@@ -68,6 +68,10 @@ def v1_service(rec: dict, vault: set | None = None) -> dict:
     if 'reference_draft' in rec:
         from mc.desk_connect.reference_draft import stored
         out['reference_draft'] = stored(rec['reference_draft'])
+    if 'browser_connection' in rec:
+        from mc.desk_connect.browser_connections import view
+        out['browser_connection'] = view(rec)
+        out['kind'] = 'browser_profile'
     if cred:
         out['credential']['in_vault'] = cred in (_vault_names() if vault is None else vault)
     return out

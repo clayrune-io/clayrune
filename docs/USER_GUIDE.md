@@ -912,13 +912,19 @@ browser manually.
 
 ## Desk Connections: add or check a service
 
+Every service also offers **Sign in on the website**, including YouTube and unknown web addresses. Generic browser connections save the service name, address and browser profile. They grant no execution access: Read and Post remain off. Saving a browser profile does not prove that it is signed in.
+
+Browser setup uses your configured shared default profile, normally **main**. Existing dotted profile names up to 64 characters are accepted; `..` is not allowed. A damaged saved profile reference or unavailable status lookup shows an unavailable status while the rest of the Connections list stays usable.
+
 Open the Desk and choose **Connections**, then **Add service**. Live connections must be enabled; preview mode explains this instead of opening a different editor.
 
 Every service follows the same six screens: **Add service > Connection options > Connection details > Permissions > Review > Result**. Enter the service name or web address and press **Continue**. A maintained service uses its built-in connection choices. An unknown web address is investigated automatically; its suggestions are information, not proof of a working connection. **Details** includes manual software/server setup and information-only alternatives. An unknown name without a built-in match asks you for its address rather than guessing a site.
 
 Choose how to connect, then enter only the selected connection's details. Account connections let you select an existing account or add one. LinkedIn personal profiles and Company Pages have distinct destinations. X browser sign-in does not require a developer app. **Permissions** comes after setup; new Read and Post choices start off and appear only where Clayrune enforces them. Some connections have no separate Read/Post control. Review shows the selected facts and risks before **Save** asks for your dashboard passcode. Opening a provider sign-in and applying permissions keep their own passcode checks.
 
-A saved connection is not necessarily signed in or verified. On supported saved generation connections, open its Connections tile and click **Check it now** for the existing free connection check. Result offers the same action after Save. Opening a tile never runs the check automatically. A failed check stays visibly failed. Browser sign-in alone is not verification, and X has no free provider check. Use **Change connection** to return to the same Add service flow. Limits and disconnect controls remain on the saved connection detail.
+A saved connection is not necessarily signed in or verified. For browser sign-in, **Check connection** checks the selected profile first. A passing check turns green without opening the browser pane. If sign-in is needed, the pane opens and Clayrune checks again automatically while you sign in. X, LinkedIn and YouTube have browser checks. For a service without an automatic check, Clayrune asks once whether you are signed in; **Yes, I'm signed in** means **Signed in, not verified**. A browser check proves only the browser session, and grants no Read or Post permission.
+
+On supported saved generation connections, open its Connections tile and click **Check it now** for the existing free connection check. Result offers the same action after Save. Opening a tile never runs the check automatically. A failed check stays visibly failed. The X API has no free provider check. Use **Change connection** to return to the same Add service flow. Limits and disconnect controls remain on the saved connection detail.
 
 For a saved social account, **Change how this is connected** opens its **Permissions** step in the same wizard with the saved reading method, browser profile and activity addresses filled in. **How to read this account** defaults to **Browser sign-in (no charge)**; X also offers **Platform app (may cost money)**. An old app choice that the service cannot use asks you to choose explicitly. Reading choices do not grant new connection permissions. Use Back to return through setup and connection options when you need another connection.
 

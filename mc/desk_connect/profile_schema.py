@@ -12,7 +12,7 @@ user's account.
 `ProfileError` on the first problem and never returns a half-valid profile. It checks
 shape and internal references only; whether a named adapter or catalogue entry exists
 in code is the loader's neighbour's job (a test pins it), because this module must
-stay free of any other Clayrune import.
+stay free of runtime Clayrune imports (the sign-in check validator is pure).
 
 Facts and dates: a fact that cites a CLAIM must have evidence in the same route that
 carries that claim, and the dates come from the evidence alone (`retrieved`,
@@ -27,6 +27,7 @@ import unicodedata
 from datetime import date
 from typing import Any
 from urllib.parse import urlsplit
+from mc.desk_connect import browser_check_schema
 
 SCHEMA_VERSION = 1
 
@@ -346,7 +347,7 @@ def route_verification(route: dict, evidence: dict[str, dict]) -> dict:
 def check_profile(raw: Any, where: str = 'profile') -> dict:
     """Validate one parsed profile and return the normalised copy."""
     _fields(raw, where, {'schema_version', 'service_id', 'revision', 'label', 'aliases', 'home_url', 'hosts', 'account_kinds',
-                         'purposes', 'routes', 'evidence', 'change_summary', 'supersedes'})
+                         'purposes', 'routes', 'evidence', 'change_summary', 'supersedes'}, {'signin_check'})
     need(raw['schema_version'] == SCHEMA_VERSION, where, f'schema_version must be {SCHEMA_VERSION}')
     sid = raw['service_id']
     need(isinstance(sid, str) and _SLUG_RE.match(sid), where, 'service_id must be a short slug')
@@ -370,6 +371,12 @@ def check_profile(raw: Any, where: str = 'profile') -> dict:
     except ValueError:
         home_ok = False
     need(home_ok, where, 'home_url must be https://<one of the hosts> with no path: the address a name resolves to')
+    signin_check = None
+    if 'signin_check' in raw:
+        try:
+            signin_check = browser_check_schema.check(raw['signin_check'], hosts)
+        except ValueError as e:
+            raise ProfileError(f'{where}: {e}') from e
     need(all(normalize(x) for x in [label, *aliases]), where, 'a name must contain a letter or a digit')
 
     kinds = []
@@ -434,4 +441,6 @@ def check_profile(raw: Any, where: str = 'profile') -> dict:
            'change_summary': _text(raw['change_summary'], where, 'change_summary'), 'supersedes': sup}
     for r in out['routes']:
         r['verification'] = route_verification(r, by_ev)
+    if signin_check is not None:
+        out['signin_check'] = signin_check
     return out

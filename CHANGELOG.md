@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Browser status tolerates saved profile names after MC-1079 (MC-1074 review)
+
+- Browser connection Save and Check reuse the browser's name rule, including dotted names up to 64 characters and the `..` guard. Generic setup follows the configured shared profile default.
+- Invalid saved names and failed status lookups log and display unavailable instead of breaking account/service lists. Checks with an agent-held profile keep both the visible pane and the agent's existing tab unchanged.
+- Rebased onto `91b20f55`; validation and revised commit mapping: `docs/desk_v1/CHECK_CONNECTION.md`. Branch only; no merge, push or restart.
+
 ## [2026-10-07] - Agent-owned tabs share a browser profile (MC-1079)
 
 - An agent adopting an open profile gets its own background tab handle. Input and filtered page reads stay on that target; Stop closes that tab, leaving the pane's visible tab and browser running. Dashboard launches retain their existing navigation behavior.
@@ -31,6 +37,17 @@
 - Only chosen scenes are priced, uploaded and generated. Saved untouched clips rebuild the video locally without another generation charge; a first partial render names missing scenes and does not replace a full-video attachment.
 - Higher prepared prices stop before generation and restore the same selection after reload. Submission holds, free acknowledgement, reservations and the prohibition on automatic paid retries remain unchanged.
 - Rebased onto MC-1068; contract, exact checks and the UI walkthrough: `docs/desk_v1/SCENE_SUBSET_RENDER.md`. Branch only; no merge, push, restart or real spend.
+
+## [2026-10-07] - Check connection verifies browser sign-in before opening the pane (MC-1074)
+
+- Browser setup, Result and saved connection details share **Check connection**. A passing check turns green without opening the pane; signed-out evidence opens the named profile and rechecks automatically. Transport failures stay failed.
+- X, LinkedIn and YouTube use fixed, read-only checks from reviewed profile data. Services without a check ask once; human confirmation means **Signed in, not verified**. Browser verification grants no Read/Post permission. Human-only save, credential-fill and permission gates remain intact.
+- Contract, validation matrix and Ron walkthrough: `docs/desk_v1/CHECK_CONNECTION.md`. Branch only; live vendor-account checks remain for Dave's handoff. No merge, push or restart.
+
+## [2026-10-07] - Browser sign-in can be saved for every service (MC-1074 prerequisite)
+
+- Known services, YouTube and unknown addresses offer browser sign-in in the shared Add service flow. Generic connections save only the service name, address and named profile; Read/Post stay off and no executor is created.
+- Existing account and credential gates remain on X and LinkedIn. Generic saves require the human passcode and cannot replace an existing profile silently. Contract: `docs/desk_v1/CHECK_CONNECTION.md`. Branch only; no merge, push or restart.
 
 ## [2026-10-07] - Browser pane passes Google's "may not be secure" check again
 

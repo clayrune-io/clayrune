@@ -194,6 +194,9 @@ def test_v1_account_carries_the_saved_browser_setup_names_only():
              'refs': {'browser_profile': 'x-ron', 'login': 'x.ron'}, 'saved_at': '2026-10-06T12:00:00',
              'password': 'must-not-travel'}
     row = _accounts.v1_account({'id': 'a', 'platform': 'x', 'identity': '@a', 'capability': 'direct', 'browser_setup': setup}, {})
+    assert row['browser_setup'].pop('url') == 'https://x.com'
+    status = row['browser_setup'].pop('status')
+    assert status['state'] == 'sign_in_required' and status['verifiable'] is True
     assert row['browser_setup'] == {'service': 'x', 'route_id': 'x-browser', 'account_kind': 'account',
                                     'refs': {'browser_profile': 'x-ron', 'login': 'x.ron'}, 'saved_at': '2026-10-06T12:00:00'}
     assert 'password' not in row['browser_setup']

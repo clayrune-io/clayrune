@@ -2246,6 +2246,10 @@ app.register_blueprint(_bp_desk_connect_type.bp)
 # Connect by URL, browser connection setup with no developer app (MC-1062 ticket 03): account + named profile + login name. Own module.
 from mc.blueprints import desk_connect_browser_setup_routes as _bp_desk_connect_browser_setup  # noqa: E402
 app.register_blueprint(_bp_desk_connect_browser_setup.bp)
+from mc.blueprints import desk_connect_browser_profile_routes as _bp_desk_connect_browser_profile  # noqa: E402
+app.register_blueprint(_bp_desk_connect_browser_profile.bp)
+from mc.blueprints import desk_connect_browser_check_routes as _bp_desk_connect_browser_check  # noqa: E402
+app.register_blueprint(_bp_desk_connect_browser_check.bp)
 from mc.blueprints import desk_connect_permission_routes as _bp_desk_connect_permission  # noqa: E402
 app.register_blueprint(_bp_desk_connect_permission.bp)
 

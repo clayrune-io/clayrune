@@ -351,7 +351,7 @@
 
   registerBranch({
     id: 'signin', word: 'Sign in (username/password)',
-    match: (sel) => sel.type === 'signin' && !!_L(),
+    match: (sel, info) => sel.type === 'signin' && ['x','linkedin'].includes(_service(info)) && !!_L(),
     problem: () => (_L().summary() ? '' : 'Go back and choose how to sign in.'),
     save: () => _L().commit(),
     accountId: (res) => res.account_id,
@@ -368,7 +368,7 @@
       rows: (res, st, info) => {
         const prof = `<code>${esc(res.browser_profile)}</code> ${esc(_profileWord[res.profile_state] || _profileWord.unknown)}`;
         const shared = (res.shared_with || []).length ? `<div class="desk-v1-cfw-fact-text" data-sum-shared>Also used by: ${esc(res.shared_with.join(', '))}.</div>` : '';
-        const signed = res.profile_state === 'new' ? `<span data-sum-signin="not_yet">Not yet.</span> Sign in to the browser profile <code>${esc(res.browser_profile)}</code>.`
+        const signed = st && ['verified','signed_in'].includes(st.state) ? `<span data-sum-signin="${esc(st.state)}">${esc(window.DeskV1ConnectCopy.status(st.state))}</span>` : res.profile_state === 'new' ? `<span data-sum-signin="not_yet">Not yet.</span> Sign in to the browser profile <code>${esc(res.browser_profile)}</code>.`
           : `<span data-sum-signin="not_checked">Not checked.</span> Clayrune cannot tell whether <code>${esc(res.browser_profile)}</code> is signed in.`;
         return [
           ['Connection', res.unchanged ? 'Already saved. Nothing changed.' : (res.account_created ? 'Saved. A new account was created.' : 'Saved to the existing account.'), 'connection'],
@@ -380,13 +380,16 @@
       extra: (res, st, info) => {
         const Sg = window.DeskV1ConnectSignin;
         const url = _signinUrl(info, res.route_id);
-        const fill = Sg && res.login ? Sg.fillHTML(FILL_KEY, { url, login: res.login, profile: res.browser_profile, hint: '', why: '' }) : '';
+        const checking = window.DeskV1ConnectCopy.isEnabled() && window.DeskV1ConnectBrowserCheck;
+        const fill = Sg && res.login ? Sg.fillHTML(FILL_KEY, { url:checking?null:url, login: res.login, profile: res.browser_profile, hint: '', why: '' }) : '';
+        if (checking) return checking.html('account-result') + fill;
         return url || fill ? `<div class="desk-v1-cfsum-fill" data-sum-fill>${fill || `<div class="desk-v1-cs-fill-row"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-sum-open="${esc(url)}">Open sign-in</button></div>`}</div>` : '';
       },
       actions: () => [],
       bind: (root, res, api) => {
         const Sg = window.DeskV1ConnectSignin;
         const url = _signinUrl(api.info, res.route_id);
+        window.DeskV1ConnectBrowserCheck?.bind(root,'account-result',()=>({url:res.url || api.info.url,browser_profile:res.browser_profile}),api.ctx,{own:api.own,status:R.status,onStatus:out=>{R.status=out;api.repaint();}});
         root.querySelectorAll('[data-sum-open]').forEach((b) => b.addEventListener('click', () => {
           try { if (typeof window.openBrowserPane === 'function') window.openBrowserPane(b.dataset.sumOpen, null, null, res.browser_profile || null); } catch (_) { /* the pane shows its own failure */ }
         }));
@@ -459,5 +462,5 @@
     return { saved: !!R.result, saving: R.saving, perms: R.perms ? { ok: R.perms.ok, pending: R.perms.pending, desk: R.perms.desk.status, site: R.perms.site.status } : null, outcome: R.result ? _outcome().kind : null };
   }
 
-  window.DeskV1ConnectSummaryStep = { setTarget, registerBranch, state };
+  window.DeskV1ConnectSummaryStep = { setTarget, registerBranch, state, setStatus: out => {R.status=out;} };
 })();

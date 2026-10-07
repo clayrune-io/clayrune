@@ -1,7 +1,11 @@
 {
   "schema_version": 1,
   "service_id": "x",
-  "revision": 2,
+  "revision": 3,
+  "signin_check": {
+    "url": "https://x.com/home",
+    "selectors": ["[data-testid=SideNav_AccountSwitcher_Button]", "a[data-testid=AppTabBar_Home_Link]"]
+  },
   "label": "X",
   "aliases": [
     "X",
@@ -553,6 +557,6 @@
       "result": "unavailable"
     }
   ],
-  "change_summary": "P1: the version 1 API row kept as is; MCP, documentation MCP, browser and manual routes added from the pages read on 2026-10-05 (web intents page unavailable that day). Revision 2 (slice P2b): sign-in routes declare the one page a stored login may be typed on (`signin`); nothing else in the profile changed.",
-  "supersedes": 1
+  "change_summary": "P1: the version 1 API row kept as is; MCP, documentation MCP, browser and manual routes added from the pages read on 2026-10-05 (web intents page unavailable that day). Revision 2 (slice P2b): sign-in routes declare the one page a stored login may be typed on (`signin`). Revision 3 (MC-1074): fixed read-only browser sign-in evidence added; Chromium fixtures checked, live vendor account check pending.",
+  "supersedes": 2
 }

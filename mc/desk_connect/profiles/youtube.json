@@ -1,7 +1,11 @@
 {
   "schema_version": 1,
   "service_id": "youtube",
-  "revision": 1,
+  "revision": 2,
+  "signin_check": {
+    "url": "https://www.youtube.com/",
+    "selectors": ["button#avatar-btn"]
+  },
   "label": "YouTube",
   "aliases": [
     "YouTube",
@@ -61,6 +65,6 @@
       "result": "unverified"
     }
   ],
-  "change_summary": "P1: converted from the version 1 registry; nothing in it was re-verified.",
-  "supersedes": null
+  "change_summary": "P1: converted from the version 1 registry; nothing in it was re-verified. Revision 2 (MC-1074): fixed read-only browser sign-in evidence added; Chromium fixtures checked, live vendor account check pending.",
+  "supersedes": 1
 }

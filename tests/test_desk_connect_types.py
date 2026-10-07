@@ -116,19 +116,19 @@ def test_catalogue_and_engine_services_keep_their_provider_routes():
 def test_service_with_no_provider_stays_unavailable():
     for sid, rid in (('youtube', 'youtube-oauth'), ('google_drive', 'google-drive-oauth')):
         out = type_view.project_service(sid)
-        assert _types(out['picker']) == ['mcp']
+        assert _types(out['picker']) == ['signin', 'mcp']
         assert _hidden(out)[rid]['explanation']['code'] == 'missing_adapter'
 
 
 # ── unknown addresses ────────────────────────────────────────────────────────
 
-def test_unknown_address_gets_custom_mcp_and_the_reference_but_no_sign_in():
+def test_unknown_address_gets_browser_reference_custom_mcp_and_information():
     out = type_view.project(None)
     assert out['service']['recognised'] is False
-    assert _types(out['picker']) == ['mcp']
-    assert set(_variants(out)) == {'custom-npm', 'custom-remote'}
+    assert _types(out['picker']) == ['signin', 'mcp']
+    assert set(_variants(out)) == {'browser-profile', 'custom-npm', 'custom-remote'}
     hidden = _hidden(out)
-    assert hidden['signin-unreviewed']['explanation']['code'] == 'no_reviewed_signin'
+    assert _variants(out)['browser-profile']['runtime']['desk_executes'] is False
     assert out['reference']['method'] == 'save_for_agents' and out['reference']['endpoint'] == '/api/desk/connect/commit'
     assert 'detected-pypi' in hidden and 'api-details' in hidden
 
@@ -234,7 +234,7 @@ def test_route_answers_a_name_and_an_address(client):
     assert a['service']['id'] == 'x' and a['host'] == 'x.com' and _types(a['picker']) == ['signin', 'api', 'mcp']
     assert b['service']['id'] == 'linkedin' and b['input_kind'] == 'name' and _types(b['picker']) == ['signin', 'mcp']
     u = client.post('/api/desk/connect/types', json={'url': 'https://plausible.io/mysite'}).get_json()
-    assert u['service']['recognised'] is False and u['host'] == 'plausible.io' and _types(u['picker']) == ['mcp']
+    assert u['service']['recognised'] is False and u['host'] == 'plausible.io' and _types(u['picker']) == ['signin', 'mcp']
 
 
 def test_route_errors_match_inspect(client):

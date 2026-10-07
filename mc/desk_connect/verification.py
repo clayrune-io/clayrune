@@ -75,29 +75,30 @@ def _provider(service_id, method):
     return prov
 
 
-def status(service_id, method, account_id=None) -> dict:
+def status(service_id, method, account_id=None, *, provider=None) -> dict:
     """The derived state. Metadata only; no network."""
-    prov = _provider(service_id, method)
+    prov = provider or _provider(service_id, method)
     cs = prov.credential_state(method, account_id)
     state = {'not_connected': 'not_connected', 'needs_signin': 'sign_in_required',
-             'key_unreadable': 'key_unreadable'}.get(cs['state'], cs['state'])
+             'key_unreadable': 'key_unreadable', 'probe_ready': 'sign_in_required'}.get(cs['state'], cs['state'])
     out = {'state': state, 'entry': cs.get('entry')}
-    if cs['state'] in ('key_stored', 'signed_in'):
+    if cs['state'] in ('key_stored', 'signed_in', 'probe_ready'):
         rec = _records.get((service_id, method, account_id or ''))
-        if rec and rec['entry'] == cs.get('entry') and rec['stamp'] == _stamp(cs.get('entry')):
-            out.update(state='verified', method=method, capability=rec['capability'], identity=rec['identity'],
+        current_stamp = cs['stamp'] if 'stamp' in cs else _stamp(cs.get('entry'))
+        if rec and rec['entry'] == cs.get('entry') and rec['stamp'] == current_stamp:
+            out.update(state='verified' if rec.get('verified', True) else 'signed_in', method=method, capability=rec['capability'], identity=rec['identity'],
                        at=rec['at'])
     out['label'] = LABELS.get(out['state'], out['state'])
     return out
 
 
-def verify(service_id, method, account_id=None) -> dict:
+def verify(service_id, method, account_id=None, *, provider=None) -> dict:
     """Run the provider's one read-only check and return the new status plus the
     probe's own message. Never raises for a failed check: that is a result."""
-    prov = _provider(service_id, method)
+    prov = provider or _provider(service_id, method)
     cs = prov.credential_state(method, account_id)
-    if cs['state'] not in ('key_stored', 'signed_in'):
-        out = status(service_id, method, account_id)
+    if cs['state'] not in ('key_stored', 'signed_in', 'probe_ready'):
+        out = status(service_id, method, account_id, provider=prov)
         out['message'] = {'not_connected': 'Nothing is stored for this yet, so there is nothing to check.',
                           'needs_signin': 'Sign in again, then check.',
                           'key_unreadable': 'The stored key cannot be opened (its key changed). Replace it, then check.',
@@ -105,7 +106,7 @@ def verify(service_id, method, account_id=None) -> dict:
                           }.get(cs['state'], '')
         return out
     key = (service_id, method, account_id or '')
-    stamp = _stamp(cs.get('entry'))        # taken BEFORE the probe: a change during it is not covered by it
+    stamp = cs['stamp'] if 'stamp' in cs else _stamp(cs.get('entry'))
     try:
         probe = prov.verify(method, account_id)
     except Exception as e:                 # a provider bug must read as "check failed", never as Verified
@@ -113,12 +114,14 @@ def verify(service_id, method, account_id=None) -> dict:
         probe = Probe(False, 'the check could not run; see the server log', kind='unavailable')
     with _lock:
         _records.pop(key, None)
-        if probe.ok is True:
-            _records[key] = {'entry': cs.get('entry'), 'stamp': stamp, 'at': now_iso(),
-                             'identity': probe.identity or cs.get('entry') or '', 'capability': probe.capability}
+        if probe.ok is True or (probe.ok is None and probe.kind == 'confirmed'):
+            record_stamp = prov.probe_stamp(stamp) if hasattr(prov, 'probe_stamp') else stamp
+            _records[key] = {'entry': cs.get('entry'), 'stamp': record_stamp, 'at': now_iso(),
+                             'identity': probe.identity or cs.get('entry') or '', 'capability': probe.capability,
+                             'verified': probe.ok is True}
             while len(_records) > _REMEMBER:
                 _records.popitem(last=False)
-    out = status(service_id, method, account_id)
+    out = status(service_id, method, account_id, provider=prov)
     if probe.ok is False:
         out.update(state='check_failed', label=LABELS['check_failed'], failure=probe.kind or 'rejected')
     out['message'] = probe.message

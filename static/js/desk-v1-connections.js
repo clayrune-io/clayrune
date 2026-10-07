@@ -348,7 +348,7 @@
     if (live && window.DeskV1ConnectionStatus) window.DeskV1ConnectionStatus.mcpItems().forEach((m) => items.push(m));
     (window.DeskV1Services.rows() || []).forEach((s) => items.push({
       key: `service:${s.id}`, kind: 'service', mark: String(s.name || '?').charAt(0).toUpperCase(),
-      name: s.name, kindLabel: 'Saved service', status: window.DeskV1Services.STATUS,
+      name: s.name, kindLabel: s.browser_connection ? 'Browser sign-in' : 'Saved service', status: s.browser_connection ? window.DeskV1BrowserService.status(s) : window.DeskV1Services.STATUS,
     }));
     return items;
   }
