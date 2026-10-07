@@ -5,10 +5,12 @@ module performs no network or vault access and never executes vendor text.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from mc import desk
 from mc.atomic_json import write_json_atomic
+from mc.atomic_json import read_text_with_retry
 from mc.core import _log, now_iso
 
 FILE_NAME = 'higgsfield_mcp_tools.json'
@@ -48,3 +50,21 @@ def capture(tools: list[dict]) -> None:
     except Exception as e:
         # Exception text may contain transport/credential details; keep only type.
         _log(f'[desk_connect] Higgsfield MCP snapshot write failed: {type(e).__name__}', flush=True)
+
+
+def read() -> dict | None:
+    """Read bounded untrusted evidence, never credentials; absence is normal."""
+    try:
+        target = path()
+        if target.stat().st_size > 32 * 1024 * 1024:
+            raise ValueError('schema snapshot too large')
+        doc = json.loads(read_text_with_retry(target, encoding='utf-8'))
+        if not isinstance(doc, dict) or doc.get('untrusted_vendor_text') is not True \
+                or not isinstance(doc.get('tools'), list):
+            raise ValueError('schema snapshot malformed')
+        return doc
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        _log(f'[desk_connect] Higgsfield MCP snapshot read failed: {type(e).__name__}', flush=True)
+        return None

@@ -17,7 +17,7 @@ from __future__ import annotations
 from mc import desk_engines as _engines
 from mc import desk_oauth as _oauth
 from mc import secrets_store as _vault
-from mc.desk_connect import higgsfield_mcp_snapshot as _snapshot
+from mc import desk_engine_schemas as _schemas
 from mc.desk_connect.providers import base
 from mc.desk_connect.providers.key_paste import KeyPaste
 
@@ -78,30 +78,7 @@ class HiggsfieldProvider(base.Provider):
     def _verify_oauth(self) -> base.Probe:
         try:
             token = _oauth.access_token('higgsfield', consumer='desk_connect:verify')
-            _engines._mcp_post(token, {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {
-                'protocolVersion': _engines._MCP_PROTOCOL, 'capabilities': {},
-                'clientInfo': {'name': 'Clayrune', 'version': '1'}}}, expect_id=1)
-            _engines._mcp_post(token, {'jsonrpc': '2.0', 'method': 'notifications/initialized'}, expect_id=None)
-            tools: list[dict] = []
-            cursor = None
-            seen: set[str] = set()
-            for rid in range(2, 52):
-                body: dict = {'jsonrpc': '2.0', 'id': rid, 'method': 'tools/list'}
-                if cursor:
-                    body['params'] = {'cursor': cursor}
-                page = _engines._mcp_post(token, body, expect_id=rid)
-                if not isinstance(page, dict) or not isinstance(page.get('tools'), list):
-                    raise _engines.EngineError('engine', 'Higgsfield returned a malformed tool list')
-                tools.extend(t for t in page['tools'] if isinstance(t, dict))
-                cursor = page.get('nextCursor')
-                if cursor is None or cursor == '':
-                    break
-                if not isinstance(cursor, str) or cursor in seen:
-                    raise _engines.EngineError('engine', 'Higgsfield returned an invalid or repeated tool-list cursor')
-                seen.add(cursor)
-            else:
-                raise _engines.EngineError('engine', 'Higgsfield tool listing exceeded 50 pages')
-            _snapshot.capture(tools)
+            _schemas.ensure('higgsfield_mcp', token=token, force=True, strict=True)
         except _oauth.OAuthError as e:
             kind = 'rejected' if e.code in ('needs_signin', 'not_connected') else 'unreachable'
             return base.Probe(False, str(e), kind=kind)
@@ -110,6 +87,9 @@ class HiggsfieldProvider(base.Provider):
                               kind='rejected' if e.kind == 'auth' else 'unreachable')
         except _vault.SecretsError as e:
             return base.Probe(False, f'the saved sign-in could not be read: {_oauth._safe(e)}', kind='unavailable')
+        except _schemas.CaptureBusy:
+            return base.Probe(False, 'Higgsfield schema capture is already in progress; check again shortly.',
+                              kind='unreachable')
         return base.Probe(True, 'Higgsfield accepted the sign-in.', identity=_OAUTH_ENTRY,
                           capability='list tools (read-only)')
 

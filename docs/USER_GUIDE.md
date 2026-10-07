@@ -738,6 +738,19 @@ Click the **?** button in the header (top-right), or use Settings → Tour.
 
 ## Troubleshooting
 
+### Higgsfield refuses a storyboard picture
+
+Clayrune reads Higgsfield's model/tool definitions automatically after saving a
+sign-in and on the next price check or Render when those definitions are missing
+or older than 24 hours. You do not need to press **Check it now** for discovery.
+If discovery fails, the picture refusal explains that the model list has not yet
+been read; another price check retries. Text-only price checks can still work.
+
+Picture generation through **Higgsfield (sign in)** remains unavailable while its
+upload integration is being implemented. A model whose captured definition accepts
+pictures reports that upload wiring is pending, rather than silently dropping the
+picture. **Check it now** remains a separate, human-only connection verification.
+
 ### "Session not found"
 Old session was purged after 24h of inactivity. Just send a new message —
 Clayrune will revive from the Claude transcript on disk.

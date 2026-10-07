@@ -892,6 +892,9 @@ def _complete(params: dict[str, str]) -> tuple[bool, str, bool]:
         srv = flow.pop('listener', None)
     _close_listener(srv)
     _log(f'[desk_oauth] {service} {"signed in, held for the Save" if held else "connected"}', flush=True)
+    if not held:
+        from mc import desk_engine_schemas
+        desk_engine_schemas.connection_saved(service, 'oauth', token=rec['access_token'])
     return True, msg, held
 
 

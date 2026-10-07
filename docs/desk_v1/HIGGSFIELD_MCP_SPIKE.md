@@ -495,3 +495,102 @@ hands the snapshot back for schema-driven implementation. No live verification
 or capture has been run by this worker, and no provider schema is yet claimed
 live-verified. A successful schema capture does not authorize uploads or paid
 generation.
+
+## 11. Automatic discovery and runtime evidence, 2026-10-06 (Sol_Tobin)
+
+This supersedes section 10's requirement to press the human-only verification
+button for discovery. Server saves now discover tools without an extra human
+step: the legacy OAuth callback captures after its durable vault save; the
+Connect wizard captures after a held sign-in is committed, outside the commit
+lock. Merely holding a sign-in does not capture. Verification retains its human
+gate and is never marked successful by automatic discovery.
+
+`mc/desk_engine_schemas.py` supplies a small registry of read, refresh and optional
+capability callbacks keyed by engine, with a connection service/method mapping.
+Higgsfield registers its snapshotter; another remote MCP engine can register its
+own callbacks without copying the save/price hooks. Durable non-sign-in
+credential saves share the same registry hook; OAuth saves wait until their
+callback or held-sign-in commit. This is not a general tool
+executor, model catalogue importer, credential API or permission grant.
+
+Missing or 24-hour-old snapshots are refreshed before single-job estimates,
+submits and storyboard price/render validation. One capture per engine may run
+at a time; competing requests do not queue behind it. Discovery shares a
+15-second RPC deadline across initialization and all cursor pages, retains the
+50-page limit, and uses deadline-aware bounded response reads so SSE heartbeats
+cannot keep the capture open. Credential resolution follows existing OAuth
+policy; price/render paths pass the credential they already resolve. No worker
+reads the live token, invokes live discovery, uploads or generates media.
+
+Discovery/network/read/write failures log exception types without arbitrary
+exception text or signed URLs. A failed capture preserves the old complete
+snapshot, does not undo a saved connection, and permits text-only price checks
+to continue. Missing/expired evidence is retried on the next ordinary price
+check. Snapshot data remains gitignored under `data/desk/`, outside project
+records and selectively bundled installer assets.
+
+`mc/desk_mcp_picture_schema.py` derives **evidence**, separately from submission
+support. It reads only structured generation input schemas with a model `const`
+or `enum` at the root or within `params`. Supported evidence is a first-frame
+field (`start_image`, `first_frame`, `start_image_url`), a reference array
+(`image_references`, `reference_images`, `input_images`), or a `medias` array
+whose item `role` has an explicit image/start-image enum. The evidence retains
+the tool, parameter path, role, original field schema and an explicit-count
+flag. Explicit `maxItems` supplies the count; an unspecified count is restricted
+to one reference locally and is not claimed as the vendor's maximum. Local
+JSON pointers and uncomplicated model unions are supported. Descriptions never
+grant capability. External references, unsupported intersections/conditionals,
+opaque model selectors, duplicate tool definitions and conflicting model
+branches remain conservative. A fully closed prompt-only contract establishes
+no picture input.
+
+`get_model()` and the engine listing overlay this runtime evidence without
+mutating the static catalogue. Absent evidence explains:
+"Clayrune has not read Higgsfield's model list yet; it does so on the next price
+check". Stale and unknown evidence have distinct explanations. Documented
+picture evidence **still refuses generation/estimates with pictures** because
+upload wiring is not implemented. Both validation and the adapter guard that
+boundary, preventing silently dropped pictures. `use_unlim` stays false.
+
+### Evidence needed for step 4 (picture wiring)
+
+The server-produced snapshot must establish the actual `generate_video` and
+`generate_image` parameter paths and model-specific applicability: the accepted
+first-frame/reference fields or `medias` item shapes and roles, identifier/URL
+types, required companion fields, allowed modes and counts for each supported
+model. It must also identify the actual upload/media tool and its accepted
+payload (base64/file/mime/size fields, or signed-upload allocation parameters).
+The returned asset id/public URL shape and how that value is referenced by
+generation must be documented as well. The current snapshot intentionally
+retains input schemas only; if descriptions/public documentation do not define
+upload output, an output schema or other authorized server-side evidence is
+still required. Do not substitute the public CLI's contract for the remote MCP.
+
+After merge and Ron's restart, an ordinary text-only price check also triggers
+capture for an already saved connection. Example **free estimate only** (Bash):
+
+```bash
+curl -sS --fail-with-body -X POST http://localhost:5199/api/desk/engines/estimate \
+  -H 'Content-Type: application/json' \
+  -d '{"engine_id":"higgsfield_mcp","model_id":"kling3_0","kind":"video","prompt":"Schema discovery price check","aspect_ratio":"16:9","duration_sec":5}'
+```
+
+Read `data/desk/higgsfield_mcp_tools.json` as untrusted vendor data. The discovery
+may succeed even if the subsequent credit quote fails; inspect the timestamp
+and complete filtered tool list. No live schema has been read in this branch.
+
+### Verification
+
+- The two save-path assertions fail on base `946464f6` (no MCP discovery calls),
+  then pass with the hooks. Full eight-file regression: `232 passed in 71.04s`.
+  The final generic credential-save hook and focused provider/discovery tests:
+  `83 passed in 6.80s`.
+- Final engine-file command: `python -m pytest tests/test_desk_engines.py -o addopts=''`
+  returned `89 passed in 4.19s`. Fake discovery/capability/transport tests cover
+  TTL, a single in-flight capture, timeout/heartbeats, redacted failures,
+  model-specific image/video evidence, conflicts and explicit pending refusals.
+- New modules and changed connection modules pass basic Pyright. Including
+  `desk_engines.py` reports its pre-existing optional campaign-id error in the
+  ffmpeg hold path; the same error is reproduced from base `946464f6`.
+- No frontend files changed, so JavaScript/Playwright smokes are inapplicable.
+  No merge, push, restart, live provider call, upload or paid generation occurred.

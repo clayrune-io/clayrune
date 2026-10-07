@@ -64,7 +64,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from dataclasses import asdict, dataclass, field
+import time
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -379,7 +380,24 @@ def get_engine(engine_id: str) -> EngineDescriptor | None:
 
 def get_model(engine_id: str, model_id: str) -> ModelDescriptor | None:
     eng = ENGINES.get(engine_id)
-    return next((m for m in eng.models if m.model_id == model_id), None) if eng else None
+    model = next((m for m in eng.models if m.model_id == model_id), None) if eng else None
+    if model is not None:
+        from mc import desk_engine_schemas
+        inputs = desk_engine_schemas.model_inputs(engine_id, model.kind, model_id)
+        if inputs is not None:
+            return replace(model, inputs=inputs)
+    return model
+
+
+def _schema_creds(engine_id: str, project_id: str | None, unattended: bool) -> _Creds | None:
+    """Refresh registered remote-engine evidence before request validation."""
+    from mc import desk_engine_schemas
+    if not desk_engine_schemas.registered(engine_id):
+        return None
+    creds = _creds(engine_id, project_id, unattended)
+    desk_engine_schemas.ensure(engine_id, token=creds.secret,
+                               project_id=project_id, unattended=unattended)
+    return creds
 
 
 # -- HTTP (the one function tests replace) ------------------------------------
@@ -652,6 +670,9 @@ def validate_request(model: ModelDescriptor, req: GenerationRequest) -> list[str
     if req.audio and not model.audio:
         p.append(f'{model.model_id} cannot generate audio')
     inp = model.inputs
+    if (req.first_frame or req.last_frame or req.reference_images) and inp.get('schema_state'):
+        # Evidence describes the vendor contract; the media adapter is a separate step.
+        p.append(inp['picture_refusal'])
     if req.first_frame and not inp.get('first_frame'):
         p.append(f'{model.model_id} takes no first frame')
     if req.last_frame:
@@ -834,6 +855,8 @@ def _mcp_post(token: str, body: dict, *, expect_id: int | None, timeout: float =
     arrives, so a server that keeps it open cannot hang us. The one function
     the MCP tests replace. Transport failures raise a NON-definitive EngineError:
     a call that timed out may still have been acted on."""
+    from mc import mcp_read_deadline
+    deadline = time.monotonic() + timeout
     headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/json, text/event-stream',
                'Content-Type': 'application/json', 'MCP-Protocol-Version': _MCP_PROTOCOL,
                'User-Agent': USER_AGENT}
@@ -850,17 +873,15 @@ def _mcp_post(token: str, body: dict, *, expect_id: int | None, timeout: float =
         if status >= 400:
             if status == 401:
                 raise EngineError('auth', 'Higgsfield rejected the saved sign-in (HTTP 401); sign in again on Connections')
-            raise _classify_http(status, resp.read(64 * 1024))
+            raise _classify_http(status, b''.join(mcp_read_deadline.chunks(
+                resp, deadline=deadline, maximum=64 * 1024)))
         if expect_id is None:
             return None
         ctype = (resp.headers.get('content-type') or '').split(';')[0].strip()
         try:
             if ctype == 'text/event-stream':
-                data, seen = [], 0
-                for raw in resp:
-                    seen += len(raw)
-                    if seen > _MCP_MAX_BYTES:
-                        raise ValueError('response too large')
+                data = []
+                for raw in mcp_read_deadline.lines(resp, deadline=deadline, maximum=_MCP_MAX_BYTES):
                     line = raw.decode('utf-8', errors='replace').rstrip('\r\n')
                     if line.startswith('data:'):
                         data.append(line[5:].lstrip())
@@ -871,7 +892,8 @@ def _mcp_post(token: str, body: dict, *, expect_id: int | None, timeout: float =
                             return hit
                 hit = _mcp_match(data, expect_id) if data else None
             else:
-                hit = _mcp_match([resp.read(_MCP_MAX_BYTES + 1).decode('utf-8', errors='replace')], expect_id)
+                raw = b''.join(mcp_read_deadline.chunks(resp, deadline=deadline, maximum=_MCP_MAX_BYTES))
+                hit = _mcp_match([raw.decode('utf-8', errors='replace')], expect_id)
         except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError, OSError, ValueError) as e:
             raise EngineError('engine', f'no usable response from Higgsfield: {_safe(e)}', definitive=False) from e
         if hit is None:
@@ -934,6 +956,9 @@ class HiggsfieldMcpAdapter:
 
     @staticmethod
     def _params(model: ModelDescriptor, req: GenerationRequest, **extra) -> dict:
+        if req.first_frame or req.last_frame or req.reference_images:
+            from mc.desk_mcp_picture_schema import PENDING
+            raise EngineError('invalid_input', model.inputs.get('picture_refusal', PENDING))
         p: dict = {'model': model.model_id, 'prompt': req.prompt, 'count': req.count,
                    'aspect_ratio': req.aspect_ratio, 'use_unlim': False}     # credits only, never the free allowance
         if req.kind == 'video' and req.duration_sec:
@@ -1457,6 +1482,7 @@ def list_engines(project_id: str | None = None) -> list[dict]:
     out = []
     for e in _ENGINES:
         d = e.public()
+        d['models'] = [(get_model(e.id, m.model_id) or m).public() for m in e.models]
         d['connected'] = connection(e.id, project_id)
         d['job_limit_usd'] = None if e.currency == 'credits' else limits.get(e.id)
         if e.currency == 'credits':
@@ -1469,11 +1495,12 @@ def estimate(d: dict, *, unattended: bool = False) -> dict:
     """Estimate one request. Free (a vendor estimate call costs nothing), so
     no passcode, but it does read the credential for an `endpoint` engine."""
     req = parse_request(d)
-    _eng, model = _resolve(req)
     campaign_id = d.get('campaign_id')
     project_id = _project_for(campaign_id) if campaign_id else d.get('project_id')
+    schema_creds = _schema_creds(req.engine_id, project_id, unattended)
+    _eng, model = _resolve(req)
     try:
-        creds = _creds(req.engine_id, project_id, unattended) if ENGINES[req.engine_id].estimate == 'endpoint' \
+        creds = schema_creds or _creds(req.engine_id, project_id, unattended) if ENGINES[req.engine_id].estimate == 'endpoint' \
             else _Creds(secret='')
         est = _adapter(model).estimate(model, req, creds)
     except NotConnected:
@@ -1561,7 +1588,6 @@ def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False) -> t
     if not isinstance(key, str) or not key.strip() or len(key) > 120:
         raise Refused('invalid_input', 'desk.idempotency_key is required (a retried click must not spend twice)', 400)
     campaign_id, camp, project_id = _render_scope(d)
-    _eng, model = _resolve(req)
     idem = f'{campaign_id or "-"}:{key}'
 
     with _lock:
@@ -1569,7 +1595,9 @@ def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False) -> t
         if existing:
             return _public_job(_read_store()['jobs'][existing]), True
 
-    creds = _creds(req.engine_id, project_id, unattended)
+    schema_creds = _schema_creds(req.engine_id, project_id, unattended)
+    _eng, model = _resolve(req)
+    creds = schema_creds or _creds(req.engine_id, project_id, unattended)
     adapter = _adapter(model)
     try:
         est = adapter.estimate(model, req, creds)
@@ -1901,6 +1929,8 @@ def _plan_render(d: dict, *, unattended: bool) -> dict:
         raise Refused('unknown_model', f'{engine_id} has no model {model_id!r}', 400)
     if model.kind != 'video':
         raise Refused('invalid_input', f'{model_id} makes {model.kind}, not video', 400)
+    schema_creds = _schema_creds(engine_id, project_id, unattended)
+    model = get_model(engine_id, model_id) or model
 
     ratio = str(d.get('aspect_ratio') or '').strip()
     if ratio not in _DESK_RATIOS:
@@ -1919,7 +1949,7 @@ def _plan_render(d: dict, *, unattended: bool) -> dict:
     creds = None
     adapter = _adapter(model)
     if eng.estimate == 'endpoint':
-        creds = _creds(engine_id, project_id, unattended)
+        creds = schema_creds or _creds(engine_id, project_id, unattended)
     problems, rows, total, total_amount, approximate = [], [], 0.0, 0.0, False
     root = Path(UPLOADS_ROOT).resolve() if UPLOADS_ROOT is not None else None
     for n, sc in enumerate(scenes, 1):
@@ -1933,8 +1963,8 @@ def _plan_render(d: dict, *, unattended: bool) -> dict:
             elif model.inputs.get('reference_images_max', 0) >= 1:
                 refs = [ref]
             else:
-                problems.append(f'{where} has a picture, but {model_id} takes no picture: choose an '
-                                f'image-to-video model, or remove the picture')
+                reason = model.inputs.get('picture_refusal') or 'choose an image-to-video model, or remove the picture'
+                problems.append(f'{where} has a picture, but {model_id} takes no picture: {reason}')
                 continue
         secs = _snap_duration(model, sc.get('duration_sec'))
         req = GenerationRequest(

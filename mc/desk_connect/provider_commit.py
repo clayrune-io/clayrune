@@ -105,9 +105,15 @@ def follow(clean: dict, applied: Applied) -> dict:
     """What happens after the durable commit: the sign-in. Never raises. Nothing starts for a
     Save that claimed a held sign-in: the person already signed in."""
     if clean.get('held'):
+        from mc import desk_engine_schemas
+        desk_engine_schemas.connection_saved(clean['service'], clean['method'])
         return {}
     prov = providers.for_service(clean['service'])
     try:
+        if prov and clean['method'] not in prov.signs_in:
+            # Credential saves may register discovery too; sign-ins wait for their callback.
+            from mc import desk_engine_schemas
+            desk_engine_schemas.connection_saved(clean['service'], clean['method'])
         return prov.after_commit(clean['method'], clean['fields'], applied) if prov else {}
     except Exception as e:
         _log(f'[desk_connect] {clean["service"]} sign-in start raised {type(e).__name__}', flush=True)

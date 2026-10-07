@@ -224,15 +224,30 @@ def test_a_second_held_sign_in_of_the_same_service_replaces_the_first(api):
 
 # -- the Save claims it -----------------------------------------------------------------
 
-def test_save_writes_higgsfield_sign_in_in_one_commit_and_starts_nothing(api):
+def test_save_writes_higgsfield_sign_in_in_one_commit_and_starts_nothing(api, monkeypatch):
+    from mc import desk_engines
+    from mc.desk_connect import higgsfield_mcp_snapshot
+    discovery = []
+
+    def mcp(token, body, **kwargs):
+        assert _vault_names() == ['oauth.higgsfield']
+        assert token == ACCESS_1
+        discovery.append(body['method'])
+        return {'tools': []} if body['method'] == 'tools/list' else {}
+
+    monkeypatch.setattr(desk_engines, '_mcp_post', mcp)
     client, p = api
     out = _start_hf(client, p)
     _sign_in(out)
+    assert discovery == []  # held sign-in is not yet a connection save
     starts_before = len(p.to('/oauth/register'))
     r = _save(client, HF_URL, held=_held(out))
     body = r.get_json()
     assert r.status_code == 201, body
     assert _vault_names() == ['oauth.higgsfield']
+    assert discovery == ['initialize', 'notifications/initialized', 'tools/list']
+    assert higgsfield_mcp_snapshot.read()['untrusted_vendor_text'] is True
+    assert body['status']['state'] != 'verified'
     assert 'signin' not in body and body['status']['state'] != 'not_connected'
     assert len(p.to('/oauth/register')) == starts_before               # no second sign-in was opened
     assert hold.alive(out['flow_id']) == 0 and not p.to(HF_REVOKE)     # consumed, not revoked
