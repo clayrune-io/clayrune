@@ -292,6 +292,10 @@ def client(project, monkeypatch):
 
 
 def _as(monkeypatch, status, session_id='', detail='test'):
+    if session_id:
+        # An attributed caller is a live managed session; the lineage check
+        # (mc/review_lineage.py) refuses a reviewer it has no record of.
+        monkeypatch.setitem(agent_sessions, session_id, {'session_id': session_id})
     monkeypatch.setattr(rr.caller_attribution, 'attribute_caller',
                         lambda *a, **k: ca.Attribution(status, session_id, detail=detail))
 
@@ -323,6 +327,47 @@ def test_route_refuses_the_branch_owner(client, project, monkeypatch):
     r = _post(client, 'rt2', sha=tip, verdict='pass', reviewer_session='fenn-session')
     assert r.status_code == 403 and 'self-review' in r.get_json()['error']
     assert w.merge_back(project, 'rt2')[0] == 'awaiting_review'
+
+
+def test_route_refuses_a_child_the_owner_dispatched(client, project, monkeypatch):
+    """MC-1077: the builder dispatches a child and has it 'review' the branch.
+    A different session id, but the author's own."""
+    _, tip = _agent(project, 'rt2c')
+    _as(monkeypatch, ca.ATTRIBUTED, 'kid')
+    monkeypatch.setitem(agent_sessions, 'kid', {'session_id': 'kid', '_spawned_by': 'rt2c'})
+    r = _post(client, 'rt2c', sha=tip, verdict='pass')
+    assert r.status_code == 403 and 'descends from the branch owner' in r.get_json()['error']
+    assert gate.find('testproj', w.branch_name('rt2c'), tip) is None
+    assert w.merge_back(project, 'rt2c')[0] == 'awaiting_review'
+
+
+def test_route_refuses_a_grandchild_the_owner_dispatched(client, project, monkeypatch):
+    _, tip = _agent(project, 'rt2g')
+    _as(monkeypatch, ca.ATTRIBUTED, 'grandkid')
+    monkeypatch.setitem(agent_sessions, 'grandkid', {'session_id': 'grandkid', '_spawned_by': 'kid2'})
+    monkeypatch.setitem(agent_sessions, 'kid2', {'session_id': 'kid2', '_spawned_by': 'rt2g'})
+    r = _post(client, 'rt2g', sha=tip, verdict='changes_requested')
+    assert r.status_code == 403
+    assert gate.find('testproj', w.branch_name('rt2g'), tip) is None
+
+
+def test_route_refuses_when_lineage_cannot_be_read(client, project, monkeypatch):
+    _, tip = _agent(project, 'rt2u')
+    _as(monkeypatch, ca.ATTRIBUTED, 'kid3')
+    monkeypatch.setitem(agent_sessions, 'kid3', {'session_id': 'kid3', '_spawned_by': 'ghost'})
+    r = _post(client, 'rt2u', sha=tip, verdict='pass')
+    assert r.status_code == 403 and 'cannot establish' in r.get_json()['error']
+    assert gate.find('testproj', w.branch_name('rt2u'), tip) is None
+
+
+def test_route_accepts_a_reviewer_dispatched_by_someone_else(client, project, monkeypatch):
+    _, tip = _agent(project, 'rt2i')
+    _as(monkeypatch, ca.ATTRIBUTED, 'fenn2')
+    monkeypatch.setitem(agent_sessions, 'fenn2', {'session_id': 'fenn2', '_spawned_by': 'dave'})
+    monkeypatch.setitem(agent_sessions, 'dave', {'session_id': 'dave'})
+    r = _post(client, 'rt2i', sha=tip, verdict='pass')
+    assert r.status_code == 200, r.get_json()
+    assert w.merge_back(project, 'rt2i')[0] == 'clean'
 
 
 def test_route_refuses_when_the_caller_cannot_be_attributed(client, project, monkeypatch):
