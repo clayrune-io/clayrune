@@ -798,6 +798,9 @@ and credits. Render stays unavailable until a price is returned. Clayrune does
 not follow suggested setup calls or purchase links automatically. If Higgsfield
 supplies no recognized explanation, the message says so; it does not invent a
 price. Server diagnostics record response shapes without vendor sales copy.
+If the reply is a notice with no price, the message identifies its type when
+it is a short identifier; an unknown or malformed type is reported explicitly.
+Clayrune does not treat a notice as permission to retry with different settings.
 
 Missing or unusable contracts explain what is unavailable; Clayrune does not
 drop a picture or invent an identifier. **Check it now** remains a separate,

@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Higgsfield notice-only price replies identify their type
+
+- A notice instead of a price now produces an explicit refusal with its type when it matches a strict, bounded identifier. Missing or malformed types use a plain fallback; valid prices remain usable when a notice accompanies them.
+- Diagnostics retain only strict notice-type identifiers and at most 40 matching data-key names. Notice messages and data values are never logged. Price requests and approval gates are unchanged.
+- Captured schema findings, the declared exact-preset refusal parameter and validation are documented in `docs/desk_v1/HIGGSFIELD_QUOTE_NOTICES.md`. Local branch checkpoint only; no push, merge, restart or changed provider parameters.
+
 ## [2026-10-07] - Higgsfield price refusals retain structured explanations
 
 - Price replies that ask for media, an account plan, credits or a payment-balance choice now produce plain-language explanations instead of "no usable credit quote". Picture price checks retain the same explanation through the preparation wrapper. Unknown replies explicitly say no recognized explanation was supplied.

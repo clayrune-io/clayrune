@@ -1,7 +1,8 @@
 """Translate quote refusals without forwarding vendor sales copy or instructions.
 
-Diagnostics contain bounded shapes, known field names and enumerated routing
-values only. Neither a recovery tool nor a purchase link is ever followed.
+Diagnostics contain bounded shapes, field names and enumerated routing values.
+Notice types and data keys must be strict identifiers; data values stay private.
+Neither a recovery tool nor a purchase link is ever followed.
 """
 from __future__ import annotations
 
@@ -31,6 +32,28 @@ _ENUMS = {
 _STRUCTURES = ('input_check', 'prepared_params', 'next_step', 'unlim_choice', 'error',
                'recovery_tool_args', 'billing_recovery_context', 'media_recovery_context',
                'notice', 'cost')
+_IDENTIFIER = re.compile(r'[a-z][a-z0-9_.-]{0,40}')
+
+
+def _identifier(value: object) -> str | None:
+    return value if isinstance(value, str) and _IDENTIFIER.fullmatch(value) else None
+
+
+def _notice_shape(value: object) -> dict | str:
+    """A notice's open data contract permits names, never nested values."""
+    if not isinstance(value, dict):
+        return 'unexpected_type'
+    shape: dict = {}
+    notice_type = _identifier(value.get('type'))
+    if notice_type is not None:
+        shape['type'] = notice_type
+    data = value.get('data')
+    if isinstance(data, dict):
+        keys = sorted(k for k in data if _identifier(k) is not None)
+        shape['data'] = {'keys': keys[:40], 'other_fields': len(data) - min(len(keys), 40)}
+    elif 'data' in value:
+        shape['data'] = 'unexpected_type'
+    return shape
 
 
 def _shape(value: object, field: str = '', depth: int = 0, *, budget: list[int]) -> object:
@@ -90,17 +113,25 @@ def refusal(out: dict) -> str | None:
         return 'Higgsfield needs your brand kit ready before it can price this request'
     if isinstance(out.get('next_step'), dict):
         return 'Higgsfield needs another setup step before it can price this request; check its dashboard'
+    if 'notice' in out:
+        notice = out['notice']
+        notice_type = _identifier(notice.get('type')) if isinstance(notice, dict) else None
+        # The captured schema declares no notice-type meanings or enum.
+        if notice_type is not None:
+            return f'Higgsfield sent a notice of type {notice_type} instead of a price'
+        return 'Higgsfield sent a notice instead of a price, without a recognized notice type'
     return None
 
 
 def report(out: dict, *, reason: str | None = None) -> str:
-    """Log no prompts, credentials, URLs, arbitrary keys or vendor prose."""
+    """Log no prompts, credentials, URLs, notice data values or vendor prose."""
     reason = reason or refusal(out) or 'Higgsfield did not explain why it could not price this request'
     budget = [200]
     diagnostic = {'keys': sorted(k for k in out if k in _FIELDS),
                   'other_fields': sum(k not in _FIELDS for k in out),
                   'reason': reason,
-                  'structure': {k: _shape(out[k], k, budget=budget) for k in _STRUCTURES if k in out}}
+                  'structure': {k: _notice_shape(out[k]) if k == 'notice' else _shape(out[k], k, budget=budget)
+                                for k in _STRUCTURES if k in out}}
     for field in ('recovery_tool', 'monetization_intent'):
         if field in out:
             diagnostic[field] = _shape(out[field], field, budget=budget)

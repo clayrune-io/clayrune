@@ -1,5 +1,8 @@
 # Higgsfield quote refusals: diagnostic checkpoint
 
+This document records the original checkpoint. The later notice-only response
+and captured-schema findings are in [HIGGSFIELD_QUOTE_NOTICES.md](HIGGSFIELD_QUOTE_NOTICES.md).
+
 Base: `master` at `7d353094`. Branch: `clayrune/higgsfield-price-reason`.
 No merge, push, restart, media upload or generation was performed.
 
