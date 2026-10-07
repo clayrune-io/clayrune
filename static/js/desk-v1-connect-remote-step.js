@@ -481,9 +481,8 @@
         <div data-rs-check-slot aria-live="polite">${_checkHTML(P.check)}</div>
         ${_canCheck() ? `<div class="desk-v1-cfr-actions"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-rs-check-run ${P.check && P.check.busy ? 'disabled' : ''}>Check the connection</button></div>` : ''}`;
     },
-    // Done closes the wizard itself, as the package screen does: `api.finish` would hand the panel a service record and its toast says
-    // the service was "saved for agents", which is not what an MCP server registration is. What happens to the panel after this is ticket 14's.
-    primary: (api) => ({ label: 'Done', run: async () => { W.close(); api.repaint(); return false; } }),
+    // Done uses the common finish callback to refresh saved connection tiles.
+    primary: (api) => ({ label: 'Done', run: async () => { api.finish(null, {}); api.repaint(); return false; } }),
     bind: (root, api) => {
       _focusTitle(root);
       const run = root.querySelector('[data-rs-check-run]');

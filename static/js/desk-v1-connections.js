@@ -135,12 +135,12 @@
         </div>`;
     }
     const locked = !!pub.vault_locked;      // the sign-in is saved; the vault needs unlocking, not a new sign-in
-    const fix = isX
+    const fix = isX && !window.DeskV1ConnectWizard?.enabled()
       ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-conn-x-guide="${esc(ch.id)}" aria-expanded="${open}">${open ? 'Hide steps' : (pub.ready ? 'Manage' : (locked ? 'Unlock the vault' : 'Connect X'))}</button>`
       : '';
     const note = pub.ready && pub.unattended_ok === false
       ? '<div class="desk-v1-rules-hint" data-conn-unattended>Scheduled posts will be held: the saved sign-in is not allowed for unattended use. “Approve now” still posts.</div>' : '';
-    const li = ch.platform === 'linkedin' && !pub.ready && window.DeskV1Guides ? window.DeskV1Guides.linkedinHTML() : '';
+    const li = !window.DeskV1ConnectWizard?.enabled() && ch.platform === 'linkedin' && !pub.ready && window.DeskV1Guides ? window.DeskV1Guides.linkedinHTML() : '';
     return `
         <div class="desk-v1-conn-publish" data-conn-publish data-ready="${pub.ready ? 'true' : 'false'}">
           <span class="desk-v1-how-field-label">Publishing</span>
@@ -366,7 +366,7 @@
     }
     if (sel.indexOf('engine:') === 0) {
       const e = (_enginesCache || []).find((x) => `engine:${x.id}` === sel);
-      return e ? Tiles.detailHTML(sel, e.label, window.DeskV1Engines.rowHTML(e)) : null;
+      return e ? Tiles.detailHTML(sel, e.label, window.DeskV1ConnectSavedCheck.html(e, window.DeskV1Engines.rowHTML(e))) : null;
     }
     if (sel.indexOf('source:') === 0) {
       const a = _contentSources().find((x) => `source:${x.id}` === sel);
@@ -438,7 +438,7 @@
       });
     } else if (sel && sel.indexOf('engine:') === 0 && _enginesCache) {
       const e = _enginesCache.find((x) => `engine:${x.id}` === sel);
-      if (e) window.DeskV1Engines.bindConnections(el, [e], () => _reloadEngines(repaint));
+      if (e) { window.DeskV1Engines.bindConnections(el, [e], () => _reloadEngines(repaint)); window.DeskV1ConnectSavedCheck.bind(el, e, repaint); }
     } else if (sel && sel.indexOf('service:') === 0) {
       const sv = window.DeskV1Services.byId(sel.slice(8));
       if (sv) window.DeskV1Services.bindDetail(el, sv, repaint);

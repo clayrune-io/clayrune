@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] - One Add service flow and shared language (MC-1062/14)
+
+- Activated the six-screen Connect shell for every service and retired the old wizard/list entry. Maintained profiles and automatic unknown-URL investigation feed one options screen; unimplemented suggestions stay information only, with manual software/server and reference setup under Details.
+- Centralized screen instructions, actions and field vocabulary in a separate copy module. Account selection distinguishes LinkedIn profiles/Pages; Setup precedes enforced Permissions and passcode Review/Save. Existing approval, sign-in, credential and permission gates remain intact.
+- Supported saved generation tiles now offer the free human-clicked Check it now using the existing verify route. Selection never probes, failed checks remain failed, and X has no free provider probe. User guide and section 11 describe the behavior and limits. This entry records branch implementation; release requires the integrator's merge/push.
+
 ## [2026-10-06] — Higgsfield sign-in checks retain schema diagnostics
 
 - The existing OAuth verification follows tool-list pagination (50-page bound) and atomically saves selected generation, polling and media-related definitions under gitignored `data/desk/higgsfield_mcp_tools.json`. Snapshots mark vendor text untrusted, omit transport credentials/headers, and cap descriptions at 2000 characters; a write failure is logged without failing a successful probe. Incomplete or cyclic listings preserve the previous snapshot.

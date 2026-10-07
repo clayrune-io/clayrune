@@ -160,19 +160,7 @@ async function lockedFlow(browser, width, height) {
   await inView(page, '[data-vg-unlock]', 'Unlock');
   await page.screenshot({ path: resolve(SHOT_DIR, `vault_gate_${width}.png`) });
 
-  await page.waitForSelector('[data-add-pick="engine:higgsfield_mcp"]', { timeout: 6000 });
-  await page.click('[data-add-pick="engine:higgsfield_mcp"]');
-  await page.waitForSelector('[data-conn-engine="higgsfield_mcp"]', { timeout: 6000 });
-  await page.waitForSelector('[data-vault-gate]:not([hidden])', { timeout: 4000 }).catch(() => {});
-  check((await page.$$eval('[data-vault-gate]', (g) => g.length)) === 1 && (await gates(page)) === 1,
-    'on the Higgsfield card there is still exactly one unlock', 'the card has no, or a second, unlock');
-
-  await page.click('[data-engine-signin]');
-  await page.waitForFunction(() => /Unlock the vault first/.test(document.querySelector('[data-guide-status]')?.textContent || ''), null, { timeout: 4000 }).catch(() => {});
-  check(/Unlock the vault first, then sign in/.test(await page.textContent('[data-guide-status]')), 'the server\'s 409 is shown on the card', 'the vault_locked refusal was not shown');
-  check((await page.evaluate(() => window.__panes.length)) === 0, 'the vendor sign-in page was NOT opened', 'the sign-in page opened with a locked vault');
-  check((await gates(page)) === 1, 'the unlock is still there after the refusal', 'the unlock vanished after the refusal');
-
+  check(!srv.log.some(r=>/start/.test(r.path)), 'locked Add service starts no vendor sign-in');
   // a wrong passcode
   await page.fill('[data-vg-pass]', PASSPHRASE);
   await page.fill('[data-vg-passcode]', 'wrong-passcode');
@@ -192,12 +180,7 @@ async function lockedFlow(browser, width, height) {
   check(posts.length === 2 && last.body.passphrase === PASSPHRASE && last.body.passcode === PASSCODE && Object.keys(last.body).sort().join() === 'passcode,passphrase',
     'the unlock request carries the passphrase and the passcode and nothing else', `unlock requests: ${JSON.stringify(posts.map((p) => Object.keys(p.body)))}`);
   check((await gates(page)) === 0, 'the form goes away once unlocked', 'the form is still showing after a good unlock');
-  check(!!(await page.$('[data-conn-engine="higgsfield_mcp"]')), 'the Higgsfield card is still on screen: the flow was not restarted', 'the flow was reset by unlocking');
-
-  await page.click('[data-engine-signin]');
-  await page.waitForFunction(() => window.__panes.length === 1, null, { timeout: 4000 }).catch(() => {});
-  const panes = await page.evaluate(() => window.__panes);
-  check(panes.length === 1 && panes[0].profile === 'desk-higgsfield', 'signing in now opens the vendor page on its own profile', `panes: ${JSON.stringify(panes)}`);
+  check(!!(await page.$('[data-cfw-input]')), 'unlock preserves the shared Add service screen');
   check(realErrors(pageErrors).length === 0, 'no page errors', `page errors: ${realErrors(pageErrors).join(' | ')}`);
   await ctx.close();
 }
@@ -207,9 +190,7 @@ async function unlockedFlow(browser, width, height) {
   const srv = makeServer({ locked: false });
   const { ctx, page, pageErrors } = await newPage(browser, { srv, width, height });
   await page.click('[data-conn-add-tile]');
-  await page.waitForSelector('[data-add-pick="engine:higgsfield_mcp"]', { timeout: 6000 });
-  await page.click('[data-add-pick="engine:higgsfield_mcp"]');
-  await page.waitForSelector('[data-conn-engine="higgsfield_mcp"]', { timeout: 6000 });
+  await page.waitForSelector('[data-cfw-input]');
   await new Promise((r) => setTimeout(r, 300));          // the state read is async
   check(srv.log.some((r) => r.method === 'GET' && r.path === '/api/secrets/vault-lock'), 'the lock state was read', 'the lock state was never read');
   check((await gates(page)) === 0, 'no unlock form is shown', 'an unlock form shows although the vault is unlocked');

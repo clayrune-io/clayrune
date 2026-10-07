@@ -2,6 +2,11 @@
 
 2026-10-05. Specification for review. No connector is delivered by this document.
 
+
+## Current UI integration (MC-1062/14, 2026-10-06)
+
+The implemented integration supersedes historical screen sequences and activation notes below: every service uses the six screens and shared copy in [Connect simplification, section 11](desk_v1/CONNECT_FLOW_SIMPLIFY.md#11-rons-rule-2026-10-06-one-flow-for-every-service). Unknown URLs investigate on Continue; manual connection setup and reference-only information remain reachable from the common options page. Unknown bare names still need an address; any future site lookup must show the proposed address for confirmation before reading. Provider sign-in, Save, install and permission proof remain separate and unchanged. Saved supported provider tiles offer the free human-clicked Check it now; no automatic probe or execution capability is inferred from saved information. Historical implementation sections below describe their slices before this integration.
+
 ## 1. Contract, authority and scope
 
 Desk Connect currently recognizes LinkedIn but explains only one restricted Company Page OAuth option. Recognition should instead open a maintained service profile: the routes for each purpose, their account requirements, costs and limits, and what Clayrune can actually execute. A user must also be able to add any MCP server or API of their own choosing without waiting for that profile or the curated catalogue.

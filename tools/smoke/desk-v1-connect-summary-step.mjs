@@ -42,7 +42,7 @@ const SUMMARY_SRC = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'desk-v1-con
 const ORIGIN = 'http://mc.smoke.test';
 const SHOT_DIR = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens');
 mkdirSync(SHOT_DIR, { recursive: true });
-const STATIC = loadStaticJsCss(REPO_ROOT);
+const STATIC = loadStaticJsCss(REPO_ROOT, { isolateConnectScreens: true });
 
 let bad = 0;
 const ok = (m) => console.log('  ✓ ' + m);

@@ -233,60 +233,13 @@ async function run(browser) {
   await page.waitForSelector('[data-conn-detail="source:gdrive"] [data-conn-source="gdrive"]', { timeout: 4000 });
   ok('a content source tile opens its own detail below the grid');
 
-  // Add service -> a social account (demo: nothing is saved): it appears flagged as
-  // needing a connection, and Connect flips it (with nothing authenticated).
+  // The old duplicate list/account/reference forms are retired. Full live
+  // Save/permission/tile-check walks live in desk-v1-connect-simplify.mjs.
   await page.click('[data-conn-add-tile]');
-  await page.waitForSelector('[data-conn-detail="add"] [data-add-service] [data-add-list]', { timeout: 4000 });
-  const pickList = await page.$$eval('[data-add-pick]', (els) => els.map((e) => e.dataset.addPick));
-  check(pickList.includes('account:x') && pickList.includes('account:linkedin') && pickList.includes('account:blog') && pickList[pickList.length - 1] === 'other'
-        && pickList.includes('account:youtube') && pickList.includes('account:instagram') && pickList.includes('account:tiktok')
-        && !pickList.some((k) => /dropbox|gdrive|reddit/i.test(k)),
-        `Add service lists what Clayrune can connect, then "Something else" last (${pickList.join(', ')})`, `pick list wrong: ${JSON.stringify(pickList)}`);
-  await page.fill('[data-add-search]', 'link');
-  const shown = await page.$$eval('[data-add-pick]', (els) => els.filter((e) => !e.parentElement.hidden).map((e) => e.dataset.addPick));
-  check(shown.join() === 'account:linkedin,other', 'the search narrows the one list (Something else is always offered)', `search wrong: ${JSON.stringify(shown)}`);
-  await page.fill('[data-add-search]', 'zzzz');
-  check(await page.$eval('[data-add-nomatch]', (e) => !e.hidden), 'nothing matches: it says to pick Something else', 'no-match line missing');
-  await page.fill('[data-add-search]', '');
-  await page.click('[data-add-pick="account:x"]');
-  await page.waitForSelector('[data-conn-add]', { timeout: 4000 });
-  await page.fill('[data-conn-add-identity]', '@newbie');
-  await page.click('[data-conn-add-submit]');
-  await page.waitForSelector('[data-conn-tile][data-conn-state="off"]', { timeout: 4000 });
-  const newId = await page.$eval('[data-conn-tile][data-conn-state="off"]', (e) => e.dataset.connTile);
-  check((await page.getAttribute(`[data-conn-tile="${newId}"]`, 'aria-pressed')) === 'true'
-        && (await page.$$eval('[data-conn-tiles] > *', (e) => e[e.length - 1].hasAttribute('data-conn-add-tile'))),
-        'an added account is a flagged (not connected) tile, selected, and Add service is still last', 'added account not shown as expected');
-  await page.waitForSelector(`[data-conn-detail="${newId}"] [data-conn-action="${newId}"]`, { timeout: 4000 });
-  btns[newId] = (await page.textContent(`[data-conn-action="${newId}"]`)).trim();
-  check(btns[newId] === 'Connect', 'a not-connected account offers Connect', `new account button: ${btns[newId]}`);
-  await page.click(`[data-conn-action="${newId}"]`);
-  await page.waitForFunction((id) => (document.querySelector(`[data-conn-tile="${id}"]`) || {}).dataset.connState === 'ok', newId, { timeout: 4000 });
-  ok('Connect makes the tile Connected (preview: nothing is authenticated)');
-
-  // Add service -> Something else: a name, a link, a credential NAME. Honest status, no value asked.
-  await page.click('[data-conn-add-tile]');
-  await page.waitForSelector('[data-add-pick="other"]', { timeout: 4000 });
-  await page.click('[data-add-pick="other"]');
-  await page.waitForSelector('[data-svc-add]', { timeout: 4000 });
-  check(!(await page.$('[data-svc-add] input[type="password"]')), 'Something else never asks for a secret value (a vault entry NAME only)', 'a password field is on the Something else form');
-  await page.fill('[data-svc-add-name]', 'Plausible analytics');
-  await page.fill('[data-svc-add-link]', 'https://plausible.io');
-  await page.fill('[data-svc-add-cred]', 'plausible.key');
-  await page.click('[data-svc-add-submit]');
-  await page.waitForSelector('[data-conn-tile^="service:"]', { timeout: 4000 });
-  const svc = await page.$eval('[data-conn-tile^="service:"]', (e) => ({ name: e.querySelector('.desk-v1-conn-tile-name').textContent.trim(),
-    pill: e.querySelector('[data-conn-tile-status]').textContent.trim(), state: e.dataset.connState, kind: e.querySelector('.desk-v1-conn-tile-kind').textContent.trim() }));
-  check(svc.name === 'Plausible analytics' && svc.pill === 'Saved for agents' && svc.state === 'saved',
-        `Something else renders a tile that says "${svc.pill}", never Connected`, `service tile wrong: ${JSON.stringify(svc)}`);
-  const honest = await page.$eval('[data-conn-detail] [data-svc-honest]', (e) => e.textContent);
-  check(/does not connect to this service or post to it/.test(honest) && !(await page.$('[data-conn-detail] [data-conn-action]')),
-        'its detail says Clayrune does not connect to it or post to it, and offers no Connect', `service detail wrong: ${honest}`);
-  check((await page.$$eval('[data-conn-tiles] > *', (e) => e[e.length - 1].hasAttribute('data-conn-add-tile'))), 'Add service is still the last tile', 'Add service not last after saving a service');
-  await page.screenshot({ path: resolve(SHOT_DIR, 'connections_v3_service_1440.png') });
-  await page.click('[data-svc-remove]');
-  await page.waitForFunction(() => !document.querySelector('[data-conn-tile^="service:"]'), null, { timeout: 4000 });
-  ok('Remove takes the saved service off the grid');
+  await page.waitForSelector('[data-add-service]', { timeout: 4000 });
+  check(!await page.locator('[data-add-list], [data-add-pick], [data-svc-add], [data-conn-add]').count(),
+        'Add service has no second list or independently saving form');
+  await page.click('[data-conn-detail-close]');
 
   await selectTile(page, 'ch-x-ron');
   await page.click('[data-conn-detail-close]');

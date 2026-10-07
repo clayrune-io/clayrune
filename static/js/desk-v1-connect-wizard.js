@@ -31,7 +31,8 @@
 //     no second Save; there is one Details disclosure and it holds no other disclosure.
 //
 // ACTIVATION. `enabled()` is false until ticket 14 turns the wizard on with `setEnabled`;
-// until then desk-v1-connect-flow.js delegates here only when it is, and the old flow runs.
+// desk-v1-connect-integration.js activates it in production. No legacy flow remains.
+import { ConnectCopy as C } from './desk-v1-connect-copy.js';
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -58,6 +59,7 @@
   // def: { id, step, match?(sel, info), title(api), copy(api), body(api), details?(api), bind?(root, api),
   //        primary?(api) -> { label, disabled?, run?() -> true|false|Promise }, substep?(api) -> [n, of], discard?(why) }
   function registerScreen(def) {
+    def = C.screen(def);
     if (!def || !def.id || !STEPS.some((s) => s[0] === def.step)) throw new Error('registerScreen: a screen needs an id and a known step');
     const at = _screens.findIndex((s) => s.id === def.id);
     if (at >= 0) _screens[at] = def; else _screens.push(def);
@@ -101,6 +103,7 @@
     order.forEach(([k, lv]) => { if (k in patch && patch[k] !== S.sel[k] && (level === null || lv < level)) level = lv; });
     if (level === null) return;
     _invalidate(level, level === 0 ? 'service' : level === 1 ? 'type' : 'account');
+    if (level <= 1) S.sel.account = null;
     if ('service' in patch && patch.service !== S.sel.service) { S.sel = { service: patch.service, type: null, variant: null, account: null }; }
     if ('type' in patch && patch.type !== S.sel.type) { S.sel.type = patch.type; S.sel.variant = null; }
     if ('variant' in patch) S.sel.variant = patch.variant;
@@ -204,7 +207,7 @@
           ${S.error ? `<div class="desk-v1-cfw-msg" data-cfw-msg="error" role="alert">${esc(S.error)}${S.hint ? ` <span class="desk-v1-cfw-hint">${esc(S.hint)}</span>` : ''}</div>` : ''}
           ${details ? `<details class="desk-v1-cfw-details" data-cfw-details${S.detailsOpen ? ' open' : ''}><summary>Details</summary><div class="desk-v1-cfw-details-body">${details}</div></details>` : ''}
           <div class="desk-v1-cfw-actions" data-cfw-actions>
-            ${back ? '<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline desk-v1-cfw-back" data-cfw-back>‹ Back</button>' : ''}
+            ${back ? '<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline desk-v1-cfw-back" data-cfw-back>Back</button>' : ''}
             ${primary ? `<button type="submit" class="desk-v1-conn-btn desk-v1-conn-btn-inline desk-v1-cfw-primary" data-cfw-primary ${primary.disabled ? 'disabled' : ''}>${esc(primary.label)}</button>` : ''}
           </div>
         </form>
@@ -234,6 +237,7 @@
       _repaint();
     }));
     if (def.bind) def.bind(root, api);
+    C.bind(root);
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       if (S.running) return;                                  // a second Enter while the first is still answering

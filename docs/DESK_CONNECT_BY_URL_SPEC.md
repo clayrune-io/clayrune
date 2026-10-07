@@ -2,6 +2,11 @@
 
 2026-10-03 · Implementation proposal; open decisions require Dave's selection.
 
+
+## Current UI integration (MC-1062/14, 2026-10-06)
+
+The implemented integration supersedes historical screen sequences and activation notes below: every service uses the six screens and shared copy in [Connect simplification, section 11](desk_v1/CONNECT_FLOW_SIMPLIFY.md#11-rons-rule-2026-10-06-one-flow-for-every-service). Unknown URLs investigate on Continue; manual connection setup and reference-only information remain reachable from the common options page. Unknown bare names still need an address; any future site lookup must show the proposed address for confirmation before reading. Provider sign-in, Save, install and permission proof remain separate and unchanged. Saved supported provider tiles offer the free human-clicked Check it now; no automatic probe or execution capability is inferred from saved information. Historical implementation sections below describe their slices before this integration.
+
 ## Contract and limits
 
 Connections serves people who know their service's URL but not its integration terminology. Add service starts with that URL, explains available methods, and stores credentials inside the same flow. One final Save requests the dashboard passcode once. Before Save, configuration exists only as an unsaved browser draft.
