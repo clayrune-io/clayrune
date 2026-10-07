@@ -12,6 +12,14 @@
 - Failing X bodies are projected into sanitized error codes/messages, including non-JSON responses. Headers, tokens, request bodies, URL queries and successful auth bodies are discarded. Session shutdown automatically stops capture.
 - Contract, retry commands and validation: `docs/BROWSER_AUTH_DIAGNOSTICS.md`. Local branch only; no merge, push, restart or authenticated retry.
 
+## [2026-10-07] - Studio returns a render record before uploading and submitting (MC-1068)
+
+- Render closes the passcode prompt after a durable pending record is created; a server worker uploads, prices and submits the storyboard. Studio polls and shows waiting, working, submitted, held or failed.
+- Higher prepared prices hold before any clip generation. The held quote survives reload; another Render click and passcode accept the displayed price. Price again and storyboard edits invalidate the offer.
+- Owner clicks reuse active renders; campaign reservations transfer atomically to child jobs. Interrupted or uncertain submissions retain child costs and stop without a paid retry. Human and passcode gates are unchanged.
+- Submission holds keep polling linked clips for free, saving accepted outputs and settling their costs. A human can acknowledge checking the engine dashboard to allow a new render; children stay visible, unattended acknowledgement is refused, and the next Render still requires its passcode.
+- Contract, checks and Ron's UI script: `docs/desk_v1/ASYNC_RENDER_SUBMISSION.md`. Branch only; no merge, push, restart or real spend.
+
 ## [2026-10-07] - Browser pane passes Google's "may not be secure" check again
 
 - The CDP pipe transport (2026-10-05) made every pane tab report `navigator.webdriver === true`, so Google sign-in (including "Sign in with Google" popups on x.com) answered "Couldn't sign you in. This browser or app may not be secure." The launch now adds `--disable-blink-features=AutomationControlled`; the pipe is unchanged.

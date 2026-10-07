@@ -33,20 +33,23 @@ def test_picture_price_increase_is_shown_before_any_generation_then_accepted(cli
     quote = client.post('/api/desk/engines/render/estimate', json=request).get_json()
     assert quote['estimate']['credits'] == 4 and quote['estimate']['picture_pending']
     refused = client.post('/api/desk/engines/renders', json=request)
-    out = refused.get_json()
-    assert (refused.status_code, out['code']) == (409, 'render_price_changed')
+    assert refused.status_code == 201
+    held = eng.get_render(refused.get_json()['render']['render_id'])
+    assert held['status'] == 'held'
+    out = held['hold']
+    assert out['code'] == 'render_price_changed'
     assert out['prepared_total'] == 14 and out['shown_total'] == 4 and out['currency'] == 'credits'
     assert out['estimate']['credits'] == 14 and not out['estimate'].get('picture_pending')
     assert [s['credits'] for s in out['plan']['scenes']] == [7, 7]
-    assert 'Price with your pictures is 14 credits (was 4). Press Render again to accept.' == out['error']
+    assert 'Price with your pictures is 14 credits (was 4). Press Render again to accept.' == out['message']
     assert not generations(mcp[0])
-    assert eng._read_store()['renders'] == eng._read_store()['render_idem'] == eng._read_store()['jobs'] == {}
-    accepted = client.post('/api/desk/engines/renders', json={**request, 'shown_total': out['prepared_total']})
+    assert eng._read_store()['jobs'] == {} and eng._read_store()['renders'][held['render_id']]['reserved_usd'] == 0
+    accepted = client.post('/api/desk/engines/renders', json={**request, 'idempotency_key': 'accept-click', 'shown_total': out['prepared_total']})
     assert accepted.status_code == 201, accepted.get_json()
     assert len(generations(mcp[0])) == 2
     # Existing preparation is in-memory only: both attempts upload both pictures.
     assert sum(n == 'media_upload' for n, _ in mcp[0]) == 4
-    replay = client.post('/api/desk/engines/renders', json={**request, 'shown_total': 4})
+    replay = client.post('/api/desk/engines/renders', json={**request, 'idempotency_key': 'accept-click', 'shown_total': 4})
     assert replay.status_code == 200 and replay.get_json()['replay']
     assert len(generations(mcp[0])) == 2
 
@@ -63,10 +66,11 @@ def test_equal_or_lower_prepared_price_proceeds(client, board, uploads, mcp, tot
 def test_price_can_rise_again_before_acceptance(client, board, uploads, mcp):
     picture_board(board, uploads)
     eng.set_limit('higgsfield_mcp', 30)
-    assert client.post('/api/desk/engines/renders', json=body(shown_total=4)).status_code == 409
+    first = client.post('/api/desk/engines/renders', json=body(shown_total=4))
+    assert eng.get_render(first.get_json()['render']['render_id'])['hold']['prepared_total'] == 14
     mcp[1]['cost'] = 8
     out = client.post('/api/desk/engines/renders', json=body(shown_total=14))
-    assert out.status_code == 409 and out.get_json()['prepared_total'] == 16
+    assert out.status_code == 201 and eng.get_render(out.get_json()['render']['render_id'])['hold']['prepared_total'] == 16
     assert not generations(mcp[0])
 
 
@@ -102,7 +106,8 @@ def test_dollar_price_increase_is_also_refused(client, board, vendor):
     _two_clip_vendor(vendor)
     eng.set_limit('higgsfield', 5)
     out = client.post('/api/desk/engines/renders', json=_render_body(shown_total=0.4))
-    assert out.status_code == 409 and out.get_json()['prepared_total'] == 0.42
-    assert out.get_json()['currency'] == 'usd'
-    assert [s['usd'] for s in out.get_json()['plan']['scenes']] == [0.21, 0.21]
+    assert out.status_code == 201
+    hold = eng.get_render(out.get_json()['render']['render_id'])['hold']
+    assert hold['prepared_total'] == 0.42 and hold['currency'] == 'usd'
+    assert [s['usd'] for s in hold['plan']['scenes']] == [0.21, 0.21]
     assert not _job_posts(vendor, HIGGS_T2V)

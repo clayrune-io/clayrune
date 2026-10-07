@@ -23,8 +23,9 @@
 //
 // Output is downloaded server-side into the Material library on `ready`; what the
 // page paints is the library path the server answers with, never a vendor URL.
-import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.js';
+import { confirmationMatches, priceConfirmation, heldPriceConfirmation, renderStatusWord, dismissedPriceHold, dismissPriceHold } from './desk-v1-render-price.js';
 import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.js';
+import { submissionHeld, renderNeedsPolling, recoveryActionHTML, bindRenderRecovery } from './desk-v1-render-recovery.js';
 
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -275,13 +276,14 @@ import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.j
   // ── Video: render a storyboard ───────────────────────────────────────────
   function _renderResultHTML(r) {
     if (!r) return '';
-    const word = { queued: 'Queued', rendering: 'Rendering', ready: 'Ready', held: 'Held', failed: 'Failed' }[r.status] || r.status;
+    const word = renderStatusWord(r);
     const p = r.progress || { ready: 0, total: 0 };
     const bits = [`<div data-eng-render-status data-status="${esc(r.status)}">${r.status === 'rendering' || r.status === 'queued' ? '⟳ ' : ''}${esc(word)} · ${p.ready}/${p.total} clips${r.cost_credits ? ` · ${esc(_credits(r.cost_credits))} spent` : (r.cost_usd ? ` · ${esc(_usd(r.cost_usd))} spent` : '')}</div>`];
     if (r.hold) bits.push(`<div class="desk-v1-engine-refusal" data-eng-hold>${_errorHTML(r.hold)}</div>`);
     if (r.failure) bits.push(`<div class="desk-v1-engine-refusal" data-eng-failure>${_errorHTML(r.failure)}</div>`);
     (r.scenes || []).filter((s) => s.failure).forEach((s) => bits.push(`<div class="desk-v1-engine-refusal">Scene “${esc(s.label)}”: ${esc(typeof s.failure === 'string' ? s.failure : (s.failure.message || ''))}</div>`));
-    const outs = (r.outputs && r.outputs.length ? r.outputs : (r.status === 'held' ? r.clips : [])) || [];
+    const outs = (r.outputs && r.outputs.length ? r.outputs : (r.status === 'held'
+      || (r.failure || {}).kind === 'submission_acknowledged' ? r.clips : [])) || [];
     if (outs.length) {
       bits.push(`<ul class="desk-v1-engine-outputs" data-eng-outputs>${outs.map((o) =>
         `<li data-eng-output data-path="${esc(o.path)}">${_playerHTML(o)}${esc(String(o.path).split('/').pop())}${o.duration_sec ? ` · ${esc(o.duration_sec)}s` : ''}<span class="desk-v1-engine-saved"> · saved to the Material library${o.attached_to ? ' and attached' : ''}</span></li>`).join('')}</ul>`);
@@ -302,6 +304,7 @@ import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.j
     const owner = opts.owner;
     const key = `v:${owner.kind}:${owner.id}`;
     const st = _panels.get(key) || { ratio: '16:9', render: null, estimate: null };
+    if (!st.dismissedHold) st.dismissedHold = dismissedPriceHold(key);
     _panels.set(key, st);
     const mine = Symbol('mount');
     st.mount = mine;
@@ -316,7 +319,7 @@ import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.j
       const running = st.render && !_TERMINAL.includes(st.render.status);
       const busy = running || st.submitting;
       const conn = p.engine.connected || {};
-      const canRender = conn.ready && !busy && !st.estimating && st.estimate && st.estimate.estimate && !st.estimate.refusal && !st.estimateError;
+      const canRender = conn.ready && !busy && !submissionHeld(st.render) && !st.acknowledging && !st.estimating && st.estimate && st.estimate.estimate && !st.estimate.refusal && !st.estimateError;
       host.innerHTML = `<div class="desk-v1-engine-panel" data-eng-panel data-kind="video">
         <div class="desk-v1-engine-head">Render with an engine</div>
         ${_pickersHTML(p, st, 'video')}
@@ -328,6 +331,7 @@ import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.j
           <button type="button" class="btn-secondary" data-eng-reprice${busy ? ' disabled' : ''}>Price again</button>
         </div>
         ${_renderResultHTML(st.render)}
+        ${recoveryActionHTML(st.render, st.acknowledging)}
       </div>`;
       coalesceVaultPrompts(host);
       host.querySelector('[data-eng-engine]').onchange = (ev) => { st.engineId = ev.target.value; st.modelId = null; st.estimate = null; paint(engines); estimate(engines); };
@@ -335,21 +339,39 @@ import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.j
       host.querySelector('[data-eng-ratio]').onchange = (ev) => { st.ratio = ev.target.value; st.estimate = null; paint(engines); estimate(engines); };
       host.querySelector('[data-eng-reprice]').onclick = () => estimate(engines);
       host.querySelector('[data-eng-render-btn]').onclick = () => submit(engines);
+      bindRenderRecovery(host, { state: st, api: _api, alive, paint: () => paint(engines),
+        estimate: () => estimate(engines), poll: () => poll(engines) });
     };
 
     const body = (extra) => Object.assign({ owner, engine_id: st.engineId, model_id: st.modelId, aspect_ratio: st.ratio, project_id: opts.projectId || undefined }, extra || {});
 
     let _timer = null;
-    const estimate = (engines) => {
+    const adoptHeldPrice = (fresh) => {
+      if (!st.render || st.dismissedHold === st.render.render_id) return;
+      const confirmation = heldPriceConfirmation(st.render, body(), fresh);
+      if (confirmation) {
+        st.priceConfirmation = confirmation;
+        st.estimate = confirmation.quote;
+        st.error = null; // The held record paints the explanation once.
+      }
+    };
+
+    const estimate = (engines, restoreHeld = false) => {
       clearTimeout(_timer);
       const seq = (st.seq = (st.seq || 0) + 1);
       st.priceConfirmation = null;
+      if (!restoreHeld && st.render) {
+        st.dismissedHold = st.render.render_id;
+        dismissPriceHold(key, st.dismissedHold);
+      }
       st.estimating = true; st.estimateError = null; st.error = null;
       _timer = setTimeout(async () => {
         try {
           const out = await _api('POST', '/api/desk/engines/render/estimate', body());
           if (st.seq !== seq || !alive()) return;
           st.estimate = out; st.estimateError = null;
+          st.priceBase = out;
+          if (restoreHeld) adoptHeldPrice(out);
         } catch (e) {
           if (st.seq !== seq || !alive()) return;
           st.estimate = null; st.estimateError = e;
@@ -366,16 +388,24 @@ import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.j
       setEngines: (engines) => { currentEngines = engines; _pick(engines, 'video', st); },
     });
 
+    let pollTimer = null;
     const poll = (engines) => {
-      if (!st.render || _TERMINAL.includes(st.render.status)) return;
+      clearTimeout(pollTimer);
+      if (!renderNeedsPolling(st.render) || st.acknowledging) return;
       const id = st.render.render_id;
-      setTimeout(async () => {
-        if (!alive() || !st.render || st.render.render_id !== id) return;
+      pollTimer = setTimeout(async () => {
+        if (!alive() || !st.render || st.render.render_id !== id || st.acknowledging) return;
+        const seq = st.renderReadSeq || 0;
         try {
           const out = await _api('GET', `/api/desk/engines/renders/${encodeURIComponent(id)}`);
+          if (!alive() || !st.render || st.render.render_id !== id || seq !== (st.renderReadSeq || 0)) return;
           st.render = out.render;
+          adoptHeldPrice(st.priceBase);
           if (typeof opts.onChange === 'function') opts.onChange(st.render);
-        } catch (e) { st.error = `Could not read the render's progress: ${e && e.message ? e.message : e}`; }
+        } catch (e) {
+          if (!alive() || !st.render || st.render.render_id !== id || seq !== (st.renderReadSeq || 0)) return;
+          st.error = `Could not read the render's progress: ${e && e.message ? e.message : e}`;
+        }
         paint(engines);
         poll(engines);
       }, POLL_MS);
@@ -410,8 +440,12 @@ import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.j
             : `Re-enter your dashboard passcode to render this storyboard with ${p.engine.label} (${p.model.label}). It spends about ${_fmt(p.engine, usd)} of ${_isCredits(p.engine) ? 'the credits in your plan' : 'your account'} with them, and the clips are saved to your Material library.`,
         });
         st.render = out.render;
+        st.priceBase = fresh;
+        st.dismissedHold = null;
+        dismissPriceHold(key, null);
         st.priceConfirmation = null;
-        _toast('Render started');
+        adoptHeldPrice(fresh);
+        _toast(st.render.status === 'held' ? 'Render held' : 'Render started');
       } catch (e) {
         const confirmation = priceConfirmation(e, body(), fresh);
         if (confirmation) { st.priceConfirmation = confirmation; st.estimate = confirmation.quote; }
@@ -430,8 +464,11 @@ import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.j
         st.loadedRender = true;
         try {
           const b = await _api('GET', `/api/desk/engines/renders?owner_kind=${encodeURIComponent(owner.kind)}&owner_id=${encodeURIComponent(owner.id)}`);
-          if (b && b.render) st.render = b.render;
-        } catch (e) { /* no earlier render to show */ }
+          if (b && b.render) {
+            st.render = b.render;
+            st.engineId = b.render.engine_id; st.modelId = b.render.model_id; st.ratio = b.render.aspect_ratio;
+          }
+        } catch (e) { st.error = `Could not read the earlier render: ${e && e.message ? e.message : e}`; }
       }
       if (!alive()) return;
       _pick(engines, 'video', st);
@@ -439,7 +476,7 @@ import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.j
       host.__engRefresh = () => { if (alive()) { st.estimate = null; estimate(currentEngines); } };
       paint(engines);
       poll(engines);
-      estimate(engines);
+      estimate(engines, true);
     }).catch((e) => {
       if (alive()) host.innerHTML = `<div class="desk-v1-engine-panel" data-eng-panel><div class="desk-v1-engine-refusal">Could not load the engines: ${esc(e && e.message ? e.message : e)}</div></div>`;
     });

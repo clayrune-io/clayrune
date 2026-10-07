@@ -255,8 +255,15 @@ def test_user_price_and_render_discover_before_picture_validation(client, board,
                 'first_frame': {'path': 'shot.png'}, 'desk': {'idempotency_key': 'schema-test'}}
     else:
         body = _render_body(engine_id='higgsfield_mcp', model_id='kling3_0')
-    with pytest.raises(eng.Refused, match='upload wiring'):
-        getattr(eng, operation)(body)
+    if operation == 'render':
+        eng.set_limit('higgsfield_mcp', 10)
+        record, replay = eng.render(body)
+        failed = eng.get_render(record['render_id'])
+        assert not replay and failed['status'] == 'failed'
+        assert 'upload wiring' in failed['failure']['message']
+    else:
+        with pytest.raises(eng.Refused, match='upload wiring'):
+            getattr(eng, operation)(body)
     assert calls == ['initialize', 'notifications/initialized', 'tools/list']
 
 

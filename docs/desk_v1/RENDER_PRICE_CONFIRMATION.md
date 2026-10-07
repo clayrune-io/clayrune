@@ -1,5 +1,16 @@
 # Studio render price confirmation
 
+**Current submission contract:** MC-1068 moves upload, pricing and clip
+submission into a server worker. The initial POST creates a pending render;
+a higher prepared price is now persisted in `render.hold` with
+`kind/code: render_price_changed`, rather than returned by that POST as 409.
+Polling and latest-render recovery restore the offer, including after reload.
+The human presses Render again with a new click key and passcode. The pricing
+comparison and spending gates below still apply. See
+[Async render submission](ASYNC_RENDER_SUBMISSION.md) for the current API,
+reservation/restart behavior, tests and Ron's walkthrough. The sections below
+record the original synchronous implementation and its verification.
+
 Dave's specified fix for the picture price gap: Render cannot submit a prepared
 storyboard whose total exceeds the total displayed before the click. This is a
 local implementation on `clayrune/render-price-confirm`, based on `b164784d`.

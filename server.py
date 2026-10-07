@@ -2219,6 +2219,9 @@ _bp_desk.wire(
 )
 app.register_blueprint(_bp_desk.bp)
 
+from mc.blueprints import desk_render_recovery_routes as _bp_desk_render_recovery  # noqa: E402
+app.register_blueprint(_bp_desk_render_recovery.bp)
+
 # Desk "Something else" services (Connections' Add service): a plain blueprint
 # over mc.desk_services, which shares the Desk store wired just above.
 from mc.blueprints import desk_services_routes as _bp_desk_services  # noqa: E402

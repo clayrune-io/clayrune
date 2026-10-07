@@ -229,7 +229,7 @@ def test_storyboard_quotes_prepare_all_then_total_cap(client, board, uploads, mc
     file.write_bytes(b'fixture-picture')
     picture = {'path': 'desk/library/image/pic.png'}
     board([_sc('s1', picture=picture), _sc('s2', picture=picture)])
-    body = _render_body(engine_id='higgsfield_mcp', model_id='seedance_2_5')
+    body = _render_body(engine_id='higgsfield_mcp', model_id='seedance_2_5', shown_total=4 if failure == 'cap' else 14)
     quote = client.post('/api/desk/engines/render/estimate', json=body)
     assert quote.status_code == 200 and quote.get_json()['estimate']['credits'] == 4
     assert quote.get_json()['estimate']['note'] == 'Text-only price; picture priced at render'
@@ -238,12 +238,14 @@ def test_storyboard_quotes_prepare_all_then_total_cap(client, board, uploads, mc
     if failure == 'later_upload':
         mcp[1]['bad'] = lambda n, o: {'uploads': []} if n == 'media_upload' and mcp[1]['n'] == 2 else o
     out = client.post('/api/desk/engines/renders', json=body)
+    assert out.status_code == 201, out.get_json()
+    render = eng.get_render(out.get_json()['render']['render_id'])
     if failure:
-        assert out.status_code == (409 if failure == 'cap' else 502), out.get_json()
-        assert not generations(mcp[0]) and eng._read_store()['renders'] == {}
+        assert render['status'] == 'failed'
+        assert not generations(mcp[0]) and eng._read_store()['jobs'] == {}
     else:
         assert out.status_code == 201, out.get_json()
-        assert out.get_json()['render']['estimate']['credits'] == 14
+        assert render['estimate']['credits'] == 14
         names = [n for n, _ in mcp[0]]
         first_gen = next(i for i, (n, a) in enumerate(mcp[0]) if n == 'generate_video' and not a['params'].get('get_cost'))
         assert names[:first_gen].count('media_confirm') == 2 and len(generations(mcp[0])) == 2

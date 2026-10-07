@@ -125,6 +125,11 @@ def uploads(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client(tmp_path, monkeypatch, uploads, vault, vendor):
+    # Most adapter tests complete workers deterministically. Worker tests replace
+    # this seam to exercise the actual early-return and in-flight transitions.
+    from mc import desk_render_worker
+    monkeypatch.setattr(desk_render_worker, 'launch',
+                        lambda rid, unattended: desk_render_worker.run(rid, unattended=unattended))
     # The passcode gate is exercised for real in the "human proof" section via `gated`.
     monkeypatch.setattr(desk_routes, '_require_human_passcode', lambda data: None)
     app = Flask(__name__)
@@ -813,9 +818,9 @@ def _sc(sid, secs=5, **kw):
 
 
 def _render_body(**kw):
-    # General submission fixtures approve 20 units; price-guard tests use exact quotes.
+    # Two scripted Higgsfield clips cost $0.42; worker reservations use approval.
     d = {'owner': {'kind': 'studio', 'id': STUDIO_ID}, 'engine_id': 'higgsfield', 'model_id': HIGGS_T2V,
-         'aspect_ratio': '16:9', 'idempotency_key': f'r{next(_n)}', 'shown_total': 20}
+         'aspect_ratio': '16:9', 'idempotency_key': f'r{next(_n)}', 'shown_total': 0.42}
     d.update(kw)
     return d
 
@@ -1042,7 +1047,7 @@ def test_stitch_command_shape():
 def test_a_square_render_of_a_model_with_no_1_1_is_made_16_9_then_cropped(client, vendor, board, uploads, ffmpeg):
     board([_sc('s1', 8)])
     eng.set_limit('google', 5)
-    veo = dict(engine_id='google', model_id='veo-3.1-generate-preview', aspect_ratio='1:1', resolution='720p')
+    veo = dict(engine_id='google', model_id='veo-3.1-generate-preview', aspect_ratio='1:1', resolution='720p', shown_total=3.2)
     est = client.post('/api/desk/engines/render/estimate', json=_render_body(**veo)).get_json()
     assert est['plan']['crop'] is True and est['plan']['generated_ratio'] == '16:9' and est['plan']['needs_ffmpeg']
     vendor.on('POST', ':predictLongRunning', vendor.json(200, {'name': 'models/veo-3.1-generate-preview/operations/sq'}))

@@ -52,7 +52,6 @@ on short notice.
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import math
 import mimetypes
@@ -1293,6 +1292,8 @@ def budget_state(campaign_id: str, *, _store: dict | None = None) -> dict:
     store = _store if _store is not None else _read_store()
     spent = sum(_num(j.get('cost_usd')) for j in store['jobs'].values()
                 if j.get('campaign_id') == campaign_id)
+    spent += sum(_num(r.get('reserved_usd')) for r in store['renders'].values()
+                 if r.get('campaign_id') == campaign_id)
     spent += sum(_num(r.get('cost')) for r in _desk.list_ledger(limit=10 ** 9)
                  if r.get('campaign_id') == campaign_id)
     return {'amount': round(amount, 6), 'spent': round(spent, 6),
@@ -1554,7 +1555,8 @@ def _render_scope(d: dict) -> tuple[str | None, dict | None, str | None]:
     return campaign_id, camp, camp.get('project_id')
 
 
-def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False, _prepared=None) -> tuple[dict, bool]:
+def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False, _prepared=None,
+           _render_id: str | None = None, _estimate=None) -> tuple[dict, bool]:
     """Submit one render job -> (job, replay). SPENDS MONEY: the route gates
     on a human + the passcode before calling this. Raises `Refused`,
     `NotConnected` (nothing sent) or returns the job (queued/rendering/ready).
@@ -1577,12 +1579,12 @@ def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False, _pre
     creds = schema_creds or _creds(req.engine_id, project_id, unattended)
     adapter = _adapter(model)
     try:
-        est = _prepared.estimate if _prepared else adapter.estimate(model, req, creds)
+        est = _prepared.estimate if _prepared else (_estimate or adapter.estimate(model, req, creds))
     except EngineError as e:
         raise Refused('estimate_failed', _price_failure_text(e, f'could not get a price, so nothing was sent: {e}'),
                       502, failure=e.kind)
 
-    if _prepared is None:
+    if _prepared is None and _render_id is None:
         from mc.desk_generation_preflight import prepare
         with _lock:
             check_caps(_amount(est, req.engine_id), req.engine_id, campaign_id, _read_store(),
@@ -1598,11 +1600,21 @@ def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False, _pre
         store = _read_store()
         if idem in store['idem']:
             return _public_job(store['jobs'][store['idem'][idem]]), True
+        parent = store['renders'][_render_id] if _render_id else None
+        if parent is not None:
+            # Transfer the hold and link the child BEFORE the paid call. A restart
+            # can then find even a child whose submission result was never saved.
+            parent['reserved_usd'] = max(0.0, round(parent.get('reserved_usd', 0) - est.usd, 6))
         check_caps(_amount(est, req.engine_id), req.engine_id, campaign_id, store, estimate=est.public(),
                    enforce_limit=not _skip_limit)
         job = _new_job(req, camp, est, project_id)
         store['jobs'][job['job_id']] = job
         store['idem'][idem] = job['job_id']
+        if parent is not None:
+            parent['children'].append({'scene_id': req.desk['scene_id'],
+                                       'label': next((s.get('label', '') for s in parent['board']['scenes']
+                                                      if s['id'] == req.desk['scene_id']), ''),
+                                       'job_id': job['job_id']})
         _write_store(store)
     job_id = job['job_id']
 
@@ -1611,6 +1623,9 @@ def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False, _pre
             s = _read_store()
             s['jobs'].pop(job_id, None)
             s['idem'].pop(idem, None)
+            if _render_id:
+                parent = s['renders'][_render_id]
+                parent['children'] = [c for c in parent['children'] if c['job_id'] != job_id]
             _write_store(s)
 
     def settle(mutate: Callable[[dict], None]) -> dict:
@@ -1832,7 +1847,7 @@ def _save_outputs(job: dict, req: GenerationRequest, blobs: list) -> list[dict]:
 # never fails a paid render: the clips are already in the library, the render is
 # `held` with the reason, and nothing is installed for the user.
 
-RENDER_STATUSES = ('queued', 'rendering', 'ready', 'held', 'failed')
+RENDER_STATUSES = ('pending', 'working', 'queued', 'rendering', 'ready', 'held', 'failed')
 _RATIO_NATIVE_FALLBACK = '16:9'          # what a model with no 1:1 is generated at, then cropped
 _finalizing: set[str] = set()
 
@@ -1894,7 +1909,7 @@ def _owner_scope(owner: Any, d: dict) -> tuple[str, str, str | None, str | None]
     return kind, oid, None, pid if isinstance(pid, str) and pid else None
 
 
-def _plan_render(d: dict, *, unattended: bool) -> dict:
+def _plan_render(d: dict, *, unattended: bool, _board: dict | None = None) -> dict:
     """Validate a storyboard render and price it. Sends nothing, spends nothing.
     Raises `Refused` (the request or the storyboard cannot be rendered) or
     `NotConnected`."""
@@ -1903,7 +1918,7 @@ def _plan_render(d: dict, *, unattended: bool) -> dict:
         raise Refused('invalid_input', 'body must be a JSON object', 400)
     kind, oid, campaign_id, project_id = _owner_scope(d.get('owner'), d)
     try:
-        board = _storyboard.get_storyboard(kind, oid)
+        board = _board if _board is not None else _storyboard.get_storyboard(kind, oid)
     except _pieces.PieceError as e:
         raise Refused('storyboard_unavailable', str(e), e.status)
     scenes = board['scenes']
@@ -1983,7 +1998,9 @@ def _plan_render(d: dict, *, unattended: bool) -> dict:
         rows.append({'scene': sc, 'req': req, 'est': est, 'requested_sec': sc.get('duration_sec')})
     if problems:
         raise Refused('invalid_input', '; '.join(problems), 400, problems=problems)
+    from mc.desk_render_worker import fingerprint
     return {'kind': kind, 'owner_id': oid, 'campaign_id': campaign_id, 'project_id': project_id,
+            'board_fingerprint': fingerprint(board),
             'engine_id': engine_id, 'model_id': model_id, 'aspect_ratio': ratio, 'generated_ratio': gen_ratio,
             'crop_square': crop, 'rows': rows, 'total_usd': round(total, 6), 'total_amount': round(total_amount, 6),
             'currency': eng.currency, 'approximate': approximate,
@@ -2022,7 +2039,8 @@ def estimate_render(d: dict, *, unattended: bool = False) -> dict:
     BEFORE the user presses Render. Free: a vendor estimate call costs nothing,
     so no passcode."""
     plan = _plan_render(d, unattended=unattended)
-    out = {'plan': _plan_public(plan), 'estimate': _plan_estimate(plan)}
+    out = {'plan': _plan_public(plan), 'estimate': _plan_estimate(plan),
+           'board_fingerprint': plan['board_fingerprint']}
     return with_caps(out, plan['total_amount'], plan['engine_id'], plan['campaign_id'])
 
 
@@ -2033,6 +2051,7 @@ def _public_render(r: dict, jobs: dict) -> dict:
     done = sum(1 for k in kids if k['status'] == 'ready')
     return {
         'render_id': r['render_id'], 'kind': 'video', 'status': r['status'], 'hold': r.get('hold'),
+        'submission_state': r.get('submission_state'),
         'failure': r.get('failure'), 'owner': r['owner'], 'campaign_id': r.get('campaign_id'),
         'engine_id': r['engine_id'], 'model_id': r['model_id'], 'aspect_ratio': r['aspect_ratio'],
         'progress': {'ready': done, 'total': r.get('clip_count', len(kids))}, 'scenes': kids,
@@ -2045,6 +2064,8 @@ def _public_render(r: dict, jobs: dict) -> dict:
 
 
 def _render_view(render_id: str) -> dict | None:
+    from mc.desk_render_worker import recover
+    recover(render_id)
     with _lock:
         store = _read_store()
     r = store['renders'].get(render_id)
@@ -2065,113 +2086,32 @@ def latest_render(owner_kind: str, owner_id: str) -> dict | None:
     if not mine:
         return None
     mine.sort(key=lambda r: r.get('created_at') or '')
-    return _public_render(mine[-1], store['jobs'])
+    return _render_view(mine[-1]['render_id'])
 
 
 def render(d: dict, *, unattended: bool = False) -> tuple[dict, bool]:
-    """Start a storyboard render -> (render, replay). SPENDS MONEY (one engine
-    job per scene): the route gates on a human + the passcode first. Refuses
-    before the first clip is sent when the TOTAL is over the engine's per-job
-    limit or the campaign's remaining budget."""
-    plan = _plan_render(d, unattended=unattended)
-    key = d.get('idempotency_key')
-    if not isinstance(key, str) or not key.strip() or len(key) > 120:
-        raise Refused('invalid_input', 'idempotency_key is required (a retried click must not spend twice)', 400)
-    ridem = f"{plan['kind']}:{plan['owner_id']}:{key}"
-    with _lock:
-        existing = _read_store()['render_idem'].get(ridem)
-    if existing:
-        return _render_view(existing), True  # type: ignore[return-value]
-
-    from mc.desk_generation_preflight import prepare_plan
-    from mc.desk_render_price_confirmation import shown_total, check as check_shown_price
-    campaign_id = plan['campaign_id']
-    with _lock:
-        check_caps(plan['total_amount'], plan['engine_id'], campaign_id, _read_store(), estimate=_plan_estimate(plan))
-    displayed = shown_total(d)
-    try:
-        prepare_plan(plan, unattended=unattended)
-    except EngineError as e:
-        raise Refused('engine_refused', str(e), 502, failure=e.kind) from e
-    with _lock:
-        store = _read_store()
-        if ridem in store['render_idem']:
-            return _public_render(store['renders'][store['render_idem'][ridem]], store['jobs']), True
-        check_caps(plan['total_amount'], plan['engine_id'], campaign_id, store,
-                   estimate=_plan_estimate(plan))
-        check_shown_price(displayed, plan, estimate=_plan_estimate(plan), public_plan=_plan_public(plan))
-        now = now_iso()
-        rec = {
-            'render_id': f'rnd-{uuid.uuid4().hex[:10]}', 'status': 'queued', 'hold': None, 'failure': None,
-            'owner': {'kind': plan['kind'], 'id': plan['owner_id']}, 'campaign_id': campaign_id,
-            'project_id': plan['project_id'], 'engine_id': plan['engine_id'], 'model_id': plan['model_id'],
-            'aspect_ratio': plan['aspect_ratio'], 'crop_square': plan['crop_square'],
-            'clip_count': len(plan['rows']), 'children': [], 'outputs': [], 'clips': [],
-            'estimate': _plan_estimate(plan),
-            'created_at': now, 'updated_at': now,
-        }
-        store['renders'][rec['render_id']] = rec
-        store['render_idem'][ridem] = rec['render_id']
-        _write_store(store)
-    rid = rec['render_id']
-
-    def mutate(fn: Callable[[dict], None]) -> None:
-        with _lock:
-            s = _read_store()
-            fn(s['renders'][rid])
-            s['renders'][rid]['updated_at'] = now_iso()
-            _write_store(s)
-
-    def unwind() -> None:
-        with _lock:
-            s = _read_store()
-            s['renders'].pop(rid, None)
-            s['render_idem'].pop(ridem, None)
-            _write_store(s)
-
-    for n, row in enumerate(plan['rows']):
-        sid = row['scene']['id']
-        body = asdict(row['req'])
-        body['desk'] = {'scene_id': sid,
-                        'idempotency_key': 'r-' + hashlib.sha1(f'{ridem}|{sid}'.encode()).hexdigest()[:32]}
-        if campaign_id:
-            body['campaign_id'] = campaign_id
-        elif plan['project_id']:
-            body['project_id'] = plan['project_id']
-        try:
-            job, _replay = submit(body, unattended=unattended, _skip_limit=True, _prepared=row.get('prepared'))
-        except (Refused, NotConnected) as e:
-            if n == 0:                       # nothing was sent: leave no trace
-                unwind()
-                raise
-            msg = str(e) if isinstance(e, Refused) else e.reason
-            mutate(lambda r, n=n, msg=msg: r.update(status='failed', failure={
-                'kind': 'partial', 'message': f'scene {n + 1} was not sent ({msg}); the {n} earlier '
-                                              f'clip{"s" if n != 1 else ""} already went out and are billed'}))
-            break
-        mutate(lambda r, j=job, s=row['scene']: r['children'].append(
-            {'scene_id': s['id'], 'label': s.get('label') or '', 'job_id': j['job_id']}))
-        if job['status'] == 'failed':
-            mutate(lambda r, j=job, n=n: r.update(status='failed', failure={
-                'kind': 'clip_failed',
-                'message': f"scene {n + 1}: {(j.get('failure') or {}).get('message', 'the engine failed')}"}))
-            break
-    else:
-        mutate(lambda r: r.update(status='rendering'))
-    # A sync engine (or a vendor that finishes at once) may already be done.
-    return poll_render(rid, unattended=unattended), False  # type: ignore[return-value]
+    # The HTTP route retains the human/passcode gate. No vendor call runs here.
+    from mc.desk_render_worker import enqueue
+    return enqueue(d, unattended=unattended)
 
 
 def poll_render(render_id: str, *, unattended: bool = False) -> dict | None:
     """Advance one render: poll every clip job once, and when all are ready
     stitch / crop them into the library and attach the result. Free. A render
     that is `held` (ffmpeg missing, or the join failed) tries again here."""
+    from mc.desk_render_worker import recover
+    recover(render_id)
     with _lock:
         store = _read_store()
     r = store['renders'].get(render_id)
     if r is None:
         return None
+    from mc.desk_render_recovery import needs_poll, poll_linked
+    if needs_poll(r):
+        return poll_linked(render_id, r, unattended=unattended)
     if r['status'] in ('ready', 'failed'):
+        return _public_render(r, store['jobs'])
+    if r.get('submission_state') in ('pending', 'working') or (r.get('hold') or {}).get('kind') == 'render_price_changed':
         return _public_render(r, store['jobs'])
     children = r.get('children') or []
     jobs = {}
