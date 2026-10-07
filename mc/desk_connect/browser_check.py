@@ -15,7 +15,6 @@ from mc.blueprints import browser_routes as br
 from mc.browser_hidden_read import HiddenTabReader
 from mc.core import _log
 from mc.desk_connect import registry, url_check, verification
-from mc.desk_connect.browser_connections import PROFILE_RE
 from mc.desk_connect.providers.base import Probe
 
 # Fixed read-only expression, selectors inserted as JSON values. Visible controls
@@ -45,8 +44,9 @@ def clean(raw, own_hosts=()) -> dict:
     except url_check.UrlError as e:
         raise CheckError(str(e)) from e
     name=raw['browser_profile']
-    if not isinstance(name,str) or not PROFILE_RE.fullmatch(name):
+    if not isinstance(name,str) or br._profile_dir(name) is None:
         raise CheckError('that browser profile name is not valid')
+    name=name.strip().lower()
     if type(raw.get('confirmed',False)) is not bool or type(raw.get('check',True)) is not bool:
         raise CheckError('confirmed and check must be booleans')
     return {**got,'browser_profile':name,'confirmed':raw.get('confirmed',False),'check':raw.get('check',True)}
@@ -149,7 +149,30 @@ def run(cleaned: dict) -> dict:
 
 
 def status_for(url: str, name: str) -> dict:
-    return run(clean({'url':url,'browser_profile':name,'check':False}))
+    """Best-effort saved-state projection; a bad reference cannot break a list."""
+    try:
+        return run(clean({'url':url,'browser_profile':name,'check':False}))
+    except Exception as e:
+        return unavailable(e)
+
+
+def unavailable(error: Exception) -> dict:
+    _log(f'[desk_connect] browser status lookup failed: {type(error).__name__}',flush=True)
+    return {'state':'unknown','label':'Check unavailable','failure':'unavailable',
+            'message':'The connection status is unavailable. Check the saved connection details.',
+            'verifiable':False,'needs_signin':False}
+
+
+def account_status(service: str, name: str) -> dict:
+    """Keep registry and status failures outside the account-list boundary."""
+    try:
+        profile=registry.profile(service)
+        if profile is None:
+            raise CheckError('the stored service profile is unavailable')
+        url=profile['home_url']
+        return {'url':url,'status':status_for(url,name)}
+    except Exception as e:
+        return {'status':unavailable(e)}
 
 
 def refresh_result(result: dict) -> dict:

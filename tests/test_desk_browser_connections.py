@@ -36,6 +36,31 @@ def test_no_replace_or_confused_replay(store):
     assert desk_services.list_services()[0]['browser_connection']['browser_profile'] == 'main'
 
 
+@pytest.mark.parametrize('name',['work.profile','a'*42,'a.'+'b'*62])
+def test_long_dotted_profile_commit_and_service_view(store,name):
+    clean=c.clean_draft({'name':'Example','url':'https://example.com','browser_profile':name})
+    result,_=c.commit('request-1234',clean)
+    assert result['browser_profile']==name
+    assert desk_services.list_services()[0]['browser_connection']['browser_profile']==name
+
+
+@pytest.mark.parametrize('name',['bad..profile','a'*65,'../profile',None])
+def test_invalid_stored_profile_degrades_service_status(store,monkeypatch,name):
+    from mc.desk_connect import browser_check
+    logs=[];monkeypatch.setattr(browser_check,'_log',lambda message,**kw:logs.append(message))
+    rec={'id':'svc-bad','name':'Example','link':'https://example.com',
+         'browser_connection':{'service':None,'browser_profile':name}}
+    row=desk_services.v1_service(rec,set())
+    assert row['browser_connection']['status']['state']=='unknown'
+    assert row['browser_connection']['status']['failure']=='unavailable' and logs
+
+
+def test_generic_default_uses_shared_configuration(monkeypatch):
+    from mc import state
+    monkeypatch.setitem(state.CONFIG,'browser_default_profile','custom.main')
+    assert c.variant(None)['setup']['default_profile']=='custom.main'
+
+
 def test_replayed_save_refreshes_verdict_without_rewriting(store,monkeypatch):
     from mc.desk_connect import browser_check
     state=['verified']

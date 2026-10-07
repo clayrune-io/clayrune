@@ -34,7 +34,9 @@ try {
    const ctx={live:true,channels:()=>[],api:async(method,url)=>url==='/api/browser/profiles'?{profiles:[{name:'main'}]}:{},repaint:()=>{const r=document.querySelector('#root');r.innerHTML=DeskV1ConnectWizard.html(ctx);DeskV1ConnectWizard.bind(r,ctx);}};
    DeskV1ConnectWizard.resume(info,{service:info.service.id || info.host,type:'signin',variant:'browser-profile'},'setup');ctx.repaint();
   },types[service]);
-  await page.fill('[data-bp-profile]','main');
+  assert.equal(await page.inputValue('[data-bp-profile]'),types[service].picker.flatMap(t=>t.variants).find(v=>v.id==='browser-profile').setup.default_profile);
+  const profile=service==='example.com' && width===390?'a.'+'b'.repeat(62):'main';
+  await page.fill('[data-bp-profile]',profile);
   assert.equal(await page.locator('[data-cfw-title]').textContent(),'Connection details');
   await page.screenshot({path:resolve(shots,`generic-${service}-${width}.png`),fullPage:true});
   await page.click('[data-cfw-primary]');assert.equal(await page.locator('[data-cfw-title]').textContent(),'Permissions');
@@ -46,7 +48,7 @@ try {
   const saved=await page.evaluate(()=>window.saved);
   assert.equal(saved.url,'/api/desk/connect/browser-profile/commit');
   assert.deepEqual(Object.keys(saved.body.draft).sort(),['browser_profile','name','url']);
-  assert.equal(saved.body.draft.browser_profile,'main');
+  assert.equal(saved.body.draft.browser_profile,profile);
   assert.equal(await page.locator('[data-sum-verified="yes"]').count(),0);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   assert.deepEqual(errors,[]);await page.close();

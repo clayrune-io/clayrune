@@ -175,12 +175,8 @@ def v1_account(acc: dict, vault: dict | None = None) -> dict:
     setup = _setup_record.of(acc)       # a saved browser sign-in (MC-1062/03): profile and login NAMES, so Connections can show it
     if setup is not None:
         out['browser_setup'] = {k: setup[k] for k in ('service', 'route_id', 'account_kind', 'refs', 'saved_at') if k in setup}
-        from mc.desk_connect.browser_check import status_for
-        from mc.desk_connect.registry import profile
-        service_profile = profile(acc.get('platform'))
-        if service_profile is not None and setup.get('refs', {}).get('browser_profile'):
-            out['browser_setup']['url'] = service_profile['home_url']
-            out['browser_setup']['status'] = status_for(service_profile['home_url'], setup['refs']['browser_profile'])
+        from mc.desk_connect.browser_check import account_status
+        out['browser_setup'].update(account_status(acc.get('platform'), setup['refs'].get('browser_profile')))
     if acc.get('preview'):
         out['preview'] = True
     return out

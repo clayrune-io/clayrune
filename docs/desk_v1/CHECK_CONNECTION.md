@@ -1,6 +1,6 @@
 # MC-1074: browser connections and checks
 
-Branch delivery only. Dave selected option A: two commits on one branch, no merge, push or restart.
+Branch delivery only. Dave selected option A: two implementation commits on one branch, followed by the requested review fix; no merge, push or restart.
 
 ## Generic browser setup
 
@@ -30,7 +30,17 @@ A service without a reviewed check opens its entered address and asks one inline
 
 ## Files and scope
 
-Generic storage and checks each have their own modules and blueprints. Wizard screens and summary branches use the existing registries. Existing account projections and connection-status rendering only delegate. There is no new executor, profile deletion, credential management path or automatic fill. The work remains on `clayrune/agent/55b8b8ae5f9e`, with no merge, push or server restart. Commit 1 is `fc30287d`; commit 2 adds checking and honest status.
+Generic storage and checks each have their own modules and blueprints. Wizard screens and summary branches use the existing registries. Existing account projections and connection-status rendering only delegate. There is no new executor, profile deletion, credential management path or automatic fill. The work remains on `clayrune/agent/55b8b8ae5f9e`, with no merge, push or server restart. Rebased onto master `91b20f55`: prerequisite `fc30287d` became `cb185b0a`; checker `3b3502c7` became `404ffddb`. Every master CHANGELOG entry was retained.
+
+## MC-1079 drift fix (Dave review)
+
+MC-1079 accepts dotted profile names through 64 characters and disallows `..`. The original checker/generic Save had a second, narrower 41-character regex. Saved account and service projections used that strict request validator and could raise, returning 500 for an entire list. Both now call `browser_routes._profile_dir`, the existing authoritative browser validation/normalization function; no second backend regex remains. Invalid new requests still fail validation before Save's passcode.
+
+Metadata `status_for` catches failed validation, registry/metadata and file-status errors, logs with `_log`, and returns `{state: unknown, failure: unavailable, verifiable: false, needs_signin: false}`. `account_status` also protects the registry lookup at the account-list boundary. Account/service projections never probe or infer successful sign-in from a lookup failure. Existing account/service facts remain visible. The generic form permits 64 characters and lets the server validate the complete name; its default comes from `desk_browser_profiles.shared_default()` through type metadata, normally `main`.
+
+Review backend run: **326 tests, rc=0**, including dotted/42/64-character names in Check, generic commit and both projections; invalid stored names and I/O/registry failures degrade and log. Five new modules passed pyright, **rc=0**, zero errors. `tests/test_desk_browser_check_agent_tab.py` runs real pipe and port Chromium with an agent-owned tab holding the profile: `_session_using_profile` returns its pane; the checker uses a separate `HiddenTabReader` target, closes only that target, and preserves both existing URLs, visible tabs and active target. The local HTTP fixture deliberately returns signed-out rather than verifying an HTTPS service; this test proves tab ownership and cleanup, not vendor authentication.
+
+All **24 connect smoke scripts passed, rc=0**; return codes are retained in `_scratch/check_connection/matrix.json`. The generic smoke additionally verifies the shared default and saves a dotted 64-character profile through the 390-pixel wizard. The browser-check smoke confirms unavailable status renders without verification or a render-time probe. The **eight-script npm suite passed, rc=0**. No live vendor-account success is claimed. Smoke dependencies were linked from the main checkout and removed before the fix commit.
 
 ## Validation
 
@@ -43,7 +53,7 @@ Initial regression failures were corrected: unknown-service picker assertions ha
 Reproduce backend and type checks:
 
 ```powershell
-python -m pytest -q tests/test_desk_browser_check.py tests/test_desk_browser_connections.py tests/test_desk_connect_browser_setup.py tests/test_desk_connect_types.py tests/test_desk_service_profiles.py tests/test_desk_connect_providers.py tests/test_desk_connect_verify_consent.py tests/test_desk_accounts.py tests/test_desk_services.py tests/test_browser_agent_read_hidden.py
+python -m pytest -q tests/test_desk_browser_check.py tests/test_desk_browser_connections.py tests/test_desk_connect_browser_setup.py tests/test_desk_connect_types.py tests/test_desk_service_profiles.py tests/test_desk_connect_providers.py tests/test_desk_connect_verify_consent.py tests/test_desk_accounts.py tests/test_desk_services.py tests/test_browser_agent_read_hidden.py tests/test_browser_agent_tabs.py tests/test_desk_browser_check_agent_tab.py
 pyright mc/desk_connect/browser_check.py mc/desk_connect/browser_check_schema.py mc/blueprints/desk_connect_browser_check_routes.py mc/desk_connect/browser_connections.py mc/blueprints/desk_connect_browser_profile_routes.py
 ```
 

@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Browser status tolerates saved profile names after MC-1079 (MC-1074 review)
+
+- Browser connection Save and Check reuse the browser's name rule, including dotted names up to 64 characters and the `..` guard. Generic setup follows the configured shared profile default.
+- Invalid saved names and failed status lookups log and display unavailable instead of breaking account/service lists. Checks with an agent-held profile keep both the visible pane and the agent's existing tab unchanged.
+- Rebased onto `91b20f55`; validation and revised commit mapping: `docs/desk_v1/CHECK_CONNECTION.md`. Branch only; no merge, push or restart.
+
 ## [2026-10-07] - Agent-owned tabs share a browser profile (MC-1079)
 
 - An agent adopting an open profile gets its own background tab handle. Input and filtered page reads stay on that target; Stop closes that tab, leaving the pane's visible tab and browser running. Dashboard launches retain their existing navigation behavior.

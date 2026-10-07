@@ -46,6 +46,40 @@ def test_pass_only_from_positive_evidence_and_bound_profile(monkeypatch):
     assert len(reader.calls)==2
 
 
+@pytest.mark.parametrize('name',['work.profile','a'*42,'a.'+'b'*62])
+def test_browser_rule_accepts_existing_long_dotted_profiles_in_check_and_account(monkeypatch,name):
+    from mc import desk_accounts
+    assert len(name)<=64
+    reader=Reader();monkeypatch.setattr(b,'reader_for',lambda chosen:reader)
+    clean=b.clean({'url':'https://x.com','browser_profile':name})
+    assert b.run(clean)['state']=='verified'
+    row=desk_accounts.v1_account({'id':'account','platform':'x','identity':'example','capability':'direct',
+        'browser_setup':{'service':'x','route_id':'x-browser','refs':{'browser_profile':name}}},{})
+    assert row['browser_setup']['refs']['browser_profile']==name
+    assert row['browser_setup']['status']['state']=='verified'
+
+
+@pytest.mark.parametrize('name',['bad..profile','a'*65,'../profile',None])
+def test_invalid_stored_profile_degrades_account_status_and_logs(monkeypatch,name):
+    from mc import desk_accounts
+    logs=[];monkeypatch.setattr(b,'_log',lambda message,**kw:logs.append(message))
+    row=desk_accounts.v1_account({'id':'account','platform':'x','identity':'example','capability':'direct',
+        'browser_setup':{'service':'x','route_id':'x-browser','refs':{'browser_profile':name}}},{})
+    assert row['browser_setup']['status']['state']=='unknown'
+    assert row['browser_setup']['status']['failure']=='unavailable' and logs
+    assert not v._records
+
+
+def test_status_io_and_registry_failures_are_unavailable(monkeypatch):
+    logs=[];monkeypatch.setattr(b,'_log',lambda message,**kw:logs.append(message))
+    def fail(*a,**kw):raise OSError('unavailable')
+    monkeypatch.setattr(b,'profile_stamp',fail)
+    assert b.status_for('https://x.com','main')['failure']=='unavailable'
+    monkeypatch.setattr(b.registry,'profile',fail)
+    assert b.account_status('x','main')['status']['state']=='unknown'
+    assert len(logs)==2
+
+
 @pytest.mark.parametrize('final,matches,ok,failure',[
     ('https://x.com/home',[True,False],True,'signed_out'),
     ('https://x.com/i/flow/login',[True,True],True,'signed_out'),

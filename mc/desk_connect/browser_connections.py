@@ -8,17 +8,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from collections import OrderedDict
 from threading import Lock
 
-from mc import desk, desk_services
+from mc import desk, desk_services, desk_browser_profiles
+from mc.blueprints import browser_routes
 from mc.core import now_iso
 from mc.desk_connect import registry, url_check
 from mc.desk_connect.browser_setup import SetupError, _profile_state
 from mc.desk_connect.commit import clean_request_id
 
-PROFILE_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{0,40}$')
 _lock = Lock()
 _done: OrderedDict[str, tuple[str, dict]] = OrderedDict()
 
@@ -30,7 +29,8 @@ def variant(service: str | None) -> dict:
             'transport': 'browser', 'support': 'available', 'auth': ['browser_signin'],
             'account_kinds': [], 'coverage': [], 'requirements': [], 'evidence': [],
             'verification': {}, 'cost': {'basis': 'unknown'}, 'explanation': None,
-            'setup': {'mode': 'full', 'via': 'browser_profile', 'service': service},
+            'setup': {'mode': 'full', 'via': 'browser_profile', 'service': service,
+                      'default_profile': desk_browser_profiles.shared_default()},
             'runtime': {'purposes': {}, 'desk_executes': False, 'adapter': None}}
 
 
@@ -43,8 +43,9 @@ def clean_draft(raw, own_hosts=()) -> dict:
     except (desk_services.ServiceError, url_check.UrlError) as e:
         raise SetupError(str(e)) from e
     profile = raw['browser_profile']
-    if not isinstance(profile, str) or not PROFILE_RE.fullmatch(profile):
-        raise SetupError('a browser profile name uses lowercase letters, digits, - or _ (at most 41 characters)')
+    if not isinstance(profile, str) or browser_routes._profile_dir(profile) is None:
+        raise SetupError('a browser profile name uses lowercase letters, digits, ., - or _ (at most 64 characters; no ..)')
+    profile = profile.strip().lower()
     svc = registry.lookup(got['host'])
     if svc and svc['id'] in ('x', 'linkedin'):
         raise SetupError('choose the account for this service first')

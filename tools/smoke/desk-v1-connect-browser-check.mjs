@@ -110,6 +110,14 @@ print(json.dumps({'js':EVIDENCE_JS,'checks':{s:registry.profile(s)['signin_check
   },savedState);
   assert.equal(await page.locator('[data-bc-state]').getAttribute('data-bc-state'),savedState);
   assert.equal(await page.evaluate(()=>calls.length),count);
+  if(service==='example.com') {
+   await page.evaluate(()=>{
+    const root=document.querySelector('#root');root.innerHTML=DeskV1ConnectBrowserCheck.html('unavailable-fixture');
+    DeskV1ConnectBrowserCheck.bind(root,'unavailable-fixture',()=>({url:'https://example.com',browser_profile:'bad..profile'}),{api:()=>{throw new Error('render ran a check');}},{status:{state:'unknown',verifiable:false,needs_signin:false}});
+   });
+   assert.equal(await page.locator('[data-bc-state]').textContent(),'Check unavailable');
+   assert.equal(await page.locator('[data-bc-state="verified"]').count(),0);
+  }
   assert.deepEqual(errors,[]);await page.close();console.log(`PASS ${service} ${flow} ${width}`);
  }
 }finally{await browser.close();}
