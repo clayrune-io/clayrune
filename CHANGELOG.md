@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Account reading settings stay inside the connection wizard (MC-1062 follow-up)
+
+- Saved social accounts reopen the same wizard's Permissions step with their reading method, browser profile and activity pages pre-filled. Browser reading is the default; only X offers app reading. An older unsupported app choice requires an explicit new selection.
+- Activity addresses appear after discovery needs them or when addresses are already saved. Add, Remove and Continue edit a draft; Review shows the choices and Save applies changed reading fields. Refused updates retain the draft and show the server's reason with retry.
+- Removed unreachable account-card activity-page calls and the caller-free service creation helper. Validation, screenshots and the UI walkthrough: `docs/desk_v1/connect_flow_tickets/14-reading-settings.md`. Local branch only; integration and live walkthrough are not yet verified.
+
 ## [2026-10-07] - LinkedIn account setup permits shared sign-ins (MC-1062/14)
 
 - LinkedIn accounts may share a saved login or browser profile regardless of personal/Page/legacy kind. No account kind is inferred or backfilled. X still refuses sharing between distinct accounts.

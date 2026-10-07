@@ -6,7 +6,7 @@ const screens = Object.freeze({
   connection: ['Connection options', 'Choose how you want to connect the service.'],
   setup: ['Connection details', 'Choose an account or enter the details for your chosen connection.'],
   permissions: ['Permissions', 'Choose what agents may do with this connection.'],
-  review: ['Review', 'Check the details, then save with your passcode.'],
+  review: ['Review', 'Check the details, then save.'],
   result: ['Result', 'Read the status below and finish any remaining sign-in.'],
 });
 const words = Object.freeze({ continue: 'Continue', back: 'Back', save: 'Save', done: 'Done',
@@ -43,6 +43,17 @@ const words = Object.freeze({ continue: 'Continue', back: 'Back', save: 'Save', 
   approve:'Approve this connection', noPermissions:'No permissions are allowed.',
   referenceStatus:'Information only; not connected or verified', none:'None',
   selected:'Selected', credentialChoice:'How to provide a credential',
+  readingMethod:'How to read this account', readingHelp:'Choose how agents read this account.',
+  readPane:'Browser sign-in (no charge)', readApp:'Platform app (may cost money)',
+  readChoiceNeeded:'The saved reading method is unavailable. Choose how to read this account.',
+  activityPages:'Activity pages', activityHelp:'Enter the web address of the page that lists activity on this account.',
+  addAddress:'Add address', httpsRequired:'The address must start with https://',
+  readingSaved:'Reading settings are saved.', readingFailed:'Reading settings were not saved',
+  currentConnection:'Current connection', readingLoading:'Checking which activity pages are needed…',
+  permissionsUnchanged:'Existing connection permissions stay as saved.',
+  readingLoadFailed:'Activity pages could not be checked.',
+  addressPending:'Add the address before continuing.',
+  readingSave:'Save the chosen reading settings.', readingWillSave:'Reading changes are applied when you save.',
 });
 const fields = Object.freeze({ key_id:'keyId', key_secret:'keySecret', key:'key', api_key:'key',
   client_id:'clientId', client_secret:'clientSecret', identity:'identity', label:'label',
@@ -93,7 +104,7 @@ function body(html, api) {
   const connection=t.content.querySelector('[data-sum-row="connection"] dd');
   if(connection && api) {
     const variant=(api.info?.picker || []).flatMap(type=>type.variants).find(v=>v.id===api.sel.variant);
-    connection.textContent=api.sel.type==='signin' || variant?.setup?.signs_in ? words.signin : words.api;
+    connection.textContent=api.sel.type==='account' ? words.currentConnection : api.sel.type==='signin' || variant?.setup?.signs_in ? words.signin : words.api;
   }
   const walker = document.createTreeWalker(t.content, NodeFilter.SHOW_TEXT);
   while (walker.nextNode()) {
@@ -169,7 +180,7 @@ function bind(root) {
     const word=factWords[label.textContent.trim()];if(word) label.textContent=words[word];
   });
   const connection=root.querySelector('[data-sum-row="connection"] dd');
-  if(connection && root.dataset.cfwStep==='review') connection.textContent=/sign/i.test(connection.textContent)?words.signin:words.api;
+  if(connection && root.dataset.cfwStep==='review' && connection.textContent!==words.currentConnection) connection.textContent=/sign/i.test(connection.textContent)?words.signin:words.api;
   root.querySelectorAll('[data-sum-status]').forEach(n=>{n.textContent=connectionStatus(n.dataset.sumStatus);});
   root.querySelectorAll('[data-cfw-page]').forEach(b=>{b.textContent=b.dataset.cfwPage==='next'?words.next:words.previousPage;});
   root.querySelectorAll('[data-ref-select="mode"] option').forEach(option => {

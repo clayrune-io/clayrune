@@ -57,6 +57,9 @@
   let _target = null;
   let _ctx = null;
   let _seq = 0;
+  const sections = [];
+  const sectionContext = api => ({ api, target: _target, profile: _profile() });
+  function registerSection(section) { sections.push(section); }
 
   // ── what the frame is showing ───────────────────────────────────────────
   function _label(info) { return info && info.service && info.service.label ? info.service.label : 'the service'; }
@@ -106,7 +109,7 @@
     if (sel.type === 'reference') return 'reference';
     if (!_target) return 'none';
     const v = _variant(sel, info), o = _offers(v, _target.kind);
-    return o.read || o.post || (_isBrowser(v) && window.DeskV1ConnectBrowserPermission && _site(info)) ? 'account' : 'none';
+    return o.read || o.post || sections.some(s => s.matches(sectionContext({ sel, info, ctx: _ctx }))) || (_isBrowser(v) && window.DeskV1ConnectBrowserPermission && _site(info)) ? 'account' : 'none';
   }
 
   // ── scopes: what is allowed, and what saving would record ───────────────
@@ -150,7 +153,7 @@
   function _loadKey(info) { return [_service(info), (_target.account && _target.account.id) || '', _profile(), _site(info), _loginName()].join('|'); }
 
   function _load(api, force) {
-    if (!_target || (api.sel.type !== 'signin' && api.sel.type !== 'api')) return;
+    if (!_target || !['signin', 'api', 'account'].includes(api.sel.type)) return;
     const key = _loadKey(api.info);
     if (M.loading || (!force && M.loaded === key)) return;
     if (!_needsFetch(api.sel, api.info)) { M.loaded = key; return; }
@@ -248,7 +251,7 @@
     const v = _variant(api.sel, api.info), offers = _offers(v, _target.kind);
     const rows = [offers.read ? _readRowHTML(offers.read) : '', offers.post ? _postRowHTML(offers.post) : '',
       _isBrowser(v) && window.DeskV1ConnectBrowserPermission && _site(api.info) ? _siteRowHTML(api.info) : ''].join('');
-    return `${_stateHTML()}<div class="desk-v1-cfw-options" data-cfp-rows aria-label="Permissions">${rows}</div>${_vaultHTML()}<div data-cfp-notes aria-live="polite">${_notesHTML(api.sel, api.info)}</div>`;
+    return `${sections.map(s => s.html(sectionContext(api))).join('')}${rows ? _stateHTML() : ''}<div class="desk-v1-cfw-options" data-cfp-rows aria-label="Permissions">${rows}</div>${_vaultHTML()}<div data-cfp-notes aria-live="polite">${_notesHTML(api.sel, api.info)}</div>`;
   }
   function failedHTML() {
     return '<div class="desk-v1-cfw-msg" data-cfp-failed role="alert">What is saved could not be read. <button type="button" class="desk-v1-cf-link" data-cfp-retry>Try again</button>.</div>';
@@ -280,7 +283,7 @@
     const kept = _base().filter((s) => !(offers.read && _mine(offers.read, s)) && !(offers.post && _mine(offers.post, s)));
     if (kept.length) items.push({ head: 'Kept as they are', text: kept.map((s) => `${CAP_LABEL[s.capability] || s.capability} (${s.purpose === 'publish' ? 'post' : 'read'}) via ${s.route_id}`).join('; ') + '. Saving here does not change them.' });
     const ch = _target.account && _target.account.id && _ctx && _ctx.channels ? (_ctx.channels() || []).find((c) => c.id === _target.account.id) : null;
-    if (ch && ch.read_via) items.push({ head: 'Reads stay as set', text: `This account reads ${ch.read_via === 'api' ? 'through the API' : 'through the browser sign-in'}. Adding another connection does not change that.` });
+    if (ch && ch.read_via) items.push({ head: 'Reading settings', text: 'The reading method and activity addresses chosen here are saved separately from connection permissions.' });
     if (M.bound && M.bound.bound && M.bound.bound.length) items.push({ head: 'Existing routes', text: M.bound.bound.map((b) => `${b.route_title}: ${_capText(b.capabilities)}`).join('; ') + '. Split routes stay as they are.' });
     return items;
   }
@@ -300,12 +303,14 @@
     if (!_target && ['x', 'linkedin'].includes(_service(info))) return 'Choose the account first.';
     if (_needsFetch(sel, info) && M.loaded !== _loadKey(info)) return M.failed ? 'What is saved could not be read.' : 'Loading what is saved.';
     if (M.failed) return 'What is saved could not be read.';
+    const why = sections.map(s => s.problem(sectionContext({ sel, info, ctx: _ctx }))).find(Boolean);
+    if (why) return why;
     return '';
   }
 
   W.registerScreen({
     id: 'permissions-step', step: 'permissions',
-    match: (sel) => sel.type === 'mcp' || (sel.type === 'reference' && !window.DeskV1ConnectReferenceStep) || ((sel.type === 'signin' || sel.type === 'api') && (!!_target || (window.DeskV1ConnectWizard.enabled() && !['x', 'linkedin'].includes(window.DeskV1ConnectWizard.state().sel.service)))),
+    match: (sel) => sel.type === 'mcp' || (sel.type === 'reference' && !window.DeskV1ConnectReferenceStep) || (['signin', 'api', 'account'].includes(sel.type) && (!!_target || (window.DeskV1ConnectWizard.enabled() && !['x', 'linkedin'].includes(window.DeskV1ConnectWizard.state().sel.service)))),
     title: (api) => { const m = _mode(api.sel, api.info); return m === 'account' ? `Permissions for ${_label(api.info)}` : 'Permissions'; },
     copy: (api) => {
       const m = _mode(api.sel, api.info);
@@ -315,17 +320,18 @@
     },
     body: _bodyHTML,
     details: _detailsHTML,
-    primary: (api) => ({
+    primary: (api) => { _ctx = api.ctx; return ({
       label: 'Continue', disabled: !!_problem(api.sel, api.info),
       run: async () => {
         const why = _problem(api.sel, api.info);
         if (why) { api.error(why); return false; }
         return true;                                           // Continue writes nothing: `apply` is called by Review
       },
-    }),
+    }); },
     bind: (root, api) => {
       M.info = api.info; M.sel = api.sel; _ctx = api.ctx;
       _load(api);
+      sections.forEach(s => s.bind(root, sectionContext(api)));
       const primary = root.querySelector('[data-cfw-primary]');
       const sync = () => {
         const notes = root.querySelector('[data-cfp-notes]');
@@ -351,7 +357,7 @@
       if (proj) proj.addEventListener('change', () => { M.reach.projectId = proj.value; sync(); });
       sync();
     },
-    discard: () => { _seq++; M = _fresh(); _target = null; },    // service, type or account changed, or Close: nothing of this branch is kept
+    discard: () => { _seq++; M = _fresh(); _target = null; sections.forEach(s => s.discard()); },
   });
 
   function setTarget(t) {
@@ -374,9 +380,11 @@
     const p = _pending(sel, info), lines = [];
     ['read', 'post'].forEach((op) => { const o = p.offers[op]; if (o && p.scopes.some((s) => _mine(o, s))) lines.push(`Desk: ${op === 'post' ? 'Post' : `Read ${_capText(p.scopes.filter((s) => _mine(o, s)).map((s) => s.capability))}`} ${VIA_WORD[o.via] || ''}`.trim()); });
     if (M.bperm && M.bperm.site && _siteOn()) lines.push(`Browser: read pages on ${M.bperm.site} through "${M.bperm.profile}"`);
-    if (!lines.length) lines.push('No permissions are allowed.');
+    if (!lines.length) lines.push(sel.type === 'account' ? window.DeskV1ConnectCopy.words.permissionsUnchanged : 'No permissions are allowed.');
+    const extra = sections.map(s => s.summary());
+    extra.forEach(s => lines.push(...s.lines));
     const notice = _confirmNotice(_service(info), p.scopes);
-    return { kind: 'account', pending: p.deskChange || p.siteChange, lines, notice };
+    return { kind: 'account', pending: p.deskChange || p.siteChange || extra.some(s => s.pending), permissionPending: p.deskChange || p.siteChange, lines, notice };
   }
 
   const _uuid = () => (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : `pp-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
@@ -436,7 +444,9 @@
     try {
       const desk = await _applyDesk(id).catch((e) => ({ status: 'failed', error: (e && e.message) || 'That did not work.' }));
       const site = desk.status === 'cancelled' ? { status: 'not_attempted' } : await _applySite().catch((e) => ({ status: 'failed', error: (e && e.message) || 'That did not work.' }));
-      return { ok: ['saved', 'unchanged'].indexOf(desk.status) >= 0 && ['saved', 'unchanged', 'deferred'].indexOf(site.status) >= 0, pending: site.status === 'deferred', desk, site };
+      const extra = [];
+      for (const s of sections) extra.push(desk.status === 'cancelled' ? { status: 'not_attempted' } : await s.apply(id));
+      return { ok: ['saved', 'unchanged'].indexOf(desk.status) >= 0 && ['saved', 'unchanged', 'deferred'].indexOf(site.status) >= 0 && extra.every(r => ['saved', 'unchanged'].includes(r.status)), pending: site.status === 'deferred', desk, site, extra };
     } finally { M.applying = false; }
   }
 
@@ -450,8 +460,9 @@
     const B = window.DeskV1ConnectBrowserPermission;
     if (B && r.site.status !== 'not_attempted') { const o = B.outcome(connectionSaved, r.site); if (o.text) lines.push(o.text); }
     if (r.site.status === 'deferred') lines.push('Finish sign-in to apply Read permission.');
+    (r.extra || []).forEach((result, i) => { const line = sections[i].outcome(result); if (line) lines.push(line); });
     return { kind: lines.length ? (r.ok && !r.pending ? 'ok' : 'partial') : 'ok', lines };
   }
 
-  window.DeskV1ConnectPermissionsStep = { setTarget, summary, apply, outcome, reach };
+  window.DeskV1ConnectPermissionsStep = { setTarget, summary, apply, outcome, reach, registerSection };
 })();
