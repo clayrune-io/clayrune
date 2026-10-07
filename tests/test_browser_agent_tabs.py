@@ -1,5 +1,7 @@
 """MC-1079: real pipe/port targets, plus handle routing and cleanup failures."""
 import queue
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from flask import Flask
@@ -63,6 +65,28 @@ def test_human_adoption_keeps_current_navigation_behavior(client, monkeypatch):
                     json={'profile': 'main', 'url': 'https://new.example'})
     assert r.status_code == 200 and r.get_json()['session_id'] == 'pane'
     assert pane['cmd_queue'].get_nowait() == ('Page.navigate', {'url': 'https://new.example'})
+
+
+def test_concurrent_launches_do_not_consume_each_others_reuse_flag(monkeypatch):
+    pane = {'session_id': 'pane', 'status': 'running', 'cmd_queue': queue.Queue()}
+    barrier = threading.Barrier(2)
+    def launch(*a, reuse_result, **kw):
+        pane['reused'] = True
+        reuse_result['reused'] = True
+        barrier.wait(timeout=5)
+        return pane, None
+    monkeypatch.setattr(br, '_launch_browser', launch)
+    monkeypatch.setattr(tabs, 'adopt', lambda p, url, pid: {'agent_tab': True, 'url': url})
+    app = Flask(__name__)
+    app.register_blueprint(br.bp)
+    def request(url):
+        with app.test_client() as caller:
+            response = caller.post('/api/browser/launch', json={'profile': 'main', 'url': url})
+            return response.status_code, response.get_json()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        replies = list(pool.map(request, ['https://one.example', 'https://two.example']))
+    assert all(status == 200 and body.get('agent_tab') for status, body in replies)
+    assert pane['cmd_queue'].empty()
 
 
 def test_tab_input_rejects_own_origin_and_never_queues_to_pane(client):

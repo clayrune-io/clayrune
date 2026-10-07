@@ -16,6 +16,8 @@ Stop closes only the owned target and its CDP connections. A failed close retain
 
 Targets use the proven hidden-read marker and disposition, registered before creation; they do not enter the pane's tab strip or steal focus. Popups from those hidden tabs follow the existing hidden-tab popup refusal. Dashboard Origin launches keep today's existing-session navigation behavior. This is routing isolation, not a permission system: no fence, policy, passcode or human-only sign-in gate is expanded.
 
+Launch reuse metadata is returned per call rather than consumed from the shared session record. Concurrent HTTP callers therefore both receive owned handles, even when they adopt the same profile at the same time.
+
 ## Desk profiles
 
 New accounts default to configured `browser_default_profile`, or `main`. The first account on a different site shares it. A second same-site account gets a distinct default (X OAuth uses its stable account-id suffix so a held sign-in's profile stays the same across Save). Explicit LinkedIn sharing remains allowed for personal profiles, Pages and unknown destinations.
@@ -31,9 +33,69 @@ New backend tests use temporary profile roots and local HTML only; no account si
 - `pyright mc/browser_agent_tabs.py mc/desk_browser_profiles.py`: rc=0, 0 errors/warnings.
 - `node --check static/js/desk-v1-connect-login-step.js`: rc=0.
 - `git diff --check`: rc=0.
-- Full pytest command/count/rc is recorded below after the final run. The registered foreground runner expands all `tests/test_desk*.py` files, and adds browser routes, agent tabs, hidden reads and profile selection tests.
+- Broad post-rebase run: `python _scratch/mc1079_checks.py pytest`: **3060 passed, 2 failed**, 586.23s, rc=1. One assertion enumerating stored fields needed the new independent OAuth binding field (corrected); the other was a transient `non_html_content` result in the real-Chromium WebRTC negative-control probe. No test was skipped or weakened.
+- Both failed checks are rerun together with the exact command below; the browser-setup module independently passes 107 checks, and the WebRTC control independently passes its isolated rerun. Latest browser-route/adoption/auth coverage: **245 passed**, rc=0, including the concurrency fix made during the broad run. This is full coverage plus targeted correction, not a claim that the broad run itself returned rc=0.
 - Pane smokes: 17 of 18 distinct files pass. `browser-pane-mobile-typing.mjs` returns rc=1 on the real-backend, no-viewport-meta field tap (typing never reaches the field); the unchanged main checkout reproduces the same coordinates and failure. No MC-1079 adoption occurs on that fresh throwaway launch. It remains a separate existing defect. The initial public LinkedIn navigation timeout passed on the branch rerun; baseline also showed this public-site timing failure.
 - No operator sign-in, live named-profile modification, server restart, merge, push or deployment was performed.
+
+Pane matrix after rebasing onto master (each command is `node <file>.mjs` from `tools/smoke`; the registered runner passes the equivalent absolute path to Node):
+
+| File | rc |
+|---|---:|
+| browser-pane-batch-b | 0 |
+| browser-pane-binary-stream | 0 |
+| browser-pane-coords | 0 |
+| browser-pane-fit | 0 |
+| browser-pane-ime-shortcuts | 0 |
+| browser-pane-maximize | 0 |
+| browser-pane-minimize-downloads | 0 |
+| browser-pane-mobile | 0 |
+| browser-pane-mobile-navigate | 0 |
+| browser-pane-mobile-render | 0 |
+| browser-pane-mobile-site | 0 |
+| browser-pane-mobile-typing | 1 (baseline defect above) |
+| browser-pane-real-frames | 0 |
+| browser-pane-tabs-dialog | 0 |
+| browser-paste | 0 |
+| browser-pick | 0 |
+| desk-v1-connect-login-step | 0 |
+| desk-v1-connect-browser-permission | 0 |
+
+The main checkout's smoke dependency directory was linked with a junction, without installing packages. The junction is removed before the final commit. Dashboard boot smoke is not required here: `static/index.html` is unchanged; the two Connect smokes exercise the edited login UI. Auth-observer integration is also checked with `tests/test_browser_auth_diagnostics.py`.
+
+Exact foreground commands (the scratch runners register their PID with Process Manager before invoking pytest/Node):
+
+```text
+python _scratch/mc1079_checks.py pytest
+  rc=1; 3060 passed, 2 failed (reasons above)
+python _scratch/mc1079_focused.py tests/test_browser_agent_tabs.py tests/test_browser_routes.py tests/test_browser_auth_diagnostics.py -o addopts=-ra -q
+  rc=0; 245 passed
+python _scratch/mc1079_focused.py tests/test_desk_connect_browser_setup.py -o addopts=-ra -q
+  rc=0; 107 passed
+python _scratch/mc1079_focused.py tests/test_desk_connect_browser_setup.py::test_a_setup_grants_nothing_and_leaves_the_read_route_alone tests/test_desk_connect_real_chromium.py::test_negative_control_the_old_flag_name_leaks -o addopts=-ra -q
+  rc=0; 2 passed in 11.37s
+python _scratch/mc1079_checks.py smokes
+  rc=1; 17/18 pass, mobile-typing baseline defect
+pyright mc/browser_agent_tabs.py mc/desk_browser_profiles.py
+  rc=0; 0 errors/warnings
+node --check static/js/desk-v1-connect-login-step.js
+  rc=0
+git diff --check
+  rc=0
+```
+
+The broad runner's pytest argument list is reproduced here without its local process-registration wrapper, for use from any checkout:
+
+```python
+from pathlib import Path
+import pytest
+raise SystemExit(pytest.main([
+    'tests/test_browser_agent_tabs.py', 'tests/test_browser_routes.py',
+    'tests/test_browser_agent_read_hidden.py', 'tests/test_desk_browser_profiles.py',
+    *[str(p) for p in sorted(Path('tests').glob('test_desk*.py'))],
+    '-o', 'addopts=-ra', '-q',
+]))
+```
 
 ## Ron's five-line UI test (after Dave integrates and restarts)
 

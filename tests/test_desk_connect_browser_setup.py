@@ -178,7 +178,7 @@ def test_a_setup_grants_nothing_and_leaves_the_read_route_alone(env):
     assert after['presences'] == before['presences'] and after['campaigns'] == before['campaigns']   # on no board, in no campaign
     assert after['engagement'] == before['engagement']
     assert set(rec) - {'id', 'platform', 'identity', 'label', 'capability', 'voice', 'created_at', 'credentials',
-                       'browser_setup', 'browser_profile', 'permission_policy', 'permission_policy_version'} == set()
+                       'browser_setup', 'browser_profile', 'oauth_profile_binding', 'permission_policy', 'permission_policy_version'} == set()
 
 
 @pytest.mark.parametrize('service,kind,identity,extra', [

@@ -2191,7 +2191,8 @@ def _default_profile():
 
 
 def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, view=None,
-                    mobile=False, extra_args=None, narrow_remote_origins=False, init_script=None):
+                    mobile=False, extra_args=None, narrow_remote_origins=False, init_script=None,
+                    reuse_result=None):
     """Start a headless Chromium and its CDP reader.
 
     ``profile`` names a persistent user-data-dir that survives teardown; None
@@ -2213,7 +2214,11 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
     the session carries ``reused=True`` when an existing one already held that
     profile (its running Chromium keeps whatever dpr it launched with — this
     call's ``dpr`` is ignored for a reuse).
+    HTTP callers receive per-call reuse metadata in ``reuse_result`` so two
+    concurrent launches cannot consume each other's shared session flag.
     """
+    if reuse_result is not None:
+        reuse_result['reused'] = False
     if profile is None and not ephemeral:
         profile = _default_profile()
     chromium = _find_chromium()
@@ -2233,6 +2238,8 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
         live = _session_using_profile(profile)
         if live:
             live['reused'] = True
+            if reuse_result is not None:
+                reuse_result['reused'] = True
             return live, None
         err = _release_held_profile(profile, udd)
         if err:
@@ -2700,17 +2707,19 @@ def browser_launch():
         return jsonify({'error': "the browser pane may not navigate to "
                                  "Clayrune's own origin"}), 403
     profile = data.get('profile')
+    reuse_result = {}
     session, err = _launch_browser(project_id, url, profile=profile or None,
                                    ephemeral=bool(data.get('ephemeral')),
                                    dpr=data.get('dpr'),
                                    view=_view_from(data.get('view')),
-                                   mobile=bool(data.get('mobile')))
+                                   mobile=bool(data.get('mobile')), reuse_result=reuse_result)
     if err or session is None:
         err = err or 'browser failed to start'
         # A bad profile name is the caller's mistake, not a missing dependency —
         # 501 would send them installing Chromium over a typo.
         return jsonify({'error': err}), (400 if 'profile name' in err else 501)
-    reused = bool(session.pop('reused', False))
+    reused = (bool(reuse_result['reused']) if 'reused' in reuse_result
+              else bool(session.pop('reused', False)))
     from mc.blueprints.workflow_routes import _is_agent_caller
     if reused and _is_agent_caller():
         from mc import browser_agent_tabs
