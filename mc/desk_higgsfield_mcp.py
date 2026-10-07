@@ -28,8 +28,14 @@ class HiggsfieldMcpAdapter:
         res = res or {}
         if res.get('isError'):
             if arguments.get('params', {}).get('get_cost') is True:
+                from mc.desk_higgsfield_preset_decline import preset_notice
+                if preset_notice(eng._mcp_data(res)):
+                    return res
                 from mc.desk_higgsfield_quote_response import report
                 raise eng.EngineError('engine', report(eng._mcp_data(res)))
+            if tool in self._TOOLS.values():
+                from mc.desk_higgsfield_preset_decline import check_submit
+                check_submit(eng._mcp_data(res))
             raise eng._classify_http(400, eng._mcp_text(res).encode('utf-8'))
         return res
 
@@ -49,51 +55,56 @@ class HiggsfieldMcpAdapter:
         return {'params': p}
 
     def estimate(self, model, req, creds) -> eng.Estimate:
-        from mc import desk_engines as eng
         args = self._params(model, req, get_cost=True)
         picture = bool(req.first_frame or req.last_frame or req.reference_images)
+        out, _, note = self._price(model, req, creds, args, checked=picture)
         if picture:
-            from mc import desk_engine_schemas
+            note = '; '.join(n for n in ('Text-only price; picture priced at render', note) if n)
+        return self._quote(out, note=note, picture_pending=picture)
+
+    def _price(self, model, req, creds, args, *, checked=False, doc=None):
+        from mc import desk_engines as eng, desk_engine_schemas
+        from mc.desk_higgsfield_preset_decline import quote
+        doc = doc if doc is not None else desk_engine_schemas.read(req.engine_id) or {}
+        call = lambda n, a: eng._mcp_data(self._call(creds, n, a))
+        if checked:
             from mc.desk_higgsfield_media_upload import checked_call
-            doc = desk_engine_schemas.read(req.engine_id)
-            out = checked_call(doc or {}, lambda n, a: self._call(creds, n, a), self._TOOLS[model.kind], args)
-        else:
-            out = eng._mcp_data(self._call(creds, self._TOOLS[model.kind], args))
-        return self._quote(out, note='Text-only price; picture priced at render' if picture else None)
+            call = lambda n, a: checked_call(doc, lambda n, a: self._call(creds, n, a), n, a)
+        return quote(doc, call, self._TOOLS[model.kind], args)
 
     @staticmethod
-    def _quote(out, note=None) -> eng.Estimate:
+    def _quote(out, note=None, *, picture_pending=False) -> eng.Estimate:
         from mc import desk_engines as eng
-        from mc.desk_mcp_schema_validation import finite_number
+        from mc.desk_higgsfield_preset_decline import credits
         from mc.desk_higgsfield_quote_response import report
-        cost = out.get('cost')
-        val = (cost.get('credits_exact', cost.get('credits')) if isinstance(cost, dict) else None)
-        if isinstance(val, bool) or not isinstance(val, (int, float)) or not finite_number(val) or val < 0:
+        val = credits(out)
+        if val is None:
             raise eng.EngineError('engine', report(out))
         adj = out.get('adjustments') if isinstance(out.get('adjustments'), dict) and out.get('adjustments') else None
-        return eng.Estimate(usd=0.0, credits=float(val), basis='engine', read=eng.now_iso(), adjustments=adj,
-                            note=note, picture_pending=bool(note))
+        return eng.Estimate(usd=0.0, credits=val, basis='engine', read=eng.now_iso(), adjustments=adj,
+                            note=note, picture_pending=picture_pending)
 
     def prepare(self, model, req, creds):
-        """Upload/confirm and quote actual picture inputs, only inside an approved render."""
+        """Price the exact literal submit arguments before the final render caps."""
         from mc import desk_engine_schemas
         from mc.desk_generation_preflight import Prepared
-        from mc.desk_higgsfield_media_upload import checked_call, upload
-        from mc.desk_higgsfield_picture_contract import bindings
-        if not (req.first_frame or req.last_frame or req.reference_images):
-            return None
         doc = desk_engine_schemas.read(req.engine_id) or {}
-        call = lambda n, a: self._call(creds, n, a)
-        # Read every local picture before allocating any remote media.
-        from mc import desk_engines as eng
-        rows = bindings(model, req)
-        for ref, _ in rows:
-            eng._read_asset(ref)
-        medias = [{'value': upload(doc, call, ref), 'role': role} for ref, role in rows]
-        args = self._params(model, req, medias=medias)
-        quote_args = {'params': {**args['params'], 'get_cost': True}}
-        quote = checked_call(doc, call, self._TOOLS[model.kind], quote_args)
-        return Prepared(args, self._quote(quote), doc)
+        picture = bool(req.first_frame or req.last_frame or req.reference_images)
+        if picture:
+            from mc.desk_higgsfield_media_upload import upload
+            from mc.desk_higgsfield_picture_contract import bindings
+            from mc import desk_engines as eng
+            rows = bindings(model, req)
+            for ref, _ in rows:
+                eng._read_asset(ref)
+            medias = [{'value': upload(doc, lambda n, a: self._call(creds, n, a), ref), 'role': role}
+                      for ref, role in rows]
+            args = self._params(model, req, medias=medias, get_cost=True)
+        else:
+            args = self._params(model, req, get_cost=True)
+        out, priced, note = self._price(model, req, creds, args, checked=picture, doc=doc)
+        args = {'params': {k: v for k, v in priced['params'].items() if k != 'get_cost'}}
+        return Prepared(args, self._quote(out, note=note, picture_pending=False), doc)
 
     def submit(self, model, req, creds, *, prepared=None) -> dict:
         from mc import desk_engines as eng
@@ -104,7 +115,10 @@ class HiggsfieldMcpAdapter:
             out = checked_call(prepared.snapshot, lambda n, a: self._call(creds, n, a),
                                self._TOOLS[model.kind], prepared.arguments, submitted=True)
         else:
-            out = eng._mcp_data(self._call(creds, self._TOOLS[model.kind], self._params(model, req)))
+            args = prepared.arguments if prepared is not None else self._params(model, req)
+            out = eng._mcp_data(self._call(creds, self._TOOLS[model.kind], args))
+        from mc.desk_higgsfield_preset_decline import check_submit
+        check_submit(out)
         ids = [r.get('id') for r in (out.get('results') or []) if isinstance(r, dict)]
         if not ids or not all(isinstance(i, str) and eng._REF_OK.match(i) for i in ids):
             raise eng.EngineError('engine', 'Higgsfield accepted the job but returned no job id', definitive=False)
