@@ -25,6 +25,7 @@
 // page paints is the library path the server answers with, never a vendor URL.
 import { confirmationMatches, priceConfirmation, heldPriceConfirmation, renderStatusWord, dismissedPriceHold, dismissPriceHold } from './desk-v1-render-price.js';
 import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.js';
+import { submissionHeld, renderNeedsPolling, recoveryActionHTML, bindRenderRecovery } from './desk-v1-render-recovery.js';
 
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -281,7 +282,8 @@ import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.j
     if (r.hold) bits.push(`<div class="desk-v1-engine-refusal" data-eng-hold>${_errorHTML(r.hold)}</div>`);
     if (r.failure) bits.push(`<div class="desk-v1-engine-refusal" data-eng-failure>${_errorHTML(r.failure)}</div>`);
     (r.scenes || []).filter((s) => s.failure).forEach((s) => bits.push(`<div class="desk-v1-engine-refusal">Scene “${esc(s.label)}”: ${esc(typeof s.failure === 'string' ? s.failure : (s.failure.message || ''))}</div>`));
-    const outs = (r.outputs && r.outputs.length ? r.outputs : (r.status === 'held' ? r.clips : [])) || [];
+    const outs = (r.outputs && r.outputs.length ? r.outputs : (r.status === 'held'
+      || (r.failure || {}).kind === 'submission_acknowledged' ? r.clips : [])) || [];
     if (outs.length) {
       bits.push(`<ul class="desk-v1-engine-outputs" data-eng-outputs>${outs.map((o) =>
         `<li data-eng-output data-path="${esc(o.path)}">${_playerHTML(o)}${esc(String(o.path).split('/').pop())}${o.duration_sec ? ` · ${esc(o.duration_sec)}s` : ''}<span class="desk-v1-engine-saved"> · saved to the Material library${o.attached_to ? ' and attached' : ''}</span></li>`).join('')}</ul>`);
@@ -317,8 +319,7 @@ import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.j
       const running = st.render && !_TERMINAL.includes(st.render.status);
       const busy = running || st.submitting;
       const conn = p.engine.connected || {};
-      const submissionHeld = st.render && ['submit_interrupted', 'submit_uncertain'].includes((st.render.hold || {}).kind);
-      const canRender = conn.ready && !busy && !submissionHeld && !st.estimating && st.estimate && st.estimate.estimate && !st.estimate.refusal && !st.estimateError;
+      const canRender = conn.ready && !busy && !submissionHeld(st.render) && !st.acknowledging && !st.estimating && st.estimate && st.estimate.estimate && !st.estimate.refusal && !st.estimateError;
       host.innerHTML = `<div class="desk-v1-engine-panel" data-eng-panel data-kind="video">
         <div class="desk-v1-engine-head">Render with an engine</div>
         ${_pickersHTML(p, st, 'video')}
@@ -330,6 +331,7 @@ import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.j
           <button type="button" class="btn-secondary" data-eng-reprice${busy ? ' disabled' : ''}>Price again</button>
         </div>
         ${_renderResultHTML(st.render)}
+        ${recoveryActionHTML(st.render, st.acknowledging)}
       </div>`;
       coalesceVaultPrompts(host);
       host.querySelector('[data-eng-engine]').onchange = (ev) => { st.engineId = ev.target.value; st.modelId = null; st.estimate = null; paint(engines); estimate(engines); };
@@ -337,6 +339,8 @@ import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.j
       host.querySelector('[data-eng-ratio]').onchange = (ev) => { st.ratio = ev.target.value; st.estimate = null; paint(engines); estimate(engines); };
       host.querySelector('[data-eng-reprice]').onclick = () => estimate(engines);
       host.querySelector('[data-eng-render-btn]').onclick = () => submit(engines);
+      bindRenderRecovery(host, { state: st, api: _api, alive, paint: () => paint(engines),
+        estimate: () => estimate(engines), poll: () => poll(engines) });
     };
 
     const body = (extra) => Object.assign({ owner, engine_id: st.engineId, model_id: st.modelId, aspect_ratio: st.ratio, project_id: opts.projectId || undefined }, extra || {});
@@ -384,17 +388,24 @@ import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.j
       setEngines: (engines) => { currentEngines = engines; _pick(engines, 'video', st); },
     });
 
+    let pollTimer = null;
     const poll = (engines) => {
-      if (!st.render || _TERMINAL.includes(st.render.status)) return;
+      clearTimeout(pollTimer);
+      if (!renderNeedsPolling(st.render) || st.acknowledging) return;
       const id = st.render.render_id;
-      setTimeout(async () => {
-        if (!alive() || !st.render || st.render.render_id !== id) return;
+      pollTimer = setTimeout(async () => {
+        if (!alive() || !st.render || st.render.render_id !== id || st.acknowledging) return;
+        const seq = st.renderReadSeq || 0;
         try {
           const out = await _api('GET', `/api/desk/engines/renders/${encodeURIComponent(id)}`);
+          if (!alive() || !st.render || st.render.render_id !== id || seq !== (st.renderReadSeq || 0)) return;
           st.render = out.render;
           adoptHeldPrice(st.priceBase);
           if (typeof opts.onChange === 'function') opts.onChange(st.render);
-        } catch (e) { st.error = `Could not read the render's progress: ${e && e.message ? e.message : e}`; }
+        } catch (e) {
+          if (!alive() || !st.render || st.render.render_id !== id || seq !== (st.renderReadSeq || 0)) return;
+          st.error = `Could not read the render's progress: ${e && e.message ? e.message : e}`;
+        }
         paint(engines);
         poll(engines);
       }, POLL_MS);

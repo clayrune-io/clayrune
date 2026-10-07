@@ -2106,10 +2106,12 @@ def poll_render(render_id: str, *, unattended: bool = False) -> dict | None:
     r = store['renders'].get(render_id)
     if r is None:
         return None
+    from mc.desk_render_recovery import needs_poll, poll_linked
+    if needs_poll(r):
+        return poll_linked(render_id, r, unattended=unattended)
     if r['status'] in ('ready', 'failed'):
         return _public_render(r, store['jobs'])
-    if r.get('submission_state') in ('pending', 'working') or (r.get('hold') or {}).get('kind') in (
-            'render_price_changed', 'submit_interrupted', 'submit_uncertain'):
+    if r.get('submission_state') in ('pending', 'working') or (r.get('hold') or {}).get('kind') == 'render_price_changed':
         return _public_render(r, store['jobs'])
     children = r.get('children') or []
     jobs = {}

@@ -825,8 +825,14 @@ return the active render instead of starting another one. A campaign's pending
 render reserves its approved amount until exact pricing transfers that hold
 to its clips. If the server restarts during submission, Studio shows **Held**
 with an interrupted-submission explanation. It does not retry paid calls;
-uncertain clip costs stay reserved and Render remains disabled until the
-submission is investigated. Check the engine dashboard before any recovery.
+linked clips keep polling for free, downloading accepted outputs and settling
+their costs normally. Missing scenes are never submitted automatically.
+Check the engine dashboard, then press **I checked the engine dashboard, allow
+a new render**. This free acknowledgement needs no passcode, marks the parent
+Failed, and keeps its children, saved clips and recorded costs. Render becomes
+available after a fresh price check; starting it still requires the passcode
+and must fit your configured spending limits. Unattended sessions cannot
+acknowledge a submission.
 An unsafe upload URL or unexpected upload/confirmation
 response stops the render before generation. A later refused render can leave
 an uploaded picture in your Higgsfield library; it spends no generation credits.

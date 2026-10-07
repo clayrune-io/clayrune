@@ -63,8 +63,21 @@ lost startup work. The GET/latest read paths turn interrupted pending/working
 records into `held/submit_interrupted`, release the provably unsent parent
 remainder and retain all linked child reservations. They never re-submit a
 paid call, including a child whose vendor acceptance was not saved. These
-holds require investigation; this ticket adds no refund, cancellation or
-human-gate override. Legacy ready/failed/rendering records remain readable.
+holds require investigation. `mc/desk_render_recovery.py` keeps polling only
+linked children for free, downloading accepted clips and settling their costs
+through the normal job path. A vendor-declared free failure releases its cost;
+an accepted clip retains its billed expense. Missing scenes are never submitted.
+Legacy ready/failed/rendering records remain readable.
+
+POST `/api/desk/engines/renders/<render_id>/acknowledge`, in its own blueprint
+`mc/blueprints/desk_render_recovery_routes.py`, accepts only these two held
+submission kinds. It marks the parent failed with failure kind
+`submission_acknowledged`, clears its hold and retains children, clips and
+recorded costs. Missing records return 404; other states and repeated
+acknowledgements return 409. The existing unattended-caller guard returns 403.
+There is no passcode on this free action. The next Render still goes through
+the unchanged passcode and spending gates. Linked children continue polling
+even after acknowledgement; a racing GET cannot restore the old hold.
 
 ## Studio and saved offers
 
@@ -84,7 +97,11 @@ Explicit dismissal survives a reload in the same tab through session storage.
 The second click uses a NEW key, rechecks the current free quote and asks for
 the existing passcode at the displayed prepared total. Cancellation sends
 nothing. An additional price increase holds again. Uncertain/interrupted
-submission holds disable Render rather than offering a repeated paid start.
+submission holds disable Render and show **I checked the engine dashboard,
+allow a new render**. `desk-v1-render-recovery.js` sends that free acknowledgement,
+refreshes the price/budget and keeps clips visible on the failed parent. The
+next paid start requires a fresh passcode. In-flight progress reads cannot
+overwrite the acknowledged record or a newer render.
 
 ## Verification
 
@@ -97,8 +114,8 @@ Backend selection includes every `test_*.py` containing `higgsfield`, and
 every Desk engine, render or spending-guard test. Exact command:
 
 ```text
-python -m pytest -q -o addopts= tests/test_desk_engine_schemas.py tests/test_desk_engines.py tests/test_desk_render_price_confirmation.py tests/test_desk_render_worker.py tests/test_desk_spend_guard.py tests/test_higgsfield_mcp_catalogue.py tests/test_higgsfield_mcp_snapshot.py tests/test_higgsfield_picture_render.py tests/test_higgsfield_preset_decline.py tests/test_higgsfield_quote_response.py
-pyright mc/desk_render_worker.py
+python -m pytest -q -o addopts= tests/test_desk_engine_schemas.py tests/test_desk_engines.py tests/test_desk_render_price_confirmation.py tests/test_desk_render_recovery.py tests/test_desk_render_worker.py tests/test_desk_spend_guard.py tests/test_higgsfield_mcp_catalogue.py tests/test_higgsfield_mcp_snapshot.py tests/test_higgsfield_picture_render.py tests/test_higgsfield_preset_decline.py tests/test_higgsfield_quote_response.py
+pyright mc/desk_render_worker.py mc/desk_render_recovery.py mc/blueprints/desk_render_recovery_routes.py
 ```
 
 Browser checks use the main checkout's existing `tools/smoke/node_modules`
@@ -113,7 +130,7 @@ node tools/smoke/desk-v1-studio.mjs
 node tools/smoke/desk-v1-engine-vault-recovery.mjs
 ```
 
-The new module passes Pyright basic. Including `mc/desk_engines.py` reports
+All three new modules pass Pyright basic. Including `mc/desk_engines.py` reports
 the existing optional campaign-ID argument in the untouched ffmpeg-hold path;
 the earlier picture-price work records the same diagnostic. No baseline
 cleanup is included. `static/index.html` is unchanged; a separate boot smoke
@@ -121,15 +138,16 @@ is not required for this ticket. Logs, exit-code matrices and desktop/mobile
 screenshots live under `_scratch/render_worker/` and are not committed.
 The dependency junction is removed before committing.
 
-Final backend result: **376 passed**; all six smoke files exited 0. The dedicated async smoke has **34 passing checks** and covers 1440px
+Final backend result: **391 passed**; all six smoke files exited 0. The dedicated async smoke has **68 passing checks** and covers 1440px
 and 390px, including reload, explicit dismissal, changed scenes, cancellation,
-another price increase, single explanation and uncertain-submission refusal.
+another price increase, single explanation, both submission holds, free linked
+clip polling, acknowledgement, preserved clips and the next paid passcode.
 
 | Check | Exit code |
 | --- | --- |
-| Selected backend suite (376 cases) | 0 |
-| New worker Pyright basic | 0 |
-| Async render / held quote smoke (34 checks) | 0 |
+| Selected backend suite (391 cases) | 0 |
+| New worker and recovery modules Pyright basic | 0 |
+| Async render / held quote / recovery smoke (68 checks) | 0 |
 | Full live-render / legacy price-confirmation smoke | 0 |
 | Studio passcode / replay smoke | 0 |
 | Shared passcode busy smoke | 0 |
@@ -163,10 +181,23 @@ displayed engine credits; run it only when you want those clips generated.
    apply. Check that only this accepted generation appears on the engine.
 6. On a submission failure, expect Failed with a readable reason. If acceptance
    is uncertain or the server was interrupted, expect Held with an explanation,
-   retained costs and disabled Render. Check the engine dashboard and report
-   that record to Dave; no automatic paid retry should appear.
+   retained costs and disabled Render. Accepted linked clips should still finish
+   and appear in the Material library. Check the engine dashboard, then press
+   **I checked the engine dashboard, allow a new render**: no passcode popup or
+   new generation should occur. The parent becomes Failed and retains its
+   clips. Reload and confirm Render is available after the free price check.
+   Starting a new render must ask for the passcode again. Missing scenes from
+   the older record must never start automatically.
 
-Integration and live observation remain Dave's handoff. Reverting the commit
-restores synchronous startup; investigate any new pending/working/held records
-before rollback, because older code has no async-startup recovery logic. No
-schema migration, dependency, authority change or server restart is included.
+Round 2 fixes the permanent owner hold found in review of `4dfe95ea`.
+The branch was rebased onto master `59e11b5b` first (prior async delivery is now
+`10902573`). Recovery tests cover accepted and free-failed children, preserved
+costs, new owner enqueue, invalid-state and unattended refusals, missing/repeated
+acknowledgements, passcode continuity and a GET/acknowledgement race.
+
+Integration and live observation remain Dave's handoff. Reverting the recovery
+commit removes acknowledgement and strands linked-child polling on submission
+holds again. Reverting the original async delivery restores synchronous startup;
+investigate pending/working/held records first, because older code has no
+async-startup recovery logic. No schema migration, dependency or server restart
+is included; only the explicitly requested free human acknowledgement is added.

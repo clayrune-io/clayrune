@@ -11,6 +11,7 @@
 - Render closes the passcode prompt after a durable pending record is created; a server worker uploads, prices and submits the storyboard. Studio polls and shows waiting, working, submitted, held or failed.
 - Higher prepared prices hold before any clip generation. The held quote survives reload; another Render click and passcode accept the displayed price. Price again and storyboard edits invalidate the offer.
 - Owner clicks reuse active renders; campaign reservations transfer atomically to child jobs. Interrupted or uncertain submissions retain child costs and stop without a paid retry. Human and passcode gates are unchanged.
+- Submission holds keep polling linked clips for free, saving accepted outputs and settling their costs. A human can acknowledge checking the engine dashboard to allow a new render; children stay visible, unattended acknowledgement is refused, and the next Render still requires its passcode.
 - Contract, checks and Ron's UI script: `docs/desk_v1/ASYNC_RENDER_SUBMISSION.md`. Branch only; no merge, push, restart or real spend.
 
 ## [2026-10-07] - Browser pane passes Google's "may not be secure" check again

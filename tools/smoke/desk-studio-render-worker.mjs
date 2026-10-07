@@ -17,7 +17,7 @@ try {
   for (const width of [1440, 390]) {
     const ctx = await browser.newContext({ viewport: { width, height: 950 } });
     const page = await ctx.newPage();
-    const posts = [], proofs = [];
+    const posts = [], proofs = [], acknowledgements = [];
     const owner = { kind: 'studio', id: 'worker-smoke' };
     let record = null, polls = 0, cancel = false, prepared = 79, board = 'v1';
     const quote = () => ({ estimate: { usd: 0, credits: 72, picture_pending: true },
@@ -42,7 +42,19 @@ try {
           submittedRequest: body, boardAtClick: board };
         return json({ render: record, replay: false }, 201);
       }
+      if (path.endsWith('/acknowledge') && req.method() === 'POST') {
+        acknowledgements.push(req.postDataJSON());
+        Object.assign(record, { status: 'failed', submission_state: 'failed', hold: null,
+          failure: { kind: 'submission_acknowledged', message: 'A new render is allowed. Existing clips and recorded costs are kept.' } });
+        return json({ render: record });
+      }
       if (path.startsWith('/api/desk/engines/renders/rnd-')) {
+        if (['submit_interrupted', 'submit_uncertain'].includes(record.hold?.kind)
+            || record.failure?.kind === 'submission_acknowledged') {
+          Object.assign(record, { progress: { ready: 1, total: 2 }, scenes: [{ scene_id: 's1', job_id: 'accepted', status: 'ready' }],
+            clips: [{ path: 'desk/library/video/Generated/accepted.mp4', mime: 'video/mp4' }] });
+          return json({ render: record });
+        }
         polls++;
         if (polls === 1) Object.assign(record, { status: 'working', submission_state: 'working' });
         else if (record.submittedRequest.shown_total < prepared) {
@@ -121,11 +133,34 @@ try {
       failure: { message: 'Higgsfield could not be reached. Nothing was sent.' } };
     await mount(); await waitStatus('failed');
     check(/Nothing was sent/.test(await page.locator('[data-eng-failure]').innerText()), `${width}: failure survives reload`);
-    record = { ...record, status: 'held', submission_state: 'held', failure: null,
-      hold: { kind: 'submit_uncertain', message: 'The engine may have accepted this job; check its dashboard before retrying.' } };
-    const before = posts.length;
-    await mount(false); await waitStatus('held');
-    check(await page.locator('[data-eng-render-btn]').isDisabled() && posts.length === before, `${width}: uncertain submission never offers a paid retry`);
+    for (const kind of ['submit_uncertain', 'submit_interrupted']) {
+      record = { ...record, status: 'held', submission_state: 'held', failure: null, clips: [],
+        scenes: [{ scene_id: 's1', job_id: 'accepted', status: 'queued' }], progress: { ready: 0, total: 2 },
+        hold: { kind, message: 'Check the engine dashboard before allowing a new render.' } };
+      const before = posts.length, proofCount = proofs.length, ackCount = acknowledgements.length;
+      await mount(false); await waitStatus('held');
+      check(await page.locator('[data-eng-render-btn]').isDisabled() && posts.length === before, `${width} ${kind}: hold blocks paid retry`);
+      await page.waitForFunction(() => /1\/2 clips/.test(document.querySelector('[data-eng-render-status]')?.textContent || ''));
+      check(await page.locator('[data-eng-output]').count() === 1 && posts.length === before, `${width} ${kind}: linked clip polls and appears without submitting a missing scene`);
+      const action = page.locator('[data-eng-acknowledge]');
+      check(await action.innerText() === 'I checked the engine dashboard, allow a new render', `${width} ${kind}: human acknowledgement text`);
+      await action.scrollIntoViewIfNeeded();
+      check(await page.evaluate(() => {
+        const button = document.querySelector('[data-eng-acknowledge]');
+        return document.documentElement.scrollWidth <= innerWidth && button.scrollWidth <= button.clientWidth;
+      }), `${width} ${kind}: recovery action fits viewport`);
+      await page.screenshot({ path: resolve(root, `_scratch/render_worker/recovery-${kind}-${width}.png`) });
+      await action.click(); await waitStatus('failed');
+      await page.waitForFunction(() => document.querySelector('[data-eng-render-btn]') && !document.querySelector('[data-eng-render-btn]').disabled);
+      check(acknowledgements.length === ackCount + 1 && proofs.length === proofCount && !('passcode' in acknowledgements.at(-1)), `${width} ${kind}: acknowledgement is free, without a passcode prompt`);
+      check(await page.locator('[data-eng-output]').count() === 1 && await page.locator('[data-eng-acknowledge]').count() === 0, `${width} ${kind}: failed acknowledged parent retains its clip`);
+      await mount();
+      check(await page.locator('[data-eng-render-btn]').isEnabled(), `${width} ${kind}: acknowledgement survives reload`);
+      await page.click('[data-eng-render-btn]'); await waitStatus('pending');
+      check(posts.length === before + 1 && proofs.length === proofCount + 1, `${width} ${kind}: next Render still uses its passcode prompt`);
+      await waitStatus('held'); // normal price increase; acknowledgement cannot approve it
+      check(await page.locator('[data-eng-acknowledge]').count() === 0, `${width} ${kind}: price hold has no recovery acknowledgement`);
+    }
     await ctx.close();
   }
   console.log(`${checks} checks passed`);

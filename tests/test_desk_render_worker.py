@@ -165,7 +165,7 @@ def test_restart_holds_unsent_startup_without_any_remote_retry(client, queued, v
     assert replay.status_code == 200 and len(queued) == 1
 
 
-def test_restart_retains_a_linked_in_flight_child_reservation(client, queued, vendor):
+def test_restart_retains_a_linked_in_flight_child_reservation(client, queued, vendor, monkeypatch):
     rid = start(client)
     store = eng._read_store()
     rec = store['renders'][rid]
@@ -173,9 +173,13 @@ def test_restart_retains_a_linked_in_flight_child_reservation(client, queued, ve
     rec['children'] = [{'scene_id': 's1', 'job_id': 'interrupted-child'}]
     store['jobs']['interrupted-child'] = {'cost_usd': 0.21, 'status': 'rendering'}
     eng._write_store(store)
+    polled = []
+    monkeypatch.setattr(eng, 'poll', lambda job_id, **kw: polled.append(job_id))
     latest = client.get('/api/desk/engines/renders?owner_kind=studio&owner_id=' + rec['owner']['id']).get_json()['render']
     assert latest['status'] == 'held' and latest['cost_usd'] == 0.21
     assert eng._read_store()['renders'][rid]['reserved_usd'] == 0 and not vendor.calls
+    client.get(f'/api/desk/engines/renders/{rid}')
+    assert polled == ['interrupted-child']
 
 
 def test_price_hold_does_not_poll_or_finalize_and_key_replay_cannot_accept(client, queued, vendor):
