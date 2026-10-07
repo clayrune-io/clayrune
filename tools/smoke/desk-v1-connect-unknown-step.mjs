@@ -223,7 +223,7 @@ async function run(browser, width, height) {
   await rules(page,'API parameters'); await fits(page,'API parameters'); await shot(page,'api',width);
   await primary(page); await page.selectOption('[data-ref-select="mode"]','existing');
   await page.waitForFunction(() => !/^Loading/.test(document.querySelector('[data-ref-vault]')?.textContent || 'Loading'));
-  await page.fill('[data-ref-field="vaultName"]','existing.key'); await referenceReview(page);
+  await page.selectOption('[data-ref-pick]','existing.key'); await referenceReview(page);
   const before=writes(srv).length;
   await primary(page);
   await page.waitForSelector('input[id^="hp-passcode-"]');

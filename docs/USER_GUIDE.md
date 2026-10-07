@@ -814,6 +814,10 @@ Choose how to connect, then enter only the selected connection's details. Accoun
 
 A saved connection is not necessarily signed in or verified. On supported saved generation connections, open its Connections tile and click **Check it now** for the existing free connection check. Result offers the same action after Save. Opening a tile never runs the check automatically. A failed check stays visibly failed. Browser sign-in alone is not verification, and X has no free provider check. Use **Change connection** to return to the same Add service flow. Limits and disconnect controls remain on the saved connection detail.
 
+For browser sign-in, **Choose an account** lists saved login names and usernames. **Add another account** offers username and password; the final passcode Save stores them together as one login. Personal sign-in uses that username for the account; a Company Page still has its own destination. Information-only connections offer a saved-credential picker and **Add a new credential**. Choosing an existing entry enables Continue; no password is returned by the picker.
+
+**Software package** accepts a package name or a GitHub repository address. Repository setup suggests the command only when it can read an explicit configuration; otherwise enter the start command yourself. Review shows the exact commit and command under **Details**. Install steps start unchecked and run only if selected and approved with the final passcode. Their dependencies can be unpinned. Saved repository files are checked before every start; changed files require Review again. A saved connection is not proof the repository is safe or successfully signed in.
+
 ## How to be Claydo (system instructions for the assistant)
 
 This section is for Claydo, not the user. The frontend parses inline

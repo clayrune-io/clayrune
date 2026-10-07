@@ -34,7 +34,7 @@ It runs on your machine against your own Claude CLI.
 
 ### Desk connections
 
-Desk's Connections view uses one Add service flow for known services, unknown addresses and user-supplied connection software. Setup precedes enforced Read/Post permissions and passcode Save. Supported saved generation connections offer a human-clicked **Check it now** from their own tile. See the [user guide](docs/USER_GUIDE.md#desk-connections-add-or-check-a-service) for limits and information-only suggestions.
+Desk's Connections view uses one Add service flow for known services, unknown addresses and user-supplied connection software. Setup precedes enforced Read/Post permissions and passcode Save. Saved-account pickers and GitHub software setup are implemented in the [MC-1062/14 follow-up](docs/desk_v1/connect_flow_tickets/14-live-fixes.md), pending integration and live retesting. Supported saved generation connections offer a human-clicked **Check it now** from their own tile. See the [user guide](docs/USER_GUIDE.md#desk-connections-add-or-check-a-service) for limits and information-only suggestions.
 
 ### 🌙 Working without you
 

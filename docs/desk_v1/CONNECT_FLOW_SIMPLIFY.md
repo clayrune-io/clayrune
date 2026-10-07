@@ -245,6 +245,8 @@ Related source specifications: [connect by URL](../DESK_CONNECT_BY_URL_SPEC.md),
 
 Binding, no exceptions: Higgsfield, X, LinkedIn, YouTube, custom servers and unknown services use **Add service → Connection options → Setup → Permissions → Review → Result**. There is one entrance; retire the previous Service/Method/Details/Review wizard.
 
+First live-test fixes retain this rule: sign-in and saved information use one metadata picker for account/credential names and usernames, plus new-login fields whose values are stored together only by the existing final human/passcode Save. Software package accepts GitHub addresses through the existing MCP URL installer, with deterministic extraction, certified tool-free scanning, an exact commit on the approval card, unchecked install steps and guarded starts. [Follow-up contract and limits](connect_flow_tickets/14-live-fixes.md).
+
 1. Enter a service name or address.
 2. Known means a profile shipped under mc/desk_connect/profiles/; options come from that profile. An unknown address starts the existing protected investigation automatically on Continue, without a Find connection options button. Look for all sign-in/connect evidence: browser/username-password, API key, app authorization, package or remote server. Findings are suggestions; missing adapters stay setup-only/reference.
 3. One shared options screen shows at most four primary alternatives; remaining options, evidence and technical explanations appear in its single Details disclosure. Manual server/API/reference paths stay reachable there.

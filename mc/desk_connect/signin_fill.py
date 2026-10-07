@@ -106,7 +106,7 @@ def options(service: str, project_id: str | None = None) -> dict:
         rows = _vault.list_secrets(project_id, check_readable=False)
     except _vault.SecretsError as e:
         raise FillError(f'the vault could not be read: {_oneline(e)}', 503, 'vault_unavailable') from e
-    logins = [{'name': s['name'], 'matches': s['name'].split('.')[0].lower() == service}
+    logins = [{'name': s['name'], 'username': s['username'], 'matches': s['name'].split('.')[0].lower() == service}
               for s in rows if s.get('entry_type') == _vault.ENTRY_LOGIN and s.get('kind') != _vault.KIND_TOTP
               and s.get('username') and s.get('scope', 'global') == 'global' and not _vault.is_server_internal(s['name'])]
     return {'service': service, 'routes': routes, 'logins': sorted(logins, key=lambda x: (not x['matches'], x['name'])),

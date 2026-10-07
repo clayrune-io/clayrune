@@ -677,16 +677,17 @@ def test_a_login_can_be_filled_from_an_account_binding_and_only_the_bound_one(en
     _no_leak(logs)
 
 
-def test_the_options_route_lists_names_only(env):
+def test_the_options_route_lists_name_and_username_metadata_only(env):
     client, _, _ = env
     _login()
     from mc import secrets_store
     secrets_store.set_secret('plausible.api-key', PW, entry_type='api_key')
     r = client.post('/api/desk/connect/signin/options', json={'service': 'linkedin'})
     out = r.get_json()
-    assert r.status_code == 200 and out['logins'] == [{'name': 'linkedin.login', 'matches': True}] and out['vault_locked'] is False
+    assert r.status_code == 200 and out['logins'] == [{'name': 'linkedin.login', 'username': USER, 'matches': True}] and out['vault_locked'] is False
     assert [x['route_id'] for x in out['routes']] == ['linkedin-browser']
-    _no_leak(r.get_data(as_text=True))
+    assert PW not in r.get_data(as_text=True)
+    assert set(out['logins'][0]) == {'name', 'username', 'matches'}
     assert client.post('/api/desk/connect/signin/options', json={'service': 'nope'}).status_code == 404
 
 

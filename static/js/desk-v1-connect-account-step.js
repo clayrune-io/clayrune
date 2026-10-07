@@ -14,7 +14,7 @@ function handoff(api, target) {
   api.go('setup');
 }
 W?.registerScreen({ id:'account-setup', step:'setup',
-  match:(sel,info)=>!sel.account && ['x','linkedin'].includes(info?.service?.id) && ['signin','api'].includes(sel.type),
+  match:(sel,info)=>!sel.account && ['x','linkedin'].includes(info?.service?.id) && (sel.type==='api' || sel.type==='signin' && (info.service.id==='x' || !kind || kind==='organization')),
   title:()=>C.screens.setup[0], copy:()=>C.screens.setup[1],
   body:api=> {
     if (api.info.service.id === 'linkedin' && !kind) return `<div class="desk-v1-cfw-options">${['member','organization'].map(k=>`<label class="desk-v1-cfw-option"><input type="radio" name="destination" data-account-kind="${k}"><span>${C.words[k]}</span></label>`).join('')}</div>`;
@@ -29,7 +29,8 @@ W?.registerScreen({ id:'account-setup', step:'setup',
       handoff(api,{kind:k,account:account==='new'?{new:{identity:identity.trim()}}:{id:existing.id},identity:account==='new'?identity.trim():existing.identity});return false;
     }}),
   bind:(root,api)=> {
-    root.querySelectorAll('[data-account-kind]').forEach(r=>r.addEventListener('change',()=>{kind=r.dataset.accountKind;api.repaint();}));
+    if(api.sel.type==='signin' && api.info.service.id==='x') {handoff(api,{kind:'account',account:{new:{identity:'Account'}},identity:''});return;}
+    root.querySelectorAll('[data-account-kind]').forEach(r=>r.addEventListener('change',()=>{kind=r.dataset.accountKind; if(api.sel.type==='signin' && kind==='member') handoff(api,{kind,account:{new:{identity:'Account'}},identity:''}); else api.repaint();}));
     root.querySelector('[data-account-search]')?.addEventListener('input',e=>{query=e.target.value;api.repaint();document.querySelector('[data-account-search]')?.focus({preventScroll:true});});
     root.querySelectorAll('[data-account-pick]').forEach(r=>r.addEventListener('change',()=>{account=r.dataset.accountPick;api.repaint();}));
     root.querySelector('[data-account-identity]')?.addEventListener('input',e=>{identity=e.target.value;root.querySelector('[data-cfw-primary]').disabled=!identity.trim();});

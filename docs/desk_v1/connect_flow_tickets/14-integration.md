@@ -29,4 +29,8 @@ Integration only. Run relevant smokes after each merge; use existing main-checko
 
 Section 11 of the parent supersedes the separate known/unknown and legacy wizard experiences. Every service uses Add service, Connection options, Connection details, Permissions, Review and Result, with titles/instructions/actions/field vocabulary from one shared copy module. Unknown URLs investigate automatically on Continue. Suggestions lacking adapters remain information only. A saved supported connection has a human-clicked free Check it now in its own tile/detail, not only immediately after Save.
 
+## First live-test follow-up
+
+The shared vault account/credential picker and GitHub package path are part of this ticket's acceptance. See [implementation, safety limits and five-line retest](14-live-fixes.md). The production simplify smoke must show saved names/usernames, add-account username/password, a selected saved credential enabling Continue, and the supplied GitHub address reaching an exact-commit approval card at 1440/390.
+
 The integration smoke covers Higgsfield key and sign-in, LinkedIn member and Page, unknown URL, YouTube information and fresh X without an app, at 1440 and 390. It asserts common copy, no internal terminology outside Details, no grants/writes on navigation, new grants off, explicit destination, separate sign-in/Save proof, saved tile check success/failure, keyboard action reach and 200% text fit. Detailed detection/reference and native adapter/approval smokes remain separate. Backend denial tests are required, not replaced by DOM assertions.

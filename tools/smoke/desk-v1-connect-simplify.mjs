@@ -73,10 +73,11 @@ async function newPage(browser, { srv, width, height }) {
     if (path === '/api/secrets/vault-lock' && method === 'GET') return J({ state: 'unlocked', configured: true });
     let body = null;
     try { body = req.postDataJSON(); } catch (_) { /* none */ }
-    if (path === '/api/secrets' && method === 'GET') return J({secrets: [{name: 'existing.key', scope: 'mission_control', allow_unattended: false}]});
+    if (path === '/api/secrets' && method === 'GET') return J({secrets: [{name: 'existing.key', scope: 'global', allow_unattended: false},{name:'linkedin.personal',username:'example@example.com',entry_type:'login',scope:'global'},{name:'x.personal',username:'examplehandle',entry_type:'login',scope:'global'}]});
     if (!path.startsWith('/api/desk/') && !path.startsWith('/api/browser/')) return route.abort();
     srv.log.push({ method, path, body });
-    if(path==='/api/desk/connect/custom/review') return J({fingerprint:'sha256:fixture',request_id:'custom-fixture',title:'example-package@1.0.0',server_name:'example-package',protocol:'stdio',command:{command:'node',args:['/smoke/mcp/route/transport.js']},package:{version:'1.0.0',pinned:true,registry:'registry.npmjs.org',integrity:'sha512:fixture',source:'https://registry.npmjs.org/example-package'},reach:{who:'One project',scope:'project',local_code:'Runs with your file and network access.'},credentials:[],scripts:[],dependencies:[],risks:[],limitations:[],changes:[]});
+    if(path==='/api/desk/connect/custom/github/stage') return J({stage_id:'github-fixture',sha:'a'.repeat(40),command:'node',args:['dist/index.js'],credentials:[]});
+    if(path==='/api/desk/connect/custom/review') return J({fingerprint:'sha256:fixture',request_id:'custom-fixture',title:body.stage_id?'youtube-mcp-server':'example-package@1.0.0',server_name:'example-package',protocol:'stdio',command:{command:'node',args:['/smoke/mcp/route/transport.js']},package:{version:body.stage_id?'a'.repeat(40):'1.0.0',pinned:true,registry:body.stage_id?'GitHub':'registry.npmjs.org',integrity:'sha512:fixture',source:body.stage_id?'https://github.com/ZubeidHendricks/youtube-mcp-server.git':'https://registry.npmjs.org/example-package'},reach:{who:'One project',scope:'project',local_code:'Runs with your file and network access.'},credentials:[],scripts:body.stage_id?[{id:'script:build',script:'build',package:'youtube-mcp-server',version:'a'.repeat(40),body:'echo fixture',approved:false,approvable:true}]:[],dependencies:[],risks:[],limitations:[],changes:[]});
     if(path==='/api/desk/connect/custom/commit') return body.passcode===PASSCODE?J({ok:true,state:'registered',message:'Registered; not checked'}):J({error:'bad_passcode'},403);
     if (path === '/api/desk/workspace') return J(srv.workspace());
     if (path === '/api/desk/engines' && method === 'GET') return J({ engines: srv.engines });
@@ -188,10 +189,15 @@ try {
       await inspect(p,service,width,'setup');
       if(['linkedin','page','x'].includes(service)) {
         if(service!=='x') await p.click(`[data-account-kind="${service==='page'?'organization':'member'}"]`);
-        await p.click('[data-account-pick="new"]');
-        await p.fill('[data-account-identity]',service==='x'?'examplehandle':service==='page'?'Example Page':'Example member');await primary(p);
+        if(service==='page') {await p.click('[data-account-pick="new"]');await p.fill('[data-account-identity]','Example Page');await primary(p);}
+        await p.waitForSelector('[data-lg-pick]');
+        check(await p.locator('[data-lg-pick] option').count()>1,'sign-in lists saved account metadata');
+        check((await p.textContent('[data-lg-pick]')).includes(service==='x'?'examplehandle':'example@example.com'),'saved account includes username');
+        check(await p.evaluate(secret=>!JSON.stringify(window.DeskV1ConnectVaultPicker.metadata({secrets:[{name:'linkedin.personal',username:'fixture',entry_type:'login',scope:'global',value:secret}]},'linkedin')).includes(secret),SECRET),'picker keeps only metadata');
+        if(service==='linkedin') {await p.selectOption('[data-lg-pick]','linkedin.personal');check(await p.locator('[data-cfw-primary]').isEnabled(),'saved sign-in enables Continue');await p.screenshot({path:resolve(SHOT_DIR,`linkedin_accounts_${width}.png`),fullPage:true});}
         await p.click('[data-lg-mode][value="new"]');
         await p.fill('[data-lg-user]','example@example.com');await p.fill('[data-lg-pass]',SECRET);
+        if(service==='linkedin') await p.screenshot({path:resolve(SHOT_DIR,`linkedin_new_account_${width}.png`),fullPage:true});
         await inspect(p,service,width,'setup');
         await primary(p);
       } else if(service==='higgsfield') {
@@ -250,6 +256,43 @@ try {
     await primary(p);await p.waitForFunction(()=>!document.querySelector('[data-add-service]'));
     check(srv.log.filter(r=>r.path==='/api/desk/connect/custom/connections').length>=2,'Done refreshes saved software tiles');
     await ctx.close();
+  }
+
+  for(const width of [1440,390]) {
+    const srv=makeServer();const {ctx,page:p}=await newPage(browser,{srv,width,height:width===390?844:1000});
+    await p.click('[data-conn-add-tile]');await p.fill('[data-cfw-input]','youtube.com');await primary(p);await step(p,'connection');
+    await p.check('[data-cfw-type][value="reference"]');await primary(p);
+    await p.selectOption('[data-ref-select="mode"]','existing');await p.waitForSelector('[data-ref-pick] option[value="existing.key"]',{state:'attached'});
+    check(await p.locator('[data-cfw-primary]').isDisabled(),'credential choice required before Continue');
+    await p.selectOption('[data-ref-pick]','existing.key');
+    await p.screenshot({path:resolve(SHOT_DIR,`youtube_credentials_${width}.png`),fullPage:true});
+    check(await p.locator('[data-cfw-primary]').isEnabled(),'saved credential enables Continue');
+    await primary(p);await step(p,'permissions');await primary(p);await step(p,'review');
+    check(!srv.log.some(r=>r.path.endsWith('/commit')),'saved credential navigation writes nothing');
+    await p.click('[data-cfw-back]');await step(p,'permissions');await p.click('[data-cfw-back]');await step(p,'setup');
+    await p.click('[data-ref-add-new]');await p.selectOption('[data-ref-select="entry"]','login');
+    await p.fill('[data-ref-field="vaultName"]','youtube.new');await p.fill('[data-ref-user]','new@example.test');await p.fill('[data-ref-secret]',SECRET);
+    await primary(p);await step(p,'permissions');await primary(p);await primary(p);
+    check(!srv.log.some(r=>r.path.endsWith('/commit')),'new credential waits for human passcode');await prompt(p);await step(p,'result');
+    const added=srv.log.find(r=>r.path==='/api/desk/connect/commit').body.draft.credential;
+    check(added.entry_type==='login' && added.username==='new@example.test' && added.value===SECRET,'new credential is one login in one Save');
+    check(await p.evaluate(secret=>!document.documentElement.outerHTML.includes(secret)&&!JSON.stringify(localStorage).includes(secret),SECRET),'credential value never appears in markup or storage');
+    await ctx.close();
+    const git=makeServer();const next=await newPage(browser,{srv:git,width,height:width===390?844:1000});const g=next.page;
+    await g.click('[data-conn-add-tile]');await g.fill('[data-cfw-input]','youtube.com');await primary(g);await step(g,'connection');
+    await g.click('[data-cfw-details] > summary');await g.check('[data-cfw-type][value="custom-npm"]');await primary(g);
+    await g.fill('[data-pk-package]','https://github.com/ZubeidHendricks/youtube-mcp-server');await primary(g);
+    await g.waitForSelector('[data-pk-command-input]');check(await g.inputValue('[data-pk-command-input]')==='node','GitHub command suggested by staged metadata');
+    await primary(g);await step(g,'permissions');await g.selectOption('[data-cfp-project]',await g.locator('[data-cfp-project] option:not([value=""])').first().getAttribute('value'));await primary(g);await step(g,'review');
+    await g.waitForSelector('[data-pk-pin]',{state:'attached'});await g.click('[data-cfw-details] > summary');
+    check((await g.textContent('[data-pk-pin]')).includes('a'.repeat(40)),'GitHub approval shows exact fixed commit');
+    check((await g.textContent('[data-pk-source]')).includes('https://github.com/ZubeidHendricks/youtube-mcp-server.git'),'repository address remains verbatim under Details');
+    await g.click('[data-cfw-details] > summary');await primary(g);
+    check(await g.locator('[data-cu-script-tick]').count()>0 && await g.locator('[data-cu-script-tick]:checked').count()===0,'GitHub install steps are listed and OFF by default');
+    await primary(g);await g.waitForSelector('[data-pk-approve]');
+    check(await g.locator('[data-cfw-primary]').isDisabled(),'GitHub Save requires explicit card approval');
+    check(!git.log.some(r=>r.path.endsWith('/commit')),'GitHub staging and Review do not install or save');
+    await g.screenshot({path:resolve(SHOT_DIR,`github_approval_${width}.png`),fullPage:true});await next.ctx.close();
   }
 } finally {await browser.close();}
 if(bad) {console.error(`${bad} connect-simplify checks failed`);process.exit(1);}

@@ -97,14 +97,14 @@ def _ancestors(base: Path) -> list[Path]:
     return out
 
 
-def ancestor_problem(op: dict) -> dict | None:
+def ancestor_problem(op: dict, directory: Path | None = None) -> dict | None:
     """None when no folder from the package's directory up to the root holds a `node_modules`, else
     `{code, message, paths}`. Node resolves a `require` by walking up from the file asking for each
     `<folder>/node_modules`, so one anywhere above (the package area, `~/.clayrune`, the home folder, the
     drive root) can answer for a package the approved tree does not hold, and that code runs with the
     server's secrets in its environment. Never raises."""
     try:
-        found = [str(d / 'node_modules') for d in _ancestors(_artifact.package_dir(op))
+        found = [str(d / 'node_modules') for d in _ancestors(directory if directory is not None else _artifact.package_dir(op))
                  if (d / 'node_modules').exists() or (d / 'node_modules').is_symlink()]
     except Exception as e:                                  # noqa: BLE001 - a check that cannot tell must refuse
         _log(f'[desk_connect] custom MCP node_modules check could not read the folders: {type(e).__name__}', flush=True)

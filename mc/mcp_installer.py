@@ -246,13 +246,20 @@ def _rmtree_force(path: Path) -> None:
         shutil.rmtree(path, onerror=_onerror)
 
 
-def stage_clone(url: str, owner: str, repo: str, ref: str | None = None) -> dict[str, Any]:
+def stage_clone(url: str, owner: str, repo: str, ref: str | None = None,
+                *, staging_id: str | None = None) -> dict[str, Any]:
     """Shallow-clone the repo and pin to a fixed SHA. Returns
     `{install_dir, sha, default_branch}` or raises on failure."""
     INSTALLS_ROOT.mkdir(parents=True, exist_ok=True)
     install_dir = INSTALLS_ROOT / _slugify(owner, repo)
+    if staging_id is not None:
+        if not re.fullmatch(r'[a-f0-9]{32}', staging_id):
+            raise ValueError('invalid staging id')
+        install_dir = install_dir.with_name(f'{install_dir.name}-{staging_id}')
 
     if install_dir.exists():
+        if staging_id is not None:
+            raise RuntimeError('the preview directory already exists; create a new preview')
         # Stale staging from a previous preview — wipe and re-clone so we know
         # the SHA we hand back is fresh.
         try:
@@ -261,11 +268,16 @@ def stage_clone(url: str, owner: str, repo: str, ref: str | None = None) -> dict
             raise RuntimeError(f'failed to clean stale install dir: {e}')
 
     branch_args = ['--branch', ref] if ref else []
+    git_options = ['-c', f'core.hooksPath={os.devnull}', '-c', 'protocol.file.allow=never'] if staging_id else []
+    git_env = {'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_SYSTEM': os.devnull,
+               'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_COUNT': '0',
+               'GIT_CONFIG_PARAMETERS': '', 'GIT_TERMINAL_PROMPT': '0'} if staging_id else None
     # `--` terminates option parsing so a hostile URL can't smuggle a git flag
     # (e.g. --upload-pack=…) into the positional slots.
     rc, out, err = _run(
-        ['git', 'clone', '--depth', '1', *branch_args, '--', url, str(install_dir)],
+        ['git', *git_options, 'clone', '--depth', '1', *branch_args, '--', url, str(install_dir)],
         timeout=120,
+        env=git_env,
     )
     if rc != 0:
         raise RuntimeError(f'git clone failed: {err.strip() or out.strip() or rc}')
@@ -517,10 +529,13 @@ def detect_secrets(servers: dict[str, Any]) -> list[dict[str, str]]:
 
 # ── Dependency audit (npm / pip) ─────────────────────────────────────────────
 
-def dependency_audit(install_dir: str) -> dict[str, Any]:
+def dependency_audit(install_dir: str, *, read_only: bool = False) -> dict[str, Any]:
     """Run `npm audit --json` or `pip-audit -f json` if the corresponding
     lock/manifest exists. Returns a flat summary suitable for the UI."""
     p = Path(install_dir)
+    if read_only and (not (p / 'package.json').is_file() or
+                      not (p / 'package-lock.json').is_file() and not (p / 'npm-shrinkwrap.json').is_file()):
+        return {'available': False, 'reason': 'No existing lockfile; read-only audit does not install or build code.'}
     if (p / 'package.json').is_file():
         return _npm_audit(p)
     if (p / 'pyproject.toml').is_file() or (p / 'requirements.txt').is_file():
@@ -725,15 +740,26 @@ def _gather_source_snippets(install_dir: Path, max_bytes: int = 20000) -> str:
     return ''.join(chunks) or '(no source files found)'
 
 
-def security_scan(install_dir: str, sha: str) -> dict[str, Any]:
+def security_scan(install_dir: str, sha: str, *, toolless: bool = False) -> dict[str, Any]:
     """One Claude call summarizing what the server does. Cached on (dir, sha)."""
-    key = f'{install_dir}@{sha}'
+    key = f'{install_dir}@{sha}@{toolless}'
     with _scan_cache_lock:
         if key in _scan_cache:
             return _scan_cache[key]
 
     src = _gather_source_snippets(Path(install_dir))
     prompt = _SCAN_PROMPT + "\n\nSOURCE:\n" + src
+    if toolless:
+        from mc.agent_runtime import run_text_transform
+        from mc.core import _log
+        try:
+            output = run_text_transform('claude', prompt=_SCAN_PROMPT,
+                                        stdin_text=src, model='haiku', timeout=90)
+            parsed = json.loads(re.sub(r'^```(?:json)?\s*|\s*```$', '', output, flags=re.M))
+            return {'available': True, **parsed}
+        except Exception as e:
+            _log(f'[mcp-installer] tool-free scan unavailable: {type(e).__name__}', flush=True)
+            return {'available': False, 'reason': 'Tool-free scan unavailable; this code has not been reviewed.'}
     rc, out, _ = _run(
         [_resolve_claude_bin(), '-p', prompt, '--max-turns', '1',
          '--output-format', 'json'],

@@ -120,12 +120,15 @@
     const n = ++_seq;
     const ctx = api.ctx;
     Promise.all([
-      ctx.api('POST', '/api/desk/connect/signin/options', { service: svc }).catch(() => { L.optionsFailed = true; return null; }),
-      ctx.api('GET', '/api/browser/profiles').catch(() => { L.profilesFailed = true; return null; }),
-    ]).then(([o, p]) => {
+      ctx.api('POST', '/api/desk/connect/signin/options', { service: svc }).catch(e => { console.error('[connect-login] options failed',e);L.optionsFailed = true; return null; }),
+      ctx.api('GET', '/api/secrets').catch(e => { console.error('[connect-login] metadata failed',e); return null; }),
+      ctx.api('GET', '/api/browser/profiles').catch(e => {console.error('[connect-login] profiles failed',e);L.profilesFailed = true; return null; }),
+    ]).then(([o, metadata, p]) => {
       if (n !== _seq) return;                            // discarded or reloaded meanwhile
       L.loading = false; L.loaded = svc;
       L.options = o;
+      if(metadata && L.options) L.options.logins=window.DeskV1ConnectVaultPicker.metadata(metadata,window.DeskV1ConnectCopy.isEnabled()?svc:'');
+      else L.optionsFailed=true;
       L.profiles = ((p && p.profiles) || []).map((x) => x.name).filter((x) => typeof x === 'string');
       api.repaint();
     });
@@ -168,15 +171,13 @@
     if (!L.options) return '<div class="desk-v1-cfw-fact-text" data-lg-loading>Loading your saved logins…</div>';
     const logins = L.options.logins || [];
     if (!logins.length) return '<div class="desk-v1-cfw-fact-text" data-lg-nologins>There is no saved login for this service yet. Choose another way.</div>';
-    const opts = ['<option value="">Choose a saved login…</option>'].concat(logins.map((l) => `<option value="${esc(l.name)}"${L.pick === l.name ? ' selected' : ''}>${esc(l.name)}</option>`));
-    return `<label class="desk-v1-conn-add-field">Saved login
-        <select class="desk-v1-rules-textinput" data-lg-pick ${_locked() ? 'disabled' : ''}>${opts.join('')}</select></label>`;
+    return window.DeskV1ConnectVaultPicker.html(logins,L.pick,`data-lg-pick ${_locked()?'disabled':''}`,window.DeskV1ConnectCopy.words.existingAccount);
   }
 
   // The Sign in button types a stored login into the page open in the pane, on this route's own address only. It is
   // offered for a login in this service's own namespace (what the fill route accepts before the connection is saved).
   function _fillHTML(info, route) {
-    const mine = L.pick && L.pick.toLowerCase().indexOf(_service(info) + '.') === 0;
+    const mine = L.pick && L.pick.toLowerCase().split('.')[0] === _service(info);
     const spec = { url: route.url, login: mine && !_locked() ? L.pick : '', profile: _profileName(info), hint: '', why: 'Choose a saved login named for this service.' };
     const why = L.pick && !mine ? `<div class="desk-v1-cfw-fact-text" data-lg-notmine>${esc(L.pick)} is not named for ${esc(_label(info))} (${esc(_service(info))}.…), so it cannot be typed from here. You can still save it and sign in after.</div>` : '';
     return `${window.DeskV1ConnectSignin ? window.DeskV1ConnectSignin.fillHTML(FILL_KEY, spec) : ''}${why}`;
@@ -191,6 +192,7 @@
   }
 
   function _bodyHTML(api) {
+    if(!L.mode && window.DeskV1ConnectCopy.isEnabled()) L.mode='saved';
     const info = api.info, route = _route(api.sel, info);
     const head = _optionsHTML();
     if (!_target) return `${head}<div class="desk-v1-cfw-msg" data-lg-notarget role="alert">Choose which ${esc(_label(info))} account this is first.</div>`;
@@ -268,10 +270,7 @@
       const slot = root.querySelector('[data-lg-typed-slot]');
       if (slot) {
         L.node = api.host(slot, 'typed', (node) => {
-          node.innerHTML = `<label class="desk-v1-conn-add-field">Username or email
-              <input type="text" class="desk-v1-rules-textinput" data-lg-user autocomplete="off" autocapitalize="off" spellcheck="false"></label>
-            <label class="desk-v1-conn-add-field">Password
-              <input type="password" class="desk-v1-rules-textinput" data-lg-pass autocomplete="off" spellcheck="false"></label>`;
+          node.innerHTML = window.DeskV1ConnectVaultPicker.fields('data-lg-user','data-lg-pass');
         });
         L.node.querySelectorAll('input').forEach((i) => { if (!i._lgBound) { i._lgBound = true; i.addEventListener('input', () => { const p = document.querySelector('[data-cfw-primary]'); if (p) p.disabled = !!_problem(L.info); }); } });
       }
@@ -310,6 +309,7 @@
     const why = _problem(info);
     if (why) return { error: why };
     const account = JSON.parse(JSON.stringify(_target.account));
+    if(account.new && account.new.identity==='Account' && _target.kind!=='organization') account.new.identity=L.mode==='new'?L.node.querySelector('[data-lg-user]').value.trim():(L.options.logins||[]).find(x=>x.name===L.pick)?.username || account.new.identity;
     if (account.new && L.label.trim()) account.new.label = L.label.trim();
     const draft = { service: _service(info), revision: info.service.revision, route_id: route.route_id, account, account_kind: _target.kind, browser_profile: _profileName(info) };
     if (L.mode === 'saved') draft.login = L.pick;

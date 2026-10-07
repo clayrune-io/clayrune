@@ -70,6 +70,17 @@ def review_custom_connection():
         return jsonify({'error': 'The review failed; see the server log.', 'code': 'failed'}), 500
 
 
+@bp.route('/api/desk/connect/custom/github/stage', methods=['POST'])
+def stage_repository():
+    if is_unattended_caller():
+        return _refuse_agent('check a user-chosen repository')
+    from mc.desk_connect.github_connection import stage
+    try:
+        return jsonify(stage(request.get_json(silent=True)))
+    except ActivationError as e:
+        return _refusal(e)
+
+
 @bp.route('/api/desk/connect/custom/commit', methods=['POST'])
 def commit_custom_connection():
     if is_unattended_caller():

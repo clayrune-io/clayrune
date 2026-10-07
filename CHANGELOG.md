@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] - Desk account pickers and GitHub connection software (MC-1062/14)
+
+- Personal sign-in and saved-credential setup now offer a shared picker of saved names and usernames. Add another account keeps username and password together and writes only at the existing final human/passcode Save; selecting an existing credential enables Continue.
+- Software package setup accepts GitHub repository addresses through the existing MCP installer. Deterministic extraction never invokes its tool-enabled model fallback; a missing command requires manual entry. Review pins the exact commit, shows install steps OFF by default, and keeps credentials as saved names. A guarded start refuses changed files before providing credentials.
+- Tests cover mocked Git staging, metadata-only vault reads, final single-entry login Save and approval/launch guards. Desktop and phone screenshots and the five-line live retest are in `docs/desk_v1/connect_flow_tickets/14-live-fixes.md`. Branch implementation only; integration and live retesting remain with the integrator.
+
 ## [2026-10-06] - Higgsfield reads only the selected model's catalogue contract
 
 - Price/storyboard requests cache a read-only `models_explore` get for the model actually selected, sharing the snapshot's discovery lock. Fresh model results skip catalogue calls, including on Render; saves and connection verification do not browse every model.
