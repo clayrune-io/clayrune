@@ -30,10 +30,10 @@ from __future__ import annotations
 import json
 import os
 import threading
-import uuid
 from datetime import datetime, timezone
 
 from mc import secrets_store as _vault
+from mc.atomic_json import write_json_atomic
 from mc.core import _log
 
 FILE_NAME = 'desk_custom_connections.json'
@@ -88,13 +88,7 @@ def _read_for_write() -> dict:
 def _write(conns: dict) -> None:
     p = path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(f'.{p.name}.{uuid.uuid4().hex[:8]}.tmp')
-    try:
-        tmp.write_text(json.dumps({'version': 1, 'connections': conns}, indent=2, sort_keys=True), encoding='utf-8')
-        os.replace(tmp, p)
-    finally:
-        if tmp.exists():
-            tmp.unlink(missing_ok=True)
+    write_json_atomic(p, {'version': 1, 'connections': conns}, indent=2, sort_keys=True)
 
 
 def get(scope: str, project_id: str | None, server_name: str) -> dict | None:

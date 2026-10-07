@@ -46,6 +46,7 @@ import zlib
 from pathlib import PurePosixPath
 
 from mc import secrets_store as _vault
+from mc.atomic_json import write_json_atomic
 from mc.core import _log
 from mc.desk_connect import custom_npm_edges as _edges
 from mc.desk_connect import mcp_package_store as _store
@@ -348,8 +349,8 @@ def install(op: dict) -> str:
             _store._extract(data, tmp, MAX_UNPACKED, MAX_MEMBERS)
             if not (tmp / 'package' / PurePosixPath(op['entry'])).is_file():
                 raise _bad('the downloaded package does not contain the file you approved to run, so it was NOT saved')
-            (tmp / VERIFIED_MARKER).write_text(json.dumps({'integrity': op['integrity'], 'package': op['package'],
-                                                           'version': op['version']}), encoding='utf-8')
+            write_json_atomic(tmp / VERIFIED_MARKER, {'integrity': op['integrity'], 'package': op['package'],
+                                                      'version': op['version']})
             os.replace(tmp, final)
         except ActivationError:
             raise

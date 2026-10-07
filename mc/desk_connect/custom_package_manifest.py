@@ -41,10 +41,10 @@ import json
 import os
 import re
 import threading
-import uuid
 from datetime import datetime, timezone
 
 from mc import secrets_store as _vault
+from mc.atomic_json import write_json_atomic
 from mc.core import _log
 from mc.desk_connect import custom_connection_store as _store
 from mc.desk_connect import custom_npm_artifact as _artifact
@@ -170,14 +170,10 @@ def record(op: dict) -> dict:
            'recorded_at': datetime.now(timezone.utc).isoformat(), 'files': files}
     p = manifest_path(key)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(f'.{p.name}.{uuid.uuid4().hex[:8]}.tmp')
     try:
-        tmp.write_text(json.dumps(doc, sort_keys=True), encoding='utf-8')
-        os.replace(tmp, p)
+        write_json_atomic(p, doc, sort_keys=True)
     except OSError as e:
         raise ManifestError('manifest_unwritable', f'the manifest could not be written: {type(e).__name__}') from e
-    finally:
-        tmp.unlink(missing_ok=True)
     summary = {'recorded_at': doc['recorded_at'], 'files': len(files), 'bytes': total}
     _store.set_package_manifest(op['scope']['kind'], op['scope']['project_id'], op['server_name'], summary)
     with _lock:
