@@ -165,10 +165,8 @@
   function _loginHelp(api) {
     const Sg = window.DeskV1ConnectSignin, Hd = window.DeskV1ConnectHeld;
     if (!Sg || !A.route) return '';
-    const opts = ['<option value="">Choose a saved login…</option>'].concat(A.logins.map((l) => `<option value="${esc(l.name)}"${A.pick === l.name ? ' selected' : ''}>${esc(l.name)}</option>`));
     const saved = A.logins.length
-      ? `<label class="desk-v1-conn-add-field">Saved login
-          <select class="desk-v1-rules-textinput" data-api-pick ${A.locked ? 'disabled' : ''}>${opts.join('')}</select></label>
+      ? `${window.DeskV1ConnectVaultPicker.html(A.logins,A.pick,`data-api-pick ${A.locked?'disabled':''}`,window.DeskV1ConnectCopy.words.existingAccount)}
         ${Sg.fillHTML(LOGIN_KEY, { url: null, login: A.pick, profile: Hd ? Hd.profile() : '', hint: '', why: 'Choose a saved login.' })}`
       : '<div class="desk-v1-cfw-fact-text" data-api-nologins>There is no saved login for this service yet.</div>';
     return `<div class="desk-v1-cfw-dgroup" data-api-loginhelp><div class="desk-v1-cfw-dtitle">Sign-in help</div>

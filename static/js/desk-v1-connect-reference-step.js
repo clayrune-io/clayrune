@@ -75,7 +75,7 @@ export function registerReferenceStep(W) {
     const n = vaultGen;
     if (P.vault !== null || P.vaultBusy) return;
     P.vaultBusy = true; P.vaultError = ''; api.repaint();
-    try { const r = await api.ctx.api('GET', '/api/secrets'); if (n !== vaultGen) return; P.vault = r.secrets || []; }
+    try { const r = await api.ctx.api('GET', '/api/secrets'); if (n !== vaultGen) return; P.vault = (r.secrets || []).map(s=>({name:s.name,username:s.username,scope:s.scope,allow_unattended:s.allow_unattended})); }
     catch (e) { if (n !== vaultGen) return; P.vaultError = e.message || 'Secrets could not be listed.'; }
     if (n !== vaultGen) return;
     P.vaultBusy = false; api.repaint();
@@ -87,13 +87,13 @@ export function registerReferenceStep(W) {
     if (P.mode !== 'none' && !P.vaultName.trim()) return 'Name the credential in Secrets.';
     if (P.mode === 'existing' && !existing()) return 'Choose an existing credential; Secrets must finish loading.';
     if (P.mode === 'new' && (!secretNode || !secretNode.querySelector('[data-ref-secret]').value)) return 'Enter the credential value.';
-    if (P.mode === 'new' && P.entry === 'api_key_pair' && !secretNode.querySelector('[data-ref-user]').value.trim()) return 'Enter the Key ID.';
+    if (P.mode === 'new' && ['api_key_pair','login'].includes(P.entry) && !secretNode.querySelector('[data-ref-user]').value.trim()) return 'Enter the Key ID.';
     return '';
   }
   function credentialForm() {
-    return select('mode', 'Credential (optional)', [['none', 'No credential'], ['existing', 'Existing entry in Secrets'], ['new', 'New credential']])
-      + (P.mode === 'none' ? '' : input('vaultName', 'Secrets entry name', 120))
-      + (P.mode === 'existing' ? `<div data-ref-vault role="status">${esc(P.vaultBusy ? 'Loading Secrets…' : P.vaultError || (existing() ? 'Existing entry selected' : 'Enter an existing entry name'))}</div>${P.vaultError ? button('data-ref-retry-vault', 'Retry') : ''}` : '')
+    return (P.mode==='existing'?'':select('mode', 'Credential (optional)', [['none', 'No credential'], ['existing', 'Existing entry in Secrets'], ['new', 'New credential']]))
+      + (P.mode === 'new' ? input('vaultName', 'Secrets entry name', 120) : P.mode==='existing' ? window.DeskV1ConnectVaultPicker.html(P.vault || [],P.vaultName,'data-ref-pick') + `<div class="desk-v1-cfk-actions">${button('data-ref-add-new',window.DeskV1ConnectCopy.words.addNew)}${button('data-ref-remove-credential',window.DeskV1ConnectCopy.words.remove)}</div>` : '')
+      + (P.mode === 'existing' ? `<div data-ref-vault role="status">${esc(P.vaultBusy ? window.DeskV1ConnectCopy.words.loading : P.vaultError || (existing() ? window.DeskV1ConnectCopy.words.selected : window.DeskV1ConnectCopy.words.choose))}</div>${P.vaultError ? button('data-ref-retry-vault', 'Retry') : ''}` : '')
       + (P.mode === 'new' ? select('entry', 'Credential kind', [['api_key', 'API key'], ['token', 'Token'], ['login', 'Username/password'], ['api_key_pair', 'Key ID/secret']]) + '<div data-ref-secret-slot></div>' : '');
   }
   function detected(api) {
@@ -123,7 +123,7 @@ export function registerReferenceStep(W) {
         + (P.kind === 'api_spec' ? '<div data-ref-spec-slot></div>' : '') + (P.det ? fact('Untrusted evidence only; not saved', JSON.stringify({ problems: P.det.problems, alternatives: P.det.alternatives })) : '');
       return fact('Draft provenance', JSON.stringify(P.labels)) + select('transport', 'Transport (draft only)', ['http', 'unknown', 'stdio', 'streamable_http', 'sse'].map((v) => [v, v]));
     },
-    primary: (api) => ({ label: 'Continue', disabled: P.detBusy, run: async () => {
+    primary: (api) => ({ label: 'Continue', disabled: P.detBusy || (api.sel.variant==='reference' || P.view==='credential') && !!problem(api), run: async () => {
       if (api.sel.variant !== 'reference' && P.view === 'info') {
         if (!P.source.trim()) { api.error('Enter an address or a package name.'); return false; }
         if (P.kind !== 'pypi') P.address = P.source.trim();
@@ -133,8 +133,13 @@ export function registerReferenceStep(W) {
       const why = problem(api); if (why) { api.error(why); return false; } return true;
     } }),
     bind: (root, api) => {
+      // The secret host survives repaint; its listener must find today's button.
+      const sync=()=>{const b=document.querySelector('[data-cfw-primary]');if(b && (api.sel.variant==='reference'||P.view==='credential')) b.disabled=!!problem(api);};
+      root.querySelector('[data-ref-pick]')?.addEventListener('change',e=>{P.vaultName=e.target.value;edited('vaultName');api.repaint();});
+      root.querySelector('[data-ref-add-new]')?.addEventListener('click',()=>{P.mode='new';P.vaultName='';api.repaint();});
+      root.querySelector('[data-ref-remove-credential]')?.addEventListener('click',()=>{P.mode='none';P.vaultName='';api.repaint();});
       root.querySelectorAll('[data-ref-field]').forEach((n) => n.addEventListener('input', () => {
-        const k = n.dataset.refField; P[k] = n.value; edited(k);
+        const k = n.dataset.refField; P[k] = n.value; edited(k);sync();
         if (k === 'source') {
           gen++; P.det = null; P.detBusy = false; P.detError = '';
           root.querySelector('[data-ref-detected-slot]')?.replaceChildren();
@@ -151,7 +156,7 @@ export function registerReferenceStep(W) {
       }));
       const slot = root.querySelector('[data-ref-secret-slot]');
       if (slot) {
-        secretNode = api.host(slot, 'credential', (n) => { n.innerHTML = '<label class="desk-v1-conn-add-field" data-ref-user-label>Username / Key ID<input class="desk-v1-rules-textinput" data-ref-user maxlength="200" autocomplete="off"></label><label class="desk-v1-conn-add-field">Credential value<input class="desk-v1-rules-textinput" type="password" data-ref-secret maxlength="8192" autocomplete="new-password"></label>'; n.querySelectorAll('input').forEach((i) => i.addEventListener('input', () => { P.rid = ''; })); }, 'type');
+        secretNode = api.host(slot, 'credential', (n) => { n.innerHTML = window.DeskV1ConnectVaultPicker.fields('data-ref-user','data-ref-secret',true); n.querySelectorAll('input').forEach((i) => i.addEventListener('input', () => { P.rid = ''; sync(); })); }, 'type');
         secretNode.querySelector('[data-ref-user-label]').hidden = !['login', 'api_key_pair'].includes(P.entry);
       }
       const specs = root.querySelector('[data-ref-spec-slot]');
@@ -161,6 +166,7 @@ export function registerReferenceStep(W) {
       root.querySelector('[data-ref-stop-detect]')?.addEventListener('click', () => { gen++; P.detBusy = false; P.detError = 'Stopped waiting. Detection may finish on the server; its answer will be ignored.'; api.repaint(); });
       root.querySelector('[data-ref-retry-vault]')?.addEventListener('click', () => loadVault(api));
       root.querySelectorAll('[data-ref-alt]').forEach((n) => n.addEventListener('click', () => { const a = P.det.alternatives.find((v) => v.id === n.dataset.refAlt); useAlternative(a); api.repaint(); }));
+      sync();
     }, discard: drop });
   W.registerScreen({ id: 'reference-permissions', step: 'permissions', match: matches, title: () => 'Permissions',
     copy: () => 'Saving information grants no connection permissions. Credential access follows its existing vault policy.',

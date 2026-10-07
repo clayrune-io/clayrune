@@ -5,6 +5,8 @@
 
 ## Current UI integration (MC-1062/14, 2026-10-06)
 
+The first live-test follow-up adds shared saved-account/credential pickers and GitHub repository setup via the existing MCP installer. Exact commits and install choices remain passcode-approved; repository configuration extraction is deterministic or manual, and launch checks files before supplying credentials. This follow-up is pending integration; [implementation, limits and retest](desk_v1/connect_flow_tickets/14-live-fixes.md).
+
 The implemented integration supersedes historical screen sequences and activation notes below: every service uses the six screens and shared copy in [Connect simplification, section 11](desk_v1/CONNECT_FLOW_SIMPLIFY.md#11-rons-rule-2026-10-06-one-flow-for-every-service). Unknown URLs investigate on Continue; manual connection setup and reference-only information remain reachable from the common options page. Unknown bare names still need an address; any future site lookup must show the proposed address for confirmation before reading. Provider sign-in, Save, install and permission proof remain separate and unchanged. Saved supported provider tiles offer the free human-clicked Check it now; no automatic probe or execution capability is inferred from saved information. Historical implementation sections below describe their slices before this integration.
 
 ## Contract and limits

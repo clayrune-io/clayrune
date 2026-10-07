@@ -66,6 +66,9 @@ def _forget_all_for_tests() -> None:
 
 def kind_of(op: dict):
     """The activation module for an operation: npm package (U2a) or remote server (U2d)."""
+    if op.get('ecosystem') == 'github':
+        from mc.desk_connect import github_activation
+        return github_activation
     return _remote_activation if op.get('ecosystem') == 'remote' else _activation
 
 
@@ -158,6 +161,9 @@ def _card(request_id: str, fp: str, op: dict, artifact: dict, project: dict | No
 def prepare(body, resolve_project) -> dict:
     """The Review card for the package a person typed. `resolve_project(project_id)` returns
     `{id, name, path}` or raises ActivationError (the route supplies it). Raises ActivationError."""
+    if isinstance(body, dict) and 'stage_id' in body:
+        from mc.desk_connect.github_connection import prepare as prepare_repository
+        return prepare_repository(body, resolve_project)
     if not isinstance(body, dict) or not isinstance(body.get('package'), str) or not body['package'].strip():
         raise ActivationError('enter the npm package to add, for example @scope/name or name@1.2.3', 'bad_package', 400)
     try:
@@ -256,6 +262,10 @@ def check_submission(request_id: str, fingerprint: str) -> dict:
                               'changed_since_review', 409)
     if rec['op'].get('ecosystem') == 'remote':
         _remote_op.require_ack(rec['op'])
+    if rec['op'].get('ecosystem') == 'github' and remembered is None:
+        from mc.desk_connect.github_manifest import inventory
+        if inventory(rec['op']['directory']) != rec['op']['source_files']:
+            raise ActivationError('The repository changed since Review. Review it again.', 'changed_since_review', 409)
     return rec
 
 

@@ -17,7 +17,7 @@ const words = Object.freeze({ continue: 'Continue', back: 'Back', save: 'Save', 
   empty: 'No connection options were found.', referenceOnly: 'Information only; this does not connect the service.',
   noPermission: 'This connection offers no separate Read or Post permission.',
   account: 'Account', identity: 'Account name or address', member: 'Personal profile', organization: 'Company Page',
-  newAccount: 'Add another account', existingAccount: 'Choose an account',
+  newAccount: 'Add another account', addNew: 'Add a new credential', packageHint: 'Enter a package name or a GitHub web address.', command: 'Start command', commandMissing: 'No start command was found. Enter the command to run.', existingAccount: 'Choose an account',
   package: 'Software package', remote: 'Server address', username: 'Username or email', password: 'Password',
   keyId: 'Access key ID', keySecret: 'Access key secret', key: 'Access key', clientId: 'App ID', clientSecret: 'App secret',
   read: 'Read', post: 'Post', check: 'Check it now', open: 'Open sign-in', retry: 'Try again',
@@ -42,12 +42,13 @@ const words = Object.freeze({ continue: 'Continue', back: 'Back', save: 'Save', 
   addCredential:'Add a credential', packageFile:'Start file in the package', arguments:'Arguments, one per line',
   approve:'Approve this connection', noPermissions:'No permissions are allowed.',
   referenceStatus:'Information only; not connected or verified', none:'None',
+  selected:'Selected', credentialChoice:'How to provide a credential',
 });
 const fields = Object.freeze({ key_id:'keyId', key_secret:'keySecret', key:'key', api_key:'key',
   client_id:'clientId', client_secret:'clientSecret', identity:'identity', label:'label',
   name:'name', source:'source', address:'address', url:'address', vaultName:'credentialName',
   credential_names:'credentialNames', placements:'placements', scopes:'permissionsList',
-  mode:'credential', entry:'credentialKind', auth_type:'authentication',
+  mode:'credentialChoice', entry:'credentialKind', auth_type:'authentication',
 });
 const replacements = [
   [/oauth\.[\w.-]+/gi, 'saved sign-in'], [/\bOAuth\b/gi, 'app sign-in'], [/\bMCP\b/gi, 'connection software'],
@@ -145,8 +146,8 @@ function bind(root) {
     if (input.matches('[data-lg-vaultname]')) word='credentialName';
     if (input.matches('[data-lg-label]')) word='label';
     if (input.matches('[data-lg-login], [data-api-pick]')) word='savedLogin';
-    if (input.matches('[data-ref-user]')) word='credentialUser';
-    if (input.matches('[data-ref-secret]')) word='secretValue';
+    if (input.matches('[data-ref-user]')) word=root.querySelector('[data-ref-select="entry"]')?.value==='login'?'username':'credentialUser';
+    if (input.matches('[data-ref-secret]')) word=root.querySelector('[data-ref-select="entry"]')?.value==='login'?'password':'secretValue';
     if (input.matches('[data-pk-package]')) word='package';
     if (input.matches('[data-pk-entry]')) word='packageFile';
     if (input.matches('[data-pk-args]')) word='arguments';
@@ -177,7 +178,7 @@ function bind(root) {
   });
   root.querySelectorAll('[data-lg-mode]').forEach(input => {
     const label=input.closest('label')?.querySelector('.desk-v1-cfw-option-label');
-    const word={new:'newLogin',saved:'savedLogin',manual:'manualLogin'}[input.value];
+    const word={new:'newAccount',saved:'savedLogin',manual:'manualLogin'}[input.value];
     if(label&&word) label.textContent=words[word];
   });
 }
@@ -185,5 +186,5 @@ const statuses = Object.freeze({verified:'Verified',key_stored:'Key stored; not 
   sign_in_required:'Sign-in required',key_unreadable:'Saved key cannot be read',vault_locked:'Saved credentials are locked',
   check_failed:'Check failed',registered:'Registered; not checked',setup_failed:'Saved; setup failed',not_connected:'Not connected'});
 const connectionStatus = value => statuses[value] || words.checkFailed;
-export const ConnectCopy = Object.freeze({ screens, words, plain, body, screen, bind, status: connectionStatus, enable: () => { enabled = true; } });
+export const ConnectCopy = Object.freeze({ screens, words, plain, body, screen, bind, status: connectionStatus, isEnabled: () => enabled, enable: () => { enabled = true; } });
 window.DeskV1ConnectCopy = ConnectCopy;

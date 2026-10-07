@@ -103,6 +103,7 @@ async function newPage(browser, { srv, width, height }) {
     if (path === '/api/secrets/vault-lock' && method === 'GET') return J({ state: 'unlocked', configured: true });
     let body = null;
     try { body = req.postDataJSON(); } catch (_) { /* none */ }
+    if (path === '/api/secrets' && method === 'GET') {srv.log.push({method,path,body});return J({secrets:srv.logins.map(s=>({...s,username:'fixture@example.test',entry_type:'login',scope:'global'}))});}
     if (path.startsWith('/api/secrets') || path === '/api/browser/launch') { srv.log.push({ method, path, body }); return J({ error: 'not expected' }, 500); }
     if (path === '/api/browser/profiles') { srv.log.push({ method, path, body }); return J({ profiles: srv.profiles }); }
     if (!path.startsWith('/api/desk/')) return route.abort();
@@ -266,7 +267,7 @@ async function run(browser, width, height) {
     await rules(page, 'Username and password');
     await shot(page, 'new', width);
     await fits(page, 'Username and password');
-    check(srv.log.every((r) => ['/api/desk/connect/types', '/api/desk/connect/signin/options', '/api/browser/profiles'].includes(r.path) || !/connect|secrets/.test(r.path) || r.path === '/api/desk/connect/suggest' || r.path === '/api/desk/workspace'),
+    check(srv.log.every((r) => ['/api/desk/connect/types', '/api/desk/connect/signin/options', '/api/browser/profiles','/api/secrets'].includes(r.path) || !/connect|secrets/.test(r.path) || r.path === '/api/desk/connect/suggest' || r.path === '/api/desk/workspace'),
       'nothing but read-only calls so far: no vault write, no fill, no commit', 'a write went out: ' + JSON.stringify(srv.log.map((r) => r.path)));
 
     // Back keeps the typed login; the node is the same.
@@ -306,7 +307,7 @@ async function run(browser, width, height) {
       'the draft: x / x-browser / account / revision / new account ronx / profile x-ronx / typed login (name, username, value)', 'draft: ' + JSON.stringify({ ...sent.draft, new_login: sent.draft.new_login && { ...sent.draft.new_login, value: '…' } }));
     check(!(await stepSecret(page)) && await page.evaluate(() => Array.from(document.querySelectorAll('input')).every((i) => i.value === '' || i.type === 'radio')), 'after the save no password is left on the page', 'a password was left after the save');
     check(await page.evaluate(() => window.__fx.saves[2].ok === true && window.__fx.saves[2].result.account_id === 'acct-new'), 'the saved result (account id, profile state) is handed to the Result screen', 'no result');
-    check(logOf(srv, '/api/desk/connect/signin/fill').length === 0 && srv.log.every((r) => !/\/api\/secrets|\/api\/browser\/launch/.test(r.path)), 'no fill, no vault route, no browser launch was ever called by the screen', 'an unexpected route was called');
+    check(logOf(srv, '/api/desk/connect/signin/fill').length === 0 && srv.log.every((r) => !(r.path.startsWith('/api/secrets') && r.method!=='GET') && r.path!=='/api/browser/launch'), 'no fill, vault write or browser launch was ever called by the screen', 'an unexpected write was called');
     check(realErrors(pageErrors).length === 0, 'no page error', realErrors(pageErrors).join(' | '));
     await ctx.close();
   }

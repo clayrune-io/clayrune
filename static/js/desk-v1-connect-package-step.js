@@ -51,7 +51,7 @@
   let _gen = 0;                                                // bumped when the branch is dropped: an answer that arrives later is ignored
 
   function _fresh() {
-    return { view: 'identify', pkg: '', entry: '', args: '', name: '', creds: [], refocus: false,
+    return { view: 'identify', git:null, command:'', staging:false, pkg: '', entry: '', args: '', name: '', creds: [], refocus: false,
       det: { busy: false, answer: null, alt: null, kind: '', error: '' },
       rv: { view: 'facts', key: '', busy: false, card: null, scripts: [], error: '', saving: false },
       result: null };
@@ -66,7 +66,8 @@
   function _halfCredential() { return _creds().find((c) => (c.env || c.vault) && !(c.env && c.vault)) || null; }
   function _pkgProblem() {
     const t = P.pkg.trim();
-    if (!t) return 'Enter the package name.';
+    if (!t) return window.DeskV1ConnectCopy.words.packageHint;
+    if(window.DeskV1ConnectGithub.matches(t)) return '';
     if (_isPypi()) return PYPI_NOTICE;
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(_spec()) || /\s/.test(_spec())) return 'Enter the package name, such as @scope/name or name@1.2.3.';
     return '';
@@ -127,14 +128,14 @@
     const pypi = _isPypi();
     return `<label class="desk-v1-conn-add-field">npm package
         <input type="text" class="desk-v1-rules-textinput" data-pk-package data-cfw-focus value="${esc(P.pkg)}" placeholder="@scope/name or name@1.2.3" maxlength="214" autocapitalize="off" spellcheck="false"></label>
-      <div class="desk-v1-cfw-fact-text">npm packages can be set up here. A PyPI package can be read for suggestions only.</div>
+      <div class="desk-v1-cfw-fact-text">${window.DeskV1ConnectCopy.words.packageHint}</div>
       <div class="desk-v1-cfk-actions"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-pk-detect ${P.pkg.trim() && !P.det.busy ? '' : 'disabled'}>${P.det.busy ? 'Reading…' : 'Detect parameters'}</button></div>
       <div data-pk-detect-slot aria-live="polite">${_detectLineHTML()}</div>
       ${pypi ? `<div class="desk-v1-cfw-msg" data-pk-pypi role="alert">${esc(PYPI_NOTICE)}</div>` : ''}`;
   }
 
   function _detailsViewHTML() {
-    return `<div class="desk-v1-cfk-pkgline" data-pk-pkgline><span><strong>${esc(_spec())}</strong></span>
+    return `${P.git?window.DeskV1ConnectGithub.commandHTML(P.command,P.git.manual_command):''}<div class="desk-v1-cfk-pkgline" data-pk-pkgline><span><strong>${esc(_spec())}</strong></span>
         <button type="button" class="desk-v1-cf-link" data-pk-change>Change package</button></div>
       <label class="desk-v1-conn-add-field">Start file inside the package (optional)
         <input type="text" class="desk-v1-rules-textinput" data-pk-entry data-cfw-focus value="${esc(P.entry)}" maxlength="200" autocapitalize="off" spellcheck="false"></label>
@@ -176,10 +177,10 @@
     const r = _reach();
     if (!r) return { body: null, problem: 'The Permissions step has not chosen who can use this server.' };
     if (r.scope === 'project' && !r.project_id) return { body: null, problem: 'Choose a project on the Permissions step.' };
-    const body = { package: _spec(), scope: r.scope };
+    const body = P.git ? {stage_id:P.git.stage_id,command:P.command.trim(),scope:r.scope} : {package:_spec(),scope:r.scope};
     if (r.scope === 'project') body.project_id = r.project_id;
     if (P.name.trim()) body.server_name = P.name.trim();
-    if (P.entry.trim()) body.entry = P.entry.trim();
+    if (P.entry.trim() && !P.git) body.entry = P.entry.trim();
     const args = P.args.split('\n').map((a) => a.trim()).filter(Boolean);
     if (args.length) body.args = args;
     const creds = _creds().filter((c) => c.env || c.vault);
@@ -224,6 +225,7 @@
     return '<div class="desk-v1-cfw-fact-text" role="status">Reading the package…</div>';
   }
 
+  function _publicTitle(c) { return window.DeskV1ConnectCopy.isEnabled() ? window.DeskV1ConnectCopy.words.package : c.title; }
   function _factsHTML(c) {
     const argv = [c.command.command].concat(c.command.args || []);
     const changes = (c.changes || []).length
@@ -235,10 +237,11 @@
     const p = c.package || {};
     const fact = (head, html, attr) => `<div class="desk-v1-cfw-fact"${attr ? ` ${attr}` : ''}><div class="desk-v1-cfw-fact-head">${esc(head)}</div><div class="desk-v1-cfw-fact-text">${html}</div></div>`;
     return `${changes}${limits}
-      <div class="desk-v1-cfk-origin" data-pk-origin="${esc(c.origin && c.origin.code)}"><span class="desk-v1-cfw-tag">${esc(c.origin ? c.origin.label : 'User supplied; not reviewed by Clayrune')}</span> <strong>${esc(c.title)}</strong></div>
+      <div class="desk-v1-cfk-origin" data-pk-origin="${esc(c.origin && c.origin.code)}"><span class="desk-v1-cfw-tag">${esc(c.origin ? c.origin.label : 'User supplied; not reviewed by Clayrune')}</span> <strong>${esc(_publicTitle(c))}</strong></div>
       ${fact('Command', `<ol class="desk-v1-cu-argv" data-pk-command>${argv.map((a) => `<li><code>${esc(a)}</code></li>`).join('')}</ol>`)}
+      ${c.command.starts?fact('Command started after the file check',`<ol class="desk-v1-cu-argv">${[c.command.starts.command,...c.command.starts.args].map(a=>`<li><code>${esc(a)}</code></li>`).join('')}</ol>`):''}
       ${fact('Version pin', `${esc(p.version)}, pinned: it never updates by itself. Digest <code class="desk-v1-cf-wrap" data-pk-digest>${esc(p.integrity)}</code>`, 'data-pk-pin')}
-      ${fact('Source', `${esc(p.registry)}: ${esc(p.source)}`, 'data-pk-source')}
+      ${fact('Source', `${esc(p.registry)}: <code>${esc(p.source)}</code>`, 'data-pk-source')}
       ${fact('Reach', `${esc(c.reach.who)} ${esc(c.reach.local_code)}`, `data-pk-reach="${esc(c.reach.scope)}"`)}
       ${fact('Credentials', creds, 'data-pk-credentials')}
       <ul class="desk-v1-cfk-list" data-pk-risks>${(c.risks || []).map((r) => `<li data-pk-risk="${esc(r.code)}">${esc(r.label)}</li>`).join('')}</ul>`;
@@ -248,6 +251,7 @@
   function _inventoryItems(c) {
     const p = c.package || {}, items = [];
     const row = (head, attr, html) => `<div class="desk-v1-cfw-fact" ${attr}><div class="desk-v1-cfw-fact-head">${esc(head)}</div><div class="desk-v1-cfw-fact-text">${html}</div></div>`;
+    if(c.repository_checks) items.push({html:`<pre>${esc(JSON.stringify(c.repository_checks,null,2))}</pre>`});
     items.push({ html: [
       row('Publisher', 'data-pk-publisher', `${esc((p.publisher && p.publisher.name) || 'not stated')} (${esc(p.publisher && p.publisher.status)}; ownership is not endorsement)`),
       row('Licence, size', 'data-pk-size', `${esc(p.licence || 'not stated')}; ${esc(_size(p.size_bytes))} download, ${esc(_size(p.unpacked_bytes))} unpacked`),
@@ -275,7 +279,7 @@
   function _approveHTML(api, c) {
     const ticked = (c.scripts || []).filter((s) => s.approved).length;
     const p = c.package || {};
-    const lines = [`<li data-pk-sum="package">${esc(c.title)}, version ${esc(p.version)}, pinned.</li>`,
+    const lines = [`<li data-pk-sum="package">${esc(_publicTitle(c))}, version ${esc(p.version)}, pinned.</li>`,
       `<li data-pk-sum="reach">${esc(c.reach.who)}</li>`,
       ticked ? `<li data-pk-sum="scripts">${ticked} install script${ticked === 1 ? '' : 's'} you ticked run${ticked === 1 ? 's' : ''} once, at Save, with this account's file and network access.</li>` : '<li data-pk-sum="scripts">No install script runs.</li>'];
     return `<ul class="desk-v1-cfk-list" data-pk-summary>${lines.join('')}</ul>
@@ -330,9 +334,11 @@
         <input type="text" class="desk-v1-rules-textinput" data-pk-name value="${esc(P.name)}" maxlength="64" autocapitalize="off" spellcheck="false"></label>
       <div class="desk-v1-cfw-dgroup" data-pk-provenance><div class="desk-v1-cfw-dtitle">Where the suggestions came from</div>${_provenanceHTML(api)}</div>`),
     primary: (api) => ({
-      label: 'Continue', disabled: P.view === 'identify' ? !!_pkgProblem() : false,
+      label: 'Continue', disabled: P.staging || (P.view === 'identify' ? !!_pkgProblem() : P.git && !P.command.trim()),
       run: async () => {
-        if (P.view === 'identify') { const why = _pkgProblem(); if (why) { api.error(why); return false; } P.view = 'details'; P.refocus = true; api.repaint(); return false; }
+        if (P.view === 'identify') { const why = _pkgProblem(); if (why) { api.error(why); return false; }
+          if(window.DeskV1ConnectGithub.matches(P.pkg)) { const generation=_gen;P.staging=true;api.repaint();try {const result=await window.DeskV1ConnectGithub.stage(api,P.pkg);if(generation!==_gen)return false;P.git=result;P.command=result.command || '';P.args=(result.args||[]).join('\n');P.creds=(result.credentials||[]).map(c=>({env:c.env,vault:''}));} catch(e) {if(generation===_gen)api.error(e.message);return false;} finally {if(generation===_gen){P.staging=false;api.repaint();}} }
+          P.view = 'details'; P.refocus = true; api.repaint(); return false; }
         const half = _halfCredential();
         if (half) { api.error(`Name both the variable and the Secrets entry${half.env ? ` for ${half.env}` : ''}, or remove the row.`); return false; }
         return true;                                                         // Continue writes nothing: the Review step reads the package
@@ -340,8 +346,9 @@
     }),
     bind: (root, api) => {
       _focusTitle(root);
+      if(P.git) root.querySelector('[data-pk-entry]')?.closest('label').setAttribute('hidden','');
       const primary = root.querySelector('[data-cfw-primary]');
-      const field = (sel, key) => { const n = root.querySelector(sel); if (n) n.addEventListener('input', () => { P[key] = n.value; if (key === 'pkg') { P.det = { busy: false, answer: null, alt: null, kind: '', error: '' }; sync(); } }); };
+      const field = (sel, key) => { const n = root.querySelector(sel); if (n) n.addEventListener('input', () => { P[key] = n.value; if(key==='command' && primary) primary.disabled=!P.command.trim();if (key === 'pkg') { _gen++;P.staging=false;P.git=null;P.command='';P.det = { busy: false, answer: null, alt: null, kind: '', error: '' }; sync(); } }); };
       const sync = () => {
         const d = root.querySelector('[data-pk-detect]');
         if (d) d.disabled = !P.pkg.trim() || P.det.busy;
@@ -355,14 +362,14 @@
           else if (!_isPypi() && note) note.remove();
         }
       };
-      field('[data-pk-package]', 'pkg'); field('[data-pk-entry]', 'entry'); field('[data-pk-args]', 'args'); field('[data-pk-name]', 'name');
+      field('[data-pk-command-input]','command');field('[data-pk-package]', 'pkg'); field('[data-pk-entry]', 'entry'); field('[data-pk-args]', 'args'); field('[data-pk-name]', 'name');
       root.querySelectorAll('[data-pk-cred-env]').forEach((n) => n.addEventListener('input', () => { P.creds[+n.dataset.pkCredEnv].env = n.value; }));
       root.querySelectorAll('[data-pk-cred-vault]').forEach((n) => n.addEventListener('input', () => { P.creds[+n.dataset.pkCredVault].vault = n.value; }));
       root.querySelectorAll('[data-pk-cred-remove]').forEach((n) => n.addEventListener('click', () => { P.creds.splice(+n.dataset.pkCredRemove, 1); api.repaint(); }));
       const add = root.querySelector('[data-pk-cred-add]');
       if (add) add.addEventListener('click', () => { P.creds.push({ env: '', vault: '' }); api.repaint(); });
       const det = root.querySelector('[data-pk-detect]');
-      if (det) det.addEventListener('click', () => _detect(api));
+      if (det) det.addEventListener('click', async () => {if(window.DeskV1ConnectGithub.matches(P.pkg)) {const generation=++_gen;P.staging=true;api.repaint();try{const r=await window.DeskV1ConnectGithub.stage(api,P.pkg);if(generation!==_gen)return;P.git=r;P.command=r.command||'';P.args=(r.args||[]).join('\n');P.creds=(r.credentials||[]).map(c=>({env:c.env,vault:''}));P.view='details';}catch(e){if(generation===_gen)api.error(e.message);}finally{if(generation===_gen){P.staging=false;api.repaint();}}}else _detect(api);});
       const change = root.querySelector('[data-pk-change]');
       if (change) change.addEventListener('click', () => { P.view = 'identify'; P.refocus = true; api.repaint(); });
     },
