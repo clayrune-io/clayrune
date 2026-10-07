@@ -22,13 +22,59 @@ with verdict `pass`.
 than boolean `true` = off, so a fresh install (which may have no reviewer
 agent) behaves exactly as before. There is no code default that turns it on.
 
-Turn it on for one project with its own record (human or Dave, not a code change):
+Turn it on in the project record through a human browser call, not an agent
+session or a code change. Human browser writes need no extra prompt.
+For a human HTTP client, the request must carry the browser Origin header:
 
-    curl -s -X POST localhost:5199/api/project/<pid> -H 'Content-Type: application/json' \
+    curl -s -X POST localhost:5199/api/project/<pid> -H 'Content-Type: application/json' -H 'Origin: http://localhost:5199' \
       -d '{"merge_requires_review": true}'
 
 Turn it off with `false`. Reverting the feature entirely = delete the setting;
 `merge_back` is then byte-for-byte the old behaviour.
+
+### Project safety settings (MC-1076 / a881d0f1)
+
+`mc/project_safety_settings.py` protects these exact project-update keys:
+`merge_requires_review`, `worktree_isolation`, `worktree_base_branch`,
+`worktree_shared_runtime`, `code_sync_branch`, `steward_mode`,
+`steward_objective`, and `steward_cadence_minutes`.
+
+`POST /api/project/<id>` calls the guard before record reads, workspace
+creation, logging, lifecycle updates, or persistence. An agent submitting
+any protected key receives HTTP 403 with the key names in `error` and a
+sorted `protected_keys` array. Presence counts even for an unchanged value
+or `null`. The **whole body** is refused; ordinary fields in a mixed request
+are never partly applied. The same guard covers project creation.
+
+Caller detection reuses `workflow_routes._is_agent_caller` (no Origin means
+agent) and the existing `mc.caller_attribution` process-tree lookup. A
+managed agent remains refused even when it sends an Origin header or claims
+`source: ui` / `client: mobile`. A browser request not attributed to an agent
+continues to save normally with no new passcode or frontend prompt. If OS
+attribution is unavailable, the existing Origin distinction remains; its
+detached-process/forged-Origin limitations are not closed here. Ordinary
+agent updates with no protected keys remain allowed and skip attribution.
+
+Scope excludes `id` and `project_path` routing (separate f0d66b8e ticket),
+other update endpoints, and direct disk edits. Defaults are unchanged. Tests:
+`tests/test_project_safety_settings.py`, plus the existing project CRUD and
+merge-review suites. This is a branch build, not a live settings change.
+
+Validation on 2026-10-07 (MC-1076 branch): **143 passed, rc=0**, including
+all 13 POSIX hook checks. Exact command used on Windows to expose the
+already-installed Git `sh` to pytest (no package installation):
+
+```powershell
+python -c "import os,pytest; os.environ['PATH']=r'C:\Program Files\Git\bin'+os.pathsep+os.environ['PATH']; raise SystemExit(pytest.main(['tests/test_project_safety_settings.py','tests/test_merge_review_gate.py','tests/test_project_routes.py','-o','addopts=-ra','-q']))"
+pyright mc/project_safety_settings.py
+git diff --check
+```
+
+Pyright: 0 errors/warnings, rc=0. Diff check: rc=0. The initial command
+`python -m pytest tests/test_project_safety_settings.py tests/test_merge_review_gate.py tests/test_project_routes.py -q`
+also returned 0, with 13 shell checks skipped; the complete rerun above
+removed those skips. Live production settings and a real browser save were
+not exercised; the route was verified through Flask clients and temp files.
 
 ## Records
 

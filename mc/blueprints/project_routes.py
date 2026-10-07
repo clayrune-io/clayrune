@@ -53,6 +53,7 @@ from mc import engine_selection
 from mc import state
 from mc.delegation_delivery import DeliveryStore
 from mc.atomic_json import write_json_atomic
+from mc.project_safety_settings import refuse_agent_safety_write
 from mc.core import _log, file_type, now_iso, path_is_within, record_backlog_status_change, time_ago
 from mc.state import (
     _backlog_sync_lock,
@@ -702,6 +703,10 @@ def update_project(project_id):
     data = request.get_json()
     if not data:
         return jsonify({'error': 'no data'}), 400
+
+    refusal = refuse_agent_safety_write(data)
+    if refusal is not None:
+        return refusal
 
     filepath = DATA_DIR / f'{project_id}.json'
     is_new = not filepath.exists()
