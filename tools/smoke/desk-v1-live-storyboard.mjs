@@ -174,6 +174,14 @@ async function studio(browser) {
     ? ok('Add scene PUTs the whole list to the Studio item at rev 0 {rev, scenes, pending_edits, title}') : fail('first PUT: ' + JSON.stringify(first.map((r) => r.body)));
   const itemKey = Object.keys(srv.boards)[0];
 
+  // The open editor uses the card's width, not the gap left beside the buttons (Ron, 2026-10-07).
+  const w = await page.evaluate(() => {
+    const li = document.querySelector('.desk-v1-sb-scene:has([data-scene-edit-line])');
+    return { card: li.getBoundingClientRect().width, line: li.querySelector('[data-scene-edit-line]').getBoundingClientRect().width };
+  });
+  await page.screenshot({ path: resolve(REPO_ROOT, '_scratch', 'sb_edit_width_1400.png') });
+  w.line > w.card * 0.8 ? ok(`the scene editor spans the card (${Math.round(w.line)} of ${Math.round(w.card)} px)`) : fail('scene editor too narrow: ' + JSON.stringify(w));
+
   // Name it (edit) -> second PUT carries rev 1 (the one the server answered with).
   await page.fill('[data-scene-edit-label]', 'Opening');
   await page.click('[data-scene-edit]');

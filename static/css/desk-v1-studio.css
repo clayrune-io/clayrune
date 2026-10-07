@@ -113,6 +113,10 @@
 .desk-v1-sb-meta { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; font-size: 11.5px; color: var(--text-faint); }
 .desk-v1-sb-editbtn { background: none; border: none; color: var(--accent); font-size: 12px; font-weight: 700; cursor: pointer; font-family: inherit; padding: 4px 2px; }
 .desk-v1-sb-edit { display: flex; flex-direction: column; gap: 6px; }
+/* Editing: the buttons keep the top row, the title and instructions take the card's full width below. */
+.desk-v1-sb-scene-editing { flex-wrap: wrap; }
+.desk-v1-sb-scene-editing .desk-v1-sb-meta { margin-left: auto; align-self: center; }
+.desk-v1-sb-scene-editing .desk-v1-sb-body { order: 1; flex: 1 1 100%; }
 .desk-v1-sb-edit-input {
   background: var(--surface2); border: 1px solid var(--border2); border-radius: 6px; color: var(--text);
   font-size: 13px; padding: 5px 8px; font-family: inherit;

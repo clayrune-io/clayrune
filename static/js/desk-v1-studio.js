@@ -434,7 +434,7 @@
     const del = _sb && (_sb.standalone || _isLive())
       ? `<button type="button" class="desk-v1-sb-delete" data-scene-delete aria-label="Delete ${ph ? 'example scene' : 'scene ' + n}: ${esc(s.label)}" title="Delete this scene">🗑</button>`
       : '';
-    return `<li class="desk-v1-sb-scene${ph ? ' desk-v1-sb-scene-example' : ''}${_sb && _sb.selected === s.id ? ' desk-v1-sb-selected' : ''}" data-scene-id="${esc(s.id)}" data-scene-label="${esc(s.label)}"${ph ? ' data-scene-placeholder' : ''}>
+    return `<li class="desk-v1-sb-scene${ph ? ' desk-v1-sb-scene-example' : ''}${editing ? ' desk-v1-sb-scene-editing' : ''}${_sb && _sb.selected === s.id ? ' desk-v1-sb-selected' : ''}" data-scene-id="${esc(s.id)}" data-scene-label="${esc(s.label)}"${ph ? ' data-scene-placeholder' : ''}>
       <button type="button" class="desk-v1-sb-handle" data-scene-handle aria-label="Move ${ph ? 'example scene' : 'scene ' + n}: ${esc(s.label)}. Arrow Up or Arrow Down reorders" title="Drag, or press Arrow Up / Arrow Down">⠿</button>
       <div class="desk-v1-sb-thumb">${s.thumb || !_isLive() ? `<img src="${esc(s.thumb || '')}" alt="${ph ? 'Example capture' : 'Capture for scene ' + n}">` : ''}<span class="desk-v1-sb-num" data-scene-num>${ph ? '·' : n}</span></div>
       <div class="desk-v1-sb-body">
