@@ -8,13 +8,21 @@ import json
 import pytest
 
 
+BROWSER = {'Origin': 'http://localhost:5199'}
+ENABLE_ROUTES = [
+    '/api/project/p1/steward/enable',
+    '/api/steward/standalone/enable',
+]
+ENABLE_BODY = {'name': 'Env Health', 'objective': 'Keep docs synced', 'cadence_minutes': 60}
+
+
 @pytest.fixture()
 def sclient(tmp_path, monkeypatch):
     import server  # noqa: F401 — registers blueprints + runs wire() on import
     from mc.blueprints import project_routes as pr
     from mc.blueprints import scheduler_routes as sr
     from mc.blueprints import local_auth as la
-    from mc import state
+    from mc import caller_attribution as ca, state
     import steward
 
     monkeypatch.setattr(la, 'LOCAL_AUTH_PATH', tmp_path / 'local_auth.json')
@@ -25,6 +33,7 @@ def sclient(tmp_path, monkeypatch):
     monkeypatch.setattr(steward.CFG, 'data_root', tmp_path)
     monkeypatch.setattr(steward.CFG, 'notify_push', lambda *a, **k: None)
     monkeypatch.setitem(state.CONFIG, 'auto_workspace_base', str(tmp_path / 'ws'))
+    monkeypatch.setattr(ca, 'attribute_caller', lambda *args: ca.Attribution(ca.UNATTRIBUTED))
 
     proj_path = tmp_path / 'proj'
     proj_path.mkdir()
@@ -32,7 +41,11 @@ def sclient(tmp_path, monkeypatch):
                            'project_path': str(proj_path), 'backlog': []})
 
     server.app.config['TESTING'] = True
-    return server.app.test_client(), proj_path, pr, sr
+    client = server.app.test_client()
+    # Existing bootstrap tests represent browser clicks. Agent tests override
+    # this with an empty Origin or with managed caller attribution.
+    client.environ_base['HTTP_ORIGIN'] = BROWSER['Origin']
+    return client, proj_path, pr, sr
 
 
 def _settings(proj_path):
@@ -219,3 +232,76 @@ def test_edit_updates_objective_cadence_and_charter(sclient):
     steward_scheds = [s for s in scheds if s.get('steward') and s['project_id'] == 'p1']
     assert len(steward_scheds) == 1                  # schedule updated, not duplicated
     assert steward_scheds[0]['interval_minutes'] == 120
+
+
+@pytest.mark.parametrize('route', ENABLE_ROUTES)
+@pytest.mark.parametrize('origin', ['', BROWSER['Origin']])
+@pytest.mark.parametrize('body', [ENABLE_BODY, {}])
+def test_agent_enable_refused_before_any_side_effect(sclient, monkeypatch, route, origin, body):
+    from mc import caller_attribution as ca
+    from mc.blueprints import steward_routes as st
+
+    client, proj_path, pr, sr = sclient
+    record = pr.DATA_DIR / 'p1.json'
+    before = record.read_bytes()
+    monkeypatch.setattr(ca, 'attribute_caller',
+                        lambda *args: ca.Attribution(ca.ATTRIBUTED, 'builder'))
+
+    def unexpected(*args):
+        pytest.fail('agent refusal must precede bootstrap and workspace provision')
+
+    monkeypatch.setattr(st, '_do_enable', unexpected)
+    monkeypatch.setattr(st, '_ensure_steward_workspace', unexpected)
+    r = client.post(route, json=body, headers={'Origin': origin})
+    assert r.status_code == 403
+    assert r.get_json()['protected_keys'] == [
+        'steward_cadence_minutes', 'steward_mode', 'steward_objective',
+    ]
+    assert all(key in r.get_json()['error'] for key in r.get_json()['protected_keys'])
+    assert record.read_bytes() == before
+    assert sorted(p.name for p in pr.DATA_DIR.iterdir()) == ['p1.json']
+    assert not sr.SCHEDULES_PATH.exists()
+    assert not (proj_path / '.claude').exists()
+    assert not (proj_path.parent / 'ws').exists()
+
+
+@pytest.mark.parametrize('route', ENABLE_ROUTES)
+def test_agent_cannot_edit_an_enabled_steward(sclient, monkeypatch, route):
+    from mc import caller_attribution as ca
+
+    client, _, pr, sr = sclient
+    enabled = client.post(route, json=ENABLE_BODY, headers=BROWSER)
+    assert enabled.status_code == 200
+    record = pr.DATA_DIR / f"{enabled.get_json()['project_id']}.json"
+    before = record.read_bytes(), sr.SCHEDULES_PATH.read_bytes()
+    monkeypatch.setattr(ca, 'attribute_caller',
+                        lambda *args: ca.Attribution(ca.ATTRIBUTED, 'builder'))
+    r = client.post(route, json={**ENABLE_BODY, 'objective': 'Agent edit',
+                                'cadence_minutes': 5}, headers=BROWSER)
+    assert r.status_code == 403
+    assert (record.read_bytes(), sr.SCHEDULES_PATH.read_bytes()) == before
+
+
+@pytest.mark.parametrize('route', ENABLE_ROUTES)
+@pytest.mark.parametrize('origin', ['', BROWSER['Origin']])
+def test_agent_disable_remains_a_working_kill_switch(sclient, monkeypatch, route, origin):
+    from pathlib import Path
+    from mc import caller_attribution as ca
+
+    client, _, pr, sr = sclient
+    enabled = client.post(route, json=ENABLE_BODY, headers=BROWSER)
+    assert enabled.status_code == 200
+    pid = enabled.get_json()['project_id']
+    charter = enabled.get_json()['charter_item_id']
+    monkeypatch.setattr(ca, 'attribute_caller',
+                        lambda *args: ca.Attribution(ca.ATTRIBUTED, 'builder'))
+    r = client.post(f'/api/project/{pid}/steward/disable', headers={'Origin': origin})
+    assert r.status_code == 200
+    assert r.get_json()['enabled'] is False and r.get_json()['schedule_removed']
+    saved = pr.load_project(pid)
+    assert saved['steward_mode'] == 'off'
+    assert any(item['id'] == charter for item in saved['backlog'])
+    assert not any(s.get('steward') and s['project_id'] == pid
+                   for s in json.loads(sr.SCHEDULES_PATH.read_text(encoding='utf-8')))
+    hooks = _settings(Path(saved['project_path'])).get('hooks', {}).get('PreToolUse', [])
+    assert not any('fence.py' in h['command'] for entry in hooks for h in entry['hooks'])

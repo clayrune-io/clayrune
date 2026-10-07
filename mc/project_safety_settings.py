@@ -5,7 +5,7 @@ request-level refusal: the route must call it before any project side effects.
 """
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Iterable
 
 from flask import Response, jsonify, request
 
@@ -25,7 +25,23 @@ PROJECT_SAFETY_KEYS = frozenset({
 })
 
 
-def refuse_agent_safety_write(data: Mapping[str, Any]) -> tuple[Response, int] | None:
+STEWARD_ENABLE_SAFETY_KEYS = (
+    'steward_mode', 'steward_objective', 'steward_cadence_minutes',
+)
+
+
+def is_agent_caller() -> bool:
+    """Reuse the browser Origin check and OS attribution for every safety gate."""
+    if _is_agent_caller():
+        return True
+    env = request.environ
+    attribution = caller_attribution.attribute_caller(
+        request.remote_addr or '', env.get('REMOTE_PORT'), env.get('SERVER_PORT'),
+        caller_attribution.managed_roots(state.agent_sessions, state.tracked_processes))
+    return attribution.status == caller_attribution.ATTRIBUTED
+
+
+def refuse_agent_safety_write(data: Iterable[str]) -> tuple[Response, int] | None:
     """Refuse the whole write when an agent submits any protected key.
 
     Presence is enough, including null or an unchanged value. A browser
@@ -33,16 +49,7 @@ def refuse_agent_safety_write(data: Mapping[str, Any]) -> tuple[Response, int] |
     attributes the request to a managed agent. No body field grants a bypass.
     """
     keys = sorted(PROJECT_SAFETY_KEYS.intersection(data))
-    if not keys:
-        return None
-    agent_caller = _is_agent_caller()
-    if not agent_caller:
-        env = request.environ
-        attribution = caller_attribution.attribute_caller(
-            request.remote_addr or '', env.get('REMOTE_PORT'), env.get('SERVER_PORT'),
-            caller_attribution.managed_roots(state.agent_sessions, state.tracked_processes))
-        agent_caller = attribution.status == caller_attribution.ATTRIBUTED
-    if not agent_caller:
+    if not keys or not is_agent_caller():
         return None
     return jsonify({
         'error': ('Project safety settings are human-only; agent callers cannot '

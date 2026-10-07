@@ -55,10 +55,28 @@ attribution is unavailable, the existing Origin distinction remains; its
 detached-process/forged-Origin limitations are not closed here. Ordinary
 agent updates with no protected keys remain allowed and skip attribution.
 
+The same refusal now guards both steward enable routes:
+`POST /api/project/<id>/steward/enable` and
+`POST /api/steward/standalone/enable`. They share
+`project_safety_settings.is_agent_caller` through the same refusal helper,
+using the three steward keys implicitly written by bootstrap. The guard
+runs before parsing the body or provisioning anything, including when no
+objective or cadence was submitted. Refused requests cannot edit a project,
+create a standalone workspace, seed a charter, install a fence, create or
+refresh a schedule, or send the enabled notification. Human browser enables
+and edits retain their existing behavior.
+
+`POST /api/project/<id>/steward/disable` deliberately remains open to agents:
+it is the kill switch and only reduces autonomy. It still turns steward mode
+off, removes the standing schedule and steward fence, and keeps the charter.
+This applies to ordinary projects and standalone steward pseudo-projects.
+
 Scope excludes `id` and `project_path` routing (separate f0d66b8e ticket),
-other update endpoints, and direct disk edits. Defaults are unchanged. Tests:
+update endpoints beyond these three guarded routes, and direct disk edits.
+Defaults are unchanged. Tests:
 `tests/test_project_safety_settings.py`, plus the existing project CRUD and
-merge-review suites. This is a branch build, not a live settings change.
+merge-review suites and `tests/test_steward_routes.py`. This is a branch
+build, not a live settings change.
 
 Validation on 2026-10-07 (MC-1076 branch): **143 passed, rc=0**, including
 all 13 POSIX hook checks. Exact command used on Windows to expose the
@@ -75,6 +93,21 @@ Pyright: 0 errors/warnings, rc=0. Diff check: rc=0. The initial command
 also returned 0, with 13 shell checks skipped; the complete rerun above
 removed those skips. Live production settings and a real browser save were
 not exercised; the route was verified through Flask clients and temp files.
+
+Send-back validation for both steward enable routes on 2026-10-07:
+**169 passed in 38.04s, rc=0, no skips**. Exact commands:
+
+```powershell
+python -c "import os,pytest; os.environ['PATH']=r'C:\Program Files\Git\bin'+os.pathsep+os.environ['PATH']; raise SystemExit(pytest.main(['tests/test_project_safety_settings.py','tests/test_merge_review_gate.py','tests/test_project_routes.py','tests/test_steward_routes.py','-o','addopts=-ra','-q']))"
+pyright mc/project_safety_settings.py mc/blueprints/steward_routes.py
+git diff --check
+```
+
+Pyright and diff check: rc=0; Pyright 0 errors/warnings. The steward blueprint
+had three existing typing errors before this extension: two nullable project
+rereads and an inferred string-only bootstrap response. Reread misses now
+return 404, and the bootstrap response is explicitly typed. No production
+enable/disable calls or real browser changes were made.
 
 ## Records
 

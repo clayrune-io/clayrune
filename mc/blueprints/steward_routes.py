@@ -15,6 +15,7 @@ from flask import Blueprint, jsonify, request
 
 from mc import state
 from mc.core import _log, now_iso
+from mc.project_safety_settings import STEWARD_ENABLE_SAFETY_KEYS, refuse_agent_safety_write
 import steward
 from steward import core as _core
 # Sibling blueprint: reuse the scheduler store + next-run math (never reimplement
@@ -96,7 +97,7 @@ def steward_status(project_id):
     })
 
 
-def _do_enable(project_id, objective, cadence):
+def _do_enable(project_id, objective, cadence) -> tuple[dict[str, Any], int]:
     """Shared enable bootstrap (used by the per-project AND standalone paths).
     Assumes the project record already exists. Returns (response_dict, status)."""
     p = load_project(project_id)
@@ -110,7 +111,10 @@ def _do_enable(project_id, objective, cadence):
         p['steward_cadence_minutes'] = int(cadence)
     p['last_updated'] = now_iso()
     save_project(project_id, p)
-    cadence_min = _core.get_cadence_minutes(load_project(project_id))
+    saved = load_project(project_id)
+    if saved is None:
+        return {'error': 'not found'}, 404
+    cadence_min = _core.get_cadence_minutes(saved)
 
     # 2. Seed the charter (pinned backlog item).
     charter = _core.ensure_charter(project_id, objective)
@@ -142,6 +146,8 @@ def _do_enable(project_id, objective, cadence):
 
     # 4. Create/refresh the standing steward schedule.
     p2 = load_project(project_id)
+    if p2 is None:
+        return {'error': 'not found'}, 404
     task = _core.build_cycle_task(p2, charter)
     schedules = _sched._load_schedules()
     existing = _find_steward_schedule(project_id, schedules)
@@ -172,6 +178,9 @@ def _do_enable(project_id, objective, cadence):
 @bp.route('/api/project/<project_id>/steward/enable', methods=['POST'])
 def steward_enable(project_id):
     """Turn a project into an autonomous steward. Idempotent."""
+    refusal = refuse_agent_safety_write(STEWARD_ENABLE_SAFETY_KEYS)
+    if refusal is not None:
+        return refusal
     data = request.get_json() or {}
     p = load_project(project_id)
     if p is None:
@@ -237,6 +246,9 @@ def _ensure_steward_workspace(slug: str, name: str) -> Optional[dict]:
 def steward_standalone_enable(project_id=None):
     """Start a standalone steward: provision a dedicated workspace pseudo-project,
     then run the same enable bootstrap on it. Idempotent per name (slug)."""
+    refusal = refuse_agent_safety_write(STEWARD_ENABLE_SAFETY_KEYS)
+    if refusal is not None:
+        return refusal
     data = request.get_json() or {}
     name = (data.get('name') or '').strip()
     objective = (data.get('objective') or '').strip()

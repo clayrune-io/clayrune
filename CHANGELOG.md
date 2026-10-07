@@ -10,6 +10,7 @@
 
 - Project updates refuse agent writes to the eight explicit merge, worktree, code-sync and steward safety controls with HTTP 403 naming the keys. Mixed bodies are refused in full before any project or workspace side effect.
 - Existing Origin detection and OS caller attribution preserve human browser saves without a new prompt and prevent attributed agents from bypassing the guard with an Origin header. Ordinary agent project edits still work.
+- Both project and standalone steward enable routes share the same caller guard before bootstrap or workspace creation. Agent disable remains available as the kill switch; browser enables and edits keep working.
 - Scope and caller-attribution limits: `docs/MERGE_REVIEW_GATE.md`. Branch only; no merge, push, restart or live settings change.
 
 ## [2026-10-07] - Browser status tolerates saved profile names after MC-1079 (MC-1074 review)
