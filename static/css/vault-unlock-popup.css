@@ -1,0 +1,13 @@
+.vault-unlock-popup { width: min(440px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); margin: auto; overflow-y: auto; box-sizing: border-box; padding: 16px; border: 1px solid var(--border2); border-radius: 12px; background: var(--surface, #fff); color: var(--text, #222); }
+.vault-unlock-popup::backdrop { background: rgba(0,0,0,.5); }
+.vault-unlock-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.vault-unlock-header h2 { margin: 0; font-size: 20px; }
+.vault-unlock-header button { min-width: 44px; }
+.vault-unlock-header button, .vault-unlock-link { min-height: 44px; padding: 8px 12px; cursor: pointer; border: 1px solid var(--border2, #888); border-radius: 8px; background: var(--surface2, #eee); color: var(--text, #222); }
+.vault-unlock-link { display: inline-flex; align-items: center; margin: 4px; font: inherit; text-decoration: none; }
+.vault-unlock-popup .desk-v1-vg { margin: 0; }
+.vault-unlock-popup label { display: flex; flex-direction: column; gap: 4px; }
+.vault-unlock-popup input { min-height: 44px; padding: 8px; border: 1px solid var(--border2, #888); border-radius: 6px; background: var(--surface2, #eee); color: var(--text, #222); }
+.vault-unlock-popup .desk-v1-conn-add-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.vault-unlock-popup [data-vg-unlock] { min-height: 44px; }
+.vault-unlock-popup button:focus-visible, .vault-unlock-link:focus-visible { outline: 2px solid var(--accent, #c96930); outline-offset: 2px; }

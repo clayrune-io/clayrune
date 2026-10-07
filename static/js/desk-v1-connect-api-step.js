@@ -170,7 +170,7 @@
         ${Sg.fillHTML(LOGIN_KEY, { url: null, login: A.pick, profile: Hd ? Hd.profile() : '', hint: '', why: 'Choose a saved login.' })}`
       : '<div class="desk-v1-cfw-fact-text" data-api-nologins>There is no saved login for this service yet.</div>';
     return `<div class="desk-v1-cfw-dgroup" data-api-loginhelp><div class="desk-v1-cfw-dtitle">Sign-in help</div>
-        ${A.locked ? '<div class="desk-v1-cfw-fact-text" data-api-locked>The vault is locked. Unlock it, then come back.</div>' : ''}
+        ${A.locked ? `<div class="desk-v1-cfw-fact-text" data-api-locked>The vault is locked. Unlock it, then try again.${window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML({ vault_locked: true }) : ''}</div>` : ''}
         ${saved}
         <div class="desk-v1-cfw-fact-text">A new login is stored only when you save.</div>
         ${Sg.newLoginHTML(LOGIN_KEY)}</div>`;

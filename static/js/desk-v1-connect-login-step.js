@@ -181,7 +181,7 @@
 
   function _lockedHTML() {
     return _locked() ? `<div class="desk-v1-cfw-msg" data-lg-locked role="alert">The vault is locked. Unlock it, then
-        <button type="button" class="desk-v1-cf-link" data-lg-recheck>check again</button>.</div>` : '';
+        <button type="button" class="desk-v1-cf-link" data-lg-recheck>check again</button>.${window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML({ vault_locked: true }) : ''}</div>` : '';
   }
 
   function _loginPickHTML(info) {

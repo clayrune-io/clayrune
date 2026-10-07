@@ -223,7 +223,12 @@ function formatAgentText(raw) {
     const tm = url.match(/[.,;:!?)\]]+$/);
     if (tm) { trail = tm[0]; url = url.slice(0, -trail.length); }
     const tok = '@@CLUrl' + _urlTokens.length + '@@';
-    _urlTokens.push('<a class="hl-url" dir="ltr" href="' + url + '" target="_blank" rel="noopener">' + url + '</a>');
+    // The fragment is a dashboard command: use this dashboard's origin, also on a phone/tunnel.
+    if (/^https?:\/\/[^/]+\/#unlock-vault$/i.test(url)) {
+      _urlTokens.push('<a class="vault-unlock-link" href="#unlock-vault" data-open-vault-unlock>Unlock vault</a>');
+    } else {
+      _urlTokens.push('<a class="hl-url" dir="ltr" href="' + url + '" target="_blank" rel="noopener">' + url + '</a>');
+    }
     return tok + trail;
   });
 

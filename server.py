@@ -2076,6 +2076,8 @@ app.register_blueprint(_bp_mcp.bp)
 # own paths under ~/.clayrune/ (deliberately outside the repo) and takes no
 # server-family deps. Note there is no plaintext-returning route by design.
 from mc.blueprints import secrets_routes as _bp_secrets  # noqa: E402
+from mc.blueprints import vault_lock_responses as _bp_vault_lock_responses  # noqa: E402
+app.register_blueprint(_bp_vault_lock_responses.bp)
 from mc import secrets_store as _secrets_store_boot  # noqa: E402
 
 app.register_blueprint(_bp_secrets.bp)

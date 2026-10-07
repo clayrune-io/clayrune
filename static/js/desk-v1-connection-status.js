@@ -79,7 +79,7 @@
         <span class="desk-v1-how-field-label">${esc(label)}</span>
         <span class="desk-v1-cs-word" data-cs-word>${esc(f.word)}</span>
         ${lines.filter(Boolean).map((l) => `<div class="desk-v1-cs-line">${l}</div>`).join('')}
-        ${f.detail ? `<div class="desk-v1-rules-hint" data-cs-detail>${esc(f.detail)}</div>` : ''}
+        ${f.detail ? `<div class="desk-v1-rules-hint" data-cs-detail>${esc(f.detail)}${window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML(f.word) : ''}</div>` : ''}
       </div>`;
   }
 

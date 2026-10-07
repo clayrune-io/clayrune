@@ -21,7 +21,7 @@
   const STATES = {
     passkey_vault_locked: {
       text: 'Unlock your vault to use passkeys.',
-      action: { act: 'vault-open', label: 'Open the vault' },
+      action: { act: 'vault-open', label: 'Unlock vault' },
     },
     passkey_vault_not_configured: {
       text: 'Passkeys need a vault passphrase.',
@@ -89,9 +89,9 @@
     return (known && known.text) || b.message || b.error || ('HTTP ' + (r ? r.status : '?'));
   }
 
-  // Buttons that leave the panel: both pages already exist and are window-bridged.
+  // Existing human controls: shared unlock popup or first-time passphrase setup.
   function openVault(act) {
-    const fn = act === 'vault-set' ? window.openVaultSetPassphrase : window.openSecretsVault;
+    const fn = act === 'vault-set' ? window.openVaultSetPassphrase : window.openVaultUnlock;
     if (typeof fn === 'function') fn();
   }
 

@@ -13,10 +13,10 @@
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
-  function _formHTML() {
+  function _formHTML(opts) {
     return `
       <div class="desk-v1-vg-title">The vault is locked</div>
-      <div class="desk-v1-rules-hint">Signing in and saving a login store a secret, and a locked vault refuses that. Unlock it here, then carry on: nothing you have done in this panel is lost.</div>
+      <div class="desk-v1-rules-hint">${esc(opts && opts.hint || 'Signing in and saving a login store a secret, and a locked vault refuses that. Unlock it here, then carry on: nothing you have done in this panel is lost.')}</div>
       <div class="desk-v1-vg-fields">
         <label class="desk-v1-conn-add-field">Vault passphrase
           <input ${window.MaskedInput.attrs()} class="desk-v1-rules-textinput" data-vg-pass></label>
@@ -35,6 +35,7 @@
     const btn = gate.querySelector('[data-vg-unlock]');
     const status = gate.querySelector('[data-vg-status]');
     const submit = async () => {
+      if (btn.disabled) return;
       const passphrase = pass.value.trim();
       const passcode = code.value.trim();
       if (!passphrase) { status.textContent = 'Enter the vault passphrase.'; return; }
@@ -79,5 +80,12 @@
     return gate;
   }
 
-  window.DeskV1VaultGate = { attach };
+  // Reuse the exact human-only form in the global popup after it checks the state.
+  function mount(el, opts) {
+    const gate = document.createElement('div');
+    gate.className = 'desk-v1-vg'; gate.dataset.vaultGate = '';
+    gate.innerHTML = _formHTML(opts); el.appendChild(gate); _bind(gate, opts);
+    return gate;
+  }
+  window.DeskV1VaultGate = { attach, mount };
 })();

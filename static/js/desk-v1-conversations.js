@@ -105,7 +105,7 @@
   }
   function _gapsFrom(coverage) {
     return (coverage || []).filter((c) => c.state !== 'ok')
-      .map((c) => ({ label: c.message || `${c.label || c.platform}: not read`, detail: c.reason || c.message || '' }));
+      .map((c) => ({ label: c.message || `${c.label || c.platform}: not read`, detail: c.reason || c.message || '', vault_locked: c.vault_locked === true }));
   }
 
   async function _fetchEngagement() {
@@ -323,7 +323,7 @@
     const gaps = _coverageGaps(st.campaignId);
     const gapsHTML = gaps.length
       ? `<div class="desk-v1-conv-gaps">${gaps.map((g, i) => `
-          <span class="desk-v1-conv-gap">${esc(g.label)} ${window.DeskV1Kit ? window.DeskV1Kit.infoIconHTML('conv-gap-' + i) : ''}</span>`).join('')}</div>`
+          <span class="desk-v1-conv-gap">${esc(g.label)} ${window.DeskV1Kit ? window.DeskV1Kit.infoIconHTML('conv-gap-' + i) : ''}${window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML(g.vault_locked ? g : g.detail) : ''}</span>`).join('')}</div>`
       : '';
     return `
       <div class="desk-v1-conv-list-pane">
