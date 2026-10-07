@@ -85,6 +85,7 @@ from flask import Blueprint, Response, jsonify, request
 
 from mc import state, browser_stream as _bstream
 from mc.browser_stream import bump as _bump
+from mc.core import _log
 from mc.state import browser_sessions, browser_lock
 from mc import browser_auth_diagnostics as _auth_diagnostics
 
@@ -2190,7 +2191,8 @@ def _default_profile():
 
 
 def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, view=None,
-                    mobile=False, extra_args=None, narrow_remote_origins=False, init_script=None):
+                    mobile=False, extra_args=None, narrow_remote_origins=False, init_script=None,
+                    reuse_result=None):
     """Start a headless Chromium and its CDP reader.
 
     ``profile`` names a persistent user-data-dir that survives teardown; None
@@ -2212,7 +2214,11 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
     the session carries ``reused=True`` when an existing one already held that
     profile (its running Chromium keeps whatever dpr it launched with — this
     call's ``dpr`` is ignored for a reuse).
+    HTTP callers receive per-call reuse metadata in ``reuse_result`` so two
+    concurrent launches cannot consume each other's shared session flag.
     """
+    if reuse_result is not None:
+        reuse_result['reused'] = False
     if profile is None and not ephemeral:
         profile = _default_profile()
     chromium = _find_chromium()
@@ -2232,6 +2238,8 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
         live = _session_using_profile(profile)
         if live:
             live['reused'] = True
+            if reuse_result is not None:
+                reuse_result['reused'] = True
             return live, None
         err = _release_held_profile(profile, udd)
         if err:
@@ -2658,6 +2666,8 @@ def _kill_browser_session(session):
         except Exception as e:
             print(f'[browser] session process wait failed: {e}', flush=True)
     _close_cdp_transport(session)
+    from mc import browser_agent_tabs
+    browser_agent_tabs.browser_closed(session)
     # Drop the throwaway Chromium profile. Must happen AFTER the process is
     # dead, or Chromium rewrites the dir as we delete it (and Windows holds
     # locks on the open files).
@@ -2697,17 +2707,31 @@ def browser_launch():
         return jsonify({'error': "the browser pane may not navigate to "
                                  "Clayrune's own origin"}), 403
     profile = data.get('profile')
+    reuse_result = {}
     session, err = _launch_browser(project_id, url, profile=profile or None,
                                    ephemeral=bool(data.get('ephemeral')),
                                    dpr=data.get('dpr'),
                                    view=_view_from(data.get('view')),
-                                   mobile=bool(data.get('mobile')))
+                                   mobile=bool(data.get('mobile')), reuse_result=reuse_result)
     if err or session is None:
         err = err or 'browser failed to start'
         # A bad profile name is the caller's mistake, not a missing dependency —
         # 501 would send them installing Chromium over a typo.
         return jsonify({'error': err}), (400 if 'profile name' in err else 501)
-    reused = bool(session.pop('reused', False))
+    reused = (bool(reuse_result['reused']) if 'reused' in reuse_result
+              else bool(session.pop('reused', False)))
+    from mc.blueprints.workflow_routes import _is_agent_caller
+    if reused and _is_agent_caller():
+        from mc import browser_agent_tabs
+        try:
+            return jsonify(browser_agent_tabs.adopt(session, url, project_id)), 200
+        except browser_agent_tabs.AdoptionError as e:
+            _log('[browser-agent-tab] failed-open tab retained for cleanup retry', flush=True)
+            return jsonify({'error': 'could not open an agent tab; stop the retained tab handle to retry cleanup',
+                            'session_id': e.handle, 'agent_tab': True}), 502
+        except Exception as e:
+            _log(f'[browser-agent-tab] adoption failed: {type(e).__name__}', flush=True)
+            return jsonify({'error': 'could not open an agent tab in the running browser'}), 502
     if reused and url and url != 'about:blank' and session.get('url') != url:
         # Adopting a signed-in session should still honour where the caller
         # asked to go, or `profile` would silently ignore the URL.
@@ -3087,6 +3111,10 @@ def _input_commands(data, page_scale=1.0):
 @bp.route('/api/browser/input', methods=['POST'])
 def browser_input():
     data = request.get_json(silent=True) or {}
+    from mc import browser_agent_tabs
+    answer = browser_agent_tabs.route('input', data)
+    if answer is not None:
+        return answer
     sid = data.get('session_id')
     session = browser_sessions.get(sid)
     if not session or session['status'] != 'running':
@@ -3627,6 +3655,10 @@ def browser_read():
     ambient, never triggered by navigation alone.
     """
     data = request.get_json(silent=True) or {}
+    from mc import browser_agent_tabs
+    answer = browser_agent_tabs.route('read', data)
+    if answer is not None:
+        return answer
     sid = data.get('session_id')
     session = browser_sessions.get(sid)
     if not session or session['status'] != 'running':
@@ -3827,6 +3859,10 @@ class ProfilePageReader:
 @bp.route('/api/browser/stop', methods=['POST'])
 def browser_stop():
     data = request.get_json(silent=True) or {}
+    from mc import browser_agent_tabs
+    answer = browser_agent_tabs.route('stop', data)
+    if answer is not None:
+        return answer
     sid = data.get('session_id')
     session = browser_sessions.get(sid)
     if not session:

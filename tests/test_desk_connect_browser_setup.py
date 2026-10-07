@@ -4,7 +4,7 @@
 Pinned:
 
   * a fresh X account with no Client ID reaches a saved browser setup: account, named profile and,
-    optionally, a login NAME; nothing else is granted (no binding, no read setting, no legacy profile,
+    optionally, a login NAME; nothing else is granted (no permission binding or read-method change,
     no presence, no pane, no vault value read) and no OAuth token is minted;
   * two X identities stay separate (own account, own profile, own login); a LinkedIn member and a
     Company Page are separate accounts; LinkedIn permits profile/login sharing regardless of kind;
@@ -158,10 +158,10 @@ def test_a_fresh_x_account_with_no_app_saves_a_browser_setup(env):
     assert r.status_code == 201, r.get_json()
     out = r.get_json()
     assert out['ok'] and out['account_created'] and not out['duplicate'] and not out['unchanged']
-    assert out['browser_profile'] == 'x-ron' and out['profile_state'] in ('new', 'exists', 'unknown') and out['login'] is None
+    assert out['browser_profile'] == 'main' and out['profile_state'] in ('new', 'exists', 'unknown') and out['login'] is None
     rec = _rec(out['account_id'])
     assert rec['platform'] == 'x' and rec['identity'] == 'ron'
-    assert rec['browser_setup']['route_id'] == 'x-browser' and rec['browser_setup']['refs'] == {'browser_profile': 'x-ron'}
+    assert rec['browser_setup']['route_id'] == 'x-browser' and rec['browser_setup']['refs'] == {'browser_profile': 'main'}
     assert not any(n.startswith('x.client') for n in _vault_names())            # still none: no app was needed or made
 
 
@@ -172,12 +172,13 @@ def test_a_setup_grants_nothing_and_leaves_the_read_route_alone(env):
     out = _save(client, _draft('x', _new('ron'))).get_json()
     after = _store()
     rec = after['accounts'][out['account_id']]
-    assert 'connections' not in rec and 'read_via' not in rec and 'browser_profile' not in rec     # no permission, no read setting
+    assert 'connections' not in rec and 'read_via' not in rec   # no permission or read-method change
+    assert rec['browser_profile'] == 'main'                    # the new default cookie jar only
     assert desk.account_read_via(rec) == 'pane'                                                       # the default, untouched
     assert after['presences'] == before['presences'] and after['campaigns'] == before['campaigns']   # on no board, in no campaign
     assert after['engagement'] == before['engagement']
     assert set(rec) - {'id', 'platform', 'identity', 'label', 'capability', 'voice', 'created_at', 'credentials',
-                       'browser_setup', 'permission_policy', 'permission_policy_version'} == set()
+                       'browser_setup', 'browser_profile', 'oauth_profile_binding', 'permission_policy', 'permission_policy_version'} == set()
 
 
 @pytest.mark.parametrize('service,kind,identity,extra', [
@@ -242,7 +243,7 @@ def test_an_existing_login_is_bound_by_name_and_never_read(env):
     _login('x.ron')
     out = _save(client, _draft('x', _new('ron'), login='x.ron')).get_json()
     assert out['login'] == 'x.ron' and not out['login_created']
-    assert _rec(out['account_id'])['browser_setup']['refs'] == {'browser_profile': 'x-ron', 'login': 'x.ron'}
+    assert _rec(out['account_id'])['browser_setup']['refs'] == {'browser_profile': 'main', 'login': 'x.ron'}
 
 
 @pytest.mark.parametrize('login,code,status', [
@@ -334,8 +335,8 @@ def test_two_x_identities_stay_separate(env):
     client, _, _, _ = env
     a = _save(client, _draft('x', _new('ron')), rid='req-a-000001').get_json()
     b = _save(client, _draft('x', _new('ronco')), rid='req-b-000001').get_json()
-    assert a['account_id'] != b['account_id'] and a['browser_profile'] == 'x-ron' and b['browser_profile'] == 'x-ronco'
-    r = _save(client, _draft('x', _new('third'), browser_profile='x-ron'), rid='req-c-000001')
+    assert a['account_id'] != b['account_id'] and a['browser_profile'] == 'main' and b['browser_profile'] == 'x-ronco'
+    r = _save(client, _draft('x', _new('third'), browser_profile=a['browser_profile']), rid='req-c-000001')
     assert r.status_code == 409 and r.get_json()['code'] == 'profile_in_use'
     assert len(_store()['accounts']) == 2
 
@@ -401,7 +402,7 @@ def test_two_linkedin_members_may_share_a_profile_or_login(env):
     first = _save(client, _draft('linkedin', _new('Ron Levy'), login='linkedin.ron'), rid='req-a-000001').get_json()
     r = _save(client, _draft('linkedin', _new('Someone Else'), login='linkedin.ron'), rid='req-b-000001')
     assert r.status_code == 201 and r.get_json()['shared_with'] == [first['account_id']]
-    r = _save(client, _draft('linkedin', _new('Third Member'), browser_profile='linkedin-ron-levy'), rid='req-c-000001')
+    r = _save(client, _draft('linkedin', _new('Third Member'), browser_profile=first['browser_profile']), rid='req-c-000001')
     assert r.status_code == 201 and r.get_json()['shared_with'] == [first['account_id']]
 
 

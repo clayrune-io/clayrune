@@ -219,10 +219,14 @@ def vault_name(service: str, account_id: str | None = None) -> str:
 
 
 def profile_name(service: str, account_id: str | None = None) -> str:
-    """The named browser profile the sign-in is made in (one login per account)."""
+    """Keep saved bindings; new accounts share the default across sites."""
     base = _def(service)['profile']
     acc = _account(service, account_id)
-    return base if acc is None else f'{base}-{_suffix(acc)}'
+    old = base if acc is None else f'{base}-{_suffix(acc)}'
+    if service not in PER_ACCOUNT:
+        return old
+    from mc import desk_browser_profiles
+    return desk_browser_profiles.oauth_profile(service, acc, old, vault_name(service, acc))
 
 
 def _refresh_lock(name: str) -> threading.Lock:
@@ -527,7 +531,9 @@ def start(service: str, account_id: str | None = None, *, hold: dict | None = No
     _drop_pending(service, supersede_held=app is not None)
     # Read AFTER the drop above (which removes a profile an earlier held flow created) and BEFORE the pane
     # opens: a profile that is already there is never this flow's to delete (`desk_oauth_profile`).
-    created = app is not None and not _profile.existed(profile_name(service, account_id))
+    from mc import desk_browser_profiles
+    created = (app is not None and profile_name(service, account_id) != desk_browser_profiles.shared_default()
+               and not _profile.existed(profile_name(service, account_id)))
     srv = _open_listener(X_CALLBACK_PORT if service == 'x' else 0)
     try:
         return _start_flow(service, d, srv, disc if service == 'higgsfield' else None, account_id, app, created)

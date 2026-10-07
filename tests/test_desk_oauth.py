@@ -488,7 +488,7 @@ def test_x_start_asks_for_the_four_scopes_including_offline_access(provider, vau
     assert out['auth_url'].startswith('https://x.com/i/oauth2/authorize?')
     assert q['scope'].split() == ['tweet.read', 'tweet.write', 'users.read', 'offline.access']
     assert q['client_id'] == 'xclient123' and q['code_challenge_method'] == 'S256'
-    assert out['profile'] == 'desk-x'
+    assert out['profile'] == oauth.profile_name('x')
 
 
 def test_x_public_client_sends_client_id_in_the_body(provider, vault, x_port):

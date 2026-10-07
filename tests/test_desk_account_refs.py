@@ -3,8 +3,8 @@
 
 Pinned:
 
-  * the FIRST direct X account keeps the legacy singleton names (`oauth.x`,
-    profile `desk-x`), every later one gets names of its own, derived from its id;
+  * the FIRST direct X account keeps the legacy singleton vault name (`oauth.x`);
+    new accounts share main first and isolate later logins, saved profile bindings stay unchanged;
   * binding is deterministic (oldest first) and idempotent, it runs when a store
     written before this existed is read, and deleting the account that holds the
     legacy names does NOT hand them to the next one (that would inherit someone
@@ -97,7 +97,7 @@ def test_create_account_binds_in_order(store, vault):
     a = accounts.create_account('x', '@first')
     b = accounts.create_account('x', '@second')
     m = accounts.create_account('x', '@manual', capability='manual')
-    assert a['credentials'] == LEGACY
+    assert a['credentials'] == {'oauth_vault': 'oauth.x', 'oauth_profile': 'main'}
     assert b['credentials'] == {'oauth_vault': f"oauth.x.{b['id'].lower()}", 'oauth_profile': f"desk-x-{b['id'].lower()}"}
     assert 'credentials' not in m
 
@@ -124,9 +124,10 @@ def test_oauth_arg(store, vault):
 
 # -- names -------------------------------------------------------------------------
 
-def test_names_derive_from_the_account_id():
-    assert oauth.vault_name('x') == 'oauth.x' and oauth.profile_name('x') == 'desk-x'
-    assert oauth.vault_name('x', 'acct-7') == 'oauth.x.acct-7' and oauth.profile_name('x', 'acct-7') == 'desk-x-acct-7'
+def test_names_derive_from_the_account_id(store, monkeypatch):
+    monkeypatch.setattr(oauth._profile, 'existed', lambda name: False)
+    assert oauth.vault_name('x') == 'oauth.x' and oauth.profile_name('x') == 'main'
+    assert oauth.vault_name('x', 'acct-7') == 'oauth.x.acct-7' and oauth.profile_name('x', 'acct-7') == 'main'
     from mc import secrets_store
     assert secrets_store.valid_name(oauth.vault_name('x', 'Acct_7-b')) if hasattr(secrets_store, 'valid_name') else True
 
@@ -154,7 +155,8 @@ def _sign_in(provider, vault, account_id, access, refresh):
     return out
 
 
-def test_a_sign_in_for_an_account_lands_in_its_own_entry_and_profile(provider, vault, x_port):
+def test_a_sign_in_for_an_account_lands_in_its_own_entry_and_profile(store, provider, vault, x_port):
+    accounts.create_account('x', '@first', account_id='first')
     _x_app(vault)
     out = _sign_in(provider, vault, 'acct-2', ACCESS_1, REFRESH_1)
     assert out['profile'] == 'desk-x-acct-2'
@@ -206,7 +208,7 @@ def test_the_second_account_is_not_signed_in_while_the_first_is(store, provider,
 
 def test_an_account_view_names_its_credentials_but_holds_no_value(store, vault):
     a = accounts.create_account('x', '@first')
-    assert accounts.get_account(a['id'])['credentials'] == LEGACY
+    assert accounts.get_account(a['id'])['credentials'] == {'oauth_vault': 'oauth.x', 'oauth_profile': 'main'}
 
 
 # -- the post goes out under the account it was written for -----------------------------
@@ -247,9 +249,9 @@ def test_the_start_route_refuses_an_account_that_is_not_there(store, provider, v
     r = c.post('/api/desk/connect/x/start', json={'account_id': b['id']})
     assert r.status_code == 201 and r.get_json()['profile'] == oauth.profile_name('x', b['id'])
     r = c.post('/api/desk/connect/x/start', json={'account_id': a['id']})     # the first account: legacy profile
-    assert r.status_code == 201 and r.get_json()['profile'] == 'desk-x'
+    assert r.status_code == 201 and r.get_json()['profile'] == 'main'
     r = c.post('/api/desk/connect/x/start', json={})                           # no account: the singleton, as before
-    assert r.status_code == 201 and r.get_json()['profile'] == 'desk-x'
+    assert r.status_code == 201 and r.get_json()['profile'] == 'main'
 
 
 # -- review 2026-10-03 (Dave): three faults found in the first cut ----------------------
@@ -279,7 +281,8 @@ def test_bind_skips_and_logs_an_id_it_cannot_name(monkeypatch):
     assert data['accounts']['next']['credentials']['oauth_vault'] == 'oauth.x.next'    # one bad id does not stop the rest
 
 
-def test_two_account_ids_never_share_a_vault_or_profile_name():
+def test_two_account_ids_never_share_a_vault_or_second_login_profile_name(store, vault):
+    accounts.create_account('x', '@first')
     ids = ['Acct-B', 'acct-b', 'ACCT-B', 'x.second', 'x-second', 'x_second', 'a' * 41, 'a' * 40, 'A' * 40]
     vaults = [oauth.vault_name('x', i) for i in ids]
     profiles = [oauth.profile_name('x', i) for i in ids]
@@ -291,12 +294,13 @@ def test_two_account_ids_never_share_a_vault_or_profile_name():
 
 def test_restoring_the_legacy_holder_with_undo_gives_it_the_legacy_names_back(store, vault):
     a = accounts.create_account('x', '@first', account_id='first')
-    assert a['credentials'] == LEGACY
+    assert a['credentials'] == {'oauth_vault': 'oauth.x', 'oauth_profile': 'main'}
     assert accounts.delete_account('first') is True
     b = accounts.create_account('x', '@second', account_id='second')
     assert b['credentials']['oauth_vault'] == 'oauth.x.second'     # a stranger does not inherit it
     again = accounts.create_account('x', '@first', account_id='first')      # Undo re-posts the same id
-    assert again['credentials'] == LEGACY
+    assert again['credentials']['oauth_vault'] == 'oauth.x'
+    assert again['credentials']['oauth_profile'] != b['credentials']['oauth_profile']
     assert refs.oauth_arg_for('first') is None and refs.oauth_arg_for('second') == 'second'
     assert _desk._read_store()['accounts']['second']['credentials']['oauth_vault'] == 'oauth.x.second'
 

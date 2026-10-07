@@ -43,7 +43,7 @@
   const SERVICES = ['x', 'linkedin'];                   // the platforms the browser setup commit can save
   const FILL_KEY = 'wizard-login';                       // desk-v1-connect-signin.js keeps the Sign in message under this key
   const NEW_PROFILE = '__new__';
-  const PROFILE_RE = /^[a-z0-9][a-z0-9_-]{0,40}$/;
+  const PROFILE_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
   const NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;         // mc/secrets_store.py _NAME_RE; the server stays the authority
   const MODES = [['saved', 'Saved login'], ['new', 'Username and password'], ['manual', 'In browser']];
 
@@ -90,6 +90,7 @@
     return name;
   }
   function _suggestProfile(info) {
+    if (L.options?.default_profile) return L.options.default_profile;
     const s = _service(info), id = _slug(_identity());
     const name = `${s}-${id || 'account'}`.slice(0, 41).replace(/[-_]+$/, '');
     return _unusedName(PROFILE_RE.test(name) ? name : `${s}-account`, L.profiles, 41);
@@ -106,7 +107,7 @@
   function _profileName(info) {
     if (_existing()) return L.profile;
     const v = (L.newProfile == null ? _suggestProfile(info) : L.newProfile).trim().toLowerCase();
-    return PROFILE_RE.test(v) ? v : '';
+    return PROFILE_RE.test(v) && !v.includes('..') ? v : '';
   }
   function _vaultName(info) { return (L.vaultName == null ? _suggestVault(info) : L.vaultName).trim(); }
   function _locked() { return !!(L.options && L.options.vault_locked); }
@@ -122,7 +123,7 @@
     if (!_target) return 'Choose the account first.';
     if (!L.mode) return 'Choose how you want to sign in.';
     if (L.mode !== 'manual' && _locked()) return 'The vault is locked. Unlock it, then check again.';
-    if (!_profileName(info)) return 'Give the browser profile a name: lowercase letters, digits, - or _.';
+    if (!_profileName(info)) return 'Give the browser profile a name: lowercase letters, digits, ., - or _ (no ..).';
     if (L.mode === 'saved' && !L.pick) return 'Choose a saved login.';
     if (L.mode === 'new') {
       if (!_typedFilled()) return 'Type the username and the password.';
@@ -139,7 +140,7 @@
     const n = ++_seq;
     const ctx = api.ctx;
     Promise.all([
-      ctx.api('POST', '/api/desk/connect/signin/options', { service: svc }).catch(e => { console.error('[connect-login] options failed',e);L.optionsFailed = true; return null; }),
+      ctx.api('POST', '/api/desk/connect/signin/options', { service: svc, account_id: _target?.account.id || null }).catch(e => { console.error('[connect-login] options failed',e);L.optionsFailed = true; return null; }),
       ctx.api('GET', '/api/secrets').catch(e => { console.error('[connect-login] metadata failed',e); return null; }),
       ctx.api('GET', '/api/browser/profiles').catch(e => {console.error('[connect-login] profiles failed',e);L.profilesFailed = true; return null; }),
     ]).then(([o, metadata, p]) => {
@@ -150,6 +151,7 @@
       if(metadata && L.options) L.options.logins=window.DeskV1ConnectVaultPicker.metadata(metadata,window.DeskV1ConnectCopy.isEnabled()?svc:'');
       else L.optionsFailed=true;
       L.profiles = ((p && p.profiles) || []).map((x) => x.name).filter((x) => typeof x === 'string');
+      if (L.newProfile == null && L.profile === NEW_PROFILE && L.profiles.includes(o?.default_profile)) L.profile = o.default_profile;
       api.repaint();
     });
   }
@@ -169,8 +171,8 @@
       .concat(L.profiles.map((p) => `<option value="${esc(p)}"${sel === p ? ' selected' : ''}>${esc(p)}</option>`));
     const typing = sel === NEW_PROFILE
       ? `<label class="desk-v1-conn-add-field">Profile name
-            <input type="text" class="desk-v1-rules-textinput" data-lg-newprofile maxlength="41" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(L.newProfile == null ? _suggestProfile(info) : L.newProfile)}"></label>`
-      : '<div class="desk-v1-cfw-fact-text" data-lg-existing-profile>This profile keeps the sign-in it already has. Use one for this account only.</div>';
+            <input type="text" class="desk-v1-rules-textinput" data-lg-newprofile maxlength="64" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(L.newProfile == null ? _suggestProfile(info) : L.newProfile)}"></label>`
+      : '<div class="desk-v1-cfw-fact-text" data-lg-existing-profile>This profile keeps its saved sign-ins. A second login on the same site needs a separate profile.</div>';
     return `<div class="desk-v1-cfw-group" data-lg-profile-group>
         <label class="desk-v1-conn-add-field">Browser profile
           <select class="desk-v1-rules-textinput" data-lg-profile>${opts.join('')}</select></label>

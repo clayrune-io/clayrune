@@ -469,7 +469,7 @@ def test_a_missing_internal_or_wrong_role_vault_name_is_refused_before_the_passc
 def test_a_profile_name_must_be_a_plain_name(env):
     client, _, _ = env
     acc = _x()
-    for bad in ('../x', 'A B', '', 'x' * 60, 5):
+    for bad in ('../x', 'A B', '', 'x' * 65, 'a..b', 5):
         r = _save(client, _draft('x', {'id': acc['id']}, 'account', [_b('read_own', 'x-browser', ['mentions'], browser_profile=bad)]))
         assert r.status_code == 400, bad
 

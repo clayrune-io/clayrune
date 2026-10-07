@@ -405,6 +405,9 @@ def parse_x_status_metrics(text: str | None) -> dict[str, int]:
 
 def _default_page_reader(project_id: str, profile: str):
     from mc.blueprints import browser_routes
+    if browser_routes._session_using_profile(profile):
+        from mc.browser_hidden_read import HiddenTabReader
+        return HiddenTabReader(project_id, profile)
     return browser_routes.ProfilePageReader(project_id, profile)
 
 

@@ -94,7 +94,7 @@ def route_signin(service: str, route_id: str) -> tuple[dict, dict]:
     return route, signin
 
 
-def options(service: str, project_id: str | None = None) -> dict:
+def options(service: str, project_id: str | None = None, account_id: str | None = None) -> dict:
     """What the sign-in panel needs, value-free: the service's sign-in routes, the stored logins
     that could be used (names only), and whether the vault is locked. Raises FillError."""
     profile = _registry.profile(service) if isinstance(service, str) else None
@@ -109,7 +109,9 @@ def options(service: str, project_id: str | None = None) -> dict:
     logins = [{'name': s['name'], 'username': s['username'], 'matches': s['name'].split('.')[0].lower() == service}
               for s in rows if s.get('entry_type') == _vault.ENTRY_LOGIN and s.get('kind') != _vault.KIND_TOTP
               and s.get('username') and s.get('scope', 'global') == 'global' and not _vault.is_server_internal(s['name'])]
+    from mc import desk_browser_profiles
     return {'service': service, 'routes': routes, 'logins': sorted(logins, key=lambda x: (not x['matches'], x['name'])),
+            'default_profile': desk_browser_profiles.for_account(service, account_id=account_id),
             'vault_locked': _vault.is_locked()}
 
 

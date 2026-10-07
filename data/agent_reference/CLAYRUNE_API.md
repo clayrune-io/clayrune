@@ -169,12 +169,12 @@ whenever a task means visiting a web page.
 
 | Verb | Path | Purpose |
 |---|---|---|
-| POST | `/api/browser/launch` | `{"project_id":"...","url":"https://…","profile":"name"?,"ephemeral":true?}` → `{session_id, url, profile, reused}`. |
+| POST | `/api/browser/launch` | `{"project_id":"...","url":"https://…","profile":"name"?,"ephemeral":true?}` → `{session_id, url, profile, reused}`. An agent adopting an open profile gets an `agent-tab-...` handle plus `browser_session_id`, `target_id`, `agent_tab:true`; use the handle for input/read/stop. It is a background target, not a pane stream/session to attach. Dashboard launches retain current-tab behavior. |
 | POST | `/api/browser/input` | Drive it: `{"session_id":…,"type":"navigate\|mouse\|wheel\|text\|key\|back\|forward\|reload", …}`. `mouse` with just `x`,`y` is one full click; `key` takes combos: `{"type":"key","key":"Ctrl+K"}` (or `modifiers:["ctrl"]`). |
 | POST | `/api/browser/selection` | `{"session_id":…}` → the page's currently selected text. |
 | POST | `/api/browser/read` | `{"session_id":…,"selector":"..."?}` → visible page text (whole page, or one CSS-selected region), wrapped in an untrusted-content envelope. See below — read it before using this on an unfamiliar page. |
 | GET | `/api/project/<project_id>/browser/status` | Live sessions for this project. |
-| POST | `/api/browser/stop` | End a session. |
+| POST | `/api/browser/stop` | End a browser session, or close only the owned tab when given an `agent-tab-...` handle. Stopping an adopted tab never closes the shared browser. |
 | POST | `/api/browser/auth-trace` | Opt-in redacted auth diagnostics for one running pane: `{"session_id":"...","on":true\|false}`. Default off; 500 in-memory events. No headers, request bodies, URL queries or successful auth bodies. |
 | GET | `/api/browser/auth-trace?session_id=...` | Read that pane's sanitized diagnostic snapshot. Keep it open until capture is read. Contract: `docs/BROWSER_AUTH_DIAGNOSTICS.md`. |
 | GET | `/api/browser/profiles` | Saved signed-in profiles (names/sizes only, never cookies). |

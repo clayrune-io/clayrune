@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Agent-owned tabs share a browser profile (MC-1079)
+
+- An agent adopting an open profile gets its own background tab handle. Input and filtered page reads stay on that target; Stop closes that tab, leaving the pane's visible tab and browser running. Dashboard launches retain their existing navigation behavior.
+- New Desk accounts default to `browser_default_profile` or `main`; a second account on the same site defaults to a separate profile. Saved account bindings and profile directories stay where they are, and an open profile can serve Desk reads through a hidden tab.
+- Shared profiles survive cancelled OAuth setup. Per-account OAuth vault entries and human-only sign-in/read permission gates are unchanged. Contract, validation and UI walkthrough: `docs/BROWSER_AGENT_TABS.md`. Branch build; not merged or deployed.
+
 ## [2026-10-07] - Opt-in browser auth diagnostics (a235ab88)
 
 - One pane can opt into a bounded, in-memory auth trace covering X/Jetfuel and Google request metadata, blocked-cookie names/reasons, console exceptions, popup lifecycle and FedCM dialogs. The default remains off.

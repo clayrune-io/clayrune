@@ -158,16 +158,15 @@ def _slug(text: str) -> str:
 
 
 def _derived_profile(service: str, identity: str) -> str:
-    """The profile name a Save uses when the person names none: `<service>-<identity>`, lowercased."""
-    name = f'{service}-{_slug(identity)}'[:_PROFILE_MAX].rstrip('-_')
-    return name if _bindings._PROFILE_NAME.match(name) else f'{service}-account'
+    from mc import desk_browser_profiles
+    return desk_browser_profiles.for_account(service, identity=identity)
 
 
 def _clean_profile(raw, service: str, identity: str) -> str:
     if raw is None:
         return _derived_profile(service, identity)
-    _need(isinstance(raw, str) and bool(_bindings._PROFILE_NAME.match(raw.strip().lower())),
-          'a browser profile name is lowercase letters, digits, - or _ (at most 41 characters)')
+    _need(isinstance(raw, str) and bool(_bindings._PROFILE_NAME.match(raw.strip().lower())) and '..' not in raw,
+          'a browser profile name is lowercase letters, digits, ., - or _ (at most 64 characters, no ..)')
     return raw.strip().lower()
 
 

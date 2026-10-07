@@ -58,7 +58,7 @@ def _body() -> dict:
 def signin_options():
     d = _body()
     try:
-        return jsonify(_fill.options(_s(d.get('service')), _SCOPE))
+        return jsonify(_fill.options(_s(d.get('service')), _SCOPE, _s(d.get('account_id')) or None))
     except _fill.FillError as e:
         return jsonify({'ok': False, 'error': str(e), 'code': e.code}), e.status
 
