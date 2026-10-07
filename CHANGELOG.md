@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Opt-in browser auth diagnostics (a235ab88)
+
+- One pane can opt into a bounded, in-memory auth trace covering X/Jetfuel and Google request metadata, blocked-cookie names/reasons, console exceptions, popup lifecycle and FedCM dialogs. The default remains off.
+- Failing X bodies are projected into sanitized error codes/messages, including non-JSON responses. Headers, tokens, request bodies, URL queries and successful auth bodies are discarded. Session shutdown automatically stops capture.
+- Contract, retry commands and validation: `docs/BROWSER_AUTH_DIAGNOSTICS.md`. Local branch only; no merge, push, restart or authenticated retry.
+
 ## [2026-10-07] - Browser pane passes Google's "may not be secure" check again
 
 - The CDP pipe transport (2026-10-05) made every pane tab report `navigator.webdriver === true`, so Google sign-in (including "Sign in with Google" popups on x.com) answered "Couldn't sign you in. This browser or app may not be secure." The launch now adds `--disable-blink-features=AutomationControlled`; the pipe is unchanged.

@@ -86,8 +86,10 @@ from flask import Blueprint, Response, jsonify, request
 from mc import state, browser_stream as _bstream
 from mc.browser_stream import bump as _bump
 from mc.state import browser_sessions, browser_lock
+from mc import browser_auth_diagnostics as _auth_diagnostics
 
 bp = Blueprint('browser_routes', __name__)
+_auth_diagnostics.register_routes(bp)
 
 # The CONTENT viewport we aim to give the page. The pane seeds its coordinate
 # space with these and then adopts the real numbers off the first frame.
@@ -1659,6 +1661,7 @@ def _run_cdp(session):
     if websocket is None:
         session['status'] = 'error'
         session['error'] = 'websocket-client not installed'
+        _auth_diagnostics.session_ended(session)
         return
     port = session['port']       # None for a pipe session (no TCP endpoint at all)
     _id = [100]
@@ -1688,8 +1691,8 @@ def _run_cdp(session):
                 page = _pick_page_target(targets, session.get('url') or '')
                 if page and page.get('webSocketDebuggerUrl'):
                     break
-            except Exception:
-                pass
+            except Exception as e:
+                print(f'[browser] devtools target lookup failed: {e}', flush=True)
             _time.sleep(0.2)
         if not page:
             session['status'] = 'error'
@@ -1863,7 +1866,9 @@ def _run_cdp(session):
                 while True:
                     method, params = q.get_nowait()
                     try:
-                        if method == '_activate_tab':
+                        if method == '_auth_trace':
+                            _auth_diagnostics.control(session, params['trace'], params['on'], send)
+                        elif method == '_activate_tab':
                             _activate_tab_cmd(session, params.get('target_id'), send)
                         elif method == '_close_tab':
                             send('Target.closeTarget', {'targetId': params.get('target_id')})
@@ -1934,6 +1939,13 @@ def _run_cdp(session):
                 continue
             method = msg.get('method')
             msg_sid = msg.get('sessionId')  # flat-mode target routing (top-level field)
+            trace = session.get('auth_trace')
+            if trace and trace.on:
+                try:
+                    trace.handle(msg, send)
+                except Exception as e:
+                    # The event may carry credentials; never print its payload.
+                    print(f'[browser] auth observer failed: {type(e).__name__}', flush=True)
             if msg.get('id') is not None and msg.get('id') == session.get('lm_id'):
                 session['lm_id'] = None
                 try:
@@ -2058,6 +2070,8 @@ def _run_cdp(session):
                     _bump(session, 'tabs_seq')
                     try:
                         send('Page.enable', {}, session_id=sid)
+                        if trace and trace.on:
+                            trace.attach(send, sid, ti.get('url'), tid)
                         if session.get('init_script'):
                             send('Page.addScriptToEvaluateOnNewDocument',
                                  {'source': session['init_script']}, session_id=sid)
@@ -2155,6 +2169,7 @@ def _run_cdp(session):
         session['status'] = 'error'
         session['error'] = str(e)
     finally:
+        _auth_diagnostics.session_ended(session)
         # If we fell out of the loop for any reason other than an explicit
         # /stop, make it observable — never leave status 'running' with a dead
         # reader (that is exactly the silent black-pane failure).
@@ -2164,8 +2179,8 @@ def _run_cdp(session):
         try:
             if session.get('ws'):
                 session['ws'].close()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f'[browser] CDP reader close failed: {e}', flush=True)
 
 
 def _default_profile():
@@ -2618,6 +2633,7 @@ def close_all_sessions(timeout=2.5):
 
 def _kill_browser_session(session):
     session['status'] = 'stopped'
+    _auth_diagnostics.session_ended(session)
     proc = session.get('proc')
     # A named profile IS the saved login, so it must reach disk before the
     # process dies — ask Chromium to close itself and only fall back to the
@@ -2630,17 +2646,17 @@ def _kill_browser_session(session):
         if not closed:
             try:
                 proc.kill()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f'[browser] session process kill failed: {e}', flush=True)
         if _unregister_process:
             try:
                 _unregister_process(proc.pid)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f'[browser] process unregister failed: {e}', flush=True)
         try:
             proc.wait(timeout=5)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f'[browser] session process wait failed: {e}', flush=True)
     _close_cdp_transport(session)
     # Drop the throwaway Chromium profile. Must happen AFTER the process is
     # dead, or Chromium rewrites the dir as we delete it (and Windows holds
