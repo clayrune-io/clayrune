@@ -73,16 +73,23 @@ def _merge_head_branches(repo: Path) -> list[str]:
 
     Git has NOT written MERGE_HEAD yet when `pre-merge-commit` runs for a fresh
     auto-merge (measured on git 2.51: the file is absent, and so is MERGE_MSG);
-    it exists only when a conflicted merge is being concluded with
-    `git commit`. So read MERGE_HEAD when it exists, and otherwise the merge
-    arguments git exports to the hook as GIT_REFLOG_ACTION ("merge <args>"),
-    resolving each word and keeping those that are an agent branch's tip."""
+    it exists only when a merge is being concluded with `git commit` (the
+    commit-msg hook's case). So read every MERGE_HEAD line when the file
+    exists, and otherwise the arguments git exports to the hook as
+    GIT_REFLOG_ACTION -- "merge <args>", or "pull <args>" when the merge was
+    started by `git pull` -- resolving each word and keeping those that are an
+    agent branch's tip."""
     shas: list[str] = []
-    ok, head = _git(repo, 'rev-parse', '-q', '--verify', 'MERGE_HEAD')
-    if ok and head:
-        shas.append(head)
+    ok, mh = _git(repo, 'rev-parse', '--git-path', 'MERGE_HEAD')
+    if ok and mh:
+        mh_path = Path(mh) if Path(mh).is_absolute() else repo / mh
+        try:
+            shas = [ln.strip() for ln in mh_path.read_text(encoding='utf-8').splitlines()
+                    if ln.strip()]
+        except OSError:
+            pass                       # no merge in progress: fall through to the args
     words = os.environ.get('GIT_REFLOG_ACTION', '').split()
-    if not shas and words[:1] == ['merge']:
+    if not shas and words[:1] in (['merge'], ['pull']):
         for word in words[1:]:
             if word.startswith('-'):
                 continue
@@ -97,6 +104,19 @@ def _merge_head_branches(repo: Path) -> list[str]:
             if b.startswith(gate.BRANCH_PREFIX) and b not in found:
                 found.append(b)
     return found
+
+
+def _main_checkout(repo: Path) -> Path:
+    """The main checkout `repo` belongs to. A linked worktree has its own
+    toplevel, but the project record names the main checkout, and hooks are
+    shared through the common git dir, so a merge typed in a linked worktree
+    runs this check from the worktree's path."""
+    ok, common = _git(repo, 'rev-parse', '--git-common-dir')
+    if not ok or not common:
+        return repo
+    common_dir = Path(common) if Path(common).is_absolute() else repo / common
+    common_dir = Path(os.path.realpath(common_dir))
+    return common_dir.parent if common_dir.name == '.git' else repo
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -124,7 +144,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0                       # not a merge of an agent branch: nothing to gate
 
     data_root = Path(a.data_root)
-    project = find_project(data_root, repo, a.project)
+    project = (find_project(data_root, repo, a.project)
+               or find_project(data_root, _main_checkout(repo), a.project))
     if project is None:
         print(f'merge-review-check: no Clayrune project for {repo} under {data_root}; '
               f'pass --project/--data-root. Not treating this as a pass.', file=sys.stderr)

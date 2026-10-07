@@ -12,7 +12,7 @@ with verdict `pass`.
 | Hold in the auto-merge path | `agent_worktree.merge_back()` returns `awaiting_review` |
 | Record route | `POST /api/project/<pid>/agent/<sid>/review` in `mc/blueprints/merge_review_routes.py` |
 | Hand-merge check | `tools/merge-review-check.py` |
-| Opt-in hook | `tools/git-hooks/pre-merge-commit`, installed by `tools/install-merge-review-hook.sh` |
+| Opt-in hooks | `tools/git-hooks/pre-merge-commit` + `tools/git-hooks/commit-msg`, installed together by `tools/install-merge-review-hook.sh` |
 | Tests | `tests/test_merge_review_gate.py` |
 
 ## Setting
@@ -47,8 +47,10 @@ corrupt store (it is kept as `.corrupt`).
 * Reviewer identity comes from `mc.caller_attribution` (OS process-tree walk),
   never from the request body. Attributed to the branch owner -> 403
   (self-review). Attribution `unavailable` (e.g. no psutil) -> 403, fail closed.
-  Unattributed (a human's curl/UI) -> accepted, recorded with
-  `reviewer_session: ""`, `attribution: "unattributed"`.
+  Unattributed -> 403 as well: an unattributed caller can be a builder's own
+  detached helper process, so self-review cannot be ruled out. Reviews are
+  recorded by attributed reviewer sessions; there is no human path through this
+  route (Dave decision, MC-1075 round 2).
 
 ## merge_back behaviour
 
@@ -73,23 +75,44 @@ Strict by default (does not consult the setting). `--respect-setting` makes the
 project setting the single switch (the hook uses it). Exit 2 = could not decide
 (unknown project); the hook treats that as a block.
 
-Opt-in hook (never installed automatically, not part of `tools/install-hooks.sh`):
+Opt-in hooks (never installed automatically, not part of `tools/install-hooks.sh`):
 
-    sh tools/install-merge-review-hook.sh              # install
+    sh tools/install-merge-review-hook.sh              # install both
     sh tools/install-merge-review-hook.sh --uninstall
+
+Two hooks, one check (`merge-review-check.py --merge-head --respect-setting`):
+
+* `pre-merge-commit` refuses the merge as git creates it.
+* `commit-msg` refuses a commit that concludes a merge (it returns at once when
+  `MERGE_HEAD` does not exist, so ordinary commits are untouched). Needed because
+  a rejected merge leaves `MERGE_HEAD` and a merged index behind, and
+  `git commit --no-edit` does not run `pre-merge-commit` again.
+
+Hooks live in the common git dir, so linked worktrees share them. The check
+resolves the project through `git rev-parse --git-common-dir`, so a merge typed
+in a linked worktree finds the main checkout's project record and reads its
+setting (gate off = pass).
+
+The agent branches checked are those named by `MERGE_HEAD` (every line, so an
+octopus merge counts) or, when git has not written it yet, by the arguments git
+exports as `GIT_REFLOG_ACTION`: `merge <args>` **and** `pull <args>`. Any word
+that resolves to the tip of a `clayrune/agent/*` branch is checked.
+
+**Client-side hooks are advisory.** `git merge --no-verify` and
+`git commit --no-verify` skip them, and anyone can delete or never install them.
+The real controls are the server-side `merge_back` hold, and Dave running
+`python tools/merge-review-check.py clayrune/agent/<sid>` before a hand merge.
 
 Known limits (measured, not hypothetical):
 
-* **Fast-forward merges never run `pre-merge-commit`.** If master has not moved
-  since the branch forked, `git merge <agent branch>` fast-forwards and the hook
-  is not called. Run `merge-review-check.py <branch>` first, or merge with
-  `--no-ff`.
-* `git merge --no-verify` skips it.
+* **Fast-forward merges never run `pre-merge-commit`** (and there is no commit to
+  run `commit-msg` on). If master has not moved since the branch forked,
+  `git merge <agent branch>` fast-forwards and the hooks are not called. Run
+  `merge-review-check.py <branch>` first, or merge with `--no-ff`.
 * During `pre-merge-commit` for a fresh auto-merge git has **not written
-  `MERGE_HEAD`** (checked on git 2.51). The check therefore reads `MERGE_HEAD`
-  when present (concluding a conflicted merge) and otherwise the merge arguments
-  git exports as `GIT_REFLOG_ACTION`, resolving each word to a commit. A merge of
-  some other branch that merely contains the agent's commits is not detected.
+  `MERGE_HEAD`** (checked on git 2.51), hence the `GIT_REFLOG_ACTION` fallback. A
+  merge of some other branch that merely contains the agent's commits is not
+  detected.
 
 ## Not covered
 

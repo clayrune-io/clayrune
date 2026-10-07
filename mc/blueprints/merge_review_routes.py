@@ -19,8 +19,11 @@ bp = Blueprint('merge_review_routes', __name__)
 
 def _reviewer():
     """(session_id, attribution) of the caller. Raises ReviewRefused when the
-    caller cannot be attributed at all: self-review cannot be ruled out, so
-    the record is refused rather than accepted on the caller's word."""
+    caller cannot be attributed to a session: self-review cannot be ruled out
+    (an UNATTRIBUTED caller can be a builder's own detached helper process),
+    so the record is refused rather than accepted on the caller's word.
+    Reviews are recorded by attributed reviewer sessions; there is no human
+    path through this route."""
     env = request.environ
     att = caller_attribution.attribute_caller(
         request.remote_addr or '', env.get('REMOTE_PORT'), env.get('SERVER_PORT'),
@@ -28,7 +31,9 @@ def _reviewer():
     if att.status == caller_attribution.ATTRIBUTED:
         return att.session_id, 'attributed'
     if att.status == caller_attribution.UNATTRIBUTED:
-        return '', 'unattributed'
+        raise gate.ReviewRefused(
+            403, 'the caller is not attributed to any session, so self-review '
+                 'cannot be ruled out; a review is recorded by a reviewer session')
     raise gate.ReviewRefused(
         403, f'cannot tell which session is calling ({att.detail}); a review is '
              f'refused when self-review cannot be ruled out')

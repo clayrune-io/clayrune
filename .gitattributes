@@ -18,6 +18,7 @@
 *.command   text eol=lf
 # Extensionless git hook that the installer copies verbatim into .git/hooks.
 tools/git-hooks/pre-merge-commit text eol=lf
+tools/git-hooks/commit-msg text eol=lf
 
 # Binary assets — never touch.
 *.png       binary

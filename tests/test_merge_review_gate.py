@@ -333,25 +333,29 @@ def test_route_refuses_when_the_caller_cannot_be_attributed(client, project, mon
     assert gate.find('testproj', w.branch_name('rt3'), tip) is None
 
 
-def test_route_accepts_an_unattributed_caller_and_says_so(client, project, monkeypatch):
+def test_route_refuses_an_unattributed_caller_and_writes_nothing(client, project, monkeypatch):
+    """An unattributed caller (e.g. a builder's detached helper process) cannot
+    be told apart from the branch owner, so its review must not be recorded."""
     _, tip = _agent(project, 'rt4')
     _as(monkeypatch, ca.UNATTRIBUTED)
-    r = _post(client, 'rt4', sha=tip, verdict='changes_requested')
-    assert r.status_code == 200
-    rec = r.get_json()['record']
-    assert rec['reviewer_session'] == '' and rec['attribution'] == 'unattributed'
+    for verdict in ('pass', 'changes_requested'):
+        r = _post(client, 'rt4', sha=tip, verdict=verdict)
+        assert r.status_code == 403, r.get_json()
+        assert 'self-review' in r.get_json()['error']
+    assert gate.find('testproj', w.branch_name('rt4'), tip) is None
+    assert w.merge_back(project, 'rt4')[0] == 'awaiting_review'
 
 
 def test_route_refuses_a_stale_sha_with_the_current_tip(client, project, monkeypatch):
     path, tip1 = _agent(project, 'rt5')
     tip2 = _commit(path, 'def one():\n    return "AGENT v2"\n')
-    _as(monkeypatch, ca.UNATTRIBUTED)
+    _as(monkeypatch, ca.ATTRIBUTED, 'fenn-session')
     r = _post(client, 'rt5', sha=tip1, verdict='pass')
     assert r.status_code == 409 and r.get_json()['tip'] == tip2
 
 
 def test_route_404_for_unknown_project_and_400_for_no_body(client, monkeypatch):
-    _as(monkeypatch, ca.UNATTRIBUTED)
+    _as(monkeypatch, ca.ATTRIBUTED, 'fenn-session')
     assert client.post('/api/project/nope/agent/x/review', json={}).status_code == 404
     assert client.post('/api/project/testproj/agent/x/review', data='x').status_code == 400
 
@@ -429,44 +433,130 @@ def test_merge_head_mode_reads_the_merge_arguments_when_git_has_no_merge_head_ye
     assert _check(*base, env={'GIT_REFLOG_ACTION': 'merge ' + branch})[0] == 1
     assert _check(*base, env={'GIT_REFLOG_ACTION': 'merge -m msg ' + tip})[0] == 1
     assert _check(*base, env={'GIT_REFLOG_ACTION': 'merge master'})[0] == 0
-    assert _check(*base, env={'GIT_REFLOG_ACTION': 'pull ' + branch})[0] == 0
+    assert _check(*base, env={'GIT_REFLOG_ACTION': 'pull . ' + branch})[0] == 1
+    assert _check(*base, env={'GIT_REFLOG_ACTION': 'pull --no-rebase --no-ff . ' + branch})[0] == 1
+    assert _check(*base, env={'GIT_REFLOG_ACTION': 'pull . master'})[0] == 0
 
 
-@pytest.mark.skipif(shutil.which('sh') is None, reason='needs a POSIX sh')
-def test_installed_hook_blocks_the_merge_commit_and_is_opt_in(project, repo, tmp_path):
-    """End to end: copy the gate's files into a scratch install, run the real
-    installer, and let git itself refuse the merge commit."""
+needs_sh = pytest.mark.skipif(shutil.which('sh') is None, reason='needs a POSIX sh')
+
+
+def _hooked_repo(repo, tmp_path, **record_extra):
+    """Copy the gate's files into `repo`, run the REAL installer from it, and
+    point the gate's store at the data root the hooks' check script will read.
+    Returns the hooks dir."""
     install = tmp_path / 'install'
     for rel in ('mc/__init__.py', 'mc/project_sync.py', 'mc/atomic_json.py',
                 'mc/merge_review_gate.py', 'tools/merge-review-check.py',
-                'tools/install-merge-review-hook.sh', 'tools/git-hooks/pre-merge-commit'):
+                'tools/install-merge-review-hook.sh', 'tools/git-hooks/pre-merge-commit',
+                'tools/git-hooks/commit-msg'):
         (install / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(REPO_ROOT / rel, install / rel)
-    _install_project_record(install, repo, merge_requires_review=True)
-    gate.STORE_DIR = install / 'data' / gate.STORE_DIRNAME
-    hook = repo / '.git' / 'hooks' / 'pre-merge-commit'
-    # The check script and installer resolve the install from their own location.
-    # The hook is installed into the repo being merged into, from that repo's root.
+    _install_project_record(install, repo, **record_extra)
+    hooks = repo / '.git' / 'hooks'
+    assert not (hooks / 'pre-merge-commit').exists(), 'must not be installed automatically'
+    assert not (hooks / 'commit-msg').exists(), 'must not be installed automatically'
     shutil.copytree(install / 'tools', repo / 'tools')
     shutil.copytree(install / 'mc', repo / 'mc')
-    assert not hook.exists(), 'must not be installed automatically'
     r = subprocess.run(['sh', str(repo / 'tools' / 'install-merge-review-hook.sh')],
                        cwd=str(repo), capture_output=True, text=True, stdin=subprocess.DEVNULL)
     assert r.returncode == 0, r.stderr
-    assert hook.exists()
-    # Fill the project's data root the hook's check script will read.
     shutil.copytree(install / 'data', repo / 'data', dirs_exist_ok=True)
     gate.STORE_DIR = repo / 'data' / gate.STORE_DIRNAME
     _git(repo, 'add', '-A')
     _git(repo, 'commit', '-q', '-m', 'tooling')
+    return hooks
+
+
+def _run(cwd, *args):
+    return subprocess.run(['git', *args], cwd=str(cwd), capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL)
+
+
+@needs_sh
+def test_installed_hook_blocks_the_merge_commit_and_is_opt_in(project, repo, tmp_path):
+    """End to end: run the real installer and let git itself refuse the merge."""
+    hooks = _hooked_repo(repo, tmp_path, merge_requires_review=True)
+    assert (hooks / 'pre-merge-commit').exists() and (hooks / 'commit-msg').exists()
     _agent(project, 'hk1')
     _commit(repo, 'X = 3\n', name='other.py')
-    m = subprocess.run(['git', 'merge', '--no-edit', w.branch_name('hk1')], cwd=str(repo),
-                       capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    m = _run(repo, 'merge', '--no-edit', w.branch_name('hk1'))
     assert m.returncode != 0 and 'BLOCKED' in m.stderr, (m.stdout, m.stderr)
-    subprocess.run(['git', 'merge', '--abort'], cwd=str(repo), stdin=subprocess.DEVNULL)
+    _run(repo, 'merge', '--abort')
     tip = _git(repo, 'rev-parse', w.branch_name('hk1'))
     _review(project, 'hk1', tip)
-    m = subprocess.run(['git', 'merge', '--no-edit', w.branch_name('hk1')], cwd=str(repo),
-                       capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    m = _run(repo, 'merge', '--no-edit', w.branch_name('hk1'))
+    assert m.returncode == 0, (m.stdout, m.stderr)
+
+
+@needs_sh
+def test_commit_after_a_rejected_merge_is_refused_until_a_pass_is_recorded(
+        project, repo, tmp_path):
+    """Finding 1: the rejected merge leaves MERGE_HEAD behind, and `git commit
+    --no-edit` used to finish it without any check."""
+    _hooked_repo(repo, tmp_path, merge_requires_review=True)
+    _agent(project, 'hk2')
+    _commit(repo, 'X = 4\n', name='other.py')
+    before = _git(repo, 'rev-parse', 'HEAD')
+    m = _run(repo, 'merge', '--no-edit', w.branch_name('hk2'))
+    assert m.returncode != 0 and 'BLOCKED' in m.stderr, (m.stdout, m.stderr)
+    c = _run(repo, 'commit', '--no-edit')
+    assert c.returncode != 0 and 'BLOCKED' in c.stderr, (c.stdout, c.stderr)
+    assert _git(repo, 'rev-parse', 'HEAD') == before, 'the unreviewed merge must not land'
+    tip = _git(repo, 'rev-parse', w.branch_name('hk2'))
+    _review(project, 'hk2', tip)
+    c = _run(repo, 'commit', '--no-edit')
+    assert c.returncode == 0, (c.stdout, c.stderr)
+    assert _git(repo, 'rev-parse', 'HEAD^2') == tip
+
+
+@needs_sh
+def test_commit_msg_hook_leaves_ordinary_commits_alone(repo, tmp_path):
+    _hooked_repo(repo, tmp_path, merge_requires_review=True)
+    (repo / 'other.py').write_text('X = 5\n', encoding='utf-8')
+    _git(repo, 'add', 'other.py')
+    c = _run(repo, 'commit', '-m', 'plain commit')
+    assert c.returncode == 0, (c.stdout, c.stderr)
+
+
+@needs_sh
+def test_pull_of_an_agent_branch_is_gated(project, repo, tmp_path):
+    """Finding 2: `git pull --no-rebase --no-ff . <branch>` exports a
+    GIT_REFLOG_ACTION that starts with `pull`, which the check ignored."""
+    _hooked_repo(repo, tmp_path, merge_requires_review=True)
+    _agent(project, 'hk3')
+    _commit(repo, 'X = 6\n', name='other.py')
+    before = _git(repo, 'rev-parse', 'HEAD')
+    branch = w.branch_name('hk3')
+    p = _run(repo, 'pull', '--no-rebase', '--no-ff', '--no-edit', '.', branch)
+    assert p.returncode != 0 and 'BLOCKED' in p.stderr, (p.stdout, p.stderr)
+    assert _git(repo, 'rev-parse', 'HEAD') == before
+    _run(repo, 'merge', '--abort')
+    _review(project, 'hk3', _git(repo, 'rev-parse', branch))
+    p = _run(repo, 'pull', '--no-rebase', '--no-ff', '--no-edit', '.', branch)
+    assert p.returncode == 0, (p.stdout, p.stderr)
+
+
+@needs_sh
+@pytest.mark.parametrize('gate_on', [False, True])
+def test_merge_from_a_linked_worktree_resolves_the_main_checkout(
+        project, repo, tmp_path, gate_on):
+    """Finding 4: hooks are shared via the common git dir, but the check looked
+    the project up by the LINKED worktree's path, found nothing and exited 2 --
+    blocking every merge there, even with the gate off."""
+    extra = {'merge_requires_review': True} if gate_on else {}
+    _hooked_repo(repo, tmp_path, **extra)
+    _agent(project, 'hk4')
+    linked = tmp_path / 'linked'
+    _git(repo, 'worktree', 'add', '-q', '-b', 'side', str(linked))
+    _commit(linked, 'X = 7\n', name='other.py')
+    branch = w.branch_name('hk4')
+    m = _run(linked, 'merge', '--no-edit', branch)
+    if not gate_on:
+        assert m.returncode == 0, (m.stdout, m.stderr)
+        return
+    assert m.returncode != 0 and 'BLOCKED' in m.stderr, (m.stdout, m.stderr)
+    _run(linked, 'merge', '--abort')
+    _review(project, 'hk4', _git(repo, 'rev-parse', branch))
+    m = _run(linked, 'merge', '--no-edit', branch)
     assert m.returncode == 0, (m.stdout, m.stderr)
