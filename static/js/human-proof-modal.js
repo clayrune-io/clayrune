@@ -186,6 +186,10 @@ function _hpCleanup(modalId, result) {
 }
 
 function _hpCancel(modalId) {
+  // Once the passcode is sent the action may already be running; closing now would
+  // tell the caller "nothing was sent", which would be false.
+  const p = _hpPending.get(modalId);
+  if (p && p.busy) return;
   _hpCleanup(modalId, null);
 }
 window._hpCancel = _hpCancel;
@@ -244,10 +248,36 @@ async function _hpSubmit(modalId) {
     return;
   }
 
+  // A route can take a while to answer (a storyboard render uploads pictures and
+  // starts every scene before it replies). Without this the prompt looked dead and
+  // a second Confirm sent the action again.
+  if (p.busy) return;
   const passcodeInput = document.getElementById(`hp-passcode-${modalId}`);
   const passcode = (passcodeInput && passcodeInput.value) || '';
   if (passcodeInput) passcodeInput.value = ''; // read once, forget immediately
   if (!passcode) { p.errorText = 'Dashboard passcode required.'; _hpShow(modalId); return; }
+  p.busy = true;
+  _hpShowBusy(modalId);
+  try {
+    await _hpSendWithPasscode(modalId, p, passcode);
+  } finally {
+    p.busy = false;
+  }
+}
+function _hpShowBusy(modalId) {
+  const body = document.getElementById(`hp-body-${modalId}`);
+  if (!body) return;
+  body.querySelectorAll('input, button').forEach((el) => { el.disabled = true; });
+  const confirm = body.querySelector('.btn-add');
+  if (confirm) confirm.textContent = 'Working…';
+  const note = document.createElement('div');
+  note.dataset.hpBusy = '';
+  note.setAttribute('role', 'status');
+  note.style.cssText = 'font-size:11px;color:var(--text-faint)';
+  note.textContent = 'Passcode sent. Waiting for the server to finish; this can take a minute.';
+  body.appendChild(note);
+}
+async function _hpSendWithPasscode(modalId, p, passcode) {
 
   let bodyObj = {};
   if (p.fetchOptions.body) {
