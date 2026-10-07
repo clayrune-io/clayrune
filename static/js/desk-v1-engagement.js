@@ -169,7 +169,7 @@
     const lines = [];
     ids.forEach((id) => (by[id] || []).forEach((g) => {
       const p = _project(id);
-      lines.push(`<div class="desk-v1-eng-gap">${esc(st.project === 'all' && p ? p.name + ': ' : '')}${esc(g.label)}${g.detail && g.detail !== g.label ? ` <span class="desk-v1-eng-gap-detail">${esc(g.detail)}</span>` : ''}</div>`);
+      lines.push(`<div class="desk-v1-eng-gap">${esc(st.project === 'all' && p ? p.name + ': ' : '')}${esc(g.label)}${g.detail && g.detail !== g.label ? ` <span class="desk-v1-eng-gap-detail">${esc(g.detail)}</span>` : ''}${window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML(g.vault_locked ? g : g.detail || g.label) : ''}</div>`);
     }));
     return lines.length ? `<div class="desk-v1-eng-gaps">${lines.join('')}</div>` : '';
   }
@@ -180,7 +180,7 @@
     return `<div class="desk-v1-eng-check">
       <button type="button" data-eng-check ${one && !_poll.busy ? '' : 'disabled'}
         title="${esc(one ? 'Reads new replies and mentions now. A platform API read is paid and counted against the budget; the browser pane is free.' : 'Pick one project to check it')}">${_poll.busy ? 'Checking…' : 'Check now'}</button>
-      <span class="desk-v1-eng-check-line" data-eng-check-line aria-live="polite">${esc(_poll.line)}</span>
+      <span class="desk-v1-eng-check-line" data-eng-check-line aria-live="polite">${esc(_poll.line)}${window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML(_poll.vault_locked ? _poll : _poll.line) : ''}</span>
     </div>`;
   }
 
@@ -228,10 +228,10 @@
       _render();
       try {
         const rep = await S.api('POST', '/api/desk/engagement/poll', { project_id: st.project });
-        _poll = { busy: false, line: _pollLine(rep) };
+        _poll = { busy: false, line: _pollLine(rep), vault_locked: !!window.VaultUnlockUI && Object.values(rep.platforms || {}).some(window.VaultUnlockUI.locked) };
         await window.deskV1LoadEngagement();
       } catch (e) {
-        _poll = { busy: false, line: `Could not check: ${e && e.message ? e.message : e}` };
+        _poll = { busy: false, line: `Could not check: ${e && e.message ? e.message : e}`, vault_locked: !!window.VaultUnlockUI && window.VaultUnlockUI.locked(e) };
       }
       if (el.isConnected && _mountEl === el) _render();
     };

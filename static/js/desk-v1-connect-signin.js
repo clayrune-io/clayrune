@@ -235,7 +235,7 @@
     }
     return `<section class="desk-v1-cs-pick" data-cs-details aria-label="Ways to sign in">
         <div class="desk-v1-rules-group-title">Ways to sign in</div>
-        <div class="desk-v1-rules-hint">Everything you can do to sign in to ${esc(D.label)} is here. Step 4 only reviews and saves what you chose or did.${D.locked ? ' The vault is locked: unlock it above, then try again.' : ''}</div>
+        <div class="desk-v1-rules-hint">Everything you can do to sign in to ${esc(D.label)} is here. Step 4 only reviews and saves what you chose or did.${D.locked ? ' The vault is locked: unlock it here, then try again.' : ''}${D.locked && window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML({ vault_locked: true }) : ''}</div>
         <div class="desk-v1-cs-options" data-cs-options>
           ${_opt('browser', 'In the browser', Hd ? Hd.html() : '')}
           ${D.loaded && !D.route ? '' : _opt('saved', 'A saved login', saved)}
@@ -324,7 +324,7 @@
     const typing = forms[KEY] && forms[KEY].open;
     return `<section class="desk-v1-cs-pick" data-cs-result aria-label="Sign in with a saved login">
         <div class="desk-v1-rules-group-title">Sign in with a saved login</div>
-        <div class="desk-v1-rules-hint">Optional. Clayrune can type a username and password you have stored into the sign-in page that just opened, instead of you typing them in the pane.${R.locked ? ' The vault is locked: unlock it in Settings, then try again.' : ''}</div>
+        <div class="desk-v1-rules-hint">Optional. Clayrune can type a username and password you have stored into the sign-in page that just opened, instead of you typing them in the pane.${R.locked ? ' The vault is locked: unlock it here, then try again.' : ''}${R.locked && window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML({ vault_locked: true }) : ''}</div>
         ${R.logins.length ? `<label class="desk-v1-conn-add-field">Use a saved login
           <select class="desk-v1-rules-textinput" data-cs-pick>${opts.join('')}</select></label>` : '<div class="desk-v1-rules-hint" data-cs-nologins>There is no saved login for this service yet.</div>'}
         ${newLoginHTML(KEY)}

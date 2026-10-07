@@ -144,7 +144,7 @@
         <div class="desk-v1-conn-publish" data-conn-publish data-ready="${pub.ready ? 'true' : 'false'}">
           <span class="desk-v1-how-field-label">Publishing</span>
           <span data-conn-publish-text>${pub.ready ? 'connected' : locked ? 'not connected (your vault is locked; your sign-in is still saved)' : `not connected${reason ? ` (${esc(reason)})` : ''}`}</span>
-          ${fix}
+          ${locked && window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML(pub) : fix}
         </div>${note}${li}${open ? `<div data-conn-x-wizard="${esc(ch.id)}">${_connOv ? window.DeskV1Guides.xWizardHTML(_connOv) : '<div class="desk-v1-stub-empty">Loading…</div>'}</div>` : ''}`;
   }
 

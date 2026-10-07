@@ -258,6 +258,7 @@
           : x.state === 'needs_signin' ? esc(x.reason || 'The saved sign-in ran out. Sign in again.')
           : 'Press the button, then approve Clayrune on the X page that opens.'}</p>
         <button type="button" class="desk-v1-conn-btn" data-x-signin${app.client_id && !locked ? '' : ' disabled'}>${connected ? 'Sign in again' : 'Sign in with X'}</button>
+        ${locked && window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML(x) : ''}
         ${connected ? '<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-x-disconnect>Disconnect</button>' : ''}
       </section>
       <div class="desk-v1-guide-result" data-guide-result role="status"></div>

@@ -313,6 +313,7 @@
 <link rel="stylesheet" href="/static/css/desk-v1-connect-unknown-step.css">
 <link rel="stylesheet" href="/static/css/agent-read-card.css">
 <link rel="stylesheet" href="/static/css/desk-v1-vault-gate.css">
+<link rel="stylesheet" href="/static/css/vault-unlock-popup.css">
 <link rel="stylesheet" href="/static/css/claude-import.css">
 </head>
 <body>
@@ -2611,6 +2612,9 @@ function _toastSwipeable(el) {
 }
 
 function showToast(message, durationMs = 5000, key) {
+  if (window.VaultUnlockUI && window.VaultUnlockUI.locked(message)) {
+    return showActionToast(esc(message), [{ label: 'Unlock vault', primary: true, onclick: window.openVaultUnlock }], { key: key || 'vault-locked', autoDismissMs: durationMs });
+  }
   const container = document.getElementById('toast-container');
   if (!container) return;
   // First-run setup fires a save on nearly every click (theme, accent, model
@@ -2653,6 +2657,9 @@ function showToast(message, durationMs = 5000, key) {
 // key: repeat events of the same kind REPLACE their earlier toast in place
 //      instead of stacking a new one (see the browser-session poller).
 function showActionToast(message, actions, opts = {}) {
+  if (window.VaultUnlockUI && window.VaultUnlockUI.locked(message) && !(actions || []).some(a => a.label === 'Unlock vault')) {
+    actions = [...(actions || []), { label: 'Unlock vault', primary: true, onclick: window.openVaultUnlock }];
+  }
   const container = document.getElementById('toast-container');
   if (!container) return null;
   const prev = opts.key
@@ -4172,6 +4179,7 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/desk-v1-project.js"></script>
 <script type="module" src="/static/js/vault-unlock.js"></script>
 <script type="module" src="/static/js/desk-v1-vault-gate.js"></script>
+<script type="module" src="/static/js/vault-unlock-popup.js"></script>
 <script type="module" src="/static/js/desk-v1-guides.js"></script>
 <script type="module" src="/static/js/desk-v1-engines.js"></script>
 <script type="module" src="/static/js/desk-v1-brand-colours.js"></script>

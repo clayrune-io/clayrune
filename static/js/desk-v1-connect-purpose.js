@@ -219,7 +219,7 @@
       const fill = sr && sr.signin && refs.login && window.DeskV1ConnectSignin
         ? window.DeskV1ConnectSignin.fillHTML(`${p.id}:${b.route_id}`, { url: sr.signin.url, login: refs.login, profile: refs.browser_profile || refs.oauth_profile }) : '';
       return `<li data-cp-bound="${esc(b.route_id)}"><strong>${esc(b.route_title)}</strong>: ${esc(b.capabilities.join(', '))}
-        <span class="desk-v1-cf-badge" data-cp-setup="${esc(b.setup)}">${esc(SETUP_WORD[b.setup] || b.setup)}</span>${b.reason ? ` <span class="desk-v1-cp-why">${esc(b.reason)}</span>` : ''}${fill}</li>`;
+        <span class="desk-v1-cf-badge" data-cp-setup="${esc(b.setup)}">${esc(SETUP_WORD[b.setup] || b.setup)}</span>${b.reason ? ` <span class="desk-v1-cp-why">${esc(b.reason)}</span>` : ''}${b.setup === 'vault_locked' && window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML({ vault_locked: true }) : ''}${fill}</li>`;
     });
     const checked = P.checks[`${a.id}:${p.id}`];
     const msg = checked ? `<div class="desk-v1-cp-checkmsg" data-cp-checkmsg role="status">${checked.map((x) => esc(`${x.title}: ${x.message}`)).join(' ')}</div>` : '';

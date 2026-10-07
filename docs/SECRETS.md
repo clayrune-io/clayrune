@@ -12,6 +12,10 @@ file, a distilled skill, or the git repo.
 
 ---
 
+## Direct unlock link
+
+`/#unlock-vault` on the dashboard's current origin opens a shared passphrase + dashboard-passcode popup, including on a fresh load or through a phone/tunnel. Locked-vault messages offer **Unlock vault**, and an agent's full dashboard unlock URL renders as that button in chat. The popup reuses `DeskV1VaultGate` and `VaultUnlock.unlock`; no new unlock endpoint or credential persistence is introduced. It closes with confirmation on success (or when already unlocked). The user retries held work; unlocking never submits a paid action. Details: `docs/desk_v1/VAULT_UNLOCK_LINK.md`.
+
 ## Where things are stored
 
 Everything lives under `~/.clayrune/` — **outside the checkout**:

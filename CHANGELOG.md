@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Unlock the vault directly from a locked-credential message
+
+- **Unlock vault** opens a shared popup with the existing passphrase and dashboard-passcode form. `/#unlock-vault` works on a fresh dashboard load, on hash changes, and from agent chat links on desktop or phone, including remote HTTPS dashboards.
+- Studio price checks and Render refusals, Connections, engagement gaps, and locked-vault toasts offer the unlock action. Desk, secrets and passkey JSON refusals/status rows expose `vault_locked: true` while preserving their codes, status and reasons.
+- The existing human-only unlock route and both credentials remain required; inputs clear after submission. Unlocking confirms success and leaves held actions for the human to retry. Implementation and validation: `docs/desk_v1/VAULT_UNLOCK_LINK.md`. Local branch only; no push, merge or restart.
+
 ## [2026-10-07] - Studio confirms higher picture-inclusive render prices
 
 - Storyboard Render carries the displayed total. After preparing all scenes, a higher total returns HTTP 409 with the actual total and per-scene prices before any generation or render reservation. Missing or invalid displayed totals refuse the request.

@@ -867,6 +867,12 @@ For browser sign-in, **Choose an account** lists saved login names and usernames
 
 **Software package** accepts a package name or a GitHub repository address. Repository setup suggests the command only when it can read an explicit configuration; otherwise enter the start command yourself. Review shows the exact commit and command under **Details**. Install steps start unchecked and run only if selected and approved with the final passcode. Select the dependency step and, for a TypeScript repository, its build step when needed. npm uses `ci` when the repository has a lockfile, and dependency lifecycle scripts stay off. Reviewed source files must remain unchanged during setup and are checked before every start; changed source requires Review again. Dependencies and generated build files are recorded once at Save and are not rechecked at start; later changes to them can run code. The approval card states this risk. A saved connection is not proof the repository is safe or successfully signed in.
 
+## Unlock the vault from where you are
+
+When a saved credential is unavailable because the vault is locked, press **Unlock vault** in the error, Connections status, engagement status, or notification. The popup asks for your **Vault passphrase** and **Dashboard passcode**. Both are required, and both fields clear when submitted. A wrong credential keeps the popup open and explains the refusal. On success it closes and confirms the unlock; retry the action that was held, or recheck Connections to refresh its status. Opening this popup never retries a paid action.
+
+You can also open `/#unlock-vault` on the same dashboard address, including your phone or remote HTTPS address. A vault-unlock link in agent chat becomes an **Unlock vault** button on the dashboard you are viewing. The link works on a fresh load and while the dashboard is already open. If the vault is already unlocked, it confirms that and closes without asking for credentials. Use the close button or Escape to dismiss the popup.
+
 ## How to be Claydo (system instructions for the assistant)
 
 This section is for Claydo, not the user. The frontend parses inline

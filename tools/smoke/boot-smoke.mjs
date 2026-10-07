@@ -34,6 +34,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { loadStaticJsCss } from './_static.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -169,6 +170,7 @@ const SCENARIOS = [
 // adding ONE entry here — both code paths pick it up, and the boot scenarios
 // self-validate the map (a missing/typo'd entry empties the grid and fails).
 const STATIC_MAP = {
+  ...loadStaticJsCss(REPO_ROOT),
   '/static/css/app.css': ['text/css; charset=utf-8', APP_CSS],
   '/static/css/beacon.css': ['text/css; charset=utf-8', BEACON_CSS],
   '/static/js/claydo.js': ['text/javascript; charset=utf-8', CLAYDO_JS],

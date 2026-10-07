@@ -109,7 +109,7 @@ function body(html, api) {
   const walker = document.createTreeWalker(t.content, NodeFilter.SHOW_TEXT);
   while (walker.nextNode()) {
     const n = walker.currentNode;
-    if (!n.parentElement?.closest('details, code, [data-cfa-r]')) n.textContent = plain(n.textContent);
+    if (!n.parentElement?.closest('details, code, [data-cfa-r], [data-open-vault-unlock]')) n.textContent = plain(n.textContent);
   }
   return t.innerHTML;
 }
@@ -142,7 +142,7 @@ function bind(root) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   while (walker.nextNode()) {
     const n = walker.currentNode;
-    if (!n.parentElement?.closest('[data-cfw-details], input, textarea, option, code, [data-cfa-r]')) n.textContent = plain(n.textContent);
+    if (!n.parentElement?.closest('[data-cfw-details], input, textarea, option, code, [data-cfa-r], [data-open-vault-unlock]')) n.textContent = plain(n.textContent);
   }
   root.querySelectorAll('label').forEach(label => {
     if (label.closest('[data-cfw-details]')) return;

@@ -29,6 +29,10 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
   function _api(method, url, body) { return window.DeskV1Store.api(method, url, body); }
   function _toast(msg) { if (window.DeskV1Kit && window.DeskV1Kit.toast) window.DeskV1Kit.toast(msg); }
+  function _errorHTML(error) {
+    const message = error && error.message ? error.message : typeof error === 'object' ? JSON.stringify(error) : error;
+    return esc(message) + (window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML(error) : '');
+  }
   function _usd(n) { return n == null || isNaN(n) ? '—' : '$' + Number(n).toFixed(Number(n) < 1 ? 4 : 2).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1'); }
   function _uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 
@@ -149,9 +153,7 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
       if (gateAt && window.DeskV1VaultGate && (e.auth && e.auth.kind === 'oauth' || (G && G.keyGuideFor(e.id)) || _stateWord(e).key === 'locked')) window.DeskV1VaultGate.attach(gateAt, _stateWord(e).key === 'locked' ? { onUnlocked: reload } : undefined);   // a sign-in or a pasted key ends in a vault write; after an unlock the card re-reads and is Connected, no new sign-in
       const unlock = row.querySelector('[data-engine-unlock]');
       if (unlock) unlock.onclick = async () => {
-        const gate = gateAt && window.DeskV1VaultGate ? await window.DeskV1VaultGate.attach(gateAt, { onUnlocked: reload }) : null;
-        const pass = gate && gate.querySelector('[data-vg-pass]');
-        if (pass && !gate.hidden) pass.focus(); else reload();       // already unlocked elsewhere: just re-read
+        window.openVaultUnlock();
       };
       const signin = row.querySelector('[data-engine-signin]');
       if (signin) signin.onclick = async () => {
@@ -248,7 +250,7 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
 
   function _estimateHTML(st, eng) {
     if (st.estimating) return '<div class="desk-v1-engine-est" data-eng-estimate data-state="pricing">Pricing this render…</div>';
-    if (st.estimateError) return `<div class="desk-v1-engine-est" data-eng-estimate data-state="refused"><span data-eng-reason>${esc(st.estimateError)}</span></div>`;
+    if (st.estimateError) return `<div class="desk-v1-engine-est" data-eng-estimate data-state="refused"><span data-eng-reason>${_errorHTML(st.estimateError)}</span></div>`;
     const e = st.estimate;
     if (!e) return '<div class="desk-v1-engine-est" data-eng-estimate data-state="none"></div>';
     const lines = [];
@@ -263,7 +265,7 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
     return `<div class="desk-v1-engine-est" data-eng-estimate data-state="${e.refusal ? 'refused' : 'ok'}">
       <div>Estimate <strong data-eng-usd>${esc(_fmt(eng, _amount(eng, e.estimate)))}</strong>${e.estimate && e.estimate.approximate ? ' (approximate)' : ''}</div>
       ${lines.length ? `<div class="desk-v1-engine-est-detail">${esc(lines.join(' · '))}</div>` : ''}
-      ${e.refusal ? `<div class="desk-v1-engine-refusal" data-eng-reason>${esc(e.refusal.message)}</div>` : ''}
+      ${e.refusal ? `<div class="desk-v1-engine-refusal" data-eng-reason>${_errorHTML(e.refusal)}</div>` : ''}
     </div>`;
   }
 
@@ -273,8 +275,8 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
     const word = { queued: 'Queued', rendering: 'Rendering', ready: 'Ready', held: 'Held', failed: 'Failed' }[r.status] || r.status;
     const p = r.progress || { ready: 0, total: 0 };
     const bits = [`<div data-eng-render-status data-status="${esc(r.status)}">${r.status === 'rendering' || r.status === 'queued' ? '⟳ ' : ''}${esc(word)} · ${p.ready}/${p.total} clips${r.cost_credits ? ` · ${esc(_credits(r.cost_credits))} spent` : (r.cost_usd ? ` · ${esc(_usd(r.cost_usd))} spent` : '')}</div>`];
-    if (r.hold) bits.push(`<div class="desk-v1-engine-refusal" data-eng-hold>${esc(r.hold)}</div>`);
-    if (r.failure) bits.push(`<div class="desk-v1-engine-refusal" data-eng-failure>${esc(typeof r.failure === 'string' ? r.failure : (r.failure.message || JSON.stringify(r.failure)))}</div>`);
+    if (r.hold) bits.push(`<div class="desk-v1-engine-refusal" data-eng-hold>${_errorHTML(r.hold)}</div>`);
+    if (r.failure) bits.push(`<div class="desk-v1-engine-refusal" data-eng-failure>${_errorHTML(r.failure)}</div>`);
     (r.scenes || []).filter((s) => s.failure).forEach((s) => bits.push(`<div class="desk-v1-engine-refusal">Scene “${esc(s.label)}”: ${esc(typeof s.failure === 'string' ? s.failure : (s.failure.message || ''))}</div>`));
     const outs = (r.outputs && r.outputs.length ? r.outputs : (r.status === 'held' ? r.clips : [])) || [];
     if (outs.length) {
@@ -306,9 +308,9 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
       host.innerHTML = `<div class="desk-v1-engine-panel" data-eng-panel data-kind="video">
         <div class="desk-v1-engine-head">Render with an engine</div>
         ${_pickersHTML(p, st, 'video')}
-        ${conn.ready ? '' : `<div class="desk-v1-engine-refusal" data-eng-not-connected>${esc(p.engine.label)} is not connected yet. Open Connections in the Desk header to set it up.</div>`}
+        ${conn.ready ? '' : `<div class="desk-v1-engine-refusal" data-eng-not-connected>${window.VaultUnlockUI && window.VaultUnlockUI.locked(conn) ? _errorHTML({ ...conn, message: conn.reason || 'Your vault is locked.' }) : esc(p.engine.label) + ' is not connected yet. Open Connections in the Desk header to set it up.'}</div>`}
         ${_estimateHTML(st, p.engine)}
-        ${st.error ? `<div class="desk-v1-engine-refusal" data-eng-error>${esc(st.error)}</div>` : ''}
+        ${st.error ? `<div class="desk-v1-engine-refusal" data-eng-error>${_errorHTML(st.error)}</div>` : ''}
         <div class="desk-v1-engine-actions">
           <button type="button" class="btn-add" data-eng-render-btn${canRender ? '' : ' disabled'}>${busy ? 'Rendering…' : 'Render'}${st.estimate && st.estimate.estimate && !busy ? ` · ${esc(_fmt(p.engine, _amount(p.engine, st.estimate.estimate)))}` : ''}</button>
           <button type="button" class="btn-secondary" data-eng-reprice${busy ? ' disabled' : ''}>Price again</button>
@@ -337,7 +339,7 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
           st.estimate = out; st.estimateError = null;
         } catch (e) {
           if (st.seq !== seq) return;
-          st.estimate = null; st.estimateError = e && e.message ? e.message : String(e);
+          st.estimate = null; st.estimateError = e;
         }
         st.estimating = false;
         paint(engines);
@@ -394,7 +396,7 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
       } catch (e) {
         const confirmation = priceConfirmation(e, body(), fresh);
         if (confirmation) { st.priceConfirmation = confirmation; st.estimate = confirmation.quote; }
-        st.error = e && e.message ? e.message : String(e);
+        st.error = e;
       }
       st.submitting = false;
       paint(engines);
@@ -449,15 +451,15 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
         <textarea class="desk-v1-sb-edit-input" id="eng-prompt" rows="3" data-eng-prompt placeholder="What should the picture show?">${esc(st.prompt)}</textarea>
         ${_refsHTML(p, st)}
         ${_pickersHTML(p, st, 'image')}
-        ${conn.ready ? '' : `<div class="desk-v1-engine-refusal" data-eng-not-connected>${esc(p.engine.label)} is not connected yet. Open Connections in the Desk header to set it up.</div>`}
+        ${conn.ready ? '' : `<div class="desk-v1-engine-refusal" data-eng-not-connected>${window.VaultUnlockUI && window.VaultUnlockUI.locked(conn) ? _errorHTML({ ...conn, message: conn.reason || 'Your vault is locked.' }) : esc(p.engine.label) + ' is not connected yet. Open Connections in the Desk header to set it up.'}</div>`}
         ${st.prompt.trim() ? _estimateHTML(st, p.engine) : '<div class="desk-v1-engine-est" data-eng-estimate data-state="none">Type a description to see the price.</div>'}
-        ${st.error ? `<div class="desk-v1-engine-refusal" data-eng-error>${esc(st.error)}</div>` : ''}
+        ${st.error ? `<div class="desk-v1-engine-refusal" data-eng-error>${_errorHTML(st.error)}</div>` : ''}
         <div class="desk-v1-engine-actions">
           <button type="button" class="btn-add" data-eng-render-btn${canGo ? '' : ' disabled'}>${busy ? 'Generating…' : 'Generate'}${st.estimate && st.estimate.estimate && !busy ? ` · ${esc(_fmt(p.engine, _amount(p.engine, st.estimate.estimate)))}` : ''}</button>
         </div>
         ${j ? `<div class="desk-v1-engine-result" data-eng-render>
           <div data-eng-render-status data-status="${esc(j.status)}">${running ? '⟳ ' : ''}${esc(j.status === 'ready' ? 'Ready' : j.status === 'failed' ? 'Failed' : 'Generating')}${j.cost_credits ? ` · ${esc(_credits(j.cost_credits))} spent` : (j.cost_usd ? ` · ${esc(_usd(j.cost_usd))} spent` : '')}</div>
-          ${j.failure ? `<div class="desk-v1-engine-refusal" data-eng-failure>${esc(typeof j.failure === 'string' ? j.failure : (j.failure.message || ''))}</div>` : ''}
+          ${j.failure ? `<div class="desk-v1-engine-refusal" data-eng-failure>${_errorHTML(j.failure)}</div>` : ''}
           ${outs.map((o) => `<div data-eng-output data-path="${esc(o.path)}">${o.src ? `<img class="desk-v1-engine-img" src="${esc(o.src)}" alt="Generated picture">` : ''}<div class="desk-v1-engine-saved">Saved to the Material library: ${esc(o.path)}</div></div>`).join('')}
         </div>` : ''}
       </div>`;
@@ -493,7 +495,7 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
           st.estimate = out; st.estimateError = null;
         } catch (e) {
           if (st.seq !== seq) return;
-          st.estimate = null; st.estimateError = e && e.message ? e.message : String(e);
+          st.estimate = null; st.estimateError = e;
         }
         st.estimating = false;
         paint(engines);
@@ -525,7 +527,7 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
         st.job = out.job;
         if (st.job.status === 'ready' && typeof opts.onReady === 'function') opts.onReady(st.job);
       } catch (e) {
-        st.error = e && e.message ? e.message : String(e);
+        st.error = e;
       }
       st.submitting = false;
       paint(engines);

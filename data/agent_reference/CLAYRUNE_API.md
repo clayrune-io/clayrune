@@ -7,6 +7,8 @@ injected separately into your system prompt).
 All endpoints return JSON unless noted. Paths use `<project_id>` for the
 project you are running in (also injected into your prompt).
 
+When asking a human to unlock the vault, include `http://<dashboard-host>:<port>/#unlock-vault` (use the dashboard's HTTPS origin on a tunnel); chat renders it as an **Unlock vault** button opening the passphrase + dashboard-passcode popup.
+
 ---
 
 ## Projects

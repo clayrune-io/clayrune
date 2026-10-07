@@ -320,10 +320,10 @@ try {
       resettable ? `${code}: offers Reset` : `${code}: does not offer Reset`, `${code}: Reset button wrong`);
   }
 
-  // The vault buttons open the vault pages (stubbed: they are other modules' modals).
+  // Lock recovery opens the shared unlock popup; unconfigured recovery opens setup.
   reset();
   await page.evaluate(() => {
-    window.openSecretsVault = () => window.__pk.vault.push('open');
+    window.openVaultUnlock = () => window.__pk.vault.push('open');
     window.openVaultSetPassphrase = () => window.__pk.vault.push('set');
   });
   listing = { status: 503, body: { error: 'passkey_vault_locked' } };
@@ -334,7 +334,7 @@ try {
   await page.click('[data-pk-act="vault-set"]');
   const vcalls = await page.evaluate(() => window.__pk.vault);
   check(JSON.stringify(vcalls) === '["open","set"]',
-    '"Open the vault" opens the vault, "Set a vault passphrase" opens passphrase setup', `vault buttons called ${JSON.stringify(vcalls)}`);
+    '"Unlock vault" opens the unlock popup, "Set a vault passphrase" opens passphrase setup', `vault buttons called ${JSON.stringify(vcalls)}`);
 
   // A locked vault on a 200 listing (credentials readable, enrolment blocked) says the same.
   reset();
