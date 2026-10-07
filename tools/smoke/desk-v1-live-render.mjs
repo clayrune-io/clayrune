@@ -156,7 +156,7 @@ async function newPage(browser, { live, srv, ctx: sharedCtx, viewport = { width:
     if (m && method === 'GET') {
       const r = srv.renders[m[1]];
       srv.polls[m[1]]++;
-      if (srv.polls[m[1]] >= 2) Object.assign(r, { status: 'ready', progress: { ready: 2, total: 2 }, cost_usd: 0.8, outputs: [{ path: 'desk/library/video/Generated/rnd-1.mp4', mime: 'video/mp4', duration_sec: 6, attached_to: null }] });
+      if (srv.polls[m[1]] >= 2) Object.assign(r, { status: 'ready', progress: { ready: 2, total: 2 }, cost_usd: 0.8, outputs: [{ path: 'desk/library/video/Generated/rnd-1.mp4', local_path: 'C:/mc/data/uploads/desk/library/video/Generated/rnd-1.mp4', mime: 'video/mp4', duration_sec: 6, attached_to: null }] });
       else r.progress = { ready: 1, total: 2 };
       return J({ render: r });
     }
@@ -394,6 +394,9 @@ async function studioVideo(browser) {
   const done = await txt(page, '[data-eng-render]');
   (/Ready · 2\/2 clips/.test(done) && /rnd-1\.mp4/.test(done) && /saved to the Material library/.test(done) && /\$0\.8 spent/.test(done))
     ? ok('ready: the library file and the spend are shown: "' + done + '"') : fail('ready view: ' + done);
+  const vsrc = await page.$eval('[data-eng-output] video[data-eng-video]', (v) => v.getAttribute('src')).catch(() => null);
+  (vsrc === '/api/serve-file?inline=1&path=' + encodeURIComponent('C:/mc/data/uploads/desk/library/video/Generated/rnd-1.mp4'))
+    ? ok('the finished video plays inline in the Render panel') : fail('inline player src: ' + vsrc);
   (reqs(srv, 'GET', /\/engines\/renders\/rnd-1$/).length >= 2) ? ok('the job was polled (GET) until ready') : fail('poll count');
   (await page.$('[data-eng-render-btn][disabled]')) ? fail('Render stays disabled after the job finished') : ok('after a finished render the panel is usable again');
 

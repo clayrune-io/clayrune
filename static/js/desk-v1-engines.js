@@ -282,9 +282,16 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
     const outs = (r.outputs && r.outputs.length ? r.outputs : (r.status === 'held' ? r.clips : [])) || [];
     if (outs.length) {
       bits.push(`<ul class="desk-v1-engine-outputs" data-eng-outputs>${outs.map((o) =>
-        `<li data-eng-output data-path="${esc(o.path)}">${esc(String(o.path).split('/').pop())}${o.duration_sec ? ` · ${esc(o.duration_sec)}s` : ''}<span class="desk-v1-engine-saved"> · saved to the Material library${o.attached_to ? ' and attached' : ''}</span></li>`).join('')}</ul>`);
+        `<li data-eng-output data-path="${esc(o.path)}">${_playerHTML(o)}${esc(String(o.path).split('/').pop())}${o.duration_sec ? ` · ${esc(o.duration_sec)}s` : ''}<span class="desk-v1-engine-saved"> · saved to the Material library${o.attached_to ? ' and attached' : ''}</span></li>`).join('')}</ul>`);
     }
     return `<div class="desk-v1-engine-result" data-eng-render>${bits.join('')}</div>`;
+  }
+
+  // Watch a finished video where it was rendered, streamed like the library viewer does.
+  function _playerHTML(o) {
+    if (!o.local_path || !/^video\//.test(o.mime || '')) return '';
+    const src = '/api/serve-file?inline=1&path=' + encodeURIComponent(o.local_path);
+    return `<video class="desk-v1-engine-video" data-eng-video src="${esc(src)}" controls playsinline preload="metadata"></video>`;
   }
 
   const _TERMINAL = ['ready', 'held', 'failed'];
