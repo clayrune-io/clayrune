@@ -752,6 +752,21 @@ def test_openai_references_use_the_edits_endpoint_multipart(client, vendor, uplo
     assert not vendor.to('/v1/images/generations')
 
 
+def test_reference_path_may_be_relative_to_uploads_but_never_outside(client, vendor, uploads):
+    """The New image page names a library file the way the library lists it (relative
+    to data/uploads). That resolves under the uploads root; `..` out of it is refused."""
+    _campaign(_own(1))
+    lib = uploads / 'desk' / 'library' / 'image' / 'Studio'
+    lib.mkdir(parents=True)
+    (lib / 'ref.png').write_bytes(_png())
+    (uploads.parent / 'outside.png').write_bytes(_png())
+    vendor.on('POST', '/v1/images/edits', vendor.json(200, {'data': [{'b64_json': base64.b64encode(_png()).decode()}]}))
+    j = _submit(client, _openai_img(reference_images=[{'path': 'desk/library/image/Studio/ref.png'}])).get_json()['job']
+    assert j['status'] == 'ready' and _png() in vendor.to('/v1/images/edits')[0]['body']
+    with pytest.raises(eng.Refused):
+        eng._read_asset({'path': '../outside.png'})
+
+
 def test_openai_interrupted_sync_job_is_failed_with_cost_kept(client, vendor, monkeypatch):
     _campaign(_own(1))
     j = eng._new_job(eng.parse_request(_openai_img()), _desk.list_campaigns()[0], eng.Estimate(0.04, 'table', 'x'))

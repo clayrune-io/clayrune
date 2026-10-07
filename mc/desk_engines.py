@@ -613,7 +613,10 @@ def _read_asset(ref: Any) -> tuple[bytes, str]:
         raise Refused('invalid_input', 'the uploads directory is not wired; cannot read assets', 400)
     root = Path(UPLOADS_ROOT).resolve()
     try:
-        p = Path(ref['path']).resolve()
+        # The page names a library file by the path the library lists (relative to
+        # data/uploads); the storyboard path hands an absolute one. Same guard below.
+        raw = Path(ref['path'])
+        p = (raw if raw.is_absolute() else root / raw).resolve()
         p.relative_to(root)
     except (ValueError, OSError):
         raise Refused('invalid_input', 'an asset must live under data/uploads', 400)

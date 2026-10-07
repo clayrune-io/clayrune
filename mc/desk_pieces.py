@@ -143,6 +143,16 @@ def _src_for(rel: str, kind: str) -> str | None:
     return '/api/serve-image?path=' + quote(str(Path(root).resolve() / rel), safe='')
 
 
+def _play_for(rel: str, kind: str) -> str | None:
+    """The URL the library viewer plays a VIDEO from: /api/serve-file inline (ranged,
+    so the browser can seek), same uploads allowlist as the thumbnails. Images have
+    none: their `src` is the picture."""
+    root = UPLOADS_ROOT
+    if root is None or kind != 'video':
+        return None
+    return '/api/serve-file?inline=1&path=' + quote(str(Path(root).resolve() / rel), safe='')
+
+
 # -- shapes -----------------------------------------------------------------------
 
 def _clean_text(value, limit: int, what: str, *, required: bool = False) -> str:
@@ -815,7 +825,10 @@ def _library_items(kind: str, folder: Path, rel_root: Path) -> list[dict]:
     files.sort(key=lambda f: (-f.stat().st_mtime, f.name))
     for f in files:
         rel = f.resolve().relative_to(rel_root).as_posix()
-        items.append({'id': rel, 'kind': kind, 'title': f.name, 'path': rel, 'src': _src_for(rel, kind)})
+        item = {'id': rel, 'kind': kind, 'title': f.name, 'path': rel, 'src': _src_for(rel, kind)}
+        if kind == 'video':
+            item['play'] = _play_for(rel, kind)
+        items.append(item)
     return items
 
 
