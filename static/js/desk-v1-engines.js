@@ -26,6 +26,7 @@
 import { confirmationMatches, priceConfirmation, heldPriceConfirmation, renderStatusWord, dismissedPriceHold, dismissPriceHold } from './desk-v1-render-price.js';
 import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.js';
 import { submissionHeld, renderNeedsPolling, recoveryActionHTML, bindRenderRecovery } from './desk-v1-render-recovery.js';
+import { wireSceneRenderPanel, sceneResultNote } from './desk-v1-render-scenes.js';
 
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -279,6 +280,7 @@ import { submissionHeld, renderNeedsPolling, recoveryActionHTML, bindRenderRecov
     const word = renderStatusWord(r);
     const p = r.progress || { ready: 0, total: 0 };
     const bits = [`<div data-eng-render-status data-status="${esc(r.status)}">${r.status === 'rendering' || r.status === 'queued' ? '⟳ ' : ''}${esc(word)} · ${p.ready}/${p.total} clips${r.cost_credits ? ` · ${esc(_credits(r.cost_credits))} spent` : (r.cost_usd ? ` · ${esc(_usd(r.cost_usd))} spent` : '')}</div>`];
+    bits.push(sceneResultNote(r));
     if (r.hold) bits.push(`<div class="desk-v1-engine-refusal" data-eng-hold>${_errorHTML(r.hold)}</div>`);
     if (r.failure) bits.push(`<div class="desk-v1-engine-refusal" data-eng-failure>${_errorHTML(r.failure)}</div>`);
     (r.scenes || []).filter((s) => s.failure).forEach((s) => bits.push(`<div class="desk-v1-engine-refusal">Scene “${esc(s.label)}”: ${esc(typeof s.failure === 'string' ? s.failure : (s.failure.message || ''))}</div>`));
@@ -310,6 +312,7 @@ import { submissionHeld, renderNeedsPolling, recoveryActionHTML, bindRenderRecov
     st.mount = mine;
     const alive = () => st.mount === mine && host.isConnected;
     let currentEngines = null;
+    let sceneControls = null;
 
     const paint = (engines) => {
       if (!alive()) return;
@@ -317,7 +320,7 @@ import { submissionHeld, renderNeedsPolling, recoveryActionHTML, bindRenderRecov
       const p = _pick(engines, 'video', st);
       if (!p.engine) { host.innerHTML = '<div class="desk-v1-engine-panel" data-eng-panel><div class="desk-v1-stub-empty">No video engines are available.</div></div>'; return; }
       const running = st.render && !_TERMINAL.includes(st.render.status);
-      const busy = running || st.submitting;
+      const busy = running || st.submitting || st.scenesSubmitting;
       const conn = p.engine.connected || {};
       const canRender = conn.ready && !busy && !submissionHeld(st.render) && !st.acknowledging && !st.estimating && st.estimate && st.estimate.estimate && !st.estimate.refusal && !st.estimateError;
       host.innerHTML = `<div class="desk-v1-engine-panel" data-eng-panel data-kind="video">
@@ -341,6 +344,7 @@ import { submissionHeld, renderNeedsPolling, recoveryActionHTML, bindRenderRecov
       host.querySelector('[data-eng-render-btn]').onclick = () => submit(engines);
       bindRenderRecovery(host, { state: st, api: _api, alive, paint: () => paint(engines),
         estimate: () => estimate(engines), poll: () => poll(engines) });
+      if (sceneControls) sceneControls.sync();
     };
 
     const body = (extra) => Object.assign({ owner, engine_id: st.engineId, model_id: st.modelId, aspect_ratio: st.ratio, project_id: opts.projectId || undefined }, extra || {});
@@ -357,6 +361,7 @@ import { submissionHeld, renderNeedsPolling, recoveryActionHTML, bindRenderRecov
     };
 
     const estimate = (engines, restoreHeld = false) => {
+      if (sceneControls && !restoreHeld) sceneControls.refresh();
       clearTimeout(_timer);
       const seq = (st.seq = (st.seq || 0) + 1);
       st.priceConfirmation = null;
@@ -473,6 +478,14 @@ import { submissionHeld, renderNeedsPolling, recoveryActionHTML, bindRenderRecov
       if (!alive()) return;
       _pick(engines, 'video', st);
       currentEngines = engines;
+      sceneControls = wireSceneRenderPanel(host, { root: opts.sceneRoot, state: st.sceneState ||= {}, alive,
+        request: (scene_ids) => body({ scene_ids }), getRender: () => st.render,
+        busy: () => !!(st.submitting || st.acknowledging || submissionHeld(st.render)
+          || st.render && !_TERMINAL.includes(st.render.status)
+          || !(_pick(currentEngines, 'video', st).engine?.connected?.ready)),
+        onBusy: (on) => { st.scenesSubmitting = on; paint(currentEngines); },
+        onRender: (render) => { st.render = render; if (opts.onChange) opts.onChange(render); paint(currentEngines); poll(currentEngines); },
+      });
       host.__engRefresh = () => { if (alive()) { st.estimate = null; estimate(currentEngines); } };
       paint(engines);
       poll(engines);

@@ -25,6 +25,12 @@
 - Owner clicks reuse active renders; campaign reservations transfer atomically to child jobs. Interrupted or uncertain submissions retain child costs and stop without a paid retry. Human and passcode gates are unchanged.
 - Submission holds keep polling linked clips for free, saving accepted outputs and settling their costs. A human can acknowledge checking the engine dashboard to allow a new render; children stay visible, unattended acknowledgement is refused, and the next Render still requires its passcode.
 - Contract, checks and Ron's UI script: `docs/desk_v1/ASYNC_RENDER_SUBMISSION.md`. Branch only; no merge, push, restart or real spend.
+## [2026-10-07] - Render one or selected storyboard scenes (MC-1070)
+
+- Studio and Director scene cards offer **Render this scene**, selection checkboxes and **Render selected (N)** with the selected price. Both use the existing dashboard passcode gate and async pending record.
+- Only chosen scenes are priced, uploaded and generated. Saved untouched clips rebuild the video locally without another generation charge; a first partial render names missing scenes and does not replace a full-video attachment.
+- Higher prepared prices stop before generation and restore the same selection after reload. Submission holds, free acknowledgement, reservations and the prohibition on automatic paid retries remain unchanged.
+- Rebased onto MC-1068; contract, exact checks and the UI walkthrough: `docs/desk_v1/SCENE_SUBSET_RENDER.md`. Branch only; no merge, push, restart or real spend.
 
 ## [2026-10-07] - Browser pane passes Google's "may not be secure" check again
 

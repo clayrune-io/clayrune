@@ -1,0 +1,10 @@
+[data-scene-render-controls] { padding: 6px 0; flex-wrap: wrap; }
+[data-scene-render-controls] label { display: inline-flex; gap: 5px; align-items: center; min-height: 32px; }
+[data-scene-render-toolbar] { padding: 8px 0; }
+[data-scene-render-note] { font-size: 12px; padding-top: 4px; }
+.desk-v1-video-scene [data-scene-render-controls] { flex-direction: column; align-items: stretch; padding: 2px; }
+.desk-v1-video-scene [data-scene-render-controls] button { font-size: 11px; padding: 4px; white-space: normal; min-width: 0; }
+@media (max-width: 600px) {
+  [data-scene-render-controls] button, [data-scene-render-toolbar] button { min-height: 44px; white-space: normal; }
+  [data-scene-render-controls] label { min-height: 44px; }
+}

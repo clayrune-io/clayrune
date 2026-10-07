@@ -19,7 +19,7 @@ export function heldPriceConfirmation(render, request, fresh) {
       || !fresh.board_fingerprint || fresh.board_fingerprint !== hold.board_fingerprint) return null;
   const saved = hold.request || {};
   if (!saved.owner || !request.owner || saved.owner.kind !== request.owner.kind || saved.owner.id !== request.owner.id) return null;
-  const fields = ['engine_id', 'model_id', 'aspect_ratio', 'resolution', 'audio', 'project_id'];
+  const fields = ['engine_id', 'model_id', 'aspect_ratio', 'resolution', 'audio', 'project_id', 'scene_ids'];
   if (fields.some(k => JSON.stringify(saved[k]) !== JSON.stringify(request[k]))) return null;
   return priceConfirmation({ status: 409, body: hold }, request, fresh);
 }
