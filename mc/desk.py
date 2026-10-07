@@ -2523,13 +2523,17 @@ def record_engagement_reply(item_id: str, receipt: dict, text: str) -> dict | No
 
 
 def record_read(*, platform: str, project_id: str | None, kind: str, resources: int,
-                cost: float, ok: bool, error: str | None = None) -> dict:
+                cost: float, ok: bool, error: str | None = None,
+                campaign_id: str | None = None) -> dict:
     """Append one row to the read-cost ledger. Failed reads are recorded too
     (`ok: False`, cost as charged, usually 0) so spend is never undercounted
-    by omission."""
+    by omission. `campaign_id` is set only on a read charged to a campaign's
+    budget (`mc/desk_spend_guard.py`); the key is absent otherwise."""
     entry = {'id': _new_id('read'), 'at': now_iso(), 'platform': platform,
              'project_id': project_id, 'kind': kind, 'resources': int(resources),
              'cost': float(cost), 'ok': bool(ok), 'error': error}
+    if campaign_id:
+        entry['campaign_id'] = campaign_id
     with _store_lock:
         store = _read_store()
         store['engagement']['reads'].append(entry)

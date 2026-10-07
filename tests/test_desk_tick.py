@@ -155,6 +155,9 @@ def campaign(w, cid=CID, *, per_week=5, post_cap=10, end_date=None, accounts=('c
     end = {'post_cap': post_cap} if end_date is None else {'date': end_date}
     plan = {'brief': 'b', 'title': 'T', 'accounts': list(accounts), 'cadence': {'per_week': per_week}, 'end': end}
     plan.update(extra.pop('plan', {}))
+    # A paid X post needs a budget to draw on (bb65f3bb: no budget = $0). The
+    # default is wide enough that only the spend-guard tests ever run it dry.
+    extra.setdefault('how', {'budget': {'source': 'own', 'amount': 5}})
     r = w.client.post('/api/desk/campaigns?shape=v1', json=dict(
         {'id': cid, 'state': 'draft', 'projectId': 'alpha', 'rules': {},
          'map': {'stop': 'what', 'done': []}, 'plan': plan}, **extra))
