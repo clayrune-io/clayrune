@@ -50,6 +50,7 @@
 
   // The detail panel body for one saved service.
   function detailHTML(s) {
+    if (s.browser_connection) return window.DeskV1BrowserService.html(s);
     const link = s.link
       ? `<a href="${esc(s.link)}" target="_blank" rel="noopener noreferrer" data-svc-link>${esc(s.link)}</a>`
       : '<span class="desk-v1-rules-hint">No link saved.</span>';
@@ -77,6 +78,7 @@
   }
 
   function bindDetail(el, s, repaint) {
+    if (s.browser_connection) return window.DeskV1BrowserService.bind(el, s, repaint);
     const row = el.querySelector(`[data-conn-service="${CSS.escape(s.id)}"]`);
     if (!row) return;
     const list = rows() || [];

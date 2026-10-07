@@ -351,7 +351,7 @@
 
   registerBranch({
     id: 'signin', word: 'Sign in (username/password)',
-    match: (sel) => sel.type === 'signin' && !!_L(),
+    match: (sel, info) => sel.type === 'signin' && ['x','linkedin'].includes(_service(info)) && !!_L(),
     problem: () => (_L().summary() ? '' : 'Go back and choose how to sign in.'),
     save: () => _L().commit(),
     accountId: (res) => res.account_id,

@@ -890,6 +890,8 @@ browser manually.
 
 ## Desk Connections: add or check a service
 
+Every service also offers **Sign in on the website**, including YouTube and unknown web addresses. Generic browser connections save the service name, address and browser profile. They grant no execution access: Read and Post remain off. Saving a browser profile does not prove that it is signed in.
+
 Open the Desk and choose **Connections**, then **Add service**. Live connections must be enabled; preview mode explains this instead of opening a different editor.
 
 Every service follows the same six screens: **Add service > Connection options > Connection details > Permissions > Review > Result**. Enter the service name or web address and press **Continue**. A maintained service uses its built-in connection choices. An unknown web address is investigated automatically; its suggestions are information, not proof of a working connection. **Details** includes manual software/server setup and information-only alternatives. An unknown name without a built-in match asks you for its address rather than guessing a site.

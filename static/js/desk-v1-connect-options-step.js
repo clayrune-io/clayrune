@@ -10,6 +10,8 @@ function rows(api) {
   const items = [], name = serviceName(api.info);
   if (unknown(api.info)) {
     const seen = new Set();
+    items.push({type:'signin',variant:'browser-profile',...optionCopy('browser',name)});
+    seen.add('signin');
     for (const suggestion of discovery().answer?.options || []) {
       const family = /browser|signin|oauth|password/.test(suggestion.method) ? 'signin' : /mcp/.test(suggestion.method) ? 'mcp' : 'api';
       if (seen.has(family)) continue;

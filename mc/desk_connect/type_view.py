@@ -38,6 +38,7 @@ from typing import Any, Callable
 from mc.desk_connect import providers as _providers
 from mc.desk_connect import registry as _registry
 from mc.desk_connect import route_readiness as _ready
+from mc.desk_connect import browser_connections as _browser_connections
 
 TYPE_ORDER = ('signin', 'api', 'mcp')
 TYPE_LABELS = {'signin': 'Sign in (username/password)', 'api': 'API / developer app', 'mcp': 'MCP server'}
@@ -174,8 +175,8 @@ def project(profile: dict | None, *, provider_for: ProviderFor | None = None, ex
             v = _route_variant(profile, route, provider_for, executor)
             (delivery if v['explanation'] and v['explanation']['code'] == 'manual' else variants).append(v)
     variants += _custom_variants()
-    if not any(v['type'] == 'signin' for v in variants):
-        variants.append(_unreviewed_signin(profile is not None))
+    if not any(v['type'] == 'signin' and v['setup']['mode'] == 'full' for v in variants):
+        variants.append(_browser_connections.variant(profile['service_id'] if profile else None))
     picker = []
     for t in TYPE_ORDER:
         full = [v for v in variants if v['type'] == t and v['setup']['mode'] == 'full']
