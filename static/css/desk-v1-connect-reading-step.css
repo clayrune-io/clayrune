@@ -1,0 +1,7 @@
+/* Account reading is one section of the wizard's Permissions step. */
+[data-reading-settings] { border: 0; padding: 0; margin: 0 0 16px; min-width: 0; }
+[data-reading-settings] > legend { padding: 0; font-weight: 600; }
+[data-reading-settings] > p { margin: 6px 0 10px; }
+[data-reading-settings] .desk-v1-readpages { width: 100%; margin-top: 12px; }
+[data-reading-settings] .desk-v1-readpages > p { margin: 0; }
+[data-reading-settings] [data-reading-invalid]:empty { display: none; }

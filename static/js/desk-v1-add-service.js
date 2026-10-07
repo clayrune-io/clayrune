@@ -1,7 +1,7 @@
 // MC-1062/14: one entrance; account and engine setup use the same wizard.
 (function () {
   function reset() { window.DeskV1ConnectFlow?.reset(); }
-  function panelHTML(ctx) { return '<div class="desk-v1-add" data-add-service>' + (window.DeskV1Store.live() ? window.DeskV1ConnectFlow.html({ live: true, engines: ctx.engines }) : `<p>${window.DeskV1ConnectCopy.words.preview}</p>`) + '</div>'; }
+  function panelHTML(ctx) { return '<div class="desk-v1-add" data-add-service>' + (window.DeskV1Store.live() ? window.DeskV1ConnectFlow.html({ ...ctx, live: true }) : `<p>${window.DeskV1ConnectCopy.words.preview}</p>`) + '</div>'; }
   function bind(el, ctx) {
     const root = el.querySelector('[data-add-service]'); if (!root) return;
     window.DeskV1VaultGate?.attach(root);

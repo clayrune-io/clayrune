@@ -121,7 +121,7 @@
     const s = _permSummary();
     if (!s) return '<span data-sum-perm-none>Not chosen yet.</span>';
     const lines = s.lines.map((l) => `<div data-sum-perm-line>${esc(l)}</div>`).join('');
-    return `${lines}${s.pending ? '<div class="desk-v1-cfw-fact-text" data-sum-perm-pending>Applied after the connection is saved, with its own passcode check.</div>' : ''}`;
+    return `${lines}${s.pending ? `<div class="desk-v1-cfw-fact-text" data-sum-perm-pending>${s.permissionPending === false ? esc(window.DeskV1ConnectCopy.words.readingWillSave) : 'Applied after the connection is saved, with its own passcode check.'}</div>` : ''}`;
   }
 
   function _risks(br, sel, info) {
@@ -133,8 +133,8 @@
 
   function _stepsHTML() {
     const s = _permSummary();
-    const items = ['Save the connection. It asks for your passcode.'];
-    if (s && s.pending) items.push('Apply permissions. Each change asks for your passcode again.');
+    const items = [R.sel?.type === 'account' ? window.DeskV1ConnectCopy.words.readingSave : 'Save the connection. It asks for your passcode.'];
+    if (s && (s.permissionPending ?? s.pending)) items.push('Apply permissions. Each change asks for your passcode again.');
     return `<ol class="desk-v1-cfsum-steps" data-sum-steps aria-label="What happens when you save">${items.map((t) => `<li>${esc(t)}</li>`).join('')}</ol>`;
   }
 
@@ -245,7 +245,7 @@
     const o = _outcome(), p = R.perms;
     if (!p) return '<span data-sum-perm-state="unchanged">Unchanged. None were chosen.</span>';
     if (o.kind === 'partial') return `<span data-sum-perm-state="not_applied">Not applied.</span> ${o.lines.map((l) => `<div data-sum-perm-line>${esc(l)}</div>`).join('')}`;
-    const changed = p.desk.status === 'saved' || p.site.status === 'saved';
+    const changed = p.desk.status === 'saved' || p.site.status === 'saved' || (p.extra || []).some(r => r.status === 'saved');
     return `<span data-sum-perm-state="${changed ? 'saved' : 'unchanged'}">${changed ? 'Saved.' : 'Unchanged.'}</span> ${R.requested.map((l) => `<div data-sum-perm-line>${esc(l)}</div>`).join('')}`;
   }
 
@@ -304,7 +304,7 @@
     R.busy = ''; api.repaint();
   }
 
-  function _anyPermSaved() { return !!R.perms && (R.perms.desk.status === 'saved' || R.perms.site.status === 'saved'); }
+  function _anyPermSaved() { return !!R.perms && (R.perms.desk.status === 'saved' || R.perms.site.status === 'saved' || (R.perms.extra || []).some(r => r.status === 'saved')); }
   function _resultTitle(api) {
     if (!R.result) return 'Not saved';
     if (_outcome().kind !== 'partial') return `${_label(api.info)} saved`;

@@ -111,24 +111,5 @@
     });
   }
 
-  // Save a new one (the Add service panel calls this). Resolves {ok, service?}.
-  // Live: the row appears at once and takes the server's answer; a refusal takes
-  // it back out and the server's reason is toasted by the store. Demo: memory only.
-  function create(body, repaint) {
-    const list = rows() || [];
-    const rec = {
-      id: body.id, name: body.name, link: body.link || '', kind: 'saved_for_agents', publish: false,
-      credential: { name: body.credential || '', in_vault: body.credential ? (_live() ? null : false) : null },
-    };
-    return window.DeskV1Store.write({
-      label: `Saved ${rec.name}${_live() ? '' : ' (preview: nothing was saved)'}`,
-      repaint,
-      apply: () => { list.push(rec); repaint(); },
-      unapply: () => { const i = list.indexOf(rec); if (i >= 0) list.splice(i, 1); },
-      request: () => _api('POST', '/api/desk/services', body).then((saved) => { Object.assign(rec, saved); repaint(); return saved; }),
-      undoRequest: () => _api('DELETE', `/api/desk/services/${encodeURIComponent(body.id)}`),
-    }).then((r) => Object.assign({ service: rec }, r));
-  }
-
-  window.DeskV1Services = { STATUS, rows, load, loadError, byId, detailHTML, bindDetail, create };
+  window.DeskV1Services = { STATUS, rows, load, loadError, byId, detailHTML, bindDetail };
 })();

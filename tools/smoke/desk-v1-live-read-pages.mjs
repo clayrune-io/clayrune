@@ -1,28 +1,13 @@
 #!/usr/bin/env node
-/**
- * Desk v1 (44712cf4 follow-up) - any site's account reads through the browser pane.
- * Connections against a fake server, `desk_v1_live` ON, at 1440 and 390.
- *
- * What is under test is what the browser shows and sends (the routes are pinned by
- * tests/test_desk_account_read_pages.py):
- *   1. A YouTube / Instagram account carries Read via with the browser pane as its ONLY
- *      route (no API button), and takes a signed-in profile (PATCH browser_profile).
- *   2. X keeps its pane / API choice; LinkedIn is the pane alone (no API option); a LinkedIn
- *      account stored as `api` is NOT moved: it asks for a choice and one click sends `pane`.
- *      A blog carries no Read via at all. A read-only account (capability none) reads
- *      "Read only" and says the Desk does not publish there.
- *   3. The activity-page address is never asked first: no block while discovery is fine.
- *      When the coverage says `pages_needed` the block appears with the reason, takes one
- *      https address (PATCH read_pages [{role:'activity', url}]), lists it, and Remove
- *      sends the list without it. A non-https address is refused in the page, no request.
- *   4. A refused save (server error) shows the server's words and keeps the list as it was.
- *   5. At 390 nothing overflows sideways and the input and its button are on screen.
- *
- * RUN   cd tools/smoke && node desk-v1-live-read-pages.mjs
+/** MC-1062 follow-up: production wizard, actual type projections, 1440/390.
+ * Reopen prefill, pane/app choice, pages_needed, draft-only edits, Review/Save,
+ * refusal and retry, untouched preservation, account isolation, viewport fit.
+ * Screenshots: _scratch/connect_reading/{youtube,linkedin}_{1440,390}.png.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright';
 import { loadFixtures, workspaceFromFixtures } from './desk-v1-fixture-api.mjs';
 import { loadStaticJsCss } from './_static.mjs';
@@ -32,6 +17,18 @@ const REPO_ROOT = resolve(__dirname, '..', '..');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
 const ORIGIN = 'http://mc.smoke.test';
 const STATIC = loadStaticJsCss(REPO_ROOT);
+const SHOTS = resolve(REPO_ROOT, '_scratch', 'connect_reading');
+mkdirSync(SHOTS, { recursive: true });
+const TYPES = JSON.parse(execFileSync(process.env.MC_PYTHON || 'python', ['-c', `
+import json
+from mc.desk_connect import resolve, type_view
+out={}
+for name in ['x', 'linkedin', 'youtube', 'instagram']:
+    got=resolve.resolve('https://'+name+'.com', own_hosts=('mc.smoke.test',))
+    service=got.pop('service')
+    out['https://'+name+'.com']={**got, **type_view.project_service(service['id'] if service else None)}
+print(json.dumps(out))
+`], {cwd: REPO_ROOT, encoding:'utf8', env:{...process.env, PYTHONIOENCODING:'utf-8'}}));
 
 let bad = 0;
 const ok = (m) => console.log('  ✓ ' + m);
@@ -48,7 +45,7 @@ function makeServer() {
   srv.accounts = fx.channels.filter((c) => ['x', 'linkedin', 'blog'].includes(c.platform))
     .map((c) => ({ ...JSON.parse(JSON.stringify(c)), publish: { ready: true, reason: null, secret: null, unattended_ok: null } }));
   srv.accounts.push(
-    { id: 'ch-yt', platform: 'youtube', identity: 'UC123', label: 'YouTube · UC123', capability: 'none', voice: '', connected: false, publish: NOT_READY },
+    { id: 'ch-yt', platform: 'youtube', identity: 'UC123', label: 'YouTube · UC123', capability: 'none', voice: '', browser_profile: 'yt-main', connected: false, publish: NOT_READY },
     { id: 'ch-ig', platform: 'instagram', identity: 'clayrune', label: 'Instagram · clayrune', capability: 'none', voice: '', connected: false, publish: NOT_READY });
   srv.accounts.find((a) => a.platform === 'linkedin').read_via = 'api';      // saved before the option was removed
   srv.workspace = () => ({ ...workspaceFromFixtures(fx), projects, accounts: srv.accounts, pieces: [] });
@@ -81,7 +78,7 @@ async function open(browser, srv, viewport) {
     if (path === '/api/local-auth/status') return J({ configured: true });
     if (path === '/api/browser/agent-read') return J({ profiles: {} });
     if (path === '/api/browser/profiles') return J({ profiles: [] });
-    if (/^\/api\/desk\/engagement\/coverage\//.test(path)) return J({ project_id: 'p', coverage: srv.coverage });
+    if (/^\/api\/desk\/engagement\/coverage\//.test(path)) return srv.coverageError ? J({error:srv.coverageError},503) : J({ project_id: 'p', coverage: srv.coverage });
     if (!path.startsWith('/api/desk/')) return route.abort();
     let body = null;
     try { body = req.postDataJSON(); } catch (_) { /* none */ }
@@ -89,6 +86,13 @@ async function open(browser, srv, viewport) {
     if (path === '/api/desk/workspace') return J(srv.workspace());
     if (path === '/api/desk/engines') return J({ engines: [] });
     if (path === '/api/desk/services') return J([]);
+    if (path === '/api/desk/connect/types') {
+      if (srv.delayTypes === body.input) await new Promise(resolve => { srv.resumeTypes=resolve; srv.typesRequested(); });
+      return J(TYPES[body.input]);
+    }
+    if (path === '/api/desk/connect/suggest') return J({ suggestions:[] });
+    if (path === '/api/desk/connect/purposes') return J({ accounts:[] });
+    if (/^\/api\/desk\/connect\/permissions\//.test(path)) return J({ policy:{ state:'legacy', scopes:[] } });
     if (path === '/api/desk/accounts' && method === 'GET') return J(srv.accounts);
     const m = path.match(/^\/api\/desk\/accounts\/([^/]+)$/);
     if (m && method === 'PATCH') {
@@ -118,130 +122,137 @@ const selectTile = async (page, id) => {
 const patches = (srv, id) => srv.log.filter((r) => r.method === 'PATCH' && r.path === `/api/desk/accounts/${id}`);
 const realErrors = (errs) => errs.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
 
+
+async function reopen(page, id) {
+  await selectTile(page,id);
+  await page.click(`[data-conn-account="${id}"] [data-cs-reopen]`);
+  await page.waitForSelector('[data-cfw-step="permissions"] [data-reading-settings]');
+  await page.waitForFunction(() => !document.querySelector('[data-cfw-primary]').disabled || !!document.querySelector('[data-reading-choice-needed]'));
+}
+async function next(page, step) {
+  await page.click('[data-cfw-primary]');
+  await page.waitForSelector(`[data-cfw-step="${step}"]`);
+}
+async function save(page) { await next(page,'review'); await next(page,'result'); }
+const writes = srv => srv.log.filter(r => !['GET'].includes(r.method) && !['/api/desk/connect/types','/api/desk/connect/purposes','/api/desk/connect/suggest','/api/desk/connect/custom/connections'].includes(r.path));
 async function run(browser, viewport, label) {
   console.log(label);
   const srv = makeServer();
-  const { ctx, page, pageErrors } = await open(browser, srv, viewport);
-  const R = '[data-conn-account="ch-yt"]';
+  const {ctx,page,pageErrors} = await open(browser,srv,viewport);
+  await selectTile(page,'ch-yt');
+  check(!(await page.$('[data-readvia-row], [data-readpages-for]')), 'account card has no second reading editor');
+  await reopen(page,'ch-yt');
+  check(await page.inputValue('[data-reading-profile]')==='yt-main', 'reopen pre-fills the account profile');
+  check(await page.locator('[data-reading-via="pane"]').isChecked() && !(await page.$('[data-reading-via="api"]')), 'YouTube defaults to pane, without an app option');
+  check(!(await page.$('[data-reading-pages]')), 'activity addresses are not asked before discovery needs them');
+  check(writes(srv).length===0,'opening Permissions sends no write',JSON.stringify(writes(srv)));
+  await save(page);
+  check(writes(srv).length===0,'an untouched saved account sends no write');
 
-  // 1-2: which accounts carry Read via, and which routes they offer
-  await selectTile(page, 'ch-yt');
-  check(await page.$(`${R} [data-readvia-row][data-platform="youtube"] [data-readvia-fixed]`)
-        && !(await page.$(`${R} [data-readvia]`)) && !!(await page.$(`${R} [data-readvia-profile]`)),
-        'YouTube: Read via is the browser pane alone (no API button) and takes a profile', 'YouTube Read via row wrong');
-  await selectTile(page, 'ch-ig');
-  check(!!(await page.$('[data-conn-account="ch-ig"] [data-readvia-fixed]')) && !(await page.$('[data-conn-account="ch-ig"] [data-readvia]')),
-        'Instagram: the browser pane alone', 'Instagram Read via row wrong');
-  const yst = await page.textContent('[data-conn-tile="ch-yt"]');
-  check(/Read only/.test(yst) && !/Not connected/.test(yst), 'a read-only tile reads "Read only", not "Not connected"', `YouTube tile: ${yst}`);
-  await selectTile(page, 'ch-yt');
-  check(/does not publish/.test(await page.textContent(`${R} [data-conn-publish-text]`)) && !(await page.$(`${R} [data-conn-x-guide]`)),
-        'a read-only account says the Desk does not publish there, with no Connect button', 'publishing line wrong');
-  await selectTile(page, 'ch-x-ron');
-  const xl = await page.$$eval('[data-conn-account="ch-x-ron"] [data-readvia]', (bs) => bs.map((b) => b.textContent.trim()));
-  check(xl.length === 2 && xl[0] === 'Browser pane (no charge)' && /^X API/.test(xl[1]),
-        'X keeps its pane / API choice', `X buttons: ${JSON.stringify(xl)}`);
-  const LI = '[data-conn-account="ch-li-page"]';
-  await selectTile(page, 'ch-li-page');
-  check(!(await page.$(`${LI} [data-readvia="api"]`)) && !(await page.$(`${LI} [data-readvia-profile]`)) && !!(await page.$(`${LI} [data-readvia-needs-choice]`))
-        && (await page.$$(`${LI} [aria-pressed="true"]`)).length === 0,
-        'LinkedIn stored as api: no API button, nothing pressed, no profile yet, asks for a choice', 'LinkedIn stale row wrong');
-  check(patches(srv, 'ch-li-page').length === 0, 'the stored api setting was not rewritten by opening the screen', 'a PATCH was sent on open');
-  await page.click(`${LI} [data-readvia="pane"]`);
-  await page.waitForSelector(`${LI} [data-readvia-fixed]`, { timeout: 6000 });
-  const lp = patches(srv, 'ch-li-page');
-  check(lp.length === 1 && lp[0].body.read_via === 'pane' && !!(await page.$(`${LI} [data-readvia-profile]`)),
-        'one click on the browser pane sends read_via pane and brings the profile field back', `LinkedIn choice: ${JSON.stringify(lp.map((p) => p.body))}`);
-  await selectTile(page, 'ch-blog');
-  check(!(await page.$('[data-conn-account="ch-blog"] [data-readvia-row]')), 'a blog carries no Read via', 'blog shows Read via');
+  srv.coverage=[{platform:'youtube',state:'not_connected',pages:{status:'pages_needed',reason:'not found'}}];
+  await reopen(page,'ch-yt');
+  await page.waitForSelector('[data-reading-pages]');
+  await page.locator('[data-cfw]').evaluate(e=>e.scrollIntoView({block:'start'}));
+  await page.locator('[data-cfw-primary]').scrollIntoViewIfNeeded();
+  await page.screenshot({path:resolve(SHOTS,`youtube_${viewport.width}.png`)});
+  await page.fill('[data-reading-address]','http://studio.youtube.com/channel/UC123/comments');
+  await page.click('[data-reading-add]');
+  check((await page.textContent('[data-reading-invalid]')).includes('https://') && await page.locator('[data-cfw-primary]').isDisabled(), 'non-https address is refused and cannot Continue');
+  check(writes(srv).length===0,'invalid address sends nothing');
+  await page.fill('[data-reading-address]',ADDR);
+  await page.click('[data-reading-add]');
+  check(writes(srv).length===0,'Add address only changes the draft');
+  await next(page,'review');
+  check((await page.textContent('[data-sum-row="permissions"]')).includes(ADDR),'Review shows the chosen activity address');
+  await page.click('[data-cfw-back]');
+  await page.waitForSelector('[data-cfw-step="permissions"] [data-reading-remove]');
+  check((await page.textContent('[data-reading-pages]')).includes(ADDR),'Back preserves the activity draft');
+  check(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),`Permissions fits ${viewport.width}px`);
+  await page.locator('[data-reading-add]').scrollIntoViewIfNeeded();
+  const rect = await page.locator('[data-reading-address]').boundingBox();
+  check(rect.x>=0 && rect.x+rect.width<=viewport.width,'activity address field fits the viewport');
+  await save(page);
+  const sent = patches(srv,'ch-yt');
+  check(sent.length===1 && JSON.stringify(sent[0].body.read_pages)===JSON.stringify([{role:'activity',url:ADDR}]) && typeof sent[0].body.project_id==='string', 'Save sends the account read_pages PATCH with its project');
+  check(!('read_via' in sent[0].body) && !('browser_profile' in sent[0].body), 'page save preserves untouched method and profile');
+  check((await page.textContent('[data-sum-row="permissions"]')).includes('Saved'), 'Result reports reading settings saved');
 
-  // profile
-  await selectTile(page, 'ch-yt');
-  check(!(await page.$(`${R} [data-readpages-for]:not([hidden])`)),
-        'no address field while discovery has not asked for one', 'the address block showed before pages_needed');
-  await page.fill(`${R} [data-readvia-profile]`, 'yt-main');
-  await page.dispatchEvent(`${R} [data-readvia-profile]`, 'change');
-  await page.waitForFunction(() => true);
-  await new Promise((r) => setTimeout(r, 300));
-  const pp = patches(srv, 'ch-yt');
-  check(pp.length === 1 && pp[0].body.browser_profile === 'yt-main' && typeof pp[0].body.project_id === 'string' && !('read_pages' in pp[0].body),
-        'typing a profile PATCHes browser_profile only, filed under a project', `profile PATCH: ${JSON.stringify(pp.map((p) => p.body))}`);
+  await reopen(page,'ch-yt');
+  check((await page.textContent('[data-reading-pages]')).includes(ADDR),'reopen pre-fills saved pages');
+  await page.click('[data-reading-remove]');
+  await page.fill('[data-reading-profile]','yt-other');
+  check(patches(srv,'ch-yt').length===1,'Remove and profile edits remain drafts until Save');
+  srv.refuse='saved browser profile does not exist';
+  await save(page);
+  check((await page.textContent('[data-sum-banner="partial"]')).includes(srv.refuse), 'refused PATCH shows the exact server error as a partial result');
+  check(srv.accounts.find(a=>a.id==='ch-yt').read_pages.length===1,'refused save preserves the stored list');
+  srv.refuse=null;
+  await page.click('[data-sum-act="perms"]');
+  await page.waitForFunction(() => !document.querySelector('[data-sum-banner="partial"]'));
+  const removed = patches(srv,'ch-yt').at(-1).body;
+  check(removed.read_pages.length===0 && removed.browser_profile==='yt-other', 'retry saves the unchanged removal/profile draft');
+  check(!('read_via' in removed),'retry does not change the reading method');
 
-  // 3: pages_needed asks once
-  srv.coverage = [{ platform: 'youtube', state: 'not_read_yet', via: 'pane', message: 'Connected, not read yet on YouTube',
-    pages: { source: 'none', status: 'pages_needed', reason: 'studio.youtube.com start page offered no usable links', pages: [] } }];
-  await page.fill(`${R} [data-readvia-profile]`, 'yt-main2');
-  await page.dispatchEvent(`${R} [data-readvia-profile]`, 'change');
-  await page.press(`${R} [data-readvia-profile]`, 'Tab');   // the blur fires the browser's own change: let that save and repaint finish
-  await page.waitForSelector(`${R} [data-readpages-for]:not([hidden]) [data-readpages-input]`, { timeout: 6000 });
-  await new Promise((r) => setTimeout(r, 400));
-  const why = await page.$eval(`${R} [data-readpages-why]`, (e) => e.textContent);
-  check(/could not find the page/.test(why) && /start page offered no usable links/.test(why),
-        'pages_needed shows the block with the reader\'s reason', `why text: ${why}`);
-  const before = patches(srv, 'ch-yt').length;
-  await page.fill(`${R} [data-readpages-input]`, 'http://studio.youtube.com/x');
-  await page.click(`${R} [data-readpages-add]`);
-  check((await page.$eval(`${R} [data-readpages-status]`, (e) => e.textContent)).includes('https://') && patches(srv, 'ch-yt').length === before,
-        'a non-https address is refused in the page, nothing is sent', 'http address was sent or not refused');
-  await page.fill(`${R} [data-readpages-input]`, ADDR);
-  await page.click(`${R} [data-readpages-add]`);
-  await page.waitForSelector(`${R} [data-readpages-page="0"]`, { timeout: 6000 });
-  const sent = patches(srv, 'ch-yt').pop();
-  check(JSON.stringify(sent.body.read_pages) === JSON.stringify([{ role: 'activity', url: ADDR }]),
-        'one https address PATCHes read_pages [{role: activity, url}]', `read_pages PATCH: ${JSON.stringify(sent.body)}`);
-  check((await page.$eval(`${R} [data-readpages-page="0"]`, (e) => e.textContent)).includes(ADDR),
-        'the saved address is listed', 'saved address not listed');
+  const li = srv.accounts.find(a=>a.platform==='linkedin');
+  li.browser_profile='main';
+  await page.evaluate(id => { window.DeskV1Store.state().channels.find(a=>a.id===id).browser_profile='main'; },li.id);
+  await reopen(page,li.id);
+  check(await page.locator('[data-cfw-primary]').isDisabled() && !!(await page.$('[data-reading-choice-needed]')) && !(await page.$('[data-reading-via="api"]')), 'LinkedIn stored as app asks for an explicit choice');
+  check(patches(srv,li.id).length===0 && li.read_via==='api','opening LinkedIn does not move its saved reading method');
+  await page.click('[data-reading-via="pane"]');
+  check(await page.inputValue('[data-reading-profile]')==='main','LinkedIn retains its saved browser profile');
+  await page.locator('[data-cfw]').evaluate(e=>e.scrollIntoView({block:'start'}));
+  await page.locator('[data-cfw-primary]').scrollIntoViewIfNeeded();
+  await page.screenshot({path:resolve(SHOTS,`linkedin_${viewport.width}.png`)});
+  await next(page,'review');
+  check((await page.textContent('[data-sum-row="permissions"]')).includes('Browser sign-in (no charge)'), 'Review shows the explicit LinkedIn pane choice');
+  await next(page,'result');
+  check(patches(srv,li.id).length===1 && patches(srv,li.id)[0].body.read_via==='pane','Save records the explicit LinkedIn choice');
+  await reopen(page,li.id);
+  check(await page.locator('[data-reading-via="pane"]').isChecked() && !(await page.$('[data-reading-choice-needed]')),'next reopen pre-fills the chosen method');
 
-  // 4: refusal keeps the list
-  srv.refuse = 'this action needs a human: an unattended agent session cannot choose how an account is read';
-  await page.fill(`${R} [data-readpages-input]`, 'https://studio.youtube.com/second');
-  await page.click(`${R} [data-readpages-add]`);
-  await page.waitForFunction((sel) => /needs a human/.test((document.querySelector(sel) || {}).textContent || ''), `${R} [data-readvia-status]`, { timeout: 6000 });
-  check((await page.$$(`${R} [data-readpages-page]`)).length === 1, 'a refused save shows the server\'s words and keeps the list as it was', 'list changed on refusal');
-  srv.refuse = null;
-
-  // 5: layout
-  const box = await page.$eval(`${R} [data-readpages-for]`, (host) => {
-    const q = (s) => host.querySelector(s).getBoundingClientRect();
-    const i = q('[data-readpages-input]'); const b = q('[data-readpages-add]');
-    return { inputL: i.left, inputW: i.width, btnR: b.right, vw: window.innerWidth, scroll: document.documentElement.scrollWidth };
+  const x = srv.accounts.find(a=>a.platform==='x');
+  await reopen(page,x.id);
+  check(await page.locator('[data-reading-via="pane"]').isChecked() && !!(await page.$('[data-reading-via="api"]')),'X offers both routes and defaults to pane');
+  await page.click('[data-reading-via="api"]');
+  check(!(await page.$('[data-reading-profile], [data-reading-pages]')),'app choice hides pane-only settings');
+  await save(page);
+  check(patches(srv,x.id).length===1 && patches(srv,x.id)[0].body.read_via==='api','X app choice saves only on Review');
+  await reopen(page,x.id);
+  check(await page.locator('[data-reading-via="api"]').isChecked(),'X app choice pre-fills on reopen');
+  await reopen(page,'ch-ig');
+  check(await page.locator('[data-reading-via="pane"]').isChecked() && !(await page.$('[data-reading-via="api"]')) && !(await page.$('[data-reading-pages]')),'switching accounts clears the prior account draft and coverage');
+  srv.coverageError='coverage temporarily unavailable';
+  await selectTile(page,'ch-yt');
+  await page.click('[data-conn-account="ch-yt"] [data-cs-reopen]');
+  await page.waitForSelector('[data-reading-retry]');
+  check(await page.locator('[data-cfw-primary]').isDisabled() && (await page.textContent('[data-reading-settings]')).includes(srv.coverageError),'coverage errors block Continue and show the server error');
+  srv.coverageError=null;
+  await page.click('[data-reading-retry]');
+  await page.waitForFunction(()=>!document.querySelector('[data-cfw-primary]').disabled);
+  check(!!(await page.$('[data-reading-pages]')), 'coverage retry restores the activity-page section');
+  srv.delayTypes='https://youtube.com';
+  const requested = new Promise(resolve => { srv.typesRequested=resolve; });
+  await page.evaluate(() => {
+    const original=window.DeskV1Store.api;
+    window.DeskV1Store.api=async (...args) => { const r=await original(...args); if(args[1]==='/api/desk/connect/types') window.__lookupDone=true; return r; };
   });
-  check(box.inputL >= 0 && box.btnR <= box.vw && box.inputW >= 100 && box.scroll <= box.vw,
-        `input and Save fit at ${viewport.width}px (input ${Math.round(box.inputW)}px wide, no sideways scroll)`, `layout: ${JSON.stringify(box)}`);
-  await page.screenshot({ path: resolve(REPO_ROOT, '_scratch', `read_pages_${viewport.width}.png`) });
-
-  // remove sends the list without it
-  await page.click(`${R} [data-readpages-remove="0"]`);
-  await page.waitForFunction((sel) => !document.querySelector(sel), `${R} [data-readpages-page]`, { timeout: 6000 });
-  const rm = patches(srv, 'ch-yt').pop();
-  check(Array.isArray(rm.body.read_pages) && rm.body.read_pages.length === 0, 'Remove PATCHes the list without it', `remove PATCH: ${JSON.stringify(rm.body)}`);
-
-  // 6: Where lists a read-only account as "Read only": no Connect, no drag/place card, still on screen
-  await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1', panel: 'where' }));
-  await page.waitForSelector('.desk-v1-where[data-where]', { timeout: 6000 });
-  const RO = '[data-where-source-readonly]';
-  const ro = await page.$$eval(RO, (els) => els.map((e) => ({
-    id: e.dataset.channelId, text: e.innerText.replace(/\s+/g, ' '), connect: !!e.querySelector('[data-where-connect]'),
-    placeable: e.hasAttribute('data-where-source') || e.draggable || e.tabIndex >= 0,
-    r: e.getBoundingClientRect().right, vw: window.innerWidth })));
-  check(ro.map((x) => x.id).sort().join() === 'ch-ig,ch-yt' && ro.every((x) => /Read only/.test(x.text) && !/Not connected/.test(x.text)),
-        'Where lists YouTube and Instagram as "Read only", not "Not connected"', `Where read-only tiles: ${JSON.stringify(ro)}`);
-  check(ro.every((x) => !x.connect && !x.placeable) && !(await page.$('[data-where-source-off][data-channel-id="ch-yt"], [data-where-source][data-channel-id="ch-yt"]')),
-        'a read-only tile has no Connect button and cannot be placed (no source card, no focus, no drag)', `Where read-only affordances: ${JSON.stringify(ro)}`);
-  check(!!(await page.$('[data-where-source-off][data-channel-id="ch-x-clayrune"], [data-where-source][data-channel-id="ch-x-clayrune"]')),
-        'a publishing account keeps its source card', 'the X source card is gone');
-  check(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
-        `Where does not scroll sideways at ${viewport.width}px`, 'Where overflows the page');
-
-  realErrors(pageErrors).length ? realErrors(pageErrors).forEach((e) => fail('page error: ' + e)) : ok('no uncaught page errors');
+  await selectTile(page,'ch-yt');
+  await page.click('[data-conn-account="ch-yt"] [data-cs-reopen]');
+  await requested;
+  await selectTile(page,'ch-ig');
+  srv.delayTypes=null; srv.resumeTypes();
+  await page.waitForFunction(()=>window.__lookupDone);
+  check(await page.evaluate(()=>window.DeskV1ConnTiles.selected()==='ch-ig') && !(await page.$('[data-cfw]')), 'late account lookup cannot reopen a different tile');
+  check(!writes(srv).some(r => /browser|commit|verify|publish/.test(r.path)), 'reading settings never grant permission, sign in, verify, or publish');
+  realErrors(pageErrors).length ? realErrors(pageErrors).forEach(e=>fail('page error: '+e)) : ok('no uncaught page errors');
   await ctx.close();
 }
-
 const browser = await chromium.launch();
 try {
-  await run(browser, { width: 1440, height: 900 }, 'live ON, 1440');
-  await run(browser, { width: 390, height: 844 }, 'live ON, 390');
-} catch (e) { fail('harness error: ' + (e && e.stack || e)); }
+  await run(browser,{width:1440,height:900},'one wizard, 1440');
+  await run(browser,{width:390,height:844},'one wizard, 390');
+} catch(e) {fail('harness error: '+(e.stack || e));}
 await browser.close();
-if (bad) { console.error(`\n❌ FAIL — ${bad} case(s)`); process.exit(1); }
-console.log('\n✅ PASS — a non-X site reads through the pane alone, takes a profile, and is asked for an activity page only once discovery needs it.');
+if(bad) {console.error(`FAIL: ${bad}`);process.exit(1);}
+console.log('PASS: saved account reading choices and activity pages live in the one wizard.');

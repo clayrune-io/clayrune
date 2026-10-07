@@ -119,6 +119,10 @@ async function newPage(browser, { live, srv }) {
       return J({ ok: true });
     }
     if (path === '/api/desk/accounts' && method === 'GET') return J(srv.accounts);
+    if (path === '/api/desk/connect/types') return J({ service:{ id:'x', label:'X', recognised:true }, host:'x.com', picker:[] });
+    if (path === '/api/desk/connect/purposes') return J({ accounts:[] });
+    if (/^\/api\/desk\/connect\/permissions\//.test(path)) return J({ policy:{ state:'legacy', scopes:[] } });
+    if (/^\/api\/desk\/engagement\/coverage\//.test(path)) return J({ coverage:[] });
     if (path === '/api/desk/accounts' && method === 'POST') {
       const a = { id: body.id, platform: body.platform, identity: body.identity, label: body.label || body.identity, capability: body.capability, voice: '',
         connected: false, publish: PUBLISH[body.platform] || { ready: true, reason: null, secret: null, unattended_ok: null } };
@@ -218,14 +222,17 @@ async function connectionsRead(browser) {
   check(typed.length === 0, 'no credential field exists on the screen until a guide is opened', 'a credential input is on Connections');
   await selectTile(page, 'ch-x-ron');
   await page.click('[data-conn-account="ch-x-ron"] [data-cs-reopen]');
-  await page.waitForSelector('[data-conn-detail="add"] [data-add-service] [data-cfw-input]', { timeout: 4000 });
-  check(!(await page.evaluate(() => window.__vaultOpened)), 'Change how this is connected opens the Add service wizard, not the Vault panel', 'the Vault panel was opened');
+  await page.waitForSelector('[data-conn-detail="add"] [data-cfw-step="permissions"] [data-reading-settings]', { timeout: 4000 });
+  check(!(await page.evaluate(() => window.__vaultOpened)) && await page.evaluate(() => window.DeskV1ConnectWizard.state().sel.account === 'ch-x-ron'), 'Change how this is connected reopens that account in the one wizard', 'the saved account was not handed to the wizard');
 
   const ph = await page.$$eval('[data-conn-placeholder], [data-conn-tile][data-conn-state="preview"]', (els) => els.length);
   const srcs = await page.$$eval('[data-conn-source], [data-conn-tile^="source:"]', (els) => els.length);
   check(ph === 0 && srcs === 0, 'no unconnected placeholder is rendered: no YouTube / Discord / Reddit, no Google Drive / Dropbox', `placeholders: ${ph}, sources: ${srcs}`);
   const lastTile = await page.$$eval('[data-conn-tiles] > *', (els) => els.map((e) => e.hasAttribute('data-conn-add-tile')));
   check(lastTile[lastTile.length - 1] && lastTile.filter(Boolean).length === 1, 'the Add service tile is present and is the last tile', 'Add service tile: ' + JSON.stringify(lastTile));
+  await page.click('[data-conn-add-tile]');   // close the saved-account edit
+  await page.click('[data-conn-add-tile]');   // a fresh add starts at the name/address step
+  await page.waitForSelector('[data-cfw-input]');
   // Weaker than before: Add service no longer lists the engines that are not connected (nor "Something else"). Its first screen is
   // one box for a name or an address; that the unconnected engine is not a tile is the check above.
   check(!!(await page.$('[data-conn-detail="add"] [data-cfw-input]')) && !(await page.$('[data-add-list], [data-add-pick]')),

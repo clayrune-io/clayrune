@@ -271,5 +271,10 @@ import { ConnectCopy as C } from './desk-v1-connect-copy.js';
   function state() {
     return { step: S.step, sel: _selCopy(), hasInfo: !!S.info, hosts: Object.keys(S.hosts), owned: Object.keys(S.owned), drafts: Object.keys(S.drafts), approvals: Object.keys(S.approvals) };
   }
-  window.DeskV1ConnectWizard = { enabled, setEnabled, active, registerScreen, html, bind, close, state, STEPS: STEPS.map((s) => s[0]), PAGE_SIZE };
+  // Re-enter the same frame with a saved, non-secret selection. The caller hands
+  // account data to the owning screens after this invalidates the old branch.
+  function resume(info, selection, step = 'permissions') {
+    close(); S.info = info; select(selection); S.step = step; S.focusTitle = true;
+  }
+  window.DeskV1ConnectWizard = { enabled, setEnabled, active, registerScreen, html, bind, close, resume, state, STEPS: STEPS.map((s) => s[0]), PAGE_SIZE };
 })();

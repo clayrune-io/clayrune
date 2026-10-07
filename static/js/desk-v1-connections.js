@@ -112,7 +112,6 @@
           ${choice}
           ${profile}
           ${via === 'pane' && window.DeskV1ConnectAgentRead ? window.DeskV1ConnectAgentRead.html(ch) : ''}
-          ${via === 'pane' && window.DeskV1ReadPages ? window.DeskV1ReadPages.html(ch) : ''}
           <div class="desk-v1-rules-hint" data-readvia-status></div>
         </div>`;
   }
@@ -198,9 +197,7 @@
       const c = ((d || {}).coverage || []).find((x) => x.platform === ch.platform);
       out.textContent = c ? (c.message || '') : '';
       out.dataset.state = c ? c.state : '';
-      // Live only: the page addresses are saved through the account route, which the demo has not got.
-      if (_isLiveRow(ch) && window.DeskV1ReadPages) window.DeskV1ReadPages.show(row, ch, c ? c.pages : null, patch);
-    }).catch(() => { out.textContent = ''; });
+    }).catch(e => { out.textContent = 'Reading coverage could not be checked.'; console.warn('[desk-read] coverage failed: ' + e); });
   }
 
   function _bindReadVia(row, ch, repaint) {
@@ -362,7 +359,7 @@
     const Tiles = window.DeskV1ConnTiles;
     if (!sel) return null;
     if (sel === 'add') {
-      return Tiles.detailHTML('add', 'Add service', window.DeskV1AddService.panelHTML({ engines: _enginesCache, engineError: _enginesError }));
+      return Tiles.detailHTML('add', 'Add service', window.DeskV1AddService.panelHTML({ engines: _enginesCache, engineError: _enginesError, channels: _channels, api: _api }));
     }
     if (sel.indexOf('engine:') === 0) {
       const e = (_enginesCache || []).find((x) => `engine:${x.id}` === sel);
