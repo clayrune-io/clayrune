@@ -153,6 +153,7 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
       if (gateAt && window.DeskV1VaultGate && (e.auth && e.auth.kind === 'oauth' || (G && G.keyGuideFor(e.id)) || _stateWord(e).key === 'locked')) window.DeskV1VaultGate.attach(gateAt, _stateWord(e).key === 'locked' ? { onUnlocked: reload } : undefined);   // a sign-in or a pasted key ends in a vault write; after an unlock the card re-reads and is Connected, no new sign-in
       const unlock = row.querySelector('[data-engine-unlock]');
       if (unlock) unlock.onclick = async () => {
+        window.addEventListener('vault-unlocked', reload, { once: true });   // re-read the card once the popup unlocks, as the inline gate did
         window.openVaultUnlock();
       };
       const signin = row.querySelector('[data-engine-signin]');
