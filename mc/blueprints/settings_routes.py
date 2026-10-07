@@ -288,6 +288,10 @@ _CONFIG_EDITABLE_KEYS = {
     # (off); validated below, same "refuse a bad write outright" reasoning as
     # default_provider just above.
     'engine_fallback_order',
+    # MC-1071: weekly pace routing. Defaults live in mc/engine_pace.py;
+    # alternate character mappings are human-owned install data.
+    'engine_pace_enabled', 'engine_pace_margin_points',
+    'engine_pace_ceiling_percent', 'engine_pace_alternates',
 }
 
 # Respawn-trigger ("Tier-1") settings: baked into the spawn (CLI flags or the

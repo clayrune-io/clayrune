@@ -12,6 +12,12 @@
 - Over-budget boards shorten only the longest unselected instructions, account for the complete focused scene, and retain the minimum line length. The `line_cut` prompt rule and sparse-edit refusal remain unchanged.
 - Regression coverage and handoff: `docs/desk_v1/STORY_CHAT_CONTEXT.md`. Local branch only; no merge, push or restart.
 
+## [2026-10-07] - Pace-aware character dispatch routing (MC-1071)
+
+- Fresh character dispatches can use a human-configured named alternate when weekly usage is ahead of the elapsed seven-day window by more than 5 points or above 85%. No alternates are seeded; missing/stale usage keeps the original choice and logs why. Resumes and explicit engine picks retain their existing precedence.
+- Rerouted dispatch responses include the original character and reason; the full display task names the swap. The existing Floor task summary can clip it; a dedicated Floor label and Settings UI controls are deferred. Four config keys use the existing protected settings allowlist.
+- Pure policy and dispatch adapter are separate modules. Contract and validation: `docs/ENGINE_PACE_ROUTING.md`. Branch only; no merge, push, restart or live configuration changes.
+
 ## [2026-10-07] - Unlock the vault directly from a locked-credential message
 
 - **Unlock vault** opens a shared popup with the existing passphrase and dashboard-passcode form. `/#unlock-vault` works on a fresh dashboard load, on hash changes, and from agent chat links on desktop or phone, including remote HTTPS dashboards.

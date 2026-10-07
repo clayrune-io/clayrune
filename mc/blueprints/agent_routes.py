@@ -106,6 +106,7 @@ from mc import allowance_state as _allowance_state
 from mc import attend_once_replay as _attend_once_replay  # MC-1055: one tool call, one spend
 from mc import cli_update as _cli_update
 from mc import engine_fallback as _engine_fallback  # MC-961 opt-in vendor swap
+from mc import engine_pace_dispatch as _engine_pace_dispatch
 from mc import vision_bridge as _vision_bridge  # describe images for models that cannot see
 import mc.distiller as _distiller          # exploration read-floor (registered by server.py)
 import mc.identity as _identity            # ws_005: shared no-persona identity fallback (Floor/Channel)
@@ -12286,11 +12287,20 @@ def agent_dispatch(project_id):
     # attended, whatever it claims (mc/caller_attribution.py).
     trigger_type, source = _caller_attribution.resolve_dispatch(
         request, trigger_type, source, agent_sessions, tracked_processes)
+    character, pace_record = _engine_pace_dispatch.prepare(
+        project_id, character, resume_id=resume_id,
+        provider_override=provider_override, model_override=model_override,
+        effort_override=effort_override, config=state.CONFIG,
+        load_project=load_project, resolve_character=_resolve_character)
+    display_task = task
+    if pace_record:
+        display_task = _engine_pace_dispatch.disclosure(character, pace_record) + task
+        _log(f'[engine_pace] {_engine_pace_dispatch.disclosure(character, pace_record)}', flush=True)
     try:
         session_id = _dispatch_agent_internal(project_id, claude_task, resume_id,
                                               incognito=incognito,
                                               provider_override=provider_override,
-                                              display_task=task, character=character,
+                                              display_task=display_task, character=character,
                                               source=source,
                                               trigger_type=trigger_type,
                                               model_override=model_override,
@@ -12317,7 +12327,7 @@ def agent_dispatch(project_id):
         return jsonify({'error': _cli_missing_message(provider_override)}), 500
     except Exception as e:
         return jsonify({'error': f'dispatch failed: {e}'}), 500
-    return jsonify({'ok': True, 'session_id': session_id})
+    return jsonify({'ok': True, 'session_id': session_id, **pace_record})
 
 
 @bp.route('/api/project/<project_id>/agent/<session_id>/model', methods=['POST'])
