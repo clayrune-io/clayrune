@@ -1,5 +1,9 @@
 # Higgsfield picture scenes: captured contract wiring
 
+Later follow-up: `RENDER_PRICE_CONFIRMATION.md` documents the additional
+displayed-price comparison and second Render click when a picture-inclusive
+total exceeds the text-only quote. The upload and role wiring below is unchanged.
+
 Follow-up to the capture prerequisite merged as `89b4b628`; base `3114dac6`.
 This implementation is on `clayrune/higgsfield-picture-render` for integration.
 

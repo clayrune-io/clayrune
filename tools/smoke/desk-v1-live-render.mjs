@@ -63,12 +63,13 @@ function makeServer() {
   return srv;
 }
 
-const ENGINES = ({ limits, higgsReady }) => [
+const ENGINES = ({ limits, higgsReady, creditPricing }) => [
   { id: 'higgsfield', label: 'Higgsfield', auth: { kind: 'key_id_secret', vault_entry: 'higgsfield' }, job_limit_usd: limits.higgsfield,
     connected: higgsReady ? { ready: true, vault_entry: 'higgsfield', reason: null }
       : { ready: false, vault_entry: 'higgsfield', reason: "no vault entry named 'higgsfield' (add it in the Vault)" },
     models: [{ model_id: 'kling-2.5', kind: 'video', label: 'Kling 2.5 Turbo', status: 'stable', aspect_ratios: ['16:9', '9:16'] }] },
   { id: 'google', label: 'Google', auth: { kind: 'api_key', vault_entry: 'gemini-api' }, job_limit_usd: limits.google,
+    ...(creditPricing ? { currency: 'credits', job_limit_credits: 200 } : {}),
     connected: { ready: true, vault_entry: 'gemini-api', reason: null },
     models: [{ model_id: 'veo-3.1', kind: 'video', label: 'Veo 3.1', status: 'preview', aspect_ratios: ['16:9', '9:16'] },
       { model_id: 'veo-3.1-fast', kind: 'video', label: 'Veo 3.1 Fast', status: 'preview', aspect_ratios: ['16:9', '9:16'] },
@@ -80,8 +81,8 @@ const ENGINES = ({ limits, higgsReady }) => [
 const PERSCENE = { 'veo-3.1': 1.6, 'veo-3.1-fast': 0.4, 'kling-2.5': 0.2 };
 const OUT_PIC = 'desk/library/image/Generated/job-1-0.png';
 
-async function newPage(browser, { live, srv, ctx: sharedCtx }) {
-  const ctx = sharedCtx || await browser.newContext({ viewport: { width: 1400, height: 950 } });
+async function newPage(browser, { live, srv, ctx: sharedCtx, viewport = { width: 1400, height: 950 } }) {
+  const ctx = sharedCtx || await browser.newContext({ viewport });
   const page = await ctx.newPage();
   if (!live) await installDemoFixtures(page);   // demo mode is the harness's: the page ships no fixtures (S10)
   const pageErrors = [];
@@ -128,6 +129,7 @@ async function newPage(browser, { live, srv, ctx: sharedCtx }) {
       const usd = Math.round((PERSCENE[body.model_id] * n + srv.bump) * 1e4) / 1e4;
       const out = { plan: { clips: n, total_usd: usd, crop: body.aspect_ratio === '1:1', needs_ffmpeg: n > 1, ffmpeg_available: true }, estimate: { usd, approximate: false }, job_limit_usd: srv.limits[body.engine_id], refusal: null };
       if (srv.pictureQuote) Object.assign(out.estimate, { note: 'Text-only price; picture priced at render', picture_pending: true });
+      if (srv.creditPricing) { out.estimate.credits = 72; out.job_limit_credits = 200; }
       if (body.owner.kind === 'piece') {
         out.budget = { remaining: 1.0, amount: 5, spent: 4 };
         if (usd > 1.0) out.refusal = { code: 'over_budget', message: `estimate $${usd.toFixed(4)} is over the campaign's remaining budget $1.0000 (amount $5.00, spent $4.0000)` };
@@ -137,6 +139,13 @@ async function newPage(browser, { live, srv, ctx: sharedCtx }) {
       return J(out);
     }
     if (path === '/api/desk/engines/renders' && method === 'POST') {
+      if (srv.preparedPrice && body.shown_total < srv.preparedPrice) {
+        return J({ code: 'render_price_changed', error: `Price with your pictures is ${srv.preparedPrice} credits (was ${body.shown_total}). Press Render again to accept.`,
+          shown_total: body.shown_total, prepared_total: srv.preparedPrice, currency: 'credits',
+          estimate: { usd: 0, credits: srv.preparedPrice, approximate: false },
+          plan: { clips: 2, total_usd: 0, total_credits: srv.preparedPrice, currency: 'credits',
+            scenes: [{ scene_id: 's1', credits: srv.preparedPrice / 2 }, { scene_id: 's2', credits: srv.preparedPrice / 2 }] } }, 409);
+      }
       const r = { render_id: 'rnd-1', kind: 'video', status: 'rendering', hold: null, failure: null, owner: body.owner, engine_id: body.engine_id, model_id: body.model_id,
         aspect_ratio: body.aspect_ratio, progress: { ready: 0, total: 2 }, scenes: [], outputs: [], clips: [], cost_usd: 0 };
       srv.renders[r.render_id] = r; srv.polls[r.render_id] = 0;
@@ -373,10 +382,11 @@ async function studioVideo(browser) {
   const post = reqs(srv, 'POST', /\/engines\/renders$/);
   const pf = await proofs(page);
   (post.length === 1 && post[0].body.owner.kind === 'studio' && post[0].body.engine_id === 'google' && post[0].body.model_id === 'veo-3.1-fast'
+    && post[0].body.shown_total === 0.8
     && /^[a-z0-9]{8,}$/.test(post[0].body.idempotency_key) && pf.length === 1 && /Render this video/.test(pf[0].title) && /Google/.test(pf[0].description) && /\$0\.8/.test(pf[0].description))
     ? ok('Render is one POST through the passcode prompt (price in the prompt), with an idempotency key') : fail('render POST: ' + JSON.stringify({ post: post.map((r) => r.body), pf }));
   (pf.length === 1 && /pictures are uploaded and priced after you approve Render/.test(pf[0].description))
-    ? ok('the passcode prompt explains picture pricing happens after approval, within the configured limit') : fail('picture approval description');
+    ? ok('the passcode prompt explains picture pricing and another click for a higher price') : fail('picture approval description');
   (/pass|secret|key"/i.test(JSON.stringify(post[0].body).replace(/idempotency_key/g, ''))) ? fail('the render body carries something credential-shaped') : ok('the render body carries no credential');
   await settle(page, () => /Rendering/.test((document.querySelector('[data-eng-render-status]') || {}).textContent || ''));
   ok('progress is shown while the job runs: "' + (await txt(page, '[data-eng-render-status]')) + '"');
@@ -392,6 +402,60 @@ async function studioVideo(browser) {
 }
 
 // ── 4: Studio image ────────────────────────────────────────────────────────
+async function studioPriceConfirmation(browser, width = 1440) {
+  const srv = makeServer();
+  srv.creditPricing = true; srv.pictureQuote = true; srv.preparedPrice = 79;
+  const { ctx, page, pageErrors } = await newPage(browser, { live: true, srv, viewport: { width, height: 950 } });
+  await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
+  await openStudio(page, 'video');
+  await page.waitForSelector('[data-eng-panel] [data-eng-engine]');
+  await addScene(page, 'Opening'); await addScene(page, 'Closing');
+  await page.selectOption('[data-eng-model]', 'veo-3.1-fast');
+  await waitEstimate(page, 'ok');
+  srv.log.length = 0;
+  await page.click('[data-eng-render-btn]');
+  await settle(page, () => /Press Render again to accept/.test(document.querySelector('[data-eng-error]')?.textContent || ''));
+  let posts = reqs(srv, 'POST', /\/engines\/renders$/);
+  (posts.length === 1 && posts[0].body.shown_total === 72 && !Object.keys(srv.renders).length
+    && /79 credits/.test(await txt(page, '[data-eng-render-btn]')) && /was 72/.test(await txt(page, '[data-eng-error]')))
+    ? ok('72-credit quote -> 79-credit picture price: refused without a job and displayed for a second click') : fail('picture price refusal');
+  await page.locator('[data-eng-error]').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: resolve(REPO_ROOT, `_scratch/render_price/confirmation_${width}.png`) });
+  (await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+    ? ok(`the picture-price confirmation fits the ${width}px viewport`) : fail('picture-price confirmation overflows');
+  await page.evaluate(() => { window.__cancelProof = true; });
+  await page.click('[data-eng-render-btn]');
+  await settle(page, () => /passcode was not entered/.test(document.querySelector('[data-eng-error]')?.textContent || ''));
+  (reqs(srv, 'POST', /\/engines\/renders$/).length === 1 && /79 credits/.test(await txt(page, '[data-eng-render-btn]')))
+    ? ok('cancelling the second passcode sends no request and retains the prepared price') : fail('cancelled confirmation');
+  await page.evaluate(() => { window.__cancelProof = false; });
+  srv.preparedPrice = 85;
+  await page.click('[data-eng-render-btn]');
+  await settle(page, () => /85 credits/.test(document.querySelector('[data-eng-error]')?.textContent || ''));
+  posts = reqs(srv, 'POST', /\/engines\/renders$/);
+  (posts.length === 2 && posts[1].body.shown_total === 79 && !Object.keys(srv.renders).length)
+    ? ok('the second click carries 79 despite the fresh 72-credit text quote; another increase is refused') : fail('repeated price increase');
+  // Explicit repricing clears the higher prepared quote.
+  await page.click('[data-eng-reprice]'); await waitEstimate(page, 'ok');
+  /72 credits/.test(await txt(page, '[data-eng-render-btn]')) ? ok('Price again clears picture-price acceptance') : fail('reprice retains approval');
+  await page.click('[data-eng-render-btn]');
+  await settle(page, () => /85 credits/.test(document.querySelector('[data-eng-error]')?.textContent || ''));
+  // A storyboard edit invalidates the prepared total even when the text quote has the same price.
+  await addScene(page, 'Extra'); await waitEstimate(page, 'ok');
+  /72 credits/.test(await txt(page, '[data-eng-render-btn]')) ? ok('a storyboard edit clears picture-price acceptance') : fail('edit retains approval');
+  await page.click('[data-eng-render-btn]');
+  await settle(page, () => /85 credits/.test(document.querySelector('[data-eng-error]')?.textContent || ''));
+  await page.click('[data-eng-render-btn]');
+  await settle(page, () => !!document.querySelector('[data-eng-render-status]'));
+  posts = reqs(srv, 'POST', /\/engines\/renders$/);
+  const prompts = await proofs(page);
+  (posts.at(-1).body.shown_total === 85 && Object.keys(srv.renders).length === 1
+    && /85 credits/.test(prompts.at(-1).description) && !/text-only/.test(prompts.at(-1).description))
+    ? ok('accepting the current prepared total starts one job through a new passcode prompt at that price') : fail('confirmation submission');
+  realErrors(pageErrors).forEach((e) => fail('page error: ' + e));
+  await ctx.close();
+}
+
 async function studioImage(browser) {
   const srv = makeServer();
   const { ctx, page, pageErrors } = await newPage(browser, { live: true, srv });
@@ -481,6 +545,8 @@ try {
   } else console.log('Studio scope only: Connections, Director and Flag OFF are not requested');
   console.log('Studio video: estimate, refusal, Render, progress, guards');
   await studioVideo(browser);
+  await studioPriceConfirmation(browser);
+  await studioPriceConfirmation(browser, 390);
   console.log('Studio image');
   await studioImage(browser);
   if (!studioOnly) {
