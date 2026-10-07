@@ -15,6 +15,13 @@
  *   4. Refused  -> a change the server refused shows why and changes nothing; a failed call
  *                  keeps the message in the box and adds no turn.
  *   5. Reload   -> a fresh page opens the draft and the thread is back.
+ *   8. Send     -> the box empties the moment Enter sends (the pending turn shows the message)
+ *                  and stays disabled until the reply is in; a failed send puts the text back.
+ *   9. Text     -> A-/A+ scale the thread and the box, keyboard reachable, clamped, and the
+ *                  size survives a reload (localStorage).
+ *  10. Pop out  -> the SAME chat element is lifted to a large view: sending from it lands in the
+ *                  one thread, Esc / the backdrop / the button close it and return focus; at 1440
+ *                  and 390 with no horizontal scroll.
  *   7. Shots    -> screens at 1440 and 390 into docs/desk_v1/screens/.
  *
  * RUN   cd tools/smoke && node desk-v1-story-chat.mjs
@@ -105,6 +112,7 @@ async function newPage(browser, srv, viewport) {
       return J({ storyboards: Object.entries(srv.boards).filter(([k]) => k.startsWith('studio:')).map(([k, b]) => ({ id: k.slice(7), title: b.title, scenes: b.scenes.length, updated_at: '2026-10-01T10:00:00Z' })) });
     }
     if (path === '/api/desk/storyboard/chat') {
+      if (method === 'POST' && srv.chatGate) await srv.chatGate;
       if (method === 'GET') return J({ thread: (srv.threads[`${url.searchParams.get('kind')}:${url.searchParams.get('id')}`] || []).map((t) => ({ ...t })) });
       const key = `${body.owner.kind}:${body.owner.id}`;
       if (!srv.boards[key]) return J({ error: 'this storyboard is not saved yet, so there is nowhere to keep the conversation' }, 404);
@@ -157,6 +165,32 @@ async function newPage(browser, srv, viewport) {
   return { ctx, page, pageErrors, dialogs };
 }
 
+
+async function reopen(page, itemId) {
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row', { timeout: 15000 });
+  await page.evaluate(() => window.sidebarNav('social'));
+  await page.waitForSelector('.modal-window[data-modal-id="__desk"] .desk-v1-shell', { timeout: 8000 });
+  await page.waitForFunction(() => window.DeskV1Store.state().campaigns.length > 0, null, { timeout: 8000 });
+  await page.evaluate(() => window.deskV1Nav('studio', {}));
+  await page.waitForSelector(`[data-studio-recent-row="${itemId}"]`, { timeout: 8000 });
+  await page.click(`[data-studio-recent-row="${itemId}"]`);
+  await page.waitForSelector('[data-sb-story]:not([disabled])', { timeout: 8000 });
+  await page.waitForSelector('[data-chat-chrome][data-wired]', { timeout: 8000 });
+}
+const fontPx = (page, sel) => page.$eval(sel, (e) => parseFloat(getComputedStyle(e).fontSize));
+const hOverflow = (page) => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+const popState = (page) => page.evaluate(() => {
+  const el = document.querySelector('[data-chat]'); const r = el.getBoundingClientRect();
+  const ae = document.activeElement;
+  return {
+    same: el === window.__chat, popped: el.classList.contains('is-popped'), open: el.matches(':popover-open'),
+    l: r.left, t: r.top, r: r.right, b: r.bottom, w: r.width, vw: innerWidth, vh: innerHeight,
+    threads: document.querySelectorAll('[data-chat-thread]').length,
+    focus: ae && (ae.matches('[data-chat-pop]') ? 'pop' : ae.matches('[data-sb-ask]') ? 'ask' : ae.tagName),
+    desk: !!document.querySelector('.modal-window[data-modal-id="__desk"] .desk-v1-shell'),
+  };
+});
 
 const settle = (page, pred, arg) => page.waitForFunction(pred, arg, { timeout: 8000 });
 const puts = (srv, re) => srv.log.filter((r) => r.method === 'PUT' && re.test(r.path));
@@ -320,6 +354,106 @@ async function main(browser) {
   realErrors(fresh.pageErrors).forEach((e) => fail('page error (reload): ' + e));
   await fresh.ctx.close();
 
+  // 8. The box empties the moment Enter sends; it stays disabled until the turn is over.
+  console.log('Send empties the box at once');
+  let release;
+  srv.chatGate = new Promise((r) => { release = r; });
+  srv.reply = () => ({ reply: 'Held reply.' });
+  await ask.fill('hold this reply');
+  await ask.press('Enter');
+  await settle(page, () => !!document.querySelector('[data-chat-pending]'));
+  const mid = await page.evaluate(() => {
+    const a = document.querySelector('[data-sb-ask]');
+    return { v: a.value, d: a.disabled, pend: document.querySelector('[data-chat-pending] .desk-v1-chat-text').textContent, thinking: !!document.querySelector('[data-chat-thinking]') };
+  });
+  (mid.v === '' && mid.d && mid.pend === 'hold this reply' && mid.thinking)
+    ? ok('while the reply is pending the box is empty and disabled, and the thread shows the message once (pending bubble)') : fail('pending state: ' + JSON.stringify(mid));
+  release(); srv.chatGate = null;
+  await settle(page, () => !document.querySelector('[data-chat-thinking]') && !document.querySelector('[data-sb-ask]').disabled);
+  ((await ask.inputValue()) === '' && (await turns(page)).slice(-1)[0][1] === 'Held reply.') ? ok('the reply lands, the box is empty and usable again') : fail('after reply: ' + (await ask.inputValue()));
+  srv.chatGate = new Promise((r) => { release = r; });
+  srv.reply = () => ({ status: 502, error: 'the model call failed, so nothing was changed: boom' });
+  await ask.fill('this one will fail');
+  await ask.press('Enter');
+  await settle(page, () => !!document.querySelector('[data-chat-pending]'));
+  (await ask.inputValue()) === '' ? ok('a send that will fail also empties the box at once') : fail('box not empty while pending');
+  release(); srv.chatGate = null;
+  await settle(page, () => /Nothing was changed/.test((document.querySelector('[data-sb-ask-status]') || {}).textContent || ''));
+  ((await ask.inputValue()) === 'this one will fail' && !(await ask.isDisabled()) && !(await page.$('[data-chat-pending]')) && /back in the box/.test(await statusText(page)))
+    ? ok('the failure puts the typed text back, re-enables the box and says so') : fail('restore: ' + JSON.stringify(await ask.inputValue()));
+  await ask.fill('');
+
+  // 9. Text size: A-/A+, keyboard reachable, clamped, remembered across a reload.
+  console.log('Text size');
+  const AGENT_TXT = '[data-chat-turn="agent"] .desk-v1-chat-text';
+  const t0 = await fontPx(page, AGENT_TXT);
+  const a0 = await fontPx(page, '[data-sb-ask]');
+  await page.click('[data-chat-text-more]');
+  await page.focus('[data-chat-text-more]');
+  await page.keyboard.press('Enter');
+  const t1 = await fontPx(page, AGENT_TXT);
+  const a1 = await fontPx(page, '[data-sb-ask]');
+  (t1 > t0 * 1.25 && a1 > a0 * 1.25 && (await page.textContent('[data-chat-text-read]')) === '130%')
+    ? ok(`A+ (mouse, then keyboard) scales the thread ${t0}px -> ${t1}px and the box ${a0}px -> ${a1}px (130%)`) : fail('scale up: ' + JSON.stringify({ t0, t1, a0, a1 }));
+  for (let i = 0; i < 10; i++) if (!(await page.isDisabled('[data-chat-text-more]'))) await page.click('[data-chat-text-more]');
+  const tMax = await fontPx(page, AGENT_TXT);
+  ((await page.isDisabled('[data-chat-text-more]')) && (await page.textContent('[data-chat-text-read]')) === '175%' && tMax > t1)
+    ? ok(`A+ stops at 175% (${tMax}px) and disables itself`) : fail('max: ' + tMax);
+  for (let i = 0; i < 12; i++) if (!(await page.isDisabled('[data-chat-text-less]'))) await page.click('[data-chat-text-less]');
+  const tMin = await fontPx(page, AGENT_TXT);
+  ((await page.isDisabled('[data-chat-text-less]')) && (await page.textContent('[data-chat-text-read]')) === '85%' && tMin < t0)
+    ? ok(`A- stops at 85% (${tMin}px) and disables itself`) : fail('min: ' + tMin);
+  for (let i = 0; i < 3; i++) await page.click('[data-chat-text-more]');
+  const want = await fontPx(page, AGENT_TXT);
+  await page.waitForTimeout(300);
+  await reopen(page, itemId);
+  await settle(page, () => document.querySelectorAll('[data-chat-turn]').length > 0);
+  const stored = await page.evaluate(() => localStorage.getItem('clayrune.desk.chatTextScale'));
+  const back2 = await fontPx(page, AGENT_TXT);
+  (stored === '1.3' && back2 === want && (await page.textContent('[data-chat-text-read]')) === '130%')
+    ? ok(`after a reload the size is still 130% (stored ${stored}, ${back2}px)`) : fail('persist: ' + JSON.stringify({ stored, want, back2 }));
+
+  // 10. Pop out: the same chat element, large, live; Esc / backdrop / button close it.
+  console.log('Pop out');
+  await page.evaluate(() => { window.__chat = document.querySelector('[data-chat]'); });
+  const before0 = (await turns(page)).length;
+  await page.click('[data-chat-pop]');
+  let ps = await popState(page);
+  (ps.same && ps.popped && ps.open && ps.w >= 800 && ps.l >= 0 && ps.r <= ps.vw && ps.b <= ps.vh && ps.threads === 1 && ps.focus === 'ask')
+    ? ok(`the large view is the same element (one thread in the page), in the top layer, ${Math.round(ps.w)}px wide, focus in the ask box`) : fail('pop state: ' + JSON.stringify(ps));
+  (await hOverflow(page)) <= 1 ? ok('no horizontal scroll with the large view open (1440)') : fail('overflow when popped');
+  mkdirSync(SHOTS, { recursive: true });
+  await page.screenshot({ path: resolve(SHOTS, 'studio-agent-chat-popout-1440.png') });
+  ok('docs/desk_v1/screens/studio-agent-chat-popout-1440.png');
+  srv.reply = () => ({ reply: 'Answered inside the large view.' });
+  srv.log.length = 0;
+  await ask.fill('sent from the large view');
+  await ask.press('Enter');
+  await settle(page, () => !document.querySelector('[data-chat-thinking]') && [...document.querySelectorAll('[data-chat-turn="agent"]')].some((e) => e.textContent.includes('Answered inside the large view.')));
+  const sent = chats(srv);
+  (sent.length === 1 && sent[0].body.message === 'sent from the large view' && (await turns(page)).length === before0 + 2 && (await ask.inputValue()) === '')
+    ? ok('sending from the large view posts once and both turns appear in the thread') : fail('popped send: ' + JSON.stringify(sent.map((r) => r.body && r.body.message)));
+  await page.keyboard.press('Escape');
+  ps = await popState(page);
+  (!ps.popped && !ps.open && ps.same && ps.focus === 'pop' && ps.desk)
+    ? ok('Esc closes the large view, focus returns to the pop-out button, and the Desk stays open') : fail('after Esc: ' + JSON.stringify(ps));
+  const docked = await turns(page);
+  (docked.length === before0 + 2 && docked.slice(-2)[0][1] === 'sent from the large view')
+    ? ok('the docked thread already has the exchange (same live thread)') : fail('docked: ' + JSON.stringify(docked.slice(-2)));
+  await page.click('[data-chat-pop]');
+  await page.mouse.click(4, 4);
+  ps = await popState(page);
+  !ps.popped ? ok('a click on the dimmed backdrop closes it') : fail('backdrop click did not close');
+  await page.click('[data-chat-pop]');
+  await page.click('[data-chat-pop]');
+  ps = await popState(page);
+  (!ps.popped && ps.focus === 'pop') ? ok('the button (now x) closes it too') : fail('button close: ' + JSON.stringify(ps));
+  await page.click('[data-chat-pop]');
+  const tabs = [];
+  for (let i = 0; i < 8; i++) { await page.keyboard.press('Tab'); tabs.push(await page.evaluate(() => !!document.activeElement.closest('[data-chat]'))); }
+  tabs.every(Boolean) ? ok('Tab stays inside the large view') : fail('focus escaped: ' + tabs.join(','));
+  await page.keyboard.press('Escape');
+
   // 7. Screens: a thread long enough to scroll, at desktop and phone width.
   console.log('Screens');
   srv.reply = (b) => ({ reply: `About "${b.message}": the strongest scenes here each give the viewer one new fact. Scene 1 sets the problem, scene 2 shows the fix, scene 3 closes the loop. If I had to cut one it would be the pause, because the cursor already carries it.` });
@@ -349,6 +483,25 @@ async function main(browser) {
   await m.page.evaluate(() => document.querySelector('[data-sb-agent]').scrollIntoView({ block: 'start' }));
   await m.page.screenshot({ path: resolve(SHOTS, 'studio-agent-chat-390.png') });
   ok('docs/desk_v1/screens/studio-agent-chat-390.png');
+  // the large view at phone width
+  await m.page.evaluate(() => { window.__chat = document.querySelector('[data-chat]'); });
+  await m.page.click('[data-chat-pop]');
+  const mp = await popState(m.page);
+  (mp.same && mp.popped && mp.open && mp.l >= 0 && mp.r <= mp.vw + 0.5 && mp.t >= 0 && mp.b <= mp.vh + 0.5 && mp.w >= 360 && (await hOverflow(m.page)) <= 1)
+    ? ok(`at 390px the large view fills the screen (${Math.round(mp.w)}px wide) with no horizontal scroll`) : fail('mobile pop: ' + JSON.stringify(mp));
+  const n390 = (await turns(m.page)).length;
+  srv.reply = () => ({ reply: 'Phone reply.' });
+  await m.page.fill('[data-sb-ask]', 'from my phone');
+  await m.page.press('[data-sb-ask]', 'Enter');
+  await settle(m.page, () => !document.querySelector('[data-chat-thinking]') && [...document.querySelectorAll('[data-chat-turn="agent"]')].some((e) => e.textContent.includes('Phone reply.')));
+  (await turns(m.page)).length === n390 + 2 ? ok('sending from the large view works at 390px') : fail('mobile popped send');
+  await m.page.screenshot({ path: resolve(SHOTS, 'studio-agent-chat-popout-390.png') });
+  ok('docs/desk_v1/screens/studio-agent-chat-popout-390.png');
+  await m.page.keyboard.press('Escape');
+  const mc = await popState(m.page);
+  (!mc.popped && mc.focus === 'pop' && (await hOverflow(m.page)) <= 1) ? ok('closing it at 390px returns to the docked panel, focus on the button') : fail('mobile close: ' + JSON.stringify(mc));
+  const toolBox = await m.page.$eval('[data-chat-chrome]', (e) => { const r = e.getBoundingClientRect(); return { r: r.right, w: innerWidth, h: Math.min(...[...e.querySelectorAll('button')].map((b) => b.getBoundingClientRect().height)) }; });
+  (toolBox.r <= toolBox.w && toolBox.h >= 32) ? ok('the A-/A+/pop-out strip fits at 390px with 32px+ targets') : fail('mobile strip: ' + JSON.stringify(toolBox));
   realErrors(m.pageErrors).forEach((e) => fail('page error (390): ' + e));
   await m.ctx.close();
 }

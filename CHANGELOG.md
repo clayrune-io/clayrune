@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] - Desk Studio agent chat: send, text size, large view
+
+- The ask box now empties the moment Enter sends (the pending "You" turn shows the message); it stays disabled until the reply is in, and a failed send puts the typed text back with the error.
+- New shared `desk-v1-chat-chrome.js` (+ CSS): A-/A+ text size (85-175%, remembered in localStorage) and a pop-out that lifts the SAME chat element into a large top-layer view (Esc, backdrop or the x closes it and returns focus). Wired to the Studio chat only; the campaign chat can adopt it with `barHTML()` + `attach()`.
+- `tools/smoke/desk-v1-story-chat.mjs` gained the send, text-size and pop-out checks at 1440 and 390.
+
 ## [2026-10-06] - One Add service flow and shared language (MC-1062/14)
 
 - Activated the six-screen Connect shell for every service and retired the old wizard/list entry. Maintained profiles and automatic unknown-URL investigation feed one options screen; unimplemented suggestions stay information only, with manual software/server and reference setup under Details.
