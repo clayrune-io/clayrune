@@ -36,9 +36,13 @@ def needs_oauth(acc: dict) -> bool:
             and not acc.get('preview'))
 
 
-def _credentials(account_id: str, legacy: bool) -> dict:
+def _credentials(account_id: str, legacy: bool, accounts: dict, new_account_id: str | None) -> dict:
+    from mc import desk_browser_profiles
     arg = None if legacy else account_id
-    return {'oauth_vault': _oauth.vault_name('x', arg), 'oauth_profile': _oauth.profile_name('x', arg)}
+    old = 'desk-x' if legacy else f'desk-x-{_oauth._suffix(account_id)}'
+    profile = (old if account_id != new_account_id else
+               desk_browser_profiles.select('x', accounts, account_id=account_id, separate=old))
+    return {'oauth_vault': _oauth.vault_name('x', arg), 'oauth_profile': profile}
 
 
 def _legacy_holder(data: dict, accounts: dict):
@@ -53,10 +57,11 @@ def _legacy_holder(data: dict, accounts: dict):
     return flag or None
 
 
-def bind(data: dict) -> None:
+def bind(data: dict, *, new_account_id: str | None = None) -> None:
     """Give every unbound X account its reference (see module doc). Mutates `data`.
     Never raises: this runs inside every Desk store read, so an account whose id
-    cannot be named is left unbound and logged, not allowed to take the Desk down."""
+    cannot be named is left unbound and logged, not allowed to take the Desk down.
+    Only create_account supplies new_account_id; legacy migration keeps its old profiles."""
     accounts = data.get('accounts') or {}
     todo = sorted((a for a in accounts.values()
                    if isinstance(a, dict) and needs_oauth(a) and not a.get('credentials')),
@@ -65,7 +70,11 @@ def bind(data: dict) -> None:
         try:
             holder = _legacy_holder(data, accounts)
             legacy = holder is None or holder == acc.get('id')
-            acc['credentials'] = _credentials(acc['id'], legacy)
+            acc['credentials'] = _credentials(acc['id'], legacy, accounts, new_account_id)
+            if acc['id'] == new_account_id:
+                # Independent selection provenance: attachment validates the
+                # mutable credential reference against this original binding.
+                acc['oauth_profile_binding'] = acc['credentials']['oauth_profile']
             if legacy:
                 data[LEGACY_FLAG] = acc['id']
         except Exception as e:

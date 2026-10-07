@@ -44,7 +44,7 @@ from mc.desk_connect import route_readiness as _ready
 from mc.desk_connect import signin_login_store as _logins
 
 MAX_BINDINGS = 8
-_PROFILE_NAME = re.compile(r'^[a-z0-9][a-z0-9_-]{0,40}$')
+_PROFILE_NAME = re.compile(r'^[a-z0-9][a-z0-9._-]{0,63}$')
 _ACCOUNT_ID = re.compile(r'^[A-Za-z0-9_.-]{1,80}$')
 # What a person may point a route at, by the kind of credential the route uses.
 _ROLE_FOR_AUTH = {'browser_signin': 'login', 'api_key': 'api_key', 'bearer': 'api_key'}
@@ -195,8 +195,8 @@ def _clean_binding(b, i: int, profile: dict, kind: str, seen: set, names_cache: 
     prof = b.get('browser_profile')
     if prof is not None:
         _need(route['transport'] == 'browser', f'{where}: a browser profile belongs to a browser route')
-        _need(isinstance(prof, str) and _PROFILE_NAME.match(prof.strip().lower()),
-              f'{where}: a browser profile name is lowercase letters, digits, - or _')
+        _need(isinstance(prof, str) and _PROFILE_NAME.match(prof.strip().lower()) and '..' not in prof,
+              f'{where}: a browser profile name is lowercase letters, digits, ., - or _ (at most 64 characters, no ..)')
         out['browser_profile'] = prof.strip().lower()
     creds = b.get('credentials')
     if creds is not None:

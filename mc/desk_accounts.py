@@ -246,8 +246,11 @@ def create_account(platform, identity, *, label=None, capability=None, voice=Non
                 raise AccountError(f'{identity} on {platform} is already an account', 409)
         rec = {'id': account_id or _desk._new_id('acct'), 'platform': platform, 'identity': identity,
                'label': label, 'capability': capability, 'voice': voice, 'created_at': now_iso()}
+        if platform != 'blog':
+            from mc import desk_browser_profiles
+            rec['browser_profile'] = desk_browser_profiles.new_account(platform, accounts, rec)
         accounts[rec['id']] = rec
-        _refs.bind(store)
+        _refs.bind(store, new_account_id=rec['id'])
         _desk._write_store(store)
     return v1_account(rec)
 

@@ -85,6 +85,7 @@ from flask import Blueprint, Response, jsonify, request
 
 from mc import state, browser_stream as _bstream
 from mc.browser_stream import bump as _bump
+from mc.core import _log
 from mc.state import browser_sessions, browser_lock
 from mc import browser_auth_diagnostics as _auth_diagnostics
 
@@ -2658,6 +2659,8 @@ def _kill_browser_session(session):
         except Exception as e:
             print(f'[browser] session process wait failed: {e}', flush=True)
     _close_cdp_transport(session)
+    from mc import browser_agent_tabs
+    browser_agent_tabs.browser_closed(session)
     # Drop the throwaway Chromium profile. Must happen AFTER the process is
     # dead, or Chromium rewrites the dir as we delete it (and Windows holds
     # locks on the open files).
@@ -2708,6 +2711,18 @@ def browser_launch():
         # 501 would send them installing Chromium over a typo.
         return jsonify({'error': err}), (400 if 'profile name' in err else 501)
     reused = bool(session.pop('reused', False))
+    from mc.blueprints.workflow_routes import _is_agent_caller
+    if reused and _is_agent_caller():
+        from mc import browser_agent_tabs
+        try:
+            return jsonify(browser_agent_tabs.adopt(session, url, project_id)), 200
+        except browser_agent_tabs.AdoptionError as e:
+            _log('[browser-agent-tab] failed-open tab retained for cleanup retry', flush=True)
+            return jsonify({'error': 'could not open an agent tab; stop the retained tab handle to retry cleanup',
+                            'session_id': e.handle, 'agent_tab': True}), 502
+        except Exception as e:
+            _log(f'[browser-agent-tab] adoption failed: {type(e).__name__}', flush=True)
+            return jsonify({'error': 'could not open an agent tab in the running browser'}), 502
     if reused and url and url != 'about:blank' and session.get('url') != url:
         # Adopting a signed-in session should still honour where the caller
         # asked to go, or `profile` would silently ignore the URL.
@@ -3087,6 +3102,10 @@ def _input_commands(data, page_scale=1.0):
 @bp.route('/api/browser/input', methods=['POST'])
 def browser_input():
     data = request.get_json(silent=True) or {}
+    from mc import browser_agent_tabs
+    answer = browser_agent_tabs.route('input', data)
+    if answer is not None:
+        return answer
     sid = data.get('session_id')
     session = browser_sessions.get(sid)
     if not session or session['status'] != 'running':
@@ -3627,6 +3646,10 @@ def browser_read():
     ambient, never triggered by navigation alone.
     """
     data = request.get_json(silent=True) or {}
+    from mc import browser_agent_tabs
+    answer = browser_agent_tabs.route('read', data)
+    if answer is not None:
+        return answer
     sid = data.get('session_id')
     session = browser_sessions.get(sid)
     if not session or session['status'] != 'running':
@@ -3827,6 +3850,10 @@ class ProfilePageReader:
 @bp.route('/api/browser/stop', methods=['POST'])
 def browser_stop():
     data = request.get_json(silent=True) or {}
+    from mc import browser_agent_tabs
+    answer = browser_agent_tabs.route('stop', data)
+    if answer is not None:
+        return answer
     sid = data.get('session_id')
     session = browser_sessions.get(sid)
     if not session:

@@ -61,12 +61,13 @@ def test_cancel_removes_the_profile_the_flow_created(api, profiles):
     assert profiles.forgotten == [HF_PROFILE] and HF_PROFILE not in profiles.have
 
 
-def test_cancel_before_the_vendor_answers_removes_it_too(api, profiles):
+def test_cancel_before_the_vendor_answers_keeps_a_shared_profile(api, profiles):
     client, p = api
     out = _start_x(client, p)
     profiles.have.add(out['profile'])
     assert _cancel(client, out).get_json() == {'ok': True}
-    assert profiles.forgotten == [out['profile']]
+    assert out['profile'] == 'main'
+    assert profiles.forgotten == [] and out['profile'] in profiles.have
 
 
 def test_a_profile_that_was_already_there_is_never_removed(api, profiles, monkeypatch):
