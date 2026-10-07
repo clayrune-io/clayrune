@@ -40,7 +40,7 @@ const F = (value, provenance='openapi') => ({ value, provenance, evidence_id: 'e
 const API_ALT = { id: 'a1', route_type: 'api', transport: 'http', fields: { url: F('https://api.plausible.io/v1'), auth_type: F('bearer'), transport: F('http') }, credentials: [{name: 'Authorization', placement: 'header', provenance:'openapi',confidence:'stated'}], scopes: ['stats:read'], approved: false };
 function makeServer() {
   const fx = loadFixtures();
-  const srv = { log: [], fx, engines: [], commitMode: 'ok', discoverMode: 'found', detectMode: 'complete', pending: [], saves: new Map() };
+  const srv = { log: [], fx, engines: [], profiles: [], extraSecrets: [], commitMode: 'ok', discoverMode: 'found', detectMode: 'complete', pending: [], saves: new Map() };
   srv.workspace = () => ({ ...workspaceFromFixtures(fx), projects: fx.projects.map((p) => ({ id: p.id, name: p.name, state: 'active', roster: [], presence: { replies: 'drafts', desk_agent: null, state: 'active' } })), accounts: [], pieces: [] });
   return srv;
 }
@@ -73,7 +73,7 @@ async function newPage(browser, { srv, width, height }) {
     if (path === '/api/secrets/vault-lock' && method === 'GET') return J({ state: 'unlocked', configured: true });
     let body = null;
     try { body = req.postDataJSON(); } catch (_) { /* none */ }
-    if (path === '/api/secrets' && method === 'GET') return J({secrets: [{name: 'existing.key', scope: 'global', allow_unattended: false},{name:'linkedin.personal',username:'example@example.com',entry_type:'login',scope:'global'},{name:'x.personal',username:'examplehandle',entry_type:'login',scope:'global'}]});
+    if (path === '/api/secrets' && method === 'GET') return J({secrets: [{name: 'existing.key', scope: 'global', allow_unattended: false},{name:'linkedin.personal',username:'example@example.com',entry_type:'login',scope:'global'},{name:'x.personal',username:'examplehandle',entry_type:'login',scope:'global'}, ...srv.extraSecrets]});
     if (!path.startsWith('/api/desk/') && !path.startsWith('/api/browser/')) return route.abort();
     srv.log.push({ method, path, body });
     if(path==='/api/desk/connect/custom/github/stage') return J({stage_id:'github-fixture',sha:'a'.repeat(40),command:'node',args:['dist/index.js'],credentials:[]});
@@ -85,7 +85,7 @@ async function newPage(browser, { srv, width, height }) {
     if (path === '/api/desk/accounts' && method === 'GET') return J([]);
     if (path === '/api/desk/connect/custom/connections') return J({connections:[]});
     if (path === '/api/browser/agent-read') return J({policies:{},profiles:[]});
-    if (path === '/api/browser/profiles') return J({profiles:[]});
+    if (path === '/api/browser/profiles') return J({profiles:srv.profiles});
     if (path === '/api/desk/connect/verify') return J({state:srv.checkFail?'check_failed':'verified',label:srv.checkFail?'Check failed':'Verified'});
     if (path === '/api/desk/connect/signin/options') return J({routes:[], logins:[],vault_locked:false});
     if (path === '/api/desk/connect/higgsfield/start-held') return body.passcode===PASSCODE?J({flow_id:'flow-1',claim:'claim-1',auth_url:'https://signin.example.test',profile:'desk-higgsfield'}):J({error:'bad_passcode'},403);
@@ -176,6 +176,11 @@ try {
   for(const width of [1440,390]) {
     for(const service of ['higgsfield','linkedin','unknown','x','page','higgsfield-signin','youtube']) {
       const srv=makeServer();
+      if (service === 'linkedin') {
+        srv.profiles = [{name:'linkedin-example-example-com'}, {name:'linkedin-example-example-com-2'}];
+        srv.extraSecrets = [{name:'linkedin', username:'legacy@example.com', entry_type:'login', scope:'global'},
+          {name:'linkedin.example-example-com', scope:'global'}, {name:'linkedin.example-example-com-2', scope:'project'}];
+      }
       const {ctx,page:p,pageErrors}=await newPage(browser,{srv,width,height:width===390?844:1000});
       await p.click('[data-conn-add-tile]');
       await inspect(p,service,width,'service');
@@ -194,9 +199,23 @@ try {
         check(await p.locator('[data-lg-pick] option').count()>1,'sign-in lists saved account metadata');
         check((await p.textContent('[data-lg-pick]')).includes(service==='x'?'examplehandle':'example@example.com'),'saved account includes username');
         check(await p.evaluate(secret=>!JSON.stringify(window.DeskV1ConnectVaultPicker.metadata({secrets:[{name:'linkedin.personal',username:'fixture',entry_type:'login',scope:'global',value:secret}]},'linkedin')).includes(secret),SECRET),'picker keeps only metadata');
-        if(service==='linkedin') {await p.selectOption('[data-lg-pick]','linkedin.personal');check(await p.locator('[data-cfw-primary]').isEnabled(),'saved sign-in enables Continue');await p.screenshot({path:resolve(SHOT_DIR,`linkedin_accounts_${width}.png`),fullPage:true});}
+        if(service==='linkedin') {
+          await p.selectOption('[data-lg-pick]','linkedin.personal');
+          check(await p.locator('[data-cfw-primary]').isEnabled(),'saved sign-in enables Continue');
+          check(await p.inputValue('[data-lg-newprofile]') === 'linkedin-example-example-com-3','saved username derives a profile name without taking either existing profile');
+          await primary(p); await step(p,'permissions'); await p.waitForFunction(()=>!document.querySelector('[data-cfw-primary]')?.disabled);
+          await primary(p); await step(p,'review');
+          check((await p.textContent('[data-sum-row="account"] dd')).trim() === 'Personal profile: example@example.com (new)','saved-login Review shows the username before Save');
+          check(!srv.log.some(r=>r.path.endsWith('/browser-setup/commit')),'saved-login Review writes no account');
+          await p.screenshot({path:resolve(SHOT_DIR,`linkedin_saved_review_${width}.png`),fullPage:true});
+          await p.click('[data-cfw-back]'); await step(p,'permissions'); await p.click('[data-cfw-back]'); await step(p,'setup');
+        }
         await p.click('[data-lg-mode][value="new"]');
         await p.fill('[data-lg-user]','example@example.com');await p.fill('[data-lg-pass]',SECRET);
+        if (service === 'linkedin') {
+          check(await p.inputValue('[data-lg-vaultname]') === 'linkedin.example-example-com-3','new login suggestion avoids every vault name, including other entry kinds/scopes');
+          check(await p.inputValue('[data-lg-newprofile]') === 'linkedin-example-example-com-3','typed username derives the same free profile name');
+        }
         if(service==='linkedin') await p.screenshot({path:resolve(SHOT_DIR,`linkedin_new_account_${width}.png`),fullPage:true});
         await inspect(p,service,width,'setup');
         await primary(p);
@@ -220,8 +239,18 @@ try {
       if(service==='x') check(!srv.log.some(r=>r.path==='/api/desk/connect/inspect'),'X browser sign-in needs no developer app');
       if(['x','linkedin','page'].includes(service)) check(await p.locator('[data-cfw-body] input[type="checkbox"]:checked').count()===0,'new Read/Post grants start off');
       await primary(p);await inspect(p,service,width,'review');
+      if (service === 'linkedin') {
+        check((await p.textContent('[data-sum-row="account"] dd')).trim() === 'Personal profile: example@example.com (new)','typed-login Review shows the identity that Save will send');
+        const summary = await p.evaluate(()=>window.DeskV1ConnectLoginStep.summary());
+        check(summary.profile === 'linkedin-example-example-com-3' && summary.login === 'linkedin.example-example-com-3','Review keeps the free profile and login names');
+        check(!(await p.content()).includes(SECRET),'Review never exposes the typed password');
+      }
       await primary(p);await prompt(p);await inspect(p,service,width,'result');
       if(['x','linkedin','page'].includes(service)) check(srv.log.find(r=>r.path.endsWith('/browser-setup/commit')).body.draft.account_kind===(service==='page'?'organization':service==='linkedin'?'member':'account'),'saved account destination matches explicit choice');
+      if (service === 'linkedin') {
+        const draft = srv.log.find(r=>r.path.endsWith('/browser-setup/commit')).body.draft;
+        check(draft.account.new.identity === 'example@example.com' && draft.browser_profile === 'linkedin-example-example-com-3' && draft.new_login.name === 'linkedin.example-example-com-3','Save matches the identity and names shown on Review');
+      }
       if(service==='higgsfield') {
         check(await p.locator('[data-sum-act="check"]').count()===1,'newly saved connection also offers Check it now');
         await primary(p);await p.waitForSelector('[data-conn-tile="engine:higgsfield"]');await p.click('[data-conn-tile="engine:higgsfield"]');

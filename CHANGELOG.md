@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - LinkedIn account setup permits shared sign-ins (MC-1062/14)
+
+- LinkedIn accounts may share a saved login or browser profile regardless of personal/Page/legacy kind. No account kind is inferred or backfilled. X still refuses sharing between distinct accounts.
+- Review shows the selected or typed username before Save. New browser-profile and login names derive from the identity and skip occupied names; explicit choices stay as entered.
+- Sharing refusals name the service and account identity and direct users Back to Setup. Validation and integration status: `docs/desk_v1/connect_flow_tickets/14-linkedin-sharing.md`.
+
 ## [2026-10-07] - Higgsfield storyboard pictures use the captured media contract
 
 - Kling 3.0 and Seedance 2.5 storyboard pictures now use captured catalogue roles and the upload/confirm contract. The MCP adapter, model-role mapping, response validation and presigned PUT are separate modules; model IDs do not select picture roles in code.

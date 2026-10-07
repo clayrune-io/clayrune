@@ -20,6 +20,8 @@ Create or reuse an X/LinkedIn account and bind its named browser-profile and opt
 
 Fresh X account with no Client ID reaches browser setup; two X identities stay separate; LinkedIn member/Page never substitute for one another. Duplicate/replayed saves and account-name conflicts are explicit. Wrong/missing passcode and unattended callers write nothing. Save with no permissions starts no agent read/post. New/moved mc modules pass basic pyright.
 
+Sharing policy revised 2026-10-07: LinkedIn never refuses a shared login or browser profile, regardless of member, organization or unknown/legacy kind. Account destinations remain distinct; existing account records are not backfilled. X keeps the separation rule. Regression and Review details: [LinkedIn sharing follow-up](14-linkedin-sharing.md).
+
 ## Integrated default-deny policy (2026-10-06, MC-1062/06 pre-step)
 
 New browser-setup accounts call `permission_policy.initialize_new_account` after

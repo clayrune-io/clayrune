@@ -25,8 +25,8 @@ Identity rules:
     profile would be one x.com session). The handle is the identity; a second account is a second id.
   * LinkedIn: the member (`member`) and the Company Page (`organization`) are different accounts and
     never stand in for each other. The kind is recorded, never inferred from the login: a Page is
-    reached through a member's login, so a Page may share a profile and login with a member or another
-    Page (the result names who, `shared_with`), but two members never share one. An organization id is
+    reached through a member's login. Any LinkedIn accounts may share a profile or login (the result
+    names who, `shared_with`); account kind never blocks sharing. An organization id is
     only accepted on a NEW Page; it is not inferred from the member.
   * An existing account is never changed: a setup already saved is answered `unchanged` when the draft
     is identical and 409 `already_set_up` when it is not; an account whose sign-in route is already
@@ -271,8 +271,8 @@ def _check_existing(rec: dict, route_id: str, kind: str, refs: dict) -> bool:
 
 
 def _check_conflicts(accounts: dict, account_id: str | None, service: str, kind: str, refs: dict) -> list:
-    """Refuse a profile or login another account on the same site already holds, except where a LinkedIn
-    Page is reached through a member's login. Returns the ids this setup shares a profile or login with."""
+    """LinkedIn permits shared profiles/logins regardless of kind; X keeps each account's refs separate.
+    Returns the ids this setup shares a profile or login with. Never infers or backfills a kind."""
     shared: list = []
     for oid, o in accounts.items():
         if oid == account_id or o.get('platform') != service:
@@ -282,14 +282,17 @@ def _check_conflicts(accounts: dict, account_id: str | None, service: str, kind:
         same_login = bool(refs.get('login')) and refs['login'] in held['logins']
         if not (same_profile or same_login):
             continue
-        other_kind = _record.kind_of(o) or ('organization' if o.get('organization_id') else None)
-        if service == 'linkedin' and (kind == 'organization' or other_kind == 'organization'):
+        if service == 'linkedin':
             shared.append(oid)
             continue
         what, code = (('browser profile', 'profile_in_use') if same_profile else ('login', 'login_in_use'))
         value = refs['browser_profile'] if same_profile else refs['login']
-        raise SetupError(f'the {what} "{value}" already belongs to {o.get("label") or o.get("identity") or oid}. '
-                         f'Each {service} account needs its own: choose another.', 409, code)
+        profile = _registry.profile(service)
+        service_name = profile['label'] if profile else service
+        identity = o.get('identity') or oid
+        raise SetupError(f'The {what} "{value}" already belongs to {identity}. '
+                         f'Each {service_name} account needs its own {what}. '
+                         'Go Back to Setup to choose another.', 409, code)
     return sorted(set(shared))
 
 
