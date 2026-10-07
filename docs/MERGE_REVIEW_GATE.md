@@ -95,8 +95,12 @@ setting (gate off = pass).
 
 The agent branches checked are those named by `MERGE_HEAD` (every line, so an
 octopus merge counts) or, when git has not written it yet, by the arguments git
-exports as `GIT_REFLOG_ACTION`: `merge <args>` **and** `pull <args>`. Any word
-that resolves to the tip of a `clayrune/agent/*` branch is checked.
+exports as `GIT_REFLOG_ACTION`: `merge <args>` **and** `pull <args>`. Any commit
+being merged that a `clayrune/agent/*` branch **contains** and `HEAD` does not is
+checked, and the pass must be on record for **that exact commit**, not the
+branch's current tip. Matching only tips (round 2) let a rejected merge be
+finished by advancing the agent branch first, and let `<branch>~1` or a
+copy-named branch through.
 
 **Client-side hooks are advisory.** `git merge --no-verify` and
 `git commit --no-verify` skip them, and anyone can delete or never install them.

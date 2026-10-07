@@ -510,6 +510,64 @@ def test_commit_after_a_rejected_merge_is_refused_until_a_pass_is_recorded(
     assert _git(repo, 'rev-parse', 'HEAD^2') == tip
 
 
+def _advance(repo, branch):
+    """Move `branch` one empty commit forward without checking it out."""
+    tip = _git(repo, 'rev-parse', branch)
+    new = _git(repo, 'commit-tree', tip + '^{tree}', '-p', tip, '-m', 'advance')
+    _git(repo, 'update-ref', f'refs/heads/{branch}', new)
+    return new
+
+
+@needs_sh
+def test_advancing_the_branch_does_not_unlock_a_rejected_merge(project, repo, tmp_path):
+    """Round 2: MERGE_HEAD keeps the rejected SHA; moving the agent branch past
+    it used to make the check match no branch tip and wave the commit through."""
+    _hooked_repo(repo, tmp_path, merge_requires_review=True)
+    _agent(project, 'hk5')
+    _commit(repo, 'X = 7\n', name='other.py')
+    before = _git(repo, 'rev-parse', 'HEAD')
+    branch = w.branch_name('hk5')
+    m = _run(repo, 'merge', '--no-edit', branch)
+    assert m.returncode != 0 and 'BLOCKED' in m.stderr, (m.stdout, m.stderr)
+    new_tip = _advance(repo, branch)
+    _review(project, 'hk5', new_tip)     # a pass on the NEW tip covers nothing pending
+    c = _run(repo, 'commit', '--no-edit')
+    assert c.returncode != 0 and 'BLOCKED' in c.stderr, (c.stdout, c.stderr)
+    assert _git(repo, 'rev-parse', 'HEAD') == before
+
+
+@needs_sh
+def test_merging_an_unreviewed_ancestor_of_an_agent_branch_is_gated(project, repo, tmp_path):
+    """`<agent branch>~1`, or a copy-named branch at it, is still agent work."""
+    _hooked_repo(repo, tmp_path, merge_requires_review=True)
+    _agent(project, 'hk6')
+    _commit(repo, 'X = 8\n', name='other.py')
+    branch = w.branch_name('hk6')
+    old = _git(repo, 'rev-parse', branch)
+    _review(project, 'hk6', _advance(repo, branch))
+    _git(repo, 'branch', 'copy', old)
+    for target in (branch + '~1', 'copy'):
+        m = _run(repo, 'merge', '--no-edit', target)
+        assert m.returncode != 0 and 'BLOCKED' in m.stderr, (target, m.stdout, m.stderr)
+        _run(repo, 'merge', '--abort')
+    m = _run(repo, 'merge', '--no-edit', branch)   # the reviewed tip still merges
+    assert m.returncode == 0, (m.stdout, m.stderr)
+
+
+@needs_sh
+def test_merging_an_ordinary_branch_is_not_gated(project, repo, tmp_path):
+    """Base commits are contained in every agent branch; only work not yet on
+    the base may trigger the gate."""
+    _hooked_repo(repo, tmp_path, merge_requires_review=True)
+    _agent(project, 'hk7')
+    _git(repo, 'checkout', '-q', '-b', 'feature')
+    _commit(repo, 'Y = 1\n', name='feature.py')
+    _git(repo, 'checkout', '-q', '-')
+    _commit(repo, 'X = 9\n', name='other.py')
+    m = _run(repo, 'merge', '--no-edit', 'feature')
+    assert m.returncode == 0, (m.stdout, m.stderr)
+
+
 @needs_sh
 def test_commit_msg_hook_leaves_ordinary_commits_alone(repo, tmp_path):
     _hooked_repo(repo, tmp_path, merge_requires_review=True)

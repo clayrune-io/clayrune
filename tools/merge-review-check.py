@@ -68,8 +68,8 @@ def find_project(data_root: Path, repo: Path, project_id: str = '') -> dict | No
     return None
 
 
-def _merge_head_branches(repo: Path) -> list[str]:
-    """clayrune/agent/* branches being merged into `repo` right now.
+def _merge_head_branches(repo: Path) -> list[tuple[str, str]]:
+    """(clayrune/agent/* branch, commit) pairs being merged into `repo` right now.
 
     Git has NOT written MERGE_HEAD yet when `pre-merge-commit` runs for a fresh
     auto-merge (measured on git 2.51: the file is absent, and so is MERGE_MSG);
@@ -77,8 +77,13 @@ def _merge_head_branches(repo: Path) -> list[str]:
     commit-msg hook's case). So read every MERGE_HEAD line when the file
     exists, and otherwise the arguments git exports to the hook as
     GIT_REFLOG_ACTION -- "merge <args>", or "pull <args>" when the merge was
-    started by `git pull` -- resolving each word and keeping those that are an
-    agent branch's tip."""
+    started by `git pull` -- resolving each word to a commit.
+
+    A commit is gated when any agent branch CONTAINS it and the current HEAD
+    does not, and the check is of that exact commit, not the branch's tip.
+    Matching only branch tips let a rejected merge be finished by advancing
+    the agent branch first (the pending MERGE_HEAD then pointed at no tip),
+    and let a merge of `<agent branch>~1` or a copy-named branch through."""
     shas: list[str] = []
     ok, mh = _git(repo, 'rev-parse', '--git-path', 'MERGE_HEAD')
     if ok and mh:
@@ -96,13 +101,15 @@ def _merge_head_branches(repo: Path) -> list[str]:
             ok, sha = _git(repo, 'rev-parse', '-q', '--verify', word + '^{commit}')
             if ok and sha:
                 shas.append(sha)
-    found: list[str] = []
+    found: list[tuple[str, str]] = []
     for sha in shas:
-        ok, out = _git(repo, 'for-each-ref', '--points-at', sha,
+        if _git(repo, 'merge-base', '--is-ancestor', sha, 'HEAD')[0]:
+            continue                   # already on the base: lands nothing new
+        ok, out = _git(repo, 'for-each-ref', '--contains', sha,
                        '--format=%(refname:short)', f'refs/heads/{gate.BRANCH_PREFIX}')
         for b in (out.splitlines() if ok else []):
-            if b.startswith(gate.BRANCH_PREFIX) and b not in found:
-                found.append(b)
+            if b.startswith(gate.BRANCH_PREFIX) and (b, sha) not in found:
+                found.append((b, sha))
     return found
 
 
@@ -139,7 +146,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f'merge-review-check: {a.repo} is not a git checkout', file=sys.stderr)
         return 2
     repo = Path(top)
-    branches = _merge_head_branches(repo) if a.merge_head else [a.branch]
+    # (branch, commit to check); '' = the branch's current tip (CLI mode)
+    branches = _merge_head_branches(repo) if a.merge_head else [(a.branch, '')]
     if not branches:
         return 0                       # not a merge of an agent branch: nothing to gate
 
@@ -155,9 +163,9 @@ def main(argv: list[str] | None = None) -> int:
     gate.STORE_DIR = data_root / 'data' / gate.STORE_DIRNAME
 
     status = 0
-    for branch in branches:
+    for branch, merging in branches:
         project = dict(project, project_path=str(repo))
-        tip = gate.branch_tip(project, branch)
+        tip = merging or gate.branch_tip(project, branch)
         held = gate.hold_reason(project['id'], branch, tip)
         if held:
             print(f'BLOCKED: {held}. Record a pass for this exact commit '
