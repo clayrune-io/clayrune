@@ -426,9 +426,8 @@
         ${r.notice ? `<div class="desk-v1-cfw-msg" data-pk-notice role="status">${esc(r.notice)}</div>` : ''}
         <div class="desk-v1-cfw-fact-text">Saving does not start the server or check that it works. It starts the first time an agent session uses it.</div>`;
     },
-    // Done closes the wizard itself: `api.finish` would hand the panel's onSaved a service record, and its toast says the service was
-    // "saved for agents", which is not what an MCP server registration is. What happens to the panel after this is ticket 14's.
-    primary: (api) => ({ label: 'Done', run: async () => { W.close(); api.repaint(); return false; } }),
+    // The common panel refreshes saved connection tiles without inventing a service record.
+    primary: (api) => ({ label: 'Done', run: async () => { api.finish(null, {}); api.repaint(); return false; } }),
     bind: (root) => _focusTitle(root),
     discard: () => { _gen++; P = _fresh(); },
   });

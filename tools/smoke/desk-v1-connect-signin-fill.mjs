@@ -24,7 +24,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
 const PROJECTS = JSON.parse(readFileSync(resolve(__dirname, 'fixtures', 'projects.json'), 'utf8'));
-const STATIC = loadStaticJsCss(REPO_ROOT);
+const STATIC = loadStaticJsCss(REPO_ROOT, { isolateConnectScreens: true });
 const ORIGIN = 'http://mc.smoke.test';
 const PASSCODE = 'right-passcode';
 

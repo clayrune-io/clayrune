@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] - One Add service flow and shared language (MC-1062/14)
+
+- Activated the six-screen Connect shell for every service and retired the old wizard/list entry. Maintained profiles and automatic unknown-URL investigation feed one options screen; unimplemented suggestions stay information only, with manual software/server and reference setup under Details.
+- Centralized screen instructions, actions and field vocabulary in a separate copy module. Account selection distinguishes LinkedIn profiles/Pages; Setup precedes enforced Permissions and passcode Review/Save. Existing approval, sign-in, credential and permission gates remain intact.
+- Supported saved generation tiles now offer the free human-clicked Check it now using the existing verify route. Selection never probes, failed checks remain failed, and X has no free provider probe. User guide and section 11 describe the behavior and limits. This entry records branch implementation; release requires the integrator's merge/push.
+
 ## [2026-10-06] — Higgsfield discovers model inputs automatically
 
 - Server-side Higgsfield OAuth saves capture the free tool list automatically; price checks and renders refresh missing or 24-hour-old snapshots. A small remote-engine snapshotter registry shares one capture at a time, and discovery has a 15-second RPC deadline, including SSE heartbeats. Logged discovery failures preserve the saved connection and permit text-only price checks to continue.

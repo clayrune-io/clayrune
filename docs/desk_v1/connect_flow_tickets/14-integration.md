@@ -1,6 +1,6 @@
 # MC-1062 / 14: Replace the old entrypoint after branch acceptance
 
-Status: proposed, not dispatched. [Parent design](../CONNECT_FLOW_SIMPLIFY.md).
+Status: implemented on the ticket branch; review/merge/release remain with Dave. [Parent design](../CONNECT_FLOW_SIMPLIFY.md).
 
 ## Depends on
 
@@ -23,3 +23,10 @@ Fresh X with no app: URL → Sign in → username/password → later Read permis
 ## Boundary
 
 Integration only. Run relevant smokes after each merge; use existing main-checkout dependencies, never install a second browser stack. No deployment/restart/push is authorized by this proposal.
+
+
+## Binding additions (Ron, 2026-10-06)
+
+Section 11 of the parent supersedes the separate known/unknown and legacy wizard experiences. Every service uses Add service, Connection options, Connection details, Permissions, Review and Result, with titles/instructions/actions/field vocabulary from one shared copy module. Unknown URLs investigate automatically on Continue. Suggestions lacking adapters remain information only. A saved supported connection has a human-clicked free Check it now in its own tile/detail, not only immediately after Save.
+
+The integration smoke covers Higgsfield key and sign-in, LinkedIn member and Page, unknown URL, YouTube information and fresh X without an app, at 1440 and 390. It asserts common copy, no internal terminology outside Details, no grants/writes on navigation, new grants off, explicit destination, separate sign-in/Save proof, saved tile check success/failure, keyboard action reach and 200% text fit. Detailed detection/reference and native adapter/approval smokes remain separate. Backend denial tests are required, not replaced by DOM assertions.

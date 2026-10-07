@@ -37,7 +37,7 @@ const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf
 const ORIGIN = 'http://mc.smoke.test';
 const MIME = { '.webp': 'image/webp', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml' };
 const STATIC = {};
-Object.assign(STATIC, loadStaticJsCss(REPO_ROOT));
+Object.assign(STATIC, loadStaticJsCss(REPO_ROOT, { isolateConnectScreens: true }));
 for (const f of readdirSync(ASSETS_DIR)) {
   const ext = f.slice(f.lastIndexOf('.'));
   if (MIME[ext]) STATIC[`/assets/${f}`] = [MIME[ext], readFileSync(resolve(ASSETS_DIR, f))];

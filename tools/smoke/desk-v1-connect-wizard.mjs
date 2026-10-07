@@ -42,7 +42,7 @@ const ORIGIN = 'http://mc.smoke.test';
 const SHOT_DIR = resolve(REPO_ROOT, '_scratch', 'connect_wizard');
 mkdirSync(SHOT_DIR, { recursive: true });
 const STATIC = {};
-Object.assign(STATIC, loadStaticJsCss(REPO_ROOT));
+Object.assign(STATIC, loadStaticJsCss(REPO_ROOT, { isolateConnectScreens: true }));
 const REAL_SCREENS = new Set(['/static/js/desk-v1-connect-login-step.js', '/static/js/desk-v1-connect-api-step.js', '/static/js/desk-v1-connect-unknown-step.js']); // unknown/ref screens would shadow this frame smoke's fixtures
 
 let bad = 0;
@@ -228,7 +228,7 @@ async function run(browser, width, height) {
 
   // 1. Off by default.
   await openAdd(page);
-  check(!!(await page.$('[data-cf]')) && !(await page.$('[data-cfw]')), 'wizard is off by default: the old flow opens', 'the old flow did not open or the wizard showed');
+  check(!(await page.$('[data-cf]')) && !(await page.$('[data-add-list]')), 'disabled unit fixture never revives the retired entrypoint');
   await page.evaluate(() => window.DeskV1ConnectWizard.setEnabled(true));
   await page.click('[data-conn-add-tile]');                      // closes the panel
   await openAdd(page);

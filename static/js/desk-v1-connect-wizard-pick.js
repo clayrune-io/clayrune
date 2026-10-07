@@ -57,6 +57,13 @@
           info.input = text;
           T.busy = false;
           api.setInfo(info);
+          if (window.DeskV1ConnectOptionsStep?.unknown(info)) {
+            const D = window.DeskV1ConnectDiscover;
+            api.own('investigation', () => D.reset(), 'service');
+            api.go('connection');
+            D.run({ ...info, service: null, input_kind: 'url' }, { api: api.ctx.api, repaint: api.repaint });
+            return false;
+          }
           return true;
         } catch (e) {
           if (n !== T.seq) return false;

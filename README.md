@@ -32,6 +32,10 @@ It runs on your machine against your own Claude CLI.
 - Read output as it streams; interrupt mid-task without killing the session.
 - Agents working on the same project are protected by git worktree isolation when you choose it.
 
+### Desk connections
+
+Desk's Connections view uses one Add service flow for known services, unknown addresses and user-supplied connection software. Setup precedes enforced Read/Post permissions and passcode Save. Supported saved generation connections offer a human-clicked **Check it now** from their own tile. See the [user guide](docs/USER_GUIDE.md#desk-connections-add-or-check-a-service) for limits and information-only suggestions.
+
 ### 🌙 Working without you
 
 - ⏰ Scheduler: once, daily, interval or cron.

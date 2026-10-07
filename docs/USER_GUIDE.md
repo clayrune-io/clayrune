@@ -776,6 +776,16 @@ browser manually.
 
 ---
 
+## Desk Connections: add or check a service
+
+Open the Desk and choose **Connections**, then **Add service**. Live connections must be enabled; preview mode explains this instead of opening a different editor.
+
+Every service follows the same six screens: **Add service > Connection options > Connection details > Permissions > Review > Result**. Enter the service name or web address and press **Continue**. A maintained service uses its built-in connection choices. An unknown web address is investigated automatically; its suggestions are information, not proof of a working connection. **Details** includes manual software/server setup and information-only alternatives. An unknown name without a built-in match asks you for its address rather than guessing a site.
+
+Choose how to connect, then enter only the selected connection's details. Account connections let you select an existing account or add one. LinkedIn personal profiles and Company Pages have distinct destinations. X browser sign-in does not require a developer app. **Permissions** comes after setup; new Read and Post choices start off and appear only where Clayrune enforces them. Some connections have no separate Read/Post control. Review shows the selected facts and risks before **Save** asks for your dashboard passcode. Opening a provider sign-in and applying permissions keep their own passcode checks.
+
+A saved connection is not necessarily signed in or verified. On supported saved generation connections, open its Connections tile and click **Check it now** for the existing free connection check. Result offers the same action after Save. Opening a tile never runs the check automatically. A failed check stays visibly failed. Browser sign-in alone is not verification, and X has no free provider check. Use **Change connection** to return to the same Add service flow. Limits and disconnect controls remain on the saved connection detail.
+
 ## How to be Claydo (system instructions for the assistant)
 
 This section is for Claydo, not the user. The frontend parses inline

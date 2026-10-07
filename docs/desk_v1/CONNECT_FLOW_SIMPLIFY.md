@@ -1,10 +1,10 @@
 # MC-1062: a simpler Connect flow
 
-2026-10-06 · Kestrel · Design proposal only · Backlog `c4d2e802`
+2026-10-06 · Kestrel · Design and ticket 14 implementation contract · Backlog `c4d2e802`
 
-**Recommendation:** one address, one connection type, that type's setup, then a separate Permissions step. Retain the existing human authorization boundaries. No implementation is approved by this document; Dave selects the two open product choices in section 8 before build starts.
+**Implementation authority:** Ron's rule in section 11 supersedes the separate known/unknown entry screens in sections 3–5. Dave has selected Q1/Q2. Ticket 14 integrates the approved six-screen flow; existing human authorization boundaries remain.
 
-Source baseline: `a1228a0ec220` on the assigned worktree. This proposal changes no running behavior. Inspection sequence: read the requested specifications and modules; inspect both screenshots; trace selection, saving, sign-in and permission consumers; specify screens; split build tickets; validate references and commit locally. All artifacts stay in this worktree.
+Source baseline: `a1228a0ec220` on the assigned worktree. The historical proposal below changed no running behavior; section 11 describes the activated ticket 14 implementation. Inspection sequence: read the requested specifications and modules; inspect both screenshots; trace selection, saving, sign-in and permission consumers; specify screens; split build tickets; validate references and commit locally. All artifacts stay in this worktree.
 
 ## 1. Findings: why the current flow is confusing
 
@@ -240,3 +240,32 @@ Related source specifications: [connect by URL](../DESK_CONNECT_BY_URL_SPEC.md),
 
 - **Q1 = A.** Unavailable methods are hidden from the primary picker; their explanation and setup-only paths live under Details. Why: Ron's complaint was too many choices, and a disabled row is a choice that leads nowhere. Reversing it is a display change in ticket 01/02.
 - **Q2 = A.** Custom MCP servers get truthful whole-server approval with project or global reach; Read/Post controls appear only on routes that actually enforce them. Why: granular enforcement on arbitrary MCP code is a separate security project, and a checkbox that restricts nothing is worse than none. Reversing it means the execution-control design described in section 7 before ticket 08 changes.
+
+## 11. Ron's rule 2026-10-06: one flow for every service
+
+Binding, no exceptions: Higgsfield, X, LinkedIn, YouTube, custom servers and unknown services use **Add service → Connection options → Setup → Permissions → Review → Result**. There is one entrance; retire the previous Service/Method/Details/Review wizard.
+
+1. Enter a service name or address.
+2. Known means a profile shipped under mc/desk_connect/profiles/; options come from that profile. An unknown address starts the existing protected investigation automatically on Continue, without a Find connection options button. Look for all sign-in/connect evidence: browser/username-password, API key, app authorization, package or remote server. Findings are suggestions; missing adapters stay setup-only/reference.
+3. One shared options screen shows at most four primary alternatives; remaining options, evidence and technical explanations appear in its single Details disclosure. Manual server/API/reference paths stay reachable there.
+4. Setup asks only for the selected connection, with account/destination substeps as needed.
+5. Permissions are separate. Read/Post appear only where enforced; whole-server consent retains Q2; nothing auto-grants permissions.
+6. Review preserves every passcode check; Result distinguishes saved, signed in, registered and checked. Check it now appears only where supported.
+
+This supersedes U2's four-action menu and U3a's extra discovery button in section5: automatic investigation leads to the same options page as sections3–4. Discovery preserves net_guard, guard_proxy, the toolless classifier, untrusted-evidence warning and no writes. Dave permits investigation of a bare unknown name, but its found address must be shown and confirmed before reading any page; never silently substitute a similarly named service.
+
+**Same language (Ron's binding addition):** every screen title, instruction line, button label, field label and status word comes from static/js/desk-v1-connect-copy.js, used verbatim for every service; only the service name varies. Each screen tells the user in one plain sentence exactly what to enter/do next. Internal terms (route, transport, OAuth, MCP, vault, U1/U2, held, oauth.higgsfield) appear only under Details. Acceptance asserts identical visible titles/instructions/buttons and absence of internal terms in full Higgsfield/LinkedIn/unknown-URL walks, with inspected 1440/390 screenshots; full connect smokes, boot/scope checks and test_desk_connect*.py remain required.
+
+
+**Saved connection check (Ron, 2026-10-06).** A saved supported connection offers the free **Check it now** in its own Connections tile/detail, using the same shared copy as Result. Selecting/opening a tile never probes. Only a human click invokes the unchanged human-gated verify route. Failure is shown as failed, never inferred success. Acceptance includes a previously saved Higgsfield tile, no automatic check, and explicit success/failure at 1440/390. X offers no free provider probe; browser sign-in alone is not verification.
+
+### Ticket 14 implementation and regression boundaries
+
+`desk-v1-connect-integration.js` activates the common shell. `desk-v1-connect-options-step.js` owns profile options and automatic unknown-URL investigation; classifier suggestions without an adapter lead only to editable information. Manual package/server setup stays under Details. `desk-v1-connect-account-step.js` selects the existing/new account and hands its destination to native Setup, Permissions and Review modules. `desk-v1-connect-copy.js` owns public screen copy and presentation labels; service evidence and technical approval facts stay under Details. `desk-v1-connect-saved-check.js` owns saved provider checks. The former `desk-v1-connect-flow.js` is a compatibility bridge with no legacy wizard body.
+
+Backend discovery, protected browser/proxy, certified toolless classification, passcode proof, credential handling and permission enforcement are reused unchanged. Unknown names without a registry match still ask for an address: Dave permits a future official-site lookup only with address confirmation before any page read; this integration introduces no guessing or alternate reader. Demo mode explains that live connections must be enabled.
+
+Native screen smokes isolate only the integration/options/account wiring so their authorization and adapter fixtures keep testing the underlying contract. Retired wizard smoke entry names now invoke their replacement screen coverage; the detailed unknown/reference smoke retains cancellation, late responses, detection provenance, replay/refusal and held-DOM credential checks. The production simplify smoke loads all wiring and compares six screen titles, instructions and footer action labels across service walks. No live vendor calls are made by these fixtures.
+
+
+Technical identifiers, commands and approval evidence remain verbatim under the single Details disclosure. Copy presentation never rewrites a command or credential identifier. Manual software Review substeps use Continue while reading the immutable card, then Save after explicit approval; common Done refreshes the saved connection tiles. The production smoke exercises this path, its separate human proof, and exact command preservation. Historical `desk-connect-guides.mjs` now exercises provider Setup authorization because the separate service-specific guide entrypoints were retired.

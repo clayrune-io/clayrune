@@ -13,7 +13,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
 const ORIGIN = 'http://mc.smoke.test';
-const SHOT_DIR = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens');
+const SHOT_DIR = resolve(REPO_ROOT, '_scratch', 'reference_screens');
 mkdirSync(SHOT_DIR, { recursive: true });
 const STATIC = loadStaticJsCss(REPO_ROOT);
 
@@ -164,41 +164,43 @@ async function restart(page, address = 'plausible.io') {
   await page.evaluate(() => window.DeskV1ConnectWizard.close()); await repaint(page);
   await screen(page, 'service'); await page.fill('[data-cfw-input]', address); await primary(page); await waitStep(page, 'connection');
 }
-async function path(page, value) { await page.check(`[data-unknown-path="${value}"]`); await primary(page); await waitStep(page, 'setup'); }
+async function path(page, value) {
+  await page.waitForFunction(()=>!window.DeskV1ConnectDiscover.state().busy);
+  if(value==='reference') { await page.check('[data-cfw-type][value="reference"]'); await primary(page); }
+  else { await page.click('[data-cfw-details] > summary');await page.click(value==='api'?'[data-options-api]':'[data-options-manual="custom-npm"]'); }
+  await waitStep(page,'setup');
+}
 async function referenceReview(page) { await primary(page); await screen(page, 'reference-permissions'); await primary(page); await screen(page, 'reference-review'); }
 async function run(browser, width, height) {
   console.log(`\nUnknown/reference ${width}x${height}`);
   const srv = makeServer(); const {ctx,page,pageErrors} = await newPage(browser,{srv,width,height});
-  check(!(await page.evaluate(() => window.DeskV1ConnectWizard.enabled())), 'wizard remains disabled on fresh boot');
+  check(await page.evaluate(() => window.DeskV1ConnectWizard.enabled()), 'shared flow activated on fresh boot');
   await page.evaluate(() => window.DeskV1ConnectWizard.setEnabled(true)); await page.click('[data-conn-add-tile]');
   await screen(page,'service');
   await page.fill('[data-cfw-input]','Unknown Name'); await primary(page); await page.waitForSelector('[data-cfw-msg="error"]');
   check(/Paste its address/.test(await page.textContent('[data-cfw-msg]')) && logOf(srv,/discover|detect/).length===0,'unknown name asks for an address; no guessed domain or lookup');
-  await page.fill('[data-cfw-input]','plausible.io'); await primary(page); await screen(page,'unknown-connection');
-  check(await page.locator('[data-unknown-path]').count()===4,'unknown U2 has four paths despite non-null unknown service projection');
-  await rules(page,'U2'); await fits(page,'U2'); await shot(page,'choices',width);
-  await path(page,'lookup');
-  check(logOf(srv,/discover/).length===0,'lookup is explicit, entering screen sends nothing');
-  srv.discoverMode='pending'; await primary(page); await page.waitForSelector('[data-unknown-busy]');
-  check(await page.locator('[data-cfw] input').count()===0,'running lookup has no setup forms');
-  await primary(page); await page.waitForSelector('[data-unknown-outcome="failed"]');
-  await srv.pending.shift()();
-  await page.waitForFunction(() => !window.DeskV1ConnectDiscover.state().busy);
-  check(/cancelled/.test(await page.textContent('[data-unknown-outcome]')) && await page.locator('[data-unknown-found]').count()===0,'cancel clears identity immediately and ignores late answer');
-  srv.discoverMode='failed'; await primary(page); await page.waitForSelector('[data-unknown-outcome="failed"]');
-  check(/timed out/.test(await page.textContent('[data-unknown-outcome]')) && await page.locator('[data-unknown-reference]').count()===1,'failed lookup states exact failure and retains reference fallback');
-  srv.discoverMode='empty'; await primary(page); await page.waitForSelector('[data-unknown-outcome="none"]');
-  check(await page.locator('[data-unknown-reference]').count()===1,'empty lookup retains reference fallback');
-  srv.discoverMode='incomplete'; await primary(page); await page.waitForSelector('[data-unknown-outcome="incomplete"]');
-  check(/incomplete/.test(await page.textContent('[data-unknown-outcome]')) && await page.locator('[data-unknown-found]').count()===2,'incomplete lookup labels missing evidence and deduplicates actionable paths');
+  for(const mode of ['pending','failed','empty','incomplete']) {
+    srv.discoverMode=mode;await restart(page);
+    if(mode==='pending') {
+      await page.waitForSelector('[data-options-cancel]');
+      check(await page.locator('[data-cfw] input').count()===0,'automatic investigation has no setup form');
+      await page.click('[data-options-cancel]');await srv.pending.shift()();
+      await page.waitForFunction(()=>!window.DeskV1ConnectDiscover.state().busy);
+      check(await page.evaluate(()=>window.DeskV1ConnectDiscover.state().answer===null),'cancel ignores late investigation answer');
+    } else {
+      await page.waitForFunction(()=>!window.DeskV1ConnectDiscover.state().busy);
+      check(await page.locator('[data-cfw-type][value="reference"]').count()===1,mode+' investigation retains information-only fallback');
+    }
+    if(mode==='failed') check(await page.evaluate(()=>window.DeskV1ConnectDiscover.state().error.includes('timed out')),'exact investigation failure retained in Details');
+    await rules(page,'Shared options '+mode);await fits(page,'Shared options '+mode);
+  }
   await page.click('[data-cfw-details] > summary');
-  check(await page.locator('[data-cfw] img, [data-cfw] a').count()===0 && !(await page.evaluate(() => window.__injected)),'hostile evidence remains escaped text, never a link or instruction');
-  await rules(page,'U4'); await fits(page,'U4'); await shot(page,'lookup',width);
-  await page.click('[data-unknown-found="mcp"]'); await screen(page,'unknown-mcp-choice');
-  await page.check('[data-unknown-mcp="custom-npm"]'); await primary(page); await screen(page,'package-setup');
-  check(logOf(srv,/custom\/review|custom\/commit/).length===0,'lookup maps to editable npm setup without approval or install');
-  await restart(page); await path(page,'mcp'); await page.check('[data-unknown-mcp="custom-remote"]'); await primary(page); await screen(page,'remote-setup');
-  check(logOf(srv,/remote\/review|remote\/check/).length===0,'MCP chooser routes to existing remote setup without contacting a target');
+  check(await page.locator('[data-cfw] img, [data-cfw] a').count()===0 && !(await page.evaluate(()=>window.__injected)),'hostile suggestions escaped; never linked or executed');
+  srv.discoverMode='found';
+  await restart(page);await path(page,'mcp');await screen(page,'package-setup');
+  check(logOf(srv,/custom\/review|custom\/commit/).length===0,'manual software setup performs no installation');
+  await restart(page);await page.waitForFunction(()=>!window.DeskV1ConnectDiscover.state().busy);await page.click('[data-cfw-details] > summary');await page.click('[data-options-manual="custom-remote"]');await screen(page,'remote-setup');
+  check(logOf(srv,/remote\/review|remote\/check/).length===0,'manual server setup does not contact target');
 
   // API evidence is editable, retains provenance and saves via 12b only.
   await restart(page); await path(page,'api'); await screen(page,'reference-setup');
@@ -220,7 +222,7 @@ async function run(browser, width, height) {
   await page.fill('[data-ref-field="address"]','https://api.plausible.io/edited');
   await rules(page,'API parameters'); await fits(page,'API parameters'); await shot(page,'api',width);
   await primary(page); await page.selectOption('[data-ref-select="mode"]','existing');
-  await page.waitForFunction(() => document.querySelector('[data-ref-vault]')?.textContent !== 'Loading Secrets…');
+  await page.waitForFunction(() => !/^Loading/.test(document.querySelector('[data-ref-vault]')?.textContent || 'Loading'));
   await page.fill('[data-ref-field="vaultName"]','existing.key'); await referenceReview(page);
   const before=writes(srv).length;
   await primary(page);
@@ -267,13 +269,13 @@ async function run(browser, width, height) {
   // Cached asynchronous results cannot change a newly edited service.
   await restart(page); await page.click('[data-cfw-back]'); srv.holdTypes=true;
   await page.fill('[data-cfw-input]','other.example.com'); await primary(page);
-  await page.waitForFunction(()=>document.querySelector('[data-cfw-primary]')?.textContent.includes('Checking'));
+  for(let i=0;i<100&&!srv.pendingTypes;i++) await new Promise(r=>setTimeout(r,10));
   await page.fill('[data-cfw-input]','x.com'); await srv.pendingTypes();
-  await page.waitForFunction(() => !document.querySelector('[data-cfw-primary]')?.textContent.includes('Checking'));
+  await page.waitForFunction(()=>!document.querySelector('[data-cfw-primary]')?.disabled);
   check(await page.locator('[data-cfw-screen="service"]').count()===1,'late types answer ignored after service edit');
   // Known LinkedIn exposes the same honest reference-only API fallback.
-  await restart(page,'linkedin.com'); await page.click('[data-cfw-details] > summary'); await page.click('[data-unknown-api-details]'); await screen(page,'reference-setup');
-  check(/cannot run a new API/.test(await page.textContent('[data-cfw-copy]')),'unavailable built-in API uses explicit reference-only path');
+  await restart(page,'linkedin.com'); await page.click('[data-cfw-details] > summary'); await page.click('[data-options-api]'); await screen(page,'reference-setup');
+  check(await page.evaluate(()=>window.DeskV1ConnectWizard.state().sel.type==='reference'),'unavailable built-in app is information only');
   await page.evaluate(()=>document.documentElement.style.fontSize='200%'); await fits(page,'Reference at 200% text'); await page.evaluate(()=>document.documentElement.style.fontSize='');
   check(realErrors(pageErrors).length===0,'no runtime page errors',realErrors(pageErrors).join(' | '));
   await ctx.close();

@@ -107,7 +107,7 @@
   function _permSummary() { const P = _perm(); return P && typeof P.summary === 'function' ? P.summary() : null; }
 
   function _problem(br, info) {
-    if (!_target) return 'Choose the account first.';
+    if (!_target && ['x', 'linkedin'].includes(_service(info))) return 'Choose the account first.';
     if (!_permSummary()) return 'Choose the permissions first. Allowing nothing is a choice.';
     const why = br.problem ? br.problem(info) : '';
     if (why) return why;
@@ -151,7 +151,7 @@
     _syncApproval(api, br);
     const card = br.install ? br.install() : null;
     const I = window.DeskV1ConnectInstall;
-    const rows = _rows([['Service', esc(_label(api.info))], ['Connection', esc(br.word)], ['Account', _accountText(api.info) || '<span data-sum-noaccount>Not chosen yet.</span>', 'account']]);
+    const rows = _rows([['Service', esc(_label(api.info))], ['Connection', esc(br.word)], ['x', 'linkedin'].includes(_service(api.info)) && ['Account', _accountText(api.info) || '<span data-sum-noaccount>Not chosen yet.</span>', 'account']]);
     const risks = _risks(br, api.sel, api.info);
     const why = _problem(br, api.info);
     return `${rows}${br.factsHTML ? br.factsHTML(api.info) : ''}
@@ -401,7 +401,7 @@
 
   registerBranch({
     id: 'api', word: 'API / developer app',
-    match: (sel, info) => sel.type === 'api' && !!_A() && !!_provider(sel, info),
+    match: (sel, info) => ['api', 'mcp'].includes(sel.type) && !!_A() && !!_provider(sel, info),
     problem: () => '',
     save: () => _A().commit(),
     accountId: (res) => res.account_id,

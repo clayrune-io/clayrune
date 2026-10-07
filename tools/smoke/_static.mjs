@@ -25,9 +25,14 @@ function walk(dir, urlPrefix, ext, out) {
   return out;
 }
 
-export function loadStaticJsCss(repoRoot) {
+export function loadStaticJsCss(repoRoot, { isolateConnectScreens = false } = {}) {
   const out = {};
   walk(resolve(repoRoot, 'static', 'js'), '/static/js', '.js', out);
   walk(resolve(repoRoot, 'static', 'css'), '/static/css', '.css', out);
+  // Unit harnesses provide their own navigation/destination fixtures. Production
+  // activation belongs to the end-to-end simplify harness, which does not opt out.
+  if (isolateConnectScreens) for (const name of ['account-step', 'options-step', 'integration']) {
+    out[`/static/js/desk-v1-connect-${name}.js`] = [TYPES['.js'], ''];
+  }
   return out;
 }

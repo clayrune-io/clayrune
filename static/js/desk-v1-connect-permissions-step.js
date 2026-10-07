@@ -102,7 +102,7 @@
 
   // 'mcp' | 'reference' | 'account' (a Desk or browser choice exists) | 'none' (the type grants nothing).
   function _mode(sel, info) {
-    if (sel.type === 'mcp') return 'mcp';
+    if (sel.type === 'mcp') return _variant(sel, info)?.setup?.via === 'provider' ? 'none' : 'mcp';
     if (sel.type === 'reference') return 'reference';
     if (!_target) return 'none';
     const v = _variant(sel, info), o = _offers(v, _target.kind);
@@ -239,8 +239,8 @@
   function _bodyHTML(api) {
     M.info = api.info; M.sel = api.sel;
     const mode = _mode(api.sel, api.info);
-    if (mode === 'mcp') return _reachHTML();
-    if (mode !== 'account') return '';
+    if (mode === 'mcp' && !(api.info?.picker || []).flatMap(t => t.variants).some(v => v.id === api.sel.variant && v.setup?.via === 'provider')) return _reachHTML();
+    if (mode !== 'account') return `<p>${esc(window.DeskV1ConnectCopy.words.noPermission)}</p>`;
     if (_needsFetch(api.sel, api.info) && M.loaded !== _loadKey(api.info)) {
       return M.failed ? '' : '<div class="desk-v1-cfw-fact-text" data-cfp-loading>Loading what is saved…</div>';
     }
@@ -262,6 +262,7 @@
       items.push({ head: 'No Read or Post switch', text: 'A server\'s tools cannot be made read-only by filtering their names, so approval covers the whole server. Campaign approval and LinkedIn\'s closed posting gate are unchanged.' });
       return items;
     }
+    if (mode === 'none' && !_target) return [{ head: 'Permissions', text: window.DeskV1ConnectCopy.words.noPermission }];
     if (mode === 'reference') { items.push({ head: 'Vault policy', text: 'A credential keeps the scope and unattended-use setting it has in Secrets. Saving a reference does not change them.' }); return items; }
     const v = _variant(api.sel, api.info);
     if (!v) return items;
@@ -293,9 +294,10 @@
   // ── the screen ──────────────────────────────────────────────────────────
   function _problem(sel, info) {
     const mode = sel.type === 'mcp' ? 'mcp' : sel.type === 'reference' ? 'reference' : 'account-ish';
+    if (mode === 'mcp' && _variant(sel, info)?.setup?.via === 'provider') return '';
     if (mode === 'mcp') return M.reach.scope === 'project' && !M.reach.projectId ? 'Choose a project.' : '';
     if (mode === 'reference') return '';
-    if (!_target) return 'Choose the account first.';
+    if (!_target && ['x', 'linkedin'].includes(_service(info))) return 'Choose the account first.';
     if (_needsFetch(sel, info) && M.loaded !== _loadKey(info)) return M.failed ? 'What is saved could not be read.' : 'Loading what is saved.';
     if (M.failed) return 'What is saved could not be read.';
     return '';
@@ -303,7 +305,7 @@
 
   W.registerScreen({
     id: 'permissions-step', step: 'permissions',
-    match: (sel) => sel.type === 'mcp' || (sel.type === 'reference' && !window.DeskV1ConnectReferenceStep) || ((sel.type === 'signin' || sel.type === 'api') && !!_target),
+    match: (sel) => sel.type === 'mcp' || (sel.type === 'reference' && !window.DeskV1ConnectReferenceStep) || ((sel.type === 'signin' || sel.type === 'api') && (!!_target || (window.DeskV1ConnectWizard.enabled() && !['x', 'linkedin'].includes(window.DeskV1ConnectWizard.state().sel.service)))),
     title: (api) => { const m = _mode(api.sel, api.info); return m === 'account' ? `Permissions for ${_label(api.info)}` : 'Permissions'; },
     copy: (api) => {
       const m = _mode(api.sel, api.info);
@@ -366,6 +368,7 @@
   function summary() {
     if (!M.sel || !M.info) return null;
     const sel = M.sel, info = M.info;
+    if (sel.type === 'mcp' && _variant(sel, info)?.setup?.via === 'provider') return { kind: 'reference', pending: false, lines: [window.DeskV1ConnectCopy.words.noPermission] };
     if (sel.type === 'mcp') return { kind: 'mcp', pending: false, lines: [M.reach.scope === 'global' ? 'Use this server\'s tools in all projects.' : 'Use this server\'s tools in one project.'] };
     if (sel.type === 'reference' || !_target) return { kind: 'reference', pending: false, lines: ['No connection permission is granted.'] };
     const p = _pending(sel, info), lines = [];
