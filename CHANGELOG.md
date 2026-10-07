@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Higgsfield storyboard pictures use the captured media contract
+
+- Kling 3.0 and Seedance 2.5 storyboard pictures now use captured catalogue roles and the upload/confirm contract. The MCP adapter, model-role mapping, response validation and presigned PUT are separate modules; model IDs do not select picture roles in code.
+- Price checks never upload. Identifier-required picture quotes show "Text-only price; picture priced at render" in Studio and explain the difference in the passcode prompt. Approved Render uploads/confirms all pictures, quotes the real media inputs and rechecks the full credit cap before any generation.
+- Presigned PUT uses HTTPS, public DNS addresses pinned through TLS, a 20 MB cap and the file's MIME type, with no redirects or account token. Unexpected responses stop before generation; ambiguous generation responses retain the reservation and retry key. Implementation and verification: `docs/desk_v1/HIGGSFIELD_PICTURE_RENDER.md`. Branch only; integration/restart and a human paid render remain unverified.
+
 ## [2026-10-06] - GitHub connection setup accepts dependency and build output (MC-1062/14)
 
 - Reviewed source stays pinned during setup and before every launch. Generated files have a separate bounded record at Save, so large `node_modules` and build trees do not hit the source inventory limits or get hashed on every start. Review states that generated output is not rechecked at launch; existing approvals keep their original checks.

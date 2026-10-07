@@ -19,6 +19,7 @@
  *   6. Flag OFF    -> no engine panel, no /api/desk/* request.
  *
  * RUN   cd tools/smoke && node desk-v1-live-render.mjs
+ *       node desk-v1-live-render.mjs --studio (video/image price, render and approval only)
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -124,6 +125,7 @@ async function newPage(browser, { live, srv, ctx: sharedCtx }) {
       if (!n) return J({ error: 'this storyboard has no scenes to render: add one first', code: 'no_scenes' }, 409);
       const usd = Math.round((PERSCENE[body.model_id] * n + srv.bump) * 1e4) / 1e4;
       const out = { plan: { clips: n, total_usd: usd, crop: body.aspect_ratio === '1:1', needs_ffmpeg: n > 1, ffmpeg_available: true }, estimate: { usd, approximate: false }, job_limit_usd: srv.limits[body.engine_id], refusal: null };
+      if (srv.pictureQuote) Object.assign(out.estimate, { note: 'Text-only price; picture priced at render', picture_pending: true });
       if (body.owner.kind === 'piece') {
         out.budget = { remaining: 1.0, amount: 5, spent: 4 };
         if (usd > 1.0) out.refusal = { code: 'over_budget', message: `estimate $${usd.toFixed(4)} is over the campaign's remaining budget $1.0000 (amount $5.00, spent $4.0000)` };
@@ -338,6 +340,11 @@ async function studioVideo(browser) {
   await page.evaluate(() => { window.__cancelProof = false; window.__proofs.length = 0; });
 
   // Render for real (mocked engine).
+  srv.pictureQuote = true;
+  await page.click('[data-eng-reprice]');
+  await waitEstimate(page, 'ok');
+  /Text-only price; picture priced at render/.test(await estimateText(page))
+    ? ok('the upload-free picture quote is explicitly labeled text-only in Studio') : fail('missing picture price note');
   srv.log.length = 0;
   await page.click('[data-eng-render-btn]');
   await settle(page, () => !!document.querySelector('[data-eng-render-status]'));
@@ -346,6 +353,8 @@ async function studioVideo(browser) {
   (post.length === 1 && post[0].body.owner.kind === 'studio' && post[0].body.engine_id === 'google' && post[0].body.model_id === 'veo-3.1-fast'
     && /^[a-z0-9]{8,}$/.test(post[0].body.idempotency_key) && pf.length === 1 && /Render this video/.test(pf[0].title) && /Google/.test(pf[0].description) && /\$0\.8/.test(pf[0].description))
     ? ok('Render is one POST through the passcode prompt (price in the prompt), with an idempotency key') : fail('render POST: ' + JSON.stringify({ post: post.map((r) => r.body), pf }));
+  (pf.length === 1 && /pictures are uploaded and priced after you approve Render/.test(pf[0].description))
+    ? ok('the passcode prompt explains picture pricing happens after approval, within the configured limit') : fail('picture approval description');
   (/pass|secret|key"/i.test(JSON.stringify(post[0].body).replace(/idempotency_key/g, ''))) ? fail('the render body carries something credential-shaped') : ok('the render body carries no credential');
   await settle(page, () => /Rendering/.test((document.querySelector('[data-eng-render-status]') || {}).textContent || ''));
   ok('progress is shown while the job runs: "' + (await txt(page, '[data-eng-render-status]')) + '"');
@@ -442,21 +451,26 @@ async function flagOff(browser) {
 }
 
 const browser = await chromium.launch();
+const studioOnly = process.argv.includes('--studio');
 try {
-  console.log('Connections: engines and per-job limits');
-  await connections(browser);
+  if (!studioOnly) {
+    console.log('Connections: engines and per-job limits');
+    await connections(browser);
+  } else console.log('Studio scope only: Connections, Director and Flag OFF are not requested');
   console.log('Studio video: estimate, refusal, Render, progress, guards');
   await studioVideo(browser);
   console.log('Studio image');
   await studioImage(browser);
-  console.log('Director');
-  await director(browser);
-  console.log('Flag OFF');
-  await flagOff(browser);
+  if (!studioOnly) {
+    console.log('Director');
+    await director(browser);
+    console.log('Flag OFF');
+    await flagOff(browser);
+  }
 } catch (e) {
   fail('smoke crashed: ' + (e && e.stack ? e.stack : e));
 } finally {
   await browser.close();
 }
-console.log(bad ? `\n${bad} check(s) FAILED` : '\nAll desk-v1-live-render checks passed');
+console.log(bad ? `\n${bad} check(s) FAILED` : `\nAll requested desk-v1-live-render ${studioOnly ? 'Studio ' : ''}checks passed`);
 process.exit(bad ? 1 : 0);

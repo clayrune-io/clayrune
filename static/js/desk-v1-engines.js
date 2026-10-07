@@ -250,6 +250,7 @@
     const e = st.estimate;
     if (!e) return '<div class="desk-v1-engine-est" data-eng-estimate data-state="none"></div>';
     const lines = [];
+    if (e.estimate && e.estimate.note) lines.push(e.estimate.note);
     if (e.plan) lines.push(`${e.plan.clips} clip${e.plan.clips === 1 ? '' : 's'}${e.plan.crop ? ', then cropped to 1:1' : ''}${e.plan.clips > 1 && !e.plan.crop ? ', then joined' : ''}`);
     if (_isCredits(eng) ? e.job_limit_credits != null : e.job_limit_usd != null) lines.push(`limit ${_fmt(eng, _isCredits(eng) ? e.job_limit_credits : e.job_limit_usd)} per job`);
     if (e.estimate && e.estimate.adjustments) {
@@ -375,7 +376,9 @@
         }
         const out = await _humanPost('POST', '/api/desk/engines/renders', body({ idempotency_key: _uid() }), {
           title: 'Render this video',
-          description: `Re-enter your dashboard passcode to render this storyboard with ${p.engine.label} (${p.model.label}). It spends about ${_fmt(p.engine, usd)} of ${_isCredits(p.engine) ? 'the credits in your plan' : 'your account'} with them, and the clips are saved to your Material library.`,
+          description: fresh.estimate && fresh.estimate.picture_pending
+            ? `Re-enter your dashboard passcode to render this storyboard with ${p.engine.label} (${p.model.label}). The text-only estimate is ${_fmt(p.engine, usd)}. Your pictures are uploaded and priced after you approve Render; generation starts only if the full price fits your configured limit. The clips are saved to your Material library.`
+            : `Re-enter your dashboard passcode to render this storyboard with ${p.engine.label} (${p.model.label}). It spends about ${_fmt(p.engine, usd)} of ${_isCredits(p.engine) ? 'the credits in your plan' : 'your account'} with them, and the clips are saved to your Material library.`,
         });
         st.render = out.render;
         _toast('Render started');
