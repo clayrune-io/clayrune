@@ -14,8 +14,8 @@ and description, submitted without a picture at the same six-second duration,
 also fail on both models. A separate one-scene text-only storyboard containing
 that exact text likewise fails through the storyboard estimate route. These
 are comparisons, not replacements for the original request. The original
-storyboard was read but never edited. Operator IDs and the scene text are kept
-only in the ignored diagnostic journal.
+storyboard was read but never edited. Operator IDs are kept only in the ignored
+diagnostic journal; the exact scene text remains in the live diagnostic board.
 
 This narrows the issue to the quote request/response rather than picture
 upload: the free picture estimate intentionally sends the text parameters
