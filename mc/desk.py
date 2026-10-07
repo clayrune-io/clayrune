@@ -2102,6 +2102,7 @@ def v1_campaign(camp: dict) -> dict:
     unchanged), `projectId` beside `project_id`, `plan.title` carrying the
     title. A deep copy: nothing the caller does to it reaches the store."""
     out = json.loads(json.dumps(camp))
+    out.pop('chat', None)   # the agent conversation has its own GET (mc/desk_campaign_chat.py); it can be long
     state = camp.get('state') or ''
     out['state'] = _V1_STATE_OUT.get(state, state)
     out['projectId'] = camp.get('project_id')

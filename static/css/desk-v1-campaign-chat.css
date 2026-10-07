@@ -1,0 +1,7 @@
+/* The conversation in a campaign's agent box (static/js/desk-v1-campaign-chat.js).
+   The turns reuse the Studio thread's classes (desk-v1-story-chat.css); only the
+   status line under the thread is new. */
+.desk-v1-camp-chat-status { font-size: 11.5px; line-height: 1.4; color: var(--text-dim); overflow-wrap: anywhere; }
+.desk-v1-camp-chat-status:empty { display: none; }
+.desk-v1-camp-chat-status[data-kind="ok"] { color: var(--green-text); }
+.desk-v1-camp-chat-status[data-kind="error"] { color: var(--amber-text, var(--amber)); }
