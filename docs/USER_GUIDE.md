@@ -181,6 +181,18 @@ strip is hidden.
 
 ## Agent dispatch
 
+**Weekly pace routing:** fresh character dispatches can use a named alternate
+when the original provider's weekly utilization is more than 5 points ahead of
+the elapsed share of its seven-day window, or above 85%. This requires a
+human-configured `engine_pace_alternates` map; none is seeded. The protected
+settings API accepts that map, `engine_pace_enabled` (default true),
+`engine_pace_margin_points` (5), and `engine_pace_ceiling_percent` (85).
+There are no dedicated Settings UI controls yet. Set enabled to false to disable.
+Missing/stale readings or a missing alternate keep your choice. Resumes and
+explicit provider/model/effort picks stay unchanged. The dispatch response and
+full task text explain each swap; the Floor's short task text may clip it.
+Routing stops automatically once usage is back on pace or its window resets.
+
 In the **Agent** tab, type a task and click **Dispatch**. The agent runs
 in the background, output streams live into the modal AND into the bottom
 **Agent Console** so you can keep watching it from any other surface.
