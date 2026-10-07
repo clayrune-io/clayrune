@@ -73,13 +73,15 @@ async function saveProjectPath(projectId, inputEl) {
   const p = allProjects.find(x => x.id === projectId);
   if (p && p.project_path === val) return; // no change
   try {
-    await fetch(API_BASE + `/api/project/${projectId}`, {
+    const result = await humanProofFetch(API_BASE + `/api/project/${projectId}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ project_path: val })
-    });
+    }, { title: 'Change workspace', description: 'Re-enter your dashboard passcode to change this project\'s workspace folder.' });
+    if (result === null) { if (p) inputEl.value = p.project_path || ''; return; }
+    if (!result.ok) { showToast(result.body.error || 'Workspace change failed', 6000); return; }
     await refreshSilent();
-  } catch(e) {}
+  } catch(e) { showToast('Workspace change failed: ' + e.message, 6000); }
 }
 
 // ── Folder picker (project_path) ────────────────────────────────────────────
@@ -227,14 +229,16 @@ async function fpSelectCurrent() {
   }
   if (!projectId || !chosen) { closeFolderPicker(); return; }
   try {
-    await fetch(API_BASE + `/api/project/${projectId}`, {
+    const result = await humanProofFetch(API_BASE + `/api/project/${projectId}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ project_path: chosen })
-    });
+    }, { title: 'Change workspace', description: 'Re-enter your dashboard passcode to change this project\'s workspace folder.' });
+    if (result === null) return;
+    if (!result.ok) { showToast(result.body.error || 'Workspace change failed', 6000); return; }
     await refreshSilent();
     refreshModalById(projectId);
-  } catch (e) {}
+  } catch (e) { showToast('Workspace change failed: ' + e.message, 6000); return; }
   closeFolderPicker();
 }
 
@@ -841,12 +845,13 @@ async function createProject() {
   if (!id || !name) { alert('Name and ID are required'); return; }
   if (allProjects.find(p => p.id === id)) { alert('A project with this ID already exists'); return; }
   try {
-    const res = await fetch(API_BASE + `/api/project/${encodeURIComponent(id)}`, {
+    const res = await humanProofFetch(API_BASE + `/api/project/${encodeURIComponent(id)}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ name, domain, status: 'active', project_path: path })
-    });
-    const data = await res.json();
+    }, { title: 'Create project', description: 'Re-enter your dashboard passcode to create this project and choose its workspace.' });
+    if (res === null) return;
+    const data = res.body;
     if (!res.ok || !data.ok) { alert(data.error || 'Failed to create project'); return; }
     newProjDomain = 'general';
     closeModalById('__new_project');

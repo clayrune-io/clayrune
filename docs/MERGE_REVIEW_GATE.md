@@ -71,8 +71,10 @@ it is the kill switch and only reduces autonomy. It still turns steward mode
 off, removes the standing schedule and steward fence, and keeps the charter.
 This applies to ordinary projects and standalone steward pseudo-projects.
 
-Scope excludes `id` and `project_path` routing (separate f0d66b8e ticket),
-update endpoints beyond these three guarded routes, and direct disk edits.
+The safety-key guard excludes `id` and `project_path` routing, which has a
+separate caller-and-passcode guard in MC-1080 / f0d66b8e (see
+`docs/PROJECT_ROUTING_GUARD.md`). It also excludes update endpoints beyond
+these three guarded routes, and direct disk edits.
 Defaults are unchanged. Tests:
 `tests/test_project_safety_settings.py`, plus the existing project CRUD and
 merge-review suites and `tests/test_steward_routes.py`. This is a branch

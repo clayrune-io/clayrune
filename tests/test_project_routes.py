@@ -57,8 +57,10 @@ def client(tmp_path, monkeypatch):
     from mc.blueprints import local_auth as la
     from mc.blueprints import project_routes as pr
 
-    # Deterministic gate state: no LAN passcode configured on this run.
+    # Deterministic human routing proof, isolated from the real LAN passcode.
     monkeypatch.setattr(la, 'LOCAL_AUTH_PATH', tmp_path / 'local_auth.json')
+    la._local_auth_set_passcode('project-crud-test-proof')
+    monkeypatch.setattr(la, '_LOCAL_AUTH_FAILS', {})
 
     data_dir = tmp_path / 'projects'
     data_dir.mkdir()
@@ -198,6 +200,12 @@ def _seed(client, pid='tproj', **extra):
     return rec
 
 
+def _human_project_post(client, url, *, json):
+    """Routing CRUD cases use the real browser/passcode gate (MC-1080)."""
+    return client.post(url, json={**json, 'passcode': 'project-crud-test-proof'},
+                       headers={'Origin': 'http://localhost:5199'})
+
+
 # ── /api/projects ────────────────────────────────────────────────────────────
 
 def test_projects_list_happy(client):
@@ -302,7 +310,7 @@ def test_create_project_auto_installs_fence_hook(client):
 def test_create_project_with_explicit_path_also_installs_fence(client, tmp_path):
     explicit = tmp_path / 'explicit-proj'
     explicit.mkdir()
-    r = client.post('/api/project/explicitproj',
+    r = _human_project_post(client, '/api/project/explicitproj',
                     json={'name': 'Explicit', 'project_path': str(explicit)})
     assert r.status_code == 200
     assert (explicit / '.claude' / 'settings.json').exists()
@@ -377,7 +385,7 @@ def test_create_project_duplicate_path_409(client):
     ws = client.tmp / 'shared_ws'
     ws.mkdir()
     _seed(client, pid='first', project_path=str(ws))
-    r = client.post('/api/project/second',
+    r = _human_project_post(client, '/api/project/second',
                     json={'name': 'Second', 'project_path': str(ws)})
     assert r.status_code == 409
     assert 'already used' in r.get_json()['error']
@@ -398,7 +406,7 @@ def _install_dir(client, monkeypatch):
 
 def test_new_project_at_install_dir_refused(client, monkeypatch):
     install = _install_dir(client, monkeypatch)
-    r = client.post('/api/project/newproj',
+    r = _human_project_post(client, '/api/project/newproj',
                     json={'name': 'New', 'project_path': str(install)})
     assert r.status_code == 400
     assert 'install directory' in r.get_json()['error']
@@ -410,7 +418,7 @@ def test_new_project_inside_install_dir_refused(client, monkeypatch):
     install = _install_dir(client, monkeypatch)
     sub = install / 'some' / 'nested' / 'folder'
     sub.mkdir(parents=True)
-    r = client.post('/api/project/newproj',
+    r = _human_project_post(client, '/api/project/newproj',
                     json={'name': 'New', 'project_path': str(sub)})
     assert r.status_code == 400
     assert not (client.data_dir / 'newproj.json').exists()
@@ -422,7 +430,7 @@ def test_project_outside_install_dir_unaffected(client, monkeypatch):
     _install_dir(client, monkeypatch)
     ws = client.tmp / 'elsewhere'
     ws.mkdir()
-    r = client.post('/api/project/newproj',
+    r = _human_project_post(client, '/api/project/newproj',
                     json={'name': 'New', 'project_path': str(ws)})
     assert r.status_code == 200
 
@@ -433,7 +441,7 @@ def test_install_dir_opt_in_config_allows_it(client, monkeypatch):
     working."""
     install = _install_dir(client, monkeypatch)
     monkeypatch.setitem(client.state.CONFIG, 'allow_project_in_install_dir', True)
-    r = client.post('/api/project/newproj',
+    r = _human_project_post(client, '/api/project/newproj',
                     json={'name': 'New', 'project_path': str(install)})
     assert r.status_code == 200
     rec = json.loads((client.data_dir / 'newproj.json').read_text(encoding='utf-8'))
@@ -446,7 +454,7 @@ def test_existing_project_already_at_install_dir_is_grandfathered(client, monkey
     project_path on an unrelated field edit is not a NEW assignment."""
     install = _install_dir(client, monkeypatch)
     _seed(client, pid='mission_control', project_path=str(install))
-    r = client.post('/api/project/mission_control',
+    r = _human_project_post(client, '/api/project/mission_control',
                     json={'name': 'Renamed', 'project_path': str(install)})
     assert r.status_code == 200
     rec = json.loads((client.data_dir / 'mission_control.json').read_text(encoding='utf-8'))
@@ -462,7 +470,7 @@ def test_existing_project_path_change_to_install_dir_still_refused(client, monke
     elsewhere = client.tmp / 'elsewhere'
     elsewhere.mkdir()
     _seed(client, pid='proj', project_path=str(elsewhere))
-    r = client.post('/api/project/proj',
+    r = _human_project_post(client, '/api/project/proj',
                     json={'name': 'Test Project', 'project_path': str(install)})
     assert r.status_code == 400
     rec = json.loads((client.data_dir / 'proj.json').read_text(encoding='utf-8'))

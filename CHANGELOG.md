@@ -11,6 +11,12 @@
 - A non-Claude follow-up or interrupt sent after an isolated run ended with nothing to commit used to hand the deleted worktree to the engine and die with `[WinError 267] The directory name is invalid`, putting the session in `error`. The missing worktree is now recreated from base at the same path, and the agent log says so; if recreation fails it falls back to the project tree and says that instead.
 - Chose recreate-on-follow-up over keeping no-commit worktrees: it also covers startup gc, manual deletes and restarts, and leaks no tree per read-only run. New `mc/agent_worktree_followup.py`; test `tests/test_followup_removed_worktree.py`. Branch build only; no merge, push or restart.
 
+## [2026-10-07] - Project routing changes require a human (MC-1080)
+
+- Project updates refuse agent writes of `id` or `project_path` with HTTP 403 before any record, workspace, log or lifecycle side effect. Caller attribution also refuses managed agents carrying a forged browser Origin, even with valid human proof.
+- Human Create, Claude project Import, typed workspace edits and folder selection use the existing dashboard passcode prompt. Cancel keeps drafts/selections; workspace refusals are visible. Request passcodes are never saved in project records.
+- Contract and validation: `docs/PROJECT_ROUTING_GUARD.md`. Branch build only; no merge, push, restart or live settings changes.
+
 ## [2026-10-07] - Saved-connection model discovery (MC-1067, slice 1)
 
 - Studio lists discovered image/video models through independent read-only vendor adapters, with a scoped 24-hour cache outside project records and an explicitly labelled curated fallback.
