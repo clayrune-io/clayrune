@@ -113,6 +113,7 @@ import mc.identity as _identity            # ws_005: shared no-persona identity 
 import mc.skills as _skills                # _skills_catalog_block
 import mc.skill_scoping as _skill_scoping  # per-agent skill scoping
 import mc.agent_worktree as _agent_worktree  # per-agent worktree isolation (b264200a)
+import mc.agent_worktree_followup as _agent_worktree_followup  # MC-1081: follow-up into a removed worktree
 import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§9.6)
 import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends §9.6's split)
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
@@ -507,6 +508,23 @@ def _session_cwd(sess, project_path):
         _log(f"[resume-cwd] {sess.get('session_id')}: worktree {cwd} is gone, "
              f"respawning in the project tree")
     return project_path
+
+
+def _followup_cwd_for(session, project, project_path):
+    """cwd for a non-Claude follow-up/interrupt respawn (MC-1081). The tree
+    the session started in, recreated from base if a no-commit end already
+    removed it; the note lands in the agent log and activity feed so the move
+    is never silent."""
+    cwd, note = _agent_worktree_followup.resolve_followup_cwd(
+        session, project, project_path)
+    if note:
+        session['log_lines'].append(f"[{note}]")
+        _log(f"[followup-cwd] {session.get('session_id', '')[:12]}: {note}")
+        try:
+            _log_agent_activity(session.get('project_id', ''), note)
+        except Exception as e:
+            _log(f"[followup-cwd] activity log failed (non-fatal): {e}")
+    return cwd
 
 
 def _pid_is_alive(pid):
@@ -13150,7 +13168,7 @@ def agent_followup(project_id):
                 # recorded, when this conversation was isolated. Respawning into
                 # `pp` instead would silently move an isolated agent's later
                 # turns into the shared main checkout mid-conversation.
-                _followup_cwd = existing.get('_agent_cwd') or pp
+                _followup_cwd = _followup_cwd_for(existing, p, pp)
                 runtime = _agent_runtime.get_runtime(session_provider)
                 handle = _agent_runtime.SessionHandle(
                     mc_session_id=session_id,
@@ -14081,7 +14099,7 @@ def agent_interrupt(project_id, *, _internal=None):
             try:
                 # Same tree the dispatch turn ran in — see the followup path's
                 # identical `_followup_cwd` for why `pp` alone is wrong here.
-                _followup_cwd = session.get('_agent_cwd') or pp
+                _followup_cwd = _followup_cwd_for(session, p, pp)
                 runtime = _agent_runtime.get_runtime(session_provider)
                 handle = _agent_runtime.SessionHandle(
                     mc_session_id=session_id,

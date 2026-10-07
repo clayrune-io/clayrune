@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Follow-up into a removed agent worktree no longer fails (MC-1081)
+
+- A non-Claude follow-up or interrupt sent after an isolated run ended with nothing to commit used to hand the deleted worktree to the engine and die with `[WinError 267] The directory name is invalid`, putting the session in `error`. The missing worktree is now recreated from base at the same path, and the agent log says so; if recreation fails it falls back to the project tree and says that instead.
+- Chose recreate-on-follow-up over keeping no-commit worktrees: it also covers startup gc, manual deletes and restarts, and leaks no tree per read-only run. New `mc/agent_worktree_followup.py`; test `tests/test_followup_removed_worktree.py`. Branch build only; no merge, push or restart.
+
 ## [2026-10-07] - Saved-connection model discovery (MC-1067, slice 1)
 
 - Studio lists discovered image/video models through independent read-only vendor adapters, with a scoped 24-hour cache outside project records and an explicitly labelled curated fallback.
