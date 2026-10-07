@@ -125,6 +125,7 @@ import mc.delegation_wake as _delegation_wake  # MC-1063: a parent's turn-end wa
 import mc.desk_connect.custom_package_manifest as _custom_package_manifest  # MC-1054: detect-only file drift of approved npm MCPs
 import mc.agent_jobs as _agent_jobs  # MC-958 follow-up: engine-agnostic background command jobs
 import mc.caller_attribution as _caller_attribution  # backlog 40260b57: who is really calling dispatch
+import mc.dispatch_lineage as _dispatch_lineage  # MC-1082: attributed caller recorded as the spawner
 import mc.memory_push as _memory_push      # MC-944 mid-task memory push observer, report mode
 import mc.artifact_coverage as _artifact_coverage  # substitution check: did the turn run what was asked
 import mc.vendor_context_sync as _vendor_context_sync  # mirrors CLAUDE.md into AGENTS.md/GEMINI.md/QWEN.md
@@ -12313,6 +12314,11 @@ def agent_dispatch(project_id):
     # attended, whatever it claims (mc/caller_attribution.py).
     trigger_type, source = _caller_attribution.resolve_dispatch(
         request, trigger_type, source, agent_sessions, tracked_processes)
+    # MC-1082: lineage is the OS-attributed caller, not whatever the body named
+    # as notify_session (mc/dispatch_lineage.py). None -> notify_session, as before.
+    spawned_by = _dispatch_lineage.spawner_of_record(
+        _dispatch_lineage.attributed_caller_session(request, agent_sessions, tracked_processes),
+        notify_session)
     character, pace_record = _engine_pace_dispatch.prepare(
         project_id, character, resume_id=resume_id,
         provider_override=provider_override, model_override=model_override,
@@ -12343,6 +12349,7 @@ def agent_dispatch(project_id):
                                               # best-effort; they don't set this.
                                               strict_character=True,
                                               notify_session=notify_session,
+                                              spawned_by=spawned_by,
                                               cross_provider_handoff=cross_provider_handoff)
     except _engine_fallback.EngineFallbackBlocked as e:
         return jsonify(e.payload), 400

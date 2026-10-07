@@ -6,6 +6,13 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Merge review lineage no longer depends on notify_session (MC-1082)
+
+- `POST .../agent/dispatch` now records the OS-attributed caller session as the child's spawner (`_spawned_by`, durable `dispatched_by_session_id`), whatever the body says. A builder that dispatched its own reviewer without `notify_session`, or naming a decoy, used to leave no lineage and the reviewer passed; it is now refused 403 by the merge-review gate. `mc/review_lineage.py` reads the same fields unchanged.
+- `notify_session` stays the callback target only. A dispatch the OS cannot attribute to a session (UI, human curl, scheduler) records no caller and falls back to `notify_session` as before. Where the two differ, the banner now shows the true dispatcher.
+- Hivemind workers (`hm_*`) carry no lineage link: the orchestrator spawns them, not a builder, so they cannot choose a reviewer.
+- New `mc/dispatch_lineage.py`; tests `tests/test_dispatch_lineage.py`. Branch build only; no merge, push or restart.
+
 ## [2026-10-07] - Follow-up into a removed agent worktree no longer fails (MC-1081)
 
 - A non-Claude follow-up or interrupt sent after an isolated run ended with nothing to commit used to hand the deleted worktree to the engine and die with `[WinError 267] The directory name is invalid`, putting the session in `error`. The missing worktree is now recreated from base at the same path, and the agent log says so; if recreation fails it falls back to the project tree and says that instead.
