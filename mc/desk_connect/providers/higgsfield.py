@@ -103,7 +103,8 @@ class HiggsfieldProvider(base.Provider):
             return base.Probe(False, f'the saved key could not be read: {_oauth._safe(e)}', kind='unavailable')
         try:
             _engines._json_call('POST', f'{_engines._HIGGS_BASE}/estimate/{_QUOTE_MODEL}',
-                                {'Authorization': f'Key {user}:{secret}', 'Accept': 'application/json'}, _QUOTE_BODY)
+                                {'Authorization': f'Key {user}:{secret}', 'Accept': 'application/json'}, _QUOTE_BODY,
+                                free=True)      # a price quote: repeating it costs nothing
         except _engines.EngineError as e:
             if e.kind == 'auth':
                 return base.Probe(False, 'Higgsfield did not accept the key ID and secret. Check both were copied '

@@ -480,11 +480,17 @@ def _transport_call(method: str, url: str, *, free: bool = False, **kw) -> tuple
     """`_http_request` with transport failures turned into a NON-definitive
     EngineError (we cannot know whether the vendor acted on the request).
     `free` is the caller's statement that repeating the call costs nothing and
-    changes nothing; it unlocks retry of a failure that may have been sent."""
+    changes nothing; it unlocks retry of a failure that may have been sent.
+    `timeout` is the total budget across retries, as in `_mcp_post`, so a Price
+    click that times out answers in ~30 s rather than ~90 s."""
     from mc import desk_net_errors as net
     service = net.service_name(url)
+    deadline = time.monotonic() + kw.pop('timeout', _HTTP_TIMEOUT)
+
+    def attempt():
+        return _http_request(method, url, timeout=max(0.1, deadline - time.monotonic()), **kw)
     try:
-        return net.run(lambda: _http_request(method, url, **kw), free=free, log=_log, label=service)
+        return net.run(attempt, free=free, deadline=deadline, log=_log, label=service)
     except net.NetFailure as f:
         raise _net_engine_error(f, service, free=free) from f.original
 
