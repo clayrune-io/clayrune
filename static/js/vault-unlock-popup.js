@@ -40,11 +40,12 @@
       const state = await res.json();
       if (dialog !== d) return;
       if (state.state === 'unlocked' || state.state === 'unconfigured') {
+        if (state.state === 'unlocked') window.dispatchEvent(new Event('vault-unlocked'));
         close(); window.showToast(state.state === 'unlocked' ? 'Vault is already unlocked.' : 'The vault has no passphrase lock configured.'); return;
       }
       if (state.state !== 'locked') throw new Error('Could not determine whether the vault is locked.');
       body.replaceChildren();
-      window.DeskV1VaultGate.mount(body, { hint: 'Enter your vault passphrase and dashboard passcode to use your saved credentials. Then retry the action that was held.', onUnlocked: () => { if (dialog === d) close(); window.dispatchEvent(new Event('vault-unlocked')); } });
+      window.DeskV1VaultGate.mount(body, { hint: 'Enter your vault passphrase and dashboard passcode to use your saved credentials. Then retry the action that was held.', onUnlocked: () => { if (dialog === d) close(); } });
       body.querySelector('[data-vg-pass]').focus();
     } catch (e) {
       if (dialog === d) body.textContent = e.message || String(e);

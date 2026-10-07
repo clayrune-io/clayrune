@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Studio refreshes locked engine cards after vault unlock (MC-1065)
+
+- Studio shows one locked-vault message and unlock action per video/image card, even when connection status and pricing both refuse access.
+- Successful unlocks through any shared form, and the popup's already-unlocked result, refresh visible Studio engine status and price. Returning focus also rechecks held cards; no polling loop or paid retry is added. Render/Generate require a ready engine and a returned quote.
+- Drafts and picker choices survive recovery; obsolete price replies cannot restore a locked refusal. Contract and exact checks: `docs/desk_v1/ENGINE_VAULT_RECOVERY.md`. Branch only; no merge, push or restart.
+
 ## [2026-10-07] - Character-specific context rollover limits (MC-1072)
 
 - `context_rollover_by_character` lets a character roll earlier or later than the global token limit. Missing or invalid overrides use the global value; active limits clamp to 60,000 tokens, and the existing global disable setting remains supported.

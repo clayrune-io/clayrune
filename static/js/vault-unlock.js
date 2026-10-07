@@ -39,7 +39,10 @@
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    return { ok: res.ok, status: res.status, body: await res.json().catch(() => ({})) };
+    const out = { ok: res.ok, status: res.status, body: await res.json().catch(() => ({})) };
+    // Every form uses this helper, including the Secrets panel and inline gates.
+    if (out.ok && out.body.state === 'unlocked') window.dispatchEvent(new Event('vault-unlocked'));
+    return out;
   }
 
   window.VaultUnlock = { errorText, isLocked, unlock };

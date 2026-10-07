@@ -24,6 +24,7 @@
 // Output is downloaded server-side into the Material library on `ready`; what the
 // page paints is the library path the server answers with, never a vendor URL.
 import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.js';
+import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.js';
 
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -31,7 +32,8 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
   function _toast(msg) { if (window.DeskV1Kit && window.DeskV1Kit.toast) window.DeskV1Kit.toast(msg); }
   function _errorHTML(error) {
     const message = error && error.message ? error.message : typeof error === 'object' ? JSON.stringify(error) : error;
-    return esc(message) + (window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML(error) : '');
+    const html = esc(message) + (window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML(error) : '');
+    return window.VaultUnlockUI && window.VaultUnlockUI.locked(error) ? `<span data-eng-vault-message>${html}</span>` : html;
   }
   function _usd(n) { return n == null || isNaN(n) ? '—' : '$' + Number(n).toFixed(Number(n) < 1 ? 4 : 2).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1'); }
   function _uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
@@ -304,15 +306,17 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
     const mine = Symbol('mount');
     st.mount = mine;
     const alive = () => st.mount === mine && host.isConnected;
+    let currentEngines = null;
 
     const paint = (engines) => {
       if (!alive()) return;
+      engines = currentEngines || engines;
       const p = _pick(engines, 'video', st);
       if (!p.engine) { host.innerHTML = '<div class="desk-v1-engine-panel" data-eng-panel><div class="desk-v1-stub-empty">No video engines are available.</div></div>'; return; }
       const running = st.render && !_TERMINAL.includes(st.render.status);
       const busy = running || st.submitting;
       const conn = p.engine.connected || {};
-      const canRender = !busy && !st.estimating && st.estimate && !st.estimate.refusal && !st.estimateError;
+      const canRender = conn.ready && !busy && !st.estimating && st.estimate && st.estimate.estimate && !st.estimate.refusal && !st.estimateError;
       host.innerHTML = `<div class="desk-v1-engine-panel" data-eng-panel data-kind="video">
         <div class="desk-v1-engine-head">Render with an engine</div>
         ${_pickersHTML(p, st, 'video')}
@@ -325,6 +329,7 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
         </div>
         ${_renderResultHTML(st.render)}
       </div>`;
+      coalesceVaultPrompts(host);
       host.querySelector('[data-eng-engine]').onchange = (ev) => { st.engineId = ev.target.value; st.modelId = null; st.estimate = null; paint(engines); estimate(engines); };
       host.querySelector('[data-eng-model]').onchange = (ev) => { st.modelId = ev.target.value; st.estimate = null; paint(engines); estimate(engines); };
       host.querySelector('[data-eng-ratio]').onchange = (ev) => { st.ratio = ev.target.value; st.estimate = null; paint(engines); estimate(engines); };
@@ -337,16 +342,16 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
     let _timer = null;
     const estimate = (engines) => {
       clearTimeout(_timer);
+      const seq = (st.seq = (st.seq || 0) + 1);
       st.priceConfirmation = null;
       st.estimating = true; st.estimateError = null; st.error = null;
       _timer = setTimeout(async () => {
-        const seq = (st.seq = (st.seq || 0) + 1);
         try {
           const out = await _api('POST', '/api/desk/engines/render/estimate', body());
-          if (st.seq !== seq) return;
+          if (st.seq !== seq || !alive()) return;
           st.estimate = out; st.estimateError = null;
         } catch (e) {
-          if (st.seq !== seq) return;
+          if (st.seq !== seq || !alive()) return;
           st.estimate = null; st.estimateError = e;
         }
         st.estimating = false;
@@ -354,6 +359,12 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
       }, 150);
       paint(engines);
     };
+
+    watchEngineVault(host, { alive, state: st, paint, estimate,
+      clearTimer: () => clearTimeout(_timer), getEngines: () => currentEngines,
+      loadEngines: () => list(opts.projectId, { force: true }),
+      setEngines: (engines) => { currentEngines = engines; _pick(engines, 'video', st); },
+    });
 
     const poll = (engines) => {
       if (!st.render || _TERMINAL.includes(st.render.status)) return;
@@ -424,7 +435,8 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
       }
       if (!alive()) return;
       _pick(engines, 'video', st);
-      host.__engRefresh = () => { if (alive()) { st.estimate = null; estimate(engines); } };
+      currentEngines = engines;
+      host.__engRefresh = () => { if (alive()) { st.estimate = null; estimate(currentEngines); } };
       paint(engines);
       poll(engines);
       estimate(engines);
@@ -442,17 +454,23 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
     const mine = Symbol('mount');
     st.mount = mine;
     const alive = () => st.mount === mine && host.isConnected;
+    let currentEngines = null;
 
     const paint = (engines) => {
       if (!alive()) return;
+      engines = currentEngines || engines;
       const p = _pick(engines, 'image', st);
       if (!p.engine) { host.innerHTML = '<div class="desk-v1-engine-panel" data-eng-panel><div class="desk-v1-stub-empty">No image engines are available.</div></div>'; return; }
       const j = st.job;
       const running = j && !_TERMINAL.includes(j.status) && j.status !== 'failed';
       const busy = running || st.submitting;
       const conn = p.engine.connected || {};
-      const canGo = !busy && !st.estimating && st.estimate && !st.estimate.refusal && !st.estimateError && st.prompt.trim();
+      const canGo = conn.ready && !busy && !st.estimating && st.estimate && st.estimate.estimate && !st.estimate.refusal && !st.estimateError && st.prompt.trim();
       const outs = (j && j.outputs) || [];
+      // Replacing a focused textarea can fire change while innerHTML is removing
+      // it. oninput already saved its draft; avoid a nested paint during recovery.
+      const previousPrompt = host.querySelector('[data-eng-prompt]');
+      if (previousPrompt) previousPrompt.onchange = null;
       host.innerHTML = `<div class="desk-v1-engine-panel" data-eng-panel data-kind="image">
         <div class="desk-v1-engine-head">Generate with an engine</div>
         <label class="desk-v1-sc-label" for="eng-prompt">Describe the picture</label>
@@ -471,6 +489,7 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
           ${outs.map((o) => `<div data-eng-output data-path="${esc(o.path)}">${o.src ? `<img class="desk-v1-engine-img" src="${esc(o.src)}" alt="Generated picture">` : ''}<div class="desk-v1-engine-saved">Saved to the Material library: ${esc(o.path)}</div></div>`).join('')}
         </div>` : ''}
       </div>`;
+      coalesceVaultPrompts(host);
       const ta = host.querySelector('[data-eng-prompt]');
       ta.oninput = () => { st.prompt = ta.value; };
       ta.onchange = () => { st.prompt = ta.value; st.estimate = null; paint(engines); estimate(engines); };
@@ -493,16 +512,16 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
     let _timer = null;
     const estimate = (engines) => {
       clearTimeout(_timer);
+      const seq = (st.seq = (st.seq || 0) + 1);
       if (!st.prompt.trim()) { st.estimate = null; st.estimating = false; return; }
       st.estimating = true; st.estimateError = null; st.error = null;
       _timer = setTimeout(async () => {
-        const seq = (st.seq = (st.seq || 0) + 1);
         try {
           const out = await _api('POST', '/api/desk/engines/estimate', body());
-          if (st.seq !== seq) return;
+          if (st.seq !== seq || !alive()) return;
           st.estimate = out; st.estimateError = null;
         } catch (e) {
-          if (st.seq !== seq) return;
+          if (st.seq !== seq || !alive()) return;
           st.estimate = null; st.estimateError = e;
         }
         st.estimating = false;
@@ -510,6 +529,12 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
       }, 150);
       paint(engines);
     };
+
+    watchEngineVault(host, { alive, state: st, paint, estimate,
+      clearTimer: () => clearTimeout(_timer), getEngines: () => currentEngines,
+      loadEngines: () => list(opts.projectId, { force: true }),
+      setEngines: (engines) => { currentEngines = engines; _pick(engines, 'image', st); },
+    });
 
     const poll = (engines) => {
       if (!st.job || _TERMINAL.includes(st.job.status)) return;
@@ -546,6 +571,7 @@ import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.j
     list(opts.projectId).then((engines) => {
       if (!alive()) return;
       _pick(engines, 'image', st);
+      currentEngines = engines;
       paint(engines);
       poll(engines);
       estimate(engines);
