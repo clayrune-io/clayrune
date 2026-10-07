@@ -221,6 +221,32 @@ def test_transport_call_timeout_on_a_free_call_is_retried(monkeypatch):
     assert len(calls) == 3
 
 
+def test_transport_call_free_timeouts_share_one_total_budget(monkeypatch, sleeps):
+    clock = [100.0]
+    timeouts = []
+    monkeypatch.setattr(eng.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(net.time, 'monotonic', lambda: clock[0])
+
+    def sleep(delay):
+        sleeps.append(delay)
+        clock[0] += delay
+
+    def timed_out(method, url, *, timeout, **kw):
+        timeouts.append(timeout)
+        clock[0] += min(2.0, timeout)
+        raise TimeoutError('read timed out')
+
+    monkeypatch.setattr(net.time, 'sleep', sleep)
+    monkeypatch.setattr(eng, '_http_request', timed_out)
+    with pytest.raises(eng.EngineError) as e:
+        eng._transport_call('GET', 'https://platform.higgsfield.ai/requests/r1/status',
+                            timeout=4.0, free=True)
+    assert timeouts == pytest.approx([4.0, 1.5])
+    assert sleeps == [0.5]
+    assert clock[0] - 100.0 <= 4.0
+    assert e.value.not_sent is False and e.value.plain is True
+
+
 def test_free_flag_is_not_inferred_from_the_payload(monkeypatch):
     """A body that says get_cost / estimate does not make a call free."""
     calls = _count(monkeypatch, TimeoutError('t'), TimeoutError('t'))
