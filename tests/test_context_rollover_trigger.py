@@ -47,8 +47,8 @@ class TestContextTokensOverThreshold:
     def test_custom_threshold(self, ar, monkeypatch):
         from mc import state as mc_state
         monkeypatch.setitem(mc_state.CONFIG, 'context_rollover_tokens', 5000)
-        assert ar._context_tokens_over_threshold(5001) is True
-        assert ar._context_tokens_over_threshold(4999) is False
+        assert ar._context_tokens_over_threshold(60_000) is True
+        assert ar._context_tokens_over_threshold(59_999) is False
 
     def test_none_never_trips(self, ar, monkeypatch):
         from mc import state as mc_state
@@ -66,8 +66,8 @@ class TestAutoFreshTrigger:
         monkeypatch.setattr(ar, '_session_too_large',
                             lambda *a, **k: (_ for _ in ()).throw(
                                 AssertionError('byte check must not run when tokens already trip')))
-        reason, detail = ar._auto_fresh_trigger('/no/such/project', 'sid-1', context_tokens=5000)
-        assert (reason, detail) == ('tokens', 5000)
+        reason, detail = ar._auto_fresh_trigger('/no/such/project', 'sid-1', context_tokens=65_000)
+        assert (reason, detail) == ('tokens', 65_000)
 
     def test_known_tokens_under_threshold_never_falls_through_to_bytes(self, ar, monkeypatch):
         """Regression (2026-09-18): clayrune_website auto-freshed twice at
@@ -101,6 +101,34 @@ class TestAutoFreshTrigger:
         monkeypatch.setattr(ar, '_session_too_large', lambda pp, sid: (True, 6 * 1024 * 1024))
         reason, detail = ar._auto_fresh_trigger('/p', 'sid-1', context_tokens=None)
         assert reason == 'bytes'
+
+
+@pytest.mark.parametrize('ref,expected', [('global:dave', 'tokens'),
+                                        ('global:builder', None),
+                                        ('project:dave', None)])
+def test_auto_fresh_uses_character_threshold(ar, monkeypatch, ref, expected):
+    monkeypatch.setitem(ar.state.CONFIG, 'context_rollover_tokens', 200_000)
+    monkeypatch.setitem(ar.state.CONFIG, 'context_rollover_by_character',
+                        {'global:dave': 120_000})
+    reason, detail = ar._auto_fresh_trigger(
+        '/p', 'sid', 130_000, session_or_character={'character': ref})
+    assert (reason, detail) == (expected, 130_000 if expected else 0)
+
+
+@pytest.mark.parametrize('provider', ['codex', 'gemini', 'qwen'])
+def test_mode_a_rollover_uses_character_threshold(ar, monkeypatch, provider):
+    monkeypatch.setitem(ar.state.CONFIG, 'context_rollover_tokens', 200_000)
+    monkeypatch.setitem(ar.state.CONFIG, 'context_rollover_by_character',
+                        {'global:dave': 120_000})
+    monkeypatch.setattr(ar, '_auto_fresh_handoff',
+                        lambda *a, **k: ('handoff', 'rolled', 'activity'))
+    monkeypatch.setattr(ar, '_log_agent_activity', lambda *a: None)
+    session = {'character': {'name': 'dave', 'scope': 'global'},
+               'context_tokens': 130_000, 'provider_session_id': 'old'}
+    assert ar._mode_a_token_rollover('/p', 'p', 's', session, provider, 'continue') == \
+        'handoff\n\ncontinue'
+    assert session['context_tokens'] is None
+    assert 'provider_session_id' not in session
 
 
 class TestInFlightChildren:

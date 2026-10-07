@@ -249,6 +249,23 @@ def _run_reader(env, lines_fn, session=None, proc=None, reader='reader', **extra
     return session
 
 
+def test_character_limit_rolls_midturn_and_logs_effective_threshold(env, monkeypatch):
+    monkeypatch.setitem(env['CONFIG'], 'context_rollover_by_character',
+                        {'global:dave': 120_000})
+
+    def lines():
+        yield _assistant('tool1', 130_000, 'm1')
+        yield _tool_result('tool1')
+
+    _run_reader(env, lines, character={'name': 'dave', 'scope': 'global'})
+    assert _wait(lambda: len(env['spawned']) == 1)
+    log = env['tmp'] / 'midturn_log' / 'p1.jsonl'
+    assert _wait(log.is_file)
+    rows = [json.loads(line) for line in log.read_text().splitlines()]
+    assert rows[0]['threshold'] == 120_000
+    assert rows[0]['context_tokens'] == 130_000
+
+
 def test_crossing_mid_turn_rolls_once_at_a_tool_boundary(env):
     """Threshold crossed inside ONE turn (no message arrives): exactly one
     fresh spawn, and only AFTER the tool_result — never while t1 is in flight."""

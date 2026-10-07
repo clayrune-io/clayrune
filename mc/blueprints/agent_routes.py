@@ -117,6 +117,7 @@ import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§
 import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends §9.6's split)
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
 import mc.midturn_rollover as _midturn  # mid-turn context rollover bookkeeping
+from mc.rollover_threshold import threshold_for as _rollover_threshold_for
 import mc.background_tasks as _bg_tasks  # MC-958 background-job wake tracking (Mode B)
 import mc.delegation_waiting as _delegation_waiting  # MC-1063: queued child reports shown on the parent
 import mc.delegation_wake as _delegation_wake  # MC-1063: a parent's turn-end wakes its queued reports
@@ -7460,7 +7461,8 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
     # the byte-based backstop alone decides, same as before this trigger
     # existed (docs/CONTEXT_ECONOMY_SPEC.md §2, "byte-based trigger ...
     # independent of cost").
-    _af_reason, _af_detail = _auto_fresh_trigger(pp, claude_sid)
+    _af_reason, _af_detail = _auto_fresh_trigger(
+        pp, claude_sid, session_or_character=_revive_character)
     resume_flags = []
     context = None
     revival_msg = message
@@ -10991,7 +10993,7 @@ def _fragile_resume_target(pp, provider, native_id, rolled_from):
         return False
 
 
-def _context_tokens_over_threshold(context_tokens):
+def _context_tokens_over_threshold(context_tokens, session_or_character=None):
     """Token-based auto-fresh trigger (`context_rollover_tokens`, default
     200000, 0 disables) — the live counterpart to `_session_too_large`'s
     byte-based backstop. Either trigger may fire a rollover independently
@@ -11001,13 +11003,13 @@ def _context_tokens_over_threshold(context_tokens):
     usage has been recorded yet (a revived/never-live session), which never
     trips this trigger, matching "unknown stays unknown".
     """
-    thr = int(state.CONFIG.get('context_rollover_tokens', 200000) or 0)
+    thr = _rollover_threshold_for(session_or_character, state.CONFIG)
     if thr <= 0:
         return False
     return isinstance(context_tokens, (int, float)) and context_tokens >= thr
 
 
-def _auto_fresh_trigger(pp, claude_sid, context_tokens=None):
+def _auto_fresh_trigger(pp, claude_sid, context_tokens=None, *, session_or_character=None):
     """Unified auto-fresh decision. A KNOWN `context_tokens` figure is
     authoritative and decides on its own — the byte check is a backstop
     consulted only when tokens are unknown, never run alongside a known
@@ -11025,7 +11027,7 @@ def _auto_fresh_trigger(pp, claude_sid, context_tokens=None):
     size_bytes int (0 when no rollover is warranted).
     """
     if context_tokens is not None:
-        if _context_tokens_over_threshold(context_tokens):
+        if _context_tokens_over_threshold(context_tokens, session_or_character):
             return 'tokens', int(context_tokens)
         return None, 0
     too_large, size_bytes = _session_too_large(pp, claude_sid)
@@ -11071,7 +11073,7 @@ def _mode_a_token_rollover(pp, project_id, session_id, session, provider, messag
     unknown")."""
     ctx = session.get('context_tokens')
     native_id = session.get('provider_session_id') or ''
-    if not native_id or not _context_tokens_over_threshold(ctx):
+    if not native_id or not _context_tokens_over_threshold(ctx, session):
         return message
     _log(f"[followup] {provider} session {native_id} rolling to fresh (tokens={ctx})")
     handoff_text, log_line, activity_line = _auto_fresh_handoff(
@@ -11649,7 +11651,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     if resume_id:
         _af_rolled_from = _live_session_rolled_from(project_id, resume_id)
         _af_reason, _af_detail = _auto_fresh_trigger(
-            pp, resume_id, _live_context_tokens(project_id, resume_id))
+            pp, resume_id, _live_context_tokens(project_id, resume_id),
+            session_or_character=character_meta)
         if not _af_reason and _fragile_resume_target(pp, 'claude', resume_id, _af_rolled_from):
             # An earlier roll already reset this live session's context_tokens
             # to None (`_mark_context_rolled`), so the trigger above sees
@@ -13201,7 +13204,8 @@ def agent_followup(project_id):
                 _live_sid = existing.get('claude_session_id')
                 if _live_sid:
                     _live_reason, _live_detail = _auto_fresh_trigger(
-                        pp, _live_sid, existing.get('context_tokens'))
+                        pp, _live_sid, existing.get('context_tokens'),
+                        session_or_character=existing)
                     if _live_reason:
                         _log(f"[followup] Live session {_live_sid} rolling to fresh "
                              f"({_live_reason}={_live_detail}) — ending process")
@@ -13241,7 +13245,8 @@ def agent_followup(project_id):
                     # Normal session, OR a resume that already produced output
                     # (healthy — it just died later). Resume with -r to keep context.
                     _af_reason, _af_detail = _auto_fresh_trigger(
-                        pp, claude_sid, existing.get('context_tokens'))
+                        pp, claude_sid, existing.get('context_tokens'),
+                        session_or_character=existing)
                     _af_rolled_from = existing.get('_rolled_from')
                     if not _af_reason and _fragile_resume_target(
                             pp, 'claude', claude_sid, _af_rolled_from):
@@ -13664,7 +13669,8 @@ def agent_followup(project_id):
             followup_msg = message
             if claude_sid:
                 _af_reason, _af_detail = _auto_fresh_trigger(
-                    pp, claude_sid, existing.get('context_tokens'))
+                    pp, claude_sid, existing.get('context_tokens'),
+                    session_or_character=existing)
                 _af_rolled_from = existing.get('_rolled_from')
                 if not _af_reason and _fragile_resume_target(
                         pp, 'claude', claude_sid, _af_rolled_from):
@@ -14207,7 +14213,8 @@ def agent_interrupt(project_id, *, _internal=None):
                     midturn_state = _mt['build_state'](_session_cwd(session, pp))
                 else:
                     _af_reason, _af_detail = _auto_fresh_trigger(
-                        pp, claude_sid, session.get('context_tokens'))
+                        pp, claude_sid, session.get('context_tokens'),
+                        session_or_character=session)
                 if _af_reason:
                     _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
                         pp, 'claude', claude_sid, project_id, session_id,

@@ -31,6 +31,7 @@ from pathlib import Path
 
 from mc import state
 from mc.core import _log, TimestampedLines
+from mc.rollover_threshold import threshold_for
 
 RECENT_TOOLS_KEEP = 10
 # MC-964 Step C: the last tool_results' first lines, carried across a roll
@@ -219,7 +220,7 @@ def should_roll(session, over_threshold):
     if _pending(session):
         return False
     tokens = session.get('_mt_main_tokens')
-    if not over_threshold(tokens):
+    if not over_threshold(tokens, session):
         return False
     base = session.get('_mt_baseline_tokens')
     if base is not None and tokens - base < MIN_GROWTH_TOKENS:
@@ -351,7 +352,7 @@ def _append_row(session, extra):
         'project_id': pid,
         'session_id': session.get('session_id', ''),
         'claude_session_id': session.get('claude_session_id', ''),
-        'threshold': state.CONFIG.get('context_rollover_tokens'),
+        'threshold': threshold_for(session, state.CONFIG),
         'roll_number': session.get('_mt_rolls', 0),
         'epoch': int(time.time()),
     }
