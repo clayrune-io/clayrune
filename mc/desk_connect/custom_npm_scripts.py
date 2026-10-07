@@ -7,8 +7,8 @@ A script is what npm would run at install: `preinstall`, `install` or `postinsta
 run by the system shell with that package's folder as the working directory. The environment is built
 from nothing (`script_env`), never inherited: no Clayrune secret, no vault value, no `NODE_OPTIONS`, no
 `npm_config_*` registry or auth, no user `.npmrc` (HOME is an empty folder inside the staging area and
-the npm config files point at the null device). That is a fixed environment, not a sandbox: an approved
-script has this account's file and network access, and the card says so.
+the npm config files point at separate absent paths in that empty home). That is a fixed environment,
+not a sandbox: an approved script has this account's file and network access, and the card says so.
 
 Bounds: a time limit per script (the process tree is killed at it), and a capped copy of the output kept
 for the server log only. A script that fails stops the install and nothing is placed.
@@ -42,7 +42,9 @@ def script_env(step: dict, home: Path, node_dir: str, cwd: Path) -> dict:
         env = {'PATH': sep.join([bins, '/usr/local/bin', '/usr/bin', '/bin']), 'TMPDIR': str(home / 'tmp')}
     env.update({'HOME': str(home), 'CI': '1', 'npm_lifecycle_event': step['script'],
                 'npm_package_name': step['package'], 'npm_package_version': step['version'],
-                'npm_config_userconfig': os.devnull, 'npm_config_globalconfig': os.devnull,
+                # npm refuses to load the same path as both user and global configuration,
+                # including the null device. These distinct paths live in the empty temp home.
+                'npm_config_userconfig': str(home / 'user.npmrc'), 'npm_config_globalconfig': str(home / 'global.npmrc'),
                 'npm_config_ignore_scripts': 'true', 'npm_config_cache': str(home / 'npm-cache')})
     return env
 

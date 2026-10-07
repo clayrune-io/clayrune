@@ -171,7 +171,9 @@ def test_a_script_runs_in_a_fixed_environment_with_no_secret_loader_or_npm_confi
     e = ran[0]['env']
     assert not {k for k in e if k.upper() in ('NODE_OPTIONS', 'NODE_PATH', 'ACME_TOKEN', 'GH_TOKEN', 'NPM_CONFIG_REGISTRY')}
     assert 'secret-value' not in json.dumps(e) and 'evil' not in json.dumps(e)
-    assert e['npm_config_userconfig'] == os.devnull and e['npm_config_globalconfig'] == os.devnull
+    assert e['npm_config_userconfig'] != e['npm_config_globalconfig']
+    assert Path(e['npm_config_userconfig']).parent == Path(e['HOME'])
+    assert Path(e['npm_config_globalconfig']).parent == Path(e['HOME'])
     assert e['npm_config_ignore_scripts'] == 'true' and e['npm_lifecycle_event'] == 'postinstall'
     assert e['npm_package_name'] == 'alpha' and e['npm_package_version'] == '1.0.0'
     home = Path(e['HOME'])
