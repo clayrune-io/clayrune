@@ -23,13 +23,11 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from mc.blueprints import browser_routes as br  # noqa: E402
 
-import websocket  # noqa: E402
 
 tmp = Path(tempfile.mkdtemp(prefix='bp-ua-'))
 br._profiles_root = lambda: str(tmp / 'p')
@@ -95,8 +93,9 @@ try:
         check('Headless' not in ua and ch and 'Headless' not in ch,
               f'request {path}: UA {ua[-40:]!r}, Sec-CH-UA {ch!r}')
 
-    ver = json.load(urllib.request.urlopen(f"http://127.0.0.1:{session['port']}/json/version"))
-    ws = websocket.create_connection(ver['webSocketDebuggerUrl'], timeout=10)
+    # Either transport: the pane defaults to a pipe (no port), where reading
+    # session['port'] crashed this smoke before it reached the webdriver check.
+    ws = br._cdp_browser_conn(session, br._cdp_version(session), timeout=10)
     n = [0]
 
     def call(method, params=None, sid=None):

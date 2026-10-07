@@ -322,6 +322,18 @@ def test_a_pipe_launch_has_no_debugging_port_anywhere(pipe_cfg, monkeypatch, tmp
     browser_sessions.clear()
 
 
+def test_a_pipe_launch_turns_off_the_automation_marker(pipe_cfg, monkeypatch, tmp_path):
+    """--remote-debugging-pipe sets navigator.webdriver true in every tab, and
+    Google's sign-in refuses such a browser ("This browser or app may not be
+    secure"; measured 2026-10-07, 3/3). The launch must carry the flag that
+    turns that one marker back off."""
+    got = _stub_launch(monkeypatch, tmp_path)
+    session, err = br._launch_browser('proj', 'https://example.com', ephemeral=True)
+    assert err is None
+    assert '--disable-blink-features=AutomationControlled' in got['spawn'], got['spawn']
+    browser_sessions.clear()
+
+
 def test_a_port_launch_is_unchanged(monkeypatch, tmp_path):
     monkeypatch.setitem(state.CONFIG, 'browser_cdp_pipe', False)
     got = _stub_launch(monkeypatch, tmp_path)

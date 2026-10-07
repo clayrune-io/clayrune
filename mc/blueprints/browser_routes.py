@@ -986,6 +986,9 @@ _UA_GUARD_CHILDREN = True
 _UA_OVERRIDE_TYPES = ('page', 'iframe')
 
 
+_NO_AUTOMATION_MARKER = '--disable-blink-features=AutomationControlled'
+
+
 def _guard_ua_override(session, target_type):
     """The UA an attaching target must present. An iframe matches the mode
     the pane is in NOW (a mobile page with a desktop-UA frame inside it is a
@@ -1014,7 +1017,8 @@ def _start_ua_guard(session, port):
         hints off: navigator.userAgentData.brands was [] and no Sec-CH-UA
         header went out, where a real browser always sends both;
       * navigator.webdriver was undefined, via our own init script. Chromium
-        not launched for automation reports false natively.
+        not launched for automation reports false natively. (The pipe
+        transport later made it true again; see _NO_AUTOMATION_MARKER.)
     The native client hints are already clean (brands Chromium/153 +
     Not_A Brand, no "Headless"), so the override is the UA string with the
     Headless marker removed plus the NATIVE metadata verbatim. The
@@ -1816,6 +1820,7 @@ def _run_cdp(session):
         # BEFORE navigate so the first request already carries it. No
         # navigator.webdriver script: it used to force `undefined`, where
         # Chromium reports false natively -- the patch was itself the tell.
+        # (Natively false only with _NO_AUTOMATION_MARKER on a pipe launch.)
         # MC-980: a mobile-pane launch switches device mode (metrics, touch,
         # mobile UA) here too, BEFORE navigate -- same reason the desktop UA
         # override above always has been. `view` is exactly what --window-size
@@ -2243,6 +2248,15 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
         ]
     args += [
         f'--user-data-dir={udd}',
+        # --remote-debugging-pipe (the default CDP transport since 6b313cb6)
+        # switches Blink's AutomationControlled feature on, so every tab
+        # reported navigator.webdriver === true -- the port transport and a
+        # plain launch both report false. Google's sign-in reads it: measured
+        # 2026-10-07 on accounts.google.com with a made-up address, pipe 3/3
+        # "Couldn't sign you in - This browser or app may not be secure",
+        # pipe + this flag 3/3 reached account lookup, port 1/1 likewise.
+        # The flag turns off only that marker; the pipe and what it closes stay.
+        _NO_AUTOMATION_MARKER,
         '--no-first-run', '--no-default-browser-check', '--disable-gpu',
         f'--window-size={view[0] + WINDOW_CHROME_W},{view[1] + WINDOW_CHROME_H}',
     ]

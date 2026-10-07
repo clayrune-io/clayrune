@@ -1,5 +1,44 @@
 # Browser pane — gap list vs. a real browser
 
+## 2026-10-07: Google "This browser or app may not be secure" is back, pipe cause
+
+Cause: the CDP pipe transport (`f01d0d6a`, 2026-10-05, backlog 6b313cb6)
+launches Chromium with `--remote-debugging-pipe`, which turns on Blink's
+AutomationControlled feature. Every tab then reports `navigator.webdriver ===
+true`; the port transport MC-976 was measured on reports `false`. Google's
+sign-in refuses that browser at the identifier step.
+
+Fix: `_launch_browser` adds `--disable-blink-features=AutomationControlled`
+(`_NO_AUTOMATION_MARKER`). The pipe stays; only that marker is turned off.
+
+Measured with the real `_launch_browser`, an ephemeral profile and a made-up
+address on accounts.google.com (stops before any password):
+
+| Launch | navigator.webdriver | Google result |
+|---|---|---|
+| pipe (shipped default) | true | 3/3 "Couldn't sign you in" |
+| port | false | 1/1 reached account lookup |
+| pipe + flag | false | 3/3 reached account lookup |
+
+`tools/smoke/browser_pane_ua.py` asserts `webdriver false` in root and popup,
+but had crashed on `session['port']` (None for a pipe session) since the pipe
+landed, so it never reached that check. It now uses the session's own
+transport: rc=1 without the flag, rc=0 with it. `browser_pane_handoff.py`
+had the same crash; past it, its first click landed too early on a pipe
+session (popup never opened, flag or not; the pane itself opens cross-origin
+popups fine, measured 3/3), so it now waits 1s like the UA smoke.
+
+Two later fixed-code runs reached a text CAPTCHA instead of account lookup:
+Google rate-limiting after nine identifier submissions from this IP in a few
+minutes, not the browser rejection. Testing stopped there. The mobile pane
+also reports `webdriver false` with the flag (fingerprint page, no Google).
+
+Other tells still present, not shown to matter at Google's identifier step:
+`outerWidth/outerHeight` 0x0, `screen` 800x600, no WebGL (`--disable-gpu`),
+`Chromium` rather than `Google Chrome` brand. Running headed with the window
+off-screen (`--window-position=-32000,-32000`) produced no screencast frame
+at all, so headed mode is not a drop-in alternative.
+
 ## 2026-09-26: popup completion follow-up (MC-976)
 
 The older gap table below is the pre-tabs baseline, not current status.
