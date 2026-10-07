@@ -7,7 +7,7 @@ Ron requested an accessible button or URL wherever Clayrune asks him to unlock t
 - The URL is the dashboard's origin followed by `/#unlock-vault`. It opens on cold load and hashchange. A chat link matching that dashboard fragment becomes an action on the viewer's current origin, so a localhost link also works on the remote dashboard.
 - `window.openVaultUnlock()` opens one native modal dialog, with a title, labels, close button, Escape dismissal, native focus containment and return to the trigger. Layout is viewport-bounded, scrolls vertically when needed, and has 44px controls.
 - `vault-unlock-popup.js` reads status, then mounts the existing `DeskV1VaultGate` form. Unknown/unreachable status is shown as an error. Already unlocked/unconfigured states close with an explanation. Success closes with the existing gate toast. Both credentials clear on submission; none is remembered. Closing does not cancel an unlock request already submitted.
-- The existing `POST /api/secrets/vault-lock/unlock` remains the only request, with its existing human gates. Unlocking does not retry reads, paid renders or publishing. Retry the held action; recheck Connections to refresh cached rows.
+- The existing `POST /api/secrets/vault-lock/unlock` remains the only request, with its existing human gates. Unlocking refreshes visible Studio engine status and price, including when the popup finds the vault already unlocked. Paid renders and publishing are never retried. Other held actions still need a human retry. See `ENGINE_VAULT_RECOVERY.md` for the MC-1065 follow-up and its checks.
 
 ## Integration
 
