@@ -1,0 +1,7 @@
+.desk-v1-capture { display: grid; gap: 14px; min-width: 0; }
+.desk-v1-capture [data-capture-controls] { display: grid; gap: 12px; justify-items: start; min-width: 0; }
+.desk-v1-capture-field { display: grid; gap: 6px; width: 100%; font-size: 13px; color: var(--text-muted); }
+.desk-v1-capture-field input, .desk-v1-capture-field select { box-sizing: border-box; width: 100%; min-width: 0; padding: 10px 12px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; font: inherit; }
+.desk-v1-capture [role="alert"] { color: var(--red); }
+.desk-v1-capture .desk-v1-cap-preview img { width: 100%; height: auto; }
+.desk-v1-capture button { max-width: 100%; }

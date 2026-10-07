@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] — Studio captures real product pages
+
+- **Capture from the product** now takes a real server-side Chromium screenshot and saves it as a picture in the material library's Studio folder. Clayrune offers its actual Projects, Floor, Desk, Studio and Connections pages; other projects remember a user-entered app address and accept page paths. The same capture body works in Studio and campaign What, with progress, refusal and retry states, and no second copy uploaded after capture.
+- Screenshot routes, capture service, network boundary and UI each live in new modules. A throwaway profile and the existing CDP pipe isolate each capture; the process manager registers its exact child and teardown closes only that child. Every request, redirect and subresource passes through a proxy that connects to vetted IPs; private destinations require the exact user-entered host and port, apart from this server's loopback address. Record remains unchanged. Contract: `docs/desk_v1/PRODUCT_CAPTURE.md`.
+
 ## [2026-10-06] — Higgsfield discovers model inputs automatically
 
 - Server-side Higgsfield OAuth saves capture the free tool list automatically; price checks and renders refresh missing or 24-hour-old snapshots. A small remote-engine snapshotter registry shares one capture at a time, and discovery has a 15-second RPC deadline, including SSE heartbeats. Logged discovery failures preserve the saved connection and permit text-only price checks to continue.
