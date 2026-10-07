@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] - GitHub connection setup accepts dependency and build output (MC-1062/14)
+
+- Reviewed source stays pinned during setup and before every launch. Generated files have a separate bounded record at Save, so large `node_modules` and build trees do not hit the source inventory limits or get hashed on every start. Review states that generated output is not rechecked at launch; existing approvals keep their original checks.
+- Locked npm repositories use `ci --ignore-scripts` to preserve reviewed lockfiles. The fixed install environment uses distinct empty user/global config paths so npm can start without loading the operator's configuration.
+- Regression coverage installs over 10,000 local fixture dependency files, builds, and starts Node; source changes still refuse Save/start. Verification and the public-repository scratch install are recorded in `docs/desk_v1/connect_flow_tickets/14-install-output.md`. Branch implementation only; no push or restart.
+
 ## [2026-10-06] - Desk account pickers and GitHub connection software (MC-1062/14)
 
 - Personal sign-in and saved-credential setup now offer a shared picker of saved names and usernames. Add another account keeps username and password together and writes only at the existing final human/passcode Save; selecting an existing credential enables Continue.

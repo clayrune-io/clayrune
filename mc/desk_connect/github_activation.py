@@ -13,6 +13,7 @@ from mc.desk_connect import custom_connection_store as store
 from mc.desk_connect import custom_connection_activation as npm
 from mc.desk_connect import custom_npm_scripts as scripts
 from mc.desk_connect import github_manifest as manifest
+from mc.desk_connect import github_install_output as output
 from mc.desk_connect.mcp_errors import ActivationError
 
 def _manifest_path(op: dict) -> Path:
@@ -45,7 +46,9 @@ def conflict(op: dict, project_path: str | None):
 def problem(op: dict) -> str:
     try:
         expected=json.loads(_manifest_path(op).read_text(encoding='utf-8'))
-        if expected != manifest.inventory(op['directory']):
+        unchanged = (output.source_matches(op, expected) if op.get('file_checks') == output.POLICY
+                     else expected == manifest.inventory(op['directory']))
+        if not unchanged:
             return 'The saved repository files changed. Review the connection again.'
         return ''
     except (OSError,ValueError,ActivationError) as e:
@@ -68,7 +71,8 @@ def provision(op: dict, project_path: str | None) -> dict:
                         raise ActivationError('A selected install step failed. See the server log.', 'install_failed',400)
                 else:
                     scripts.run(step,cwd,Path(temporary),node_dir=str(Path(shutil.which('node') or sys.executable).parent))
-        files=manifest.inventory(op['directory'])
+        files=(output.capture(op['directory'], op['source_files']) if op.get('file_checks') == output.POLICY
+               else manifest.inventory(op['directory']))
         target=_manifest_path(op);target.parent.mkdir(parents=True,exist_ok=True)
         from mc.atomic_json import write_json_atomic
         write_json_atomic(target,files)

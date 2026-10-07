@@ -1,5 +1,8 @@
 """Repository staging uses the existing installer, with no model tools or implicit installs."""
 import json
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 import pytest
 from flask import Flask
@@ -206,3 +209,79 @@ def test_unapproved_node_search_path_refuses_before_credentials(staged,monkeypat
 
 def test_extracted_absolute_arguments_reach_review(staged):
     assert prepare(staged[0],args=staged[0]['args'])['package']['version']==SHA
+
+
+def test_install_large_dependency_fixture_and_build_then_start(staged,monkeypatch,tmp_path):
+    """Real local install/build subprocesses and Node start; no network or MCP config writes."""
+    from mc.desk_connect import custom_connection_store as store, github_install_output as output
+    from mc.desk_connect import custom_npm_gate, custom_npm_node_paths
+    from mc import mcp
+    node=shutil.which('node')
+    if not node:
+        pytest.skip('Node is required to start the installed dependency fixture')
+    answer,_,_=staged
+    rec=github._stages[answer['stage_id']]
+    directory=Path(rec['install_dir'])
+    (directory/'server.js').write_text("process.stdout.write(require('./dist/ready.js'))")
+    (directory/'fixture_install.py').write_text("""
+from pathlib import Path
+p = Path('node_modules/fixture'); p.mkdir(parents=True)
+for i in range(10001):
+    (p / f'value-{i}.js').write_text("module.exports = 'ready'")
+""")
+    (directory/'fixture_build.py').write_text("""
+from pathlib import Path
+Path('dist').mkdir()
+Path('dist/ready.js').write_text("module.exports = require('../node_modules/fixture/value-10000.js')")
+""")
+    rec['files']=github.manifest.inventory(str(directory))
+    rec['steps']=[{'id':name,'argv':[sys.executable,'-I',script]}
+                  for name,script in [('dependencies:0','fixture_install.py'),('script:build','fixture_build.py')]]
+    monkeypatch.setattr(store,'path',lambda:tmp_path/'approvals.json')
+    configs={}
+    monkeypatch.setattr(mcp,'_write_project_servers',lambda path,mutate:mutate(configs))
+    monkeypatch.setattr(activation.npm,'_read',lambda scope,pid,name,path:configs.get(name))
+    monkeypatch.setattr(activation,'_manifest_path',lambda op:tmp_path/'approved-files.json')
+    card=prepare(answer,command=node,approve_scripts=['dependencies:0','script:build'])
+    assert card['scripts'][0]['approved'] and any(r['code']=='install_output_not_rechecked' for r in card['risks'])
+    result,_=service.commit(card['request_id'],card['fingerprint'])
+    assert result['state']=='registered',result
+    op=store.get('project','p',card['server_name'])['operation']
+    saved=json.loads(activation._manifest_path(op).read_text())
+    assert len(saved['output_files'])==10002 and set(saved['skip'])=={'node_modules','dist'}
+    assert saved['source_files']==op['source_files']
+    # Source checking must prune generated trees, not simply raise the original caps.
+    read=Path.read_bytes
+    def read_source(path):
+        assert 'node_modules' not in path.parts and 'dist' not in path.parts
+        return read(path)
+    monkeypatch.setattr(Path,'read_bytes',read_source)
+    assert activation.problem(op)==''
+    monkeypatch.setattr(custom_npm_gate,'ancestor_problem',lambda *a:None)
+    monkeypatch.setattr(custom_npm_node_paths,'problem',lambda *a:None)
+    monkeypatch.setattr(activation.os,'chdir',lambda *a:None)
+    launched=[]
+    def execute(command,argv,env):
+        done=subprocess.run(argv,cwd=directory,env=env,capture_output=True,check=True)
+        launched.append(done.stdout)
+    monkeypatch.setattr(activation.os,'execvpe',execute)
+    activation.start('project','p',card['server_name'],card['fingerprint'])
+    assert launched==[b'ready']
+    # Generated output changes have the disclosed Save-only policy.
+    (directory/'dist/ready.js').write_text('changed output')
+    assert activation.problem(op)==''
+    (directory/'server.js').write_text('changed source')
+    assert activation.problem(op)
+
+
+def test_selected_install_cannot_repin_reviewed_source(staged,monkeypatch,tmp_path):
+    from mc import mcp
+    monkeypatch.setattr(activation,'_manifest_path',lambda op:tmp_path/'approved-files.json')
+    monkeypatch.setattr(mcp,'_write_project_servers',lambda *a:pytest.fail('modified source registered'))
+    def overwrite(step,cwd,*a,**kw):
+        (cwd/'server.js').write_text('different reviewed source')
+    monkeypatch.setattr(activation.scripts,'run',overwrite)
+    card=prepare(staged[0],approve_scripts=['script:postinstall'])
+    result,_=service.commit(card['request_id'],card['fingerprint'])
+    assert result['state']=='setup_failed' and result['code']=='repository_changed'
+    assert not (tmp_path/'approved-files.json').exists()

@@ -17,6 +17,8 @@ from mc.desk_connect import custom_connection_operation as operation
 from mc.desk_connect import custom_connection_store as store
 from mc.desk_connect import github_manifest as manifest
 from mc.desk_connect import github_activation as activation
+from mc.desk_connect import github_install_output as output
+from mc.desk_connect import github_install_steps as steps_builder
 from mc.desk_connect import parameter_schema as parameters
 from mc.desk_connect.mcp_errors import ActivationError
 
@@ -41,12 +43,7 @@ def stage(body: object) -> dict:
         scan = installer.security_scan(clone['install_dir'], clone['sha'], toolless=True)
         if files != manifest.inventory(clone['install_dir']):
             raise ActivationError('The repository changed while it was checked.', 'repository_changed', 409)
-        steps = []
-        for i, argv in enumerate(installer.install_commands(clone['install_dir'])):
-            # Package-manager dependency scripts never run implicitly.
-            if 'install' in argv and '--ignore-scripts' not in argv and installer.detect_install_kind(clone['install_dir']) == 'npm':
-                argv = [*argv, '--ignore-scripts']
-            steps.append({'id': f'dependencies:{i}', 'argv': argv})
+        steps = steps_builder.dependencies(clone['install_dir'])
         p = Path(clone['install_dir']) / 'package.json'
         pkg = json.loads(p.read_text(encoding='utf-8')) if p.is_file() else {}
         scripts = pkg.get('scripts', {})
@@ -96,7 +93,8 @@ def prepare(body: dict, resolve_project) -> dict:
     chosen = set(fields['approve_scripts'])
     if chosen - {s['id'] for s in staged['steps']}:
         raise ActivationError('An install step changed. Review it again.', 'bad_script_approval', 400)
-    op = {'schema':'desk-github-connection/1','ecosystem':'github','protocol':'stdio',
+    op = {'schema':'desk-github-connection/2','ecosystem':'github','protocol':'stdio',
+          'file_checks':dict(output.POLICY),
           'package':staged['url'], 'version':staged['sha'], 'integrity':operation.fingerprint(staged['files']),
           'directory':staged['install_dir'], 'source_files':staged['files'], 'command':shutil.which(command.strip()) or command.strip(),
           'args':fields['args'], 'credentials':fields['credentials'], 'server_name':fields['server_name'],
@@ -122,8 +120,9 @@ def prepare(body: dict, resolve_project) -> dict:
             'scripts':[{'id':s['id'],'path':'','package':op['package'],'version':op['version'],'script':s.get('script',s['id']),
                         'body':s.get('body') or json.dumps(s['argv']), 'body_escaped':s.get('body') or json.dumps(s['argv']),
                         'approved':s['id'] in chosen,'approvable':True,'reason':''} for s in staged['steps']],
-            'scripts_note':'Every install step starts off. Selected steps run only after passcode Save; dependencies may be unpinned.',
+            'scripts_note':'Every install step starts off. Selected steps run only after passcode Save; dependencies may be unpinned. '+output.NOTICE,
             'install_note':'Only selected install steps run. Nothing starts until an agent uses this connection.',
             'working_directory':staged['install_dir'],'first_start':'Deferred until an agent session uses it.',
-            'risks':[{'code':'unreviewed','label':'User supplied code; no safety guarantee. Dependencies and selected install steps can fetch or run other code.'}],
+            'risks':[{'code':'unreviewed','label':'User supplied code; no safety guarantee. Dependencies and selected install steps can fetch or run other code.'},
+                     {'code':'install_output_not_rechecked','label':output.NOTICE}],
             'repository_checks':{'audit':staged['audit'],'scan':staged['scan']}}
