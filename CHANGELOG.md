@@ -19,6 +19,10 @@
 - Owner clicks reuse active renders; campaign reservations transfer atomically to child jobs. Interrupted or uncertain submissions retain child costs and stop without a paid retry. Human and passcode gates are unchanged.
 - Submission holds keep polling linked clips for free, saving accepted outputs and settling their costs. A human can acknowledge checking the engine dashboard to allow a new render; children stay visible, unattended acknowledgement is refused, and the next Render still requires its passcode.
 - Contract, checks and Ron's UI script: `docs/desk_v1/ASYNC_RENDER_SUBMISSION.md`. Branch only; no merge, push, restart or real spend.
+## [2026-10-07] - Scene-subset render foundations (MC-1070; not wired)
+
+- Added independent scene selection/pricing seams, replacement of chosen clips while retaining untouched ready jobs, and local assembly helpers. Added a separate scene-control module using the existing passcode and higher-price confirmation gates.
+- This is a dormant implementation slice: production route/worker and Studio/Director wiring await MC-1068 on master. No subset rendering is available yet; contract, checks and integration handoff are in `docs/desk_v1/SCENE_SUBSET_RENDER.md`.
 
 ## [2026-10-07] - Browser pane passes Google's "may not be secure" check again
 
