@@ -519,7 +519,7 @@
     // Live, Render is the engine panel (estimate, passcode, a real job): the
     // fixture card above is demo only.
     const engineHost = el.querySelector('[data-eng-host]');
-    if (engineHost) window.DeskV1Engines.mountVideoRender(engineHost, { owner: { kind: 'piece', id: family.id } });
+    if (engineHost) window.DeskV1Engines.mountVideoRender(engineHost, { owner: { kind: 'piece', id: family.id }, sceneRoot: el.querySelector('.desk-v1-video-scenestrip') });
 
     const raiseBtn = el.querySelector('[data-raise-budget]');
     if (raiseBtn) raiseBtn.onclick = () => window.deskV1GotoCampaignPanel('how', { campaignId: _st.campaignId });

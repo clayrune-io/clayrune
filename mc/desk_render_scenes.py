@@ -70,7 +70,7 @@ def validate_previous(data: dict, previous: dict | None) -> None:
         return
     if previous.get('owner') != data.get('owner'):
         raise Refused('invalid_input', 'the previous render belongs to a different storyboard', 400)
-    if previous.get('status') in ('queued', 'preparing', 'submitting', 'rendering'):
+    if previous.get('status') in ('pending', 'working', 'queued', 'preparing', 'submitting', 'rendering'):
         raise Refused('render_busy', 'Wait for the current render before replacing selected scenes.', 409)
     if previous.get('aspect_ratio') != data.get('aspect_ratio'):
         raise Refused('render_shape_changed', 'Use the existing video shape to replace scenes, or render the full storyboard in the new shape.', 409)
@@ -132,3 +132,69 @@ def rebuild_outputs(assembly: dict, jobs: dict, *, join: Callable[[list[dict]], 
     if not clips:
         raise Refused('clips_missing', 'There are no downloaded clips to rebuild.', 409)
     return join(clips)
+
+
+def select_request_board(data: dict, board: dict) -> dict:
+    """Shared quote/worker seam; explicit null never means render everything."""
+    return selected_board(board, subset_request(data, board).get('scene_ids'))
+
+
+def _saved_scenes(previous: dict | None, jobs: dict) -> dict:
+    # Keep the previous snapshot even when its selected generation was held
+    # before submission. Only downloaded READY jobs replace a saved clip.
+    saved = {c['scene_id']: deepcopy(c) for c in (previous or {}).get('base_scenes') or []}
+    for child in (previous or {}).get('children') or []:
+        job = jobs.get(child['job_id']) or {}
+        if job.get('status') == 'ready' and job.get('outputs'):
+            saved[child['scene_id']] = {**deepcopy(child), 'outputs': deepcopy(job['outputs']),
+                                      'crop_square': bool((previous or {}).get('crop_square'))}
+    return saved
+
+
+def submission_context(data: dict, board: dict, store: dict) -> tuple[dict, dict]:
+    """Freeze subset and ready prior outputs under the worker's enqueue lock.
+
+    `children` always remains ONLY newly submitted jobs: MC-1068 holds,
+    acknowledgement and accounting do not change. Prior outputs are server
+    snapshots, never accepted from the browser.
+    """
+    selected = select_request_board(data, board)
+    if 'scene_ids' not in data:
+        return selected, {}
+    chosen = [s['id'] for s in selected['scenes']]
+    mine = [r for r in store['renders'].values() if r['owner'] == data['owner']]
+    previous = max(mine, key=lambda r: r.get('created_at') or '') if mine else None
+    saved = _saved_scenes(previous, store['jobs'])
+    reused = [s['id'] for s in board['scenes'] if s['id'] not in chosen and s['id'] in saved]
+    if reused:
+        validate_previous(data, previous)
+    missing = [s['id'] for s in board['scenes'] if s['id'] not in chosen and s['id'] not in saved]
+    return selected, {
+        'scene_ids': chosen, 'scene_order': [{'id': s['id'], 'label': s.get('label') or ''} for s in board['scenes']],
+        'base_scenes': [saved[s['id']] for s in board['scenes'] if s['id'] in saved],
+        'reuse_crop_square': any(saved[sid].get('crop_square') for sid in reused),
+        'reused_scene_ids': reused, 'missing_scene_ids': missing, 'complete_storyboard': not missing,
+    }
+
+
+def render_clips(record: dict, jobs: dict) -> list[dict]:
+    """Local finalizer inputs; reused jobs never enter the paid child list."""
+    if 'scene_ids' not in record:
+        return [o for c in record['children'] for o in jobs[c['job_id']].get('outputs') or []]
+    generated = {c['scene_id']: c for c in record['children']}
+    saved = {c['scene_id']: c for c in record.get('base_scenes') or []}
+    clips = []
+    for scene in record['scene_order']:
+        sid = scene['id']
+        if sid in record['scene_ids']:
+            child = generated.get(sid)
+            outputs = (jobs.get(child['job_id']) or {}).get('outputs') if child else None
+        else:
+            outputs = (saved.get(sid) or {}).get('outputs')
+        clips.extend(deepcopy(outputs or []))
+    return clips
+
+
+def public_selection(record: dict) -> dict:
+    fields = ('scene_ids', 'reused_scene_ids', 'missing_scene_ids', 'complete_storyboard')
+    return {k: deepcopy(record[k]) for k in fields if k in record}

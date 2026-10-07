@@ -781,6 +781,28 @@ Click the **?** button in the header (top-right), or use Settings → Tour.
 
 ## Troubleshooting
 
+### Render one or selected storyboard scenes
+
+In Studio or Director, press **Render this scene** to get that scene's price;
+press it again to approve with your dashboard passcode. To render several,
+check **Select** on their cards, review **Render selected (N)** and its price,
+then press it and enter your passcode. **Price selected again** refreshes the
+quote. Cancelling the passcode prompt starts nothing.
+
+Only selected scenes are priced, uploaded and generated. Clayrune keeps the
+latest saved clips for the other scenes and rebuilds the video locally, in
+storyboard order, without paying to generate those clips again. Keep the same
+video shape when reusing clips; render the full storyboard to change its shape.
+On a storyboard with missing clips, the result is labelled a partial video and
+does not replace the piece's full-video attachment.
+
+A higher picture-inclusive price holds before generation. The selected button
+shows the new total; another click and passcode approve it. Reloading restores
+the held selection and price when its scenes and engine choices still match.
+Editing scenes or changing engine/model/shape clears the offer. Uncertain or
+interrupted submissions use the same engine-dashboard acknowledgement below;
+no missing scene or paid call is retried automatically.
+
 ### Higgsfield storyboard pictures and pricing
 
 Clayrune reads Higgsfield's model/tool definitions automatically after saving a

@@ -1,6 +1,6 @@
 // MC-1070 scene-card controls. Mounted by the async render panel after MC-1068.
 // Every paid request uses the dashboard's SAME humanProofFetch passcode gate.
-import { confirmationMatches, priceConfirmation } from './desk-v1-render-price.js';
+import { confirmationMatches, priceConfirmation, heldPriceConfirmation, dismissedPriceHold, dismissPriceHold } from './desk-v1-render-price.js';
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -16,7 +16,7 @@ export function mountSceneRenderControls(root, toolbar, opts) {
   // request(ids) reads the shared engine/model/shape pick. refresh() must be
   // called after board/picker edits; onRender hands off to the existing poll.
   const st = opts.state || { selected: [], quotes: {}, confirmations: {} };
-  st.selected ||= []; st.quotes ||= {}; st.confirmations ||= {};
+  st.selected ||= []; st.quotes ||= {}; st.confirmations ||= {}; st.bases ||= {};
   let epoch = 0, timer = null, disposed = false;
   st.submitting ||= false;
   const pending = new Set();
@@ -24,11 +24,12 @@ export function mountSceneRenderControls(root, toolbar, opts) {
   const busy = () => st.submitting || !!(opts.busy && opts.busy());
   const submitting = (on) => { st.submitting = on; if (opts.onBusy) opts.onBusy(on); };
   const cards = () => Array.from(root.querySelectorAll('[data-scene-id]'))
-    .filter((el) => el.classList.contains('desk-v1-sb-scene') && !el.hasAttribute('data-scene-placeholder'));
+    .filter((el) => (el.classList.contains('desk-v1-sb-scene') || el.classList.contains('desk-v1-video-scene')) && !el.hasAttribute('data-scene-placeholder'));
   const ids = () => cards().map((el) => el.dataset.sceneId);
   const canonical = (chosen) => ids().filter((id) => chosen.includes(id));
   const key = (chosen) => JSON.stringify(chosen);
   const quote = (request) => window.DeskV1Store.api('POST', '/api/desk/engines/render/estimate', request);
+  const holdKey = (chosen) => `subset:${JSON.stringify(opts.request(chosen).owner)}:${key(chosen)}`;
   const report = (message) => { const el = toolbar.querySelector('[data-scene-render-note]'); if (el) el.textContent = message || ''; };
 
   function paint() {
@@ -48,11 +49,12 @@ export function mountSceneRenderControls(root, toolbar, opts) {
         aria-label="Select scene ${esc(id)} for rendering"${st.selected.includes(id) ? ' checked' : ''}${busy() ? ' disabled' : ''}> Select</label>
         <button type="button" class="btn-secondary" data-scene-render-one${busy() || pending.has(key([id])) ? ' disabled' : ''}>Render this scene${q ? ' · ' + esc(price(q)) : ''}</button>`;
       controls.onclick = (ev) => ev.stopPropagation(); // keep selection out of the scene editor
+      controls.onpointerdown = (ev) => ev.stopPropagation(); // keep buttons out of strip dragging
       controls.querySelector('[data-scene-render-select]').onchange = (ev) => {
         st.selected = canonical(ev.target.checked ? [...st.selected, id] : st.selected.filter((sid) => sid !== id));
         report(''); paint();
         clearTimeout(timer);
-        if (st.selected.length) timer = setTimeout(() => reprice([...st.selected]), 150);
+        if (st.selected.length) timer = setTimeout(() => reprice([...st.selected], true), 150);
       };
       controls.querySelector('[data-scene-render-one]').onclick = () => render([id]);
     });
@@ -69,17 +71,28 @@ export function mountSceneRenderControls(root, toolbar, opts) {
     actions.querySelector('[data-scene-render-reprice]').onclick = () => reprice([...st.selected]);
   }
 
-  async function reprice(chosen) {
+  function adoptHeld(chosen, fresh) {
+    const r = opts.getRender && opts.getRender();
+    if (!r || !r.scene_ids || key(r.scene_ids) !== key(chosen) || dismissedPriceHold(holdKey(chosen)) === r.render_id) return;
+    const confirmation = heldPriceConfirmation(r, opts.request(chosen), fresh);
+    if (confirmation) { st.confirmations[key(chosen)] = confirmation; st.quotes[key(chosen)] = confirmation.quote; }
+  }
+
+  async function reprice(chosen, restoreHeld = false) {
     chosen = canonical(chosen);
     if (!alive() || !chosen.length || busy() || pending.has(key(chosen))) return;
     const k = key(chosen), mine = epoch, request = opts.request(chosen);
+    const r = opts.getRender && opts.getRender();
+    if (!restoreHeld && r) dismissPriceHold(holdKey(chosen), r.render_id);
     delete st.confirmations[k]; delete st.quotes[k]; pending.add(k); paint();
     try {
       const fresh = await quote(request);
       if (!alive() || mine !== epoch || JSON.stringify(request) !== JSON.stringify(opts.request(chosen))) return;
       st.quotes[k] = fresh;
-      report(fresh.refusal?.message || (Number.isFinite(amount(fresh))
-        ? `Selected scene price: ${price(fresh)}. Press Render to approve.`
+      st.bases[k] = fresh;
+      if (restoreHeld) adoptHeld(chosen, fresh);
+      report(fresh.refusal?.message || (Number.isFinite(amount(st.quotes[k]))
+        ? `Selected scene price: ${price(st.quotes[k])}. Press Render to approve.`
         : 'This service did not return a price. Nothing was sent.'));
     } catch (e) {
       if (alive() && mine === epoch) report(e.message || String(e));
@@ -108,6 +121,7 @@ export function mountSceneRenderControls(root, toolbar, opts) {
       const q = confirmed ? st.confirmations[k].quote : fresh;
       if (!confirmed) delete st.confirmations[k];
       st.quotes[k] = q;
+      st.bases[k] = fresh;
       if (fresh.refusal) throw new Error(fresh.refusal.message);
       if (!Number.isFinite(amount(q))) throw new Error('This service did not return a price. Nothing was sent.');
       if (amount(q) !== shown) { report(`The price changed to ${price(q)}. Press Render again to accept.`); return; }
@@ -124,6 +138,7 @@ export function mountSceneRenderControls(root, toolbar, opts) {
         e.status = out.status; e.body = out.body; throw e;
       }
       delete st.confirmations[k];
+      dismissPriceHold(holdKey(chosen), null);
       if (typeof opts.onRender === 'function') opts.onRender(out.body.render);
       report('Render started.');
     } catch (e) {
@@ -136,11 +151,48 @@ export function mountSceneRenderControls(root, toolbar, opts) {
   }
 
   function refresh() {
+    const r = opts.getRender && opts.getRender();
+    if (r?.scene_ids) dismissPriceHold(holdKey(r.scene_ids), r.render_id);
     epoch++; clearTimeout(timer); pending.clear();
-    st.quotes = {}; st.confirmations = {};
+    st.quotes = {}; st.confirmations = {}; st.bases = {};
     paint(); report('');
     if (st.selected.length && !busy()) timer = setTimeout(() => reprice([...st.selected]), 150);
   }
+  function sync() {
+    if (!alive()) return;
+    const r = opts.getRender && opts.getRender();
+    if (r?.hold?.kind === 'render_price_changed' && r.scene_ids && key(canonical(r.scene_ids)) === key(r.scene_ids)) {
+      const k = key(r.scene_ids);
+      if (st.bases[k]) adoptHeld(r.scene_ids, st.bases[k]);
+      else if (!pending.has(k) && !busy()) reprice(r.scene_ids, true);
+    }
+    paint();
+  }
+  const saved = opts.getRender && opts.getRender();
+  if (!st.selected.length && saved?.hold?.kind === 'render_price_changed' && saved.scene_ids?.length > 1) {
+    st.selected = canonical(saved.scene_ids);
+  }
   paint();
-  return { refresh, render, reprice, state: st, dispose: () => { disposed = true; epoch++; clearTimeout(timer); } };
+  return { refresh, render, reprice, sync, state: st, dispose: () => { disposed = true; epoch++; clearTimeout(timer); } };
+}
+
+// The shared engine panel is repainted often. The toolbar lives beside it so
+// those repaints preserve its proof/quote lifecycle and the scene checkboxes.
+export function wireSceneRenderPanel(host, opts) {
+  if (!opts.root) return null;
+  if (!document.querySelector('[data-scene-render-styles]')) {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet'; link.href = '/static/css/desk-v1-render-scenes.css';
+    link.setAttribute('data-scene-render-styles', ''); document.head.append(link);
+  }
+  const toolbar = document.createElement('div');
+  toolbar.setAttribute('data-scene-render-toolbar', ''); host.after(toolbar);
+  return mountSceneRenderControls(opts.root, toolbar, opts);
+}
+
+export function sceneResultNote(render) {
+  if (!render.scene_ids) return '';
+  const reused = (render.reused_scene_ids || []).length;
+  const missing = (render.missing_scene_ids || []).length;
+  return `<div data-scene-render-summary>${render.scene_ids.length} selected scene(s)${reused ? ` · ${reused} existing clip(s) reused` : ''}${missing ? ` · ${missing} scene(s) have no clip yet; this is a partial video` : ''}</div>`;
 }

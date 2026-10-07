@@ -6,6 +6,11 @@ server restart, live upload, live engine call or spending is part of this work.
 
 ## API and state
 
+MC-1070 adds optional `scene_ids` through this same worker and approval path.
+The durable board, pricing, preparation, child jobs and reservations cover only
+that selection; prior saved clips are separate local assembly snapshots.
+See `SCENE_SUBSET_RENDER.md` for the contract and combined regression results.
+
 The existing POST `/api/desk/engines/renders` human/passcode gate is unchanged.
 After local owner/model/shape, click-key, shown-total and spending-cap checks,
 `mc/desk_render_worker.py` snapshots the storyboard and whitelists request

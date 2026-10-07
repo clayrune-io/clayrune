@@ -1921,6 +1921,8 @@ def _plan_render(d: dict, *, unattended: bool, _board: dict | None = None) -> di
         board = _board if _board is not None else _storyboard.get_storyboard(kind, oid)
     except _pieces.PieceError as e:
         raise Refused('storyboard_unavailable', str(e), e.status)
+    from mc.desk_render_scenes import select_request_board
+    board = select_request_board(d, board)
     scenes = board['scenes']
     if not scenes:
         raise Refused('no_scenes', 'this storyboard has no scenes to render: add one first', 409)
@@ -2045,13 +2047,14 @@ def estimate_render(d: dict, *, unattended: bool = False) -> dict:
 
 
 def _public_render(r: dict, jobs: dict) -> dict:
+    from mc.desk_render_scenes import public_selection
     kids = [{'scene_id': c['scene_id'], 'label': c.get('label', ''), 'job_id': c['job_id'],
              'status': (jobs.get(c['job_id']) or {}).get('status', 'queued'),
              'failure': (jobs.get(c['job_id']) or {}).get('failure')} for c in r.get('children') or []]
     done = sum(1 for k in kids if k['status'] == 'ready')
     return {
         'render_id': r['render_id'], 'kind': 'video', 'status': r['status'], 'hold': r.get('hold'),
-        'submission_state': r.get('submission_state'),
+        'submission_state': r.get('submission_state'), **public_selection(r),
         'failure': r.get('failure'), 'owner': r['owner'], 'campaign_id': r.get('campaign_id'),
         'engine_id': r['engine_id'], 'model_id': r['model_id'], 'aspect_ratio': r['aspect_ratio'],
         'progress': {'ready': done, 'total': r.get('clip_count', len(kids))}, 'scenes': kids,
@@ -2162,7 +2165,8 @@ def _join_clips(render_id: str, jobs: dict) -> dict | None:
         r = dict(_read_store()['renders'][render_id])
     if r['status'] in ('ready', 'failed'):
         return _render_view(render_id)
-    clips = [o for c in r['children'] for o in (jobs[c['job_id']].get('outputs') or [])]
+    from mc.desk_render_scenes import render_clips
+    clips = render_clips(r, jobs)
     clip_paths = [Path(o['local_path']) for o in clips]
 
     def settle(**fields) -> dict | None:
@@ -2218,5 +2222,6 @@ def _join_clips(render_id: str, jobs: dict) -> dict | None:
             return hold('stitch_failed', f'ffmpeg could not join the clips (exit {code}). The clips are saved in your '
                                          f'Material library. {tail.strip()[-300:]}')
         outputs = [_describe_output(out_path, 'video/mp4', duration_sec=total_sec)]
-    _attach_to_piece(r['owner']['id'] if r['owner']['kind'] == 'piece' else None, outputs)
+    if r.get('complete_storyboard', True):
+        _attach_to_piece(r['owner']['id'] if r['owner']['kind'] == 'piece' else None, outputs)
     return settle(status='ready', hold=None, failure=None, outputs=outputs, clips=clips)

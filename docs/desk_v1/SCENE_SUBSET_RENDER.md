@@ -1,140 +1,141 @@
-# MC-1070: render one or selected scenes
+# Render one or selected scenes (MC-1070)
 
 ## Delivery boundary
 
-Independent implementation only, on `clayrune/agent/f138abc66aec`.
-**Not wired, not shipped.** MC-1068 must first land on master; the current
-production render planner ignores `scene_ids`. The new JS module is not loaded
-or mounted by the page. Do not manually connect it to the old synchronous path.
-No paid render, live upload, merge, push, server restart or config change was
-performed. Existing passcode and higher-price gates stay intact.
+Wired and verified on `clayrune/agent/f138abc66aec`, rebased onto master
+`a405a363` (MC-1068). Branch delivery only: no merge, push, server restart,
+real upload, paid generation or configuration change. Dave owns integration
+and live-account verification. The earlier isolated foundation is `cde85e1d`
+after rebase (previously `6345a437`).
 
-## Implemented modules
+## Request and clip contract
 
-`mc/desk_render_scenes.py` contains pure helpers with no transport or generation
-submission function:
+Optional `scene_ids` selects a nonempty, unique list of existing scene IDs.
+Omitting the field retains the full render. Explicit null, empty, duplicate or
+unknown IDs refuse rather than falling back to everything. Selection is
+canonicalized in storyboard order before pricing or submission preparation.
+One/N/all selected prices come from the same planner as full Render; no full
+quote is obtained and then subtracted. Unselected pictures are not uploaded.
 
-- `selected_board`: validate explicit nonempty unique scene IDs; reject deleted
-  IDs; filter in storyboard order without mutating the saved board.
-- `subset_request`: canonicalize scene IDs, retain owner/project, engine/model,
-  shape, idempotency key and the shown total. Omitted IDs mean a full render;
-  explicit null, empty or malformed IDs refuse instead of spending on everything.
-- `price_subset`: narrow the board **before** invoking a board-aware planner
-  callback. Unselected scenes are not priced, validated for generation, prepared
-  or uploaded. This seam awaits production integration.
-- `validate_previous`: refuse cross-owner reuse, an active prior render, or a
-  different final video shape before preparing or spending. A full regeneration
-  does not need a reuse snapshot.
-- `replacement_children`: replace precisely the chosen children with new job IDs,
-  preserve untouched ready jobs with saved outputs, discard deleted scenes,
-  order the combined children by the current storyboard. It records generated
-  versus reused job IDs and explicitly names scenes with no saved clip.
-- `rebuild_outputs`: pass downloaded outputs to a local join/crop callback;
-  refuse until all included jobs are ready. It never submits generation.
+`mc/desk_render_scenes.py` owns validation, ready-clip snapshots and final
+assembly order. Under the enqueue lock, it freezes the selected storyboard,
+the full current scene order and ready saved outputs from the latest same-owner
+render. Snapshots are resolved server-side; the browser cannot supply job IDs,
+prior clips or arbitrary render records. A reused clip requires the same final
+aspect ratio. Selecting every scene permits a new shape without reuse.
 
-`static/js/desk-v1-render-scenes.js` owns scene-card checkboxes, **Render this
-scene**, **Render selected (N)**, the subset quote and explicit repricing. It
-imports the existing price-confirmation helpers. A single scene's first click
-obtains and displays its exact subset quote; a second click opens approval.
-Selections price automatically after a short debounce.
+The new parent's `children`, progress, reservations and cost cover ONLY newly
+submitted jobs. `base_scenes` privately holds saved outputs for local assembly;
+it never participates in submission or charged-cost accounting. Sequential
+subset renders retain both earlier replacements and untouched clips. Deleted
+scenes drop out and the current storyboard determines assembly order. Original
+records and files are preserved. Square-crop metadata follows reused clips.
 
-Every paid request uses the existing `window.humanProofFetch`. A cancelled
-prompt sends nothing. A changed free quote stops before opening the prompt;
-a prepared-price 409 is displayed and requires another click and another
-passcode approval. Credits and dollars use their own displayed amount.
-Quotes and prepared confirmations clear on `refresh()` after board/model/shape
-changes. Refused single-scene quotes can be retried after correcting a limit.
+The existing local join/crop finalizer consumes new outputs and saved clips.
+`scene_ids`, `reused_scene_ids`, `missing_scene_ids` and `complete_storyboard`
+are exposed for UI feedback. With no prior clips, rendering one scene produces
+that clip and labels missing scenes as a partial video. A partial result does
+not replace a piece's full-video attachment. It never pays for missing scenes.
 
-The mount takes `request(sceneIds)`, `onRender(render)`, `busy()`, `onBusy(on)`,
-`alive()`, and optional persistent `state`. The caller supplies the current
-shared engine pick, receives the new job for existing polling, and synchronizes
-both full and subset submission busy states. It must call `refresh()` after
-storyboard edits or picker changes and `dispose()` when leaving the surface.
+## MC-1068 behaviour retained
 
-## Required integration after MC-1068
+The existing human/passcode route guards every submission, including replays.
+The route creates its durable pending record before any remote call. Its board,
+clip count and whitelisted request snapshot describe only the selection;
+passcodes and credentials are not persisted. Active owner clicks still replay.
 
-1. Rebase this branch after an MC-1068 commit is visible on master. Read its
-   actual worker/status/confirmation contract before modifying any shared file.
-2. Add a board-aware seam to the existing planner (or call `selected_board`
-   immediately after loading the board). Both estimate and render must use it.
-   Do not obtain a full quote and subtract unselected prices.
-3. Resolve the latest prior raw render and jobs server-side by the validated
-   owner. Never accept prior job IDs or an arbitrary render snapshot from the
-   browser. Validate a reusable settled snapshot before upload or spend;
-   freeze its children when accepting the new worker task. Use the same store
-   lock to prevent competing submissions from reusing a moving snapshot.
-4. Keep the route's human/passcode check, idempotency, campaign/per-job caps,
-   picture preparation and prepared-price confirmation on the existing worker
-   path. Only selected rows go through picture preparation and paid submit.
-   Accepting a higher price never overrides a spending cap.
-5. Store reuse metadata on the new render; merge new and reused children after
-   submission. Poll and locally join all included clips through the existing
-   finalizer. Count only `generated_job_ids` in the new render's charged-cost
-   display; retaining an old job is not a new charge. Preserve the previous
-   render and its files. A no-prior single scene produces just its clip(s), with
-   `complete_storyboard=false` when other scenes lack clips; do not label it a
-   completed full storyboard or overwrite a full-video attachment with it.
-6. Import/mount the controls from the shared Studio/Director render panel.
-   Provide a separate toolbar slot and refresh after scene edits/reordering,
-   engine/model/shape changes and vault recovery; share busy state with full
-   Render. The new module has no fallback paid-submit path.
-7. Add actual integrated route/worker regressions: request subset persisted to
-   worker, vendor call counts, reused jobs untouched, subset 409/caps/passcode,
-   active-render race, no-prior result and local finalization. Update USER_GUIDE
-   and rerun the render/Studio smokes before declaring the feature usable.
+The same worker prepares every chosen scene, checks caps and compares the exact
+prepared total with `shown_total` BEFORE any generation. MC-1068 carries a
+later `render_price_changed` in an asynchronous held record after HTTP 201;
+the initial POST does not synchronously return that later price as HTTP 409.
+Existing 409 confirmation helpers remain supported. A higher price requires a
+new click, a new key and the same passcode gate. Acceptance cannot bypass caps.
 
-## Verification of the independent slice
+Submission holds, atomic parent-to-child reservation transfer, free linked-clip
+polling and human acknowledgement are unchanged. Unknown or interrupted paid
+calls are never automatically retried. Acknowledgement retains clips and costs;
+the next subset or full Render still needs its passcode. Reused clips stay
+outside `children`, so recovery cannot submit or re-charge them.
 
-| Exact command (from this worktree root) | Result |
+## Studio and Director
+
+`static/js/desk-v1-render-scenes.js` and its own CSS own card checkboxes,
+**Render this scene**, **Render selected (N)** and **Price selected again**.
+Studio and Director pass their scene containers to the shared render panel.
+The first single-scene click obtains and displays its quote; the next opens
+the real shared passcode prompt. Multiple selections price automatically.
+Cancelling sends nothing. Shared busy state disables full and subset actions
+while either passcode flow or a render submission is active.
+
+The shared panel adopts subset records into its existing poll/recovery flow.
+A saved price offer matches owner, selected IDs, engine/model/shape/project and
+the selected board fingerprint. Reload restores the held price and multi-scene
+checkboxes. A subset offer cannot replace the full Render quote. Explicit
+repricing, storyboard edits and picker/vault refresh invalidate it; dismissal
+survives reload in the same tab. A changed fresh price requires another click.
+
+Shared Python/JS files contain only wiring to these modules. No new dependency,
+boot entry, alternative approval path or vendor-submission implementation was
+introduced. `static/index.html` is unchanged.
+
+## Verification (2026-10-07)
+
+Exact commands from the worktree root:
+
+```text
+python -m pytest -q -o addopts= tests/test_desk_engine_schemas.py tests/test_desk_engines.py tests/test_desk_render_price_confirmation.py tests/test_desk_render_recovery.py tests/test_desk_render_worker.py tests/test_desk_spend_guard.py tests/test_higgsfield_mcp_catalogue.py tests/test_higgsfield_mcp_snapshot.py tests/test_higgsfield_picture_render.py tests/test_higgsfield_preset_decline.py tests/test_higgsfield_quote_response.py tests/test_desk_render_scenes.py tests/test_desk_render_scenes_flow.py
+pyright mc/desk_render_scenes.py mc/desk_render_worker.py mc/desk_render_recovery.py mc/blueprints/desk_render_recovery_routes.py
+```
+
+| Exact check | rc / result |
 | --- | --- |
-| `python -m pytest tests/test_desk_render_scenes.py tests/test_desk_engines.py tests/test_desk_render_price_confirmation.py -o addopts='' -q` | rc=0; 137 passed |
-| `pyright mc/desk_render_scenes.py` | rc=0; 0 errors/warnings |
-| `node --check static/js/desk-v1-render-scenes.js` | rc=0 |
-| `node tools/smoke/desk-v1-render-scenes.mjs` | rc=0; 1440/390, real shared passcode modal, mocked render endpoint |
-| `node tools/smoke/desk-v1-live-render.mjs` | rc=0; existing full-render/confirmation regression |
-| `node tools/smoke/desk-studio-passcode-replay.mjs` | rc=0; real prompt/caller, 201/200 and 1440/390 |
-| `node tools/smoke/desk-v1-studio.mjs` | rc=0 |
-| `node tools/smoke/desk-v1-studio-article.mjs` | rc=0 |
-| `node tools/smoke/desk-v1-studio-capture.mjs` | rc=0 |
-| `node tools/smoke/desk-v1-studio-delete.mjs` | rc=0 |
+| Backend command above (MC-1068 suite + subset tests) | 0; 435 passed |
+| Pyright command above | 0; no errors/warnings |
+| `node tools/smoke/desk-studio-render-worker.mjs` | 0; 68 checks |
+| `node tools/smoke/desk-v1-live-render.mjs` | 0 |
+| `node tools/smoke/desk-studio-passcode-replay.mjs` | 0 |
+| `node tools/smoke/human-proof-busy.mjs` | 0 |
+| `node tools/smoke/desk-v1-studio.mjs` | 0 |
+| `node tools/smoke/desk-v1-engine-vault-recovery.mjs` | 0 |
+| `node tools/smoke/desk-v1-render-scenes.mjs` | 0; independent controls, 1440/390 |
+| `node tools/smoke/desk-studio-render-scenes.mjs` | 0; 64 checks, Studio/Director at 1440/390 |
+| `node --check static/js/desk-v1-render-scenes.js` | 0 |
+| `node --check static/js/desk-v1-engines.js` | 0 |
+| `node --check static/js/desk-v1-render-price.js` | 0 |
+| `node --check static/js/desk-v1-studio.js` | 0 |
+| `node --check static/js/desk-v1-video.js` | 0 |
+| `git diff --check` | 0 |
 
-The pytest planner seam supplies a narrowed board to the real existing engine
-planner **only inside the test**, using a temporary monkeypatch. It establishes
-1/N/all prices and call counts without wiring production to the synchronous
-path. The passcode check tests the existing guarded route with a subset field;
-the prepared-price check exercises the narrowed real picture-preparation plan.
-Neither is evidence of an integrated subset worker/route, which remains pending.
+Backend tests use the actual guarded routes, durable worker, planner, accounting
+and finalizer with mocked vendor/ffmpeg fixtures. They cover one/N/all prices,
+malformed IDs, durable selected snapshots, unchanged replay, untouched files,
+sequential reuse, partial results, one-picture upload, held pricing, passcodes,
+caps, uncertain submission, acknowledgement and square-crop retention.
 
-The Playwright harness mounts the new controls explicitly on three fixture cards
-inside the real dashboard and mocks every API/vendor response. It checks no
-viewport overflow or page exceptions; screenshots are fixture controls, not a
-claim that the real storyboard is wired. Artifacts: `_scratch/mc1070/` (ignored).
-The main checkout's existing `tools/smoke/node_modules` was temporarily linked
-into this worktree. The link was moved out of `tools/smoke` into ignored
-`_scratch/mc1070-node-modules` before commit; the main dependencies remain
-intact and nothing was installed. The unattended fence refused deleting the
-junction; this reversible relocation removed it from the commit candidate.
+Browser checks use the real shared render panel/passcode modal and actual card
+CSS with fixture scenes and mocked APIs. They cover cancelled approval, pending
+and working states, higher prepared prices, single/multi offer reload, correct
+subset totals, full quote isolation, clip-reuse feedback, submission holds,
+free acknowledgement, the next passcode and viewport/runtime errors. They are
+not live account or real generation evidence. Screenshots/logs/rc matrix live
+in ignored `_scratch/mc1070/`. Generated tracked PNGs are restored before commit.
+The main checkout's existing smoke dependencies are linked temporarily;
+the worktree junction is relocated into ignored scratch before commit. No
+packages or browsers are installed. Owned smoke processes are registered with
+Clayrune by the scratch runner. No project or server process is stopped.
 
-The scratch check runner registered each owned smoke PID with Clayrune. Its
-first batch stopped after a Windows console encoding exception printing the
-already-passing full-render log; the runner was corrected and remaining smokes
-were run. The new controls were rerun after final UI changes.
+## Ron's five-line UI test (after Dave integrates)
 
-## Ron's five-line UI test (after integration only)
+1. Restart the server after backend integration, then hard reload to load the new JS/CSS; a hard reload alone cannot update the Python worker.
+2. Open a rendered storyboard in Studio or Director, edit one scene, price/approve **Render this scene** and verify the other saved clips are reused in the rebuilt video.
+3. Select two scenes, review **Render selected (2)** and its exact price, approve and verify only those two clips are newly generated.
+4. Cancel a passcode prompt; then, if pictures raise the price, verify Held starts no generation, reload restores the same selection/price, and another click/passcode is required.
+5. Render one scene on a new storyboard: verify the partial result names missing clips; at phone width verify controls fit, and an uncertain/interrupted hold requires dashboard checking and free acknowledgement before another paid approval.
 
-1. After Dave lands the backend, a **server restart is required**; hard reload the page to load the new JS (a reload alone cannot enable this slice).
-2. Open Desk > Studio > a rendered video's storyboard; price/approve **Render this scene** on one edited scene, then verify other clips are reused and the video is rebuilt.
-3. Select two scenes; verify **Render selected (2)** shows exactly their price, approve it, and verify only those two clips change.
-4. Cancel a passcode prompt: no render starts; if pictures raise the price, verify it stops and requires another Render click and passcode before generation.
-5. On a new storyboard, render one scene: only that clip is produced; repeat at phone width and verify all controls fit.
+## Continuity
 
-## Documentation and environment
-
-USER_GUIDE is intentionally unchanged: these controls cannot yet be discovered
-in the product. No README/agent-rule changes are needed for a dormant slice.
-The document/commit and changelog skills were used with the task's explicit
-no-push/no-merge/no-restart boundary overriding their general shipping steps.
-Engram tools are unavailable in this session; continuity is recorded here and
-in the project journal. A global plan-file write was rejected by the unattended
-fence as an out-of-project `~/.claude` config edit; the plan and exact remaining
-integration steps are recorded in this document instead.
+The task's explicit branch-only boundary overrides general shipping steps in
+the document/commit and changelog skills. No open design decision remains.
+The global plan write was fenced in the initial slice; this report and the
+project journal hold the plan and recovery context. Runtime-attributed memory
+is unavailable; no memory ID was invented or another session reused.

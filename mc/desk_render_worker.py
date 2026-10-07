@@ -16,6 +16,7 @@ from mc import desk_storyboard
 from mc.core import _log, now_iso
 from mc.desk_generation_preflight import prepare_plan
 from mc.desk_render_price_confirmation import check, shown_total
+from mc.desk_render_scenes import submission_context
 
 _RUN = uuid.uuid4().hex
 _active: set[str] = set()  # protected by eng._lock, like the durable store
@@ -86,12 +87,15 @@ def enqueue(data: dict, *, unattended: bool = False) -> tuple[dict, bool]:
             raise eng.Refused('storyboard_unavailable', str(e), e.status) from e
         if not board['scenes']:
             raise eng.Refused('no_scenes', 'this storyboard has no scenes to render: add one first', 409)
+        board, selection = submission_context({**data, 'owner': owner}, board, store)
         # This approval is the largest allowed spend, reserved before any remote
         # work. Exact price and caps are checked again in the worker.
         eng.check_caps(displayed, engine_id, campaign_id, store)
         rid = f'rnd-{uuid.uuid4().hex[:10]}'
         request = {k: copy.deepcopy(data[k]) for k in _FIELDS if k in data}
         request.update(owner=owner, engine_id=engine_id, model_id=model_id, aspect_ratio=ratio)
+        if selection:
+            request['scene_ids'] = selection['scene_ids']
         currency = eng.ENGINES[engine_id].currency
         now = now_iso()
         rec = dict(render_id=rid, status='pending', submission_state='pending', worker_run=_RUN,
@@ -102,7 +106,7 @@ def enqueue(data: dict, *, unattended: bool = False) -> tuple[dict, bool]:
                              **({'credits': displayed} if currency == 'credits' else {})},
                    reserved_usd=displayed if currency != 'credits' else 0,
                    request=request, board=copy.deepcopy(board), shown_total=displayed,
-                   created_at=now, updated_at=now)
+                   created_at=now, updated_at=now, **selection)
         store['renders'][rid] = rec
         store['render_idem'][idem] = rid
         eng._write_store(store)
@@ -146,7 +150,7 @@ def run(rid: str, *, unattended: bool = False) -> None:
                            estimate=eng._plan_estimate(plan))
             check(rec['shown_total'], plan, estimate=eng._plan_estimate(plan), public_plan=eng._plan_public(plan))
             parent.update(reserved_usd=plan['total_usd'], estimate=eng._plan_estimate(plan),
-                          crop_square=plan['crop_square'], updated_at=now_iso())
+                          crop_square=plan['crop_square'] or rec.get('reuse_crop_square', False), updated_at=now_iso())
             eng._write_store(store)
         for n, row in enumerate(plan['rows']):
             sid = row['scene']['id']

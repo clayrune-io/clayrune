@@ -1014,7 +1014,7 @@
     const demoRender = el.querySelector('[data-sb-render]');
     if (demoRender) demoRender.onclick = _startRender;
     const engineHost = el.querySelector('[data-sb-engine]');
-    if (engineHost) window.DeskV1Engines.mountVideoRender(engineHost, { owner: _sbOwner(), projectId: ctx.camp.projectId || undefined });
+    if (engineHost) window.DeskV1Engines.mountVideoRender(engineHost, { owner: _sbOwner(), projectId: ctx.camp.projectId || undefined, sceneRoot: el.querySelector('[data-scenes]') });
     const add = el.querySelector('[data-scene-add]');
     if (add) add.onclick = _addScene;
     _wireScenes(el.querySelector('[data-scenes]'));

@@ -15,15 +15,9 @@ from tests.test_higgsfield_picture_render import contract, mcp, generations  # n
 
 @pytest.fixture
 def subset_planner(monkeypatch):
-    """TEST ONLY: exercise today's real planner with the narrowed board.
-
-    No replacement production route is installed: this isolates the future
-    board-aware seam without touching the four files owned by MC-1068.
-    """
+    """Exercise the board-aware production planner seam."""
     def plan(request, narrowed):
-        with monkeypatch.context() as patch:
-            patch.setattr(sb, 'get_storyboard', lambda *_: narrowed)
-            return eng._plan_render(request, unattended=False)
+        return eng._plan_render(request, unattended=False, _board=narrowed)
     return plan
 
 
