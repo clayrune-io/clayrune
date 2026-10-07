@@ -114,10 +114,16 @@ class EngineError(Exception):
     False when we cannot tell (timeout, dropped connection): the second case
     keeps the cost reserved, because the vendor may have accepted the job."""
 
-    def __init__(self, kind: str, message: str, *, definitive: bool = True):
+    def __init__(self, kind: str, message: str, *, definitive: bool = True,
+                 not_sent: bool = False, plain: bool = False):
         super().__init__(message)
         self.kind = kind
         self.definitive = definitive
+        # Network failures (desk_net_errors): `not_sent` = the request never left
+        # this machine (the vendor cannot have acted); `plain` = the message is
+        # already user-ready, so a wrapper should not prefix it with vendor text.
+        self.not_sent = not_sent
+        self.plain = plain
 
 
 class NotConnected(Exception):
@@ -455,14 +461,32 @@ def _safe(text: Any, limit: int = 300) -> str:
     return re.sub(r'\s+', ' ', s).strip()[:limit]
 
 
-def _transport_call(*args, **kw) -> tuple[int, dict, bytes]:
+def _net_engine_error(fail, service: str, *, free: bool) -> EngineError:
+    """A NetFailure as an EngineError. Always NON-definitive (we cannot know
+    whether the vendor acted) except that `not_sent` is flagged so a paid submit
+    can release its reservation: nothing left this machine. Raw text -> log only."""
+    from mc import desk_net_errors as net
+    return EngineError('engine', net.message(fail, service, free=free), definitive=False,
+                       not_sent=fail.kind == net.NOT_SENT, plain=fail.kind == net.NOT_SENT or free)
+
+
+def _price_failure_text(e: EngineError, fallback: str) -> str:
+    """User text for a failed price read: a network failure already says what
+    happened, so it is shown whole instead of behind vendor-error framing."""
+    return f'{e} Try Price again.' if e.plain else fallback
+
+
+def _transport_call(method: str, url: str, *, free: bool = False, **kw) -> tuple[int, dict, bytes]:
     """`_http_request` with transport failures turned into a NON-definitive
-    EngineError (we cannot know whether the vendor acted on the request)."""
+    EngineError (we cannot know whether the vendor acted on the request).
+    `free` is the caller's statement that repeating the call costs nothing and
+    changes nothing; it unlocks retry of a failure that may have been sent."""
+    from mc import desk_net_errors as net
+    service = net.service_name(url)
     try:
-        return _http_request(*args, **kw)
-    except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError, OSError, ValueError) as e:
-        raise EngineError('engine', f'no usable response from the engine: {_safe(e)}',
-                          definitive=False) from e
+        return net.run(lambda: _http_request(method, url, **kw), free=free, log=_log, label=service)
+    except net.NetFailure as f:
+        raise _net_engine_error(f, service, free=free) from f.original
 
 
 def _classify_http(status: int, body: bytes) -> EngineError:
@@ -481,13 +505,14 @@ def _classify_http(status: int, body: bytes) -> EngineError:
 
 
 def _json_call(method: str, url: str, headers: dict, payload: Any = None, *,
-               timeout: float = _HTTP_TIMEOUT, max_bytes: int = 32 * 1024 * 1024) -> dict:
+               timeout: float = _HTTP_TIMEOUT, max_bytes: int = 32 * 1024 * 1024,
+               free: bool = False) -> dict:
     body = None
     h = dict(headers)
     if payload is not None:
         body = json.dumps(payload).encode('utf-8')
         h['Content-Type'] = 'application/json'
-    status, _hdrs, data = _transport_call(method, url, headers=h, body=body,
+    status, _hdrs, data = _transport_call(method, url, headers=h, body=body, free=free,
                                           timeout=timeout, max_bytes=max_bytes)
     if not 200 <= status < 300:
         raise _classify_http(status, data)
@@ -517,7 +542,7 @@ def _download(url: str, *, auth_headers: dict | None = None,
         hdrs = dict(auth_headers or {}) if (
             auth_host_suffix and (host == auth_host_suffix or host.endswith('.' + auth_host_suffix))
         ) else {}
-        status, rh, data = _transport_call('GET', url, headers=hdrs, timeout=120,
+        status, rh, data = _transport_call('GET', url, headers=hdrs, timeout=120, free=True,
                                            max_bytes=_MAX_DOWNLOAD_BYTES)
         if status in (301, 302, 303, 307, 308) and rh.get('location'):
             url = urllib.parse.urljoin(url, rh['location'])
@@ -800,7 +825,7 @@ class HiggsfieldAdapter:
 
     def estimate(self, model, req, creds) -> Estimate:
         out = _json_call('POST', f'{_HIGGS_BASE}/estimate/{model.model_id}', self._headers(creds),
-                         self._body(model, req, image_url=None))
+                         self._body(model, req, image_url=None), free=True)
         try:
             usd = float(out['usd'])
         except (KeyError, TypeError, ValueError):
@@ -821,7 +846,7 @@ class HiggsfieldAdapter:
         rid = ref.get('request_id', '')
         if not _REF_OK.match(rid):
             raise EngineError('engine', 'stored request id is malformed')
-        out = _json_call('GET', f'{_HIGGS_BASE}/requests/{rid}/status', self._headers(creds))
+        out = _json_call('GET', f'{_HIGGS_BASE}/requests/{rid}/status', self._headers(creds), free=True)
         st = out.get('status')
         if st == 'queued':
             return {'state': 'queued'}
@@ -859,14 +884,33 @@ _MCP_TIMEOUT = 60               # job_status sync:true holds up to ~25 s server-
 _MCP_MAX_BYTES = 4 * 1024 * 1024
 
 
-def _mcp_post(token: str, body: dict, *, expect_id: int | None, timeout: float = _MCP_TIMEOUT) -> dict | None:
+def _mcp_post(token: str, body: dict, *, expect_id: int | None, timeout: float = _MCP_TIMEOUT,
+              free: bool = False) -> dict | None:
     """One JSON-RPC POST to the Higgsfield MCP endpoint -> the `result` of the
     response with id `expect_id` (None for a notification). The server answers
     in an SSE stream (or plain JSON); the stream is read only until our id
     arrives, so a server that keeps it open cannot hang us. The one function
     the MCP tests replace. Transport failures raise a NON-definitive EngineError:
-    a call that timed out may still have been acted on."""
+    a call that timed out may still have been acted on. `free` is the caller's
+    statement that repeating this call costs nothing (handshake, price check,
+    catalogue read, status poll); `timeout` stays the total budget across retries."""
+    from mc import desk_net_errors as net
+    deadline = time.monotonic() + timeout
+
+    def attempt():
+        return _mcp_post_once(token, body, expect_id=expect_id,
+                              timeout=max(0.1, deadline - time.monotonic()))
+    try:
+        return net.run(attempt, free=free, deadline=deadline, log=_log, label='Higgsfield MCP')
+    except net.NetFailure as f:
+        raise _net_engine_error(f, 'Higgsfield', free=free) from f.original
+
+
+def _mcp_post_once(token: str, body: dict, *, expect_id: int | None, timeout: float) -> dict | None:
+    """One attempt of `_mcp_post`. Raises the raw transport exception; a failure
+    while reading the reply is wrapped in `AfterSend` (the request had gone out)."""
     from mc import mcp_read_deadline
+    from mc import desk_net_errors as net
     deadline = time.monotonic() + timeout
     headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/json, text/event-stream',
                'Content-Type': 'application/json', 'MCP-Protocol-Version': _MCP_PROTOCOL,
@@ -877,8 +921,6 @@ def _mcp_post(token: str, body: dict, *, expect_id: int | None, timeout: float =
         resp = _OPENER.open(req, timeout=timeout)
     except urllib.error.HTTPError as e:
         resp = e
-    except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError, OSError) as e:
-        raise EngineError('engine', f'no usable response from Higgsfield: {_safe(e)}', definitive=False) from e
     try:
         status = int(getattr(resp, 'status', None) or resp.getcode() or 0)
         if status >= 400:
@@ -905,8 +947,8 @@ def _mcp_post(token: str, body: dict, *, expect_id: int | None, timeout: float =
             else:
                 raw = b''.join(mcp_read_deadline.chunks(resp, deadline=deadline, maximum=_MCP_MAX_BYTES))
                 hit = _mcp_match([raw.decode('utf-8', errors='replace')], expect_id)
-        except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError, OSError, ValueError) as e:
-            raise EngineError('engine', f'no usable response from Higgsfield: {_safe(e)}', definitive=False) from e
+        except net.TRANSPORT_ERRORS as e:
+            raise net.AfterSend(e) from e
         if hit is None:
             raise EngineError('engine', 'Higgsfield answered with no result for the request', definitive=False)
         return hit
@@ -989,7 +1031,7 @@ class VeoAdapter:
         name = ref.get('operation', '')
         if not _REF_OK.match(name) or '..' in name:
             raise EngineError('engine', 'stored operation name is malformed')
-        out = _json_call('GET', f'{_GEMINI_BASE}/v1beta/{name}', self._headers(creds))
+        out = _json_call('GET', f'{_GEMINI_BASE}/v1beta/{name}', self._headers(creds), free=True)
         if not out.get('done'):
             return {'state': 'rendering'}
         if out.get('error'):
@@ -1435,7 +1477,7 @@ def estimate(d: dict, *, unattended: bool = False) -> dict:
     except NotConnected:
         raise
     except EngineError as e:
-        raise Refused('estimate_failed', str(e), 502, failure=e.kind)
+        raise Refused('estimate_failed', _price_failure_text(e, str(e)), 502, failure=e.kind)
     return with_caps({'estimate': est.public()}, _amount(est, req.engine_id), req.engine_id, campaign_id)
 
 
@@ -1531,7 +1573,8 @@ def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False, _pre
     try:
         est = _prepared.estimate if _prepared else adapter.estimate(model, req, creds)
     except EngineError as e:
-        raise Refused('estimate_failed', f'could not get a price, so nothing was sent: {e}', 502, failure=e.kind)
+        raise Refused('estimate_failed', _price_failure_text(e, f'could not get a price, so nothing was sent: {e}'),
+                      502, failure=e.kind)
 
     if _prepared is None:
         from mc.desk_generation_preflight import prepare
@@ -1576,7 +1619,7 @@ def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False, _pre
     try:
         res = adapter.submit(model, req, creds, prepared=_prepared) if _prepared else adapter.submit(model, req, creds)
     except EngineError as e:
-        if e.definitive:
+        if e.definitive or e.not_sent:      # not_sent: the request never left this machine
             release()
             raise Refused('engine_refused', str(e), 502, failure=e.kind)
         # Unknown whether the vendor accepted: keep the reservation and the
@@ -1926,7 +1969,8 @@ def _plan_render(d: dict, *, unattended: bool) -> dict:
             problems.append(f'{where}: {e}')
             continue
         except EngineError as e:
-            raise Refused('estimate_failed', f'could not get a price for {where}, so nothing was sent: {e}', 502, failure=e.kind)
+            raise Refused('estimate_failed', _price_failure_text(e, f'could not get a price for {where}, so nothing was sent: {e}'),
+                          502, failure=e.kind)
         total += est.usd
         total_amount += _amount(est, engine_id)
         approximate = approximate or est.approximate

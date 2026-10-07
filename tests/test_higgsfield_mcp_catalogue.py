@@ -29,7 +29,7 @@ def env(tmp_path, monkeypatch):
     calls = []
     result = {'model': {'id': 'kling3_0', 'type': 'video', 'vendor_extension': {'opaque': True}}}
 
-    def post(token, body, *, expect_id, timeout):
+    def post(token, body, *, expect_id, timeout, **kw):
         assert token == 'fake-token'
         assert 0 < timeout <= 15
         calls.append(body)

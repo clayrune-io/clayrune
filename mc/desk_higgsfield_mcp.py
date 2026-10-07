@@ -17,14 +17,16 @@ class HiggsfieldMcpAdapter:
 
     _TOOLS = {'image': 'generate_image', 'video': 'generate_video'}
 
-    def _call(self, creds: _Creds, tool: str, arguments: dict) -> dict:
+    def _call(self, creds: _Creds, tool: str, arguments: dict, *, free: bool = False) -> dict:
+        """`free` is the caller's statement that repeating the call costs nothing
+        (price check, status poll); a submit or upload leaves it False."""
         from mc import desk_engines as eng
         eng._mcp_post(creds.secret, {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {
             'protocolVersion': eng._MCP_PROTOCOL, 'capabilities': {},
-            'clientInfo': {'name': 'Clayrune', 'version': '1'}}}, expect_id=1)
-        eng._mcp_post(creds.secret, {'jsonrpc': '2.0', 'method': 'notifications/initialized'}, expect_id=None)
+            'clientInfo': {'name': 'Clayrune', 'version': '1'}}}, expect_id=1, free=True)
+        eng._mcp_post(creds.secret, {'jsonrpc': '2.0', 'method': 'notifications/initialized'}, expect_id=None, free=True)
         res = eng._mcp_post(creds.secret, {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
-                                       'params': {'name': tool, 'arguments': arguments}}, expect_id=2)
+                                       'params': {'name': tool, 'arguments': arguments}}, expect_id=2, free=free)
         res = res or {}
         if res.get('isError'):
             if arguments.get('params', {}).get('get_cost') is True:
@@ -66,10 +68,10 @@ class HiggsfieldMcpAdapter:
         from mc import desk_engines as eng, desk_engine_schemas
         from mc.desk_higgsfield_preset_decline import quote
         doc = doc if doc is not None else desk_engine_schemas.read(req.engine_id) or {}
-        call = lambda n, a: eng._mcp_data(self._call(creds, n, a))
+        call = lambda n, a: eng._mcp_data(self._call(creds, n, a, free=True))     # only ever a get_cost quote
         if checked:
             from mc.desk_higgsfield_media_upload import checked_call
-            call = lambda n, a: checked_call(doc, lambda n, a: self._call(creds, n, a), n, a)
+            call = lambda n, a: checked_call(doc, lambda n, a: self._call(creds, n, a, free=True), n, a)
         return quote(doc, call, self._TOOLS[model.kind], args)
 
     @staticmethod
@@ -132,7 +134,7 @@ class HiggsfieldMcpAdapter:
             raise eng.EngineError('engine', 'stored job id is malformed')
         urls, state = [], 'ready'
         for jid in ids:
-            gen = eng._mcp_data(self._call(creds, 'job_status', {'jobId': jid, 'sync': True})).get('generation')
+            gen = eng._mcp_data(self._call(creds, 'job_status', {'jobId': jid, 'sync': True}, free=True)).get('generation')
             gen = gen if isinstance(gen, dict) else {}
             st = str(gen.get('status') or '').lower()
             if st in ('failed', 'error'):
