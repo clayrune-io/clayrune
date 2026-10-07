@@ -32,7 +32,7 @@ Tests use mocked Git/network/provider calls; they do not prove this particular e
 |---|---|---|
 | Saved sign-in | [1440](../screens/connect_fix_linkedin_accounts_1440.png) | [390](../screens/connect_fix_linkedin_accounts_390.png) |
 | Add another account | [1440](../screens/connect_fix_linkedin_new_account_1440.png) | [390](../screens/connect_fix_linkedin_new_account_390.png) |
-| Saved credential | [1440](../screens/connect_fix_youtube_credentials_1440.png) | [390](../screens/connect_fix_youtube_credentials_390.png) |
+| Saved credential | [1440](../screens/connect_fix_youtube_saved_login_1440.png) | [390](../screens/connect_fix_youtube_saved_login_390.png) |
 | GitHub approval | [1440](../screens/connect_fix_github_approval_1440.png) | [390](../screens/connect_fix_github_approval_390.png) |
 
 ## Five-line UI retest

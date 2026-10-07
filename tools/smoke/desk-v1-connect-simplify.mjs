@@ -294,7 +294,7 @@ try {
     await p.selectOption('[data-ref-select="mode"]','existing');await p.waitForSelector('[data-ref-pick] option[value="existing.key"]',{state:'attached'});
     check(await p.locator('[data-cfw-primary]').isDisabled(),'credential choice required before Continue');
     await p.selectOption('[data-ref-pick]','existing.key');
-    await p.screenshot({path:resolve(SHOT_DIR,`youtube_credentials_${width}.png`),fullPage:true});
+    await p.screenshot({path:resolve(SHOT_DIR,`youtube_saved_login_${width}.png`),fullPage:true});
     check(await p.locator('[data-cfw-primary]').isEnabled(),'saved credential enables Continue');
     await primary(p);await step(p,'permissions');await primary(p);await step(p,'review');
     check(!srv.log.some(r=>r.path.endsWith('/commit')),'saved credential navigation writes nothing');
