@@ -14,7 +14,8 @@ with verdict `pass`.
 | Hand-merge check | `tools/merge-review-check.py` |
 | Opt-in hooks | `tools/git-hooks/pre-merge-commit` + `tools/git-hooks/commit-msg`, installed together by `tools/install-merge-review-hook.sh` |
 | Reviewer lineage check | `mc/review_lineage.py` |
-| Tests | `tests/test_merge_review_gate.py`, `tests/test_review_lineage.py` |
+| Dispatch-time caller recording | `mc/dispatch_lineage.py` |
+| Tests | `tests/test_merge_review_gate.py`, `tests/test_review_lineage.py`, `tests/test_dispatch_lineage.py` |
 
 ## Setting
 
@@ -147,10 +148,32 @@ Fails closed: a reviewer or ancestor that is neither live nor in a readable
 agent log, an unreadable log hiding one, a missing data dir, or a chain over
 200 sessions all refuse with 403 "cannot establish the dispatch lineage".
 
-Limit (not closed here): the recorded spawner is the `notify_session` the
-dispatching caller typed (`agent_dispatch`), not the OS-attributed caller. A
-builder that dispatches a reviewer without naming itself leaves no lineage.
-Hivemind workers (`hm_*`) are not linked by `_spawned_by` either.
+### Who is recorded as the spawner (MC-1082)
+
+The recorded spawner is the OS-attributed caller of `POST .../agent/dispatch`
+(`mc/dispatch_lineage.py`, the same `caller_attribution` walk the review route
+and MC-1076 use), not what the body typed as `notify_session`. A builder that
+dispatches its reviewer without `notify_session`, or naming a decoy session,
+still leaves its own id as `_spawned_by` / `dispatched_by_session_id`.
+`notify_session` is unchanged: it is only the callback target.
+`mc/review_lineage.py` reads the same fields as before.
+
+A caller the OS cannot tie to a managed session (the UI, a human's own curl, a
+scheduler or workflow dispatch, an unavailable lookup) records no caller, and
+the spawner falls back to `notify_session` as it always did. Tests:
+`tests/test_dispatch_lineage.py`.
+
+Limits (not closed here):
+- Hivemind workers (`hm_*`) are spawned by the orchestrator, not by a builder,
+  so they cannot choose a reviewer for a branch; they carry no lineage link.
+- A fully detached helper process (parent chain broken before the session) is
+  unattributed and records no caller; this is the residual named in
+  `mc/caller_attribution.py`. Such a process cannot record a review either:
+  the review route refuses unattributed callers.
+- The durable agent-log row is written at completion, or at dispatch only when
+  `notify_session` is given. A child dispatched without `notify_session` and
+  killed before it finishes lives only in memory, so after a server restart its
+  lineage is unreadable and a review through it is refused (fail closed).
 
 ## merge_back behaviour
 

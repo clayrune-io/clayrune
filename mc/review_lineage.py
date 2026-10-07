@@ -22,10 +22,9 @@ Fails closed. Lineage that cannot be established is a refusal, never a pass:
 a session on the chain that is neither live nor in any readable agent log, an
 unreadable log, or a chain longer than any real delegation tree.
 
-Known limit: the recorded spawner is whatever the dispatching caller passed as
-`notify_session` (see `agent_dispatch`), not the OS-attributed caller. A
-builder that dispatches a reviewer WITHOUT naming itself leaves no lineage to
-walk. This module closes the recorded-lineage bypass only.
+The recorded spawner is the OS-attributed dispatch caller, not the caller's
+`notify_session` (`mc/dispatch_lineage.py`, MC-1082). A caller the OS cannot
+tie to a session records none; hivemind workers carry no lineage link.
 
 The walk (`owner_in_ancestry`) is pure so it is testable without Flask or
 sessions; `check()` is the production wiring the route calls.
