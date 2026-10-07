@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Higgsfield preset suggestions preserve literal storyboard text
+
+- Free price checks retry a preset recommendation once with only its validated, agreeing decline identifier. The tool must explicitly declare the parameter; prompt text, media and other caller settings are preserved. A second notice or unusable price refuses the request, without applying suggested preset arguments or exposing vendor prose.
+- Approved text and picture renders carry the final priced arguments through preparation and recheck the complete credit cap before submission. Quotes explain that the text is used as written; this note does not mark a text-only request as awaiting picture pricing.
+- Paid-call notices are not retried: the captured direct-tool contract does not guarantee no submission or charge. Ambiguous outcomes retain the reservation and idempotency key. Contract evidence, checks and the unverified live boundary are in `docs/desk_v1/HIGGSFIELD_PRESET_DECLINE.md`. Local branch only; no push, merge or restart.
+
 ## [2026-10-07] - Higgsfield notice-only price replies identify their type
 
 - A notice instead of a price now produces an explicit refusal with its type when it matches a strict, bounded identifier. Missing or malformed types use a plain fallback; valid prices remain usable when a notice accompanies them.

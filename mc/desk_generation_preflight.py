@@ -26,11 +26,10 @@ def prepare_plan(plan: dict, *, unattended: bool) -> None:
     if model is None:
         raise eng.EngineError('engine', 'The selected generation model is no longer available')
     adapter = eng._adapter(model)
-    if not getattr(adapter, 'prepare', None) or not any(
-            r['req'].first_frame or r['req'].last_frame or r['req'].reference_images for r in plan['rows']):
+    if not getattr(adapter, 'prepare', None):
         return
     creds = eng._creds(plan['engine_id'], plan['project_id'], unattended)
-    # Prepare ALL scenes before any paid submission; a later failed upload spends zero credits.
+    # Price/prepare ALL exact scene arguments before any paid submission.
     for row in plan['rows']:
         row['prepared'] = prepare(adapter, model, row['req'], creds)
         if row['prepared']:

@@ -1,5 +1,8 @@
 # Higgsfield quote notices: follow-up checkpoint
 
+Later implementation checkpoint: [literal preset decline](HIGGSFIELD_PRESET_DECLINE.md).
+The observations and options below describe the earlier diagnostic branch.
+
 Base: `b789ca45`. Branch: `clayrune/higgsfield-notice`.
 No push, merge, restart, upload, generation, prompt rewriting or changed
 provider parameter was performed. This is a local diagnostic patch, not a

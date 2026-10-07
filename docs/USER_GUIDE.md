@@ -800,7 +800,16 @@ supplies no recognized explanation, the message says so; it does not invent a
 price. Server diagnostics record response shapes without vendor sales copy.
 If the reply is a notice with no price, the message identifies its type when
 it is a short identifier; an unknown or malformed type is reported explicitly.
-Clayrune does not treat a notice as permission to retry with different settings.
+For a preset recommendation, Clayrune retries the free price check once with
+that exact preset declined, when the tool declares this option and the returned
+identifiers are valid and agree. The prompt and your other settings stay as
+written. A successful quote says "Higgsfield suggested a preset; your text is
+used as written". A second notice or missing price stops the request.
+Render uses the exact final priced arguments, including the declined preset,
+and rechecks the credit cap before submitting. Clayrune never applies the
+suggested preset. A notice from the paid Render call is not automatically
+retried: submission and charging cannot be confirmed, so check the provider's
+dashboard before retrying. The existing reservation and retry key are retained.
 
 Missing or unusable contracts explain what is unavailable; Clayrune does not
 drop a picture or invent an identifier. **Check it now** remains a separate,

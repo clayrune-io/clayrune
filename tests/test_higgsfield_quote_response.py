@@ -56,7 +56,8 @@ def test_unusable_prices_fail_closed(val, logs):
 
 @pytest.mark.parametrize('cost', [{'credits_exact': 0, 'credits': 1}, {'credits_exact': 3.25}, {'credits': 2}])
 def test_real_numeric_quote_retains_exact_credits_and_picture_note(cost, logs):
-    est = HiggsfieldMcpAdapter._quote({'cost': cost, 'brand_kit_status': 'ready'}, note='Text-only price; picture priced at render')
+    est = HiggsfieldMcpAdapter._quote({'cost': cost, 'brand_kit_status': 'ready'},
+                                    note='Text-only price; picture priced at render', picture_pending=True)
     assert est.credits == cost.get('credits_exact', cost.get('credits'))
     assert est.picture_pending and est.note
     assert not logs
@@ -192,7 +193,7 @@ def test_notice_refusal_preserves_prompt_and_only_free_quote(mcp, logs, picture,
         monkeypatch.setattr(eng, '_mcp_post', post)
     else:
         mcp[1]['bad'] = lambda name, out: notice
-    with pytest.raises(eng.Refused, match='notice of type preset_recommendation instead of a price'):
+    with pytest.raises(eng.Refused, match='without one valid, agreeing decline identifier'):
         eng.estimate(request(prompt='A desk in the office', first_frame={'path': 'pic.png'} if picture else None))
     assert [name for name, _ in mcp[0]] == ['generate_video']
     params = mcp[0][0][1]['params']
