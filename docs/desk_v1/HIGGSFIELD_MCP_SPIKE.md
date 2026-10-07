@@ -594,3 +594,39 @@ and complete filtered tool list. No live schema has been read in this branch.
   ffmpeg hold path; the same error is reproduced from base `946464f6`.
 - No frontend files changed, so JavaScript/Playwright smokes are inapplicable.
   No merge, push, restart, live provider call, upload or paid generation occurred.
+
+## 12. Captured generation schema is not the model catalogue (2026-10-06)
+
+The server-produced tool snapshot has the generation and upload tools, but it
+does not yet establish the contract required by step 4. The actual
+`generate_video` / `generate_image` input schema declares:
+
+- `params` as an object or serialized string; the object has `model: string`
+  without a model enum or per-model branches.
+- `params.medias[]` items requiring `value: string` and `role: string`, with no
+  role enum, model-specific count, accepted MIME list or image-size limit.
+- `get_cost: boolean` promises a quote without submitting a job, but supplies no
+  special picture-slot form that omits a media identifier. Whether the cost
+  path accepts an empty/omitted identifier is not established. Never invent an
+  uploaded UUID or silently quote a different text-only request.
+- `media_upload` has upload-URL allocation inputs; `media_confirm` has media-ID
+  inputs. The snapshot retains no output schemas, so allocation response shape
+  and confirmed-ID extraction are not established by these input schemas.
+
+The snapshot filter omits `models_explore`; its model-specific result data is
+also absent. An official CLI [media-input reference](https://github.com/higgsfield-ai/skills/blob/main/higgsfield-generate/references/media-inputs.md)
+documents model-dependent roles, but substituting that CLI contract would not
+satisfy a runtime implementation driven by this remote MCP snapshot.
+
+Direct evaluation on the captured shape returns `schema_state: unknown` for
+both `kling3_0` and `seedance_2_5`, with no picture capability. The running
+server's metadata-only engine listing reports the same states. Thus the current
+observed contract gap precedes the upload-wiring guard; removing `PENDING` alone
+cannot fix this shape.
+
+Required evidence: the `models_explore` tool definition and selected-model
+results; upload/confirm output schemas or vendor-documented response shapes;
+and a server-run free `get_cost` proof with a picture slot declared and no upload.
+Do not infer that the vendor requires an upload merely because that proof is
+missing. Recommended next implementation is server-only read-only contract
+capture/probing, keeping credentials in the server and all human gates intact.
