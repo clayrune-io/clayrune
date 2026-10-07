@@ -803,17 +803,30 @@ roles; a model that declares no picture input says so.
 Price checks never upload your pictures. When the engine's quote requires an
 uploaded media identifier, the estimate says **Text-only price; picture priced
 at render**. The passcode prompt explains that difference. After you approve
-Render, Clayrune uploads and confirms the pictures, quotes their actual price,
+Render, the passcode popup closes as soon as Clayrune saves a pending render.
+Studio shows **Waiting to start**, then **Working: uploading pictures and
+submitting clips** while a server worker uploads and confirms the pictures, quotes their actual price,
 and checks the full storyboard total against your per-job credit limit and the
 price you saw before submitting any clip. If the full price is higher, Studio
-shows **Price with your pictures is N credits (was M). Press Render again to
-accept.** Nothing is generated on that attempt. The Render button shows the
+shows **Held** and **Price with your pictures is N credits (was M). Press Render again to
+accept.** Nothing is generated on that attempt. Reloading restores that held
+price when the storyboard and engine/model/shape still match. The Render button shows the
 new total; clicking it again asks for your passcode at that price. Another price
 increase stops again. Editing the storyboard, changing the engine/model/shape,
 or choosing **Price again** clears that picture-inclusive price and starts a
 new price check. Retrying currently uploads the pictures again; an upload from
 a refused attempt can remain in your Higgsfield library. The per-job limit and
 campaign budget still apply after you accept the new price.
+
+Once the engine accepts the clips, Studio shows **Submitted** and polls them
+to **Ready**. A failed submission shows its reason. Render stays disabled
+while submission is in progress; repeat clicks, including a fresh click key,
+return the active render instead of starting another one. A campaign's pending
+render reserves its approved amount until exact pricing transfers that hold
+to its clips. If the server restarts during submission, Studio shows **Held**
+with an interrupted-submission explanation. It does not retry paid calls;
+uncertain clip costs stay reserved and Render remains disabled until the
+submission is investigated. Check the engine dashboard before any recovery.
 An unsafe upload URL or unexpected upload/confirmation
 response stops the render before generation. A later refused render can leave
 an uploaded picture in your Higgsfield library; it spends no generation credits.

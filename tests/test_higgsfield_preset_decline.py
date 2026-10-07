@@ -178,7 +178,7 @@ def test_storyboard_prices_all_literal_requests_before_any_submission(client, bo
     board([_sc('1'), _sc('2')])
     scripted(monkeypatch)
     eng.set_limit('higgsfield_mcp', 20)
-    body = _render_body(engine_id='higgsfield_mcp', model_id='kling3_0')
+    body = _render_body(engine_id='higgsfield_mcp', model_id='kling3_0', shown_total=14)
     response = client.post('/api/desk/engines/renders', json=body)
     assert response.status_code == 201, response.get_json()
     calls = [a['params'] for n, a in mcp[0] if n == 'generate_video']
