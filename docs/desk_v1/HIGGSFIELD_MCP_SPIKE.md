@@ -662,3 +662,48 @@ tests/test_higgsfield_mcp_snapshot.py tests/test_desk_engine_schemas.py -o
 addopts='' -q` reports **251 passed in 16.28s**. Basic Pyright for
 `mc/desk_connect/higgsfield_mcp_snapshot.py` and `mc/desk_engine_schemas.py`
 reports **0 errors**. No frontend code changed; no browser smoke was run.
+
+## 13. Selected-model catalogue capture (2026-10-06)
+
+Dave authorized `models_explore` reads for models actually used by a
+storyboard/price check. `mc/desk_connect/higgsfield_mcp_catalogue.py` implements
+that separate concern. It supports the known `action: get`, `model_id` form
+only after the fresh tool definition establishes those inputs; missing,
+duplicate or composed definitions and unknown required companion fields refuse
+before any call. No list/search/recommend action, upload or generation is used.
+
+`_schema_creds` supplies the selected catalogue model and kind for ordinary
+estimates, submissions and storyboard plans. Connections still capture only
+tool definitions. The snapshotter's existing lock serializes tool/model writes;
+another request never waits behind discovery. Model results are stored raw,
+redacted and explicitly untrusted under `models[model_id]`, with their kind and
+own timestamp. Each expires after 24 hours, matching the tool TTL; refreshing
+tools replaces the old model entries. Fresh model entries make no catalogue
+call on a render's hot path. RPCs share a 15-second deadline, responses are
+bounded to 4 MB per model, and the full serialized snapshot is bounded to
+32 MB before atomic replacement. A failure logs its exception type and leaves
+the previous snapshot intact; stale data does not become new role evidence.
+
+The earlier server proof's saved `tools.json` supplied an example of the input
+contract, not a current vendor result. Its saved model responses contain test
+models and supply no production role evidence. No older result was substituted
+for the actual selected-model catalogue. Runtime validation always uses the
+fresh server-produced definition.
+
+**Restart checkpoint, not complete picture wiring:** the running server still
+has the old capture (`2026-10-07T01:32:06.878257Z`, no capture_version, no
+models_explore definition or model entries). Integration and Ron's restart are
+required to obtain the actual model result shape and picture roles. One Studio
+price check using the desired model captures that result before the current
+picture refusal. The next check should reuse its unchanged model timestamp.
+Only after reading those actual records can picture capability/role mapping,
+free picture-slot quotes, and human-render upload/confirm wiring be completed.
+No full picture-price success, live quote, upload, generation or UI smoke is
+claimed for this checkpoint.
+
+Verification: six-file engine/connect/snapshot/schema/catalogue regression
+reports **268 passed in 17.55s**. The catalogue suite includes actual price and
+storyboard path tests proving one selected-model read followed by cache reuse,
+with free `get_cost: true` / `use_unlim: false` calls only. New/changed capture
+and registry modules pass basic Pyright; including `desk_engines.py` still
+reports the pre-existing optional campaign-ID error in the ffmpeg hold path.

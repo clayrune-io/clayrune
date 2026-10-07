@@ -389,14 +389,17 @@ def get_model(engine_id: str, model_id: str) -> ModelDescriptor | None:
     return model
 
 
-def _schema_creds(engine_id: str, project_id: str | None, unattended: bool) -> _Creds | None:
+def _schema_creds(engine_id: str, project_id: str | None, unattended: bool,
+                  model_id: str | None = None) -> _Creds | None:
     """Refresh registered remote-engine evidence before request validation."""
     from mc import desk_engine_schemas
     if not desk_engine_schemas.registered(engine_id):
         return None
     creds = _creds(engine_id, project_id, unattended)
+    model = get_model(engine_id, model_id) if model_id else None
     desk_engine_schemas.ensure(engine_id, token=creds.secret,
-                               project_id=project_id, unattended=unattended)
+                               project_id=project_id, unattended=unattended,
+                               model_id=model.model_id if model else None, kind=model.kind if model else None)
     return creds
 
 
@@ -1500,7 +1503,7 @@ def estimate(d: dict, *, unattended: bool = False) -> dict:
     req = parse_request(d)
     campaign_id = d.get('campaign_id')
     project_id = _project_for(campaign_id) if campaign_id else d.get('project_id')
-    schema_creds = _schema_creds(req.engine_id, project_id, unattended)
+    schema_creds = _schema_creds(req.engine_id, project_id, unattended, req.model_id)
     _eng, model = _resolve(req)
     try:
         creds = schema_creds or _creds(req.engine_id, project_id, unattended) if ENGINES[req.engine_id].estimate == 'endpoint' \
@@ -1598,7 +1601,7 @@ def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False) -> t
         if existing:
             return _public_job(_read_store()['jobs'][existing]), True
 
-    schema_creds = _schema_creds(req.engine_id, project_id, unattended)
+    schema_creds = _schema_creds(req.engine_id, project_id, unattended, req.model_id)
     _eng, model = _resolve(req)
     creds = schema_creds or _creds(req.engine_id, project_id, unattended)
     adapter = _adapter(model)
@@ -1932,7 +1935,7 @@ def _plan_render(d: dict, *, unattended: bool) -> dict:
         raise Refused('unknown_model', f'{engine_id} has no model {model_id!r}', 400)
     if model.kind != 'video':
         raise Refused('invalid_input', f'{model_id} makes {model.kind}, not video', 400)
-    schema_creds = _schema_creds(engine_id, project_id, unattended)
+    schema_creds = _schema_creds(engine_id, project_id, unattended, model_id)
     model = get_model(engine_id, model_id) or model
 
     ratio = str(d.get('aspect_ratio') or '').strip()
