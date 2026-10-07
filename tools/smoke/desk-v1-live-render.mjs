@@ -119,6 +119,7 @@ async function newPage(browser, { live, srv, ctx: sharedCtx }) {
     if (m && method === 'PUT') { srv.limits[m[1]] = body.job_limit_usd; return J({ engine_id: m[1], job_limit_usd: body.job_limit_usd }); }
     if (path === '/api/desk/engines/render/estimate') {
       srv.estCalls++;
+      if (srv.quoteError) return J({ error: srv.quoteError, code: 'estimate_failed' }, 502);
       const eng = ENGINES(srv).find((e) => e.id === body.engine_id);
       if (!eng.connected.ready) return J({ error: eng.connected.reason, code: 'not_connected', engine_id: eng.id, vault_entry: eng.connected.vault_entry }, 409);
       const key = (body.owner.kind === 'piece' ? 'piece:' : 'studio:') + body.owner.id;
@@ -329,6 +330,17 @@ async function studioVideo(browser) {
     ? ok('within the limit: the estimate (' + usd + ', 2 clips joined, the limit) is shown BEFORE Render') : fail('estimate: ' + usd + ' / ' + (await estimateText(page)));
   const btn = await txt(page, '[data-eng-render-btn]');
   (!(await page.$('[data-eng-render-btn][disabled]')) && /Render · \$0\.8/.test(btn)) ? ok('Render is enabled and carries the price: "' + btn + '"') : fail('render button: ' + btn);
+
+  srv.quoteError = 'Higgsfield needs a shorter scene description before it can price this request; nothing was sent';
+  srv.log.length = 0;
+  await page.click('[data-eng-reprice]');
+  await waitEstimate(page, 'refused');
+  ((await estimateText(page)).includes(srv.quoteError) && (await page.$('[data-eng-render-btn][disabled]'))
+    && reqs(srv, 'POST', /\/engines\/renders$/).length === 0)
+    ? ok('a structured price refusal shows the plain reason, disables Render and submits nothing') : fail('quote refusal: ' + (await estimateText(page)));
+  srv.quoteError = null;
+  await page.click('[data-eng-reprice]');
+  await waitEstimate(page, 'ok');
 
   // Guard: the storyboard changed (price moved) after the user looked.
   srv.bump = 0.5;

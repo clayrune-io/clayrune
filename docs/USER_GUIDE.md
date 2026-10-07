@@ -791,6 +791,14 @@ an uploaded picture in your Higgsfield library; it spends no generation credits.
 If the generation response itself is unclear, check Higgsfield's dashboard
 before retrying: that paid call may have been accepted.
 
+If Higgsfield returns a setup or account requirement instead of a price,
+Clayrune shows the reason in plain words, such as missing reference media,
+more account credits, a plan requirement, or a choice between free generations
+and credits. Render stays unavailable until a price is returned. Clayrune does
+not follow suggested setup calls or purchase links automatically. If Higgsfield
+supplies no recognized explanation, the message says so; it does not invent a
+price. Server diagnostics record response shapes without vendor sales copy.
+
 Missing or unusable contracts explain what is unavailable; Clayrune does not
 drop a picture or invent an identifier. **Check it now** remains a separate,
 human-only connection verification.
