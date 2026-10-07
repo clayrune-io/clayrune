@@ -17,7 +17,6 @@ from urllib.parse import urlsplit, parse_qs
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from mc.blueprints import browser_routes as br
-import websocket
 
 
 def register(pid, name, command):
@@ -116,9 +115,8 @@ def main():
         assert session and not err, err
         wait_for(lambda: session.get('frame'), 'root frame arrives')
         root = session['root_target_id']
-        ver = json.load(urllib.request.urlopen(
-            f"http://127.0.0.1:{session['port']}/json/version", timeout=3))
-        ws = websocket.create_connection(ver['webSocketDebuggerUrl'], timeout=5)
+        # Either transport: a pipe session (the default) has no port to read.
+        ws = br._cdp_browser_conn(session, br._cdp_version(session), timeout=5)
         seq = 0
 
         def call(method, params=None, sid=None):
@@ -147,6 +145,10 @@ def main():
                 session['cmd_queue'].put(('Input.dispatchMouseEvent', {
                     'type': kind, 'x': 200, 'y': 200, 'button': 'left', 'clickCount': 1}))
 
+        # Measured 2026-10-07 on a pipe session: a click sent the moment the
+        # first frame lands never opened the popup (0/2); after a 1s settle,
+        # as browser_pane_ua.py does, 2/2. The pane opens it either way.
+        time.sleep(1)
         click()
         popup = wait_for(lambda: next((tid for tid, tab in list(session['tabs'].items())
             if tid != root and tab.get('url', '').endswith('/popup')), None),

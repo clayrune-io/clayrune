@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Browser pane passes Google's "may not be secure" check again
+
+- The CDP pipe transport (2026-10-05) made every pane tab report `navigator.webdriver === true`, so Google sign-in (including "Sign in with Google" popups on x.com) answered "Couldn't sign you in. This browser or app may not be secure." The launch now adds `--disable-blink-features=AutomationControlled`; the pipe is unchanged.
+- Measured on accounts.google.com with a made-up address: pipe 3/3 rejected, pipe plus flag 3/3 reached account lookup. Detail: `docs/BROWSER_PANE_GAPS.md`.
+- `tools/smoke/browser_pane_ua.py` had crashed on pipe sessions before its webdriver check; it now uses the session transport and fails without the flag.
+
 ## [2026-10-07] - Studio refreshes locked engine cards after vault unlock (MC-1065)
 
 - Studio shows one locked-vault message and unlock action per video/image card, even when connection status and pricing both refuse access.
