@@ -147,7 +147,14 @@ def logs(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _clean_flows():
+def _clean_flows(monkeypatch):
+    # Saving OAuth now discovers MCP schemas. Unscripted tests must never call a vendor.
+    from mc import desk_engines
+
+    def no_mcp(*args, **kwargs):
+        raise desk_engines.EngineError('engine', 'MCP discovery is not scripted in this test')
+
+    monkeypatch.setattr(desk_engines, '_mcp_post', no_mcp)
     yield
     with oauth._lock:
         servers = [f.get('listener') for f in oauth._flows.values()]
@@ -295,8 +302,22 @@ def test_the_provider_reporting_an_error_is_shown_not_exchanged(provider, vault)
     assert provider.to(HF_TOKEN) == [] and vault['writes'] == []
 
 
-def test_a_good_sign_in_is_stored_once_and_leaks_nothing(provider, vault, logs, capsys):
+def test_a_good_sign_in_is_stored_once_and_leaks_nothing(provider, vault, logs, capsys, monkeypatch, tmp_path):
+    from mc import desk, desk_engines
+    from mc.desk_connect import higgsfield_mcp_snapshot
+    monkeypatch.setattr(desk, 'STORE_PATH', tmp_path / 'desk.json')
+    discovery = []
+
+    def mcp(token, body, **kwargs):
+        assert vault['writes'] == ['oauth.higgsfield']  # capture follows the durable save
+        assert token == ACCESS_1
+        discovery.append(body['method'])
+        return {'tools': []} if body['method'] == 'tools/list' else {}
+
+    monkeypatch.setattr(desk_engines, '_mcp_post', mcp)
     out, q, status, page = _sign_in_higgsfield(provider)
+    assert discovery == ['initialize', 'notifications/initialized', 'tools/list']
+    assert higgsfield_mcp_snapshot.read()['untrusted_vendor_text'] is True
     assert status == 200 and 'signed in' in page.lower()
     form = provider.to(HF_TOKEN)[0]['form']
     assert form['grant_type'] == 'authorization_code' and form['code'] == 'the-code'

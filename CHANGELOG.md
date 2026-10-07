@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] — Higgsfield discovers model inputs automatically
+
+- Server-side Higgsfield OAuth saves capture the free tool list automatically; price checks and renders refresh missing or 24-hour-old snapshots. A small remote-engine snapshotter registry shares one capture at a time, and discovery has a 15-second RPC deadline, including SSE heartbeats. Logged discovery failures preserve the saved connection and permit text-only price checks to continue.
+- Runtime model descriptors derive picture evidence from structured, model-bound schemas. Missing, stale and ambiguous evidence explain the refusal; documented picture inputs remain explicitly blocked until the real upload contract is wired. No upload or paid generation is added, `use_unlim` remains false, and connection verification keeps its human gate. Details: spike section 11 and User Guide troubleshooting.
+
 ## [2026-10-06] — Higgsfield sign-in checks retain schema diagnostics
 
 - The existing OAuth verification follows tool-list pagination (50-page bound) and atomically saves selected generation, polling and media-related definitions under gitignored `data/desk/higgsfield_mcp_tools.json`. Snapshots mark vendor text untrusted, omit transport credentials/headers, and cap descriptions at 2000 characters; a write failure is logged without failing a successful probe. Incomplete or cyclic listings preserve the previous snapshot.
