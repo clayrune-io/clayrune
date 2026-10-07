@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Saved-connection model discovery (MC-1067, slice 1)
+
+- Studio lists discovered image/video models through independent read-only vendor adapters, with a scoped 24-hour cache outside project records and an explicitly labelled curated fallback.
+- Higgsfield sign-in can quote a saved storyboard or image description without media uploads or generation. Other services show price unknown; unsupported models and unknown-price services keep Render and scene-subset Render disabled. Discovery adds no submission permissions.
+- Higgsfield API-key discovery reports no verified list endpoint. HTTP contract, exact test commands and integration limits: `docs/desk_v1/MODEL_DISCOVERY.md`. Branch build only; no merge, push, restart or live settings changes.
+
 ## [2026-10-07] - Agents cannot rewrite project safety settings (MC-1076)
 
 - Project updates refuse agent writes to the eight explicit merge, worktree, code-sync and steward safety controls with HTTP 403 naming the keys. Mixed bodies are refused in full before any project or workspace side effect.

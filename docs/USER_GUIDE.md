@@ -805,6 +805,14 @@ no missing scene or paid call is retried automatically.
 
 ### Higgsfield storyboard pictures and pricing
 
+Studio's model picker reads the saved generation connection's catalogue for the
+selected image or video kind, cached for up to 24 hours. A failed catalogue read
+labels the curated fallback. New models may be explored and quoted, but Render
+and scene Render stay disabled until their submission support is wired. Higgsfield
+sign-in provides free text-only credit quotes without uploads. Services without a
+verified free quote show **Price unknown**; those Render controls stay disabled.
+Higgsfield API-key model discovery currently uses the labelled curated fallback.
+
 Clayrune reads Higgsfield's model/tool definitions automatically after saving a
 sign-in and on the next price check or Render when those definitions are missing
 or older than 24 hours. You do not need to press **Check it now** for discovery.

@@ -27,6 +27,7 @@ import { confirmationMatches, priceConfirmation, heldPriceConfirmation, renderSt
 import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.js';
 import { submissionHeld, renderNeedsPolling, recoveryActionHTML, bindRenderRecovery } from './desk-v1-render-recovery.js';
 import { wireSceneRenderPanel, sceneResultNote } from './desk-v1-render-scenes.js';
+import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } from './desk-v1-model-discovery.js';
 
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -232,7 +233,7 @@ import { wireSceneRenderPanel, sceneResultNote } from './desk-v1-render-scenes.j
         `<option value="${esc(m.model_id)}"${m.model_id === p.model.model_id ? ' selected' : ''}>${esc(m.label)}${m.status === 'preview' ? ' · preview' : ''}</option>`).join('')}</select></label>
       <label>Shape <select class="desk-v1-cap-select" data-eng-ratio>${ratios.map((r) =>
         `<option value="${esc(r)}"${r === st.ratio ? ' selected' : ''}>${esc(r)}</option>`).join('')}</select></label>
-    </div>`;
+    </div>${discoveryNote(p.engine, esc)}`;
   }
 
   // The picture strip on New image: library pictures to start from or refer to. A
@@ -258,6 +259,7 @@ import { wireSceneRenderPanel, sceneResultNote } from './desk-v1-render-scenes.j
     if (st.estimateError) return `<div class="desk-v1-engine-est" data-eng-estimate data-state="refused"><span data-eng-reason>${_errorHTML(st.estimateError)}</span></div>`;
     const e = st.estimate;
     if (!e) return '<div class="desk-v1-engine-est" data-eng-estimate data-state="none"></div>';
+    if (e.price_unknown) return `<div class="desk-v1-engine-est" data-eng-estimate data-state="unknown">${esc(e.note || 'Price unknown.')}</div>`;
     const lines = [];
     if (e.estimate && e.estimate.note) lines.push(e.estimate.note);
     if (e.plan) lines.push(`${e.plan.clips} clip${e.plan.clips === 1 ? '' : 's'}${e.plan.crop ? ', then cropped to 1:1' : ''}${e.plan.clips > 1 && !e.plan.crop ? ', then joined' : ''}`);
@@ -322,7 +324,7 @@ import { wireSceneRenderPanel, sceneResultNote } from './desk-v1-render-scenes.j
       const running = st.render && !_TERMINAL.includes(st.render.status);
       const busy = running || st.submitting || st.scenesSubmitting;
       const conn = p.engine.connected || {};
-      const canRender = conn.ready && !busy && !submissionHeld(st.render) && !st.acknowledging && !st.estimating && st.estimate && st.estimate.estimate && !st.estimate.refusal && !st.estimateError;
+      const canRender = conn.ready && !discoveryBlocksRender(p) && !busy && !submissionHeld(st.render) && !st.acknowledging && !st.estimating && st.estimate && st.estimate.estimate && !st.estimate.refusal && !st.estimateError;
       host.innerHTML = `<div class="desk-v1-engine-panel" data-eng-panel data-kind="video">
         <div class="desk-v1-engine-head">Render with an engine</div>
         ${_pickersHTML(p, st, 'video')}
@@ -372,7 +374,8 @@ import { wireSceneRenderPanel, sceneResultNote } from './desk-v1-render-scenes.j
       st.estimating = true; st.estimateError = null; st.error = null;
       _timer = setTimeout(async () => {
         try {
-          const out = await _api('POST', '/api/desk/engines/render/estimate', body());
+          const out = await discoveryPrice(_api, _pick(currentEngines || engines, 'video', st), body(), 'video')
+            || await _api('POST', '/api/desk/engines/render/estimate', body());
           if (st.seq !== seq || !alive()) return;
           st.estimate = out; st.estimateError = null;
           st.priceBase = out;
@@ -389,7 +392,7 @@ import { wireSceneRenderPanel, sceneResultNote } from './desk-v1-render-scenes.j
 
     watchEngineVault(host, { alive, state: st, paint, estimate,
       clearTimer: () => clearTimeout(_timer), getEngines: () => currentEngines,
-      loadEngines: () => list(opts.projectId, { force: true }),
+      loadEngines: () => list(opts.projectId, { force: true }).then(es => studioModels(_api, es, 'video', opts.projectId)),
       setEngines: (engines) => { currentEngines = engines; _pick(engines, 'video', st); },
     });
 
@@ -462,7 +465,7 @@ import { wireSceneRenderPanel, sceneResultNote } from './desk-v1-render-scenes.j
     };
 
     host.innerHTML = '<div class="desk-v1-engine-panel" data-eng-panel><div class="desk-v1-stub-empty">Loading engines…</div></div>';
-    list(opts.projectId).then(async (engines) => {
+    list(opts.projectId).then(es => studioModels(_api, es, 'video', opts.projectId)).then(async (engines) => {
       if (!alive()) return;
       // What this owner last rendered survives a reload: show it (and keep polling a running one).
       if (!st.render && !st.loadedRender) {
@@ -482,7 +485,8 @@ import { wireSceneRenderPanel, sceneResultNote } from './desk-v1-render-scenes.j
         request: (scene_ids) => body({ scene_ids }), getRender: () => st.render,
         busy: () => !!(st.submitting || st.acknowledging || submissionHeld(st.render)
           || st.render && !_TERMINAL.includes(st.render.status)
-          || !(_pick(currentEngines, 'video', st).engine?.connected?.ready)),
+          || !(_pick(currentEngines, 'video', st).engine?.connected?.ready)
+          || discoveryBlocksRender(_pick(currentEngines, 'video', st))),
         onBusy: (on) => { st.scenesSubmitting = on; paint(currentEngines); },
         onRender: (render) => { st.render = render; if (opts.onChange) opts.onChange(render); paint(currentEngines); poll(currentEngines); },
       });
@@ -515,7 +519,7 @@ import { wireSceneRenderPanel, sceneResultNote } from './desk-v1-render-scenes.j
       const running = j && !_TERMINAL.includes(j.status) && j.status !== 'failed';
       const busy = running || st.submitting;
       const conn = p.engine.connected || {};
-      const canGo = conn.ready && !busy && !st.estimating && st.estimate && st.estimate.estimate && !st.estimate.refusal && !st.estimateError && st.prompt.trim();
+      const canGo = conn.ready && !discoveryBlocksRender(p) && !busy && !st.estimating && st.estimate && st.estimate.estimate && !st.estimate.refusal && !st.estimateError && st.prompt.trim();
       const outs = (j && j.outputs) || [];
       // Replacing a focused textarea can fire change while innerHTML is removing
       // it. oninput already saved its draft; avoid a nested paint during recovery.
@@ -567,7 +571,8 @@ import { wireSceneRenderPanel, sceneResultNote } from './desk-v1-render-scenes.j
       st.estimating = true; st.estimateError = null; st.error = null;
       _timer = setTimeout(async () => {
         try {
-          const out = await _api('POST', '/api/desk/engines/estimate', body());
+          const out = await discoveryPrice(_api, _pick(currentEngines || engines, 'image', st), body(), 'image')
+            || await _api('POST', '/api/desk/engines/estimate', body());
           if (st.seq !== seq || !alive()) return;
           st.estimate = out; st.estimateError = null;
         } catch (e) {
@@ -582,7 +587,7 @@ import { wireSceneRenderPanel, sceneResultNote } from './desk-v1-render-scenes.j
 
     watchEngineVault(host, { alive, state: st, paint, estimate,
       clearTimer: () => clearTimeout(_timer), getEngines: () => currentEngines,
-      loadEngines: () => list(opts.projectId, { force: true }),
+      loadEngines: () => list(opts.projectId, { force: true }).then(es => studioModels(_api, es, 'image', opts.projectId)),
       setEngines: (engines) => { currentEngines = engines; _pick(engines, 'image', st); },
     });
 
@@ -618,7 +623,7 @@ import { wireSceneRenderPanel, sceneResultNote } from './desk-v1-render-scenes.j
     };
 
     host.innerHTML = '<div class="desk-v1-engine-panel" data-eng-panel><div class="desk-v1-stub-empty">Loading engines…</div></div>';
-    list(opts.projectId).then((engines) => {
+    list(opts.projectId).then(es => studioModels(_api, es, 'image', opts.projectId)).then((engines) => {
       if (!alive()) return;
       _pick(engines, 'image', st);
       currentEngines = engines;
