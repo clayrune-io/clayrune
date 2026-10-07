@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Character-specific context rollover limits (MC-1072)
+
+- `context_rollover_by_character` lets a character roll earlier or later than the global token limit. Missing or invalid overrides use the global value; active limits clamp to 60,000 tokens, and the existing global disable setting remains supported.
+- Claude and other-provider token checks use the same resolver; mid-turn audit logs record the effective limit. No per-character values are included in repo config. Validation and integration handoff: `docs/ROLLOVER_THRESHOLDS.md`. Local branch only; no merge, push or restart.
+
 ## [2026-10-07] - Storyboard chat keeps scene instructions whole when they fit (MC-1069)
 
 - Removed the fixed 600-character limit for unselected scene instructions. Boards within the 60,000-character scene-text budget are sent whole, so ordinary boards can be edited through chat.

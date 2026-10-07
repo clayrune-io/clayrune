@@ -174,6 +174,30 @@ def test_token_trigger_rolls_live_session_and_logs_context_measurement(env, monk
         f'expected exactly one Auto-fresh activity line for this roll, got {matching}'
 
 
+def test_character_limit_rolls_live_followup_below_global(env, monkeypatch):
+    ar = env['ar']
+    monkeypatch.setitem(ar.state.CONFIG, 'context_rollover_by_character',
+                        {'global:dave': 120_000})
+    live = _session('dave-session', context_tokens=130_000)
+    live['character'] = {'name': 'dave', 'scope': 'global'}
+    old_proc = live['proc']
+    env['sessions']['dave-session'] = live
+    spawned = []
+
+    def popen(cmd, **kwargs):
+        spawned.append(cmd)
+        return _Proc(pid=999999)
+
+    monkeypatch.setattr(ar.subprocess, 'Popen', popen)
+    response = env['client'].post('/api/project/p1/agent/followup', json={
+        'session_id': 'dave-session', 'message': 'continue'})
+    assert response.status_code == 200
+    assert _wait(lambda: bool(spawned))
+    assert '-r' not in spawned[0]
+    assert old_proc.stdin.written == []
+    assert any('130k tokens' in line for line in env['activity_lines'])
+
+
 def test_under_threshold_with_small_transcript_stays_on_stdin(env, monkeypatch):
     """Control: below the token threshold AND under the byte cap — must not
     roll, matches pre-existing undersized behavior."""

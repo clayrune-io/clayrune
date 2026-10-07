@@ -415,6 +415,14 @@ Two layers of context every agent sees:
   nothing auto-restarts. Tunable in Settings:
   `long_session_advisory_enabled` (on/off), `long_session_advisory_turns`
   (the threshold, default 25).
+- **Character context limits** — automatic context rollover can use a
+  character-specific token limit through `context_rollover_by_character`
+  in the configuration API (`scope:name` keys). Missing or invalid entries
+  use the global `context_rollover_tokens` value, default 200,000. Active
+  limits have a 60,000-token floor. Remove an entry to restore the global
+  limit; the existing global `0` disable setting is still supported.
+  This has no dedicated UI editor; config edits keep their existing passcode
+  requirement. Details: `docs/ROLLOVER_THRESHOLDS.md`.
 - **Shared Rules** (`SHARED_RULES.md`) — sidebar entry → injects rules
   into every agent's system prompt across every project. Use for stuff like
   *"never commit without my approval"*, *"always run tests before

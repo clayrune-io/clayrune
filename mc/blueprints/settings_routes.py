@@ -161,7 +161,7 @@ _CONFIG_EDITABLE_KEYS = {
     # Read live by the periodic loop and the startup pass — no respawn needed.
     'browser_pane_leak_sweep_enabled',
     'long_session_advisory_enabled', 'long_session_advisory_turns',
-    'context_rollover_tokens', 'midturn_rollover_enabled',
+    'context_rollover_tokens', 'context_rollover_by_character', 'midturn_rollover_enabled',
     # Per-agent skill scoping (mc/skill_scoping.py). Read at each spawn.
     'agent_skill_scoping_enabled',
     # Keep-awake wake lock (mc/wake_lock.py). Reconciler reads both live —
