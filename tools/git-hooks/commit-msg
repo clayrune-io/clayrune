@@ -1,0 +1,24 @@
+#!/bin/sh
+# ── Clayrune merge review gate (MC-1075) ─────────────────────────────────────
+# Second half of the gate. When pre-merge-commit rejects a merge git leaves the
+# merge half-done (MERGE_HEAD set, index merged), and `git commit --no-edit`
+# then finishes it without asking pre-merge-commit again. This hook runs the
+# same check whenever a commit is concluding a merge, so that path is closed.
+#
+# Does nothing for an ordinary commit: it returns at once when MERGE_HEAD does
+# not exist. OPT-IN, installed together with pre-merge-commit by
+# tools/install-merge-review-hook.sh. Source of truth: tools/git-hooks/commit-msg.
+#
+# Limits (docs/MERGE_REVIEW_GATE.md): `git commit --no-verify` skips it. It is
+# a guard against forgetting, not a lock.
+CHECK="__CHECK_SCRIPT__"
+
+git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 || exit 0
+
+py="${CLAYRUNE_PYTHON:-}"
+[ -n "$py" ] || py=$(command -v python 2>/dev/null || command -v python3 2>/dev/null)
+if [ -z "$py" ]; then
+  echo "merge review gate: no python on PATH (set CLAYRUNE_PYTHON); refusing the merge commit." >&2
+  exit 1
+fi
+exec "$py" "$CHECK" --merge-head --respect-setting --repo "$(git rev-parse --show-toplevel)"

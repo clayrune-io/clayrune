@@ -1,0 +1,23 @@
+#!/bin/sh
+# ── Clayrune merge review gate (MC-1075) ─────────────────────────────────────
+# Refuses a merge commit when the branch being merged is a clayrune/agent/*
+# branch whose current tip has no `pass` review on record (the check reads
+# MERGE_HEAD, or GIT_REFLOG_ACTION when git has not written it yet). The project's own
+# merge_requires_review setting stays the single on/off switch.
+#
+# OPT-IN. Nothing installs this for you: run tools/install-merge-review-hook.sh.
+# Source of truth: tools/git-hooks/pre-merge-commit; the installer fills in the
+# check-script path below.
+#
+# Limits (docs/MERGE_REVIEW_GATE.md): git does not run pre-merge-commit for a
+# fast-forward merge, and `git merge --no-verify` skips it. It is a guard
+# against forgetting, not a lock.
+CHECK="__CHECK_SCRIPT__"
+
+py="${CLAYRUNE_PYTHON:-}"
+[ -n "$py" ] || py=$(command -v python 2>/dev/null || command -v python3 2>/dev/null)
+if [ -z "$py" ]; then
+  echo "merge review gate: no python on PATH (set CLAYRUNE_PYTHON); refusing the merge." >&2
+  exit 1
+fi
+exec "$py" "$CHECK" --merge-head --respect-setting --repo "$(git rev-parse --show-toplevel)"

@@ -1591,6 +1591,11 @@ def _worktree_merge_back_on_end(session, _attempt=0):
             _log_agent_activity(
                 pid, f'Agent worktree needs manual merge ({status}): '
                      f'branch {_agent_worktree.branch_name(sid)} — {detail[:120]}')
+        elif status == 'awaiting_review':
+            # MC-1075 merge review gate: branch and worktree stay; nothing merged.
+            _log_agent_activity(
+                pid, f'Agent branch awaiting review ({sid[:8]}): '
+                     f'branch {_agent_worktree.branch_name(sid)} — {detail[:160]}')
     except Exception as e:
         _log(f"[worktree] merge-back failed for {sid[:12]}: {e}")
 

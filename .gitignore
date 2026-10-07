@@ -28,6 +28,8 @@ data/media/*
 # Archived agent-worktree _scratch/ (MC-1029): copied out before a worktree is
 # deleted. Untracked here would make the main tree 'dirty' and block merge-back.
 data/agent_scratch/
+# Merge review records (MC-1075): who reviewed which commit on this machine.
+data/merge_reviews/
 !data/projects/.gitkeep
 !data/uploads/.gitkeep
 !data/media/.gitkeep

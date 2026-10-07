@@ -48,6 +48,7 @@ import threading
 from pathlib import Path
 from typing import Callable, Iterable
 
+import mc.merge_review_gate as _review_gate
 import mc.project_sync as _sync
 
 # ── Injected helpers (set by register()) ────────────────────────────────────
@@ -495,6 +496,10 @@ def merge_back(project: dict, session_id: str, target_ref: str = ''):
                    human. Never auto-resolved.
       'skipped'  — base tree busy/unmergeable (or a hivemind worker); branch
                    preserved
+      'awaiting_review' — the project's merge_requires_review gate is on and
+                   the branch tip has no `pass` review on record (MC-1075);
+                   nothing merged, branch and worktree preserved. A review of
+                   an older SHA does not count.
     """
     base = project.get('project_path') or ''
     wt = worktree_path(project, session_id)
@@ -516,6 +521,19 @@ def merge_back(project: dict, session_id: str, target_ref: str = ''):
     ahead, _ = _sync._ahead_behind(wts, 'HEAD', ref)
     if ahead <= 0:
         return 'nothing', 'no new commits'
+    branch = branch_name(session_id)
+    merge_ref = branch
+    # Review gate (MC-1075): only for a landing on the project's base branch.
+    # An explicit target_ref is the integration path's own call (see above).
+    if _review_gate.enabled(project) and ref == _base_ref(project):
+        tip = _review_gate.branch_tip(project, branch)
+        held = _review_gate.hold_reason(project.get('id', ''), branch, tip)
+        if held:
+            _plog(f"[worktree] {branch} HELD for review: {held}")
+            return 'awaiting_review', held
+        # Merge the exact commit that was reviewed, not whatever the branch
+        # name points at a moment later.
+        merge_ref = tip
     # Merge happens in the MAIN tree, so it must be clean — never fight the
     # user's own uncommitted edits.
     if _sync._dirty(base):
@@ -523,8 +541,10 @@ def merge_back(project: dict, session_id: str, target_ref: str = ''):
     cur = _sync.git_run(base, ['rev-parse', '--abbrev-ref', 'HEAD'])[1].strip()
     if cur != ref:
         return 'skipped', f'main tree is on {cur}, not {ref}'
-    branch = branch_name(session_id)
-    ok, msg = _sync.git_run(base, ['merge', '--no-edit', branch], timeout=120)
+    args = ['merge', '--no-edit', merge_ref]
+    if merge_ref != branch:
+        args[2:2] = ['-m', f"Merge branch '{branch}' (reviewed {merge_ref[:8]})"]
+    ok, msg = _sync.git_run(base, args, timeout=120)
     if ok:
         _plog(f"[worktree] merged {branch} into {ref}")
         if _log_activity:
@@ -867,6 +887,13 @@ def gc_stale(project: dict, live_session_ids, merge_first: bool = True,
                 out['merged'] += 1
                 if use_cache and cache.pop(sid, None) is not None:
                     cache_dirty = True
+            elif status == 'awaiting_review':
+                # Held by the merge review gate: never remove, and never cache
+                # the verdict -- a pass recorded later changes it without the
+                # worktree's HEAD or dirty flag moving.
+                out['preserved'].append(sid)
+                _plog(f"[worktree] gc PRESERVED {sid[:12]} — awaiting review")
+                continue
         # remove() refuses (force=False) when work would be lost.
         ok, msg = remove(project, sid, delete_branch=True)
         if ok:
