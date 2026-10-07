@@ -6,11 +6,12 @@ Agents may call this (a review is a verdict, not a capability grant), so the
 one thing it has to get right is that a builder cannot pass its own work. The
 reviewer identity therefore comes from caller attribution -- the OS-level
 process-tree walk in `mc.caller_attribution` -- never from the request body.
-All the record rules live in `mc.merge_review_gate`.
+All the record rules live in `mc.merge_review_gate`; reviewer independence by
+dispatch lineage (a child of the owner is not a reviewer) in `mc.review_lineage`.
 """
 from flask import Blueprint, jsonify, request
 
-from mc import agent_worktree, caller_attribution, merge_review_gate as gate, state
+from mc import agent_worktree, caller_attribution, merge_review_gate as gate, review_lineage, state
 from mc.blueprints import project_routes
 from mc.core import _log
 
@@ -49,6 +50,7 @@ def record_review(project_id, session_id):
         return jsonify({'error': 'project not found'}), 404
     try:
         reviewer, how = _reviewer()
+        review_lineage.check(reviewer, session_id)
         sess = state.agent_sessions.get(reviewer) or {}
         character = (sess.get('character') or {}).get('agent_name') or ''
         rec = gate.record(project, agent_worktree.branch_name(session_id),

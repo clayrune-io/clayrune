@@ -13,7 +13,8 @@ with verdict `pass`.
 | Record route | `POST /api/project/<pid>/agent/<sid>/review` in `mc/blueprints/merge_review_routes.py` |
 | Hand-merge check | `tools/merge-review-check.py` |
 | Opt-in hooks | `tools/git-hooks/pre-merge-commit` + `tools/git-hooks/commit-msg`, installed together by `tools/install-merge-review-hook.sh` |
-| Tests | `tests/test_merge_review_gate.py` |
+| Reviewer lineage check | `mc/review_lineage.py` |
+| Tests | `tests/test_merge_review_gate.py`, `tests/test_review_lineage.py` |
 
 ## Setting
 
@@ -51,6 +52,26 @@ corrupt store (it is kept as `.corrupt`).
   detached helper process, so self-review cannot be ruled out. Reviews are
   recorded by attributed reviewer sessions; there is no human path through this
   route (Dave decision, MC-1075 round 2).
+
+### Reviewer lineage (MC-1077)
+
+Not being the owner is not independence: a child (or grandchild) the builder
+dispatched is the author's own. `mc/review_lineage.py` walks the reviewer's
+dispatch ancestry before `gate.record()` and refuses (403) when the branch owner
+is anywhere in it. Spawners are read from the live session's `_spawned_by` and
+the agent-log row via `agent_routes._durable_spawner_of_record` (the immutable
+`dispatched_by_session_id`; the re-armable `_notify_session` /
+`spawned_by_session_id` callback target is not lineage). Logs of every project
+are searched, since a spawner can sit in another project.
+
+Fails closed: a reviewer or ancestor that is neither live nor in a readable
+agent log, an unreadable log hiding one, a missing data dir, or a chain over
+200 sessions all refuse with 403 "cannot establish the dispatch lineage".
+
+Limit (not closed here): the recorded spawner is the `notify_session` the
+dispatching caller typed (`agent_dispatch`), not the OS-attributed caller. A
+builder that dispatches a reviewer without naming itself leaves no lineage.
+Hivemind workers (`hm_*`) are not linked by `_spawned_by` either.
 
 ## merge_back behaviour
 
