@@ -137,11 +137,31 @@ def verdict_for(project_id: str, branch: str, sha: str) -> str:
     return rec['verdict'] if rec else NONE
 
 
+def rejected_by(project_id: str, sha: str) -> str:
+    """The branch whose review of exactly `sha` requested changes, '' when no
+    review of it did. Looked up across every branch name: a rejection is of
+    the commit, so renaming or recreating the branch, or reviewing the same
+    commit under a second branch, must not leave it behind."""
+    path = store_path(project_id)
+    if path is None or not sha:
+        return ''
+    sha = sha.lower()
+    for rec in _read(path).values():
+        if (isinstance(rec, dict) and rec.get('sha') == sha
+                and rec.get('verdict') == CHANGES_REQUESTED):
+            return str(rec.get('branch') or '?')
+    return ''
+
+
 def hold_reason(project_id: str, branch: str, tip: str) -> str:
-    """Why the merge is held, '' when the tip has a pass on record. One place
+    """Why the merge is held, '' when the tip has a pass on record and no
+    review of that commit, under any branch name, requested changes. One place
     for the wording so merge_back, the CLI and the hook say the same thing."""
     if not tip:
         return f'cannot resolve the tip of {branch}'
+    other = rejected_by(project_id, tip)
+    if other and other != branch:
+        return f'review of {other} at {tip[:8]} requested changes on this commit'
     v = verdict_for(project_id, branch, tip)
     if v == PASS:
         return ''

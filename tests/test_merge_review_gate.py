@@ -601,6 +601,24 @@ def test_recreating_an_agent_branch_at_a_rejected_commit_does_not_launder_it(pro
 
 
 @needs_sh
+def test_renaming_the_rejecting_branch_does_not_let_another_pass_through(project, repo, tmp_path):
+    """Round 4: B was moved onto A's commit and passed; A rejected it. Renaming
+    A (or its creation entry expiring from the reflog) made A look forked from
+    the commit, so only B owned it and B's pass let it land."""
+    _hooked_repo(repo, tmp_path, merge_requires_review=True)
+    _, c = _agent(project, 'hk14')
+    w.create(project, 'hk15')
+    _git(repo, 'update-ref', 'refs/heads/' + w.branch_name('hk15'), c)
+    _review(project, 'hk15', c)
+    _review(project, 'hk14', c, verdict='changes_requested')
+    _commit(repo, 'X = 13\n', name='other.py')
+    renamed = 'clayrune/agent/renamed'
+    _git(repo, 'branch', '-m', w.branch_name('hk14'), renamed)
+    m = _run(repo, 'merge', '--no-edit', renamed)
+    assert m.returncode != 0 and 'BLOCKED' in m.stderr, (m.stdout, m.stderr)
+
+
+@needs_sh
 def test_merging_an_ordinary_branch_is_not_gated(project, repo, tmp_path):
     """Base commits are contained in every agent branch; only work not yet on
     the base may trigger the gate."""

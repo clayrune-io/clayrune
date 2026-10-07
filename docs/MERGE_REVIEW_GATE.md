@@ -114,6 +114,15 @@ non-agent branch other than `HEAD` also holds it; otherwise every containing
 agent branch owns it, so deleting and recreating a branch at its own rejected
 commit does not launder it. A missing reflog counts as owning (fails closed).
 
+A rejection is of the commit, not the branch name (round 5): any
+`changes_requested` on record for that exact SHA, under **any** branch name,
+holds it, whether or not that branch still exists or still counts as an owner.
+Ownership comes from the reflog, which expires, and a branch can be renamed or
+deleted; without this, renaming the rejecting branch let a second branch's
+pass on the same commit land it. `merge_back` (`gate.hold_reason`) applies the
+same lookup. A rejected commit stays rejected until that same branch records a
+pass on it or the agent commits a fix.
+
 **Client-side hooks are advisory.** `git merge --no-verify` and
 `git commit --no-verify` skip them, and anyone can delete or never install them.
 The real controls are the server-side `merge_back` hold, and Dave running

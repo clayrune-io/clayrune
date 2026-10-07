@@ -149,7 +149,13 @@ def commit_hold_reason(project_id: str, sha: str, owners: list[str]) -> str:
     """'' when some owning agent branch has a pass for exactly `sha` and none
     requested changes on it. A commit an agent branch was forked FROM (another
     agent's reviewed tip) is owned by both branches; the review under the
-    branch that produced it is enough."""
+    branch that produced it is enough. A rejection of `sha` under ANY branch
+    name holds it, owner or not: the reflog that decides ownership can expire,
+    and a branch can be renamed or deleted, so ownership alone would let one
+    branch's pass outvote another's standing rejection of the same commit."""
+    other = gate.rejected_by(project_id, sha)
+    if other:
+        return f'review of {other} at {sha[:8]} requested changes on this commit'
     verdicts = {b: gate.verdict_for(project_id, b, sha) for b in owners}
     rejected = [b for b, v in verdicts.items() if v == gate.CHANGES_REQUESTED]
     if rejected:
