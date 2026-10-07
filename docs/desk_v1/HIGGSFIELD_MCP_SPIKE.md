@@ -630,3 +630,35 @@ and a server-run free `get_cost` proof with a picture slot declared and no uploa
 Do not infer that the vendor requires an upload merely because that proof is
 missing. Recommended next implementation is server-only read-only contract
 capture/probing, keeping credentials in the server and all human gates intact.
+
+### Capture revision 2: retain the missing definitions
+
+The snapshot writer now explicitly includes `models_explore`, regardless of
+description keywords, and retains each selected tool's `outputSchema` when it
+is an object. Missing/malformed output schemas stay absent; no response contract
+is inferred. The snapshot records `capture_version: 2`. The next ordinary
+save/price/render discovery upgrades an older capture even when its timestamp
+is less than 24 hours old; successful revision-2 captures keep the existing TTL.
+Discovery still sends only initialize, initialized and paginated tools/list.
+
+This is the capture prerequisite, **not completed picture wiring**. Dave's
+follow-up permits tool listing and free cost/quote probes only, with no upload
+or generation during discovery or pricing. Obtaining the selected model's
+`medias[].roles` requires the separate `models_explore` tool call; its results
+are not in tools/list. That call needs clarification under the stated probe
+limit before adding it. Upload output parsing can follow Dave's authorized
+fail-closed first-human-render path when output schemas are absent. No synthetic
+upload is needed or authorized. A text-only quote fallback is authorized only
+after a free picture-slot quote establishes that an identifier is required.
+
+After integration and Ron's restart, one ordinary price check refreshes the
+capture. Inspect revision 2 and the model catalogue/upload output definitions
+in the gitignored snapshot; a price check with a picture will still refuse at
+this checkpoint. No live quote, upload, generation or UI success is claimed.
+
+Revision-2 verification: `python -m pytest tests/test_desk_engines.py
+tests/test_desk_connect_mcp.py tests/test_desk_connect_mcp_followups.py
+tests/test_higgsfield_mcp_snapshot.py tests/test_desk_engine_schemas.py -o
+addopts='' -q` reports **251 passed in 16.28s**. Basic Pyright for
+`mc/desk_connect/higgsfield_mcp_snapshot.py` and `mc/desk_engine_schemas.py`
+reports **0 errors**. No frontend code changed; no browser smoke was run.

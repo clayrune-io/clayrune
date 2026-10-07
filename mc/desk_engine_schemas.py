@@ -100,6 +100,10 @@ def ensure(engine_id: str, *, token: str | None = None, project_id: str | None =
     if entry is None:
         return None
     snapshot = _read(entry, engine_id)
+    if engine_id == 'higgsfield_mcp':
+        from mc.desk_connect.higgsfield_mcp_snapshot import CAPTURE_VERSION
+        # Earlier, even fresh snapshots discarded output schemas and the catalogue tool.
+        force = force or not snapshot or snapshot.get('capture_version') != CAPTURE_VERSION
     if not force and fresh(snapshot):
         return snapshot
     # Another request never waits behind discovery; use the previous observation.

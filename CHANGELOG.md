@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] - Higgsfield capture retains catalogue and output contracts
+
+- Diagnostic captures retain the `models_explore` definition and declared output schemas, which the original filter discarded. A capture-version marker makes the next discovery upgrade old snapshots without waiting for their 24-hour expiry.
+- Capture remains tools/list only; this prerequisite does not enable picture pricing or rendering. Model-specific catalogue results still need a separately authorized read. Details: Higgsfield spike section 12.
+
 ## [2026-10-06] - Desk Studio agent chat: send, text size, large view
 
 - The ask box now empties the moment Enter sends (the pending "You" turn shows the message); it stays disabled until the reply is in, and a failed send puts the typed text back with the error.

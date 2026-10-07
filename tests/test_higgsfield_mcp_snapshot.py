@@ -118,6 +118,27 @@ def test_empty_list_replaces_previous_snapshot(capture_env):
     assert json.loads(path.read_text(encoding='utf-8'))['tools'] == []
 
 
+def test_catalogue_and_declared_output_schemas_survive_capture_without_calls(capture_env):
+    from mc.desk_connect import higgsfield_mcp_snapshot as snapshot
+    path, calls, fake = capture_env
+    output = {'type': 'object', 'properties': {'media_id': {'type': 'string'},
+                                             'upload_url': {'type': 'string'}}}
+    fake([{'tools': [
+        {'name': 'models_explore', 'inputSchema': {'type': 'object'}, 'description': 'catalogue'},
+        {'name': 'media_upload', 'inputSchema': {}, 'outputSchema': output,
+         'headers': {'Authorization': TOKEN}},
+        {'name': 'media_confirm', 'inputSchema': {}, 'outputSchema': None},
+    ]}])
+    assert HiggsfieldProvider().verify('oauth').ok is True
+    doc = json.loads(path.read_text(encoding='utf-8'))
+    assert doc['capture_version'] == snapshot.CAPTURE_VERSION
+    assert [t['name'] for t in doc['tools']] == ['models_explore', 'media_upload', 'media_confirm']
+    assert doc['tools'][1]['outputSchema'] == output
+    assert 'outputSchema' not in doc['tools'][2]
+    assert TOKEN not in path.read_text(encoding='utf-8')
+    assert [c['method'] for c in calls] == ['initialize', 'notifications/initialized', 'tools/list']
+
+
 def test_endless_unique_cursors_are_bounded_without_writing_partial_schemas(capture_env):
     path, calls, fake = capture_env
     fake([{'tools': [], 'nextCursor': f'page-{n}'} for n in range(50)])
