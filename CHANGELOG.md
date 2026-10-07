@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Saved-connection model discovery (MC-1067, slice 1)
+
+- Studio lists discovered image/video models through independent read-only vendor adapters, with a scoped 24-hour cache outside project records and an explicitly labelled curated fallback.
+- Higgsfield sign-in can quote a saved storyboard or image description without media uploads or generation. Other services show price unknown; unsupported models and unknown-price services keep Render and scene-subset Render disabled. Discovery adds no submission permissions.
+- Higgsfield API-key discovery reports no verified list endpoint. HTTP contract, exact test commands and integration limits: `docs/desk_v1/MODEL_DISCOVERY.md`. Branch build only; no merge, push, restart or live settings changes.
+
 ## [2026-10-07] - Browser status tolerates saved profile names after MC-1079 (MC-1074 review)
 
 - Browser connection Save and Check reuse the browser's name rule, including dotted names up to 64 characters and the `..` guard. Generic setup follows the configured shared profile default.

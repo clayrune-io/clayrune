@@ -302,6 +302,8 @@ def _credential(vault_entry: str, secret_label: str, hint: str, url: str, *,
 
 # `kind` of the engine's auth + where its credential lives. Two-part entries
 # (Higgsfield) read the username half through `secrets_store.get_username`.
+# Curated labels and known submission contracts. The read-only discovery route
+# is the account catalogue; these entries are its explicitly labelled fallback.
 _ENGINES: list[EngineDescriptor] = [
     EngineDescriptor(
         id='higgsfield_mcp', label='Higgsfield (sign in)',
@@ -1460,6 +1462,7 @@ def list_engines(project_id: str | None = None) -> list[dict]:
     out = []
     for e in _ENGINES:
         d = e.public()
+        d['model_discovery'] = True
         d['models'] = [(get_model(e.id, m.model_id) or m).public() for m in e.models]
         d['connected'] = connection(e.id, project_id)
         d['job_limit_usd'] = None if e.currency == 'credits' else limits.get(e.id)

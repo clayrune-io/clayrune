@@ -2302,6 +2302,8 @@ _desk_publish.RECEIPTS_PATH = DESK_RECEIPTS_PATH
 import mc.desk_engines as _desk_engines  # noqa: E402
 _desk_engines.JOBS_PATH = DESK_ENGINE_JOBS_PATH
 _desk_engines.UPLOADS_ROOT = UPLOADS_DIR
+from mc.blueprints import desk_model_discovery_routes as _bp_desk_model_discovery
+app.register_blueprint(_bp_desk_model_discovery.bp)
 
 
 # ── Workflow builder (docs/WORKFLOW_BUILDER_SPEC.md, MC-871) ─────────────────
