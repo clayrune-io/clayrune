@@ -15,14 +15,14 @@
 // A turn is the agent's PROSE. This version changes nothing by itself: when the
 // agent proposes pieces, times or a placement the SERVER saves them as suggestions
 // (the existing M10 store) and the answer says so; the chip under the reply and the
-// status line are written from that answer, never by this file. The box empties on send and a failed
-// send puts the text back with the reason. The thread is saved with the campaign on the server,
+// status line are written from that answer, never by this file. The box empties on send and a
+// failed send puts the text back with the reason. The thread is saved with the campaign on the server,
 // so a reload shows it; it is also kept here per campaign so a repaint of the box
 // (every selection change repaints it) does not lose it, nor the draft, nor a turn
-// still in flight. A shared text-size / pop-out chrome for the thread (desk-v1-chat-chrome.js,
-// built for Studio) is not used here yet: when it lands, wrap `[data-camp-chat]` in `_html`
-// with it; the thread host is `[data-chat-thread]`. Live Desk only: the sample (demo) campaigns have no agent behind
-// them, so `mount` returns false and the old box stays.
+// still in flight. The text-size strip and the pop-out large view come from the shared
+// desk-v1-chat-chrome.js (barHTML in the markup, attach on mount), as in the Studio thread;
+// pop-out lifts this same element, so a send from it lands in the docked thread.
+// Live Desk only: the sample (demo) campaigns have no agent behind them, so `mount` returns false and the old box stays.
 (function () {
   const INPUT_ID = 'desk-v1-camp-posy-input';   // desk-v1-how.js's Suggest button looks for this id
   const threads = {};   // campaignId -> { turns, loaded, loading, pending, draft }
@@ -67,10 +67,11 @@
   function _html(opts) {
     const name = esc(opts.agentName);
     return `<div class="desk-v1-chat desk-v1-camp-chat" data-camp-chat>
+      ${window.DeskV1ChatChrome ? window.DeskV1ChatChrome.barHTML() : ''}
       <div class="desk-v1-chat-thread" data-chat-thread role="log" aria-live="polite" tabindex="0" aria-label="Conversation with ${name}"></div>
       <div class="desk-v1-posy-output desk-v1-camp-chat-status" data-camp-chat-status role="status"></div>
       <div class="agent-input-row">
-        <textarea class="agent-task-input desk-v1-posy-input" id="${INPUT_ID}" rows="2" aria-label="Message ${name}" placeholder="Ask ${name} about the campaign, or brainstorm with them…"></textarea>
+        <textarea class="agent-task-input desk-v1-posy-input" id="${INPUT_ID}" data-sb-ask rows="2" aria-label="Message ${name}" placeholder="Ask ${name} about the campaign, or brainstorm with them…"></textarea>
         <button type="button" class="btn-dispatch" data-posy-send="${INPUT_ID}">Send</button>
       </div>
     </div>`;
@@ -91,6 +92,7 @@
     if (!box || !opts || !opts.campaign || !window.DeskV1Store || !window.DeskV1Store.live()) return false;
     ['.desk-v1-posy-output', '.desk-v1-posy-chips', '.agent-input-row'].forEach((sel) => { const n = box.querySelector(sel); if (n) n.remove(); });
     box.insertAdjacentHTML('beforeend', _html(opts));
+    if (window.DeskV1ChatChrome) window.DeskV1ChatChrome.attach(box.querySelector('[data-camp-chat]'));
     const camp = opts.campaign;
     const st = _state(camp.id);
     const ask = box.querySelector('textarea');

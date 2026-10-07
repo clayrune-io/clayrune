@@ -19,7 +19,10 @@
  *   7. Suggest button (How stop) -> goes to the chat as a message, never "Not connected".
  *   8. No agent -> a campaign with no agent anywhere shows the head and a disabled input,
  *                  and POSTs nothing.
- *   9. Demo     -> flag OFF keeps the old box and makes 0 /api/desk/* requests.
+ *   9. Chrome   -> (shared desk-v1-chat-chrome.js) A-/A+ scale the thread, the status line and the
+ *                  box, and the size survives a reload; pop-out lifts the SAME chat element, a send
+ *                  from it lands in the docked thread, Esc closes it; at 1440 and 390 no sideways scroll.
+ *  10. Demo     -> flag OFF keeps the old box and makes 0 /api/desk/* requests.
  *
  * RUN   cd tools/smoke && node desk-v1-campaign-chat.mjs
  */
@@ -51,8 +54,8 @@ function makeServer({ agent = 'global:claydo' } = {}) {
   return srv;
 }
 
-async function newPage(browser, { live = true, srv }) {
-  const ctx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
+async function newPage(browser, { live = true, srv, viewport = { width: 1400, height: 950 } }) {
+  const ctx = await browser.newContext({ viewport });
   const page = await ctx.newPage();
   if (!live) await installDemoFixtures(page);
   const pageErrors = [];
@@ -243,6 +246,87 @@ async function noAgent(browser) {
   await ctx.close();
 }
 
+const fontPx = (page, sel) => page.$eval(sel, (e) => parseFloat(getComputedStyle(e).fontSize));
+const hOverflow = (page) => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+const popState = (page) => page.evaluate(() => {
+  const el = document.querySelector('[data-camp-chat]'); const r = el.getBoundingClientRect();
+  const ae = document.activeElement;
+  return {
+    same: el === window.__chat, popped: el.classList.contains('is-popped'), open: el.matches(':popover-open'),
+    l: r.left, t: r.top, r: r.right, b: r.bottom, w: r.width, vw: innerWidth, vh: innerHeight,
+    threads: document.querySelectorAll('[data-chat-thread]').length,
+    focus: ae && (ae.matches('[data-chat-pop]') ? 'pop' : ae.matches('#desk-v1-camp-posy-input') ? 'ask' : ae.tagName),
+  };
+});
+
+async function chrome(browser) {
+  const srv = makeServer();
+  srv.reply = () => ({ reply: 'A reply long enough to have a size: the first post should lead with the benefit.' });
+  const { ctx, page, pageErrors } = await newPage(browser, { srv });
+  await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
+  await openCampaign(page, 'camp-1');
+  await page.fill('#desk-v1-camp-posy-input', 'first question');
+  await page.press('#desk-v1-camp-posy-input', 'Enter');
+  await settle(page, () => document.querySelectorAll('[data-chat-turn="agent"]:not([data-chat-thinking])').length === 1);
+  (await page.$('[data-camp-chat] [data-chat-chrome][data-wired]')) ? ok('the shared A-/A+/pop-out strip is in the box and wired') : fail('no chrome strip');
+
+  const TXT = '[data-chat-turn="agent"] .desk-v1-chat-text';
+  const t0 = await fontPx(page, TXT), a0 = await fontPx(page, '#desk-v1-camp-posy-input'), s0 = await fontPx(page, '[data-camp-chat-status]');
+  await page.click('[data-chat-text-more]');
+  await page.click('[data-chat-text-more]');
+  const t1 = await fontPx(page, TXT), a1 = await fontPx(page, '#desk-v1-camp-posy-input'), s1 = await fontPx(page, '[data-camp-chat-status]');
+  (t1 > t0 * 1.25 && a1 > a0 * 1.25 && s1 > s0 * 1.25 && (await page.textContent('[data-chat-text-read]')) === '130%')
+    ? ok(`A+ twice scales the thread ${t0}->${t1}px, the box ${a0}->${a1}px and the status line ${s0}->${s1}px (130%)`) : fail('scale: ' + JSON.stringify({ t0, t1, a0, a1, s0, s1 }));
+  await page.waitForTimeout(300);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row', { timeout: 15000 });
+  await page.evaluate(() => window.sidebarNav('social'));
+  await page.waitForSelector('.modal-window[data-modal-id="__desk"] .desk-v1-shell', { timeout: 8000 });
+  await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
+  await openCampaign(page, 'camp-1');
+  await settle(page, () => document.querySelectorAll('[data-chat-turn]').length > 0);
+  const back = await fontPx(page, TXT);
+  ((await page.textContent('[data-chat-text-read]')) === '130%' && back === t1) ? ok(`after a reload the size is still 130% (${back}px)`) : fail('persist: ' + back);
+
+  // pop out
+  await page.evaluate(() => { window.__chat = document.querySelector('[data-camp-chat]'); });
+  const n0 = (await turns(page)).length;
+  await page.click('[data-chat-pop]');
+  let ps = await popState(page);
+  (ps.same && ps.popped && ps.open && ps.w >= 800 && ps.l >= 0 && ps.r <= ps.vw && ps.b <= ps.vh && ps.threads === 1 && ps.focus === 'ask')
+    ? ok(`the large view is the same chat element (one thread), ${Math.round(ps.w)}px wide, focus in the box`) : fail('pop: ' + JSON.stringify(ps));
+  (await hOverflow(page)) <= 1 ? ok('no sideways scroll with the large view open (1440)') : fail('overflow at 1440 popped');
+  await page.fill('#desk-v1-camp-posy-input', 'sent from the large view');
+  await page.press('#desk-v1-camp-posy-input', 'Enter');
+  await settle(page, ([n]) => !document.querySelector('[data-chat-thinking]') && document.querySelectorAll('[data-chat-turn]').length === n + 2, [n0]);
+  await page.keyboard.press('Escape');
+  ps = await popState(page);
+  const docked = await turns(page);
+  (!ps.popped && ps.same && ps.focus === 'pop' && docked.length === n0 + 2 && docked.slice(-2)[0].text === 'sent from the large view')
+    ? ok('after Esc the docked thread already has the exchange sent from the large view; focus is back on the button') : fail('docked: ' + JSON.stringify({ ps, docked }));
+  posts(srv, 'camp-1').filter((r) => r.body.message === 'sent from the large view').length === 1 ? ok('the popped send POSTed once') : fail('popped send count');
+  (await hOverflow(page)) <= 1 ? ok('no sideways scroll docked (1440)') : fail('overflow at 1440');
+  const err = realErrors(pageErrors);
+  err.length ? err.forEach((e) => fail('page error: ' + e)) : ok('no uncaught page errors');
+  await ctx.close();
+
+  // phone width
+  const m = await newPage(browser, { srv, viewport: { width: 390, height: 844 } });
+  await settle(m.page, () => window.DeskV1Store.state().campaigns.length > 0);
+  await openCampaign(m.page, 'camp-1');
+  await settle(m.page, () => document.querySelectorAll('[data-chat-turn]').length > 0);
+  (await hOverflow(m.page)) <= 1 ? ok('no sideways scroll docked at 390') : fail('overflow at 390: ' + await hOverflow(m.page));
+  const bar = await m.page.$eval('[data-chat-chrome]', (e) => { const r = e.getBoundingClientRect(); return { r: r.right, w: innerWidth, h: Math.min(...[...e.querySelectorAll('button')].map((b) => b.getBoundingClientRect().height)) }; });
+  (bar.r <= bar.w && bar.h >= 32) ? ok('the strip fits at 390 with 32px+ targets') : fail('strip at 390: ' + JSON.stringify(bar));
+  await m.page.evaluate(() => { window.__chat = document.querySelector('[data-camp-chat]'); });
+  await m.page.click('[data-chat-pop]');
+  const mp = await popState(m.page);
+  (mp.same && mp.popped && mp.open && mp.l >= 0 && mp.r <= mp.vw + 0.5 && mp.t >= 0 && mp.b <= mp.vh + 0.5 && (await hOverflow(m.page)) <= 1)
+    ? ok(`at 390 the large view fills the screen (${Math.round(mp.w)}px) with no sideways scroll`) : fail('popped at 390: ' + JSON.stringify(mp));
+  await m.page.keyboard.press('Escape');
+  await m.ctx.close();
+}
+
 async function demo(browser) {
   const srv = makeServer();
   const { ctx, page } = await newPage(browser, { live: false, srv });
@@ -260,6 +344,7 @@ try {
   console.log('live ON: reload'); await reload(browser, prior);
   console.log('live ON: Suggest button'); await suggestButton(browser);
   console.log('live ON: no agent'); await noAgent(browser);
+  console.log('live ON: text size + pop-out'); await chrome(browser);
   console.log('live OFF: demo'); await demo(browser);
 } catch (e) { fail('harness error: ' + (e && e.stack || e)); }
 await browser.close();
