@@ -13,7 +13,7 @@ def collect(token: str, *, timeout: float = 15.0) -> list[dict]:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise engines.EngineError('engine', 'Higgsfield schema capture timed out')
-        result = engines._mcp_post(token, body, expect_id=rid, timeout=remaining)
+        result = engines._mcp_post(token, body, expect_id=rid, timeout=remaining, free=True)
         if time.monotonic() >= deadline:
             raise engines.EngineError('engine', 'Higgsfield schema capture timed out')
         return result

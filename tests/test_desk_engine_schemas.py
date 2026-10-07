@@ -38,7 +38,7 @@ def mcp(monkeypatch, tmp_path):
     calls = []
     tools = document(contract(start_image={'type': 'string'}))['tools']
 
-    def post(token, body, *, expect_id, timeout=None):
+    def post(token, body, *, expect_id, timeout=None, **kw):
         assert token == 'fake-token'
         calls.append((body, timeout))
         assert body['method'] in {'initialize', 'notifications/initialized', 'tools/list'}
