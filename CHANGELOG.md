@@ -6,6 +6,16 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-06] - Higgsfield reads only the selected model's catalogue contract
+
+- Price/storyboard requests cache a read-only `models_explore` get for the model actually selected, sharing the snapshot's discovery lock. Fresh model results skip catalogue calls, including on Render; saves and connection verification do not browse every model.
+- Results remain untrusted vendor data with a 24-hour TTL, a 4 MB per-model limit and a 32 MB snapshot limit. Missing/ambiguous tool contracts, transport errors, malformed responses and failed writes keep the existing refusal. This capture prerequisite still does not enable picture upload or quote fallback.
+
+## [2026-10-06] - Higgsfield capture retains catalogue and output contracts
+
+- Diagnostic captures retain the `models_explore` definition and declared output schemas, which the original filter discarded. A capture-version marker makes the next discovery upgrade old snapshots without waiting for their 24-hour expiry.
+- Capture remains tools/list only; this prerequisite does not enable picture pricing or rendering. Model-specific catalogue results still need a separately authorized read. Details: Higgsfield spike section 12.
+
 ## [2026-10-06] - Desk Studio agent chat: send, text size, large view
 
 - The ask box now empties the moment Enter sends (the pending "You" turn shows the message); it stays disabled until the reply is in, and a failed send puts the typed text back with the error.

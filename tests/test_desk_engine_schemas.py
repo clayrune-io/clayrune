@@ -15,6 +15,7 @@ from tests.test_desk_engines import board, client, uploads, vault, vendor, _sc, 
 
 def document(schema, *, age=0, kind='video'):
     return {'untrusted_vendor_text': True,
+            'capture_version': snapshot.CAPTURE_VERSION,
             'captured_at': (datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat(),
             'tools': [{'name': 'generate_' + kind, 'inputSchema': schema, 'description': ''}]}
 
@@ -66,6 +67,18 @@ def test_missing_and_expired_snapshot_refresh_before_price(mcp, age):
         snapshot.path().write_text(json.dumps(document(contract(), age=age)), encoding='utf-8')
     registry.ensure('higgsfield_mcp', token='fake-token')
     assert len(calls) == 3 and registry.fresh(snapshot.read())
+
+
+def test_fresh_old_capture_is_upgraded_once_on_price_path(mcp):
+    calls, _ = mcp
+    old = document(contract())
+    old.pop('capture_version')
+    snapshot.path().parent.mkdir()
+    snapshot.path().write_text(json.dumps(old), encoding='utf-8')
+    registry.ensure('higgsfield_mcp', token='fake-token')
+    assert snapshot.read()['capture_version'] == snapshot.CAPTURE_VERSION
+    registry.ensure('higgsfield_mcp', token='fake-token')
+    assert len(calls) == 3
 
 
 def test_registry_reuses_shape_for_another_remote_engine():

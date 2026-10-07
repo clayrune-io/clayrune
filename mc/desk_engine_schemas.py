@@ -24,6 +24,7 @@ class Snapshotter:
     read: Callable[[], dict | None]
     refresh: Callable[..., None]
     capabilities: Callable[[dict | None, str, str], dict] | None = None
+    model_refresh: Callable[..., None] | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -34,20 +35,21 @@ _registry_lock = threading.RLock()
 
 def register(engine_id: str, *, service: str, method: str,
              read: Callable[[], dict | None], refresh: Callable[..., None],
-             capabilities: Callable[[dict | None, str, str], dict] | None = None) -> None:
+             capabilities: Callable[[dict | None, str, str], dict] | None = None,
+             model_refresh: Callable[..., None] | None = None) -> None:
     with _registry_lock:
-        _snapshotters[engine_id] = Snapshotter(read, refresh, capabilities)
+        _snapshotters[engine_id] = Snapshotter(read, refresh, capabilities, model_refresh)
         _connections[(service, method)] = engine_id
 
 
 def _entry(engine_id: str) -> Snapshotter | None:
     with _registry_lock:
         if engine_id == 'higgsfield_mcp' and engine_id not in _snapshotters:
-            from mc.desk_connect import higgsfield_mcp_capture, higgsfield_mcp_snapshot
+            from mc.desk_connect import higgsfield_mcp_capture, higgsfield_mcp_snapshot, higgsfield_mcp_catalogue
             from mc.desk_mcp_picture_schema import derive
             register(engine_id, service='higgsfield', method='oauth',
                      read=higgsfield_mcp_snapshot.read, refresh=higgsfield_mcp_capture.refresh,
-                     capabilities=derive)
+                     capabilities=derive, model_refresh=higgsfield_mcp_catalogue.refresh)
         return _snapshotters.get(engine_id)
 
 
@@ -95,12 +97,21 @@ def fresh(snapshot: dict | None) -> bool:
 
 
 def ensure(engine_id: str, *, token: str | None = None, project_id: str | None = None,
-           unattended: bool = False, force: bool = False, strict: bool = False) -> dict | None:
+           unattended: bool = False, force: bool = False, strict: bool = False,
+           model_id: str | None = None, kind: str | None = None) -> dict | None:
     entry = _entry(engine_id)
     if entry is None:
         return None
     snapshot = _read(entry, engine_id)
-    if not force and fresh(snapshot):
+    if engine_id == 'higgsfield_mcp':
+        from mc.desk_connect.higgsfield_mcp_snapshot import CAPTURE_VERSION
+        # Earlier, even fresh snapshots discarded output schemas and the catalogue tool.
+        force = force or not snapshot or snapshot.get('capture_version') != CAPTURE_VERSION
+    needs_model = False
+    if entry.model_refresh and model_id and kind:
+        from mc.desk_connect.higgsfield_mcp_catalogue import cached
+        needs_model = not cached(snapshot, kind, model_id)
+    if not force and fresh(snapshot) and not needs_model:
         return snapshot
     # Another request never waits behind discovery; use the previous observation.
     if not entry.lock.acquire(blocking=False):
@@ -111,6 +122,12 @@ def ensure(engine_id: str, *, token: str | None = None, project_id: str | None =
         snapshot = _read(entry, engine_id)
         if force or not fresh(snapshot):
             entry.refresh(token=token, project_id=project_id, unattended=unattended)
+        if entry.model_refresh and model_id and kind:
+            if token is None:
+                from mc import desk_oauth
+                token = desk_oauth.access_token('higgsfield', consumer='desk_engine_schemas',
+                                                project_id=project_id, unattended=unattended)
+            entry.model_refresh(token=token, model_id=model_id, kind=kind)
         return _read(entry, engine_id)
     except Exception as e:
         _log(f'[desk_engine_schemas] {engine_id} capture failed: {type(e).__name__}', flush=True)

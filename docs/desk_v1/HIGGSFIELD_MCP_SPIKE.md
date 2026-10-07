@@ -594,3 +594,116 @@ and complete filtered tool list. No live schema has been read in this branch.
   ffmpeg hold path; the same error is reproduced from base `946464f6`.
 - No frontend files changed, so JavaScript/Playwright smokes are inapplicable.
   No merge, push, restart, live provider call, upload or paid generation occurred.
+
+## 12. Captured generation schema is not the model catalogue (2026-10-06)
+
+The server-produced tool snapshot has the generation and upload tools, but it
+does not yet establish the contract required by step 4. The actual
+`generate_video` / `generate_image` input schema declares:
+
+- `params` as an object or serialized string; the object has `model: string`
+  without a model enum or per-model branches.
+- `params.medias[]` items requiring `value: string` and `role: string`, with no
+  role enum, model-specific count, accepted MIME list or image-size limit.
+- `get_cost: boolean` promises a quote without submitting a job, but supplies no
+  special picture-slot form that omits a media identifier. Whether the cost
+  path accepts an empty/omitted identifier is not established. Never invent an
+  uploaded UUID or silently quote a different text-only request.
+- `media_upload` has upload-URL allocation inputs; `media_confirm` has media-ID
+  inputs. The snapshot retains no output schemas, so allocation response shape
+  and confirmed-ID extraction are not established by these input schemas.
+
+The snapshot filter omits `models_explore`; its model-specific result data is
+also absent. An official CLI [media-input reference](https://github.com/higgsfield-ai/skills/blob/main/higgsfield-generate/references/media-inputs.md)
+documents model-dependent roles, but substituting that CLI contract would not
+satisfy a runtime implementation driven by this remote MCP snapshot.
+
+Direct evaluation on the captured shape returns `schema_state: unknown` for
+both `kling3_0` and `seedance_2_5`, with no picture capability. The running
+server's metadata-only engine listing reports the same states. Thus the current
+observed contract gap precedes the upload-wiring guard; removing `PENDING` alone
+cannot fix this shape.
+
+Required evidence: the `models_explore` tool definition and selected-model
+results; upload/confirm output schemas or vendor-documented response shapes;
+and a server-run free `get_cost` proof with a picture slot declared and no upload.
+Do not infer that the vendor requires an upload merely because that proof is
+missing. Recommended next implementation is server-only read-only contract
+capture/probing, keeping credentials in the server and all human gates intact.
+
+### Capture revision 2: retain the missing definitions
+
+The snapshot writer now explicitly includes `models_explore`, regardless of
+description keywords, and retains each selected tool's `outputSchema` when it
+is an object. Missing/malformed output schemas stay absent; no response contract
+is inferred. The snapshot records `capture_version: 2`. The next ordinary
+save/price/render discovery upgrades an older capture even when its timestamp
+is less than 24 hours old; successful revision-2 captures keep the existing TTL.
+Discovery still sends only initialize, initialized and paginated tools/list.
+
+This is the capture prerequisite, **not completed picture wiring**. Dave's
+follow-up permits tool listing and free cost/quote probes only, with no upload
+or generation during discovery or pricing. Obtaining the selected model's
+`medias[].roles` requires the separate `models_explore` tool call; its results
+are not in tools/list. That call needs clarification under the stated probe
+limit before adding it. Upload output parsing can follow Dave's authorized
+fail-closed first-human-render path when output schemas are absent. No synthetic
+upload is needed or authorized. A text-only quote fallback is authorized only
+after a free picture-slot quote establishes that an identifier is required.
+
+After integration and Ron's restart, one ordinary price check refreshes the
+capture. Inspect revision 2 and the model catalogue/upload output definitions
+in the gitignored snapshot; a price check with a picture will still refuse at
+this checkpoint. No live quote, upload, generation or UI success is claimed.
+
+Revision-2 verification: `python -m pytest tests/test_desk_engines.py
+tests/test_desk_connect_mcp.py tests/test_desk_connect_mcp_followups.py
+tests/test_higgsfield_mcp_snapshot.py tests/test_desk_engine_schemas.py -o
+addopts='' -q` reports **251 passed in 16.28s**. Basic Pyright for
+`mc/desk_connect/higgsfield_mcp_snapshot.py` and `mc/desk_engine_schemas.py`
+reports **0 errors**. No frontend code changed; no browser smoke was run.
+
+## 13. Selected-model catalogue capture (2026-10-06)
+
+Dave authorized `models_explore` reads for models actually used by a
+storyboard/price check. `mc/desk_connect/higgsfield_mcp_catalogue.py` implements
+that separate concern. It supports the known `action: get`, `model_id` form
+only after the fresh tool definition establishes those inputs; missing,
+duplicate or composed definitions and unknown required companion fields refuse
+before any call. No list/search/recommend action, upload or generation is used.
+
+`_schema_creds` supplies the selected catalogue model and kind for ordinary
+estimates, submissions and storyboard plans. Connections still capture only
+tool definitions. The snapshotter's existing lock serializes tool/model writes;
+another request never waits behind discovery. Model results are stored raw,
+redacted and explicitly untrusted under `models[model_id]`, with their kind and
+own timestamp. Each expires after 24 hours, matching the tool TTL; refreshing
+tools replaces the old model entries. Fresh model entries make no catalogue
+call on a render's hot path. RPCs share a 15-second deadline, responses are
+bounded to 4 MB per model, and the full serialized snapshot is bounded to
+32 MB before atomic replacement. A failure logs its exception type and leaves
+the previous snapshot intact; stale data does not become new role evidence.
+
+The earlier server proof's saved `tools.json` supplied an example of the input
+contract, not a current vendor result. Its saved model responses contain test
+models and supply no production role evidence. No older result was substituted
+for the actual selected-model catalogue. Runtime validation always uses the
+fresh server-produced definition.
+
+**Restart checkpoint, not complete picture wiring:** the running server still
+has the old capture (`2026-10-07T01:32:06.878257Z`, no capture_version, no
+models_explore definition or model entries). Integration and Ron's restart are
+required to obtain the actual model result shape and picture roles. One Studio
+price check using the desired model captures that result before the current
+picture refusal. The next check should reuse its unchanged model timestamp.
+Only after reading those actual records can picture capability/role mapping,
+free picture-slot quotes, and human-render upload/confirm wiring be completed.
+No full picture-price success, live quote, upload, generation or UI smoke is
+claimed for this checkpoint.
+
+Verification: six-file engine/connect/snapshot/schema/catalogue regression
+reports **268 passed in 17.55s**. The catalogue suite includes actual price and
+storyboard path tests proving one selected-model read followed by cache reuse,
+with free `get_cost: true` / `use_unlim: false` calls only. New/changed capture
+and registry modules pass basic Pyright; including `desk_engines.py` still
+reports the pre-existing optional campaign-ID error in the ffmpeg hold path.

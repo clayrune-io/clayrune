@@ -769,6 +769,11 @@ or older than 24 hours. You do not need to press **Check it now** for discovery.
 If discovery fails, the picture refusal explains that the model list has not yet
 been read; another price check retries. Text-only price checks can still work.
 
+Price checks also read the catalogue entry for the model you selected, without
+uploading a picture or submitting a generation. Those entries are cached for
+24 hours; Render reuses a fresh entry. Saving or checking a connection does not
+browse the whole model catalogue. Failed catalogue reads do not guess picture roles.
+
 Picture generation through **Higgsfield (sign in)** remains unavailable while its
 upload integration is being implemented. A model whose captured definition accepts
 pictures reports that upload wiring is pending, rather than silently dropping the
