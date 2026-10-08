@@ -7204,6 +7204,9 @@ def _session_usage_payload(session: dict) -> dict:
         out['usage'] = session.get('usage', {})
     if caps.emits_cost:
         out['cost_usd'] = session.get('cost_usd', 0)
+        if session.get('cost_estimate'):
+            out['cost_estimate'] = True
+            out['cost_estimate_models'] = session.get('cost_estimate_models', {})
     if caps.emits_num_turns:
         out['num_turns'] = session.get('num_turns', 0)
     out['context_tokens'] = session.get('context_tokens')

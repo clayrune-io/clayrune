@@ -26,8 +26,14 @@
   `haiku` is untouched: it still resolves to Haiku 4.5 on Claude Code 2.1.292.
 - Claude Code 2.1.292 logs `unrecognized_model` for `claude-haiku-5-5` and its
   `total_cost_usd` for that model is not Haiku 5.5's rate; it still answers and
-  reports that id. Cost figures for Haiku 5.5 sessions are inflated until the CLI
-  is updated.
+  reports that id, with `modelUsage[model].costBasis: 'unknown'` and a cost about
+  34x high. `accumulate_result_cost` now swaps such an entry's `costUSD` for a
+  price from `model_prices.json` (cache read 0.1x, cache write 1.25x or 2x by the
+  result's 5m/1h split, since the store holds input/output only), or books 0 when
+  there is no row. Either way the session gets `cost_estimate: true` and
+  `cost_estimate_models` (`repriced` or `unpriced`), exposed by
+  `_session_usage_payload`. `costBasis` `'list'` or absent books exactly as before.
+  No gauge UI reads the flag yet.
 
 ## [2026-10-08] - Zoomed-out tap smoke waits for the visible field
 
