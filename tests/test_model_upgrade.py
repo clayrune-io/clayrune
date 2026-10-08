@@ -112,6 +112,21 @@ class TestEvaluatePin:
                                       'source_url': '', 'verified_at': decision.old_price['verified_at']}
         assert decision.new_price['input'] == 2.0
 
+    def test_haiku_4_5_pin_waits_for_prices_then_upgrades_to_5_5(self, monkeypatch, tmp_path):
+        # ClaudeRuntime has no discover_models(); the gate reads the static
+        # catalog head, so Haiku 5.5 is a candidate as soon as it is listed.
+        # Prices are per-1M at the <=100K-token tier (the price schema has no
+        # long-context tier).
+        monkeypatch.setattr(mu, 'clayrune_home', lambda: tmp_path)
+        old, new = 'claude-haiku-4-5-20251001', 'claude-haiku-5-5'
+        assert mu.evaluate_pin('claude', old).reason == 'unknown_price_old'
+        mu.set_price('claude', old, 1.0, 5.0)
+        assert mu.evaluate_pin('claude', old).reason == 'unknown_price_new'
+        mu.set_price('claude', new, 0.10, 0.50)
+        decision = mu.evaluate_pin('claude', old)
+        assert (decision.action, decision.reason, decision.new_model) == ('upgrade', 'ok', new)
+        assert mu.evaluate_pin('claude', new).reason == 'already_head'
+
     def test_uncatalogued_same_family_pin_is_never_downgraded(self, monkeypatch, tmp_path):
         """A custom id newer than the CLI's cache (gpt-7-sol) shares the -sol
         family with today's head; even priced higher than the head, it must

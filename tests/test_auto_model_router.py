@@ -64,6 +64,17 @@ class TestRouteDispatchModel:
         assert model == s._AUTO_MODEL_VALID['H']
         assert source == 'auto'
 
+    def test_tier_targets_are_the_catalog_heads(self):
+        # The router's H/S/O targets must track the Claude catalog heads, or
+        # an auto-routed dispatch lands on a model the pickers no longer lead with.
+        from mc.agent_runtime import get_runtime
+        rt = get_runtime('claude')
+        assert _bp_agent._AUTO_MODEL_VALID == {
+            'H': rt.catalog_head_for('fast'),
+            'S': rt.catalog_head_for('balanced'),
+            'O': rt.catalog_head_for('best'),
+        }
+
     def test_sonnet_pick(self, tmp_path, monkeypatch):
         s = _fresh_server(tmp_path, monkeypatch)
         s.CONFIG['auto_model_enabled'] = True

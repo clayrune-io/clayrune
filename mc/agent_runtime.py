@@ -1987,6 +1987,7 @@ class ClaudeRuntime(AgentRuntime):
         ('claude-sonnet-5', 'Sonnet 5'),
         ('claude-opus-5-5', 'Opus 5.5'),
         ('claude-opus-5', 'Opus 5'),
+        ('claude-haiku-5-5', 'Haiku 5.5'),
         ('claude-haiku-4-5-20251001', 'Haiku 4.5'),
     ]
 
@@ -3083,7 +3084,7 @@ class ClaudeRuntime(AgentRuntime):
                       effort: str = '') -> List[str]:
         cmd = [
             self.resolve_binary_str(), '-p',
-            '--model', model or 'claude-haiku-4-5-20251001',
+            '--model', model or 'claude-haiku-5-5',
             '--max-turns', str(max(1, int(max_turns))),
             *self.TRANSFORM_ISOLATION,
         ]
@@ -3236,7 +3237,7 @@ class ClaudeRuntime(AgentRuntime):
             return None
         return OneshotResult(text=(r.stdout or '').strip())
 
-    VISION_DESCRIBE_MODEL = 'claude-haiku-4-5-20251001'
+    VISION_DESCRIBE_MODEL = 'claude-haiku-5-5'
     _IMAGE_MEDIA_TYPES = {'.png': 'image/png', '.jpg': 'image/jpeg',
                           '.jpeg': 'image/jpeg', '.gif': 'image/gif',
                           '.webp': 'image/webp'}

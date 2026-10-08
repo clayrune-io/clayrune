@@ -335,6 +335,7 @@ async function _renderSettings() {
     ['claude-opus-5', 'Opus 5'],
     ['claude-sonnet-5-5', 'Sonnet 5.5'],
     ['claude-sonnet-5', 'Sonnet 5'],
+    ['claude-haiku-5-5', 'Haiku 5.5'],
     ['claude-haiku-4-5-20251001', 'Haiku 4.5'],
   ];
   // If the saved model has since been retired from the list (e.g. Opus 4.8),

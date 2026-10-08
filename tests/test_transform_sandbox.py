@@ -116,3 +116,42 @@ def test_describe_image_uses_neutral_cwd_and_env(tmp_path):
         rt.describe_image(str(img), prompt='what')
     assert calls[0]['cwd'] == ts.neutral_cwd()
     assert calls[0]['env']['CLAUDE_CODE_DISABLE_AUTO_MEMORY'] == '1'
+
+
+# ── Haiku 5.5 pins: adaptive thinking is ON by default there ────────────────
+
+def test_haiku_5_5_is_the_default_transform_and_vision_model():
+    rt = ar.ClaudeRuntime()
+    argv = rt._oneshot_argv()
+    assert argv[argv.index('--model') + 1] == 'claude-haiku-5-5'
+    assert ar.ClaudeRuntime.VISION_DESCRIBE_MODEL == 'claude-haiku-5-5'
+
+
+def test_describe_image_returns_only_text_blocks_when_haiku_thinks(tmp_path):
+    """Haiku 5.5 emits a thinking block before its answer. The vision parser
+    must keep the answer and drop the reasoning."""
+    import json
+    img = tmp_path / 'a.png'
+    img.write_bytes(b'\x89PNG')
+
+    def stream(*blocks):
+        return json.dumps({'type': 'assistant', 'message': {'role': 'assistant', 'content': list(blocks)}})
+
+    out = '\n'.join([
+        stream({'type': 'thinking', 'thinking': 'internal reasoning, must not leak'}),
+        stream({'type': 'text', 'text': 'A red square.'}),
+        json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'A red square.'}),
+    ])
+
+    def fake(cmd, **kw):
+        r = MagicMock()
+        r.returncode = 0
+        r.stdout = out
+        r.stderr = ''
+        return r
+
+    rt = ar.ClaudeRuntime()
+    with patch.object(ar, '_authorize_text_transform', return_value=None), \
+            patch('subprocess.run', side_effect=fake):
+        result = rt.describe_image(str(img), prompt='what')
+    assert result.text == 'A red square.'

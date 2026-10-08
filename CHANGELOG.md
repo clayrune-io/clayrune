@@ -6,6 +6,29 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-08] - Haiku 5.5 in the model pickers
+
+- Added `claude-haiku-5-5` ("Haiku 5.5") above `claude-haiku-4-5-20251001` in
+  `ClaudeRuntime.MODEL_CHOICES` (`mc/agent_runtime.py`), `MC_MODEL_CHOICES`
+  (`static/js/modal-manager.js`) and Settings > Agent (`static/js/settings-drill.js`),
+  so it is now the Haiku family head for `catalog_head_for('fast')` and the model
+  auto-upgrade gate. Haiku 4.5 stays listed. The gate reads the static catalog head,
+  not `discover_models()` (which `ClaudeRuntime` does not have), so a Haiku 4.5 pin
+  upgrades once both prices are in `~/.clayrune/model_prices.json` and 5.5 is not
+  dearer: 0.10 in / 0.50 out USD per Mtok (prompts up to 100K tokens; 0.50 / 2.50
+  above) against 4.5's 1 / 5. That file is operator data, not source, and its
+  schema holds one rate per model, so a price run records the up-to-100K rate.
+- Three Haiku 4.5 pins moved to 5.5: the transform default in
+  `ClaudeRuntime._oneshot_argv` (reads plain `-p` text stdout, which carries the
+  final answer only), `ClaudeRuntime.VISION_DESCRIBE_MODEL` (keeps only `text`
+  blocks, drops `thinking`), and the auto-router's Haiku tier
+  (`_AUTO_MODEL_VALID['H']`). Haiku 5.5 thinks adaptively by default. The alias
+  `haiku` is untouched: it still resolves to Haiku 4.5 on Claude Code 2.1.292.
+- Claude Code 2.1.292 logs `unrecognized_model` for `claude-haiku-5-5` and its
+  `total_cost_usd` for that model is not Haiku 5.5's rate; it still answers and
+  reports that id. Cost figures for Haiku 5.5 sessions are inflated until the CLI
+  is updated.
+
 ## [2026-10-08] - Zoomed-out tap smoke waits for the visible field
 
 - The real-backend typing smoke now waits for its textarea to appear in the decoded phone frame before tapping. The earlier readiness check accepted a blank JPEG while the backend already reported the page's new zoom, producing a false tap-mapping failure.
