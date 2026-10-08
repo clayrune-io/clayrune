@@ -20,7 +20,8 @@ import { readFileSync } from 'fs';
 const src = f => readFileSync(new URL(`../../static/js/${f}`, import.meta.url), 'utf8');
 const JS = { 'browser-pane.js': src('browser-pane.js'), 'browser-pick.js': src('browser-pick.js'),
              'composer-extras.js': src('composer-extras.js'),
-             'browser-pane-stream.js': src('browser-pane-stream.js') };   // browser-pane.js imports it
+             'browser-pane-stream.js': src('browser-pane-stream.js'),
+             'browser-input-timing.js': src('browser-input-timing.js') };   // browser-pane.js imports it
 const FW = 1264, FH = 649;
 const browser = await chromium.launch();
 const fails = [];

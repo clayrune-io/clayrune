@@ -22,6 +22,7 @@ import http.server
 import os
 import sys
 import threading
+import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -51,6 +52,19 @@ def _register(proc, name, proc_type, session_id, project_id, command_preview='')
     # Same signature as agent_routes._register_process on purpose: a caller
     # that does not match it fails here the way it fails in production.
     registered[proc.pid] = {'name': name, 'type': proc_type, 'session_id': session_id}
+    # The temporary registry is test state; also expose our owned Chromium PID
+    # to the real Process Manager so the operator can monitor the smoke.
+    register_url = os.environ.get('MC_TEST_PROCESS_REGISTER_URL')
+    if not register_url:
+        return  # Standalone CI uses only the temporary registry.
+    body = json.dumps({'pid': proc.pid, 'name': 'Browser smoke Chromium',
+                       'project_id': 'mission_control',
+                       'command': 'browser_pane_harness.py isolated Chromium'}).encode()
+    req = urllib.request.Request(register_url,
+                                 data=body, headers={'Content-Type': 'application/json'})
+    with urllib.request.urlopen(req, timeout=5) as response:
+        if response.status != 200:
+            raise RuntimeError('Browser smoke process registration failed')
 
 
 def _unregister(pid):
@@ -62,6 +76,8 @@ br.wire(register_process_fn=_register, unregister_process_fn=_unregister,
 
 app = Flask(__name__, static_folder=str(REPO / 'static'), static_url_path='/static')
 app.register_blueprint(br.bp)
+from mc import browser_input_timing  # noqa: E402
+app.register_blueprint(browser_input_timing.bp)
 
 
 @app.route('/_harness/crash/<sid>', methods=['POST'])

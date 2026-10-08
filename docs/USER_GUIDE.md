@@ -921,6 +921,18 @@ Update if on an old version.
 Was a real `sizeAgentChat` measurement loop. Fixed in `[2026-05-06]`.
 Update.
 
+### Measure browser-pane typing delay on a phone
+
+Optional diagnostics start off. To collect timings from your phone, add
+`?bp_input_timing=1` to the dashboard address (`&bp_input_timing=1` if it already
+has a query), fully reload, then type in the browser pane and leave it visible
+for 12 seconds. Use `bp_input_timing=0` plus reload to turn collection off.
+The host reads `/api/browser/input-timing`; it keeps only numeric timings and
+user-agent in memory. It does not store what you typed or change browser
+permissions. Setup, stage meanings and limitations are in
+[Browser input timing](BROWSER_INPUT_TIMING.md). This needs the timing build
+loaded by a server restart before the phone reload can collect results.
+
 ### Browser doesn't open after install
 Some Linux installs lack `xdg-open` and WSL doesn't always have a
 configured browser-opener. Just paste `http://localhost:5199` into your

@@ -177,6 +177,8 @@ whenever a task means visiting a web page.
 | POST | `/api/browser/stop` | End a browser session, or close only the owned tab when given an `agent-tab-...` handle. Stopping an adopted tab never closes the shared browser. |
 | POST | `/api/browser/auth-trace` | Opt-in redacted auth diagnostics for one running pane: `{"session_id":"...","on":true\|false}`. Default off; 500 in-memory events. No headers, request bodies, URL queries or successful auth bodies. |
 | GET | `/api/browser/auth-trace?session_id=...` | Read that pane's sanitized diagnostic snapshot. Keep it open until capture is read. Contract: `docs/BROWSER_AUTH_DIAGNOSTICS.md`. |
+| POST | `/api/browser/input-timing` | Opt-in phone diagnostics batch: numeric `samples` (max 50) and `user_agent` only; no text, keys, URLs or session/profile identifiers. Holds the newest 1,000 samples in RAM. |
+| GET | `/api/browser/input-timing?after=0` | Read bounded timing samples after a ring `index`. Enable on the phone dashboard with `?bp_input_timing=1` and fully reload. Stage meanings and limits: `docs/BROWSER_INPUT_TIMING.md`. |
 | GET | `/api/browser/profiles` | Saved signed-in profiles (names/sizes only, never cookies). |
 | DELETE | `/api/browser/profiles/<name>` | Forget a profile — **this is the sign-out. Destructive; ask first.** |
 
