@@ -24,7 +24,7 @@
 // RUN: node tools/smoke/browser-pane-mobile.mjs   (exit 0 = all pass)
 import { chromium } from 'playwright';
 import { spawn } from 'child_process';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import net from 'net';
@@ -71,7 +71,7 @@ async function stopAll(page) {
 }
 
 async function openPane({ width, height }) {
-  const page = await browser.newPage({ viewport: { width, height } });
+  const page = await browser.newPage({ viewport: { width, height }, hasTouch: width <= 960 });
   page.on('pageerror', e => fail(`page error: ${e.message}`));
   await page.goto(BASE + '/');
   await page.waitForFunction(() => typeof window.openBrowserPane === 'function');
@@ -85,9 +85,7 @@ function layout(page) {
     const win = document.getElementById('mc-browser-pane');
     const r = win.getBoundingClientRect();
     const url = win.querySelector('[data-bp="url"]');
-    // The header's way out: mobile "Back to chat" (hide), desktop X (close).
-    // Mobile's "close" is the collapsed menu's Close browser item, not the header.
-    const close = win.querySelector('[data-bp="hide"], [data-bp="bar"] [data-bp="close"]');
+    const close = win.querySelector('[data-bp="bar"] [data-bp="close"]');
     const grip = win.querySelector('[data-bp="grip"]');
     const cr = close ? close.getBoundingClientRect() : null;
     return {
@@ -150,6 +148,52 @@ try {
     else fail('phone viewport: close control is not visible/inside the viewport');
 
     await stopAll(page);
+    await page.close();
+  }
+
+  // 390px close discovery + keyboard geometry. Headless Chromium cannot open
+  // a native phone keyboard: a reduced visible viewport models its occlusion
+  // while the real pane retains its intentional focus-frozen full height.
+  {
+    const page = await openPane({ width: 390, height: 844 });
+    const shots = join(REPO, '_scratch', 'browser-return-viewer');
+    mkdirSync(shots, { recursive: true });
+    await page.waitForFunction(() => document.querySelector('[data-bp="screen"]').naturalWidth > 0);
+    const close = page.locator('#mc-browser-pane [data-bp="bar"] [data-bp="close"]');
+    const closeBox = await close.boundingBox();
+    if (!closeBox || closeBox.width < 40 || closeBox.height < 40 ||
+        closeBox.x < 0 || closeBox.x + closeBox.width > 390 || closeBox.y + closeBox.height > 844 ||
+        await close.getAttribute('aria-label') !== 'Close browser')
+      fail(`390px: top-bar close must be visible, labelled and >=40px: ${JSON.stringify(closeBox)}`);
+    else ok('390px: top-bar Close browser is visible with a labelled 40px tap target');
+    const bottom = async () => page.evaluate(() => {
+      const r = document.querySelector('[data-bp="bbar"]').getBoundingClientRect();
+      return { top: r.top, bottom: r.bottom, height: r.height, visibleHeight: window.visualViewport.height };
+    });
+    // The auto-focused shadow normally opens the keyboard; blur for the
+    // keyboard-closed measurement, then focus it before reducing the viewport.
+    await page.evaluate(() => document.activeElement.blur());
+    await page.waitForTimeout(100);
+    const full = await bottom();
+    if (full.height <= 0 || full.top < 0 || full.bottom > full.visibleHeight + 1)
+      fail(`390x844 bottom bar is off-screen: ${JSON.stringify(full)}`);
+    else ok(`390x844 bottom bar is on-screen: ${JSON.stringify(full)}`);
+    await page.screenshot({ path: join(shots, 'mobile-390x844.png') });
+    await page.locator('[data-bp="ime-shadow"]').focus();
+    await page.setViewportSize({ width: 390, height: 500 });
+    await page.waitForTimeout(200);
+    const keyboard = await bottom();
+    console.log(`MEASURE simulated keyboard visible area 390x500: ${JSON.stringify(keyboard)}`);
+    await page.screenshot({ path: join(shots, 'mobile-keyboard-visible-area.png') });
+    if (keyboard.bottom > keyboard.visibleHeight)
+      console.log('LIMIT bottom bar is below the simulated keyboard visible area; screenshot saved (native keyboard unverified)');
+    const stops = [];
+    page.on('request', r => { if (r.url().endsWith('/api/browser/stop')) stops.push(r.postData()); });
+    await close.tap();
+    await page.waitForSelector('#mc-browser-pane', { state: 'detached' });
+    await page.waitForFunction(async () => !(await fetch('/api/project/smoke/browser/status').then(r => r.json())).sessions.length);
+    if (stops.length !== 1) fail(`top-bar close should send one stop, saw ${stops.length}`);
+    else ok('390px top-bar close tap removes the pane and stops its throwaway session exactly once');
     await page.close();
   }
 

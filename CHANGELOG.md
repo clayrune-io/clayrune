@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-08] - Browser pane returns to the active device and exposes mobile close
+
+- Returning to a visible dashboard tab or focusing its window re-reports that viewer's viewport and mobile mode, even without a pane resize. Hidden/detached panes do not reclaim on these events; the existing backend guard reloads only when mode changes. Pointer and keyboard input do not trigger takeovers.
+- The mobile top bar now shows a labelled 40px Close browser X beside the address field, using the same close handler as the retained menu entry. At 390x844 the bottom bar is on-screen; its focus-frozen position falls below a simulated keyboard's reduced visible area. Native keyboard testing remains unverified.
+- 192 route/viewer tests and all four handoff/mobile/coordinate/typing smokes passed. Evidence and screenshots: `docs/BROWSER_VIEWER_HANDOFF.md`. Tested branch only; commit awaits dependency-junction cleanup. No merge, push or restart.
+
 ## [2026-10-08] - Browser pane follows the returning viewer's device
 
 - Phone-to-PC handoff clears phone metrics before measuring the desktop window and disables touch with a valid CDP command. Dock restore reports the viewer's device mode even when the pane size is unchanged.

@@ -923,11 +923,21 @@ Update.
 
 ### Move a browser pane between phone and PC
 
-Opening or restoring the same running pane on another device switches its
+Opening or restoring the same running pane on another device, returning to
+its visible dashboard tab, or focusing its dashboard window switches its
 page rendering to that viewer: phone metrics and touch on a phone, desktop
 metrics and touch off on a PC. A device-mode change reloads the page so the
 site can serve the matching version; resizing within one mode does not.
-The pane is one shared page: its latest attach or restore controls rendering.
+The pane is one shared page: its latest attach, restore, visible-tab return
+or window focus controls rendering. Returning within the same mode does not
+reload the page. Tapping or typing in the pane does not trigger a takeover.
+
+On a phone, the **X** at the right of the top address bar closes the browser;
+**Close browser** remains in the bottom menu too. Both end the session through
+the same graceful close; named profiles keep their saved sign-in. The left
+chevron returns to chat while keeping the browser running. During typing the
+pane keeps its full height, so the soft keyboard can cover the bottom toolbar;
+the top-bar X remains available.
 
 ### Measure browser-pane typing delay on a phone
 

@@ -588,14 +588,16 @@ const freePort = () => new Promise(res => {
 // way to end the browser: it used to POST /api/browser/stop behind the same
 // arrow glyph the bottom bar uses for browser-Back, so Ron's sessions vanished
 // shortly after he used them. It must hide the pane and keep the session; only
-// the menu's "Close browser" stops it.
+// the explicit X and menu's "Close browser" stop it.
 async function testBackToChatKeepsSession() {
   const { page, context } = await newPage();
   const stops = [];
   page.on('request', r => { if (r.url().includes('/api/browser/stop')) stops.push(r.postData()); });
   const hide = page.locator('#mc-browser-pane [data-bp="hide"]');
-  if (await page.locator('#mc-browser-pane [data-bp="bar"] [data-bp="close"]').count())
-    fail('the header still has a close control wired to the back arrow');
+  if (await hide.getAttribute('data-bp') === 'close')
+    fail('Back to chat is wired as a close control');
+  if (!await page.locator('#mc-browser-pane [data-bp="bar"] [data-bp="close"]').isVisible())
+    fail('the distinct top-bar Close browser X is missing');
   const glyph = await hide.innerHTML();
   const bottomBack = await page.locator('#mc-browser-pane [data-bp="back"]').innerHTML();
   if (glyph.includes('8592') || glyph.includes('←') || glyph === bottomBack)
