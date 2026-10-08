@@ -140,7 +140,7 @@ harness/Chromium processes are registered with Process Manager.
 Set `MC_TEST_PROCESS_REGISTER_URL` as above for managed runs; without that
 variable the test harness remains independent of a running Clayrune server.
 
-Branch verification: the backend contract has **44 passing tests**, the browser
+Initial branch verification: the backend contract has **44 passing tests**, the browser
 pytest subset has **503 passing tests**, and new-module pyright has **0 errors**.
 The mobile layout smoke passed. The collector lifecycle tests passed (4 checks).
 The full mobile typing smoke's new trace checks passed, but its existing
@@ -149,9 +149,16 @@ receive `hello`. The same check returned rc=1 with the original HEAD pane
 JavaScript served through the same harness; outgoing picture coordinates were
 `273.265,147.143` with a `412x809` server frame and page scale about `0.420`.
 No authenticated root cause is claimed. A server frame readiness check plus a
-decoded-viewer-frame check did not resolve it. The suite is **not all green**.
+decoded-viewer-frame check did not resolve it. At that build the suite was
+**not all green**.
 
-To repeat the isolated failing check (diagnosis only; not a replacement for the
+Follow-up, 2026-10-08: the decoded frame at the failing tap was still blank.
+The smoke now waits for its field to be visible in that frame. The full typing
+smoke and the five companion checks pass with production mapping and input
+semantics unchanged; removing inverse-scale mapping still fails the corrected
+check. Details: [tap verification](BROWSER_TAP_MAPPING_VERIFICATION.md).
+
+To repeat the isolated tap check (not a replacement for the
 full required smoke):
 
 ```powershell
@@ -159,10 +166,9 @@ node tools/smoke/browser-pane-mobile-typing.mjs --real-only
 # For comparison only, SMOKE_PANE_JS can name an original-source copy.
 ```
 
-Open handoff decision for Dave: **a separate input-path repair (recommended)**
-keeps this observer change isolated but delays the all-green gate; expanding this
-ticket to repair the pre-existing input path couples a behavior fix to the trace
-and requires overriding this ticket's explicit no-input-semantics-change limit.
+The earlier handoff recommendation for an input-path repair is superseded by
+the follow-up above: the reported failure came from smoke readiness. Live
+phone measurement remains unverified.
 
 | Check command | Result |
 | --- | --- |
@@ -171,7 +177,7 @@ and requires overriding this ticket's explicit no-input-semantics-change limit.
 | `pyright mc/browser_input_timing.py` | rc=0; 0 errors |
 | `node --test tools/smoke/browser-input-timing.test.mjs` | rc=0; 4 passed |
 | `node tools/smoke/browser-pane-mobile.mjs` | rc=0; mobile and desktop checks passed |
-| `node tools/smoke/browser-pane-mobile-typing.mjs` | rc=1; trace checks passed, original real-browser tap failed |
+| `node tools/smoke/browser-pane-mobile-typing.mjs` | Initial build rc=1; follow-up rc=0 after smoke readiness correction |
 | `node tools/smoke/browser-pane-ime-shortcuts.mjs` | rc=0; shortcuts and IME passed |
 | `node tools/smoke/boot-smoke.mjs` | rc=0; all boot scenarios and guards passed |
 

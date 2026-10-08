@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-08] - Zoomed-out tap smoke waits for the visible field
+
+- The real-backend typing smoke now waits for its textarea to appear in the decoded phone frame before tapping. The earlier readiness check accepted a blank JPEG while the backend already reported the page's new zoom, producing a false tap-mapping failure.
+- Production coordinate scaling, ordered input, EEPR and timing collection are unchanged. Removing inverse-scale mapping still makes the corrected smoke fail.
+- All six requested typing/coordinate/mobile/IME/timing/route checks passed. Evidence and limits: `docs/BROWSER_TAP_MAPPING_VERIFICATION.md`. Local branch only; no merge, push or restart.
+
 ## [2026-10-07] - Opt-in phone browser input timing
 
 - A dashboard query/storage flag records originating input, send, acknowledgement and first decoded visible frame after acknowledgement using the phone's own clock. Merged edits retain separate originating samples; input payloads, ordering and the CDP receive poll are unchanged.

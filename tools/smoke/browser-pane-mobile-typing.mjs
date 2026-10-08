@@ -681,6 +681,23 @@ async function testRealBackendTapOnZoomedOutPage() {
     }
     if (!(st && st.page_scale && st.page_scale < 0.6)) { fail(`real-backend: premise lost, the no-meta page is not drawn zoomed out (page_scale=${st && st.page_scale}); the test no longer proves anything`); return; }
     ok(`real-backend: the no-viewport-meta page is drawn zoomed out (pageScaleFactor ${st.page_scale.toFixed(3)})`);
+    // The server's newest frame/scale can precede the phone's decoded frame:
+    // the first loaded JPEG is often still blank. Wait for the white textarea
+    // at its expected picture position, without attaching another CDP client
+    // to the remote page (or delaying the tap by an arbitrary timeout).
+    await page.waitForFunction(([fw, fh, ps]) => {
+      const img = document.querySelector('#mc-browser-pane [data-bp="screen"]');
+      if (!img?.complete || !img.naturalWidth || !img.naturalHeight) return false;
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const [r, g, b] = ctx.getImageData(
+        Math.floor(650 * ps * img.naturalWidth / fw),
+        Math.floor(350 * ps * img.naturalHeight / fh), 1, 1).data;
+      return r > 220 && g > 220 && b > 220;
+    }, [...st.frame, st.page_scale]);
+    ok('real-backend: the phone has decoded the field before tapping its picture');
     // Where the textarea (layout centre 650,350) sits in the PICTURE the user sees.
     const [fw, fh] = st.frame;
     const pt = await page.evaluate(([fw, fh, ps]) => {
