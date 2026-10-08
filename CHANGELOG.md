@@ -28,12 +28,25 @@
   `total_cost_usd` for that model is not Haiku 5.5's rate; it still answers and
   reports that id, with `modelUsage[model].costBasis: 'unknown'` and a cost about
   34x high. `accumulate_result_cost` now swaps such an entry's `costUSD` for a
-  price from `model_prices.json` (cache read 0.1x, cache write 1.25x or 2x by the
-  result's 5m/1h split, since the store holds input/output only), or books 0 when
-  there is no row. Either way the session gets `cost_estimate: true` and
-  `cost_estimate_models` (`repriced` or `unpriced`), exposed by
-  `_session_usage_payload`. `costBasis` `'list'` or absent books exactly as before.
-  No gauge UI reads the flag yet.
+  price from `model_prices.json` when the model has a row (`repriced`). A model with
+  no row keeps the CLI's own figure (`unpriced`), since that file is never shipped
+  and booking 0 would show every install a silent $0; a high number the flag marks
+  beats that. Either way the session gets `cost_estimate: true` and
+  `cost_estimate_models`, exposed by `_session_usage_payload`. A row may carry
+  optional `cache_read`, `cache_write_5m` and `cache_write_1h` rates (USD per Mtok);
+  a rate it omits falls back to 0.1x, 1.25x and 2x of `input`. `modelUsage` has one
+  cache-write count, so the 5m/1h split comes from the result's
+  `usage.cache_creation` (token-weighted), and with no split writes use the 1h rate.
+  `costBasis` `'list'` or absent books exactly as before. No gauge UI reads the
+  flag yet.
+- Known limit: Haiku 5.5 list price depends on prompt length. Up to 100K tokens it is
+  $0.10 input, $0.125 5m cache write, $0.20 1h cache write, $0.01 cache read and
+  $0.50 output per Mtok; over 100K it is $0.50, $0.625, $1, $0.05 and $2.50. A price
+  row holds one rate per kind and the repricer works on per-process `modelUsage`
+  totals, so any request over 100K is booked at about a fifth of list. No tier-aware
+  repricing is built; `result.usage.iterations` has per-request token counts but no
+  model field. Under 100K the row is exact: a 0.10 / 0.50 row reproduces $0.00434006
+  on a real 2.1.292 probe.
 
 ## [2026-10-08] - Zoomed-out tap smoke waits for the visible field
 

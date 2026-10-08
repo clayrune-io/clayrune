@@ -74,12 +74,36 @@ def test_unknown_basis_with_price_row_is_repriced(prices):
     assert s['cost_estimate_models'] == {'claude-haiku-5-5': 'repriced'}
 
 
-def test_unknown_basis_without_price_row_is_flagged_not_the_cli_number(prices):
+def test_unknown_basis_without_price_row_keeps_the_cli_figure_flagged(prices):
+    """model_prices.json is never shipped; booking 0 would be a silent $0 on
+    every install. The CLI's (high) figure stays and the flag says it is not ours."""
     s = _book(H55)
-    assert s['cost_usd'] == 0.0
-    assert s['cost_usd'] != H55['total_cost_usd']
+    assert s['cost_usd'] == pytest.approx(H55['total_cost_usd'])
     assert s['cost_estimate'] is True
     assert s['cost_estimate_models'] == {'claude-haiku-5-5': 'unpriced'}
+
+
+def test_unpriced_cumulative_totals_still_book_as_deltas(prices):
+    second = copy.deepcopy(H55)
+    second['total_cost_usd'] = 0.30
+    second['modelUsage']['claude-haiku-5-5']['costUSD'] = 0.30
+    session, proc = {}, {}
+    ar.accumulate_result_cost(session, copy.deepcopy(H55), proc)
+    ar.accumulate_result_cost(session, second, proc)
+    assert session['cost_usd'] == pytest.approx(0.30)
+
+
+def test_mixed_priced_and_unpriced_unknown_models(prices):
+    mu.set_price('claude', 'claude-haiku-5-5', 0.10, 0.50)
+    msg = copy.deepcopy(H55)
+    other = copy.deepcopy(H55['modelUsage']['claude-haiku-5-5'])
+    other.update(canonicalModel='claude-future-9', costUSD=0.5)
+    msg['modelUsage']['claude-future-9'] = other
+    msg['total_cost_usd'] = 0.1674652 + 0.5
+    s = _book(msg)
+    assert s['cost_usd'] == pytest.approx(H55_REPRICED + 0.5)
+    assert s['cost_estimate_models'] == {'claude-haiku-5-5': 'repriced',
+                                         'claude-future-9': 'unpriced'}
 
 
 def test_list_basis_is_untouched_even_with_a_price_row(prices):
@@ -116,6 +140,71 @@ def test_cache_write_priced_by_the_5m_1h_split(prices):
                                       'ephemeral_1h_input_tokens': 0}
     expected = (2 * 0.10 + 20045 * 0.10 * 1.25 + 30686 * 0.10 * 0.1 + 48 * 0.50) / 1e6
     assert _book(msg)['cost_usd'] == pytest.approx(expected)
+
+
+def _write_row(tmp_path, **row):
+    """A price row with extra optional keys, written the way the store reads it."""
+    mu.set_price('claude', 'claude-haiku-5-5', 0.10, 0.50)
+    data = mu.load_prices()
+    data['claude']['claude-haiku-5-5'].update(row)
+    mu.save_prices(data)
+
+
+def test_explicit_cache_rates_on_the_row_are_used(prices):
+    _write_row(prices, cache_read=0.02, cache_write_1h=0.30)
+    expected = (2 * 0.10 + 20045 * 0.30 + 30686 * 0.02 + 48 * 0.50) / 1e6
+    assert _book(H55)['cost_usd'] == pytest.approx(expected)
+
+
+def test_explicit_5m_write_rate_weighted_by_the_split(prices):
+    _write_row(prices, cache_write_5m=0.20, cache_write_1h=0.40)
+    msg = copy.deepcopy(H55)
+    msg['usage']['cache_creation'] = {'ephemeral_5m_input_tokens': 5000,
+                                      'ephemeral_1h_input_tokens': 15045}
+    write = (5000 * 0.20 + 15045 * 0.40) / 20045
+    expected = (2 * 0.10 + 20045 * write + 30686 * 0.10 * 0.1 + 48 * 0.50) / 1e6
+    assert _book(msg)['cost_usd'] == pytest.approx(expected)
+
+
+def test_rates_a_row_omits_fall_back_per_kind(prices):
+    """Only cache_read is given: writes still use 1.25x / 2x of input."""
+    _write_row(prices, cache_read=0.03)
+    msg = copy.deepcopy(H55)
+    msg['usage']['cache_creation'] = {'ephemeral_5m_input_tokens': 10000,
+                                      'ephemeral_1h_input_tokens': 10045}
+    write = (10000 * 0.10 * 1.25 + 10045 * 0.10 * 2.0) / 20045
+    expected = (2 * 0.10 + 20045 * write + 30686 * 0.03 + 48 * 0.50) / 1e6
+    assert _book(msg)['cost_usd'] == pytest.approx(expected)
+
+
+def test_no_split_prices_writes_at_the_1h_rate(prices):
+    """modelUsage carries one cache-write count; without usage.cache_creation
+    the 1h rate (explicit or 2x) is used, so the guess errs high."""
+    _write_row(prices, cache_write_5m=0.01, cache_write_1h=0.40)
+    msg = copy.deepcopy(H55)
+    del msg['usage']['cache_creation']
+    expected = (2 * 0.10 + 20045 * 0.40 + 30686 * 0.10 * 0.1 + 48 * 0.50) / 1e6
+    assert _book(msg)['cost_usd'] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize('bad', [-1, 'x', None, True, [0.1]])
+def test_unusable_cache_rate_on_the_row_falls_back(prices, bad):
+    _write_row(prices, cache_read=bad, cache_write_1h=bad)
+    assert _book(H55)['cost_usd'] == pytest.approx(H55_REPRICED)
+
+
+def test_row_is_one_rate_so_a_long_prompt_is_booked_at_the_row_rate(prices):
+    """Known limit, pinned so nobody mistakes it for tier-aware pricing: Haiku
+    5.5 lists 5x higher past 100K prompt tokens, but a row holds one rate and
+    modelUsage is a per-process total, so 150K cache-read tokens book at 0.01
+    per Mtok, not the 0.05 list rate."""
+    mu.set_price('claude', 'claude-haiku-5-5', 0.10, 0.50)
+    msg = copy.deepcopy(H55)
+    msg['modelUsage']['claude-haiku-5-5'].update(
+        cacheReadInputTokens=150_000, cacheCreationInputTokens=0, inputTokens=0,
+        outputTokens=0)
+    msg['usage']['cache_creation'] = {}
+    assert _book(msg)['cost_usd'] == pytest.approx(150_000 * 0.01 / 1e6)
 
 
 def test_cumulative_totals_still_book_as_deltas(prices):

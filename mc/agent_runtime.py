@@ -6020,20 +6020,36 @@ def note_cli_init(proc_cost, msg, find_transcript=None):
         proc_cost['cli_saved_total'] = saved
 
 
-# Anthropic's cache multipliers on the input rate. model_prices.json holds
-# input/output only, so cache tokens are priced off these. Verified 2026-10-08
-# against a CLI-priced ('list') Haiku 4.5 result: 10 in + 12533 1h-cache-write
-# + 18035 cache-read + 116 out at 1/5 per Mtok gives 0.0274595, the CLI's figure.
+# Anthropic's cache multipliers on the input rate. A price row may carry its own
+# `cache_read` / `cache_write_5m` / `cache_write_1h` (USD per Mtok); a rate it
+# leaves out falls back to these. Verified 2026-10-08 against a CLI-priced
+# ('list') Haiku 4.5 result: 10 in + 12533 1h-cache-write + 18035 cache-read +
+# 116 out at 1/5 per Mtok gives 0.0274595, the CLI's figure.
 _CACHE_READ_X = 0.1
 _CACHE_WRITE_5M_X = 1.25
 _CACHE_WRITE_1H_X = 2.0
 
 
+def _row_rate(price, key, fallback):
+    """price[key] as a non-negative float (USD per Mtok), else `fallback`."""
+    v = price.get(key)
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+        return fallback
+    return float(v)
+
+
 def _reprice_model_usage(entry, msg):
     """USD for one modelUsage entry from model_prices.json, or None if no row.
 
-    Cache writes are split 5m/1h by the result's own usage.cache_creation
-    ratio; with no split they are priced at the 1h rate, so a guess errs high.
+    A row is one rate per kind, so this is exact only below the model's
+    long-prompt tier (Haiku 5.5: 100K tokens); a request above it is booked at
+    the row's rate, about a fifth of list. modelUsage is a per-process total and
+    carries no per-request size, so there is nothing here to tier on.
+
+    modelUsage does not split cache writes by TTL; the result's own
+    usage.cache_creation does, so writes are priced at the 5m/1h token-weighted
+    mean of the two write rates. With no split they are priced at the 1h rate,
+    so a guess errs high.
     """
     from mc import model_upgrade  # lazy: model_upgrade imports this module
     price = None
@@ -6045,15 +6061,18 @@ def _reprice_model_usage(entry, msg):
     if not price:
         return None
     inp, out = float(price['input']), float(price['output'])
-    write_x = _CACHE_WRITE_1H_X
+    read_rate = _row_rate(price, 'cache_read', inp * _CACHE_READ_X)
+    w5 = _row_rate(price, 'cache_write_5m', inp * _CACHE_WRITE_5M_X)
+    w1 = _row_rate(price, 'cache_write_1h', inp * _CACHE_WRITE_1H_X)
+    write_rate = w1
     cc = ((msg.get('usage') or {}).get('cache_creation') or {})
     n5, n1 = cc.get('ephemeral_5m_input_tokens'), cc.get('ephemeral_1h_input_tokens')
     if isinstance(n5, (int, float)) and isinstance(n1, (int, float)) and (n5 + n1) > 0:
-        write_x = (n5 * _CACHE_WRITE_5M_X + n1 * _CACHE_WRITE_1H_X) / (n5 + n1)
+        write_rate = (n5 * w5 + n1 * w1) / (n5 + n1)
     tok = lambda k: float(entry.get(k) or 0)
     return (tok('inputTokens') * inp
-            + tok('cacheCreationInputTokens') * inp * write_x
-            + tok('cacheReadInputTokens') * inp * _CACHE_READ_X
+            + tok('cacheCreationInputTokens') * write_rate
+            + tok('cacheReadInputTokens') * read_rate
             + tok('outputTokens') * out) / 1e6
 
 
@@ -6061,9 +6080,12 @@ def _unknown_basis_adjustment(session, msg):
     """USD to add to the CLI's cumulative total_cost_usd for models it could not price.
 
     A CLI older than the model reports costBasis 'unknown' and a wrong rate
-    (Haiku 5.5 on 2.1.292: ~34x high). Each such entry's costUSD is swapped
-    for a price from model_prices.json, or 0 when there is no row; either way
-    session['cost_estimate_models'] records which, and session['cost_estimate']
+    (Haiku 5.5 on 2.1.292: ~34x high). An entry whose model has a row in
+    model_prices.json has its costUSD swapped for that price ('repriced'). An
+    entry with no row keeps the CLI's figure ('unpriced'): model_prices.json
+    is never shipped, so booking 0 would show every install a silent $0, and
+    an overstated number that the flag marks beats that. Either way
+    session['cost_estimate_models'] records which and session['cost_estimate']
     is set. 'list' or absent costBasis: returns 0.0 and touches nothing.
     """
     usage = msg.get('modelUsage')
@@ -6080,7 +6102,8 @@ def _unknown_basis_adjustment(session, msg):
             repriced = _reprice_model_usage({**entry, '_model': model}, msg)
         except Exception:
             repriced = None
-        adjust += (repriced or 0.0) - cli_cost
+        if repriced is not None:
+            adjust += repriced - cli_cost
         session['cost_estimate'] = True
         session.setdefault('cost_estimate_models', {})[model] = (
             'repriced' if repriced is not None else 'unpriced')
