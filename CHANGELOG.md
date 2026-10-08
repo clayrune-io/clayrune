@@ -27,7 +27,7 @@
 - Claude Code 2.1.292 logs `unrecognized_model` for `claude-haiku-5-5` and its
   `total_cost_usd` for that model is not Haiku 5.5's rate; it still answers and
   reports that id, with `modelUsage[model].costBasis: 'unknown'` and a cost about
-  34x high. `accumulate_result_cost` now swaps such an entry's `costUSD` for a
+  39x high. `accumulate_result_cost` now swaps such an entry's `costUSD` for a
   price from `model_prices.json` when the model has a row (`repriced`). A model with
   no row keeps the CLI's own figure (`unpriced`), since that file is never shipped
   and booking 0 would show every install a silent $0; a high number the flag marks

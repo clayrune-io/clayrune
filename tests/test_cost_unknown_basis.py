@@ -2,7 +2,7 @@
 
 Claude Code 2.1.292 does not know claude-haiku-5-5. Its `result` event marks
 that model's `modelUsage` entry `costBasis: 'unknown'` and carries a cost that
-is ~34x too high; a model it knows reads `costBasis: 'list'`. The fixtures
+is ~39x too high; a model it knows reads `costBasis: 'list'`. The fixtures
 below are the real `usage` / `modelUsage` objects from those two probes
 (2026-10-08, CLI 2.1.292); ids and timings are left out.
 """

@@ -6080,7 +6080,7 @@ def _unknown_basis_adjustment(session, msg):
     """USD to add to the CLI's cumulative total_cost_usd for models it could not price.
 
     A CLI older than the model reports costBasis 'unknown' and a wrong rate
-    (Haiku 5.5 on 2.1.292: ~34x high). An entry whose model has a row in
+    (Haiku 5.5 on 2.1.292: ~39x high). An entry whose model has a row in
     model_prices.json has its costUSD swapped for that price ('repriced'). An
     entry with no row keeps the CLI's figure ('unpriced'): model_prices.json
     is never shipped, so booking 0 would show every install a silent $0, and
