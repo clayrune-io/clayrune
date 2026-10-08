@@ -7,6 +7,7 @@
 // window.* (see discovery_es_module_cross_boundary_globals).
 
 import { openStream, makeBlobPainter } from './browser-pane-stream.js';
+import { inputTiming } from './browser-input-timing.js';
 
 // Human-opened panes default to this persistent profile instead of a
 // throwaway one — before this, every login typed into a hand-opened pane was
@@ -181,14 +182,18 @@ function _bpPumpOrdered() {
       while (_bpOrderedQueue.length) {
         let body = _bpOrderedQueue.shift();
         for (let m; _bpOrderedQueue.length && (m = _bpMergeTextBodies(body, _bpOrderedQueue[0])); ) {
+          inputTiming.merged(m, body, _bpOrderedQueue[0]);
           body = m; _bpOrderedQueue.shift();
         }
+        const timing = inputTiming.sent(body);
         try {
-          _bpNoteSendFailure(await fetch(url, {
+          const response = await fetch(url, {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
             signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined,
-          }));
-        } catch (e) { /* aborted or offline: drop this one, keep typing alive */ }
+          });
+          inputTiming.ack(timing, response);
+          _bpNoteSendFailure(response);
+        } catch (e) { inputTiming.failed(timing); /* aborted or offline: keep typing alive */ }
       }
     } finally { _bpOrderedBusy = false; }
   })();
@@ -198,7 +203,10 @@ function _bpSend(body) {
   if (!_bpSession) return;
   const full = { session_id: _bpSession, ...body };
   const ordered = _BP_ORDERED.has(body.type) || (body.type === 'mouse' && _BP_ORDERED_MOUSE.has(body.action));
-  if (ordered) { _bpOrderedQueue.push(full); _bpPumpOrdered(); return; }
+  if (ordered) {
+    inputTiming.queued(full, _bpOrderedQueue.length);
+    _bpOrderedQueue.push(full); _bpPumpOrdered(); return;
+  }
   fetch((window.API_BASE || '') + '/api/browser/input', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(full),
   }).catch(() => {});
@@ -500,6 +508,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   const $ = sel => win.querySelector(`[data-bp="${sel}"]`);
   const img = $('screen'), urlInput = $('url'), spin = $('spin');
   const imeShadow = $('ime-shadow');
+  inputTiming.observeInput(imeShadow);
 
   // Profile indicator — the sessions menu already lets you SWITCH profile,
   // but gave no ambient sign of which one a pane is currently on. A signed-in
@@ -1060,6 +1069,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   // ── frame stream ──
   // Binary frames first, SSE as the fallback (browser-pane-stream.js); either way
   // `onStream` gets the same event object, a frame carrying `img` (base64) or `blob`.
+  const stopTimingFrames = inputTiming.observeFrames(img);
   const paintBlob = makeBlobPainter(img);
   // Fallback for the frame's true size when the server is older than this
   // file and sends no w/h: the decoded JPEG IS the viewport. CDP only scales a
@@ -1112,7 +1122,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   };
   _bpES = openStream(_bpSession, onStream);
   _bpES.onerror = () => { if (spin) spin.style.color = '#e57373'; };
-  _bpES.onclose = () => paintBlob.release();
+  _bpES.onclose = () => { stopTimingFrames(); paintBlob.release(); };
 
   // ── the page is the pane's size ──
   // ResizeObserver fires once on observe() and again on every change (corner

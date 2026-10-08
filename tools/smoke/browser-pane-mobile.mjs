@@ -28,8 +28,10 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import net from 'net';
+import { registerBrowserSmokeProcess } from './browser-smoke-processes.mjs';
 
 const REPO = new URL('../../', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+await registerBrowserSmokeProcess(process.pid, 'Browser mobile smoke', 'node tools/smoke/browser-pane-mobile.mjs');
 const fails = [];
 const fail = m => { fails.push(m); console.log(`❌ FAIL — ${m}`); };
 const ok = m => console.log(`✅ ${m}`);
@@ -43,6 +45,7 @@ const port = await freePort();
 const py = process.env.PYTHON || 'python';
 const harness = spawn(py, [join(REPO, 'tools/smoke/browser_pane_harness.py'), String(port), tmp],
   { cwd: REPO, stdio: ['pipe', 'pipe', 'pipe'] });
+await registerBrowserSmokeProcess(harness.pid, 'Browser mobile smoke harness', 'python tools/smoke/browser_pane_harness.py (isolated)');
 let harnessOut = '';
 harness.stderr.on('data', d => { harnessOut += d; });
 const pagePort = await new Promise((res, rej) => {
@@ -56,7 +59,9 @@ const pagePort = await new Promise((res, rej) => {
 });
 const BASE = `http://127.0.0.1:${port}`;
 const PAGE = `http://127.0.0.1:${pagePort}/page.html`;
-const browser = await chromium.launch();
+const browserServer = await chromium.launchServer();
+await registerBrowserSmokeProcess(browserServer.process().pid, 'Browser mobile smoke viewer', 'Playwright Chromium (isolated mobile smoke)');
+const browser = await chromium.connect(browserServer.wsEndpoint());
 
 async function stopAll(page) {
   const st = await page.evaluate(() => fetch('/api/project/smoke/browser/status').then(r => r.json()));
@@ -175,6 +180,7 @@ try {
   }
 } finally {
   await browser.close();
+  await browserServer.close();
   harness.stdin.end();
   await new Promise(r => { harness.on('exit', r); setTimeout(r, 15000); });
   try { rmSync(tmp, { recursive: true, force: true }); } catch {}

@@ -43,20 +43,25 @@ import { spawn } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import net from 'net';
+import { registerBrowserSmokeProcess } from './browser-smoke-processes.mjs';
 
 const JS = readFileSync(process.env.SMOKE_PANE_JS
   || new URL('../../static/js/browser-pane.js', import.meta.url), 'utf8');
 const MOBILE_JS = readFileSync(process.env.SMOKE_MOBILE_JS
   || new URL('../../static/js/mobile.js', import.meta.url), 'utf8');
 const ANDROID_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
+await registerBrowserSmokeProcess(process.pid, 'Browser typing smoke', 'node tools/smoke/browser-pane-mobile-typing.mjs');
 
-const browser = await chromium.launch();
+const browserServer = await chromium.launchServer();
+await registerBrowserSmokeProcess(browserServer.process().pid, 'Browser typing smoke viewer', 'Playwright Chromium (isolated typing smoke)');
+const browser = await chromium.connect(browserServer.wsEndpoint());
 const fails = [];
 const fail = m => { fails.push(m); console.log(`❌ FAIL — ${m}`); };
 const ok = m => console.log(`✅ ${m}`);
 
-async function newPage({ android = true, firstPostDelayMs = 0, editDelayMs = 0, realMobileJs = false } = {}) {
+async function newPage({ android = true, firstPostDelayMs = 0, editDelayMs = 0, realMobileJs = false, timing = false, timingUploadFails = false } = {}) {
   const posts = [];
+  const timingPosts = [];
   const context = await browser.newContext(android
     ? { userAgent: ANDROID_UA, viewport: { width: 412, height: 915 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2.6 }
     : { viewport: { width: 1280, height: 800 } });
@@ -66,6 +71,8 @@ async function newPage({ android = true, firstPostDelayMs = 0, editDelayMs = 0, 
     const url = route.request().url();
     if (url.endsWith('/browser-pane.js'))
       return route.fulfill({ contentType: 'application/javascript', body: JS });
+    if (url.endsWith('/browser-input-timing.js'))
+      return route.fulfill({ contentType: 'application/javascript', body: readFileSync(new URL('../../static/js/browser-input-timing.js', import.meta.url), 'utf8') });
     if (url.endsWith('/browser-pane-stream.js'))   // browser-pane.js imports it; this stub serves files by hand
       return route.fulfill({ contentType: 'application/javascript', body: readFileSync(new URL('../../static/js/browser-pane-stream.js', import.meta.url), 'utf8') });
     if (url.endsWith('/static/js/mobile.js'))
@@ -74,6 +81,10 @@ async function newPage({ android = true, firstPostDelayMs = 0, editDelayMs = 0, 
       return route.fulfill({ status: 201, contentType: 'application/json',
         body: JSON.stringify({ session_id: 'sid-1', url: 'about:blank',
                                profile: 'main', view: { w: 412, h: 700 } }) });
+    if (url.includes('/api/browser/input-timing')) {
+      timingPosts.push(JSON.parse(route.request().postData() || '{}'));
+      return route.fulfill({ status: timingUploadFails ? 503 : 200, contentType: 'application/json', body: '{"ok":true}' });
+    }
     if (url.includes('/api/browser/input')) {
       const body = JSON.parse(route.request().postData() || '{}');
       posts.push(body);
@@ -105,13 +116,13 @@ async function newPage({ android = true, firstPostDelayMs = 0, editDelayMs = 0, 
        ${realMobileJs ? '<script type="module" src="/static/js/mobile.js"></script>' : ''}
        <script type="module" src="/static/js/browser-pane.js"></script></body>` });
   });
-  await page.goto('http://localhost:9/');
+  await page.goto('http://localhost:9/' + (timing ? '?bp_input_timing=1' : ''));
   await page.waitForFunction(() => typeof window.openBrowserPane === 'function');
   await page.evaluate(() => window.openBrowserPane('about:blank', 'p1'));
   await page.locator('#mc-browser-pane [data-bp="ime-shadow"]').waitFor({ state: 'attached' });
   await page.waitForTimeout(400);                   // the pane's own 100ms focus + viewport debounce
   const cdp = await context.newCDPSession(page);
-  return { page, posts, cdp, context };
+  return { page, posts, timingPosts, cdp, context };
 }
 
 // What the remote page's focused field would contain after these POSTs.
@@ -148,6 +159,62 @@ const gboardDelete = page => page.evaluate(() => {
   el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Unidentified', keyCode: 229, bubbles: true, cancelable: true }));
   document.execCommand('delete');
 });
+
+// The real pane/collector, real soft-keyboard events, deliberately slow input
+// acknowledgement and newly decoded images. This measures instrumentation;
+// it does not claim to measure Ron's tunnel or correlate page pixels to text.
+async function testInputTiming() {
+  const off = await newPage();
+  await shadow(off.page).focus();
+  await commit(off.cdp, 'off');
+  await off.page.waitForTimeout(1200);
+  if (off.timingPosts.length) fail('input timing must produce no uploads by default');
+  else ok('input timing: default off produces no telemetry');
+  await off.context.close();
+
+  const { page, posts, timingPosts, cdp, context } = await newPage({ timing: true, editDelayMs: 800 });
+  await shadow(page).focus();
+  for (const text of ['secret-a', 'b', 'c']) await commit(cdp, text);
+  await page.waitForTimeout(1800);
+  // Decode a fresh image after both input responses have arrived.
+  await page.evaluate(() => {
+    document.querySelector('[data-bp="screen"]').src = 'data:image/svg+xml,' +
+      encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="412" height="700"><rect width="412" height="700" fill="red"/></svg>');
+  });
+  await page.waitForTimeout(1200);
+  const samples = timingPosts.flatMap(b => b.samples);
+  const edits = posts.filter(p => p.type === 'edit');
+  const merged = samples.filter(s => s.request_id === samples.at(-1)?.request_id);
+  if (samples.length < 3 || merged.length !== 2 || edits.length !== 2)
+    fail(`input timing lost merged input events: ${samples.length} samples, ${merged.length} merged, ${edits.length} edits`);
+  else ok('input timing: three soft-keyboard events survive a two-request queue merge');
+  if (!samples.every(s => s.outcome === 1 && s.t_key <= s.t_sent && s.t_sent <= s.t_ack && s.t_ack < s.t_frame))
+    fail('input timing timestamps must follow event, send, ack, decoded visible frame');
+  else ok('input timing: all four stages measured in phone document clock');
+  if (!samples.some(s => s.t_sent - s.t_key >= 600) || !samples.some(s => s.t_ack - s.t_sent >= 700))
+    fail('input timing did not expose delayed queue and input round trip');
+  else ok('input timing: simulated 800ms input delay exposes queue wait and request time');
+  if (JSON.stringify(timingPosts).includes('secret-a') || samples.some(s => Object.values(s).some(v => v !== null && typeof v !== 'number')))
+    fail('input timing leaked text or a nonnumeric sample field');
+  else ok('input timing: numeric samples + UA only, no typed contents');
+  if (posts.some(p => Object.keys(p).some(k => k.startsWith('t_') || k.includes('timing'))))
+    fail('input timing mutated the input wire payload');
+  else ok('input timing: input payload unchanged');
+  await context.close();
+
+  const failure = await newPage({ timing: true, timingUploadFails: true });
+  await shadow(failure.page).focus();
+  await commit(failure.cdp, 'still-types');
+  await settle(failure.page);
+  // No new decoded image: after ten seconds the no-frame sample is uploaded.
+  await failure.page.waitForTimeout(11000);
+  await commit(failure.cdp, '-more');
+  await settle(failure.page);
+  if (!failure.timingPosts.length || remoteText(failure.posts) !== 'still-types-more')
+    fail('telemetry failure stalled typing or missing-frame diagnostics');
+  else ok('input timing: missing frame is explicit and failed upload never stalls typing');
+  await failure.context.close();
+}
 
 // ── 1. typing ───────────────────────────────────────────────────────────────
 async function testTyping() {
@@ -564,6 +631,7 @@ async function testRealBackendTapOnZoomedOutPage() {
   const harness = spawn(process.env.PYTHON || 'python',
     [join(REPO, 'tools/smoke/browser_pane_harness.py'), String(port), tmp],
     { cwd: REPO, stdio: ['pipe', 'pipe', 'pipe'] });
+  await registerBrowserSmokeProcess(harness.pid, 'Browser typing smoke harness', 'python tools/smoke/browser_pane_harness.py (isolated typing)');
   let out = '';
   harness.stderr.on('data', d => { out += d; });
   const pagePort = await new Promise((res, rej) => {
@@ -574,6 +642,14 @@ async function testRealBackendTapOnZoomedOutPage() {
   const BASE = `http://127.0.0.1:${port}`;
   const context = await browser.newContext({ userAgent: ANDROID_UA, viewport: { width: 412, height: 915 }, hasTouch: true });
   const page = await context.newPage();
+  // Honour the existing source override for the real-backend regression too.
+  await page.route('**/static/js/browser-pane.js', route => route.fulfill({ contentType: 'application/javascript', body: JS }));
+  const inputNumbers = [];
+  page.on('request', req => {
+    if (!req.url().endsWith('/api/browser/input')) return;
+    const data = req.postDataJSON();
+    inputNumbers.push({ type: data.type, x: data.x, y: data.y });
+  });
   page.on('pageerror', e => fail(`real-backend: page error: ${e.message}`));
   try {
     await page.goto(BASE + '/');
@@ -590,6 +666,12 @@ async function testRealBackendTapOnZoomedOutPage() {
       return null;
     })();
     if (!sid) { fail('real-backend: no session launched'); return; }
+    // A CDP frame existing on the server does not mean the phone has decoded
+    // it. Clicking before the first visible frame uses fallback dimensions.
+    await page.waitForFunction(() => {
+      const img = document.querySelector('#mc-browser-pane [data-bp="screen"]');
+      return img && img.complete && img.naturalWidth > 0 && window._bpStats?.frames > 0;
+    });
     // Wait for the zoomed-out premise: frames report a pageScaleFactor < 1.
     let st = null;
     for (let i = 0; i < 100; i++) {
@@ -617,7 +699,7 @@ async function testRealBackendTapOnZoomedOutPage() {
         body: JSON.stringify({ session_id: sid, selector: 'body' }) });
       text = JSON.stringify(r);
     }
-    if (!text.includes('typed:hello')) fail(`real-backend: a tap on the page's field (picture ${pt.x.toFixed(0)},${pt.y.toFixed(0)}) then typing "hello" never reached it; the tap missed the field. read: ${text.replace(/"warning":"[^"]*",?/, "").slice(0, 500)}`);
+    if (!text.includes('typed:hello')) fail(`real-backend: a tap on the page's field (picture ${pt.x.toFixed(0)},${pt.y.toFixed(0)}; server frame ${fw}x${fh}; input coordinates ${JSON.stringify(inputNumbers)}) then typing "hello" never reached it; the tap missed the field. read: ${text.replace(/"warning":"[^"]*",?/, "").slice(0, 500)}`);
     else ok('real-backend: tap on a zoomed-out page focuses its field and soft-keyboard typing arrives in it');
     await getJson('/api/browser/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: sid }) });
   } finally {
@@ -627,6 +709,7 @@ async function testRealBackendTapOnZoomedOutPage() {
   }
 }
 
+if (!process.argv.includes('--real-only')) {
 await testTyping();
 await testSuggestionAndAutocorrect();
 await testEmojiAndEmptyBackspaceAndEnter();
@@ -641,8 +724,11 @@ await testTapQueuesBehindTyping();
 await testTapEndsComposition();
 await testTapDismissesHostMenu();
 await testBackToChatKeepsSession();
+await testInputTiming();
+}
 await testRealBackendTapOnZoomedOutPage();
 await browser.close();
+await browserServer.close();
 
 if (!fails.length) console.log('✅ PASS — Android soft-keyboard typing, keyboard-stable frame, long-press paste and paste fallback verified against the real static/js/browser-pane.js.');
 else process.exitCode = 1;

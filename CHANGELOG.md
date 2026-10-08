@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-07] - Opt-in phone browser input timing
+
+- A dashboard query/storage flag records originating input, send, acknowledgement and first decoded visible frame after acknowledgement using the phone's own clock. Merged edits retain separate originating samples; input payloads, ordering and the CDP receive poll are unchanged.
+- A separate `/api/browser/input-timing` blueprint accepts numeric samples and user-agent only into a bounded 1,000-sample memory ring; no text, key values, URLs, profile names or files. Phone enable/read instructions and verification limits: `docs/BROWSER_INPUT_TIMING.md`.
+- Branch build only; no merge, push, restart or live-phone measurement. The existing real-browser zoomed-out tap check also fails with the original pane source; full typing smoke is not green.
+
 ## [2026-10-07] - Merge review lineage no longer depends on notify_session (MC-1082)
 
 - `POST .../agent/dispatch` now records the OS-attributed caller session as the child's spawner (`_spawned_by`, durable `dispatched_by_session_id`), whatever the body says. A builder that dispatched its own reviewer without `notify_session`, or naming a decoy, used to leave no lineage and the reviewer passed; it is now refused 403 by the merge-review gate. `mc/review_lineage.py` reads the same fields unchanged.
