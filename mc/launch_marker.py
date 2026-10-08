@@ -26,6 +26,8 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Optional
 
+from mc.provider_env_scope import scope_claude_env
+
 # Read by steward/fence.py `_should_arm_for_unattended_trigger` (the hook runs in
 # the Claude child's environment, so this is the one channel that needs no server).
 LAUNCH_MARKER_ENV = 'CLAYRUNE_LAUNCHED_UNATTENDED'
@@ -58,8 +60,12 @@ def launch_env(trigger_type: Optional[str],
     The removal matters: a server started from an agent's shell inherits the
     marker, and every attended chat it spawned would then carry it. Attended
     sessions must stay unfenced.
+
+    Also drops ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN that were saved under a
+    non-claude provider (mc/provider_env_scope.py), so a Goose/Aider/Qwen key
+    cannot move a Claude run off the subscription plan.
     """
-    env: Dict[str, Any] = dict(os.environ if base is None else base)
+    env: Dict[str, Any] = scope_claude_env(dict(os.environ if base is None else base))
     unattended = (trigger_type or '') in UNATTENDED_TRIGGER_TYPES
     if unattended and _fence_enabled():
         env[LAUNCH_MARKER_ENV] = '1'

@@ -172,6 +172,15 @@ function _renderProviderHealthRows() {
   return `<div class="ssp-section-head" style="margin-top:10px">Agent providers</div>${rows}`;
 }
 
+// A Claude run billed to an API key (any apiKeySource other than 'none')
+// is NOT drawing on the subscription plan. '' means no init event captured
+// yet, so there is nothing to warn about.
+function _apiKeyBillingWarning(s) {
+  const src = s && s.apiKeySource;
+  if (!src || src === 'none') return '';
+  return `<div class="ssp-row"><span class="ssp-v amber" style="text-align:left;font-family:inherit">Warning: Claude runs are billed to an API key (${esc(src)}), not your subscription plan.</span></div>`;
+}
+
 function _renderStatusTab(s, rl, h) {
   const colorClass = h.color === 'ok' ? 'green' : (h.color === 'warn' ? 'amber' : (h.color === 'bad' ? 'red' : ''));
   const resetWhen = rl.resetsAt ? new Date(rl.resetsAt * 1000).toLocaleTimeString() : '';
@@ -191,7 +200,8 @@ function _renderStatusTab(s, rl, h) {
     <div class="ssp-row"><span class="ssp-k">Overage</span><span class="ssp-v">${rl.isUsingOverage ? 'using overage' : esc(rl.overageStatus || '—')}</span></div>
     <div class="ssp-row"><span class="ssp-k">Model</span><span class="ssp-v">${esc(s.model || '—')}</span></div>
     <div class="ssp-row"><span class="ssp-k">Agent version</span><span class="ssp-v">${esc(s.claude_code_version || '—')}</span></div>
-    <div class="ssp-row"><span class="ssp-k">Auth</span><span class="ssp-v">${esc(authDisplay)}</span></div>
+    <div class="ssp-row"><span class="ssp-k">Auth</span><span class="ssp-v${_apiKeyBillingWarning(s) ? ' amber' : ''}">${esc(authDisplay)}</span></div>
+    ${_apiKeyBillingWarning(s)}
     ${_renderProviderHealthRows()}
   `;
 }

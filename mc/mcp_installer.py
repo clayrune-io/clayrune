@@ -37,6 +37,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from mc.provider_env_scope import claude_child_env
+
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
@@ -105,10 +107,13 @@ def _resolve_npm() -> str | None:
 
 
 def _run(cmd: list[str], cwd: str | None = None, timeout: int = 60,
-         env: dict[str, str] | None = None) -> tuple[int, str, str]:
+         env: dict[str, str] | None = None, claude_child: bool = False) -> tuple[int, str, str]:
     """Sync subprocess.run wrapper that captures text output without popping a
-    console window on Windows. Returns (rc, stdout, stderr)."""
+    console window on Windows. Returns (rc, stdout, stderr). `claude_child`
+    scopes saved provider API keys to the claude provider (provider_env_scope)."""
     full_env = {**os.environ, **(env or {})}
+    if claude_child:
+        full_env = claude_child_env(full_env)
     try:
         proc = subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
@@ -763,7 +768,7 @@ def security_scan(install_dir: str, sha: str, *, toolless: bool = False) -> dict
     rc, out, _ = _run(
         [_resolve_claude_bin(), '-p', prompt, '--max-turns', '1',
          '--output-format', 'json'],
-        timeout=90,
+        timeout=90, claude_child=True,
     )
     if rc != 0 or not out.strip():
         result = {'available': False, 'reason': f'claude rc={rc}'}
