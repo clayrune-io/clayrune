@@ -80,14 +80,92 @@ UA-served HTML. It does not treat a reported session mode alone as success.
 
 Process registration is enabled with
 `MC_TEST_PROCESS_REGISTER_URL=http://localhost:5199/api/processes/register`.
-The smoke dependency junction points at the main checkout; no npm or
-Chromium installation. Its required pre-commit removal was refused by the
-unattended tool fence. The tested changes remain uncommitted pending cleanup.
+The original smoke dependency junction pointed at the main checkout; no npm or
+Chromium installation. Its removal was initially refused by the unattended
+tool fence. The original fix was subsequently committed as `939a4aa4` and
+integrated by Dave in `c710ffe9` before this follow-up began.
 
 ## Delivery
 
-Uncommitted on the assigned branch. Python changes require a server restart after integration; the
-dashboard must reload the changed JavaScript. No merge, push or restart is
-performed here. Physical phone/PC hardware and authenticated sites are not
-verified. No new reload policy decision: reloads in both directions already
-existed on the base branch.
+The follow-up below is a local branch change based on `c710ffe9`. The dashboard
+must reload the changed JavaScript after integration. No merge, push or restart
+is performed in this follow-up. Physical phone/PC hardware and authenticated
+sites are not verified. No new reload policy decision: reloads in both
+directions already existed on the base branch.
+
+## 2026-10-08 follow-up: visibility/focus return and visible mobile close
+
+The original smoke covered dock restore, which explicitly sends a viewport.
+It did not cover a phone whose dashboard document returned to visibility while
+its pane remained at exactly the same size. `sendView` had no visibility/focus
+caller and retained its local size+mode dedupe. The extended regression failed
+on `c710ffe9` (rc=1): phone return left desktop HTML, touch=0 and 1120x685
+desktop metrics in place.
+
+`browser-pane.js` now reuses `sendView` on `visibilitychange` to visible and
+window focus, clearing its local dedupe. Hidden, minimized and detached panes
+are guarded; close, detach and stop remove the listeners and pending resize
+timer. No pointerdown/keydown takeover was added. The backend's existing
+device-mode transition guard makes repeated same-mode reports non-reloading;
+the smoke counts actual UA fixture loads to verify zero extra reloads on both
+phone and desktop. The change stays with the existing viewport lifecycle in
+`browser-pane.js`; it adds no independent concern or new teardown module.
+
+The mobile top bar now has a visible X after the spinner, with a 40x40px tap
+target and `aria-label="Close browser"`. Both X and the retained menu item are
+wired to `closeBrowserPane`, which uses the existing `/api/browser/stop`
+graceful close path. No profile handling changed; saved-profile/sign-in
+persistence was not exercised. The typing smoke retains its Back to chat and
+menu-close checks; the mobile smoke taps the top X and verifies pane removal
+and exactly one stop request against an isolated throwaway session.
+
+### Bottom toolbar measurement
+
+At 390x844, the real mobile pane's toolbar is y=792..844 (52px), fully on-screen.
+With the typing shadow focused, reducing the viewport to 390x500 models the
+visible area above a soft keyboard. The pane intentionally freezes at its
+original height to prevent the frame moving under the finger; the toolbar
+stays y=792..844, below the visible area. The top X remains visible and tappable.
+No keyboard-layout change was made: Ron asked for measurement and disclosure.
+
+Screenshots generated and visually inspected (gitignored):
+
+- `_scratch/browser-return-viewer/mobile-390x844.png`
+- `_scratch/browser-return-viewer/mobile-keyboard-visible-area.png`
+
+This is headless geometry with simulated keyboard occlusion, not a native
+Android/iOS keyboard test. The screenshot shows the reduced visible area,
+not a fabricated keyboard. Neither physical phone behavior nor sign-in is
+claimed as verified.
+
+### Follow-up verification
+
+All commands below returned rc=0 on this branch. Python: 192 passed. The handoff
+checks actual inner dimensions, touch, UA client hints and UA-served HTML for
+phone -> PC -> phone visible and PC -> phone -> PC focus, plus same-mode no
+reload and existing dock restore. Mobile checks labelled X/tap and toolbar
+geometry. Coordinates and the complete typing/IME/paste/ordering smoke pass.
+
+```text
+python -m pytest tests/test_browser_routes.py tests/test_browser_viewer_mode.py -o addopts= -q
+node tools/smoke/browser-pane-device-handoff.mjs
+node tools/smoke/browser-pane-mobile.mjs
+node tools/smoke/browser-pane-coords.mjs
+node tools/smoke/browser-pane-mobile-typing.mjs
+```
+
+Smoke environment: `MC_TEST_PROCESS_REGISTER_URL=http://localhost:5199/api/processes/register`.
+Each smoke registers its owned viewer/harness/browser PIDs. All smokes use the
+main checkout's `tools/smoke/node_modules` through a temporary junction. No
+installation, named profiles, live panes, unrelated process termination or
+production server restart.
+
+### Follow-up delivery blocker
+
+Changes are tested but not committed. The unattended tool fence rejected
+removal of `tools/smoke/node_modules` as destructive deletion outside scratch.
+The inspected path is a junction
+created by this session, targeting the main checkout's dependencies. No retry
+or alternate deletion was attempted. Project instructions require its removal
+before committing. The integration owner must arrange cleanup; after the junction is
+removed, commit only the seven changed source/test/documentation paths.

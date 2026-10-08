@@ -78,6 +78,8 @@ let _bpUpHandler = null;
 // -- huge blurry text and black bars). Disconnected on teardown like the
 // mouseup handler above.
 let _bpViewObserver = null;
+// Visibility/focus listeners belong to the current pane, like its observer.
+let _bpReturnViewOff = null;
 // Keeps a maximized pane filling the viewport across a browser-window resize
 // (item 4 of the maximize spec). Tracked/removed on teardown like the mouseup
 // handler above, for the same reason — a stale one bound to a detached `win`
@@ -421,6 +423,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
         style="flex:1;min-width:0;padding:10px 12px;font-size:14px;background:#111;border:1px solid #444;border-radius:8px;color:#eee;outline:none">
       </form>
       <span data-bp="spin" style="display:none;color:#888;font-size:12px;width:14px">&#9679;</span>
+      <button data-bp="close" title="Close browser" aria-label="Close browser" style="background:none;border:none;color:#ff8a80;font-size:22px;line-height:1;cursor:pointer;width:40px;height:40px;padding:0;flex:0 0 auto">&#10005;</button>
     </div>
     <div data-bp="tabstrip" style="display:none"></div>
     ${_bpMiddleHtml}
@@ -532,7 +535,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   _bpSetProfileBadge(curProfile);
   profileBadge.onclick = (e) => { e.stopPropagation(); _bpToggleSessionMenu(win, pid); };
 
-  $('close').onclick = closeBrowserPane;
+  win.querySelectorAll('[data-bp="close"]').forEach(btn => { btn.onclick = closeBrowserPane; });
   $('back').onclick = () => _bpSend({ type: 'back' });
   $('fwd').onclick = () => _bpSend({ type: 'forward' });
   $('reload').onclick = () => _bpSend({ type: 'reload' });
@@ -1132,6 +1135,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   const screenBox = img.parentElement;
   let viewTimer = null, lastView = '';
   const sendView = () => {
+    if (!win.isConnected) return;
     const w = Math.floor(screenBox.clientWidth), h = Math.floor(screenBox.clientHeight);
     const mode = _bpIsMobile();
     const viewKey = w + 'x' + h + ':' + mode;
@@ -1147,6 +1151,25 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   if (_bpViewObserver) _bpViewObserver.disconnect();
   _bpViewObserver = new ResizeObserver(() => { clearTimeout(viewTimer); viewTimer = setTimeout(sendView, 150); });
   _bpViewObserver.observe(screenBox);
+
+  // Returning to this device need not resize its pane. Forget the local
+  // report so the backend can compare with the OTHER viewer's current mode.
+  // Its mode-transition guard reloads only on a change, so same-mode returns
+  // preserve forms. Never reclaim on pointer/key input under the user's hand.
+  const returnView = () => {
+    if (document.visibilityState !== 'visible' || !win.isConnected ||
+        screenBox.clientWidth < 50 || screenBox.clientHeight < 50) return;
+    clearTimeout(viewTimer);
+    lastView = '';
+    sendView();
+  };
+  document.addEventListener('visibilitychange', returnView);
+  window.addEventListener('focus', returnView);
+  _bpReturnViewOff = () => {
+    clearTimeout(viewTimer);
+    document.removeEventListener('visibilitychange', returnView);
+    window.removeEventListener('focus', returnView);
+  };
 
   // ── maximize/restore — wired here (not with the other buttons above) so it
   // can call `sendView` directly instead of waiting on the ResizeObserver's
@@ -1555,6 +1578,7 @@ function _bpRenderFileChooser(win, fc) {
 }
 
 function closeBrowserPane() {
+  if (_bpReturnViewOff) { _bpReturnViewOff(); _bpReturnViewOff = null; }
   if (_bpMinimizedChip) { try { _bpMinimizedChip.remove(); } catch (e) {} _bpMinimizedChip = null; }
   if (_bpES) { try { _bpES.close(); } catch (e) {} _bpES = null; }
   if (_bpUpHandler) { window.removeEventListener('mouseup', _bpUpHandler); _bpUpHandler = null; }
@@ -1606,6 +1630,7 @@ async function _bpFetchSessions(pid) {
 // Detach the pane VIEW (close the stream, remove the window) WITHOUT stopping
 // the backend session or clearing the restore flag. Used on switch/re-open.
 function _bpDetachView() {
+  if (_bpReturnViewOff) { _bpReturnViewOff(); _bpReturnViewOff = null; }
   if (_bpMinimizedChip) { try { _bpMinimizedChip.remove(); } catch (e) {} _bpMinimizedChip = null; }
   if (_bpES) { try { _bpES.close(); } catch (e) {} _bpES = null; }
   if (_bpUpHandler) { window.removeEventListener('mouseup', _bpUpHandler); _bpUpHandler = null; }
@@ -1635,6 +1660,7 @@ function stopBrowserSession(sid, pid) {
     body: JSON.stringify({ session_id: sid }),
   }).catch(() => {});
   if (sid === _bpSession) {
+    if (_bpReturnViewOff) { _bpReturnViewOff(); _bpReturnViewOff = null; }
     if (_bpES) { try { _bpES.close(); } catch (e) {} _bpES = null; }
     try { localStorage.removeItem('mc_browser_pane_open'); } catch (e) {}
     _bpSession = null;

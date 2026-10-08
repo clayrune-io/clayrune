@@ -72,6 +72,41 @@ try {
   const desktop = await viewer(1440, 1000);
   await desktop.evaluate(s => window.attachBrowserPane(s, 'smoke'), sid);
   await expectMode(false);
+  // The phone sheet never resized or closed while its user was on the PC.
+  // Model tab visibility explicitly: headless pages need not become hidden
+  // when another page is created. Dispatch only the real return event.
+  await phone.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('focus'));
+  });
+  await expectMode(false);
+  await phone.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expectMode(true);
+  const phoneHitsBefore = (await api('/_harness/uahits')).hits.length;
+  await phone.evaluate(() => {
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('focus'));
+  });
+  await new Promise(resolve => setTimeout(resolve, 700));
+  assert.equal((await api('/_harness/uahits')).hits.length, phoneHitsBefore,
+    'same-mode phone visibility/focus must not reload the remote page');
+  console.log('PASS same-mode phone visibility/focus does not reload');
+  await desktop.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expectMode(false);
+  const hitsBefore = (await api('/_harness/uahits')).hits.length;
+  await desktop.evaluate(() => {
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('focus'));
+  });
+  await new Promise(resolve => setTimeout(resolve, 700));
+  await expectMode(false);
+  assert.equal((await api('/_harness/uahits')).hits.length, hitsBefore,
+    'same-mode visibility/focus must not reload the remote page');
+  console.log('PASS same-mode visibility/focus does not reload');
   // A hidden viewer reclaims the session at the SAME pane size. Resize-only
   // deduplication must not suppress this takeover after the other device won.
   await phone.locator('[data-bp="hide"]').click();
