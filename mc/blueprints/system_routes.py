@@ -36,7 +36,7 @@ from mc.usage_breakdown_aggregate import reset_drop_starts as _ub_reset_drop_sta
 from mc import slash_commands as slash_cmds
 from mc.atomic_json import write_json_atomic
 from mc import update_requirements
-from mc.provider_env_scope import claude_child_env
+from mc.provider_env_scope import claude_child_env, relaunch_env
 from mc.core import _atomic_write_text, _log, now_iso, path_is_within, time_ago
 from mc.state import (
     _UPDATE_CHECK_BOOT_DELAY_S,
@@ -1836,7 +1836,8 @@ def _perform_server_restart_async(audit_entry):
         # the user already has a fresh server starting up. The new instance's
         # port-conflict bypass will wait for the old socket to free.
         spawned = False
-        new_env = os.environ.copy()
+        # Pre-hydration guarded keys only: see provider_env_scope.relaunch_env.
+        new_env = relaunch_env()
         new_env['MC_RESTART_FROM_PID'] = str(os.getpid())
         try:
             popen_kwargs = {

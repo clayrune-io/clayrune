@@ -68,6 +68,22 @@ def scope_claude_env(env: MutableMapping[str, str]) -> MutableMapping[str, str]:
     return env
 
 
+def relaunch_env(base: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
+    """Env for a relaunched SERVER (in-app restart, self-update swap).
+
+    The running server's environ is already hydrated with every provider's saved
+    keys; a successor that inherited it would snapshot a Goose-saved key as the
+    shell's own (`_ORIGINAL_ENV`) and hand it to Claude. Restore the guarded
+    names to their pre-hydration state: original shell value, or absent. Never
+    carries a guarded value that was not in the original shell; the successor
+    re-hydrates the saved ones from provider_env.json itself."""
+    env = dict(os.environ if base is None else base)
+    for k in [k for k in env if k.upper() in CLAUDE_GUARDED_ENV]:
+        del env[k]
+    env.update(_ORIGINAL_ENV)
+    return env
+
+
 def claude_child_env(base: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
     """A scoped copy of `base` (default: the server's environ) for a Claude
     child that has no trigger_type (probes, one-shots, housekeeping). Spawn
