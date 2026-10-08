@@ -1133,14 +1133,16 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   let viewTimer = null, lastView = '';
   const sendView = () => {
     const w = Math.floor(screenBox.clientWidth), h = Math.floor(screenBox.clientHeight);
-    if (w < 50 || h < 50 || lastView === w + 'x' + h) return;
-    lastView = w + 'x' + h;
+    const mode = _bpIsMobile();
+    const viewKey = w + 'x' + h + ':' + mode;
+    if (w < 50 || h < 50 || lastView === viewKey) return;
+    lastView = viewKey;
     // `mobile` (MC-980) tells the backend which CDP device-mode this report
     // should put the session in — re-evaluated live (not the `mobile` this
     // open captured) so an attach from the other kind of client, or the host
     // window crossing 960px, switches the remote page's presentation to match
     // rather than leaving it stuck in whichever mode first launched it.
-    _bpSend({ type: 'viewport', w, h, mobile: _bpIsMobile() });
+    _bpSend({ type: 'viewport', w, h, mobile: mode });
   };
   if (_bpViewObserver) _bpViewObserver.disconnect();
   _bpViewObserver = new ResizeObserver(() => { clearTimeout(viewTimer); viewTimer = setTimeout(sendView, 150); });
@@ -1229,7 +1231,7 @@ function _bpRestorePane(win) {
   const box = screenBox && screenBox.parentElement;
   if (box) {
     const w = Math.floor(box.clientWidth), h = Math.floor(box.clientHeight);
-    if (w >= 50 && h >= 50) _bpSend({ type: 'viewport', w, h });
+    if (w >= 50 && h >= 50) _bpSend({ type: 'viewport', w, h, mobile: _bpIsMobile() });
   }
 }
 

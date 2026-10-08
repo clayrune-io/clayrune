@@ -113,6 +113,17 @@ def _registered():
     return {'registered': [dict(v, pid=k) for k, v in registered.items()]}
 
 
+@app.route('/_harness/device/<sid>')
+def _device_state(sid):
+    session = browser_sessions.get(sid)
+    if not session or not session.get('frame_seq'):
+        return {'ready': False}
+    ok, value = br._cdp_evaluate(session, "JSON.stringify({width: innerWidth, height: innerHeight, "
+        "touch: navigator.maxTouchPoints, mobile: navigator.userAgentData?.mobile, "
+        "ua: navigator.userAgent, site: document.getElementById('site')?.textContent})")
+    return {'ready': ok, 'device': json.loads(value) if ok and isinstance(value, str) else None}
+
+
 @app.route('/')
 def _shell():
     # The viewport meta is what the real app's index.html carries: without it a

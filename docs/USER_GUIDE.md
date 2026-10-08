@@ -921,6 +921,14 @@ Update if on an old version.
 Was a real `sizeAgentChat` measurement loop. Fixed in `[2026-05-06]`.
 Update.
 
+### Move a browser pane between phone and PC
+
+Opening or restoring the same running pane on another device switches its
+page rendering to that viewer: phone metrics and touch on a phone, desktop
+metrics and touch off on a PC. A device-mode change reloads the page so the
+site can serve the matching version; resizing within one mode does not.
+The pane is one shared page: its latest attach or restore controls rendering.
+
 ### Measure browser-pane typing delay on a phone
 
 Optional diagnostics start off. To collect timings from your phone, add

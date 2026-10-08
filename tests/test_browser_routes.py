@@ -1606,7 +1606,7 @@ def test_device_mode_commands_switches_to_desktop_restores_desktop_ua():
     assert methods == ['Emulation.clearDeviceMetricsOverride',
                        'Emulation.setTouchEmulationEnabled',
                        'Network.setUserAgentOverride']
-    assert cmds[1][1] == {'enabled': False, 'maxTouchPoints': 0}
+    assert cmds[1][1] == {'enabled': False}
     assert cmds[2][1]['userAgent'] == 'Chrome/153.0.0.0 desktop-ua'
     assert session['device_mode'] == 'desktop'
     assert session['device_mode_view'] is None

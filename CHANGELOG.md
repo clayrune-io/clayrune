@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-08] - Browser pane follows the returning viewer's device
+
+- Phone-to-PC handoff clears phone metrics before measuring the desktop window and disables touch with a valid CDP command. Dock restore reports the viewer's device mode even when the pane size is unchanged.
+- Device transitions live in `mc/browser_viewer_mode.py`; the existing reload on mode change and the rule against desktop metrics overrides remain. Throwaway two-viewer regression: `tools/smoke/browser-pane-device-handoff.mjs`. Evidence: `docs/BROWSER_VIEWER_HANDOFF.md`.
+- Branch build only; no merge, push or server restart.
+
 ## [2026-10-08] - Zoomed-out tap smoke waits for the visible field
 
 - The real-backend typing smoke now waits for its textarea to appear in the decoded phone frame before tapping. The earlier readiness check accepted a blank JPEG while the backend already reported the page's new zoom, producing a false tap-mapping failure.
