@@ -1342,7 +1342,8 @@ def _device_mode_commands(session, mobile: bool, view=None):
         session['device_mode_view'] = None
         cmds = [
             ('Emulation.clearDeviceMetricsOverride', {}),
-            ('Emulation.setTouchEmulationEnabled', {'enabled': False, 'maxTouchPoints': 0}),
+            # CDP rejects maxTouchPoints=0 even when enabled is false.
+            ('Emulation.setTouchEmulationEnabled', {'enabled': False}),
         ]
         ua = session.get('ua_override')
         if ua:
@@ -1350,7 +1351,7 @@ def _device_mode_commands(session, mobile: bool, view=None):
         return cmds
 
 
-def _fit_windows(session, target_ids=None):
+def _fit_windows(session, target_ids=None, reset_device=False):
     """Size each tab's window so its PAGE viewport is exactly session['view']
     CSS px -- the pane's own on-screen size -- so the pane shows it 1:1.
 
@@ -1433,9 +1434,8 @@ def _fit_windows(session, target_ids=None):
                 try:
                     win = call('Browser.getWindowForTarget', {'targetId': tid})
                     wid = win['windowId']
-                    if wid in done:
+                    if wid in done and not reset_device:
                         continue
-                    done.add(wid)
                     b = win.get('bounds') or {}
                     if b.get('windowState', 'normal') != 'normal':
                         call('Browser.setWindowBounds',
@@ -1443,6 +1443,16 @@ def _fit_windows(session, target_ids=None):
                     sid = call('Target.attachToTarget',
                                {'targetId': tid, 'flatten': True})['sessionId']
                     try:
+                        if reset_device:
+                            # This connection must clear the phone override
+                            # BEFORE measuring; the reader's queue is async.
+                            call('Emulation.clearDeviceMetricsOverride', {}, sid)
+                            call('Emulation.setTouchEmulationEnabled', {'enabled': False}, sid)
+                        # Metrics/touch are per target even when tabs share
+                        # one window. Clear all targets, fit each window once.
+                        if wid in done:
+                            continue
+                        done.add(wid)
                         before = inner(sid)
                         if before == view:
                             continue
@@ -1474,11 +1484,11 @@ def _fit_windows(session, target_ids=None):
         finally:
             try:
                 ws.close()
-            except Exception:
-                pass
+            except Exception as e:
+                _log(f'[browser] viewport fit connection close failed: {e}', flush=True)
 
 
-def _fit_and_rearm(session, target_ids=None):
+def _fit_and_rearm(session, target_ids=None, reset_device=False):
     """_fit_windows, then restart the active tab's screencast.
 
     A window resize alone produces NO screencast frame in headless Chromium:
@@ -1487,65 +1497,17 @@ def _fit_and_rearm(session, target_ids=None):
     old-size frame, letterboxed, indefinitely. A stop+start emits a
     new-size frame within ~50ms. (A bare second startScreencast is not
     enough: same stall.) Skipped while minimized, same as every re-arm."""
-    _fit_windows(session, target_ids)
+    if reset_device:
+        _fit_windows(session, target_ids, reset_device=True)
+    else:
+        _fit_windows(session, target_ids)
     if session.get('status') == 'running' and not session.get('screencast_paused'):
         session['cmd_queue'].put(('Page.stopScreencast', {}))
         session['cmd_queue'].put(('Page.startScreencast',
                                   session.get('screencast_params', _SCREENCAST_PARAMS)))
 
 
-def _apply_view(session, view, mobile=None):
-    """The pane is `view` CSS px on screen now: size every tab to it, and
-    raise the screencast caps to match (they only downscale, so caps left at
-    a smaller, older size would shrink every frame of a bigger pane).
-
-    `mobile` (MC-980) is None for an ordinary desktop-pane resize -- no
-    device-mode change; queues the CDP switch AFTER _fit_and_rearm so the
-    window is already the size the override declares -- that ordering is
-    correct down to ~500 CSS px, Chromium's own real-window floor (measured
-    2026-09-26: `--window-size=412,915` still reports innerWidth 500 before
-    any override lands).
-
-    A phone pane is narrower than that floor, so when `mobile` is true this
-    skips `_fit_and_rearm`'s real-`Browser.setWindowBounds` fitting entirely
-    -- below the floor it cannot converge, and the "size, measure, correct
-    once" loop in `_fit_windows` mis-solves for window chrome from a
-    settled-but-wrong reading and leaves that wrong number cached for next
-    time. The Emulation override is declarative: it sizes the page and the
-    screencast frame exactly, independent of the real window (verified via a
-    raw screencastFrame capture at real window floored to 500 but override
-    set to 412 -- frame came back 412x915, pixel-exact). So mobile mode
-    relies on the override alone, sent BEFORE the screencast restart rather
-    than after -- the previous order restarted the cast against pre-override
-    window state, capturing one or more letterboxed frames every time the
-    pane resized (MC-980 defect 1)."""
-    session['view'] = view
-    session['screencast_params'] = _screencast_params_for(session.get('dpr', 1), view)
-    is_mobile = bool(mobile) if mobile is not None else session.get('device_mode') == 'mobile'
-    q = session['cmd_queue']
-    prev_mode = session.get('device_mode')
-    if is_mobile:
-        for cmd in _device_mode_commands(session, True, view):
-            q.put(cmd)
-        # A page loaded under the desktop UA already has its desktop HTML: the
-        # UA/metrics switch does not re-ask the site, so Google stayed a
-        # 980px-wide layout drawn at 0.42 (Ron, 2026-10-02, a session an agent
-        # launched at 1280x800 and the phone then flipped to mobile). Reload so
-        # the site serves the mobile one. Only on a real desktop->mobile switch
-        # of a live session: a mobile LAUNCH sets the mode before its first
-        # navigation (prev_mode is None there), so it has nothing to reload.
-        if prev_mode == 'desktop' and session.get('device_mode') == 'mobile':
-            q.put(('Page.reload', {}))
-        if session.get('status') == 'running' and not session.get('screencast_paused'):
-            q.put(('Page.stopScreencast', {}))
-            q.put(('Page.startScreencast', session['screencast_params']))
-    else:
-        _fit_and_rearm(session)
-        if mobile is not None:
-            for cmd in _device_mode_commands(session, False, view):
-                q.put(cmd)
-            if prev_mode == 'mobile' and session.get('device_mode') == 'desktop':
-                q.put(('Page.reload', {}))   # the converse: drop the mobile HTML
+from mc.browser_viewer_mode import apply_view as _apply_view
 
 
 def _page_disposition(session, target_info):
