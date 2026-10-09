@@ -1727,7 +1727,7 @@ async function _bpRenderSessionMenu(menu, pid) {
       <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_bpEsc(label)}">${_bpEsc(label)}</span>
       ${badge}
       ${s.profile && window.bpAgentReadChip ? window.bpAgentReadChip(s.profile) : ''}
-      <span data-stop="${_bpEsc(s.session_id)}" title="Stop this session" style="color:#e57373;cursor:pointer;padding:0 4px;flex:0 0 auto">&#10005;</span>
+      <span data-stop="${_bpEsc(s.session_id)}" role="button" aria-label="Stop this session" title="Stop this session" style="color:#e57373;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;margin:-6px -6px -6px 0;font-size:16px;flex:0 0 auto">&#10005;</span>
     </div>`;
   }).join('') || '<div style="padding:8px;color:#999">No running sessions</div>';
 

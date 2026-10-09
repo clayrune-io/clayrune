@@ -187,6 +187,20 @@ try {
     await page.screenshot({ path: join(shots, 'mobile-keyboard-visible-area.png') });
     if (keyboard.bottom > keyboard.visibleHeight)
       console.log('LIMIT bottom bar is below the simulated keyboard visible area; screenshot saved (native keyboard unverified)');
+    // The session list's per-row stop X is the only way to end ONE of several
+    // sessions on a phone; it was a ~12px glyph before 2026-10-09.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('#mc-browser-pane [data-bp="menu"]').tap();
+    await page.locator('#mc-browser-pane [data-bp="mm-profile"]').tap();
+    const rowStop = page.locator('#mc-browser-pane [data-bp="sessmenu"] [data-stop]').first();
+    await rowStop.waitFor();
+    const rowBox = await rowStop.boundingBox();
+    if (!rowBox || rowBox.width < 40 || rowBox.height < 40 || rowBox.x + rowBox.width > 390 ||
+        await rowStop.getAttribute('aria-label') !== 'Stop this session')
+      fail(`390px: session-menu stop must be labelled and >=40px: ${JSON.stringify(rowBox)}`);
+    else ok('390px: session-menu Stop this session is a labelled 40px tap target');
+    await page.screenshot({ path: join(shots, 'mobile-390-session-menu.png') });
+    await page.mouse.click(195, 400);   // dismiss the menu before the close tap
     const stops = [];
     page.on('request', r => { if (r.url().endsWith('/api/browser/stop')) stops.push(r.postData()); });
     await close.tap();
