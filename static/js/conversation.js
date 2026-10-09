@@ -625,6 +625,12 @@ function _attendControlHTML(activeSession, sid) {
   // that simply expired, must fall back to "Guarded" on the next status poll
   // even if this tab never re-clicked anything.
   const pass = activeSession.attendOncePass;
+  if (pass && pass.open && pass.mode === 'window') {
+    // "Allow 10 min": the fence keeps letting blocked actions through until
+    // expiry, so show WHEN it closes and a one-click way to close it early.
+    const until = new Date(pass.expires_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return `<span class="provider-badge attend-pill attended attend-window" title="A human clicked Allow 10 min — the fence lets every blocked action in this chat through until ${esc(until)}, then re-arms by itself. Re-arm closes it early.">&#x2713; Open until ${esc(until)}<button type="button" class="attend-rearm" onclick="rearmAttendOnce(event,'${esc(sid)}')">Re-arm</button></span>`;
+  }
   if (pass && pass.open) {
     return `<span class="provider-badge attend-pill attended" title="A human clicked Allow once — the fence lets exactly the next blocked action through, then re-arms. Expires after 10 minutes if unused.">&#x2713; Allowed once (10 min)</span>`;
   }
@@ -661,8 +667,10 @@ function attendOnceSession(event, sid) {
     </div>
     <div style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:14px">
       <div style="font-size:11px;color:var(--text-faint);line-height:1.55">
-        Re-enter your dashboard passcode to let the next fence-blocked action in
-        this chat through once. The fence re-arms right after.
+        Re-enter your dashboard passcode. <b>Allow once</b> lets the next
+        fence-blocked action in this chat through, then the fence re-arms.
+        <b>Allow 10 min</b> lets every blocked action through until the time is
+        up, or until you Re-arm.
       </div>
       <div>
         <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">Dashboard passcode</label>
@@ -672,9 +680,10 @@ function attendOnceSession(event, sid) {
           onkeydown="if(event.key==='Enter')submitAttendOncePasscode('${modalId}','${esc(sid)}')">
       </div>
       <div id="ao-status-${esc(sid)}" style="font-size:11px;color:var(--danger,#c94a3a);min-height:14px"></div>
-      <div style="display:flex;gap:8px;justify-content:flex-end">
+      <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
         <button class="btn-secondary" onclick="closeModalById('${modalId}')">Cancel</button>
-        <button class="btn-add" onclick="submitAttendOncePasscode('${modalId}','${esc(sid)}')">Allow once</button>
+        <button class="btn-secondary attend-window-btn" onclick="submitAttendOncePasscode('${modalId}','${esc(sid)}','window')">Allow 10 min</button>
+        <button class="btn-add" onclick="submitAttendOncePasscode('${modalId}','${esc(sid)}','once')">Allow once</button>
       </div>
     </div>`;
   win.appendChild(content);
@@ -694,7 +703,8 @@ function _attendOnceErrorText(out) {
   return out.message || out.error || 'Request failed.';
 }
 
-async function submitAttendOncePasscode(modalId, sid) {
+async function submitAttendOncePasscode(modalId, sid, mode) {
+  mode = mode === 'window' ? 'window' : 'once';
   const passcodeInput = document.getElementById(`ao-passcode-${sid}`);
   const statusEl = document.getElementById(`ao-status-${sid}`);
   const passcode = (passcodeInput && passcodeInput.value) || '';
@@ -705,7 +715,7 @@ async function submitAttendOncePasscode(modalId, sid) {
   try {
     const resp = await fetch(`${API_BASE}/api/project/${projectId}/agent/${sid}/attend-once`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ passcode }),
+      body: JSON.stringify({ passcode, mode }),
     });
     // Passcode is read from the DOM once, sent, and never cached on `s` or
     // anywhere client-side beyond this input's own lifetime.
@@ -715,9 +725,17 @@ async function submitAttendOncePasscode(modalId, sid) {
       if (statusEl) statusEl.textContent = _attendOnceErrorText(body);
       return;
     }
-    if (s) s.attendOncePass = { open: true, expires_at: body.expires_at };
+    // The server's mode wins: a window that was already open stays a window
+    // even when this click asked for "once" (grant never narrows or extends).
+    const granted = body.mode === 'window' ? 'window' : 'once';
+    if (s) s.attendOncePass = { open: true, expires_at: body.expires_at, mode: granted };
     closeModalById(modalId);
-    if (typeof showToast === 'function') showToast("Allowed once — the next blocked action goes through, then the fence re-arms", 3000);
+    if (typeof showToast === 'function') {
+      const until = new Date(body.expires_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      showToast(granted === 'window'
+        ? `Allowed for 10 minutes — every blocked action goes through until ${until}`
+        : "Allowed once — the next blocked action goes through, then the fence re-arms", 3000);
+    }
     refreshModalById(projectId);
     // Start the bounded status poll immediately rather than waiting for the
     // next unrelated fetchAgentStatus tick — see _attendOncePollStart above.
@@ -727,6 +745,27 @@ async function submitAttendOncePasscode(modalId, sid) {
   }
 }
 window.submitAttendOncePasscode = submitAttendOncePasscode;
+
+// "Re-arm": close an open pass early. No passcode — closing the gate is the
+// safe direction (the revoke route in agent_routes.py).
+async function rearmAttendOnce(event, sid) {
+  if (event) { event.stopPropagation(); event.preventDefault(); }
+  const s = agentStatusCache[sid];
+  const projectId = s && s.projectId;
+  if (!projectId) return;
+  try {
+    const resp = await fetch(`${API_BASE}/api/project/${projectId}/agent/${sid}/attend-once/revoke`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    s.attendOncePass = null;
+    if (typeof showToast === 'function') showToast('Fence re-armed', 2500);
+    refreshModalById(projectId);
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Could not re-arm: ' + e.message, 4000);
+  }
+}
+window.rearmAttendOnce = rearmAttendOnce;
 
 function getIncognitoFor(projectId) {
   // Global incognito project is always incognito; user can't turn it off.

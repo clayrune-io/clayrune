@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-09] - "Allow 10 min" on the fence Allow-once gate
+
+- The chat-header gate modal offers **Allow once** (unchanged, still the Enter default) and **Allow 10 min**. A window lets every fence-blocked action in that chat through until it expires, instead of the first one spending the pass, so a failed action no longer needs the passcode again. Same passcode, eligibility, passcode-changed and session-binding checks as before; the fence still refuses supply-chain and multi-operation calls.
+- A window never extends or stacks (a second grant reports `already_open` with the original expiry); an open once-pass can be upgraded to a window with a fresh passcode; an unknown `mode` is a 400. The open pill reads "Open until HH:MM" with a **Re-arm** control that calls the new passcode-free `POST .../attend-once/revoke` (closing the gate is the safe direction).
+- Pass record, modes and transitions moved out of `agent_routes.py` into `mc/attend_once_pass.py`. 27 new tests in `tests/test_attend_once_window.py`; `tools/smoke/attend-handoff.mjs` extended (1440 and 390). Spec addendum in `docs/HUMAN_PROOF_GUARD_SPEC.md`. Branch only; no merge, push or restart.
+
 ## [2026-10-08] - Browser pane returns to the active device and exposes mobile close
 
 - Returning to a visible dashboard tab or focusing its window re-reports that viewer's viewport and mobile mode, even without a pane resize. Hidden/detached panes do not reclaim on these events; the existing backend guard reloads only when mode changes. Pointer and keyboard input do not trigger takeovers.

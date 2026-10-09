@@ -27,6 +27,11 @@
  * both desktop (1400px) and mobile (390px), since the pill lives in the same
  * shared header markup both layouts render (conversation.js's tabContent).
  *
+ * 2026-10-09 (Ron): the modal also offers "Allow 10 min" (mode: window). The
+ * pill then reads "Open until HH:MM" with a Re-arm control that POSTs
+ * .../attend-once/revoke (no passcode) and drops back to Guarded. Set
+ * ATTEND_SHOTS=<dir> to write the modal / open-pill screenshots there.
+ *
  * RUN: cd tools/smoke && node attend-handoff.mjs
  */
 import { readFileSync, readdirSync } from 'node:fs';
@@ -47,6 +52,8 @@ const PID = 'smoke_alpha';
 const STATIC = {};
 Object.assign(STATIC, loadStaticJsCss(REPO_ROOT));
 
+const SHOTS = process.env.ATTEND_SHOTS || '';
+
 const DAVE = { name: 'dave', agent_name: 'Dave', scope: 'global', avatar: 'fig:guard' };
 
 async function runOnce(viewport, label) {
@@ -56,7 +63,10 @@ async function runOnce(viewport, label) {
   const fail = (m) => { console.error('  ✗ ' + m); bad++; };
   const check = (cond, pass, failMsg) => (cond ? ok(pass) : fail(failMsg));
   let attendOnceCalls = 0;
+  let revokeCalls = 0;
+  let lastSentMode;
   let passExpiresAt = null;
+  let passMode = 'once';
 
   const SESSIONS = () => ({
     mcDispatch: {
@@ -65,7 +75,7 @@ async function runOnce(viewport, label) {
       claude_session_id: 'csidDispatch', started_at: '2026-09-28T21:00:00Z',
       task: 'Please push the fix we discussed', character: DAVE,
       log_lines: ['> Ron: please push the fix we discussed', 'On it.'],
-      attend_once_pass: passExpiresAt ? { open: true, expires_at: passExpiresAt } : null,
+      attend_once_pass: passExpiresAt ? { open: true, expires_at: passExpiresAt, mode: passMode } : null,
     },
   });
 
@@ -97,8 +107,16 @@ async function runOnce(viewport, label) {
         if (sent.passcode !== 'smoke-test-passcode') {
           return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'bad_passcode' }) });
         }
+        lastSentMode = sent.mode;
+        passMode = sent.mode === 'window' ? 'window' : 'once';
         passExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-        return json({ ok: true, session_id: 'mcDispatch', status: 'granted', expires_at: passExpiresAt });
+        return json({ ok: true, session_id: 'mcDispatch', status: 'granted', expires_at: passExpiresAt, mode: passMode });
+      }
+      if (req.method() === 'POST' && /\/agent\/mcDispatch\/attend-once\/revoke$/.test(path)) {
+        revokeCalls++;
+        const was = passExpiresAt ? passMode : null;
+        passExpiresAt = null;
+        return json({ ok: true, session_id: 'mcDispatch', status: was ? 'revoked' : 'none_open', mode: was });
       }
       return route.abort();
     });
@@ -146,9 +164,19 @@ async function runOnce(viewport, label) {
       'wrong passcode leaves the pill Guarded', 'pill flipped on a wrong passcode');
     check(await page.locator(`.modal-window[data-modal-id="${modalId}"]`).count() === 1,
       'modal stays open after a wrong passcode', 'modal closed on a wrong passcode');
+    // The modal offers both modes; Enter / the primary button stay "once".
+    check(await page.locator(`.modal-window[data-modal-id="${modalId}"] button.attend-window-btn`).innerText() === 'Allow 10 min',
+      'modal offers an "Allow 10 min" button', 'no Allow 10 min button in the modal');
+    check(await page.locator(`.modal-window[data-modal-id="${modalId}"] button.btn-add`).innerText() === 'Allow once',
+      'primary button is still "Allow once"', 'primary button text changed');
+    if (SHOTS) {
+      await page.fill(`#ao-passcode-mcDispatch`, 'xxxxxxxx');
+      await page.screenshot({ path: `${SHOTS}/attend_modal_${viewport.width}.png` });
+    }
     await page.fill(`#ao-passcode-mcDispatch`, 'smoke-test-passcode');
-    await page.click(`.modal-window[data-modal-id="${modalId}"] button.btn-add`);
+    await page.press(`#ao-passcode-mcDispatch`, 'Enter');
     await page.waitForFunction(() => document.querySelector('.attend-pill.attended'), null, { timeout: 5000 });
+    check(lastSentMode === 'once', `Enter grants mode once (sent ${lastSentMode})`, `Enter sent mode ${lastSentMode}`);
     check(attendOnceCalls === 2, `one refused + one granted POST .../attend-once (got ${attendOnceCalls})`, `attend-once POST count wrong: ${attendOnceCalls}`);
     check(await page.locator('.attend-pill.guarded').count() === 0, 'guarded pill is gone after the click',
       'guarded pill still present after the click');
@@ -169,6 +197,38 @@ async function runOnce(viewport, label) {
     check(flippedBack, 'spent/expired pass flips the pill back to Guarded via the status poll',
       'pill still shows Allowed once 9s after the server dropped the pass');
 
+    // ── "Allow 10 min": window pill, Re-arm, back to Guarded ──────────────
+    await page.waitForSelector('.attend-pill.guarded', { timeout: 5000 });
+    await page.locator('.attend-pill.guarded').first().click();
+    await page.waitForSelector(`.modal-window[data-modal-id="${modalId}"]`, { timeout: 5000 });
+    await page.fill(`#ao-passcode-mcDispatch`, 'smoke-test-passcode');
+    await page.click(`.modal-window[data-modal-id="${modalId}"] button.attend-window-btn`);
+    await page.waitForSelector('.attend-pill.attend-window', { timeout: 5000 });
+    check(lastSentMode === 'window', `Allow 10 min sends mode window (sent ${lastSentMode})`, `sent mode ${lastSentMode}`);
+    const winText = await page.locator('.attend-pill.attend-window').first().innerText();
+    check(/^\S?\s*Open until \d{1,2}:\d{2}/.test(winText.trim()) && /Re-arm/.test(winText),
+      `window pill reads "Open until HH:MM" with a Re-arm control (${winText.replace(/\s+/g, ' ')})`,
+      `window pill text: ${winText}`);
+    check(await page.locator('.attend-pill.guarded').count() === 0, 'no Guarded pill while the window is open',
+      'Guarded pill rendered during an open window');
+    // The pill must fit the 390px header without horizontal overflow.
+    const fits = await page.evaluate(() => {
+      const el = document.querySelector('.attend-pill.attend-window');
+      const r = el.getBoundingClientRect();
+      return r.left >= 0 && r.right <= window.innerWidth && document.documentElement.scrollWidth <= window.innerWidth;
+    });
+    check(fits, 'window pill fits inside the viewport, no horizontal scroll', 'window pill overflows the viewport');
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/attend_window_pill_${viewport.width}.png` });
+    // Still open after a status poll (server truth carries mode).
+    await page.waitForTimeout(5600);
+    check(await page.locator('.attend-pill.attend-window').count() === 1, 'window pill survives the status poll',
+      'window pill vanished after a poll');
+    await page.locator('.attend-pill.attend-window .attend-rearm').click();
+    await page.waitForSelector('.attend-pill.guarded', { timeout: 5000 });
+    check(revokeCalls === 1, `Re-arm POSTs revoke once (got ${revokeCalls})`, `revoke POST count: ${revokeCalls}`);
+    check(await page.locator('.attend-pill.attended').count() === 0, 'Re-arm returns the pill to Guarded',
+      'attended pill still shown after Re-arm');
+
     const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
     uncaught.length ? uncaught.forEach((e) => fail('uncaught page error: ' + e)) : ok('no uncaught page errors');
     exitCode = bad ? 1 : 0;
@@ -182,7 +242,7 @@ async function runOnce(viewport, label) {
 }
 
 let overallBad = 0;
-overallBad += await runOnce({ width: 1400, height: 900 }, 'desktop');
+overallBad += await runOnce({ width: 1440, height: 900 }, 'desktop');
 overallBad += await runOnce({ width: 390, height: 844 }, 'mobile 390px');
 
 console.log(overallBad ? `\nFAILED` : '\nALL PASS');
