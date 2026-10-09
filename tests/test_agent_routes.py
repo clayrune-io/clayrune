@@ -87,6 +87,7 @@ EXPECTED_ROUTES = {
     # hook-facing consume, replacing the permanent re-stamp above as the
     # chat header's live control.
     '/api/project/<project_id>/agent/<session_id>/attend-once',
+    '/api/project/<project_id>/agent/<session_id>/attend-once/revoke',  # re-arm now, no passcode
     '/api/session/attend-once/consume',
     '/api/project/<project_id>/agent/session',
     '/api/project/<project_id>/agent/status',

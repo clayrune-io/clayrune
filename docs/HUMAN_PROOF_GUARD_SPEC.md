@@ -311,3 +311,37 @@ via `_is_agent_caller`, 9 via `is_unattended_caller`), 1 dead-code route with
 the same forgeable check unreachable behind a hard refusal, 4 routes already
 correctly gated with the retyped-passcode pattern this spec recommends
 generalizing.*
+
+---
+
+## Addendum 2026-10-09 — the Allow-once pass has two modes
+
+Ron's ask: one passcode per blocked action meant re-typing it every time the
+action failed and had to be retried. The chat-header gate now offers **Allow
+once** (unchanged) and **Allow 10 min**. Record shape, expiry and transitions
+live in `mc/attend_once_pass.py`; the routes in `agent_routes.py` stay thin.
+
+| | `once` (default) | `window` |
+|---|---|---|
+| Grant | passcode-gated `POST …/agent/<sid>/attend-once` | same route, body `mode: "window"`, same passcode |
+| Consume | first call spends it | does not spend it; every fence-blocked call passes until expiry |
+| TTL | 600 s | 600 s from the grant |
+
+- **Same gates, both modes:** passcode (shared throttle), session eligibility,
+  passcode-changed-after-start refusal, `mc_session_id` binding, replay record.
+  The fence is unchanged: it still passes only a call holding exactly one
+  overridable blocked operation, so a window never covers supply-chain /
+  global-config edits or a bundled multi-operation call.
+- **Never extends, never stacks.** A grant while a pass is open returns
+  `already_open` with the original expiry and the mode in force. The one
+  rewrite is `once` → `window` (a fresh passcode, a fresh 600 s), reported as
+  `upgraded`. A window asked for `once` stays a window.
+- **Unknown `mode` is a 400**, never coerced to `once`.
+- **Re-arm now:** `POST …/agent/<sid>/attend-once/revoke` drops any open pass.
+  No passcode — it only closes the gate. Consume still cannot create a pass.
+- **Status payload:** `attend_once_pass` is `{open, expires_at, mode}`.
+- **Design call for Ron:** a window is the "time-boxed window" that open
+  question 2 above flags — within it, an agent (or an injected instruction) in
+  that session gets every single-operation blocked action without a further
+  proof. The bound is the 600 s, one session, the revoke control, and the
+  fence's own never-passable classes.

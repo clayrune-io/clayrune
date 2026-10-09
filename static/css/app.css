@@ -7244,6 +7244,13 @@
     border: 1px solid rgba(16,185,129,.35); background: rgba(16,185,129,.12);
     color: #10b981; text-transform: none; letter-spacing: normal;
   }
+  .provider-badge.attend-pill.attend-window { gap: 6px; }
+  .provider-badge.attend-pill .attend-rearm {
+    font: inherit; font-weight: 700; color: inherit; cursor: pointer;
+    background: transparent; border: 1px solid currentColor; border-radius: 4px;
+    padding: 0 6px; text-transform: none; letter-spacing: normal;
+  }
+  .provider-badge.attend-pill .attend-rearm:hover { background: rgba(16,185,129,.2); }
   .chat-model-menu {
     position: fixed; top: 0; left: 0; display: none;
     min-width: 200px; z-index: 9200; padding: 4px;
