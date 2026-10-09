@@ -76,6 +76,8 @@ def _popen_sites(path):
     tree = ast.parse(path.read_text(encoding='utf-8'))
     sites = []
     gates = {}
+    gate_cwds = []
+    popen_cwds = []
 
     class V(ast.NodeVisitor):
         def __init__(self):
@@ -94,6 +96,8 @@ def _popen_sites(path):
                           and isinstance(env.func, ast.Attribute)
                           and env.func.attr == 'launch_env')
                 sites.append((n.lineno, self.stack[-1] if self.stack else '<module>', marked))
+                cwd_kw = next((k.value for k in n.keywords if k.arg == 'cwd'), None)
+                popen_cwds.append((n.lineno, ast.unparse(cwd_kw) if cwd_kw else None))
             # The fail-closed gate (mc/fence_fail_closed.py): a launch_cmd(...)
             # call per Claude Popen in the same function, or the unattended
             # self-test and the onFailure settings copy are skipped at that site.
@@ -102,10 +106,13 @@ def _popen_sites(path):
             if isinstance(f, ast.Attribute) and f.attr == 'launch_cmd':
                 fn = self.stack[-1] if self.stack else '<module>'
                 gates[fn] = gates.get(fn, 0) + 1
+                cwd_arg = n.args[2] if len(n.args) > 2 else None
+                gate_cwds.append((n.lineno, ast.unparse(cwd_arg) if cwd_arg else None))
             self.generic_visit(n)
 
     V().visit(tree)
     _popen_sites.gates = gates
+    _popen_sites.cwds = (gate_cwds, popen_cwds)
     return sites
 
 
@@ -125,6 +132,19 @@ def test_every_claude_popen_in_agent_routes_passes_cmd_through_launch_cmd():
     short = {fn: (n, _popen_sites.gates.get(fn, 0)) for fn, n in per_fn.items()
              if _popen_sites.gates.get(fn, 0) < n}
     assert not short, f'Claude spawn sites without a launch_cmd(...) gate (popens, gates): {short}'
+
+
+def test_every_launch_cmd_gate_gets_the_cwd_its_popen_uses():
+    """The project fence entry that gets shadowed is the one in the child's cwd,
+    so each gate must be handed the SAME expression as the Popen right after it."""
+    for rel in (('mc', 'blueprints', 'agent_routes.py'), ('server.py',)):
+        sites = _popen_sites(PROJECT_ROOT.joinpath(*rel))
+        gate_cwds, popen_cwds = _popen_sites.cwds
+        claude = [(ln, cwd) for (ln, cwd), (_l, _fn, ok) in zip(popen_cwds, sites) if ok]
+        gates = sorted(gate_cwds)
+        assert len(gates) == len(claude), (rel, len(gates), len(claude))
+        for (gl, gcwd), (pl, pcwd) in zip(gates, sorted(claude)):
+            assert gcwd == pcwd and abs(gl - pl) < 20, (rel, gl, gcwd, pl, pcwd)
 
 
 def test_server_followup_hook_passes_launch_env():

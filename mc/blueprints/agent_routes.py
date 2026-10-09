@@ -6455,7 +6455,7 @@ def _auto_recover_failed_resume(session):
                    effort_override=_continuation_effort(session),
                    character_skills=_session_skills(p, session)),
                    *_sp_args]
-            cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'))
+            cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), pp)
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -6499,7 +6499,7 @@ def _auto_recover_failed_resume(session):
                    effort_override=_continuation_effort(session),
                    character_skills=_session_skills(p, session)),
                    *_sp_args]
-            cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'))
+            cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), pp)
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -7568,7 +7568,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             _sp_args, _sp_path = _sysprompt_file_args(context)
             cmd.extend(_sp_args)
         try:
-            cmd = _launch_marker.launch_cmd(cmd, entry.get('trigger_type'))
+            cmd = _launch_marker.launch_cmd(cmd, entry.get('trigger_type'), _revive_cwd)
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -7686,7 +7686,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                                 effort_override=revive_effort,
                                 character_skills=_revive_char_skills), *_sp_args]
     try:
-        cmd = _launch_marker.launch_cmd(cmd, entry.get('trigger_type'))
+        cmd = _launch_marker.launch_cmd(cmd, entry.get('trigger_type'), _revive_cwd)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -9796,7 +9796,7 @@ def _auto_dispatch_followup(session, message):
         session['model_source'] = 'manual'
 
     try:
-        cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'))
+        cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _session_cwd(session, pp))
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
@@ -11977,7 +11977,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             else:
                 cmd = [_resolve_claude(), *base_flags, *_sp_args]
 
-            cmd = _launch_marker.launch_cmd(cmd, trigger_type)
+            cmd = _launch_marker.launch_cmd(cmd, trigger_type, _agent_cwd)
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
@@ -12138,7 +12138,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             else:
                 cmd = [_resolve_claude(), '-p', task, *base_flags, *_sp_args]
 
-            cmd = _launch_marker.launch_cmd(cmd, trigger_type)
+            cmd = _launch_marker.launch_cmd(cmd, trigger_type, _agent_cwd)
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -13632,7 +13632,8 @@ def agent_followup(project_id):
                 _log(f"[respawn-B] {rb['project_id']}: spawning cmd={' '.join(rb['cmd'][:5])}...")
                 proc = subprocess.Popen(
                     _launch_marker.launch_cmd(
-                        rb['cmd'], rb['existing'].get('trigger_type')),
+                        rb['cmd'], rb['existing'].get('trigger_type'),
+                        _session_cwd(rb['existing'], rb['pp'])),
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, cwd=_session_cwd(rb['existing'], rb['pp']),
                     text=True, encoding='utf-8', errors='replace',
@@ -13759,7 +13760,7 @@ def agent_followup(project_id):
                 existing['_system_prompt'] = context
                 _sp_args, _sp_path = _sysprompt_file_args(context)
             cmd.extend(_sp_args)
-            cmd = _launch_marker.launch_cmd(cmd, existing.get('trigger_type'))
+            cmd = _launch_marker.launch_cmd(cmd, existing.get('trigger_type'), _session_cwd(existing, pp))
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -14296,7 +14297,7 @@ def agent_interrupt(project_id, *, _internal=None):
                     session['_system_prompt'] = context
                     _sp_args, _sp_path = _sysprompt_file_args(context)
                     cmd.extend(_sp_args)
-                cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'))
+                cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _session_cwd(session, pp))
                 proc = subprocess.Popen(
                     cmd,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -14370,7 +14371,7 @@ def agent_interrupt(project_id, *, _internal=None):
                            character_skills=_session_skills(p, session)),
                            *_sp_args]
 
-                cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'))
+                cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _session_cwd(session, pp))
                 proc = subprocess.Popen(
                     cmd,
                     stdin=subprocess.PIPE if is_midturn else subprocess.DEVNULL,

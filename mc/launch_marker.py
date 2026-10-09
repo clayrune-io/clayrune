@@ -70,16 +70,17 @@ def launch_env(trigger_type: Optional[str],
     return env
 
 
-def launch_cmd(cmd: List[str], trigger_type: Optional[str]) -> List[str]:
+def launch_cmd(cmd: List[str], trigger_type: Optional[str],
+               cwd: Optional[str] = None) -> List[str]:
     """`cmd` as Popen should receive it. Called at every Claude spawn site next
     to `launch_env`, with the same `trigger_type`.
 
     Attended (or fence switched off): `cmd` itself, same object. Unattended:
     the fence self-test runs first and a failure raises, refusing the launch;
     on a CLI that supports `onFailure` the `--settings` file is swapped for one
-    whose fence entry blocks when the hook cannot run. See
-    mc/fence_fail_closed.py."""
+    whose fence entry blocks when the hook cannot run. `cwd` is the child's
+    working directory (pass the Popen `cwd=`). See mc/fence_fail_closed.py."""
     if (trigger_type or '') not in UNATTENDED_TRIGGER_TYPES or not _fence_enabled():
         return cmd
     from mc import fence_fail_closed
-    return fence_fail_closed.launch_cmd(cmd, trigger_type)
+    return fence_fail_closed.launch_cmd(cmd, trigger_type, cwd)

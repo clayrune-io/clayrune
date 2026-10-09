@@ -57,20 +57,72 @@ M3 and M3b were run twice with the same outcome.
 
 **Merge, with last-wins collapse of identical commands.** So:
 
-* The unattended launch needs no new file in the project and no change to the
-  project entry. It hands the CLI a copy of the `--settings` file whose fence entry
-  (found by `name == clayrune-steward-fence`) has `onFailure: "block"` and
-  `timeout: 30` (M3, M8). The command string is left byte-identical to the project
-  entry's (`tests/test_install_hooks.py::test_fence_command_matches_steward_core_project_install_command`),
-  so Claude Code collapses the two into one run carrying the launch entry's keys
-  (M2, M3, M3b): **the fence does not run twice per call**, cost unchanged.
-* If the commands ever differ (different interpreter after a venv move), both run,
-  and the `onFailure` one still blocks (M4). Cost then is the two runs the launch
-  file already pays today (MC-1055).
+* The unattended launch needs no change to the project file. It hands the CLI a
+  copy of the `--settings` file whose fence entry (found by `name ==
+  clayrune-steward-fence`) has `onFailure: "block"` and `timeout: 30` (M3, M8).
+* **Correction (follow-up, same day): "once per call" holds only when the two
+  commands are byte-identical, and on this machine they are not.** The code builds
+  both from `sys.executable` of the process that wrote them
+  (`tests/test_install_hooks.py::test_fence_command_matches_steward_core_project_install_command`
+  pins only that the two *functions* agree), but this box's project files were written
+  by the system python (`...\pythoncore-3.14-64\python.exe`, `timeout` 10000) and the
+  launch file by the `.venv` python. Different strings do not collapse (M1, M4), so the
+  fence runs **twice per call here, as it did before this branch** (MC-1055 case). The
+  first commit's message (8bae6685) says the fence "does not run twice per call"; that
+  overstates it.
+* If the commands differ both run, and the `onFailure` one blocks (M4) **but only
+  after every hook has finished** (P5 below). Hence the shadow entry, next section.
 * Do NOT put `onFailure` on the project entry alone: M3b shows the `--settings`
   entry wins the collapse, so a plain launch-file entry would erase it.
 * T1/T3: a fence that crashes (exit 1) or hangs past its timeout is blocked with the
   key and passes without it. `timeout` is SECONDS (T1: `timeout:2` timed out a 5 s hook).
+
+## P5: a hung fence when the two entries are different commands (Quill, then re-run here)
+
+Quill's probe (`%TEMP%/quill-cw-1009/mergeprobe/hang_probe.py`): project entry sleeps
+45 s (`timeout` 10000, no onFailure), the launch's own fence entry is a *different*
+command that sleeps 46 s with `timeout: 5` + `onFailure: "block"`. The launch entry
+timed out and blocked, but the block landed only when the project entry finished 45 s
+later: Claude Code waits for **every** hook before it applies a block. With the real
+project timeout of 10000 a hung fence would hold each unattended call that long.
+
+Re-run on this branch's real mechanism, 2.1.295, stand-in fence that answers
+`--self-test` and then sleeps (project 45 s `--project`, launch 46 s), project file
+written like `install_fence_to_project` (`timeout: 10000`), launch file from
+`install_hooks.generate('claude')`, one `claude -p` per row:
+
+| mechanism | `--settings` fence entries | hook log | blocked? | wall for the call |
+|---|---|---|---|---|
+| launch file as before this branch | launch fence plain | `end PROJECT` 45 s, `end LAUNCH` 46 s | no (`probe-ok`) | 52.5 s |
+| 8bae6685 (copy, no project shadow) | launch fence `onFailure`/30 | `end PROJECT` after 45 s; LAUNCH killed | yes, but only after PROJECT ended | 51.0 s (`duration_ms` 47939) |
+| follow-up (copy + project shadow) | launch fence **and** a twin of the project command, both `onFailure`/30 | both started, neither ended (both killed at the 30 s timeout) | **yes, at the 30 s timeout** | **36.7 s** (`duration_ms` 33581) |
+
+The model made one Bash attempt in each run. 36.7 s = 30 s hook timeout + about 6.7 s
+of model turns, so the block lands within ~30 s of the call, not 45 s or 10000 s.
+
+How: `launch_cmd` is handed the child's cwd; if `<cwd>/.claude/settings.json` has a
+steward fence entry (command containing `fence.py`, or the frozen-build marker)
+that differs from the launch file's own, and that command passes `--self-test`, the
+copy gets one more entry with **that exact command**, the project entry's matcher,
+`onFailure: "block"`, `timeout: 30`, `name: clayrune-steward-fence-project-copy`.
+It collapses with the project entry and its keys win (M3/M3b), so the project's
+`timeout: 10000` is out of play. Costs, stated plainly:
+
+* **Two fence runs per call remain** when the commands differ (system-python fence
+  and venv fence), exactly as today. The shadow replaces the project entry's run, it
+  adds no third. When the commands are identical there is nothing to shadow and it is
+  one run.
+* One extra `--self-test` subprocess (~0.1 s) per unattended spawn when a different
+  project command exists.
+* The project file is read, never written. Rewriting existing project entries at
+  boot (timeout 10000 -> 10, one interpreter) is a change to files the user owns and
+  is left as an option for Ron.
+* A project entry that fails `--self-test` (stale interpreter) is NOT shadowed: it
+  already fails open without holding the call, our own entry still guards, and
+  blocking every call because of a file we do not own would wedge the run.
+* Only `settings.json` of the launch cwd is read. A worktree cwd has none (Claude
+  Code does not walk up to the main checkout), so there is nothing to hold the call
+  and nothing to shadow.
 
 ## End to end through our code (real 2.1.295, 2.1.293)
 

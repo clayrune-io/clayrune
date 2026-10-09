@@ -162,7 +162,11 @@ def fake_cli(tmp_path, monkeypatch):
     binary.write_text('x', encoding='utf-8')
     state = {'out': '2.1.295 (Claude Code)', 'calls': 0, 'raise': None}
 
+    real_run = subprocess.run
+
     def fake_run(argv, **kw):
+        if list(argv)[-1:] != ['--version']:
+            return real_run(argv, **kw)  # a self-test of a fence: run it for real
         state['calls'] += 1
         assert list(argv) == [str(binary), '--version']
         if state['raise']:
@@ -375,3 +379,118 @@ def test_patch_applies_to_a_throwaway_copy_and_fixes_the_timeout(tmp_path):
     spec.loader.exec_module(mod)
     hook = mod._fence_settings_content()['hooks']['PreToolUse'][0]['hooks'][0]
     assert hook['timeout'] == 10
+
+
+# ── (b2) a project fence entry with a DIFFERENT command is shadowed ─────────
+# On this machine the project entry was written by the system python and the
+# launch file's by the venv python: different strings, so they do not collapse,
+# both run, and Claude Code waits for all of them before it applies a block
+# (P5, docs/FENCE_FAIL_CLOSED_MEASUREMENT.md). The copy therefore also carries
+# a twin of the project command with the same keys.
+
+def _write_project_settings(cwd: Path, *commands, timeout=10000, matcher='Bash|Write'):
+    d = cwd / '.claude'
+    d.mkdir(parents=True, exist_ok=True)
+    (d / 'settings.json').write_text(json.dumps({'hooks': {'PreToolUse': [
+        {'matcher': matcher, 'hooks': [{'type': 'command', 'command': c, 'timeout': timeout}
+                                       for c in commands]}]}}), encoding='utf-8')
+
+
+def _project_cmd(fence_command: str) -> str:
+    return fence_command + ' --project'
+
+
+def test_project_entry_with_a_different_command_is_found(tmp_path, fence_cmd):
+    own = fence_cmd(tmp_path)
+    proj = tmp_path / 'proj'
+    _write_project_settings(proj, _project_cmd(own))
+    assert ffc.project_fence_entries(str(proj)) == [('Bash|Write', _project_cmd(own))]
+
+
+def test_project_entry_with_our_own_command_adds_nothing(tmp_path, fence_cmd):
+    own = fence_cmd(tmp_path)
+    proj = tmp_path / 'proj'
+    _write_project_settings(proj, own)
+    assert ffc.project_fence_entries(str(proj)) == []
+
+
+@pytest.mark.parametrize('cwd_kind', ['none', 'no_file', 'bad_json', 'no_fence_hook'])
+def test_nothing_to_shadow(tmp_path, fence_cmd, cwd_kind):
+    fence_cmd(tmp_path)
+    proj = tmp_path / 'proj'
+    proj.mkdir()
+    if cwd_kind == 'bad_json':
+        (proj / '.claude').mkdir()
+        (proj / '.claude' / 'settings.json').write_text('{nope', encoding='utf-8')
+    elif cwd_kind == 'no_fence_hook':
+        _write_project_settings(proj, 'echo hello')
+    assert ffc.project_fence_entries(None if cwd_kind == 'none' else str(proj)) == []
+
+
+def test_project_entry_that_fails_its_self_test_is_left_alone(tmp_path, fence_cmd):
+    fence_cmd(tmp_path)
+    proj = tmp_path / 'proj'
+    stale = f'{_quote(tmp_path / "gone" / "python.exe")} {_quote(tmp_path / "fence.py")}'
+    _write_project_settings(proj, stale)
+    assert ffc.project_fence_entries(str(proj)) == []
+
+
+def test_copy_adds_one_shadow_per_project_command_and_no_third_run(tmp_path):
+    src = _launch_file(tmp_path)
+    own = steward_core._fence_command()
+    shadow = [('Bash|Write', own + ' --project')]
+    out = ffc.fail_closed_settings_path(src, tmp_path / 'out', project_fences=shadow)
+    groups = json.loads(out.read_text(encoding='utf-8'))['hooks']['PreToolUse']
+    hooks = [h for g in groups for h in g['hooks']]
+    fences = [h for h in hooks if h.get('name') in (install_hooks.FENCE_HOOK_NAME,
+                                                    ffc.PROJECT_COPY_NAME)]
+    assert [h['command'] for h in fences] == [own, own + ' --project']
+    for h in fences:
+        assert h['onFailure'] == 'block' and h['timeout'] == 30
+    # Exactly the entries that already existed plus the one shadow: nothing else.
+    assert len(hooks) == len(json.loads(src.read_text(encoding='utf-8'))['hooks']['PreToolUse']) + 1
+    # The shadow keeps the project entry's matcher.
+    assert groups[-1]['matcher'] == 'Bash|Write'
+
+
+def test_launch_cmd_shadows_the_project_entry_of_the_launch_cwd(tmp_path, fake_cli, fence_cmd,
+                                                                 monkeypatch):
+    binary, state = fake_cli
+    own = fence_cmd(tmp_path)
+    src = _launch_file(tmp_path)
+    proj = tmp_path / 'proj'
+    _write_project_settings(proj, _project_cmd(own))
+    monkeypatch.setattr(gh, 'hooks_dir', lambda *a, **k: tmp_path / 'hooks')
+    out = launch_marker.launch_cmd(_cmd(binary, src), 'dispatch', str(proj))
+    hooks = [h for g in json.loads(Path(out[out.index('--settings') + 1]).read_text(
+        encoding='utf-8'))['hooks']['PreToolUse'] for h in g['hooks']]
+    by_name = {h.get('name'): h for h in hooks}
+    assert by_name[ffc.PROJECT_COPY_NAME]['command'] == _project_cmd(own)
+    assert by_name[ffc.PROJECT_COPY_NAME]['onFailure'] == 'block'
+    # The project file itself is not touched.
+    stored = json.loads((proj / '.claude' / 'settings.json').read_text(encoding='utf-8'))
+    assert stored['hooks']['PreToolUse'][0]['hooks'][0]['timeout'] == 10000
+    assert 'onFailure' not in stored['hooks']['PreToolUse'][0]['hooks'][0]
+
+
+def test_launch_cmd_without_a_cwd_or_on_an_old_cli_adds_no_shadow(tmp_path, fake_cli, fence_cmd,
+                                                                    monkeypatch):
+    binary, state = fake_cli
+    own = fence_cmd(tmp_path)
+    src = _launch_file(tmp_path)
+    proj = tmp_path / 'proj'
+    _write_project_settings(proj, _project_cmd(own))
+    monkeypatch.setattr(gh, 'hooks_dir', lambda *a, **k: tmp_path / 'hooks')
+    out = launch_marker.launch_cmd(_cmd(binary, src), 'dispatch')
+    assert ffc.PROJECT_COPY_NAME not in Path(out[out.index('--settings') + 1]).read_text(
+        encoding='utf-8')
+    state['out'] = '2.1.293 (Claude Code)'
+    ffc._version_cache.clear()
+    assert launch_marker.launch_cmd(_cmd(binary, src), 'dispatch', str(proj)) == _cmd(binary, src)
+
+
+def test_attended_launch_never_reads_the_project_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(ffc, 'project_fence_entries',
+                        lambda cwd: pytest.fail('attended spawn must not read project settings'))
+    cmd = ['claude', '--settings', 'x.json']
+    assert launch_marker.launch_cmd(cmd, 'manual', str(tmp_path)) is cmd

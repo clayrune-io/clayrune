@@ -3248,7 +3248,7 @@ def _claude_followup_hook(handle, message, attachments=None):
     resume_flags = ['-r', claude_sid] if claude_sid else ['--continue']
     cmd = [_resolve_claude(), *resume_flags, '-p', message, *_build_claude_flags(p)]
     try:
-        cmd = _launch_marker.launch_cmd(cmd, existing.get('trigger_type'))
+        cmd = _launch_marker.launch_cmd(cmd, existing.get('trigger_type'), pp)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,

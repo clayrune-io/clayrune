@@ -24,9 +24,14 @@ Two layers, both applied by `launch_cmd` at every Claude spawn site:
     .claude/settings.json (docs/FENCE_FAIL_CLOSED_MEASUREMENT.md):
       * hooks from the project file and from `--settings` MERGE;
       * byte-identical commands collapse to ONE run and the `--settings` entry
-        is the one kept, so its onFailure/timeout win and the fence does not
-        run twice per call;
-      * a different command runs in BOTH, and the `onFailure` one still blocks.
+        is the one kept, so its onFailure/timeout win;
+      * a different command runs in BOTH, and the `onFailure` one blocks, but
+        only after EVERY hook has finished (a project entry that hangs holds the
+        call for its own 10000 s timeout, docs P5). So the copy also carries a
+        twin of the project entry's command (read from the launch cwd, never
+        written) with the same two keys; it collapses with the project entry and
+        the wait is bounded at FAIL_CLOSED_TIMEOUT_SEC. Two fence runs per call
+        remain when the two commands differ, as before.
     A 2.1.293 CLI ignores the key, so older versions are left on the plain file.
 
 `launch_cmd` raises only ClaudeFenceSelfTestError. Every other problem (no
@@ -145,9 +150,70 @@ def supports_on_failure(binary: str) -> bool:
 
 # ── Layer 2: the fail-closed copy of the per-launch settings file ───────────
 
-def fail_closed_settings_path(src: Path, out_dir: Optional[Path] = None) -> Optional[Path]:
+# Name of an entry added to the copy to shadow a project fence entry.
+PROJECT_COPY_NAME = 'clayrune-steward-fence-project-copy'
+
+
+def project_fence_entries(cwd: Optional[str]) -> List[Tuple[str, str]]:
+    """[(matcher, command)] of the steward fence entries in the project settings
+    file under `cwd` whose command is NOT the launch file's own fence command,
+    each one first proven with `--self-test`. Empty when there is no cwd, no
+    file, or nothing different. Reads only; never writes the project file.
+
+    Why: on a machine where the project entry was written by another interpreter
+    than the one the launch file uses, the two commands do not collapse, both
+    run, and Claude Code waits for ALL of them before it applies a block
+    (measured, docs/FENCE_FAIL_CLOSED_MEASUREMENT.md P5). Shadowing the project
+    command with an `onFailure`/30 s twin bounds that wait.
+
+    An entry whose self-test fails (a stale interpreter path) is skipped with a
+    warning: it fails open on its own without holding the call, our own entry
+    still guards, and blocking every call on a file we don't own would wedge the
+    run."""
+    if not cwd:
+        return []
+    try:
+        from steward import core as _sc
+        path = Path(cwd) / '.claude' / 'settings.json'
+        if not path.is_file():
+            return []
+        data = json.loads(path.read_text(encoding='utf-8'))
+        seen = {_sc._fence_command()}
+        out: List[Tuple[str, str]] = []
+        for group in ((data.get('hooks') or {}).get('PreToolUse') or []):
+            if not isinstance(group, dict):
+                continue
+            for h in group.get('hooks') or []:
+                cmd = str(h.get('command', '')) if isinstance(h, dict) else ''
+                if (not cmd or cmd in seen or h.get('type', 'command') != 'command'
+                        or not (_sc.STEWARD_HOOK_MARKER in cmd
+                                or _sc._STEWARD_HOOK_FROZEN_MARKER in cmd)):
+                    continue
+                seen.add(cmd)
+                ok, detail = _gh.run_fence_self_test(
+                    shlex.split(cmd, posix=True) + [_gh.FENCE_SELF_TEST_ARG],
+                    timeout=SELF_TEST_TIMEOUT_SEC, what='the project fence')
+                if ok:
+                    out.append((str(group.get('matcher', '')), cmd))
+                else:
+                    _warn(f'project fence entry in {path} fails its self-test ({detail}); '
+                          'not shadowed')
+        return out
+    except Exception as e:
+        _warn(f'reading project fence entries for {cwd} failed ({e}); not shadowed')
+        return []
+
+def fail_closed_settings_path(src: Path, out_dir: Optional[Path] = None,
+                              project_fences: Sequence[Tuple[str, str]] = ()) -> Optional[Path]:
     """Copy `src` with every hook named FENCE_HOOK_NAME given `onFailure:
     "block"` and `timeout: FAIL_CLOSED_TIMEOUT_SEC`; return the copy's path.
+
+    `project_fences` is [(matcher, command)] for steward fence entries in the
+    launch cwd's project settings whose command differs from ours (see
+    project_fence_entries). Each is added as its own entry with the SAME command
+    string and the same two keys, so Claude Code collapses it with the project
+    entry and the keys win. Without it a project entry that hangs holds every
+    call for its own timeout (10000 s) before a block can land.
 
     Content-addressed, like mc/skill_scoping.scoped_settings_path, so a respawn
     gets byte-for-byte the same file. None when `src` has no fence entry or the
@@ -166,6 +232,12 @@ def fail_closed_settings_path(src: Path, out_dir: Optional[Path] = None) -> Opti
                         found = True
         if not found:
             return None
+        if project_fences:
+            pre = data['hooks'].setdefault('PreToolUse', [])
+            for matcher, command in project_fences:
+                pre.append({'matcher': matcher, 'hooks': [{
+                    'type': 'command', 'command': command, 'name': PROJECT_COPY_NAME,
+                    'timeout': FAIL_CLOSED_TIMEOUT_SEC, 'onFailure': 'block'}]})
         text = json.dumps(data, indent=2, sort_keys=True)
         digest = hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]
         out_dir = out_dir or (_gh.hooks_dir() / 'unattended')
@@ -195,12 +267,15 @@ def _warn(msg: str) -> None:
 
 # ── The one entry point the spawn sites call ────────────────────────────────
 
-def launch_cmd(cmd: Sequence[str], trigger_type: Optional[str]) -> List[str]:
+def launch_cmd(cmd: Sequence[str], trigger_type: Optional[str],
+               cwd: Optional[str] = None) -> List[str]:
     """`cmd` as it should be handed to Popen for a session of `trigger_type`.
 
     Attended: `cmd` itself, unchanged. Unattended: runs the fence self-test
     (raises ClaudeFenceSelfTestError on failure) and, on a CLI that supports
-    `onFailure`, swaps the `--settings` file for its fail-closed copy."""
+    `onFailure`, swaps the `--settings` file for its fail-closed copy. `cwd` is
+    the directory the child will run in; its project fence entry, when it
+    differs from ours, is shadowed in the copy (project_fence_entries)."""
     if not is_unattended_launch(trigger_type):
         return cmd  # type: ignore[return-value]
     ok, detail = claude_fence_self_test()
@@ -213,7 +288,8 @@ def launch_cmd(cmd: Sequence[str], trigger_type: Optional[str]) -> List[str]:
     if '--settings' in out:
         i = out.index('--settings')
         if i + 1 < len(out) and supports_on_failure(out[0]):
-            repl = fail_closed_settings_path(Path(out[i + 1]))
+            repl = fail_closed_settings_path(Path(out[i + 1]),
+                                             project_fences=project_fence_entries(cwd))
             if repl is not None:
                 out[i + 1] = str(repl)
     return out
