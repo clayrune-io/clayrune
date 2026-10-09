@@ -75,6 +75,7 @@ _NOT_CLAUDE = {'_launch_terminal_for_binary', 'agent_auth_login_remote'}
 def _popen_sites(path):
     tree = ast.parse(path.read_text(encoding='utf-8'))
     sites = []
+    gates = {}
 
     class V(ast.NodeVisitor):
         def __init__(self):
@@ -93,9 +94,18 @@ def _popen_sites(path):
                           and isinstance(env.func, ast.Attribute)
                           and env.func.attr == 'launch_env')
                 sites.append((n.lineno, self.stack[-1] if self.stack else '<module>', marked))
+            # The fail-closed gate (mc/fence_fail_closed.py): a launch_cmd(...)
+            # call per Claude Popen in the same function, or the unattended
+            # self-test and the onFailure settings copy are skipped at that site.
+            # (Assigned to `cmd` ahead of Popen, not nested in its args: the
+            # provider-architecture guard follows the name `cmd`.)
+            if isinstance(f, ast.Attribute) and f.attr == 'launch_cmd':
+                fn = self.stack[-1] if self.stack else '<module>'
+                gates[fn] = gates.get(fn, 0) + 1
             self.generic_visit(n)
 
     V().visit(tree)
+    _popen_sites.gates = gates
     return sites
 
 
@@ -106,10 +116,22 @@ def test_every_claude_popen_in_agent_routes_passes_launch_env():
     assert sum(1 for _, fn, ok in sites if ok) == 11
 
 
+def test_every_claude_popen_in_agent_routes_passes_cmd_through_launch_cmd():
+    sites = _popen_sites(PROJECT_ROOT / 'mc' / 'blueprints' / 'agent_routes.py')
+    per_fn = {}
+    for _ln, fn, ok in sites:
+        if ok:
+            per_fn[fn] = per_fn.get(fn, 0) + 1
+    short = {fn: (n, _popen_sites.gates.get(fn, 0)) for fn, n in per_fn.items()
+             if _popen_sites.gates.get(fn, 0) < n}
+    assert not short, f'Claude spawn sites without a launch_cmd(...) gate (popens, gates): {short}'
+
+
 def test_server_followup_hook_passes_launch_env():
     sites = _popen_sites(PROJECT_ROOT / 'server.py')
     assert [(fn, ok) for _, fn, ok in sites if fn == '_claude_followup_hook'] == [
         ('_claude_followup_hook', True)]
+    assert _popen_sites.gates.get('_claude_followup_hook', 0) >= 1
 
 
 # ── real spawn paths ──────────────────────────────────────────────────────
@@ -180,6 +202,15 @@ def env(tmp_path, monkeypatch):
         return proc
 
     monkeypatch.setattr(ar.subprocess, 'Popen', fake_popen)
+    # Unattended spawns self-test the fence first (mc/fence_fail_closed.py); the
+    # refusal itself is covered below and in tests/test_fence_fail_closed_unattended.py.
+    from mc import fence_fail_closed
+    self_test = {'result': (True, 'ok'), 'calls': 0}
+
+    def fake_self_test(**k):
+        self_test['calls'] += 1
+        return self_test['result']
+    monkeypatch.setattr(fence_fail_closed, 'claude_fence_self_test', fake_self_test)
 
     class _InertThread:
         def __init__(self, *a, **k):
@@ -202,7 +233,8 @@ def env(tmp_path, monkeypatch):
 
     try:
         yield {'ar': ar, 'sessions': mc_state.agent_sessions, 'project': project,
-               'spawned': spawned, 'set_mode': set_mode, 'monkeypatch': monkeypatch}
+               'spawned': spawned, 'set_mode': set_mode, 'monkeypatch': monkeypatch,
+               'self_test': self_test}
     finally:
         mc_state.agent_sessions.clear()
         mc_state.agent_sessions.update(snapshot)
@@ -267,3 +299,42 @@ def test_revive_from_agent_log_uses_the_logged_trigger_type(env, tmp_path, trigg
     ar._revive_from_agent_log('p1', 'old-sid', 'hello again', env['project'])
     assert len(env['spawned']) == 1, 'revive did not reach Popen'
     assert _marked(env['spawned'][0]) is expected
+
+
+# ── unattended launches are refused when the fence self-test fails ────────
+
+@pytest.mark.parametrize('streaming', [False, True], ids=['modeA', 'modeB'])
+@pytest.mark.parametrize('trigger_type', ['dispatch', 'schedule', 'workflow',
+                                          'hivemind_worker'])
+def test_dispatch_refuses_an_unattended_launch_whose_fence_self_test_fails(
+        env, streaming, trigger_type):
+    from mc.fence_fail_closed import ClaudeFenceSelfTestError
+    env['set_mode'](streaming)
+    env['self_test']['result'] = (False, 'exit 1; stderr: ')
+    with pytest.raises(ClaudeFenceSelfTestError):
+        env['ar']._dispatch_agent_internal('p1', 'do the thing', trigger_type=trigger_type)
+    assert env['spawned'] == [], 'Popen must not be reached when the fence cannot run'
+    assert env['self_test']['calls'] == 1
+
+
+@pytest.mark.parametrize('streaming', [False, True], ids=['modeA', 'modeB'])
+def test_dispatch_never_self_tests_an_attended_launch(env, streaming):
+    env['set_mode'](streaming)
+    env['self_test']['result'] = (False, 'would refuse if it ran')
+    env['ar']._dispatch_agent_internal('p1', 'do the thing', trigger_type='manual')
+    assert len(env['spawned']) == 1
+    assert env['self_test']['calls'] == 0
+
+
+def test_followup_respawn_of_an_unattended_session_self_tests_again(env):
+    env['set_mode'](False)
+    sid = env['ar']._dispatch_agent_internal('p1', 'do the thing', trigger_type='schedule')
+    session = env['sessions'][sid]
+    session['proc']._alive = False
+    env['self_test']['result'] = (False, 'fence broke between turns')
+    env['ar']._auto_dispatch_followup(session, 'next')
+    # This site already turns a Popen-time exception into a log line and a
+    # return; the refusal rides that path and the child is never started.
+    assert len(env['spawned']) == 1, 'the respawn must not have been started'
+    assert any('refusing unattended Claude launch' in str(l)
+               for l in session['log_lines']), list(session['log_lines'])[-3:]
