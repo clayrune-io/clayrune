@@ -1,0 +1,27 @@
+diff --git a/steward/core.py b/steward/core.py
+index f9691719..e7f43ff1 100644
+--- a/steward/core.py
++++ b/steward/core.py
+@@ -280,12 +280,21 @@ def _fence_command() -> str:
+ FENCE_MATCHER = "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit"
+ 
+ 
++# Claude Code hook timeouts are SECONDS. This was 10000, written as if
++# milliseconds, which is 2 h 47 min (measured 2026-10-09 on 2.1.295: timeout 2
++# timed out a 5 s hook). Ten seconds is the intent. A timed-out hook does not
++# block on this entry, so it only bounds a hung fence. Unattended launches on a
++# CLI with `onFailure` get a longer, blocking timeout: mc/fence_fail_closed.py.
++FENCE_HOOK_TIMEOUT_SEC = 10
++
++
+ def _fence_settings_content() -> dict:
+     return {
+         "hooks": {
+             "PreToolUse": [{
+                 "matcher": FENCE_MATCHER,
+-                "hooks": [{"type": "command", "command": _fence_command(), "timeout": 10000}],
++                "hooks": [{"type": "command", "command": _fence_command(),
++                           "timeout": FENCE_HOOK_TIMEOUT_SEC}],
+             }],
+         },
+     }
