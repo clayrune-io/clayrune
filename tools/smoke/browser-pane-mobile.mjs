@@ -191,9 +191,14 @@ try {
     // sessions on a phone; it was a ~12px glyph before 2026-10-09.
     await page.setViewportSize({ width: 390, height: 844 });
     await page.locator('#mc-browser-pane [data-bp="menu"]').tap();
-    await page.locator('#mc-browser-pane [data-bp="mm-profile"]').tap();
+    // Tap the profile NAME inside the item: its desktop-badge handler used to
+    // swallow the tap and leave this menu open over the session list.
+    await page.locator('#mc-browser-pane [data-bp="mm-profile"] [data-bp="profile"]').tap();
     const rowStop = page.locator('#mc-browser-pane [data-bp="sessmenu"] [data-stop]').first();
     await rowStop.waitFor();
+    if (await page.locator('#mc-browser-pane [data-bp="mobmenu"]').isVisible())
+      fail('390px: the menu stayed open after tapping Profile');
+    else ok('390px: tapping Profile closes the menu and opens the session list');
     const rowBox = await rowStop.boundingBox();
     if (!rowBox || rowBox.width < 40 || rowBox.height < 40 || rowBox.x + rowBox.width > 390 ||
         await rowStop.getAttribute('aria-label') !== 'Stop this session')

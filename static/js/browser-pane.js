@@ -583,6 +583,9 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     // reflexive "go back" killed the session (Ron, 2026-10-02).
     $('hide').onclick = () => { menu.style.display = 'none'; _bpMinimizePane(win, pid); };
     $('mm-profile').onclick = (e) => { e.stopPropagation(); menu.style.display = 'none'; _bpToggleSessionMenu(win, pid); };
+    // The profile name sits INSIDE this item on a phone; its own desktop-badge
+    // handler stopped the tap before it reached here, leaving the menu open.
+    profileBadge.onclick = null;
     // "Desktop site", like Chrome's: the server swaps the UA and reloads the page
     // under it; the choice is remembered on the session, not in this tab.
     const paintDesktopSite = () => {
