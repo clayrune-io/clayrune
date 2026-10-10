@@ -15,6 +15,12 @@ def apply_view(session, view, mobile=None):
         is_mobile = bool(mobile) if mobile is not None else session.get('device_mode') == 'mobile'
         previous = session.get('device_mode')
         session['mobile'] = is_mobile
+        if previous != ('mobile' if is_mobile else 'desktop'):
+            # MC-1083: a pane that turned desktop left no trace of what turned
+            # it. Name the transition and the report that asked for it.
+            br._log(f"[browser] {session.get('session_id')} device mode {previous} -> "
+                    f"{'mobile' if is_mobile else 'desktop'} (viewport {view}, "
+                    f"reported mobile={mobile})", flush=True)
         q = session['cmd_queue']
         for cmd in br._device_mode_commands(session, is_mobile, view):
             q.put(cmd)

@@ -983,10 +983,16 @@ _UA_HIGH_ENTROPY_JS = (
 # first request. False restores the pre-MC-992 page-only guard; it exists so
 # the fail baseline can be re-measured (_scratch harness), not as a setting.
 _UA_GUARD_CHILDREN = True
-# Target types whose own Network domain carries the UA. Workers inherit their
-# frame's override (measured: a dedicated worker in the iframe reported
-# Chrome once its frame did), so they are only released, never overridden.
-_UA_OVERRIDE_TYPES = ('page', 'iframe')
+# Target types whose own Network domain carries the UA. Dedicated workers
+# inherit their frame's override (measured: a dedicated worker in the iframe
+# reported Chrome once its frame did), so they are only released, never
+# overridden. Service and shared workers do NOT: they belong to no frame, and
+# their requests went out with Chromium's raw default UA (MC-1083, measured
+# 2026-10-10): once a service worker controlled a page, every reload's
+# document request was fetched BY the worker and said "Windows NT 10.0 ...
+# HeadlessChrome" while the page itself said Android -- a mobile pane got the
+# desktop site after a refresh, and any pane leaked HeadlessChrome there.
+_UA_OVERRIDE_TYPES = ('page', 'iframe', 'service_worker', 'shared_worker')
 
 
 _NO_AUTOMATION_MARKER = '--disable-blink-features=AutomationControlled'
@@ -1260,7 +1266,11 @@ def _mobile_ua_override(session):
     ver = m.group(1) if m else '131.0.0.0'
     override: dict = {'userAgent': (
         f'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
-        f'(KHTML, like Gecko) Chrome/{ver} Mobile Safari/537.36')}
+        f'(KHTML, like Gecko) Chrome/{ver} Mobile Safari/537.36'),
+        # navigator.platform, which the override otherwise leaves at the
+        # host's "Win32" under an Android UA (MC-1083) -- a mismatch a site
+        # can read. Chrome on a Pixel reports this.
+        'platform': 'Linux armv81'}
     meta = base.get('userAgentMetadata')
     if meta:
         mobile_meta = dict(meta)

@@ -53,9 +53,18 @@ def test_desktop_site_keeps_the_desktop_ua_in_mobile_mode():
     assert br._guard_ua_override(s, 'iframe') == _DESKTOP
 
 
-def test_workers_are_released_never_overridden():
+def test_dedicated_workers_are_released_never_overridden():
+    # A dedicated worker inherits its frame's UA. Service and shared workers
+    # belong to no frame and must carry their own (MC-1083,
+    # tests/test_browser_sw_ua_live.py).
     assert 'worker' not in br._UA_OVERRIDE_TYPES
-    assert set(br._UA_OVERRIDE_TYPES) == {'page', 'iframe'}
+    assert set(br._UA_OVERRIDE_TYPES) == {'page', 'iframe', 'service_worker', 'shared_worker'}
+
+
+def test_service_worker_follows_mobile_mode():
+    s = {'ua_override': _DESKTOP, 'device_mode': 'mobile'}
+    assert 'Mobile' in br._guard_ua_override(s, 'service_worker')['userAgent']
+    assert br._guard_ua_override({**s, 'device_mode': 'desktop'}, 'service_worker') == _DESKTOP
 
 
 # ---- live -------------------------------------------------------------------
