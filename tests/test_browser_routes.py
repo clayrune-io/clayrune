@@ -1574,6 +1574,15 @@ def test_mobile_ua_override_builds_phone_ua_from_desktop_chrome_version():
     assert 'bitness' not in meta and 'wow64' not in meta
 
 
+def test_mobile_ua_override_sets_android_navigator_platform():
+    # MC-1083: without it navigator.platform stayed the host's "Win32" under
+    # an Android UA. The desktop-site choice hands back the desktop override
+    # untouched, platform included.
+    session = {'ua_override': {'userAgent': 'Mozilla/5.0 (Windows NT 10.0) Chrome/153.0.0.0'}}
+    assert br._mobile_ua_override(session)['platform'] == 'Linux armv81'
+    assert 'platform' not in br._mobile_ua_override({**session, 'desktop_site': True})
+
+
 def test_mobile_ua_override_falls_back_when_no_desktop_override():
     assert br._mobile_ua_override({}) is None
     assert br._mobile_ua_override({'ua_override': None}) is None
