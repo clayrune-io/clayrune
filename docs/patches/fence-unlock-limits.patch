@@ -1,7 +1,7 @@
 diff --git a/steward/fence.py b/steward/fence.py
 --- a/steward/fence.py
 +++ b/steward/fence.py
-@@ -3345,8 +3345,9 @@
+@@ -3345,8 +3345,10 @@
                 'the next blocked action (one action, expires in 10 minutes). '
                 'Do NOT retry it until they say they have.')
      else:
@@ -9,7 +9,8 @@ diff --git a/steward/fence.py b/steward/fence.py
 -               'charter with the exact command so the human can approve it.')
 +        how = ('Neither "Allow once" nor "Allow 10 min" can cover this action. '
 +               'It needs a fresh chat started by the human. Do NOT retry it '
-+               'in this guarded chat.')
++               'in this guarded chat. Put the exact command in your final '
++               'message so the human can run it from a fresh chat.')
      msg = (f"STEWARD FENCE blocked this action: {decision.reason}. "
             f"This is irreversible/mutating and you are running unattended. "
             f"{how}")
