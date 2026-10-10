@@ -3798,8 +3798,6 @@ class GeminiRuntime(AgentRuntime):
         ('gemini-pro-latest', 'Gemini Pro (latest)'),
         ('gemini-flash-lite-latest', 'Gemini Flash-Lite (latest)'),
         ('gemini-3.6-flash', 'Gemini 3.6 Flash'),
-        ('gemini-3.7-flash', 'Gemini 3.7 Flash'),
-        ('gemini-3.5-flash', 'Gemini 3.5 Flash'),
         ('gemini-3.1-pro-preview', 'Gemini 3.1 Pro (Preview)'),
         ('gemini-3.1-flash-lite', 'Gemini 3.1 Flash-Lite'),
     ]
