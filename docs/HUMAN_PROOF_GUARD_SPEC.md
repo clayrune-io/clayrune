@@ -332,6 +332,14 @@ live in `mc/attend_once_pass.py`; the routes in `agent_routes.py` stay thin.
   The fence is unchanged: it still passes only a call holding exactly one
   overridable blocked operation, so a window never covers supply-chain /
   global-config edits or a bundled multi-operation call.
+  HTTP transfer heads (`curl`, `wget`, HTTPie, PowerShell web-request aliases)
+  also cannot spend either mode. `_is_plain_single_invocation` excludes shell
+  metacharacters and shell/interpreter wrapper heads; ordinary quoted arguments
+  alone are accepted. MC-1084's dialog and pill titles disclose those limits.
+  Its refusal-copy change is a human-applied patch at
+  `docs/patches/fence-unlock-limits.patch`; until applied, the current fence still
+  asks for a charter note on a non-passable call. The patch instead explains
+  that neither unlock covers it and asks for a fresh human-started chat.
 - **Never extends, never stacks.** A grant while a pass is open returns
   `already_open` with the original expiry and the mode in force. The one
   rewrite is `once` → `window` (a fresh passcode, a fresh 600 s), reported as
