@@ -634,8 +634,8 @@ function _attendControlHTML(activeSession, sid) {
   if (pass && pass.open) {
     return `<span class="provider-badge attend-pill attended" title="A human clicked Allow once — the fence lets exactly the next blocked action through, then re-arms. Expires after 10 minutes if unused.">&#x2713; Allowed once (10 min)</span>`;
   }
-  return `<button type="button" class="provider-badge attend-pill guarded" title="This chat was dispatched/scheduled — the unattended fence blocks irreversible actions here. Click to let the NEXT blocked action through once; the fence re-arms right after."
-    onclick="attendOnceSession(event,'${esc(sid)}')">&#x1F512; Guarded <span class="attend-cta">Allow once</span></button>`;
+  return `<button type="button" class="provider-badge attend-pill guarded" title="This chat was dispatched/scheduled — the unattended fence blocks irreversible actions here. Click to unlock it: Allow once (the next blocked action only) or Allow 10 min."
+    onclick="attendOnceSession(event,'${esc(sid)}')">&#x1F512; Guarded <span class="attend-cta">Unlock</span></button>`;
 }
 
 // `_require_human_passcode` (secrets_routes.py, MC-994 follow-up Fenn finding 1)
@@ -660,7 +660,7 @@ function attendOnceSession(event, sid) {
   _clampModalSize(content, 420);
   content.innerHTML = `
     <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
-      <span style="font-size:16px;font-weight:700;color:var(--text)">&#x1F513; Allow once</span>
+      <span style="font-size:16px;font-weight:700;color:var(--text)">&#x1F513; Unlock this chat</span>
       <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
         <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
       </div>

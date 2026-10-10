@@ -2221,6 +2221,18 @@
     cursor: pointer; transition: all 0.15s; white-space: nowrap;
   }
   .btn-add:hover { background: var(--accent); color: var(--bg); }
+  /* .btn-secondary had no rule anywhere, so every modal Cancel (vault lock,
+     the fence Unlock dialog, backup import) rendered as a bare browser
+     button. Low specificity on purpose: the Desk's scoped
+     `.desk-v1-shell .btn-secondary` still wins inside the Desk. */
+  .btn-secondary {
+    background: var(--surface); border: 1px solid var(--border2);
+    color: var(--text); font-family: 'Inter', sans-serif;
+    font-size: 12px; font-weight: 600; padding: 7px 16px; border-radius: 5px;
+    cursor: pointer; transition: all 0.15s; white-space: nowrap;
+  }
+  .btn-secondary:hover { background: var(--surface2); }
+  .btn-secondary:disabled { opacity: 0.55; cursor: default; }
 
   .toggle-done {
     background: none; border: 1px solid var(--border); color: var(--text-faint);

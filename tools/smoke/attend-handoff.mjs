@@ -150,6 +150,9 @@ async function runOnce(viewport, label) {
       `expected 1 attend pill, got ${await pill().count()}`);
     check((await pill().first().innerText()).toLowerCase().includes('guarded'),
       'pill reads Guarded before the click', `pill text: ${await pill().first().innerText()}`);
+    // Ron 2026-10-10: the pill offers both modes, so it must not name just one.
+    check(/unlock/i.test(await pill().first().innerText()) && !/allow once/i.test(await pill().first().innerText()),
+      'pill CTA reads Unlock, not "Allow once"', `pill text: ${await pill().first().innerText()}`);
 
     await pill().first().click();
     // Passcode gate (Fenn finding 1): the click opens a modal instead of
@@ -169,6 +172,12 @@ async function runOnce(viewport, label) {
       'modal offers an "Allow 10 min" button', 'no Allow 10 min button in the modal');
     check(await page.locator(`.modal-window[data-modal-id="${modalId}"] button.btn-add`).innerText() === 'Allow once',
       'primary button is still "Allow once"', 'primary button text changed');
+    // .btn-secondary used to have no rule, so Cancel / Allow 10 min rendered
+    // as bare browser buttons (light grey face) on the dark modal.
+    const secBg = await page.locator(`.modal-window[data-modal-id="${modalId}"] button.attend-window-btn`)
+      .evaluate((b) => getComputedStyle(b).backgroundColor);
+    check(secBg !== 'rgb(239, 239, 239)' && secBg !== 'rgb(240, 240, 240)',
+      'Allow 10 min is styled, not a bare browser button', `background ${secBg}`);
     if (SHOTS) {
       await page.fill(`#ao-passcode-mcDispatch`, 'xxxxxxxx');
       await page.screenshot({ path: `${SHOTS}/attend_modal_${viewport.width}.png` });
