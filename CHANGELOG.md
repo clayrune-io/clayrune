@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-10] - Unlock dialog states the fence limits (MC-1084)
+
+- The unlock dialog and guarded/open pill tooltips now qualify which actions can pass. The dialog names browser-pane/HTTP transfer calls, chaining and special shell symbols, and shell/interpreter wrappers, and directs the human to start a fresh chat for those actions. Ordinary quoted arguments alone remain eligible under the existing classifier.
+- Dialog markup moved to `static/js/attend-unlock-dialog.js`; grant, passcode, expiry, and re-arm enforcement are unchanged. The user guide and guard spec document the limits.
+- The human-owned fence refused an agent edit. `docs/patches/fence-unlock-limits.patch` supplies the exact refusal-copy change with temporary-copy pytest coverage; the current fence remains unchanged until a human applies it. Branch only; no merge, push, restart, or named profiles.
+
 ## [2026-10-10] - Opt-in X auth diagnostics inside HTTP 200 (MC-1083)
 
 - Auth trace accepts a separate `x_success_bodies` boolean, default off, to retain sanitized 2xx diagnostics only under HTTPS `jf.x.com/onboarding/web/` and `api.x.com/1.1/flow/`. Repeated enable updates the flag; off resets it and discards pending reads. Request bodies and headers remain excluded.

@@ -153,12 +153,24 @@ async function runOnce(viewport, label) {
     // Ron 2026-10-10: the pill offers both modes, so it must not name just one.
     check(/unlock/i.test(await pill().first().innerText()) && !/allow once/i.test(await pill().first().innerText()),
       'pill CTA reads Unlock, not "Allow once"', `pill text: ${await pill().first().innerText()}`);
+    const guardedTitle = await pill().first().getAttribute('title');
+    check(/browser-pane/i.test(guardedTitle) && /HTTP/.test(guardedTitle) && /shell/.test(guardedTitle) && /fresh chat/i.test(guardedTitle),
+      'guarded tooltip states unlock limits and the fresh-chat path', `guarded tooltip: ${guardedTitle}`);
 
     await pill().first().click();
     // Passcode gate (Fenn finding 1): the click opens a modal instead of
     // firing the grant directly — punch through it like a human would.
     const modalId = '__attend-once_mcDispatch';
     await page.waitForSelector(`.modal-window[data-modal-id="${modalId}"]`, { timeout: 5000 });
+    const limits = page.locator(`.modal-window[data-modal-id="${modalId}"] .attend-unlock-limits`);
+    const limitsText = await limits.innerText();
+    const limitsRect = await limits.boundingBox();
+    check(await limits.isVisible() && limitsRect && limitsRect.x >= 0 && limitsRect.y >= 0
+      && limitsRect.x + limitsRect.width <= viewport.width && limitsRect.y + limitsRect.height <= viewport.height
+      && /browser-pane/.test(limitsText) && /HTTP/.test(limitsText) && /curl/.test(limitsText)
+      && /chaining/.test(limitsText) && /shell symbols/.test(limitsText) && /interpreter/.test(limitsText)
+      && /fresh chat yourself/.test(limitsText) && !limitsText.includes('\u2014'),
+      'unlock caveat is visible inside the viewport with actual limits and fresh-chat guidance', `caveat: ${limitsText}`);
     // Wrong passcode: the server refuses, the modal says so, nothing flips.
     await page.fill(`#ao-passcode-mcDispatch`, 'wrong-passcode');
     await page.click(`.modal-window[data-modal-id="${modalId}"] button.btn-add`);

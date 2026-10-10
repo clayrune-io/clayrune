@@ -191,6 +191,18 @@ strip is hidden.
 
 ## Agent dispatch
 
+**Unlocking a guarded chat:** a dispatched or scheduled chat shows **Guarded**
+with an **Unlock** button. Re-enter your dashboard passcode to choose **Allow
+once** (the next eligible blocked action, expiring after 10 minutes if unused)
+or **Allow 10 min** (eligible actions until the displayed expiry). **Re-arm**
+closes a timed window early. The session keeps its original trigger type.
+Neither unlock covers browser-pane or other HTTP calls made with curl or similar
+tools, shell commands with chaining or special shell symbols, or commands run
+through another shell or an interpreter. Open a fresh chat yourself for those
+actions. Supply-chain and global-config edits also remain ineligible; existing
+human-only gates still apply. Ordinary quoted arguments alone do not exclude a
+plain single command from an unlock.
+
 **Weekly pace routing:** fresh character dispatches can use a named alternate
 when the original provider's weekly utilization is more than 5 points ahead of
 the elapsed share of its seven-day window, or above 85%. This requires a
