@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-10] - Opt-in X auth diagnostics inside HTTP 200 (MC-1083)
+
+- Auth trace accepts a separate `x_success_bodies` boolean, default off, to retain sanitized 2xx diagnostics only under HTTPS `jf.x.com/onboarding/web/` and `api.x.com/1.1/flow/`. Repeated enable updates the flag; off resets it and discards pending reads. Request bodies and headers remain excluded.
+- Shared body projection lives in `mc/browser_auth_body_projection.py`; success projections are capped at 8 KiB, mask secrets and contact/identifier strings, and keep bounded error/envelope diagnostics. Contract and enable command: `docs/BROWSER_AUTH_DIAGNOSTICS.md`.
+- 295 diagnostic/success-body/route tests and pyright on both touched modules passed. Branch only; no merge, push, restart, named-profile launch or authenticated retry.
+
 ## [2026-10-09] - "Allow 10 min" on the fence Allow-once gate
 
 - The chat-header gate modal offers **Allow once** (unchanged, still the Enter default) and **Allow 10 min**. A window lets every fence-blocked action in that chat through until it expires, instead of the first one spending the pass, so a failed action no longer needs the passcode again. Same passcode, eligibility, passcode-changed and session-binding checks as before; the fence still refuses supply-chain and multi-operation calls.
