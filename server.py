@@ -2288,6 +2288,8 @@ from mc.blueprints import desk_capture_routes as _bp_desk_capture  # noqa: E402
 app.register_blueprint(_bp_desk_capture.bp)
 from mc.blueprints import merge_review_routes as _bp_merge_review  # noqa: E402
 app.register_blueprint(_bp_merge_review.bp)
+from mc.blueprints import preserved_worktrees_routes as _bp_preserved_worktrees  # noqa: E402
+app.register_blueprint(_bp_preserved_worktrees.bp)
 
 # mc.desk_publish (simplification plan §5 step 2) is a plain module, not a
 # blueprint: callers are the human-gated reply route and mc.desk_tick (R1-W

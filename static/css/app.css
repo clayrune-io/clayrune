@@ -2356,6 +2356,31 @@
     color: var(--text-faint); text-align: center; padding: 8px 12px;
     font-size: 11px; font-style: italic;
   }
+  /* "Kept for review": read-only list of worktrees the gc preserved */
+  .feed-entry.kept-review .feed-entry-project { display: flex; align-items: center; gap: 6px; margin-bottom: 0; }
+  .kept-body { padding: 4px 24px 20px 28px; max-height: 70vh; overflow-y: auto; }
+  .kept-intro { font-size: 11px; color: var(--text-faint); line-height: 1.5; margin-bottom: 10px; }
+  .kept-group > summary {
+    cursor: pointer; font-size: 12px; font-weight: 600; color: var(--text);
+    padding: 6px 0; display: flex; align-items: center; gap: 6px;
+  }
+  .kept-group > summary .fsh-count {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    background: var(--surface2); color: var(--text-dim);
+    border-radius: 3px; padding: 1px 5px; font-weight: 600;
+  }
+  .kept-row { padding: 6px 8px; border-left: 2px solid var(--border); margin: 0 0 4px 4px; }
+  .kept-branch { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text); word-break: break-all; }
+  .kept-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10px; color: var(--text-faint); margin-top: 2px; }
+  .kept-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+  .kept-tag {
+    font-family: 'JetBrains Mono', monospace; font-size: 9px;
+    background: var(--surface2); color: var(--text-dim);
+    border-radius: 3px; padding: 1px 5px;
+  }
+  .kept-tag.uncommitted, .kept-tag.commits_ahead { color: var(--accent); }
+  .kept-tag.runtime_files_only { color: var(--text-faint); }
+  .kept-tag.base_unresolved, .kept-tag.unregistered { color: #c66; }
   /* Time-bucket subheads inside the Recent section */
   .feed-subhead {
     font-size: 9px; letter-spacing: 1.2px; text-transform: uppercase;
