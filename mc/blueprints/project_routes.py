@@ -55,7 +55,7 @@ from mc.delegation_delivery import DeliveryStore
 from mc.atomic_json import write_json_atomic
 from mc.project_safety_settings import refuse_agent_safety_write
 from mc.project_routing_guard import require_human_routing_write
-from mc.core import _log, file_type, now_iso, path_is_within, record_backlog_status_change, time_ago
+from mc.core import _atomic_write_text, _log, file_type, now_iso, path_is_within, record_backlog_status_change, time_ago
 from mc.state import (
     _backlog_sync_lock,
     agent_sessions,
@@ -2753,6 +2753,19 @@ def _index_cap_error(ex):
             '(the existing MEMORY.md convention), then retry.'),
     }
 
+def _index_nul_error(p, what):
+    """The 409 body: MEMORY.md must never gain or keep NUL bytes (MC-1085).
+    Logged so the refusal is visible server-side, not just to the caller."""
+    _log(f"[memory] {p.get('id', '')}: refusing MEMORY.md write; {what}")
+    return {
+        'error': 'MEMORY.md NUL bytes refused',
+        'detail': what,
+        'guidance': (
+            'NUL bytes mean the index was zero-filled by a crash or the '
+            'content is corrupt. Restore the index from a backup, or PUT '
+            'clean content (which replaces the file) - do not append.'),
+    }
+
 @bp.route('/api/project/<project_id>/memory')
 def get_memory(project_id):
     p = load_project(project_id)
@@ -2774,13 +2787,19 @@ def save_memory(project_id):
     if content is None:
         return jsonify({'error': 'content required'}), 400
     from mc import memory as _mem
+    nuls = _mem._index_nul_count(content)
+    if nuls:
+        return jsonify(_index_nul_error(p, f'the submitted content holds {nuls} NUL bytes')), 409
     try:
         _mem._enforce_index_cap(content)
     except _mem.MemoryCapExceeded as ex:
         return jsonify(_index_cap_error(ex)), 413
     mem_path = _get_memory_path(p)
     mem_path.parent.mkdir(parents=True, exist_ok=True)
-    mem_path.write_text(content, encoding='utf-8')
+    # Same leaf lock the scribe/condense writers hold, and an atomic write:
+    # a bare write_text truncates in place (MC-1085).
+    with _mem._get_mem_write_lock(project_id):
+        _atomic_write_text(mem_path, content)
     return jsonify({'ok': True})
 
 @bp.route('/api/project/<project_id>/memory/append', methods=['POST'])
@@ -2792,21 +2811,32 @@ def append_memory(project_id):
     content = (data.get('content') or '').strip()
     if not content:
         return jsonify({'error': 'content required'}), 400
+    from mc import memory as _mem
+    nuls = _mem._index_nul_count(content)
+    if nuls:
+        return jsonify(_index_nul_error(p, f'the submitted content holds {nuls} NUL bytes')), 409
     mem_path = _get_memory_path(p)
     mem_path.parent.mkdir(parents=True, exist_ok=True)
-    existing = ''
-    if mem_path.exists():
-        existing = mem_path.read_text(encoding='utf-8').rstrip()
-    if existing:
-        combined = existing + '\n\n' + content
-    else:
-        combined = content
-    from mc import memory as _mem
-    try:
-        _mem._enforce_index_cap(combined)
-    except _mem.MemoryCapExceeded as ex:
-        return jsonify(_index_cap_error(ex)), 413
-    mem_path.write_text(combined, encoding='utf-8')
+    # Read-modify-write under the scribe's leaf lock so a concurrent
+    # commit/condense cannot interleave with it (MC-1085).
+    with _mem._get_mem_write_lock(project_id):
+        existing = ''
+        if mem_path.exists():
+            raw = mem_path.read_text(encoding='utf-8')
+            nuls = _mem._index_nul_count(raw)
+            if nuls:
+                return jsonify(_index_nul_error(
+                    p, f'MEMORY.md on disk holds {nuls} NUL bytes')), 409
+            existing = raw.rstrip()
+        if existing:
+            combined = existing + '\n\n' + content
+        else:
+            combined = content
+        try:
+            _mem._enforce_index_cap(combined)
+        except _mem.MemoryCapExceeded as ex:
+            return jsonify(_index_cap_error(ex)), 413
+        _atomic_write_text(mem_path, combined)
     return jsonify({'ok': True})
 
 

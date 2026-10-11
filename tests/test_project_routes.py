@@ -920,6 +920,79 @@ def test_memory_put_append_still_work_under_cap(client, monkeypatch):
         encoding='utf-8') == 'line 1\n\nline 2'
 
 
+def test_memory_routes_refuse_nul_with_409(client):
+    """MC-1085: MEMORY.md must never gain or keep NUL bytes. Content with a
+    NUL, or an on-disk index that is already NUL-filled (crash casualty), is
+    a 409 and the file stays byte-for-byte as it was."""
+    _seed(client)
+    mp = client.mem_dir / 'tproj.md'
+
+    r = client.put('/api/project/tproj/memory', json={'content': 'a\x00b'})
+    assert r.status_code == 409
+    assert 'NUL' in r.get_json()['error']
+    assert not mp.exists()
+
+    r = client.post('/api/project/tproj/memory/append',
+                    json={'content': 'a\x00b'})
+    assert r.status_code == 409
+    assert not mp.exists()
+
+    zeroed = b'\x00' * 2048 + b'\r\n'
+    mp.write_bytes(zeroed)
+    r = client.post('/api/project/tproj/memory/append',
+                    json={'content': '[2026-10-11] clean entry'})
+    assert r.status_code == 409
+    assert '2048' in r.get_json()['detail']
+    assert mp.read_bytes() == zeroed          # not appended onto the NULs
+    # PUT of clean content is the restore path and must still work.
+    assert client.put('/api/project/tproj/memory',
+                      json={'content': 'restored'}).status_code == 200
+    assert mp.read_text(encoding='utf-8') == 'restored'
+
+
+def test_memory_routes_take_the_scribe_lock_and_write_atomically(
+        client, monkeypatch):
+    """MC-1085: PUT/append used to truncate in place with no lock. They must
+    hold the same per-project lock the scribe path uses and go through
+    _atomic_write_text."""
+    _seed(client)
+    from mc import memory as mem
+    from mc.blueprints import project_routes as pr
+    events = []
+    real_lock = mem._get_mem_write_lock
+
+    class _Spy:
+        def __init__(self, pid):
+            self._lk = real_lock(pid)
+            self._pid = pid
+
+        def __enter__(self):
+            events.append(('lock', self._pid))
+            return self._lk.__enter__()
+
+        def __exit__(self, *a):
+            events.append(('unlock', self._pid))
+            return self._lk.__exit__(*a)
+
+    monkeypatch.setattr(mem, '_get_mem_write_lock', lambda pid: _Spy(pid))
+    real_write = pr._atomic_write_text
+
+    def _write(path, text, *a, **kw):
+        events.append(('write', Path(path).name))
+        return real_write(path, text, *a, **kw)
+
+    monkeypatch.setattr(pr, '_atomic_write_text', _write)
+
+    assert client.put('/api/project/tproj/memory',
+                      json={'content': 'line 1'}).status_code == 200
+    assert client.post('/api/project/tproj/memory/append',
+                       json={'content': 'line 2'}).status_code == 200
+    assert events == [
+        ('lock', 'tproj'), ('write', 'tproj.md'), ('unlock', 'tproj'),
+        ('lock', 'tproj'), ('write', 'tproj.md'), ('unlock', 'tproj'),
+    ]
+
+
 def test_memory_malformed_and_404(client):
     _seed(client)
     assert client.put('/api/project/tproj/memory', json={}).status_code == 400
