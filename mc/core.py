@@ -60,12 +60,20 @@ def _atomic_write_text(path, text, encoding='utf-8'):
     torn MEMORY.md/archive (SPEC §3.A.MID atomicity). Same-dir temp so
     os.replace is atomic on the same filesystem. The replace is retried on a
     Windows sharing violation -- a concurrent READER of the target makes the
-    bare call fail there; see mc/atomic_json.replace_with_retry."""
+    bare call fail there; see mc/atomic_json.replace_with_retry.
+
+    The temp file is flushed and fsynced BEFORE the replace (MC-1085, same as
+    atomic_json.write_json_atomic): without it the rename can reach disk
+    while the data pages are still dirty, and a bugcheck leaves the target
+    zero-filled at full length (MEMORY.md, 2026-10-06, 20,458 NUL bytes)."""
     from mc.atomic_json import replace_with_retry
     path = Path(path)
     tmp = path.with_name(f'.{path.name}.tmp{os.getpid()}')
-    tmp.write_text(text, encoding=encoding)
-    replace_with_retry(tmp, path)
+    with open(tmp, 'w', encoding=encoding) as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    replace_with_retry(str(tmp), path)
 
 
 def sweep_orphan_tmpfiles(roots, max_age_hours=24):

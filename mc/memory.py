@@ -4118,7 +4118,30 @@ def _write_curated_only(mem_path, curated):
     matching `_mem_migrate`'s existing "curated content preserved verbatim
     modulo trailing whitespace" contract."""
     text = (curated or '').rstrip()
-    _atomic_write_text(mem_path, (text + '\n') if text else '')
+    if '\x00' in text:
+        # MC-1085: a NUL-bearing index is a crash casualty awaiting restore.
+        # Round-tripping it re-persists the corruption (and its bytes keep
+        # the condense trigger hot), so refuse. Not stripped: that would
+        # "heal" it to an empty index and erase the evidence.
+        _log(f"[memory] {mem_path}: index holds {text.count(chr(0))} NUL "
+             f"bytes; refusing to rewrite MEMORY.md (restore needed)")
+        return
+    out = (text + '\n') if text else ''
+    try:
+        # MC-1085: skip a rewrite that would change nothing. Every scribe
+        # run, checkpoint and teardown used to re-write the whole unchanged
+        # index, each one a crash-exposure window for a file it never altered.
+        if Path(mem_path).read_text(encoding='utf-8') == out:
+            return
+    except (OSError, UnicodeDecodeError):
+        pass  # absent/unreadable: write it
+    _atomic_write_text(mem_path, out)
+
+
+def _index_nul_count(text):
+    """NUL bytes in index text; the routes use it to refuse (409) instead of
+    persisting or appending onto a crash-zeroed MEMORY.md (MC-1085)."""
+    return (text or '').count('\x00')
 
 
 def _write_session_log(project, entries, wm_markers):
@@ -4507,6 +4530,9 @@ def demote_line(project, line_index):
     with _get_mem_write_lock(project_id):
         mem_path = _get_memory_path(project)
         text = mem_path.read_text(encoding='utf-8') if mem_path.exists() else ''
+        if _index_nul_count(text):
+            raise DemotionRefused(
+                'MEMORY.md holds NUL bytes (crash damage); restore it first')
         curated, _e, _w = _mem_split_full(text)
         lines = curated.splitlines()
         if line_index >= len(lines) or lines[line_index] != match['text']:
@@ -4824,7 +4850,10 @@ def _gc_stale_watermarks(projects):
                 if mem_path.exists():
                     existing = mem_path.read_text(encoding='utf-8')
                     curated, mem_entries, mem_wm = _mem_split_full(existing)
-                    if mem_wm:
+                    if mem_wm and _index_nul_count(existing):
+                        _log(f"[memory] {mem_path}: index holds NUL bytes; "
+                             f"skipping watermark sweep of MEMORY.md")
+                    elif mem_wm:
                         kept = [ln for ln in mem_wm
                                 if (_wm_parse(ln) or {}).get('session_id') in live]
                         dropped = len(mem_wm) - len(kept)
