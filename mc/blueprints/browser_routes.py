@@ -88,6 +88,7 @@ from mc.browser_stream import bump as _bump
 from mc.core import _log
 from mc.state import browser_sessions, browser_lock
 from mc import browser_auth_diagnostics as _auth_diagnostics
+from mc import browser_frame_guard as _frame_guard
 
 bp = Blueprint('browser_routes', __name__)
 _auth_diagnostics.register_routes(bp)
@@ -1884,6 +1885,14 @@ def _run_cdp(session):
                         session['error'] = f'send failed: {e}'
             except queue.Empty:
                 pass
+            # Mobile frame narrower/wider than the page (see browser_frame_guard).
+            heal = _frame_guard.due(session, _active_session_id(session), _time.monotonic())
+            if heal:
+                try:
+                    for m_, p_ in _frame_guard.heal_commands(session, heal):
+                        send(m_, p_, session_id=_active_session_id(session))
+                except Exception as e:
+                    session['error'] = f'frame guard re-assert failed: {e}'
             # 2. read one inbound message (poll timeout so we loop back to send)
             try:
                 raw = ws.recv()
@@ -1949,6 +1958,8 @@ def _run_cdp(session):
                     dw, dh = md.get('deviceWidth'), md.get('deviceHeight')
                     if dw and dh:
                         session['frame_w'], session['frame_h'] = int(dw), int(dh)
+                        _frame_guard.observe(session, msg_sid, float(dw), float(dh),
+                                             _time.monotonic())
                     # The zoom the picture is drawn at: input must be aimed
                     # through it (see _input_commands).
                     if md.get('pageScaleFactor'):
@@ -2084,8 +2095,14 @@ def _run_cdp(session):
                     # A popup opens at whatever size headless Chromium picks
                     # (784x470 CSS measured) -- size it to the pane, like the
                     # tab that opened it. Own thread: _fit_windows blocks.
-                    threading.Thread(target=_fit_and_rearm, args=(session, [tid]),
-                                     daemon=True).start()
+                    # Not in mobile mode: the override above already sets the
+                    # size, and a window resize landing after it leaves the
+                    # frame at the window's width around the phone-width page
+                    # (see browser_frame_guard) -- the same reason apply_view
+                    # never fits a mobile session's windows.
+                    if session.get('device_mode') != 'mobile':
+                        threading.Thread(target=_fit_and_rearm, args=(session, [tid]),
+                                         daemon=True).start()
                 elif p.get('waitingForDebugger') and sid:
                     # Not a page (worker, etc.) — we asked for
                     # waitForDebuggerOnStart=False so this should not normally
