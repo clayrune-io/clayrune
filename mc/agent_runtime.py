@@ -9716,6 +9716,18 @@ class OpenCodeRuntime(AgentRuntime):
 
     _bin_cache: Optional[str] = None
 
+    # Unlike every other Mode-A runtime, OpenCode has no dedicated "session
+    # started" event: `sessionID` rides on every line. INIT is therefore
+    # synthesised by parse_event from the first line that carries a session id
+    # and has nothing else to say (in practice `step_start`, the first line of
+    # every successful run). `mc_session_id` -> last announced native id;
+    # dropped again at the run's last line so the next process announces anew.
+    _ANNOUNCED_CAP = 512
+
+    def __init__(self) -> None:
+        self._announced: Dict[str, str] = {}
+        self._announced_lock = threading.Lock()
+
     def resolve_binary(self) -> Optional[Path]:
         if self._bin_cache is not None:
             return Path(self._bin_cache) if self._bin_cache else None
@@ -9770,15 +9782,81 @@ class OpenCodeRuntime(AgentRuntime):
             cmd.extend(['--model', model])
         return cmd
 
+    @staticmethod
+    def _tokens_to_usage(tokens: Any) -> Optional[Dict[str, int]]:
+        """step-finish `tokens` -> the Claude-style keys the shared reader,
+        normalize_context_tokens() and the usage display already understand.
+
+        Both v1 (`{total?, input, output, reasoning, cache:{read, write}}`) and
+        v2 (same, no `total`) carry `input` EXCLUDING cache reads/writes, like
+        Claude's `input_tokens`. Each step_finish is one model request, so the
+        input + cache sum is that request's context size."""
+        if not isinstance(tokens, dict):
+            return None
+
+        def _n(v: Any) -> int:
+            return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+
+        cache = tokens.get('cache') if isinstance(tokens.get('cache'), dict) else {}
+        usage = {
+            'input_tokens': _n(tokens.get('input')),
+            'output_tokens': _n(tokens.get('output')),
+            'cache_read_input_tokens': _n(cache.get('read')),
+            'cache_creation_input_tokens': _n(cache.get('write')),
+            'reasoning_output_tokens': _n(tokens.get('reasoning')),
+        }
+        total = tokens.get('total')
+        usage['total_tokens'] = (_n(total) if isinstance(total, (int, float))
+                                 and not isinstance(total, bool)
+                                 else sum(usage.values()))
+        return usage
+
+    @staticmethod
+    def _error_text(err: Any) -> str:
+        """Message out of an `error` event's `error` object.
+
+        v1 forwards the SDK's session.error payload verbatim: `{name, data:
+        {message, ...}}` (run.ts: `emit("error", { error: props.error })`;
+        run.ts itself prints `data.message`, else `name`). v2 sends
+        `{type, message}` (noninteractive.ts: `emit("error", time, { error })`).
+        """
+        if isinstance(err, str):
+            return err
+        if isinstance(err, dict):
+            data = err.get('data')
+            if isinstance(data, dict) and data.get('message'):
+                return str(data['message'])
+            if err.get('message'):
+                return str(err['message'])
+            return str(err.get('name') or err.get('type') or err)
+        return str(err)
+
     def parse_event(self, raw_line: str, mc_session_id: str = '') -> Optional[AgentEvent]:
         """Parse nd-JSON from `opencode run --format json`.
 
-        OpenCode nd-JSON event shapes:
-          {"type":"session","properties":{"id":"..."}} → INIT
-          {"type":"message","role":"assistant","content":[...]} → ASSISTANT_TEXT / TOOL_USE
-          {"type":"tool","name":"...","input":{...}} → TOOL_USE
-          {"type":"done","info":{...}} → TURN_END
-          {"type":"error","error":{"message":"..."}} → ERROR
+        Every line is `{type, timestamp, sessionID, ...data}` (v1.19.0
+        packages/opencode/src/cli/cmd/run.ts `emit()`; v2.0.26
+        packages/cli/src/run/noninteractive.ts `emit()` — same envelope).
+        `type` is one of:
+          text        part.text                          → ASSISTANT_TEXT
+          reasoning   part.text (only with --thinking)   → THINKING
+          tool_use    part{tool, callID|id, state}       → TOOL_USE (one event
+                      per FINISHED call: state.status is "completed" or
+                      "error"; state.output / state.error ride in the block —
+                      OpenCode has no separate tool-result line)
+          step_start  part{type:"step-start"}            → INIT (first line
+                      of a run only, see _announced) else None
+          step_finish part{reason, cost, tokens}         → TURN_END (one per
+                      model request: reason "tool-calls" means more steps
+                      follow, so `usage` is that request's alone, `cost_usd`
+                      sums correctly across them)
+          error       error                              → ERROR
+        A non-JSON line is passed through as ASSISTANT_TEXT.
+
+        v1 and v2 differ only inside the payloads: a v1 tool part is
+        `{id: <part id>, callID, tool, state}`, a v2 one `{partID, id: <call
+        id>, tool, state}`; v1 errors are `{name, data:{message}}`, v2
+        `{type, message}`. Both are read here.
         """
         line = raw_line.rstrip('\n\r') if raw_line else ''
         if not line:
@@ -9796,90 +9874,84 @@ class OpenCodeRuntime(AgentRuntime):
             )
 
         etype = msg.get('type', '')
-        props = msg.get('properties') or {}
-        session_id = props.get('id') or msg.get('session_id') or msg.get('id')
+        part = msg.get('part') if isinstance(msg.get('part'), dict) else {}
+        session_id = msg.get('sessionID') or part.get('sessionID') or None
+        if not isinstance(session_id, str):
+            session_id = None
 
-        if etype == 'session':
-            return AgentEvent(
-                type=EventType.INIT, provider='opencode',
-                session_id=session_id, mc_session_id=mc_session_id,
-                timestamp=_now_iso(),
-                payload={'session_id': session_id,
-                         'model': props.get('model') or props.get('modelID')},
-                raw=msg,
-            )
-        if etype == 'message':
-            if msg.get('role') != 'assistant':
-                return None
-            content = msg.get('content') or []
-            texts, tool_blocks = [], []
-            for block in (content if isinstance(content, list) else []):
-                if not isinstance(block, dict):
-                    continue
-                btype = block.get('type', '')
-                if btype == 'text':
-                    texts.append(block.get('text', ''))
-                elif btype == 'tool_use':
-                    tool_blocks.append({'type': 'tool_use',
-                                       'name': block.get('name', ''),
-                                       'input': block.get('input', {}),
-                                       'tool_use_id': block.get('id')})
-            if tool_blocks:
-                return AgentEvent(type=EventType.TOOL_USE, provider='opencode',
-                                  session_id=session_id, mc_session_id=mc_session_id,
-                                  timestamp=_now_iso(),
-                                  payload={'blocks': tool_blocks}, raw=msg)
-            text = '\n'.join(texts).strip()
-            return (AgentEvent(type=EventType.ASSISTANT_TEXT, provider='opencode',
-                               session_id=session_id, mc_session_id=mc_session_id,
-                               timestamp=_now_iso(),
-                               payload={'text': text}, raw=msg)
-                    if text else None)
-        if etype == 'tool':
-            return AgentEvent(type=EventType.TOOL_USE, provider='opencode',
+        def _ev(kind: EventType, payload: Dict[str, Any]) -> AgentEvent:
+            return AgentEvent(type=kind, provider='opencode',
                               session_id=session_id, mc_session_id=mc_session_id,
-                              timestamp=_now_iso(),
-                              payload={'blocks': [{'type': 'tool_use',
-                                                  'name': msg.get('name', ''),
-                                                  'input': msg.get('input', {}),
-                                                  'tool_use_id': None}]}, raw=msg)
-        if etype in ('done', 'finish', 'complete', 'end'):
-            info = msg.get('info') or {}
-            return AgentEvent(type=EventType.TURN_END, provider='opencode',
-                              session_id=session_id, mc_session_id=mc_session_id,
-                              timestamp=_now_iso(),
-                              payload={'usage': info.get('usage') or info,
-                                      'cost_usd': info.get('cost'),
-                                      'num_turns': None, 'rc': 0}, raw=msg)
-        if etype == 'error':
-            err = msg.get('error') or {}
-            err_msg = (err.get('message') or str(err)) if isinstance(err, dict) else str(msg)
-            return AgentEvent(type=EventType.ERROR, provider='opencode',
-                              session_id=session_id, mc_session_id=mc_session_id,
-                              timestamp=_now_iso(),
-                              payload={'text': err_msg}, raw=msg)
-        text_val = msg.get('text') or msg.get('content') or ''
-        if text_val and isinstance(text_val, str):
-            return AgentEvent(type=EventType.ASSISTANT_TEXT, provider='opencode',
-                              session_id=session_id, mc_session_id=mc_session_id,
-                              timestamp=_now_iso(),
-                              payload={'text': text_val}, raw=msg)
+                              timestamp=_now_iso(), payload=payload, raw=msg)
+
+        if etype == 'text':
+            text = str(part.get('text') or '').strip()
+            if text:
+                return _ev(EventType.ASSISTANT_TEXT, {'text': text})
+        elif etype == 'reasoning':
+            text = str(part.get('text') or '').strip()
+            if text:
+                return _ev(EventType.THINKING, {'text': text})
+        elif etype == 'tool_use':
+            state = part.get('state') if isinstance(part.get('state'), dict) else {}
+            tinput = state.get('input')
+            block: Dict[str, Any] = {
+                'type': 'tool_use',
+                'name': part.get('tool') or '',
+                'input': tinput if isinstance(tinput, dict) else {},
+                'tool_use_id': part.get('callID') or part.get('id'),
+                'status': state.get('status') or '',
+            }
+            if state.get('status') == 'error':
+                block['error'] = str(state.get('error') or '')
+            elif state.get('output') is not None:
+                block['output'] = state.get('output')
+            return _ev(EventType.TOOL_USE, {'blocks': [block]})
+        elif etype == 'step_finish':
+            cost = part.get('cost')
+            reason = part.get('reason') or ''
+            if reason != 'tool-calls':
+                self._forget(mc_session_id)
+            return _ev(EventType.TURN_END, {
+                'usage': self._tokens_to_usage(part.get('tokens')),
+                'cost_usd': (cost if isinstance(cost, (int, float))
+                             and not isinstance(cost, bool) else None),
+                'num_turns': None, 'rc': 0, 'finish_reason': reason})
+        elif etype == 'error':
+            self._forget(mc_session_id)
+            return _ev(EventType.ERROR, {'text': self._error_text(msg.get('error'))})
+
+        # Nothing to surface from this line (step_start, an empty text part, a
+        # type this build predates): if it names a session we have not yet
+        # announced for this MC session, that is the INIT.
+        if session_id:
+            with self._announced_lock:
+                if self._announced.get(mc_session_id) != session_id:
+                    if len(self._announced) >= self._ANNOUNCED_CAP:
+                        self._announced.pop(next(iter(self._announced)), None)
+                    self._announced[mc_session_id] = session_id
+                    return _ev(EventType.INIT, {'session_id': session_id})
         return None
 
+    def _forget(self, mc_session_id: str) -> None:
+        """The run is over: let the next process announce its session again."""
+        with self._announced_lock:
+            self._announced.pop(mc_session_id, None)
+
     def transcript_path(self, project_path: str, session_id: str) -> Optional[Path]:
-        """OpenCode stores sessions in ~/.local/share/opencode/sessions/<id>/messages.json"""
-        if not session_id:
-            return None
-        if sys.platform == 'win32':
-            base = Path(os.environ.get('LOCALAPPDATA', '')) / 'opencode' / 'sessions'
-        else:
-            base = Path.home() / '.local' / 'share' / 'opencode' / 'sessions'
-        p = base / session_id / 'messages.json'
-        try:
-            if p.exists():
-                return p
-        except OSError:
-            pass
+        """OpenCode keeps no per-session transcript file, so there is none to return.
+
+        Verified against v1.19.0 (packages/core/src/database/database.ts
+        `path()`) and v2.0.26 (packages/cli/src/database-path.ts): every
+        session and message lives in ONE SQLite database,
+        `<xdg data>/opencode/opencode.db` (`~/.local/share/opencode/` on every
+        OS, including Windows — xdg-basedir does not use %LOCALAPPDATA%;
+        `OPENCODE_DB` overrides the file, a non-stable channel build uses
+        `opencode-<channel>.db`). The `sessions/<id>/messages.json` this used
+        to return was never written by any release. A whole-database file is
+        not a transcript, so callers get None, like Gemini. A single session
+        can be dumped with `opencode export <sessionID>`.
+        """
         return None
 
     def health_check(self) -> HealthStatus:

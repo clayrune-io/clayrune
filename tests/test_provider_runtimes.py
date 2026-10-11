@@ -1743,41 +1743,254 @@ class TestOpenCodeRuntime:
         assert '--session' in cmd
         assert 'abc123' in cmd
 
-    def test_parse_event_session(self):
-        line = json.dumps({'type': 'session', 'properties': {'id': 'sess-abc', 'model': 'claude-3'}})
-        ev = self.rt.parse_event(line)
-        assert ev is not None
-        assert ev.type == EventType.INIT
-        assert ev.session_id == 'sess-abc'
+    # ── parse_event: the REAL `opencode run --format json` vocabulary ──────────
+    #
+    # Every line is {type, timestamp, sessionID, ...data}. Sources, read from
+    # the tagged trees rather than from memory:
+    #   v1.19.0 packages/opencode/src/cli/cmd/run.ts           emit() ~L679, events L725-789
+    #   v2.0.26 packages/cli/src/run/noninteractive.ts         emit() L100-102, events L260-542
+    #   v1.19.0 packages/sdk/js/src/v2/gen/types.gen.ts        TextPart, ToolPart*, StepFinishPart
+    # tests/fixtures/opencode_v1.19.0_*.jsonl are stdout captured from a real
+    # `opencode-ai@1.19.0 run --format json` against a free opencode/* model
+    # (no credentials; only the machine path was scrubbed). v2 does not ship
+    # on npm as `opencode-ai`, so the v2-shaped lines below are built from the
+    # v2.0.26 source, not captured.
 
-    def test_parse_event_assistant_message(self):
-        line = json.dumps({
-            'type': 'message',
-            'role': 'assistant',
-            'content': [{'type': 'text', 'text': 'Hello from OpenCode!'}],
-        })
-        ev = self.rt.parse_event(line)
-        assert ev is not None
-        assert ev.type == EventType.ASSISTANT_TEXT
-        assert 'Hello from OpenCode!' in ev.payload['text']
+    @staticmethod
+    def _fixture(name):
+        p = Path(__file__).resolve().parent / 'fixtures' / name
+        return [ln for ln in p.read_text(encoding='utf-8').splitlines() if ln.strip()]
 
-    def test_parse_event_user_message_ignored(self):
-        line = json.dumps({'type': 'message', 'role': 'user', 'content': 'hi'})
-        ev = self.rt.parse_event(line)
-        assert ev is None
+    def _parse_all(self, lines, mc_session_id='m1'):
+        return [self.rt.parse_event(ln, mc_session_id) for ln in lines]
 
-    def test_parse_event_done(self):
-        line = json.dumps({'type': 'done', 'info': {'cost': 0.002, 'usage': {}}})
-        ev = self.rt.parse_event(line)
-        assert ev is not None
+    def test_build_command_model(self):
+        """--model is `provider/model`; flags match v1.19 run.ts and v2.0.26 commands.ts"""
+        self.rt._bin_cache = 'opencode'
+        cmd = self.rt.build_command(model='opencode/big-pickle')
+        assert cmd[1:] == ['run', '--format', 'json', '--model', 'opencode/big-pickle']
+
+    def test_fixture_tool_and_text_run(self):
+        """A real two-step run: read tool -> final answer."""
+        evs = self._parse_all(self._fixture('opencode_v1.19.0_tool_and_text.jsonl'))
+        assert [e.type if e else None for e in evs] == [
+            EventType.INIT,            # step_start (first line of the run)
+            EventType.TOOL_USE,        # tool_use
+            EventType.TURN_END,        # step_finish reason=tool-calls
+            None,                      # step_start (same session, already announced)
+            EventType.ASSISTANT_TEXT,  # text
+            EventType.TURN_END,        # step_finish reason=stop
+        ]
+        sid = 'ses_ed5a68ea5ffePVWMHnoIeagFK7'
+        assert all(e.session_id == sid for e in evs if e)
+        assert evs[0].payload['session_id'] == sid
+        assert evs[4].payload['text'] == 'The secret word is pelican.'
+
+    def test_tool_use_carries_name_input_output_and_call_id(self):
+        evs = self._parse_all(self._fixture('opencode_v1.19.0_tool_and_text.jsonl'))
+        block = evs[1].payload['blocks'][0]
+        assert block['name'] == 'read'
+        assert block['input'] == {'filePath': 'C:\\proj\\hello.txt'}
+        assert block['tool_use_id'] == 'call_00_oz3y06o8oxngisjf8ohqgto2'
+        assert block['status'] == 'completed'
+        assert 'pelican' in block['output'] and 'error' not in block
+
+    def test_tool_use_error_state(self):
+        """v1 ToolStateError: {status:'error', input, error:str} — no `output`."""
+        line = json.dumps({'type': 'tool_use', 'timestamp': 1, 'sessionID': 'ses_1', 'part': {
+            'id': 'prt_1', 'callID': 'call_1', 'type': 'tool', 'tool': 'bash',
+            'state': {'status': 'error', 'input': {'command': 'false'},
+                      'error': 'Command exited with code 1',
+                      'time': {'start': 1, 'end': 2}}}})
+        ev = self.rt.parse_event(line, 'm1')
+        assert ev.type == EventType.TOOL_USE
+        block = ev.payload['blocks'][0]
+        assert block['status'] == 'error'
+        assert block['error'] == 'Command exited with code 1'
+        assert 'output' not in block
+
+    def test_tool_use_v2_shape_uses_id_as_call_id(self):
+        """v2 MiniToolPart: {partID, id: <call id>, tool, state{output}} — no callID."""
+        line = json.dumps({'type': 'tool_use', 'timestamp': 1, 'sessionID': 'ses_1', 'part': {
+            'partID': 'prt_9', 'sessionID': 'ses_1', 'messageID': 'msg_1', 'type': 'tool',
+            'id': 'call_v2', 'tool': 'bash',
+            'state': {'status': 'completed', 'input': {'command': 'ls'},
+                      'output': 'a.txt', 'title': 'bash',
+                      'time': {'start': 1, 'end': 2}}}})
+        block = self.rt.parse_event(line, 'm1').payload['blocks'][0]
+        assert block['tool_use_id'] == 'call_v2'
+        assert block['name'] == 'bash' and block['output'] == 'a.txt'
+
+    def test_step_finish_is_turn_end_with_usage_and_cost(self):
+        evs = self._parse_all(self._fixture('opencode_v1.19.0_tool_and_text.jsonl'))
+        first, last = evs[2], evs[5]
+        assert first.payload['finish_reason'] == 'tool-calls'
+        assert last.payload['finish_reason'] == 'stop'
+        assert last.payload['cost_usd'] == 0
+        assert last.payload['usage'] == {
+            'input_tokens': 198, 'output_tokens': 8,
+            'cache_read_input_tokens': 16384, 'cache_creation_input_tokens': 0,
+            'reasoning_output_tokens': 0, 'total_tokens': 16590,
+        }
+        # One request's context = input + cache, what normalize_context_tokens reads.
+        assert agent_runtime.normalize_context_tokens(last.payload['usage']) == 198 + 16384
+
+    def test_step_finish_v2_has_no_total_and_computes_it(self):
+        """v2 TokenUsage.Info has no `total`; TokenUsage.total() is the sum of all five."""
+        line = json.dumps({'type': 'step_finish', 'timestamp': 1, 'sessionID': 'ses_1', 'part': {
+            'id': 'prt_1', 'sessionID': 'ses_1', 'messageID': 'msg_1', 'type': 'step-finish',
+            'reason': 'stop', 'cost': 0.0123,
+            'tokens': {'input': 100, 'output': 20, 'reasoning': 5,
+                       'cache': {'read': 300, 'write': 40}}}})
+        ev = self.rt.parse_event(line, 'm1')
         assert ev.type == EventType.TURN_END
-        assert ev.payload['cost_usd'] == 0.002
+        assert ev.payload['cost_usd'] == 0.0123
+        assert ev.payload['usage']['total_tokens'] == 465
+        assert ev.payload['usage']['cache_creation_input_tokens'] == 40
 
-    def test_parse_event_error(self):
-        line = json.dumps({'type': 'error', 'error': {'message': 'rate limit'}})
-        ev = self.rt.parse_event(line)
-        assert ev is not None
+    def test_reasoning_is_thinking(self):
+        evs = self._parse_all(self._fixture('opencode_v1.19.0_reasoning.jsonl'))
+        assert [e.type if e else None for e in evs] == [
+            EventType.INIT, EventType.THINKING, EventType.ASSISTANT_TEXT, EventType.TURN_END]
+        assert evs[1].payload['text'] == 'The user is asking a simple math question: 17 + 25.'
+        assert evs[2].payload['text'] == '42'
+        assert evs[3].payload['usage']['reasoning_output_tokens'] == 13
+
+    def test_error_v1_fixture(self):
+        """Real v1 failure: {error:{name, data:{message, ref}}} as the FIRST line."""
+        evs = self._parse_all(self._fixture('opencode_v1.19.0_error.jsonl'))
+        assert len(evs) == 1 and evs[0].type == EventType.ERROR
+        assert evs[0].payload['text'] == 'Unexpected server error. Check server logs for details.'
+        assert evs[0].session_id == 'ses_ed5a57e51ffeaiCzXD2Y2XROaF'
+
+    def test_error_v1_without_message_falls_back_to_name(self):
+        line = json.dumps({'type': 'error', 'timestamp': 1, 'sessionID': 'ses_1',
+                           'error': {'name': 'MessageOutputLengthError', 'data': {}}})
+        assert self.rt.parse_event(line, 'm1').payload['text'] == 'MessageOutputLengthError'
+
+    def test_error_v2_shape(self):
+        """v2: emit("error", time, { error: {type, message} })."""
+        line = json.dumps({'type': 'error', 'timestamp': 1, 'sessionID': 'ses_1',
+                           'error': {'type': 'aborted', 'message': 'Session interrupted: timeout'}})
+        ev = self.rt.parse_event(line, 'm1')
         assert ev.type == EventType.ERROR
+        assert ev.payload['text'] == 'Session interrupted: timeout'
+
+    def test_init_announced_once_per_run_then_again_for_next_process(self):
+        lines = self._fixture('opencode_v1.19.0_tool_and_text.jsonl')
+        run1 = self._parse_all(lines, 'm1')
+        assert sum(1 for e in run1 if e and e.type == EventType.INIT) == 1
+        # Final step_finish ended the run; a follow-up process of the same MC
+        # session (same opencode session id) announces itself again.
+        run2 = self._parse_all(lines, 'm1')
+        assert run2[0].type == EventType.INIT
+
+    def test_init_is_per_mc_session(self):
+        step_start = self._fixture('opencode_v1.19.0_tool_and_text.jsonl')[0]
+        assert self.rt.parse_event(step_start, 'm1').type == EventType.INIT
+        assert self.rt.parse_event(step_start, 'm1') is None
+        assert self.rt.parse_event(step_start, 'm2').type == EventType.INIT
+
+    def test_init_not_stolen_from_a_content_line(self):
+        """A text line is never swallowed by INIT; the next quiet line announces."""
+        text = json.dumps({'type': 'text', 'timestamp': 1, 'sessionID': 'ses_1',
+                           'part': {'type': 'text', 'text': 'hello'}})
+        step = json.dumps({'type': 'step_start', 'timestamp': 1, 'sessionID': 'ses_1',
+                           'part': {'type': 'step-start'}})
+        assert self.rt.parse_event(text, 'm1').type == EventType.ASSISTANT_TEXT
+        assert self.rt.parse_event(step, 'm1').type == EventType.INIT
+
+    def test_empty_text_part_is_dropped(self):
+        step = json.dumps({'type': 'step_start', 'timestamp': 1, 'sessionID': 'ses_1',
+                           'part': {'type': 'step-start'}})
+        self.rt.parse_event(step, 'm1')  # consume the INIT
+        blank = json.dumps({'type': 'text', 'timestamp': 1, 'sessionID': 'ses_1',
+                            'part': {'type': 'text', 'text': '  \n'}})
+        assert self.rt.parse_event(blank, 'm1') is None
+
+    def test_non_json_line_is_passed_through_as_text(self):
+        ev = self.rt.parse_event('Reading prompt from stdin...', 'm1')
+        assert ev.type == EventType.ASSISTANT_TEXT
+        assert ev.payload['text'] == 'Reading prompt from stdin...'
+        assert ev.session_id is None
+
+    def test_invented_prototype_shapes_are_gone(self):
+        """session / message / done / top-level text never existed in the CLI."""
+        for obj in ({'type': 'session', 'properties': {'id': 'sess-abc'}},
+                    {'type': 'message', 'role': 'assistant',
+                     'content': [{'type': 'text', 'text': 'hi'}]},
+                    {'type': 'done', 'info': {'cost': 0.002}},
+                    {'type': 'tool', 'name': 'bash', 'input': {}},
+                    {'text': 'stray'}):
+            assert self.rt.parse_event(json.dumps(obj), 'm1') is None, obj
+
+    def test_empty_line_is_none(self):
+        assert self.rt.parse_event('', 'm1') is None
+        assert self.rt.parse_event('\n', 'm1') is None
+
+    # ── through the shared Mode-A reader (what actually decides the verdict) ──
+
+    class _FakeProc:
+        def __init__(self, lines, rc=0):
+            self.stdout = iter(l + '\n' for l in lines)
+            self._rc = rc
+
+        def wait(self):
+            return self._rc
+
+    def _run_reader(self, fixture, rc=0):
+        proc = self._FakeProc(self._fixture(fixture), rc=rc)
+        session = {'log_lines': [], 'proc': proc, 'status': 'running'}
+        handle = agent_runtime.SessionHandle(
+            mc_session_id='mc-oc-1', provider='opencode', mode='A',
+            project_path='.', project_id='p', session_dict=session, meta={'callbacks': {}})
+        agent_runtime._mode_a_reader(proc, handle, self.rt)
+        return session
+
+    def test_reader_real_run_is_a_completed_turn_not_an_empty_one(self):
+        s = self._run_reader('opencode_v1.19.0_tool_and_text.jsonl')
+        assert s['status'] == 'completed'
+        assert '_empty_turn' not in s
+        assert s['provider_session_id'] == 'ses_ed5a68ea5ffePVWMHnoIeagFK7'
+        assert 'The secret word is pelican.' in list(s['log_lines'])
+        assert '[tool: read]' in list(s['log_lines'])
+        assert s['usage']['output_tokens'] == 8  # last step's request
+        assert s.get('cost_usd', 0) == 0
+
+    def test_reader_reasoning_run_completes(self):
+        s = self._run_reader('opencode_v1.19.0_reasoning.jsonl')
+        assert s['status'] == 'completed' and '_empty_turn' not in s
+        assert '42' in list(s['log_lines'])
+
+    def test_reader_error_run_shows_error_and_is_not_double_flagged(self):
+        s = self._run_reader('opencode_v1.19.0_error.jsonl', rc=1)
+        assert s['status'] == 'error'
+        assert any('Unexpected server error' in ln for ln in s['log_lines'])
+        assert '_empty_turn' not in s
+
+    def test_oneshot_returns_the_final_text_part(self, monkeypatch):
+        import subprocess as sp
+        out = '\n'.join(self._fixture('opencode_v1.19.0_tool_and_text.jsonl'))
+
+        class R:
+            stdout = out
+        monkeypatch.setattr(sp, 'run', lambda *a, **k: R())
+        self.rt._bin_cache = 'opencode'
+        assert self.rt.oneshot(prompt='x').text == 'The secret word is pelican.'
+
+    def test_transcript_path_is_none_there_is_no_per_session_file(self, tmp_path, monkeypatch):
+        """OpenCode stores everything in one SQLite db (opencode.db); the old
+        `sessions/<id>/messages.json` is never written. Even if such a file
+        were planted where the old code looked, no transcript is claimed."""
+        for var in ('LOCALAPPDATA', 'XDG_DATA_HOME'):
+            monkeypatch.setenv(var, str(tmp_path))
+        monkeypatch.setattr(Path, 'home', classmethod(lambda cls: tmp_path))
+        for base in (tmp_path / 'opencode' / 'sessions' / 'ses_1',
+                     tmp_path / '.local' / 'share' / 'opencode' / 'sessions' / 'ses_1'):
+            base.mkdir(parents=True)
+            (base / 'messages.json').write_text('[]')
+        assert self.rt.transcript_path(str(tmp_path), 'ses_1') is None
+        assert self.rt.transcript_path(str(tmp_path), '') is None
 
     def test_capabilities(self):
         caps = self.rt.capabilities()
