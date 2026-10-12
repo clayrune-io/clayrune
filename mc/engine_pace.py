@@ -38,8 +38,8 @@ def _percent(value) -> float | None:
     return value if math.isfinite(value) and 0 <= value <= 100 else None
 
 
-def weekly_reading(character: Mapping, usage: Mapping, now: datetime):
-    """Return (utilization, elapsed %) or None for unknown/stale windows."""
+def weekly_window(character: Mapping, usage: Mapping, now: datetime):
+    """Return (utilization, time until reset) or None for unknown/stale windows."""
     engine = character.get('engine') or {}
     provider = engine.get('provider', '') if isinstance(engine, dict) else ''
     entry = usage.get(provider)
@@ -59,7 +59,16 @@ def weekly_reading(character: Mapping, usage: Mapping, now: datetime):
     window = timedelta(days=7)
     if remaining <= timedelta(0) or remaining > window:
         return None
-    return utilization, 100 * (1 - remaining / window)
+    return utilization, remaining
+
+
+def weekly_reading(character: Mapping, usage: Mapping, now: datetime):
+    """Return (utilization, elapsed %) or None for unknown/stale windows."""
+    window = weekly_window(character, usage, now)
+    if window is None:
+        return None
+    utilization, remaining = window
+    return utilization, 100 * (1 - remaining / timedelta(days=7))
 
 
 def decide(character: Mapping, usage: Mapping, now: datetime,

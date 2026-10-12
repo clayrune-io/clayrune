@@ -66,6 +66,9 @@ import mc.distiller as _distiller           # exploration read-floor (steward cy
 from mc import workflows as _wf             # MC-871 Q4: a schedule may invoke a workflow run
 from mc import memory as _mem            # memory read-floor (steward cycle refresh)
 from mc import engine_fallback as _engine_fallback  # MC-961: blocked-run pointer on a timer fire
+from mc import engine_pace_dispatch as _engine_pace_dispatch  # usage reader for run conditions
+from mc import schedule_conditions as _schedule_conditions    # "spend leftover weekly allowance"
+from mc import schedule_skip_log as _skip_log                 # skipped ticks, shown in Runs
 from mc.blueprints.push_mobile import _notify_push  # MC-961: same pointer, the notify/inbox surface
 from steward import core as _steward_core  # cycle-task builder + skills delta
 # NOTE: `steward.core` is a leaf (no Flask, no blueprint imports), so this does
@@ -555,6 +558,37 @@ def _steward_cycle_task(project_id):
     return task, bool(new_skills)
 
 
+def _skipped_by_condition(sched, now):
+    """True if a due tick must not fire because its run condition fails.
+
+    The verdict logic lives in mc/schedule_conditions.py; this is only the
+    scheduler-side effect: log the skip with its reason (server log + the
+    schedule's Runs panel via mc/schedule_skip_log.py) and roll `next_run`
+    forward WITHOUT touching `last_run` — nothing ran, and an interval row
+    computes its next fire from `last_run`, hence the explicit roll.
+    """
+    verdict = _schedule_conditions.check(
+        sched, config=state.CONFIG, load_project=load_project,
+        read_character=_read_character, usage_for=_engine_pace_dispatch.provider_usage,
+        now=now)
+    if verdict is None or verdict.fire:
+        return False
+    sid = sched.get('id', '')
+    _log(f"[scheduler] Skipped {sid}: {verdict.reason}")
+    _skip_log.record(SCHEDULES_PATH, sid, verdict.reason, 'condition')
+    if sched.get('schedule_type') == 'interval':
+        mins = sched.get('interval_minutes', 60) or 60
+        sched['next_run'] = (now + timedelta(minutes=mins)).isoformat().replace('+00:00', 'Z')
+    else:
+        sched['next_run'] = _compute_next_run(sched)
+    return True
+
+
+def _read_character(scope, name, project_path=None):
+    from mc import characters as _chars
+    return _chars.read_character(scope, name, project_path=project_path)
+
+
 def _scheduler_loop():
     """Background daemon: check schedules every 30s and dispatch due tasks."""
     was_paused = None
@@ -609,6 +643,9 @@ def _scheduler_loop():
                             .isoformat().replace('+00:00', 'Z')
                     else:
                         sched['next_run'] = _compute_next_run(sched)
+                    changed = True
+                    continue
+                if now >= nr_dt and _skipped_by_condition(sched, now):
                     changed = True
                     continue
                 if now >= nr_dt:
@@ -1370,6 +1407,12 @@ def create_schedule_from_spec(data: dict):
             'error': 'model/effort cannot be set on a workflow-targeted '
                      'schedule; pin them on the workflow steps'}), 400)
 
+    run_condition, rcerr = _schedule_conditions.normalize_condition(
+        data.get('run_condition'), schedule_type=stype,
+        workflow_target=bool(workflow_id))
+    if rcerr:
+        return None, (jsonify({'error': rcerr}), 400)
+
     sched = {
         'id': uuid.uuid4().hex[:8],
         'enabled': True,
@@ -1393,6 +1436,9 @@ def create_schedule_from_spec(data: dict):
         'cron_expr': data.get('cron_expr', ''),
         # once-only: delete the row after it fires instead of keeping it disabled.
         'delete_after_run': bool(data.get('delete_after_run', False)),
+        # Optional gate checked on each due tick (mc/schedule_conditions.py);
+        # None = fire on every tick, as before.
+        'run_condition': run_condition,
         'last_run': None,
         'next_run': None,
         'created_at': now_iso(),
@@ -1467,6 +1513,17 @@ def update_schedule(schedule_id):
         if rerr:
             return jsonify({'error': rerr}), 400
 
+    # Validated against the MERGED row, like task/workflow_id above: switching
+    # an existing conditioned row to `once` or to a workflow target is as
+    # invalid as sending both on create.
+    merged_type = data.get('schedule_type', sched.get('schedule_type', 'once'))
+    cond_raw = data['run_condition'] if 'run_condition' in data else sched.get('run_condition')
+    cond, rcerr = _schedule_conditions.normalize_condition(
+        cond_raw, schedule_type=merged_type, workflow_target=bool(target_workflow_id))
+    if rcerr:
+        return jsonify({'error': rcerr}), 400
+    sched['run_condition'] = cond
+
     for key in ('project_id', 'task', 'workflow_id', 'description', 'continue_session',
                 'schedule_type', 'time', 'days',
                 'interval_minutes', 'enabled', 'run_at', 'cron_expr',
@@ -1488,6 +1545,7 @@ def delete_schedule(schedule_id):
     if len(schedules) == before:
         return jsonify({'error': 'not found'}), 404
     _save_schedules(schedules)
+    _skip_log.forget(SCHEDULES_PATH, schedule_id)
     return jsonify({'ok': True})
 
 
@@ -1621,8 +1679,12 @@ def schedule_runs(schedule_id):
             'limit': limit,
         })
     pid = sched.get('project_id', '')
+    # Ticks a run condition skipped (no agent started, so no agent_log row).
+    # Only the first page carries them; they are a short bounded list.
+    skips = _skip_log.list_for(SCHEDULES_PATH, schedule_id) if offset == 0 else []
     if not pid:
-        return jsonify({'runs': [], 'total': 0, 'offset': 0, 'limit': limit})
+        return jsonify({'runs': [], 'total': 0, 'offset': 0, 'limit': limit,
+                        'skips': skips})
     log = _load_agent_log(pid)
     runs = [e for e in log
             if e.get('trigger_type') == 'schedule' and e.get('trigger_id') == schedule_id]
@@ -1633,4 +1695,5 @@ def schedule_runs(schedule_id):
         'total': total,
         'offset': offset,
         'limit': limit,
+        'skips': skips,
     })

@@ -219,6 +219,10 @@ async function refreshScheduleList() {
                wd.missing ? '<span class="sched-who-tag">missing</span>' : ''}</span>
            </div>`
         : `<div class="schedule-card-task" title="${esc(s.task)}">${esc(s.task)}</div>`;
+      const rc = s.run_condition;
+      const condBadge = rc
+        ? `<span title="Fires only when the ${esc(rc.engine || "agent's engine")} weekly window resets within ${esc(rc.lead_hours)}h and usage is below ${esc(rc.ceiling_percent)}%. Other ticks are skipped; see Runs." style="color:var(--accent)">&#x23F3; Leftover allowance only (&le;${esc(rc.lead_hours)}h to reset, &lt;${esc(rc.ceiling_percent)}% used)</span>`
+        : '';
       return `<div class="schedule-card-wrap">
         <div class="schedule-card${cardClass}">
           <div class="schedule-card-body">
@@ -232,6 +236,7 @@ async function refreshScheduleList() {
               <span>Last: ${lastRun}</span>
               <span>Next: ${nextRun}</span>
               ${wd ? '' : continueBadge}
+              ${condBadge}
             </div>
           </div>
           <div class="schedule-card-actions">
@@ -296,11 +301,22 @@ async function loadScheduleRunsPage(scheduleId, projectId, offset) {
     // A workflow-invoking schedule's runs are workflow run records, not
     // agent_log entries (MC-871 Q4) -- different shape, different renderer.
     const rows = data.kind === 'workflow' ? renderWorkflowRunRows(runs) : renderRunRows(runs, projectId);
-    panel.innerHTML = rows
+    panel.innerHTML = _renderScheduleSkipRows(data.skips) + rows
                     + renderRunsPagination(total, data.offset || 0, data.limit || limit, pageFnTemplate);
   } catch(e) {
     panel.innerHTML = '<div class="runs-empty">Failed to load runs.</div>';
   }
+}
+
+// Ticks a run condition skipped. No agent ran, so these are not agent_log rows;
+// /runs returns them as `skips` (newest first) and they sit above the real runs.
+function _renderScheduleSkipRows(skips) {
+  if (!skips || !skips.length) return '';
+  return skips.slice(0, 10).map(k => `<div class="run-row sched-skip-row" style="cursor:default;opacity:.8" title="${esc(k.reason)}">
+      <span class="run-row-ts">${esc(typeof timeAgoShort === 'function' ? timeAgoShort(k.ts) : k.ts)}</span>
+      <span class="run-row-status">&#x23ED;</span>
+      <span class="run-row-summary">Skipped &mdash; ${esc(k.reason)}</span>
+    </div>`).join('');
 }
 
 function scheduleDescription(s) {
@@ -389,6 +405,8 @@ function showScheduleForm(existing) {
   const selDeleteAfter = existing ? !!existing.delete_after_run : true;
 
   const selCharacter = (existing && existing.character) || '';
+  // Optional run condition (mc/schedule_conditions.py); null = fire every tick.
+  const selCond = (existing && existing.run_condition) || null;
 
   area.innerHTML = `<div class="schedule-form">
     <label>Project</label>
@@ -417,6 +435,25 @@ function showScheduleForm(existing) {
       <button class="sched-type-btn${selType==='cron'?' active':''}" onclick="setSchedType('cron')">Cron</button>
     </div>
     <div id="sched-type-fields"></div>
+    <div id="sched-condition-area">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;margin-top:10px">
+        <input type="checkbox" id="sched-cond-on" ${selCond ? 'checked' : ''} onchange="_schedSyncCondition()" style="margin:0;width:auto">
+        <span style="font-weight:600">Only spend leftover weekly allowance</span>
+        <span class="memory-hint" style="margin:0;font-weight:normal">(a tick that doesn't qualify is skipped and logged in Runs)</span>
+      </label>
+      <div id="sched-cond-fields" style="display:${selCond ? 'block' : 'none'}">
+        <label>Fire only when the weekly window resets within (hours)</label>
+        <input type="number" id="sched-cond-lead" value="${selCond ? selCond.lead_hours : 12}" min="0.5" max="168" step="0.5">
+        <label>&hellip;and usage so far is below (%)</label>
+        <input type="number" id="sched-cond-ceiling" value="${selCond ? selCond.ceiling_percent : 80}" min="1" max="100" step="1">
+        <label>Whose allowance <span class="memory-hint" style="margin:0;font-weight:normal">(missing or stale usage data never fires)</span></label>
+        <select id="sched-cond-engine">
+          <option value=""${!selCond || !selCond.engine ? ' selected' : ''}>The engine this agent runs on</option>
+          <option value="claude"${selCond && selCond.engine === 'claude' ? ' selected' : ''}>Claude</option>
+          <option value="codex"${selCond && selCond.engine === 'codex' ? ' selected' : ''}>Codex</option>
+        </select>
+      </div>
+    </div>
     <div class="sched-actions">
       <button class="btn-sched-save" onclick="saveSchedule()">${schedulerEditId ? 'Update' : 'Create'}</button>
       ${schedulerEditId ? `<button class="btn-sched-cancel" style="border-color:var(--accent);color:var(--accent)" onclick="runScheduleNow('${esc(schedulerEditId)}')">&#x25B6; Run Now</button>` : ''}
@@ -425,6 +462,7 @@ function showScheduleForm(existing) {
   </div>`;
   renderSchedTypeFields(selType, { time: selTime, days: selDays, interval_minutes: selInterval, run_at: selRunAt, cron_expr: selCron, delete_after_run: selDeleteAfter });
   reloadSchedCharacters(selCharacter);
+  _schedSyncCondition();
   // The form sits below the Stewards section and the whole schedule list, so on
   // anything smaller than a desktop it opens off-screen and reads as "nothing
   // happened" — true for Edit from the calendar too, not just the new
@@ -524,6 +562,28 @@ function _paintSchedAgentFace(list) {
 function setSchedType(type) {
   document.querySelectorAll('.sched-type-btn').forEach(b => b.classList.toggle('active', b.textContent.toLowerCase() === type));
   renderSchedTypeFields(type);
+  _schedSyncCondition();
+}
+
+// The run condition applies to repeating schedules only: a skipped one-shot
+// would be consumed, so the server refuses it and the form hides the section.
+function _schedSyncCondition() {
+  const area = document.getElementById('sched-condition-area');
+  if (!area) return;
+  const type = document.querySelector('.sched-type-btn.active')?.textContent?.toLowerCase() || 'daily';
+  area.style.display = type === 'once' ? 'none' : 'block';
+  const fields = document.getElementById('sched-cond-fields');
+  if (fields) fields.style.display = document.getElementById('sched-cond-on')?.checked ? 'block' : 'none';
+}
+
+function _schedConditionBody(type) {
+  if (type === 'once' || !document.getElementById('sched-cond-on')?.checked) return null;
+  return {
+    type: 'spend_leftover_weekly',
+    lead_hours: parseFloat(document.getElementById('sched-cond-lead')?.value) || 12,
+    ceiling_percent: parseFloat(document.getElementById('sched-cond-ceiling')?.value) || 80,
+    engine: document.getElementById('sched-cond-engine')?.value || '',
+  };
 }
 
 function renderSchedTypeFields(type, vals) {
@@ -595,6 +655,8 @@ async function saveSchedule() {
     // Always sent, empty included: '' is a real value here (inherit the
     // project default), so an absent key could never clear a pinned persona.
     character: document.getElementById('sched-agent')?.value || '',
+    // Always sent: null is what clears a condition on edit.
+    run_condition: _schedConditionBody(activeType),
   };
 
   if (activeType === 'daily') {
@@ -679,6 +741,7 @@ window.showScheduleForm = showScheduleForm;
 window.reloadSchedCharacters = reloadSchedCharacters;   // Project select onchange
 window.hideScheduleForm = hideScheduleForm;
 window.setSchedType = setSchedType;
+window._schedSyncCondition = _schedSyncCondition;       // run-condition checkbox onchange
 window.saveSchedule = saveSchedule;
 window.toggleScheduleEnabled = toggleScheduleEnabled;
 window.toggleScheduleRuns = toggleScheduleRuns;
