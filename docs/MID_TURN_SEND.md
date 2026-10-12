@@ -72,10 +72,28 @@ still acted on; it just is not folded. Not a failure, but "steer" there means
 Probe scripts and logs were kept under `_scratch/steer_probe/` (gitignored).
 To re-run: write the probe's first message, `sleep`, write the second.
 
+## Mid-turn messages across context rolls (MC-1088 / MC-1089)
+
+Messages absorbed into a running turn are included first in the next roll's
+state block under "Unanswered user messages (answer these first)". Only an
+actual roll stamps those entries as carried; inspecting the state block
+does not change them. In either Claude reader, the first non-empty text
+block from the main conversation retires the carried entries. This is a
+text-output signal, not semantic verification that each question was answered.
+
+Messages received after the roll remain unstamped and survive that cleanup.
+Tool-only output, empty or whitespace-only text, and subagent text do not
+retire carried entries, so a roll without main-conversation text carries
+them again. A turn result still clears every unanswered entry. The latest
+user-message section and rollover thresholds/defaults are unchanged.
+
 ## Tests
 
 - `tests/test_mid_turn_send.py` — routing matrix (provider x state x intent),
   steer/queue actions, `/agent/send` wiring, vendor drain.
+- `tests/test_midturn_rollover.py` — carried-message retirement in both Claude
+  readers, messages arriving after a roll, repeated rolls without text,
+  tool-only/empty/subagent output, pure rendering, and observable helper errors.
 - `tools/smoke/mid-turn-send-ui.mjs` — composer: Interrupt button, wording,
   `send_mode` on the wire, in-flight gate lifted.
 

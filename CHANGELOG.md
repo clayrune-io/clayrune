@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-12] - Retire answered rollover messages (MC-1089)
+
+- Actual mid-turn rolls stamp the user messages they carry; the first non-empty main-conversation assistant text retires those entries so later rolls do not demand the same answers again. Messages received after the roll survive until carried by a later roll or cleared at turn completion.
+- Tool-only output, empty text, and subagent text do not retire carried messages; another roll without assistant text carries them again. State rendering remains pure, with its other sections, thresholds, and defaults unchanged.
+- Branch only; no merge, push, server restart, or live verification.
+
 ## [2026-10-10] - Unlock dialog states the fence limits (MC-1084)
 
 - The unlock dialog and guarded/open pill tooltips now qualify which actions can pass. The dialog names browser-pane/HTTP transfer calls, chaining and special shell symbols, and shell/interpreter wrappers, and directs the human to start a fresh chat for those actions. Ordinary quoted arguments alone remain eligible under the existing classifier.

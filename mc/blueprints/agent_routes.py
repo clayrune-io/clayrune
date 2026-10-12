@@ -5911,6 +5911,8 @@ def _read_agent_stream(proc, session):
                         if not isinstance(block, dict):
                             continue
                         if block.get('type') == 'text':
+                            if not msg.get('parent_tool_use_id') and block.get('text', '').strip():
+                                _midturn.note_assistant_text(session)
                             # The RAW text feeds the MC Tool Protocol scanner at the
                             # turn boundary (Claude has no native AskUserQuestion when
                             # run headless — see _agent_capability_lines).
@@ -6202,6 +6204,8 @@ def _read_agent_stream_b(proc, session):
                         if not isinstance(block, dict):
                             continue
                         if block.get('type') == 'text':
+                            if not msg.get('parent_tool_use_id') and block.get('text', '').strip():
+                                _midturn.note_assistant_text(session)
                             # The RAW text feeds the MC Tool Protocol scanner at the
                             # turn boundary (Claude has no native AskUserQuestion when
                             # run headless — see _agent_capability_lines).
@@ -14500,7 +14504,7 @@ def _maybe_midturn_roll(session, proc=None):
             'session_id': session.get('session_id', ''),
             'message': _midturn.ROLL_MESSAGE, 'midturn': True, 'proc': proc,
             'tokens': tokens,
-            'build_state': lambda cwd: _midturn.build_state_block(session, cwd)})
+            'build_state': lambda cwd: _midturn.build_roll_state_block(session, cwd)})
         if status == 200:
             _midturn.record_roll(session, tokens, scribe_flushed=scribe_flushed)
             return

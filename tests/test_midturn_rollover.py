@@ -895,3 +895,95 @@ def test_mc1088_result_event_clears_unanswered_messages(env, monkeypatch):
                          'is_error': False, 'result': 'done'}) + '\n'
     _run_reader(env, lambda: iter([result]), session=session, proc=proc)
     assert not session.get('_mt_unanswered_msgs')
+
+
+# MC-1089: carry once after text, but retry if the fresh process never speaks.
+
+def _mc1089_carried_session(env):
+    mt = env['ar']._midturn
+    prompt = _roll_prompt(
+        env, lambda s: mt.note_user_message(s, 'TEST-A', mid_turn=True))
+    session = env['sessions']['worker-1']
+    assert 'TEST-A' in prompt
+    assert session['_mt_unanswered_msgs'][0]['carried'] is True
+    return session
+
+
+@pytest.mark.parametrize('reader', ['reader', 'reader_a'])
+def test_mc1089_postroll_text_clears_carried_messages(env, reader):
+    session = _mc1089_carried_session(env)
+    _run_reader(env, lambda: iter([_assistant('answer to TEST-A', 100_000, 'm3')]),
+                session=session, proc=env['new_proc'], reader=reader)
+    assert session['_mt_unanswered_msgs'] == []
+
+
+@pytest.mark.parametrize('reader', ['reader', 'reader_a'])
+def test_mc1089_messages_after_roll_survive_text_and_next_roll(env, reader):
+    session = _mc1089_carried_session(env)
+    mt = env['ar']._midturn
+    mt.note_user_message(session, 'TEST-B', mid_turn=True)
+
+    def lines():
+        yield _assistant('answer to TEST-A', 100_000, 'm3')
+        assert [m['text'] for m in session['_mt_unanswered_msgs']] == ['TEST-B']
+        mt.note_user_message(session, 'TEST-C', mid_turn=True)
+        yield _assistant('continuing the task', 110_000, 'm4')
+
+    _run_reader(env, lines, session=session, proc=env['new_proc'], reader=reader)
+    assert [m['text'] for m in session['_mt_unanswered_msgs']] == ['TEST-B', 'TEST-C']
+    assert all(not m.get('carried') for m in session['_mt_unanswered_msgs'])
+    prompt = mt.build_roll_state_block(session, env['pp'])
+    unanswered = prompt.split('--- Latest user message ---')[0]
+    assert 'TEST-A' not in unanswered
+    assert 'TEST-B' in unanswered and 'TEST-C' in unanswered
+
+
+@pytest.mark.parametrize('reader', ['reader', 'reader_a'])
+def test_mc1089_roll_without_assistant_text_recarries(env, reader):
+    session = _mc1089_carried_session(env)
+
+    def lines():
+        yield _assistant('tool3', 250_000, 'm3')  # fresh baseline
+        yield _tool_result('tool3')
+        yield _assistant('tool4', 280_000, 'm4')  # enough growth to roll again
+        yield _tool_result('tool4')
+
+    _run_reader(env, lines, session=session, proc=env['new_proc'], reader=reader)
+    env['join_respawns']()
+    assert len(env['spawned']) == 2
+    prompt = json.loads(env['new_proc'].stdin.written[-1])['message']['content']
+    assert '--- Unanswered user messages (answer these first) ---' in prompt
+    assert 'TEST-A' in prompt.split('--- Latest user message ---')[0]
+    assert session['_mt_unanswered_msgs'][0]['carried'] is True
+
+
+@pytest.mark.parametrize('reader', ['reader', 'reader_a'])
+@pytest.mark.parametrize('output', ['tool3', '', '   ', 'subagent text'])
+def test_mc1089_only_nonempty_main_text_retires_carried_messages(env, reader, output):
+    session = _mc1089_carried_session(env)
+    parent = 'parent-tool' if output == 'subagent text' else None
+    _run_reader(env, lambda: iter([_assistant(output, 100_000, 'm3', parent)]),
+                session=session, proc=env['new_proc'], reader=reader)
+    assert [m['text'] for m in session['_mt_unanswered_msgs']] == ['TEST-A']
+    assert session['_mt_unanswered_msgs'][0]['carried'] is True
+
+
+def test_mc1089_rendering_alone_does_not_stamp_messages(env):
+    mt = env['ar']._midturn
+    session = {}
+    mt.note_user_message(session, 'TEST-A', mid_turn=True)
+    assert 'TEST-A' in mt.build_state_block(session, env['pp'])
+    mt.note_assistant_text(session)
+    assert [m['text'] for m in session['_mt_unanswered_msgs']] == ['TEST-A']
+    assert not session['_mt_unanswered_msgs'][0].get('carried')
+
+
+def test_mc1089_assistant_text_helper_logs_errors_without_raising(env, monkeypatch):
+    mt = env['ar']._midturn
+    logged = []
+    monkeypatch.setattr(mt, '_log', logged.append)
+    session = {'_mt_unanswered_msgs': [None]}
+    mt.note_assistant_text(session)
+    assert len(logged) == 1
+    assert 'note_assistant_text failed:' in logged[0]
+    assert session['_mt_unanswered_msgs'] == [None]

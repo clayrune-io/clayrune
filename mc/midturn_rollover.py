@@ -11,8 +11,9 @@ This module holds the parts that need no Flask/agent_routes state:
     which tool calls are still awaiting a result, the last few calls, and any
     `run_in_background` jobs;
   * user text the transcript handoff cannot carry (`note_user_message`,
-    `note_turn_complete`): messages delivered while a turn was running
-    (stdin steer, queued follow-up) and the latest user message (MC-1088);
+    `note_assistant_text`, `note_turn_complete`): messages delivered while a
+    turn was running (stdin steer, queued follow-up) and the latest user
+    message (MC-1088);
   * `should_roll` — the gate, evaluated at a tool_result boundary only;
   * `build_state_block` — what a mid-task roll must carry that the transcript
     handoff (role/text turns, 8000 chars) does not: the original task verbatim,
@@ -207,7 +208,8 @@ def note_user_message(session, text, *, mid_turn=False):
     `queue-operation` ... `absorbed_mid_turn`) or the interrupt that performs
     a roll drops the queue, and either way the transcript handoff (role/text
     turns) does not reliably carry it. Those are kept in `_mt_unanswered_msgs`
-    until the turn ends (`note_turn_complete`), newest `UNANSWERED_KEEP` only.
+    until post-roll assistant text retires carried entries, or the turn ends
+    (`note_turn_complete`), newest `UNANSWERED_KEEP` only.
     Never raises."""
     if not enabled() or not isinstance(text, str) or not text.strip():
         return
@@ -223,11 +225,27 @@ def note_user_message(session, text, *, mid_turn=False):
         _log(f"[midturn-rollover] note_user_message failed: {e}")
 
 
+def note_assistant_text(session):
+    """Post-roll assistant text retires only messages carried into that process.
+    Steers received after the roll remain unstamped and must survive. Called
+    only for non-empty main-conversation text, never tool-only output.
+    Never raises."""
+    try:
+        if not enabled():
+            return
+        msgs = session.get('_mt_unanswered_msgs')
+        if msgs:
+            msgs[:] = [m for m in msgs if not m.get('carried')]
+    except Exception as e:
+        _log(f"[midturn-rollover] note_assistant_text failed: {e}")
+
+
 def note_turn_complete(session):
     """A turn's `result` arrived: whatever was absorbed into it was answered
     (one `result` covers the original prompt and every steer folded into it,
     docs/MID_TURN_SEND.md). A roll never reaches here -- it kills the process
-    before any `result` -- so unanswered messages survive repeated rolls."""
+    before any `result` -- so messages with no post-roll text survive repeated
+    rolls."""
     session.pop('_mt_unanswered_msgs', None)
 
 
@@ -337,6 +355,16 @@ def _git(cwd, *args):
     if len(text) > _GIT_OUT_CAP:
         text = text[:_GIT_OUT_CAP] + '\n[... truncated]'
     return text or '(clean)'
+
+
+def build_roll_state_block(session, cwd):
+    """Stamp the messages carried by an actual roll, then render its state.
+    Kept separate from pure rendering used by inspection/tests. The interrupt
+    path calls this after killing the old process and before starting its
+    replacement, so old-process text cannot retire the stamped messages."""
+    for msg in session.get('_mt_unanswered_msgs') or []:
+        msg['carried'] = True
+    return build_state_block(session, cwd)
 
 
 def build_state_block(session, cwd):
