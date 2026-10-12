@@ -864,6 +864,7 @@ const MC_MODEL_CHOICES = [
   ['claude-sonnet-5', 'Sonnet 5'],
   ['claude-opus-5-5', 'Opus 5.5'],
   ['claude-opus-5', 'Opus 5'],
+  ['claude-haiku-5-5', 'Haiku 5.5'],
   ['claude-haiku-4-5-20251001', 'Haiku 4.5'],
 ];
 const MC_EFFORT_CHOICES = [

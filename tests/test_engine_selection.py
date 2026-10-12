@@ -259,6 +259,19 @@ def test_sonnet_5_5_is_the_balanced_head():
     assert es.is_stale_pin('claude', 'claude-sonnet-5-5') is False
 
 
+def test_haiku_5_5_is_the_fast_head():
+    # Same reason as Sonnet 5.5 above: Haiku 5.5 must sit above Haiku 4.5 in
+    # MODEL_CHOICES or the upgrade gate reads 4.5 as the head and never moves
+    # a Haiku pin. The Sonnet and Opus heads must not move with it.
+    from mc.agent_runtime import get_runtime
+    rt = get_runtime('claude')
+    assert rt.catalog_head_for('fast') == 'claude-haiku-5-5'
+    assert rt.catalog_head_for('balanced') == 'claude-sonnet-5-5'
+    assert rt.catalog_head_for('best') == 'claude-opus-5-5'
+    assert es.is_stale_pin('claude', 'claude-haiku-4-5-20251001') is True
+    assert es.is_stale_pin('claude', 'claude-haiku-5-5') is False
+
+
 def test_stale_pin_false_for_tier_value():
     assert es.is_stale_pin('claude', 'tier:best') is False
 

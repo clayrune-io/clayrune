@@ -1987,6 +1987,7 @@ class ClaudeRuntime(AgentRuntime):
         ('claude-sonnet-5', 'Sonnet 5'),
         ('claude-opus-5-5', 'Opus 5.5'),
         ('claude-opus-5', 'Opus 5'),
+        ('claude-haiku-5-5', 'Haiku 5.5'),
         ('claude-haiku-4-5-20251001', 'Haiku 4.5'),
     ]
 
@@ -2307,6 +2308,9 @@ class ClaudeRuntime(AgentRuntime):
                     # lands here too, not only settings-based permission rules,
                     # and it lands even under --dangerously-skip-permissions.
                     'permission_denials': msg.get('permission_denials') or [],
+                    # Only when present, so an older CLI's payload is unchanged.
+                    # accumulate_result_cost reads it (costBasis 'unknown').
+                    **({'modelUsage': msg['modelUsage']} if 'modelUsage' in msg else {}),
                 },
                 raw=msg,
             )
@@ -3083,7 +3087,7 @@ class ClaudeRuntime(AgentRuntime):
                       effort: str = '') -> List[str]:
         cmd = [
             self.resolve_binary_str(), '-p',
-            '--model', model or 'claude-haiku-4-5-20251001',
+            '--model', model or 'claude-haiku-5-5',
             '--max-turns', str(max(1, int(max_turns))),
             *self.TRANSFORM_ISOLATION,
         ]
@@ -3236,7 +3240,7 @@ class ClaudeRuntime(AgentRuntime):
             return None
         return OneshotResult(text=(r.stdout or '').strip())
 
-    VISION_DESCRIBE_MODEL = 'claude-haiku-4-5-20251001'
+    VISION_DESCRIBE_MODEL = 'claude-haiku-5-5'
     _IMAGE_MEDIA_TYPES = {'.png': 'image/png', '.jpg': 'image/jpeg',
                           '.jpeg': 'image/jpeg', '.gif': 'image/gif',
                           '.webp': 'image/webp'}
@@ -6014,6 +6018,96 @@ def note_cli_init(proc_cost, msg, find_transcript=None):
         proc_cost['cli_saved_total'] = saved
 
 
+# Anthropic's cache multipliers on the input rate. A price row may carry its own
+# `cache_read` / `cache_write_5m` / `cache_write_1h` (USD per Mtok); a rate it
+# leaves out falls back to these. Verified 2026-10-08 against a CLI-priced
+# ('list') Haiku 4.5 result: 10 in + 12533 1h-cache-write + 18035 cache-read +
+# 116 out at 1/5 per Mtok gives 0.0274595, the CLI's figure.
+_CACHE_READ_X = 0.1
+_CACHE_WRITE_5M_X = 1.25
+_CACHE_WRITE_1H_X = 2.0
+
+
+def _row_rate(price, key, fallback):
+    """price[key] as a non-negative float (USD per Mtok), else `fallback`."""
+    v = price.get(key)
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+        return fallback
+    return float(v)
+
+
+def _reprice_model_usage(entry, msg):
+    """USD for one modelUsage entry from model_prices.json, or None if no row.
+
+    A row is one rate per kind, so this is exact only below the model's
+    long-prompt tier (Haiku 5.5: 100K tokens); a request above it is booked at
+    the row's rate, about a fifth of list. modelUsage is a per-process total and
+    carries no per-request size, so there is nothing here to tier on.
+
+    modelUsage does not split cache writes by TTL; the result's own
+    usage.cache_creation does, so writes are priced at the 5m/1h token-weighted
+    mean of the two write rates. With no split they are priced at the 1h rate,
+    so a guess errs high.
+    """
+    from mc import model_upgrade  # lazy: model_upgrade imports this module
+    price = None
+    for key in (entry.get('_model'), entry.get('canonicalModel')):
+        if key:
+            price = model_upgrade.get_price('claude', key)
+            if price:
+                break
+    if not price:
+        return None
+    inp, out = float(price['input']), float(price['output'])
+    read_rate = _row_rate(price, 'cache_read', inp * _CACHE_READ_X)
+    w5 = _row_rate(price, 'cache_write_5m', inp * _CACHE_WRITE_5M_X)
+    w1 = _row_rate(price, 'cache_write_1h', inp * _CACHE_WRITE_1H_X)
+    write_rate = w1
+    cc = ((msg.get('usage') or {}).get('cache_creation') or {})
+    n5, n1 = cc.get('ephemeral_5m_input_tokens'), cc.get('ephemeral_1h_input_tokens')
+    if isinstance(n5, (int, float)) and isinstance(n1, (int, float)) and (n5 + n1) > 0:
+        write_rate = (n5 * w5 + n1 * w1) / (n5 + n1)
+    tok = lambda k: float(entry.get(k) or 0)
+    return (tok('inputTokens') * inp
+            + tok('cacheCreationInputTokens') * write_rate
+            + tok('cacheReadInputTokens') * read_rate
+            + tok('outputTokens') * out) / 1e6
+
+
+def _unknown_basis_adjustment(session, msg):
+    """USD to add to the CLI's cumulative total_cost_usd for models it could not price.
+
+    A CLI older than the model reports costBasis 'unknown' and a wrong rate
+    (Haiku 5.5 on 2.1.292: ~39x high). An entry whose model has a row in
+    model_prices.json has its costUSD swapped for that price ('repriced'). An
+    entry with no row keeps the CLI's figure ('unpriced'): model_prices.json
+    is never shipped, so booking 0 would show every install a silent $0, and
+    an overstated number that the flag marks beats that. Either way
+    session['cost_estimate_models'] records which and session['cost_estimate']
+    is set. 'list' or absent costBasis: returns 0.0 and touches nothing.
+    """
+    usage = msg.get('modelUsage')
+    if not isinstance(usage, dict):
+        return 0.0
+    adjust = 0.0
+    for model, entry in usage.items():
+        if not isinstance(entry, dict) or entry.get('costBasis') != 'unknown':
+            continue
+        cli_cost = entry.get('costUSD')
+        if not isinstance(cli_cost, (int, float)) or isinstance(cli_cost, bool):
+            continue
+        try:
+            repriced = _reprice_model_usage({**entry, '_model': model}, msg)
+        except Exception:
+            repriced = None
+        if repriced is not None:
+            adjust += repriced - cli_cost
+        session['cost_estimate'] = True
+        session.setdefault('cost_estimate_models', {})[model] = (
+            'repriced' if repriced is not None else 'unpriced')
+    return adjust
+
+
 def accumulate_result_cost(session, msg, proc_cost):
     """Add one turn's spend, from a `result`-style dict, to session['cost_usd'].
 
@@ -6045,6 +6139,12 @@ def accumulate_result_cost(session, msg, proc_cost):
         return
     total = msg.get('total_cost_usd')
     if isinstance(total, (int, float)) and not isinstance(total, bool):
+        # Both the cumulative modelUsage costUSD and total_cost_usd carry the
+        # CLI's wrong figure for a model newer than the CLI, so the swap is
+        # applied to the cumulative total and the delta logic below is unchanged.
+        adjust = _unknown_basis_adjustment(session, msg)
+        if adjust:
+            total = total + adjust
         if 'total_cost_usd' not in proc_cost:
             seed = 0.0
             carries = (_version_tuple(proc_cost.get('cli_version'))

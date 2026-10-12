@@ -36,6 +36,48 @@
 - Device transitions live in `mc/browser_viewer_mode.py`; the existing reload on mode change and the rule against desktop metrics overrides remain. Throwaway two-viewer regression: `tools/smoke/browser-pane-device-handoff.mjs`. Evidence: `docs/BROWSER_VIEWER_HANDOFF.md`.
 - Branch build only; no merge, push or server restart.
 
+## [2026-10-08] - Haiku 5.5 in the model pickers
+
+- Added `claude-haiku-5-5` ("Haiku 5.5") above `claude-haiku-4-5-20251001` in
+  `ClaudeRuntime.MODEL_CHOICES` (`mc/agent_runtime.py`), `MC_MODEL_CHOICES`
+  (`static/js/modal-manager.js`) and Settings > Agent (`static/js/settings-drill.js`),
+  so it is now the Haiku family head for `catalog_head_for('fast')` and the model
+  auto-upgrade gate. Haiku 4.5 stays listed. The gate reads the static catalog head,
+  not `discover_models()` (which `ClaudeRuntime` does not have), so a Haiku 4.5 pin
+  upgrades once both prices are in `~/.clayrune/model_prices.json` and 5.5 is not
+  dearer: 0.10 in / 0.50 out USD per Mtok (prompts up to 100K tokens; 0.50 / 2.50
+  above) against 4.5's 1 / 5. That file is operator data, not source, and its
+  schema holds one rate per model, so a price run records the up-to-100K rate.
+- Three Haiku 4.5 pins moved to 5.5: the transform default in
+  `ClaudeRuntime._oneshot_argv` (reads plain `-p` text stdout, which carries the
+  final answer only), `ClaudeRuntime.VISION_DESCRIBE_MODEL` (keeps only `text`
+  blocks, drops `thinking`), and the auto-router's Haiku tier
+  (`_AUTO_MODEL_VALID['H']`). Haiku 5.5 thinks adaptively by default. The alias
+  `haiku` is untouched: it still resolves to Haiku 4.5 on Claude Code 2.1.292.
+- Claude Code 2.1.292 logs `unrecognized_model` for `claude-haiku-5-5` and its
+  `total_cost_usd` for that model is not Haiku 5.5's rate; it still answers and
+  reports that id, with `modelUsage[model].costBasis: 'unknown'` and a cost about
+  39x high. `accumulate_result_cost` now swaps such an entry's `costUSD` for a
+  price from `model_prices.json` when the model has a row (`repriced`). A model with
+  no row keeps the CLI's own figure (`unpriced`), since that file is never shipped
+  and booking 0 would show every install a silent $0; a high number the flag marks
+  beats that. Either way the session gets `cost_estimate: true` and
+  `cost_estimate_models`, exposed by `_session_usage_payload`. A row may carry
+  optional `cache_read`, `cache_write_5m` and `cache_write_1h` rates (USD per Mtok);
+  a rate it omits falls back to 0.1x, 1.25x and 2x of `input`. `modelUsage` has one
+  cache-write count, so the 5m/1h split comes from the result's
+  `usage.cache_creation` (token-weighted), and with no split writes use the 1h rate.
+  `costBasis` `'list'` or absent books exactly as before. No gauge UI reads the
+  flag yet.
+- Known limit: Haiku 5.5 list price depends on prompt length. Up to 100K tokens it is
+  $0.10 input, $0.125 5m cache write, $0.20 1h cache write, $0.01 cache read and
+  $0.50 output per Mtok; over 100K it is $0.50, $0.625, $1, $0.05 and $2.50. A price
+  row holds one rate per kind and the repricer works on per-process `modelUsage`
+  totals, so any request over 100K is booked at about a fifth of list. No tier-aware
+  repricing is built; `result.usage.iterations` has per-request token counts but no
+  model field. Under 100K the row is exact: a 0.10 / 0.50 row reproduces $0.00434006
+  on a real 2.1.292 probe.
+
 ## [2026-10-08] - Zoomed-out tap smoke waits for the visible field
 
 - The real-backend typing smoke now waits for its textarea to appear in the decoded phone frame before tapping. The earlier readiness check accepted a blank JPEG while the backend already reported the page's new zoom, producing a false tap-mapping failure.
