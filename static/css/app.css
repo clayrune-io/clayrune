@@ -5085,6 +5085,13 @@
   }
   .hl-file-link:hover { border-color: var(--accent); }
   .hl-file-link .hl-file-ic { font-size: 0.95em; line-height: 1; }
+  .hl-file-link { overflow-wrap: anywhere; }
+  /* Full path shown after a labelled file link: selectable, wraps on phones. */
+  .hl-file-path {
+    font-family: var(--mono, monospace); font-size: 0.85em;
+    color: var(--text-dim, inherit); overflow-wrap: anywhere; user-select: all;
+    direction: ltr; unicode-bidi: embed;
+  }
   /* Inline image embeds in agent output (any render context) */
   .agent-img-wrap { display: block; margin: 8px 0; }
   /* Path caption: only visible as a fallback if the image fails to load. */
