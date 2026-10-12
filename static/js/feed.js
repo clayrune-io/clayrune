@@ -87,9 +87,163 @@ function _updateFeedAttentionBadge(count) {
   }
 }
 
+// ── "Kept for review" (read-only) ───────────────────────────────────────────
+// Agent worktrees the stale-worktree gc preserved because they still hold
+// unmerged/uncommitted work. The count comes from GET /api/worktrees/preserved
+// ?summary=1 (git-backed, so slow on a cold cache): fetched at most once per
+// KEPT_REFRESH_MS, never blocking renderFeed. Clicking the row opens a list.
+// Nothing here deletes or cleans up a worktree; that is the human's call.
+const KEPT_REFRESH_MS = 5 * 60 * 1000;
+const KEPT_MODAL_ID = '__kept_worktrees';
+let _keptCount = 0;
+let _keptAttemptAt = 0;     // last fetch START (success or not): failures back off too
+let _keptInFlight = false;
+
+function _refreshKeptCount() {
+  if (_keptInFlight || (_keptAttemptAt && Date.now() - _keptAttemptAt < KEPT_REFRESH_MS)) return;
+  _keptInFlight = true;
+  _keptAttemptAt = Date.now();
+  fetch(API_BASE + '/api/worktrees/preserved?summary=1')
+    .then(r => (r.ok ? r.json() : null))
+    .then(d => {
+      const n = d && d.totals ? Number(d.totals.preserved) || 0 : null;
+      if (n !== null && n !== _keptCount) { _keptCount = n; renderFeed(); }
+    })
+    .catch(() => {})
+    .finally(() => { _keptInFlight = false; });
+}
+
+function _keptTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? '—' : d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function _keptBytes(n) {
+  if (n === null || n === undefined || isNaN(Number(n))) return '—';
+  n = Number(n);
+  const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? String(n) : n.toFixed(n >= 100 ? 0 : n >= 10 ? 1 : 2)) + ' ' + u[i];
+}
+
+function _keptRowHTML(it) {
+  const tags = (it.held_for || []).map(t => `<span class="kept-tag ${esc(t)}">${esc(t)}</span>`).join('');
+  const ahead = it.commits_ahead === null || it.commits_ahead === undefined ? '?' : it.commits_ahead;
+  const dirty = it.dirty === null || it.dirty === undefined ? '?' : (it.dirty ? 'yes' : 'no');
+  return `<div class="kept-row" title="${esc(it.path || '')}">
+    <div class="kept-branch">${esc(it.branch || it.session_id)}</div>
+    <div class="kept-meta">
+      <span>last commit ${esc(_keptTime(it.last_commit_at))}</span>
+      <span>ahead ${esc(String(ahead))}</span>
+      <span>dirty ${esc(dirty)}</span>
+      <span>size ${esc(_keptBytes(it.size_bytes))}</span>
+    </div>
+    <div class="kept-tags">${tags}</div>
+  </div>`;
+}
+
+async function openKeptWorktreesModal() {
+  let win = document.querySelector(`[data-modal-id="${KEPT_MODAL_ID}"]`);
+  if (!win) {
+    win = document.createElement('div');
+    win.className = 'modal-window';
+    win.dataset.modalId = KEPT_MODAL_ID;
+    const content = document.createElement('div');
+    content.className = 'modal-content';
+    _clampModalSize(content, 640);
+    win.appendChild(content);
+    document.getElementById('modal-layer').appendChild(win);
+    const z = nextModalZ++;
+    win.style.zIndex = z;
+    openModals.set(KEPT_MODAL_ID, { projectId: null, element: win, minimized: false, zIndex: z });
+    centerModalElement(win);
+  }
+  const content = win.querySelector('.modal-content');
+  const shell = body => `
+    <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
+      <span style="font-size:16px;font-weight:700;color:var(--text)">Kept for review</span>
+      <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
+        <button class="modal-close" onclick="closeModalById('${KEPT_MODAL_ID}')" title="Close">&#10005;</button>
+      </div>
+    </div>
+    <div class="kept-body">${body}</div>`;
+  content.innerHTML = shell('<div class="feed-empty">Loading…</div>');
+  focusModal(KEPT_MODAL_ID);
+
+  // measure=1 only STARTS the server's background disk walk (a 500-folder tree
+  // takes ~30 s); the response never waits for it. While a project still
+  // reports 'measuring' the list is re-fetched (without measure) and redrawn.
+  const fetchList = async (measure) => {
+    try {
+      const r = await fetch(API_BASE + '/api/worktrees/preserved' + (measure ? '?measure=1' : ''));
+      return r.ok ? await r.json() : null;
+    } catch (_) { return null; }   // shown as unavailable by the caller
+  };
+  const draw = data => {
+    const open = new Set([...content.querySelectorAll('details.kept-group[open]')].map(d => d.dataset.k));
+    const first = !content.querySelector('details.kept-group');
+    const projects = (data.projects || [])
+      .map(p => ({ p, items: (p.items || []).filter(it => !it.live_session) }))
+      .filter(g => g.items.length);
+    const unreg = (data.projects || []).filter(p => (p.unregistered || []).length);
+    const inUse = data.totals ? data.totals.in_use || 0 : 0;
+    const disks = (data.projects || []).map(p => p.disk).filter(Boolean);
+    const busy = disks.some(d => d.state === 'measuring');
+    const totalBytes = data.totals ? data.totals.preserved_bytes : null;
+    const lower = (data.projects || []).some(p => p.preserved_disk && p.preserved_disk.complete === false);
+    const note = busy ? 'measuring…' : (disks.some(d => d.state === 'unmeasured') ? 'not measured yet' : (lower ? 'lower bound, some folders not measured' : ''));
+    const diskLine = `<div class="kept-disk"><b>${esc(_keptBytes(totalBytes))}</b> on disk in the kept folders${note ? ` <span class="kept-note">(${esc(note)})</span>` : ''}</div>`;
+    const intro = `<div class="kept-intro">Agent worktrees kept because they hold work that is not in the base branch yet, or uncommitted changes. This list is read-only; nothing here is deleted or merged for you.${inUse ? ` ${inUse} more ${inUse === 1 ? 'is' : 'are'} in use by a live session and not listed.` : ''}</div>${diskLine}`;
+    if (!projects.length && !unreg.length) { content.innerHTML = shell(intro + '<div class="feed-empty">Nothing is being kept.</div>'); return busy; }
+    const groups = projects.map((g, i) => {
+      const k = 'k:' + (g.p.project_id || i);
+      const pd = g.p.preserved_disk;
+      const sz = pd && pd.bytes !== null && pd.bytes !== undefined ? ` <span class="kept-size">${esc(_keptBytes(pd.bytes))}</span>` : '';
+      return `
+    <details class="kept-group" data-k="${esc(k)}"${(first ? i === 0 : open.has(k)) ? ' open' : ''}>
+      <summary>${esc(g.p.name || g.p.project_id)} <span class="fsh-count">${g.items.length}</span>${sz}</summary>
+      ${g.items.map(_keptRowHTML).join('')}
+    </details>`;
+    }).join('');
+    const unregHTML = unreg.map((p, i) => {
+      const k = 'u:' + (p.project_id || i);
+      const ud = p.unregistered_disk;
+      const sz = ud && ud.bytes !== null && ud.bytes !== undefined ? ` <span class="kept-size">${esc(_keptBytes(ud.bytes))}</span>` : '';
+      const rows = p.unregistered.map(u => `<div class="kept-row" title="${esc(u.path || '')}">
+        <div class="kept-branch">${esc(u.name)}</div>
+        <div class="kept-meta"><span>size ${esc(_keptBytes(u.size_bytes))}</span>${u.files === null || u.files === undefined ? '' : `<span>${esc(String(u.files))} files</span>`}</div>
+      </div>`).join('');
+      return `
+    <details class="kept-group" data-k="${esc(k)}"${open.has(k) ? ' open' : ''}>
+      <summary>Not known to git: ${esc(p.name || p.project_id)} <span class="fsh-count">${p.unregistered.length}</span>${sz}</summary>
+      <div class="kept-intro">Folders under .clayrune/agents that <code>git worktree list</code> does not list. They may also appear above. Nothing here is deleted for you.</div>
+      ${rows}
+    </details>`;
+    }).join('');
+    content.innerHTML = shell(intro + groups + unregHTML);
+    return busy;
+  };
+
+  const run = win._keptRun = {};     // a re-open supersedes this call's poll loop
+  let data = await fetchList(true);
+  if (!data) { content.innerHTML = shell('<div class="feed-empty">Could not load the list.</div>'); return; }
+  let stillBusy = draw(data);
+  // Poll while the walk runs; stop when it ends, the modal is closed, or after ~10 min.
+  for (let n = 0; stillBusy && n < 150 && win.isConnected && win._keptRun === run; n++) {
+    await new Promise(res => setTimeout(res, 4000));
+    if (!win.isConnected || win._keptRun !== run) break;
+    const next = await fetchList(false);
+    if (next) stillBusy = draw(next);
+  }
+}
+window.openKeptWorktreesModal = openKeptWorktreesModal;
+
 function renderFeed() {
   const feedEl = document.getElementById('feed-entries');
   if (!feedEl) return;
+  _refreshKeptCount();
 
   // ── Bucket 1: Needs you (derived from live state, not the log) ────────
   const attention = _buildAttentionList();
@@ -134,6 +288,15 @@ function renderFeed() {
         </div>`);
     });
     parts.push('</div>');
+  }
+
+  if (_keptCount > 0) {
+    parts.push(`<div class="feed-bucket"><div class="feed-entry kept-review" title="Agent worktrees kept because they hold unmerged or uncommitted work (read-only list)">
+      <div class="feed-entry-row">
+        <span class="fe-icon">&#128230;</span>
+        <div><div class="feed-entry-project">Kept for review <span class="fsh-count">${_keptCount}</span></div></div>
+        <span></span>
+      </div></div></div>`);
   }
 
   // Time-bucket the per-project rows. Anything older than a week drops off —
@@ -196,6 +359,9 @@ function renderFeed() {
       else openProjectModal(el.dataset.projectId);
     });
   });
+
+  const keptEl = feedEl.querySelector('.feed-entry.kept-review');
+  if (keptEl) keptEl.addEventListener('click', openKeptWorktreesModal);
 
   _updateFeedAttentionBadge(attention.length);
 }
