@@ -51,6 +51,7 @@ _get_mem_write_lock or writes MEMORY.md.
 import concurrent.futures
 import contextlib
 from mc import empty_turn as _empty_turn
+from mc import mid_turn_send as _mid_turn_send  # MC-1086: steer / queue / interrupt routing
 from mc import triggered_turns as _triggered_turns  # seed-line label for non-human turns
 from mc import engine_selection
 from mc import launch_marker as _launch_marker  # per-launch unattended marker (fence fail-open, MC-1040)
@@ -9698,6 +9699,13 @@ def _runtime_log_completion(ev, session):
         except Exception as e2:
             _log(f"[runtime-completion] wake backstop failed: {e2}")
 
+    # MC-1086: a vendor turn just ended; send the next message queued mid-turn.
+    try:
+        _mid_turn_send.drain_next(session, lambda s, m: _mid_turn_send.deliver_via_followup(
+            _delegation_app, agent_followup, s, m))
+    except Exception as e:
+        _log(f"[runtime-completion] queued follow-up drain failed: {e}")
+
 
 # Wired onto every SessionHandle MC hands a non-claude runtime. Module-level
 # and stateless on purpose: the runtime passes the session dict back into the
@@ -12545,7 +12553,12 @@ def agent_send(project_id):
         if not session:
             decision = 'fresh_or_revive'
         elif session.get('status') == 'running':
-            decision = 'interrupt'
+            # MC-1086: steer / queue / interrupt -- see mc/mid_turn_send.py.
+            decision, _route_why = _mid_turn_send.decide(
+                session,
+                _mid_turn_send.provider_mode_b_kind(session.get('provider') or 'claude'),
+                _mid_turn_send.normalize_intent(data.get('send_mode')))
+            _log(f"[send] {session_id[:12]} running -> {decision} ({_route_why})")
         else:
             decision = 'followup'
 
@@ -12558,7 +12571,11 @@ def agent_send(project_id):
         # The handlers honor `_send_already_logged` and skip their own
         # append. fresh_or_revive paths log via their own mechanisms and are
         # not affected.
-        if session and decision in ('interrupt', 'followup'):
+        if session and decision == 'queue':
+            _mid_turn_send.queue_message(
+                session, message, state.CONFIG.get('user_name') or 'User')
+            _log_agent_activity(project_id, f"Agent follow-up queued: {message[:100]}")
+        elif session and decision in ('interrupt', 'followup', 'steer'):
             user_label = state.CONFIG.get('user_name') or 'User'
             session['log_lines'].append(f"\n> {user_label}: {message}\n")
             session['_send_already_logged'] = True
@@ -12576,6 +12593,26 @@ def agent_send(project_id):
     # The existing handlers read `request.get_json()` themselves; they get
     # the same body we got. We tag the response so the frontend can log the
     # route taken (useful for debugging; FE doesn't act on it).
+    if decision == 'queue':
+        return jsonify({'ok': True, 'queued': True, 'session_id': session_id,
+                        'route': 'queue'})
+    if decision == 'steer':
+        ack = _mid_turn_send.steer_live(
+            session,
+            content=_apply_mobile_brief(message, data),
+            write=_bounded_stdin_write,
+            owner=(_TURN_OWNER_KEY, _OWNER_HUMAN))
+        _log_agent_activity(project_id, f"Agent steered mid-turn: {message[:100]}")
+        if ack.get('ack') != 'failed':
+            return jsonify({'ok': True, 'session_id': session_id, 'route': 'steer',
+                            'stdin_write_ack': ack.get('ack')})
+        # Write failed (pipe gone): the message was not delivered, so fall
+        # back to the old interrupt-and-resume rather than drop it.
+        _log(f"[send] {session_id[:12]} steer write failed ({ack.get('error')}); interrupting")
+        decision = 'interrupt'
+        with get_manager(project_id).lock:
+            if session.get('status') == 'running':
+                session['_send_already_logged'] = True
     if decision == 'interrupt':
         # agent_interrupt returns jsonify(payload) for its 200 path but
         # (jsonify(payload), status) — a plain tuple, not a Response — for
@@ -17360,7 +17397,9 @@ def _guardian_check_session(sid, session, now):
 
     # State 4: stuck pending_followups queue
     pending = session.get('pending_followups', [])
-    if pending and status != 'running' and not session.get('_dispatching_followup'):
+    # Vendor queues are drained by mid_turn_send (this replay spawns `claude -r`).
+    if (pending and status != 'running' and not session.get('_dispatching_followup')
+            and (session.get('provider') or 'claude').lower() == 'claude'):
         if now - last_change > 30:
             with proj_lock:
                 msg = pending.pop(0)

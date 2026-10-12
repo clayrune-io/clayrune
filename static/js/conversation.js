@@ -1740,7 +1740,7 @@ function agentPanelHTML(p) {
             ${mobileMode ? `<div class="composer-field">${emojiBtnHTML(`agent-followup-${esc(activeSessionId)}`)}` : ''}
             <textarea spellcheck="true" dir="auto" class="agent-task-input" id="agent-followup-${esc(activeSessionId)}" rows="1"
               data-project="${esc(p.id)}"
-              placeholder="${mobileMode ? (st === 'error' ? 'Continue…' : st === 'stopped' ? 'Resume…' : st === 'running' ? 'Redirect agent…' : 'Message') : (st === 'error' ? 'Type to continue from where it stopped...' : st === 'stopped' ? 'Type to resume conversation...' : st === 'running' ? 'Interrupt and redirect agent... (Enter to send)' : 'Send follow-up...')}"
+              placeholder="${mobileMode ? (st === 'error' ? 'Continue…' : st === 'stopped' ? 'Resume…' : st === 'running' ? mcSendIntent.runningPlaceholder(_pcaps, true) : 'Message') : (st === 'error' ? 'Type to continue from where it stopped...' : st === 'stopped' ? 'Type to resume conversation...' : st === 'running' ? mcSendIntent.runningPlaceholder(_pcaps, false) : 'Send follow-up...')}"
               onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(activeSessionId)}'),'${esc(p.id)}')"
               onpaste="${_pcaps.image_attach ? `handleAgentPaste(event,'fu_${esc(activeSessionId)}')` : ''}"
             ></textarea>
@@ -1748,6 +1748,7 @@ function agentPanelHTML(p) {
             ${mobileMode && _pcaps.image_attach ? cameraBtnHTML(`fu_${esc(activeSessionId)}`) : ''}
             ${mobileMode ? '</div>' : ''}
             ${mobileMode ? '' : emojiBtnHTML(`agent-followup-${esc(activeSessionId)}`)}
+            ${mcSendIntent.interruptButtonHTML(p.id, activeSessionId, st, mobileMode)}
             ${mobileMode
               ? composerActionHTML(`agent-followup-${esc(activeSessionId)}`, `fu_${esc(activeSessionId)}`,
                   `<button class="btn-send-arrow" onclick="sendFollowup('${esc(p.id)}','${esc(activeSessionId)}')" title="Send" aria-label="Send">&#8593;</button>`)
@@ -4306,10 +4307,11 @@ function splitPaneHTML(p, sid, isPrimary, hostPid) {
         ${_spPlusBtn}
         <textarea spellcheck="true" dir="auto" class="agent-task-input" id="agent-followup-${esc(sid)}" rows="1"
           data-project="${esc(p.id)}"
-          placeholder="${isRunning ? 'Redirect…' : 'Reply…'}"
+          placeholder="${isRunning ? mcSendIntent.runningPlaceholder(_spCaps, true) : 'Reply…'}"
           onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(sid)}'),'${esc(p.id)}')"
           onpaste="${_spCaps.image_attach ? `handleAgentPaste(event,'${esc(_spKey)}')` : ''}"></textarea>
         ${emojiBtnHTML(`agent-followup-${esc(sid)}`)}
+        ${mcSendIntent.interruptButtonHTML(p.id, sid, isRunning ? 'running' : st, false)}
         <button class="btn-dispatch" onclick="sendFollowup('${esc(p.id)}','${esc(sid)}')">Send</button>
       </div></div>` : '';
   return `<div class="agent-split-pane${isPrimary ? ' primary' : ''}" data-sid="${esc(sid)}">
@@ -5555,7 +5557,7 @@ function _dispatchQuestionAnswer(projectId, sessionId, container, answers) {
   }
 }
 
-async function sendFollowup(projectId, sessionId) {
+async function sendFollowup(projectId, sessionId, sendMode) {
   const input = document.getElementById(`agent-followup-${sessionId}`);
   const message = input.value.trim();
   if (!message) { input.focus(); return; }
@@ -5743,6 +5745,9 @@ async function sendFollowup(projectId, sessionId) {
   const _sessInc = (agentStatusCache[sessionId] && agentStatusCache[sessionId].incognito)
     || (agentHistory.find(h => h.sessionId === sessionId) || {}).incognito;
   if (getIncognitoFor(projectId) || _sessInc) sendBody.incognito = true;
+  // MC-1086: Send steers/queues mid-turn by default; only the Interrupt
+  // control asks for the old kill-and-resume.
+  if (sendMode === 'interrupt') sendBody.send_mode = 'interrupt';
   _maybeTagMobileClient(sendBody);
   // Fail-fast timeout: on Android after a Doze cycle the WebView fetch can
   // hang forever on dead sockets — the user sees their prompt cleared, the
@@ -5802,6 +5807,13 @@ async function sendFollowup(projectId, sessionId) {
     if (data.ok && agentStatusCache[sessionId]) {
       delete agentStatusCache[sessionId]._readOnlyRevived;
       delete agentStatusCache[sessionId]._nativeHistory;
+    }
+    // MC-1086: a steered/queued send starts no new turn, so no turn_start will
+    // ever clear the in-flight gate; leaving it up would swallow the real
+    // turn_complete for up to 8s.
+    if (mcSendIntent.startsNoNewTurn(data)) {
+      delete _sendInFlight[sessionId];
+      delete _preSendStatus[sessionId];
     }
     // If queued (Mode A follow-up while previous turn still running),
     // mark the echo so the user knows it isn't going out yet.
