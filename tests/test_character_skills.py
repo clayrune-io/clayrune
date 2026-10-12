@@ -75,6 +75,55 @@ def test_an_empty_value_clears_it(chars):
     assert 'skills' not in chars.read_character('global', 'fenn')
 
 
+# ── the on-disk key (2026-10-12) ────────────────────────────────────────────
+# Claude Code preloads the full SKILL.md body of every skill listed under a
+# native `skills:` frontmatter key into the subagent, so the file must not use it.
+
+def _frontmatter(path):
+    from mc import skills as sk
+    return sk.parse_skill_md(path.read_text(encoding='utf-8'))[0]
+
+
+def test_the_file_holds_clayrune_skills_not_the_native_key(chars, tmp_path):
+    chars.write_character('global', 'fenn', 'reviews code', 'body',
+                          skills='audit-doc, frontend-design')
+    meta = _frontmatter(tmp_path / 'agents' / 'fenn.md')
+    assert meta.get('clayrune_skills') == 'audit-doc, frontend-design'
+    assert 'skills' not in meta
+
+
+def test_a_legacy_skills_key_is_read_and_warned_about(chars, tmp_path, monkeypatch):
+    chars._legacy_skills_warned.clear()
+    logged = []
+    import mc.core
+    monkeypatch.setattr(mc.core, '_log', lambda msg, **kw: logged.append(msg))
+    f = tmp_path / 'agents' / 'old.md'
+    f.write_text('---\nname: old\ndescription: d\nskills: audit-doc, frontend-design\n---\nbody\n',
+                 encoding='utf-8')
+    assert chars.read_character('global', 'old')['skills'] == \
+        ['audit-doc', 'frontend-design']
+    assert any('legacy' in m and 'old.md' in m for m in logged)
+    # Reading never rewrites the user's file.
+    assert 'skills: audit-doc' in f.read_text(encoding='utf-8')
+
+
+def test_the_next_write_migrates_a_legacy_key(chars, tmp_path):
+    f = tmp_path / 'agents' / 'old.md'
+    f.write_text('---\nname: old\ndescription: d\nskills: audit-doc\n---\nbody\n',
+                 encoding='utf-8')
+    chars.write_character('global', 'old', 'd2', 'body', overwrite=True)
+    meta = _frontmatter(f)
+    assert meta.get('clayrune_skills') == 'audit-doc'
+    assert 'skills' not in meta
+
+
+def test_the_new_key_wins_over_a_stale_legacy_one(chars, tmp_path):
+    f = tmp_path / 'agents' / 'both.md'
+    f.write_text('---\nname: both\ndescription: d\nskills: stale\n'
+                 'clayrune_skills: fresh\n---\nbody\n', encoding='utf-8')
+    assert chars.read_character('global', 'both')['skills'] == ['fresh']
+
+
 # ── what the agent is told ──────────────────────────────────────────────────
 
 def test_the_prompt_names_a_types_own_skills(tmp_path):

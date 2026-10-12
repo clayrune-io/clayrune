@@ -123,8 +123,21 @@ def clean_emojis(value):
 # Comma-separated rather than a YAML list, for the reason the frontmatter
 # already documents: the minimal parser has no list type and hands `['a','b']`
 # back as a string that then iterates character by character.
-SKILLS_KEY = 'skills'
+#
+# The ON-DISK key is `clayrune_skills`, not `skills` (2026-10-12). Claude Code
+# reads `skills:` natively from ~/.claude/agents/*.md and PRELOADS THE FULL
+# SKILL.md BODY of every listed skill into the subagent at startup, so a bare
+# `skills:` here would add several KB per skill to every Task-tool spawn of the
+# character — the opposite of what scoping is for. Claude Code ignores unknown
+# keys. The record/API field stays `skills` (RECORD_SKILLS_KEY); only the file
+# spelling differs. A file still carrying the legacy `skills:` key is read as
+# the declared list (with a logged warning) and rewritten to the new key on its
+# next write_character; nothing rewrites user files on read.
+SKILLS_KEY = 'clayrune_skills'
+LEGACY_SKILLS_KEY = 'skills'
+RECORD_SKILLS_KEY = 'skills'
 MAX_SKILLS = 12
+_legacy_skills_warned: set[str] = set()
 
 
 def clean_skills(value):
@@ -289,9 +302,20 @@ def _read_one(path: Path, scope: str, project_id: str | None,
     avatar = clean_avatar(meta.get(AVATAR_KEY))
     if avatar:
         rec[AVATAR_KEY] = avatar
-    skills = clean_skills(meta.get(SKILLS_KEY))
+    raw_skills = meta.get(SKILLS_KEY)
+    if raw_skills is None and LEGACY_SKILLS_KEY in meta:
+        raw_skills = meta.get(LEGACY_SKILLS_KEY)
+        key = str(path)
+        if key not in _legacy_skills_warned:
+            _legacy_skills_warned.add(key)
+            from mc.core import _log
+            _log(f"[characters] {path} declares skills under the legacy "
+                 f"`{LEGACY_SKILLS_KEY}:` key, which Claude Code preloads in "
+                 f"full into subagents; it will be rewritten as "
+                 f"`{SKILLS_KEY}` on the next save", flush=True)
+    skills = clean_skills(raw_skills)
     if skills:
-        rec[SKILLS_KEY] = skills
+        rec[RECORD_SKILLS_KEY] = skills
     emojis = clean_emojis(meta.get(EMOJIS_KEY))
     if emojis:
         rec[EMOJIS_KEY] = emojis
@@ -454,7 +478,7 @@ def write_character(scope: str, name: str, description: str, body: str,
     # Same three-state contract again: None carries forward, '' or [] clears.
     if skills is None:
         prior = _read_one(existing, scope, None, include_body=False) if existing else None
-        carried = (prior or {}).get(SKILLS_KEY)
+        carried = (prior or {}).get(RECORD_SKILLS_KEY)
         if carried:
             front[SKILLS_KEY] = ', '.join(carried)
     else:
