@@ -968,6 +968,26 @@ def test_mc1089_only_nonempty_main_text_retires_carried_messages(env, reader, ou
     assert session['_mt_unanswered_msgs'][0]['carried'] is True
 
 
+@pytest.mark.parametrize('reader', ['reader', 'reader_a'])
+@pytest.mark.parametrize('stale', ['interrupting', 'replaced'])
+def test_mc1089_dying_process_text_does_not_retire_carried_messages(env, reader, stale):
+    """The roll kills the old process in the background, so it can still have
+    text buffered after the respawn stamped the carried messages. That text
+    never answered them; the readers' per-line ownership check must drop it."""
+    session = _mc1089_carried_session(env)
+
+    def lines():
+        if stale == 'interrupting':
+            session['_interrupting'] = True
+        else:
+            session['proc'] = env['new_proc']
+        yield _assistant('late text from the dying process', 100_000, 'm3')
+
+    _run_reader(env, lines, session=session, proc=_Proc(), reader=reader)
+    assert [m['text'] for m in session['_mt_unanswered_msgs']] == ['TEST-A']
+    assert session['_mt_unanswered_msgs'][0]['carried'] is True
+
+
 def test_mc1089_rendering_alone_does_not_stamp_messages(env):
     mt = env['ar']._midturn
     session = {}
