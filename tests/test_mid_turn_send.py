@@ -257,3 +257,37 @@ def test_idle_session_still_goes_to_followup(client, tmp_path, monkeypatch):
     r = _post(client, {'message': 'hi'})
     assert r.get_json()['route'] == 'followup'
     assert calls['followup'] == 1 and calls['writes'] == []
+
+
+# ── MC-1088: what a roll must carry is recorded at the send ────────────────
+
+@pytest.fixture()
+def rollover_on(monkeypatch):
+    from mc import state as mc_state
+    monkeypatch.setitem(mc_state.CONFIG, 'midturn_rollover_enabled', True)
+
+
+def test_steered_message_is_recorded_as_unanswered_and_latest(client, tmp_path, monkeypatch, rollover_on):
+    s = _sess(provider='claude', mode='B')
+    _route_setup(monkeypatch, tmp_path, s)
+    assert _post(client, {'message': 'what happens with this msg?'}).get_json()['route'] == 'steer'
+    assert [m['text'] for m in s['_mt_unanswered_msgs']] == ['what happens with this msg?']
+    assert s['_mt_latest_user_msg'] == 'what happens with this msg?'
+
+
+def test_queued_message_is_recorded_as_unanswered(client, tmp_path, monkeypatch, rollover_on):
+    s = _sess(provider='claude', mode='A')    # Claude Mode A: queue, not steer
+    _route_setup(monkeypatch, tmp_path, s)
+    assert _post(client, {'message': 'later please'}).get_json()['route'] == 'queue'
+    assert [m['text'] for m in s['_mt_unanswered_msgs']] == ['later please']
+
+
+def test_failed_steer_is_not_recorded_as_absorbed(client, tmp_path, monkeypatch, rollover_on):
+    from mc.blueprints import agent_routes as ar
+    s = _sess(provider='claude', mode='B')
+    _route_setup(monkeypatch, tmp_path, s)
+    monkeypatch.setattr(ar, '_bounded_stdin_write',
+                        lambda *a, **k: {'ack': 'failed', 'error': 'broken pipe'})
+    assert _post(client, {'message': 'not delivered by stdin'}).get_json()['route'] == 'interrupt'
+    assert not s.get('_mt_unanswered_msgs'), 'the interrupt delivers it as the turn\'s own prompt'
+    assert s['_mt_latest_user_msg'] == 'not delivered by stdin'

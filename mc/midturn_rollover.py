@@ -10,6 +10,9 @@ This module holds the parts that need no Flask/agent_routes state:
   * bookkeeping the stream readers feed (`note_tool_use`, `note_tool_results`):
     which tool calls are still awaiting a result, the last few calls, and any
     `run_in_background` jobs;
+  * user text the transcript handoff cannot carry (`note_user_message`,
+    `note_turn_complete`): messages delivered while a turn was running
+    (stdin steer, queued follow-up) and the latest user message (MC-1088);
   * `should_roll` — the gate, evaluated at a tool_result boundary only;
   * `build_state_block` — what a mid-task roll must carry that the transcript
     handoff (role/text turns, 8000 chars) does not: the original task verbatim,
@@ -55,6 +58,11 @@ MIN_GROWTH_TOKENS = 20_000
 # context size the failed attempt was made at.
 MAX_ROLL_FAILURES = 3
 _BG_JOBS_KEEP = 10
+# MC-1088: user text carried across a roll. Bounded like the other `_mt_*`
+# fields: the newest few mid-turn messages, each capped, so a flood of steers
+# cannot inflate the fresh session's floor.
+UNANSWERED_KEEP = 5
+USER_MSG_CAP_CHARS = 2000
 _INPUT_PREVIEW = 160
 _GIT_OUT_CAP = 4000
 _GIT_TIMEOUT_S = 10
@@ -183,6 +191,46 @@ def note_tool_results(session, content):
     return seen
 
 
+def _cap_user_text(text):
+    text = str(text).strip()
+    if len(text) > USER_MSG_CAP_CHARS:
+        return text[:USER_MSG_CAP_CHARS] + ' [... truncated]'
+    return text
+
+
+def note_user_message(session, text, *, mid_turn=False):
+    """Record a user message for the rollover state block (MC-1088).
+
+    Every message is the session's latest user message. `mid_turn=True` marks
+    one delivered WHILE a turn was running -- stdin steer, or a follow-up held
+    in `pending_followups`: the CLI folds it into the running turn (transcript
+    `queue-operation` ... `absorbed_mid_turn`) or the interrupt that performs
+    a roll drops the queue, and either way the transcript handoff (role/text
+    turns) does not reliably carry it. Those are kept in `_mt_unanswered_msgs`
+    until the turn ends (`note_turn_complete`), newest `UNANSWERED_KEEP` only.
+    Never raises."""
+    if not enabled() or not isinstance(text, str) or not text.strip():
+        return
+    try:
+        capped = _cap_user_text(text)
+        session['_mt_latest_user_msg'] = capped
+        if mid_turn:
+            msgs = session.setdefault('_mt_unanswered_msgs', [])
+            msgs.append({'ts': datetime.now(timezone.utc).strftime('%H:%M:%SZ'),
+                         'text': capped})
+            msgs[:] = msgs[-UNANSWERED_KEEP:]
+    except Exception as e:
+        _log(f"[midturn-rollover] note_user_message failed: {e}")
+
+
+def note_turn_complete(session):
+    """A turn's `result` arrived: whatever was absorbed into it was answered
+    (one `result` covers the original prompt and every steer folded into it,
+    docs/MID_TURN_SEND.md). A roll never reaches here -- it kills the process
+    before any `result` -- so unanswered messages survive repeated rolls."""
+    session.pop('_mt_unanswered_msgs', None)
+
+
 def note_call_tokens(session, tokens, parent_tool_use_id=None):
     """Record the MAIN conversation's context size from one model call.
     A subagent (Task) call streams through the same reader with a
@@ -295,6 +343,12 @@ def build_state_block(session, cwd):
     """The mid-task state the transcript handoff cannot carry. Every section is
     always present; an unavailable one says so instead of vanishing.
 
+    MC-1088 puts the user's mid-turn messages FIRST ("Unanswered user messages
+    (answer these first)") and, when it differs from the original task, the
+    latest user message: a roll used to rebuild the session from the first
+    prompt alone, so messages the CLI had absorbed mid-turn were never
+    answered (2026-10-12, transcript 03546a91).
+
     MC-964 Step C adds two sections the plan's replay showed missing: the
     session's own `docs/_journal/` file(s) (so the fresh session re-reads its
     own log instead of re-deriving what it already wrote), and the last
@@ -319,8 +373,16 @@ def build_state_block(session, cwd):
     heads = session.get('_mt_tool_result_heads') or []
     heads_text = ('\n'.join(f"- {h['tool']}: {h['head']}" for h in heads)
                   or '(none captured)')
+    unanswered = session.get('_mt_unanswered_msgs') or []
+    unanswered_text = ('\n'.join(f"- [{m['ts']}] {m['text']}" for m in unanswered)
+                       or '(none)')
+    latest = session.get('_mt_latest_user_msg')
+    latest_text = (f"--- Latest user message ---\n{latest}\n\n"
+                   if latest and latest != session.get('task') else '')
     return (
         "=== Mid-task rollover state ===\n"
+        f"--- Unanswered user messages (answer these first) ---\n{unanswered_text}\n\n"
+        f"{latest_text}"
         f"--- Original task (verbatim) ---\n{task}\n\n"
         f"--- Working directory ---\n{cwd}\n"
         f"Branch: {_git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD')}\n\n"
@@ -386,5 +448,6 @@ def record_roll(session, context_tokens, *, scribe_flushed=False):
         'recent_tools': len(session.get('_mt_recent_tools') or []),
         'journal_paths': len(session.get('_mt_journal_paths') or []),
         'tool_result_heads': len(session.get('_mt_tool_result_heads') or []),
+        'unanswered_msgs': len(session.get('_mt_unanswered_msgs') or []),
         'scribe_flushed': bool(scribe_flushed),
     })

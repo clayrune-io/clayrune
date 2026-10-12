@@ -6057,6 +6057,7 @@ def _read_agent_stream(proc, session):
                     _auto_snapshot_notes_on_turn(session)
                     _emit_coverage_advisory(session)
                     _scan_result_event_for_auth(msg)
+                    _midturn.note_turn_complete(session)
                 # Web push hook: intercept PushNotification tool_use + turn results.
                 _handle_push_signal(
                     session.get('project_id', ''),
@@ -6334,6 +6335,7 @@ def _read_agent_stream_b(proc, session):
                     _auto_snapshot_notes_on_turn(session)
                     _emit_coverage_advisory(session)
                     _scan_result_event_for_auth(msg)
+                    _midturn.note_turn_complete(session)
                     # Turn boundary — process stays alive
                     session['status'] = 'idle'
                     session['last_status_change_time'] = _time.time()
@@ -12583,9 +12585,11 @@ def agent_send(project_id):
         if session and decision == 'queue':
             _mid_turn_send.queue_message(
                 session, message, state.CONFIG.get('user_name') or 'User')
+            _midturn.note_user_message(session, message, mid_turn=True)  # MC-1088
             _log_agent_activity(project_id, f"Agent follow-up queued: {message[:100]}")
         elif session and decision in ('interrupt', 'followup', 'steer'):
             user_label = state.CONFIG.get('user_name') or 'User'
+            _midturn.note_user_message(session, message)  # MC-1088: latest user message
             session['log_lines'].append(f"\n> {user_label}: {message}\n")
             session['_send_already_logged'] = True
             # Mark followup as in-flight under the same lock so the SSE generate()
@@ -12613,6 +12617,9 @@ def agent_send(project_id):
             owner=(_TURN_OWNER_KEY, _OWNER_HUMAN))
         _log_agent_activity(project_id, f"Agent steered mid-turn: {message[:100]}")
         if ack.get('ack') != 'failed':
+            # MC-1088: the CLI folds a steer into the running turn, so a roll
+            # before that turn ends would otherwise lose it.
+            _midturn.note_user_message(session, message, mid_turn=True)
             return jsonify({'ok': True, 'session_id': session_id, 'route': 'steer',
                             'stdin_write_ack': ack.get('ack')})
         # Write failed (pipe gone): the message was not delivered, so fall
@@ -13416,6 +13423,9 @@ def agent_followup(project_id):
                 # Fall through — spawn happens after lock release
             else:
                 # Process alive — optionally re-classify model before writing to stdin
+                # MC-1088: a write into a RUNNING Mode B turn is absorbed by it.
+                _midturn.note_user_message(
+                    existing, message, mid_turn=existing.get('status') == 'running')
                 user_label = state.CONFIG.get('user_name') or 'User'
                 if not existing.pop('_send_already_logged', False):
                     existing['log_lines'].append(f"\n> {user_label}: {message}\n")
@@ -13535,6 +13545,7 @@ def agent_followup(project_id):
                 pending = existing.setdefault('pending_followups', [])
                 pending.append(message)
                 user_label = state.CONFIG.get('user_name') or 'User'
+                _midturn.note_user_message(existing, message, mid_turn=True)  # MC-1088
                 existing['log_lines'].append(f"> [queued] {user_label}: {message}")
                 _log_agent_activity(project_id, f"Agent follow-up queued: {message[:100]}")
                 return jsonify({'ok': True, 'queued': True, 'session_id': session_id})

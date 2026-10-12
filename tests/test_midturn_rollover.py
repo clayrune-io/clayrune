@@ -802,3 +802,96 @@ def test_n2_a_committed_roll_clears_the_back_off_state(env):
     for k in ('_mt_seen_failures', '_mt_fail_tokens', '_mt_gave_up'):
         assert k not in session
     assert session['_mt_roll_failures'] == 0
+
+
+# ── MC-1088: user messages absorbed mid-turn must survive a roll ─────────────
+
+def _roll_prompt(env, session_fn):
+    """Run a roll over a scripted turn, return the fresh session's first prompt.
+    `session_fn(session)` runs between the first tool boundary and the one that
+    crosses the threshold, i.e. while the turn is still running."""
+    proc = _Proc()
+    session = _session(proc)
+
+    def lines():
+        yield _assistant('tool1', 100_000, 'm1')
+        yield _tool_result('tool1')
+        session_fn(session)
+        yield _assistant('tool2', 250_000, 'm2')
+        yield _tool_result('tool2')
+
+    _run_reader(env, lines, session=session, proc=proc)
+    assert _wait(lambda: env['new_proc'].stdin.written), 'fresh session got no prompt'
+    return json.loads(env['new_proc'].stdin.written[0])['message']['content']
+
+
+def test_mc1088_roll_carries_midturn_user_messages_verbatim_and_first(env):
+    """Ron's 2026-10-12 incident: two messages absorbed into a running turn,
+    then a roll rebuilt the session from the first prompt alone."""
+    from mc import midturn_rollover as mt
+    first, second = 'what happens with this msg?', 'which was sent mid run'
+
+    def steer(session):
+        mt.note_user_message(session, first, mid_turn=True)
+        mt.note_user_message(session, second, mid_turn=True)
+
+    prompt = _roll_prompt(env, steer)
+    head = '--- Unanswered user messages (answer these first) ---'
+    assert head in prompt
+    assert first in prompt and second in prompt, 'mid-turn messages must be verbatim'
+    assert prompt.index(first) < prompt.index(second)
+    assert prompt.index(head) < prompt.index('--- Original task (verbatim) ---'), \
+        'unanswered messages must come before the original task'
+    assert '--- Latest user message ---\n' + second in prompt, \
+        'the latest message differs from the original task and must be shown'
+    assert TASK in prompt
+
+
+def test_mc1088_roll_without_midturn_messages_says_none(env):
+    prompt = _roll_prompt(env, lambda session: None)
+    assert ('--- Unanswered user messages (answer these first) ---\n(none)'
+            in prompt)
+    assert '--- Latest user message ---' not in prompt
+
+
+def test_mc1088_latest_message_shown_only_when_it_differs_from_the_task(env):
+    from mc import midturn_rollover as mt
+    p = _roll_prompt(env, lambda s: mt.note_user_message(s, 'yes please'))
+    assert '--- Latest user message ---\nyes please' in p
+    assert '(none)' in p.split('--- Original task')[0], \
+        'a non-mid-turn message is the latest message but not unanswered'
+
+
+def test_mc1088_unit_bounds_clear_on_result_and_flag_off(env):
+    from mc import midturn_rollover as mt
+    s = {}
+    for i in range(mt.UNANSWERED_KEEP + 3):
+        mt.note_user_message(s, f'm{i}', mid_turn=True)
+    assert [m['text'] for m in s['_mt_unanswered_msgs']] == \
+        [f'm{i}' for i in range(3, mt.UNANSWERED_KEEP + 3)], 'newest kept'
+
+    mt.note_user_message(s, 'x' * (mt.USER_MSG_CAP_CHARS + 50), mid_turn=True)
+    assert len(s['_mt_latest_user_msg']) < mt.USER_MSG_CAP_CHARS + 50
+    assert s['_mt_latest_user_msg'].endswith('[... truncated]')
+
+    mt.note_turn_complete(s)
+    assert '_mt_unanswered_msgs' not in s, 'a turn result answers what it absorbed'
+
+    off = {}
+    env['CONFIG']['midturn_rollover_enabled'] = False
+    mt.note_user_message(off, 'ignored', mid_turn=True)
+    assert off == {}
+
+
+def test_mc1088_result_event_clears_unanswered_messages(env, monkeypatch):
+    from mc import midturn_rollover as mt
+    # The result branch also fires the web-push hook, which would generate a
+    # real VAPID key file (icacls) -- not what this test is about.
+    monkeypatch.setattr(env['ar'], '_handle_push_signal', lambda *a, **k: None)
+    proc = _Proc()
+    session = _session(proc)
+    mt.note_user_message(session, 'steered in', mid_turn=True)
+    result = json.dumps({'type': 'result', 'subtype': 'success', 'session_id': CSID,
+                         'is_error': False, 'result': 'done'}) + '\n'
+    _run_reader(env, lambda: iter([result]), session=session, proc=proc)
+    assert not session.get('_mt_unanswered_msgs')
