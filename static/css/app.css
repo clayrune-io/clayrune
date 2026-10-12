@@ -3826,6 +3826,17 @@
   .btn-dispatch:hover { background: var(--green); color: var(--bg); }
   .btn-dispatch:disabled { opacity: 0.4; cursor: not-allowed; }
 
+  /* MC-1086: explicit Interrupt beside Send while a turn runs (old kill-and-resume). */
+  .btn-interrupt-send {
+    background: transparent; border: 1px solid var(--border2); color: var(--text-dim);
+    font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 600;
+    padding: 8px 12px; border-radius: 5px; cursor: pointer; white-space: nowrap; flex-shrink: 0;
+  }
+  .btn-interrupt-send:hover { border-color: #e85a4a; color: #e85a4a; }
+  .btn-interrupt-send-mobile {
+    width: 36px; height: 36px; padding: 0; border-radius: 50%; font-size: 18px; line-height: 1;
+  }
+
   .session-picker { margin-bottom: 10px; }
   .session-picker-label {
     font-size: 11px; color: var(--text-faint); margin-bottom: 6px;

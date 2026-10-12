@@ -306,7 +306,10 @@ def test_agent_send_interrupt_path_normalizes_tuple_response(client, monkeypatch
     }
 
     resp = client.post(f'/api/project/{project_id}/agent/send',
-                       json={'message': 'hi', 'session_id': session_id})
+                       json={'message': 'hi', 'session_id': session_id,
+                             # MC-1086: the default is now steer; this test is about the
+                             # interrupt path, so ask for it explicitly.
+                             'send_mode': 'interrupt'})
 
     assert resp.status_code != 500, (
         f'agent_send 500d instead of surfacing agent_interrupt\'s real error: '

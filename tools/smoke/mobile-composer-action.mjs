@@ -239,7 +239,7 @@ for (const status of ['completed', 'running']) {
     const stop2 = await page.evaluate((sid) => !!document.querySelector(`#stop-btn-${sid} .btn-stop`), SID);
     check('running: Stop still present while send is showing', stop2);
     const ph = (await probe(page, `agent-followup-${SID}`)).placeholder;
-    check('running: short one-line placeholder', ph === 'Redirect agent…', ph);
+    check('running: short one-line placeholder', ph === 'Steer agent…', ph);
   }
   check(`mobile follow-up (${status}): no uncaught exceptions`, page.__errors.length === 0, page.__errors.join(' | '));
   await page.context().close();
