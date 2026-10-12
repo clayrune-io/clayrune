@@ -462,15 +462,25 @@ def codex_fence_self_test(*, fence_script: Optional[Path] = None,
     command = codex_fence_hook_command(armed=True, fence_script=fence_script,
                                        python_exe=python_exe,
                                        extra_args=[FENCE_SELF_TEST_ARG])
+    return run_fence_self_test(_codex_hook_shell_argv(command), timeout=timeout)
+
+
+def run_fence_self_test(argv: Sequence[str], *, timeout: float,
+                        what: str = 'the hook shell') -> Tuple[bool, str]:
+    """Run `argv` (a fence command ending in `--self-test`) and judge it.
+
+    Shared by the Codex pre-spawn check above and the unattended-Claude one
+    (mc/fence_fail_closed.py). Passes only on exit 2 carrying
+    FENCE_SELF_TEST_TOKEN. Never raises. Returns (ok, detail)."""
     kwargs = {}
     if os.name == 'nt':
         kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
     try:
-        r = subprocess.run(_codex_hook_shell_argv(command), input='{}',
+        r = subprocess.run(list(argv), input='{}',
                            capture_output=True, text=True, encoding='utf-8',
                            errors='replace', timeout=timeout, **kwargs)
     except Exception as e:
-        return False, f'could not run the hook shell: {e}'
+        return False, f'could not run {what}: {e}'
     err = (r.stderr or '').strip()
     ok = r.returncode == 2 and FENCE_SELF_TEST_TOKEN in err
     return ok, f'exit {r.returncode}; stderr: {err[:300]}'

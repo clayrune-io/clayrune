@@ -174,6 +174,24 @@ def _no_inherited_unattended_launch_marker(monkeypatch):
     monkeypatch.delenv('CLAYRUNE_LAUNCHED_UNATTENDED', raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _stub_claude_fence_self_test(request, monkeypatch):
+    """Every UNATTENDED Claude spawn self-tests the fence first
+    (mc/fence_fail_closed.launch_cmd) by running a real subprocess. Dozens of
+    spawn-path tests swap subprocess.Popen for a fake and dispatch with an
+    unattended trigger_type; the self-test would run through that fake and
+    refuse the launch. Stubbed to pass; the one file that exercises the real
+    self-test sets REAL_FENCE_SELF_TEST = True at module level."""
+    if getattr(request.module, 'REAL_FENCE_SELF_TEST', False):
+        return
+    try:
+        from mc import fence_fail_closed
+    except Exception:
+        return
+    monkeypatch.setattr(fence_fail_closed, 'claude_fence_self_test',
+                        lambda **k: (True, 'stubbed by tests/conftest.py'))
+
+
 def stub_codex_auth_state(monkeypatch, state=('not_logged_in', None)):
     """Stop a test from asking the operator's real Codex CLI who is signed in.
 

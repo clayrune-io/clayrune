@@ -24,7 +24,7 @@ tests/test_launch_marker.py pins the two together.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 # Read by steward/fence.py `_should_arm_for_unattended_trigger` (the hook runs in
 # the Claude child's environment, so this is the one channel that needs no server).
@@ -68,3 +68,19 @@ def launch_env(trigger_type: Optional[str],
     if unattended and not (env.get(RETRY_WATCHDOG_ENV) or '').strip():
         env[RETRY_WATCHDOG_ENV] = '1'
     return env
+
+
+def launch_cmd(cmd: List[str], trigger_type: Optional[str],
+               cwd: Optional[str] = None) -> List[str]:
+    """`cmd` as Popen should receive it. Called at every Claude spawn site next
+    to `launch_env`, with the same `trigger_type`.
+
+    Attended (or fence switched off): `cmd` itself, same object. Unattended:
+    the fence self-test runs first and a failure raises, refusing the launch;
+    on a CLI that supports `onFailure` the `--settings` file is swapped for one
+    whose fence entry blocks when the hook cannot run. `cwd` is the child's
+    working directory (pass the Popen `cwd=`). See mc/fence_fail_closed.py."""
+    if (trigger_type or '') not in UNATTENDED_TRIGGER_TYPES or not _fence_enabled():
+        return cmd
+    from mc import fence_fail_closed
+    return fence_fail_closed.launch_cmd(cmd, trigger_type, cwd)
