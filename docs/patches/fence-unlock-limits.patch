@@ -7,7 +7,7 @@ diff --git a/steward/fence.py b/steward/fence.py
      else:
 -        how = ('Do NOT retry it. Instead post a `DECISION NEEDED:` note to your '
 -               'charter with the exact command so the human can approve it.')
-+        how = ('Neither "Allow once" nor "Allow 10 min" can cover this action. '
++        how = ('No one-time chat unlock can cover this action. '
 +               'It needs a fresh chat started by the human. Do NOT retry it '
 +               'in this guarded chat. Put the exact command in your final '
 +               'message so the human can run it from a fresh chat.')

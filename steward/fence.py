@@ -3345,8 +3345,10 @@ def main(argv=None) -> int:
                'the next blocked action (one action, expires in 10 minutes). '
                'Do NOT retry it until they say they have.')
     else:
-        how = ('Do NOT retry it. Instead post a `DECISION NEEDED:` note to your '
-               'charter with the exact command so the human can approve it.')
+        how = ('No one-time chat unlock can cover this action. '
+               'It needs a fresh chat started by the human. Do NOT retry it '
+               'in this guarded chat. Put the exact command in your final '
+               'message so the human can run it from a fresh chat.')
     msg = (f"STEWARD FENCE blocked this action: {decision.reason}. "
            f"This is irreversible/mutating and you are running unattended. "
            f"{how}")

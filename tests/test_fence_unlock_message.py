@@ -19,7 +19,7 @@ import steward.fence as current_fence
 
 REPO = Path(__file__).resolve().parents[1]
 PATCH = REPO / 'docs/patches/fence-unlock-limits.patch'
-NEW_GUIDANCE = 'Neither "Allow once" nor "Allow 10 min" can cover this action.'
+NEW_GUIDANCE = 'No one-time chat unlock can cover this action.'
 PATCH_PENDING = NEW_GUIDANCE not in (REPO / 'steward/fence.py').read_text(encoding='utf-8')
 
 

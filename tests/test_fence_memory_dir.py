@@ -520,7 +520,7 @@ def test_unattended_trigger_session_uses_the_same_rule(env, monkeypatch, capsys)
            'tool_input': {'file_path': str(env.mem / 'MEMORY.md')}}
     assert _main(monkeypatch, ok, []) == 0
     assert _main(monkeypatch, bad, []) == 2
-    assert 'Do NOT retry it. Instead post' in capsys.readouterr().err
+    assert 'No one-time chat unlock can cover this action.' in capsys.readouterr().err
 
 
 def test_pass_helpers_use_the_same_project_root(env):
