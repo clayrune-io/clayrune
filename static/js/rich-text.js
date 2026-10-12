@@ -196,12 +196,17 @@ function formatAgentText(raw) {
     const path = unesc(pathEsc).trim();
     if (!path) return m;                                  // malformed → leave literal
     const href = API_BASE + '/api/serve-file?path=' + encodeURIComponent(path);
-    const fname = path.split(/[\\/]/).pop() || path;
-    const labelHtml = labelEsc ? labelEsc.trim() : esc(fname);  // labelEsc already escaped
+    // The full path is ALWAYS visible, never only in a hover title (Ron,
+    // 2026-10-12: a label alone left him tracing which folder a file lives
+    // in). No label → the path is the link text; a label → the path follows
+    // it as selectable text.
+    const pathHtml = pathEsc.trim();                      // already escaped
+    const labelHtml = labelEsc ? labelEsc.trim() : pathHtml;  // labelEsc already escaped
     const tok = '@@CLFile' + _fileTokens.length + '@@';
     _fileTokens.push(
       `<a class="hl-file-link" dir="ltr" href="${href}" target="_blank" rel="noopener" ` +
-      `title="Download ${pathEsc.trim()}"><span class="hl-file-ic">&#128196;</span>${labelHtml}</a>`);
+      `title="Download ${pathHtml}"><span class="hl-file-ic">&#128196;</span>${labelHtml}</a>` +
+      (labelEsc ? ` <span class="hl-file-path" dir="ltr">${pathHtml}</span>` : ''));
     return tok;
   });
 

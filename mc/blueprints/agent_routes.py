@@ -4573,7 +4573,11 @@ def _clayrune_universal_capabilities(port: int | None = None) -> list[str]:
         "data/uploads|media, and secrets (.env, *.key/*.pem, id_rsa, "
         "*credential*) are refused. Use this for logs, reports, exports, or any "
         "artifact the user should open — NOT for images (use a bare image path) "
-        "or diagrams (use a ```mermaid block).",
+        "or diagrams (use a ```mermaid block). Whenever you name a project "
+        "file in a reply, marker or not, write its ABSOLUTE path, never a "
+        "repo-relative one like docs/x.md: the user should not have to work out "
+        "which folder it lives in. Clayrune prints the full path under every "
+        "file link, so a Label adds a name, it does not replace the path.",
 
         # Browser pane — agents kept shelling out to the HOST browser
         # (`start`/`open`/`webbrowser.open`), which opens a window on a machine
