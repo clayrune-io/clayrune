@@ -23,6 +23,8 @@ import os
 from pathlib import Path
 from typing import Dict, Optional
 
+from mc.provider_env_scope import claude_child_env
+
 NEUTRAL_DIRNAME = 'transform_cwd'
 
 # Both names are real CLI switches (each changed the measured prompt size).
@@ -53,7 +55,8 @@ def neutral_cwd() -> str:
 
 
 def transform_env() -> Dict[str, str]:
-    """The parent environment plus TRANSFORM_ENV, for subprocess `env=`."""
-    env = dict(os.environ)
+    """The parent environment (Claude-scoped: see mc/provider_env_scope.py) plus
+    TRANSFORM_ENV, for subprocess `env=`. Only Claude transforms call this."""
+    env = claude_child_env()
     env.update(TRANSFORM_ENV)
     return env

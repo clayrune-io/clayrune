@@ -54,6 +54,7 @@ from mc import empty_turn as _empty_turn
 from mc import mid_turn_send as _mid_turn_send  # MC-1086: steer / queue / interrupt routing
 from mc import triggered_turns as _triggered_turns  # seed-line label for non-human turns
 from mc import engine_selection
+from mc import provider_env_scope as _provider_env_scope  # saved keys stay with their provider
 from mc import launch_marker as _launch_marker  # per-launch unattended marker (fence fail-open, MC-1040)
 from mc import proc_kill as _proc_kill
 from mc.proc_kill import POPEN_NEW_SESSION
@@ -2356,6 +2357,10 @@ def _hydrate_provider_env_into_os() -> None:
         if not isinstance(kv, dict):
             continue
         for k, v in kv.items():
+            if k and v is not None:
+                # Recorded for every provider even when the shell wins below:
+                # Claude children are scoped from this map, not from os.environ.
+                _provider_env_scope.note_saved(_provider, k, v)
             if k and v is not None and k not in os.environ:
                 os.environ[k] = str(v)
 
@@ -2428,6 +2433,7 @@ def agent_provider_set_env(name):
         data = _load_provider_env_file()
         data.setdefault(name, {})[key] = val_str
         _save_provider_env_file(data)
+    _provider_env_scope.note_saved(name, key, val_str)
     if val_str:
         os.environ[key] = val_str
     else:
@@ -3283,7 +3289,7 @@ def _run_claude_auth_probe() -> dict:
             # ('Not logged in · Please run /login') reached the Providers
             # panel as mojibake (seen on the clean VM, 2026-09-22).
             encoding='utf-8', errors='replace',
-            cwd=_auth_probe_cwd(),
+            cwd=_auth_probe_cwd(), env=_provider_env_scope.claude_child_env(),
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
         )
         combined = (result.stdout or '') + (result.stderr or '')

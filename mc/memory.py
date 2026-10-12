@@ -45,6 +45,7 @@ import mc.allowance_state as _allowance_state  # live vendor exhaustion state (M
 import mc.memory_overlap_df as _overlap_df  # M4 corpus document-frequency stoplist (MC-964 fix A2)
 
 from mc import state
+from mc.provider_env_scope import claude_child_env
 from mc.core import _atomic_write_text, _log, now_iso, TimestampedLines
 from mc.state import (
     _checkpoint_guard,
@@ -6794,6 +6795,7 @@ def _dispatch_condense(project):
                 text=True,
                 encoding='utf-8',
                 errors='replace',
+                env=claude_child_env(),
                 creationflags=_POPEN_FLAGS,
                 startupinfo=_STARTUPINFO,
             )

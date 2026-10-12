@@ -41,6 +41,8 @@ import urllib.request
 from pathlib import Path
 from typing import Callable, Optional
 
+from mc.provider_env_scope import relaunch_env
+
 # Job states. `idle`/`failed` accept a new job; everything else is in flight.
 IDLE = 'idle'
 DOWNLOADING = 'downloading'
@@ -457,7 +459,8 @@ def _spawn_swap(script_path: Path, log_path: Path):
     try:
         return subprocess.Popen(['/bin/sh', str(script_path)], stdin=subprocess.DEVNULL,
                                 stdout=logf, stderr=subprocess.STDOUT,
-                                start_new_session=True, close_fds=True)
+                                start_new_session=True, close_fds=True,
+                                env=relaunch_env())
     finally:
         logf.close()
 
