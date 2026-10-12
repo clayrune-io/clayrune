@@ -22,6 +22,7 @@ import base64
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shlex
 import sys
@@ -57,9 +58,8 @@ def _is_within(path: Path, base: Path) -> bool:
         return False
 
 
-# Markers that make a destructive path clearly scratch-scoped (→ allow deletes).
-_SCRATCH_MARKERS = ('_scratch', 'scratchpad', '/tmp/', '\\temp\\', 'appdata/local/temp',
-                    'appdata\\local\\temp')
+# Which deletes count as scratch-scoped: see "Per-target scratch judgement for
+# deletes" above classify_bash (a marker anywhere in the text no longer does).
 
 # Hosts that count as "local" — the steward's own reporting/API calls target
 # these and must pass the fence.
@@ -1943,6 +1943,12 @@ def _agent_shell_install(cmd: str, cwd: Optional[str] = None) -> FenceDecision:
 #     spelled as a command, as `bash -c` / `pwsh -Command` / `-EncodedCommand`,
 #     as Start-Process, or as the code of python/node/perl/ruby -c, a
 #     heredoc to an interpreter, or a .NET call;
+#   - taking one away (2026-10-12): `mv`/`Move-Item`/`git mv`, `rm`/`rmdir`/`del`/
+#     `Remove-Item`/`git rm`/`find -delete`, or a program body that deletes, whose
+#     SOURCE is the `.claude` directory itself or a settings file directly in it
+#     (a moved settings.json drops the fence's own hook registration). A copy OUT
+#     stays allowed, and so does moving a subfolder out (`mv ~/.claude/skills/old
+#     _scratch/old`, pinned by tests/test_fence_mod_plant.py);
 #   - any CLAUDE_CODE_PLUGIN_*DIR* variable being SET (`CLAUDE_CODE_PLUGIN_DIRS`
 #     plugin folders, `_DIR_WATCH`, `_SEED_DIR`, `_CACHE_DIR`), and the
 #     `--plugin-dir` / `--plugin-url` flags;
@@ -1959,11 +1965,23 @@ def _agent_shell_install(cmd: str, cwd: Optional[str] = None) -> FenceDecision:
 # KNOWN GAPS, accepted (command text only): a script file that writes .claude
 # (`python _scratch/plant.py`), a path built from a variable or glob, a
 # relative write whose cwd the hook payload does not show to be inside
-# `.claude`, `git checkout`/`restore`/`apply` materialising a tracked
-# .claude file, and `claude plugin eval|test` running a plugin that is already
-# on disk. Living in fence.py rather than a new module on purpose: the hook is
-# a standalone stdlib script, and only these four basenames are protected
-# from agent edits (see the `_fence_names` check in classify_action).
+# `.claude`, `git apply`/`stash apply`/`reset --hard` (or a `checkout`/`restore`
+# with no pathspec naming .claude) materialising a tracked .claude file, and
+# `claude plugin eval|test` running a plugin that is already
+# on disk. awk and sed write with no -i and no redirect word, the target sits
+# in their quoted program text (_mp_script_writes); gaps there: an awk path
+# passed as a variable (`-v f=.claude/x '{print > f}'`), `-f script`, sed `e`,
+# a perl pipe open. In-place editors and output-file options/operands are
+# named too (_mp_named_output_writes); gaps: `vim -R` made writable (`set noro`,
+# a `-S` script or commands on stdin), uniq/xxd/split written as `IN OUT`
+# through a variable, and the same shape in tools not named (zip, like
+# `tar -c`, makes an archive, not a loadable file). Other writers by name
+# (_mp_tool_writes): dos2unix & co, sponge, `yq -i`, gunzip/`gzip -d` & co (they
+# write the de-suffixed file beside the archive), certutil -decode/-encode, and
+# `git checkout|restore|checkout-index` whose pathspec names .claude.
+# Living in fence.py rather than a new module on purpose:
+# the hook is a standalone stdlib script, and only these four basenames are
+# protected from agent edits (see the `_fence_names` check in classify_action).
 _MP_CLAUDE_RE = re.compile(r'(?<![\w-])\.claude(?![\w.-])', re.I)
 _MP_WORKTREE_RE = re.compile(r'^/worktrees(?:/|$)', re.I)
 _MP_ENV_NAME = r'CLAUDE_CODE_PLUGIN_\w*DIR\w*'
@@ -1984,8 +2002,22 @@ _MP_DEST_LAST = frozenset({
 _MP_ANY_ARG = frozenset({
     'mkdir', 'md', 'new-item', 'ni', 'touch', 'tee', 'tee-object', 'set-content',
     'sc', 'add-content', 'ac', 'out-file', 'export-clixml', 'expand-archive',
-    'unzip', '7z', '7za', '7zr', 'tar', 'bsdtar', 'truncate', 'sed', 'gsed',
-    'perl', 'patch', 'rename-item', 'rni', 'ren', 'rename', 'mklink', 'dd'})
+    'unzip', '7z', '7za', '7zr', '7zz', 'tar', 'bsdtar', 'truncate', 'sed', 'gsed',
+    'perl', 'ruby', 'patch', 'rename-item', 'rni', 'ren', 'rename', 'mklink', 'dd',
+    'sponge', 'yq'})
+# Taking .claude (or its settings) AWAY (2026-10-12): `mv .claude .claude.bak` and
+# `rm -rf .claude` aim at no destination, so the checks above never saw them, yet
+# a moved settings.json drops the fence's own hook registration and a moved
+# .claude drops every mod. For these verbs the SOURCE operand counts, not only
+# the destination, but only when it IS the `.claude` directory or a settings file
+# directly in it (_MpTarget.removed). A copy OUT (`cp .claude/settings.json
+# /tmp/x`) still passes.
+_MP_MOVE = frozenset({'mv', 'move', 'move-item', 'mi'})
+_MP_DELETE = frozenset({'rm', 'rmdir', 'unlink', 'shred', 'del', 'erase', 'rd',
+                        'remove-item', 'ri'})
+_MP_FIND_EXEC = frozenset({'-exec', '-execdir', '-ok', '-okdir'})
+_MP_CLAUDE_DIR_END_RE = re.compile(r'(?:^|/)\.claude$', re.I)
+_MP_CLAUDE_SETTINGS_RE = re.compile(r'(?:^|/)\.claude/settings[^/]*$', re.I)
 _MP_INTERP_RE = re.compile(
     r'^(?:python\d*(?:\.\d+)?|py|pypy\d*|node|nodejs|deno|bun|perl|ruby|php|lua|'
     r'pwsh|powershell)$')
@@ -1998,10 +2030,18 @@ _MP_HEREDOC_RE = re.compile(
 # What a program body does to a path: open for write, mkdir, copy, rename,
 # symlink, archive extract, shell-out; fs.*; Ruby/Perl file helpers; the
 # PowerShell cmdlets and .NET statics. Both this AND a `.claude` path must be
-# in the same string (a code word, a heredoc body) before it counts.
+# in the same string (a code word, a heredoc body) before it counts. Perl's
+# two-argument open (`open(F, ">f")`, `open F, ">>f"`, `+>`/`+<`) carries the
+# mode inside the path string, with or without parentheses; a `<` read stays out.
+# `fileinput ... inplace=True` (or True as the second positional argument)
+# rewrites the files it is given (a `.claude` file named in the same code).
 _MP_WRITE_API_RE = re.compile(
     r'''\bopen\s*\([^)]*,\s*(?:mode\s*=\s*)?['"]?[rwxabt+<]*[wxa+>][rwxabt+<>]*['"]?\s*[,)]'''
     r'''|\.open\s*\(\s*['"]?[rwxabt+]*[wxa+][rwxabt+]*['"]?\s*[,)]'''
+    r'''|\bopen\b\s*\(?[^,;)]*,\s*['"]\s*(?:\+?>|\+<)'''
+    r'''|\bfileinput\b[\s\S]*?\binplace\s*=(?!\s*(?:False|0|None)\b)'''
+    r'''|\bfileinput\s*\.\s*(?:input|FileInput)\s*\(\s*(?:\[[^\]]*\]|\([^)]*\)|[^,()\s][^,()]*)'''
+    r'''\s*,\s*(?:True|1)\s*[,)]'''
     r'''|\.(?:write_text|write_bytes|mkdir|touch|symlink_to|hardlink_to|rename)\s*\('''
     r'''|\bshutil\s*\.\s*(?:copy\w*|move|make_archive|unpack_archive)\b'''
     r'''|\bos\s*\.\s*(?:makedirs|mkdir|rename|replace|symlink|link|system|popen)\b'''
@@ -2014,6 +2054,17 @@ _MP_WRITE_API_RE = re.compile(
     r'''|Rename-Item|Expand-Archive)\b'''
     r'''|\[(?:System\.)?IO\.(?:File|Directory)\]\s*::\s*'''
     r'''(?:Write\w*|Append\w*|Copy|Move|Create\w*|Open\w*|Replace)''', re.I)
+# What a program body does to take a path away. Only the `.claude` rule adds
+# these to the write list (_MpTarget.write_api): moves and renames are already
+# above, deletes are not.
+_MP_DELETE_API_RE = re.compile(
+    r'''\bshutil\s*\.\s*rmtree\b|\bos\s*\.\s*(?:remove|unlink|rmdir|removedirs)\b'''
+    r'''|\.(?:unlink|rmdir)\s*\(|\b(?:rmtree|remove_tree)\b'''
+    r'''|(?:\bfs(?:\.promises)?|\bfs['"]?\))\s*\.\s*(?:rm\w*|unlink\w*)\b'''
+    r'''|\bFile\s*\.\s*(?:delete|unlink)\b|\bDir\s*\.\s*(?:rmdir|unlink|delete)\b'''
+    r'''|\bRemove-Item\b|\[(?:System\.)?IO\.(?:File|Directory)\]\s*::\s*Delete''', re.I)
+_MP_WRITE_OR_DELETE_API_RE = re.compile(
+    _MP_WRITE_API_RE.pattern + '|' + _MP_DELETE_API_RE.pattern, re.I)
 
 
 def _mp_hit(text: str, skip_worktrees: bool = False) -> bool:
@@ -2027,19 +2078,90 @@ def _mp_hit(text: str, skip_worktrees: bool = False) -> bool:
     return False
 
 
-def _mp_args_hit(args, in_claude: bool) -> bool:
-    """Any word names `.claude`, or (inside a `cd .claude`) is a relative path."""
-    for w in args:
-        if _mp_hit(w):
+class _MpTarget:
+    """Which paths the shell-write scan (_mp_scan) is hunting for. This base
+    class IS the `.claude` rule; _MpPathTarget below aims the same parser at
+    other places. `ctx` is the target's own "where is the shell now" state: a
+    bool for `.claude` (inside a `cd .claude`), a path string or None for the
+    path targets."""
+    into = 'a .claude directory'
+    under = '.claude'
+    plugin_rules = True       # CLAUDE_CODE_PLUGIN_* / `claude plugin` checks: .claude only
+    git_paths = False         # `git checkout|restore|apply|mv` naming a path
+    # A .NET static call (`[IO.File]::WriteAllText(...)`) is only looked for
+    # AFTER a command's first word. A bare one, which is how the PowerShell tool
+    # usually spells it, IS the first word; the .claude rule has always missed
+    # that and is left as it was.
+    dotnet_head = False
+    git_arg_may_be_ref = False    # True: also define exists(text, ctx), see _MpInstall
+    removes = True            # moving / deleting the target itself counts (see _MP_MOVE)
+    write_api = _MP_WRITE_OR_DELETE_API_RE    # what in a program body counts as acting on it
+    gone = 'a .claude directory or its settings file'
+
+    def start(self, cwd):
+        return _mp_hit(cwd or '', skip_worktrees=True)
+
+    def cd(self, ctx, target):
+        return True if _mp_hit(target) else ctx
+
+    def hit(self, text, ctx):
+        """`text` (one path-ish string) names the target."""
+        return _mp_hit(text)
+
+    def word(self, w, ctx):
+        """`hit`, plus: inside the target's own directory a bare relative word counts.
+        An option with its value attached (`7z -o.claude/x`, `tar -C.claude`) counts."""
+        if _mp_hit(w) or _mp_hit(re.sub(r'^-[A-Za-z]', '', w)):
             return True
-        if in_claude and w and not w.startswith('-') and w[0] not in '/~$%\\' \
-                and not _WIN_DRIVE_RE.match(w):
+        return bool(ctx and w and not w.startswith('-') and w[0] not in '/~$%\\'
+                    and not _WIN_DRIVE_RE.match(w))
+
+    def removed(self, w, ctx):
+        """`w` is something a move or delete verb would take away: the `.claude`
+        directory itself (or `.claude/*`) or a settings file directly in it. A
+        subfolder is not (`mv ~/.claude/skills/old _scratch/old` is pinned as
+        allowed by tests/test_fence_mod_plant.py), nor are Claude Code's agent
+        worktrees below it. Inside a `cd .claude`, `.`, `*` and a bare `settings*`
+        count. `..` is folded first, so `.claude/worktrees/../settings.json` is
+        the settings file."""
+        w = w or ''
+        if w.startswith('-'):
+            m = _MP_FLAG_VALUE_RE.match(w)       # -Path:.claude\settings.json
+            if not m:
+                return False
+            w = m.group(1)
+        norm = posixpath.normpath(w.replace('\\', '/')) if w else ''
+        norm = re.sub(r'(?:/+\*{1,2}|/+\.)+$', '', norm)
+        if _MP_CLAUDE_DIR_END_RE.search(norm) or _MP_CLAUDE_SETTINGS_RE.search(norm):
             return True
-    return False
+        return bool(ctx and (norm in ('.', '*', '**') or re.match(r'^settings[^/]*$', norm)))
+
+    def code(self, code):
+        """A program body (a `-c` string, a heredoc) names the target."""
+        return _mp_hit(code)
+
+    def dir_dest(self, dest, sources, ctx):
+        """`cp SRC DIR` where the file it creates inside DIR is the target."""
+        return False
+
+    def command(self, prog, rest):
+        """A reason the one command `prog rest...` plants the target by itself
+        (no path involved), for a target without the plugin rules; else None."""
+        return None
 
 
-def _mp_code_plants(code: str) -> bool:
-    return _mp_hit(code) and bool(_MP_WRITE_API_RE.search(code))
+_MP_CLAUDE = _MpTarget()
+
+
+def _mp_args_hit(args, in_claude, tgt: Optional[_MpTarget] = None) -> bool:
+    """Any word names the target (for `.claude`: or, inside a `cd .claude`, is a relative path)."""
+    tgt = tgt or _MP_CLAUDE
+    return any(tgt.word(w, in_claude) for w in args)
+
+
+def _mp_code_plants(code: str, tgt: Optional[_MpTarget] = None) -> bool:
+    tgt = tgt or _MP_CLAUDE
+    return tgt.code(code) and bool(tgt.write_api.search(code))
 
 
 def _mp_positional(args) -> list:
@@ -2063,33 +2185,389 @@ def _mp_dest(prog: str, rest: list) -> Optional[str]:
 
 
 def _mp_any_arg_applies(prog: str, rest: list) -> bool:
-    """tar only writes when it extracts, sed/perl only when they edit in place."""
+    """tar only writes when it extracts, sed/perl/ruby only when they edit in place."""
     if prog in ('tar', 'bsdtar'):
         return any(re.match(r'^-[A-Za-z]*x', w) or re.match(r'^x[A-Za-z]*$', w)
                    or w in ('--extract', '--get') for w in rest)
     if prog in ('sed', 'gsed', 'perl'):
         return any(w == '--in-place' or w.startswith('--in-place=')
-                   or re.match(r'^-[A-Za-z]*i', w) for w in rest)
+                   or re.match(r'^-[A-Za-z]*i', w)
+                   or (prog == 'perl' and ('$^I' in w or '$INPLACE_EDIT' in w))
+                   for w in rest)
+    if prog == 'yq':                         # only -i / --inplace writes the file
+        return any(w in ('--inplace', '--in-place') or re.match(r'^-[A-Za-z]*i[A-Za-z]*$', w)
+                   for w in rest)
+    if prog == 'ruby':                       # -i[ext], -pi, -lpi; not -Ilib
+        return any(re.match(r'^-[acdlnpsSvwx0-9]*i', w) for w in rest)
     return True
 
 
-def _mp_net_output_hit(rest: list) -> bool:
+_MP_AWK = frozenset({'awk', 'gawk', 'mawk', 'nawk'})
+_MP_SED = frozenset({'sed', 'gsed'})
+# sed `w FILE` / `W FILE` (a command, after an optional address) and the s///w
+# flag. A letter before the w only counts inside an s-flag run (`s/a/b/gw F`),
+# so `s/show .claude/x/` is not a write.
+_MP_SED_W_RE = re.compile(r'[wW][ \t]*([^\n]*)')
+_MP_SED_FLAG_CTX_RE = re.compile(r'[^\w\s][gpiImMe]*$')
+
+
+def _mp_awk_writes(text: str) -> bool:
+    """An awk program text that can write or run something: a `>`/`>>` after a
+    print/printf (before one, `>` is a comparison), a pipe (`print | "cmd"`,
+    `"cmd" | getline`, `|&`), or system()."""
+    i = text.find('print')
+    return bool((i >= 0 and '>' in text[i:])
+                or re.search(r'(?<!\|)\|(?!\|)', text)
+                or re.search(r'\bsystem\s*\(', text))
+
+
+def _mp_sed_writes_claude(text: str) -> bool:
+    """A sed script with a `w`/`W` command or s///w flag whose file is .claude."""
+    for m in _MP_SED_W_RE.finditer(text):
+        pre = text[:m.start()]
+        if pre and pre[-1].isalpha() and not _MP_SED_FLAG_CTX_RE.search(pre):
+            continue
+        if _mp_hit(m.group(1)):
+            return True
+    return False
+
+
+def _mp_script_writes(prog: str, rest: list) -> Optional[str]:
+    """awk and sed write without -i or a redirect word: the target sits inside
+    the quoted program text, so each word is judged on its own (a .claude path
+    that is only an INPUT operand is a separate word and is not a write)."""
+    if prog in _MP_AWK:
+        if any(_mp_hit(w) and _mp_awk_writes(w) for w in rest):
+            return f"`{prog}` program that writes or runs a command aimed at .claude"
+    elif prog in _MP_SED:
+        if any(_mp_sed_writes_claude(w) for w in rest):
+            return f"`{prog}` w command writing into a .claude directory"
+    return None
+
+
+# Writers that are not writers by name. In-place modes: gawk `-i inplace`, ruby
+# `-i`, ex/vi/vim/nvim run from a script (`-es -c wq`, or commands on stdin; only
+# -R and `view` read). Output as an option or an operand: sort/shuf/iconv -o,
+# openssl -out, `uniq IN OUT`, `xxd -r IN OUT`, `split IN PREFIX`. Each is judged
+# on the word that is the written file, so a .claude path that is only an INPUT
+# (`sort .claude/x`, `uniq .claude/x`, `openssl enc -in .claude/x`) is not a write.
+_MP_OUT_OPTS = {
+    'sort': ('-o', '--output'), 'shuf': ('-o', '--output'),
+    'iconv': ('-o', '--output'),
+    'openssl': ('-out', '-keyout', '-writerand'),
+    'gpg': ('-o', '--output'), 'gpg2': ('-o', '--output'),
+    'zstd': ('-o', '--output'), 'unzstd': ('-o', '--output'), 'csplit': ('-f', '--prefix'),
+}
+# prog -> options that take a value, so that value is not mistaken for an operand.
+_MP_OUT_OPERAND_OPTS = {
+    'uniq': ('-f', '-s', '-w', '--skip-fields', '--skip-chars', '--check-chars'),
+    'xxd': ('-s', '-c', '-l', '-g', '-o', '-n', '-seek', '-cols', '-len',
+            '-groupsize', '-name'),
+    'split': ('-l', '-b', '-n', '-C', '-a', '-t', '--lines', '--bytes', '--number',
+              '--line-bytes', '--suffix-length', '--separator', '--filter',
+              '--additional-suffix'),
+}
+_MP_AWK_VALUED = frozenset({'-F', '-v', '-f', '-i', '-l', '-e', '-E', '-W',
+                            '--include', '--load', '--file', '--source', '--exec',
+                            '--assign', '--field-separator'})
+_MP_EDITORS = frozenset({'ex', 'vi', 'vim', 'nvim', 'view', 'rview', 'ed', 'red'})
+# `vim -R` / `view` refuse a plain `w`; a forced write of the current file does not.
+_MP_VIM_FORCE_RE = re.compile(
+    r'(?:^|[\s:|%,;.$+\d])(?:w(?:r(?:i(?:t(?:e)?)?)?)?|wq|x(?:it?)?|up(?:d(?:a(?:t(?:e)?)?)?)?)!'
+    r'(?=\s*(?:$|\|))', re.I)
+
+
+def _mp_operands(rest: list, valued) -> tuple:
+    """(positional words, number of `< file` input redirects). A lone `-` is
+    stdin and an operand; the value of an option in `valued` and the word after a
+    bare redirect operator are not."""
+    ops, redirects, skip = [], 0, False
+    for w in rest:
+        if skip:
+            skip = False
+        elif w in valued:
+            skip = True
+        elif re.match(r'^(?:\d*|&)[<>]+$', w):
+            skip = True
+            redirects += w.lstrip('0123456789&').startswith('<')
+        elif re.match(r'^(?:\d*|&)[<>]+.', w):
+            redirects += w.lstrip('0123456789&').startswith('<')
+        elif w == '-' or (w and not w.startswith('-')):
+            ops.append(w)
+    return ops, redirects
+
+
+def _mp_out_opt_hit(prog: str, rest: list, in_claude: bool) -> bool:
+    """`-o FILE`, `-oFILE`, a cluster ending in o (`-ro FILE`), `--output FILE`,
+    `--output=FILE`, `-out FILE`: the option's value names .claude."""
+    flags = _MP_OUT_OPTS[prog]
+    shorts = [f[1] for f in flags if len(f) == 2 and f[0] == '-']   # -o, -f
+    for k, w in enumerate(rest):
+        nxt = rest[k + 1:k + 2]
+        if w in flags and nxt and _mp_args_hit(nxt, in_claude):
+            return True
+        if w.startswith('--'):
+            flag, _, val = w.partition('=')
+            if val and flag in flags and _mp_args_hit([val], in_claude):
+                return True
+        else:
+            for c in shorts:
+                if re.match(r'^-[A-Za-z]*' + c + r'$', w) and nxt and _mp_args_hit(nxt, in_claude):
+                    return True
+                if re.match(r'^-' + c + r'.', w) and _mp_args_hit([w[2:]], in_claude):
+                    return True
+    return False
+
+
+def _mp_awk_inplace(rest: list) -> bool:
+    """gawk's inplace library: `-i inplace`, `-iinplace`, `--include=inplace`,
+    or an `@include "inplace"` line in the program text."""
+    for k, w in enumerate(rest):
+        if w in ('-i', '--include'):
+            val = rest[k + 1] if k + 1 < len(rest) else ''
+        elif w.startswith('--include='):
+            val = w[len('--include='):]
+        elif w.startswith('-i'):
+            val = w[2:]
+        else:
+            if re.search(r'''@include\s*["']?[^"'\s]*inplace''', w):
+                return True
+            continue
+        if re.match(r'''["']?(?:[^"'/\\]*[/\\])?inplace\b''', val):
+            return True
+    return False
+
+
+def _mp_named_output_writes(prog: str, rest: list, in_claude: bool) -> Optional[str]:
+    if prog in _MP_OUT_OPTS:
+        if _mp_out_opt_hit(prog, rest, in_claude):
+            return f"`{prog}` writing its output file into a .claude directory"
+    elif prog in _MP_OUT_OPERAND_OPTS:
+        if prog == 'xxd' and not any(
+                w == '-revert' or re.match(r'^-[A-Za-z]{0,3}r[A-Za-z]{0,3}$', w)
+                for w in rest):
+            return None                      # a plain hexdump is not a rebuild
+        ops, redirected = _mp_operands(rest, _MP_OUT_OPERAND_OPTS[prog])
+        out = 1 - redirected                 # IN OUT; `< IN` leaves only OUT
+        if 0 <= out < len(ops) and _mp_args_hit([ops[out]], in_claude):
+            return f"`{prog}` writing its output operand into a .claude directory"
+    elif prog in _MP_AWK:
+        if _mp_awk_inplace(rest):
+            ops, _ = _mp_operands(rest, _MP_AWK_VALUED)
+            if not any(re.match(r'^-(?:[feE]|-file|-source|-exec)', w) for w in rest):
+                ops = ops[1:]                # the first operand is the program
+            if _mp_args_hit(ops, in_claude):
+                return f"`{prog}` editing a .claude file in place"
+    elif prog in _MP_EDITORS:
+        if prog in ('view', 'rview') or any(re.match(r'^-[A-Za-z]*R', w) for w in rest):
+            # read-only: only a command that names .claude (`-c 'w! .claude/x'`)
+            cmds = [rest[k + 1] for k, w in enumerate(rest[:-1])
+                    if w in ('-c', '--cmd', '-S')] + [w for w in rest if w.startswith('+')]
+            if _mp_args_hit(cmds, False):
+                return f"`{prog}` command writing into a .claude directory"
+            if any(_MP_VIM_FORCE_RE.search(c) for c in cmds) and _mp_args_hit(rest, in_claude):
+                return f"`{prog}` forcing a write (w!) of a .claude file"
+        elif _mp_args_hit(rest, in_claude):
+            return f"`{prog}` editing a .claude file (scripted ex/vim/ed writes it)"
+    return None
+
+
+# End-of-line converters rewrite their operands in place; `-n IN OUT` (newfile
+# mode) writes only OUT, `-o` goes back to in-place, `-O`/`-i`/`-h`/`-V` write
+# nothing (stdout, info, help).
+_MP_EOL_TOOLS = frozenset({'dos2unix', 'unix2dos', 'mac2unix', 'unix2mac', 'todos', 'fromdos'})
+_MP_EOL_MODES = frozenset({'ascii', 'iso', '7bit'})
+# Decompressors write the de-suffixed file beside the archive (`gunzip x.gz` -> x)
+# unless -c / -t / -l; the second set decompresses only with -d.
+_MP_UNPACK = frozenset({'gunzip', 'bunzip2', 'unxz', 'unlzma', 'uncompress', 'unzstd'})
+_MP_UNPACK_D = frozenset({'gzip', 'bzip2', 'xz', 'lzma', 'zstd'})
+_MP_CERTUTIL_OUT = frozenset({'decode', 'decodehex', 'encode', 'encodehex', 'urlcache'})
+_MP_GIT_VALUE_OPTS = frozenset({'-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path'})
+_MP_PATHSPEC_EXCLUDE_RE = re.compile(r'^:(?:[!^]|\([^)]*\bexclude\b)', re.I)
+
+
+def _mp_unredirected(rest: list) -> list:
+    """The words without redirect operators and their targets (`< IN`, `> OUT`)."""
+    out, skip = [], False
+    for w in rest:
+        if skip:
+            skip = False
+        elif re.match(r'^(?:\d*|&)[<>]+$', w):
+            skip = True
+        elif not re.match(r'^(?:\d*|&)[<>]+.', w):
+            out.append(w)
+    return out
+
+
+def _mp_eol_writes(rest: list, in_claude: bool) -> bool:
+    new_mode, pending, targets = False, None, []
+    for w in _mp_unredirected(rest):
+        if w.startswith('--'):
+            if w in ('--to-stdout', '--help', '--version') or w.startswith('--info'):
+                return False
+            if w == '--newfile':
+                new_mode, pending = True, None
+            elif w == '--oldfile':
+                new_mode, pending = False, None
+        elif re.match(r'^-[A-Za-z]+$', w):
+            letters = w[1:]
+            if letters in _MP_EOL_MODES:
+                continue
+            if 'O' in letters or letters in ('h', 'V') or letters.startswith('i'):
+                return False
+            if letters.endswith('n'):
+                new_mode, pending = True, None
+            elif letters.endswith('o'):
+                new_mode, pending = False, None
+        elif w and not w.startswith('-'):
+            if not new_mode:
+                targets.append(w)
+            elif pending is None:
+                pending = w                      # the input of an `-n IN OUT` pair
+            else:
+                targets.append(w)
+                pending = None
+    return _mp_args_hit(targets, in_claude)
+
+
+def _mp_unpack_writes(prog: str, rest: list, in_claude: bool) -> bool:
+    if prog in _MP_UNPACK_D and not any(
+            w in ('--decompress', '--uncompress') or re.match(r'^-[A-Za-z]*d[A-Za-z]*$', w)
+            for w in rest):
+        return False                         # compressing is not a plant
+    rest = _mp_unredirected(rest)
+    for w in rest:
+        if w in ('--stdout', '--to-stdout', '--test', '--list'):
+            return False
+        if re.match(r'^-[A-Za-z0-9]*[ctl][A-Za-z0-9]*$', w):
+            return False                     # -c stdout, -t test, -l list
+        if prog in ('zstd', 'unzstd') and (w.startswith('-o') or w.startswith('--output')):
+            return False                     # an explicit output is judged as one (_MP_OUT_OPTS)
+    return _mp_args_hit(_mp_positional(rest), in_claude)
+
+
+def _mp_certutil_writes(rest: list, in_claude: bool) -> bool:
+    if not {w.lower().lstrip('-/') for w in rest if w[:1] in '-/'} & _MP_CERTUTIL_OUT:
+        return False
+    pos = _mp_positional(rest)
+    return bool(pos) and _mp_args_hit([pos[-1]], in_claude)
+
+
+def _mp_git_restores(rest: list, in_claude: bool) -> Optional[str]:
+    """`git checkout|restore|checkout-index` writes the work tree from a tree it
+    is told to read (a stash, an older commit): that plants a tracked .claude
+    file. Judged by its pathspec: the words after `--`, or a word that names
+    .claude. `git checkout <branch>` and `restore --staged` (index only) stay."""
+    args, k, sub = list(rest), 0, None
+    while k < len(args):
+        w = args[k]
+        if w in _MP_GIT_VALUE_OPTS:
+            if w == '-C' and k + 1 < len(args) and _mp_hit(args[k + 1], skip_worktrees=True):
+                in_claude = True
+            k += 2
+        elif w.startswith('-'):
+            k += 1
+        else:
+            sub, k = w.lower(), k + 1
+            break
+    if sub not in ('checkout', 'restore', 'checkout-index'):
+        return None
+    after = args[k:]
+    if sub == 'restore':
+        staged = any(w == '--staged' or re.match(r'^-[A-Za-z]*S[A-Za-z]*$', w) for w in after)
+        worktree = any(w == '--worktree' or re.match(r'^-[A-Za-z]*W[A-Za-z]*$', w) for w in after)
+        if staged and not worktree:
+            return None
+    dashdash = after.index('--') if '--' in after else -1
+    skip, specs = False, []
+    for i, w in enumerate(after):
+        if skip:
+            skip = False
+        elif w in ('-s', '--source', '--pathspec-from-file'):
+            skip = True
+        elif i == dashdash or w.startswith('-') or w.startswith('--pathspec-from-file') \
+                or _MP_PATHSPEC_EXCLUDE_RE.match(w):
+            continue
+        elif sub == 'restore' or (dashdash >= 0 and i > dashdash):
+            specs.append(w)                  # a pathspec: relative names count in a .claude cwd
+        elif _mp_hit(w):
+            return f"`git {sub}` restoring a .claude path from a tree"
+    if _mp_args_hit(specs, in_claude):
+        return f"`git {sub}` restoring a .claude path from a tree"
+    return None
+
+
+def _mp_tool_writes(prog: str, rest: list, in_claude: bool) -> Optional[str]:
+    if prog in _MP_EOL_TOOLS:
+        if _mp_eol_writes(rest, in_claude):
+            return f"`{prog}` rewriting a .claude file in place"
+    elif prog in _MP_UNPACK or prog in _MP_UNPACK_D:
+        if _mp_unpack_writes(prog, rest, in_claude):
+            return f"`{prog}` writing the decompressed file beside a .claude archive"
+    elif prog == 'certutil':
+        if _mp_certutil_writes(rest, in_claude):
+            return "`certutil` writing its output file into a .claude directory"
+    elif prog == 'git':
+        return _mp_git_restores(rest, in_claude)
+    return None
+
+
+# A static [IO.File]/[IO.Directory] call, its arguments, and which one is the
+# path that gets written (Copy/Move: the destination, Replace: destination and
+# backup, Write/Append/Create/Open: the first).
+_MP_NET_CALL_RE = re.compile(r'\[(?:System\.)?IO\.(?:File|Directory)\]\s*::\s*(\w+)\s*\(', re.I)
+
+
+def _mp_dotnet_writes(text: str, in_claude: bool) -> bool:
+    for m in _MP_NET_CALL_RE.finditer(text):
+        name = m.group(1).lower()
+        if name in ('copy', 'move'):
+            idx = (1,)
+        elif name == 'replace':
+            idx = (1, 2)
+        elif name.startswith(('write', 'append', 'create', 'open')) \
+                and name not in ('openread', 'opentext'):
+            idx = (0,)
+        else:
+            continue
+        args, depth, cur = [], 0, ''
+        for ch in text[m.end():]:
+            if ch in '([{':
+                depth += 1
+            elif ch in ')]}':
+                depth -= 1
+                if depth < 0:
+                    break
+            if ch == ',' and depth == 0:
+                args.append(cur)
+                cur = ''
+            else:
+                cur += ch
+        args.append(cur)
+        if _mp_args_hit([args[i].strip() for i in idx if i < len(args)], in_claude):
+            return True
+    return False
+
+
+def _mp_net_output_hit(rest: list, tgt: '_MpTarget', ctx) -> bool:
     for k, w in enumerate(rest):
         low = w.lower()
-        if low in _MP_NET_OUT and k + 1 < len(rest) and _mp_hit(rest[k + 1]):
+        if low in _MP_NET_OUT and k + 1 < len(rest) and tgt.hit(rest[k + 1], ctx):
             return True
         m = re.match(r'^(--?[a-z-]+)[:=](.+)$', low)
-        if m and m.group(1) in _MP_NET_OUT and _mp_hit(m.group(2)):
+        if m and m.group(1) in _MP_NET_OUT and tgt.hit(m.group(2), ctx):
             return True
-        if re.match(r'^-o.', w) and not w.startswith('--') and _mp_hit(w[2:]):
+        if re.match(r'^-o.', w) and not w.startswith('--') and tgt.hit(w[2:], ctx):
             return True
-        if re.match(r'^-[A-Za-z]*[oO]$', w) and k + 1 < len(rest) and _mp_hit(rest[k + 1]):
+        if re.match(r'^-[A-Za-z]*[oO]$', w) and k + 1 < len(rest) and tgt.hit(rest[k + 1], ctx):
             return True                      # a flag cluster ending in -o: -sSfLo FILE
     return False
 
 
-def _mp_segment(words: list, in_claude: bool, depth: int):
-    """(reason or None, in_claude) for one shell segment of dequoted words."""
+def _mp_segment(words: list, in_claude, depth: int, tgt: '_MpTarget'):
+    """(reason or None, in_claude) for one shell segment of dequoted words.
+    `in_claude` is the target's own cwd state (a bool for `.claude`, see
+    _MpTarget.start); `tgt` decides which paths count."""
     words = list(words)
     if words:
         words[0] = re.sub(r'^(?:\$?\(+|\{+)', '', words[0])
@@ -2097,8 +2575,8 @@ def _mp_segment(words: list, in_claude: bool, depth: int):
         m = re.match(r'^(?:\d*|&)>>?(?![>&])(.*)$', w)
         if m:
             target = m.group(1) or (words[k + 1] if k + 1 < len(words) else '')
-            if target and _mp_args_hit([target], in_claude):
-                return "a shell redirect into a .claude directory", in_claude
+            if target and tgt.word(target, in_claude):
+                return f"a shell redirect into {tgt.into}", in_claude
     k = 0
     while k < len(words):
         w = words[k]
@@ -2159,69 +2637,111 @@ def _mp_segment(words: list, in_claude: bool, depth: int):
         elif prog in ('eval', 'iex', 'invoke-expression'):
             inner = ' '.join(rest)
         if inner is not None:
-            why = _mp_scan(inner, depth + 1, in_claude)
+            why = _mp_scan(inner, depth + 1, in_claude, tgt)
             if why:
                 return why, in_claude
     if prog in _MP_CD:
         target = next((a for a in rest if not a.startswith('-')), '')
-        if target and _mp_hit(target):
-            in_claude = True
+        if target:
+            in_claude = tgt.cd(in_claude, target)
         return None, in_claude
-    if prog not in _MP_PROSE_HEADS:
-        if any(w == f or w.startswith(f + '=') for w in rest for f in _MP_PLUGIN_FLAGS):
-            return "the --plugin-dir / --plugin-url flags (load a plugin outside the install)", in_claude
-    for i, w in enumerate(words):
-        if _install_prog(w) != 'claude':
-            continue
-        sub = [a.lower() for a in words[i + 1:] if not a.startswith('-')]
-        for j, a in enumerate(sub):
-            if a in ('plugin', 'plugins') and j + 1 < len(sub):
-                verb = sub[j + 1]
-                if verb in _MP_PLUGIN_VERBS or (
-                        verb == 'marketplace' and sub[j + 2:j + 3] in (['add'], ['update'])):
-                    return f"`claude plugin {verb}` (installs or scaffolds a plugin)", in_claude
-                break
+    if tgt.plugin_rules:
+        if prog not in _MP_PROSE_HEADS:
+            if any(w == f or w.startswith(f + '=') for w in rest for f in _MP_PLUGIN_FLAGS):
+                return "the --plugin-dir / --plugin-url flags (load a plugin outside the install)", in_claude
+        for i, w in enumerate(words):
+            if _install_prog(w) != 'claude':
+                continue
+            sub = [a.lower() for a in words[i + 1:] if not a.startswith('-')]
+            for j, a in enumerate(sub):
+                if a in ('plugin', 'plugins') and j + 1 < len(sub):
+                    verb = sub[j + 1]
+                    if verb in _MP_PLUGIN_VERBS or (
+                            verb == 'marketplace' and sub[j + 2:j + 3] in (['add'], ['update'])):
+                        return f"`claude plugin {verb}` (installs or scaffolds a plugin)", in_claude
+                    break
+    else:
+        why = tgt.command(prog, rest)
+        if why:
+            return why, in_claude
     why = None
     if prog in _MP_DEST_LAST:
         dest = _mp_dest(prog, rest)
-        if dest and _mp_args_hit([dest], in_claude):
-            why = f"`{prog}` into a .claude directory"
+        if dest and (tgt.word(dest, in_claude) or tgt.dir_dest(
+                dest, [p for p in _mp_positional(rest) if p != dest], in_claude)):
+            why = f"`{prog}` into {tgt.into}"
+        elif tgt.removes and prog in _MP_MOVE and any(tgt.removed(a, in_claude) for a in rest):
+            why = f"`{prog}` moving {tgt.gone} away"
     elif prog == 'git':
         sub = [a for a in rest if not a.startswith('-')]
         if 'clone' in sub:
             pos = _mp_positional(rest[rest.index('clone') + 1:]) if 'clone' in rest else []
-            if pos and _mp_args_hit([pos[-1]], in_claude):
-                why = "`git clone` into a .claude directory"
-        elif sub[:2] == ['worktree', 'add'] and len(sub) > 2 and _mp_args_hit([sub[2]], in_claude):
-            why = "`git worktree add` into a .claude directory"
+            if pos and tgt.word(pos[-1], in_claude):
+                why = f"`git clone` into {tgt.into}"
+        elif sub[:2] == ['worktree', 'add'] and len(sub) > 2 and tgt.word(sub[2], in_claude):
+            why = f"`git worktree add` into {tgt.into}"
+        if not why and tgt.git_paths:
+            why = _mp_git_paths(rest, in_claude, tgt)
+        if not why and tgt.removes:
+            why = _mp_git_removes(rest, in_claude, tgt)
+    elif tgt.removes and prog in _MP_DELETE:
+        if any(tgt.removed(a, in_claude) for a in rest):
+            why = f"`{prog}` deleting {tgt.gone}"
+    elif tgt.removes and prog == 'find':
+        # `find .claude -delete`, `find .claude -exec rm {} +`
+        if ('-delete' in rest or any(
+                a in _MP_FIND_EXEC and rest[j + 1].lower() in _MP_MOVE | _MP_DELETE
+                for j, a in enumerate(rest[:-1])))                 and any(tgt.removed(a, in_claude) for a in rest):
+            why = f"`find` deleting {tgt.gone}"
     elif prog in _MP_ANY_ARG and _mp_any_arg_applies(prog, rest):
         if prog == 'dd':
-            if any(a.lower().startswith('of=') and _mp_hit(a[3:]) for a in rest):
-                why = "`dd of=` into a .claude directory"
-        elif _mp_args_hit(rest, in_claude):
-            why = f"`{prog}` aimed at a .claude directory"
+            if any(a.lower().startswith('of=') and tgt.hit(a[3:], in_claude) for a in rest):
+                why = f"`dd of=` into {tgt.into}"
+        elif _mp_args_hit([w for w in rest if prog != 'yq' or not re.search(r'\s', w)], in_claude, tgt):
+            why = f"`{prog}` aimed at {tgt.into}"  # yq: an expression is not a file
     elif prog in ('curl', 'wget', 'iwr', 'invoke-webrequest', 'irm', 'invoke-restmethod',
-                  'start-bitstransfer') and _mp_net_output_hit(rest):
-        why = f"`{prog}` saving a download into a .claude directory"
+                  'start-bitstransfer') and _mp_net_output_hit(rest, tgt, in_claude):
+        why = f"`{prog}` saving a download into {tgt.into}"
+    if not why and type(tgt) is _MpTarget:      # modw writers name .claude only
+        why = (_mp_script_writes(prog, rest) or _mp_named_output_writes(prog, rest, in_claude)
+               or _mp_tool_writes(prog, rest, in_claude))
     if why:
         return why, in_claude
     if _MP_INTERP_RE.match(prog):
         for a in rest:
-            if _mp_code_plants(a):
-                return f"`{prog}` code that writes under .claude", in_claude
-    for a in rest:
-        if '::' in a and _mp_code_plants(a):
-            return "a .NET file call that writes under .claude", in_claude
+            if _mp_code_plants(a, tgt):
+                return f"`{prog}` code that writes under {tgt.under}", in_claude
+    for a in (words[k:] if tgt.dotnet_head else rest):
+        if '::' in a and _mp_code_plants(a, tgt):
+            return f"a .NET file call that writes under {tgt.under}", in_claude
+    # the call can START the segment ([IO.File]::Copy(a, b); [void][IO.File]::...)
+    # and its path can be a later word, so judge the written argument of the call
+    if type(tgt) is _MpTarget and any('::' in w for w in words[k:]) \
+            and _mp_dotnet_writes(' '.join(words[k:]), in_claude):
+        return "a .NET file call that writes under .claude", in_claude
     return None, in_claude
 
 
-def _mp_scan(cmd: str, depth: int = 0, in_claude: bool = False) -> Optional[str]:
+def _mp_scan(cmd: str, depth: int = 0, in_claude=False,
+             tgt: Optional['_MpTarget'] = None) -> Optional[str]:
+    tgt = tgt or _MP_CLAUDE
     cmd = _unwrap_start_process(_join_line_continuations(cmd))
     for words in _install_split(cmd, parens=False):
-        why, in_claude = _mp_segment(words, in_claude, depth)
+        why, in_claude = _mp_segment(words, in_claude, depth, tgt)
         if why:
             return why
     return None
+
+
+def _mp_scan_command(scan: str, cwd: Optional[str], tgt: '_MpTarget') -> Optional[str]:
+    """Reason a (prose-masked) command writes to `tgt`, else None: interpreter
+    heredoc bodies first, then the shell segments. May raise; callers wrap."""
+    for m in _MP_HEREDOC_RE.finditer(scan):
+        if _INTERPRETER_RE.search(m.group('head')) and (
+                _mp_code_plants(m.group('body'), tgt)
+                or _mp_scan(m.group('body'), 1, tgt.start(None), tgt)):
+            return f"an interpreter script that writes under {tgt.under}"
+    return _mp_scan(scan, 0, tgt.start(cwd), tgt)
 
 
 def _mod_plant_guard(command: str, cwd: Optional[str] = None) -> FenceDecision:
@@ -2236,13 +2756,7 @@ def _mod_plant_guard(command: str, cwd: Optional[str] = None) -> FenceDecision:
         if _MP_ENV_RE.search(scan):
             why = "setting a CLAUDE_CODE_PLUGIN_*DIR* variable (loads plugin folders)"
         if not why:
-            for m in _MP_HEREDOC_RE.finditer(scan):
-                if _INTERPRETER_RE.search(m.group('head')) and (
-                        _mp_code_plants(m.group('body')) or _mp_scan(m.group('body'), 1)):
-                    why = "an interpreter script that writes under .claude"
-                    break
-        if not why:
-            why = _mp_scan(scan, 0, _mp_hit(cwd or '', skip_worktrees=True))
+            why = _mp_scan_command(scan, cwd, _MP_CLAUDE)
     except Exception:
         return FenceDecision(False, '')      # never wedge the agent on a parse bug
     if not why:
@@ -2254,10 +2768,1170 @@ def _mod_plant_guard(command: str, cwd: Optional[str] = None) -> FenceDecision:
                          overridable=False)
 
 
+# ── Shell writes to the fence's own files and the install tree (2026-10-06) ──
+# classify_action refuses a Write/Edit/MultiEdit/NotebookEdit onto the four
+# fence files, data/skills (and the _skill_stats files) and mc/addons, and
+# check_install_dir_write refuses one into the running install from another
+# project. Both only ever looked at those four tools, so the SAME file went
+# through the shell: `echo x > steward/fence.py`, `cp`, `sed -i`,
+# `Set-Content`, `git checkout -- steward/fence.py` all exited 0 against the
+# live hook (Quill, 2026-10-06), and a worktree copy of the fence was rewritten
+# that way twice. This points the mod-plant parser (_mp_scan: redirect, tee,
+# cp/mv, Copy-Item/Move-Item, sed/perl -i, Set-Content/Out-File/Add-Content,
+# python/node/perl -c and heredoc bodies, .NET writes, bash -c / pwsh -Command
+# / Start-Process wrapping) at those same targets, through a target predicate
+# instead of a copy of the parser. No new targets: what the Write rules
+# protect, and the install folder with the Write guard's own-project
+# exemption.
+#
+# ARMED ONLY. classify_bash is reached from main() only for an armed session,
+# so the shell rule for the fence's files is armed-only exactly like the Write
+# rule is. The Write guard for the install folder runs attended too
+# (unconditionally); the shell version deliberately does not, because an
+# attended human-driven session legitimately copies into, edits and rebuilds
+# the install from another project, and diagnostic one-liners naming it are
+# common there. Whether to enforce it attended is a human decision
+# (docs/patches/fence-shell-self-protect.README.md).
+#
+# Path SHAPE decides, as it does for the Write tool: any `.../steward/<fence
+# file>`, `.../data/skills/...`, `.../mc/addons/...` counts wherever it lives.
+# A scratch copy of the fence under a folder named `steward` is refused here
+# the way the Write tool already refuses it; build fence patches in a scratch
+# dir NOT named steward (`fence_work/fence.py`) and rewrite the diff headers.
+#
+# Also covered: `git [-C dir] checkout|restore|mv` naming such a path (a
+# `restore --staged` that leaves the work tree alone is allowed), `git apply
+# --include=<path>`, and a unified diff carried IN the command (`git apply -
+# <<EOF`, `patch <<EOF`) whose headers name one.
+# KNOWN GAPS, accepted (command text only), the .claude rule's plus: a script
+# file that writes the path (`python _scratch/edit.py`), a path built from a
+# variable, a glob or os.path.join, `git apply x.patch` / `patch < x.diff`
+# whose patch FILE carries the target, `git checkout|reset --hard|merge|pull|
+# stash pop` that rewrites the file without naming it, and an `-c` body that
+# only READS a protected path but also uses a write-capable or shell-out API
+# (the co-occurrence test cannot tell direction).
+_MP_FENCE_NAMES = ('fence.py', 'core.py', '_config.py', '__init__.py')
+# Target paths inside a program body: the Write rules' shapes as a search.
+_MP_PROT_CODE_RE = re.compile(
+    r'(?<![\w.-])(?:'
+    r'steward[\\/]+(?:[^\s\'"`]*?[\\/]+)?(?:fence|core|_config|__init__)\.py(?![\w-]|\.\w)'
+    r'|data[\\/]+skills[\\/]'
+    r'|mc[\\/]+addons[\\/]'
+    r'|\.clayrune[\\/]+addons(?![\w-])'
+    r'|_skill_stats\.json(?![\w-])|_skill_stats_archive\.jsonl(?![\w-])'
+    r')', re.I)
+_MP_FLAG_VALUE_RE = re.compile(r'^--?[A-Za-z][\w-]*[:=](.+)$')
+_MP_DIFF_HDR_RE = re.compile(r'^(?:\+\+\+|---|diff --git)[ \t]+(?:"?a/)?(\S+)', re.M)
+_MP_GIT_APPLY_RE = re.compile(
+    r'\bgit(?:\.exe)?\s+(?:(?:-C|-c)\s+\S+\s+|--?\S+\s+)*apply\b'
+    r'|(?:^|[;&|(\s])patch\b', re.M)
+_MP_GIT_GLOBAL_VALUE = frozenset({'-c', '--git-dir', '--namespace', '--exec-path',
+                                  '--super-prefix', '--config-env'})
+_MP_GIT_SUB_VALUE = {
+    'checkout': frozenset({'-b', '-B', '--orphan', '--conflict', '--pathspec-from-file'}),
+    'restore': frozenset({'-s', '--source', '--conflict', '--pathspec-from-file'})}
+
+
+def _shell_addons_hit(raw: str, cwd: Optional[str]) -> bool:
+    """`raw` resolves inside the add-ons root. Unlike _path_resolves_into_addons
+    it fails toward ALLOW on an unresolvable word: a shell word is not always a
+    path, and refusing every odd word would wedge ordinary commands."""
+    low = raw.replace('\\', '/').lower()
+    if re.search(r'(?:^|/)\.clayrune/addons(?:/|$)', low):
+        return True
+    try:
+        root = _addons_root().resolve()
+        target = Path(os.path.expanduser(os.path.expandvars(raw)))
+        if not target.is_absolute():
+            target = (Path(cwd) if cwd else Path.cwd()) / target
+        target = target.resolve()
+    except Exception:
+        return False
+    return target == root or _is_within(target, root)
+
+
+def _protected_path_kind(raw: str, cwd: Optional[str] = None) -> Optional[str]:
+    """'fence' | 'skills' | 'addons' when `raw` is a path classify_action's
+    Write rules protect, else None. Same shapes, same order; pinned against
+    classify_action by tests/test_fence_shell_self_protect.py."""
+    low = raw.replace('\\', '/').lower()
+    if (low.startswith('steward/') or '/steward/' in low) and \
+            low.rsplit('/', 1)[-1] in _MP_FENCE_NAMES:
+        return 'fence'
+    if ('/data/skills/' in low or low.startswith('data/skills/')
+            or low.endswith('_skill_stats.json')
+            or low.endswith('_skill_stats_archive.jsonl')):
+        return 'skills'
+    if low.startswith('mc/addons/') or '/mc/addons/' in low or _shell_addons_hit(raw, cwd):
+        return 'addons'
+    return None
+
+
+def _mp_flag_word(w: str) -> str:
+    """The path part of a word: itself, or the value of `-Path:x` / `--include=x`;
+    '' for a bare flag."""
+    if not w.startswith('-'):
+        return w
+    m = _MP_FLAG_VALUE_RE.match(w)
+    return m.group(1) if m else ''
+
+
+def _mp_cd_ctx(ctx, target: str):
+    """Where the shell is after `cd target` (posix-style string; None = unknown)."""
+    t = (target or '').replace('\\', '/')
+    if not t or t == '-':
+        return ctx
+    if '$' in t or '%' in t:
+        return None
+    if t.startswith(('/', '~')) or _WIN_DRIVE_RE.match(t) or not ctx:
+        new = t
+    else:
+        new = ctx.rstrip('/') + '/' + t
+    return posixpath.normpath(new)
+
+
+def _mp_norm_code(code: str) -> str:
+    return re.sub(r'/+', '/', code.replace('\\', '/')).lower()
+
+
+class _MpPathTarget(_MpTarget):
+    """A target decided by path shape or resolution, not by a `.claude` name."""
+    plugin_rules = False
+    git_paths = True
+    dotnet_head = True
+    removes = False           # the Write rules these mirror do not cover a move/delete
+    write_api = _MP_WRITE_API_RE
+
+    def start(self, cwd):
+        return _mp_cd_ctx(None, cwd) if cwd else None
+
+    def cd(self, ctx, target):
+        return _mp_cd_ctx(ctx, target)
+
+    def word(self, w, ctx):
+        return self.hit(w, ctx)
+
+    def dir_dest(self, dest, sources, ctx):
+        d = (dest or '').rstrip('/\\')
+        return bool(d) and any(
+            self.hit(d + '/' + (re.split(r'[\\/]', s)[-1] or 'x'), ctx) for s in sources)
+
+
+class _MpProtected(_MpPathTarget):
+    """The fence's own files, data/skills and mc/addons (classify_action's rules)."""
+    into = "a fence-protected path (the fence's own code, data/skills or mc/addons)"
+    under = 'a fence-protected path'
+
+    def hit(self, text, ctx):
+        w = _mp_flag_word(text or '')
+        if not w:
+            return False
+        cwd = ctx if isinstance(ctx, str) else None
+        if _protected_path_kind(w, cwd):
+            return True
+        if cwd and w[0] not in '/~$%\\' and not _WIN_DRIVE_RE.match(w):
+            return _protected_path_kind(cwd.rstrip('/') + '/' + w, cwd) is not None
+        return False
+
+    def code(self, code):
+        if _MP_PROT_CODE_RE.search(code):
+            return True
+        try:
+            return _mp_norm_code(str(_addons_root())) in _mp_norm_code(code)
+        except Exception:
+            return False
+
+
+class _MpInstall(_MpPathTarget):
+    """Anything inside the running Clayrune install (`_INSTALL_DIR`)."""
+    into = 'the Clayrune install directory'
+    under = 'the Clayrune install directory'
+
+    # `git checkout NAME` with NAME a branch resolves "inside the install" as a
+    # relative word too, so there only `--` or an existing file counts.
+    git_arg_may_be_ref = True
+
+    def _resolve(self, text, ctx) -> Optional[Path]:
+        w = _mp_flag_word(text or '')
+        if not w:
+            return None
+        try:
+            target = Path(os.path.expanduser(os.path.expandvars(w)))
+            if not target.is_absolute():
+                base = Path(os.path.expanduser(ctx)) if isinstance(ctx, str) and ctx else Path.cwd()
+                target = base / target
+            return target.resolve()
+        except Exception:
+            return None
+
+    def hit(self, text, ctx):
+        target = self._resolve(text, ctx)
+        if target is None:
+            return False
+        try:
+            install_dir = _INSTALL_DIR.resolve()
+        except Exception:
+            return False
+        return target == install_dir or _is_within(target, install_dir)
+
+    def exists(self, text, ctx):
+        target = self._resolve(text, ctx)
+        return target is not None and target.exists()
+
+    def code(self, code):
+        norm = _mp_norm_code(code)
+        try:
+            return any(_mp_norm_code(str(p)) in norm
+                       for p in {_INSTALL_DIR, _INSTALL_DIR.resolve()})
+        except Exception:
+            return False
+
+
+_MP_PROTECTED = _MpProtected()
+_MP_INSTALL = _MpInstall()
+
+
+def _mp_git_split(rest: list, ctx, tgt: _MpTarget):
+    """(ctx, subcommand, its args) of `git [global opts] sub args...`; subcommand
+    is None when there is none. `-C dir` / `--work-tree` move ctx like a `cd`."""
+    i, n = 0, len(rest)
+    while i < n and rest[i].startswith('-'):
+        opt = rest[i]
+        if opt in ('-C', '--work-tree') and i + 1 < n:
+            ctx = tgt.cd(ctx, rest[i + 1])
+            i += 2
+        elif opt.startswith('--work-tree='):
+            ctx = tgt.cd(ctx, opt.split('=', 1)[1])
+            i += 1
+        elif opt in _MP_GIT_GLOBAL_VALUE:
+            i += 2
+        else:
+            i += 1
+    if i >= n:
+        return ctx, None, []
+    return ctx, rest[i].lower(), rest[i + 1:]
+
+
+def _mp_git_removes(rest: list, ctx, tgt: _MpTarget) -> Optional[str]:
+    """Reason `git mv|rm ...` takes a path of `tgt` out of the work tree, else
+    None. `git rm --cached` only drops it from the index."""
+    ctx, sub, args = _mp_git_split(rest, ctx, tgt)
+    if sub not in ('mv', 'rm') or (sub == 'rm' and '--cached' in args):
+        return None
+    if any(tgt.removed(a, ctx) for a in args if not a.startswith('-')):
+        return f"`git {sub}` taking {tgt.gone} out of the work tree"
+    return None
+
+
+def _mp_git_paths(rest: list, ctx, tgt: _MpTarget) -> Optional[str]:
+    """Reason `git [global opts] checkout|restore|apply|mv ...` writes a path of
+    `tgt`, else None."""
+    ctx, sub, args = _mp_git_split(rest, ctx, tgt)
+    if sub is None:
+        return None
+    what = f"a file inside {tgt.into}"
+    if sub in ('checkout', 'restore'):
+        if sub == 'restore' and any(a in ('--staged', '-S') for a in args) \
+                and not any(a in ('--worktree', '-W') for a in args):
+            return None                      # index only, the work tree is untouched
+        skip, paths, k, after_dd = _MP_GIT_SUB_VALUE[sub], [], 0, sub == 'restore'
+        while k < len(args):
+            if args[k] == '--':
+                after_dd = True
+            elif args[k] in skip:
+                k += 2
+                continue
+            elif not args[k].startswith('-'):
+                paths.append((args[k], after_dd))
+            k += 1
+        if any(tgt.hit(p, ctx) and (dd or not tgt.git_arg_may_be_ref or tgt.exists(p, ctx))
+               for p, dd in paths):
+            return f"`git {sub}` restoring {what}"
+    elif sub == 'apply':
+        for k, a in enumerate(args):
+            val = args[k + 1] if a == '--include' and k + 1 < len(args) else (
+                a.split('=', 1)[1] if a.startswith('--include=') else '')
+            if val and tgt.hit(val, ctx):
+                return f"`git apply --include` of {what}"
+    elif sub == 'mv':
+        pos = [a for a in args if not a.startswith('-')]
+        if len(pos) >= 2 and tgt.hit(pos[-1], ctx):
+            return f"`git mv` onto {what}"
+    return None
+
+
+def _mp_patch_body_hit(command: str, cwd: Optional[str], tgt: _MpTarget) -> bool:
+    """A unified diff carried in the command itself (`git apply - <<EOF`,
+    `patch <<EOF`) names a path of `tgt`. A patch FILE is not read (accepted)."""
+    if not _MP_GIT_APPLY_RE.search(command) \
+            or re.search(r'--(?:check|stat|numstat|summary)\b', command):
+        return False
+    ctx = tgt.start(cwd)
+    return any(tgt.hit(m.group(1), ctx) for m in _MP_DIFF_HDR_RE.finditer(command))
+
+
+def _mp_cwd_in_install(cwd: Optional[str]) -> bool:
+    """The session's own project IS the install (check_install_dir_write's
+    exemption); an unresolvable cwd also counts, it fails open the same way."""
+    try:
+        session = (Path(cwd) if cwd else Path.cwd()).resolve()
+        install_dir = _INSTALL_DIR.resolve()
+    except Exception:
+        return True
+    return session == install_dir or _is_within(session, install_dir)
+
+
+def _shell_self_protect_guard(command: str, cwd: Optional[str] = None) -> FenceDecision:
+    """Block an armed agent writing, through the shell, a path the Write rules
+    protect, or (from another project) the install tree. Never passable, like
+    the Write rules. Fails open on a parse bug."""
+    try:
+        scan = _mask_inert_prose(command.strip(), mask_python_c=False)
+    except Exception:
+        scan = command.strip()
+    try:
+        why = _mp_scan_command(scan, cwd, _MP_PROTECTED)
+        if not why and _mp_patch_body_hit(command, cwd, _MP_PROTECTED):
+            why = "a patch applied to a fence-protected path"
+        if why:
+            return FenceDecision(True, f"{why} — the fence's own enforcement code "
+                                       f"(steward/fence.py, core.py, _config.py, "
+                                       f"__init__.py), data/skills and mc/addons are "
+                                       f"human-owned (safety-rail and loadout supply "
+                                       f"chain; the Write tool refuses the same paths)",
+                                 overridable=False)
+        if not _mp_cwd_in_install(cwd):
+            why = _mp_scan_command(scan, cwd, _MP_INSTALL)
+            if why:
+                return FenceDecision(True, f"{why} ({_INSTALL_DIR}) from a different "
+                                           f"project — an agent may not edit the running "
+                                           f"app's own source (the Write tool refuses the "
+                                           f"same)",
+                                     overridable=False)
+    except Exception:
+        return FenceDecision(False, '')      # never wedge the agent on a parse bug
+    return FenceDecision(False, '')
+
+
+# ── MCP-server / git-hook / shell-profile planting guard (2026-10-04) ───────
+# Sibling of the mod-plant guard above, same hole one layer over. agent_runtime
+# launches `claude` with the whole MCP fleet (~/.claude.json, the project's
+# .mcp.json) unless a session pins --strict-mcp-config, and no `mcp__<server>__*`
+# tool call a planted server answers is worth anything to this fence: the
+# server decides what its tools do and the fence sees a tool name. A git hook
+# or a shell profile is the same shape: code that runs later, outside any tool
+# call this hook ever sees. For armed sessions this refuses, never passably
+# (what Claude loads and what runs around it is a human-owned supply chain):
+#   - `claude mcp add|add-json|add-from-claude-desktop|add-*` (any scope, any
+#     option order, also via npx / sudo / bash -c / pwsh -Command / & / Start-
+#     Process, which _mp_segment already unwraps). `mcp list|get|remove` stay;
+#   - a shell write, copy, move, redirect, tee, in-place edit, download or
+#     interpreter-code write aimed at ~/.claude.json (also $HOME/, %USERPROFILE%\,
+#     C:\Users\*\) or any `.mcp.json`; and the Write/Edit/MultiEdit tools on the
+#     same files (classify_action's /.claude/ rule misses `.claude.json`: it is
+#     a file beside the directory, not under it);
+#   - a write under `.git/hooks/` (shell and Write/Edit), `git config
+#     core.hooksPath <value>` (any scope; `--get`, a bare key, `--unset` stay)
+#     and `git -c core.hooksPath=...`;
+#   - a write to a shell profile: ~/.bashrc .bash_profile .bash_login .profile
+#     .zshrc .zprofile .zshenv .zlogin, the PowerShell profile files
+#     (Documents\PowerShell and Documents\WindowsPowerShell
+#     Microsoft.PowerShell_profile.ps1, profile.ps1) and `$PROFILE` as a
+#     target.
+# Reuses _mp_segment/_mp_scan through a target (_MpConfig, a _MpTarget like the
+# `.claude` and fence-file rules), so the aim-not-mention rule and the
+# prose masking are the mod-plant guard's: reading (`cat ~/.claude.json`,
+# `grep mcpServers .mcp.json`, `ls .git/hooks`, `source ~/.bashrc`, `. $PROFILE`),
+# `git diff|add .mcp.json` and a message that merely names a path stay allowed.
+# KNOWN GAPS, accepted (command text only): a script file that does the write
+# (`bash x.sh`, `python plant.py`), a path built from a variable or glob, a
+# relative write whose cwd the hook payload does not show to be inside .git/hooks,
+# `git checkout|restore|apply|stash pop` materialising a tracked .mcp.json or
+# hook, `sponge`/`jq -i`-style tools not in the mod-plant verb lists, a bare
+# repo's `<name>.git/hooks`, GIT_CONFIG_* env vars and a hand edit of
+# .git/config or ~/.gitconfig, `claude --mcp-config <file>` (one session only),
+# `claude config set`, and .env / ~/.codex/config.toml (left out on purpose).
+_CP_WHAT = 'an MCP config, git hooks or shell profile path'
+_CP_PATHS = (r'\.(?:claude|mcp)\.json',
+             r'\.git/(?:modules/.+?/)?hooks',
+             r'\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|zlogin)',
+             r'microsoft\.\w+_profile\.ps1',
+             r'(?:windows)?powershell/(?:\d+/)?profile\.ps1',
+             r'\$profile(?:\.(?:currentuser|alluser)\w*)?')
+
+
+def _cp_re(before: str, after: str):
+    return re.compile('|'.join(before + p + after for p in _CP_PATHS), re.I)
+
+
+# A word handed to a command is a path only when the name ends the word and
+# does not follow a space (`Set-Content n.md "edit .mcp.json by hand"` is prose);
+# code (a `python -c` body, a heredoc) holds the name amid other text.
+_CP_ARG_RE = _cp_re(r'(?<![\w\s-])', r'(?![\w.\s-])')
+_CP_CODE_RE = _cp_re(r'(?<![\w-])', r'(?![\w.-])')
+_CP_CLAUDE_PROGS = frozenset({'claude', 'claude-code'})
+_CP_LAUNCHERS = frozenset({'npx', 'bunx', 'pnpx', 'uvx', 'pipx', 'npm', 'pnpm', 'yarn',
+                           'bun', 'corepack', 'volta', 'mise', 'fnm'})
+_CP_MCP_ADD_RE = re.compile(r'^add(?:-[\w-]+)?$')
+_CP_GIT_CONFIG_READS = frozenset({
+    '--get', '--get-all', '--get-regexp', '--get-urlmatch', '--list', '-l',
+    '--unset', '--unset-all', '--remove-section', '--rename-section'})
+_CP_HOOKSPATH_RE = re.compile(r'^core\.hookspath(?:=|$)', re.I)
+# `git -c core.hooksPath=/dev/null commit` runs NO hook: the same effect as
+# --no-verify, which this guard leaves alone. Measured on 93,676 past shell
+# calls, every real `git -c core.hooksPath=` was this one (3 of 3).
+# `git config core.hooksPath /dev/null` persists the same "no hooks", so the
+# config form gets the same exception (it disables hooks, it plants none).
+_CP_NO_HOOKS = frozenset({'/dev/null', 'nul'})
+
+
+def _cp_hit(text: str) -> bool:
+    """True when the word `text` is an MCP config file, a `.git/hooks` path or a
+    shell profile (see the section comment)."""
+    return bool(_CP_ARG_RE.search((text or '').replace('\\', '/')))
+
+
+def _cp_code_hit(text: str) -> bool:
+    """_cp_hit for a span of code, where the path sits amid other text."""
+    return bool(_CP_CODE_RE.search((text or '').replace('\\', '/')))
+
+
+def _cp_command(prog: str, rest: list) -> Optional[str]:
+    """Reason when this one command is `claude mcp add*` or sets git's
+    core.hooksPath. `prog`/`rest` are the program and its words after wrappers
+    (sudo, env, ...) were skipped. A prose head (echo, grep, ...) names, never runs."""
+    if prog in _MP_PROSE_HEADS:
+        return None
+    after = None
+    if prog in _CP_CLAUDE_PROGS:
+        after = rest
+    elif prog in _CP_LAUNCHERS:
+        for j, w in enumerate(rest):
+            if _install_prog(w) in _CP_CLAUDE_PROGS:
+                after = rest[j + 1:]
+                break
+    if after is not None:
+        sub = [a.lower() for a in after if not a.startswith('-')]
+        if 'mcp' in sub:
+            j = sub.index('mcp')
+            if j + 1 < len(sub) and _CP_MCP_ADD_RE.match(sub[j + 1]):
+                return (f"`claude mcp {sub[j + 1]}` (registers an MCP server whose "
+                        f"tool calls never reach this fence)")
+    if prog == 'git':
+        for k, w in enumerate(rest):
+            spec = None
+            if w in ('-c', '--config', '--config-env'):
+                spec = rest[k + 1] if k + 1 < len(rest) else ''
+            elif w.startswith('--config'):
+                spec = w.split('=', 1)[1] if '=' in w else None
+            elif w.startswith('-c'):
+                spec = w[2:]
+            if spec is not None and _CP_HOOKSPATH_RE.match(spec):
+                value = spec.split('=', 1)[1].strip().lower() if '=' in spec else ''
+                if value in _CP_NO_HOOKS and 'env' not in w:
+                    continue         # one-shot "run no hooks", the --no-verify of config
+                return "`git -c core.hooksPath=...` (points git at a hooks directory)"
+        sub_i = None
+        k = 0
+        while k < len(rest):
+            w = rest[k]
+            if w in ('-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix',
+                     '--config-env', '--exec-path'):
+                k += 2
+            elif w.startswith('-'):
+                k += 1
+            else:
+                sub_i = k
+                break
+        if sub_i is not None and rest[sub_i].lower() == 'config':
+            args = rest[sub_i + 1:]
+            if not any(a in _CP_GIT_CONFIG_READS for a in args):
+                pos = [a for a in args if a and not a.startswith('-')]
+                for j, a in enumerate(pos):
+                    if a.lower() == 'core.hookspath':
+                        vals = [v.strip().lower() for v in pos[j + 1:]]
+                        if vals and not all(v in _CP_NO_HOOKS for v in vals):
+                            return "`git config core.hooksPath <value>` (points git at a hooks directory)"
+                        break
+    return None
+
+
+class _MpConfig(_MpTarget):
+    """MCP config files, `.git/hooks` and shell profiles (_cp_hit's paths) as the
+    shell-write scan's target. Plugin checks give way to _cp_command; no
+    move/delete rule, and the write list is the plain one."""
+    into = _CP_WHAT
+    under = _CP_WHAT
+    plugin_rules = False
+    removes = False
+    write_api = _MP_WRITE_API_RE
+
+    def start(self, cwd):
+        return _cp_hit(cwd or '')
+
+    def cd(self, ctx, target):
+        return True if _cp_hit(target) else ctx
+
+    def hit(self, text, ctx):
+        return _cp_hit(text)
+
+    def word(self, w, ctx):
+        if _cp_hit(w):
+            return True
+        return bool(ctx and w and not w.startswith('-') and w[0] not in '/~$%\\'
+                    and not _WIN_DRIVE_RE.match(w))
+
+    def code(self, code):
+        return _cp_code_hit(code)
+
+    def command(self, prog, rest):
+        return _cp_command(prog, rest)
+
+
+_MP_CONFIG = _MpConfig()
+
+
+def _config_plant_guard(command: str, cwd: Optional[str] = None) -> FenceDecision:
+    """Block an armed agent planting an MCP server, a git hook or a shell
+    profile line (see the section comment). Never passable."""
+    try:
+        scan = _mask_inert_prose(command.strip(), mask_python_c=False)
+    except Exception:
+        scan = command.strip()
+    try:
+        why = _mp_scan_command(scan, cwd, _MP_CONFIG)
+    except Exception:
+        return FenceDecision(False, '')      # never wedge the agent on a parse bug
+    if not why:
+        return FenceDecision(False, '')
+    return FenceDecision(True, f"{why} — a planted MCP server's tools are never "
+                               f"seen by this fence, and a git hook or shell "
+                               f"profile runs outside every tool call, so what "
+                               f"Claude loads and what runs around it is "
+                               f"human-owned (supply chain)",
+                         overridable=False)
+
+
+# ── Per-target scratch judgement for deletes (Quill, 2026-10-07 §2) ──────────
+# The delete exemption used to be `any(marker in command) and '..' not in
+# command`: a scratch marker ANYWHERE in the text let every recursive delete in
+# it through. `rm -rf ~ /tmp/build`, `rm -rf "$HOME"  # /tmp/`, `rm -rf "$HOME";
+# ls /tmp/` and `Remove-Item -Recurse -Force <Documents>, <Temp>\x` all passed,
+# and so did `C:/work/scratchpad-app`, whose NAME merely contains a marker.
+# Present since the MVP commit (24785676).
+#
+# Now every delete is lexed and every target judged on its own:
+#   • the command is split into segments. A `#` comment never reaches a
+#     target. A segment that matches a delete pattern must itself BE the delete
+#     (rm / rmdir / Remove-Item / ri / del / erase / rd, after a sudo-style
+#     wrapper), a `bash -c` / `powershell -Command` / `cmd /c` around one
+#     (judged recursively), or the `gci <paths> | ri` pipeline. Anything else
+#     (xargs, eval, find -exec, a script block) refuses;
+#   • each target is read the way EACH shell that may run it reads it (the
+#     Bash tool name also carries Codex's PowerShell on Windows), expanding ~,
+#     $HOME, $env:X, %X% and an allowlist of environment variables. A variable
+#     the command itself mentions any other way (an assignment), any other
+#     expansion, a substitution, a brace or an escape the two shells disagree
+#     on refuses;
+#   • a reading is scratch when its REAL path (8.3 names, junctions and
+#     symlinks resolved) lies strictly inside a temp root (/tmp, <drive>:/tmp,
+#     <drive>:/Users/<u>/AppData/Local/Temp, $TEMP, $TMP, $TMPDIR, the
+#     interpreter's temp dir) or at/under a folder named exactly `_scratch` or
+#     `scratchpad`;
+#   • a target passes when one reading is scratch and every other reading is
+#     scratch or names nothing that exists (bash's reading of an unquoted
+#     `C:\Users\x\AppData\Local\Temp\y` is a no-op name in the cwd);
+#   • ONE failing target refuses the whole command, and so does anything this
+#     section cannot judge: it fails closed to the pre-exemption verdict.
+# Known limits: after a `cd` in the same command a relative target is judged
+# by its folder names only; `mv <dir> /tmp/y && rm -rf /tmp/y` is a move into
+# scratch, which no delete check can see; a link made in the same command
+# refuses outright because its target cannot be resolved yet.
+class _Unjudgeable(Exception):
+    """A delete this section cannot read with certainty (→ refuse)."""
+
+
+_SCRATCH_DIR_NAMES = ('_scratch', 'scratchpad')
+_SCRATCH_ENV_VARS = frozenset({'HOME', 'USERPROFILE', 'TEMP', 'TMP', 'TMPDIR',
+                               'LOCALAPPDATA', 'APPDATA', 'HOMEDRIVE', 'HOMEPATH',
+                               'SYSTEMROOT', 'SYSTEMDRIVE', 'USERNAME'})
+_DEL_HEADS = frozenset({'rm', 'rmdir', 'remove-item', 'ri', 'del', 'erase', 'rd'})
+_DEL_CMD_HEADS = frozenset({'rmdir', 'rd', 'del', 'erase'})
+_DEL_WRAPPERS = frozenset({'sudo', 'doas', 'nohup', 'time', 'command', 'builtin', 'exec'})
+_DEL_LISTERS = frozenset({'get-childitem', 'gci', 'ls', 'dir', 'get-item', 'gi'})
+_DEL_FOREACH = frozenset({'%', 'foreach-object', 'foreach'})
+_DEL_CD = frozenset({'cd', 'chdir', 'pushd', 'popd', 'set-location', 'sl',
+                     'push-location', 'pop-location'})
+_DEL_POSIX_SHELLS = frozenset({'bash', 'sh', 'zsh', 'dash', 'ksh'})
+_DEL_PS_SHELLS = frozenset({'powershell', 'pwsh'})
+_DEL_PS_NOARG_OPTS = frozenset({'-noprofile', '-nop', '-noninteractive', '-noni',
+                                '-nologo', '-nol'})
+_DEL_PS_VALUE_OPTS = frozenset({'-executionpolicy', '-ep', '-ex'})
+_DEL_PIPED_REFS = frozenset({'$_', '$psitem', '$_.fullname', '$psitem.fullname',
+                             '$_.pspath', '$psitem.pspath'})
+_DEL_ACTION_PARAMS = frozenset({'erroraction', 'ea', 'warningaction', 'wa',
+                                'informationaction', 'infa', 'progressaction', 'proga'})
+_DEL_ACTION_PREFS = frozenset({'silentlycontinue', 'stop', 'continue', 'ignore',
+                               'inquire', 'suspend', 'break'})
+# A link made in the same command cannot be resolved before it exists.
+_DEL_LINK_RE = re.compile(
+    r'(?<![\w.\-])(?:ln|mklink|junction|subst|mount)(?:\.exe)?(?![\w.\-])'
+    r'|\b(?:SymbolicLink|Junction|HardLink|CreateSymbolicLink|symlink)\b', re.I)
+_DEL_VAR_RE = re.compile(r'\$(?:\{(?P<b>(?:env:)?[A-Za-z_]\w*)\}|(?P<auto>_(?!\w)|PSItem\b)'
+                         r'|(?P<n>(?:env:)?[A-Za-z_]\w*))', re.I)
+
+
+def _del_lex(text: str) -> list:
+    """Segments of `text`: [{'sep', 'end', 'words', 'text'}], each word
+    (start, end, [(quote, raw), ...]) with quote "'", '"' or '' (unquoted).
+    Raises _Unjudgeable on any construct bash and PowerShell read differently
+    or that hides a command (substitution, here-doc, backtick, `''`)."""
+    segs: list = []
+    words: list = []
+    parts: list = []
+    st = {'wstart': -1, 'seg_start': 0, 'sep': '', 'redirect': False}
+    n = len(text)
+
+    def end_word(end):
+        nonlocal parts
+        if parts:
+            if st['redirect']:
+                st['redirect'] = False   # a redirection's target, not an argument
+            else:
+                words.append((st['wstart'], end, parts))
+        parts = []
+        st['wstart'] = -1
+
+    def end_seg(at, term, nxt):
+        nonlocal words
+        end_word(at)
+        if st['redirect']:
+            raise _Unjudgeable('redirection with no target')
+        segs.append({'sep': st['sep'], 'end': term, 'words': words,
+                     'text': text[st['seg_start']:at]})
+        words = []
+        st['sep'] = term
+        st['seg_start'] = nxt
+
+    def add(q, raw, at):
+        if not parts:
+            st['wstart'] = at
+        if q == '' and parts and parts[-1][0] == '':
+            parts[-1] = ('', parts[-1][1] + raw)
+        else:
+            parts.append((q, raw))
+
+    i = 0
+    while i < n:
+        c = text[i]
+        two = text[i:i + 2]
+        if c in _CURLY_QUOTES or c == '`':
+            raise _Unjudgeable('backtick or curly quote')
+        if c in ' \t\r':
+            end_word(i)
+            i += 1
+        elif two in ('&&', '||'):
+            end_seg(i, two, i + 2)
+            i += 2
+        elif c == '&' and text[i + 1:i + 2] == '>':
+            end_word(i)
+            i += 2 + (text[i + 2:i + 3] == '>')
+            st['redirect'] = True
+        elif c in '\n;|(){}&':
+            if c in '{}' and parts:
+                raise _Unjudgeable('brace inside a word')
+            end_seg(i, c, i + 1)
+            i += 1
+        elif c in '<>':
+            if two in ('<<', '<(', '>(', '<#'):
+                raise _Unjudgeable('here-doc, process substitution or block comment')
+            if parts:
+                if len(parts) == 1 and parts[0][0] == '' and re.fullmatch(r'\d+|\*', parts[0][1]):
+                    parts = []          # `2>` / `*>`: the fd belongs to the operator
+                    st['wstart'] = -1
+                else:
+                    raise _Unjudgeable('redirection glued to a word')
+            j = i + 1 + (text[i + 1:i + 2] == '>')
+            m = re.match(r'&(?:\d+|-)', text[j:])
+            if m:
+                i = j + m.end()         # `2>&1`: duplicates a descriptor, no target
+            else:
+                st['redirect'] = True
+                i = j
+        elif c == '#' and not parts:
+            nl = text.find('\n', i)
+            i = n if nl < 0 else nl     # a comment: never an argument
+        elif c == "'":
+            j = text.find("'", i + 1)
+            if j < 0 or text[j + 1:j + 2] == "'":
+                raise _Unjudgeable("unpaired quote or ''")
+            add("'", text[i + 1:j], i)
+            i = j + 1
+        elif c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                ch = text[j]
+                if ch == '\\' and text[j + 1:j + 2] in ('$', '`', '"', '\\', '\n', '\r'):
+                    raise _Unjudgeable('escape inside double quotes')
+                if ch == '$' and text[j + 1:j + 2] == '(':
+                    raise _Unjudgeable('substitution')
+                if ch == '$' and text[j + 1:j + 2] == '{':
+                    m = re.match(r'\$\{(?:env:)?[A-Za-z_]\w*\}', text[j:])
+                    if not m:
+                        raise _Unjudgeable('parameter expansion')
+                    j += m.end()
+                    continue
+                j += 1
+            if j >= n or text[j + 1:j + 2] == '"':
+                raise _Unjudgeable('unpaired quote or ""')
+            add('"', text[i + 1:j], i)
+            i = j + 1
+        elif c == '$':
+            nx = text[i + 1:i + 2]
+            if nx in ('(', "'", '"'):
+                raise _Unjudgeable('substitution or ANSI-C quote')
+            if nx == '{':
+                m = re.match(r'\$\{(?:env:)?[A-Za-z_]\w*\}', text[i:])
+                if not m:
+                    raise _Unjudgeable('parameter expansion')
+                add('', m.group(0), i)
+                i += m.end()
+            else:
+                add('', c, i)
+                i += 1
+        elif c == '@' and not parts and text[i + 1:i + 2] in ('(', '{', "'", '"'):
+            raise _Unjudgeable('PowerShell array, hashtable or here-string')
+        elif c == '\\':
+            nx = text[i + 1:i + 2]
+            if not nx or nx in '\'" \t\r\n;|&#$()<>{}`':
+                raise _Unjudgeable('backslash the two shells read differently')
+            add('', c + nx, i)
+            i += 2
+        else:
+            add('', c, i)
+            i += 1
+    end_seg(n, '', n)
+    return segs
+
+
+def _del_home() -> str:
+    return os.path.expanduser('~')
+
+
+def _del_env(name: str, shell: str, raw: str) -> str:
+    """The value of an allowlisted variable, or _Unjudgeable."""
+    up = name.upper()
+    if up not in _SCRATCH_ENV_VARS or (shell == 'bash' and name != up):
+        raise _Unjudgeable(f'variable {name} is not on the allowlist')
+    n = re.escape(name)
+    # Every mention of the name must be a plain read: `TEMP=~`, `export TEMP`,
+    # `$env:TEMP = ...`, `Set-Item env:TEMP` all make the hook's value a guess.
+    # (`...\Local\Temp` in a path is a folder, not the variable.)
+    total = len(re.findall(rf'(?<!\w)(?<!local/)(?<!local\\){n}(?!\w)', raw, re.I))
+    reads = len(re.findall(rf'(?:\$\{{(?:env:)?{n}\}}|\$(?:env:)?{n}(?!\w)|%{n}%)'
+                           rf'(?!\s*[-+*/.?]?=(?!=))', raw, re.I))
+    if total > reads:
+        raise _Unjudgeable(f'{name} is assigned or mentioned in the command')
+    if up == 'HOME' and shell == 'ps':
+        return _del_home()               # PowerShell's $HOME is the profile dir
+    val = os.environ.get(up) or os.environ.get(name)
+    if not val and up in ('HOME', 'USERPROFILE'):
+        val = _del_home()
+    if not val:
+        raise _Unjudgeable(f'{name} is not set')
+    return val
+
+
+def _del_expand(raw: str, shell: str, quoted: bool, cmd_raw: str) -> str:
+    """Expand the variables in one piece of a word for `shell`."""
+    if shell == 'cmd':
+        if any(ch in raw for ch in '^!'):
+            raise _Unjudgeable('cmd escape or delayed expansion')
+        if '%' in re.sub(r'%[A-Za-z_]\w*%', '', raw):
+            raise _Unjudgeable('stray % in a cmd word')
+        return re.sub(r'%([A-Za-z_]\w*)%',
+                      lambda m: _del_env(m.group(1), shell, cmd_raw), raw)
+    out, i = [], 0
+    while i < len(raw):
+        ch = raw[i]
+        if ch == '\\' and shell == 'bash' and not quoted:
+            out.append(raw[i + 1:i + 2])     # bash drops an unquoted backslash
+            i += 2
+            continue
+        if ch != '$':
+            out.append(ch)
+            i += 1
+            continue
+        m = _DEL_VAR_RE.match(raw, i)
+        if not m or m.group('auto'):
+            raise _Unjudgeable('unreadable $ expansion')
+        name = m.group('b') or m.group('n')
+        if name.lower().startswith('env:'):
+            if shell != 'ps':
+                raise _Unjudgeable('$env: outside PowerShell')
+            name = name[4:]
+        elif shell == 'ps' and name.upper() != 'HOME':
+            raise _Unjudgeable(f'PowerShell variable ${name}')
+        out.append(_del_env(name, shell, cmd_raw))
+        i = m.end()
+        if shell == 'ps' and not quoted and raw[i:i + 1] in ('.', '[', '('):
+            raise _Unjudgeable('PowerShell member access on a variable')
+    return ''.join(out)
+
+
+_DEL_TILDE = '\x00HOME\x00'
+
+
+def _del_word_values(pieces: list, shell: str, cmd_raw: str) -> list:
+    """What `shell` passes for one word: a list (PowerShell splits on unquoted
+    commas; bash and cmd give one value)."""
+    if shell == 'cmd' and any(q == "'" for q, _ in pieces):
+        raise _Unjudgeable("cmd does not treat ' as a quote")
+    vals = ['']
+    for k, (q, raw) in enumerate(pieces):
+        if q == "'":
+            vals[-1] += raw
+            continue
+        quoted = q == '"'
+        if k == 0 and not quoted and raw.startswith('~') and shell == 'bash':
+            rest = raw[1:]
+            if rest and not rest.startswith('/'):
+                raise _Unjudgeable('~user or ~+ expansion')
+            if not rest and len(pieces) > 1:
+                raise _Unjudgeable('~ followed by a quoted part')
+            raw = _DEL_TILDE + rest
+        chunks = raw.split(',') if (shell == 'ps' and not quoted) else [raw]
+        for ci, chunk in enumerate(chunks):
+            if ci:
+                vals.append('')
+            if chunk.startswith(_DEL_TILDE):
+                vals[-1] += _del_home() + _del_expand(chunk[len(_DEL_TILDE):], shell,
+                                                      quoted, cmd_raw)
+            else:
+                vals[-1] += _del_expand(chunk, shell, quoted, cmd_raw)
+    if shell == 'ps':
+        # `a, b` lexes as `a,` and `b`: an empty end is the list continuing
+        # into the next word (_del_args checks that word), an empty middle is not.
+        if len(vals) > 1 and not vals[-1]:
+            vals.pop()
+        if len(vals) > 1 and not vals[0]:
+            vals.pop(0)
+        if any(not v for v in vals) and len(vals) > 1:
+            raise _Unjudgeable('empty element in a PowerShell list')
+        # The FileSystem provider resolves a leading ~ in ANY path string,
+        # quoted or not, first in a list or not.
+        out = []
+        for v in vals:
+            if v == '~' or v.startswith(('~/', '~\\')):
+                v = _del_home() + v[1:]
+            elif v.startswith('~'):
+                raise _Unjudgeable('~ followed by a name')
+            out.append(v)
+        vals = out
+    return vals
+
+
+def _del_word_value(pieces: list, shell: str, cmd_raw: str) -> str:
+    vals = _del_word_values(pieces, shell, cmd_raw)
+    if len(vals) != 1:
+        raise _Unjudgeable('a list where one value was expected')
+    return vals[0]
+
+
+def _del_cmp_form(p: str) -> str:
+    """Comparable form: forward slashes, no `.`/empty components, no trailing
+    slash; Windows: trailing dots/spaces dropped per component, lowercased."""
+    nt = os.name == 'nt'
+    s = p.replace('\\', '/')
+    lead = '/' if s.startswith('/') else ''
+    comps = []
+    for c in s.split('/'):
+        if nt and c != '.':
+            c = c.rstrip(' .')
+        if c in ('', '.'):
+            continue
+        comps.append(c)
+    out = lead + '/'.join(comps)
+    return out.lower() if nt else out
+
+
+def _del_temp_roots() -> list:
+    import tempfile
+    home = _del_cmp_form(os.path.realpath(_del_home()))
+    cands = [os.environ.get(k) for k in ('TEMP', 'TMP', 'TMPDIR')]
+    cands.append(tempfile.gettempdir())
+    if os.environ.get('LOCALAPPDATA'):
+        cands.append(os.path.join(os.environ['LOCALAPPDATA'], 'Temp'))
+    roots = set()
+    for c in cands:
+        if not c:
+            continue
+        for v in (c, os.path.realpath(c)):
+            r = _del_cmp_form(v)
+            # A temp variable pointed at a drive root, or at home or above it,
+            # is not a scratch root.
+            if r.count('/') < 2 or r == home or home.startswith(r + '/'):
+                continue
+            roots.add(r)
+    return sorted(roots)
+
+
+_DEL_TEMP_TEXT_RE = re.compile(
+    r'^(?:[a-z]:)?(?:/private)?/tmp/.'
+    r'|^[a-z]:/users/[^/*?\[\]]+/appdata/local/temp/.', re.I)
+
+
+def _del_is_scratch(real: str) -> bool:
+    nt = os.name == 'nt'
+    if any((c.lower() if nt else c) in _SCRATCH_DIR_NAMES for c in real.split('/')):
+        return True
+    if _DEL_TEMP_TEXT_RE.match(real):
+        return True
+    return any(real.startswith(r + '/') for r in _del_temp_roots())
+
+
+def _del_path_state(value: str, shell: str, cwd: Optional[str], cd_seen: bool) -> str:
+    """'scratch', 'dud' (names nothing that exists) or 'bad' for one reading."""
+    nt = os.name == 'nt'
+    s = value.replace('\\', '/')
+    if not s.strip() or s.startswith('//'):
+        return 'bad'                     # empty, UNC or device path
+    if nt and shell == 'bash':
+        m = re.match(r'^/([a-zA-Z])(?=/|$)', s)
+        if m:
+            s = m.group(1) + ':' + s[2:]  # MSYS /c/x → C:/x
+    for c in s.split('/'):
+        c2 = c.rstrip(' .') if nt else c
+        if c2 == '' and c not in ('', '.'):
+            return 'bad'                 # `..` (Windows: also `...`, `.. `)
+        if not nt and c == '..':
+            return 'bad'
+    glob = any(ch in s for ch in '*?[')
+    base = (cwd or os.getcwd()).replace('\\', '/').rstrip('/')
+    drive_rel = re.match(r'^([a-zA-Z]):(?!/)', s)
+    if drive_rel:
+        # `C:x` is relative to the cwd on drive C: known only when that is ours.
+        if base[:2].lower() != s[:2].lower():
+            cd_seen = True
+        s = s[2:]
+    absolute = s.startswith('/') or bool(re.match(r'^[a-zA-Z]:/', s))
+    if not absolute:
+        if cd_seen:
+            # The base folder is unknown: scratch only by a scratch-named folder.
+            names = [c.lower() if nt else c for c in s.split('/')]
+            return 'scratch' if any(c in _SCRATCH_DIR_NAMES for c in names) else 'bad'
+        s = base + '/' + s
+    fs = s
+    if nt and shell == 'bash' and re.match(r'^/tmp(?:/|$)', s):
+        import tempfile
+        fs = tempfile.gettempdir().replace('\\', '/') + s[4:]   # MSYS /tmp
+    try:
+        real = _del_cmp_form(os.path.realpath(fs))
+    except (OSError, ValueError):
+        return 'bad'
+    if _del_is_scratch(real):
+        return 'scratch'
+    try:
+        if not glob and not os.path.lexists(fs):
+            return 'dud'
+    except (OSError, ValueError):
+        pass
+    return 'bad'
+
+
+def _del_target_ok(pieces: list, shells: tuple, cwd, cd_seen, cmd_raw) -> bool:
+    scratch = False
+    for sh in shells:
+        for v in _del_word_values(pieces, sh, cmd_raw):
+            state = _del_path_state(v, sh, cwd, cd_seen)
+            if state == 'bad':
+                return False
+            scratch = scratch or state == 'scratch'
+    return scratch
+
+
+def _del_head(words: list, shells: tuple, cmd_raw: str):
+    """(index, lowercase program name) of a segment's command word after any
+    sudo-style wrapper, or None when the shells would not agree on it."""
+    i = 0
+    while i < len(words):
+        try:
+            vals = {_del_word_value(words[i][2], sh, cmd_raw) for sh in shells}
+        except _Unjudgeable:
+            return None
+        if len(vals) != 1:
+            return None
+        v = vals.pop()
+        name = re.split(r'[\\/]', v)[-1].lower()
+        if name.endswith('.exe'):
+            name = name[:-4]
+        if name in _DEL_WRAPPERS and i + 1 < len(words):
+            i += 1
+            continue
+        return i, name
+    return None
+
+
+def _del_args(words: list, cmd_style: bool) -> tuple:
+    """(targets, piped_refs) among a delete's or lister's arguments."""
+    targets, piped = [], 0
+    end_opts = skip_action = list_open = False
+    for w in words:
+        pieces = w[2]
+        q0, lit0 = pieces[0]
+        plain = lit0 if (len(pieces) == 1 and q0 == '') else None
+        if list_open and lit0.startswith('-'):
+            raise _Unjudgeable('a PowerShell list running into an option')
+        list_open = pieces[-1][0] == '' and pieces[-1][1].endswith(',')
+        if skip_action:
+            skip_action = False
+            if plain is not None and plain.lower() in _DEL_ACTION_PREFS:
+                continue
+        if plain is not None and plain.lower() in _DEL_PIPED_REFS:
+            piped += 1
+            continue
+        if not end_opts and lit0.startswith('-'):
+            if q0 != '' or len(pieces) > 1:
+                raise _Unjudgeable('quoted option')
+            if lit0 == '--':
+                end_opts = True
+                continue
+            name, colon, val = lit0[1:].partition(':')
+            if colon:
+                if val.lower() not in _DEL_ACTION_PREFS | {'$true', '$false'}:
+                    raise _Unjudgeable(f'option value {lit0}')
+                continue
+            if name.lower() in _DEL_ACTION_PARAMS:
+                skip_action = True
+            continue
+        if cmd_style and plain is not None and plain.startswith('/'):
+            continue                     # cmd's `rd /s /q`
+        targets.append(pieces)
+    if list_open:
+        raise _Unjudgeable('a PowerShell list with no last element')
+    return targets, piped
+
+
+def _del_pipeline_ok(segs, k, shells, cwd, cd_seen, cmd_raw, piped_refs) -> bool:
+    """`gci <scratch paths> | ri` and `gci <scratch paths> | % { ri $_ }`."""
+    seg = segs[k]
+    j = k - 1
+    if seg['sep'] == '{':
+        if seg['end'] != '}' or j < 0:
+            return False
+        fe = segs[j]
+        fe_head = _del_head(fe['words'], shells, cmd_raw)
+        if (len(fe['words']) != 1 or not fe_head or fe_head[1] not in _DEL_FOREACH
+                or fe['sep'] != '|' or fe['end'] != '{'):
+            return False
+        j -= 1
+    elif seg['sep'] == '|':
+        if piped_refs:
+            return False                 # $_ outside a ForEach block
+    else:
+        return False
+    if j < 0:
+        return False
+    head_seg = segs[j]
+    if head_seg['sep'] in ('|', '{') or head_seg['end'] != '|':
+        return False
+    head = _del_head(head_seg['words'], shells, cmd_raw)
+    if not head or head[1] not in _DEL_LISTERS or head[0] != 0:
+        return False
+    targets, piped = _del_args(head_seg['words'][1:], False)
+    if piped or not targets:
+        return False
+    return all(_del_target_ok(t, shells, cwd, cd_seen, cmd_raw) for t in targets)
+
+
+def _del_nested_ok(seg, idx, name, shells, cwd, cd_seen, cmd_raw, depth) -> bool:
+    """`bash -c '<delete>'`, `powershell -Command <delete>`, `cmd /c <delete>`:
+    the inner text must be the same whichever outer shell runs it."""
+    if seg['sep'] == '|' or seg['end'] in ('(', '{'):
+        return False
+    lists = {tuple(_del_word_value(w[2], sh, cmd_raw) for w in seg['words'][idx + 1:])
+             for sh in shells}
+    if len(lists) != 1:
+        return False
+    ws = list(lists.pop())
+    if name in _DEL_POSIX_SHELLS:
+        if len(ws) != 2 or ws[0] != '-c':
+            return False
+        return _del_judge(ws[1], ('bash',), cwd, cd_seen, cmd_raw, depth + 1)
+    if name in _DEL_PS_SHELLS:
+        while ws and ws[0].lower() in _DEL_PS_NOARG_OPTS | _DEL_PS_VALUE_OPTS:
+            ws = ws[2:] if ws[0].lower() in _DEL_PS_VALUE_OPTS else ws[1:]
+        if len(ws) < 2 or ws[0].lower() not in ('-command', '-c'):
+            return False
+        return _del_judge(' '.join(ws[1:]), ('ps',), cwd, cd_seen, cmd_raw, depth + 1)
+    if name == 'cmd':
+        if len(ws) < 2 or ws[0].lower() not in ('/c', '//c', '/k', '//k'):
+            return False
+        inner = ' '.join(ws[1:])
+        # cmd also splits arguments on these; the lexer would not.
+        if any(ch in inner for ch in ';,=()\'^!'):
+            return False
+        return _del_judge(inner, ('cmd',), cwd, cd_seen, cmd_raw, depth + 1)
+    return False
+
+
+def _del_judge(text, shells, cwd, cd_seen, cmd_raw, depth=0) -> bool:
+    """True only when every delete in `text` targets scratch (see the section
+    comment) and at least one delete was found. Raises _Unjudgeable."""
+    if depth > 3 or _DEL_LINK_RE.search(text):
+        return False
+    segs = _del_lex(text)
+    heads = [_del_head(s['words'], shells, cmd_raw) if s['words'] else None for s in segs]
+    if any(s['words'] and (h is None or h[1] in _DEL_CD) for s, h in zip(segs, heads)):
+        cd_seen = True                   # or a command word we could not read
+    judged = 0
+    for k, seg in enumerate(segs):
+        if not any(p.search(seg['text']) for p in _DELETE_PATTERNS):
+            continue
+        head = heads[k]
+        if head is None:
+            return False
+        idx, name = head
+        if name in _DEL_HEADS:
+            cmd_style = shells == ('cmd',) and name in _DEL_CMD_HEADS
+            targets, piped = _del_args(seg['words'][idx + 1:], cmd_style)
+            if piped or not targets:
+                if targets or idx != 0 or not _del_pipeline_ok(
+                        segs, k, shells, cwd, cd_seen, cmd_raw, piped):
+                    return False
+            else:
+                if seg['sep'] == '|' or seg['end'] in ('(', '{'):
+                    return False
+                if not all(_del_target_ok(t, shells, cwd, cd_seen, cmd_raw)
+                           for t in targets):
+                    return False
+        elif name in _DEL_POSIX_SHELLS | _DEL_PS_SHELLS | {'cmd'}:
+            if not _del_nested_ok(seg, idx, name, shells, cwd, cd_seen, cmd_raw, depth):
+                return False
+        else:
+            return False                 # xargs, eval, find -exec, prose ...
+        judged += 1
+    return judged > 0
+
+
+def _deletes_all_scratch(cmd: str, raw: str, cwd: Optional[str],
+                         shell: Optional[str] = None) -> bool:
+    """The delete exemption: True only when every delete in `cmd` (the masked
+    command) is scratch-scoped. `raw` is the unmasked text, searched for
+    assignments; `shell` is 'powershell' for the PowerShell tool, else None
+    (bash AND PowerShell readings, since Codex sends PowerShell as Bash)."""
+    shells = ('ps',) if shell == 'powershell' else ('bash', 'ps')
+    try:
+        return _del_judge(cmd, shells, cwd, False, raw)
+    except (_Unjudgeable, IndexError, ValueError):
+        return False
+
+
 _HUMAN_GATE_ROUTE_RE = re.compile(r'local-auth/set|/attend-once(?!/consume)', re.IGNORECASE)
 
 
-def classify_bash(command: str, cwd: Optional[str] = None) -> FenceDecision:
+def classify_bash(command: str, cwd: Optional[str] = None,
+                  shell: Optional[str] = None) -> FenceDecision:
     """Classify a Bash command string. Returns (blocked, reason).
 
     Classification runs on the inert-prose-MASKED command: commit-message /
@@ -2274,12 +3948,26 @@ def classify_bash(command: str, cwd: Optional[str] = None) -> FenceDecision:
         return FenceDecision(True, "calls the dashboard-passcode or Allow-once "
                                    "grant route (the human-proof gate — "
                                    "human-owned)", overridable=False)
+    # Git-planted code (2026-10-12), see the section above the Codex apply_patch
+    # block: judged on the raw text and ahead of the pattern lists, like the
+    # guard below, and never passable.
+    git_plant = _git_plant_guard(command, cwd)
+    if git_plant.blocked:
+        return git_plant
     # Judged on the raw text, not the masked `cmd` below (a `python -c` body is
     # masked there), and ahead of the pattern lists so a never-passable plant
     # is not reported as an overridable disk or delete block.
     mod_plant = _mod_plant_guard(command, cwd)
     if mod_plant.blocked:
         return mod_plant
+    # Same parser, aimed at the fence's own files and the install tree (see
+    # "Shell writes to the fence's own files"). Never passable either.
+    self_protect = _shell_self_protect_guard(command, cwd)
+    if self_protect.blocked:
+        return self_protect
+    config_plant = _config_plant_guard(command, cwd)
+    if config_plant.blocked:
+        return config_plant
     try:
         cmd = _mask_inert_prose(command.strip())
     except Exception:
@@ -2300,11 +3988,17 @@ def classify_bash(command: str, cwd: Optional[str] = None) -> FenceDecision:
         if pat.search(cmd) or pat.search(normalized):
             return FenceDecision(True, reason)
 
-    for pat in _DELETE_PATTERNS:
-        if pat.search(cmd):
-            low = cmd.lower()
-            if any(m in low for m in _SCRATCH_MARKERS) and '..' not in cmd:
-                break  # scratch-scoped delete → allowed
+    # git's silent discards (2026-10-12), see the section above the Codex
+    # apply_patch block. Overridable, like the git reset --hard pattern above.
+    git_discard = _git_discard_guard(cmd, cwd)
+    if git_discard.blocked:
+        return git_discard
+
+    if any(pat.search(cmd) for pat in _DELETE_PATTERNS):
+        # Every target of every delete judged on its own (Quill, 2026-10-07;
+        # see the section above _HUMAN_GATE_ROUTE_RE). `shell` narrows the
+        # readings to PowerShell's for the PowerShell tool.
+        if not _deletes_all_scratch(cmd, command, cwd, shell):
             return FenceDecision(True, "destructive delete outside scratch (irreversible)")
 
     net = _touches_nonlocal_network(cmd)
@@ -2328,6 +4022,472 @@ def classify_bash(command: str, cwd: Optional[str] = None) -> FenceDecision:
         return installs
 
     return FenceDecision(False, '')
+
+
+# ── Git-planted code and silent working-tree discards (2026-10-12) ──────────
+# Measured on master d5748ef5 with the public skillkeel/tamper-cases corpus
+# (hook level, --armed, exit 0 = allowed):
+#   git config core.fsmonitor '...'           git -c core.fsmonitor='sh -c id' status
+#   git config core.sshCommand '...'          git config alias.st '!sh -c id'
+#   git -c alias.x='!id' x                    git config filter.x.smudge id
+#   git config --local diff.external /tmp/d   printf '[core]\n\tfsmonitor = id\n' >> sub/.git/config
+#   mv .gitx sub/.git                         cp -r /tmp/g sub/.git
+#   git checkout -- .                         (git reset --hard and git clean -f were refused)
+# Each plants code git runs LATER (on the next `git status`, `git commit`, a
+# diff, a fetch, a human's next pager), outside any tool call this hook sees,
+# or throws away uncommitted work. Two guards, one walker:
+#
+# _git_plant_guard (armed only; never passable, like the mod-plant guard):
+#   - `git config [--global|--system|--local|--file F|--worktree] KEY VALUE`,
+#     `git config set KEY VALUE` and `git -c KEY=VALUE <cmd>` / `--config-env`,
+#     where KEY is a setting that makes git run a program. Refused keys:
+#       core.fsmonitor core.sshCommand core.gitProxy core.askPass core.hooksPath
+#       core.pager pager.* core.editor sequence.editor diff.external
+#       diff.*.textconv diff.*.command filter.*.smudge|clean|process
+#       merge.*.driver mergetool|difftool|browser|man.*.cmd|path
+#       credential[.*].helper gpg[.*].program remote.*.uploadpack|receivepack|
+#       uploadarchive uploadpack.packObjectsHook trailer.*.cmd include.path
+#       includeIf.*.path init.templateDir, alias.* and submodule.*.update when
+#       the value starts with `!`.
+#     Values that cannot run anything stay allowed: an empty value; core.fsmonitor
+#     true|false (git's built-in daemon, the common perf toggle); core.hooksPath
+#     /dev/null (the config spelling of --no-verify; 3 of 3 real uses on 93,676
+#     past shell calls, per fix/fence-mcp-plant); core.editor / sequence.editor
+#     true|false|:|cat (the "never open an editor" idiom); core.pager / pager.*
+#     cat|less|more|true|false|: (pager.* also yes|no|on|off|0|1); credential.helper
+#     store|cache|manager|manager-core|osxkeychain|wincred|libsecret; an alias that
+#     is a plain git alias. Reads and removals are never touched: `git config
+#     KEY`, --get*, --list, --unset*, --remove-section, --rename-section, --edit.
+#   - a shell write (redirect, tee, cp/mv/ln/install/rsync, sed -i, Set-Content,
+#     tar -x, dd of=, curl -o, interpreter code or heredoc) aimed at a
+#     `.git/config`, `.git/config.worktree`, `.git/hooks/*`, `.git/modules/*/
+#     {config,hooks}`, `.git/worktrees/*/config.worktree`, `~/.gitconfig`,
+#     `~/.config/git/config` or `/etc/gitconfig`; and cp/mv/ln/install/rsync/
+#     redirect onto a path whose last component is `.git` (a copied or linked
+#     `.git` directory, or a `.git` file holding `gitdir: <elsewhere>`, brings its
+#     own config). Inside a `cd .git` / `cd .git/hooks` a relative `config` or
+#     `hooks/x` counts too. The Write/Edit/MultiEdit/NotebookEdit tools get the
+#     same path test in classify_action.
+#
+# _git_discard_guard (armed only; overridable, exactly like `git reset --hard`,
+# which already accepts that an agent cannot undo its own edit):
+#   `git checkout -- PATH...` / `git checkout TREE -- PATH`, `git checkout .`
+#   (or any lone argument that is a glob, a `:` pathspec or an existing file),
+#   `git checkout -f|--force`, `git restore PATH...` and `--worktree` (not
+#   `--staged` alone: that only unstages), `git switch -f|--force|
+#   --discard-changes` and `git checkout-index -f` (the plumbing under
+#   `checkout -- .`). Branch switching (`git checkout BRANCH`, `-b`, `-B`, `-`,
+#   `git switch BRANCH`, `-c`, `-C`) stays allowed: `-B`/`-C` move a branch
+#   pointer (the old tip stays in the reflog) and never touch uncommitted work.
+#
+# KNOWN GAPS, accepted (command text only): a script that does the write
+# (`bash x.sh`, `python plant.py`), a path or key built from a variable,
+# GIT_CONFIG_KEY_n / GIT_CONFIG_PARAMETERS / GIT_SSH_COMMAND / GIT_EXTERNAL_DIFF
+# environment spellings, `git init|clone --template`, a bare repo's
+# `<name>.git/config` (only a component named exactly `.git` counts),
+# `xargs`/`find -exec` carrying the write, and `git read-tree --reset -u`.
+_GP_WHAT = 'a git config, git hook or .git directory'
+_GP_EXEC_KEY_RE = re.compile(
+    r'^(?:core\.(?:sshcommand|gitproxy|askpass|hookspath|fsmonitor|pager|editor)'
+    r'|pager\..+|sequence\.editor|diff\.external|diff\..+\.(?:textconv|command)'
+    r'|filter\..+\.(?:smudge|clean|process)|merge\..+\.driver'
+    r'|(?:mergetool|difftool|browser|man)\..+\.(?:cmd|path)'
+    r'|credential\.(?:.+\.)?helper|gpg\.(?:.+\.)?program'
+    r'|remote\..+\.(?:uploadpack|receivepack|uploadarchive)'
+    r'|uploadpack\.packobjectshook|trailer\..+\.cmd'
+    r'|include\.path|includeif\..+\.path|init\.templatedir'
+    r'|alias\..+|submodule\..+\.update)$')
+_GP_BOOLS = frozenset({'true', 'false', 'yes', 'no', 'on', 'off', '0', '1'})
+_GP_NOOP_EDITORS = frozenset({'true', 'false', ':', 'cat'})
+_GP_SAFE_PAGERS = frozenset({'cat', 'less', 'more', 'true', 'false', ':'})
+_GP_SAFE_HELPERS = frozenset({'store', 'cache', 'manager', 'manager-core',
+                              'osxkeychain', 'wincred', 'libsecret'})
+_GP_META_RE = re.compile(r'[;&|$`()<>\\\n]')
+_GP_GIT_VALUE_OPTS = frozenset({'-C', '--git-dir', '--work-tree', '--namespace',
+                                '--super-prefix'})
+_GP_CFG_NOWRITE = frozenset({'--get', '--get-all', '--get-regexp', '--get-urlmatch',
+                             '--list', '-l', '--unset', '--unset-all',
+                             '--remove-section', '--rename-section', '--edit', '-e'})
+_GP_CFG_VALUE_OPTS = frozenset({'-f', '--file', '--blob', '-t', '--type', '--default',
+                                '--comment'})
+_GP_CFG_READ_SUBS = frozenset({'get', 'list', 'unset', 'edit', 'remove-section',
+                               'rename-section'})
+# A word handed to a writer: .git/config, .git/hooks/..., a global git config.
+_GP_PATH_RE = re.compile(
+    r'(?:^|/)\.git/(?:modules/.+?/|worktrees/[^/]+/)?(?:config(?:\.worktree)?$|hooks(?:/|$))'
+    r'|(?:^|/)\.gitconfig$|(?:^|/)\.config/git/config$|^/etc/gitconfig$', re.I)
+# The same inside a span of code (a `python -c` body, a heredoc).
+_GP_CODE_RE = re.compile(
+    r'\.git/(?:modules/.+?/|worktrees/[^/]+/)?(?:config\b|hooks\b)|\.gitconfig\b'
+    r'|\.config/git/config\b', re.I)
+_GP_DOTGIT_RE = re.compile(r'(?:^|/)\.git/?$', re.I)
+_GP_NET_PROGS = frozenset({'curl', 'wget', 'iwr', 'invoke-webrequest', 'irm',
+                           'invoke-restmethod', 'start-bitstransfer'})
+
+
+def _gp_target_hit(word: str, in_git: str = '', dotgit: bool = False) -> bool:
+    """True when `word` names a git config / hook path. `dotgit` also counts a
+    path ending in `.git` (a destination that would BE a git directory or
+    gitdir file); `in_git` ('git' or 'hooks') is a `cd` into such a directory,
+    where a relative `config` / `hooks/x` / any name does."""
+    norm = (word or '').replace('\\', '/')
+    if _GP_PATH_RE.search(norm) or (dotgit and _GP_DOTGIT_RE.search(norm)):
+        return True
+    if in_git and word and not word.startswith(('-', '/', '~', '$', '%')) \
+            and not _WIN_DRIVE_RE.match(word):
+        rel = norm[2:] if norm.startswith('./') else norm
+        if in_git == 'hooks' or re.match(r'(?:config(?:\.worktree)?$|hooks(?:/|$))', rel, re.I):
+            return True
+    return False
+
+
+def _gp_code_plants(code: str) -> bool:
+    return bool(_GP_CODE_RE.search((code or '').replace('\\', '/'))) \
+        and bool(_MP_WRITE_API_RE.search(code))
+
+
+def _gp_dir_state(text: str) -> str:
+    """'hooks' / 'git' when `text` is a path that ends in .git/hooks or .git."""
+    norm = (text or '').replace('\\', '/').rstrip('/')
+    if re.search(r'(?:^|/)\.git/hooks$', norm, re.I):
+        return 'hooks'
+    return 'git' if re.search(r'(?:^|/)\.git$', norm, re.I) else ''
+
+
+def _gp_value_runs(key: str, value: str) -> bool:
+    """True when setting `key` to `value` leaves git something to execute."""
+    v = (value or '').strip()
+    if not v:
+        return False
+    low = v.lower()
+    if key.startswith('alias.') or (key.startswith('submodule.') and key.endswith('.update')):
+        return v.startswith('!')
+    if key == 'core.fsmonitor':
+        return low not in _GP_BOOLS
+    if key == 'core.hookspath':
+        return low not in ('/dev/null', 'nul')
+    plain = not _GP_META_RE.search(v)
+    first = low.split(None, 1)[0]
+    if key in ('core.editor', 'sequence.editor'):
+        return not (plain and first in _GP_NOOP_EDITORS)
+    if key == 'core.pager' or key.startswith('pager.'):
+        return not (plain and first in _GP_SAFE_PAGERS) \
+            and not (key != 'core.pager' and low in _GP_BOOLS)
+    if re.match(r'^credential\.(?:.+\.)?helper$', key):
+        return not (plain and first in _GP_SAFE_HELPERS)
+    return True
+
+
+def _gp_exec_setting(key: str, value: str) -> Optional[str]:
+    key = (key or '').strip().lower()
+    if _GP_EXEC_KEY_RE.match(key) and _gp_value_runs(key, value):
+        return f"git config `{key}` set to a value git executes"
+    return None
+
+
+def _gp_git_split(rest: list):
+    """(config specs, subcommand, its args, -C dirs) for the words after `git`.
+    A spec is (key, value, from_env) from `-c k=v` / `--config-env k=ENVVAR`."""
+    specs, cdirs, k = [], [], 0
+    while k < len(rest):
+        w = rest[k]
+        if w == '-c' and k + 1 < len(rest):
+            key, _, val = rest[k + 1].partition('=')
+            specs.append((key, val, False))
+            k += 2
+        elif w == '--config-env' and k + 1 < len(rest):
+            key, _, val = rest[k + 1].partition('=')
+            specs.append((key, '$' + val, True))
+            k += 2
+        elif w.startswith('--config-env='):
+            key, _, val = w.split('=', 1)[1].partition('=')
+            specs.append((key, '$' + val, True))
+            k += 1
+        elif w == '-C' and k + 1 < len(rest):
+            cdirs.append(rest[k + 1])
+            k += 2
+        elif w in _GP_GIT_VALUE_OPTS:
+            k += 2
+        elif w.startswith('-'):
+            k += 1
+        else:
+            return specs, w.lower(), rest[k + 1:], cdirs
+    return specs, '', [], cdirs
+
+
+def _gp_config_sets(args: list) -> list:
+    """[(key, value)] a `git config ...` call writes; [] for a read, --list,
+    --unset*, --remove-section, --rename-section or --edit."""
+    if any(a in _GP_CFG_NOWRITE for a in args):
+        return []
+    pos, k, end = [], 0, False
+    while k < len(args):
+        a = args[k]
+        if end or a == '-' or not a.startswith('-'):
+            pos.append(a)
+        elif a == '--':
+            end = True
+        elif a in _GP_CFG_VALUE_OPTS:
+            k += 1
+        k += 1
+    if pos[:1] == ['set']:
+        pos = pos[1:]
+    elif pos[:1] and pos[0].lower() in _GP_CFG_READ_SUBS:
+        return []
+    return [(pos[0], pos[1])] if len(pos) >= 2 else []
+
+
+def _gp_parse(args: list, long_val=frozenset(), short_val=frozenset()):
+    """(flags, positionals, words after `--`, saw `--`) for a git subcommand's
+    args. A flag is `--name` or `-c` (one per letter of a short cluster, which
+    stops at a letter that takes a value: `-bfix` is -b with value `fix`)."""
+    flags, pos, k = set(), [], 0
+    while k < len(args):
+        a = args[k]
+        if a == '--':
+            return flags, pos, args[k + 1:], True
+        if a.startswith('--'):
+            name, eq, _ = a.partition('=')
+            flags.add(name)
+            if name in long_val and not eq:
+                k += 1
+        elif a.startswith('-') and len(a) > 1:
+            for i, ch in enumerate(a[1:]):
+                flags.add('-' + ch)
+                if ch in short_val:
+                    if i == len(a) - 2:
+                        k += 1
+                    break
+        else:
+            pos.append(a)
+        k += 1
+    return flags, pos, [], False
+
+
+def _gp_is_pathspec(word: str, cdirs: list, cwd: Optional[str]) -> bool:
+    """A lone `git checkout WORD` argument that is a path, not a branch: `.`, a
+    glob, a `:` pathspec, or something that exists in the working tree."""
+    if word == '.' or word.startswith(':') or any(c in word for c in '*?['):
+        return True
+    try:
+        base = cwd or os.getcwd()
+        for d in cdirs:
+            base = os.path.join(base, d)
+        return os.path.lexists(os.path.join(base, word))
+    except Exception:
+        return False
+
+
+def _gp_discard(sub: str, args: list, cdirs: list, cwd: Optional[str]) -> Optional[str]:
+    if sub == 'checkout':
+        flags, pos, tail, dd = _gp_parse(args, {'--orphan', '--conflict'}, set('bBU'))
+        if flags & {'-f', '--force'}:
+            return "`git checkout -f` discards working-tree changes"
+        if tail or '--pathspec-from-file' in flags:
+            return "`git checkout -- PATH` overwrites working-tree files from the index or a commit"
+        if flags & {'-b', '-B', '--orphan'}:
+            return None                       # new branch: a lone argument is a start point
+        if len(pos) >= 2 or (len(pos) == 1 and _gp_is_pathspec(pos[0], cdirs, cwd)):
+            return "`git checkout PATH` overwrites working-tree files from the index or a commit"
+    elif sub == 'restore':
+        flags, pos, tail, dd = _gp_parse(args, {'--source', '--pathspec-from-file',
+                                                '--conflict'}, set('sU'))
+        if (pos or tail or '--pathspec-from-file' in flags) \
+                and not (flags & {'-S', '--staged'} and not flags & {'-W', '--worktree'}):
+            return "`git restore` overwrites working-tree files (only --staged alone is safe)"
+    elif sub == 'switch':
+        flags, pos, tail, dd = _gp_parse(
+            args, {'--conflict', '--orphan', '--create', '--force-create'}, set('cC'))
+        if flags & {'-f', '--force', '--discard-changes'}:
+            return "`git switch -f` / `--discard-changes` discards working-tree changes"
+    elif sub == 'checkout-index':
+        flags, pos, tail, dd = _gp_parse(args, {'--prefix', '--stage'})
+        if flags & {'-f', '--force'}:
+            return "`git checkout-index -f` overwrites working-tree files from the index"
+    return None
+
+
+def _gp_plant(words: list, prog: str, rest: list, in_git: str) -> Optional[str]:
+    """Reason when this segment plants code through git (see the section comment)."""
+    for k, w in enumerate(words):
+        m = re.match(r'^(?:\d*|&)>>?(?![>&])(.*)$', w)
+        if m:
+            target = m.group(1) or (words[k + 1] if k + 1 < len(words) else '')
+            if target and _gp_target_hit(target, in_git, True):
+                return f"a shell redirect into {_GP_WHAT}"
+    if prog == 'git':
+        specs, sub, args, _ = _gp_git_split(rest)
+        for key, val, _env in specs:
+            why = _gp_exec_setting(key, val)
+            if why:
+                return why
+        if sub == 'config':
+            for key, val in _gp_config_sets(args):
+                why = _gp_exec_setting(key, val)
+                if why:
+                    return why
+        return None
+    if prog in _MP_DEST_LAST:
+        dest = _mp_dest(prog, rest)
+        if dest and _gp_target_hit(dest, in_git, True):
+            return f"`{prog}` into {_GP_WHAT}"
+    elif prog in _MP_ANY_ARG and _mp_any_arg_applies(prog, rest):
+        if prog == 'dd':
+            if any(a.lower().startswith('of=') and _gp_target_hit(a[3:], in_git) for a in rest):
+                return f"`dd of=` into {_GP_WHAT}"
+        elif any(_gp_target_hit(a, in_git) for a in rest):
+            return f"`{prog}` aimed at {_GP_WHAT}"
+    elif prog in _GP_NET_PROGS:
+        for k, w in enumerate(rest):
+            m = re.match(r'^(--?[A-Za-z-]+)[:=](.+)$', w)
+            if w.lower() in _MP_NET_OUT and k + 1 < len(rest):
+                tgt = rest[k + 1]
+            elif m and m.group(1).lower() in _MP_NET_OUT:
+                tgt = m.group(2)
+            elif re.match(r'^-o.', w) and not w.startswith('--'):
+                tgt = w[2:]
+            elif re.match(r'^-[A-Za-z]*[oO]$', w) and k + 1 < len(rest):
+                tgt = rest[k + 1]
+            else:
+                continue
+            if _gp_target_hit(tgt, in_git):
+                return f"`{prog}` saving a download into {_GP_WHAT}"
+    if _MP_INTERP_RE.match(prog) and any(_gp_code_plants(a) for a in rest):
+        return f"`{prog}` code that writes {_GP_WHAT}"
+    if any('::' in a and _gp_code_plants(a) for a in words):
+        return f"a .NET file call that writes {_GP_WHAT}"
+    return None
+
+
+def _gp_scan(cmd: str, visit, depth: int = 0, in_git: str = '') -> Optional[str]:
+    """Walk the shell segments of `cmd`; `visit(words, prog, rest, in_git)` gives
+    a reason or None for each command, wrappers (sudo, env, ...) skipped and
+    `bash -c` / `pwsh -Command` / `cmd /c` / `eval` bodies scanned in turn.
+    The unwrapping follows _mp_segment, which this leaves untouched."""
+    cmd = _unwrap_start_process(_join_line_continuations(cmd))
+    for words in _install_split(cmd, parens=False):
+        words = list(words)
+        if words:
+            words[0] = re.sub(r'^(?:\$?\(+|\{+)', '', words[0])
+        k = 0
+        while k < len(words):
+            w = words[k]
+            head = _install_prog(w)
+            if (re.match(r'^\w+=', w) and not w.startswith('-')) \
+                    or w in ('{', '}', '!', 'then', 'do', 'else', ''):
+                k += 1
+                continue
+            if head in _WRAPPER_VALUE_OPTS:
+                vals = _WRAPPER_VALUE_OPTS[head]
+                k += 1
+                while k < len(words):
+                    nxt = words[k]
+                    if head in ('start', 'call'):
+                        if re.match(r'^/[A-Za-z]+$', nxt):
+                            k += 1
+                            continue
+                        break
+                    if nxt == '--':
+                        k += 1
+                        break
+                    if nxt.startswith('-') and nxt != '-':
+                        k += 2 if nxt in vals else 1
+                        continue
+                    if head == 'env' and re.match(r'^\w+=', nxt):
+                        k += 1
+                        continue
+                    break
+                continue
+            break
+        else:
+            continue
+        prog, rest = _install_prog(words[k]), words[k + 1:]
+        if depth < 4:
+            inner = None
+            if prog in _SHELL_DASH_C:
+                for j, a in enumerate(rest):
+                    if re.match(r'^-[A-Za-z]*c[A-Za-z]*$', a) and j + 1 < len(rest):
+                        inner = rest[j + 1]
+                        break
+            elif prog in ('pwsh', 'powershell'):
+                for j, a in enumerate(rest):
+                    if _PS_COMMAND_RE.match(a):
+                        inner = ' '.join(rest[j + 1:])
+                        break
+                    if _MP_PS_ENCODED_RE.match(a) and j + 1 < len(rest):
+                        try:
+                            inner = base64.b64decode(rest[j + 1]).decode('utf-16-le')
+                        except Exception:
+                            inner = None
+                        break
+            elif prog == 'cmd':
+                for j, a in enumerate(rest):
+                    if a.lower() in ('/c', '/k'):
+                        inner = ' '.join(rest[j + 1:])
+                        break
+            elif prog in ('eval', 'iex', 'invoke-expression'):
+                inner = ' '.join(rest)
+            if inner is not None:
+                why = _gp_scan(inner, visit, depth + 1, in_git)
+                if why:
+                    return why
+        if prog in _MP_CD:
+            target = next((a for a in rest if not a.startswith('-')), '')
+            in_git = _gp_dir_state(target) or (
+                'hooks' if in_git == 'git' and target.rstrip('/\\') == 'hooks' else '')
+            continue
+        why = visit(words, prog, rest, in_git)
+        if why:
+            return why
+    return None
+
+
+def _git_plant_guard(command: str, cwd: Optional[str] = None) -> FenceDecision:
+    """Block an armed agent planting code through git config or a .git
+    directory (see the section comment). Never passable."""
+    try:
+        scan = _mask_inert_prose(command.strip(), mask_python_c=False)
+    except Exception:
+        scan = command.strip()
+    start = _gp_dir_state(cwd or '')
+    why = None
+    try:
+        for m in _MP_HEREDOC_RE.finditer(scan):
+            if _INTERPRETER_RE.search(m.group('head')) and (
+                    _gp_code_plants(m.group('body'))
+                    or _gp_scan(m.group('body'), _gp_plant, 1, start)):
+                why = f"an interpreter script that writes {_GP_WHAT}"
+                break
+        if not why:
+            why = _gp_scan(scan, _gp_plant, 0, start)
+    except Exception:
+        return FenceDecision(False, '')      # never wedge the agent on a parse bug
+    if not why:
+        return FenceDecision(False, '')
+    return FenceDecision(True, f"{why}; git runs a configured program or a hook "
+                               f"later (next status, commit, diff, fetch), outside "
+                               f"every tool call this fence sees, so git's config "
+                               f"and hooks are human-owned (supply chain)",
+                         overridable=False)
+
+
+def _git_discard_guard(command: str, cwd: Optional[str] = None) -> FenceDecision:
+    """Block an armed agent discarding working-tree changes through git
+    checkout / restore / switch, the same effect `git reset --hard` is refused
+    for. Overridable, like reset --hard."""
+    def visit(words, prog, rest, in_git):
+        if prog != 'git':
+            return None
+        _specs, sub, args, cdirs = _gp_git_split(rest)
+        return _gp_discard(sub, args, cdirs, cwd)
+    try:
+        why = _gp_scan(command, visit)
+    except Exception:
+        return FenceDecision(False, '')      # never wedge the agent on a parse bug
+    if not why:
+        return FenceDecision(False, '')
+    return FenceDecision(True, f"{why}; git reset --hard is refused for the same "
+                               f"reason (uncommitted work is not recoverable)")
 
 
 # ── Codex apply_patch (MC-975 follow-up, 2026-09-25) ────────────────────────
@@ -2783,6 +4943,21 @@ def _is_own_memory_topic_file(raw: str, cwd: Optional[str] = None,
         return False
 
 
+def _anchor_path(raw: str, cwd: Optional[str] = None) -> str:
+    """`raw` joined onto `cwd` (the hook payload's, else this process's) when it
+    is a relative path; anything else comes back unchanged. The path rules in
+    classify_action look for `/.claude/`, `/steward/` and so on, so a relative
+    `.claude/settings.json` has to be anchored before they can see the slash.
+    Joined, not normalised: every old match on `raw` is still a match."""
+    if not raw or raw.startswith(('/', '\\', '~', '$', '%')) or _WIN_DRIVE_RE.match(raw):
+        return raw
+    try:
+        base = cwd or os.getcwd()
+    except Exception:
+        return raw
+    return base.rstrip('/\\') + '/' + raw
+
+
 def classify_action(tool_name: str, tool_input: dict,
                     cwd: Optional[str] = None,
                     project_root: Optional[str] = None) -> FenceDecision:
@@ -2810,16 +4985,26 @@ def classify_action(tool_name: str, tool_input: dict,
         # patterns — a live `git push` via the PowerShell tool exited 0
         # before this branch existed (Quill, 2026-09-27) because this
         # function only ever routed 'Bash'.
-        return classify_bash(ti.get('command', '') or '', cwd)
+        return classify_bash(ti.get('command', '') or '', cwd,
+                             shell='powershell' if name == 'PowerShell' else None)
     # Writing to global config outside the project is out-of-scope for a
     # project steward — block edits/writes targeting ~/.claude or a home dotfile.
     if name in ('Write', 'Edit', 'MultiEdit', 'NotebookEdit'):
-        path = str(ti.get('file_path', '') or ti.get('notebook_path', '') or '')
+        path = _anchor_path(
+            str(ti.get('file_path', '') or ti.get('notebook_path', '') or ''), cwd)
         low = path.replace('\\', '/').lower()
         if ('/.claude/' in low or low.endswith('/.claude')) \
                 and not _is_own_memory_topic_file(path, cwd, project_root):
             return FenceDecision(True, "editing global ~/.claude config (out of project scope)",
                                  overridable=False)
+        # MCP server config, git hooks, shell profiles (2026-10-04): files, not
+        # directories under .claude, so the rule above misses ~/.claude.json
+        # and a project's .mcp.json. Same posture, see _config_plant_guard.
+        if _cp_hit(path):
+            return FenceDecision(True, "editing an MCP server config, git hook or "
+                                       "shell profile (what Claude loads and what "
+                                       "runs outside a tool call — human-owned "
+                                       "supply chain)", overridable=False)
         # Fence supply chain (MC-914, 2026-08-31): this hook script is re-read
         # from disk fresh on EVERY tool call (invoked as a fresh subprocess per
         # PreToolUse event, no caching) — the exact "hot re-read of a mutable
@@ -2854,6 +5039,13 @@ def classify_action(tool_name: str, tool_input: dict,
             return FenceDecision(True, "editing the add-on catalogue, manifest or "
                                        "installed binaries (executable supply "
                                        "chain — human-owned)", overridable=False)
+        # Git config and hooks (2026-10-12): files git runs code from later, see
+        # _git_plant_guard. The shell half refuses the same paths.
+        if _gp_target_hit(path, dotgit=True):
+            return FenceDecision(True, "editing a git config, git hook or .git file "
+                                       "(git runs what it names outside any tool "
+                                       "call this fence sees; human-owned)",
+                                 overridable=False)
     # Autonomous web browsing is high blast-radius for an unattended agent: the
     # browser MCP is unrestricted (all sites) with in-page JS execution, so
     # prompt-injecting page content can steer a steward cycle. The steward does
