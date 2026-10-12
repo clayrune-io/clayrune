@@ -226,7 +226,8 @@ def test_route_full_listing_shape(repo, client):
     r = client.get('/api/worktrees/preserved?refresh=1')
     assert r.status_code == 200
     d = r.get_json()
-    assert d['totals'] == {'preserved': 1, 'in_use': 0, 'worktrees_total': 1}
+    assert d['totals'] == {'preserved': 1, 'in_use': 0, 'worktrees_total': 1,
+                           'preserved_bytes': None}
     [p] = d['projects']
     assert p['project_id'] == 'pwproj' and p['name'] == 'PW Proj'
     [it] = p['items']
@@ -273,3 +274,137 @@ def test_route_registered_get_only():
     rules = [r for r in app.url_map.iter_rules() if r.rule.startswith('/api/worktrees')]
     assert len(rules) == 1
     assert rules[0].methods - {'HEAD', 'OPTIONS'} == {'GET'}
+
+
+# ── disk use and unregistered folders ───────────────────────────────────────
+
+def _wait_measured(project, timeout=30.0):
+    import time
+    t = time.monotonic() + timeout
+    while time.monotonic() < t:
+        st = pw.disk_status(project)
+        if st['state'] == 'measured':
+            return st
+        time.sleep(0.05)
+    raise AssertionError('disk measurement did not finish')
+
+
+def test_measure_counts_every_folder_and_skips_loose_files(repo, project):
+    wt = _add_wt(repo, 'd1d1d1d1d1d1')
+    (wt / 'big.bin').write_bytes(b'x' * 5000)
+    stray = repo / '.clayrune' / 'agents' / 'e2e2e2e2e2e2'
+    (stray / 'sub').mkdir(parents=True)
+    (stray / 'sub' / 'f.txt').write_bytes(b'y' * 300)
+    (repo / '.clayrune' / 'agents' / 'gc_cache.json').write_text('{}', encoding='utf-8')
+    m = pw.measure_agents_dir(project)
+    assert m['complete'] is True and m['folders'] == 2
+    assert set(m['per_folder']) == {'d1d1d1d1d1d1', 'e2e2e2e2e2e2'}
+    assert m['per_folder']['e2e2e2e2e2e2'] == {'bytes': 300, 'files': 1, 'link': False}
+    assert m['per_folder']['d1d1d1d1d1d1']['bytes'] >= 5000
+    assert m['bytes'] == sum(v['bytes'] for v in m['per_folder'].values())
+
+
+def test_measure_without_agents_dir_is_none(repo, project):
+    assert pw.measure_agents_dir(project) is None
+    assert pw.unregistered_folders(project) is None
+
+
+def test_measure_budget_marks_incomplete(repo, project):
+    (repo / '.clayrune' / 'agents' / 'f3f3f3f3f3f3').mkdir(parents=True)
+    m = pw.measure_agents_dir(project, budget=-1)
+    assert m['complete'] is False
+
+
+def test_measure_does_not_follow_a_link(repo, project, tmp_path):
+    import os
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    (outside / 'huge.bin').write_bytes(b'z' * 9000)
+    agents = repo / '.clayrune' / 'agents'
+    (agents / 'a4a4a4a4a4a4').mkdir(parents=True)
+    try:
+        os.symlink(str(outside), str(agents / 'a4a4a4a4a4a4' / 'lnk'), target_is_directory=True)
+    except (OSError, NotImplementedError):
+        if os.name != 'nt':
+            pytest.skip('cannot create a directory link here')
+        r = subprocess.run(['cmd', '/c', 'mklink', '/J',
+                            str(agents / 'a4a4a4a4a4a4' / 'lnk'), str(outside)],
+                           capture_output=True, stdin=subprocess.DEVNULL)
+        if r.returncode != 0:
+            pytest.skip('cannot create a junction here')
+    m = pw.measure_agents_dir(project)
+    assert m['per_folder']['a4a4a4a4a4a4']['bytes'] == 0
+
+
+def test_start_measure_is_background_and_single_flight(repo, project):
+    (repo / '.clayrune' / 'agents' / 'b5b5b5b5b5b5').mkdir(parents=True)
+    assert pw.disk_status(project)['state'] == 'unmeasured'
+    assert pw.start_measure(project) is True
+    st = _wait_measured(project)
+    assert st['folders'] == 1 and st['age_s'] is not None
+    # a fresh result is kept under max_age; force (max_age=None) re-measures
+    assert pw.start_measure(project, max_age=600) is False
+    assert pw.start_measure(project, max_age=None) is True
+    _wait_measured(project)
+
+
+def test_unregistered_folders_lists_only_unknown_dirs(repo, project):
+    _add_wt(repo, 'c6c6c6c6c6c6')
+    (repo / '.clayrune' / 'agents' / 'zzzzzzzzzzzz').mkdir(parents=True)
+    (repo / '.clayrune' / 'agents' / 'loose.txt').write_text('x', encoding='utf-8')
+    u = pw.unregistered_folders(project)
+    assert [r['name'] for r in u] == ['zzzzzzzzzzzz']
+
+
+def test_unregistered_none_when_git_list_unreadable(repo, project, monkeypatch):
+    (repo / '.clayrune' / 'agents' / 'yyyyyyyyyyyy').mkdir(parents=True)
+    monkeypatch.setattr(pw, '_porcelain_worktrees', lambda base: {})
+    assert pw.unregistered_folders(project) is None
+
+
+def test_survey_does_not_measure_disk(repo, project):
+    _commit(_add_wt(repo, 'd7d7d7d7d7d7'))
+    pw.survey_project(project)
+    assert pw.disk_status(project)['state'] == 'unmeasured'
+
+
+def test_items_with_disk_sums_only_kept_folders(repo, project):
+    _commit(_add_wt(repo, 'e8e8e8e8e8e8'))
+    _commit(_add_wt(repo, 'f9f9f9f9f9f9'))
+    items = pw.survey_project(project)['items']
+    _, before = pw.items_with_disk(project, items)
+    assert before['bytes'] is None and before['complete'] is False
+    pw.start_measure(project)
+    _wait_measured(project)
+    live = [dict(i, live_session=(i['session_id'] == 'f9f9f9f9f9f9')) for i in items]
+    out, pd = pw.items_with_disk(project, live)
+    per = pw._disk[project['id']]['last']['per_folder']
+    assert pd['folders'] == 1 and pd['complete'] is True
+    assert pd['bytes'] == per['e8e8e8e8e8e8']['bytes'] > 0
+    assert all(i['size_bytes'] is not None for i in out)
+
+
+def test_route_measure_starts_walk_and_reports_disk(repo, client, project):
+    _commit(_add_wt(repo, 'aaaa11112222'))
+    (repo / '.clayrune' / 'agents' / 'unreg0000000').mkdir(parents=True)
+    d = client.get('/api/worktrees/preserved?refresh=1').get_json()
+    [p] = d['projects']
+    assert p['disk']['state'] == 'unmeasured'
+    assert [u['name'] for u in p['unregistered']] == ['unreg0000000']
+    assert d['totals']['preserved_bytes'] is None
+    client.get('/api/worktrees/preserved?measure=1')
+    _wait_measured(project)
+    d = client.get('/api/worktrees/preserved').get_json()
+    [p] = d['projects']
+    assert p['disk']['state'] == 'measured'
+    assert d['totals']['preserved_bytes'] == p['preserved_disk']['bytes'] > 0
+    assert p['unregistered'][0]['size_bytes'] == 0
+    assert p['unregistered_disk'] == {'folders': 1, 'measured': 1, 'bytes': 0}
+
+
+def test_route_summary_drops_unregistered_rows_keeps_count(repo, client):
+    _commit(_add_wt(repo, 'bbbb11112222'))
+    (repo / '.clayrune' / 'agents' / 'unreg1111111').mkdir(parents=True)
+    d = client.get('/api/worktrees/preserved?summary=1&refresh=1').get_json()
+    [p] = d['projects']
+    assert 'unregistered' not in p and p['unregistered_count'] == 1

@@ -119,6 +119,15 @@ function _keptTime(iso) {
   return isNaN(d.getTime()) ? '—' : d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 }
 
+function _keptBytes(n) {
+  if (n === null || n === undefined || isNaN(Number(n))) return '—';
+  n = Number(n);
+  const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? String(n) : n.toFixed(n >= 100 ? 0 : n >= 10 ? 1 : 2)) + ' ' + u[i];
+}
+
 function _keptRowHTML(it) {
   const tags = (it.held_for || []).map(t => `<span class="kept-tag ${esc(t)}">${esc(t)}</span>`).join('');
   const ahead = it.commits_ahead === null || it.commits_ahead === undefined ? '?' : it.commits_ahead;
@@ -129,6 +138,7 @@ function _keptRowHTML(it) {
       <span>last commit ${esc(_keptTime(it.last_commit_at))}</span>
       <span>ahead ${esc(String(ahead))}</span>
       <span>dirty ${esc(dirty)}</span>
+      <span>size ${esc(_keptBytes(it.size_bytes))}</span>
     </div>
     <div class="kept-tags">${tags}</div>
   </div>`;
@@ -162,25 +172,71 @@ async function openKeptWorktreesModal() {
   content.innerHTML = shell('<div class="feed-empty">Loading…</div>');
   focusModal(KEPT_MODAL_ID);
 
-  let data = null;
-  try {
-    const r = await fetch(API_BASE + '/api/worktrees/preserved');
-    if (r.ok) data = await r.json();
-  } catch (_) { /* shown as unavailable below */ }
-  if (!data) { content.innerHTML = shell('<div class="feed-empty">Could not load the list.</div>'); return; }
-
-  const projects = (data.projects || [])
-    .map(p => ({ p, items: (p.items || []).filter(it => !it.live_session) }))
-    .filter(g => g.items.length);
-  const inUse = data.totals ? data.totals.in_use || 0 : 0;
-  const intro = `<div class="kept-intro">Agent worktrees kept because they hold work that is not in the base branch yet, or uncommitted changes. This list is read-only; nothing here is deleted or merged for you.${inUse ? ` ${inUse} more ${inUse === 1 ? 'is' : 'are'} in use by a live session and not listed.` : ''}</div>`;
-  if (!projects.length) { content.innerHTML = shell(intro + '<div class="feed-empty">Nothing is being kept.</div>'); return; }
-  const groups = projects.map((g, i) => `
-    <details class="kept-group"${i === 0 ? ' open' : ''}>
-      <summary>${esc(g.p.name || g.p.project_id)} <span class="fsh-count">${g.items.length}</span></summary>
+  // measure=1 only STARTS the server's background disk walk (a 500-folder tree
+  // takes ~30 s); the response never waits for it. While a project still
+  // reports 'measuring' the list is re-fetched (without measure) and redrawn.
+  const fetchList = async (measure) => {
+    try {
+      const r = await fetch(API_BASE + '/api/worktrees/preserved' + (measure ? '?measure=1' : ''));
+      return r.ok ? await r.json() : null;
+    } catch (_) { return null; }   // shown as unavailable by the caller
+  };
+  const draw = data => {
+    const open = new Set([...content.querySelectorAll('details.kept-group[open]')].map(d => d.dataset.k));
+    const first = !content.querySelector('details.kept-group');
+    const projects = (data.projects || [])
+      .map(p => ({ p, items: (p.items || []).filter(it => !it.live_session) }))
+      .filter(g => g.items.length);
+    const unreg = (data.projects || []).filter(p => (p.unregistered || []).length);
+    const inUse = data.totals ? data.totals.in_use || 0 : 0;
+    const disks = (data.projects || []).map(p => p.disk).filter(Boolean);
+    const busy = disks.some(d => d.state === 'measuring');
+    const totalBytes = data.totals ? data.totals.preserved_bytes : null;
+    const lower = (data.projects || []).some(p => p.preserved_disk && p.preserved_disk.complete === false);
+    const note = busy ? 'measuring…' : (disks.some(d => d.state === 'unmeasured') ? 'not measured yet' : (lower ? 'lower bound, some folders not measured' : ''));
+    const diskLine = `<div class="kept-disk"><b>${esc(_keptBytes(totalBytes))}</b> on disk in the kept folders${note ? ` <span class="kept-note">(${esc(note)})</span>` : ''}</div>`;
+    const intro = `<div class="kept-intro">Agent worktrees kept because they hold work that is not in the base branch yet, or uncommitted changes. This list is read-only; nothing here is deleted or merged for you.${inUse ? ` ${inUse} more ${inUse === 1 ? 'is' : 'are'} in use by a live session and not listed.` : ''}</div>${diskLine}`;
+    if (!projects.length && !unreg.length) { content.innerHTML = shell(intro + '<div class="feed-empty">Nothing is being kept.</div>'); return busy; }
+    const groups = projects.map((g, i) => {
+      const k = 'k:' + (g.p.project_id || i);
+      const pd = g.p.preserved_disk;
+      const sz = pd && pd.bytes !== null && pd.bytes !== undefined ? ` <span class="kept-size">${esc(_keptBytes(pd.bytes))}</span>` : '';
+      return `
+    <details class="kept-group" data-k="${esc(k)}"${(first ? i === 0 : open.has(k)) ? ' open' : ''}>
+      <summary>${esc(g.p.name || g.p.project_id)} <span class="fsh-count">${g.items.length}</span>${sz}</summary>
       ${g.items.map(_keptRowHTML).join('')}
-    </details>`).join('');
-  content.innerHTML = shell(intro + groups);
+    </details>`;
+    }).join('');
+    const unregHTML = unreg.map((p, i) => {
+      const k = 'u:' + (p.project_id || i);
+      const ud = p.unregistered_disk;
+      const sz = ud && ud.bytes !== null && ud.bytes !== undefined ? ` <span class="kept-size">${esc(_keptBytes(ud.bytes))}</span>` : '';
+      const rows = p.unregistered.map(u => `<div class="kept-row" title="${esc(u.path || '')}">
+        <div class="kept-branch">${esc(u.name)}</div>
+        <div class="kept-meta"><span>size ${esc(_keptBytes(u.size_bytes))}</span>${u.files === null || u.files === undefined ? '' : `<span>${esc(String(u.files))} files</span>`}</div>
+      </div>`).join('');
+      return `
+    <details class="kept-group" data-k="${esc(k)}"${open.has(k) ? ' open' : ''}>
+      <summary>Not known to git: ${esc(p.name || p.project_id)} <span class="fsh-count">${p.unregistered.length}</span>${sz}</summary>
+      <div class="kept-intro">Folders under .clayrune/agents that <code>git worktree list</code> does not list. They may also appear above. Nothing here is deleted for you.</div>
+      ${rows}
+    </details>`;
+    }).join('');
+    content.innerHTML = shell(intro + groups + unregHTML);
+    return busy;
+  };
+
+  const run = win._keptRun = {};     // a re-open supersedes this call's poll loop
+  let data = await fetchList(true);
+  if (!data) { content.innerHTML = shell('<div class="feed-empty">Could not load the list.</div>'); return; }
+  let stillBusy = draw(data);
+  // Poll while the walk runs; stop when it ends, the modal is closed, or after ~10 min.
+  for (let n = 0; stillBusy && n < 150 && win.isConnected && win._keptRun === run; n++) {
+    await new Promise(res => setTimeout(res, 4000));
+    if (!win.isConnected || win._keptRun !== run) break;
+    const next = await fetchList(false);
+    if (next) stillBusy = draw(next);
+  }
 }
 window.openKeptWorktreesModal = openKeptWorktreesModal;
 
