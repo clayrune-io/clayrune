@@ -26,6 +26,17 @@ sign-in. They are the measured pane-vs-Chrome differences on surfaces X reads.
 
 ``browser_pane_gpu: false`` in config.json restores ``--disable-gpu`` for a
 host whose GPU process misbehaves headless.
+
+Mobile launches are the exception (b189ba58): the pane then claims to be a
+Pixel 7, and the MC-1090 fix made it report the host's desktop GPU (NVIDIA
+D3D11 via WebGL) and a 1920x1080 screen under that UA. A mobile launch gets
+the pre-MC-1090 ``--disable-gpu`` (no WebGL beats a desktop renderer string
+under an Android UA, and a spoofed GPU string would need injected getter
+overrides, themselves a detectable inconsistency) and a screen the size of
+the phone view. That view and dpr are the same values
+``browser_routes._mobile_metrics_cmd`` hands Emulation.setDeviceMetricsOverride
+(screenWidth/screenHeight = view), so the launch flag and the CDP override
+state one screen, not two.
 """
 
 from __future__ import annotations
@@ -48,11 +59,19 @@ def _fmt(x: float) -> str:
     return f'{x:g}'
 
 
-def display_args(window_w: int, window_h: int, dpr: float, gpu: bool = True) -> list[str]:
+def display_args(window_w: int, window_h: int, dpr: float, gpu: bool = True,
+                 mobile_view: tuple[int, int] | None = None) -> list[str]:
     """Launch flags for the pane's GPU and screen, given the launch window
-    size (CSS px, chrome included) and the clamped device pixel ratio."""
+    size (CSS px, chrome included) and the clamped device pixel ratio.
+
+    ``mobile_view`` (the CSS viewport of a mobile launch) switches to the phone
+    presentation: GPU off whatever ``gpu`` says, screen = that view."""
+    if mobile_view:
+        gpu = False
+        sw, sh = mobile_view
+    else:
+        sw, sh = screen_for(window_w, window_h)
     args = [] if gpu else ['--disable-gpu']
-    sw, sh = screen_for(window_w, window_h)
     # --screen-info takes PHYSICAL pixels; devicePixelRatio scales them to CSS.
     info = f'0,0 {round(sw * dpr)}x{round(sh * dpr)}'
     if dpr != 1:

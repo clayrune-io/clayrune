@@ -60,3 +60,37 @@ def test_launch_config_can_turn_the_gpu_back_off(profiles, monkeypatch):
     session, err = br._launch_browser('proj', 'https://example.com')
     assert err is None
     assert '--disable-gpu' in captured['args']
+
+
+# --- b189ba58: a mobile launch is a phone, not the host desktop -------------
+
+def test_mobile_screen_is_the_phone_view_with_the_dpr_and_gpu_off():
+    assert bdf.display_args(428, 1066, 2.0, mobile_view=(412, 915)) == [
+        '--disable-gpu', '--screen-info={0,0 824x1830 devicePixelRatio=2}']
+
+
+def test_mobile_gpu_is_off_even_when_config_asks_for_the_gpu():
+    assert '--disable-gpu' in bdf.display_args(428, 1066, 1.0, gpu=True, mobile_view=(412, 915))
+
+
+def test_desktop_output_is_unchanged_by_the_mobile_parameter():
+    assert bdf.display_args(1296, 951, 2.0) == bdf.display_args(1296, 951, 2.0, mobile_view=None)
+    assert bdf.display_args(1296, 951, 1.0) == ['--screen-info={0,0 1920x1080}']
+
+
+def test_mobile_launch_is_gpu_off_with_a_phone_screen(profiles, monkeypatch):
+    captured = _stub_launch_deps(monkeypatch, profiles)
+    session, err = br._launch_browser('proj', 'https://example.com', dpr=2,
+                                      view=(412, 915), mobile=True)
+    assert err is None
+    assert '--disable-gpu' in captured['args']
+    assert '--screen-info={0,0 824x1830 devicePixelRatio=2}' in captured['args']
+    assert not any('1920x1080' in a or '3840x2160' in a for a in captured['args'])
+
+
+def test_desktop_launch_with_a_view_keeps_gpu_and_desktop_screen(profiles, monkeypatch):
+    captured = _stub_launch_deps(monkeypatch, profiles)
+    session, err = br._launch_browser('proj', 'https://example.com', view=(412, 915))
+    assert err is None
+    assert '--disable-gpu' not in captured['args']
+    assert '--screen-info={0,0 1920x1080}' in captured['args']
