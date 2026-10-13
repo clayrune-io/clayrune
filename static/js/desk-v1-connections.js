@@ -432,6 +432,8 @@
       window.DeskV1AddService.bind(el, {
         repaint, channels: _channels, api: _api, engines: _enginesCache,
         onEnginesChanged: () => _reloadEngines(repaint),
+        // A save makes an account and a saved service on the server: re-read both now, never wait for "Check again".
+        onConnectionsChanged: () => Promise.all([_recheck(el, repaint), window.DeskV1Services.load(true).then(repaint)]),
       });
     } else if (sel && sel.indexOf('engine:') === 0 && _enginesCache) {
       const e = _enginesCache.find((x) => `engine:${x.id}` === sel);
