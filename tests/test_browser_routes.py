@@ -1399,7 +1399,8 @@ def test_stream_gen_emits_dialog_payload_when_one_opens():
 
 
 # ── HiDPI screencast scaling (B4, MC-976 gap #8) ─────────────────────────────
-# The launch flag is --force-device-scale-factor, never Emulation.
+# The launch flag is --screen-info's devicePixelRatio (--force-device-scale-
+# factor until MC-1090, see mc/browser_display_flags.py), never Emulation.
 # setDeviceMetricsOverride — that CDP call is the one the _pump() comment a
 # few hundred lines up forbids, because it decoupled the page's believed
 # viewport from what the screencast actually captured (a real Discord captcha
@@ -1499,18 +1500,19 @@ def test_launch_with_dpr2_passes_the_scale_flag_and_scales_the_frame(profiles, m
     captured = _stub_launch_deps(monkeypatch, profiles)
     session, err = br._launch_browser('proj', 'https://example.com', dpr=2)
     assert err is None
-    assert any(a == '--force-device-scale-factor=2.0' for a in captured['args']), captured['args']
+    assert '--screen-info={0,0 3840x2160 devicePixelRatio=2}' in captured['args'], captured['args']
+    assert not any('force-device-scale-factor' in a for a in captured['args'])
     assert session['dpr'] == 2.0
     assert session['screencast_params']['maxWidth'] == br._SCREENCAST_PARAMS['maxWidth'] * 2
 
 
 def test_launch_with_no_dpr_omits_the_flag_entirely(profiles, monkeypatch):
-    """dpr=1 (or absent) must reproduce EXACTLY today's launch args — no flag
-    at all — so an ordinary, non-HiDPI launch is byte-for-byte unchanged."""
+    """dpr=1 (or absent) carries no devicePixelRatio and no scale flag."""
     captured = _stub_launch_deps(monkeypatch, profiles)
     session, err = br._launch_browser('proj', 'https://example.com')
     assert err is None
-    assert not any('force-device-scale-factor' in a for a in captured['args'])
+    assert not any('force-device-scale-factor' in a or 'devicePixelRatio' in a for a in captured['args'])
+    assert '--screen-info={0,0 1920x1080}' in captured['args']
     assert session['dpr'] == 1.0
     assert session['screencast_params'] == br._SCREENCAST_PARAMS
 
@@ -1531,7 +1533,7 @@ def test_launch_route_forwards_client_dpr_and_reports_it_back(app_client, profil
     assert resp.status_code == 201
     body = resp.get_json()
     assert body['dpr'] == 2.0
-    assert any('force-device-scale-factor=2.0' in a for a in captured['args'])
+    assert any('devicePixelRatio=2}' in a for a in captured['args'])
 
 
 # ── MC-976 Google sign-in: every tab presents as the Chromium it is ──────────
