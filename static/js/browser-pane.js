@@ -61,7 +61,7 @@ const BP_VIEW_W = 1280, BP_VIEW_H = 800;
 let _bpViewW = BP_VIEW_W, _bpViewH = BP_VIEW_H;
 // True once the server has sent the frame's CSS-px size (w/h). From then on
 // the decoded JPEG's own size is NOT the coordinate space: at a HiDPI launch
-// (--force-device-scale-factor, MC-976) the JPEG is dpr x the CSS viewport, so
+// (launch dpr, MC-976; --screen-info since MC-1090) the JPEG is dpr x the CSS viewport, so
 // adopting naturalWidth mapped a centre click at dpr 2 to (1280,799) -- the
 // page's bottom-right corner -- instead of (640,400).
 let _bpServerDims = false;

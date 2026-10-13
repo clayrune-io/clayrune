@@ -483,6 +483,10 @@ def _load_config():
         # debugging port exists for another local process to attach to
         # (backlog 6b313cb6). False returns every launch to the TCP port.
         'browser_cdp_pipe': True,
+        # Browser pane GPU (MC-1090): True (default) leaves WebGL/WebGPU on so
+        # the pane presents a real GPU like a normal Chrome. False restores
+        # --disable-gpu for a host whose GPU process misbehaves headless.
+        'browser_pane_gpu': True,
         # Hosted sign-in / usage seams (backlog 1d940d0f). config.json only,
         # deliberately NOT in _CONFIG_EDITABLE_KEYS: a hosted pod pins these,
         # and the Settings panel is not where that posture gets flipped.

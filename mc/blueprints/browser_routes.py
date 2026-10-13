@@ -160,7 +160,8 @@ def _clamp_view(w, h):
             max(_MIN_VIEW[1], min(h, _MAX_VIEW[1])))
 
 
-# Scales the CAPTURE only, via the --force-device-scale-factor launch flag
+# Scales the CAPTURE only, via the dpr carried in the --screen-info launch flag
+# (mc/browser_display_flags.py, MC-1090; --force-device-scale-factor before that)
 # in _launch_browser below — never the CDP viewport-override call the
 # _run_cdp comment a few hundred lines down forbids, for exactly the reason
 # that comment gives.
@@ -2190,7 +2191,8 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
     stops signing the user out of everything on every click. ``ephemeral=True``
     opts a single launch back out of that default. ``dpr`` is the launching
     client's ``window.devicePixelRatio`` (clamped, see _clamp_dpr) — passed to
-    Chromium as ``--force-device-scale-factor`` so the screencast captures
+    Chromium in ``--screen-info`` (mc/browser_display_flags.py; it was
+    ``--force-device-scale-factor`` until MC-1090) so the screencast captures
     more device pixels per CSS pixel and text reads sharp on a HiDPI display.
     A launch flag, changing only the backing pixel density — never
     window.innerWidth/Height, so the CSS layout viewport
@@ -2269,11 +2271,17 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
         # pipe + this flag 3/3 reached account lookup, port 1/1 likewise.
         # The flag turns off only that marker; the pipe and what it closes stay.
         _NO_AUTOMATION_MARKER,
-        '--no-first-run', '--no-default-browser-check', '--disable-gpu',
+        '--no-first-run', '--no-default-browser-check',
         f'--window-size={view[0] + WINDOW_CHROME_W},{view[1] + WINDOW_CHROME_H}',
     ]
-    if dpr != 1:
-        args.append(f'--force-device-scale-factor={dpr}')
+    # GPU on and a real-sized screen that carries the dpr (MC-1090): see
+    # mc/browser_display_flags.py for what --disable-gpu and the 800x600
+    # headless screen were telling sites, and why the dpr moved out of
+    # --force-device-scale-factor.
+    from mc import browser_display_flags
+    args += browser_display_flags.display_args(
+        view[0] + WINDOW_CHROME_W, view[1] + WINDOW_CHROME_H, dpr,
+        gpu=bool(state.CONFIG.get('browser_pane_gpu', True)))
     # Extra Chromium flags a server-side caller needs (the Desk's discovery pane
     # confines the network with --proxy-server, mc/desk_connect/guard_proxy.py): a
     # list, or a callable given this launch's debugging port. Never fed from a
@@ -2314,7 +2322,7 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
         # Browser.setDownloadBehavior; None until then.
         'screencast_paused': False, 'downloads': {}, 'downloads_seq': 0,
         'download_dir': None,
-        # dpr this Chromium was launched with (--force-device-scale-factor)
+        # dpr this Chromium was launched with (--screen-info, MC-1090)
         # and the screencast params scaled to match — every startScreencast
         # call site reads screencast_params, never the module-level default,
         # so a HiDPI launch stays sharp across tab switches and re-arms too.
