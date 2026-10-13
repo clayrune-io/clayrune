@@ -140,6 +140,8 @@ import { ConnectCopy as C } from './desk-v1-connect-copy.js';
       approval: (key) => { const a = S.approvals[`${id}:${key}`]; return a ? a.value : undefined; },
       // A long option set, four to a page, with Previous and Next. `render(item)` returns one alternative's HTML.
       paged: (key, items, render) => _pagedHTML(`${id}:${key}`, items, render),
+      // Something was written but the wizard stays open (a Result is showing): the panel re-reads accounts and services now.
+      saved: () => { const cb = _ctx && _ctx.onConnectionsChanged; if (cb) cb(); },
       // Leave the wizard having saved something: the panel gets the saved service, the wizard is emptied.
       finish: (svc, info) => { const cb = _ctx && _ctx.onSaved; close(); if (cb) cb(svc || {}, info || {}); },
     };

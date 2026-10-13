@@ -7,7 +7,7 @@
     window.DeskV1VaultGate?.attach(root);
     window.DeskV1ConnectFlow.bind(root, { ...ctx, live: window.DeskV1Store.live(), onSaved: () => {
       reset(); window.DeskV1ConnTiles.select(null);
-      Promise.all([window.DeskV1Services.load(true), window.DeskV1ConnectionStatus?.refresh()]).then(() => { ctx.onEnginesChanged?.(); ctx.repaint(); }).catch(e => { console.warn('[connect] refresh failed: ' + e); ctx.repaint(); });
+      Promise.all([ctx.onConnectionsChanged?.(), window.DeskV1ConnectionStatus?.refresh()]).then(() => { ctx.onEnginesChanged?.(); ctx.repaint(); }).catch(e => { console.warn('[connect] refresh failed: ' + e); ctx.repaint(); });
     } });
   }
   window.DeskV1AddService = { reset, panelHTML, bind, pickedEngine: () => null };

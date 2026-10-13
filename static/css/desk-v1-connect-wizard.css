@@ -58,3 +58,11 @@
   .desk-v1-cfw-details > summary { min-height: 2.75rem; display: flex; align-items: center; box-sizing: border-box; }
   .desk-v1-cfw-pager .desk-v1-conn-btn { min-height: 2.75rem; }
 }
+
+/* Action rows on every Setup/Result screen (Check connection + its status, Use saved sign-in, Open sign-in): one left
+   edge shared with the fields above, buttons one height, status text centred on its button. The base
+   .desk-v1-conn-btn rule sets margin-left: auto, which right-aligned a lone button and left each row on its own edge. */
+.desk-v1-cfw-body .desk-v1-cs-fill, .desk-v1-cfw-details-body .desk-v1-cs-fill { margin-top: 0; }
+.desk-v1-cfw-body .desk-v1-cs-fill-row, .desk-v1-cfw-details-body .desk-v1-cs-fill-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 0.5rem 0.75rem; }
+.desk-v1-cfw-body .desk-v1-cs-fill-row .desk-v1-conn-btn, .desk-v1-cfw-details-body .desk-v1-cs-fill-row .desk-v1-conn-btn { margin-left: 0; }
+.desk-v1-cfw-body .desk-v1-cs-fill-row .desk-v1-conn-status { line-height: 1.2; }

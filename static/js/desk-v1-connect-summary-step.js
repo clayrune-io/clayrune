@@ -190,6 +190,7 @@
       const accountId = String(br.accountId(c.result) || '');
       R.result = c.result; R.requested = requested; R.status = c.result.status || null;
       R.perms = await _applyPerms(accountId);
+      if (n === _seq && api.saved) api.saved();                  // the account exists now: the Connections list shows it behind the Result, not after a manual re-check
       return n === _seq;
     } finally { R.saving = false; }
   }
