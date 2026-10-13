@@ -2281,7 +2281,8 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
     from mc import browser_display_flags
     args += browser_display_flags.display_args(
         view[0] + WINDOW_CHROME_W, view[1] + WINDOW_CHROME_H, dpr,
-        gpu=bool(state.CONFIG.get('browser_pane_gpu', True)))
+        gpu=bool(state.CONFIG.get('browser_pane_gpu', True)),
+        mobile_view=view if mobile else None)
     # Extra Chromium flags a server-side caller needs (the Desk's discovery pane
     # confines the network with --proxy-server, mc/desk_connect/guard_proxy.py): a
     # list, or a callable given this launch's debugging port. Never fed from a
