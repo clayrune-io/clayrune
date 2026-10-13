@@ -976,7 +976,7 @@ _UA_LOW_ENTROPY_JS = (
     " : null")
 _UA_HIGH_ENTROPY_JS = (
     "navigator.userAgentData ? navigator.userAgentData.getHighEntropyValues(["
-    "'architecture','bitness','model','platformVersion','fullVersionList','wow64'"
+    "'architecture','bitness','model','platformVersion','fullVersionList','uaFullVersion','wow64'"
     "]).then(v => JSON.stringify(v)) : null")
 
 
@@ -995,6 +995,15 @@ _UA_GUARD_CHILDREN = True
 # HeadlessChrome" while the page itself said Android -- a mobile pane got the
 # desktop site after a refresh, and any pane leaked HeadlessChrome there.
 _UA_OVERRIDE_TYPES = ('page', 'iframe', 'service_worker', 'shared_worker')
+# What the guard holds at the BROWSER level. A shared worker is no page's
+# child, so the per-page auto-attach never saw it and its requests said
+# HeadlessChrome (MC-1090, measured 2026-10-13: x.com's Castle SharedWorker).
+# Service workers are listed too, so one that starts with no page attached is
+# held as well. The override covers their request headers ONLY: a worker's
+# navigator.userAgent is fixed at creation from Chromium's default UA, and
+# neither Network. nor Emulation.setUserAgentOverride on the held worker
+# changes it (both return {}, measured) -- see the MC-1090 journal.
+_UA_GUARD_BROWSER_FILTER = [{'type': 'page'}, {'type': 'shared_worker'}, {'type': 'service_worker'}]
 
 
 _NO_AUTOMATION_MARKER = '--disable-blink-features=AutomationControlled'
@@ -1101,6 +1110,8 @@ def _start_ua_guard(session, port):
                                           'returnByValue': True}, sid)
             hi = json.loads((r.get('result') or {}).get('value') or 'null') or {}
             if lo and lo.get('brands'):
+                from mc import browser_default_ua
+                hi = browser_default_ua.fill_high_entropy(hi, lo, session.get('chromium'))
                 override['userAgentMetadata'] = _ua_metadata(lo, hi)
             else:
                 session['error'] = 'UA client hints unavailable, string-only override'
@@ -1114,7 +1125,7 @@ def _start_ua_guard(session, port):
                     pass
         session['ua_override'] = override
         call('Target.setAutoAttach', {'autoAttach': True, 'waitForDebuggerOnStart': True,
-                                      'flatten': True, 'filter': [{'type': 'page'}]})
+                                      'flatten': True, 'filter': _UA_GUARD_BROWSER_FILTER})
     except Exception as e:
         session['error'] = f'UA guard setup failed: {e}'
         try:
@@ -1235,6 +1246,10 @@ def _ua_metadata(low, high):
           'mobile': bool(low.get('mobile'))}
     if high.get('fullVersionList'):
         md['fullVersionList'] = brands(high['fullVersionList'])
+    # Deprecated in CDP but still what a worker's uaFullVersion reads; without
+    # it a held shared/service worker answers "" (MC-1090, measured).
+    if high.get('uaFullVersion'):
+        md['fullVersion'] = high['uaFullVersion']
     if high.get('bitness'):
         md['bitness'] = high['bitness']
     if 'wow64' in high:
@@ -2288,6 +2303,13 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
     # list, or a callable given this launch's debugging port. Never fed from a
     # request: only in-process callers can pass it.
     args.extend(extra_args(port) if callable(extra_args) else (extra_args or ()))
+    # The default UA without "HeadlessChrome", so shared and service workers,
+    # which no CDP override reaches, stop leaking it (MC-1090, x.com's Castle
+    # worker): see mc/browser_default_ua.py. Config `browser_pane_default_ua:
+    # false` restores Chromium's own default.
+    from mc import browser_default_ua
+    args += browser_default_ua.default_ua_args(
+        chromium, enabled=bool(state.CONFIG.get('browser_pane_default_ua', True)))
     args.append('about:blank')
     cdp = None
     try:
@@ -2305,6 +2327,9 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False, dpr=None, vi
         return None, f'failed to launch Chromium: {e}'
     session = {
         'session_id': sid, 'project_id': project_id, 'proc': proc, 'port': port,
+        # The binary, so the UA guard can put back the client hints that
+        # --user-agent blanks (mc/browser_default_ua.py).
+        'chromium': chromium,
         # CDP over a pipe (browser_cdp_pipe): no port at all, None otherwise.
         'cdp': cdp,
         'url': url or 'about:blank', 'status': 'running', 'frame': None,
