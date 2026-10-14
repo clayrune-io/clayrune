@@ -7,12 +7,19 @@ const screens = Object.freeze({
   setup: ['Connection details', 'Choose an account or enter the details for your chosen connection.'],
   permissions: ['Permissions', 'Choose what agents may do with this connection.'],
   review: ['Review', 'Check the details, then save.'],
-  result: ['Result', 'Read the status below and finish any remaining sign-in.'],
+  result: ['Result', 'Read the connection status below.'],
 });
 const words = Object.freeze({ continue: 'Continue', back: 'Back', save: 'Save', done: 'Done',
   packageStaging: 'Reading the repository and checking its files; this can take a minute.',
   packageDetecting: 'Reading the package listing to find the required details.',
   packageBuild: 'This package needs building: in Review, select its dependency and build steps before saving.',
+  packageBuildRequired: 'Select the required build step in Review before saving.',
+  packageRequired: 'Required before saving.',
+  packageSaving: 'Setting up and saving the connection; this can take a few minutes.',
+  packageSaveFailed: 'The connection was not saved because setup failed.',
+  packageResult: 'Read the connection status below.',
+  packageRegistered: 'Registered', packagePending: 'Saved, cannot run yet',
+  packageStartNote: 'Saving does not start the server or check that it works. It starts the first time an agent session uses it.',
   commandHelp: 'This is the program Clayrune starts; keep the suggestion unless the package instructions say otherwise.',
   packageFileHelp: 'Leave this empty to use the package’s default start file, or enter a file path inside it.',
   argumentsHelp: 'Keep any suggested file path and put each extra option on a separate line, without secret values.',
@@ -148,7 +155,7 @@ function body(html, api) {
 function screen(def) {
   const copy = screens[def.step];
   if (!copy) return def;
-  return { ...def, title: api => enabled ? copy[0] : def.title(api), copy: api => enabled ? copy[1] : def.copy(api),
+  return { ...def, title: api => enabled ? (def.step === 'result' && def.resultState?.(api) === 'setup_failed' ? words.notSaved : copy[0]) : def.title(api), copy: api => enabled ? copy[1] : def.copy(api),
     body: api => enabled ? body(def.body ? def.body(api) : '', def.step==='review'?api:undefined) : (def.body ? def.body(api) : ''),
     primary: def.primary ? (api) => { const p = def.primary(api); return enabled && p ? { ...p, label: /^(Checking|Reading|Saving)/.test(p.label) ? p.label : def.step === 'review' && /^sav/i.test(p.label) ? words.save : def.step === 'result' ? words.done : words.continue } : p; } : undefined,
   };

@@ -14,7 +14,7 @@
 //                M6p "Install steps"    only when the package has install scripts: at most four per page, every full
 //                                       body visible, each OFF until ticked. Ticking one reviews again.
 //                M7  "Approve connection" the existing approval box and Save, which asks for the dashboard passcode.
-//   Result       the server's own state word and message: Registered / Saved, cannot run yet / Saved, setup failed.
+//   Result       Registered / Saved, cannot run yet / Not saved (setup failed).
 //
 // WHAT IT PRESERVES. Everything the card carries comes from POST /api/desk/connect/custom/review and is the
 // server's text; the Save sends only {request_id, fingerprint} to /custom/commit through humanProofFetch, so the
@@ -32,13 +32,13 @@
 // `variant = custom-npm` is not part of this ticket: until it exists, the screens are reachable only by
 // `api.select({ variant: 'custom-npm' })`.
 import {createPackageHelper} from './desk-v1-connect-package-helper.js';
+import {packageResultHTML, packageResultTitle} from './desk-v1-connect-package-result.js';
 (function () {
   const W = window.DeskV1ConnectWizard;
   if (!W) return;
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
   const VARIANT = 'custom-npm';
-  const STATE_WORD = { registered: 'Registered', pending_runtime: 'Saved, cannot run yet', setup_failed: 'Saved, setup failed' };
   const FLAG_WORD = {
     detected_from_untrusted_evidence: 'Read from a README or listing someone else wrote.',
     unpinned_package: 'No exact version was named; the review will pin the one it resolves.',
@@ -291,7 +291,7 @@ import {createPackageHelper} from './desk-v1-connect-package-helper.js';
 
   function _scriptItemHTML(s) {
     const D = window.DeskV1ConnectCustomDeps && window.DeskV1ConnectCustomDeps.parts;
-    return `<div class="desk-v1-cfk-script" data-cfw-alt><ul class="desk-v1-cu-script-list">${D ? D.script(s) : ''}</ul></div>`;
+    return `<div class="desk-v1-cfk-script" data-cfw-alt>${s.required ? `<p data-pk-required>${esc(window.DeskV1ConnectCopy.words.packageRequired)}</p>` : ''}<ul class="desk-v1-cu-script-list">${D ? D.script(s) : ''}</ul></div>`;
   }
   function _scriptsHTML(api, c) {
     const note = c.scripts_note ? `<div class="desk-v1-cfw-fact-text" data-pk-scripts-note>${esc(c.scripts_note)}</div>` : '';
@@ -308,7 +308,13 @@ import {createPackageHelper} from './desk-v1-connect-package-helper.js';
       <label class="desk-v1-cf-check desk-v1-cfk-approve"><input type="checkbox" data-pk-approve ${_approved(api) ? 'checked' : ''}>
         <span>I have read this and approve saving it.</span></label>
       <div class="desk-v1-cfw-fact-text">Saving asks for your dashboard passcode once. Nothing has been written yet.</div>
+      ${_missingRequired(c) ? `<div class="desk-v1-cfw-msg" data-pk-required-missing role="alert">${esc(window.DeskV1ConnectCopy.words.packageBuildRequired)}</div>` : ''}
       ${P.rv.error ? `<div class="desk-v1-cfw-msg" data-pk-save-error role="alert">${esc(P.rv.error)}</div>` : ''}`;
+  }
+
+  function _missingRequired(c) {
+    const selected = new Set((c.scripts || []).filter(s => s.approved).map(s => s.id));
+    return (c.required_steps || []).some(id => !selected.has(id));
   }
 
   const REVIEW_TITLE = { facts: 'Review package', scripts: 'Install steps', approve: 'Approve connection' };
@@ -322,12 +328,13 @@ import {createPackageHelper} from './desk-v1-connect-package-helper.js';
   // The passcode-gated Save. -> true (saved: go to Result) | false (stay: cancelled, refused, or the card went stale)
   async function _save(api) {
     const R = P.rv, c = R.card;
-    if (R.saving || !c || !_approved(api)) return false;
+    if (R.saving || !c || !_approved(api) || _missingRequired(c)) return false;
     R.saving = true; R.error = '';
     let res;
     try {
       res = await window.humanProofFetch('/api/desk/connect/custom/commit', { method: 'POST', body: JSON.stringify({ request_id: c.request_id, fingerprint: c.fingerprint }) },
-        { title: 'Save MCP server', description: `Re-enter your dashboard passcode to save the MCP server “${c.server_name}”, which Clayrune has not reviewed.` });
+        { title: window.DeskV1ConnectCopy.words.saveConnection, description: window.DeskV1ConnectCopy.words.saveProof,
+          busyText: window.DeskV1ConnectCopy.words.packageSaving });
     } catch (e) { res = { ok: false, status: 0, body: { error: (e && e.message) || 'could not reach the server' } }; }
     R.saving = false;
     if (res === null) { api.repaint(); return false; }                       // cancelled at the passcode: nothing was sent, the card stays
@@ -430,7 +437,7 @@ import {createPackageHelper} from './desk-v1-connect-package-helper.js';
     details: (api) => (P.rv.card && P.rv.view === 'facts' ? _factsDetailsHTML(api, P.rv.card) : ''),
     primary: (api) => {
       const R = P.rv, ready = !!R.card && !R.busy && !_requestBody().problem;
-      if (ready && R.view === 'approve') return { label: R.saving ? 'Saving…' : 'Save', disabled: R.saving || !_approved(api), run: () => _save(api) };
+      if (ready && R.view === 'approve') return { label: R.saving ? 'Saving…' : 'Save', disabled: R.saving || !_approved(api) || _missingRequired(R.card), run: () => _save(api) };
       return {
         label: 'Continue', disabled: !ready,
         run: async () => { const v = _views(), at = _viewIndex(); if (at < v.length - 1) { R.view = v[at + 1]; P.refocus = true; api.repaint(); } return false; },
@@ -454,7 +461,7 @@ import {createPackageHelper} from './desk-v1-connect-package-helper.js';
       const approve = root.querySelector('[data-pk-approve]'), primary = root.querySelector('[data-cfw-primary]');
       if (approve) approve.addEventListener('change', () => {
         if (R.card) api.approve('card', approve.checked ? R.card.fingerprint : null);
-        if (primary) primary.disabled = R.saving || !_approved(api);
+        if (primary) primary.disabled = R.saving || !_approved(api) || _missingRequired(R.card);
       });
     },
     discard: () => { _gen++; P = _fresh(); },
@@ -462,14 +469,10 @@ import {createPackageHelper} from './desk-v1-connect-package-helper.js';
 
   W.registerScreen({
     id: 'package-result', step: 'result', match: _isMine,
-    title: () => STATE_WORD[(P.result || {}).state] || 'Saved',
-    copy: () => 'Your saved server and its status are shown below.',
-    body: () => {
-      const r = P.result || {};
-      return `<div class="desk-v1-cfw-msg" data-pk-result="${esc(r.state || '')}" role="status"><strong>${esc(STATE_WORD[r.state] || 'Saved')}</strong>: ${esc(r.message || '')}</div>
-        ${r.notice ? `<div class="desk-v1-cfw-msg" data-pk-notice role="status">${esc(r.notice)}</div>` : ''}
-        <div class="desk-v1-cfw-fact-text">Saving does not start the server or check that it works. It starts the first time an agent session uses it.</div>`;
-    },
+    resultState: () => (P.result || {}).state,
+    title: () => packageResultTitle(P.result, window.DeskV1ConnectCopy.words),
+    copy: () => window.DeskV1ConnectCopy.words.packageResult,
+    body: () => packageResultHTML(P.result, window.DeskV1ConnectCopy.words, esc),
     // The common panel refreshes saved connection tiles without inventing a service record.
     primary: (api) => ({ label: 'Done', run: async () => { api.finish(null, {}); api.repaint(); return false; } }),
     bind: (root) => _focusTitle(root),
@@ -480,7 +483,7 @@ import {createPackageHelper} from './desk-v1-connect-package-helper.js';
   function summary() {
     if (!P.pkg.trim()) return null;
     const c = P.rv.card;
-    return { kind: 'mcp-package', package: _spec(), saved: !!P.result, state: P.result ? P.result.state : null,
+    return { kind: 'mcp-package', package: _spec(), saved: !!P.result && P.result.state !== 'setup_failed', state: P.result ? P.result.state : null,
       lines: [`npm package ${_spec()}`].concat(c ? [`Version ${c.package && c.package.version}, pinned`, c.reach && c.reach.who] : []).filter(Boolean) };
   }
   window.DeskV1ConnectPackageStep = { summary, VARIANT };

@@ -263,6 +263,8 @@ def check_submission(request_id: str, fingerprint: str) -> dict:
     if rec['op'].get('ecosystem') == 'remote':
         _remote_op.require_ack(rec['op'])
     if rec['op'].get('ecosystem') == 'github' and remembered is None:
+        from mc.desk_connect.github_install_steps import require_selected
+        require_selected(rec['op'])
         from mc.desk_connect.github_manifest import inventory
         if inventory(rec['op']['directory']) != rec['op']['source_files']:
             raise ActivationError('The repository changed since Review. Review it again.', 'changed_since_review', 409)

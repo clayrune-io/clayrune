@@ -14,6 +14,7 @@ from mc.desk_connect import custom_connection_activation as npm
 from mc.desk_connect import custom_npm_scripts as scripts
 from mc.desk_connect import github_manifest as manifest
 from mc.desk_connect import github_install_output as output
+from mc.desk_connect import github_install_steps as steps_builder
 from mc.desk_connect.mcp_errors import ActivationError
 
 def _manifest_path(op: dict) -> Path:
@@ -57,6 +58,7 @@ def problem(op: dict) -> str:
 
 def provision(op: dict, project_path: str | None) -> dict:
     try:
+        steps_builder.require_selected(op)
         if manifest.inventory(op['directory']) != op['source_files']:
             raise ActivationError('The repository changed since Review.', 'repository_changed',409)
         cwd=Path(op['directory'])
@@ -64,13 +66,19 @@ def provision(op: dict, project_path: str | None) -> dict:
             (Path(temporary)/'tmp').mkdir()
             for step in op['install_steps']:
                 step={**step,'package':op['package'],'version':op['version']}
-                if step.get('argv'):
-                    env=scripts.script_env({'script':step['id'],'package':op['package'],'version':op['version']},Path(temporary),str(Path(shutil.which('node') or sys.executable).parent),cwd)
-                    rc,_=scripts.spawn(step['argv'],cwd,env,120)
-                    if rc != 0:
-                        raise ActivationError('A selected install step failed. See the server log.', 'install_failed',400)
-                else:
-                    scripts.run(step,cwd,Path(temporary),node_dir=str(Path(shutil.which('node') or sys.executable).parent))
+                try:
+                    if step.get('argv'):
+                        env=scripts.script_env({'script':step['id'],'package':op['package'],'version':op['version']},Path(temporary),str(Path(shutil.which('node') or sys.executable).parent),cwd)
+                        rc,_=scripts.spawn(step['argv'],cwd,env,120)
+                        if rc != 0:
+                            raise ActivationError('A selected install step failed. See the server log.', 'install_failed',400)
+                    else:
+                        scripts.run(step,cwd,Path(temporary),node_dir=str(Path(shutil.which('node') or sys.executable).parent))
+                except Exception as e:
+                    _log(f'[desk-connect] repository step {step["id"]} failed: {e}', flush=True)
+                    label = 'dependency setup' if step['id'].startswith('dependencies:') else f'"{step["script"]}" step'
+                    raise ActivationError(f'The {label} failed; the connection was not saved.',
+                                          getattr(e, 'code', 'install_failed'), 400) from e
         files=(output.capture(op['directory'], op['source_files']) if op.get('file_checks') == output.POLICY
                else manifest.inventory(op['directory']))
         target=_manifest_path(op);target.parent.mkdir(parents=True,exist_ok=True)

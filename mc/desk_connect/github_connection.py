@@ -47,13 +47,7 @@ def stage(body: object) -> dict:
         steps = steps_builder.dependencies(clone['install_dir'])
         p = Path(clone['install_dir']) / 'package.json'
         pkg = json.loads(p.read_text(encoding='utf-8')) if p.is_file() else {}
-        scripts = pkg.get('scripts', {})
-        if not isinstance(scripts, dict):
-            raise ActivationError('The declared install steps could not be read.', 'bad_scripts', 400)
-        for name, script in scripts.items():
-            if not isinstance(script, str) or len(script) > 10000:
-                raise ActivationError('An install step cannot be shown completely.', 'bad_scripts', 400)
-            steps.append({'id': f'script:{name}', 'argv': [], 'body': script, 'script': name})
+        steps.extend(steps_builder.declared_scripts(pkg.get('scripts', {})))
         cfg = next(iter(configs.values()), {})
         command = cfg.get('command', '') if isinstance(cfg, dict) else ''
         args = cfg.get('args', []) if isinstance(cfg, dict) else []
@@ -64,6 +58,7 @@ def stage(body: object) -> dict:
         if inferred:
             command, args = inferred['command'], inferred['args']
         rec = {**clone, 'url': classified['url'], 'files': files, 'steps': steps,
+               'required_steps': inferred.get('required_steps', []),
                'expires': time.monotonic()+1800, 'audit': audit, 'scan': scan}
         with _lock:
             _stages[token] = rec
@@ -112,6 +107,7 @@ def prepare(body: dict, resolve_project) -> dict:
           'args':fields['args'], 'credentials':fields['credentials'], 'server_name':fields['server_name'],
           'strip_env':['NODE_OPTIONS','NODE_PATH','PYTHONPATH','PYTHONHOME'],
           'scope':{'kind':fields['scope'],'project_id':fields['project_id']},
+          'required_steps':list(staged['required_steps']),
           'install_steps':[s for s in staged['steps'] if s['id'] in chosen]}
     project = resolve_project(fields['project_id']) if fields['scope']=='project' else None
     clash = activation.conflict(op, project['path'] if project else None)
@@ -128,10 +124,11 @@ def prepare(body: dict, resolve_project) -> dict:
             'credentials':op['credentials'], 'changes':operation.changes(previous['operation'] if previous else None,op),
             'reask':bool(previous and previous['fingerprint'] != fp),
             'replaces':previous['fingerprint'] if previous and previous['fingerprint'] != fp else None,
-            'dependencies':[], 'limitations':[],
+            'dependencies':[], 'limitations':[], 'required_steps':op['required_steps'],
             'scripts':[{'id':s['id'],'path':'','package':op['package'],'version':op['version'],'script':s.get('script',s['id']),
                         'body':s.get('body') or json.dumps(s['argv']), 'body_escaped':s.get('body') or json.dumps(s['argv']),
-                        'approved':s['id'] in chosen,'approvable':True,'reason':''} for s in staged['steps']],
+                        'approved':s['id'] in chosen,'required':s['id'] in op['required_steps'],
+                        'approvable':True,'reason':''} for s in staged['steps']],
             'scripts_note':'Every install step starts off. Selected steps run only after passcode Save; dependencies may be unpinned. '+output.NOTICE,
             'install_note':'Only selected install steps run. Nothing starts until an agent uses this connection.',
             'working_directory':staged['install_dir'],'first_start':'Deferred until an agent session uses it.',
