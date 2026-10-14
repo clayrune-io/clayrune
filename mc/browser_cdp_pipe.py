@@ -448,18 +448,30 @@ def _spawn_posix(args, popen_kwargs):
     c_r, c_w = os.pipe()
     e_r, e_w = os.pipe()
     # Chromium reads CDP from fd 3 and writes it to fd 4. Move our child ends
-    # clear of 3/4 first so the dup2s below cannot clobber each other.
-    c_r = fcntl.fcntl(c_r, fcntl.F_DUPFD, 10) if c_r < 10 else c_r
-    e_w = fcntl.fcntl(e_w, fcntl.F_DUPFD, 10) if e_w < 10 else e_w
+    # clear of 3/4 first so the dup2s below cannot clobber each other, and close
+    # the low originals F_DUPFD leaves behind (they would leak, one pair a launch).
+    if c_r < 10:
+        c_r, low = fcntl.fcntl(c_r, fcntl.F_DUPFD, 10), c_r
+        os.close(low)
+    if e_w < 10:
+        e_w, low = fcntl.fcntl(e_w, fcntl.F_DUPFD, 10), e_w
+        os.close(low)
 
     def _child():
         os.dup2(c_r, 3)
         os.dup2(e_w, 4)
+        os.close(c_r)
+        os.close(e_w)
 
     try:
         argv = list(args)
         argv.insert(1, '--remote-debugging-pipe')
-        proc = subprocess.Popen(argv, pass_fds=(c_r, e_w), preexec_fn=_child, **popen_kwargs)
+        # Popen closes every fd not in pass_fds AFTER preexec_fn runs, so 3 and 4
+        # must be listed or the dup2s above are undone before exec and Chromium
+        # gets no CDP (measured: Target.getTargets never answers). c_r/e_w are
+        # listed so they are still open when _child dup2s them.
+        proc = subprocess.Popen(argv, pass_fds=(c_r, e_w, 3, 4), preexec_fn=_child,
+                                **popen_kwargs)
     except BaseException:
         for fd in (c_r, c_w, e_r, e_w):
             os.close(fd)

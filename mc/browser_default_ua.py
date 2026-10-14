@@ -30,8 +30,14 @@ Each supported OS was checked against headed Chromium 151.0.7922.34 on that OS:
   Linux version), x86 / 64 / 151.0.7922.34, formFactors ["Desktop"]. Linux
   builds ship no version manifest; ``chrome --version`` prints it there.
 
-macOS and Linux on ARM are not measured yet, so `default_ua_args` returns no
-flag there, which is the old behaviour.
+- macOS 26.5.1 arm64 (Darwin 25.5, 2026-10-14): the UA token is the frozen
+  "Macintosh; Intel Mac OS X 10_15_7" even on Apple Silicon, navigator.platform
+  MacIntel, architecture "arm", bitness 64, platformVersion "26.5.1" (what
+  ``sw_vers -productVersion`` prints), 151.0.7922.34, formFactors ["Desktop"].
+  Headless without the switch reports HeadlessChrome in all four contexts.
+
+Linux on ARM is not measured yet, so `default_ua_args` returns no flag there,
+which is the old behaviour.
 """
 
 from __future__ import annotations
@@ -48,7 +54,12 @@ _VERSION_RE = re.compile(r'(\d+)\.(\d+)\.(\d+)\.(\d+)')
 _UA_TOKENS = {
     'win32': 'Windows NT 10.0; Win64; x64',
     'linux': 'X11; Linux x86_64',
+    # Frozen at 10_15_7 and "Intel" on Apple Silicon too (measured on arm64).
+    'darwin': 'Macintosh; Intel Mac OS X 10_15_7',
 }
+# GUI launchd hands apps a minimal PATH, so sw_vers is called by absolute path.
+_SW_VERS = '/usr/bin/sw_vers'
+_MAC_VERSION_RE = re.compile(r'\d+(\.\d+){0,2}')
 _cache: dict[tuple[str, float], str | None] = {}
 
 
@@ -106,11 +117,32 @@ def _windows_platform_version() -> str | None:
         return None
 
 
+def _macos_platform_version() -> str | None:
+    """What Chromium reports as Sec-CH-UA-Platform-Version on macOS: the
+    product version padded to three parts ("15.0" -> "15.0.0", "26.5.1")."""
+    raw = ''
+    try:
+        raw = subprocess.run([_SW_VERS, '-productVersion'], stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception as e:
+        print(f'[browser] sw_vers failed: {e}', flush=True)
+    if not _MAC_VERSION_RE.fullmatch(raw):
+        raw = platform.mac_ver()[0]
+    if not _MAC_VERSION_RE.fullmatch(raw):
+        print('[browser] macOS platformVersion lookup failed', flush=True)
+        return None
+    parts = raw.split('.')
+    return '.'.join(parts + ['0'] * (3 - len(parts)))
+
+
 def _platform_version(platform_name: str | None = None) -> str | None:
     """platformVersion as Chromium reports it natively, or None when it cannot
     be derived. "" is a real value: Chromium reports no Linux version."""
-    if _platform(platform_name) == 'win32':
+    name = _platform(platform_name)
+    if name == 'win32':
         return _windows_platform_version()
+    if name == 'darwin':
+        return _macos_platform_version()
     return ''
 
 
@@ -119,7 +151,8 @@ def _supported(platform_name: str | None = None) -> bool:
     if name == 'linux':
         # Only x86_64 was measured; an ARM build may carry another token.
         return platform.machine().lower() in ('x86_64', 'amd64')
-    return name == 'win32'
+    # darwin: the token is the same on both arches; the hints come from the machine.
+    return name in ('win32', 'darwin')
 
 
 def default_user_agent(chromium: str, platform_name: str | None = None) -> str | None:
