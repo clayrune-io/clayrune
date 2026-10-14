@@ -6,6 +6,10 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-14] - Infer repository start files (MC-1095, part 3)
+
+- GitHub staging reads a single Node bin or a plain `node` start script from package.json and suggests a clone-local command. Missing build output requires an explicit build script and shows dependency/build guidance; install steps remain unchecked. Ambiguous or unsafe metadata keeps manual entry.
+
 ## [2026-10-14] - Preserve connection values (MC-1095, part 2)
 
 - Vocabulary presentation now applies only to owned UI labels and explicitly marked prose. Rendered URLs, package names, commands, saved names and field contents remain verbatim through render and bind.

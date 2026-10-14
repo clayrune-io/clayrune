@@ -156,7 +156,7 @@
   }
 
   function _detailsViewHTML() {
-    return `${P.git?window.DeskV1ConnectGithub.commandHTML(P.command,P.git.manual_command):''}<div class="desk-v1-cfk-pkgline" data-pk-pkgline><span data-connect-value><strong>${esc(_spec())}</strong></span>
+    return `${P.git?window.DeskV1ConnectGithub.commandHTML(P.command,P.git.manual_command):''}${P.git?.build_required ? `<p class="desk-v1-cfw-fact-text" data-pk-build>${esc(window.DeskV1ConnectCopy.words.packageBuild)}</p>` : ''}<div class="desk-v1-cfk-pkgline" data-pk-pkgline><span data-connect-value><strong>${esc(_spec())}</strong></span>
         <button type="button" class="desk-v1-cf-link" data-pk-change>Change package</button></div>
       <label class="desk-v1-conn-add-field">Start file inside the package (optional)
         <input type="text" class="desk-v1-rules-textinput" data-pk-entry data-cfw-focus value="${esc(P.entry)}" maxlength="200" autocapitalize="off" spellcheck="false"></label>

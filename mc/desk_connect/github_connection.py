@@ -19,6 +19,7 @@ from mc.desk_connect import github_manifest as manifest
 from mc.desk_connect import github_activation as activation
 from mc.desk_connect import github_install_output as output
 from mc.desk_connect import github_install_steps as steps_builder
+from mc.desk_connect import github_start_command
 from mc.desk_connect import parameter_schema as parameters
 from mc.desk_connect.mcp_errors import ActivationError
 
@@ -59,6 +60,9 @@ def stage(body: object) -> dict:
         # A registry launcher would ignore the reviewed clone's commit.
         if Path(str(command)).name.lower() in ('npx', 'npx.cmd', 'npm', 'uvx', 'pipx'):
             command, args = '', []
+        inferred = github_start_command.infer(pkg, files)
+        if inferred:
+            command, args = inferred['command'], inferred['args']
         rec = {**clone, 'url': classified['url'], 'files': files, 'steps': steps,
                'expires': time.monotonic()+1800, 'audit': audit, 'scan': scan}
         with _lock:
@@ -66,7 +70,10 @@ def stage(body: object) -> dict:
             while len(_stages)>50:
                 _stages.popitem(last=False)
         return {'stage_id': token, 'sha': clone['sha'], 'command': command, 'args': args,
-                'credentials': [{'env': c['key']} for c in detected], 'manual_command': not bool(command)}
+                'credentials': [{'env': c['key']} for c in detected], 'manual_command': not bool(command),
+                'command_source': inferred.get('command_source', 'repository configuration' if command else ''),
+                'build_required': inferred.get('build_required', False),
+                'required_steps': inferred.get('required_steps', [])}
     except ActivationError:
         raise
     except Exception as e:

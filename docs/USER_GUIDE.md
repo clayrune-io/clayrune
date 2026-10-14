@@ -615,8 +615,6 @@ many projects open.
 
 ---
 
-Connection addresses, package names, commands and saved names are displayed exactly as supplied; public labels do not rewrite those values.
-
 ## Settings
 
 Major sections:
@@ -973,6 +971,8 @@ browser manually.
 ---
 
 ## Desk Connections: add or check a service
+
+Addresses, package names, commands and saved names are displayed exactly as supplied. For GitHub Node packages, setup uses a single declared start file or a plain Node start script where available. A build notice means you must select the dependency and build steps in Review; setup does not run them or select them for you. Ambiguous packages still need an explicit start command.
 
 Every service also offers **Sign in on the website**, including YouTube and unknown web addresses. Generic browser connections save the service name, address and browser profile. They grant no execution access: Read and Post remain off. Saving a browser profile does not prove that it is signed in.
 

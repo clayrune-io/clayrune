@@ -12,6 +12,7 @@ const screens = Object.freeze({
 const words = Object.freeze({ continue: 'Continue', back: 'Back', save: 'Save', done: 'Done',
   packageStaging: 'Reading the repository and checking its files; this can take a minute.',
   packageDetecting: 'Reading the package listing to find the required details.',
+  packageBuild: 'This package needs building: in Review, select its dependency and build steps before saving.',
   service: 'Service name or web address', signin: 'Sign in', api: 'Access key or app',
   mcp: 'Connection software', reference: 'Save information only', details: 'Details',
   investigating: 'Finding connection options…', suggestions: 'Suggestions',
