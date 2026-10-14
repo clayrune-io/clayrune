@@ -692,11 +692,19 @@ def _find_chromium():
     root = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'ms-playwright')
     if os.name != 'nt':
         root = os.path.join(os.path.expanduser('~'), '.cache', 'ms-playwright')
+    # Playwright's cache on macOS is ~/Library/Caches, not ~/.cache.
+    mac_root = os.path.join(os.path.expanduser('~'), 'Library', 'Caches', 'ms-playwright')
     pats = [
         os.path.join(root, 'chromium-*', 'chrome-win64', 'chrome.exe'),
         os.path.join(root, 'chromium-*', 'chrome-win', 'chrome.exe'),
         os.path.join(root, 'chromium-*', 'chrome-linux', 'chrome'),
         os.path.join(root, 'chromium-*', 'chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium'),
+        # Chrome for Testing layouts, what Playwright installs on Linux x64
+        # and macOS now (playwright-core 1.60 EXECUTABLE_PATHS): the two above
+        # never matched them, so the pane found no Chromium on those hosts.
+        os.path.join(root, 'chromium-*', 'chrome-linux64', 'chrome'),
+        os.path.join(mac_root, 'chromium-*', 'chrome-mac-*', 'Google Chrome for Testing.app',
+                     'Contents', 'MacOS', 'Google Chrome for Testing'),
     ]
     found = []
     for p in pats:
@@ -976,7 +984,8 @@ _UA_LOW_ENTROPY_JS = (
     " : null")
 _UA_HIGH_ENTROPY_JS = (
     "navigator.userAgentData ? navigator.userAgentData.getHighEntropyValues(["
-    "'architecture','bitness','model','platformVersion','fullVersionList','uaFullVersion','wow64'"
+    "'architecture','bitness','model','platformVersion','fullVersionList','uaFullVersion','wow64',"
+    "'formFactors'"
     "]).then(v => JSON.stringify(v)) : null")
 
 
@@ -1254,6 +1263,11 @@ def _ua_metadata(low, high):
         md['bitness'] = high['bitness']
     if 'wow64' in high:
         md['wow64'] = bool(high['wow64'])
+    # Without it a held worker answers [] where Chromium says ["Desktop"].
+    # Only carried when non-empty: on Windows the pane reads [] under
+    # --user-agent and has always sent none (mc/browser_default_ua.py).
+    if high.get('formFactors'):
+        md['formFactors'] = [str(f) for f in high['formFactors']]
     return md
 
 
@@ -1295,6 +1309,7 @@ def _mobile_ua_override(session):
                            platformVersion='13.0.0', model='Pixel 7')
         mobile_meta.pop('bitness', None)
         mobile_meta.pop('wow64', None)
+        mobile_meta.pop('formFactors', None)   # a desktop "Desktop" under a Pixel UA
         override['userAgentMetadata'] = mobile_meta
     return override
 
