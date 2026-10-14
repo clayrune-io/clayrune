@@ -139,8 +139,8 @@
   function _credRowsHTML() {
     return P.creds.map((c, i) => `
         <div class="desk-v1-cfk-cred" data-pk-cred="${i}">
-          <input type="text" class="desk-v1-rules-textinput" data-pk-cred-env="${i}" value="${esc(c.env)}" placeholder="VARIABLE_NAME" maxlength="64" autocapitalize="characters" spellcheck="false" aria-label="Environment variable the server reads">
-          <input type="text" class="desk-v1-rules-textinput" data-pk-cred-vault="${i}" value="${esc(c.vault)}" placeholder="Vault entry name" maxlength="120" autocapitalize="off" spellcheck="false" aria-label="Vault entry that holds it">
+          <label class="desk-v1-conn-add-field">${window.DeskV1ConnectCopy.words.variableLabel}<input type="text" class="desk-v1-rules-textinput" data-pk-cred-env="${i}" value="${esc(c.env)}" placeholder="VARIABLE_NAME" maxlength="64" autocapitalize="characters" spellcheck="false" aria-describedby="pk-env-help-${i}"><span class="desk-v1-cfw-fact-text" id="pk-env-help-${i}">${window.DeskV1ConnectCopy.words.variableHelp}</span></label>
+          <label class="desk-v1-conn-add-field">${window.DeskV1ConnectCopy.words.savedCredentialLabel}<input type="text" class="desk-v1-rules-textinput" data-pk-cred-vault="${i}" value="${esc(c.vault)}" placeholder="Saved credential name" maxlength="120" autocapitalize="off" spellcheck="false" aria-describedby="pk-vault-help-${i}"><span class="desk-v1-cfw-fact-text" id="pk-vault-help-${i}">${window.DeskV1ConnectCopy.words.savedCredentialHelp}</span></label>
           <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-pk-cred-remove="${i}">Remove</button>
         </div>`).join('');
   }
@@ -158,13 +158,13 @@
   function _detailsViewHTML() {
     return `${P.git?window.DeskV1ConnectGithub.commandHTML(P.command,P.git.manual_command):''}${P.git?.build_required ? `<p class="desk-v1-cfw-fact-text" data-pk-build>${esc(window.DeskV1ConnectCopy.words.packageBuild)}</p>` : ''}<div class="desk-v1-cfk-pkgline" data-pk-pkgline><span data-connect-value><strong>${esc(_spec())}</strong></span>
         <button type="button" class="desk-v1-cf-link" data-pk-change>Change package</button></div>
-      <label class="desk-v1-conn-add-field">Start file inside the package (optional)
-        <input type="text" class="desk-v1-rules-textinput" data-pk-entry data-cfw-focus value="${esc(P.entry)}" maxlength="200" autocapitalize="off" spellcheck="false"></label>
+      ${P.git ? '' : `<label class="desk-v1-conn-add-field">Start file inside the package (optional)
+        <input type="text" class="desk-v1-rules-textinput" data-pk-entry data-cfw-focus value="${esc(P.entry)}" maxlength="200" autocapitalize="off" spellcheck="false" aria-describedby="pk-entry-help"><span class="desk-v1-cfw-fact-text" id="pk-entry-help">${window.DeskV1ConnectCopy.words.packageFileHelp}</span></label>`}
       <label class="desk-v1-conn-add-field">Arguments, one per line (optional)
-        <textarea class="desk-v1-rules-textinput" data-pk-args rows="2" spellcheck="false">${esc(P.args)}</textarea></label>
+        <textarea class="desk-v1-rules-textinput" data-pk-args rows="2" spellcheck="false" aria-describedby="pk-args-help">${esc(P.args)}</textarea><span class="desk-v1-cfw-fact-text" id="pk-args-help">${window.DeskV1ConnectCopy.words.argumentsHelp}</span></label>
       <div class="desk-v1-conn-add-field" data-pk-creds>Credentials, by name only (optional)
         ${_credRowsHTML()}
-        <div class="desk-v1-cfw-fact-text">Each is an environment variable the server reads and the Vault entry that holds its value. The value is never typed here.</div>
+        <div class="desk-v1-cfw-fact-text">${window.DeskV1ConnectCopy.words.credentialsHelp}</div>
         <div class="desk-v1-cfk-actions"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-pk-cred-add>Add a credential</button></div>
       </div>`;
   }
@@ -352,7 +352,7 @@
     copy: () => (P.view === 'identify' ? 'Enter the package you want to use.' : 'Review the detected settings and name any credentials in the Vault.'),
     body: () => (P.view === 'identify' ? _identifyHTML() : _detailsViewHTML()),
     details: (api) => (P.view === 'identify' ? '' : `<label class="desk-v1-conn-add-field">Server name (optional)
-        <input type="text" class="desk-v1-rules-textinput" data-pk-name value="${esc(P.name)}" maxlength="64" autocapitalize="off" spellcheck="false"></label>
+        <input type="text" class="desk-v1-rules-textinput" data-pk-name value="${esc(P.name)}" maxlength="64" autocapitalize="off" spellcheck="false" aria-describedby="pk-name-help"><span class="desk-v1-cfw-fact-text" id="pk-name-help">${window.DeskV1ConnectCopy.words.packageNameHelp}</span></label>
       <div class="desk-v1-cfw-dgroup" data-pk-provenance><div class="desk-v1-cfw-dtitle">Where the suggestions came from</div>${_provenanceHTML(api)}</div>`),
     primary: (api) => ({
       label: _busy() ? window.DeskV1ConnectCopy.words.checking : 'Continue', disabled: _busy() || (P.view === 'identify' ? !!_pkgProblem() : P.git && !P.command.trim()),
@@ -368,7 +368,6 @@
     }),
     bind: (root, api) => {
       _focusTitle(root);
-      if(P.git) root.querySelector('[data-pk-entry]')?.closest('label').setAttribute('hidden','');
       const primary = root.querySelector('[data-cfw-primary]');
       const field = (sel, key) => { const n = root.querySelector(sel); if (n) n.addEventListener('input', () => { P[key] = n.value; if(key==='command' && primary) primary.disabled=!P.command.trim();if (key === 'pkg') { _gen++;P.staging=false;P.git=null;P.command='';P.det = { busy: false, answer: null, alt: null, kind: '', error: '' }; sync(); } }); };
       const sync = () => {

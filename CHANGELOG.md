@@ -6,6 +6,10 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-14] - Explain package setup fields (MC-1095, part 4)
+
+- Setup fields have one plain guidance sentence from shared copy, including credential names versus saved credential references. GitHub setup omits the npm-only start-file field rather than relying on a hidden label that CSS can reveal.
+
 ## [2026-10-14] - Infer repository start files (MC-1095, part 3)
 
 - GitHub staging reads a single Node bin or a plain `node` start script from package.json and suggests a clone-local command. Missing build output requires an explicit build script and shows dependency/build guidance; install steps remain unchecked. Ambiguous or unsafe metadata keeps manual entry.

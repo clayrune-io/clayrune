@@ -59,6 +59,9 @@ try {
     await page.waitForSelector('[data-pk-pkgline]');
     assert.equal(await page.locator('[data-pk-pkgline] strong').textContent(),value);
     assert.equal(await page.inputValue('[data-pk-args]'),'mcp/vault/transport.js');
+    assert.equal(await page.locator('[data-pk-entry]').count(),0);
+    assert(await page.locator('#pk-command-help').isVisible());
+    assert(await page.locator('#pk-args-help').isVisible());
     // Copy is applied twice (body, then bind); all arbitrary rendered values stay literal.
     assert.equal(await page.evaluate(()=>{
       const C=window.DeskV1ConnectCopy, el=document.createElement('div');

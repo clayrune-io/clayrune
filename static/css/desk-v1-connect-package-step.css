@@ -3,6 +3,7 @@
 .desk-v1-cfk-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
 .desk-v1-cfk-cred { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; min-width: 0; }
 .desk-v1-cfk-cred input { flex: 1 1 10rem; min-width: 0; box-sizing: border-box; }
+.desk-v1-cfk-cred label { flex:1 1 14rem; min-width:0; }
 .desk-v1-cfk-origin { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; min-width: 0; overflow-wrap: anywhere; margin-bottom: 0.5rem; }
 .desk-v1-cfk-list { margin: 0.5rem 0 0; padding-left: 1.25rem; display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; overflow-wrap: anywhere; }
 .desk-v1-cfk-list:empty { display: none; }
