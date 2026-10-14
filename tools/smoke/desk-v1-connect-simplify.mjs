@@ -15,6 +15,8 @@ const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf
 const ORIGIN = 'http://mc.smoke.test';
 const SHOT_DIR = resolve(REPO_ROOT, '_scratch', 'connect_simplify');
 mkdirSync(SHOT_DIR, { recursive: true });
+const PACKAGE_SHOTS=resolve(REPO_ROOT,'_scratch','mc1095');
+mkdirSync(PACKAGE_SHOTS,{recursive:true});
 const STATIC = loadStaticJsCss(REPO_ROOT);
 
 let bad = 0;
@@ -76,7 +78,8 @@ async function newPage(browser, { srv, width, height }) {
     if (path === '/api/secrets' && method === 'GET') return J({secrets: [{name: 'existing.key', scope: 'global', allow_unattended: false},{name:'linkedin.personal',username:'example@example.com',entry_type:'login',scope:'global'},{name:'x.personal',username:'examplehandle',entry_type:'login',scope:'global'}, ...srv.extraSecrets]});
     if (!path.startsWith('/api/desk/') && !path.startsWith('/api/browser/')) return route.abort();
     srv.log.push({ method, path, body });
-    if(path==='/api/desk/connect/custom/github/stage') return J({stage_id:'github-fixture',sha:'a'.repeat(40),command:'node',args:['dist/index.js'],credentials:[]});
+    if(path==='/api/desk/connect/custom/github/stage') { if(srv.stagePending) await srv.stagePending;return J({stage_id:'github-fixture',sha:'a'.repeat(40),command:'node',args:['dist/cli.js'],credentials:[],build_required:true}); }
+    if(path==='/api/desk/connect/custom/setup-help') return J({content:{answer:'This package runs with Node.js. Keep node as the start command and dist/cli.js as its argument. Select the dependency and build steps in Review to create that file. YOUTUBE_API_KEY is the required credential name; pair it with the name of your saved YouTube key.',warning:'Review these suggestions before using them; nothing has been installed or saved.',suggestions:{command:'node',entry:'',args:['dist/cli.js'],credentials:['YOUTUBE_API_KEY']}}});
     if(path==='/api/desk/connect/custom/review') return J({fingerprint:'sha256:fixture',request_id:'custom-fixture',title:body.stage_id?'youtube-mcp-server':'example-package@1.0.0',server_name:'example-package',protocol:'stdio',command:{command:'node',args:['/smoke/mcp/route/transport.js']},package:{version:body.stage_id?'a'.repeat(40):'1.0.0',pinned:true,registry:body.stage_id?'GitHub':'registry.npmjs.org',integrity:'sha512:fixture',source:body.stage_id?'https://github.com/ZubeidHendricks/youtube-mcp-server.git':'https://registry.npmjs.org/example-package'},reach:{who:'One project',scope:'project',local_code:'Runs with your file and network access.'},credentials:[],scripts:body.stage_id?[{id:'script:build',script:'build',package:'youtube-mcp-server',version:'a'.repeat(40),body:'echo fixture',approved:false,approvable:true}]:[],dependencies:[],risks:body.stage_id?[{code:'install_output_not_rechecked',label:'Reviewed source files are checked before every start. Dependencies and build output are recorded once at Save, but are not checked again at start; later changes to them can run code.'}]:[],limitations:[],changes:[]});
     if(path==='/api/desk/connect/custom/commit') return body.passcode===PASSCODE?J({ok:true,state:'registered',message:'Registered; not checked'}):J({error:'bad_passcode'},403);
     if (path === '/api/desk/workspace') return J(srv.workspace());
@@ -141,7 +144,8 @@ async function inspect(p, service, width, screen) {
   if(screen==='permissions') await p.waitForFunction(()=>!document.querySelector('[data-cfw-primary]')?.disabled);
   const data = await p.evaluate(() => {
     const r=document.querySelector('[data-cfw]');
-    const visible=r.cloneNode(true);visible.querySelectorAll('details, [hidden]').forEach(n=>n.remove());
+    // Saved names/addresses and approval values are evidence, not public copy.
+    const visible=r.cloneNode(true);visible.querySelectorAll('details, [hidden], dd, [data-connect-value]').forEach(n=>n.remove());
     return { title:r.querySelector('[data-cfw-title]').textContent, copy:r.querySelector('[data-cfw-copy]').textContent,
       buttons:[...r.querySelectorAll('[data-cfw-actions] button')].map(b=>b.textContent), text:visible.textContent,
       forms:r.querySelectorAll('form').length, nested:r.querySelectorAll('details details').length,
@@ -320,8 +324,19 @@ try {
     const git=makeServer();const next=await newPage(browser,{srv:git,width,height:width===390?844:1000});const g=next.page;
     await g.click('[data-conn-add-tile]');await g.fill('[data-cfw-input]','youtube.com');await primary(g);await step(g,'connection');
     await g.click('[data-cfw-details] > summary');await g.check('[data-cfw-type][value="custom-npm"]');await primary(g);
+    let finishStage;git.stagePending=new Promise(resolve=>{finishStage=resolve;});
     await g.fill('[data-pk-package]','https://github.com/ZubeidHendricks/youtube-mcp-server');await primary(g);
+    await g.waitForSelector('[data-pk-detect-state="busy"]');
+    check(await g.locator('[data-pk-detect]').isDisabled()&&await g.locator('[data-cfw-primary]').isDisabled(),'GitHub stage shows disabled Find and Continue');
+    await g.screenshot({path:resolve(PACKAGE_SHOTS,`progress_${width}.png`),fullPage:true});finishStage();
     await g.waitForSelector('[data-pk-command-input]');check(await g.inputValue('[data-pk-command-input]')==='node','GitHub command suggested by staged metadata');
+    check(await g.locator('[data-pk-entry]').count()===0,'GitHub omits registry-only start file');
+    await g.click('[data-pk-help-open]');await g.click('[data-pk-help-ask]');await g.waitForSelector('[data-pk-help-answer]');
+    await g.locator('[data-pk-helper]').scrollIntoViewIfNeeded();
+    await g.locator('[data-pk-help-accept]').click({trial:true});
+    check(true,`${width}: helper acceptance is reachable above the pinned actions`);
+    await g.screenshot({path:resolve(PACKAGE_SHOTS,`helper_full_${width}.png`),fullPage:true});
+    check(!git.log.some(r=>/commit$/.test(r.path))&&await g.locator('[data-pk-cred-env]').count()===0,'helper only proposes values until acceptance');
     await primary(g);await step(g,'permissions');await g.selectOption('[data-cfp-project]',await g.locator('[data-cfp-project] option:not([value=""])').first().getAttribute('value'));await primary(g);await step(g,'review');
     await g.waitForSelector('[data-pk-pin]',{state:'attached'});await g.click('[data-cfw-details] > summary');
     check((await g.textContent('[data-pk-pin]')).includes('a'.repeat(40)),'GitHub approval shows exact fixed commit');

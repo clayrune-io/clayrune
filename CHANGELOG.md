@@ -6,6 +6,28 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-14] - Package setup questions and suggestions (MC-1095, part 5)
+
+- **Help me fill this in** answers package-specific questions using bounded staged metadata/README and non-secret detected fields through the certified tool-free Claude transform. It cannot install, read the vault, approve or save; unavailable/invalid answers fail visibly without fallback.
+- Suggestions remain proposals until **Use suggestions for empty fields**; existing edits and saved credential references are preserved. Follow-up questions include the previous explanation as data. Existing Review, unchecked scripts and passcode Save are unchanged.
+- Implementation and handoff: `docs/DESK_PACKAGE_SETUP.md`. Branch only; no merge, push or restart.
+
+## [2026-10-14] - Explain package setup fields (MC-1095, part 4)
+
+- Setup fields have one plain guidance sentence from shared copy, including credential names versus saved credential references. GitHub setup omits the npm-only start-file field rather than relying on a hidden label that CSS can reveal.
+
+## [2026-10-14] - Infer repository start files (MC-1095, part 3)
+
+- GitHub staging reads a single Node bin or a plain `node` start script from package.json and suggests a clone-local command. Missing build output requires an explicit build script and shows dependency/build guidance; install steps remain unchecked. Ambiguous or unsafe metadata keeps manual entry.
+
+## [2026-10-14] - Preserve connection values (MC-1095, part 2)
+
+- Vocabulary presentation now applies only to owned UI labels and explicitly marked prose. Rendered URLs, package names, commands, saved names and field contents remain verbatim through render and bind.
+
+## [2026-10-14] - Package setup progress (MC-1095, part 1)
+
+- GitHub staging and npm detection show a spinner and plain status, with Find and Continue disabled while reading. Busy labels survive the shared copy layer; edited addresses discard late answers. No install or save is triggered by detection.
+
 ## [2026-10-12] - Retire answered rollover messages (MC-1089)
 
 - Actual mid-turn rolls stamp the user messages they carry; the first non-empty main-conversation assistant text retires those entries so later rolls do not demand the same answers again. Messages received after the roll survive until carried by a later roll or cleared at turn completion.

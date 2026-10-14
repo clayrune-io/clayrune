@@ -1,6 +1,6 @@
 // Desk v1 — Connections: the Connect wizard's PACKAGE MCP screens (MC-1062 ticket 10,
 // docs/desk_v1/connect_flow_tickets/10-package-screen.md; frame and rules in desk-v1-connect-wizard.js).
-// Window-bridged module, no `import` (ground rule 1). It registers three screens through `registerScreen`
+// Window-bridged screen registry; the independent setup helper is imported below. Three screens use `registerScreen`
 // for the branch `type = mcp, variant = custom-npm` (the type projection's "MCP server: npm package"), and
 // owns nothing else: the old "Add your own MCP server" section (desk-v1-connect-custom.js) is untouched.
 //
@@ -31,6 +31,7 @@
 // ACTIVATION. The wizard is disabled until ticket 14, and the Package/Server-address choice that sets
 // `variant = custom-npm` is not part of this ticket: until it exists, the screens are reachable only by
 // `api.select({ variant: 'custom-npm' })`.
+import {createPackageHelper} from './desk-v1-connect-package-helper.js';
 (function () {
   const W = window.DeskV1ConnectWizard;
   if (!W) return;
@@ -51,12 +52,33 @@
   let _gen = 0;                                                // bumped when the branch is dropped: an answer that arrives later is ignored
 
   function _fresh() {
-    return { view: 'identify', git:null, command:'', staging:false, pkg: '', entry: '', args: '', name: '', creds: [], refocus: false,
+    return { view: 'identify', git:null, command:'', staging:false, pkg: '', entry: '', args: '', name: '', creds: [], refocus: false, helper:createPackageHelper(),
       det: { busy: false, answer: null, alt: null, kind: '', error: '' },
       rv: { view: 'facts', key: '', busy: false, card: null, scripts: [], error: '', saving: false },
       result: null };
   }
   let P = _fresh();
+  const _busy = () => P.staging || P.det.busy;
+
+  async function _stage(api) {
+    if (_busy()) return false;
+    const generation = ++_gen;
+    P.staging = true; api.repaint();
+    try {
+      const result = await window.DeskV1ConnectGithub.stage(api, P.pkg);
+      if (generation !== _gen) return false;
+      P.git = result; P.command = result.command || '';
+      P.args = (result.args || []).join('\n');
+      P.creds = (result.credentials || []).map(c => ({env:c.env, vault:''}));
+      P.view = 'details'; P.refocus = true;
+      return true;
+    } catch (e) {
+      if (generation === _gen) api.error(e.message);
+      return false;
+    } finally {
+      if (generation === _gen) { P.staging = false; api.repaint(); }
+    }
+  }
 
   // ── what the person typed ───────────────────────────────────────────────
   const _spec = () => P.pkg.trim().replace(/^npm:/i, '');
@@ -79,7 +101,7 @@
   }
   async function _detect(api) {
     const text = P.pkg.trim();
-    if (!text || P.det.busy) return;
+    if (!text || _busy()) return;
     const kind = _kind(), gen = _gen;
     P.det = { busy: true, answer: null, alt: null, kind, error: '' };
     api.repaint();
@@ -104,7 +126,7 @@
 
   function _detectLineHTML() {
     const d = P.det;
-    if (d.busy) return '<div class="desk-v1-cfw-fact-text" data-pk-detect-state="busy" role="status">Reading the registry. Nothing is installed.</div>';
+    if (_busy()) return `<div class="desk-v1-cfw-fact-text" data-pk-detect-state="busy" role="status"><span class="desk-v1-cfk-spinner" aria-hidden="true"></span>${esc(window.DeskV1ConnectCopy.words[P.staging ? 'packageStaging' : 'packageDetecting'])}</div>`;
     if (d.error) return `<div class="desk-v1-cfw-msg" data-pk-detect-state="error" role="alert">${esc(d.error)}</div>`;
     if (!d.answer || !d.alt) return '';
     const p = d.alt.package || {};
@@ -118,8 +140,8 @@
   function _credRowsHTML() {
     return P.creds.map((c, i) => `
         <div class="desk-v1-cfk-cred" data-pk-cred="${i}">
-          <input type="text" class="desk-v1-rules-textinput" data-pk-cred-env="${i}" value="${esc(c.env)}" placeholder="VARIABLE_NAME" maxlength="64" autocapitalize="characters" spellcheck="false" aria-label="Environment variable the server reads">
-          <input type="text" class="desk-v1-rules-textinput" data-pk-cred-vault="${i}" value="${esc(c.vault)}" placeholder="Vault entry name" maxlength="120" autocapitalize="off" spellcheck="false" aria-label="Vault entry that holds it">
+          <label class="desk-v1-conn-add-field">${window.DeskV1ConnectCopy.words.variableLabel}<input type="text" class="desk-v1-rules-textinput" data-pk-cred-env="${i}" value="${esc(c.env)}" placeholder="VARIABLE_NAME" maxlength="64" autocapitalize="characters" spellcheck="false" aria-describedby="pk-env-help-${i}"><span class="desk-v1-cfw-fact-text" id="pk-env-help-${i}">${window.DeskV1ConnectCopy.words.variableHelp}</span></label>
+          <label class="desk-v1-conn-add-field">${window.DeskV1ConnectCopy.words.savedCredentialLabel}<input type="text" class="desk-v1-rules-textinput" data-pk-cred-vault="${i}" value="${esc(c.vault)}" placeholder="Saved credential name" maxlength="120" autocapitalize="off" spellcheck="false" aria-describedby="pk-vault-help-${i}"><span class="desk-v1-cfw-fact-text" id="pk-vault-help-${i}">${window.DeskV1ConnectCopy.words.savedCredentialHelp}</span></label>
           <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-pk-cred-remove="${i}">Remove</button>
         </div>`).join('');
   }
@@ -129,23 +151,23 @@
     return `<label class="desk-v1-conn-add-field">npm package
         <input type="text" class="desk-v1-rules-textinput" data-pk-package data-cfw-focus value="${esc(P.pkg)}" placeholder="@scope/name or name@1.2.3" maxlength="214" autocapitalize="off" spellcheck="false"></label>
       <div class="desk-v1-cfw-fact-text">${window.DeskV1ConnectCopy.words.packageHint}</div>
-      <div class="desk-v1-cfk-actions"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-pk-detect ${P.pkg.trim() && !P.det.busy ? '' : 'disabled'}>${P.det.busy ? 'Reading…' : 'Detect parameters'}</button></div>
+      <div class="desk-v1-cfk-actions"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-pk-detect aria-busy="${_busy()}" ${P.pkg.trim() && !_busy() ? '' : 'disabled'}>${_busy() ? window.DeskV1ConnectCopy.words.checking : 'Detect parameters'}</button></div>
       <div data-pk-detect-slot aria-live="polite">${_detectLineHTML()}</div>
       ${pypi ? `<div class="desk-v1-cfw-msg" data-pk-pypi role="alert">${esc(PYPI_NOTICE)}</div>` : ''}`;
   }
 
   function _detailsViewHTML() {
-    return `${P.git?window.DeskV1ConnectGithub.commandHTML(P.command,P.git.manual_command):''}<div class="desk-v1-cfk-pkgline" data-pk-pkgline><span><strong>${esc(_spec())}</strong></span>
+    return `${P.git?window.DeskV1ConnectGithub.commandHTML(P.command,P.git.manual_command):''}${P.git?.build_required ? `<p class="desk-v1-cfw-fact-text" data-pk-build>${esc(window.DeskV1ConnectCopy.words.packageBuild)}</p>` : ''}<div class="desk-v1-cfk-pkgline" data-pk-pkgline><span data-connect-value><strong>${esc(_spec())}</strong></span>
         <button type="button" class="desk-v1-cf-link" data-pk-change>Change package</button></div>
-      <label class="desk-v1-conn-add-field">Start file inside the package (optional)
-        <input type="text" class="desk-v1-rules-textinput" data-pk-entry data-cfw-focus value="${esc(P.entry)}" maxlength="200" autocapitalize="off" spellcheck="false"></label>
+      ${P.git ? '' : `<label class="desk-v1-conn-add-field">Start file inside the package (optional)
+        <input type="text" class="desk-v1-rules-textinput" data-pk-entry data-cfw-focus value="${esc(P.entry)}" maxlength="200" autocapitalize="off" spellcheck="false" aria-describedby="pk-entry-help"><span class="desk-v1-cfw-fact-text" id="pk-entry-help">${window.DeskV1ConnectCopy.words.packageFileHelp}</span></label>`}
       <label class="desk-v1-conn-add-field">Arguments, one per line (optional)
-        <textarea class="desk-v1-rules-textinput" data-pk-args rows="2" spellcheck="false">${esc(P.args)}</textarea></label>
+        <textarea class="desk-v1-rules-textinput" data-pk-args rows="2" spellcheck="false" aria-describedby="pk-args-help">${esc(P.args)}</textarea><span class="desk-v1-cfw-fact-text" id="pk-args-help">${window.DeskV1ConnectCopy.words.argumentsHelp}</span></label>
       <div class="desk-v1-conn-add-field" data-pk-creds>Credentials, by name only (optional)
         ${_credRowsHTML()}
-        <div class="desk-v1-cfw-fact-text">Each is an environment variable the server reads and the Vault entry that holds its value. The value is never typed here.</div>
+        <div class="desk-v1-cfw-fact-text">${window.DeskV1ConnectCopy.words.credentialsHelp}</div>
         <div class="desk-v1-cfk-actions"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-pk-cred-add>Add a credential</button></div>
-      </div>`;
+      </div>${P.helper.html()}`;
   }
 
   function _provenanceItems() {
@@ -331,13 +353,14 @@
     copy: () => (P.view === 'identify' ? 'Enter the package you want to use.' : 'Review the detected settings and name any credentials in the Vault.'),
     body: () => (P.view === 'identify' ? _identifyHTML() : _detailsViewHTML()),
     details: (api) => (P.view === 'identify' ? '' : `<label class="desk-v1-conn-add-field">Server name (optional)
-        <input type="text" class="desk-v1-rules-textinput" data-pk-name value="${esc(P.name)}" maxlength="64" autocapitalize="off" spellcheck="false"></label>
+        <input type="text" class="desk-v1-rules-textinput" data-pk-name value="${esc(P.name)}" maxlength="64" autocapitalize="off" spellcheck="false" aria-describedby="pk-name-help"><span class="desk-v1-cfw-fact-text" id="pk-name-help">${window.DeskV1ConnectCopy.words.packageNameHelp}</span></label>
       <div class="desk-v1-cfw-dgroup" data-pk-provenance><div class="desk-v1-cfw-dtitle">Where the suggestions came from</div>${_provenanceHTML(api)}</div>`),
     primary: (api) => ({
-      label: 'Continue', disabled: P.staging || (P.view === 'identify' ? !!_pkgProblem() : P.git && !P.command.trim()),
+      label: _busy() ? window.DeskV1ConnectCopy.words.checking : 'Continue', disabled: _busy() || (P.view === 'identify' ? !!_pkgProblem() : P.git && !P.command.trim()),
       run: async () => {
+        if (_busy()) return false;
         if (P.view === 'identify') { const why = _pkgProblem(); if (why) { api.error(why); return false; }
-          if(window.DeskV1ConnectGithub.matches(P.pkg)) { const generation=_gen;P.staging=true;api.repaint();try {const result=await window.DeskV1ConnectGithub.stage(api,P.pkg);if(generation!==_gen)return false;P.git=result;P.command=result.command || '';P.args=(result.args||[]).join('\n');P.creds=(result.credentials||[]).map(c=>({env:c.env,vault:''}));} catch(e) {if(generation===_gen)api.error(e.message);return false;} finally {if(generation===_gen){P.staging=false;api.repaint();}} }
+          if(window.DeskV1ConnectGithub.matches(P.pkg)) { await _stage(api); return false; }
           P.view = 'details'; P.refocus = true; api.repaint(); return false; }
         const half = _halfCredential();
         if (half) { api.error(`Name both the variable and the Vault entry${half.env ? ` for ${half.env}` : ''}, or remove the row.`); return false; }
@@ -346,13 +369,12 @@
     }),
     bind: (root, api) => {
       _focusTitle(root);
-      if(P.git) root.querySelector('[data-pk-entry]')?.closest('label').setAttribute('hidden','');
       const primary = root.querySelector('[data-cfw-primary]');
-      const field = (sel, key) => { const n = root.querySelector(sel); if (n) n.addEventListener('input', () => { P[key] = n.value; if(key==='command' && primary) primary.disabled=!P.command.trim();if (key === 'pkg') { _gen++;P.staging=false;P.git=null;P.command='';P.det = { busy: false, answer: null, alt: null, kind: '', error: '' }; sync(); } }); };
+      const field = (sel, key) => { const n = root.querySelector(sel); if (n) n.addEventListener('input', () => { P[key] = n.value; if(key==='command' && primary) primary.disabled=!P.command.trim();if (key === 'pkg') { _gen++;P.helper.reset();P.staging=false;P.git=null;P.command='';P.det = { busy: false, answer: null, alt: null, kind: '', error: '' }; sync(); } }); };
       const sync = () => {
         const d = root.querySelector('[data-pk-detect]');
-        if (d) d.disabled = !P.pkg.trim() || P.det.busy;
-        if (primary && P.view === 'identify') primary.disabled = !!_pkgProblem();
+        if (d) { d.disabled = !P.pkg.trim() || _busy(); d.setAttribute('aria-busy', String(_busy())); d.textContent = window.DeskV1ConnectCopy.words[_busy() ? 'checking' : 'detect']; }
+        if (primary && P.view === 'identify') { primary.disabled = _busy() || !!_pkgProblem(); primary.setAttribute('aria-busy', String(_busy())); primary.textContent = window.DeskV1ConnectCopy.words[_busy() ? 'checking' : 'continue']; }
         const slot = root.querySelector('[data-pk-detect-slot]');
         if (slot) slot.innerHTML = _detectLineHTML();
         const form = root.querySelector('[data-cfw-body]');
@@ -369,11 +391,26 @@
       const add = root.querySelector('[data-pk-cred-add]');
       if (add) add.addEventListener('click', () => { P.creds.push({ env: '', vault: '' }); api.repaint(); });
       const det = root.querySelector('[data-pk-detect]');
-      if (det) det.addEventListener('click', async () => {if(window.DeskV1ConnectGithub.matches(P.pkg)) {const generation=++_gen;P.staging=true;api.repaint();try{const r=await window.DeskV1ConnectGithub.stage(api,P.pkg);if(generation!==_gen)return;P.git=r;P.command=r.command||'';P.args=(r.args||[]).join('\n');P.creds=(r.credentials||[]).map(c=>({env:c.env,vault:''}));P.view='details';}catch(e){if(generation===_gen)api.error(e.message);}finally{if(generation===_gen){P.staging=false;api.repaint();}}}else _detect(api);});
+      if (det) det.addEventListener('click', () => window.DeskV1ConnectGithub.matches(P.pkg) ? _stage(api) : _detect(api));
       const change = root.querySelector('[data-pk-change]');
-      if (change) change.addEventListener('click', () => { P.view = 'identify'; P.refocus = true; api.repaint(); });
+      if (change) change.addEventListener('click', () => { P.helper.reset();P.view = 'identify'; P.refocus = true; api.repaint(); });
+      P.helper.bind(root, {api,
+        request: () => ({...(P.git ? {stage_id:P.git.stage_id} : {package:_spec()}), fields:{command:P.command,entry:P.entry,args:P.args.split('\n').filter(Boolean),credentials:P.creds.map(c=>c.env).filter(Boolean)}}),
+        accept: suggestions => {
+          if (P.git && !P.command.trim()) P.command=suggestions.command||'';
+          if (!P.git && !P.entry.trim()) P.entry=suggestions.entry||'';
+          if (!P.args.trim()) P.args=(suggestions.args||[]).join('\n');
+          const missing=(suggestions.credentials||[]).filter(env=>!P.creds.some(c=>c.env===env));
+          for (const env of missing) {
+            if(P.creds.length>=8) break;
+            const empty=P.creds.find(c=>!c.env.trim()&&!c.vault.trim());
+            if(empty) empty.env=env;else P.creds.push({env,vault:''});
+          }
+          P.rv.card=null;P.rv.key='';P.rv.scripts=[];
+        },
+      });
     },
-    discard: () => { _gen++; P = _fresh(); },
+    discard: () => { _gen++; P.helper.reset(); P = _fresh(); },
   });
 
   W.registerScreen({

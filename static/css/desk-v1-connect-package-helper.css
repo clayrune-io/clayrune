@@ -1,0 +1,4 @@
+/* The independent package helper: wrap prose and preserve proposed argv lines. */
+.desk-v1-cfw [data-pk-helper] { display:flex; flex-direction:column; gap:0.5rem; min-width:0; }
+.desk-v1-cfw [data-pk-helper] h4, .desk-v1-cfw [data-pk-helper] p { margin:0; }
+.desk-v1-cfw [data-pk-help-value] { white-space:pre-wrap; overflow-wrap:anywhere; }

@@ -207,8 +207,8 @@
     if (!name) return '';
     const v = M.vault;
     const say = v && typeof v.allow_unattended === 'boolean'
-      ? `Unattended agents ${v.allow_unattended ? 'may' : 'may not'} use "${esc(name)}". Change this in the Vault.` : `The unattended-use setting for "${esc(name)}" is chosen in the Vault.`;
-    return `<div class="desk-v1-cfp-fact" data-cfp-vault><span class="desk-v1-cfp-owner">Saved login (Vault)</span><span class="desk-v1-cfw-fact-text">${say} Filling the password always starts with you.</span></div>`;
+      ? `Unattended agents ${v.allow_unattended ? 'may' : 'may not'} use "${esc(name)}". Change this in saved credentials.` : `The unattended-use setting for "${esc(name)}" is chosen in saved credentials.`;
+    return `<div class="desk-v1-cfp-fact" data-cfp-vault><span class="desk-v1-cfp-owner" data-connect-copy>Saved login (Vault)</span><span class="desk-v1-cfw-fact-text">${say} Filling the password always starts with you.</span></div>`;
   }
 
   function _stateHTML() {

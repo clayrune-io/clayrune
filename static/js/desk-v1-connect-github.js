@@ -3,5 +3,5 @@ import { ConnectCopy as C } from './desk-v1-connect-copy.js';
 const esc = s => String(s ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function matches(value) { return /^https?:\/\/github\.com\/[a-z\d._-]+\/[a-z\d._-]+(?:\.git)?(?:\/tree\/[^/]+)?\/?$/i.test(value.trim()); }
 async function stage(api, url) { return api.ctx.api('POST','/api/desk/connect/custom/github/stage',{url}); }
-function commandHTML(value, missing) { return `${missing?`<div role="status">${C.words.commandMissing}</div>`:''}<label class="desk-v1-conn-add-field">${C.words.command}<input class="desk-v1-rules-textinput" data-pk-command-input value="${esc(value)}" autocomplete="off" spellcheck="false"></label>`; }
+function commandHTML(value, missing) { return `${missing?`<div role="status">${C.words.commandMissing}</div>`:''}<label class="desk-v1-conn-add-field">${C.words.command}<input class="desk-v1-rules-textinput" data-pk-command-input data-cfw-focus value="${esc(value)}" aria-describedby="pk-command-help" autocomplete="off" spellcheck="false"><span class="desk-v1-cfw-fact-text" id="pk-command-help">${C.words.commandHelp}</span></label>`; }
 window.DeskV1ConnectGithub={matches,stage,commandHTML};

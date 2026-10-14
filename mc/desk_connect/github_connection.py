@@ -19,6 +19,7 @@ from mc.desk_connect import github_manifest as manifest
 from mc.desk_connect import github_activation as activation
 from mc.desk_connect import github_install_output as output
 from mc.desk_connect import github_install_steps as steps_builder
+from mc.desk_connect import github_start_command
 from mc.desk_connect import parameter_schema as parameters
 from mc.desk_connect.mcp_errors import ActivationError
 
@@ -59,6 +60,9 @@ def stage(body: object) -> dict:
         # A registry launcher would ignore the reviewed clone's commit.
         if Path(str(command)).name.lower() in ('npx', 'npx.cmd', 'npm', 'uvx', 'pipx'):
             command, args = '', []
+        inferred = github_start_command.infer(pkg, files)
+        if inferred:
+            command, args = inferred['command'], inferred['args']
         rec = {**clone, 'url': classified['url'], 'files': files, 'steps': steps,
                'expires': time.monotonic()+1800, 'audit': audit, 'scan': scan}
         with _lock:
@@ -66,7 +70,10 @@ def stage(body: object) -> dict:
             while len(_stages)>50:
                 _stages.popitem(last=False)
         return {'stage_id': token, 'sha': clone['sha'], 'command': command, 'args': args,
-                'credentials': [{'env': c['key']} for c in detected], 'manual_command': not bool(command)}
+                'credentials': [{'env': c['key']} for c in detected], 'manual_command': not bool(command),
+                'command_source': inferred.get('command_source', 'repository configuration' if command else ''),
+                'build_required': inferred.get('build_required', False),
+                'required_steps': inferred.get('required_steps', [])}
     except ActivationError:
         raise
     except Exception as e:
@@ -74,15 +81,20 @@ def stage(body: object) -> dict:
         _log(f'[desk-connect] repository staging failed: {type(e).__name__}', flush=True)
         raise ActivationError('The repository could not be checked; see the server log.', 'stage_failed', 400) from e
 
-def prepare(body: dict, resolve_project) -> dict:
-    from mc.desk_connect import custom_connection_service as service
+def checked_stage(stage_id: object) -> dict:
+    """Return only a live, unchanged stage for read-only setup/review consumers."""
     with _lock:
-        stage_id = body.get('stage_id')
         staged = _stages.get(stage_id) if isinstance(stage_id, str) else None
     if not staged or staged['expires'] < time.monotonic():
         raise ActivationError('These details expired. Enter the address again.', 'stage_expired', 409)
     if manifest.inventory(staged['install_dir']) != staged['files']:
         raise ActivationError('The repository changed. Enter the address again.', 'repository_changed', 409)
+    return staged
+
+
+def prepare(body: dict, resolve_project) -> dict:
+    from mc.desk_connect import custom_connection_service as service
+    staged = checked_stage(body.get('stage_id'))
     raw = {k:v for k,v in body.items() if k not in ('stage_id','command')}
     fields = operation.clean_fields(raw, service.visible_vault_names(body.get('scope','project'),body.get('project_id')), default_name=Path(staged['install_dir']).name[:60])
     command = body.get('command')
