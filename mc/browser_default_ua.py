@@ -17,15 +17,21 @@ that worker said ``HeadlessChrome/151.0.0.0``; in Chrome it says
 ``--user-agent`` changes the default itself, so every context agrees. But
 with that switch Chromium reports EMPTY high-entropy client hints natively
 (architecture, bitness, platformVersion, uaFullVersion, fullVersionList all
-"", measured), and the guard copies the native values into its override. So
-`fill_high_entropy` puts back what Chromium would have reported without the
-switch, derived from the binary and the OS, and only where the native read
-came back blank.
+"", formFactors [], measured), and the guard copies the native values into
+its override. So `fill_high_entropy` puts back what Chromium would have
+reported without the switch, derived from the binary and the OS, and only
+where the native read came back blank.
 
-Windows only for now: that is where every derived value was checked against
-the native one (Chromium 151, Windows 11 build 26200: 19.0.0 / x86 / 64 /
-151.0.7922.34). Elsewhere `default_ua_args` returns no flag, which is the old
-behaviour, until macOS and Linux platformVersion are measured the same way.
+Each supported OS was checked against headed Chromium 151.0.7922.34 on that OS:
+
+- Windows 11 build 26200: 19.0.0 / x86 / 64 / 151.0.7922.34.
+- Linux x86_64 (Ubuntu 24.04 on WSL2, kernel 6.6.87, 2026-10-14):
+  platformVersion is "" natively, headed or not (Chromium does not report a
+  Linux version), x86 / 64 / 151.0.7922.34, formFactors ["Desktop"]. Linux
+  builds ship no version manifest; ``chrome --version`` prints it there.
+
+macOS and Linux on ARM are not measured yet, so `default_ua_args` returns no
+flag there, which is the old behaviour.
 """
 
 from __future__ import annotations
@@ -34,27 +40,54 @@ import glob
 import os
 import platform
 import re
+import subprocess
 import sys
 
 _VERSION_RE = re.compile(r'(\d+)\.(\d+)\.(\d+)\.(\d+)')
-_WIN_TOKEN = 'Windows NT 10.0; Win64; x64'   # Chromium's reduced UA, fixed since M110
+# Chromium's reduced UA platform token, fixed since M110 (measured per OS).
+_UA_TOKENS = {
+    'win32': 'Windows NT 10.0; Win64; x64',
+    'linux': 'X11; Linux x86_64',
+}
 _cache: dict[tuple[str, float], str | None] = {}
 
 
-def _full_version(chromium: str) -> str | None:
-    """Chromium's full version (151.0.7922.34), without starting it. Windows
-    builds ship a "<full version>.manifest" next to chrome.exe; chrome.exe
-    --version opens a browser on Windows instead of printing."""
+def _platform(platform_name: str | None = None) -> str:
+    return platform_name or sys.platform
+
+
+def _manifest_version(chromium: str) -> str | None:
+    """Windows builds ship a "<full version>.manifest" next to chrome.exe."""
+    for path in glob.glob(os.path.join(os.path.dirname(chromium), '*.manifest')):
+        name = os.path.basename(path)[:-len('.manifest')]
+        if _VERSION_RE.fullmatch(name):
+            return name
+    return None
+
+
+def _version_flag(chromium: str) -> str | None:
+    """``chrome --version`` ("Google Chrome for Testing 151.0.7922.34"). Never
+    on Windows: there chrome.exe --version opens a browser instead of printing."""
+    try:
+        out = subprocess.run([chromium, '--version'], stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, timeout=10).stdout
+    except Exception as e:
+        print(f'[browser] chromium --version failed: {e}', flush=True)
+        return None
+    m = _VERSION_RE.search(out or '')
+    return m.group(0) if m else None
+
+
+def _full_version(chromium: str, platform_name: str | None = None) -> str | None:
+    """Chromium's full version (151.0.7922.34), read once per binary."""
     try:
         key = (chromium, os.path.getmtime(chromium))
     except OSError:
         return None
     if key not in _cache:
-        found = None
-        for path in glob.glob(os.path.join(os.path.dirname(chromium), '*.manifest')):
-            if _VERSION_RE.fullmatch(os.path.basename(path)[:-len('.manifest')]):
-                found = os.path.basename(path)[:-len('.manifest')]
-                break
+        found = _manifest_version(chromium)
+        if not found and _platform(platform_name) != 'win32':
+            found = _version_flag(chromium)
         _cache[key] = found
     return _cache[key]
 
@@ -73,37 +106,51 @@ def _windows_platform_version() -> str | None:
         return None
 
 
+def _platform_version(platform_name: str | None = None) -> str | None:
+    """platformVersion as Chromium reports it natively, or None when it cannot
+    be derived. "" is a real value: Chromium reports no Linux version."""
+    if _platform(platform_name) == 'win32':
+        return _windows_platform_version()
+    return ''
+
+
 def _supported(platform_name: str | None = None) -> bool:
-    return (platform_name or sys.platform) == 'win32'
+    name = _platform(platform_name)
+    if name == 'linux':
+        # Only x86_64 was measured; an ARM build may carry another token.
+        return platform.machine().lower() in ('x86_64', 'amd64')
+    return name == 'win32'
 
 
 def default_user_agent(chromium: str, platform_name: str | None = None) -> str | None:
     """The UA Chromium would send if it were not headless, or None."""
     if not _supported(platform_name):
         return None
-    full = _full_version(chromium)
+    full = _full_version(chromium, platform_name)
     if not full:
         return None
     major = full.split('.')[0]
-    return (f'Mozilla/5.0 ({_WIN_TOKEN}) AppleWebKit/537.36 (KHTML, like Gecko) '
-            f'Chrome/{major}.0.0.0 Safari/537.36')
+    return (f'Mozilla/5.0 ({_UA_TOKENS[_platform(platform_name)]}) AppleWebKit/537.36 '
+            f'(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36')
 
 
-def default_ua_args(chromium: str, enabled: bool = True) -> list[str]:
+def default_ua_args(chromium: str, enabled: bool = True,
+                    platform_name: str | None = None) -> list[str]:
     """``--user-agent=...`` for a pane launch, or [] (off, unsupported OS, or
     the version could not be read, all of which keep the old behaviour). The
     hints have to be derivable too, or the switch would blank them for good."""
-    if not enabled or _windows_platform_version() is None:
+    if not enabled or not _supported(platform_name) or _platform_version(platform_name) is None:
         return []
-    ua = default_user_agent(chromium)
+    ua = default_user_agent(chromium, platform_name)
     return [f'--user-agent={ua}'] if ua else []
 
 
-def fill_high_entropy(high: dict | None, low: dict | None, chromium: str | None) -> dict:
+def fill_high_entropy(high: dict | None, low: dict | None, chromium: str | None,
+                      platform_name: str | None = None) -> dict:
     """Native getHighEntropyValues() result with the fields the --user-agent
     switch blanked put back. Fields the native read did return are kept."""
     out = dict(high or {})
-    full = _full_version(chromium) if chromium else None
+    full = _full_version(chromium, platform_name) if chromium else None
     if not full:
         return out
     major = full.split('.')[0]
@@ -111,7 +158,7 @@ def fill_high_entropy(high: dict | None, low: dict | None, chromium: str | None)
     derived = {
         'architecture': 'arm' if machine.startswith(('arm', 'aarch')) else 'x86',
         'bitness': '64' if sys.maxsize > 2 ** 32 else '32',
-        'platformVersion': _windows_platform_version() or '',
+        'platformVersion': _platform_version(platform_name) or '',
         'uaFullVersion': full,
         # Chromium's own brand carries the full version; GREASE brands carry
         # "<version>.0.0.0" (measured: Not=A?Brand 99 -> 99.0.0.0).
@@ -120,6 +167,10 @@ def fill_high_entropy(high: dict | None, low: dict | None, chromium: str | None)
              'version': full if str(b.get('version')) == major else f"{b.get('version')}.0.0.0"}
             for b in ((low or {}).get('brands') or [])],
     }
+    if _platform(platform_name) != 'win32' and not (low or {}).get('mobile'):
+        # Measured ["Desktop"] on headed Linux. Not filled on Windows, where
+        # the pane has reported [] since 362f4d2d (left as it is there).
+        derived['formFactors'] = ['Desktop']
     for k, v in derived.items():
         if not out.get(k) and v:
             out[k] = v
