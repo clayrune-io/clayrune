@@ -63,6 +63,8 @@ prompt space in every future turn that touches its subject.
 
 ## Backlog (per-project)
 
+Package setup help: `POST /api/desk/connect/custom/setup-help` is human-requested and read-only. Supply exactly one `stage_id` or npm `package`, a plain `question`, optional `previous_answer`, and `fields` containing only `command`, `entry`, `args`, and credential environment-name strings. Returns `content: {warning, answer, suggestions}` through the certified tool-free Claude transform; no install/approval/save. Do not send secret values or saved credential contents. See `docs/DESK_PACKAGE_SETUP.md`.
+
 When the user says "backlog", "the list", "todo", they mean THIS — never grep
 the filesystem.
 

@@ -7,6 +7,7 @@ import {chromium} from 'playwright';
 import {loadStaticJsCss} from './_static.mjs';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const files = loadStaticJsCss(root), out = resolve(root, '_scratch/mc1095');
+const styles=[...readFileSync(resolve(root,'static/index.html'),'utf8').matchAll(/<link rel="stylesheet" href="(\/static\/css\/[^\"]+)"[^>]*>/g)].map(match=>match[0]).join('');
 mkdirSync(out, {recursive:true});
 const browser = await chromium.launch({headless:true});
 try {
@@ -16,7 +17,7 @@ try {
     await page.route('**/*', route=> {
       const path=new URL(route.request().url()).pathname;
       if(files[path]) return route.fulfill({contentType:files[path][0],body:files[path][1]});
-      return route.fulfill({contentType:'text/html',body:`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/css/app.css"><link rel="stylesheet" href="/static/css/desk-v1-connections.css"><link rel="stylesheet" href="/static/css/desk-v1-connect-wizard.css"><link rel="stylesheet" href="/static/css/desk-v1-connect-package-step.css"><main style="padding:12px;max-width:1040px;margin:auto" id="host"></main><script type="module">
+      return route.fulfill({contentType:'text/html',body:`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">${styles}<main style="padding:12px;max-width:1040px;margin:auto" id="host"></main><script type="module">
         import '/static/js/desk-v1-connect-wizard.js';
         import '/static/js/desk-v1-connect-github.js';
         import '/static/js/desk-v1-connect-package-step.js';
@@ -62,6 +63,32 @@ try {
     assert.equal(await page.locator('[data-pk-entry]').count(),0);
     assert(await page.locator('#pk-command-help').isVisible());
     assert(await page.locator('#pk-args-help').isVisible());
+    await page.click('[data-pk-help-open]');await page.click('[data-pk-help-ask]');
+    await page.waitForSelector('[data-pk-help-ask][disabled]');
+    assert.equal(await page.evaluate(()=>calls.at(-1).path),'/api/desk/connect/custom/setup-help');
+    assert.equal(await page.evaluate(()=>calls.at(-1).body.fields.args[0]),'mcp/vault/transport.js');
+    await page.evaluate(()=>pending.shift().resolve({content:{answer:'Start this package with node and its compiled file; select the build step in Review first. YOUTUBE_API_KEY is the credential name.',warning:'Suggestions need your review; nothing is saved.',suggestions:{command:'python',entry:'',args:['dist/cli.js'],credentials:['YOUTUBE_API_KEY']}}}));
+    await page.waitForSelector('[data-pk-help-answer]');
+    // A proposed value never changes a field until accepted, and never overwrites edits.
+    assert.equal(await page.inputValue('[data-pk-command-input]'),'node');
+    assert.equal(await page.locator('[data-pk-cred-env]').count(),0);
+    await page.screenshot({path:resolve(out,`helper_${width}.png`),fullPage:true});
+    await page.click('[data-pk-help-accept]');
+    assert.equal(await page.inputValue('[data-pk-command-input]'),'node');
+    assert.equal(await page.inputValue('[data-pk-args]'),'mcp/vault/transport.js');
+    assert.equal(await page.inputValue('[data-pk-cred-env="0"]'),'YOUTUBE_API_KEY');
+    assert.equal(await page.inputValue('[data-pk-cred-vault="0"]'),'');
+    await page.fill('[data-pk-help-question]','Why is that needed?');await page.click('[data-pk-help-ask]');
+    assert.match(await page.evaluate(()=>calls.at(-1).body.previous_answer),/compiled file/);
+    await page.evaluate(()=>pending.shift().reject(new Error('Help unavailable')));
+    await page.waitForSelector('[data-pk-helper] [role="alert"]');
+    assert(!(await page.isDisabled('[data-pk-help-ask]')));
+    assert.equal(await page.evaluate(()=>calls.some(c=>/commit|review/.test(c.path))),false);
+    // A late model answer after changing package is discarded.
+    await page.click('[data-pk-help-ask]');await page.click('[data-pk-change]');
+    await page.fill('[data-pk-package]','next-package');
+    await page.evaluate(()=>pending.shift().resolve({content:{answer:'old answer',suggestions:{}}}));
+    assert.equal(await page.locator('[data-pk-help-answer]').count(),0);
     // Copy is applied twice (body, then bind); all arbitrary rendered values stay literal.
     assert.equal(await page.evaluate(()=>{
       const C=window.DeskV1ConnectCopy, el=document.createElement('div');

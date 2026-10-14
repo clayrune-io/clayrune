@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-14] - Package setup questions and suggestions (MC-1095, part 5)
+
+- **Help me fill this in** answers package-specific questions using bounded staged metadata/README and non-secret detected fields through the certified tool-free Claude transform. It cannot install, read the vault, approve or save; unavailable/invalid answers fail visibly without fallback.
+- Suggestions remain proposals until **Use suggestions for empty fields**; existing edits and saved credential references are preserved. Follow-up questions include the previous explanation as data. Existing Review, unchecked scripts and passcode Save are unchanged.
+- Implementation and handoff: `docs/DESK_PACKAGE_SETUP.md`. Branch only; no merge, push or restart.
+
 ## [2026-10-14] - Explain package setup fields (MC-1095, part 4)
 
 - Setup fields have one plain guidance sentence from shared copy, including credential names versus saved credential references. GitHub setup omits the npm-only start-file field rather than relying on a hidden label that CSS can reveal.

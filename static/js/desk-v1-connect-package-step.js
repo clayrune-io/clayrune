@@ -1,6 +1,6 @@
 // Desk v1 — Connections: the Connect wizard's PACKAGE MCP screens (MC-1062 ticket 10,
 // docs/desk_v1/connect_flow_tickets/10-package-screen.md; frame and rules in desk-v1-connect-wizard.js).
-// Window-bridged module, no `import` (ground rule 1). It registers three screens through `registerScreen`
+// Window-bridged screen registry; the independent setup helper is imported below. Three screens use `registerScreen`
 // for the branch `type = mcp, variant = custom-npm` (the type projection's "MCP server: npm package"), and
 // owns nothing else: the old "Add your own MCP server" section (desk-v1-connect-custom.js) is untouched.
 //
@@ -31,6 +31,7 @@
 // ACTIVATION. The wizard is disabled until ticket 14, and the Package/Server-address choice that sets
 // `variant = custom-npm` is not part of this ticket: until it exists, the screens are reachable only by
 // `api.select({ variant: 'custom-npm' })`.
+import {createPackageHelper} from './desk-v1-connect-package-helper.js';
 (function () {
   const W = window.DeskV1ConnectWizard;
   if (!W) return;
@@ -51,7 +52,7 @@
   let _gen = 0;                                                // bumped when the branch is dropped: an answer that arrives later is ignored
 
   function _fresh() {
-    return { view: 'identify', git:null, command:'', staging:false, pkg: '', entry: '', args: '', name: '', creds: [], refocus: false,
+    return { view: 'identify', git:null, command:'', staging:false, pkg: '', entry: '', args: '', name: '', creds: [], refocus: false, helper:createPackageHelper(),
       det: { busy: false, answer: null, alt: null, kind: '', error: '' },
       rv: { view: 'facts', key: '', busy: false, card: null, scripts: [], error: '', saving: false },
       result: null };
@@ -166,7 +167,7 @@
         ${_credRowsHTML()}
         <div class="desk-v1-cfw-fact-text">${window.DeskV1ConnectCopy.words.credentialsHelp}</div>
         <div class="desk-v1-cfk-actions"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-pk-cred-add>Add a credential</button></div>
-      </div>`;
+      </div>${P.helper.html()}`;
   }
 
   function _provenanceItems() {
@@ -369,7 +370,7 @@
     bind: (root, api) => {
       _focusTitle(root);
       const primary = root.querySelector('[data-cfw-primary]');
-      const field = (sel, key) => { const n = root.querySelector(sel); if (n) n.addEventListener('input', () => { P[key] = n.value; if(key==='command' && primary) primary.disabled=!P.command.trim();if (key === 'pkg') { _gen++;P.staging=false;P.git=null;P.command='';P.det = { busy: false, answer: null, alt: null, kind: '', error: '' }; sync(); } }); };
+      const field = (sel, key) => { const n = root.querySelector(sel); if (n) n.addEventListener('input', () => { P[key] = n.value; if(key==='command' && primary) primary.disabled=!P.command.trim();if (key === 'pkg') { _gen++;P.helper.reset();P.staging=false;P.git=null;P.command='';P.det = { busy: false, answer: null, alt: null, kind: '', error: '' }; sync(); } }); };
       const sync = () => {
         const d = root.querySelector('[data-pk-detect]');
         if (d) { d.disabled = !P.pkg.trim() || _busy(); d.setAttribute('aria-busy', String(_busy())); d.textContent = window.DeskV1ConnectCopy.words[_busy() ? 'checking' : 'detect']; }
@@ -392,9 +393,24 @@
       const det = root.querySelector('[data-pk-detect]');
       if (det) det.addEventListener('click', () => window.DeskV1ConnectGithub.matches(P.pkg) ? _stage(api) : _detect(api));
       const change = root.querySelector('[data-pk-change]');
-      if (change) change.addEventListener('click', () => { P.view = 'identify'; P.refocus = true; api.repaint(); });
+      if (change) change.addEventListener('click', () => { P.helper.reset();P.view = 'identify'; P.refocus = true; api.repaint(); });
+      P.helper.bind(root, {api,
+        request: () => ({...(P.git ? {stage_id:P.git.stage_id} : {package:_spec()}), fields:{command:P.command,entry:P.entry,args:P.args.split('\n').filter(Boolean),credentials:P.creds.map(c=>c.env).filter(Boolean)}}),
+        accept: suggestions => {
+          if (P.git && !P.command.trim()) P.command=suggestions.command||'';
+          if (!P.git && !P.entry.trim()) P.entry=suggestions.entry||'';
+          if (!P.args.trim()) P.args=(suggestions.args||[]).join('\n');
+          const missing=(suggestions.credentials||[]).filter(env=>!P.creds.some(c=>c.env===env));
+          for (const env of missing) {
+            if(P.creds.length>=8) break;
+            const empty=P.creds.find(c=>!c.env.trim()&&!c.vault.trim());
+            if(empty) empty.env=env;else P.creds.push({env,vault:''});
+          }
+          P.rv.card=null;P.rv.key='';P.rv.scripts=[];
+        },
+      });
     },
-    discard: () => { _gen++; P = _fresh(); },
+    discard: () => { _gen++; P.helper.reset(); P = _fresh(); },
   });
 
   W.registerScreen({

@@ -81,15 +81,20 @@ def stage(body: object) -> dict:
         _log(f'[desk-connect] repository staging failed: {type(e).__name__}', flush=True)
         raise ActivationError('The repository could not be checked; see the server log.', 'stage_failed', 400) from e
 
-def prepare(body: dict, resolve_project) -> dict:
-    from mc.desk_connect import custom_connection_service as service
+def checked_stage(stage_id: object) -> dict:
+    """Return only a live, unchanged stage for read-only setup/review consumers."""
     with _lock:
-        stage_id = body.get('stage_id')
         staged = _stages.get(stage_id) if isinstance(stage_id, str) else None
     if not staged or staged['expires'] < time.monotonic():
         raise ActivationError('These details expired. Enter the address again.', 'stage_expired', 409)
     if manifest.inventory(staged['install_dir']) != staged['files']:
         raise ActivationError('The repository changed. Enter the address again.', 'repository_changed', 409)
+    return staged
+
+
+def prepare(body: dict, resolve_project) -> dict:
+    from mc.desk_connect import custom_connection_service as service
+    staged = checked_stage(body.get('stage_id'))
     raw = {k:v for k,v in body.items() if k not in ('stage_id','command')}
     fields = operation.clean_fields(raw, service.visible_vault_names(body.get('scope','project'),body.get('project_id')), default_name=Path(staged['install_dir']).name[:60])
     command = body.get('command')
