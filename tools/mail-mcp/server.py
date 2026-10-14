@@ -30,6 +30,11 @@ from email.header import decode_header
 from email.message import Message
 from pathlib import Path
 
+# read_digest.py loads this file by path, so its directory is not necessarily
+# on sys.path; the sibling helper has to be reachable either way.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from imap_quote import gmail_search  # noqa: E402
+
 CONFIG_PATH = Path.home() / ".clayrune" / "night-mail.json"
 IMAP_HOST = "imap.gmail.com"
 IMAP_PORT = 993
@@ -158,9 +163,7 @@ def tool_search_email(query: str, count: int = 20) -> str:
     try:
         M.select("INBOX", readonly=True)
         # Gmail full search syntax (from:, subject:, newer_than:1d, has:attachment…)
-        typ, data = M.uid("SEARCH", None, "X-GM-RAW", f'"{query}"')
-        if typ != "OK":
-            typ, data = M.uid("SEARCH", None, "TEXT", query)
+        typ, data = gmail_search(M, query)
         ids = data[0].split() if data and data[0] else []
         hits = ids[-count:][::-1]
         rows = [_headers(M, u) for u in hits]
