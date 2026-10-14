@@ -69,9 +69,7 @@ def fetch_messages(mail_server, query: str, count: int, mailbox: str) -> List[Di
     M = mail_server._connect()
     try:
         M.select(mailbox, readonly=True)
-        typ, data = M.uid("SEARCH", None, "X-GM-RAW", f'"{query}"')
-        if typ != "OK":
-            typ, data = M.uid("SEARCH", None, "TEXT", query)
+        typ, data = mail_server.gmail_search(M, query)
         ids = data[0].split() if data and data[0] else []
         uids = ids[-count:][::-1]
         messages = []
