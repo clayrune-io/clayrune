@@ -52,6 +52,19 @@ try {
     await page.evaluate(()=>pending.shift().resolve({alternatives:[{package:{ecosystem:'npm',name:'old'}}]}));
     assert.equal(await page.inputValue('[data-pk-package]'),'changed-mcp');
     assert.equal(await page.locator('[data-pk-detect-state]').count(),0);
+    await page.evaluate(()=>reset());
+    const value='https://github.com/ZubeidHendricks/youtube-mcp-server';
+    await page.fill('[data-pk-package]',value);await page.click('[data-pk-detect]');
+    await page.evaluate(()=>pending.shift().resolve({stage_id:'fixture',command:'node',args:['mcp/vault/transport.js'],credentials:[]}));
+    await page.waitForSelector('[data-pk-pkgline]');
+    assert.equal(await page.locator('[data-pk-pkgline] strong').textContent(),value);
+    assert.equal(await page.inputValue('[data-pk-args]'),'mcp/vault/transport.js');
+    // Copy is applied twice (body, then bind); all arbitrary rendered values stay literal.
+    assert.equal(await page.evaluate(()=>{
+      const C=window.DeskV1ConnectCopy, el=document.createElement('div');
+      el.innerHTML=C.body('<div data-cfw-actions></div><p>mcp-vault-route</p><dd>OAuth API</dd><label>mcp-vault<input value="MCP route"></label><span data-connect-value>https://x.test/MCP/vault</span><textarea>MCP transport</textarea>');
+      C.bind(el);return [el.querySelector('p').textContent,el.querySelector('dd').textContent,el.querySelector('input').value,el.querySelector('span').textContent,el.querySelector('textarea').value].join('|');
+    }),'mcp-vault-route|OAuth API|MCP route|https://x.test/MCP/vault|MCP transport');
     assert.deepEqual(errors,[]);
     console.log(`PASS package progress ${width}`);await page.close();
   }

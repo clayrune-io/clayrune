@@ -6,6 +6,10 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-14] - Preserve connection values (MC-1095, part 2)
+
+- Vocabulary presentation now applies only to owned UI labels and explicitly marked prose. Rendered URLs, package names, commands, saved names and field contents remain verbatim through render and bind.
+
 ## [2026-10-14] - Package setup progress (MC-1095, part 1)
 
 - GitHub staging and npm detection show a spinner and plain status, with Find and Continue disabled while reading. Busy labels survive the shared copy layer; edited addresses discard late answers. No install or save is triggered by detection.

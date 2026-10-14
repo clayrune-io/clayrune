@@ -615,6 +615,8 @@ many projects open.
 
 ---
 
+Connection addresses, package names, commands and saved names are displayed exactly as supplied; public labels do not rewrite those values.
+
 ## Settings
 
 Major sections:

@@ -141,7 +141,8 @@ async function inspect(p, service, width, screen) {
   if(screen==='permissions') await p.waitForFunction(()=>!document.querySelector('[data-cfw-primary]')?.disabled);
   const data = await p.evaluate(() => {
     const r=document.querySelector('[data-cfw]');
-    const visible=r.cloneNode(true);visible.querySelectorAll('details, [hidden]').forEach(n=>n.remove());
+    // Saved names/addresses and approval values are evidence, not public copy.
+    const visible=r.cloneNode(true);visible.querySelectorAll('details, [hidden], dd, [data-connect-value]').forEach(n=>n.remove());
     return { title:r.querySelector('[data-cfw-title]').textContent, copy:r.querySelector('[data-cfw-copy]').textContent,
       buttons:[...r.querySelectorAll('[data-cfw-actions] button')].map(b=>b.textContent), text:visible.textContent,
       forms:r.querySelectorAll('form').length, nested:r.querySelectorAll('details details').length,

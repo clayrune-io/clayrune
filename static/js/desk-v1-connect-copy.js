@@ -107,8 +107,14 @@ const factWords = Object.freeze({Service:'name',Name:'name',Address:'address',St
   'Browser profile':'browserProfile',Credential:'credential',Permissions:'permissionsList',
   'API key ID':'keyId','API key secret':'keySecret','API key':'key','Key ID':'keyId',
   'app key ID':'keyId','app key secret':'keySecret','App ID':'clientId','Client ID':'clientId','Client Secret':'clientSecret'});
-// Only text nodes are translated. Input values, option values, selectors, IDs,
-// requests and authorization checks are never changed by copy presentation.
+// Vocabulary is opt-in for UI copy. A text node can be a URL, package, saved
+// name or command just as easily as an input value: never rewrite arbitrary
+// rendered text. Adapters can mark fixed prose with data-connect-copy.
+function isCopy(node) {
+  const parent = node.parentElement;
+  if (!parent || parent.closest('details, [data-cfw-details], input, textarea, option, code, pre, dd, a, [data-connect-value], [data-cfa-r], [data-open-vault-unlock]')) return false;
+  return parent.matches('label, button, dt, .desk-v1-cfw-fact-head, [data-cfw-copy], [data-connect-copy]');
+}
 function body(html, api) {
   const t = document.createElement('template'); t.innerHTML = html;
   const connection=t.content.querySelector('[data-sum-row="connection"] dd');
@@ -119,7 +125,7 @@ function body(html, api) {
   const walker = document.createTreeWalker(t.content, NodeFilter.SHOW_TEXT);
   while (walker.nextNode()) {
     const n = walker.currentNode;
-    if (!n.parentElement?.closest('details, code, [data-cfa-r], [data-open-vault-unlock]')) n.textContent = plain(n.textContent);
+    if (isCopy(n)) n.textContent = plain(n.textContent);
   }
   return t.innerHTML;
 }
@@ -152,7 +158,7 @@ function bind(root) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   while (walker.nextNode()) {
     const n = walker.currentNode;
-    if (!n.parentElement?.closest('[data-cfw-details], input, textarea, option, code, [data-cfa-r], [data-open-vault-unlock]')) n.textContent = plain(n.textContent);
+    if (isCopy(n)) n.textContent = plain(n.textContent);
   }
   root.querySelectorAll('label').forEach(label => {
     if (label.closest('[data-cfw-details]')) return;
