@@ -6,6 +6,10 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-14] - Package setup progress (MC-1095, part 1)
+
+- GitHub staging and npm detection show a spinner and plain status, with Find and Continue disabled while reading. Busy labels survive the shared copy layer; edited addresses discard late answers. No install or save is triggered by detection.
+
 ## [2026-10-12] - Retire answered rollover messages (MC-1089)
 
 - Actual mid-turn rolls stamp the user messages they carry; the first non-empty main-conversation assistant text retires those entries so later rolls do not demand the same answers again. Messages received after the roll survive until carried by a later roll or cleared at turn completion.

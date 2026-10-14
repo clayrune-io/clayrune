@@ -10,6 +10,8 @@ const screens = Object.freeze({
   result: ['Result', 'Read the status below and finish any remaining sign-in.'],
 });
 const words = Object.freeze({ continue: 'Continue', back: 'Back', save: 'Save', done: 'Done',
+  packageStaging: 'Reading the repository and checking its files; this can take a minute.',
+  packageDetecting: 'Reading the package listing to find the required details.',
   service: 'Service name or web address', signin: 'Sign in', api: 'Access key or app',
   mcp: 'Connection software', reference: 'Save information only', details: 'Details',
   investigating: 'Finding connection options…', suggestions: 'Suggestions',
@@ -126,7 +128,7 @@ function screen(def) {
   if (!copy) return def;
   return { ...def, title: api => enabled ? copy[0] : def.title(api), copy: api => enabled ? copy[1] : def.copy(api),
     body: api => enabled ? body(def.body ? def.body(api) : '', def.step==='review'?api:undefined) : (def.body ? def.body(api) : ''),
-    primary: def.primary ? (api) => { const p = def.primary(api); return enabled && p ? { ...p, label: def.step === 'review' && /^sav/i.test(p.label) ? words.save : def.step === 'result' ? words.done : words.continue } : p; } : undefined,
+    primary: def.primary ? (api) => { const p = def.primary(api); return enabled && p ? { ...p, label: /^(Checking|Reading|Saving)/.test(p.label) ? p.label : def.step === 'review' && /^sav/i.test(p.label) ? words.save : def.step === 'result' ? words.done : words.continue } : p; } : undefined,
   };
 }
 function bind(root) {
@@ -178,7 +180,7 @@ function bind(root) {
     if (text) text.textContent=words[word];
   });
   for (const [selector, word] of Object.entries(buttonWords)) root.querySelectorAll(selector).forEach(button => {
-    if (!button.closest('[data-cfw-details]')) button.textContent=words[word];
+    if (!button.closest('[data-cfw-details]') && button.getAttribute('aria-busy') !== 'true') button.textContent=words[word];
   });
   root.querySelector('[data-cfw-back]')?.replaceChildren(document.createTextNode(words.back));
   root.querySelector('[data-cfw-details] > summary')?.replaceChildren(document.createTextNode(words.details));

@@ -57,6 +57,27 @@
       result: null };
   }
   let P = _fresh();
+  const _busy = () => P.staging || P.det.busy;
+
+  async function _stage(api) {
+    if (_busy()) return false;
+    const generation = ++_gen;
+    P.staging = true; api.repaint();
+    try {
+      const result = await window.DeskV1ConnectGithub.stage(api, P.pkg);
+      if (generation !== _gen) return false;
+      P.git = result; P.command = result.command || '';
+      P.args = (result.args || []).join('\n');
+      P.creds = (result.credentials || []).map(c => ({env:c.env, vault:''}));
+      P.view = 'details'; P.refocus = true;
+      return true;
+    } catch (e) {
+      if (generation === _gen) api.error(e.message);
+      return false;
+    } finally {
+      if (generation === _gen) { P.staging = false; api.repaint(); }
+    }
+  }
 
   // ── what the person typed ───────────────────────────────────────────────
   const _spec = () => P.pkg.trim().replace(/^npm:/i, '');
@@ -79,7 +100,7 @@
   }
   async function _detect(api) {
     const text = P.pkg.trim();
-    if (!text || P.det.busy) return;
+    if (!text || _busy()) return;
     const kind = _kind(), gen = _gen;
     P.det = { busy: true, answer: null, alt: null, kind, error: '' };
     api.repaint();
@@ -104,7 +125,7 @@
 
   function _detectLineHTML() {
     const d = P.det;
-    if (d.busy) return '<div class="desk-v1-cfw-fact-text" data-pk-detect-state="busy" role="status">Reading the registry. Nothing is installed.</div>';
+    if (_busy()) return `<div class="desk-v1-cfw-fact-text" data-pk-detect-state="busy" role="status"><span class="desk-v1-cfk-spinner" aria-hidden="true"></span>${esc(window.DeskV1ConnectCopy.words[P.staging ? 'packageStaging' : 'packageDetecting'])}</div>`;
     if (d.error) return `<div class="desk-v1-cfw-msg" data-pk-detect-state="error" role="alert">${esc(d.error)}</div>`;
     if (!d.answer || !d.alt) return '';
     const p = d.alt.package || {};
@@ -129,7 +150,7 @@
     return `<label class="desk-v1-conn-add-field">npm package
         <input type="text" class="desk-v1-rules-textinput" data-pk-package data-cfw-focus value="${esc(P.pkg)}" placeholder="@scope/name or name@1.2.3" maxlength="214" autocapitalize="off" spellcheck="false"></label>
       <div class="desk-v1-cfw-fact-text">${window.DeskV1ConnectCopy.words.packageHint}</div>
-      <div class="desk-v1-cfk-actions"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-pk-detect ${P.pkg.trim() && !P.det.busy ? '' : 'disabled'}>${P.det.busy ? 'Reading…' : 'Detect parameters'}</button></div>
+      <div class="desk-v1-cfk-actions"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-pk-detect aria-busy="${_busy()}" ${P.pkg.trim() && !_busy() ? '' : 'disabled'}>${_busy() ? window.DeskV1ConnectCopy.words.checking : 'Detect parameters'}</button></div>
       <div data-pk-detect-slot aria-live="polite">${_detectLineHTML()}</div>
       ${pypi ? `<div class="desk-v1-cfw-msg" data-pk-pypi role="alert">${esc(PYPI_NOTICE)}</div>` : ''}`;
   }
@@ -334,10 +355,11 @@
         <input type="text" class="desk-v1-rules-textinput" data-pk-name value="${esc(P.name)}" maxlength="64" autocapitalize="off" spellcheck="false"></label>
       <div class="desk-v1-cfw-dgroup" data-pk-provenance><div class="desk-v1-cfw-dtitle">Where the suggestions came from</div>${_provenanceHTML(api)}</div>`),
     primary: (api) => ({
-      label: 'Continue', disabled: P.staging || (P.view === 'identify' ? !!_pkgProblem() : P.git && !P.command.trim()),
+      label: _busy() ? window.DeskV1ConnectCopy.words.checking : 'Continue', disabled: _busy() || (P.view === 'identify' ? !!_pkgProblem() : P.git && !P.command.trim()),
       run: async () => {
+        if (_busy()) return false;
         if (P.view === 'identify') { const why = _pkgProblem(); if (why) { api.error(why); return false; }
-          if(window.DeskV1ConnectGithub.matches(P.pkg)) { const generation=_gen;P.staging=true;api.repaint();try {const result=await window.DeskV1ConnectGithub.stage(api,P.pkg);if(generation!==_gen)return false;P.git=result;P.command=result.command || '';P.args=(result.args||[]).join('\n');P.creds=(result.credentials||[]).map(c=>({env:c.env,vault:''}));} catch(e) {if(generation===_gen)api.error(e.message);return false;} finally {if(generation===_gen){P.staging=false;api.repaint();}} }
+          if(window.DeskV1ConnectGithub.matches(P.pkg)) { await _stage(api); return false; }
           P.view = 'details'; P.refocus = true; api.repaint(); return false; }
         const half = _halfCredential();
         if (half) { api.error(`Name both the variable and the Vault entry${half.env ? ` for ${half.env}` : ''}, or remove the row.`); return false; }
@@ -351,8 +373,8 @@
       const field = (sel, key) => { const n = root.querySelector(sel); if (n) n.addEventListener('input', () => { P[key] = n.value; if(key==='command' && primary) primary.disabled=!P.command.trim();if (key === 'pkg') { _gen++;P.staging=false;P.git=null;P.command='';P.det = { busy: false, answer: null, alt: null, kind: '', error: '' }; sync(); } }); };
       const sync = () => {
         const d = root.querySelector('[data-pk-detect]');
-        if (d) d.disabled = !P.pkg.trim() || P.det.busy;
-        if (primary && P.view === 'identify') primary.disabled = !!_pkgProblem();
+        if (d) { d.disabled = !P.pkg.trim() || _busy(); d.setAttribute('aria-busy', String(_busy())); d.textContent = window.DeskV1ConnectCopy.words[_busy() ? 'checking' : 'detect']; }
+        if (primary && P.view === 'identify') { primary.disabled = _busy() || !!_pkgProblem(); primary.setAttribute('aria-busy', String(_busy())); primary.textContent = window.DeskV1ConnectCopy.words[_busy() ? 'checking' : 'continue']; }
         const slot = root.querySelector('[data-pk-detect-slot]');
         if (slot) slot.innerHTML = _detectLineHTML();
         const form = root.querySelector('[data-cfw-body]');
@@ -369,7 +391,7 @@
       const add = root.querySelector('[data-pk-cred-add]');
       if (add) add.addEventListener('click', () => { P.creds.push({ env: '', vault: '' }); api.repaint(); });
       const det = root.querySelector('[data-pk-detect]');
-      if (det) det.addEventListener('click', async () => {if(window.DeskV1ConnectGithub.matches(P.pkg)) {const generation=++_gen;P.staging=true;api.repaint();try{const r=await window.DeskV1ConnectGithub.stage(api,P.pkg);if(generation!==_gen)return;P.git=r;P.command=r.command||'';P.args=(r.args||[]).join('\n');P.creds=(r.credentials||[]).map(c=>({env:c.env,vault:''}));P.view='details';}catch(e){if(generation===_gen)api.error(e.message);}finally{if(generation===_gen){P.staging=false;api.repaint();}}}else _detect(api);});
+      if (det) det.addEventListener('click', () => window.DeskV1ConnectGithub.matches(P.pkg) ? _stage(api) : _detect(api));
       const change = root.querySelector('[data-pk-change]');
       if (change) change.addEventListener('click', () => { P.view = 'identify'; P.refocus = true; api.repaint(); });
     },

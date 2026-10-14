@@ -9,3 +9,7 @@
 .desk-v1-cfk-script { min-width: 0; margin-bottom: 0.5rem; }
 .desk-v1-cfk-deplist { margin: 0 0 0.25rem; max-height: none; }
 .desk-v1-cfk-approve { margin-top: 0.75rem; min-height: 2.75rem; }
+/* Read-only package work shares one visible status across both detection paths. */
+.desk-v1-cfk-spinner { display:inline-block; width:14px; height:14px; margin-right:8px; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; animation:desk-package-spin 0.8s linear infinite; vertical-align:middle; }
+@keyframes desk-package-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce) { .desk-v1-cfk-spinner { animation:none; } }
