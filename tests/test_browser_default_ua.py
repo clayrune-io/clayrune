@@ -24,7 +24,7 @@ def test_default_ua_is_chromes_reduced_ua_without_headless(chromium):
 
 
 def test_no_flag_off_windows_or_without_a_version(chromium, tmp_path):
-    assert dua.default_user_agent(chromium, platform_name='darwin') is None
+    assert dua.default_user_agent(chromium, platform_name='freebsd') is None
     os.remove(tmp_path / '151.0.7922.34.manifest')
     dua._cache.clear()
     assert dua.default_user_agent(chromium, platform_name='win32') is None
@@ -151,3 +151,82 @@ def test_ua_metadata_carries_form_factors_only_when_set():
     session = {'ua_override': {'userAgent': 'Mozilla/5.0 (X11; Linux x86_64) Chrome/151.0.0.0',
                                'userAgentMetadata': br._ua_metadata(low, {'formFactors': ['Desktop']})}}
     assert 'formFactors' not in br._mobile_ua_override(session)['userAgentMetadata']
+
+
+# --- macOS (5cb6828e). Expected values are what headed Chromium 151.0.7922.34
+# reported on macOS 26.5.1 arm64, measured 2026-10-14.
+
+@pytest.fixture
+def mac_chromium(tmp_path, monkeypatch):
+    """A macOS build: the version comes from `chrome --version`, the OS version
+    from /usr/bin/sw_vers. `sw` is the sw_vers output (a str, or an exception)."""
+    exe = tmp_path / 'Google Chrome for Testing'
+    exe.write_text('')
+    dua._cache.clear()
+    state = {'sw': '26.5.1\n', 'calls': []}
+
+    def run(argv, **kw):
+        state['calls'].append(argv)
+        if argv[0] == dua._SW_VERS:
+            if isinstance(state['sw'], Exception):
+                raise state['sw']
+            return dua.subprocess.CompletedProcess(argv, 0, state['sw'], '')
+        return dua.subprocess.CompletedProcess(argv, 0, 'Google Chrome for Testing 151.0.7922.34 \n', '')
+    monkeypatch.setattr(dua.subprocess, 'run', run)
+    monkeypatch.setattr(dua.platform, 'machine', lambda: 'arm64')
+    monkeypatch.setattr(dua, '_windows_platform_version',
+                        lambda: pytest.fail('winreg consulted off Windows'))
+    return str(exe), state
+
+
+@pytest.mark.parametrize('machine', ['arm64', 'x86_64'])
+def test_mac_ua_is_the_frozen_intel_token_on_both_arches(mac_chromium, monkeypatch, machine):
+    exe, _ = mac_chromium
+    monkeypatch.setattr(dua.platform, 'machine', lambda: machine)
+    ua = dua.default_user_agent(exe, platform_name='darwin')
+    assert ua == ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
+                  '(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36')
+    assert dua.default_ua_args(exe, platform_name='darwin') == [f'--user-agent={ua}']
+
+
+def test_mac_platform_version_is_sw_vers_by_absolute_path_padded_to_three_parts(mac_chromium):
+    _, state = mac_chromium
+    assert dua._platform_version('darwin') == '26.5.1'
+    assert state['calls'] == [['/usr/bin/sw_vers', '-productVersion']]
+    state['sw'] = '15.0\n'
+    assert dua._platform_version('darwin') == '15.0.0'
+    state['sw'] = '15\n'
+    assert dua._platform_version('darwin') == '15.0.0'
+
+
+def test_mac_platform_version_falls_back_to_mac_ver_then_gives_up(mac_chromium, monkeypatch):
+    exe, state = mac_chromium
+    state['sw'] = OSError('no /usr/bin/sw_vers')
+    monkeypatch.setattr(dua.platform, 'mac_ver', lambda: ('14.4', ('', '', ''), 'arm64'))
+    assert dua._platform_version('darwin') == '14.4.0'
+    state['sw'] = 'garbage\n'
+    assert dua._platform_version('darwin') == '14.4.0'
+    monkeypatch.setattr(dua.platform, 'mac_ver', lambda: ('', ('', '', ''), ''))
+    assert dua._platform_version('darwin') is None
+    # No derivable hints, so no flag: the switch would blank them for good.
+    assert dua.default_ua_args(exe, platform_name='darwin') == []
+
+
+def test_mac_fill_matches_headed_chromium(mac_chromium):
+    exe, _ = mac_chromium
+    low = {'brands': [{'brand': 'Chromium', 'version': '151'},
+                      {'brand': 'Not=A?Brand', 'version': '99'}], 'mobile': False}
+    blank = {'architecture': '', 'bitness': '', 'platformVersion': '', 'uaFullVersion': '',
+             'fullVersionList': [], 'formFactors': [], 'model': '', 'wow64': False}
+    assert dua.fill_high_entropy(blank, low, exe, platform_name='darwin') == {
+        'architecture': 'arm', 'bitness': '64', 'platformVersion': '26.5.1',
+        'uaFullVersion': '151.0.7922.34',
+        'fullVersionList': [{'brand': 'Chromium', 'version': '151.0.7922.34'},
+                            {'brand': 'Not=A?Brand', 'version': '99.0.0.0'}],
+        'formFactors': ['Desktop'], 'model': '', 'wow64': False}
+
+
+def test_mac_fill_reports_x86_on_intel(mac_chromium, monkeypatch):
+    exe, _ = mac_chromium
+    monkeypatch.setattr(dua.platform, 'machine', lambda: 'x86_64')
+    assert dua.fill_high_entropy({}, {'brands': []}, exe, platform_name='darwin')['architecture'] == 'x86'
