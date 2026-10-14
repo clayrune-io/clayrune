@@ -8,6 +8,16 @@ The package and GitHub paths share Connection details, Permissions, Review and R
 
 Stage projects the program, argument file, source, build_required and required_steps. A build notice tells the human to select dependency/build steps in Review. All steps still start unchecked and run only after passcode Save. The npm-only optional start-file input is omitted on GitHub; explanatory sentences and labels live in the shared copy set.
 
+## GitHub Save steps (MC-1097)
+
+`github_install_steps.declared_scripts` offers only preinstall, install, postinstall, prepare, build, compile, build:* and compile:*. Dependencies precede lifecycle scripts, then base build followed by its alphabetically ordered variants, then base compile and its variants. Declaration/checkbox selection order cannot change execution order. Other package scripts are omitted and cannot be selected by a forged review request. This policy applies only to GitHub; custom_npm_* keeps its own registry lifecycle rules.
+
+Inferred required_steps is retained in staged metadata and copied into the fingerprinted operation and card. Initial Review is available with every step unchecked. The UI labels a required build and disables Save with a plain explanation while it is unselected; check_submission refuses missing approval before the human passcode gate, and provision also checks. No auto-selection, automatic execution or weaker human gate is introduced.
+
+GitHub provisioning reports a step failure as one sentence naming dependency setup or the declared script, leaving detailed output in the server log. Package Result is rendered by `desk-v1-connect-package-result.js`; setup_failed says Not saved and suppresses saved-only vault/start notes. The approval record can retain a failed attempt for recovery, but no MCP server is registered by that failure. The shared passcode dialog reuses the lookup spinner above its disabled controls. Generic status is used: the synchronous commit endpoint has no inexpensive per-step progress feed.
+
+Regression coverage: `tests/test_desk_connect_github_install_steps.py`, the existing GitHub/connect suites, and `tools/smoke/desk-v1-connect-package-save.mjs` (required selection, duplicate/cancel refusal while busy, cleared input, failed Result and 1440/390 captures). The isolated browser harness uses actual shipped modules/CSS and stub API replies; it never sends a real passcode or Save.
+
 Read-only live metadata verification: ZubeidHendricks/youtube-mcp-server at `36142e30de15841139ae9613c568e0bd09aef372` produced `node` + `dist/cli.js`, build_required true, required step script:build, without installing or executing package code. Source: <https://github.com/ZubeidHendricks/youtube-mcp-server/blob/36142e30de15841139ae9613c568e0bd09aef372/package.json>.
 
 ## Help me fill this in

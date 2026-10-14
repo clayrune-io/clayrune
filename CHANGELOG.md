@@ -6,6 +6,13 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-14] - GitHub connection Save runs only setup steps (MC-1097)
+
+- GitHub Review offers only install lifecycle, build and compile scripts. Dependencies run first, then lifecycle/build/compile order, independent of package declaration order; start, dev, test and publish scripts cannot be approved. Registry package rules are unchanged.
+- An inferred command needing build output marks the build step required. Save stays disabled until selected, and the server refuses missing build approval before the passcode check. Steps still start unchecked.
+- Failed setup says **Not saved**, names the failed step without a repository URL/version, and omits saved-only credential/start notes. The passcode dialog shows the existing spinner and visible status above disabled controls while Save runs.
+- Contract: `docs/DESK_PACKAGE_SETUP.md`. Branch only; no merge, push or restart.
+
 ## [2026-10-14] - Package setup questions and suggestions (MC-1095, part 5)
 
 - **Help me fill this in** answers package-specific questions using bounded staged metadata/README and non-secret detected fields through the certified tool-free Claude transform. It cannot install, read the vault, approve or save; unavailable/invalid answers fail visibly without fallback.

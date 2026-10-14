@@ -170,7 +170,7 @@ async function humanProofFetch(url, fetchOptions, opts) {
   return new Promise((resolve) => {
     _hpPending.set(modalId, {
       url, fetchOptions: fetchOptions || {}, title, description, mode,
-      stream: !!(opts && opts.stream), errorText: '', resolve,
+      stream: !!(opts && opts.stream), busyText: opts && opts.busyText, errorText: '', resolve,
     });
     _hpShow(modalId);
   });
@@ -268,14 +268,21 @@ function _hpShowBusy(modalId) {
   const body = document.getElementById(`hp-body-${modalId}`);
   if (!body) return;
   body.querySelectorAll('input, button').forEach((el) => { el.disabled = true; });
+  body.setAttribute('aria-busy', 'true');
   const confirm = body.querySelector('.btn-add');
   if (confirm) confirm.textContent = 'Working…';
   const note = document.createElement('div');
   note.dataset.hpBusy = '';
   note.setAttribute('role', 'status');
-  note.style.cssText = 'font-size:11px;color:var(--text-faint)';
-  note.textContent = 'Passcode sent. Waiting for the server to finish; this can take a minute.';
-  body.appendChild(note);
+  note.style.cssText = 'display:flex;align-items:center;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;font-size:13px;color:var(--text);line-height:1.55';
+  const spinner = document.createElement('span');
+  spinner.className = 'desk-v1-cfk-spinner';
+  spinner.setAttribute('aria-hidden', 'true');
+  spinner.style.flexShrink = '0';
+  const status = document.createElement('span');
+  status.textContent = _hpPending.get(modalId).busyText || 'Waiting for the server to finish; this can take a minute.';
+  note.append(spinner, status);
+  body.prepend(note);
 }
 async function _hpSendWithPasscode(modalId, p, passcode) {
 

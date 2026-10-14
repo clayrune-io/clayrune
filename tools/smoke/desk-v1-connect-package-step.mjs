@@ -176,7 +176,7 @@ async function newPage(browser, { srv, width, height }) {
       const card = srv.cards.get(body.request_id);
       if (srv.expire || !card || card.fingerprint !== body.fingerprint) return J({ error: 'the configuration changed since you reviewed it. Review it again.', code: 'changed_since_review' }, 409);
       const st = srv.commitState;
-      const msg = { registered: 'Registered. It starts the first time an agent session uses it.', pending_runtime: 'Saved. This install has no secret wrapper, so nothing is registered yet.', setup_failed: 'Saved, but setup failed: the package archive could not be unpacked.' }[st];
+      const msg = { registered: 'Registered. It starts the first time an agent session uses it.', pending_runtime: 'Saved. This install has no secret wrapper, so nothing is registered yet.', setup_failed: 'The connection was not saved because the package archive could not be unpacked.' }[st];
       return J({ ok: true, approved: true, duplicate: false, fingerprint: card.fingerprint, server_name: card.server_name, scope: card.scope_chosen, state: st, code: srv.commitCode, message: msg }, 201);
     }
     return route.abort();
@@ -552,7 +552,7 @@ try {
     await mainScenario(browser, w, h);
     await invalidateScenario(browser, w, h);
     await stateScenario(browser, w, h, 'pending_runtime', 'wrapper_missing', 'Saved, cannot run yet', 'Saved, cannot run yet');
-    await stateScenario(browser, w, h, 'setup_failed', 'unpack_failed', 'Saved, setup failed', 'Saved, setup failed');
+    await stateScenario(browser, w, h, 'setup_failed', 'unpack_failed', 'Not saved', 'Not saved');
     await pypiScenario(browser, w, h);
     await bigTextScenario(browser, w, h);
   }
