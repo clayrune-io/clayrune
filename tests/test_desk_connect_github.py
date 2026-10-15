@@ -53,7 +53,7 @@ def prepare(answer,**overrides):
 def test_classify_stage_pin_and_metadata(staged):
     answer,commands,scans=staged
     assert answer['sha']==SHA and answer['command']=='node'
-    assert answer['credentials']==[{'env':'API_TOKEN'}]
+    assert [c['env'] for c in answer['credentials']]==['API_TOKEN'] and answer['optional_credentials']==[]
     assert scans==[True]
     assert commands[0][0]=='git' and 'clone' in commands[0]
     assert 'protocol.file.allow=never' in commands[0]

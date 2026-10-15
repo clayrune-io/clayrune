@@ -81,6 +81,30 @@ def stage_repository():
         return _refusal(e)
 
 
+@bp.route('/api/desk/connect/custom/github/check', methods=['POST'])
+def check_repository():
+    """Start an approved, registered repository once and list its tools (no passcode: it runs only
+    the command the passcode approved, the way an agent would)."""
+    if is_unattended_caller():
+        return _refuse_agent('start a user-chosen repository to check it')
+    from mc.desk_connect import custom_connection_store as store, github_activation, github_start_check
+    d = request.get_json(silent=True)
+    d = d if isinstance(d, dict) else {}
+    scope, name = d.get('scope'), d.get('server_name')
+    rec = None
+    if scope in ('global', 'project') and isinstance(name, str):
+        rec = store.get(scope, d.get('project_id') if scope == 'project' else None, name)
+    if not rec or rec['operation'].get('ecosystem') != 'github':
+        return jsonify({'error': 'That saved repository was not found.', 'code': 'not_found'}), 404
+    try:
+        path = _project(rec['project_id'])['path'] if rec['scope'] == 'project' else None
+    except ActivationError as e:
+        return _refusal(e)
+    if github_activation.derive_state(rec, path)['state'] != 'registered':
+        return jsonify({'error': 'This connection is not registered as approved. Review it again first.', 'code': 'not_registered'}), 409
+    return jsonify(github_start_check.check(rec['operation']))
+
+
 @bp.route('/api/desk/connect/custom/commit', methods=['POST'])
 def commit_custom_connection():
     if is_unattended_caller():

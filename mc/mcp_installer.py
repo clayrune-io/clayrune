@@ -369,9 +369,33 @@ def _extract_from_example_files(install_dir: Path) -> dict[str, Any] | None:
 
 
 _README_NAMES = ('README.md', 'README.MD', 'Readme.md', 'README.rst', 'README')
-_JSON_FENCE_RE = re.compile(
-    r'```(?:json|jsonc|JSON)?\s*\n(.*?)\n```', re.DOTALL,
-)
+_FENCE_LINE_RE = re.compile(r'^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)')
+_JSON_LANGS = ('', 'json', 'jsonc', 'json5')
+
+
+def json_fences(text: str) -> list[str]:
+    """The bodies of a markdown text's JSON (or unlabelled) code blocks, in order.
+
+    Fences are paired line by line. The single regex this replaces paired a closing fence with the
+    next opening one as soon as any non-JSON block (```bash) came first, so every later "block" was
+    the prose between two fences and no config was ever seen (MC-1095: a README with a bash install
+    step first yielded no server and no credential)."""
+    out: list[str] = []
+    fence = lang = ''
+    body: list[str] = []
+    for line in text.splitlines():
+        m = _FENCE_LINE_RE.match(line)
+        if not fence:
+            if m:
+                fence, lang, body = m.group(1), m.group(2).lower(), []
+            continue
+        if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not m.group(2):
+            if lang in _JSON_LANGS:
+                out.append('\n'.join(body))
+            fence = ''
+            continue
+        body.append(line)
+    return out
 
 
 def _extract_from_readme(install_dir: Path) -> dict[str, Any] | None:
@@ -383,8 +407,8 @@ def _extract_from_readme(install_dir: Path) -> dict[str, Any] | None:
             text = p.read_text(encoding='utf-8', errors='replace')
         except Exception:
             continue
-        for m in _JSON_FENCE_RE.finditer(text):
-            block = m.group(1).strip()
+        for block in json_fences(text):
+            block = block.strip()
             if '"mcpServers"' not in block and 'mcpServers' not in block:
                 continue
             # Strip line comments (jsonc style) — vendors love sprinkling them.
@@ -497,33 +521,41 @@ def extract_config(install_dir: str, allow_claude_fallback: bool = True) -> dict
 # ── Secret detection ─────────────────────────────────────────────────────────
 
 _SECRET_PLACEHOLDER_RE = re.compile(
-    r'(?:paste[_-]?(?:here|me)|your[_-]?(?:api[_-]?key|token|secret|password)|'
+    # `your[_-]...` allows a few qualifying words first: "your_primary_youtube_api_key".
+    r'(?:paste[_-]?(?:here|me)|your[_-]?(?:[a-z0-9]+[_-]){0,4}(?:api[_-]?key|key|token|secret|password)|'
     r'replace[_-]?me|<your[_-]?[a-z]+>|example[_-]?(?:key|token)|'
     r'sk-xxx+|insert[_-]?here|change[_-]?me)',
     re.I,
 )
-_SECRETISH_KEY_RE = re.compile(r'(?:api[_-]?key|token|secret|password|passphrase|access[_-]?key)$', re.I)
+# A trailing number is a fallback slot (YOUTUBE_API_KEY2), still a credential.
+_SECRETISH_KEY_RE = re.compile(r'(?:api[_-]?key|token|secret|password|passphrase|access[_-]?key)\d*$', re.I)
+
+
+_VALUE_REFERENCE_RE = re.compile(r'^(?:\$\{[^}]*\}|\$[A-Za-z_]\w*|<[^>]*>)$')
+
+
+def is_credential_slot(name: str, value: str) -> bool:
+    """True when an example env entry is something the user must fill in: (a) a placeholder value
+    that looks obviously fake, or (b) a credential-like name whose value is empty or only a
+    reference (`${input:apiKey}`, `$TOKEN`, `<key>`)."""
+    if value and _SECRET_PLACEHOLDER_RE.search(value):
+        return True
+    return bool(_SECRETISH_KEY_RE.search(name)) and (not value or bool(_VALUE_REFERENCE_RE.match(value.strip())))
 
 
 def detect_secrets(servers: dict[str, Any]) -> list[dict[str, str]]:
-    """Return one entry per env var the user probably needs to fill in.
-
-    Triggers on (a) placeholder values that look obviously fake, (b)
-    empty-string env vars on keys whose names suggest a credential."""
+    """Return one entry per env var the user probably needs to fill in (`is_credential_slot`)."""
     out: list[dict[str, str]] = []
     seen: set[str] = set()
     for srv_name, cfg in servers.items():
-        env = cfg.get('env') or {}
+        env = cfg.get('env') or {} if isinstance(cfg, dict) else {}
         if not isinstance(env, dict):
             continue
         for k, v in env.items():
             if k in seen:
                 continue
             value = str(v or '')
-            looks_secretish = bool(_SECRETISH_KEY_RE.search(k))
-            placeholder = bool(_SECRET_PLACEHOLDER_RE.search(value)) if value else False
-            empty_and_credential = (not value) and looks_secretish
-            if placeholder or empty_and_credential:
+            if is_credential_slot(k, value):
                 out.append({
                     'server': srv_name, 'key': k,
                     'current': value, 'hint': k.replace('_', ' ').lower(),

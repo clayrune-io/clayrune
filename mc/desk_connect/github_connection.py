@@ -17,6 +17,7 @@ from mc.desk_connect import custom_connection_operation as operation
 from mc.desk_connect import custom_connection_store as store
 from mc.desk_connect import github_manifest as manifest
 from mc.desk_connect import github_activation as activation
+from mc.desk_connect import github_credentials as credentials
 from mc.desk_connect import github_install_output as output
 from mc.desk_connect import github_install_steps as steps_builder
 from mc.desk_connect import github_start_command
@@ -39,7 +40,7 @@ def stage(body: object) -> dict:
         files = manifest.inventory(clone['install_dir'])
         extracted = installer.extract_config(clone['install_dir'], allow_claude_fallback=False)
         configs = extracted.get('servers') or {}
-        detected = installer.detect_secrets(configs)
+        detected = credentials.detect(clone['install_dir'], configs)
         audit = installer.dependency_audit(clone['install_dir'], read_only=True)
         scan = installer.security_scan(clone['install_dir'], clone['sha'], toolless=True)
         if files != manifest.inventory(clone['install_dir']):
@@ -65,7 +66,8 @@ def stage(body: object) -> dict:
             while len(_stages)>50:
                 _stages.popitem(last=False)
         return {'stage_id': token, 'sha': clone['sha'], 'command': command, 'args': args,
-                'credentials': [{'env': c['key']} for c in detected], 'manual_command': not bool(command),
+                'credentials': detected['ask'], 'optional_credentials': detected['optional'],
+                'manual_command': not bool(command),
                 'command_source': inferred.get('command_source', 'repository configuration' if command else ''),
                 'build_required': inferred.get('build_required', False),
                 'required_steps': inferred.get('required_steps', [])}
@@ -130,8 +132,8 @@ def prepare(body: dict, resolve_project) -> dict:
                         'approved':s['id'] in chosen,'required':s['id'] in op['required_steps'],
                         'approvable':True,'reason':''} for s in staged['steps']],
             'scripts_note':'Every install step starts off. Selected steps run only after passcode Save; dependencies may be unpinned. '+output.NOTICE,
-            'install_note':'Only selected install steps run. Nothing starts until an agent uses this connection.',
-            'working_directory':staged['install_dir'],'first_start':'Deferred until an agent session uses it.',
+            'install_note':'Only selected install steps run. After Save, Clayrune starts the server once to check that it answers and lists its tools, then stops it.',
+            'working_directory':staged['install_dir'],'first_start':'Once right after Save, as a check; then whenever an agent session uses it.',
             'risks':[{'code':'unreviewed','label':'User supplied code; no safety guarantee. Dependencies and selected install steps can fetch or run other code.'},
                      {'code':'install_output_not_rechecked','label':output.NOTICE}],
             'repository_checks':{'audit':staged['audit'],'scan':staged['scan']}}

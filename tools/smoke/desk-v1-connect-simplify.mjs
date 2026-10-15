@@ -78,7 +78,7 @@ async function newPage(browser, { srv, width, height }) {
     if (path === '/api/secrets' && method === 'GET') return J({secrets: [{name: 'existing.key', scope: 'global', allow_unattended: false},{name:'linkedin.personal',username:'example@example.com',entry_type:'login',scope:'global'},{name:'x.personal',username:'examplehandle',entry_type:'login',scope:'global'}, ...srv.extraSecrets]});
     if (!path.startsWith('/api/desk/') && !path.startsWith('/api/browser/')) return route.abort();
     srv.log.push({ method, path, body });
-    if(path==='/api/desk/connect/custom/github/stage') { if(srv.stagePending) await srv.stagePending;return J({stage_id:'github-fixture',sha:'a'.repeat(40),command:'node',args:['dist/cli.js'],credentials:[],build_required:true}); }
+    if(path==='/api/desk/connect/custom/github/stage') { if(srv.stagePending) await srv.stagePending;return J({stage_id:'github-fixture',sha:'a'.repeat(40),command:'node',args:['dist/cli.js'],credentials:srv.stageCreds?[{env:'YOUTUBE_API_KEY',source:'README.md'}]:[],optional_credentials:srv.stageCreds?[{env:'YOUTUBE_API_KEY2',source:'README.md'}]:[],build_required:true}); }
     if(path==='/api/desk/connect/custom/setup-help') return J({content:{answer:'This package runs with Node.js. Keep node as the start command and dist/cli.js as its argument. Select the dependency and build steps in Review to create that file. YOUTUBE_API_KEY is the required credential name; pair it with the name of your saved YouTube key.',warning:'Review these suggestions before using them; nothing has been installed or saved.',suggestions:{command:'node',entry:'',args:['dist/cli.js'],credentials:['YOUTUBE_API_KEY']}}});
     if(path==='/api/desk/connect/custom/review') return J({fingerprint:'sha256:fixture',request_id:'custom-fixture',title:body.stage_id?'youtube-mcp-server':'example-package@1.0.0',server_name:'example-package',protocol:'stdio',command:{command:'node',args:['/smoke/mcp/route/transport.js']},package:{version:body.stage_id?'a'.repeat(40):'1.0.0',pinned:true,registry:body.stage_id?'GitHub':'registry.npmjs.org',integrity:'sha512:fixture',source:body.stage_id?'https://github.com/ZubeidHendricks/youtube-mcp-server.git':'https://registry.npmjs.org/example-package'},reach:{who:'One project',scope:'project',local_code:'Runs with your file and network access.'},credentials:[],scripts:body.stage_id?[{id:'script:build',script:'build',package:'youtube-mcp-server',version:'a'.repeat(40),body:'echo fixture',approved:false,approvable:true}]:[],dependencies:[],risks:body.stage_id?[{code:'install_output_not_rechecked',label:'Reviewed source files are checked before every start. Dependencies and build output are recorded once at Save, but are not checked again at start; later changes to them can run code.'}]:[],limitations:[],changes:[]});
     if(path==='/api/desk/connect/custom/commit') return body.passcode===PASSCODE?J({ok:true,state:'registered',message:'Registered; not checked'}):J({error:'bad_passcode'},403);
@@ -348,6 +348,15 @@ try {
     check(await g.locator('[data-cfw-primary]').isDisabled(),'GitHub Save requires explicit card approval');
     check(!git.log.some(r=>r.path.endsWith('/commit')),'GitHub staging and Review do not install or save');
     await g.screenshot({path:resolve(SHOT_DIR,`github_approval_${width}.png`),fullPage:true});await next.ctx.close();
+    const doc=makeServer();doc.stageCreds=true;const third=await newPage(browser,{srv:doc,width,height:width===390?844:1000});const d=third.page;
+    await d.click('[data-conn-add-tile]');await d.fill('[data-cfw-input]','youtube.com');await primary(d);await step(d,'connection');
+    await d.click('[data-cfw-details] > summary');await d.check('[data-cfw-type][value="custom-npm"]');await primary(d);
+    await d.fill('[data-pk-package]','https://github.com/ZubeidHendricks/youtube-mcp-server');await primary(d);
+    await d.waitForSelector('[data-pk-command-input]');
+    check((await d.textContent('[data-pk-creds-documented]')).includes('YOUTUBE_API_KEY'),'README-documented credential is named in setup');
+    check((await d.textContent('[data-pk-creds-optional]')).includes('YOUTUBE_API_KEY2'),'numbered fallback keys are listed as optional, not asked');
+    check(await d.locator('[data-pk-cred-env]').count()===1&&await d.inputValue('[data-pk-cred-env]')==='YOUTUBE_API_KEY','documented credential pre-fills exactly one name row');
+    await d.screenshot({path:resolve(PACKAGE_SHOTS,`github_documented_creds_${width}.png`),fullPage:true});await third.ctx.close();
   }
 } finally {await browser.close();}
 if(bad) {console.error(`${bad} connect-simplify checks failed`);process.exit(1);}
