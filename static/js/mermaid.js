@@ -401,8 +401,8 @@ function _ivGestures(scrollEl, wrap, zoomLabel) {
 // Stacking: each viewer has its OWN overlay, and an overlay's z-index makes it
 // a stacking context — so raising the *content* cannot lift one viewer above
 // another. The overlay is what has to move.
-let _IV_Z = 10000;
-const _IV_STACK = [];
+const _IV_WINDOWS = window._viewerWindows ||= { stack: [], z: 10000 };
+const _IV_STACK = _IV_WINDOWS.stack;
 const _ivMobile = () => window.matchMedia('(max-width: 960px)').matches;
 
 // The toolbar's own width requirement, measured from its children rather than
@@ -482,7 +482,7 @@ function _ivWindowify(overlay, content, toolbar) {
       if (i >= 0) _IV_STACK.splice(i, 1);
       _IV_STACK.push(overlay);
     }
-    overlay.style.zIndex = ++_IV_Z;
+    overlay.style.zIndex = ++_IV_WINDOWS.z;
   };
   const untrack = () => {
     const i = _IV_STACK.indexOf(overlay);
@@ -491,7 +491,7 @@ function _ivWindowify(overlay, content, toolbar) {
   // Only the TOP window answers the keyboard. Two open pictures both reacting
   // to `-` (and both closing on Esc) is the bug this prevents.
   const isTop = () => _IV_STACK[_IV_STACK.length - 1] === overlay;
-  if (_ivMobile()) return { raise, untrack, isTop, destroy: untrack };
+  if (_ivMobile()) { raise(); return { raise, untrack, isTop, destroy: untrack }; }
 
   overlay.classList.add('iv-windowed');
   content.addEventListener('mousedown', raise);
@@ -767,8 +767,9 @@ function _openMermaidViewer(source, svg) {
     e.stopPropagation(); gest.fit();
   });
   const onKey = e => {
-    if (!win.isTop()) return;                     // only the front window listens
+    if (e.defaultPrevented || !win.isTop()) return; // only the front window listens
     if (_isTypingTarget(e.target)) return;        // caret keys + '-'/'0' belong to the field
+    if (['Escape', '+', '=', '-', '0'].includes(e.key)) e.preventDefault();
     if (e.key === 'Escape') closeIt();
     else if (e.key === '+' || e.key === '=') gest.zoomBy(1.25);
     else if (e.key === '-') gest.zoomBy(1 / 1.25);
@@ -777,10 +778,7 @@ function _openMermaidViewer(source, svg) {
   document.addEventListener('keydown', onKey);
 }
 
-// Lightbox for inline agent-output images. Reuses the mermaid-viewer
-// overlay chrome (backdrop, toolbar, Esc/click-out close) for visual
-// consistency; click the image or +/- to zoom.
-// ── Download helpers (shared by the image + mermaid viewers) ────────────────
+// Download helpers for diagrams. Picture downloads live in image-viewer.js.
 function _dlBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -796,36 +794,6 @@ function _dlStamp() {
   const p = n => String(n).padStart(2, '0');
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
-// Prefer the real file's name — /api/serve-image carries it in ?path= — so a
-// saved attachment keeps its original name instead of a generic stamp.
-function _imgFilename(src, mime) {
-  try {
-    const u = new URL(src, location.href);
-    const p = u.searchParams.get('path') || u.pathname;
-    const base = decodeURIComponent(p).split(/[/\\]/).pop() || '';
-    if (base && /\.[a-z0-9]{2,5}$/i.test(base)) return base;
-  } catch (_) { /* data: URL or unparseable — fall through to the stamp */ }
-  const ext = ((mime || '').split('/')[1] || 'png').replace('svg+xml', 'svg');
-  return `image-${_dlStamp()}.${ext}`;
-}
-async function _downloadImage(src) {
-  try {
-    // Fetch → blob so the download is forced even when the server serves the
-    // image inline (Content-Disposition), and so we can read the real MIME.
-    const res = await fetch(src);
-    const blob = await res.blob();
-    _dlBlob(blob, _imgFilename(src, blob.type));
-  } catch (_) {
-    // Same-origin and data: URLs still save fine via a plain anchor.
-    const a = document.createElement('a');
-    a.href = src;
-    a.download = _imgFilename(src, '');
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  }
-}
-
 // Export a rendered mermaid diagram as a PNG (3x, flattened onto white so the
 // transparent SVG background doesn't come out black in other apps).
 //
@@ -868,199 +836,13 @@ function _downloadMermaid(overlay) {
   img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgStr);
 }
 
-// Background modes for the viewer canvas. White first — it's the sane default
-// for reading artwork; the checkerboard (transparency indicator) is opt-in.
-const _IV_BGS = ['white', 'checker', 'dark'];
-const _IV_BG_KEY = 'mc_img_viewer_bg';
-function _ivBgGet() {
-  try {
-    const v = localStorage.getItem(_IV_BG_KEY);
-    return _IV_BGS.includes(v) ? v : 'white';
-  } catch (_) { return 'white'; }
-}
-
-function _openImageViewer(src) {
-  const overlay = document.createElement('div');
-  overlay.className = 'mermaid-viewer-overlay';
-  overlay.innerHTML = `
-    <div class="mermaid-viewer-content">
-      <div class="mermaid-viewer-toolbar">
-        <button class="mermaid-viewer-btn _iv-zo" title="Zoom out">&minus;</button>
-        <span class="mermaid-viewer-zoom-label">100%</span>
-        <button class="mermaid-viewer-btn _iv-zi" title="Zoom in">+</button>
-        <button class="mermaid-viewer-btn _iv-zr" title="Fit to view">&#8634;</button>
-        <button class="mermaid-viewer-btn _iv-bg" title="Background (white / checker / dark)">&#9673; bg</button>
-        <button class="mermaid-viewer-btn _iv-dl" title="Download image">&#8681; save</button>
-        <a class="mermaid-viewer-btn _iv-open" href="${src}" target="_blank" rel="noopener" title="Open original">open ↗</a>
-        <span class="iv-counter"></span>
-        ${_ivWinControlsHTML()}
-      </div>
-      <div class="mermaid-viewer-scroll">
-        <div class="mermaid-viewer-svg"><img src="${src}" style="display:block;width:100%;height:auto" alt=""></div>
-      </div>
-      <button class="iv-nav-btn iv-nav-prev" title="Previous (←)" style="display:none">&#8249;</button>
-      <button class="iv-nav-btn iv-nav-next" title="Next (→)" style="display:none">&#8250;</button>
-    </div>`;
-  document.body.appendChild(overlay);
-  if (typeof makeResizable === 'function') makeResizable(overlay.querySelector('.mermaid-viewer-content'));
-  const wrap = overlay.querySelector('.mermaid-viewer-svg');
-  const zoomLabel = overlay.querySelector('.mermaid-viewer-zoom-label');
-  const content = overlay.querySelector('.mermaid-viewer-content');
-  const scrollEl = overlay.querySelector('.mermaid-viewer-scroll');
-  const imgEl = overlay.querySelector('.mermaid-viewer-svg img');
-
-  const gest = _ivGestures(scrollEl, wrap, zoomLabel);
-  const toolbarEl = overlay.querySelector('.mermaid-viewer-toolbar');
-  const win = _ivWindowify(overlay, content, toolbarEl);
-  // Measured BEFORE content's width is touched, while the toolbar still has
-  // its roomy CSS-default box to lay out in unclamped (see _ivToolbarMinWidth).
-  const toolbarMinW = _ivToolbarMinWidth(toolbarEl);
-
-  // ── Background mode (persisted) ──
-  let bg = _ivBgGet();
-  const applyBg = () => {
-    scrollEl.classList.remove('vbg-checker', 'vbg-dark');
-    if (bg !== 'white') scrollEl.classList.add('vbg-' + bg);
-    try { localStorage.setItem(_IV_BG_KEY, bg); } catch (_) {}
-  };
-  applyBg();
-  overlay.querySelector('._iv-bg').addEventListener('click', e => {
-    e.stopPropagation();
-    bg = _IV_BGS[(_IV_BGS.indexOf(bg) + 1) % _IV_BGS.length];
-    applyBg();
-  });
-  overlay.querySelector('._iv-dl').addEventListener('click', e => {
-    e.stopPropagation();
-    _downloadImage(src);
-  });
-
-  // ── Open at the picture's size, not a hard-coded 95vw x 92vh ──
-  // The CSS default filled the screen for a thumbnail AND for a screenshot.
-  // _ivFitBox sizes the window to the whole picture, shrinking by aspect when
-  // it has to, so it opens showing everything and leaves the dashboard visible
-  // around it. Drag-resize from any edge still applies afterwards.
-  const sizeToImage = () => {
-    const nw = imgEl.naturalWidth, nh = imgEl.naturalHeight;
-    if (!nw || !nh) return;                       // decode failed — keep CSS default
-    gest.setNatural(nw, nh);
-    // Desktop: size the WINDOW to the picture's natural pixels (never bigger —
-    // magnifying on open looks soft). Mobile keeps the CSS 95vw/92vh "modal
-    // treatment" frame regardless of the picture's own size. Either way,
-    // gest.fit() below scales the picture to fill whatever frame this leaves.
-    if (!_ivMobile()) {
-      const box = _ivFitBox(nw, nh, toolbarMinW, _ivChrome(content, toolbarEl));
-      content.style.width = box.w + 'px';
-      // Drag-resize (makeResizable) reads computed min-width as ITS floor, so
-      // this has to move too or a manual resize could shrink the window back
-      // down past the toolbar's own requirement.
-      content.style.minWidth = Math.max(320, toolbarMinW + 2) + 'px';
-      content.style.height = box.h + 'px';
-    } else {
-      content.style.minWidth = '320px';
-    }
-    gest.fit();
-  };
-  if (imgEl.complete) sizeToImage();
-  else imgEl.addEventListener('load', sizeToImage, { once: true });
-  const closeIt = () => {
-    overlay.remove();
-    document.removeEventListener('keydown', onKey);
-    gest.destroy();
-    win.destroy();
-  };
-  // Close on backdrop click — but ONLY when the gesture also STARTED there. A
-  // `click` fires on the nearest common ancestor of mousedown and mouseup, so
-  // dragging the resize corner (inside the content) and releasing over the
-  // backdrop reported e.target === overlay and made the image vanish mid-resize.
-  let _downOnBackdrop = false;
-  overlay.addEventListener('mousedown', e => { _downOnBackdrop = (e.target === overlay); });
-  overlay.addEventListener('click', e => {
-    if (e.target === overlay && _downOnBackdrop) closeIt();
-  });
-  overlay.querySelector('._iv-close').addEventListener('click', closeIt);
-  overlay.querySelector('._iv-zi').addEventListener('click', e => {
-    e.stopPropagation(); gest.zoomBy(1.25);
-  });
-  overlay.querySelector('._iv-zo').addEventListener('click', e => {
-    e.stopPropagation(); gest.zoomBy(1 / 1.25);
-  });
-  overlay.querySelector('._iv-zr').addEventListener('click', e => {
-    e.stopPropagation(); gest.fit();
-  });
-
-  // ── Prev/Next through the other image files in the same folder ──
-  // Only meaningful when `src` names a real file on disk (/api/serve-image
-  // ?path=...) — a mermaid diagram data: URL or anything else has no
-  // "folder" to step through, so the arrows/counter just stay hidden (their
-  // CSS default) rather than erroring.
-  const counterEl = overlay.querySelector('.iv-counter');
-  const prevBtn = overlay.querySelector('.iv-nav-prev');
-  const nextBtn = overlay.querySelector('.iv-nav-next');
-  let siblings = null;   // { files: [absPath, ...], } once loaded
-  let ivIdx = 0;
-  const srcPath = (() => {
-    try { return new URL(src, location.href).searchParams.get('path'); } catch (_) { return null; }
-  })();
-  const updateNavUI = () => {
-    const n = siblings ? siblings.files.length : 0;
-    const show = n > 1;
-    prevBtn.style.display = show ? '' : 'none';
-    nextBtn.style.display = show ? '' : 'none';
-    counterEl.textContent = show ? `${ivIdx + 1} / ${n}` : '';
-  };
-  const goTo = (i) => {
-    if (!siblings) return;
-    const n = siblings.files.length;
-    ivIdx = ((i % n) + n) % n;
-    const newSrc = '/api/serve-image?path=' + encodeURIComponent(siblings.files[ivIdx]);
-    imgEl.src = newSrc;
-    overlay.querySelector('._iv-open').href = newSrc;
-    updateNavUI();
-  };
-  if (srcPath) {
-    fetch('/api/serve-image/siblings?path=' + encodeURIComponent(srcPath))
-      .then(r => (r.ok ? r.json() : null))
-      .then(data => {
-        if (!data || !Array.isArray(data.files) || !data.files.length) return;
-        siblings = data;
-        ivIdx = data.index || 0;
-        updateNavUI();
-      })
-      .catch(() => {});
-  }
-  // Re-fit the zoom to whatever image is now loaded — covers both the first
-  // load and every nav step (sizeToImage above only ever fires once, for the
-  // window's own initial sizing; navigating deliberately leaves the window's
-  // size/position alone and only re-fits the picture inside it).
-  imgEl.addEventListener('load', () => {
-    if (imgEl.naturalWidth && imgEl.naturalHeight) {
-      gest.setNatural(imgEl.naturalWidth, imgEl.naturalHeight);
-      gest.fit();
-    }
-  });
-  prevBtn.addEventListener('click', e => { e.stopPropagation(); goTo(ivIdx - 1); });
-  nextBtn.addEventListener('click', e => { e.stopPropagation(); goTo(ivIdx + 1); });
-
-  const onKey = e => {
-    if (!win.isTop()) return;                     // only the front window listens
-    if (_isTypingTarget(e.target)) return;        // caret keys + '-'/'0' belong to the field
-    if (e.key === 'Escape') closeIt();
-    else if (e.key === '+' || e.key === '=') gest.zoomBy(1.25);
-    else if (e.key === '-') gest.zoomBy(1 / 1.25);
-    else if (e.key === '0') gest.fit();
-    else if (e.key === 'ArrowLeft') goTo(ivIdx - 1);
-    else if (e.key === 'ArrowRight') goTo(ivIdx + 1);
-  };
-  document.addEventListener('keydown', onKey);
-}
-
 // ── ES-module interop ───────────────────────────────────────────────────────
 // Re-expose page-called functions on window. Inbound inline callers:
 // refreshModal + openPlanViewer call _renderAllMermaidPlaceholders after a
 // rebuild; the outputLines builder + openPlanViewer's body builder emit
 // placeholders via _mermaidPlaceholderHTML; appendAgentLine's streaming path
-// calls _handleMermaidLine; and the rich-text formatter generates
-// onclick="_openImageViewer(this.src)" attributes, which resolve against
+// calls _handleMermaidLine. Picture viewing is owned by image-viewer.js.
+// Inline diagram handlers resolve
 // the global object at click time. Everything else is module-private
 // (_mermaidBuffers, _resizeSvgForFit, _sweepOrphanMermaidNodes,
 // _renderViaExcalidraw, _renderViaMermaid, and _openMermaidViewer — wired
@@ -1072,4 +854,3 @@ function _openImageViewer(src) {
 window._mermaidPlaceholderHTML = _mermaidPlaceholderHTML;
 window._renderAllMermaidPlaceholders = _renderAllMermaidPlaceholders;
 window._handleMermaidLine = _handleMermaidLine;
-window._openImageViewer = _openImageViewer;

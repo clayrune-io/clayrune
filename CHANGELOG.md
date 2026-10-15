@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-15] - Native-style picture viewer (MC-1100)
+
+- Extracted picture viewing from the diagram module. Windows/Linux get Photos-style filename, toolbar and status bars; Mac gets Preview-style window controls. Existing chat, Media and Desk library entry points remain supported.
+- Added message/gallery previous/next, filmstrip, cursor-anchored wheel/pinch zoom, drag pan, fit/100% toggle, percentage menu/slider, rotation, copy, print, image info and fullscreen. Save retains the original file; rotation changes only the view and copy/print output. Background preference remains; no delete action.
+- Phone controls fit 390px, with pinch, pan and swipe navigation. Navigation uses the caller's picture list instead of enumerating the disk folder. Contract and validation: `docs/IMAGE_VIEWER.md`. Branch only; no merge, push or restart.
+
 ## [2026-10-14] - GitHub connection Save runs only setup steps (MC-1097)
 
 - GitHub Review offers only install lifecycle, build and compile scripts. Dependencies run first, then lifecycle/build/compile order, independent of package declaration order; start, dev, test and publish scripts cannot be approved. Registry package rules are unchanged.

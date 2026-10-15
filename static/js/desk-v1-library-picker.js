@@ -124,7 +124,7 @@
     el.addEventListener('click', (e) => { if (e.target === el && downOnBackdrop) _close(); });
     const onKey = (e) => {
       // A viewer opened from a tile sits above the chooser and owns Esc while it is up.
-      if (document.querySelector('.mermaid-viewer-overlay, .desk-v1-lv-overlay')) return;
+      if (document.querySelector('.image-viewer-overlay:not([hidden]), .mermaid-viewer-overlay, .desk-v1-lv-overlay')) return;
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); _close(); return; }
       if (e.key !== 'Tab') return;
       const f = Array.from(dialog.querySelectorAll('button:not([disabled]), input')).filter((n) => n.offsetParent !== null);
