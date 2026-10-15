@@ -43,6 +43,7 @@ import mc.skills as _skills                # frontmatter parse for position note
 import mc.distiller as _distiller          # Phase 4 learning observer (best-effort)
 import mc.allowance_state as _allowance_state  # live vendor exhaustion state (MC-964 Step D.1)
 import mc.memory_overlap_df as _overlap_df  # M4 corpus document-frequency stoplist (MC-964 fix A2)
+import mc.memory_gate_tap as _gate_tap  # G1 report-mode observer for mints (MC-964 step 10)
 
 from mc import state
 from mc.provider_env_scope import claude_child_env
@@ -2302,7 +2303,10 @@ def write_topic_note(project, slug, description, body, *, note_type='project',
         lines.append('---')
         lines.append('')
         text = '\n'.join(lines) + (body or '').strip() + '\n'
+        # G1 report-mode tap: observes, never refuses or alters `text`.
+        gate_pending = _gate_tap.begin(project_id, mem_dir, slug, text, origin)
         _atomic_write_text(path, text)
+    _gate_tap.finish(gate_pending)
     return path.name
 
 
