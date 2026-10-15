@@ -15,6 +15,20 @@ def _local_file(value: object) -> str:
     return path.as_posix()
 
 
+_LAUNCHERS = frozenset({'npx', 'npm', 'uvx', 'pipx', 'pnpx', 'bunx'})
+_DLX = frozenset({'pnpm', 'yarn', 'bun'})
+
+
+def registry_launcher(command: object, args: object = ()) -> bool:
+    """True when the command downloads and runs a registry package instead of the saved repository:
+    `npx`, `npm`, `uvx`, `pipx`, `pnpx`, `bunx`, and `pnpm`/`yarn`/`bun` with `dlx` (or `bun x`)."""
+    name = PurePosixPath(str(command).replace('\\', '/')).name.lower()
+    for ext in ('.cmd', '.exe'):
+        name = name.removesuffix(ext)
+    first = args[0] if isinstance(args, (list, tuple)) and args and isinstance(args[0], str) else ''
+    return name in _LAUNCHERS or (name in _DLX and first in ('dlx', 'x'))
+
+
 def infer(package: object, files: dict[str, str]) -> dict:
     """Prefer one declared bin, then a plain node scripts.start. Missing build output
     is usable only with an explicit build script; it is never run/approved here.

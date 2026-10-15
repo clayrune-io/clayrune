@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -49,6 +50,26 @@ def _reason(stderr: str) -> str:
     return _printable(tail, _REASON_CHARS)
 
 
+def scrubber(op: dict):
+    """`text -> text` that removes secrets from what a started server wrote. The wrapper that starts it
+    runs `--raw` (no scrubbing), so this is the only place it happens: the approved credentials' values
+    are read once (audited, consumer `desk-start-check`) and registered with the vault's own redactor
+    (`secrets_store.redact`), then any word that still looks like a token (`parameter_schema.credential_like`)
+    is replaced too. A value that cannot be read adds no redaction and is logged."""
+    from mc import secrets_store as vault
+    from mc.desk_connect import parameter_schema as ps
+    for c in op.get('credentials') or []:
+        try:
+            vault.get_secret_value(c['vault'], consumer='desk-start-check', project_id=op['scope']['project_id'])
+        except Exception as e:
+            _log(f'[desk-connect] start check could not load a credential to redact: {type(e).__name__}', flush=True)
+
+    def scrub(text: str) -> str:
+        text = vault.redact(text)
+        return re.sub(r'\S+', lambda m: '[redacted]' if ps.credential_like(m.group()) else m.group(), text)
+    return scrub
+
+
 def _stop(proc: subprocess.Popen) -> None:
     """Stop the process tree this module started. Closing stdin asks an MCP server to exit; the
     gate's child (node) does not die with the gate on Windows, so the tree goes by our own PID."""
@@ -76,9 +97,11 @@ def _stop(proc: subprocess.Popen) -> None:
         _log(f'[desk-connect] start check server {proc.pid} did not exit', flush=True)
 
 
-def handshake(argv: list[str], cwd: str | None, deadline_s: float = DEADLINE_S) -> dict:
+def handshake(argv: list[str], cwd: str | None, deadline_s: float = DEADLINE_S, scrub=lambda text: text) -> dict:
     """Run `argv` as an MCP stdio server: `{'ok': True, 'tools': n, 'server': name}` or
-    `{'ok': False, 'code', 'reason'}`; `reason` is the server's stderr tail, possibly empty."""
+    `{'ok': False, 'code', 'reason'}`; `reason` is the server's stderr tail, possibly empty. Every
+    piece of text the server wrote goes through `scrub` BEFORE it is cut to length, so a secret
+    split by the cut cannot slip past."""
     flags = 0
     if os.name == 'nt':
         flags = subprocess.CREATE_NEW_PROCESS_GROUP | getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -144,7 +167,7 @@ def handshake(argv: list[str], cwd: str | None, deadline_s: float = DEADLINE_S) 
                 pass
             err_reader.join(1)                            # the last line is usually the reason
         return {'ok': False, 'code': 'exited' if exited and code == 'no_answer' else code,
-                'reason': _reason(err.decode('utf-8', 'replace'))}
+                'reason': _reason(scrub(err.decode('utf-8', 'replace')))}
 
     try:
         try:
@@ -158,8 +181,8 @@ def handshake(argv: list[str], cwd: str | None, deadline_s: float = DEADLINE_S) 
         if init is None:
             return failed('no_answer')
         if 'result' not in init:
-            return {'ok': False, 'code': 'refused', 'reason': _printable(str((init.get('error') or {}).get('message', '')), _REASON_CHARS)}
-        server = _printable(str(((init['result'] or {}).get('serverInfo') or {}).get('name', '')), 80)
+            return {'ok': False, 'code': 'refused', 'reason': _printable(scrub(str((init.get('error') or {}).get('message', ''))), _REASON_CHARS)}
+        server = _printable(scrub(str(((init['result'] or {}).get('serverInfo') or {}).get('name', ''))), 80)
         send({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
         count, cursor = 0, None
         for page in range(MAX_PAGES):
@@ -169,7 +192,7 @@ def handshake(argv: list[str], cwd: str | None, deadline_s: float = DEADLINE_S) 
                 return failed('no_tools')
             result = reply.get('result') if isinstance(reply.get('result'), dict) else None
             if result is None or not isinstance(result.get('tools'), list):
-                return {'ok': False, 'code': 'no_tools', 'reason': _printable(str((reply.get('error') or {}).get('message', '')), _REASON_CHARS)}
+                return {'ok': False, 'code': 'no_tools', 'reason': _printable(scrub(str((reply.get('error') or {}).get('message', ''))), _REASON_CHARS)}
             count += len(result['tools'])
             cursor = result.get('nextCursor')
             if not isinstance(cursor, str) or not cursor:
@@ -211,7 +234,7 @@ def check(op: dict) -> dict:
         out = {'status': 'failed', 'code': e.code, 'message': f'Not checked: {e}', 'reason': ''}
     else:
         with _lock:
-            out = summary(handshake([cfg['command'], *cfg['args']], op.get('directory')))
+            out = summary(handshake([cfg['command'], *cfg['args']], op.get('directory'), scrub=scrubber(op)))
     out['checked_at'] = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     from mc.desk_connect import custom_connection_operation as operation
     store.set_start_check(op['scope']['kind'], op['scope']['project_id'], op['server_name'],
