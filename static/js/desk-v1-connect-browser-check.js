@@ -34,7 +34,7 @@ function bind(root,key,target,ctx,{own,onStatus,status}={}) {
   if(!alive() || s.busy)return;
   clearTimeout(s.timer);s.busy=true;paint();
   try {
-   const check=!(s.status?.verifiable===false && s.status?.state==='signed_in' && !confirmed);
+   const check=!(s.status?.verifiable===false && s.status?.state==='not_checked' && !confirmed);
    const out=await ctx.api('POST','/api/desk/connect/browser-profile/check',{...wanted,confirmed,check});
    if(!alive())return;
    s.status=out;s.error='';

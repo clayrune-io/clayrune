@@ -44,7 +44,7 @@
 
   const FILL_KEY = 'summary-fill';
   const COST_BEARING = ['published', 'account_specific'];     // type_view: the cost bases that mean "may cost money"
-  const CAN_CHECK = ['key_stored', 'signed_in', 'verified', 'check_failed', 'unknown'];   // the states the existing Result offered "Check it now" in
+  const CAN_CHECK = ['key_stored', 'signed_in', 'not_checked', 'verified', 'check_failed', 'unknown'];   // the states the existing Result offered "Check it now" in
   const KIND_WORD = { account: 'Account', member: 'Personal profile', organization: 'Company Page' };
   const REVIEW_COPY = 'Save these connection details. Sign-in and permission changes keep their own passcode checks.';
 

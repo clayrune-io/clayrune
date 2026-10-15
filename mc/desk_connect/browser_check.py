@@ -89,7 +89,7 @@ class BrowserProvider:
 
     def verify(self,_method,_account=None) -> Probe:
         if not self.spec:
-            return Probe(None,'Clayrune could not check automatically.',capability='Browser sign-in',
+            return Probe(None,'Clayrune has no automatic sign-in check for this service.',capability='Browser sign-in',
                          kind='confirmed' if self.target['confirmed'] else '')
         assert self.profile is not None
         return probe(self.target['browser_profile'],self.profile,self.spec)

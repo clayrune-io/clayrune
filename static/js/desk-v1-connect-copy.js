@@ -92,7 +92,7 @@ const words = Object.freeze({ continue: 'Continue', back: 'Back', save: 'Save', 
   manualHelp:'Sign in in the browser pane. Clayrune keeps the browser session.',
   browserNoExecution:'Read and Post are off. This browser sign-in grants no permission to run actions.',
   saveConnection:'Save connection',saveProof:'Re-enter your dashboard passcode to save this connection.',
-  checkConnection:'Check connection',noAutoCheck:'Clayrune could not check automatically.',
+  checkConnection:'Check connection',noAutoCheck:'Clayrune has no automatic sign-in check for this service.',
   signedInQuestion:'Are you signed in now?',yesSignedIn:"Yes, I’m signed in",notYet:'Not yet',
   paneUnavailable:'The browser pane could not be opened. Try again.',
   browserProof:'Browser sign-in works. Read and Post keep their own permissions.',
@@ -242,7 +242,7 @@ function bind(root) {
     if(label&&word) label.textContent=words[word];
   });
 }
-const statuses = Object.freeze({verified:'Verified',key_stored:'Key stored; not checked',signed_in:'Signed in, not verified',
+const statuses = Object.freeze({verified:'Verified',key_stored:'Key stored; not checked',signed_in:'Signed in, not verified',not_checked:'Not checked',
   sign_in_required:'Sign-in required',key_unreadable:'Saved key cannot be read',vault_locked:'Saved credentials are locked',
   check_failed:'Check failed',unknown:'Check unavailable',registered:'Registered; not checked',setup_failed:'Saved; setup failed',not_connected:'Not connected'});
 const connectionStatus = value => statuses[value] || words.checkFailed;
