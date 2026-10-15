@@ -128,6 +128,9 @@ function _isolateRtlRuns(html) {
 }
 
 function formatAgentText(raw) {
+  // Rollover / starting-fresh notice → compact inline marker (MC-1101).
+  const _roHTML = window.rolloverMarkerHTML && window.rolloverMarkerHTML(raw);
+  if (_roHTML) return _roHTML;
   // Already escaped by esc() before calling — we operate on safe HTML
   let t = esc(raw);
 
@@ -472,6 +475,10 @@ function agentLineCls(text) {
   // MC-1059: the agent-read request card's marker; renderers without the card never show it raw.
   if (t.startsWith('[agent-read-request:')) return 'agent-line agent-line-hidden';
   if (t.startsWith('[tool:')) return 'agent-line agent-line-tool';
+  // Rollover / starting-fresh notices keep -status (so every existing
+  // :not(.agent-line-status) rule still excludes them) and add the marker
+  // class — static/js/context-rollover-marker.js, MC-1101.
+  if (window.isRolloverLine && window.isRolloverLine(t)) return 'agent-line agent-line-status agent-line-rollover';
   if (t.startsWith('[') && t.endsWith(']')) return 'agent-line agent-line-status';
   if (t.startsWith('[exited') || t.startsWith('[stream error')) return 'agent-line agent-line-error';
   return 'agent-line';
