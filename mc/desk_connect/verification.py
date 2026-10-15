@@ -31,6 +31,7 @@ LABELS = {
     'verified': 'Verified',
     'key_stored': 'Key stored, not verified',
     'signed_in': 'Signed in, not verified',
+    'not_checked': 'Not checked',
     'sign_in_required': 'Sign-in required',
     'key_unreadable': 'Stored key cannot be read',
     'vault_locked': 'Vault locked',
@@ -86,7 +87,8 @@ def status(service_id, method, account_id=None, *, provider=None) -> dict:
         rec = _records.get((service_id, method, account_id or ''))
         current_stamp = cs['stamp'] if 'stamp' in cs else _stamp(cs.get('entry'))
         if rec and rec['entry'] == cs.get('entry') and rec['stamp'] == current_stamp:
-            out.update(state='verified' if rec.get('verified', True) else 'signed_in', method=method, capability=rec['capability'], identity=rec['identity'],
+            # A person's own "I'm signed in" (no probe exists to observe it) is not a sign-in Clayrune saw.
+            out.update(state='verified' if rec.get('verified', True) else 'not_checked', method=method, capability=rec['capability'], identity=rec['identity'],
                        at=rec['at'])
     out['label'] = LABELS.get(out['state'], out['state'])
     return out

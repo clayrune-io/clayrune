@@ -42,6 +42,10 @@
     {
       "id": "google_photos",
       "file": "profiles/google_photos.json"
+    },
+    {
+      "id": "instagram",
+      "file": "profiles/instagram.json"
     }
   ]
 }

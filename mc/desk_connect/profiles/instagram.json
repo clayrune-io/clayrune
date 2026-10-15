@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "service_id": "instagram",
+  "revision": 1,
+  "signin_check": {
+    "url": "https://www.instagram.com/",
+    "selectors": ["a[href='/direct/inbox/']", "a[href='/explore/']"]
+  },
+  "label": "Instagram",
+  "aliases": [
+    "Instagram",
+    "Insta",
+    "IG"
+  ],
+  "home_url": "https://www.instagram.com",
+  "hosts": [
+    "instagram.com",
+    "www.instagram.com"
+  ],
+  "account_kinds": [
+    {
+      "id": "account",
+      "label": "Instagram account"
+    }
+  ],
+  "purposes": [],
+  "routes": [
+    {
+      "id": "instagram-browser",
+      "title": "Sign in through a browser profile",
+      "guidance": "Sign in to Instagram in a named browser profile; Clayrune can then check that the profile is signed in. It never stores your password. This row only describes the sign-in; no read or post route is offered.",
+      "transport": "browser",
+      "support": "info_only",
+      "auth": [
+        {
+          "type": "browser_signin",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [],
+      "requirements": [],
+      "limits": [],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "clayrune-desk-pane"
+      ],
+      "signin": {
+        "url": "https://www.instagram.com/accounts/login/",
+        "hosts": [
+          "www.instagram.com"
+        ]
+      }
+    }
+  ],
+  "evidence": [
+    {
+      "id": "clayrune-desk-pane",
+      "label": "Clayrune Desk: browser sign-in check only (no read or post route)",
+      "url": null,
+      "publisher_class": "clayrune_builtin",
+      "published": null,
+      "retrieved": null,
+      "attempted": null,
+      "claim_ids": [],
+      "digest": null,
+      "result": "unverified"
+    }
+  ],
+  "change_summary": "Revision 1: Instagram browser sign-in check only (no purposes, no read or post route). Sign-in selectors are language-neutral hrefs; the logged-out page was checked not to match, a signed-in match is unverified.",
+  "supersedes": null
+}

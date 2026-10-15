@@ -97,13 +97,14 @@ def test_failed_check_never_verified_and_clears_previous(monkeypatch,final,match
     assert b.run(target(check=False))['state']!='verified'
 
 
-def test_manual_confirmation_is_signed_in_not_verified(monkeypatch):
+def test_manual_confirmation_without_a_check_is_not_checked_never_signed_in(monkeypatch):
     monkeypatch.setattr(b,'reader_for',lambda _:pytest.fail('unknown services have no probe'))
     out=b.run(target('https://example.com'))
     assert out['state']=='sign_in_required' and not out['verifiable']
     out=b.run(target('https://example.com',confirmed=True))
-    assert out['state']=='signed_in' and out['label']=='Signed in, not verified'
-    assert b.run(target('https://example.com',check=False))['state']=='signed_in'
+    assert out['state']=='not_checked' and out['label']=='Not checked'
+    assert out['message']=='Clayrune has no automatic sign-in check for this service.'
+    assert b.run(target('https://example.com',check=False))['state']=='not_checked'
     assert b.run(target('https://other.example.com',check=False))['state']=='sign_in_required'
 
 
@@ -190,3 +191,20 @@ def test_caller_cannot_install_probe_or_run_unattended(monkeypatch):
     assert client.post('/api/desk/connect/browser-profile/check',json={**data,'selectors':['#anything']}).status_code==400
     monkeypatch.setattr(b,'reader_for',lambda _:Reader())
     assert client.post('/api/desk/connect/browser-profile/check',json=data).get_json()['state']=='verified'
+
+
+def test_instagram_profile_loads_with_a_signin_check_and_no_read_or_post_route(monkeypatch):
+    prof=registry.profile('instagram')
+    assert registry.lookup('www.instagram.com')['id']=='instagram' and registry.lookup('instagram.com')['id']=='instagram'
+    assert prof['signin_check']=={'url':'https://www.instagram.com/','selectors':["a[href='/direct/inbox/']","a[href='/explore/']"]}
+    assert prof['purposes']==[] and all(r['support']=='info_only' and not r['coverage'] for r in prof['routes'])
+    route=[r for r in prof['routes'] if r['transport']=='browser' and r.get('signin')]
+    assert route and route[0]['signin']['hosts']==['www.instagram.com']
+    # With a spec, the shared check runs and no longer answers "not checked".
+    reader=Reader(final='https://www.instagram.com/',matches=[True,True]);monkeypatch.setattr(b,'reader_for',lambda _:reader)
+    out=b.run(target('https://www.instagram.com'))
+    assert out['state']=='verified' and out['verifiable']
+    reader=Reader(final='https://www.instagram.com/accounts/login/',matches=[False,False]);monkeypatch.setattr(b,'reader_for',lambda _:reader)
+    out=b.run(target('https://www.instagram.com'))
+    assert out['state']=='check_failed' and out['failure']=='signed_out' and out['needs_signin']
+    assert out['signin_url']=='https://www.instagram.com/accounts/login/'
