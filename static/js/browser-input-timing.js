@@ -1,8 +1,8 @@
 // Opt-in observer only. WeakMap metadata never enters /api/browser/input.
 const LIMIT = 500, BATCH = 50, FRAME_WAIT_MS = 10000;
 const bodies = new WeakMap();
-const pending = new Set();
-const active = new Set();
+const pendingSamples = new Set();
+const activeSamples = new Set();
 const epochs = new WeakMap();
 const ready = [];
 const clientId = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
@@ -15,8 +15,8 @@ try {
 } catch (e) { /* query/storage unavailable: leave diagnostics off */ }
 
 function finish(sample, outcome, at = null) {
-  if (!pending.delete(sample)) return;
-  active.delete(sample);
+  if (!pendingSamples.delete(sample)) return;
+  activeSamples.delete(sample);
   sample.outcome = outcome; sample.t_frame = at;
   ready.push(sample);
   if (ready.length > LIMIT) ready.shift();
@@ -42,7 +42,7 @@ async function flush() {
 
 function tick() {
   const now = performance.now();
-  for (const sample of pending) {
+  for (const sample of pendingSamples) {
     if (sample.t_ack !== null && now - sample.t_ack >= FRAME_WAIT_MS) finish(sample, 0);
   }
   flush();
@@ -61,13 +61,13 @@ export const inputTiming = {
   queued(body, depth) {
     if (!enabled) return;
     if (!timer) timer = setInterval(tick, 1000);
-    if (active.size >= LIMIT) return;
+    if (activeSamples.size >= LIMIT) return;
     const sample = {
       client_id: clientId, sample_id: ++sampleId, request_id: 0,
       queue_depth: Math.min(depth, LIMIT), t_key: eventAt ?? performance.now(),
       t_sent: 0, t_ack: null, t_frame: null, outcome: 0, http_status: 0, transport: 0,
     };
-    active.add(sample); epochs.set(sample, frameEpoch);
+    activeSamples.add(sample); epochs.set(sample, frameEpoch);
     bodies.set(body, [sample]);
   },
   merged(result, a, b) {
@@ -84,7 +84,7 @@ export const inputTiming = {
     for (const sample of samples) {
       sample.t_sent = at; sample.request_id = id;
       sample.transport = window._bpStats?.transport === 'bin' ? 1 : window._bpStats?.transport === 'sse' ? 2 : 0;
-      pending.add(sample);
+      pendingSamples.add(sample);
       if (epochs.get(sample) <= closedEpoch) finish(sample, 3);
     }
     return samples;
@@ -93,7 +93,7 @@ export const inputTiming = {
     if (!samples) return;
     const at = performance.now();
     for (const sample of samples) {
-      if (!pending.has(sample)) continue;
+      if (!pendingSamples.has(sample)) continue;
       sample.t_ack = at; sample.http_status = res.status;
       if (!res.ok) finish(sample, 2);
     }
@@ -108,7 +108,7 @@ export const inputTiming = {
       requestAnimationFrame(() => {
         if (closed || document.hidden || !img.isConnected || !img.getClientRects().length) return;
         const at = performance.now();
-        for (const sample of pending) {
+        for (const sample of pendingSamples) {
           if (epochs.get(sample) === epoch && sample.t_ack !== null && loadedAt > sample.t_ack) {
             if (at - sample.t_ack >= FRAME_WAIT_MS) finish(sample, 0);
             else finish(sample, 1, at);
@@ -120,7 +120,7 @@ export const inputTiming = {
     return () => {
       closed = true; img.removeEventListener('load', loaded);
       closedEpoch = Math.max(closedEpoch, epoch);
-      for (const sample of pending) { if (epochs.get(sample) === epoch) finish(sample, 3); }
+      for (const sample of pendingSamples) { if (epochs.get(sample) === epoch) finish(sample, 3); }
       flush();
     };
   },

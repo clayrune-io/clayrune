@@ -1,7 +1,7 @@
 // One Remove interaction for every Desk connection. No optimistic delete or Undo:
 // a refused/cancelled removal leaves its row in place; only a server success removes it.
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const pending = new Set();
+const pendingRemovals = new Set();
 
 function html(name) {
   return `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-connection-remove aria-label="${esc(`Remove ${name}`)}">Remove</button><span role="status" data-connection-remove-status></span>`;
@@ -11,12 +11,12 @@ function bind(root, {name, key, url, body, passcode = false, preview = false, on
   const button = root.querySelector('[data-connection-remove]');
   if (!button) return;
   button.dataset.connectionRemoveKey = key;
-  button.disabled = pending.has(key);
+  button.disabled = pendingRemovals.has(key);
   button.onclick = () => {
-    if (pending.has(key)) return;
-    pending.add(key); button.disabled = true;
+    if (pendingRemovals.has(key)) return;
+    pendingRemovals.add(key); button.disabled = true;
     const reset = () => {
-      pending.delete(key);
+      pendingRemovals.delete(key);
       document.querySelectorAll('[data-connection-remove]').forEach(node => {
         if (node.dataset.connectionRemoveKey === key) node.disabled = false;
       });
