@@ -299,6 +299,9 @@ def commit(request_id: str, fingerprint: str) -> tuple[dict, bool]:
         outcome = kind_of(op).provision(op, path)
         _store.set_state(op['scope']['kind'], op['scope']['project_id'], op['server_name'],
                          outcome['state'], outcome.get('code', ''))
+        after = getattr(kind_of(op), 'after_registered', None)
+        if outcome['state'] == 'registered' and after is not None:
+            outcome = after(op, outcome)                 # a real start, now the gate will accept it
         result = {'ok': True, 'approved': True, 'fingerprint': fingerprint, 'server_name': op['server_name'],
                   'scope': op['scope']['kind'], 'project_id': op['scope']['project_id'], **outcome}
         if _activation._base.passphrase_backed():

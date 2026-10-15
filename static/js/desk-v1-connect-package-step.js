@@ -146,6 +146,16 @@ import {packageResultHTML, packageResultTitle} from './desk-v1-connect-package-r
         </div>`).join('');
   }
 
+  // What the repository's own instructions name (GitHub staging only): asked rows and optional extras.
+  function _documented() { return (P.git && P.git.credentials) || []; }
+  function _documentedHTML() {
+    const W = window.DeskV1ConnectCopy.words, ask = _documented(), extra = (P.git && P.git.optional_credentials) || [];
+    if (!ask.length && !extra.length) return '';
+    const names = (list) => list.map((c) => `<span data-connect-value><strong>${esc(c.env)}</strong></span>`).join(', ');
+    return `${ask.length ? `<div class="desk-v1-cfw-fact-text" data-pk-creds-documented>${esc(W.credentialsDocumented)} ${names(ask)}</div>` : ''}
+      ${extra.length ? `<div class="desk-v1-cfw-fact-text" data-pk-creds-optional>${esc(W.credentialsOptional)} ${names(extra)}</div>` : ''}`;
+  }
+
   function _identifyHTML() {
     const pypi = _isPypi();
     return `<label class="desk-v1-conn-add-field">npm package
@@ -163,8 +173,8 @@ import {packageResultHTML, packageResultTitle} from './desk-v1-connect-package-r
         <input type="text" class="desk-v1-rules-textinput" data-pk-entry data-cfw-focus value="${esc(P.entry)}" maxlength="200" autocapitalize="off" spellcheck="false" aria-describedby="pk-entry-help"><span class="desk-v1-cfw-fact-text" id="pk-entry-help">${window.DeskV1ConnectCopy.words.packageFileHelp}</span></label>`}
       <label class="desk-v1-conn-add-field">Arguments, one per line (optional)
         <textarea class="desk-v1-rules-textinput" data-pk-args rows="2" spellcheck="false" aria-describedby="pk-args-help">${esc(P.args)}</textarea><span class="desk-v1-cfw-fact-text" id="pk-args-help">${window.DeskV1ConnectCopy.words.argumentsHelp}</span></label>
-      <div class="desk-v1-conn-add-field" data-pk-creds>Credentials, by name only (optional)
-        ${_credRowsHTML()}
+      <div class="desk-v1-conn-add-field" data-pk-creds>${esc(window.DeskV1ConnectCopy.words[_documented().length ? 'credentialsTitle' : 'credentialsTitleOptional'])}
+        ${_documentedHTML()}${_credRowsHTML()}
         <div class="desk-v1-cfw-fact-text">${window.DeskV1ConnectCopy.words.credentialsHelp}</div>
         <div class="desk-v1-cfk-actions"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-pk-cred-add>Add a credential</button></div>
       </div>${P.helper.html()}`;

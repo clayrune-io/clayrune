@@ -176,6 +176,18 @@ def set_package_manifest(scope: str, project_id: str | None, server_name: str, s
             _write(conns)
 
 
+def set_start_check(scope: str, project_id: str | None, server_name: str, result: dict) -> None:
+    """Record the last start check of the approval (`github_start_check`): `{status, message, ...,
+    fingerprint}`. The state is left alone: the gate starts only a `registered` record."""
+    k = key(scope, project_id, server_name)
+    with _lock:
+        conns = _read()
+        rec = conns.get(k)
+        if isinstance(rec, dict):
+            rec['start_check'] = result
+            _write(conns)
+
+
 def remove(scope: str, project_id: str | None, server_name: str) -> bool:
     k = key(scope, project_id, server_name)
     with _lock:

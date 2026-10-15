@@ -114,7 +114,17 @@ def derive_state(rec: dict, project_path: str | None) -> dict:
     names={s['name'] for s in secrets_store.list_secrets(op['scope']['project_id'])}
     if any(c['vault'] not in names for c in op['credentials']):
         return {'state':'credential_missing','message':'A saved credential is missing.'}
+    from mc.desk_connect import github_start_check
+    checked = github_start_check.recorded(rec)
+    if checked:
+        return {'state':'registered','message':checked['message'],'check':checked}
     return {'state':'registered','message':'Registered; not checked.'}
+
+def after_registered(op: dict, outcome: dict) -> dict:
+    """Once the record says `registered` (the gate starts nothing else): start it once and report."""
+    from mc.desk_connect import github_start_check
+    checked = github_start_check.check(op)
+    return {**outcome, 'message': checked['message'], 'check': checked}
 
 def start(scope: str, project_id: str | None, name: str, fingerprint: str) -> None:
     rec=store.get(scope,project_id,name)

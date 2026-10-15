@@ -148,6 +148,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
   function mcpStatus(r) {
     const o = _observation(r);
     if (r.state === 'registered' && o && o.review_needed) return { key: 'reauth', word: 'Server changed' };
+    if (r.state === 'registered' && r.check) return r.check.status === 'working' ? { key: 'ok', word: 'Working' } : { key: 'reauth', word: 'Not working' };
     const w = MCP[r.state] || ['off', r.state ? String(r.state).replace(/_/g, ' ') : 'Unknown'];
     return { key: w[0], word: w[1] };
   }
@@ -189,7 +190,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
   }
 
   function mcpDetailHTML(r) {
-    const key = mcpKey(r), st = mcpStatus(r), remote = r.ecosystem === 'remote';
+    const key = mcpKey(r), st = mcpStatus(r), remote = r.ecosystem === 'remote', repo = r.ecosystem === 'github';
     const files = r.package_files || {};
     const drift = r.code === 'package_files_changed' ? _drift(files) : '';
     const note = files.status === 'not_recorded' ? '<div class="desk-v1-rules-hint" data-cs-files-note="not_recorded">The package files were not recorded when this was approved, so they are not checked. Approving it again records them.</div>' : '';
@@ -213,12 +214,14 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
         ${missing}${drift}${note}
         <dl class="desk-v1-cf-facts" data-cs-facts>${facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join('')}</dl>
         ${remote ? _observedHTML(r, key) : ''}
+        ${repo && (_check[key] || {}).busy ? '<div class="desk-v1-rules-hint" data-cs-check="busy" role="status">Starting the server to check it…</div>' : ''}
+        ${repo && (_check[key] || {}).error ? `<div class="desk-v1-cf-msg" data-cf-msg="error" data-cs-check="error" role="alert">${esc(_check[key].error)}</div>` : ''}
         <div class="desk-v1-cf-actions desk-v1-cf-actions-flat">
           ${recover ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cs-reopen="${esc(key)}">Review again</button>` : ''}
-          ${remote && r.state === 'registered' ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cs-check-run ${(_check[key] || {}).busy ? 'disabled' : ''}>Check the connection</button>` : ''}
+          ${(remote || repo) && r.state === 'registered' ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cs-check-run ${(_check[key] || {}).busy ? 'disabled' : ''}>${repo && r.check ? 'Check again' : 'Check the connection'}</button>` : ''}
           <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cs-refresh>Refresh status</button>
         </div>
-        <div class="desk-v1-rules-hint" data-cs-refresh-note>Refresh status reads what is saved here. It starts nothing and contacts no server.${remote ? ' Check the connection contacts only the approved address, and only when you press it.' : ''}</div>
+        <div class="desk-v1-rules-hint" data-cs-refresh-note>Refresh status reads what is saved here. It starts nothing and contacts no server.${remote ? ' Check the connection contacts only the approved address, and only when you press it.' : ''}${repo ? ' Checking starts the approved server once, asks for its tools, then stops it.' : ''}</div>
       </div>`;
   }
 
@@ -228,7 +231,8 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
     const key = mcpKey(r);
     if ((_check[key] || {}).busy) return;
     _check[key] = { busy: true }; repaint();
-    try { _check[key] = { out: await _api('POST', '/api/desk/connect/custom/remote/check', _target(r)) }; }
+    const path = r.ecosystem === 'github' ? '/api/desk/connect/custom/github/check' : '/api/desk/connect/custom/remote/check';
+    try { _check[key] = { out: await _api('POST', path, _target(r)) }; }
     catch (e) { _check[key] = { error: (e && e.message) || 'The check failed.' }; }
     await loadMcp(true);
     repaint();

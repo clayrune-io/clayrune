@@ -192,6 +192,20 @@ def _stub_claude_fence_self_test(request, monkeypatch):
                         lambda **k: (True, 'stubbed by tests/conftest.py'))
 
 
+@pytest.fixture(autouse=True)
+def _no_real_repository_start_check(monkeypatch):
+    """A saved Desk repository is started once after Save (mc/desk_connect/github_start_check.py,
+    MC-1095). In a test that gate process would read this machine's REAL approval store and Vault,
+    not the test's monkeypatched ones. Stubbed to a working answer; the check's own tests keep a
+    reference to the real `handshake` taken at import."""
+    try:
+        from mc.desk_connect import github_start_check
+    except Exception:
+        return
+    monkeypatch.setattr(github_start_check, 'handshake',
+                        lambda argv, cwd, deadline_s=0: {'ok': True, 'tools': 0, 'server': 'conftest stub'})
+
+
 def stub_codex_auth_state(monkeypatch, state=('not_logged_in', None)):
     """Stop a test from asking the operator's real Codex CLI who is signed in.
 
