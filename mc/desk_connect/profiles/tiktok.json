@@ -1,0 +1,520 @@
+{
+  "schema_version": 1,
+  "service_id": "tiktok",
+  "revision": 1,
+  "signin_check": {
+    "url": "https://www.tiktok.com/",
+    "selectors": [
+      "[data-e2e='profile-icon']"
+    ]
+  },
+  "label": "TikTok",
+  "aliases": [
+    "TikTok",
+    "Tik Tok"
+  ],
+  "home_url": "https://www.tiktok.com",
+  "hosts": [
+    "tiktok.com",
+    "www.tiktok.com",
+    "m.tiktok.com"
+  ],
+  "account_kinds": [
+    {
+      "id": "account",
+      "label": "TikTok account"
+    }
+  ],
+  "purposes": [
+    {
+      "id": "publish",
+      "capabilities": [
+        "post",
+        "media"
+      ],
+      "account_kinds": [
+        "account"
+      ],
+      "routes": [
+        "tiktok-direct-post",
+        "tiktok-inbox-upload",
+        "tiktok-manual"
+      ],
+      "standing_policy": [
+        "Automated publishing uses the platform API and the campaign approval; a person may always post by hand."
+      ]
+    },
+    {
+      "id": "read_own",
+      "capabilities": [
+        "own_posts",
+        "mentions",
+        "replies",
+        "post_metrics"
+      ],
+      "account_kinds": [
+        "account"
+      ],
+      "routes": [
+        "tiktok-display-api",
+        "tiktok-browser"
+      ],
+      "standing_policy": [
+        "Own reads default to the browser pane; an API read is the user's choice."
+      ]
+    },
+    {
+      "id": "listen_broad",
+      "capabilities": [
+        "search"
+      ],
+      "account_kinds": [
+        "account"
+      ],
+      "routes": [
+        "tiktok-browser"
+      ],
+      "standing_policy": [
+        "Broad listening uses the browser pane; no search API is selected silently."
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "id": "tiktok-direct-post",
+      "title": "Post a video straight to your TikTok profile (Content Posting API)",
+      "guidance": "Posts to your profile through a TikTok app. Until TikTok audits the app, everything it posts is private to you, and TikTok's audit rules exclude a tool that posts to accounts you or your team run. Clayrune has no flow for it.",
+      "transport": "api",
+      "support": "restricted",
+      "auth": [
+        {
+          "type": "oauth",
+          "params": [],
+          "placement": "header",
+          "scopes": [
+            "video.publish"
+          ],
+          "issuer": "TikTok",
+          "registration": "Register an app at developers.tiktok.com, get video.publish approved, and have the account owner authorize it.",
+          "claim": "tt.direct"
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "publish",
+          "account_kind": "account",
+          "capability": "post",
+          "status": "documented",
+          "claim": "tt.direct"
+        },
+        {
+          "purpose": "publish",
+          "account_kind": "account",
+          "capability": "media",
+          "status": "documented",
+          "claim": "tt.direct"
+        }
+      ],
+      "requirements": [
+        {
+          "kind": "developer_app",
+          "text": "A TikTok developer app approved for the video.publish scope, authorized by the account owner.",
+          "claim": "tt.direct"
+        },
+        {
+          "kind": "provider_review",
+          "text": "An audit of the app lifts the private-only restriction. Unaudited apps can post only as SELF_ONLY to accounts set to private, for at most 5 users in 24 hours.",
+          "claim": "tt.audit"
+        },
+        {
+          "kind": "permitted_use",
+          "text": "TikTok's guidelines name \"a utility tool to help upload contents to the account(s) you or your team manages\" as unacceptable, and require a client aimed at a wide audience.",
+          "claim": "tt.use"
+        }
+      ],
+      "limits": [
+        {
+          "name": "Requests per user access token",
+          "source": "provider",
+          "value": "6",
+          "unit": "requests per minute",
+          "reset": null,
+          "claim": "tt.rate"
+        },
+        {
+          "name": "Posts per creator account per day",
+          "source": "provider",
+          "value": "about 15, shared across all Direct Post clients",
+          "unit": null,
+          "reset": null,
+          "claim": "tt.use"
+        }
+      ],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "tiktok-direct-post-guide",
+        "tiktok-sharing-guidelines",
+        "tiktok-direct-post-reference"
+      ]
+    },
+    {
+      "id": "tiktok-inbox-upload",
+      "title": "Send a video to your TikTok inbox as a draft (Upload)",
+      "guidance": "Uploads a video to your TikTok inbox as a draft. You open the notification and finish and post it inside TikTok, so nothing is published by Clayrune. Needs a TikTok app approved for video.upload. Clayrune has no flow for it.",
+      "transport": "api",
+      "support": "restricted",
+      "auth": [
+        {
+          "type": "oauth",
+          "params": [],
+          "placement": "header",
+          "scopes": [
+            "video.upload"
+          ],
+          "issuer": "TikTok",
+          "registration": "Register an app at developers.tiktok.com, get video.upload approved, and have the account owner authorize it.",
+          "claim": "tt.upload"
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "publish",
+          "account_kind": "account",
+          "capability": "post",
+          "status": "claimed",
+          "claim": "tt.upload"
+        }
+      ],
+      "requirements": [
+        {
+          "kind": "developer_app",
+          "text": "A TikTok developer app, authorized by the account owner.",
+          "claim": "tt.upload"
+        },
+        {
+          "kind": "provider_review",
+          "text": "TikTok must approve the app for the video.upload scope before it can be used.",
+          "claim": "tt.upload"
+        }
+      ],
+      "limits": [],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "tiktok-upload-guide"
+      ]
+    },
+    {
+      "id": "tiktok-display-api",
+      "title": "Read your public videos (Display API)",
+      "guidance": "Lists your public videos with their counts through a TikTok app. Comments and mentions are not documented there. Clayrune has no flow for it.",
+      "transport": "api",
+      "support": "restricted",
+      "auth": [
+        {
+          "type": "oauth",
+          "params": [],
+          "placement": "header",
+          "scopes": [
+            "video.list"
+          ],
+          "issuer": "TikTok",
+          "registration": "Register an app at developers.tiktok.com, request video.list and have the account owner authorize it.",
+          "claim": "tt.list"
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "read_own",
+          "account_kind": "account",
+          "capability": "own_posts",
+          "status": "documented",
+          "claim": "tt.list"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "account",
+          "capability": "post_metrics",
+          "status": "claimed",
+          "claim": "tt.video"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "account",
+          "capability": "mentions",
+          "status": "unknown",
+          "claim": null
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "account",
+          "capability": "replies",
+          "status": "unknown",
+          "claim": null
+        }
+      ],
+      "requirements": [
+        {
+          "kind": "developer_app",
+          "text": "A TikTok developer app approved for the video.list scope. The pages read do not state TikTok's review rules for it.",
+          "claim": "tt.list"
+        }
+      ],
+      "limits": [
+        {
+          "name": "Which scope gates the view, like, comment and share counts on a video",
+          "source": "provider",
+          "value": null,
+          "unit": null,
+          "reset": null,
+          "claim": null
+        }
+      ],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "tiktok-video-list",
+        "tiktok-video-object"
+      ]
+    },
+    {
+      "id": "tiktok-browser",
+      "title": "Read what you can see signed in (browser profile)",
+      "guidance": "Clayrune reads your own TikTok activity and searches from a browser pane signed in to a named profile, chosen in the account settings. It never stores your password and never clicks Post. This row only describes the route.",
+      "transport": "browser",
+      "support": "info_only",
+      "auth": [
+        {
+          "type": "browser_signin",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "read_own",
+          "account_kind": "account",
+          "capability": "own_posts",
+          "status": "claimed",
+          "claim": "tt.browser.cov"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "account",
+          "capability": "mentions",
+          "status": "claimed",
+          "claim": "tt.browser.cov"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "account",
+          "capability": "replies",
+          "status": "claimed",
+          "claim": "tt.browser.cov"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "account",
+          "capability": "post_metrics",
+          "status": "claimed",
+          "claim": "tt.browser.cov"
+        },
+        {
+          "purpose": "listen_broad",
+          "account_kind": "account",
+          "capability": "search",
+          "status": "claimed",
+          "claim": "tt.browser.cov"
+        }
+      ],
+      "requirements": [],
+      "limits": [
+        {
+          "name": "What the page shows",
+          "source": "clayrune",
+          "value": null,
+          "unit": null,
+          "reset": null,
+          "claim": null
+        }
+      ],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "clayrune-desk-pane"
+      ],
+      "signin": {
+        "url": "https://www.tiktok.com/login",
+        "hosts": [
+          "www.tiktok.com"
+        ]
+      }
+    },
+    {
+      "id": "tiktok-manual",
+      "title": "Upload in your own browser",
+      "guidance": "Clayrune shows the caption to copy. TikTok has no web link that pre-fills a post, so you open TikTok in your browser, upload the video and click Post yourself.",
+      "transport": "browser",
+      "support": "manual",
+      "auth": [
+        {
+          "type": "browser_signin",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "publish",
+          "account_kind": "account",
+          "capability": "post",
+          "status": "claimed",
+          "claim": "tt.manual"
+        }
+      ],
+      "requirements": [],
+      "limits": [],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "clayrune-tiktok-manual"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "tiktok-direct-post-guide",
+      "label": "TikTok: Content Posting API, Direct Post",
+      "url": "https://developers.tiktok.com/doc/content-posting-api-get-started",
+      "publisher_class": "official_docs",
+      "published": "2026-08-04",
+      "retrieved": "2026-10-15",
+      "attempted": null,
+      "claim_ids": [
+        "tt.direct"
+      ],
+      "digest": null,
+      "result": "verified"
+    },
+    {
+      "id": "tiktok-sharing-guidelines",
+      "label": "TikTok: Content Sharing Guidelines (audit rules)",
+      "url": "https://developers.tiktok.com/doc/content-sharing-guidelines",
+      "publisher_class": "official_docs",
+      "published": null,
+      "retrieved": "2026-10-15",
+      "attempted": null,
+      "claim_ids": [
+        "tt.audit",
+        "tt.use"
+      ],
+      "digest": null,
+      "result": "verified"
+    },
+    {
+      "id": "tiktok-direct-post-reference",
+      "label": "TikTok: Direct Post API reference",
+      "url": "https://developers.tiktok.com/doc/content-posting-api-reference-direct-post",
+      "publisher_class": "official_docs",
+      "published": null,
+      "retrieved": "2026-10-15",
+      "attempted": null,
+      "claim_ids": [
+        "tt.rate"
+      ],
+      "digest": null,
+      "result": "verified"
+    },
+    {
+      "id": "tiktok-upload-guide",
+      "label": "TikTok: Content Posting API, Upload (inbox draft)",
+      "url": "https://developers.tiktok.com/doc/content-posting-api-get-started-upload-content",
+      "publisher_class": "official_docs",
+      "published": "2026-08-04",
+      "retrieved": "2026-10-15",
+      "attempted": null,
+      "claim_ids": [
+        "tt.upload"
+      ],
+      "digest": null,
+      "result": "verified"
+    },
+    {
+      "id": "tiktok-video-list",
+      "label": "TikTok: List Videos",
+      "url": "https://developers.tiktok.com/doc/tiktok-api-v2-video-list",
+      "publisher_class": "official_docs",
+      "published": null,
+      "retrieved": "2026-10-15",
+      "attempted": null,
+      "claim_ids": [
+        "tt.list"
+      ],
+      "digest": null,
+      "result": "verified"
+    },
+    {
+      "id": "tiktok-video-object",
+      "label": "TikTok: Video object",
+      "url": "https://developers.tiktok.com/doc/tiktok-api-v2-video-object",
+      "publisher_class": "official_docs",
+      "published": null,
+      "retrieved": "2026-10-15",
+      "attempted": null,
+      "claim_ids": [
+        "tt.video"
+      ],
+      "digest": null,
+      "result": "verified"
+    },
+    {
+      "id": "clayrune-desk-pane",
+      "label": "Clayrune Desk: own-account reads default to the signed-in browser pane (standing product rule)",
+      "url": null,
+      "publisher_class": "clayrune_builtin",
+      "published": null,
+      "retrieved": null,
+      "attempted": null,
+      "claim_ids": [
+        "tt.browser.cov"
+      ],
+      "digest": null,
+      "result": "unverified"
+    },
+    {
+      "id": "clayrune-tiktok-manual",
+      "label": "Clayrune: TikTok web upload is a person's own action (third-party guides describe a browser upload; no official page was read)",
+      "url": null,
+      "publisher_class": "clayrune_builtin",
+      "published": null,
+      "retrieved": null,
+      "attempted": null,
+      "claim_ids": [
+        "tt.manual"
+      ],
+      "digest": null,
+      "result": "unverified"
+    }
+  ],
+  "change_summary": "Revision 1 (Ron 2026-10-15, native major networks): Direct Post, inbox upload and Display API rows, browser and manual routes from TikTok pages read on 2026-10-15. Sign-in selectors are from recalled public markup, not confirmed on a signed-in page: live check pending. TODO(assisted-post): the manual route becomes an assisted one (mc/desk_connect/assisted_post) when that lands.",
+  "supersedes": null
+}

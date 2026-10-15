@@ -10,7 +10,7 @@ mkdirSync(shots,{recursive:true});
 const types=JSON.parse(execFileSync('python',['-c',`import json
 from mc.desk_connect import registry, resolve, type_view
 out={}
-for text in ['x.com','linkedin.com','youtube.com','example.com']:
+for text in ['x.com','linkedin.com','youtube.com','facebook.com','tiktok.com','reddit.com','snapchat.com','github.com','example.com']:
  got=resolve.resolve(text);svc=got.pop('service') or registry.lookup(got['host']);out[text]={**got,**type_view.project_service(svc['id'] if svc else None)}
 print(json.dumps(out))`],{cwd:root,encoding:'utf8',env:{...process.env,PYTHONIOENCODING:'utf-8'}}));
 const browser=await chromium.launch({headless:true});
@@ -18,10 +18,11 @@ try {
  const evidence=JSON.parse(execFileSync('python',['-c',`import json
 from mc.desk_connect.browser_check import EVIDENCE_JS
 from mc.desk_connect import registry
-print(json.dumps({'js':EVIDENCE_JS,'checks':{s:registry.profile(s)['signin_check'] for s in ['x','linkedin','youtube']}}))`],{cwd:root,encoding:'utf8'}));
+print(json.dumps({'js':EVIDENCE_JS,'checks':{s:registry.profile(s).get('signin_check') for s in ['x','linkedin','youtube','facebook','tiktok','reddit','snapchat','github']}}))`],{cwd:root,encoding:'utf8'}));
  for(const [service,spec] of Object.entries(evidence.checks)){
+  if(!spec){assert.equal(service,'snapchat');console.log('SKIP snapchat: no sign-in check in its profile');continue;}
   const page=await browser.newPage();
-  const controls={x:'<button data-testid="SideNav_AccountSwitcher_Button">Account</button><a data-testid="AppTabBar_Home_Link">Home</a>',linkedin:'<button class="global-nav__me">Me</button><a href="/messaging/">Messaging</a>',youtube:'<button id="avatar-btn">Account</button>'};
+  const controls={x:'<button data-testid="SideNav_AccountSwitcher_Button">Account</button><a data-testid="AppTabBar_Home_Link">Home</a>',linkedin:'<button class="global-nav__me">Me</button><a href="/messaging/">Messaging</a>',youtube:'<button id="avatar-btn">Account</button>',facebook:'<div aria-label="Account controls and settings">Me</div>',tiktok:'<a data-e2e="profile-icon">Profile</a>',reddit:'<a href="/settings/account">Account</a>',github:'<input id="user_profile_name">'};
   await page.setContent(controls[service]);
   const expr=evidence.js.replace('SELECTORS',JSON.stringify(spec.selectors));
   assert.deepEqual((await page.evaluate(expr)).matches,spec.selectors.map(()=>true));
@@ -32,7 +33,7 @@ print(json.dumps({'js':EVIDENCE_JS,'checks':{s:registry.profile(s)['signin_check
   await page.setContent('<p>Sign in</p>');assert.deepEqual((await page.evaluate(expr)).matches,spec.selectors.map(()=>false));
   await page.close();console.log(`PASS ${service}: real DOM evidence excludes hidden and signed-out controls`);
  }
- for(const width of [1440,390]) for(const service of Object.keys(types)) for(const flow of (service==='example.com'?['manual']:['already','signin','failed'])) {
+ for(const width of [1440,390]) for(const service of Object.keys(types)) for(const flow of (['example.com','snapchat.com'].includes(service)?['manual']:['already','signin','failed'])) {
   const page=await browser.newPage({viewport:{width,height:900}}),errors=[];
   page.on('pageerror',e=>errors.push(e.message));
   page.setDefaultTimeout(8000);

@@ -40,16 +40,17 @@ def _profile(sid):
 def test_shipped_index_is_version_2_and_lists_every_v1_service():
     snap = loader.load_snapshot(SHIPPED / 'registry.json')
     assert snap['version'] == 2
-    assert [p['service_id'] for p in snap['profiles']] == SHIPPED_IDS
+    ids = [p['service_id'] for p in snap['profiles']]
+    assert ids[:len(SHIPPED_IDS)] == SHIPPED_IDS          # the nine that predate profiles; later networks append (tests/test_desk_network_profiles.py)
     assert SHIPPED_IDS == [s['id'] for s in V1_GOLD['services']]
-    assert {p.name for p in (SHIPPED / 'profiles').glob('*.json')} == {f'{i}.json' for i in SHIPPED_IDS}
+    assert {p.name for p in (SHIPPED / 'profiles').glob('*.json')} == {f'{i}.json' for i in ids}
 
 
 def test_every_v1_row_maps_and_the_screens_see_the_old_records_unchanged():
     view = registry.v1_projection()
     assert view['blocked_domains'] == V1_GOLD['blocked_domains']
     assert view['common_options'] == V1_GOLD['common_options']
-    assert view['services'] == V1_GOLD['services']       # same ids, hosts, aliases, titles, evidence text, `open`
+    assert view['services'][:len(V1_GOLD['services'])] == V1_GOLD['services']       # same ids, hosts, aliases, titles, evidence text, `open`
     assert sum(len(s['options']) for s in V1_GOLD['services']) == 10
 
 

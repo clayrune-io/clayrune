@@ -42,6 +42,26 @@
     {
       "id": "google_photos",
       "file": "profiles/google_photos.json"
+    },
+    {
+      "id": "facebook",
+      "file": "profiles/facebook.json"
+    },
+    {
+      "id": "tiktok",
+      "file": "profiles/tiktok.json"
+    },
+    {
+      "id": "reddit",
+      "file": "profiles/reddit.json"
+    },
+    {
+      "id": "snapchat",
+      "file": "profiles/snapchat.json"
+    },
+    {
+      "id": "github",
+      "file": "profiles/github.json"
     }
   ]
 }
