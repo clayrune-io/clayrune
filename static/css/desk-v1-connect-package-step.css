@@ -1,9 +1,16 @@
 /* Desk v1 — Connections: the Connect wizard's PACKAGE MCP screens (desk-v1-connect-package-step.js; MC-1062 ticket 10). rem sizes so 200% text scales every control; nothing has a fixed height. The frame's own look is desk-v1-connect-wizard.css; the dependency and script rows keep desk-v1-connect-custom-deps.css. */
 .desk-v1-cfk-pkgline { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.5rem; min-width: 0; margin-bottom: 0.5rem; overflow-wrap: anywhere; }
 .desk-v1-cfk-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
-.desk-v1-cfk-cred { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; min-width: 0; }
-.desk-v1-cfk-cred input { flex: 1 1 10rem; min-width: 0; box-sizing: border-box; }
-.desk-v1-cfk-cred label { flex:1 1 14rem; min-width:0; }
+/* One credential row: the variable, where its value comes from, then one line of buttons. Columns size to their own content
+   (align-items:start): nothing stretches, and an input is never given a flex-basis, which inside a column would be a HEIGHT. */
+.desk-v1-cfk-cred { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: 0.5rem 0.75rem; align-items: start; margin-top: 0.5rem; min-width: 0; }
+.desk-v1-cfk-cred-col { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+.desk-v1-cfk-cred-col .desk-v1-conn-add-field { min-width: 0; }
+.desk-v1-cfk-cred input, .desk-v1-cfk-cred select { width: 100%; box-sizing: border-box; min-width: 0; }
+.desk-v1-cfk-cred-fixed { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.8rem; min-width: 0; overflow-wrap: anywhere; }
+.desk-v1-cfk-cred-fixed strong { font-size: 0.9rem; }
+.desk-v1-cfk-cred-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+[data-pk-creds] .desk-v1-conn-btn { margin-left: 0; }                 /* the shared button pushes itself right; these sit together at the start of the line */
 .desk-v1-cfk-origin { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; min-width: 0; overflow-wrap: anywhere; margin-bottom: 0.5rem; }
 .desk-v1-cfk-list { margin: 0.5rem 0 0; padding-left: 1.25rem; display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; overflow-wrap: anywhere; }
 .desk-v1-cfk-list:empty { display: none; }

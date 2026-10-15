@@ -30,7 +30,7 @@
     api_key: {
       label: 'API key', user: null,
       value: { label: 'API key', placeholder: 'paste the API key' },
-      twofa: false, namePh: 'openai.api-key', descPh: 'OpenAI key for the weekly digest',
+      twofa: false, namePh: 'openai.api-key', descPh: 'What this key is used for',
     },
     api_key_pair: {
       label: 'API key pair',
@@ -127,8 +127,9 @@
       <div style="font-size:11px;color:var(--text-faint);line-height:1.55;
                   padding:8px 12px;border:1px solid var(--border);border-radius:4px">
         This goes straight from your browser to this machine. It is encrypted
-        with a key held in your OS keychain and stored outside the repo, so it
-        is never committed and never reaches the agent's transcript.
+        with a key wrapped by your vault passphrase and stored outside the
+        repo, so it is never committed and never reaches the agent's
+        transcript.
       </div>`;
     return `<div data-sf-root="${p}" style="display:contents">${intro}
 

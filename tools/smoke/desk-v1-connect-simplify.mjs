@@ -353,9 +353,9 @@ try {
     await d.click('[data-cfw-details] > summary');await d.check('[data-cfw-type][value="custom-npm"]');await primary(d);
     await d.fill('[data-pk-package]','https://github.com/ZubeidHendricks/youtube-mcp-server');await primary(d);
     await d.waitForSelector('[data-pk-command-input]');
-    check((await d.textContent('[data-pk-creds-documented]')).includes('YOUTUBE_API_KEY'),'README-documented credential is named in setup');
+    check((await d.textContent('[data-pk-cred-fixed="0"]'))==='YOUTUBE_API_KEY','README-documented credential is named in setup, as fixed text');
     check((await d.textContent('[data-pk-creds-optional]')).includes('YOUTUBE_API_KEY2'),'numbered fallback keys are listed as optional, not asked');
-    check(await d.locator('[data-pk-cred-env]').count()===1&&await d.inputValue('[data-pk-cred-env]')==='YOUTUBE_API_KEY','documented credential pre-fills exactly one name row');
+    check(await d.locator('[data-pk-cred]').count()===1&&await d.locator('[data-pk-cred-env]').count()===0,'documented credential gives exactly one row, with no editable name box');
     await d.screenshot({path:resolve(PACKAGE_SHOTS,`github_documented_creds_${width}.png`),fullPage:true});await third.ctx.close();
   }
 } finally {await browser.close();}

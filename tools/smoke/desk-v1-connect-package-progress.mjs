@@ -20,10 +20,11 @@ try {
       return route.fulfill({contentType:'text/html',body:`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">${styles}<main style="padding:12px;max-width:1040px;margin:auto" id="host"></main><script type="module">
         import '/static/js/desk-v1-connect-wizard.js';
         import '/static/js/desk-v1-connect-github.js';
+        import '/static/js/desk-v1-connect-vault-picker.js';
         import '/static/js/desk-v1-connect-package-step.js';
         const W=window.DeskV1ConnectWizard;
         window.calls=[];window.pending=[];
-        const ctx={live:true,api:(method,path,body)=>{calls.push({path,body});return new Promise((resolve,reject)=>pending.push({resolve,reject}));},repaint:()=>{host.innerHTML=W.html(ctx);W.bind(host,ctx);}};
+        const ctx={live:true,api:(method,path,body)=>{if(path==='/api/secrets')return Promise.resolve({secrets:[]});calls.push({path,body});return new Promise((resolve,reject)=>pending.push({resolve,reject}));},repaint:()=>{host.innerHTML=W.html(ctx);W.bind(host,ctx);}};
         window.reset=()=>{W.resume({picker:[]},{service:'youtube',type:'mcp',variant:'custom-npm'},'setup');ctx.repaint();};
         W.setEnabled(true);window.DeskV1ConnectCopy.enable();reset();
       </script>`});

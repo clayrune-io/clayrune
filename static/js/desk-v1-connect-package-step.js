@@ -33,6 +33,7 @@
 // `api.select({ variant: 'custom-npm' })`.
 import {createPackageHelper} from './desk-v1-connect-package-helper.js';
 import {packageResultHTML, packageResultTitle} from './desk-v1-connect-package-result.js';
+import {createPackageCreds} from './desk-v1-connect-package-creds.js';
 (function () {
   const W = window.DeskV1ConnectWizard;
   if (!W) return;
@@ -52,7 +53,7 @@ import {packageResultHTML, packageResultTitle} from './desk-v1-connect-package-r
   let _gen = 0;                                                // bumped when the branch is dropped: an answer that arrives later is ignored
 
   function _fresh() {
-    return { view: 'identify', git:null, command:'', staging:false, pkg: '', entry: '', args: '', name: '', creds: [], refocus: false, helper:createPackageHelper(),
+    return { view: 'identify', git:null, command:'', staging:false, pkg: '', entry: '', args: '', name: '', creds: createPackageCreds(), refocus: false, helper:createPackageHelper(),
       det: { busy: false, answer: null, alt: null, kind: '', error: '' },
       rv: { view: 'facts', key: '', busy: false, card: null, scripts: [], error: '', saving: false },
       result: null };
@@ -69,7 +70,7 @@ import {packageResultHTML, packageResultTitle} from './desk-v1-connect-package-r
       if (generation !== _gen) return false;
       P.git = result; P.command = result.command || '';
       P.args = (result.args || []).join('\n');
-      P.creds = (result.credentials || []).map(c => ({env:c.env, vault:''}));
+      P.creds.setDocumented(result.credentials);
       P.view = 'details'; P.refocus = true;
       return true;
     } catch (e) {
@@ -84,8 +85,6 @@ import {packageResultHTML, packageResultTitle} from './desk-v1-connect-package-r
   const _spec = () => P.pkg.trim().replace(/^npm:/i, '');
   function _kind() { const t = P.pkg.trim(); return /^(pypi|pip):/i.test(t) || /^https?:\/\/(www\.)?pypi\.org\//i.test(t) ? 'pypi' : 'npm'; }
   function _isPypi() { return !!P.pkg.trim() && _kind() === 'pypi'; }
-  function _creds() { return P.creds.map((c) => ({ env: c.env.trim(), vault: c.vault.trim() })); }
-  function _halfCredential() { return _creds().find((c) => (c.env || c.vault) && !(c.env && c.vault)) || null; }
   function _pkgProblem() {
     const t = P.pkg.trim();
     if (!t) return window.DeskV1ConnectCopy.words.packageHint;
@@ -119,7 +118,7 @@ import {packageResultHTML, packageResultTitle} from './desk-v1-connect-package-r
       const args = own && own.fields.args && own.fields.args.value;
       if (!P.args.trim() && Array.isArray(args) && args.length) P.args = args.join('\n');
       const withEnv = mine.find((a) => (a.credentials || []).some((c) => c.placement === 'env' && c.name));
-      if (!P.creds.length && withEnv) withEnv.credentials.filter((c) => c.placement === 'env' && c.name).slice(0, 6).forEach((c) => P.creds.push({ env: c.name, vault: '' }));
+      if (!P.creds.count() && withEnv) withEnv.credentials.filter((c) => c.placement === 'env' && c.name).slice(0, 6).forEach((c) => P.creds.add(c.name));
     }
     api.repaint();
   }
@@ -137,24 +136,10 @@ import {packageResultHTML, packageResultTitle} from './desk-v1-connect-package-r
   }
 
   // ── Setup ───────────────────────────────────────────────────────────────
-  function _credRowsHTML() {
-    return P.creds.map((c, i) => `
-        <div class="desk-v1-cfk-cred" data-pk-cred="${i}">
-          <label class="desk-v1-conn-add-field">${window.DeskV1ConnectCopy.words.variableLabel}<input type="text" class="desk-v1-rules-textinput" data-pk-cred-env="${i}" value="${esc(c.env)}" placeholder="VARIABLE_NAME" maxlength="64" autocapitalize="characters" spellcheck="false" aria-describedby="pk-env-help-${i}"><span class="desk-v1-cfw-fact-text" id="pk-env-help-${i}">${window.DeskV1ConnectCopy.words.variableHelp}</span></label>
-          <label class="desk-v1-conn-add-field">${window.DeskV1ConnectCopy.words.savedCredentialLabel}<input type="text" class="desk-v1-rules-textinput" data-pk-cred-vault="${i}" value="${esc(c.vault)}" placeholder="Saved credential name" maxlength="120" autocapitalize="off" spellcheck="false" aria-describedby="pk-vault-help-${i}"><span class="desk-v1-cfw-fact-text" id="pk-vault-help-${i}">${window.DeskV1ConnectCopy.words.savedCredentialHelp}</span></label>
-          <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-pk-cred-remove="${i}">Remove</button>
-        </div>`).join('');
-  }
-
-  // What the repository's own instructions name (GitHub staging only): asked rows and optional extras.
-  function _documented() { return (P.git && P.git.credentials) || []; }
-  function _documentedHTML() {
-    const W = window.DeskV1ConnectCopy.words, ask = _documented(), extra = (P.git && P.git.optional_credentials) || [];
-    if (!ask.length && !extra.length) return '';
-    const names = (list) => list.map((c) => `<span data-connect-value><strong>${esc(c.env)}</strong></span>`).join(', ');
-    return `${ask.length ? `<div class="desk-v1-cfw-fact-text" data-pk-creds-documented>${esc(W.credentialsDocumented)} ${names(ask)}</div>` : ''}
-      ${extra.length ? `<div class="desk-v1-cfw-fact-text" data-pk-creds-optional>${esc(W.credentialsOptional)} ${names(extra)}</div>` : ''}`;
-  }
+  // Credential rows live in desk-v1-connect-package-creds.js. What the repository's own instructions ask for arrives as
+  // fixed-name rows (`setDocumented`); what they only mention stays a line of names.
+  const _documented = () => (P.git && P.git.credentials) || [];
+  const _optionalNames = () => ((P.git && P.git.optional_credentials) || []).map((c) => c.env);
 
   function _identifyHTML() {
     const pypi = _isPypi();
@@ -174,9 +159,7 @@ import {packageResultHTML, packageResultTitle} from './desk-v1-connect-package-r
       <label class="desk-v1-conn-add-field">Arguments, one per line (optional)
         <textarea class="desk-v1-rules-textinput" data-pk-args rows="2" spellcheck="false" aria-describedby="pk-args-help">${esc(P.args)}</textarea><span class="desk-v1-cfw-fact-text" id="pk-args-help">${window.DeskV1ConnectCopy.words.argumentsHelp}</span></label>
       <div class="desk-v1-conn-add-field" data-pk-creds>${esc(window.DeskV1ConnectCopy.words[_documented().length ? 'credentialsTitle' : 'credentialsTitleOptional'])}
-        ${_documentedHTML()}${_credRowsHTML()}
-        <div class="desk-v1-cfw-fact-text">${window.DeskV1ConnectCopy.words.credentialsHelp}</div>
-        <div class="desk-v1-cfk-actions"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-pk-cred-add>Add a credential</button></div>
+        ${P.creds.html(_optionalNames())}
       </div>${P.helper.html()}`;
   }
 
@@ -215,7 +198,7 @@ import {packageResultHTML, packageResultTitle} from './desk-v1-connect-package-r
     if (P.entry.trim() && !P.git) body.entry = P.entry.trim();
     const args = P.args.split('\n').map((a) => a.trim()).filter(Boolean);
     if (args.length) body.args = args;
-    const creds = _creds().filter((c) => c.env || c.vault);
+    const creds = P.creds.list();
     if (creds.length) body.credentials = creds;
     return { body, problem: '' };
   }
@@ -379,8 +362,9 @@ import {packageResultHTML, packageResultTitle} from './desk-v1-connect-package-r
         if (P.view === 'identify') { const why = _pkgProblem(); if (why) { api.error(why); return false; }
           if(window.DeskV1ConnectGithub.matches(P.pkg)) { await _stage(api); return false; }
           P.view = 'details'; P.refocus = true; api.repaint(); return false; }
-        const half = _halfCredential();
-        if (half) { api.error(`Name both the variable and the Vault entry${half.env ? ` for ${half.env}` : ''}, or remove the row.`); return false; }
+        if (P.creds.half()) { api.error(window.DeskV1ConnectCopy.words.credentialIncomplete); return false; }
+        const saved = await P.creds.commit(api);                              // a pasted new credential is written to the Vault here: Review refuses a name that is not in it
+        if (!saved.ok) { if (saved.message) api.error(saved.message); return false; }
         return true;                                                         // Continue writes nothing: the Review step reads the package
       },
     }),
@@ -402,32 +386,23 @@ import {packageResultHTML, packageResultTitle} from './desk-v1-connect-package-r
         }
       };
       field('[data-pk-command-input]','command');field('[data-pk-package]', 'pkg'); field('[data-pk-entry]', 'entry'); field('[data-pk-args]', 'args'); field('[data-pk-name]', 'name');
-      root.querySelectorAll('[data-pk-cred-env]').forEach((n) => n.addEventListener('input', () => { P.creds[+n.dataset.pkCredEnv].env = n.value; }));
-      root.querySelectorAll('[data-pk-cred-vault]').forEach((n) => n.addEventListener('input', () => { P.creds[+n.dataset.pkCredVault].vault = n.value; }));
-      root.querySelectorAll('[data-pk-cred-remove]').forEach((n) => n.addEventListener('click', () => { P.creds.splice(+n.dataset.pkCredRemove, 1); api.repaint(); }));
-      const add = root.querySelector('[data-pk-cred-add]');
-      if (add) add.addEventListener('click', () => { P.creds.push({ env: '', vault: '' }); api.repaint(); });
+      P.creds.bind(root, api);
       const det = root.querySelector('[data-pk-detect]');
       if (det) det.addEventListener('click', () => window.DeskV1ConnectGithub.matches(P.pkg) ? _stage(api) : _detect(api));
       const change = root.querySelector('[data-pk-change]');
       if (change) change.addEventListener('click', () => { P.helper.reset();P.view = 'identify'; P.refocus = true; api.repaint(); });
       P.helper.bind(root, {api,
-        request: () => ({...(P.git ? {stage_id:P.git.stage_id} : {package:_spec()}), fields:{command:P.command,entry:P.entry,args:P.args.split('\n').filter(Boolean),credentials:P.creds.map(c=>c.env).filter(Boolean)}}),
+        request: () => ({...(P.git ? {stage_id:P.git.stage_id} : {package:_spec()}), fields:{command:P.command,entry:P.entry,args:P.args.split('\n').filter(Boolean),credentials:P.creds.envs()}}),
         accept: suggestions => {
           if (P.git && !P.command.trim()) P.command=suggestions.command||'';
           if (!P.git && !P.entry.trim()) P.entry=suggestions.entry||'';
           if (!P.args.trim()) P.args=(suggestions.args||[]).join('\n');
-          const missing=(suggestions.credentials||[]).filter(env=>!P.creds.some(c=>c.env===env));
-          for (const env of missing) {
-            if(P.creds.length>=8) break;
-            const empty=P.creds.find(c=>!c.env.trim()&&!c.vault.trim());
-            if(empty) empty.env=env;else P.creds.push({env,vault:''});
-          }
+          (suggestions.credentials||[]).filter(env=>!P.creds.has(env)).forEach(env=>P.creds.suggest(env));
           P.rv.card=null;P.rv.key='';P.rv.scripts=[];
         },
       });
     },
-    discard: () => { _gen++; P.helper.reset(); P = _fresh(); },
+    discard: () => { _gen++; P.helper.reset(); P.creds.reset(); P = _fresh(); },
   });
 
   W.registerScreen({
