@@ -5966,6 +5966,13 @@ def _scribe_classify_habits(project, session, statements):
             if not m:
                 continue
             cue = m.group(0).strip()
+            # T2 (Dave 2026-10-15): complaint shapes are bug reports, never
+            # habits. Lives in mc/habit_report.py so the send-time report and
+            # this mint can never disagree.
+            from mc import habit_report as _habit_report
+            if _habit_report.is_complaint(stmt, cue):
+                _scribe_stat(project_id, 'habit_note_skipped_complaint')
+                continue
             slug = _habit_note_slug(stmt, cue)
             if not slug:
                 continue
