@@ -30,6 +30,7 @@
 // Read via controls in desk-v1-connections.js stay; once it is enabled they give way to a summary and a Change
 // button, so there is one editor, not two. `setReopen(fn)` is how ticket 14 points Change at the wizard; until then
 // it opens the Add service panel.
+import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
   function _api(method, url, body) { return window.DeskV1Store.api(method, url, body); }
@@ -206,6 +207,7 @@
         <div class="desk-v1-conn-head">
           <span class="desk-v1-channel-badge">${esc(r.server_name)}</span>
           <span class="desk-v1-conn-status" data-conn-status data-state="${esc(st.key)}">${esc(st.word)}</span>
+          ${Remove.html(r.server_name)}
         </div>
         <div class="desk-v1-cf-msg" data-cf-msg="${st.key === 'ok' ? 'ok' : 'warn'}" data-cs-message role="status">${esc(r.message || '')}</div>
         ${missing}${drift}${note}
@@ -269,6 +271,8 @@
   function bindMcp(root, r, repaint) {
     const el = root.querySelector(`[data-conn-mcp="${CSS.escape(mcpKey(r))}"]`);
     if (!el) return;
+    Remove.bind(el, {name:r.server_name, key:mcpKey(r), url:'/api/desk/connect/custom/connections', body:_target(r), passcode:true,
+      onRemoved:async () => { _mcp = (_mcp || []).filter(row => mcpKey(row) !== mcpKey(r)); await loadMcp(true); window.DeskV1ConnTiles.select(null); repaint(); }});
     const on = (sel, fn) => { const n = el.querySelector(sel); if (n) n.addEventListener('click', fn); };
     on('[data-cs-reopen]', () => _openEditor({ kind: 'mcp', id: mcpKey(r), record: r }, repaint));
     on('[data-cs-check-run]', () => _runCheck(r, repaint));

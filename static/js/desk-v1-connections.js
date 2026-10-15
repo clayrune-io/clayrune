@@ -32,6 +32,7 @@
 // project that uses the account so engagement has something to poll. Add and
 // Remove are M3/M5. Discord / Reddit and the cloud drives stay
 // placeholder tiles.
+import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -158,7 +159,7 @@
           ${DeskV1Kit.channelBadge(ch)}
           <span class="desk-v1-conn-status" data-conn-status data-state="${st.key}">${esc(st.word)}</span>
           ${st.action ? `<button type="button" class="desk-v1-conn-btn" data-conn-action="${esc(ch.id)}">${st.action}</button>` : ''}
-          ${live ? `<button type="button" class="desk-v1-conn-btn${st.action ? ' desk-v1-conn-btn-inline' : ''}" data-conn-remove="${esc(ch.id)}" aria-label="${esc(`Remove ${ch.label}`)}">Remove</button>` : ''}
+          ${live ? Remove.html(ch.label) : ''}
         </div>
         ${live && window.DeskV1ConnectionStatus ? window.DeskV1ConnectionStatus.accountHTML(ch, window.DeskV1ConnectionStatus.coverageRow(_homeProjectId(ch), ch.platform)) : ''}
         ${live ? _publishHTML(ch) : ''}
@@ -174,6 +175,7 @@
         <div class="desk-v1-conn-head">
           <span class="desk-v1-channel-badge">${esc(a.label)}</span>
           <span class="desk-v1-conn-status" data-state="ok">Connected${a.account ? ` · ${esc(a.account)}` : ''}</span>
+          ${Remove.html(a.label)}
         </div>
       </div>`;
   }
@@ -264,37 +266,6 @@
       });
       repaint();
     }).catch((e) => DeskV1Kit.toast(`Could not re-check the accounts: ${e && e.message ? e.message : e}`));
-  }
-
-  function _accountSnapshot(ch) {
-    const snap = { id: ch.id, platform: ch.platform, identity: ch.identity, label: ch.label, capability: ch.capability, voice: ch.voice || '' };
-    const read = {};
-    if (ch.read_via) read.read_via = ch.read_via;
-    if (ch.browser_profile) read.browser_profile = ch.browser_profile;
-    if (ch.read_pages && ch.read_pages.length) read.read_pages = ch.read_pages;
-    return { snap, read };
-  }
-
-  // M5. The row goes at once and comes back with the server's reason if it is
-  // refused (a campaign still places it, a version is still on it). Undo
-  // re-creates it, read settings included; its presence copies are gone, so the
-  // read route is filed again the next time the user sets it.
-  function _removeAccount(ch, repaint) {
-    const list = _channels();
-    const idx = list.indexOf(ch);
-    const { snap, read } = _accountSnapshot(ch);
-    window.DeskV1Store.write({
-      label: `Removed ${ch.label}`,
-      destructive: true,
-      apply: () => { const i = list.indexOf(ch); if (i >= 0) list.splice(i, 1); repaint(); },
-      unapply: () => { if (list.indexOf(ch) < 0) list.splice(Math.min(idx, list.length), 0, ch); },
-      repaint,
-      request: () => _api('DELETE', `/api/desk/accounts/${encodeURIComponent(ch.id)}`),
-      undoRequest: async () => {
-        await _api('POST', '/api/desk/accounts', snap);
-        if (Object.keys(read).length) await _api('PATCH', `/api/desk/accounts/${encodeURIComponent(ch.id)}`, read);
-      },
-    });
   }
 
   let _enginesCache = null;   // live: GET /api/desk/engines, refetched when a limit or a key changes
@@ -408,8 +379,11 @@
       if (!row) return;
       const btn = row.querySelector('[data-conn-action]');
       if (btn) _bindAction(btn, ch, repaint);
-      const rm = row.querySelector('[data-conn-remove]');
-      if (rm) rm.onclick = () => _removeAccount(ch, repaint);
+      Remove.bind(row, {name:ch.label, key:ch.id, url:`/api/desk/accounts/${encodeURIComponent(ch.id)}`, onRemoved:() => {
+        const list = _channels(), index = list.indexOf(ch);
+        if (index >= 0) list.splice(index, 1);
+        Tiles.select(null); repaint();
+      }});
       const xg = row.querySelector('[data-conn-x-guide]');
       if (xg) xg.onclick = () => {
         if (_xOpen.has(ch.id)) _xOpen.delete(ch.id); else { _xOpen.add(ch.id); _connOv = null; }
@@ -441,6 +415,14 @@
     } else if (sel && sel.indexOf('service:') === 0) {
       const sv = window.DeskV1Services.byId(sel.slice(8));
       if (sv) window.DeskV1Services.bindDetail(el, sv, repaint);
+    } else if (sel && sel.indexOf('source:') === 0) {
+      const source = _contentSources().find(x => `source:${x.id}` === sel);
+      const row = el.querySelector('[data-conn-source]');
+      if (source && row) Remove.bind(row, {name:source.label, key:sel, preview:true, onRemoved:() => {
+        const online = (_fx().studio || {}).online || {};
+        (online.video || []).concat(online.image || []).filter(x => x.id === source.id).forEach(x => { x.connected = false; });
+        Tiles.select(null); repaint();
+      }});
     } else if (sel && sel.indexOf('mcp:') === 0 && window.DeskV1ConnectionStatus) {
       const m = window.DeskV1ConnectionStatus.mcpByKey(sel);
       if (m) window.DeskV1ConnectionStatus.bindMcp(el, m, repaint);

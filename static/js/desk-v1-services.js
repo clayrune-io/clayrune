@@ -12,6 +12,7 @@
 // Live: the records are the server's (GET/POST/PATCH/DELETE /api/desk/services).
 // Demo (desk_v1_live OFF): kept in memory only, with the Add service undo, and no
 // request is made; the toast says nothing was saved.
+import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
   function _api(method, url, body) { return window.DeskV1Store.api(method, url, body); }
@@ -59,7 +60,7 @@
         <div class="desk-v1-conn-head">
           <span class="desk-v1-channel-badge">${esc(s.name)}</span>
           <span class="desk-v1-conn-status" data-conn-status data-state="saved">${esc(STATUS.word)}</span>
-          <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-svc-remove="${esc(s.id)}" aria-label="${esc(`Remove ${s.name}`)}">Remove</button>
+          ${Remove.html(s.name)}
         </div>
         <div class="desk-v1-rules-hint" data-svc-honest>Clayrune does not connect to this service or post to it. It is saved so agents can see it and use the credential you named.</div>
         <div class="desk-v1-svc-line"><span class="desk-v1-how-field-label">Link</span> ${link}</div>
@@ -78,21 +79,14 @@
   }
 
   function bindDetail(el, s, repaint) {
-    if (s.browser_connection) return window.DeskV1BrowserService.bind(el, s, repaint);
+    if (s.browser_connection) window.DeskV1BrowserService.bind(el, s, repaint);
     const row = el.querySelector(`[data-conn-service="${CSS.escape(s.id)}"]`);
     if (!row) return;
     const list = rows() || [];
-    const rm = row.querySelector('[data-svc-remove]');
-    if (rm) rm.onclick = () => {
-      const idx = list.indexOf(s);
-      window.DeskV1Store.write({
-        label: `Removed ${s.name}`, destructive: true, repaint,
-        apply: () => { const i = list.indexOf(s); if (i >= 0) list.splice(i, 1); repaint(); },
-        unapply: () => { if (list.indexOf(s) < 0) list.splice(Math.min(idx, list.length), 0, s); },
-        request: () => _api('DELETE', `/api/desk/services/${encodeURIComponent(s.id)}`),
-        undoRequest: () => _api('POST', '/api/desk/services', { id: s.id, name: s.name, link: s.link || undefined, credential: (s.credential || {}).name || undefined }),
-      });
-    };
+    Remove.bind(row, {name:s.name, key:`service:${s.id}`, url:`/api/desk/services/${encodeURIComponent(s.id)}`, onRemoved:() => {
+      const index = list.indexOf(s); if (index >= 0) list.splice(index, 1);
+      window.DeskV1ConnTiles.select(null); repaint();
+    }});
     const form = row.querySelector('[data-svc-edit]');
     if (!form) return;
     const status = form.querySelector('[data-svc-edit-status]');

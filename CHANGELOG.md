@@ -6,6 +6,13 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-15] - Remove every Desk connection (MC-1098)
+
+- Every connection detail offers **Remove**, including failed/unregistered software connections and browser-only saved services. One confirmation sheet keeps the row until the server succeeds; account/service removal no longer creates Undo.
+- Custom software removal requires the dashboard passcode and removes its registration, approval and managed install files. Shared package folders survive until their last connection is removed; cleanup failures stay visible and retryable.
+- Removing a generation engine disconnects it only in Desk. Its shared login stays in the Vault; Desk generation refuses disconnected engines. Add service can reconnect using the saved login, with a fresh passcode check.
+- Contract, audit and validation: `docs/DESK_CONNECTION_REMOVAL.md`. Branch only; no merge, push or restart.
+
 ## [2026-10-15] - Starter expert roster (MC-1099)
 
 - Added seven generic built-in specialists: builder, code reviewer, silent-failure diagnostician, UI fixer, security/privacy auditor, market/technical researcher, and spec/PRD writer. Each has its own persona file and inherits the install's engine settings.

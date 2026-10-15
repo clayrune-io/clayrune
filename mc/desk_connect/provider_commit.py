@@ -73,6 +73,8 @@ def apply(clean: dict) -> tuple[Applied, dict]:
             arg = applied.extra['oauth_arg'] if 'oauth_arg' in applied.extra else _refs.oauth_arg_for(applied.account_id)
             _oauth.commit_held(clean['service'], held['flow_id'], held['claim'],
                                arg, undo, client_id=save_app)
+        from mc import desk_engine_connections
+        desk_engine_connections.reconnect_saved(clean['service'], method, undo)
     except ProviderError as e:
         left = undo.unwind()
         raise ProviderError(_with_left(str(e), left), e.status, e.code) from e
