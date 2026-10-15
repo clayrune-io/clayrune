@@ -34,6 +34,14 @@ a connection that is not there:
              the Desk reads through the browser pane and never publishes to.
              Approval and the tick both go through `publish_state`, so every
              publish path refuses it with this reason.
+  assisted   ready, for a platform that has an assisted route
+             (`desk_assisted_post.ROUTES`; Instagram today). A version can be
+             approved for it, but nothing publishes it: the tick treats it like a
+             manual account (a task, never `desk_publish`), and a person starts the
+             fill-in on the network's own post screen and presses Share themselves.
+             Valid only for platforms with a route; it is the default for them on
+             create, and a `none` account is moved to it by an explicit,
+             passcode-gated PATCH of `capability`, never by a read.
 """
 
 from __future__ import annotations
@@ -59,7 +67,13 @@ from mc.desk_publish import LINKEDIN_TOKEN_SECRET, X_OAUTH_TOKEN_SECRET
 ACCOUNT_PLATFORMS = ('x', 'linkedin', 'blog') + PANE_ONLY_PLATFORMS
 API_READ_PLATFORMS = _desk.API_READ_PLATFORMS   # X only has a paid API read route; every other site reads through the pane
 NO_READ_PLATFORMS = ('blog',)               # a blog is published by hand: no signed-in inbox of its own to read
-CAPABILITIES = ('direct', 'manual', 'none')     # `none`: read-only, the Desk publishes nothing there
+CAPABILITIES = ('direct', 'manual', 'none', 'assisted')     # `none`: read-only, the Desk publishes nothing there; `assisted`: a person presses Share
+
+
+def assisted_platforms() -> tuple:
+    """Platforms that have an assisted route. Lazy: the route modules import the piece store."""
+    from mc import desk_assisted_post
+    return tuple(desk_assisted_post.ROUTES)
 
 LINKEDIN_ORG_POSTING_APPROVED = False
 LINKEDIN_PENDING_REASON = 'LinkedIn app review pending (w_organization_social)'
@@ -105,6 +119,10 @@ def publish_state(acc: dict, vault: dict | None = None) -> dict:
                 'secret': None, 'unattended_ok': None}
     if acc.get('capability') == 'manual':
         return {'ready': True, 'reason': None, 'secret': None, 'unattended_ok': None}
+    if acc.get('capability') == 'assisted':
+        if plat not in assisted_platforms():
+            return {'ready': False, 'reason': f'no assisted route for {plat}', 'secret': None, 'unattended_ok': None}
+        return {'ready': True, 'reason': None, 'secret': None, 'unattended_ok': None, 'assisted': True}
     if plat == 'linkedin' and not LINKEDIN_ORG_POSTING_APPROVED:
         # No vault entry can fix this, so none is named: Connections would
         # otherwise offer "Open Secrets" for a connection nothing can make yet.
@@ -225,10 +243,13 @@ def create_account(platform, identity, *, label=None, capability=None, voice=Non
                            'other channels are not available yet')
     identity = _clean_text(identity, 'identity', required=True)
     if capability is None:
-        capability = 'manual' if platform == 'blog' else 'none' if platform in PANE_ONLY_PLATFORMS else 'direct'
+        capability = ('manual' if platform == 'blog' else 'assisted' if platform in assisted_platforms()
+                      else 'none' if platform in PANE_ONLY_PLATFORMS else 'direct')
     if capability not in CAPABILITIES:
         raise AccountError(f'capability must be one of {", ".join(CAPABILITIES)}')
-    if platform in PANE_ONLY_PLATFORMS and capability != 'none':
+    if capability == 'assisted' and platform not in assisted_platforms():
+        raise AccountError(f'capability assisted is for platforms with an assisted route ({", ".join(assisted_platforms())})')
+    if platform in PANE_ONLY_PLATFORMS and capability not in ('none', 'assisted'):
         raise AccountError(f'a {platform} account is read-only (capability none): the Desk has no way to publish there')
     if capability == 'none' and platform not in PANE_ONLY_PLATFORMS:
         raise AccountError('capability none is for read-only sites only')
@@ -299,12 +320,13 @@ def apply_read_to_store(store: dict, rec: dict, read_via: str | None, profile: s
         presences[project_id] = pres
 
 
-_PATCHABLE = ('label', 'voice', 'read_via', 'browser_profile', 'read_pages', 'project_id', 'organization_id')
+_PATCHABLE = ('label', 'voice', 'read_via', 'browser_profile', 'read_pages', 'project_id', 'organization_id', 'capability')
+_PATCH_CAPABILITIES = ('none', 'assisted')     # the only two an existing account can move between
 _ORG_ID = re.compile(r'^\d{1,20}$')
 
 
 def update_account(account_id: str, patch: dict) -> dict:
-    """Label, voice, and how the Desk reads the account. `project_id` (optional,
+    """Label, voice, capability (none <-> assisted, only where a route exists), and how the Desk reads the account. `project_id` (optional,
     with a read setting) files the account under that project's presence, which
     is what engagement polls: a workspace account no project has bound is read
     by nobody. A read setting is mirrored onto every presence copy, so the
@@ -330,6 +352,8 @@ def update_account(account_id: str, patch: dict) -> dict:
     if project_id is not None and (not isinstance(project_id, str) or not project_id):
         raise AccountError('project_id must be a project id')
     clean = {}
+    if 'capability' in patch and patch['capability'] not in _PATCH_CAPABILITIES:
+        raise AccountError(f'capability can only be changed between {" and ".join(_PATCH_CAPABILITIES)}')
     for k in ('label', 'voice'):
         if k in patch:
             clean[k] = _clean_text(patch[k], k, required=(k == 'label'))
@@ -346,6 +370,11 @@ def update_account(account_id: str, patch: dict) -> dict:
             raise AccountError('account not found', 404)
         if org is not None and rec.get('platform') != 'linkedin':
             raise AccountError('organization_id applies to LinkedIn accounts only')
+        if 'capability' in patch:
+            if rec.get('platform') not in assisted_platforms() or rec.get('capability') not in _PATCH_CAPABILITIES:
+                raise AccountError('only an account on a platform with an assisted route (read-only or assisted) '
+                                   f"can change capability: {rec.get('platform')} is {rec.get('capability') or 'manual'}")
+            clean['capability'] = patch['capability']
         reading = read_via is not None or profile is not None or pages is not None
         if reading and (rec.get('platform') or '') in ('', *NO_READ_PLATFORMS):
             raise AccountError('a blog has nothing to read through the browser pane')

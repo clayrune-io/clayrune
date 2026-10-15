@@ -105,9 +105,10 @@
       const action = v.state === 'needs_review'
         ? `<button type="button" class="desk-v1-camp-card-primary" data-review-btn="${esc(v.id)}">${fam.kind === 'video' ? 'Watch & review' : 'Review'}</button>`
         : '';
+      const assisted = window.DeskV1AssistedPost ? window.DeskV1AssistedPost.fillHTML(_channel(v.channelId), v) : '';
       return `<div class="desk-v1-piece-facetrow" data-copy-row="${esc(v.id)}">
         <span>${_versionBadge(v)}${claims ? ` · ${esc(claims)} claim${claims === 1 ? '' : 's'}` : ''}</span>
-        <span class="desk-v1-piece-rowend">${DeskV1Kit.stateLabelHTML(v.state)}${action}</span>
+        <span class="desk-v1-piece-rowend">${DeskV1Kit.stateLabelHTML(v.state)}${action}${assisted}</span>
       </div>`;
     }).join('');
     return (excerpt ? `<div class="desk-v1-piece-excerpt" data-piece-excerpt>${esc(excerpt)}</div>` : '') +
@@ -167,6 +168,7 @@
     el.querySelectorAll('[data-review-btn]').forEach((b) => b.onclick = () => {
       window.deskV1Nav('review', { campaignId: fam.campaignId, versionId: b.dataset.reviewBtn, projectId: params.projectId });
     });
+    if (window.DeskV1AssistedPost) (fam.versions || []).forEach((v) => window.DeskV1AssistedPost.bindFill(el, fam, v, _channel(v.channelId)));
     const videoBtn = el.querySelector('[data-video-btn]');
     if (videoBtn) videoBtn.onclick = () => window.deskV1Nav('video', { campaignId: fam.campaignId, familyId: fam.id, projectId: params.projectId });
     const add = el.querySelector('[data-add-media]');

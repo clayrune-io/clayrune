@@ -967,6 +967,12 @@ def update_account(account_id):
     if ('read_via' in d or 'browser_profile' in d or 'read_pages' in d) and is_unattended_caller():
         return jsonify({'error': 'this action needs a human: an unattended agent '
                                  'session cannot choose how an account is read'}), 403
+    if d.get('capability') in _accounts._PATCH_CAPABILITIES:
+        # What an account may do is a permission, not a label: human, passcode retyped.
+        refused = _human_only('change', d, 'what an account can do')
+        if refused:
+            return refused
+        d = {k: v for k, v in d.items() if k != 'passcode'}
     prof = d.get('browser_profile')
     if isinstance(prof, str) and prof.strip() and not _PROFILE_NAME.match(prof.strip().lower()):
         return jsonify({'error': 'browser_profile must be a saved profile name '

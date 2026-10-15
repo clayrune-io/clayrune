@@ -233,6 +233,7 @@
     if (!channel) return '';
     if (channel.health === 'held') return `⚠ Held — ${channel.holdReason || 'disconnected'}`;
     if (channel.capability === 'manual') return '✋ You publish it';
+    if (channel.capability === 'assisted') return '✋ You press Share';
     return 'Publishes after approval';
   }
 

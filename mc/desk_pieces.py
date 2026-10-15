@@ -603,10 +603,11 @@ def _approval_refusals(store: dict, piece: dict, ver: dict) -> list[str]:
         pub = desk_accounts.publish_state(acc)
         if not pub['ready']:
             problems.append(f"{acc.get('label') or acc.get('identity') or acc['id']} cannot publish: {pub['reason']}")
-        elif acc.get('capability') != 'manual' and (piece.get('kind') == 'video' or piece.get('assets')):
+        elif acc.get('capability') not in ('manual', 'assisted') and (piece.get('kind') == 'video' or piece.get('assets')):
             # The publisher sends text. A video, or a piece with attached media,
             # would go out WITHOUT it and read as the whole post: refuse, never
-            # send a partial version of what was reviewed.
+            # send a partial version of what was reviewed. A person posts a manual
+            # or assisted account's version, media and all.
             problems.append('this piece carries media (or is a video) and the publisher sends text only: '
                             'put it on an account you publish by hand, or remove the media')
     if not _effective_body(piece, ver):

@@ -30,6 +30,8 @@
   }
 
   function _S() { return window.DeskV1Store; }
+  // Manual and assisted accounts are posted by a person: approving creates a task, nothing publishes.
+  function _byHand(channel) { return !!channel && (channel.capability === 'manual' || channel.capability === 'assisted'); }
   function _live() { return !!(_S() && _S().live()); }
   // What a person can still act on here. Live, that includes what a refusal or
   // a send leaves behind: a version the tick held, one that failed, and one whose
@@ -476,8 +478,10 @@
       notice = `<div class="desk-v1-review-notice desk-v1-review-notice-held" data-review-unknown>? Unknown outcome — ${esc((version.failure && version.failure.reason) || 'the request may have gone out')}. It may already be live: check ${esc((channel && (channel.label || channel.identity)) || 'the account')} before doing anything else.</div>`;
     } else if (channel && channel.health === 'held') {
       notice = `<div class="desk-v1-review-notice desk-v1-review-notice-held">⚠ Held — ${esc(channel.holdReason || 'disconnected')}. Reconnect it before this can publish.</div>`;
+    } else if (channel && channel.capability === 'assisted') {
+      notice = `<div class="desk-v1-review-notice" data-review-assisted>✋ You press Share. Clayrune never posts to ${esc(channel.label || channel.identity)}. Approving creates a task; "Fill in" then prepares the post in your signed-in browser pane and stops before the final button.</div>`;
     } else if (channel && channel.capability === 'manual') {
-      notice = `<div class="desk-v1-review-notice">✋ You publish this one. Clayrune can’t post to ${esc(channel.label || channel.identity)}. Approving creates a task with the text, images and link ready to paste.</div>`;
+      notice =`<div class="desk-v1-review-notice">✋ You publish this one. Clayrune can’t post to ${esc(channel.label || channel.identity)}. Approving creates a task with the text, images and link ready to paste.</div>`;
     }
 
     const whereWhenLink = `
@@ -545,7 +549,7 @@
   function _primaryInfo(channel, hasSchedule, blockedClaim, claims, isVideo, rendered, version, detail) {
     const retry = _live() && version && (version.state === 'held' || version.state === 'failed');
     const label = !channel ? 'Approve'
-      : channel.capability === 'manual' ? 'Approve and create publishing task'
+      : _byHand(channel) ? 'Approve and create publishing task'
       : retry ? (hasSchedule ? 'Approve again and schedule' : 'Approve again')
       : (hasSchedule ? 'Approve and schedule' : 'Approve');
     const reasons = [];
@@ -955,8 +959,8 @@
     const when = !now && _hasFutureSchedule(detail) ? _fmtWhen(detail.whenISO) : null;
     const name = (channel && (channel.label || channel.identity)) || 'the account';
     const proof = {
-      title: when ? 'Approve and schedule' : (channel && channel.capability === 'manual' ? 'Approve and create the publishing task' : 'Approve and publish'),
-      description: channel && channel.capability === 'manual'
+      title: when ? 'Approve and schedule' : (_byHand(channel) ? 'Approve and create the publishing task' : 'Approve and publish'),
+      description: _byHand(channel)
         ? `Re-enter your dashboard passcode to approve this version for ${name}. Nothing is posted: you get the text and a link to post it yourself.`
         : (when
           ? `Re-enter your dashboard passcode to approve this version for ${name} at ${when}. It posts from the scheduler without asking again.`
@@ -1046,6 +1050,7 @@
     if (copy) copy.onclick = async () => {
       try { await navigator.clipboard.writeText(version.manual.copy_text || ''); copy.textContent = 'Copied'; } catch (e) { copy.textContent = 'Select the text above and copy it'; }
     };
+    if (window.DeskV1AssistedPost) window.DeskV1AssistedPost.mount(el.querySelector('[data-review-task]'), family, version, channel);
     const done = el.querySelector('[data-task-posted]');
     if (done) done.onclick = () => {
       const u = (el.querySelector('[data-task-url]') || {}).value || '';
@@ -1073,7 +1078,7 @@
     const hasSchedule = !!detail.whenISO;
     const nextState = hasSchedule ? 'scheduled' : 'approved';
     _dispose({ /* no family mutation needed */ }, version, nextState,
-      channel && channel.capability === 'manual' ? 'Publishing task created' : (hasSchedule ? 'Scheduled' : 'Approved'));
+      _byHand(channel) ? 'Publishing task created' : (hasSchedule ? 'Scheduled' : 'Approved'));
   }
 
   // Skip and Archive set a version aside, so they get the Undo toast; the other
@@ -1121,7 +1126,7 @@
     const blockedClaim = (detail.claims || []).map((c) => _st.claims[c.id]).find((s) => s && _claimBlocks(s.status));
     const held = channel && channel.health === 'held';
     const rendered = !isVideo || (family.render && family.render.status === 'ready' && family.render.revision === version.revision);
-    const manual = channel && channel.capability === 'manual';
+    const manual = _byHand(channel);
     const liveReason = _live() ? (!channel ? 'The account is not in the workspace'
       : (channel.publish && !channel.publish.ready ? `${channel.label || channel.identity} cannot publish: ${channel.publish.reason || 'not connected'}`
         : (version.state === 'unknown_outcome' ? 'This may already be live: check the account first' : ''))) : '';
