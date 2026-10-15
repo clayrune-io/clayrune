@@ -140,6 +140,9 @@ _CONFIG_EDITABLE_KEYS = {
     # Archive dedupe semantics (MC-964 Step A). Read at the next corpus build
     # (per-file cache invalidates like any other memory setting) — no respawn.
     'archive_dedupe_legacy_enabled',
+    # Allowance-state hardening (MC-964 T4/T5, mc/allowance_unverified.py,
+    # mc/memory_state_trigger.py). Read live per dispatch / context build.
+    'allowance_unverified_ttl_hours', 'allowance_conflict_note_metadata_enabled',
     # Per-turn conduct-rule tail (mc/behavior_tail.py). Read live at the next
     # context build / stdin write — no respawn needed (like read_floor_topk).
     'behavior_tail_enabled', 'behavior_tail_compact_enabled',

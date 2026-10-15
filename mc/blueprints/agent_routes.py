@@ -105,6 +105,7 @@ from mc.state import (
 import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 import mc.context_profile as _context_profile  # backlog 4a11b6a5: per-model context slim
 from mc import allowance_state as _allowance_state
+from mc import memory_state_trigger as _state_trigger  # MC-964 T5: note frontmatter as a Step D signal
 from mc import attend_once_replay as _attend_once_replay  # MC-1055: one tool call, one spend
 from mc import attend_once_pass as _attend_once_pass  # pass record: mode, expiry, spend
 from mc import cli_update as _cli_update
@@ -3742,7 +3743,10 @@ def _allowance_refusal(vendor, *, user_initiated, project=None):
     it is still out (AgentRuntime.probe_allowance) and drops a record the
     vendor contradicts. A vendor with no cheap probe (Claude, Gemini, Qwen)
     keeps refusing until the record's reset time or a successful run or the
-    user's explicit re-check — never a guess. The refusal itself is unchanged:
+    user's explicit re-check — never a guess — except that a record with NO
+    reset time goes 'unverified' after `allowance_unverified_ttl_hours` and
+    lets one trial run through (MC-964 T4, mc/allowance_unverified.py). The
+    refusal itself is unchanged:
     it names the vendor and never SILENTLY falls back to another one (MC-961:
     an opt-in `engine_fallback_order` may still swap the caller to a second
     vendor for THIS refusal — see `_apply_engine_fallback`, the one call site
@@ -3766,6 +3770,10 @@ def _allowance_refusal(vendor, *, user_initiated, project=None):
             _allowance_state.heal(vendor, rt.probe_allowance)
         except KeyError:
             pass
+    # MC-964 T4: a no-reset-time record past its TTL is unverified; the first
+    # dispatch to reach the gate is the one trial run that can refute it.
+    if _allowance_state.claim_trial(vendor):
+        return ''
     return _allowance_state.refusal_message(vendor)
 
 
@@ -3842,7 +3850,16 @@ def _vendor_mention_re(vendor):
 _HIT_DATE_RE = re.compile(r'\[(\d{4}-\d{2}-\d{2})\]')
 
 
-def _hit_date(hit):
+def _memory_dir_for(project):
+    """The project's memory dir, or None. Lets Step D read a delivered topic
+    note's frontmatter (MC-964 T5) -- hits carry only a filename."""
+    try:
+        return _get_memory_path(project).parent if project else None
+    except Exception:
+        return None
+
+
+def _hit_date(hit, mem_dir=None):
     """The ISO date a memory-search hit carries, or None. Archive lines are
     `- [YYYY-MM-DD] **task** — ...` (the same leading bracket `_ARCH_LINE_RE`
     parses at write time), which `head` (the unit's own first 120 chars, only
@@ -3850,23 +3867,32 @@ def _hit_date(hit):
     reliably carry for a short line. No date found is a real answer, not a
     gap to guess past — MC-964 Step D.2 only counts a hit that is
     demonstrably newer than the record, never one merely mentioning the
-    vendor."""
+    vendor.
+
+    A standing TOPIC note is not dated that way. With `mem_dir` given (T5),
+    its frontmatter is read: a note declaring `holds_while: allowance(...)`
+    is dated by its metadata; any other topic note by its metadata only if it
+    carries some (`mc/memory_state_trigger.py`). The bracketed date stays
+    first for everything that does not declare."""
+    declared, meta_date = _state_trigger.note_signals(hit, mem_dir)
+    if declared and meta_date:
+        return meta_date
     m = _HIT_DATE_RE.search(hit.get('head') or hit.get('snippet') or '')
     if not m:
-        return None
+        return meta_date
     try:
         return datetime.strptime(m.group(1), '%Y-%m-%d').date()
     except ValueError:
-        return None
+        return meta_date
 
 
-def _hit_is_newer(hit, entry):
+def _hit_is_newer(hit, entry, mem_dir=None):
     """True only when `hit` carries a date on/after the exhaustion record's
     own `recorded_at` day (day-granularity on both sides — archive lines
     carry a date, not a timestamp, so same-day is treated as newer rather
     than dropped). A hit with no parseable date, or a record with no
     parseable `recorded_at`, is never counted."""
-    hd = _hit_date(hit)
+    hd = _hit_date(hit, mem_dir)
     if hd is None:
         return False
     try:
@@ -3894,10 +3920,11 @@ def _newer_memory_unit_exists(project, vendor, entry):
         _log(f'[allowance-conflict] gate newer-unit search failed for '
              f'{vendor!r}: {e}')
         return False
-    return any(_hit_is_newer(h, entry) for h in hits)
+    mem_dir = _memory_dir_for(project)
+    return any(_hit_is_newer(h, entry, mem_dir) for h in hits)
 
 
-def _allowance_conflict_block(task_text, hits):
+def _allowance_conflict_block(task_text, hits, project=None):
     """MC-964 Step D.2/D.3 — 'a newer memory unit or a user chat assertion on
     the same vendor triggers ONE re-probe' (§7 decision 2, adopted position
     mc964memoryoverhaul...). A live exhausted-vendor record whose name is
@@ -3927,6 +3954,7 @@ def _allowance_conflict_block(task_text, hits):
     if not states:
         return ''
     lines = []
+    mem_dir = _memory_dir_for(project)
     for vendor, entry in states.items():
         rx = _vendor_mention_re(vendor)
         source = ''
@@ -3935,7 +3963,12 @@ def _allowance_conflict_block(task_text, hits):
         else:
             for h in hits:
                 blob = f"{h.get('file', '')} {h.get('snippet', '')}"
-                if rx.search(blob) and _hit_is_newer(h, entry):
+                # T5: a topic note whose frontmatter declares
+                # `holds_while: allowance(<vendor>)` is about this vendor
+                # even when the snippet the floor cut never says so.
+                declared = _state_trigger.note_signals(h, mem_dir)[0]
+                if ((rx.search(blob) or vendor in declared)
+                        and _hit_is_newer(h, entry, mem_dir)):
                     source = f"memory unit [{h.get('file', '')}]"
                     break
         if not source:
@@ -5357,7 +5390,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
         # and a two-line conflict block, rather than sitting unrefuted next
         # to evidence that may already contradict it.
         try:
-            _allowance_conflict = _allowance_conflict_block(task, hits)
+            _allowance_conflict = _allowance_conflict_block(task, hits, project)
         except Exception as e:
             _log(f"[allowance-conflict] {project.get('id')}: block build failed: {e}")
             _allowance_conflict = ''

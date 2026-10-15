@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, Optional
 
+from mc import allowance_unverified as _unverified
 from mc.atomic_json import write_json_atomic
 from mc.core import _log
 
@@ -212,7 +213,46 @@ def get(vendor: str) -> Optional[dict]:
             del _STATE[vendor]
             _save()
             return None
+        _mark_unverified_if_stale(vendor, entry)
         return dict(entry)
+
+
+def _mark_unverified_if_stale(vendor: str, entry: dict) -> None:
+    """MC-964 T4: a no-reset-time record past its TTL becomes 'unverified'
+    (see mc/allowance_unverified.py). Caller holds `_lock`. Lazy, like the
+    expiry check above — no timer, the next read performs the transition."""
+    if _unverified.is_unverified(entry):
+        return
+    if _unverified.is_stale_unreset(entry, _unverified.ttl_hours()):
+        entry['status'] = 'unverified'
+        entry['unverified_at'] = _now_iso()
+        _save()
+        _log(f"[allowance] {vendor} exhaustion record is "
+             f"{_unverified.age_label(entry)} old with no reset time; marked "
+             f"unverified, one trial run allowed", flush=True)
+
+
+def claim_trial(vendor: str) -> bool:
+    """Grant the ONE trial run an unverified record allows (MC-964 T4).
+
+    True means the caller may dispatch despite the standing record; the grant
+    is stamped on the record under the lock, so concurrent dispatches cannot
+    both win it. False for a vendor with no record, a record that is not
+    (yet) unverified, or one whose trial is already in flight. Only the
+    dispatch gate calls this: readers that merely display or rank vendors use
+    get()/is_exhausted(), which never consume a trial."""
+    vendor = (vendor or '').strip().lower()
+    if get(vendor) is None:  # also performs the lazy unverified transition
+        return False
+    with _lock:
+        entry = _STATE.get(vendor)
+        if (not entry or not _unverified.is_unverified(entry)
+                or _unverified.trial_active(entry)):
+            return False
+        entry['trial_started_at'] = _now_iso()
+        _save()
+    _log(f"[allowance] {vendor} unverified record: trial run granted", flush=True)
+    return True
 
 
 def is_exhausted(vendor: str) -> bool:
@@ -328,6 +368,13 @@ def refusal_message(vendor: str) -> str:
         limit = 'usage limit'
     age = record_age_clause(entry)
     suffix = f' ({age})' if age else ''
+    if _unverified.is_unverified(entry):
+        # Reached only while the one trial run is in flight (the gate lets the
+        # first dispatch through) or from a reader that is not the gate.
+        return (f"{vendor} allowance record is unverified ({limit}, no reset "
+                f"time, record {_unverified.age_label(entry)} old) — one "
+                f"trial run is in progress and clears or renews it; retry "
+                f"once it reports")
     return (f"{vendor} is out of allowance ({limit}), "
             f"{resets_clause(entry)} — no fallback to another vendor{suffix}")
 
@@ -338,6 +385,9 @@ def display_text(vendor: str) -> str:
     entry = get(vendor)
     if not entry:
         return ''
+    if _unverified.is_unverified(entry):
+        return (f"Allowance unverified (record "
+                f"{_unverified.age_label(entry)} old, no reset time)")
     return f"Out of allowance, {resets_clause(entry)}"
 
 
