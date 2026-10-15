@@ -122,6 +122,8 @@ import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§
 import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends §9.6's split)
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
 import mc.midturn_rollover as _midturn  # mid-turn context rollover bookkeeping
+from mc import habit_report as _habit_report  # MC-964 Step E report mode (human messages at send time)
+from mc import log_lines_trim as _log_lines_trim  # log_lines cap that keeps user lines
 from mc.rollover_threshold import threshold_for as _rollover_threshold_for
 import mc.background_tasks as _bg_tasks  # MC-958 background-job wake tracking (Mode B)
 import mc.delegation_waiting as _delegation_waiting  # MC-1063: queued child reports shown on the parent
@@ -6410,7 +6412,9 @@ def _read_agent_stream_b(proc, session):
             # TimestampedLines with `.ts` sliced in lock-step automatically,
             # so no separate ts-trim is needed here (MC-954).
             if len(session['log_lines']) > 2000:
-                session['log_lines'] = session['log_lines'][-1500:]
+                session['log_lines'] = _log_lines_trim.trim(
+                    session['log_lines'], 2000, 1500,
+                    label=str(session.get('session_id', ''))[:12])
     except Exception as e:
         if _session_owned_by(session, my_proc):
             if not session.get('waiting_for_question') and session.get('status') not in ('stopped',):
@@ -7138,6 +7142,19 @@ def _save_agent_log(project_id, log):
 # Triggers whose sessions the Chats list hides as machine threads
 # (conversation.js `_isNoiseConvoRow` / `_UNATTENDED_TRIGGERS`).
 _HUMAN_JOINABLE_TRIGGERS = frozenset({'schedule', 'steward', 'night-review'})
+
+
+def _observe_habit_cue(project_id, session_id, message):
+    """MC-964 Step E, report mode: log a habit-cue candidate for a HUMAN
+    message at send time (mc/habit_report.py). Mints nothing; never raises.
+    Agent callers (no Origin header, same test as `_mark_human_joined`) are
+    skipped: their text carries the user's label but is not the user's."""
+    try:
+        from mc.blueprints.workflow_routes import _is_agent_caller
+        _habit_report.observe_user_message(
+            project_id, session_id, message, human=not _is_agent_caller())
+    except Exception as e:
+        _log(f'[habit-report] observe wiring failed: {e}')
 
 
 def _mark_human_joined(project_id, session_id):
@@ -12592,6 +12609,7 @@ def agent_send(project_id):
     # A human typing into a scheduled/steward thread makes it a chat they own:
     # flag it so it keeps its place in the Chats list (display-only).
     _mark_human_joined(project_id, session_id)
+    _observe_habit_cue(project_id, session_id, message)
 
     # Decision under the lock — this is the ONLY place that picks the route.
     with get_manager(project_id).lock:
@@ -13110,6 +13128,7 @@ def agent_followup(project_id):
     if not session_id:
         return jsonify({'error': 'session_id required'}), 400
     _mark_human_joined(project_id, session_id)   # display-only; no-op for agent callers
+    _observe_habit_cue(project_id, session_id, message)
     # MC-970: this endpoint is answered by a human (chat form, plan-approval
     # click, the emailed-question-reply relay in question_channel.py) far more
     # often than by an agent, and none of those callers should re-fire a

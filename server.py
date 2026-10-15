@@ -600,6 +600,14 @@ def _load_config():
         # False restores bracketed-date-only. Read live.
         'allowance_conflict_note_metadata_enabled': True,
 
+        # MC-964 Step E report mode (mc/habit_report.py). Classifies each human
+        # message at send time with the Scribe's habit-cue regex and LOGS
+        # candidates (data/habit_candidates/); mints nothing. The exclusion
+        # keeps complaint-shaped messages ("every time I X, Y happens") out of
+        # habit notes, in the report and in the terminal Scribe's mint alike.
+        'habit_report_enabled': True,
+        'habit_complaint_exclusion_enabled': True,
+
         # Desk v1 (MC-977, R0 plan T0a). OFF by default — the new Desk UI
         # (Home -> campaign -> item, docs/THE_DESK_V1_UI.md) lives entirely
         # behind this flag so the legacy Desk (static/js/desk.js) is
@@ -1590,6 +1598,9 @@ def _reconcile_unscribed_sessions():
                     'project_id': pid,
                     'claude_session_id': e.get('claude_session_id', ''),
                     'task': e.get('task', ''),
+                    # MC-964 Step E: without this `_stamp_origin` read every
+                    # reconciled chat as unattended. Missing stays '' (unattended).
+                    'trigger_type': e.get('trigger_type', ''),
                     'incognito': False,
                     'housekeeping': False,
                 }

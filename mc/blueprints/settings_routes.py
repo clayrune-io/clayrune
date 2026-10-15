@@ -143,6 +143,8 @@ _CONFIG_EDITABLE_KEYS = {
     # Allowance-state hardening (MC-964 T4/T5, mc/allowance_unverified.py,
     # mc/memory_state_trigger.py). Read live per dispatch / context build.
     'allowance_unverified_ttl_hours', 'allowance_conflict_note_metadata_enabled',
+    # Habit-cue report mode + complaint exclusion (mc/habit_report.py). Read live.
+    'habit_report_enabled', 'habit_complaint_exclusion_enabled',
     # Per-turn conduct-rule tail (mc/behavior_tail.py). Read live at the next
     # context build / stdin write — no respawn needed (like read_floor_topk).
     'behavior_tail_enabled', 'behavior_tail_compact_enabled',
