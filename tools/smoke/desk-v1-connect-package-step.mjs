@@ -146,6 +146,7 @@ async function newPage(browser, { srv, width, height }) {
     if (path === '/api/characters') return J([]);
     if (path === '/api/local-auth/status') return J({ configured: true });
     if (path === '/api/secrets/vault-lock' && method === 'GET') return J({ state: 'unlocked', configured: true });
+    if (path === '/api/secrets' && method === 'GET') return J({ secrets: [{ name: 'harmless.token', scope: 'global', entry_type: 'api_key', allow_unattended: true }] });
     if (path.startsWith('/api/secrets') || path.startsWith('/api/browser')) { srv.log.push({ method, path, body: null }); return J({ error: 'not expected' }, 500); }
     if (!path.startsWith('/api/desk/')) return route.abort();
     let body = null;
@@ -268,7 +269,7 @@ async function toReview(page, { pkg = 'harmless-mcp@1.2.3', detect = true, vault
   if (detect) { await page.click('[data-pk-detect]'); await page.waitForSelector('[data-pk-detect-state="incomplete"]'); }
   await clickPrimary(page);
   await waitTitle(page, 'Package details');
-  if (vault && (await has(page, '[data-pk-cred-vault="0"]'))) await page.fill('[data-pk-cred-vault="0"]', vault);
+  if (vault && (await has(page, '[data-pk-cred-vault="0"]'))) await page.selectOption('[data-pk-cred-vault="0"]', vault);
   await clickPrimary(page);
   await waitStep(page, 'permissions');
   const id = await page.$eval('[data-cfp-project] option:not([value=""])', (o) => o.value);
@@ -321,7 +322,7 @@ async function mainScenario(browser, width, height) {
   await rules(page, 'Package details');
   await shot(page, 'details', width);
   await fits(page, 'Package details');
-  await page.fill('[data-pk-cred-vault="0"]', 'harmless.token');
+  await page.selectOption('[data-pk-cred-vault="0"]', 'harmless.token');
   await page.fill('[data-pk-name]', 'harmless-notes');
 
   // Permissions is the real screen, third
