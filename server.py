@@ -588,6 +588,17 @@ def _load_config():
         # `_dedupe_archive_lines_containment`) is the default now; this flag
         # is the rollback lever back to last-wins, not a feature to reach for.
         'archive_dedupe_legacy_enabled': False,
+        # MC-964 T4 (mc/allowance_unverified.py): a vendor exhaustion record
+        # with NO reset time (Gemini/Qwen never carry one) goes "unverified"
+        # after this many hours and lets exactly one trial run through, so a
+        # stale record cannot refuse the only run that could refute it (the
+        # 33h Codex blackout). 0 / null / "none" disables. Read live.
+        'allowance_unverified_ttl_hours': 24,
+        # MC-964 T5 (mc/memory_state_trigger.py): Step D also counts a topic
+        # note whose frontmatter says `holds_while: allowance(<vendor>)` or
+        # carries dated metadata, not only a bracketed date in the snippet.
+        # False restores bracketed-date-only. Read live.
+        'allowance_conflict_note_metadata_enabled': True,
 
         # Desk v1 (MC-977, R0 plan T0a). OFF by default — the new Desk UI
         # (Home -> campaign -> item, docs/THE_DESK_V1_UI.md) lives entirely
