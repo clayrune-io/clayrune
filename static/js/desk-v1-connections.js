@@ -304,21 +304,21 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
     const Tiles = window.DeskV1ConnTiles;
     const items = [];
     _channels().filter((ch) => _showAccount(ch, live, sel)).forEach((ch) => items.push({
-      key: ch.id, kind: 'account', platform: ch.platform, brand: ch.platform, mark: Tiles.mark(ch.platform),
+      key: ch.id, kind: 'account', platform: ch.platform, brand: ch.platform,
       name: Tiles.plainName(ch.label) || ch.identity || ch.id, kindLabel: 'Social account', status: _status(ch),
     }));
     _contentSources().filter((a) => a.connected).forEach((a) => items.push({
-      key: `source:${a.id}`, kind: 'source', brand: a.id, mark: a.glyph || String(a.label || '?').charAt(0).toUpperCase(),
+      key: `source:${a.id}`, kind: 'source', brand: a.id,
       name: a.label, kindLabel: 'Content source', status: { key: 'ok', word: 'Connected' },
     }));
     if (live) (_enginesCache || []).forEach((e) => {
       const st = window.DeskV1Engines.tileState(e);
-      if (st) items.push({ key: `engine:${e.id}`, kind: 'engine', brand: e.id, mark: String(e.label || '?').charAt(0).toUpperCase(),
+      if (st) items.push({ key: `engine:${e.id}`, kind: 'engine', brand: e.id,
         name: e.label, kindLabel: 'Generation engine', status: st });
     });
     if (live && window.DeskV1ConnectionStatus) window.DeskV1ConnectionStatus.mcpItems().forEach((m) => items.push(m));
     (window.DeskV1Services.rows() || []).forEach((s) => items.push({
-      key: `service:${s.id}`, kind: 'service', mark: String(s.name || '?').charAt(0).toUpperCase(),
+      key: `service:${s.id}`, kind: 'service', link: s.link,
       name: s.name, kindLabel: s.browser_connection ? 'Browser sign-in' : 'Saved service', status: s.browser_connection ? window.DeskV1BrowserService.status(s) : window.DeskV1Services.STATUS,
     }));
     return items;

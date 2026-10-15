@@ -17,11 +17,10 @@
 .desk-v1-conn-tile-add:hover, .desk-v1-conn-tile-add[aria-pressed="true"] { color: var(--text); }
 .desk-v1-conn-tile-top { display: flex; align-items: center; gap: 8px; min-width: 0; width: 100%; }
 .desk-v1-conn-tile-mark {
-  flex: none; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 7px;
+  flex: none; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 7px;
   background: var(--text); color: var(--surface); font-size: 13px; font-weight: 700; line-height: 1;
 }
-/* A known vendor: its brand colour behind a contrasting glyph (desk-v1-brand-colours.js sets both). */
-.desk-v1-conn-tile-mark[data-brand] { background: var(--mark-bg); color: var(--mark-fg); }
+/* A connection's own mark is .desk-v1-svc-icon (desk-v1-service-icons.css); this box is the Add service tile's + only. */
 .desk-v1-conn-tile-name { min-width: 0; font-size: 13px; font-weight: 600; line-height: 1.25; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
 .desk-v1-conn-pill { display: inline-block; max-width: 100%; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600; line-height: 1.4; background: var(--surface2); color: var(--text-dim); border: 1px solid var(--border2); }
 .desk-v1-conn-pill[data-state="ok"] { background: var(--green-dim, var(--surface2)); color: var(--green-text, var(--text-dim)); border-color: transparent; }

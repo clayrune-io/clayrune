@@ -1,0 +1,13 @@
+/* Desk v1 — the mark a connection wears (desk-v1-service-icons.js). A vendor logo from static/desk-icons/ on a white tile (clear space around it, never recoloured), a mark that is already a whole tile (Instagram, Snapchat, Higgsfield) filling the box, or a two-letter monogram on a colour stable for that service. The box is --svc-icon-size (28px default); the connection's name always sits beside it (UX-02), so the mark is decoration. Load order is in static/index.html. */
+.desk-v1-svc-icon {
+  --svc-icon-size: 28px;
+  flex: none; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box;
+  width: var(--svc-icon-size); height: var(--svc-icon-size); border-radius: calc(var(--svc-icon-size) * 0.27); overflow: hidden;
+  line-height: 1; user-select: none;
+}
+.desk-v1-svc-icon > img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.desk-v1-svc-icon[data-icon-kind="logo"] { background: #fff; border: 1px solid var(--border2); padding: calc(var(--svc-icon-size) * 0.17); }
+.desk-v1-svc-icon[data-icon-kind="monogram"] { background: var(--mono-bg, #444); color: #fff; font-size: calc(var(--svc-icon-size) * 0.42); font-weight: 700; letter-spacing: 0.02em; }
+/* In a line of text (the wizard's Review and Saved rows, the suggestion list). */
+.desk-v1-svc-icon-inline { vertical-align: -6px; margin-right: 7px; }
+.desk-v1-cf-suggest-name { display: inline-flex; align-items: center; }

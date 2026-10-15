@@ -103,7 +103,7 @@
       '<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline desk-v1-cf-primary" data-cfr-done>Done</button>',
     ].join('');
     return `
-        <div class="desk-v1-cf-known" data-cf-result-saved>Saved: <strong>${esc(r.service.label)}</strong></div>
+        <div class="desk-v1-cf-known" data-cf-result-saved>Saved: ${window.DeskV1ServiceIcons.markHTML({ id: r.service.id, name: r.service.label }, true)}<strong>${esc(r.service.label)}</strong></div>
         <dl class="desk-v1-cf-facts" data-cf-result>
           <div><dt>Status</dt><dd data-cf-result-status="${esc(word.state)}">${esc(word.label)}</dd></div>
           ${acct}

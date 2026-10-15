@@ -152,7 +152,7 @@
     _syncApproval(api, br);
     const card = br.install ? br.install() : null;
     const I = window.DeskV1ConnectInstall;
-    const rows = _rows([['Service', esc(_label(api.info))], ['Connection', esc(br.word)], ['x', 'linkedin'].includes(_service(api.info)) && ['Account', _accountText(api.info) || '<span data-sum-noaccount>Not chosen yet.</span>', 'account']]);
+    const rows = _rows([['Service', `${window.DeskV1ServiceIcons.markHTML({ id: _service(api.info), name: _label(api.info), link: api.info && api.info.host }, true)}${esc(_label(api.info))}`], ['Connection', esc(br.word)], ['x', 'linkedin'].includes(_service(api.info)) && ['Account', _accountText(api.info) || '<span data-sum-noaccount>Not chosen yet.</span>', 'account']]);
     const risks = _risks(br, api.sel, api.info);
     const why = _problem(br, api.info);
     return `${rows}${br.factsHTML ? br.factsHTML(api.info) : ''}

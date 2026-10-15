@@ -13,10 +13,6 @@
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
-  // One short mark per platform: a glyph, never a logo asset (nothing to load).
-  const MARKS = { x: 'X', linkedin: 'in', youtube: '▶', instagram: 'IG', tiktok: 'TT', discord: 'D', reddit: 'r', blog: 'B' };
-  function mark(platform) { return MARKS[platform] || String(platform || '?').charAt(0).toUpperCase(); }
-
   // An account's label can carry its platform glyph ("𝕏 · @ron", "in · Clayrune page",
   // and the server's own "X · @ron"). The tile already draws that mark, so the name
   // drops the prefix instead of saying it twice.
@@ -29,21 +25,16 @@
   function selected() { return _selected; }
   function select(key) { _selected = key || null; }
 
-  // The mark's vendor colour comes from desk-v1-brand-colours.js (`it.brand` is the
-  // vendor id); no colour known = no attributes = the neutral mark.
-  function markAttrs(brand) {
-    const style = brand && window.DeskV1BrandColours ? window.DeskV1BrandColours.markStyle(brand) : '';
-    return style ? ` data-brand="${esc(brand)}" style="${esc(style)}"` : '';
-  }
-
-  // item: { key, kind, mark, brand?, name, kindLabel, status: {key, word} }
+  // The mark is the vendor's logo, or a two-letter monogram (desk-v1-service-icons.js
+  // picks from `brand` / `platform` / `link` / `name`).
+  // item: { key, kind, brand?, platform?, link?, name, kindLabel, status: {key, word} }
   function tileHTML(it) {
     const on = _selected === it.key;
     return `
         <button type="button" class="desk-v1-conn-tile" data-conn-tile="${esc(it.key)}" data-conn-kind="${esc(it.kind)}"${it.platform ? ` data-platform="${esc(it.platform)}"` : ''}
           data-conn-state="${esc(it.status.key)}" aria-pressed="${on}" aria-controls="desk-v1-conn-detail" title="${esc(it.name)}">
           <span class="desk-v1-conn-tile-top">
-            <span class="desk-v1-conn-tile-mark"${markAttrs(it.brand)} aria-hidden="true">${esc(it.mark)}</span>
+            ${window.DeskV1ServiceIcons.markHTML(it)}
             <span class="desk-v1-conn-tile-name">${esc(it.name)}</span>
           </span>
           <span class="desk-v1-conn-tile-kind">${esc(it.kindLabel)}</span>
@@ -103,5 +94,5 @@
     if (close) close.addEventListener('click', () => { if (onSelect) onSelect(null, _selected); _selected = null; repaint(); });
   }
 
-  window.DeskV1ConnTiles = { selected, select, mark, plainName, gridHTML, detailHTML, bind };
+  window.DeskV1ConnTiles = { selected, select, plainName, gridHTML, detailHTML, bind };
 })();
