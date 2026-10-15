@@ -72,6 +72,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
     const need = list.find((f) => f.key === 'reauth');
     if (need) return { key: 'reauth', word: need.word, action: null };
     if (ch.capability === 'none') return { key: 'ok', word: 'Read only', action: null };       // a read-only site: the browser is its only route
+    if (window.DeskV1AssistedPost && window.DeskV1AssistedPost.statusWord(ch)) return { key: 'ok', word: window.DeskV1AssistedPost.statusWord(ch), action: null };
     if (ch.publish && ch.publish.ready) return { key: 'ok', word: 'Connected', action: null };        // an API sign-in, or a site published by hand
     if (browser) return { key: browser.key, word: browser.word, action: null };
     return { key: 'off', word: 'Not connected', action: null };

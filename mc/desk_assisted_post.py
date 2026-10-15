@@ -146,14 +146,16 @@ def approved_post(piece_id: str, version_id: str) -> dict:
 
 # -- the run ------------------------------------------------------------------------------
 
-def _click(driver: Driver, step: dict) -> None:
+def _click(driver: Driver, step: dict, route=None) -> None:
     label = step['label']
     if is_final_submit(label):
         raise AssistedError(f'refused to click {label!r}: Clayrune never presses the final button',
                             'final_submit_refused', 403)
     labels = [label, *step.get('aliases', ())]
+    # The route's own final button is refused by name too, whatever the global word list holds.
+    own_final = _norm(route.FINAL_SUBMIT['label']) if route is not None else None
     for extra in labels:
-        if is_final_submit(extra):
+        if is_final_submit(extra) or _norm(extra) == own_final:
             raise AssistedError(f'refused to click {extra!r}: Clayrune never presses the final button',
                                 'final_submit_refused', 403)
     hit = driver.locate(step['css'], labels)
@@ -162,7 +164,7 @@ def _click(driver: Driver, step: dict) -> None:
     found = hit.get('label')
     # The page offered something other than what the step names (a screen that changed under
     # us): never click it. A final-submit label is refused loudly, anything else is a plain stop.
-    if is_final_submit(found):
+    if is_final_submit(found) or _norm(found) == own_final:
         raise AssistedError(f'refused to click {found!r}: Clayrune never presses the final button',
                             'final_submit_refused', 403)
     if _norm(found) not in {_norm(x) for x in labels}:
@@ -186,7 +188,7 @@ def run(post: dict, driver: Driver) -> dict:
                 if not driver.wait(step['css'], step.get('timeout_s', 8)):
                     raise _StepFailed('the page did not show what was expected')
             elif op == 'click':
-                _click(driver, step)
+                _click(driver, step, route)
             elif op == 'attach':
                 if not driver.attach(step['css'], post['media']):
                     raise _StepFailed('the file field was not found')

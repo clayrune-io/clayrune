@@ -127,12 +127,14 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
     const open = isX && _xOpen.has(ch.id);
     // A reason that names the vault is for the server log; the page says it in plain words.
     const reason = pub.reason && !/vault/i.test(pub.reason) ? pub.reason : '';
+    const assisted = window.DeskV1AssistedPost ? window.DeskV1AssistedPost.accountHTML(ch) : '';
+    if (ch.capability === 'assisted' && assisted) return assisted;
     if (ch.capability === 'none') {
       return `
         <div class="desk-v1-conn-publish" data-conn-publish data-ready="false" data-readonly>
           <span class="desk-v1-how-field-label">Publishing</span>
           <span data-conn-publish-text>not available: the Desk reads this account and does not publish there</span>
-        </div>`;
+        </div>${assisted}`;
     }
     const locked = !!pub.vault_locked;      // the sign-in is saved; the vault needs unlocking, not a new sign-in
     const fix = isX && !window.DeskV1ConnectWizard?.enabled()
@@ -384,6 +386,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
         if (index >= 0) list.splice(index, 1);
         Tiles.select(null); repaint();
       }});
+      if (window.DeskV1AssistedPost) window.DeskV1AssistedPost.bindAccount(row, ch, repaint);
       const xg = row.querySelector('[data-conn-x-guide]');
       if (xg) xg.onclick = () => {
         if (_xOpen.has(ch.id)) _xOpen.delete(ch.id); else { _xOpen.add(ch.id); _connOv = null; }

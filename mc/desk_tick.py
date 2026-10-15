@@ -42,7 +42,7 @@ AFTER A SEND: receipt -> `submitted`, one row in the story ledger
 groups by), then `verify_post`; `verified_published` only when the platform
 confirms the post. A platform that cannot be asked (LinkedIn) stays `submitted`.
 
-MANUAL ACCOUNTS (a blog, or any account marked manual) are never called: the
+MANUAL ACCOUNTS (a blog, or any account marked manual, or `assisted`) are never called: the
 version gets a publishing task (copy text, plus an X share-intent link where
 the platform has one; standing position 2026-09-23) and waits for the human to
 say they posted it (`report_posted`).
@@ -202,7 +202,7 @@ def _refusal(store: dict, piece: dict, ver: dict, camp: dict | None, acc: dict |
     pub = _accounts.publish_state(acc)
     if not pub['ready']:
         return f"{acc.get('label') or acc['id']} cannot publish: {pub['reason']}"
-    if not attended and acc.get('capability') != 'manual' and pub.get('unattended_ok') is False:
+    if not attended and acc.get('capability') not in ('manual', 'assisted') and pub.get('unattended_ok') is False:
         return (f"the vault entry {pub['secret']} is set attended-only, so a scheduled post cannot use it: "
                 f"approve this version again with Approve now, or allow unattended use of the entry")
     return None
@@ -337,7 +337,7 @@ def _process(piece_id: str, version_id: str, *, attended: bool, now: datetime) -
     assert camp is not None and acc is not None
     body = _pieces._effective_body(piece, ver)
 
-    if acc.get('capability') == 'manual':
+    if acc.get('capability') in ('manual', 'assisted'):    # assisted: a person fills it in and presses Share; never desk_publish
         if ver.get('manual'):
             return None                  # the task exists; waiting for the person
         out = _pieces.transition_version(piece_id, version_id, to='approved', expect=('approved', 'scheduled'),
