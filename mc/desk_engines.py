@@ -77,6 +77,7 @@ from mc import desk_stitch as _stitch
 from mc import desk_vault_lock as _vault_lock
 from mc.addons import hold as _addons_hold
 from mc import secrets_store
+from mc import desk_engine_connections as _desk_connections
 from mc.core import _atomic_write_text, _log, now_iso
 
 # -- wired by server.py -------------------------------------------------------
@@ -579,6 +580,9 @@ def connection(engine_id: str, project_id: str | None = None) -> dict:
     `exists` tells the Connect button whether to open the form as Add or Edit."""
     eng = ENGINES[engine_id]
     name = eng.auth['vault_entry']
+    refusal = _desk_connections.refusal(engine_id)
+    if refusal:
+        return {'ready': False, 'vault_entry': name, 'exists': True, **refusal}
     if eng.auth['kind'] == 'oauth':
         st = _oauth.status(eng.auth['service'])
         return {'ready': st['state'] == 'connected', 'vault_entry': name,
@@ -1439,6 +1443,9 @@ def _resolve(req: GenerationRequest) -> tuple[EngineDescriptor, ModelDescriptor]
     eng = ENGINES.get(req.engine_id)
     if eng is None:
         raise Refused('unknown_engine', f'unknown engine {req.engine_id!r}', 400)
+    refusal = _desk_connections.refusal(req.engine_id)
+    if refusal:
+        raise NotConnected(req.engine_id, refusal['reason'], eng.auth['vault_entry'])
     model = get_model(req.engine_id, req.model_id)
     if model is None:
         raise Refused('unknown_model', f'{req.engine_id} has no model {req.model_id!r}', 400)

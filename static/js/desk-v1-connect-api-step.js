@@ -34,6 +34,7 @@
 //   * none      the provider's own fields are shown, as the old flow showed them;
 //   * { id }    X attaches to the saved id (MC-1062/03b): start-held and Save both name it, and the server
 //               validates its own OAuth references. Other providers keep their existing refusal.
+import { EngineReconnect } from './desk-v1-connect-engine-reconnect.js';
 (function () {
   const W = window.DeskV1ConnectWizard;
   if (!W) return;
@@ -45,7 +46,7 @@
 
   function _fresh() {
     return { loaded: '', loading: false, failed: false, connector: null, url: '', method: '', stage: null, requestId: null, committing: false,
-      logins: [], pick: '', route: null, locked: false, optionsFor: '', info: null, sel: null };
+      logins: [], pick: '', route: null, locked: false, optionsFor: '', info: null, sel: null, reconnect: null };
   }
   let A = _fresh();
   let _target = null;
@@ -108,6 +109,12 @@
     const svc = _service(api.info), v = _provider(api.sel, api.info);
     const key = `${svc}:${v ? v.setup.method : ''}`;
     if (!v || A.loading || A.loaded === key) return;
+    const reconnect = EngineReconnect.target(api, v.setup.method);
+    if (reconnect) {
+      A.reconnect = reconnect; A.method = v.setup.method; A.loaded = key; A.stage = 'fields';
+      A.connector = {fields:[], signs_in:false, summary:EngineReconnect.sentence};
+      api.repaint(); return;
+    }
     A.loading = true; A.failed = false;
     const n = ++_seq;
     api.ctx.api('POST', '/api/desk/connect/inspect', { input: api.info.input || api.info.url }).then((r) => {
@@ -142,6 +149,7 @@
   }
 
   function _fieldsBody(api) {
+    if (A.reconnect) return `<p data-engine-reconnect>${esc(EngineReconnect.sentence)}</p>`;
     const c = _displayConnector();
     return `<div class="desk-v1-cfw-group" data-api-fields><div class="desk-v1-cf-cred" data-cfa-slot ${_hasFields() ? '' : 'hidden'}></div></div>${c && c.install ? '<div class="desk-v1-cfw-fact-text" data-api-install>This installs software. You approve it on the Review screen.</div>' : ''}`;
   }
@@ -304,6 +312,12 @@
   // same request id, so a repeat is a replay, not a second write. A success empties the typed values and the held sign-in.
   async function commit() {
     if (A.committing) return { ok: false, error: 'A save is already running.', code: 'busy', status: 0 };
+    if (A.reconnect) {
+      A.committing = true;
+      try { return await EngineReconnect.save(A.reconnect, A.info.service, A.method); }
+      catch (e) { return {ok:false,error:e.message || 'The connection could not be saved.'}; }
+      finally { A.committing = false; }
+    }
     const d = _draft(A.info);
     if (d.error) return { ok: false, error: d.error, code: 'incomplete', status: 0, step: d.step || 'setup' };
     if (!A.requestId) A.requestId = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : `api-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
@@ -331,6 +345,7 @@
   // Non-secret facts for the Review screen: the typed fields (a stored entry by name, a secret as "entered, hidden"),
   // the sign-in, and the login choice. No value.
   function reviewHTML() {
+    if (A.reconnect) return `<p data-engine-reconnect>${esc(EngineReconnect.sentence)}</p>`;
     const Ad = window.DeskV1ConnectAdapter, Hd = window.DeskV1ConnectHeld, Sg = window.DeskV1ConnectSignin;
     if (!A.connector) return '';
     const typed = Sg ? Sg.meta(LOGIN_KEY) : null;

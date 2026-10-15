@@ -61,6 +61,15 @@ prompt space in every future turn that touches its subject.
 | GET | `/api/rules/shared` | Read SHARED_RULES.md (applies to all projects). |
 | PUT | `/api/rules/shared` | Write SHARED_RULES.md. |
 
+## Desk connection removal
+
+| Verb | Path | Purpose |
+|---|---|---|
+| DELETE | `/api/desk/connect/custom/connections` | Human/passcode-only. `{server_name, scope, project_id?, passcode}` removes an approved custom MCP connection, registration and unshared managed install files, including failed/unregistered setups. For global scope omit `project_id`. No credential or browser-profile deletion. |
+| DELETE / PUT | `/api/desk/engines/<engine_id>/connection` | Human/passcode-only, `{passcode}`. DELETE disconnects the engine only in Desk; PUT reconnects using the retained shared login. Desk execution refuses disconnected engines. Neither operation changes the Vault entry. |
+
+All connection kinds use the shared Remove confirmation. Existing account/service DELETE routes keep their server semantics; confirmed UI removal has no Undo. Contract and failure/retry behavior: `docs/DESK_CONNECTION_REMOVAL.md`.
+
 ## Backlog (per-project)
 
 Package setup help: `POST /api/desk/connect/custom/setup-help` is human-requested and read-only. Supply exactly one `stage_id` or npm `package`, a plain `question`, optional `previous_answer`, and `fields` containing only `command`, `entry`, `args`, and credential environment-name strings. Returns `content: {warning, answer, suggestions}` through the certified tool-free Claude transform; no install/approval/save. Do not send secret values or saved credential contents. See `docs/DESK_PACKAGE_SETUP.md`.

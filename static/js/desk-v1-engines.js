@@ -25,6 +25,7 @@
 // page paints is the library path the server answers with, never a vendor URL.
 import { confirmationMatches, priceConfirmation, heldPriceConfirmation, renderStatusWord, dismissedPriceHold, dismissPriceHold } from './desk-v1-render-price.js';
 import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.js';
+import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
 import { submissionHeld, renderNeedsPolling, recoveryActionHTML, bindRenderRecovery } from './desk-v1-render-recovery.js';
 import { wireSceneRenderPanel, sceneResultNote } from './desk-v1-render-scenes.js';
 import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } from './desk-v1-model-discovery.js';
@@ -81,6 +82,7 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
     const c = e.connected || {};
     if (c.ready) return { key: 'ok', word: 'Connected' };
     if (c.state === 'needs_signin') return { key: 'reauth', word: 'Needs sign-in' };
+    if (c.state === 'connection_unreadable') return { key: 'reauth', word: 'Connection unavailable' };
     if (c.state === 'vault_locked') return { key: 'locked', word: 'Vault locked' };   // the sign-in is saved; unlock, do not sign in again
     return { key: 'off', word: 'Not connected' };
   }
@@ -112,7 +114,7 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
       action = '<button type="button" class="desk-v1-conn-btn" data-engine-unlock>Unlock the vault</button>';
     } else if (oauth) {
       action = c.ready
-        ? '<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-engine-signin>Sign in again</button><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-engine-disconnect>Disconnect</button>'
+        ? '<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-engine-signin>Sign in again</button>'
         : `<button type="button" class="desk-v1-conn-btn" data-engine-signin>${st.key === 'reauth' ? 'Sign in again' : 'Sign in with Higgsfield'}</button>`;
     } else if (guide) {
       action = `<button type="button" class="desk-v1-conn-btn${c.ready ? ' desk-v1-conn-btn-inline' : ''}" data-engine-guide aria-expanded="${open}">${open ? 'Hide steps' : (c.ready ? 'Replace key' : 'Connect')}</button>`;
@@ -129,7 +131,7 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
         ${_limitHTML(e)}
         ${guide && open ? window.DeskV1Guides.keyGuideHTML(e.id, !!c.ready) : ''}
       </div>
-      ${action ? `<div class="desk-v1-conn-actions">${action}</div>` : ''}
+      <div class="desk-v1-conn-actions">${action}${tileState(e) ? Remove.html(e.label) : ''}</div>
     </div>`;
   }
 
@@ -151,6 +153,8 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
     (engines || []).forEach((e) => {
       const row = el.querySelector(`[data-conn-engine="${CSS.escape(e.id)}"]`);
       if (!row) return;
+      Remove.bind(row, {name:e.label, key:`engine:${e.id}`, url:`/api/desk/engines/${encodeURIComponent(e.id)}/connection`, passcode:true,
+        onRemoved:async () => { e.connected = {ready:false,state:'disconnected'}; window.DeskV1ConnTiles.select(null); repaint(); }});
       const note = row.querySelector('[data-engine-limit-note]');
       const status = row.querySelector('[data-guide-status]');
       const reload = () => list(null, { force: true }).then(() => repaint()).catch(() => repaint());
@@ -170,12 +174,6 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
         status.textContent = out.message || ''; status.dataset.state = 'bad';
         if (out.code === 'vault_locked' && gateAt && window.DeskV1VaultGate) window.DeskV1VaultGate.attach(gateAt);
         signin.disabled = false;
-      };
-      const off = row.querySelector('[data-engine-disconnect]');
-      if (off) off.onclick = async () => {
-        off.disabled = true;
-        try { await G.disconnect(e.auth.service); _toast('Higgsfield disconnected'); reload(); }
-        catch (err) { status.textContent = err && err.message ? err.message : String(err); status.dataset.state = 'bad'; off.disabled = false; }
       };
       const gbtn = row.querySelector('[data-engine-guide]');
       if (gbtn) gbtn.onclick = () => { if (_openGuides.has(e.id)) _openGuides.delete(e.id); else _openGuides.add(e.id); repaint(); };

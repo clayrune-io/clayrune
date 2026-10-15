@@ -972,6 +972,10 @@ browser manually.
 
 ## Desk Connections: add or check a service
 
+To remove a connection, open its tile and choose **Remove**, then confirm in the shared sheet. This also works for a failed software setup that was never registered. Software and generation-engine removal ask for your dashboard passcode. Cancelling either prompt changes nothing; a refusal keeps the connection and shows the reason. Confirmed removal has no Undo.
+
+Your saved login stays in the Vault, and saved browser profiles remain available. Removing software also removes its server registration and managed install folder, unless another connection still uses that folder. Removing a generation engine ends its Desk connection only; Desk generation refuses to use it until you reconnect. Choose **Add service**, enter the same service and connection method, then follow Setup and Review to **Save** using the saved login. This requires your passcode and does not replace the saved credential.
+
 Every service also offers **Sign in on the website**, including YouTube and unknown web addresses. Generic browser connections save the service name, address and browser profile. They grant no execution access: Read and Post remain off. Saving a browser profile does not prove that it is signed in.
 
 Browser setup uses your configured shared default profile, normally **main**. Existing dotted profile names up to 64 characters are accepted; `..` is not allowed. A damaged saved profile reference or unavailable status lookup shows an unavailable status while the rest of the Connections list stays usable.

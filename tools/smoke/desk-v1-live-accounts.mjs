@@ -21,7 +21,7 @@
  *   5. Flag OFF    -> the same gestures make 0 /api/desk/* requests.
  *   Since MC-1062/14 (one Add service wizard) items 1 to 4b read as the file now checks them: an account detail carries
  *   "Change how this is connected" (no `Connect X`, no Add form, no Read via buttons), Add service is a name-or-address box,
- *   M3 is sent by the Undo of a Remove, Read via is a summary, and a saved service is checked as a tile (its save is the
+ *   Remove requires confirmation and has no Undo, Read via is a summary, and a saved service is checked as a tile (its save is the
  *   wizard's, covered by desk-v1-connect-unknown-step.mjs).
  *
  * RUN   cd tools/smoke && node desk-v1-live-accounts.mjs
@@ -255,38 +255,29 @@ const txt = (page, sel) => page.textContent(sel).then((t) => (t || '').replace(/
 // ── 2: remove / undo / read via ────────────────────────────────────────────
 // Weaker than before (MC-1062/14): there is no Add form on Connections to type an @handle into, and no Read via control to
 // click. An account is created by the Add service wizard's own sign-in step on the server, so M3 is no longer sent by this screen
-// except by the Undo of a Remove, which is what is exercised here. Read via is a summary of what the server holds.
+// from this screen. Confirmed Remove calls M5 and creates no Undo. Read via is a summary of what the server holds.
 async function addRemove(browser) {
   const srv = makeServer();
   const { ctx, page, pageErrors } = await newPage(browser, { live: true, srv });
   await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
   await openConnections(page);
-  const before = srv.accounts.length;
   const id = 'ch-x-clayrune';
-  const snap = JSON.parse(JSON.stringify(srv.accounts.find((a) => a.id === id)));
   await selectTile(page, id);
 
-  // Remove: M5; a refusal rolls the row back with the server's reason.
+  // Remove: confirmation then M5; a refusal keeps the row and the server's reason.
   srv.next[`DELETE /api/desk/accounts/${id}`] = 'a campaign still places this account';
-  await page.click(`[data-conn-remove="${id}"]`);
-  await page.waitForFunction(() => /was not saved: a campaign still places this account/.test(document.body.innerText), null, { timeout: 8000 });
-  check(!!(await page.$(`[data-conn-account="${id}"]`)), 'a refused remove puts the row back and shows the server reason', 'refused remove not rolled back');
+  await page.click('[data-connection-remove]');
+  await page.click('[data-confirm-accept]');
+  await page.waitForFunction(() => /a campaign still places this account/.test(document.body.innerText), null, { timeout: 8000 });
+  check(!!(await page.$(`[data-conn-account="${id}"]`)), 'a refused remove keeps the row and shows the server reason', 'refused remove lost the row or reason');
   srv.log.length = 0;
-  await page.click(`[data-conn-remove="${id}"]`);
+  await page.click('[data-connection-remove]');
+  await page.click('[data-confirm-accept]');
   await settle(page, (a) => !document.querySelector(`[data-conn-account="${a}"]`), id);
   check(calls(srv, 'DELETE', new RegExp(`^/api/desk/accounts/${id}$`)).length === 1 && !srv.accounts.some((a) => a.id === id),
     'Remove DELETEs M5 and the server no longer has the account', 'remove calls: ' + JSON.stringify(srv.log));
 
-  // Undo re-creates it through M3: client id, platform and identity, and no credential field.
-  srv.log.length = 0;
-  await page.click('#desk-v1-undo');
-  await settle(page, (a) => !!document.querySelector(`[data-conn-tile="${a}"]`), id);
-  const post = calls(srv, 'POST', /^\/api\/desk\/accounts$/);
-  check(post.length === 1 && post[0].body.id === id && post[0].body.platform === snap.platform && post[0].body.identity === snap.identity,
-    'Undo POSTs M3 with the account\'s id, platform and identity', 'undo POST: ' + JSON.stringify(post.map((r) => r.body)));
-  check(Object.keys(post[0].body).every((k) => ['id', 'platform', 'identity', 'label', 'capability', 'voice'].includes(k)),
-    'the M3 body carries no credential field', 'M3 body keys: ' + Object.keys(post[0].body));
-  check(srv.accounts.length === before, 'the server holds the account again', 'server accounts: ' + srv.accounts.length);
+  check(!(await page.$eval('#desk-v1-undo', e => !e.disabled)), 'confirmed Remove offers no Undo', 'Remove added an Undo');
 
   // Read via: shown as the server holds it, edited in the wizard; opening the account sends nothing.
   srv.log.length = 0;
@@ -319,9 +310,10 @@ async function somethingElse(browser) {
   const cred = await page.$eval('[data-svc-cred-state]', (e) => e.dataset.svcCredState);
   check(cred === 'missing' && !(await page.$('[data-conn-detail] [data-conn-publish], [data-conn-detail] [data-conn-action]')),
     'the detail says the named vault entry is missing (Vault) and offers no Connect or Publishing', 'service detail: ' + cred);
-  await page.waitForSelector('[data-svc-remove]', { timeout: 4000 });
+  await page.waitForSelector('[data-connection-remove]', { timeout: 4000 });
   srv.log.length = 0;
-  await page.click('[data-svc-remove]');
+  await page.click('[data-connection-remove]');
+  await page.click('[data-confirm-accept]');
   await settle(page, () => !document.querySelector('[data-conn-tile^="service:"]'));
   check(calls(srv, 'DELETE', /^\/api\/desk\/services\//).length === 1 && srv.services.length === 0, 'Remove DELETEs the service', 'remove calls: ' + JSON.stringify(srv.log));
   realErrors(pageErrors).length ? realErrors(pageErrors).forEach((e) => fail('page error: ' + e)) : ok('no uncaught page errors');
@@ -416,7 +408,7 @@ async function demoCallsNothing(browser) {
   await openConnections(page);
   await page.click('[data-conn-tile]');   // an account's detail open: it must not offer the live controls either
   await page.waitForSelector('[data-conn-detail] [data-conn-account]', { timeout: 4000 });
-  const live = await page.$$('[data-conn-add], [data-conn-remove], [data-conn-publish]');
+  const live = await page.$$('[data-conn-add], [data-connection-remove], [data-conn-publish]');
   check(live.length === 0, 'flag OFF: Connections shows no Add form, Remove or Publishing line', 'live controls leaked into demo mode');
   // The read-coverage line under Read via is a pre-existing GET (S8 owns engagement); it is not an account write.
   const own = srv.log.filter((r) => !/^\/api\/desk\/engagement\/coverage\//.test(r.path));
