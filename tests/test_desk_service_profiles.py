@@ -17,7 +17,7 @@ SHIPPED = ROOT / 'mc' / 'desk_connect'
 V1_GOLD = json.loads((Path(__file__).parent / 'fixtures' / 'desk_registry_v1.json').read_text(encoding='utf-8'))
 SHIPPED_IDS = ['x', 'higgsfield', 'google_ai', 'openai', 'notion', 'linkedin', 'youtube', 'google_drive', 'google_photos']
 # Services added after the version 1 file froze: they have no version 1 record, so V1_GOLD never lists them.
-POST_V1_IDS = ['instagram']
+POST_V1_IDS = ['instagram', 'facebook', 'tiktok', 'reddit', 'snapchat', 'github']
 
 
 def _copy_shipped(tmp_path) -> Path:

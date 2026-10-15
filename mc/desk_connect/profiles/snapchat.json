@@ -1,0 +1,330 @@
+{
+  "schema_version": 1,
+  "service_id": "snapchat",
+  "revision": 1,
+  "label": "Snapchat",
+  "aliases": [
+    "Snapchat",
+    "Snap Chat",
+    "Snap"
+  ],
+  "home_url": "https://www.snapchat.com",
+  "hosts": [
+    "snapchat.com",
+    "www.snapchat.com",
+    "web.snapchat.com",
+    "accounts.snapchat.com"
+  ],
+  "account_kinds": [
+    {
+      "id": "public_profile",
+      "label": "Public Profile (creator or business)"
+    }
+  ],
+  "purposes": [
+    {
+      "id": "publish",
+      "capabilities": [
+        "post",
+        "media"
+      ],
+      "account_kinds": [
+        "public_profile"
+      ],
+      "routes": [
+        "snapchat-public-profile-api",
+        "snapchat-manual"
+      ],
+      "standing_policy": [
+        "Automated publishing uses the platform API and the campaign approval; a person may always post by hand."
+      ]
+    },
+    {
+      "id": "read_own",
+      "capabilities": [
+        "own_posts",
+        "mentions",
+        "replies",
+        "post_metrics"
+      ],
+      "account_kinds": [
+        "public_profile"
+      ],
+      "routes": [
+        "snapchat-public-profile-api"
+      ],
+      "standing_policy": [
+        "Own reads default to the browser pane; an API read is the user's choice."
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "id": "snapchat-public-profile-api",
+      "title": "Post a Story or Spotlight to a Public Profile (allowlisted API)",
+      "guidance": "Posts video Stories and Spotlights to a creator or business Public Profile through Snap's Public Profile API. Snap allowlists the app first, and Spotlights are reviewed before going live. Clayrune has no flow for it.",
+      "transport": "api",
+      "support": "restricted",
+      "auth": [
+        {
+          "type": "oauth",
+          "params": [],
+          "placement": "header",
+          "scopes": [
+            "snapchat-profile-api"
+          ],
+          "issuer": "Snap",
+          "registration": "Create an OAuth app in Ads Manager under Business Details (a Developer Portal client id does not work), then email Snap your client id and intended use to be allowlisted.",
+          "claim": "sc.allow"
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "publish",
+          "account_kind": "public_profile",
+          "capability": "post",
+          "status": "documented",
+          "claim": "sc.post"
+        },
+        {
+          "purpose": "publish",
+          "account_kind": "public_profile",
+          "capability": "media",
+          "status": "documented",
+          "claim": "sc.post"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "public_profile",
+          "capability": "post_metrics",
+          "status": "documented",
+          "claim": "sc.metrics"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "public_profile",
+          "capability": "own_posts",
+          "status": "unknown",
+          "claim": null
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "public_profile",
+          "capability": "mentions",
+          "status": "unknown",
+          "claim": null
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "public_profile",
+          "capability": "replies",
+          "status": "unknown",
+          "claim": null
+        }
+      ],
+      "requirements": [
+        {
+          "kind": "provider_review",
+          "text": "The Public Profile API is allowlist-only: Snap must approve your OAuth app after you email it your client id and intended use.",
+          "claim": "sc.allow"
+        },
+        {
+          "kind": "developer_app",
+          "text": "An OAuth app created in Ads Manager under a Snap business account (organization).",
+          "claim": "sc.allow"
+        },
+        {
+          "kind": "account_role",
+          "text": "A Snapchat Public Profile, creator or business. A personal account is not a Public Profile.",
+          "claim": "sc.intro"
+        },
+        {
+          "kind": "permitted_use",
+          "text": "A posted Spotlight starts as SUBMITTED and goes live only after Snap approves it.",
+          "claim": "sc.post"
+        }
+      ],
+      "limits": [
+        {
+          "name": "Story video",
+          "source": "provider",
+          "value": "MP4, 5 to 60 seconds, at least 540x960",
+          "unit": null,
+          "reset": null,
+          "claim": "sc.post"
+        },
+        {
+          "name": "Spotlight video",
+          "source": "provider",
+          "value": "MP4, 6 to 60 seconds, at least 540x960",
+          "unit": null,
+          "reset": null,
+          "claim": "sc.post"
+        }
+      ],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "snap-profile-asset-management",
+        "snap-get-started",
+        "snap-faq",
+        "snap-intro"
+      ]
+    },
+    {
+      "id": "snapchat-browser",
+      "title": "Keep a signed-in Snapchat browser session",
+      "guidance": "Clayrune can hold a browser pane signed in to a named profile. No Snapchat web page that shows your own Stories, Spotlights or their numbers was found, so no read is claimed and Clayrune cannot check this sign-in by itself. This row only describes the route.",
+      "transport": "browser",
+      "support": "info_only",
+      "auth": [
+        {
+          "type": "browser_signin",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [],
+      "requirements": [],
+      "limits": [
+        {
+          "name": "What the page shows",
+          "source": "clayrune",
+          "value": null,
+          "unit": null,
+          "reset": null,
+          "claim": null
+        }
+      ],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "snap-web-secondary"
+      ],
+      "signin": {
+        "url": "https://accounts.snapchat.com/accounts/login",
+        "hosts": [
+          "accounts.snapchat.com"
+        ]
+      }
+    },
+    {
+      "id": "snapchat-manual",
+      "title": "Post from the Snapchat app",
+      "guidance": "Snapchat has no web composer for Stories or Spotlight that was found. Clayrune shows the caption to copy and the file to use; you post it yourself in the Snapchat app.",
+      "transport": "browser",
+      "support": "manual",
+      "auth": [
+        {
+          "type": "browser_signin",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "publish",
+          "account_kind": "public_profile",
+          "capability": "post",
+          "status": "claimed",
+          "claim": "sc.manual"
+        }
+      ],
+      "requirements": [],
+      "limits": [],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "snap-web-secondary"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "snap-profile-asset-management",
+      "label": "Snap: Public Profile API, posting Stories and Spotlights",
+      "url": "https://developers.snap.com/marketing-api/Public-Profile-API/ProfileAssetManagement",
+      "publisher_class": "official_docs",
+      "published": null,
+      "retrieved": "2026-10-15",
+      "attempted": null,
+      "claim_ids": [
+        "sc.post"
+      ],
+      "digest": null,
+      "result": "verified"
+    },
+    {
+      "id": "snap-get-started",
+      "label": "Snap: Public Profile API, get started",
+      "url": "https://developers.snap.com/marketing-api/Public-Profile-API/GetStarted",
+      "publisher_class": "official_docs",
+      "published": null,
+      "retrieved": "2026-10-15",
+      "attempted": null,
+      "claim_ids": [
+        "sc.allow"
+      ],
+      "digest": null,
+      "result": "verified"
+    },
+    {
+      "id": "snap-faq",
+      "label": "Snap: Public Profile API, FAQ",
+      "url": "https://developers.snap.com/marketing-api/Public-Profile-API/FAQ",
+      "publisher_class": "official_docs",
+      "published": null,
+      "retrieved": "2026-10-15",
+      "attempted": null,
+      "claim_ids": [
+        "sc.metrics"
+      ],
+      "digest": null,
+      "result": "verified"
+    },
+    {
+      "id": "snap-intro",
+      "label": "Snap: Public Profile API, introduction",
+      "url": "https://developers.snap.com/marketing-api/Public-Profile-API/Introduction",
+      "publisher_class": "official_docs",
+      "published": null,
+      "retrieved": "2026-10-15",
+      "attempted": null,
+      "claim_ids": [
+        "sc.intro"
+      ],
+      "digest": null,
+      "result": "verified"
+    },
+    {
+      "id": "snap-web-secondary",
+      "label": "Search summary only: no creator-facing Snapchat web upload found (pages not opened; a negative finding, not proof)",
+      "url": "https://creators.snap.com/learn-get-started-ways-to-share-your-content",
+      "publisher_class": "community",
+      "published": null,
+      "retrieved": null,
+      "attempted": "2026-10-15",
+      "claim_ids": [
+        "sc.manual"
+      ],
+      "digest": null,
+      "result": "incomplete"
+    }
+  ],
+  "change_summary": "Revision 1 (Ron 2026-10-15, native major networks): allowlisted Public Profile API row, sign-in and manual routes from Snap pages read on 2026-10-15. No sign-in check: no selector for a signed-in Snapchat web page was found. TODO(assisted-post): the manual route becomes an assisted one (mc/desk_connect/assisted_post) when that lands.",
+  "supersedes": null
+}

@@ -1,0 +1,359 @@
+{
+  "schema_version": 1,
+  "service_id": "reddit",
+  "revision": 1,
+  "signin_check": {
+    "url": "https://www.reddit.com/settings/account",
+    "selectors": [
+      "a[href='/settings/account']"
+    ]
+  },
+  "label": "Reddit",
+  "aliases": [
+    "Reddit"
+  ],
+  "home_url": "https://www.reddit.com",
+  "hosts": [
+    "reddit.com",
+    "www.reddit.com",
+    "old.reddit.com"
+  ],
+  "account_kinds": [
+    {
+      "id": "user",
+      "label": "Reddit account"
+    }
+  ],
+  "purposes": [
+    {
+      "id": "publish",
+      "capabilities": [
+        "post",
+        "reply"
+      ],
+      "account_kinds": [
+        "user"
+      ],
+      "routes": [
+        "reddit-data-api",
+        "reddit-manual"
+      ],
+      "standing_policy": [
+        "Automated publishing uses the platform API and the campaign approval; a person may always post by hand."
+      ]
+    },
+    {
+      "id": "read_own",
+      "capabilities": [
+        "own_posts",
+        "mentions",
+        "replies",
+        "post_metrics"
+      ],
+      "account_kinds": [
+        "user"
+      ],
+      "routes": [
+        "reddit-data-api",
+        "reddit-browser"
+      ],
+      "standing_policy": [
+        "Own reads default to the browser pane; an API read is the user's choice."
+      ]
+    },
+    {
+      "id": "listen_broad",
+      "capabilities": [
+        "search"
+      ],
+      "account_kinds": [
+        "user"
+      ],
+      "routes": [
+        "reddit-data-api",
+        "reddit-browser"
+      ],
+      "standing_policy": [
+        "Broad listening uses the browser pane; no search API is selected silently."
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "id": "reddit-data-api",
+      "title": "Reddit account through the Data API (OAuth)",
+      "guidance": "Posts, replies and reads your own posts and inbox through a Reddit app. Reports say Reddit now approves new API access by hand and limits the free tier to non-commercial use. Reddit's own pages could not be read, so every fact here is second-hand. Clayrune has no flow for it.",
+      "transport": "api",
+      "support": "restricted",
+      "auth": [
+        {
+          "type": "oauth",
+          "params": [],
+          "placement": "header",
+          "scopes": [],
+          "issuer": "Reddit",
+          "registration": "Register a Reddit app and request access. Reports say self-service registration closed for new apps in late 2025 and requests go through Reddit's developer form.",
+          "claim": "reddit.approval"
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "publish",
+          "account_kind": "user",
+          "capability": "post",
+          "status": "claimed",
+          "claim": "reddit.cov"
+        },
+        {
+          "purpose": "publish",
+          "account_kind": "user",
+          "capability": "reply",
+          "status": "claimed",
+          "claim": "reddit.cov"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "user",
+          "capability": "own_posts",
+          "status": "claimed",
+          "claim": "reddit.cov"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "user",
+          "capability": "mentions",
+          "status": "claimed",
+          "claim": "reddit.cov"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "user",
+          "capability": "replies",
+          "status": "claimed",
+          "claim": "reddit.cov"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "user",
+          "capability": "post_metrics",
+          "status": "claimed",
+          "claim": "reddit.cov"
+        },
+        {
+          "purpose": "listen_broad",
+          "account_kind": "user",
+          "capability": "search",
+          "status": "claimed",
+          "claim": "reddit.cov"
+        }
+      ],
+      "requirements": [
+        {
+          "kind": "provider_review",
+          "text": "Reddit must approve your use before the API answers. Most 2026 sources say so; one disagrees for non-commercial users.",
+          "claim": "reddit.approval"
+        },
+        {
+          "kind": "permitted_use",
+          "text": "The free tier is for non-commercial use. Commercial use needs Reddit's written permission and a contract.",
+          "claim": "reddit.commercial"
+        }
+      ],
+      "limits": [
+        {
+          "name": "Free tier with OAuth",
+          "source": "provider",
+          "value": "100",
+          "unit": "queries per minute per OAuth client id, averaged over 10 minutes",
+          "reset": null,
+          "claim": "reddit.limit"
+        }
+      ],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "reddit-data-api-wiki",
+        "reddit-secondary"
+      ]
+    },
+    {
+      "id": "reddit-browser",
+      "title": "Read what you can see signed in (browser profile)",
+      "guidance": "Clayrune reads your own Reddit activity and searches from a browser pane signed in to a named profile, chosen in the account settings. It never stores your password and never clicks Post. This row only describes the route.",
+      "transport": "browser",
+      "support": "info_only",
+      "auth": [
+        {
+          "type": "browser_signin",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "read_own",
+          "account_kind": "user",
+          "capability": "own_posts",
+          "status": "claimed",
+          "claim": "reddit.browser.cov"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "user",
+          "capability": "mentions",
+          "status": "claimed",
+          "claim": "reddit.browser.cov"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "user",
+          "capability": "replies",
+          "status": "claimed",
+          "claim": "reddit.browser.cov"
+        },
+        {
+          "purpose": "read_own",
+          "account_kind": "user",
+          "capability": "post_metrics",
+          "status": "claimed",
+          "claim": "reddit.browser.cov"
+        },
+        {
+          "purpose": "listen_broad",
+          "account_kind": "user",
+          "capability": "search",
+          "status": "claimed",
+          "claim": "reddit.browser.cov"
+        }
+      ],
+      "requirements": [],
+      "limits": [
+        {
+          "name": "What the page shows",
+          "source": "clayrune",
+          "value": null,
+          "unit": null,
+          "reset": null,
+          "claim": null
+        }
+      ],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "clayrune-desk-pane"
+      ],
+      "signin": {
+        "url": "https://www.reddit.com/login",
+        "hosts": [
+          "www.reddit.com"
+        ]
+      }
+    },
+    {
+      "id": "reddit-manual",
+      "title": "Open Reddit's post page in your own browser",
+      "guidance": "Clayrune shows the title and text to copy. You open Reddit's submit page, choose the community, check its rules and click Post yourself.",
+      "transport": "browser",
+      "support": "manual",
+      "auth": [
+        {
+          "type": "browser_signin",
+          "params": [],
+          "placement": null,
+          "scopes": [],
+          "issuer": null,
+          "registration": null,
+          "claim": null
+        }
+      ],
+      "coverage": [
+        {
+          "purpose": "publish",
+          "account_kind": "user",
+          "capability": "post",
+          "status": "claimed",
+          "claim": "reddit.manual"
+        }
+      ],
+      "requirements": [],
+      "limits": [],
+      "cost": {
+        "basis": "unknown",
+        "items": []
+      },
+      "evidence": [
+        "clayrune-reddit-manual"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "reddit-data-api-wiki",
+      "label": "Reddit Data API Wiki (Reddit blocked the fetch)",
+      "url": "https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-Data-API-Wiki",
+      "publisher_class": "official_docs",
+      "published": null,
+      "retrieved": null,
+      "attempted": "2026-10-15",
+      "claim_ids": [
+        "reddit.cov"
+      ],
+      "digest": null,
+      "result": "unavailable"
+    },
+    {
+      "id": "reddit-secondary",
+      "label": "Third-party 2026 summaries of the Responsible Builder Policy, the Data API Wiki and r/modnews (search summary only; pages not opened)",
+      "url": "https://snitchfeed.com/blog/reddit-api-pricing",
+      "publisher_class": "community",
+      "published": null,
+      "retrieved": null,
+      "attempted": "2026-10-15",
+      "claim_ids": [
+        "reddit.approval",
+        "reddit.commercial",
+        "reddit.limit"
+      ],
+      "digest": null,
+      "result": "incomplete"
+    },
+    {
+      "id": "clayrune-desk-pane",
+      "label": "Clayrune Desk: own-account reads default to the signed-in browser pane (standing product rule)",
+      "url": null,
+      "publisher_class": "clayrune_builtin",
+      "published": null,
+      "retrieved": null,
+      "attempted": null,
+      "claim_ids": [
+        "reddit.browser.cov"
+      ],
+      "digest": null,
+      "result": "unverified"
+    },
+    {
+      "id": "clayrune-reddit-manual",
+      "label": "Clayrune: Reddit's submit page is a person's own action (no official page read)",
+      "url": null,
+      "publisher_class": "clayrune_builtin",
+      "published": null,
+      "retrieved": null,
+      "attempted": null,
+      "claim_ids": [
+        "reddit.manual"
+      ],
+      "digest": null,
+      "result": "unverified"
+    }
+  ],
+  "change_summary": "Revision 1 (Ron 2026-10-15, native major networks): Data API row (Reddit's own pages unreadable, so second-hand), browser and manual routes. Sign-in selectors are from recalled public markup, not confirmed on a signed-in page: live check pending. TODO(assisted-post): the manual route becomes an assisted one (mc/desk_connect/assisted_post) when that lands.",
+  "supersedes": null
+}

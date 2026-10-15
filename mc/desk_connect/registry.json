@@ -46,6 +46,26 @@
     {
       "id": "instagram",
       "file": "profiles/instagram.json"
+    },
+    {
+      "id": "facebook",
+      "file": "profiles/facebook.json"
+    },
+    {
+      "id": "tiktok",
+      "file": "profiles/tiktok.json"
+    },
+    {
+      "id": "reddit",
+      "file": "profiles/reddit.json"
+    },
+    {
+      "id": "snapchat",
+      "file": "profiles/snapchat.json"
+    },
+    {
+      "id": "github",
+      "file": "profiles/github.json"
     }
   ]
 }
