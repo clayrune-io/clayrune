@@ -23,6 +23,7 @@ try {
    const path=new URL(route.request().url()).pathname;
    if(files[path]) return route.fulfill({contentType:files[path][0],body:files[path][1]});
    return route.fulfill({contentType:'text/html',body:`<html><head><link rel="stylesheet" href="/static/css/app.css">${['kit','connections','connect-wizard','connect-summary-step','connect-login-step','connect-flow'].map(n=>`<link rel="stylesheet" href="/static/css/desk-v1-${n}.css">`).join('')}<style>body{display:block;height:auto}#root{max-width:800px;padding:16px;margin:auto}</style></head><body><main id="root"></main><script type="module">
+    await import('/static/js/desk-v1-service-icons.js');
     for(const name of ['copy','wizard','permissions-step','summary-step','browser-check','browser-profile']) await import('/static/js/desk-v1-connect-'+name+'.js');
     DeskV1ConnectCopy.enable();DeskV1ConnectWizard.setEnabled(true);window.ready=true;
    </script></body></html>`});
