@@ -131,6 +131,8 @@ def commit_custom_connection():
 
 @bp.route('/api/desk/connect/custom/connections', methods=['POST'])
 def custom_connections():
+    if is_unattended_caller():
+        return _refuse_agent('read user-chosen MCP connections')
     try:
         return jsonify({'connections': _service.connections(_path_of)})
     except Exception as e:

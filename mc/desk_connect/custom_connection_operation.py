@@ -51,6 +51,8 @@ _RESERVED_ENV = {'NODE_OPTIONS', 'NODE_PATH', 'NODE_EXTRA_CA_CERTS', 'NODE_TLS_R
                  'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'COMSPEC', 'SYSTEMROOT',
                  'LD_PRELOAD', 'LD_LIBRARY_PATH', 'ELECTRON_RUN_AS_NODE', 'CLAYRUNE_HOME', 'MC_DIR'}
 _VAULT_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$')
+PLACEHOLDER_MESSAGE = ('A start command cannot refer to a stored secret with {{secret:...}}, {{user:...}} or {{totp:...}}. '
+                       'Take that text out and add the secret in the Credentials section, where you can see and approve it.')
 
 
 def _refuse(message: str, code: str = 'invalid', status: int = 400) -> ActivationError:
@@ -80,6 +82,8 @@ def clean_fields(raw, vault_names, *, default_name: str) -> dict:
     if entry is not None and (not isinstance(entry, str) or not entry.strip() or len(entry) > 200
                               or _ps.has_hidden_chars(entry)):
         raise _refuse('the start file must be a path inside the package', 'bad_entry')
+    if _ps.has_vault_placeholder(entry):
+        raise _refuse(PLACEHOLDER_MESSAGE, 'secret_placeholder')
     args = raw.get('args', [])
     if not isinstance(args, list) or len(args) > MAX_ARGS:
         raise _refuse(f'arguments must be a list of at most {MAX_ARGS} items', 'bad_args')
@@ -87,6 +91,8 @@ def clean_fields(raw, vault_names, *, default_name: str) -> dict:
     for a in args:
         if not isinstance(a, str) or not a or len(a) > MAX_ARG or _ps.has_hidden_chars(a):
             raise _refuse('each argument must be plain text (1 to 300 characters, no hidden characters)', 'bad_args')
+        if _ps.has_vault_placeholder(a):
+            raise _refuse(PLACEHOLDER_MESSAGE, 'secret_placeholder')
         if _ps.credential_like(a):
             raise _refuse('an argument looks like a secret value. Secret values are never typed into a command: store it in '
                           'the Vault and attach it as a credential instead.', 'secret_in_args')

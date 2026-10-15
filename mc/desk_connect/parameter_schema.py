@@ -79,6 +79,9 @@ _TOKEN_PREFIXES = re.compile(
     r'\bAIza[0-9A-Za-z_\-]{30,}|\bey[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{5,}|'
     r'\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=\-]{16,})')
 _TOKEN_SHAPE = re.compile(r'^[A-Za-z0-9_\-+/=]{28,}$')
+# Wider than the vault's own placeholder patterns (`mc/secrets_store.py`): any spelling that could be
+# mistaken for one is refused, not just the ones that would resolve.
+_VAULT_PLACEHOLDER = re.compile(r'\{\{\s*(?:secret|user|totp)\s*:', re.I)
 _LOCAL_SUFFIXES = ('.local', '.internal', '.lan', '.home', '.corp', '.localdomain', '.intranet', '.home.arpa')
 
 
@@ -88,6 +91,13 @@ def has_hidden_chars(text: str) -> bool:
     unassigned characters. A value containing any is refused, not cleaned: a command that
     changes when it is cleaned is not the command that was read."""
     return any(unicodedata.category(ch) in _BAD_CATEGORIES for ch in text)
+
+
+def has_vault_placeholder(text) -> bool:
+    """True when `text` holds a `{{secret:..}}`, `{{user:..}}` or `{{totp:..}}` placeholder. The credential
+    wrapper (`tools/with-secret.py`) resolves these in a launch line's arguments, so text from a README
+    must never carry one: credentials flow only through the list a person approves."""
+    return isinstance(text, str) and bool(_VAULT_PLACEHOLDER.search(text))
 
 
 def credential_like(text: str) -> bool:

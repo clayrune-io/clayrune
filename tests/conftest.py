@@ -203,7 +203,7 @@ def _no_real_repository_start_check(monkeypatch):
     except Exception:
         return
     monkeypatch.setattr(github_start_check, 'handshake',
-                        lambda argv, cwd, deadline_s=0: {'ok': True, 'tools': 0, 'server': 'conftest stub'})
+                        lambda argv, cwd, deadline_s=0, scrub=None: {'ok': True, 'tools': 0, 'server': 'conftest stub'})
 
 
 def stub_codex_auth_state(monkeypatch, state=('not_logged_in', None)):

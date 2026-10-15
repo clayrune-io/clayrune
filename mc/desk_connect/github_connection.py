@@ -53,7 +53,10 @@ def stage(body: object) -> dict:
         command = cfg.get('command', '') if isinstance(cfg, dict) else ''
         args = cfg.get('args', []) if isinstance(cfg, dict) else []
         # A registry launcher would ignore the reviewed clone's commit.
-        if Path(str(command)).name.lower() in ('npx', 'npx.cmd', 'npm', 'uvx', 'pipx'):
+        if github_start_command.registry_launcher(command, args):
+            command, args = '', []
+        # A stored-secret placeholder from a README never reaches the form; credentials flow only through the list.
+        if parameters.has_vault_placeholder(command) or any(parameters.has_vault_placeholder(a) for a in args):
             command, args = '', []
         inferred = github_start_command.infer(pkg, files)
         if inferred:
@@ -97,7 +100,9 @@ def prepare(body: dict, resolve_project) -> dict:
     command = body.get('command')
     if not isinstance(command,str) or not command.strip() or len(command)>300 or parameters.has_hidden_chars(command) or parameters.credential_like(command):
         raise ActivationError('Enter the start command.', 'command_required', 400)
-    if Path(command).name.lower() in ('npx','npx.cmd','npm','npm.cmd','uvx','pipx'):
+    if parameters.has_vault_placeholder(command):
+        raise ActivationError(operation.PLACEHOLDER_MESSAGE, 'secret_placeholder', 400)
+    if github_start_command.registry_launcher(command.strip(), fields['args']):
         raise ActivationError('Use a command that runs the saved repository, rather than downloading other code.', 'unpinned_command', 400)
     chosen = set(fields['approve_scripts'])
     if chosen - {s['id'] for s in staged['steps']}:

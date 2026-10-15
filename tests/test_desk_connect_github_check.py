@@ -197,7 +197,7 @@ def test_check_runs_the_registered_gate_command_and_records_by_fingerprint(tmp_p
     from mc.desk_connect import custom_connection_operation as operation
     store.put(op, operation.fingerprint(op), 'registered')
     seen = []
-    monkeypatch.setattr(start_check, 'handshake', lambda argv, cwd, deadline_s=0: seen.append((argv, cwd)) or {'ok': False, 'code': 'exited', 'reason': 'key missing'})
+    monkeypatch.setattr(start_check, 'handshake', lambda argv, cwd, deadline_s=0, scrub=None: seen.append((argv, cwd)) or {'ok': False, 'code': 'exited', 'reason': 'key missing'})
     out = start_check.check(op)
     cfg = activation.launch_config(op)
     assert seen == [([cfg['command'], *cfg['args']], str(tmp_path))]
