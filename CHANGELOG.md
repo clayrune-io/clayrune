@@ -6,6 +6,13 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-15] - Starter expert roster (MC-1099)
+
+- Added seven generic built-in specialists: builder, code reviewer, silent-failure diagnostician, UI fixer, security/privacy auditor, market/technical researcher, and spec/PRD writer. Each has its own persona file and inherits the install's engine settings.
+- Claydo remains the program manager: its brief routes work to existing specialists, requests completion callbacks with `notify_session`, and requires review and synthesis before reporting completion. Brainstorm remains the raw-idea specialist; team creation still requires the user's click.
+- Builtin installation preserves user-owned same-name files and edited builtins. It now also skips names already used by nested imported agents, preventing a new builtin from silently shadowing them.
+- Real-roster tests cover fresh installation, upgrades, engine inheritance, avatar assets and collision preservation. Existing packaging includes the roster directory. Branch only; no merge, push, restart or live delegation verification.
+
 ## [2026-10-14] - GitHub connection Save runs only setup steps (MC-1097)
 
 - GitHub Review offers only install lifecycle, build and compile scripts. Dependencies run first, then lifecycle/build/compile order, independent of package declaration order; start, dev, test and publish scripts cannot be approved. Registry package rules are unchanged.

@@ -545,7 +545,10 @@ def install_builtin_characters(builtin_root: Path) -> dict[str, list[str]]:
     """Install/update built-in characters from `builtin_root` into
     GLOBAL_AGENTS_DIR. For each `<name>.md` in `builtin_root`:
 
-      - Target doesn't exist -> copy it, write the hash marker. Installed.
+      - Target doesn't exist, but the name resolves in a nested directory ->
+        user-owned imported character -> skip, never shadow it.
+      - Target doesn't exist and name is unused -> copy it, write the hash
+        marker. Installed.
       - Target exists, NO marker -> user-owned (hand-written or pre-dates
         this scheme) -> never touch. Skipped. This is what stops a fresh
         install from clobbering a user's own character that happens to
@@ -570,6 +573,11 @@ def install_builtin_characters(builtin_root: Path) -> dict[str, list[str]]:
         src_hash = _skills._file_sha256(src)
 
         if not dest.exists():
+            # Imported packs can nest characters. Match read_character's
+            # lookup so a new top-level builtin cannot replace their identity.
+            if _find_file('global', name, None) is not None:
+                result['skipped'].append(name)
+                continue
             dest.write_bytes(src.read_bytes())
             marker.write_text(src_hash, encoding='utf-8')
             result['installed'].append(name)

@@ -1,9 +1,8 @@
-"""Unit tests for mc.characters.install_builtin_characters — the Claydo
-built-in agent type install path (docs/AGENT_TYPES_DESIGN.md, MC-895 follow-up).
+"""Tests for the built-in character installer and starter roster.
 
 Determinism: mc.characters.GLOBAL_AGENTS_DIR is repointed at tmp_path; no real
-~/.claude is touched. A synthetic builtin_root is used rather than the real
-data/agents/builtin/ so these tests don't drift if claydo.md's body changes.
+~/.claude is touched. Synthetic fixtures exercise the install mechanics;
+the real roster checks fresh installs, upgrades and user-owned collisions.
 """
 import sys
 from pathlib import Path
@@ -98,3 +97,107 @@ class TestInstall:
     def test_missing_builtin_root_is_a_noop(self, env, tmp_path):
         result = ch.install_builtin_characters(tmp_path / 'does-not-exist')
         assert result == {'installed': [], 'updated': [], 'preserved': [], 'skipped': []}
+
+
+BUILTIN_ROOT = PROJECT_ROOT / 'data' / 'agents' / 'builtin'
+SPECIALISTS = (
+    'builder', 'code-reviewer', 'silent-failure-diagnostician', 'ui-fixer',
+    'security-privacy-auditor', 'researcher', 'prd-writer',
+)
+STARTER_ROSTER = ('claydo', 'brainstorm', *SPECIALISTS)
+
+
+class TestStarterRoster:
+    def test_fresh_install_resolves_every_starter(self, env, monkeypatch):
+        monkeypatch.setattr(ch, 'AVATARS_DIR', PROJECT_ROOT / 'assets' / 'avatars')
+        figures = ch.list_figures()
+        result = ch.install_builtin_characters(BUILTIN_ROOT)
+        assert set(result['installed']) == set(STARTER_ROSTER)
+        assert not result['updated'] and not result['preserved'] and not result['skipped']
+        assert {rec['name'] for rec in ch.list_characters()} == set(STARTER_ROSTER)
+        for name in STARTER_ROSTER:
+            rec = ch.read_character('global', name, include_body=True)
+            assert rec is not None
+            assert rec['name'] == name
+            assert rec['agent_name'] and rec['description'] and rec['body']
+            assert ch.avatar_figure(rec['avatar']) in figures
+            assert (env['global_dir'] / f'{name}.md').read_bytes() == (
+                BUILTIN_ROOT / f'{name}.md').read_bytes()
+        assert ch.install_builtin_characters(BUILTIN_ROOT) == {
+            'installed': [], 'updated': [], 'preserved': [],
+            'skipped': sorted(STARTER_ROSTER),
+        }
+
+    @pytest.mark.parametrize('name', ('claydo', *SPECIALISTS))
+    def test_starters_inherit_engine_without_pins(self, env, name):
+        ch.install_builtin_characters(BUILTIN_ROOT)
+        rec = ch.read_character('global', name, include_body=True)
+        assert not rec.get('engine')
+        assert len(rec['body'].encode('utf-8')) <= ch.MAX_BODY_BYTES
+
+    @pytest.mark.parametrize('name', STARTER_ROSTER)
+    def test_same_name_user_file_is_never_adopted_or_overwritten(self, env, name):
+        env['global_dir'].mkdir(parents=True)
+        dest = env['global_dir'] / f'{name}.md'
+        user_bytes = (
+            f'---\nname: {name}\ndescription: My own specialist\n'
+            'agent_name: Custom\n---\nKeep my instructions.\n'
+        ).encode('utf-8')
+        dest.write_bytes(user_bytes)
+        for _ in range(2):
+            result = ch.install_builtin_characters(BUILTIN_ROOT)
+            assert name in result['skipped']
+            assert dest.read_bytes() == user_bytes
+            assert not (env['global_dir'] / f'{name}.md.mc-builtin-hash').exists()
+            assert ch.read_character('global', name)['agent_name'] == 'Custom'
+        assert {rec['name'] for rec in ch.list_characters()} == set(STARTER_ROSTER)
+
+    @pytest.mark.parametrize('name', STARTER_ROSTER)
+    def test_roster_upgrade_preserves_user_edit_and_its_original_marker(self, env, name):
+        ch.install_builtin_characters(BUILTIN_ROOT)
+        dest = env['global_dir'] / f'{name}.md'
+        marker = env['global_dir'] / f'{name}.md.mc-builtin-hash'
+        original_marker = marker.read_bytes()
+        edited = dest.read_bytes() + b'\nUser customization.\n'
+        dest.write_bytes(edited)
+        for src in BUILTIN_ROOT.glob('*.md'):
+            (env['builtin_root'] / src.name).write_bytes(
+                src.read_bytes() + b'\nUpdated distribution.\n')
+        result = ch.install_builtin_characters(env['builtin_root'])
+        assert result['preserved'] == [name]
+        assert set(result['updated']) == set(STARTER_ROSTER) - {name}
+        assert dest.read_bytes() == edited
+        assert marker.read_bytes() == original_marker
+
+    def test_existing_two_character_install_gains_specialists(self, env):
+        # The previous release had only Claydo and Brainstorm. An unedited
+        # Claydo must get the new delegation instructions on upgrade.
+        ch.install_builtin_characters(env['builtin_root'])
+        brainstorm = BUILTIN_ROOT / 'brainstorm.md'
+        (env['builtin_root'] / brainstorm.name).write_bytes(brainstorm.read_bytes())
+        ch.install_builtin_characters(env['builtin_root'])
+        result = ch.install_builtin_characters(BUILTIN_ROOT)
+        assert set(result['installed']) == set(SPECIALISTS)
+        assert result['updated'] == ['claydo']
+        assert result['skipped'] == ['brainstorm']
+        assert not result['preserved']
+        assert (env['global_dir'] / 'claydo.md').read_bytes() == (
+            BUILTIN_ROOT / 'claydo.md').read_bytes()
+
+    @pytest.mark.parametrize('name', SPECIALISTS)
+    def test_nested_user_character_is_not_shadowed_by_a_new_builtin(self, env, name):
+        nested = env['global_dir'] / 'community-pack' / f'{name}.md'
+        nested.parent.mkdir(parents=True)
+        user_bytes = (
+            f'---\nname: {name}\ndescription: My imported specialist\n'
+            'agent_name: Imported\n---\nKeep this imported persona.\n'
+        ).encode('utf-8')
+        nested.write_bytes(user_bytes)
+        for _ in range(2):
+            result = ch.install_builtin_characters(BUILTIN_ROOT)
+            assert name in result['skipped']
+            assert nested.read_bytes() == user_bytes
+            assert not (env['global_dir'] / f'{name}.md').exists()
+            assert not (env['global_dir'] / f'{name}.md.mc-builtin-hash').exists()
+            assert ch.read_character('global', name)['agent_name'] == 'Imported'
+        assert len([rec for rec in ch.list_characters() if rec['name'] == name]) == 1
