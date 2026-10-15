@@ -168,7 +168,7 @@ def test_save_and_launch_gate_keep_files_and_credentials_bound(staged,monkeypatc
     assert not activation.matches({**configs[card['server_name']],'env':{'TOKEN':'bad'}},op)
     (Path(op['directory'])/'server.js').write_text('changed after save')
     assert activation.problem(op)
-    monkeypatch.setattr(activation.os,'execvpe',lambda *a:pytest.fail('changed files launched'))
+    monkeypatch.setattr(activation,'_launch',lambda *a:pytest.fail('changed files launched'))
     with pytest.raises(RuntimeError,match='changed'):
         activation.start('project','p',card['server_name'],card['fingerprint'])
 
@@ -203,7 +203,7 @@ def test_unapproved_node_search_path_refuses_before_credentials(staged,monkeypat
     monkeypatch.setattr(activation,'problem',lambda *a:'')
     monkeypatch.setattr(custom_npm_gate,'ancestor_problem',lambda *a:{'message':'Unapproved node_modules'})
     monkeypatch.setattr(activation.npm,'wrapper_flags',lambda *a:pytest.fail('credentials must not be given'))
-    monkeypatch.setattr(activation.os,'execvpe',lambda *a:pytest.fail('unapproved code launched'))
+    monkeypatch.setattr(activation,'_launch',lambda *a:pytest.fail('unapproved code launched'))
     with pytest.raises(RuntimeError,match='Unapproved node_modules'):
         activation.start('project','p',card['server_name'],card['fingerprint'])
 
@@ -264,7 +264,7 @@ Path('dist/ready.js').write_text("module.exports = require('../node_modules/fixt
     def execute(command,argv,env):
         done=subprocess.run(argv,cwd=directory,env=env,capture_output=True,check=True)
         launched.append(done.stdout)
-    monkeypatch.setattr(activation.os,'execvpe',execute)
+    monkeypatch.setattr(activation,'_launch',execute)
     activation.start('project','p',card['server_name'],card['fingerprint'])
     assert launched==[b'ready']
     # Generated output changes have the disclosed Save-only policy.
@@ -285,3 +285,17 @@ def test_selected_install_cannot_repin_reviewed_source(staged,monkeypatch,tmp_pa
     result,_=service.commit(card['request_id'],card['fingerprint'])
     assert result['state']=='setup_failed' and result['code']=='repository_changed'
     assert not (tmp_path/'approved-files.json').exists()
+
+
+def test_windows_launch_keeps_paths_with_spaces_whole(monkeypatch):
+    called={}
+    monkeypatch.setattr(activation.os,'name','nt')
+    monkeypatch.setattr(activation.os,'execvpe',lambda *a:pytest.fail('os.exec splits quoted paths on Windows'))
+    def call(argv,env=None):
+        called['argv']=argv
+        return 7
+    monkeypatch.setattr(activation.subprocess,'call',call)
+    argv=[r'C:\Program Files\nodejs\node.EXE',r'dist\index.js']
+    with pytest.raises(SystemExit) as stop:
+        activation._launch(argv[0],argv,{})
+    assert called['argv']==argv and stop.value.code==7

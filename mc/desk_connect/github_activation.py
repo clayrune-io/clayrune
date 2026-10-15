@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -134,4 +135,11 @@ def start(scope: str, project_id: str | None, name: str, fingerprint: str) -> No
         command=sys.executable
     os.chdir(op['directory'])
     env=custom_npm_node_paths.child_env(op['strip_env'])
-    os.execvpe(command,argv,env)
+    _launch(command,argv,env)
+
+def _launch(command: str, argv: list, env: dict) -> None:
+    # Windows os.exec* neither quotes arguments ('C:\Program Files\...' splits at the space)
+    # nor replaces the process (the agent sees its server exit at once). Same split as custom_npm_gate.
+    if os.name!='nt':
+        os.execvpe(command,argv,env)
+    sys.exit(subprocess.call(argv,env=env))
