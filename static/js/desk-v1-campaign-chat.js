@@ -93,6 +93,11 @@
     ['.desk-v1-posy-output', '.desk-v1-posy-chips', '.agent-input-row'].forEach((sel) => { const n = box.querySelector(sel); if (n) n.remove(); });
     box.insertAdjacentHTML('beforeend', _html(opts));
     if (window.DeskV1ChatChrome) window.DeskV1ChatChrome.attach(box.querySelector('[data-camp-chat]'));
+    // The edge between the stop's form and this column is draggable (the same call is safe on every repaint of the box).
+    const rightcol = box.closest('.desk-v1-camp-rightcol');
+    if (window.DeskV1Split && rightcol && rightcol.parentElement) {
+      window.DeskV1Split.attach({ container: rightcol.parentElement, side: rightcol, key: 'campaign', layout: 'flex', minSide: 260, minMain: 380, label: 'Resize the campaign form and the conversation' });
+    }
     const camp = opts.campaign;
     const st = _state(camp.id);
     const ask = box.querySelector('textarea');
@@ -132,12 +137,16 @@
       // The box empties the moment the message is sent: the pending "You" turn shows it.
       // A failed send puts it back, with the reason (below), so nothing typed is lost.
       st.pending = { text, scope };
+      // Blur FIRST: an input method or dictation still composing in the box commits its text on blur,
+      // and that commit would otherwise land after the clear below and put the sent message back.
+      if (document.activeElement === ask) ask.blur();
       st.draft = '';
       ask.value = ''; fit();
       ask.disabled = true; sendBtn.disabled = true;
       _paint(box, opts);
       say(`Asking ${opts.agentName}…`, 'info');
       const live = () => (_active && _active.box.isConnected ? _active : null);
+      let sent = true;   // false once the send failed: then the text is MEANT to come back
       try {
         const res = await window.DeskV1Store.api('POST', `/api/desk/campaigns/${encodeURIComponent(camp.id)}/chat`, body);
         st.pending = null;
@@ -159,6 +168,7 @@
         if (!st.draft) st.draft = text;   // a repaint of the box shows it too
         const target = live() ? live().box.querySelector('[data-camp-chat-status]') : null;
         if (target) { target.textContent = `Nothing was changed: ${err && err.message ? err.message : err}. Your message is back in the box.`; target.dataset.kind = 'error'; }
+        sent = false;
       } finally {
         // the box may have been repainted (a new element) while the agent was answering
         if (live()) {
@@ -167,6 +177,9 @@
           const b = live().box.querySelector('[data-posy-send]');
           if (f && live().opts.agentRef) {
             f.disabled = false; if (b) b.disabled = false;
+            // The box was disabled for the whole turn, so nothing new can have been typed: sent text
+            // sitting in it now is the sent message coming back (a late composition commit), not a new draft.
+            if (sent && f.value === text) { f.value = ''; st.draft = ''; f.style.height = 'auto'; }
             if (!f.value && st.draft) { f.value = st.draft; f.dispatchEvent(new Event('input')); }
             f.focus({ preventScroll: true });
           }

@@ -107,6 +107,10 @@
     const say = (text, kind) => { if (status && status.isConnected) { status.textContent = text; status.dataset.kind = kind || ''; } };
     _active = { box, bridge };
     if (window.DeskV1ChatChrome) window.DeskV1ChatChrome.attach(box.querySelector('[data-chat]'));
+    // The edge between the storyboard and this column is draggable (the same call is safe on every repaint of the box).
+    if (window.DeskV1Split && box.parentElement && box.parentElement.classList.contains('desk-v1-sb-layout')) {
+      window.DeskV1Split.attach({ container: box.parentElement, side: box, key: 'story', layout: 'grid', minSide: 260, minMain: 340, label: 'Resize the storyboard and the conversation' });
+    }
     _paint(box, bridge);
     onSelect();
     const A = Story().ask;
