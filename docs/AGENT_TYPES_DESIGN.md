@@ -380,7 +380,7 @@ is the part that bites daily.
 
 ## 11. Claydo, the built-in base agent (2026-09-14)
 
-Every install — fresh or existing — now ships one character out of the box:
+The original base character, now part of the starter roster in section 13, is
 `global:claydo` (`data/agents/builtin/claydo.md`, installed into
 `~/.claude/agents/claydo.md` at boot by
 `character_routes._install_builtin_characters`, wired in `server.py`'s
@@ -470,3 +470,39 @@ precedent. `is_unattended_caller` was rejected for this: it lets an attended
 manual chat's own curl through, and that is an agent. Reads stay open. The
 builtin installer (section 11) calls `mc.characters` directly and is
 unaffected.
+
+## 13. Starter expert roster (2026-10-15, MC-1099)
+
+The distribution adds seven separate files under `data/agents/builtin/`:
+`builder`, `code-reviewer`, `silent-failure-diagnostician`, `ui-fixer`,
+`security-privacy-auditor`, `researcher` (market and technical), and `prd-writer`.
+Together with Claydo and Brainstorm, a fresh install gets nine types. Claydo
+already owns program management, so there is no duplicate manager persona.
+The seven new types and Claydo have no provider, model or effort pin.
+Brainstorm's existing provider-neutral `tier:best` / `high` policy is unchanged.
+Avatars use existing bundled figures; no generated art or runtime dependency.
+
+Hired Claydo's brief directs it to check the actual roster, dispatch bounded
+tasks through `POST /api/project/<project_id>/agent/dispatch`, and supply its
+own `notify_session` for completion delivery. Follow-up sends also re-arm that
+callback. Claydo reviews returned artifacts and checks, requests corrections,
+and synthesizes the result. Small lookups remain direct work; dispatch starts
+with one specialist and respects the user's budget and project rules. These
+are persona instructions using existing APIs, not a new orchestration engine
+or an enforcement guarantee. Ask Claydo remains the read-only guide.
+
+The installer retains the checksum contract in section 11 for all types.
+Preexisting top-level same-name user files without a marker are skipped;
+edited builtins keep both their content and their previous marker. Before
+creating a missing top-level file, the installer also uses the same recursive
+lookup as `read_character` to avoid shadowing an imported nested character.
+Existing customized personas are therefore not replaced with starter prompts;
+Claydo must read the actual definition before dispatching by name.
+
+Packaging: `installer/build-macos.spec` includes the entire builtin directory;
+Windows and shell installers clone the repository, so tracked persona files
+travel with it. No installer changes are needed. `tests/test_characters_builtin.py`
+checks the real roster in temporary directories, including all seven nested
+collision cases, the prior two-character install upgrade and avatar assets.
+Live model delegation and packaged-app installation are separate integration
+checks; unit tests do not establish those behaviors.

@@ -31,6 +31,35 @@ Suggested agent names are checked against global agents and agents in every
 registered project. If a name becomes taken before you save, the form asks you
 to choose a different **Goes by** name; your draft stays open.
 
+### Starter experts on the Floor
+
+A fresh install includes nine agent types. Hire Claydo from the Floor's Bench
+for general work and program management, or hire a specialist directly:
+
+| Agent type | Use it for |
+|---|---|
+| Claydo | Orientation, small tasks, and coordinating specialist work |
+| Brainstorm | Exploring a raw idea before committing to a plan |
+| Builder | Implementing a specified change or diagnosed fix |
+| Code Reviewer | Reviewing changes for bugs and regressions |
+| Diagnostician | Finding why a healthy-looking system produces no result |
+| UI Fixer | Layout, scrolling, responsive and interaction defects |
+| Security Auditor | Credential, privacy, authorization and packaging exposure |
+| Researcher | Market or technical questions with real sources |
+| Spec Writer | Requirements, product briefs and testable specifications |
+
+Hired Claydo is instructed to route idea exploration, investigations and
+multi-part work to the relevant experts, review their results and report back.
+Small lookups stay with Claydo. Delegated runs have their own Floor sessions;
+they keep the project's permissions and approval requirements. Asking which
+team to use produces a proposal card that you approve before new types are
+created. The floating **Ask Claydo** guide still explains and navigates only.
+
+The seven new specialists and Claydo inherit your engine settings. Brainstorm
+keeps its existing best-tier preference within your selected provider. Updates
+preserve your edited builtins and existing same-name global agents, including
+imported agents in subfolders, so a customized roster may differ from this list.
+
 ---
 
 ## What is Clayrune
