@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>MOCK Instagram - compose flow (test fixture, NOT instagram.com)</title>
+<!-- MOCK: a hand-written stand-in for Instagram's create-post dialog, used only by
+     tests/test_desk_assisted_post.py. It is NOT Instagram and proves nothing about
+     Instagram's real markup. ?swap=1 labels the second "Next" as "Share" to prove the
+     engine refuses to click a screen that changed under it. -->
+<style>
+  body{font:16px sans-serif;margin:20px}
+  [role=dialog]{border:2px solid #c60;padding:16px;margin-top:16px;width:420px}
+  [role=button],a[role=link]{display:inline-block;padding:6px 12px;margin:4px;border:1px solid #888;cursor:pointer}
+  [role=textbox]{border:1px solid #888;min-height:60px;padding:6px}
+  #mock-banner{background:#fc0;padding:6px;font-weight:bold}
+</style>
+<div id="mock-banner">MOCK Instagram (test fixture)</div>
+<nav>
+  <a role="link" id="nav-home">Home</a>
+  <a role="link" id="nav-create">Create</a>
+</nav>
+<div role="menu" id="menu" hidden><a role="link" id="menu-post">Post</a><a role="link">Reel</a></div>
+<div role="dialog" id="dlg" hidden>
+  <div id="stage-pick">
+    <p>Create new post</p>
+    <input type="file" id="file" multiple accept="image/*,video/*" hidden>
+  </div>
+  <div id="stage-crop" hidden><p>Crop</p><div role="button" id="next1">Next</div></div>
+  <div id="stage-edit" hidden><p>Edit</p><div role="button" id="next2">Next</div></div>
+  <div id="stage-caption" hidden>
+    <p>Create new post</p>
+    <div role="textbox" contenteditable="true" aria-label="Write a caption..." id="caption"></div>
+    <div role="button" id="share">Share</div>
+  </div>
+</div>
+<script>
+  var swap = /[?&]swap=1/.test(location.search);
+  window.__shareClicks = 0; window.__files = []; window.__stage = 'home';
+  function show(id){ ['stage-pick','stage-crop','stage-edit','stage-caption'].forEach(function(s){
+    document.getElementById(s).hidden = (s !== id); }); window.__stage = id; }
+  document.getElementById('nav-create').onclick = function(){ document.getElementById('menu').hidden = false; };
+  document.getElementById('menu-post').onclick = function(){
+    document.getElementById('dlg').hidden = false; show('stage-pick'); };
+  document.getElementById('file').onchange = function(e){
+    window.__files = Array.prototype.map.call(e.target.files, function(f){ return f.name + ':' + f.size; });
+    show('stage-crop'); };
+  document.getElementById('next1').onclick = function(){ show('stage-edit'); };
+  var n2 = document.getElementById('next2');
+  if (swap) n2.textContent = 'Share';
+  n2.onclick = function(){ if (swap) window.__shareClicks++; else show('stage-caption'); };
+  document.getElementById('share').onclick = function(){ window.__shareClicks++; };
+</script>
