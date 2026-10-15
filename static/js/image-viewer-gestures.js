@@ -1,7 +1,7 @@
 // Image coordinates stay in natural pixels. One transform handles every zoom
 // path, including rotation; the screen point under the cursor stays stationary.
 export function imageGestures(stage, image, onChange, navigate) {
-  let width = 0, height = 0, scale = 1, angle = 0, x = 0, y = 0, fitted = true;
+  let width = 0, height = 0, scale = 1, angle = 0, x = 0, y = 0, fitted = true, lastFit = 0;
   let touch = null, mouse = null, lastTap = null;
   const bounds = () => stage.getBoundingClientRect();
   const rotated = () => angle % 180 ? [height, width] : [width, height];
@@ -14,7 +14,7 @@ export function imageGestures(stage, image, onChange, navigate) {
     stage.classList.toggle('is-zoomed', scale > fitScale() + .001);
     onChange({ scale, angle, fitted });
   };
-  const fit = () => { scale = Math.max(.001, fitScale()); x = y = 0; fitted = true; paint(); };
+  const fit = () => { scale = Math.max(.001, fitScale()); lastFit = fitScale(); x = y = 0; fitted = true; paint(); };
   // `gesture` is a wheel or pinch. Nudging one of those below Fit stays in Fit:
   // a stray scroll over a fitted picture must not freeze the zoom and stop the
   // picture following its frame. Menu, slider and key zooms are deliberate.
@@ -89,7 +89,22 @@ export function imageGestures(stage, image, onChange, navigate) {
     touch = null;
   });
   stage.addEventListener('touchcancel', () => { touch = lastTap = null; });
-  const observer = new ResizeObserver(() => { if (fitted) fit(); });
+  // Off Fit, a resize keeps the zoom RELATIVE to Fit (2x fit stays 2x fit) and the
+  // image point under the frame centre where it was; pan is then clamped so the
+  // picture cannot drift out of the frame. A collapsed stage (minimized) is skipped.
+  const follow = () => {
+    const next = fitScale();
+    if (!(next > 0) || !(lastFit > 0)) return;
+    const ratio = next / lastFit; lastFit = next;
+    if (ratio === 1) return;
+    scale = Math.max(.001, Math.min(16, scale * ratio));
+    const [w, h] = rotated();
+    x *= ratio; y *= ratio;
+    const lx = Math.abs(w * scale - stage.clientWidth) / 2, ly = Math.abs(h * scale - stage.clientHeight) / 2;
+    x = Math.max(-lx, Math.min(lx, x)); y = Math.max(-ly, Math.min(ly, y));
+    paint();
+  };
+  const observer = new ResizeObserver(() => { if (fitted) fit(); else if (width) follow(); });
   observer.observe(stage);
   return {
     fit, zoom, zoomBy: factor => zoom(scale * factor), toggle,

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Fit mode must follow the frame: drag the resize corner, Maximize/Restore, and
 // a browser window resize each leave the picture inside the stage and re-fit it.
-// A manual zoom must survive the same resizes.
+// A manual zoom follows the same resizes (relative to Fit, centre point held).
 import assert from 'node:assert/strict';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,7 @@ import { chromium } from 'playwright';
 import { loadStaticJsCss } from './_static.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const OUT = resolve(ROOT, '_scratch/iv-resize');
+const OUT = resolve(ROOT, '_scratch/viewer_zoom');
 mkdirSync(OUT, { recursive: true });
 const assets = loadStaticJsCss(ROOT);
 const html = `<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/static/css/app.css"><link rel="stylesheet" href="/static/css/image-viewer.css"></head>
@@ -120,12 +120,61 @@ try {
   st = await state(); check(st.fitPressed === 'false', 'wheel-in leaves Fit');
   await page.locator('[data-iv=close]').click();
 
-  // Manual zoom is kept across a resize (Windows Photos behaviour).
+  // Manual zoom FOLLOWS the frame (Ron 2026-10-15, Dave's call): the zoom stays
+  // relative to Fit (scale/fit constant) and the image point at the frame centre holds.
+  const NW = 1190, NH = 1540;
+  const rel = () => page.evaluate(([nw, nh]) => {
+    const s = document.querySelector('.iv-stage'), im = document.querySelector('.iv-image');
+    const sr = s.getBoundingClientRect(), ir = im.getBoundingClientRect();
+    const scale = ir.width / nw, fit = Math.min(1, (s.clientWidth - 32) / nw, (s.clientHeight - 32) / nh);
+    return { scale, fit, ratio: scale / fit, label: document.querySelector('[data-iv=zoom] [value=current]').textContent,
+      cx: ((sr.left + sr.width / 2) - (ir.left + ir.width / 2)) / scale, cy: ((sr.top + sr.height / 2) - (ir.top + ir.height / 2)) / scale,
+      sw: sr.width, sh: sr.height,
+      // Per axis: the picture either sits inside the frame or covers it edge to edge.
+      inside: (ir.left >= sr.left - 1 && ir.right <= sr.right + 1 || ir.left <= sr.left + 1 && ir.right >= sr.right - 1)
+        && (ir.top >= sr.top - 1 && ir.bottom <= sr.bottom + 1 || ir.top <= sr.top + 1 && ir.bottom >= sr.bottom - 1) };
+  }, [NW, NH]);
+  const setFrame = async (w, h) => { await page.locator('.image-viewer').evaluate((el, [w, h]) => { el.style.width = w + 'px'; el.style.height = h + 'px'; }, [w, h]); await page.waitForTimeout(200); };
+  const near = (a, b, tol) => Math.abs(a - b) <= tol;
+  const followCase = async (name, startRatio, pan) => {
+    await open(); await page.setViewportSize({ width: 1440, height: 900 }); await setFrame(1100, 800);
+    const f0 = (await rel()).fit;
+    await page.locator('[data-iv=zoom]').selectOption('fit');
+    // Deliberate slider zoom to startRatio * fit
+    await page.locator('[data-iv=slider]').evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); }, Math.round(startRatio * f0 * 100));
+    await page.waitForTimeout(100);
+    if (pan) { const sb = await page.locator('.iv-stage').boundingBox(); const mx = sb.x + sb.width / 2, my = sb.y + sb.height / 2;
+      await page.mouse.move(mx, my); await page.mouse.down(); await page.mouse.move(mx + pan[0] / 2, my + pan[1] / 2, { steps: 4 }); await page.mouse.move(mx + pan[0], my + pan[1], { steps: 4 }); await page.mouse.up(); await page.waitForTimeout(80); }
+    let r = await rel(); const base = r, startLabel = r.label;
+    check((await state()).fitPressed === 'false', name + ': manual zoom left Fit (' + startLabel + ', ratio ' + r.ratio.toFixed(3) + ')');
+    await shot(name + '-1-before');
+    for (const [w, h] of [[640, 460], [1300, 860], [900, 700]]) {
+      await setFrame(w, h); r = await rel();
+      console.log(name, w + 'x' + h, 'stage', Math.round(r.sw) + 'x' + Math.round(r.sh), 'label', r.label, 'ratio', r.ratio.toFixed(4), 'centre', r.cx.toFixed(1), r.cy.toFixed(1));
+      check(near(r.ratio, base.ratio, base.ratio * .01), name + ' ' + w + 'x' + h + ': scale/fit stays ' + base.ratio.toFixed(3) + ' within 1% (got ' + r.ratio.toFixed(4) + ')');
+      if (!pan) check(near(r.cx, base.cx, 2) && near(r.cy, base.cy, 2), name + ' ' + w + 'x' + h + ': centre point holds (' + r.cx.toFixed(1) + ',' + r.cy.toFixed(1) + ')');
+      check(r.inside, name + ' ' + w + 'x' + h + ': picture not off-screen');
+      check(r.label === Math.round(r.scale * 100) + '%', name + ' ' + w + 'x' + h + ': zoom label tracks scale (' + r.label + ')');
+      check((await state()).fitPressed === 'false', name + ' ' + w + 'x' + h + ': still not in Fit');
+      if (w === 640) await shot(name + '-2-after-resize');
+    }
+    await page.locator('[data-iv=close]').click();
+  };
+  await followCase('zoom2x', 2, null);
+  await followCase('zoom2x-panned', 2, [60, 40]);
+  await followCase('zoom-below-fit', 0.5, null);
+  // Centre point exactness where no clamp can apply: pan 2x-fit by a known amount, resize once.
+  await open(); await page.setViewportSize({ width: 1440, height: 900 }); await setFrame(1100, 800);
+  { const f = (await rel()).fit;
+    await page.locator('[data-iv=slider]').evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); }, Math.round(2 * f * 100));
+    const sb = await page.locator('.iv-stage').boundingBox(); const mx = sb.x + sb.width / 2, my = sb.y + sb.height / 2;
+    await page.mouse.move(mx, my); await page.mouse.down(); await page.mouse.move(mx + 80, my + 50, { steps: 6 }); await page.mouse.up(); await page.waitForTimeout(80);
+    const a = await rel(); await setFrame(700, 520); const b = await rel();
+    check(near(a.cx, b.cx, 3) && near(a.cy, b.cy, 3), 'panned 2x: same image point stays at the frame centre after resize (' + a.cx.toFixed(1) + ',' + a.cy.toFixed(1) + ' -> ' + b.cx.toFixed(1) + ',' + b.cy.toFixed(1) + ')'); }
+  await page.locator('[data-iv=close]').click();
+
   await open(); await page.locator('[data-iv=plus]').click(); await page.locator('[data-iv=plus]').click();
-  st = await state(); const manual = st.zoom;
-  await page.locator('.image-viewer').evaluate(el => { el.style.width = '700px'; el.style.height = '500px'; });
-  await page.waitForTimeout(150); st = await state();
-  check(st.zoom === manual && st.fitPressed === 'false', 'manual zoom survives a resize (' + manual + ')');
+  st = await state();
   await page.locator('[data-iv=fit]').click(); await page.waitForTimeout(100);
   await page.locator('.image-viewer').evaluate(el => { el.style.width = '1200px'; el.style.height = '800px'; });
   await page.waitForTimeout(150); st = await state();
