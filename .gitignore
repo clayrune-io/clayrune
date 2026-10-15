@@ -402,3 +402,6 @@ docs/LAUNCH_PLAN.md
 docs/LAUNCH_COPY.md
 docs/MARKETING_ASSETS_SPEC.md
 .clayrune/
+
+# G1 memory note-gate decision log (MC-964), runtime per-install data
+data/memory_gate_log/
