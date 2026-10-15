@@ -1,0 +1,95 @@
+/* Context-rollover / starting-fresh notices — hairline divider + tiny pill.
+   See static/js/context-rollover-marker.js. Replaces a full centered status
+   row with a 12px strip whose NEGATIVE margin absorbs the flex gap
+   (--ro-gap mirrors .agent-output's gap in each layout) and tucks into each
+   neighbour's own padding/leading, so the marker adds ~4px to the thread
+   instead of a whole row. The full sentence is the pill's tooltip and
+   unfolds below it on click. Selectors out-rank the chat chip rules in app.css
+   (.agent-line-status chip: padding/margin/max-width, and the body.chat-flow
+   `margin: 8px 0 !important`). */
+.agent-line-rollover { --ro-gap: 6px; }                                         /* .agent-output default */
+body.chat-flow .agent-output .agent-line-rollover { --ro-gap: 0px; }            /* flow: gap 0 */
+.agent-3pane .agent-main .agent-output .agent-line-rollover { --ro-gap: 10px; } /* 3-pane wins over flow */
+
+.agent-output .agent-line-rollover,
+body.chat-flow .agent-output .agent-line-rollover {
+  align-self: stretch;
+  max-width: 100%;
+  margin: calc(-1 * (var(--ro-gap) / 2 + 4px)) 0 !important;
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  text-align: center;
+  font-family: 'Inter', -apple-system, system-ui, sans-serif;
+  font-weight: 500;
+  white-space: normal;
+}
+/* Unfolded: the detail line needs real room below the strip. */
+.agent-output .agent-line-rollover:has(.ro-pill[aria-expanded="true"]),
+body.chat-flow .agent-output .agent-line-rollover:has(.ro-pill[aria-expanded="true"]) {
+  margin-bottom: 0 !important;
+}
+/* Back-to-back markers would each tuck 4px into the other: keep them 2px apart. */
+.agent-output .agent-line-rollover + .agent-line-rollover,
+body.chat-flow .agent-output .agent-line-rollover + .agent-line-rollover {
+  margin-top: calc(6px - var(--ro-gap) / 2) !important;
+}
+.agent-line-rollover .ro-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 12px;
+}
+.agent-line-rollover .ro-row::before,
+.agent-line-rollover .ro-row::after {
+  content: '';
+  flex: 1 1 0;
+  height: 0;
+  border-top: 1px dashed var(--border);
+  opacity: 0.9;
+}
+.agent-line-rollover .ro-pill {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 12px;
+  padding: 0 6px;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface2);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 9.5px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+/* The pill is 12px tall for the page's sake; the tap target is not. */
+.agent-line-rollover .ro-pill::after {
+  content: '';
+  position: absolute;
+  inset: -8px -6px;
+}
+.agent-line-rollover .ro-pill:hover,
+.agent-line-rollover .ro-pill:focus-visible,
+.agent-line-rollover .ro-pill[aria-expanded="true"] {
+  color: var(--text);
+  border-color: var(--accent);
+  outline: none;
+}
+.agent-line-rollover .ro-pill:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.agent-line-rollover .ro-ico { font-size: 10px; }
+.agent-line-rollover .ro-detail {
+  display: block;
+  margin: 2px 0 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  word-break: break-word;
+}
+.agent-line-rollover .ro-detail[hidden] { display: none; }
