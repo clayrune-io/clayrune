@@ -9,7 +9,7 @@ from flask import Flask
 from mc import mcp_installer as installer
 from mc.desk_connect import custom_connection_store as store
 from mc.desk_connect import github_activation as activation
-from mc.desk_connect import github_credentials as credentials
+from mc.desk_connect import github_required_keys as credentials
 from mc.desk_connect import github_start_check as start_check
 
 REAL_HANDSHAKE = start_check.handshake      # conftest stubs the module attribute for every test

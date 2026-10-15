@@ -17,7 +17,7 @@ from mc.desk_connect import custom_connection_operation as operation
 from mc.desk_connect import custom_connection_store as store
 from mc.desk_connect import github_manifest as manifest
 from mc.desk_connect import github_activation as activation
-from mc.desk_connect import github_credentials as credentials
+from mc.desk_connect import github_required_keys as credentials
 from mc.desk_connect import github_install_output as output
 from mc.desk_connect import github_install_steps as steps_builder
 from mc.desk_connect import github_start_command
