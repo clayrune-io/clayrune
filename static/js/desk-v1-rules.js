@@ -281,7 +281,7 @@
     // account here can be posted to via API), there is nothing for Posy to
     // draft into review — the Replies row names the real mechanism instead
     // of the API-review default.
-    const allManual = pickedChannels.length > 0 && pickedChannels.every((ch) => ch.capability === 'manual');
+    const allManual = pickedChannels.length > 0 && pickedChannels.every((ch) => ch.capability === 'manual' || ch.capability === 'assisted');
     const auth = {
       accounts: dests,
       frequencyPerWeek: eff.cadence_per_week,

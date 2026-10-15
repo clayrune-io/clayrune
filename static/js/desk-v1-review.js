@@ -481,7 +481,7 @@
     } else if (channel && channel.capability === 'assisted') {
       notice = `<div class="desk-v1-review-notice" data-review-assisted>✋ You press Share. Clayrune never posts to ${esc(channel.label || channel.identity)}. Approving creates a task; "Fill in" then prepares the post in your signed-in browser pane and stops before the final button.</div>`;
     } else if (channel && channel.capability === 'manual') {
-      notice =`<div class="desk-v1-review-notice">✋ You publish this one. Clayrune can’t post to ${esc(channel.label || channel.identity)}. Approving creates a task with the text, images and link ready to paste.</div>`;
+      notice = `<div class="desk-v1-review-notice">✋ You publish this one. Clayrune can’t post to ${esc(channel.label || channel.identity)}. Approving creates a task with the text, images and link ready to paste.</div>`;
     }
 
     const whereWhenLink = `
