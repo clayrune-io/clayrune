@@ -15,9 +15,13 @@ export function imageGestures(stage, image, onChange, navigate) {
     onChange({ scale, angle, fitted });
   };
   const fit = () => { scale = Math.max(.001, fitScale()); x = y = 0; fitted = true; paint(); };
-  const zoom = (next, cx, cy) => {
+  // `gesture` is a wheel or pinch. Nudging one of those below Fit stays in Fit:
+  // a stray scroll over a fitted picture must not freeze the zoom and stop the
+  // picture following its frame. Menu, slider and key zooms are deliberate.
+  const zoom = (next, cx, cy, gesture = false) => {
     if (!width) return;
     next = Math.max(.01, Math.min(16, next));
+    if (gesture && fitted && next <= fitScale() + .001) { fit(); return; }
     const r = bounds();
     const px = (cx ?? r.left + r.width / 2) - r.left - r.width / 2;
     const py = (cy ?? r.top + r.height / 2) - r.top - r.height / 2;
@@ -29,7 +33,7 @@ export function imageGestures(stage, image, onChange, navigate) {
   const toggle = (cx, cy) => fitted ? zoom(1, cx, cy) : fit();
   stage.addEventListener('wheel', e => {
     e.preventDefault();
-    zoom(scale * Math.exp(-e.deltaY * (e.deltaMode === 1 ? .035 : .0022)), e.clientX, e.clientY);
+    zoom(scale * Math.exp(-e.deltaY * (e.deltaMode === 1 ? .035 : .0022)), e.clientX, e.clientY, true);
   }, { passive: false });
   stage.addEventListener('dblclick', e => toggle(e.clientX, e.clientY));
   stage.addEventListener('mousedown', e => {
@@ -61,9 +65,9 @@ export function imageGestures(stage, image, onChange, navigate) {
     e.preventDefault();
     if (e.touches.length === 2 && touch.pinch) {
       const center = midpoint(e.touches), d = distance(e.touches);
-      zoom(scale * d / (touch.distance || 1), touch.center.x, touch.center.y);
-      x += center.x - touch.center.x; y += center.y - touch.center.y;
-      touch.distance = d; touch.center = center; paint();
+      zoom(scale * d / (touch.distance || 1), touch.center.x, touch.center.y, true);
+      if (!fitted) { x += center.x - touch.center.x; y += center.y - touch.center.y; paint(); }
+      touch.distance = d; touch.center = center;
     } else if (e.touches.length === 1 && !touch.pinch) {
       const dx = e.touches[0].clientX - touch.cx, dy = e.touches[0].clientY - touch.cy;
       touch.moved ||= Math.hypot(dx, dy) > 10;
