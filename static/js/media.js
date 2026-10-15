@@ -220,7 +220,10 @@ function _mediaOpen(i) {
   const m = _mediaRows[i];
   if (!m || m.kind !== 'image') return;
   if (typeof _openImageViewer === 'function') {
-    _openImageViewer(API_BASE + '/api/serve-image?path=' + encodeURIComponent(m.path));
+    _openImageViewer(API_BASE + '/api/serve-image?path=' + encodeURIComponent(m.path), {
+      images: _mediaRows.filter(row => row.kind === 'image').map(row =>
+        API_BASE + '/api/serve-image?path=' + encodeURIComponent(row.path)),
+    });
   }
 }
 

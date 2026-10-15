@@ -1398,7 +1398,7 @@ function escPromptWithImages(raw, ts) {
           `<img class="agent-img" src="${src}" alt="" ` +
           `onload="this.classList.add('agent-img-ok')" ` +
           `onerror="this.closest('.agent-img-wrap').classList.add('agent-img-failed');this.remove()" ` +
-          `onclick="_openImageViewer(this.src)"></span>`);
+          `onclick="_openImageViewer(this.src, {source: this})"></span>`);
         return tok;
       });
     // Isolate embedded Hebrew/Arabic runs so an English-base line doesn't

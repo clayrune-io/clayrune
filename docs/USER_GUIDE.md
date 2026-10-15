@@ -320,10 +320,24 @@ the asset cache. No Windows registry change or provider re-login is needed.
 - **Inline images in output**: when the agent's reply contains an absolute
   path to an image file (`.png/.jpg/.gif/.webp/.bmp/.svg/.ico/.tiff/.avif`),
   the image renders inline in the chat at its natural size (capped to chat
-  width). Click the image to open a zoom lightbox (`+`/`-` to zoom,
-  scroll-wheel with Ctrl, Esc to close). Only paths under a known project
+  width). Click the image to open the picture viewer. Only paths under a known project
   working dir, the uploads dir, or the data root are served — anything
   outside that allow-list is refused.
+- **Picture viewer**: the filename appears above the toolbar. Windows and Linux
+  use Photos-style controls; Mac uses a Preview-style title bar. Previous/next
+  arrows and the left/right keys step through pictures in the same message or
+  gallery. The filmstrip button in the bottom bar shows clickable thumbnails.
+  Wheel to zoom at the cursor, drag to pan, or double-click to toggle fit/100%.
+  On a phone, pinch to zoom, drag a zoomed picture, and swipe at fit to change pictures.
+  The bottom bar has fit, actual size, a percentage menu, a slider and `+`/`-`.
+- **Picture tools**: rotate clockwise, copy the displayed image, print, save the
+  original file, open the original, cycle white/checker/dark backgrounds, show
+  format/pixel dimensions/file size, and enter fullscreen. Rotation changes the
+  view and copy/print output; it does not overwrite the file. Desktop windows can
+  be dragged, resized, minimized and maximized. Close with the X or Esc while the
+  viewer has focus; arrows typed in the chat composer stay in the composer.
+  Clipboard access depends on browser support and permissions; failures appear
+  in the viewer. There is no delete action.
 - **Pop out**: the `Pop out ↗` button opens the active session in its own
   resizable window for focus mode.
 

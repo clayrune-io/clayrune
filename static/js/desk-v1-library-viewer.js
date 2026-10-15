@@ -5,8 +5,8 @@
 //   window.DeskV1LibraryViewer.wireShelf(root, files)  make an open folder's tiles open it
 //
 // `files` is a folder's files in shelf order: `{id, kind, title, src, play, path}`.
-//   * a PICTURE opens in the app's own image viewer (`_openImageViewer`, mermaid.js:
-//     zoom, pan, save, Esc/X, previous/next through the folder, a modal frame on a
+//   * a PICTURE opens in the app's own image viewer (`_openImageViewer`, image-viewer.js:
+//     zoom, pan, save, Esc/X, previous/next through this shelf, a modal frame on a
 //     phone). Reused, not rebuilt.
 //   * a VIDEO opens in a player here (that viewer shows images only). Its file is
 //     `play`, the /api/serve-file URL the library read hands every video, so the
@@ -90,7 +90,10 @@
     const it = list[index];
     if (!it) return;
     if (it.kind === 'video') { _openVideo(list, index); return; }
-    if (typeof window._openImageViewer === 'function' && it.src) { window._openImageViewer(it.src); return; }
+    if (typeof window._openImageViewer === 'function' && it.src) {
+      window._openImageViewer(it.src, { images: list.filter(f => f.kind !== 'video' && f.src).map(f => ({ src: f.src, name: f.title })) });
+      return;
+    }
     window.DeskV1Kit && window.DeskV1Kit.toast(it.src ? 'The picture viewer is not available.' : 'This picture has no file to show.');
   }
 

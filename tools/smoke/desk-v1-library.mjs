@@ -6,7 +6,7 @@
  *
  * LIVE (fake server), at 1440 and 390:
  *   - a library picture opens in the picture viewer; next/previous walk the folder
- *     (the app's /api/serve-image/siblings), Esc and the X close it
+ *     (the shelf's explicit image list), Esc and the X close it
  *   - a library video opens in a player (the `play` URL), Esc and the X close it
  *   - ONE "Pick from library" chooser: it lists every folder (Storyboards included),
  *     searches, and View opens the viewer without choosing
@@ -29,7 +29,7 @@ import { loadStaticJsCss } from './_static.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
-const SHOT_DIR = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens');
+const SHOT_DIR = resolve(REPO_ROOT, '_scratch', 'mc1100', 'library');
 mkdirSync(SHOT_DIR, { recursive: true });
 const ORIGIN = 'http://mc.smoke.test';
 const STATIC = loadStaticJsCss(REPO_ROOT);
@@ -183,30 +183,30 @@ async function live(browser, vp, name) {
   await page.click('[data-studio-folder="f-sb"]');
   await page.waitForSelector('[data-studio-file]');
   await page.locator('[data-studio-file="desk/library/image/Storyboards/scene-b.png"]').click();
-  await page.waitForSelector('.mermaid-viewer-overlay img');
-  const src0 = await page.$eval('.mermaid-viewer-overlay img', (i) => i.getAttribute('src'));
+  await page.waitForSelector('.image-viewer-overlay .iv-image');
+  const src0 = await page.$eval('.image-viewer-overlay .iv-image', (i) => i.getAttribute('src'));
   check(/scene-b\.png/.test(decodeURIComponent(src0)), `${tag} clicking a library picture opens it full size`, `${tag} viewer src ${src0}`);
-  await settle(page, () => /2 \/ 3/.test((document.querySelector('.iv-counter') || {}).textContent || ''));
-  ok(`${tag} the viewer knows its place in the folder: ${await page.textContent('.iv-counter')}`);
-  check(siblings.length > 0, `${tag} the folder's pictures come from /api/serve-image/siblings`, `${tag} siblings never asked`);
+  await settle(page, () => /2 \/ 3/.test((document.querySelector('.iv-count') || {}).textContent || ''));
+  ok(`${tag} the viewer knows its place in the folder: ${await page.textContent('.iv-count')}`);
+  check(siblings.length === 0, `${tag} navigation stays scoped to the supplied shelf`, `${tag} unrelated siblings were requested`);
   await page.keyboard.press('ArrowRight');
-  await settle(page, () => /scene-c/.test(decodeURIComponent(document.querySelector('.mermaid-viewer-overlay img').getAttribute('src'))));
+  await settle(page, () => /scene-c/.test(decodeURIComponent(document.querySelector('.image-viewer-overlay .iv-image').getAttribute('src'))));
   ok(`${tag} Next steps to the next picture in the folder`);
   await page.click('.iv-nav-prev');
-  await settle(page, () => /scene-b/.test(decodeURIComponent(document.querySelector('.mermaid-viewer-overlay img').getAttribute('src'))));
+  await settle(page, () => /scene-b/.test(decodeURIComponent(document.querySelector('.image-viewer-overlay .iv-image').getAttribute('src'))));
   ok(`${tag} Previous steps back`);
   if (name === '390') {
-    const box = await page.$eval('.mermaid-viewer-content', (e) => { const r = e.getBoundingClientRect(); return { l: r.left, r: r.right, w: innerWidth }; });
+    const box = await page.$eval('.image-viewer', (e) => { const r = e.getBoundingClientRect(); return { l: r.left, r: r.right, w: innerWidth }; });
     check(box.l >= 0 && box.r <= box.w, `${tag} the viewer fits the phone (${Math.round(box.l)}..${Math.round(box.r)} of ${box.w})`, `${tag} viewer overflows ${JSON.stringify(box)}`);
   }
   await shot(page, `library_viewer_${name}.png`);
   await page.keyboard.press('Escape');
-  await settle(page, () => !document.querySelector('.mermaid-viewer-overlay'));
+  await settle(page, () => !document.querySelector('.image-viewer-overlay'));
   ok(`${tag} Esc closes the viewer`);
   await page.locator('[data-studio-file="desk/library/image/Storyboards/scene-a.png"]').click();
-  await page.waitForSelector('.mermaid-viewer-overlay ._iv-close');
-  await page.click('.mermaid-viewer-overlay ._iv-close');
-  await settle(page, () => !document.querySelector('.mermaid-viewer-overlay'));
+  await page.waitForSelector('.image-viewer-overlay [data-iv=close]');
+  await page.click('.image-viewer-overlay [data-iv=close]');
+  await settle(page, () => !document.querySelector('.image-viewer-overlay'));
   ok(`${tag} the X closes the viewer`);
 
   // 2. video player
@@ -264,10 +264,10 @@ async function live(browser, vp, name) {
   }
   await shot(page, `library_picker_${name}.png`);
   await page.click('[data-lp-view="1"]');
-  await page.waitForSelector('.mermaid-viewer-overlay img');
+  await page.waitForSelector('.image-viewer-overlay .iv-image');
   check(!!(await page.$('[data-lp]')), `${tag} View opens the picture without choosing it (the chooser stays)`, `${tag} chooser gone after View`);
   await page.keyboard.press('Escape');
-  await settle(page, () => !document.querySelector('.mermaid-viewer-overlay'));
+  await settle(page, () => !document.querySelector('.image-viewer-overlay'));
   check(!!(await page.$('[data-lp]')), `${tag} Esc closes only the viewer`, `${tag} Esc closed the chooser too`);
   await page.locator('[data-lp-pick]').nth(2).click();
   await settle(page, () => !document.querySelector('[data-lp]'));
@@ -302,10 +302,10 @@ async function live(browser, vp, name) {
   check(aput && /desk\/library\/image\/Studio\/hero\.png/.test(aput.body.tabs[0].body), `${tag} the saved draft carries the library path`, `${tag} article PUT: ${JSON.stringify(aput && aput.body.tabs)}`);
   check(/nothing was copied/.test(await page.textContent('.toast')), `${tag} the page says it did not copy`, `${tag} toast: ${await page.textContent('.toast')}`);
   await page.click('[data-sa-pic-open]');
-  await page.waitForSelector('.mermaid-viewer-overlay img');
+  await page.waitForSelector('.image-viewer-overlay .iv-image');
   ok(`${tag} a picture in the strip opens in the viewer`);
   await page.keyboard.press('Escape');
-  await settle(page, () => !document.querySelector('.mermaid-viewer-overlay'));
+  await settle(page, () => !document.querySelector('.image-viewer-overlay'));
   if (name === '390') {
     const over = await overflow(page);
     check(over <= 0, `${tag} the article page has no horizontal overflow`, `${tag} article overflow ${over}px`);

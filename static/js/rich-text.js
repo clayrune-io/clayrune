@@ -179,7 +179,7 @@ function formatAgentText(raw) {
         `<img class="agent-img" src="${src}" alt="" ` +
         `onload="this.classList.add('agent-img-ok')" ` +
         `onerror="this.closest('.agent-img-wrap').classList.add('agent-img-failed');this.remove()" ` +
-        `onclick="_openImageViewer(this.src)"></span>`);
+        `onclick="_openImageViewer(this.src, {source: this})"></span>`);
       return tok;
     });
 

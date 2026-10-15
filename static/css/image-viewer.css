@@ -1,0 +1,81 @@
+.image-viewer-overlay { position:fixed; inset:0; z-index:11000; display:grid; place-items:center; pointer-events:none; }
+.image-viewer-overlay[hidden] { display:none; }
+.image-viewer { --iv-bar:#242723; --iv-border:#3e423c; position:relative; pointer-events:auto; width:94vw; height:90vh; max-width:1800px; max-height:100dvh; min-width:380px; min-height:280px; display:flex; flex-direction:column; overflow:hidden; resize:both; border:1px solid var(--iv-border); border-radius:8px; background:#1b1e19; color:#f1f2ef; box-shadow:0 20px 80px #0008; font:13px 'Segoe UI',system-ui,sans-serif; text-align:left; color-scheme:dark; }
+.image-viewer *, .image-viewer *::before, .image-viewer *::after { box-sizing:border-box; }
+.image-viewer button, .image-viewer select, .image-viewer a { font:inherit; color:inherit; }
+.image-viewer button, .image-viewer a { background:transparent; border:0; border-radius:4px; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; gap:6px; cursor:pointer; white-space:nowrap; padding:8px; flex-shrink:0; }
+.image-viewer button:hover, .image-viewer a:hover, .image-viewer button[aria-pressed=true] { background:#ffffff18; }
+.image-viewer button:disabled { opacity:.35; cursor:default; }
+.image-viewer :focus-visible { outline:2px solid #9dd9f3; outline-offset:-2px; }
+.image-viewer svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; flex-shrink:0; }
+.iv-titlebar { min-height:40px; display:flex; align-items:center; background:var(--iv-bar); border-bottom:1px solid var(--iv-border); user-select:none; touch-action:none; }
+.iv-title { margin:0; padding:0 16px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:400; text-align:center; }
+.iv-titlemark { margin-left:14px; color:#c7ccc2; }
+.iv-window-controls { display:flex; align-self:stretch; align-items:center; }
+.iv-window-controls button { border-radius:0; width:44px; height:100%; }
+.iv-window-controls [data-iv=close]:hover { background:#bc3535; }
+.iv-toolbar { min-height:46px; display:flex; align-items:center; flex-shrink:0; overflow-x:auto; padding:4px 10px; gap:3px; background:var(--iv-bar); border-bottom:1px solid var(--iv-border); }
+.iv-tool-spacer { flex:1; }
+.iv-divider { height:22px; border-left:1px solid var(--iv-border); margin:0 6px; }
+.iv-workspace { display:flex; position:relative; flex:1; min-height:0; overflow:hidden; }
+.iv-stage { flex:1; min-width:0; position:relative; overflow:hidden; background:#fff; touch-action:none; user-select:none; cursor:grab; }
+.iv-stage.is-panning { cursor:grabbing; }
+.iv-stage[data-background=dark] { background:#1b1e19; }
+.iv-stage[data-background=checker] { background-color:#fff; background-image:linear-gradient(45deg,#ddd 25%,transparent 25%),linear-gradient(-45deg,#ddd 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#ddd 75%),linear-gradient(-45deg,transparent 75%,#ddd 75%); background-size:24px 24px; background-position:0 0,0 12px,12px -12px,-12px 0; }
+.iv-image { position:absolute; left:50%; top:50%; max-width:none !important; max-height:none !important; width:auto; height:auto; transform-origin:center; pointer-events:none; user-select:none; }
+.image-viewer .iv-nav { position:absolute; top:50%; transform:translateY(-50%); z-index:1; background:#252822c9; color:#fff; border:1px solid #ffffff25; width:38px; height:58px; }
+.iv-nav-prev { left:12px; } .iv-nav-next { right:12px; }
+.iv-info { flex:0 0 260px; background:var(--iv-bar); padding:20px; border-left:1px solid var(--iv-border); overflow:auto; }
+.iv-info h3 { font-size:15px; margin:0 0 24px; font-weight:600; }
+.iv-info dl { margin:0; } .iv-info dt { color:#b1b8ab; font-size:11px; margin:18px 0 6px; }
+.iv-info dd { margin:0; overflow-wrap:anywhere; line-height:1.6; }
+.iv-filmstrip { display:flex; justify-content:center; gap:8px; padding:10px; overflow-x:auto; background:var(--iv-bar); border-top:1px solid var(--iv-border); flex-shrink:0; }
+.image-viewer .iv-thumb { padding:3px; min-width:64px; height:60px; border:2px solid transparent; }
+.image-viewer .iv-thumb[aria-current=true] { border-color:#d8dfce; }
+.iv-thumb img { width:64px; height:48px; object-fit:contain; }
+.iv-statusbar { min-height:44px; display:flex; flex-wrap:wrap; align-items:center; flex-shrink:0; gap:4px 14px; padding:4px 10px; background:var(--iv-bar); border-top:1px solid var(--iv-border); font-size:11px; }
+.iv-file-summary { display:flex; align-items:center; gap:14px; color:#cbd0c5; white-space:nowrap; }
+.iv-count { white-space:nowrap; color:#b1b8ab; }
+.iv-zoom { display:flex; align-items:center; min-width:0; gap:5px; margin-left:auto; }
+.iv-zoom select { border:1px solid var(--iv-border); background:#363b32; border-radius:4px; width:76px; padding:5px 3px; }
+.iv-zoom input { width:110px; accent-color:#d0d9c6; }
+.iv-notice { position:absolute; left:50%; bottom:12px; transform:translateX(-50%); max-width:90%; padding:8px 14px; border-radius:5px; background:#222e; color:#fff; text-align:center; font-size:12px; z-index:3; }
+.image-viewer [hidden] { display:none !important; }
+.image-viewer.is-maximized, .image-viewer:fullscreen { position:fixed !important; inset:0 !important; width:100vw !important; height:100dvh !important; max-width:none; max-height:none; border:0; border-radius:0; resize:none; }
+.image-viewer.iv-mac { --iv-bar:#303034; --iv-border:#48484c; border-radius:12px; font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif; }
+.iv-mac .iv-titlebar { flex-direction:row-reverse; min-height:44px; background:#38383c; }
+.iv-mac .iv-titlemark { display:none; }
+.iv-mac .iv-window-controls { flex-direction:row; padding:0 14px; gap:8px; }
+.iv-mac .iv-window-controls button { border-radius:50%; height:13px; width:13px; padding:0; background:#ffbd44; color:transparent; }
+.iv-mac .iv-window-controls [data-iv=close] { background:#ff6059; order:0; }
+.iv-mac .iv-window-controls [data-iv=minimize] { order:1; }
+.iv-mac .iv-window-controls [data-iv=maximize] { background:#00ca4e; order:2; }
+.iv-mac .iv-window-controls:hover button { color:#352e2b; }
+.iv-mac .iv-window-controls svg { width:9px; height:9px; }
+.iv-mac .iv-title { padding-right:82px; font-weight:600; }
+.iv-mac .iv-toolbar { justify-content:center; background:#303034; }
+@media (max-width:960px) {
+  .image-viewer-overlay { background:#0008; }
+  .image-viewer { position:relative !important; left:auto !important; top:auto !important; width:100vw !important; height:100dvh !important; min-width:0; max-width:none; border:0; border-radius:0; resize:none; }
+  .image-viewer.iv-mac { border-radius:0; }
+  .iv-titlebar { min-height:46px; padding-top:env(safe-area-inset-top,0px); }
+  .iv-titlemark, .iv-window-controls [data-iv=minimize], .iv-window-controls [data-iv=maximize] { display:none; }
+  .iv-title { text-align:left; padding-left:14px; }
+  .iv-window-controls button { width:46px; }
+  .iv-toolbar { overflow-x:auto; gap:2px; padding:3px 5px; flex-shrink:0; }
+  .image-viewer .iv-toolbar button, .image-viewer .iv-toolbar a { min-width:44px; min-height:44px; padding:8px; }
+  .iv-toolbar .iv-button-label, .iv-tool-spacer, .iv-divider { display:none; }
+  .iv-toolbar { min-height:52px; }
+  .iv-info { position:absolute; right:0; top:0; bottom:0; width:min(280px,80%); z-index:2; box-shadow:-8px 0 24px #0004; }
+  .iv-statusbar { flex-wrap:wrap; justify-content:space-between; gap:4px 10px; padding:4px 8px max(4px,env(safe-area-inset-bottom,0px)); }
+  .iv-file-summary { gap:10px; }
+  .iv-zoom { flex-basis:100%; justify-content:space-between; margin:0; }
+  .iv-zoom input { width:0; flex:1; min-width:40px; }
+  .image-viewer .iv-zoom button { min-width:44px; min-height:44px; }
+  .iv-filmstrip { justify-content:flex-start; }
+  .image-viewer .iv-nav { width:44px; height:52px; }
+  .iv-mac .iv-title { padding:0 14px; }
+  .iv-mac .iv-window-controls { padding:0; }
+  .iv-mac .iv-window-controls [data-iv=close] { width:44px; height:44px; background:transparent; color:inherit; }
+  .iv-mac .iv-window-controls svg { width:16px; height:16px; }
+}

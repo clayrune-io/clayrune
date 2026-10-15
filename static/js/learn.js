@@ -1084,7 +1084,7 @@ function _blockedByUserState() {
   if (document.getElementById('wt-overlay')) return true;                      // tour running
   const setup = document.getElementById('setup-overlay');
   if (setup && getComputedStyle(setup).display !== 'none') return true;          // setup still open
-  if (document.querySelector('dialog[open], #cmd-overlay.visible, .mermaid-viewer-overlay')) return true;
+  if (document.querySelector('dialog[open], #cmd-overlay.visible, .image-viewer-overlay:not([hidden]), .mermaid-viewer-overlay')) return true;
   if (document.body.classList.contains('pd-drag-active') || document.body.classList.contains('hire-active')) return true;
   const a = document.activeElement;
   // An editor the user can see. A closed palette's input can keep focus while
