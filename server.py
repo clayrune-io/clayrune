@@ -2254,6 +2254,8 @@ from mc.blueprints import desk_connect_browser_profile_routes as _bp_desk_connec
 app.register_blueprint(_bp_desk_connect_browser_profile.bp)
 from mc.blueprints import desk_connect_browser_check_routes as _bp_desk_connect_browser_check  # noqa: E402
 app.register_blueprint(_bp_desk_connect_browser_check.bp)
+from mc.blueprints import desk_assisted_post_routes as _bp_desk_assisted_post  # noqa: E402
+app.register_blueprint(_bp_desk_assisted_post.bp)
 from mc.blueprints import desk_connect_permission_routes as _bp_desk_connect_permission  # noqa: E402
 app.register_blueprint(_bp_desk_connect_permission.bp)
 
