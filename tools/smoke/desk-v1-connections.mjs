@@ -178,27 +178,20 @@ async function run(browser) {
   check(flags['ch-li-page'][0] === '4px' && flags['ch-x-ron'][0] !== '4px' && flags['ch-li-page'][1] !== flags['ch-x-ron'][1],
         'a re-auth tile is flagged (heavy left edge, amber pill) and a connected one is not', `flags wrong: ${JSON.stringify(flags)}`);
 
-  // Marks wear the vendor's brand colour behind a readable glyph (Ron 2026-10-03);
-  // blog / unknown stay the neutral mark. Contrast is WCAG on the painted colours.
-  const marks = await page.$$eval('[data-conn-tile]', (els) => {
-    const lin = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
-    const lum = (rgb) => 0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2]);
-    const parse = (s) => s.match(/\d+/g).slice(0, 3).map(Number);
-    return Object.fromEntries(els.map((e) => {
-      const m = e.querySelector('.desk-v1-conn-tile-mark'); const cs = getComputedStyle(m);
-      const a = lum(parse(cs.backgroundColor)), b = lum(parse(cs.color));
-      return [e.dataset.connTile, { bg: cs.backgroundColor, brand: m.dataset.brand || null, ratio: (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) }];
-    }));
-  });
-  check(marks['ch-x-ron'].bg === 'rgb(0, 0, 0)' && marks['ch-x-ron'].brand === 'x'
-        && marks['ch-li-page'].bg === 'rgb(10, 102, 194)' && marks['ch-li-page'].brand === 'linkedin',
-        'the X mark is #000000 and the LinkedIn mark is #0A66C2', `brand backgrounds wrong: ${JSON.stringify([marks['ch-x-ron'], marks['ch-li-page']])}`);
-  check(marks['source:yt'].bg === 'rgb(255, 0, 0)' && marks['source:gdrive'].bg === 'rgb(26, 115, 232)' && marks['source:gphotos'].bg === 'rgb(234, 67, 53)',
-        'YouTube source, Google Drive and Google Photos marks carry their brand colours', `source marks wrong: ${JSON.stringify([marks['source:yt'], marks['source:gdrive'], marks['source:gphotos']])}`);
-  check(marks['ch-blog'].brand === null,
-        'the blog mark stays the neutral mark (no brand colour)', `blog mark not neutral: ${JSON.stringify(marks['ch-blog'])}`);
-  const weak = Object.entries(marks).filter(([, m]) => m.ratio < 4.5);
-  check(weak.length === 0, `every mark's glyph reads at WCAG AA (min ${Math.min(...Object.values(marks).map((m) => m.ratio)).toFixed(2)}:1)`, `marks under 4.5:1: ${JSON.stringify(weak)}`);
+  // Marks (Ron 2026-10-15): a known service wears its own logo from static/desk-icons/,
+  // anything else a two-letter monogram, never one grey letter. Full coverage of the
+  // mapping lives in desk-v1-service-icons.mjs; this pins what the fixture grid shows.
+  const marks = await page.$$eval('[data-conn-tile]', (els) => Object.fromEntries(els.map((e) => {
+    const m = e.querySelector('[data-svc-icon]'); const img = m.querySelector('img');
+    return [e.dataset.connTile, { icon: m.dataset.svcIcon, text: img ? '' : m.textContent.trim(), loaded: img ? img.complete && img.naturalWidth > 0 : null }];
+  })));
+  check(marks['ch-x-ron'].icon === 'x' && marks['ch-li-page'].icon === 'linkedin' && marks['source:yt'].icon === 'youtube'
+        && marks['source:gdrive'].icon === 'googledrive' && marks['source:gphotos'].icon === 'googlephotos',
+        'X, LinkedIn, YouTube, Google Drive and Google Photos tiles carry their own logo', `logos wrong: ${JSON.stringify(marks)}`);
+  check(marks['ch-blog'].icon === 'monogram' && /^[A-Z0-9]{2}$/.test(marks['ch-blog'].text),
+        'the blog tile gets a two-letter monogram, not one letter', `blog mark wrong: ${JSON.stringify(marks['ch-blog'])}`);
+  const unloaded = Object.entries(marks).filter(([, m]) => m.loaded === false);
+  check(unloaded.length === 0, 'every logo file loads (no broken image on any tile)', `logo files failed to load: ${JSON.stringify(unloaded)}`);
 
   // Add service: the border is solid in every state (a dotted edge read as broken).
   const addBorder = () => page.$eval('[data-conn-add-tile]', (e) => { const s = getComputedStyle(e); return [s.borderTopStyle, s.borderRightStyle, s.borderBottomStyle, s.borderLeftStyle, s.outlineStyle].join('/'); });

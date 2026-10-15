@@ -9,7 +9,7 @@
 // Usage:  Object.assign(STATIC, loadStaticJsCss(REPO_ROOT));
 // Returns { '/static/js/a/b.js': [contentType, utf8Body], ... } — the same
 // shape the harnesses already build by hand.
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const TYPES = {
@@ -29,6 +29,12 @@ export function loadStaticJsCss(repoRoot, { isolateConnectScreens = false } = {}
   const out = {};
   walk(resolve(repoRoot, 'static', 'js'), '/static/js', '.js', out);
   walk(resolve(repoRoot, 'static', 'css'), '/static/css', '.css', out);
+  // The marks on Connections cards (static/desk-icons/): SVG as text, the one PNG as bytes.
+  const icons = resolve(repoRoot, 'static', 'desk-icons');
+  if (existsSync(icons)) for (const f of readdirSync(icons)) {
+    if (f.endsWith('.svg')) out[`/static/desk-icons/${f}`] = ['image/svg+xml', readFileSync(resolve(icons, f), 'utf8')];
+    else if (f.endsWith('.png')) out[`/static/desk-icons/${f}`] = ['image/png', readFileSync(resolve(icons, f))];
+  }
   // Unit harnesses provide their own navigation/destination fixtures. Production
   // activation belongs to the end-to-end simplify harness, which does not opt out.
   if (isolateConnectScreens) for (const name of ['account-step', 'options-step', 'integration']) {

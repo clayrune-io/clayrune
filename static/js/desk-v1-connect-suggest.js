@@ -25,7 +25,7 @@
     const ul = root.querySelector('[data-cf-suggest]');
     if (!ul) return;
     ul.innerHTML = _items.map((s) => `<li role="presentation"><button type="button" role="option" class="desk-v1-cf-suggest-item" data-cf-suggest-pick="${esc(s.id)}">
-        <span class="desk-v1-cf-suggest-name">${esc(s.label)}</span><span class="desk-v1-cf-suggest-host">${esc(s.host)}</span></button></li>`).join('');
+        <span class="desk-v1-cf-suggest-name">${window.DeskV1ServiceIcons.markHTML({ id: s.id, name: s.label, link: s.host }, true)}${esc(s.label)}</span><span class="desk-v1-cf-suggest-host">${esc(s.host)}</span></button></li>`).join('');
     ul.hidden = _items.length === 0;
   }
 

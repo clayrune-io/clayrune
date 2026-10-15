@@ -154,7 +154,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
   }
 
   function mcpItems() {
-    return (_mcp || []).map((r) => ({ key: mcpKey(r), kind: 'mcp', mark: 'M', name: r.server_name,
+    return (_mcp || []).map((r) => ({ key: mcpKey(r), kind: 'mcp', name: r.server_name,
       kindLabel: r.ecosystem === 'remote' ? 'Remote MCP server' : 'MCP server', status: mcpStatus(r) }));
   }
 
