@@ -34,6 +34,7 @@
 #      (gitignored), which this script sources automatically:
 #        CLAYRUNE_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 #        CLAYRUNE_NOTARY_PROFILE="my-notary-profile"
+#        CLAYRUNE_SIGN_HASH="<SHA-1>"   # only if two valid certs share the name
 #      Or export the same vars in your shell.
 #
 # Nothing secret lives in this script or in signing.env. The app-specific
@@ -51,6 +52,10 @@ _SIGNING_ENV="$(dirname "$0")/signing.env"
 
 APP="${1:-dist/Clayrune.app}"
 IDENTITY="${CLAYRUNE_SIGN_IDENTITY:-}"
+# Optional SHA-1 of the cert to sign with. Needed when two valid certs share the
+# same name (e.g. an old G1 and a renewed G2 Developer ID during the overlap):
+# codesign refuses an ambiguous name. The name is still used for the checks.
+SIGN_WITH="${CLAYRUNE_SIGN_HASH:-$IDENTITY}"
 PROFILE="${CLAYRUNE_NOTARY_PROFILE:-clayrune-notary}"
 OUT_ZIP="${CLAYRUNE_OUT_ZIP:-Clayrune-macOS.zip}"
 
@@ -111,7 +116,7 @@ plutil -lint "$ENTITLEMENTS" >/dev/null || die "Generated entitlements plist is 
 say "Signing $APP"
 codesign --force --deep --options runtime --timestamp \
   --entitlements "$ENTITLEMENTS" \
-  --sign "$IDENTITY" \
+  --sign "$SIGN_WITH" \
   "$APP"
 
 # Confirm it's REALLY signed with the Developer ID identity. `codesign --verify`
