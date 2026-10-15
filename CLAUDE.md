@@ -245,8 +245,11 @@ across sessions/restarts — log in once (vault creds, `{{user:}}` +
 `{{secret:}}`) and reuse after that. `GET /api/browser/profiles` lists what
 exists; **check before logging in**, the account may already be signed in.
 
+A pane a **human** opens from the UI always uses profile `main`
+(`BP_DEFAULT_PROFILE`, `static/js/browser-pane.js`, Ron 2026-09-24); that is
+intended, not a leak of the config default. Agent POSTs stay throwaway.
 Set **`browser_default_profile`** in `config.json` (e.g. `"main"`) to make
-*unnamed* launches persistent too; `{"ephemeral": true}` opts a single launch
+*unnamed* API launches (agents included) persistent too; `{"ephemeral": true}` opts a single launch
 back out.
 
 - Naming a profile that's already open **adopts that session** (`reused:
