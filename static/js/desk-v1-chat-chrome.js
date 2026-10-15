@@ -14,11 +14,19 @@
 // sizes by it. POP OUT does not copy or move anything: the SAME element, in the same
 // place in the DOM, is lifted into the top layer (popover) and sized for reading, so
 // the thread, the ask box and every listener on them are the live ones. Closing just
-// drops the class.
+// drops the class (and any size the reader dragged it to).
+//
+// The large view is a window like every other: attach() hangs the shared 8-handle resizer
+// (makeResizable in interactions.js, .mc-resize-handle) on the chat element. The handles are
+// only shown while popped out (desk-v1-chat-chrome.css), and a fresh pop-out starts at the
+// default size.
 (function () {
   const KEY = 'clayrune.desk.chatTextScale';
   const MIN = 0.85, MAX = 1.75, STEP = 0.15;
-  let _open = null;   // { el, back } while a chat is popped out
+  let _open = null;   // { el, back, downIn } while a chat is popped out
+  // What makeResizable / modalResizeStart write on the chat element: removed on open and close.
+  const _SIZED = ['width', 'height', 'left', 'top', 'position', 'margin'];
+  const _unsize = (el) => _SIZED.forEach((p) => el.style.removeProperty(p));
 
   const clamp = (v) => Math.min(MAX, Math.max(MIN, Math.round(v * 100) / 100));
   function scale() {
@@ -58,6 +66,7 @@
   function _pop(el, btn) {
     if (_open) return;
     const back = { opener: btn || document.activeElement };
+    _unsize(el);
     el.classList.add('is-popped');
     el.setAttribute('role', 'dialog');
     el.setAttribute('aria-modal', 'true');
@@ -68,8 +77,9 @@
     }
     const pop = el.querySelector('[data-chat-pop]');
     if (pop) { pop.innerHTML = '&times;'; pop.setAttribute('aria-label', 'Close the large view'); pop.title = 'Close (Esc)'; }
-    _open = { el, back };
+    _open = { el, back, downIn: false };
     document.addEventListener('keydown', _onKey, true);
+    document.addEventListener('mousedown', _onDown, true);
     document.addEventListener('click', _onClick, true);
     const thread = el.querySelector('[data-chat-thread]');
     if (thread) thread.scrollTop = thread.scrollHeight;
@@ -81,7 +91,9 @@
     const { el, back } = _open;
     _open = null;
     document.removeEventListener('keydown', _onKey, true);
+    document.removeEventListener('mousedown', _onDown, true);
     document.removeEventListener('click', _onClick, true);
+    _unsize(el);
     if (el.hasAttribute('popover')) { try { el.hidePopover(); } catch (_) { /* already hidden */ } el.removeAttribute('popover'); }
     el.classList.remove('is-popped');
     el.removeAttribute('role'); el.removeAttribute('aria-modal'); el.removeAttribute('aria-label');
@@ -90,9 +102,15 @@
     const to = pop && pop.isConnected ? pop : back.opener;
     if (to && to.isConnected) to.focus({ preventScroll: true });
   }
+  // where a press began decides what the click after it means: a drag that started inside the large view
+  // (a resize from an edge, a text selection) and was released over the dimmed page is not a click on the page
+  function _onDown(e) { if (_open) _open.downIn = _open.el.contains(e.target); }
   // a click on the dimmed page around the large view closes it and does nothing else
   function _onClick(e) {
-    if (!_open || _open.el.contains(e.target)) return;
+    if (!_open) return;
+    const startedInside = _open.downIn;
+    _open.downIn = false;
+    if (startedInside || _open.el.contains(e.target)) return;
     e.preventDefault(); e.stopPropagation();
     close();
   }
@@ -112,10 +130,11 @@
   function attach(el) {
     if (!el) return;
     // The chat was repainted (a new element) while an old one was popped out: the old one is gone.
-    if (_open && !_open.el.isConnected) { _open = null; document.removeEventListener('keydown', _onKey, true); document.removeEventListener('click', _onClick, true); }
+    if (_open && !_open.el.isConnected) { _open = null; document.removeEventListener('keydown', _onKey, true); document.removeEventListener('mousedown', _onDown, true); document.removeEventListener('click', _onClick, true); }
     const bar = el.querySelector('[data-chat-chrome]');
     if (!bar || bar.dataset.wired) return;
     bar.dataset.wired = '1';
+    if (typeof window.makeResizable === 'function') window.makeResizable(el);
     _apply(scale());
     bar.querySelector('[data-chat-text-less]').addEventListener('click', () => _set(scale() - STEP));
     bar.querySelector('[data-chat-text-more]').addEventListener('click', () => _set(scale() + STEP));

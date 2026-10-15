@@ -16,7 +16,9 @@
 /* The large view: the SAME chat element, lifted into the top layer and sized for reading. */
 .desk-v1-chat.is-popped {
   position: fixed; inset: max(8px, 4vh) max(8px, calc((100vw - 920px) / 2));
-  width: auto; height: auto; max-width: none; max-height: none; margin: 0; box-sizing: border-box;
+  width: auto; height: auto; margin: 0; box-sizing: border-box;
+  /* the floor and ceiling the shared resizer (interactions.js makeResizable) reads */
+  min-width: 300px; min-height: 240px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px);
   padding: 14px 16px; gap: 10px; overflow: hidden; z-index: 3000;
   background: var(--surface); color: var(--text); border: 1px solid var(--border2); border-radius: 12px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
@@ -29,3 +31,17 @@
 .desk-v1-chat.is-popped .desk-v1-chat-thread:empty { display: block; }
 .desk-v1-chat.is-popped .desk-v1-sb-agent-ask { flex: 0 0 auto; }
 @media (max-width: 960px) { .desk-v1-chat.is-popped { inset: 8px; padding: 12px; } }
+
+/* The shared window resizer's 8 handles (makeResizable, static/js/interactions.js): only the large view is a window.
+   They sit just INSIDE the border here (the stock ones straddle it and this box clips overflow). */
+.desk-v1-chat > .mc-resize-handle { display: none; }
+.desk-v1-chat.is-popped > .mc-resize-handle { display: block; }
+.desk-v1-chat.is-popped > .mc-resize-n  { top: 0; }
+.desk-v1-chat.is-popped > .mc-resize-s  { bottom: 0; }
+.desk-v1-chat.is-popped > .mc-resize-e  { right: 0; }
+.desk-v1-chat.is-popped > .mc-resize-w  { left: 0; }
+.desk-v1-chat.is-popped > .mc-resize-ne { top: 0; right: 0; }
+.desk-v1-chat.is-popped > .mc-resize-nw { top: 0; left: 0; }
+.desk-v1-chat.is-popped > .mc-resize-se { bottom: 0; right: 0; }
+.desk-v1-chat.is-popped > .mc-resize-sw { bottom: 0; left: 0; }
+@media (hover: none), (pointer: coarse) { .desk-v1-chat.is-popped > .mc-resize-handle { display: none; } }
