@@ -32,6 +32,7 @@ from typing import Any
 
 import mc.agent_runtime as _agent_runtime
 import mc.skill_import_guard as _guard
+from mc.atomic_json import write_json_atomic
 
 
 # ── Paths ────────────────────────────────────────────────────────────────────
@@ -960,9 +961,9 @@ def git_clone_to_staging(url: str, ref: str | None = None, timeout: int = 60) ->
     # sidecar reflects what was ACTUALLY cloned, derived server-side from the
     # clone_url. install_from_staging / install_full_plugin read this back.
     (staging_path / _TRUST_TIER_SIDECAR).write_text(trust_tier, encoding='utf-8')
-    (staging_path / '.mc_git_source.json').write_text(json.dumps({
+    write_json_atomic(staging_path / '.mc_git_source.json', {
         'clone_url': clone_url, 'commit': head, 'subpath': subpath,
-        'files': checkout_files}), encoding='utf-8')
+        'files': checkout_files})
 
     out = {
         'staging_id': staging_id,
