@@ -1487,6 +1487,9 @@ def _stub_launch_deps(monkeypatch, profiles):
     monkeypatch.setattr(br, '_find_chromium', lambda: 'C:/fake/chrome.exe')
     monkeypatch.setattr(br, '_import_ws', lambda: object())
     monkeypatch.setattr(br.threading, 'Thread', _FakeThread)
+    # Once server.py is imported, wire() points this at the real registry, and the fake
+    # pid 4242 stayed in state.tracked_processes for every later test in the run.
+    monkeypatch.setattr(br, '_register_process', None)
     captured = {}
 
     def fake_popen(args, **kwargs):
