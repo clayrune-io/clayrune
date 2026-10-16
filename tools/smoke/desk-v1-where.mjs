@@ -6,7 +6,7 @@
  * Checks:
  *   - Render, all 3 tones: Messages column lists every piece of the campaign
  *     with an `on N channels` pill; one column per account the campaign uses
- *     (avatar + platform badge + handle + platform + ✕); version cards read
+ *     (platform mark + handle + platform + ✕); version cards read
  *     `<kind> → <platform format>` and NO time (R2-19: times are When's); the rule line sits under the
  *     board; SOURCES lists one card per connected account (the 2 X accounts
  *     stay 2 cards with distinct handles), YouTube/Discord carry the
@@ -151,7 +151,7 @@ async function readBoard(page) {
       channelId: c.dataset.channelId,
       handle: txt(c.querySelector('.desk-v1-where-handle')),
       platform: txt(c.querySelector('.desk-v1-where-plat')),
-      hasBadge: !!c.querySelector('.desk-v1-where-avatar-badge'),
+      hasBadge: !!c.querySelector('[data-svc-icon]'),
       hasRemove: !!c.querySelector('[data-where-remove]'),
       preview: !!c.querySelector('[data-preview]'),
       empty: txt(c.querySelector('[data-where-colempty]')),
@@ -250,7 +250,7 @@ async function runRender(browser, tone) {
   const cntBad = Object.entries(EXPECT.columns).filter(([id, n]) => (col(b, id) || { versions: [] }).versions.length !== n);
   check(cntBad.length === 0, `${tag} column card counts ${Object.values(EXPECT.columns).join(' / ')}`, `${tag} column counts wrong: ${JSON.stringify(cntBad)}`);
   check(b.columns.every((c) => c.hasBadge && c.hasRemove && c.handle && c.platform),
-    `${tag} every column header has avatar + platform badge + handle + platform + ✕`,
+    `${tag} every column header has platform mark + handle + platform + ✕`,
     `${tag} a column header is missing a part: ${JSON.stringify(b.columns)}`);
   const ron = col(b, 'ch-x-ron');
   const installX = ron.versions.find((v) => v.title === 'Install in two minutes');
@@ -278,6 +278,20 @@ async function runRender(browser, tone) {
     `${tag} YouTube + Discord carry "Preview · not connected"; X/LinkedIn/blog do not`, `${tag} preview labels wrong: ${JSON.stringify(prev)}`);
   check(b.off.length === 1 && /not connected/.test(b.off[0].text) && b.off[0].connect && !b.off[0].draggable,
     `${tag} the not-connected card reads "${b.off[0] && b.off[0].text}" and is not draggable`, `${tag} off card wrong: ${JSON.stringify(b.off)}`);
+
+  // Ron 2026-10-16: equal-size tiles, a vendor mark on each, nothing running out of its card.
+  const geo = await page.evaluate(() => {
+    const tiles = [...document.querySelectorAll('.desk-v1-where-source')];
+    const sizes = new Set(tiles.map((t) => { const r = t.getBoundingClientRect(); return Math.round(r.width) + 'x' + Math.round(r.height); }));
+    const spill = [];
+    document.querySelectorAll('.desk-v1-where-source, .desk-v1-where-colhead').forEach((t) => {
+      const r = t.getBoundingClientRect();
+      t.querySelectorAll('*').forEach((c) => { const q = c.getBoundingClientRect(); if (q.width && (q.right > r.right + 0.5 || q.left < r.left - 0.5)) spill.push((t.dataset.channelId || 'col') + ':' + c.className); });
+    });
+    return { n: tiles.length, sizes: [...sizes], spill, marks: tiles.filter((t) => t.querySelector('[data-svc-icon]')).length };
+  });
+  check(geo.n > 0 && geo.sizes.length === 1 && geo.spill.length === 0 && geo.marks === geo.n,
+    `${tag} ${geo.n} source tiles are one size (${geo.sizes[0]}), each wears a mark, nothing spills`, `${tag} tile geometry wrong: ${JSON.stringify(geo)}`);
 
   const tray = await page.$$eval('#desk-v1-camp-addtray-channels', (els) => els.length);
   check(tray === 0, `${tag} the campaign Add tray has no Channels shelf`, `${tag} Channels shelf still rendered`);
