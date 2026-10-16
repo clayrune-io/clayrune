@@ -517,7 +517,8 @@ project's workspace folder.
 ### Use pictures and videos from your projects
 
 Studio and **Pick from library** include **From your projects**. Choose a
-project, open a folder, or search by file or folder name. Use **View** to
+project, open a folder, or search by file or folder name. The first 50 matching
+files load when opened; **Load more** shows the next page. Use **View** to
 preview a picture or play a video. **Refresh files** finds recent work; files
 are also refreshed automatically about every five minutes.
 

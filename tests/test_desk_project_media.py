@@ -49,9 +49,10 @@ def test_scan_groups_newest_by_project_folder_and_avoids_data_dir(env, tmp_path)
     group = media.grouped()[0]
     assert (group['project_id'], group['title'], group['files']) == ('p', 'Product', 2)
     assert [f['title'] for f in group['folders']] == ['shots', 'clips']
-    assert group['thumb'] == group['items'][0]['src']
-    video = group['items'][1]
-    assert video['origin'] == 'scan' and video['size'] == old.stat().st_size
+    page = media.items_page('p')
+    assert group['thumb'] == page['items'][0]['src']
+    video = page['items'][1]
+    assert video['kind'] == 'video'
     response = client.get(video['play'], headers={'Range': 'bytes=0-3'})
     assert response.status_code == 206 and response.data == b'proj'
     response.close()
@@ -132,7 +133,7 @@ def test_symlink_escape_refused_at_discovery_preview_and_copy(env, tmp_path):
     row = media.refresh()['items'][0]
     source.unlink()
     source.symlink_to(outside)
-    assert media.grouped() == []
+    assert media.grouped()[0]['files'] == 1  # Lists retain metadata until refresh.
     assert client.get('/api/desk/project-media/file?id=' + row['id']).status_code == 403
     assert client.post('/api/desk/project-media/copy', json={'id': row['id']}).status_code == 403
 
@@ -142,10 +143,13 @@ def test_current_project_roots_and_missing_files_are_rechecked(env):
     file = put(root, 'made.mp4')
     row = media.refresh()['items'][0]
     file.unlink()
+    missing = client.get('/api/desk/project-media/file?id=' + row['id'])
+    assert missing.status_code == 404 and 'refresh the list' in missing.get_json()['error']
+    assert media.items_page('p')['total'] == 1
     assert client.post('/api/desk/project-media/copy', json={'id': row['id']}).status_code == 404
     put(root, 'made.mp4')
     projects[0]['project_path'] = str(root / 'different')
-    assert media.grouped() == []
+    assert media.grouped()[0]['files'] == 1
     assert client.get('/api/desk/project-media/file?id=' + row['id']).status_code == 403
     projects.clear()
     assert client.post('/api/desk/project-media/copy', json={'id': row['id']}).status_code == 404
@@ -225,6 +229,75 @@ def test_cache_survives_rewire_without_scanning(env, monkeypatch):
     media.wire(load_projects_fn=lambda: projects, media_dir=media_dir, uploads_root=uploads)
     monkeypatch.setattr(media, '_scan', lambda *args: pytest.fail('GET scanned folders'))
     assert pieces.materials()['projects'][0]['files'] == 1
+
+
+def test_summary_payload_is_small_metadata_only_and_never_stats_rows(env, monkeypatch):
+    root, uploads, media_dir, projects, client = env
+    # Real-index scale: 4,824 rows; many files share each of 350 folders.
+    projects[:] = [{'id': str(i), 'name': f'Project {i}'} for i in range(14)]
+    rows = [dict(id=f'file-{i}', project_id=str(i % 14), title=f'picture-{i}.png',
+                 folder=f'folder-{i % 350}', kind='image', path=str(root / f'{i}.png'),
+                 mtime=i, size=100, session_id='s' * 100, agent_name='Maker')
+            for i in range(4824)]
+    monkeypatch.setattr(media, '_snapshot', {'items': rows, 'updated_at': 1})
+    def forbidden(*args, **kwargs):
+        pytest.fail('a list call touched the filesystem')
+    original_stat, original_resolve = Path.stat, Path.resolve
+    def checked_stat(path, *args, **kwargs):
+        if str(path).endswith('.png'):
+            forbidden()
+        return original_stat(path, *args, **kwargs)
+    def checked_resolve(path, *args, **kwargs):
+        if str(path).endswith('.png'):
+            forbidden()
+        return original_resolve(path, *args, **kwargs)
+    monkeypatch.setattr(media, '_authorize', forbidden)
+    monkeypatch.setattr(Path, 'stat', checked_stat)
+    monkeypatch.setattr(Path, 'resolve', checked_resolve)
+    response = client.get('/api/desk/project-media')
+    data = response.get_json()
+    assert response.status_code == 200 and len(response.data) < 50000
+    assert sum(p['files'] for p in data['projects']) == 4824
+    for project in data['projects']:
+        assert set(project) == {'project_id', 'title', 'files', 'thumb', 'folders'}
+        assert all(set(folder) == {'title', 'files'} for folder in project['folders'])
+    material_projects = pieces.materials()['projects']
+    assert material_projects == data['projects']
+    assert len(json.dumps(material_projects).encode()) < 50000
+    page = client.get('/api/desk/project-media/items?project_id=0').get_json()
+    assert len(page['items']) == 50 and page['next_offset'] == 50
+    assert all(set(item) == {'id', 'project_id', 'title', 'folder', 'kind', 'src', 'agent_name'}
+               for item in page['items'])
+
+
+def test_item_pages_are_bounded_disjoint_filtered_and_newest_first(env, monkeypatch):
+    rows = [dict(id=str(i), project_id='p', title=f'clip-{i}.mp4',
+                 folder='clips' if i < 120 else 'other', kind='video',
+                 agent_name='Maker') for i in range(150)]
+    rows += [dict(id='elsewhere', project_id='deleted', title='hidden.mp4', folder='clips', kind='video')]
+    monkeypatch.setattr(media, '_snapshot', {'items': rows})
+    client = env[-1]
+    path = '/api/desk/project-media/items?project_id=p&folder=clips&limit=10000'
+    first = client.get(path).get_json()
+    last = client.get(path + '&offset=100').get_json()
+    assert first['limit'] == 100 and first['total'] == 120 and first['next_offset'] == 100
+    assert [i['id'] for i in first['items'] + last['items']] == [str(i) for i in range(120)]
+    assert last['next_offset'] is None
+    assert client.get(path + '&offset=10000').get_json()['items'] == []
+    assert client.get(path + '&kind=image').get_json()['total'] == 0
+    assert client.get(path + '&q=clip-119').get_json()['items'][0]['id'] == '119'
+    assert client.get(path + '&q=Maker').get_json()['total'] == 120
+    assert client.get('/api/desk/project-media/items?project_id=deleted').get_json()['items'] == []
+    summary = client.get('/api/desk/project-media?q=clip-119&kind=video').get_json()['projects']
+    assert summary[0]['files'] == 1 and summary[0]['folders'] == [{'title': 'clips', 'files': 1}]
+    assert client.get('/api/desk/project-media?kind=image').get_json()['projects'] == []
+
+
+@pytest.mark.parametrize('args', ['', '?project_id=p&limit=0', '?project_id=p&limit=-1',
+                                   '?project_id=p&offset=-1', '?project_id=p&limit=no',
+                                   '?project_id=p&offset=1.5'])
+def test_invalid_item_page_arguments_are_visible_errors(env, args):
+    assert env[-1].get('/api/desk/project-media/items' + args).status_code == 400
 
 
 def test_forward_video_markers_real_files_dedupe_and_agent_name(env, monkeypatch):

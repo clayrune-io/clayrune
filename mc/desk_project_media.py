@@ -27,6 +27,8 @@ MAX_DEPTH = 8
 MAX_VISITS = 20000
 MAX_CHAT_BYTES = 2 * 1024 * 1024
 REFRESH_SECONDS = 300
+PAGE_SIZE = 50
+MAX_PAGE_SIZE = 100
 SKIP_DIRS = {'.git', 'node_modules', 'venv', '.venv', '__pycache__',
              'dist', 'build', '.clayrune', '_scratch'}
 _load_projects: Callable[[], list] = lambda: []
@@ -215,37 +217,63 @@ def refresh() -> dict:
         return value
 
 
-def grouped() -> list[dict]:
-    """Project -> folders -> items, newest first. Only reads the existing index."""
+def _listed(*, project_id: str | None = None, folder: str | None = None,
+            query: str = '', kinds: tuple[str, ...] = ()) -> list[dict]:
+    """Read index metadata only; refresh and _source own filesystem checks."""
     projects = {str(p['id']): p for p in _load_projects()}
-    roots = _roots(list(projects.values()))
     with _state_lock:
-        rows = list(_snapshot['items'])
+        rows = _snapshot['items']
+    query = query.strip().casefold()
+    return [dict(row, project_name=projects[row['project_id']].get('name') or row['project_id'])
+            for row in rows if row.get('project_id') in projects
+            and (project_id is None or row['project_id'] == project_id)
+            and (folder is None or row['folder'] == folder)
+            and (not kinds or row['kind'] in kinds)
+            and (not query or query in ' '.join(str(v) for v in (
+                projects[row['project_id']].get('name'), row['title'], row['folder'],
+                row.get('agent_name', ''))).casefold())]
+
+
+def _preview_url(item_id: str) -> str:
+    return '/api/desk/project-media/file?id=' + quote(item_id, safe='')
+
+
+def grouped(*, query: str = '', kinds: tuple[str, ...] = ()) -> list[dict]:
+    """Project/folder summaries only, in newest-file order; no stat per row."""
     groups: dict[str, dict] = {}
-    for row in rows:
-        pid = row.get('project_id')
-        if pid not in projects:
-            continue
-        try:
-            _authorize(row['path'], roots)
-        except (OSError, ValueError):
-            continue
-        url = '/api/desk/project-media/file?id=' + quote(row['id'], safe='')
-        item = dict(row, project_name=projects[pid].get('name') or pid, src=url if row['kind'] == 'image' else None,
-                    play=url if row['kind'] == 'video' else None)
-        group = groups.setdefault(pid, {'project_id': pid, 'title': item['project_name'], 'files': 0,
-                                        'thumb': None, 'items': [], 'folders': []})
-        group['items'].append(item)
+    folders: dict[tuple[str, str], dict] = {}
+    for row in _listed(query=query, kinds=kinds):
+        pid = row['project_id']
+        group = groups.setdefault(pid, {'project_id': pid, 'title': row['project_name'], 'files': 0,
+                                        'thumb': None, 'folders': []})
         group['files'] += 1
-        if group['thumb'] is None and item['src']:
-            group['thumb'] = item['src']
-        folder = next((f for f in group['folders'] if f['title'] == item['folder']), None)
-        if folder is None:
-            folder = {'title': item['folder'], 'items': [], 'files': 0}
-            group['folders'].append(folder)
-        folder['items'].append(item)
-        folder['files'] += 1
+        if group['thumb'] is None and row['kind'] == 'image':
+            group['thumb'] = _preview_url(row['id'])
+        key = (pid, row['folder'])
+        if key not in folders:
+            folders[key] = {'title': row['folder'], 'files': 0}
+            group['folders'].append(folders[key])
+        folders[key]['files'] += 1
     return list(groups.values())
+
+
+def items_page(project_id: str, *, folder: str | None = None, query: str = '',
+               kinds: tuple[str, ...] = (), offset: int = 0, limit: int = PAGE_SIZE) -> dict:
+    if not project_id:
+        raise pieces.PieceError('a project id is required')
+    if offset < 0 or limit < 1:
+        raise pieces.PieceError('offset must be nonnegative and limit must be positive')
+    limit = min(limit, MAX_PAGE_SIZE)
+    rows = _listed(project_id=project_id, folder=folder, query=query, kinds=kinds)
+    items = []
+    for row in rows[offset:offset + limit]:
+        item = {key: row[key] for key in ('id', 'project_id', 'title', 'folder', 'kind')}
+        if row.get('agent_name'):
+            item['agent_name'] = row['agent_name']
+        item['src' if row['kind'] == 'image' else 'play'] = _preview_url(row['id'])
+        items.append(item)
+    return {'items': items, 'total': len(rows), 'offset': offset, 'limit': limit,
+            'next_offset': offset + limit if offset + limit < len(rows) else None}
 
 
 def _source(item_id: str) -> tuple[dict, Path]:
@@ -400,5 +428,22 @@ def refresh_route():
 
 @bp.get('/api/desk/project-media')
 def list_route():
-    return jsonify({'projects': grouped(), 'updated_at': _snapshot.get('updated_at'),
+    return jsonify({'projects': grouped(query=request.args.get('q', ''),
+                                       kinds=tuple(request.args.getlist('kind'))),
+                    'updated_at': _snapshot.get('updated_at'),
                     'refreshing': _refresh_lock.locked() or _wake.is_set(), 'error': _last_error})
+
+
+@bp.get('/api/desk/project-media/items')
+def items_route():
+    try:
+        try:
+            offset = int(request.args.get('offset', '0'))
+            limit = int(request.args.get('limit', str(PAGE_SIZE)))
+        except ValueError:
+            raise pieces.PieceError('offset and limit must be integers')
+        return jsonify(items_page(request.args.get('project_id', ''),
+                                  folder=request.args.get('folder'), query=request.args.get('q', ''),
+                                  kinds=tuple(request.args.getlist('kind')), offset=offset, limit=limit))
+    except pieces.PieceError as e:
+        return jsonify({'error': str(e)}), e.status

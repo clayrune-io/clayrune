@@ -620,7 +620,7 @@
         if (it) _attachAsset(camp, fam, { id: 'asset-' + _uid(), kind: it.kind, title: it.title, path: it.path, src: it.src }, card);
       });
       if (window.DeskV1ProjectMedia) window.DeskV1ProjectMedia.mount(cardEl.querySelector('[data-project-media]'), {
-        projects: _fx().projectMedia || [], kinds: [fam.kind === 'video' ? 'video' : 'image'],
+        summaries: _fx().projectMedia || [], kinds: [fam.kind === 'video' ? 'video' : 'image'],
         onPick: (it) => _attachAsset(camp, fam, { id: 'asset-' + _uid(), kind: it.kind, title: it.title, path: it.path, src: it.src }, card),
       });
       cardEl.querySelectorAll('[data-what-folder]').forEach((b) => b.onclick = () => {

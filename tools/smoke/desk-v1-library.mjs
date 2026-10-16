@@ -57,7 +57,7 @@ const IMG_ENGINE = (max) => [{ id: 'google', label: 'Google', auth: { kind: 'api
   connected: { ready: true, vault_entry: 'gemini-api', reason: null },
   models: [{ model_id: 'gemini-img', kind: 'image', label: 'Gemini image', status: 'stable', aspect_ratios: ['1:1', '16:9'], inputs: { reference_images_max: max } }] }];
 
-const PROJECT_MEDIA = [
+const PROJECT_FILES = [
   { project_id: 'product', title: 'Product', files: 2, items: [
     { id: 'project-picture', project_id: 'product', title: 'campaign-end.png', kind: 'image', folder: 'Campaign', src: '/api/serve-image?path=project-picture' },
     { id: 'project-video', project_id: 'product', title: 'campaign.mp4', kind: 'video', folder: 'Campaign', play: '/api/serve-file?inline=1&path=project-video' },
@@ -65,7 +65,21 @@ const PROJECT_MEDIA = [
   { project_id: 'other', title: 'Other <project>', files: 1, items: [
     { id: 'other-picture', project_id: 'other', title: 'other.png', kind: 'image', folder: '.', src: '/api/serve-image?path=other-picture' },
   ] },
+  { project_id: 'paged', title: 'Many files', items: Array.from({ length: 55 }, (_, i) => ({
+    id: `paged-${i}`, project_id: 'paged', title: `batch-${i}.png`, kind: 'image', folder: 'Batch', src: '/api/serve-image?path=batch',
+  })) },
 ];
+function projectRows(query = new URLSearchParams()) {
+  const q = (query.get('q') || '').toLowerCase(), kinds = query.getAll('kind');
+  return PROJECT_FILES.map((p) => ({ ...p, items: p.items.filter((i) => (!kinds.length || kinds.includes(i.kind))
+    && (!q || `${p.title} ${i.title} ${i.folder}`.toLowerCase().includes(q))) }));
+}
+function projectSummaries(query) {
+  return projectRows(query).filter((p) => p.items.length).map((p) => ({ project_id: p.project_id, title: p.title,
+    files: p.items.length, thumb: p.items.find((i) => i.src)?.src || null,
+    folders: [...new Set(p.items.map((i) => i.folder))].map((title) => ({ title, files: p.items.filter((i) => i.folder === title).length })),
+  }));
+}
 
 const PROJECT = (p) => ({
   id: p.id, name: p.name, status: 'active', domain: 'general', emoji: '🧪', description: '', summary: '', current_task: 'Idle',
@@ -86,18 +100,33 @@ function makeServer({ refsMax = 2 } = {}) {
       scenes: b.scenes.map((s) => ({ ...s, picture: s.picture ? { ...s.picture, src: '/api/serve-image?path=' + encodeURIComponent(ABS + s.picture.path) } : null })) };
   };
   const artOut = (a) => ({ ...a, attached: false, campaign_title: '' });
-  srv.handle = ({ method, path, body, J }) => {
-    srv.log.push({ method, path, body });
+  srv.handle = ({ method, path, query, body, J }) => {
+    srv.log.push({ method, path, query: query?.toString(), body });
     if (path === '/api/desk/workspace') return J({ ...workspaceFromFixtures(fx), projects, pieces: fx.families.map((f) => JSON.parse(JSON.stringify(f))) });
-    if (path === '/api/desk/materials') return J({ library: FOLDERS, projects: PROJECT_MEDIA, articles: [], online: { video: [], image: [] }, recent: [] });
+    if (path === '/api/desk/materials') return J({ library: FOLDERS, projects: projectSummaries(), articles: [], online: { video: [], image: [] }, recent: [] });
     if (path === '/api/desk/project-media/copy') {
       if (srv.copyError) return J({ error: 'Source file no longer exists' }, 404);
-      const source = PROJECT_MEDIA.flatMap((p) => p.items).find((i) => i.id === body.id);
+      const source = PROJECT_FILES.flatMap((p) => p.items).find((i) => i.id === body.id);
       const path = `desk/library/${source.kind}/Projects/Product/${source.title}`;
       return J({ id: path, path, title: source.title, kind: source.kind, src: source.kind === 'image' ? '/api/serve-image?path=copy' : null, provenance: { project_id: source.project_id } }, 201);
     }
     if (path === '/api/desk/project-media/refresh') return J({ refreshing: true }, 202);
-    if (path === '/api/desk/project-media') return J({ projects: PROJECT_MEDIA, refreshing: false, updated_at: 1 });
+    if (path === '/api/desk/project-media') {
+      const response = { projects: projectSummaries(query), refreshing: false, updated_at: 1 };
+      if (srv.holdSummary) {
+        srv.holdSummary = false;
+        return new Promise((resolve) => { srv.releaseSummary = () => resolve(J(response)); srv.summaryHeld(); });
+      }
+      return J(response);
+    }
+    if (path === '/api/desk/project-media/items') {
+      if (srv.pageError) return J({ error: 'Index temporarily unavailable' }, 503);
+      const p = projectRows(query).find((p) => p.project_id === query.get('project_id'));
+      const items = (p?.items || []).filter((i) => !query.has('folder') || i.folder === query.get('folder'));
+      const offset = Number(query.get('offset') || 0), limit = Math.min(Number(query.get('limit') || 50), 100);
+      return J({ items: items.slice(offset, offset + limit), total: items.length, offset, limit,
+        next_offset: offset + limit < items.length ? offset + limit : null });
+    }
     if (path === '/api/desk/studio/usage') return J({ rendering: [], files: {} });
     if (path === '/api/desk/engines' && method === 'GET') return J({ engines: IMG_ENGINE(srv.refsMax) });
     if (path === '/api/desk/engines/estimate') return J({ estimate: { usd: 0.04, approximate: false }, job_limit_usd: 5, refusal: null });
@@ -369,6 +398,7 @@ async function live(browser, vp, name) {
   // only hands callers the returned library path, and a refusal stays visible.
   await openStudio(page);
   await page.waitForSelector('[data-pm-project] option[value="product"]', { state: 'attached' });
+  check(!srv.log.some((r) => r.path === '/api/desk/project-media/items'), `${tag} opening Studio reads summaries without requesting file rows`, `${tag} eagerly fetched project files`);
   await page.selectOption('[data-pm-project]', 'product');
   await page.locator('[data-pm-pid="product"] .desk-v1-pm-folder > summary').click();
   await page.waitForSelector('[data-pm-use]');
@@ -380,6 +410,19 @@ async function live(browser, vp, name) {
   await page.click('[data-pm-use="1"]');
   await settle(page, () => document.querySelector('[data-pm-status]').textContent === 'Saved to the library.');
   check(srv.log.some((r) => r.path === '/api/desk/project-media/copy' && r.body.id === 'project-video'), `${tag} Studio saves a project video as a library copy`, `${tag} no copy request`);
+  await page.selectOption('[data-pm-project]', 'paged');
+  srv.pageError = true;
+  await page.locator('[data-pm-pid="paged"] .desk-v1-pm-folder > summary').click();
+  await settle(page, () => /Could not load files: Index temporarily unavailable/.test(document.querySelector('[data-pm-results]').textContent));
+  check(await page.locator('[data-pm-use]').count() === 0, `${tag} page failure is visible without stale tiles`, `${tag} page error hidden`);
+  srv.pageError = false;
+  await page.click('[data-pm-more]');
+  await settle(page, () => document.querySelectorAll('[data-pm-use]').length === 50);
+  check(await page.locator('[data-pm-more]').textContent() === 'Load more', `${tag} folder first page is bounded to 50 files`, `${tag} missing pagination`);
+  await page.click('[data-pm-more]');
+  await settle(page, () => document.querySelectorAll('[data-pm-use]').length === 55);
+  check(await page.locator('[data-pm-more]').count() === 0 && new Set(await page.locator('[data-pm-use]').evaluateAll((nodes) => nodes.map((n) => n.getAttribute('aria-label')))).size === 55,
+    `${tag} next page appends distinct files and ends pagination`, `${tag} duplicated or missing files`);
   await page.evaluate(() => { window._pickedProject = null; window.DeskV1LibraryPicker.open({ kinds: ['image'], onPick: (i) => { window._pickedProject = i; } }); });
   await page.waitForSelector('[data-lp] [data-pm-project] option[value="product"]', { state: 'attached' });
   await page.selectOption('[data-lp] [data-pm-project]', 'other');
@@ -387,7 +430,20 @@ async function live(browser, vp, name) {
   await page.waitForSelector('[data-lp] [data-pm-use]');
   check(await page.locator('[data-lp] [data-pm-use]').count() === 1, `${tag} project filter isolates the other project`, `${tag} project filter leaked files`);
   await page.selectOption('[data-lp] [data-pm-project]', '');
+  await settle(page, () => document.querySelector('[data-lp] [data-pm-status]').textContent === '');
+  // Hold the first search response until the later query has rendered.
+  const held = new Promise((resolve) => { srv.summaryHeld = resolve; });
+  srv.holdSummary = true;
+  await page.fill('[data-lp] [data-pm-search]', 'other');
+  await held;
   await page.fill('[data-lp] [data-pm-search]', 'campaign-end');
+  await settle(page, () => document.querySelectorAll('[data-lp] [data-pm-use]').length === 1);
+  const late = page.waitForResponse((r) => r.url().includes('/api/desk/project-media?') && new URL(r.url()).searchParams.get('q') === 'other');
+  srv.releaseSummary();
+  await (await late).finished();
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  check((await page.locator('[data-lp] [data-pm-use]').getAttribute('aria-label')) === 'Use campaign-end.png',
+    `${tag} a late search response cannot replace the current result`, `${tag} stale search replaced results`);
   check(await page.locator('[data-lp] [data-pm-use]').count() === 1, `${tag} search finds a project picture and excludes videos for an image pick`, `${tag} project search mismatch`);
   await shot(page, `project_media_picker_${name}.png`);
   srv.copyError = true;

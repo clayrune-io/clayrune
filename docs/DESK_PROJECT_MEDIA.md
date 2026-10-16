@@ -45,15 +45,21 @@ The project Media gallery can play those videos and filter them separately.
 
 | Endpoint | Contract |
 | --- | --- |
-| `GET /api/desk/materials` | Adds `projects: [{project_id,title,files,thumb,items,folders}]`; projects, folders and items follow newest-file order. `online` stays unchanged. |
-| `GET /api/desk/project-media` | Same project groups plus `updated_at`, `refreshing`, and a refresh error when present. |
+| `GET /api/desk/materials` | Adds summary-only `projects: [{project_id,title,files,thumb,folders:[{title,files}]}]`; projects and folders follow newest-file order. No project file rows. `online` stays unchanged. |
+| `GET /api/desk/project-media` | Same project summaries plus `updated_at`, `refreshing`, and a refresh error when present. Optional `q` searches project/file/folder/agent names; repeated `kind=image` / `kind=video` restrict counts. |
+| `GET /api/desk/project-media/items?project_id=…` | One flat `items` page for that project, with optional exact `folder`, `q`, repeated `kind`, `offset` (default 0), `limit` (default 50, maximum 100). Returns `{items,total,offset,limit,next_offset}`; null next offset ends pagination. Missing project ID or invalid paging arguments return 400; unknown/removed project IDs return an empty page. |
 | `POST /api/desk/project-media/refresh` | Queues a refresh in the existing worker; returns 202. |
 | `GET /api/desk/project-media/file?id=…` | Previews one indexed picture/video; supports video range requests. |
 | `POST /api/desk/project-media/copy` | JSON `{id}`; returns 201 with a library item and provenance. Accepts no arbitrary source path. |
 
-Items carry `project_id`, `project_name`, absolute `path`, `kind`, `size`,
-`mtime`, `mtime_ns`, `origin` (`scan`, `chat`, `upload`), `folder` and, when
-known, `session_id`/`agent_name`. Preview/copy look up an indexed ID and
+Page items carry only `id`, `project_id`, `title`, `folder`, `kind`, `src`
+(image) or `play` (video), and optional `agent_name`. No absolute path or full
+index row is serialized, and no item list is duplicated inside folder groups.
+The internal index retains size/mtime/origin and any session attribution for
+copy provenance. Summary and page reads filter out removed projects but never
+resolve or stat indexed paths. Their metadata can be stale until refresh:
+a vanished file remains listed and preview/copy returns the existing 404
+"refresh the list" error. Preview/copy look up an indexed ID and
 re-authorize against current registered project roots, uploads and media.
 Absolute paths with `..`, unsupported extensions, missing files and resolved
 symlink escapes are refused. Drive-root projects do not expand the allowlist.
@@ -69,19 +75,26 @@ source path, project, mtime, size and any known agent/session provenance; the
 library listing and attached piece assets retain that provenance as well.
 Both files are install data and inherit the existing `data/media/*` gitignore.
 
-`static/js/desk-v1-project-media.js` owns the shared browser. Thumbnails mount
-only when a folder opens. Copy refusals stay visible without invoking the
-consumer. Refresh polls the worker for up to a minute and reports failures.
+`static/js/desk-v1-project-media.js` owns the shared browser. The picker, Studio
+and What hand it summaries. Opening a folder fetches 50 files; **Load more**
+appends the next page. Debounced search fetches matching summaries and a page
+per matching project, keeping kind restrictions on both reads. Late requests
+cannot repaint a changed selection. Page-load failures show a retry button;
+copy refusals stay visible without invoking the consumer. Refresh polls the
+worker for up to a minute and reports failures.
 The demo fixture never reads the live project index.
 
 ## Validation and handoff
 
 - Unit coverage: `tests/test_desk_project_media.py` (caps/skips, path escapes,
   current-root checks, attributed uploads, persistence, concurrent copy dedupe,
-  source loss/change, size limits and existing asset deletion protection).
+  source loss/change, size limits and existing asset deletion protection;
+  4,824-row summary payload below 50 KB, exact summary/page shapes, no per-row
+  path resolve/stat, bounded pagination, search/kind/folder filters).
 - Browser coverage: `tools/smoke/desk-v1-library.mjs` exercises existing library
   flows plus Studio/project previews, filter/search, copy refusal/retry and
-  returned library paths at 1440 and 390 pixels, with a demo isolation check.
+  returned library paths, lazy fetch, page error/retry and distinct 50+5 file
+  pages at 1440 and 390 pixels, with a demo isolation check.
 - Type check: `pyright mc/desk_project_media.py`.
 
 This is a branch build. Integration, a normal server restart and an open-tab

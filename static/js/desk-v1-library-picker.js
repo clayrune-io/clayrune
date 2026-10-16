@@ -148,7 +148,7 @@
       const flat = _flatten(materials.library || {}, kinds);
       st.files = flat.files; st.folders = flat.folders; st.loading = false;
       if (window.DeskV1ProjectMedia) window.DeskV1ProjectMedia.mount(el.querySelector('[data-project-media]'), {
-        projects: materials.projects || [], kinds, onPick: (item) => { _close(); if (typeof opts.onPick === 'function') opts.onPick(item); },
+        summaries: materials.projects || [], kinds, onPick: (item) => { _close(); if (typeof opts.onPick === 'function') opts.onPick(item); },
       });
       paint();
     }).catch((e) => {

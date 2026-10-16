@@ -64,8 +64,14 @@ prompt space in every future turn that touches its subject.
 ## Desk connection removal
 
 Desk project media: `GET /api/desk/materials` includes `projects[]` alongside
-the library. `GET /api/desk/project-media` returns indexed groups, refresh
-status and any refresh error; `POST /api/desk/project-media/refresh` queues a
+the library. Projects contain summaries only (`project_id,title,files,thumb,
+folders:[{title,files}]`), never file rows. `GET /api/desk/project-media` returns
+these summaries, refresh status and any refresh error; optional `q` and repeated
+`kind` filter counts. `GET /api/desk/project-media/items?project_id=…` returns a
+flat `{items,total,offset,limit,next_offset}` page (default 50, max 100; optional
+`folder`, `q`, repeated `kind`, `offset`, `limit`). List calls use index metadata;
+vanished files remain listed until refresh and preview/copy recheck existence.
+`POST /api/desk/project-media/refresh` queues a
 bounded background refresh (202). `GET /api/desk/project-media/file?id=…`
 previews one indexed picture/video. `POST /api/desk/project-media/copy` with
 `{"id":"…"}` saves/reuses a durable library copy and returns its relative

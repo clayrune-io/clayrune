@@ -256,7 +256,7 @@
 
   function _wireStudio(el) {
     _wireLib(el);
-    if (window.DeskV1ProjectMedia) window.DeskV1ProjectMedia.mount(el.querySelector('[data-project-media]'), { projects: _fx().projectMedia || [], state: _lib.projectView });
+    if (window.DeskV1ProjectMedia) window.DeskV1ProjectMedia.mount(el.querySelector('[data-project-media]'), { summaries: _fx().projectMedia || [], state: _lib.projectView });
     el.querySelectorAll('[data-studio-new]').forEach((btn) => {
       btn.onclick = () => {
         window.deskV1Nav('studio-create', { kind: btn.dataset.studioNew });
