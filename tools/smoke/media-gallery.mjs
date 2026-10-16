@@ -265,6 +265,24 @@ try {
   // ── (c) diagram thumbnail isn't blank ───────────────────────────────────
   // Real mermaid/excalidraw renderer (CDN passthrough above) — bounded poll
   // since the ESM import + render is async and network-dependent.
+  // Forward-indexed videos are files, never empty diagram placeholders.
+  mediaItems = [
+    { kind: 'video', path: 'C:/fake/campaign clip.mp4', ts: 1000, missing: false },
+    { kind: 'video', path: 'C:/fake/gone.mp4', ts: 999, missing: true },
+  ];
+  await page.evaluate(() => { window.setMediaShowMissing(false); window.setMediaFilter('video'); });
+  await page.evaluate(() => window.loadMedia());
+  await page.waitForTimeout(300);
+  const videoState = await page.evaluate(() => ({
+    videos: document.querySelectorAll('.media-grid video[controls]').length,
+    src: document.querySelector('.media-grid video')?.getAttribute('src'),
+    label: document.getElementById('media-missing-label').textContent,
+    diagrams: document.querySelectorAll('.media-tile-diagram').length,
+  }));
+  (videoState.videos === 1 && videoState.diagrams === 0 && /serve-file/.test(videoState.src) && /Show missing \(1\)/.test(videoState.label))
+    ? ok('video filter shows a player and hides a missing video without diagram placeholders')
+    : fail('video state: ' + JSON.stringify(videoState));
+  await page.evaluate(() => window.setMediaFilter('all'));
   mediaItems = DIAGRAM_FIXTURE_ITEMS;
   await page.evaluate(() => window.loadMedia());
   // data-rendered='1' is set SYNCHRONOUSLY when the render starts (see

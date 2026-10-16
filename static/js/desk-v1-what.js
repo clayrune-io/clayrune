@@ -69,6 +69,7 @@
     _mats.promise = _api('GET', '/api/desk/materials?campaign_id=' + encodeURIComponent(campaignId)).then((m) => {
       const st = _fx();
       st.materialLibrary = (m && m.library) || { video: [], image: [] };
+      st.projectMedia = (m && m.projects) || [];
       st.existingArticles = (m && m.articles) || [];
     }).catch((e) => { _mats.error = e && e.message ? e.message : String(e); });
     return _mats.promise;
@@ -430,6 +431,7 @@
       </div>
       <div class="desk-v1-what-lib-title">Material library</div>
       <div class="desk-v1-what-lib" data-what-lib>${_libTilesHTML(kind)}</div>
+      ${_isLive() && window.DeskV1ProjectMedia ? window.DeskV1ProjectMedia.html() : ''}
     </div>`;
   }
 
@@ -617,6 +619,10 @@
         const it = lib.flatMap((m) => m.items || []).find((x) => x.path === b.dataset.whatLibfile);
         if (it) _attachAsset(camp, fam, { id: 'asset-' + _uid(), kind: it.kind, title: it.title, path: it.path, src: it.src }, card);
       });
+      if (window.DeskV1ProjectMedia) window.DeskV1ProjectMedia.mount(cardEl.querySelector('[data-project-media]'), {
+        summaries: _fx().projectMedia || [], kinds: [fam.kind === 'video' ? 'video' : 'image'],
+        onPick: (it) => _attachAsset(camp, fam, { id: 'asset-' + _uid(), kind: it.kind, title: it.title, path: it.path, src: it.src }, card),
+      });
       cardEl.querySelectorAll('[data-what-folder]').forEach((b) => b.onclick = () => {
         const lib = (_fx().materialLibrary || {})[fam.kind === 'video' ? 'video' : 'image'] || [];
         const m = lib.find((x) => x.id === b.dataset.whatFolder);
@@ -715,8 +721,8 @@
     const lib = _fx().materialLibrary || {};
     const files = ((fam.kind === 'video' ? lib.video : lib.image) || [])
       .flatMap((m) => (m.items || []).map((it) => ({ it, folder: m.title })));
-    if (!files.length) { DeskV1Kit.toast('The material library has no files to add yet.'); return; }
-    DeskV1Kit.addToMenu(triggerEl, files.map(({ it, folder }) => ({ id: it.path, label: `${folder} / ${it.title}` })), (path) => {
+    DeskV1Kit.addToMenu(triggerEl, files.map(({ it, folder }) => ({ id: it.path, label: `${folder} / ${it.title}` })).concat([{ id: '__projects', label: 'From your projects…' }]), (path) => {
+      if (path === '__projects') { window.DeskV1LibraryPicker.open({ kinds: [fam.kind === 'video' ? 'video' : 'image'], onPick: (it) => _addMedia(fam, { id: 'asset-' + _uid(), kind: it.kind, title: it.title, path: it.path, src: it.src }, onDone) }); return; }
       const hit = files.find((x) => x.it.path === path);
       if (!hit) return;
       _addMedia(fam, { id: 'asset-' + _uid(), kind: hit.it.kind, title: hit.it.title, path: hit.it.path, src: hit.it.src }, onDone);

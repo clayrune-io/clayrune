@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-16] - Use project media directly in the Desk
+
+- Added **From your projects** to Studio, the shared library picker and campaign media sources, with project filtering, search and picture/video previews. Bounded background discovery combines registered project folders and their chat-media indexes; unidentified historical shared uploads are skipped.
+- Using a project file saves a deduplicated library copy with source provenance, preserving campaign media if the original disappears. Current-root checks guard preview/copy; existing asset deletion protection stays in force. Chat media recording now includes videos and media file markers. Contract: `docs/DESK_PROJECT_MEDIA.md`. Branch only; no merge, push or restart.
+- Project lists contain only counts, thumbnails and folder names/counts; file rows load separately in bounded pages when opened, with **Load more**, server-side search/kind filters and visible load/retry errors. List calls no longer resolve/stat every indexed file; refresh and preview/copy retain filesystem checks. Payload-shape/size and pagination regression tests prevent the duplicated full-row response from returning.
+
 ## [2026-10-16] - Retain an unlocked vault across server restarts
 
 - Restart and Update can pass an already-unlocked vault to the replacement over an anonymous inherited pipe, including the frozen macOS swap helper. The child checks the existing wrapped-key HMAC fingerprint, resets the idle clock and audits `restart_handover`. No raw key is written to disk, environment, arguments or logs; missing/invalid/timed-out handovers stay locked.
