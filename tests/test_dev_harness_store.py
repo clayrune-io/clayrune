@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from mc import atomic_json
+from mc import atomic_json, dev_harness_store
 from mc.dev_harness_catalogue import digest, load_catalogue
 from mc.dev_harness_policy import lost_protections, resolve_policy
 from mc.dev_harness_store import HarnessStore, RevisionConflict, StoreError
@@ -108,6 +108,48 @@ def test_concurrent_activation_is_compare_and_swap(setup):
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert sorted(pool.map(attempt, range(2)), key=str) == [1, 'conflict']
     assert store.read('one')['revision'] == 1
+
+
+def test_first_activation_is_never_seen_as_a_missing_snapshot(setup, monkeypatch):
+    """A reader on another instance (render() builds one per context) must see
+    'unconfigured' or the finished snapshot, never 'previously configured but
+    missing', at every point of the first write."""
+    store, catalogue = setup
+    other = HarnessStore(store.root.parent)
+    seen = []
+    real = dev_harness_store.write_json_atomic
+
+    def probing_write(path, obj, **kw):
+        seen.append(other.read('one'))      # after any mkdir, before the write
+        real(path, obj, **kw)
+        seen.append(other.read('one'))      # file written, not yet in place
+    monkeypatch.setattr(dev_harness_store, 'write_json_atomic', probing_write)
+    record = activate(store, catalogue)
+    assert seen == [None, None]
+    assert other.read('one') == record
+    assert [p.name for p in store.project_dir('one').iterdir()] == ['activated']
+
+
+def test_containment_ignores_extended_length_prefix_but_still_rejects_escapes():
+    from pathlib import Path
+    within = dev_harness_store._within
+    prefix = chr(92) * 2 + '?' + chr(92)    # the extended-length prefix
+    if Path('C:/').drive:
+        base = Path('C:/data/dev_harness/one')
+        assert within(Path(prefix + 'C:/data/dev_harness/one/activated/active.json'), base)
+        assert not within(Path(prefix + 'C:/data/dev_harness/two'), base)
+    assert not within(Path('/data/other'), Path('/data/dev_harness/one'))
+
+
+def test_failed_first_activation_leaves_project_unconfigured(setup, monkeypatch):
+    store, catalogue = setup
+    def fail(*args):
+        raise OSError('injected replace failure')
+    monkeypatch.setattr(atomic_json, '_replace_with_retry', fail)
+    with pytest.raises(OSError):
+        activate(store, catalogue)
+    assert store.read('one') is None
+    assert list(store.project_dir('one').iterdir()) == []
 
 
 def test_replace_failure_preserves_entire_old_snapshot_and_removes_temp(setup, monkeypatch):
