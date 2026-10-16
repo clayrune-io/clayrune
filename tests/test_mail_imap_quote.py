@@ -7,6 +7,7 @@ the bytes imaplib would have sent.
 import imaplib
 import importlib.util
 import re
+import sys
 from pathlib import Path
 
 
@@ -16,7 +17,14 @@ _MAIL_DIR = Path(__file__).resolve().parent.parent / "tools" / "mail-mcp"
 def _load(name, filename):
     spec = importlib.util.spec_from_file_location(name, _MAIL_DIR / filename)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    # The standalone mail server prepends its own directory for its sibling
+    # import. Do not leave that process-level side effect in pytest: its
+    # server.py would shadow the application's server on the next reload.
+    before = sys.path[:]
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path[:] = before
     return mod
 
 
@@ -177,5 +185,7 @@ def test_fetch_messages_routes_through_server_gmail_search():
 
 
 def test_server_module_exposes_shared_helper():
+    before = sys.path[:]
     server = _load("mail_server_under_test", "server.py")
     assert callable(server.gmail_search)
+    assert sys.path == before

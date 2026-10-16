@@ -159,16 +159,28 @@ def test_a_request_without_an_environment_is_refused_rather_than_inheriting_the_
 
 # ── P2-2: a session has a maximum age, and a stalled reader does not pin one ─
 
+def _wait_for_end_audit(srv, reason):
+    # teardown removes the session before persisting its final audit event.
+    # Seeing an empty registry does not mean the watchdog thread has finished.
+    def recorded():
+        try:
+            events = [json.loads(line) for line in
+                      srv.vault.audit_path().read_text(encoding='utf-8').splitlines()
+                      if line.strip()]
+        except (FileNotFoundError, json.JSONDecodeError):
+            return False  # The writer has not completed the record yet.
+        return any(e.get('event') == 'exec_stream_end' and e.get('reason') == reason
+                   for e in events)
+    _wait(recorded, what=f'the {reason} end audit to be persisted')
+
+
 def test_a_session_is_ended_at_the_configured_maximum_age(srv, monkeypatch):
     monkeypatch.setattr(srv.stream, '_max_age_s', lambda: 0.6)
     conn, resp = _post_json(srv, {'command': [sys.executable, '-c', SLEEP_CHILD]})
     session = _only_session(srv)
     _wait(lambda: session.proc.poll() is not None, what='the child to be ended at max age')
     _wait(lambda: not srv.stream._sessions, what='the session to be forgotten')
-    audit = [json.loads(line) for line in
-             srv.vault.audit_path().read_text(encoding='utf-8').splitlines() if line.strip()]
-    assert any(e.get('event') == 'exec_stream_end' and e.get('reason') == 'max_age'
-               for e in audit)
+    _wait_for_end_audit(srv, 'max_age')
     resp.close()
     conn.close()
 
@@ -202,10 +214,7 @@ def test_a_reader_that_stops_reading_while_the_child_writes_is_cut_off(srv, monk
         _wait(lambda: session.proc.poll() is not None, timeout=20,
               what='a child whose reader stalled to be killed')
         _wait(lambda: not srv.stream._sessions, what='the session to be forgotten')
-        audit = [json.loads(line) for line in
-                 srv.vault.audit_path().read_text(encoding='utf-8').splitlines() if line.strip()]
-        assert any(e.get('event') == 'exec_stream_end' and e.get('reason') == 'write_stalled'
-                   for e in audit)
+        _wait_for_end_audit(srv, 'write_stalled')
         # the server thread that was stuck sending is released too: the connection ends
         sock.settimeout(10)
         end = time.monotonic() + 20

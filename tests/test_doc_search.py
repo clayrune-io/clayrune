@@ -262,7 +262,12 @@ _QUESTIONS = [
     ("Why did our test suite stay green when a renamed tab threw an error on every click?", r"nobody clicked the button"),
     ("How many memory topic files were really never retrieved once link expansion was counted?", r"15 topic files, not 30"),
     ("What incident motivated the no-downgrade guidance on browser read errors?", r"confusing error \(HTTP 415\)"),
-    ("Is semantic search over memory built, and what holds it back?", r"Step 7 . bge-m3 retrieval.{0,100}deferred"),
+    # The newer XERJ assessment quotes the same decision and its reasons in
+    # prose. It is a valid answer too, not a retrieval miss because it lacks
+    # the original MEMORY_SYSTEM table's exact wording.
+    ("Is semantic search over memory built, and what holds it back?",
+     r"(?:Step 7 . bge-m3 retrieval.{0,100}deferred|"
+     r"decision_step7_semantic_search_deferral\.md.{0,160}defers semantic retrieval because)"),
     ("Are we scheduling sprints to split up server.py?", r"No standalone .extraction sprints"),
     ("What problem was the auto-model router designed to fix?", r"burned by trivial requests being routed to Opus"),
     ("Why does the live chat show only a tiny tail of the conversation while the transcript on disk is intact?", r"Key fact:\*\* no data is lost"),

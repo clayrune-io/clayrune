@@ -124,10 +124,18 @@ if not os.environ.get("MC_DATA_DIR"):
             _shutil.copytree(_src, _iso_root / "data" / _asset, dirs_exist_ok=True,
                              ignore=_shutil.ignore_patterns("_proposed"))
     os.environ["MC_DATA_DIR"] = str(_iso_root)
-    # Best-effort GC of roots left behind by earlier runs (a crash skips the
-    # rmtree above, and these are never read again).
+    # Concurrent runs in this checkout share _iso_parent. Only collect roots
+    # whose owning PID is gone; another live pytest still reads its root.
+    # PID reuse conservatively retains a directory. Without psutil, retain
+    # old roots rather than guessing (os.kill(pid, 0) is unsafe on Windows).
+    try:
+        import psutil as _psutil
+    except ImportError:
+        _psutil = None
     for _old in _iso_parent.glob("data-root-*"):
-        if _old != _iso_root:
+        _owner = _old.name.removeprefix('data-root-')
+        if (_old != _iso_root and _owner.isdigit() and _psutil is not None
+                and not _psutil.pid_exists(int(_owner))):
             _shutil.rmtree(_old, ignore_errors=True)
 
 # ── No test may write the operator's LIVE state (MC-965) ─────────────────────

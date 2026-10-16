@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-10-16] - Keep concurrent pytest state and refresh stale fixtures
+
+- Test startup preserves another live pytest process's data root; dead-owner roots are still collected, with a real second-process regression check.
+- Resume and project-creation tests now supply the transcripts and human proofs their scenarios require. POSIX installer checks use the existing native shell resolver on Windows; document-search acceptance recognizes the newer answer to the same semantic-search decision.
+- The embedded mail-server test restores its import path so later application reloads cannot load the mail server instead. Stream-audit tests wait for the final record, which is written after the session registry is cleared.
+- Claude revival fixtures isolate both stream-reader modes, avoiding background reader exceptions against their fake processes.
+- Recorded full-suite triage and unresolved product findings in `docs/SUITE_TRIAGE_2026-10-16.md`. Test/harness changes only; no product fixes or release claim.
+
 ## [2026-10-16] - Open Desk v1 by default
 
 - Fresh installs open the live Desk workspace. Existing configs switch once, including the old false value pinned by saving unrelated settings; `desk_v1_default_migrated` records the migration atomically. Later Desk v1 toggle choices are preserved.

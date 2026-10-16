@@ -222,6 +222,11 @@ def test_followup_respawn_refused_when_another_copy_is_live(env, monkeypatch):
     still must not start a second process: the respawn thread refuses and says
     where the conversation is running."""
     ar = env['ar']
+    # This is an existing conversation, not a never-written startup id.
+    # The resume-healing gate checks disk before reaching the ownership guard.
+    transcript = env['pp'] / f'{CSID}.jsonl'
+    transcript.write_text('{}\n', encoding='utf-8')
+    monkeypatch.setattr(ar, '_find_transcript_file', lambda pp, sid: transcript)
     dead = _session('a', alive=False)
     env['sessions'].update({'a': dead, 'b': _session('b')})
     monkeypatch.setattr(ar, '_respawn_sysprompt_args', lambda *a, **k: ([], None))

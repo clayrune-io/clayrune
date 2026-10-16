@@ -91,7 +91,8 @@ def test_failed_project_creation_does_not_reopen_revoked_generation(tmp_path, mo
     workspace = tmp_path / 'workspace'
     workspace.mkdir()
     response = app.test_client().post('/api/project/p', json={
-        'project_path': str(workspace), 'default_character': 'bad'})
+        'project_path': str(workspace), 'default_character': 'bad'},
+        headers={'Origin': 'http://localhost:5199'})
     assert response.status_code == 400
     assert store.project_is_revoked('p') is True
     assert store.project_generation('p') == revoked_generation
@@ -100,7 +101,8 @@ def test_failed_project_creation_does_not_reopen_revoked_generation(tmp_path, mo
             'SELECT identity, project_id, session_id, event_id, scope '
             'FROM revocations ORDER BY identity')] == tombstones_before
     monkeypatch.setattr(pr, 'save_project', lambda *_args: (_ for _ in ()).throw(OSError('save failed')))
-    response = app.test_client().post('/api/project/p', json={'project_path': str(workspace)})
+    response = app.test_client().post('/api/project/p', json={'project_path': str(workspace)},
+                                     headers={'Origin': 'http://localhost:5199'})
     assert response.status_code == 500
     assert store.project_is_revoked('p') is True
     assert store.project_generation('p') == revoked_generation
@@ -129,7 +131,8 @@ def test_real_route_recreation_preserves_old_replay_block_and_allows_new_generat
     monkeypatch.setattr(pr, '_steward_core', type('S', (), {'install_fence_to_project': lambda *_a: None})())
     app = Flask('route-recreate')
     app.register_blueprint(pr.bp)
-    response = app.test_client().post('/api/project/p', json={'project_path': str(workspace)})
+    response = app.test_client().post('/api/project/p', json={'project_path': str(workspace)},
+                                     headers={'Origin': 'http://localhost:5199'})
     assert response.status_code == 200
     reopened = DeliveryStore(tmp_path / 'delegation_delivery.sqlite3')
     new_generation = reopened.project_generation('p')
@@ -141,6 +144,10 @@ def test_real_route_recreation_preserves_old_replay_block_and_allows_new_generat
 
 def test_concurrent_create_rechecks_missing_state_under_manager_guard(tmp_path, monkeypatch):
     import threading
+    from mc.blueprints import local_auth as la
+    # The loser of the create race becomes an edit and must carry human proof.
+    monkeypatch.setattr(la, 'LOCAL_AUTH_PATH', tmp_path / 'local_auth.json')
+    la._local_auth_set_passcode('concurrent-create-proof')
     data_dir = tmp_path / 'projects'
     data_dir.mkdir()
     workspace = tmp_path / 'workspace'
@@ -160,7 +167,10 @@ def test_concurrent_create_rechecks_missing_state_under_manager_guard(tmp_path, 
     app.register_blueprint(pr.bp)
     responses = []
     def create():
-        responses.append(app.test_client().post('/api/project/p', json={'project_path': str(workspace)}))
+        responses.append(app.test_client().post('/api/project/p', json={
+                                               'project_path': str(workspace),
+                                               'passcode': 'concurrent-create-proof'},
+                                               headers={'Origin': 'http://localhost:5199'}))
     threads = [threading.Thread(target=create) for _ in range(2)]
     for thread in threads:
         thread.start()

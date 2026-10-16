@@ -496,6 +496,7 @@ def test_claude_cold_revival_uses_saved_native_identity_and_lineage(monkeypatch,
     monkeypatch.setattr(ar, '_register_process', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_hide_windows_delayed', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_read_agent_stream', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_read_agent_stream_b', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_memory_turn', SimpleNamespace(seed_delivered=lambda *a: None))
     class Proc:
         pid = 999
@@ -576,6 +577,7 @@ def test_interrupted_claude_parent_is_fully_revived(monkeypatch, tmp_path):
     monkeypatch.setattr(ar, '_register_process', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_hide_windows_delayed', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_read_agent_stream', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_read_agent_stream_b', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_memory_turn', SimpleNamespace(seed_delivered=lambda *a: None))
     class Proc:
         pid = 999
