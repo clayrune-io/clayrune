@@ -1,0 +1,41 @@
+{
+  "id": "P12",
+  "version": 1,
+  "title": "CI green before merge",
+  "problem": "A green check on another commit says nothing about the candidate.",
+  "rationale": "Product merge holds on pending/missing/failing/unreachable required CI. Skipped/neutral do not silently equal Success. See section 7.3.",
+  "applicability": "Candidates for a project whose selected merge prerequisites require CI.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/ci-cd-and-automation",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "merge"
+  ],
+  "severity": "required",
+  "baseline_policy": "No legacy waiver for required verification or release prerequisites.",
+  "target_check": {
+    "deterministic": "read-only CI adapter verifies required workflow/check identities and successful conclusions for the exact commit/candidate, not repository-wide “latest green”; trusted local combined-tree checks when the host runs only branch-tip CI.",
+    "reviewer": "suite adequacy.",
+    "limits": "**D:** read-only CI adapter verifies required workflow/check identities and successful conclusions for the exact commit/candidate, not repository-wide “latest green”; trusted local combined-tree checks when the host runs only branch-tip CI. **R:** suite adequacy.",
+    "adapters": [
+      "ci-provenance"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; Product merge holds on pending/missing/failing/unreachable required CI. Skipped/neutral do not silently equal Success. See section 7.3."
+  },
+  "expected_evidence": "**D:** read-only CI adapter verifies required workflow/check identities and successful conclusions for the exact commit/candidate, not repository-wide “latest green”; trusted local combined-tree checks when the host runs only branch-tip CI. **R:** suite adequacy.",
+  "repair": "Run the required named CI checks on the exact candidate and wait for successful conclusions; another commit cannot supply the result. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}

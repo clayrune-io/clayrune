@@ -1,0 +1,41 @@
+{
+  "id": "P21",
+  "version": 1,
+  "title": "Privacy and secure configuration",
+  "problem": "Sensitive data and overprivileged configuration can escape review.",
+  "rationale": "Product data/auth/config changes require review. No collection of real customer data for coverage or fixtures.",
+  "applicability": "Changed data handling, authentication or security configuration.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/security-and-hardening",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "merge"
+  ],
+  "severity": "required",
+  "baseline_policy": "No legacy waiver for required verification or release prerequisites.",
+  "target_check": {
+    "deterministic": "mapped retention/redaction/config tests and dependency/secret checks.",
+    "reviewer": "data purpose/minimisation, retention, least privilege and threat assumptions.",
+    "limits": "**D:** mapped retention/redaction/config tests and dependency/secret checks. **R:** data purpose/minimisation, retention, least privilege and threat assumptions.",
+    "adapters": [
+      "privacy-configuration-tests"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; Product data/auth/config changes require review. No collection of real customer data for coverage or fixtures."
+  },
+  "expected_evidence": "**D:** mapped retention/redaction/config tests and dependency/secret checks. **R:** data purpose/minimisation, retention, least privilege and threat assumptions.",
+  "repair": "Minimize and protect sensitive data, correct retention/redaction/least-privilege configuration, and rerun mapped tests plus threat review. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}

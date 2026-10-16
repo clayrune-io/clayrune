@@ -1,0 +1,50 @@
+{
+  "id": "P20",
+  "version": 1,
+  "title": "Rollback, backup/restore and release safety",
+  "problem": "A release may be unrecoverable despite a nominal rollback command.",
+  "rationale": "Before production; an irreversible migration needs a human decision, not a fictitious rollback command or an agent exception.",
+  "applicability": "Registered production releases and applicable recovery/restore procedures.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/shipping-and-launch",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    },
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/deprecation-and-migration",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "release"
+  ],
+  "severity": "required",
+  "baseline_policy": "No legacy waiver for required verification or release prerequisites.",
+  "target_check": {
+    "deterministic": "artifact-bound staged smoke, configured backup restore/recovery rehearsal and rollback/forward-fix runbook checks in disposable environments.",
+    "reviewer": "reversibility, data retention and blast radius.",
+    "limits": "**D:** artifact-bound staged smoke, configured backup restore/recovery rehearsal and rollback/forward-fix runbook checks in disposable environments. **R:** reversibility, data retention and blast radius.",
+    "adapters": [
+      "restore-rehearsal",
+      "release-receipt"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; Before production; an irreversible migration needs a human decision, not a fictitious rollback command or an agent exception."
+  },
+  "expected_evidence": "**D:** artifact-bound staged smoke, configured backup restore/recovery rehearsal and rollback/forward-fix runbook checks in disposable environments. **R:** reversibility, data retention and blast radius.",
+  "repair": "Rehearse backup restore and recovery on disposable data for the exact release artifact; request a human decision for irreversible changes. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}

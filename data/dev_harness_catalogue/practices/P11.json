@@ -1,0 +1,42 @@
+{
+  "id": "P11",
+  "version": 1,
+  "title": "Independent code review",
+  "problem": "Authors cannot independently assess their own implementation.",
+  "rationale": "Required review gates remain independent of lint/test success; author and descendants cannot approve their own work.",
+  "applicability": "Behavior changes and the exact candidate required by the independent review policy.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/code-review-and-quality",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "merge"
+  ],
+  "severity": "required",
+  "baseline_policy": "No legacy waiver for required verification or release prerequisites.",
+  "target_check": {
+    "deterministic": "existing review store has independent attributed/lineage-checked verdict on exact tip, with structured selected-practice assessments tied to candidate inputs.",
+    "reviewer": "correctness, design, tests, security and compatibility.",
+    "limits": "**D:** existing review store has independent attributed/lineage-checked verdict on exact tip, with structured selected-practice assessments tied to candidate inputs. **R:** correctness, design, tests, security and compatibility.",
+    "adapters": [
+      "independent-review",
+      "practice-assessments"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; Required review gates remain independent of lint/test success; author and descendants cannot approve their own work."
+  },
+  "expected_evidence": "**D:** existing review store has independent attributed/lineage-checked verdict on exact tip, with structured selected-practice assessments tied to candidate inputs. **R:** correctness, design, tests, security and compatibility.",
+  "repair": "Obtain the existing independent attributed verdict for the exact current candidate; do not use the author or its descendants. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}

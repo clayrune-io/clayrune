@@ -1,0 +1,50 @@
+{
+  "id": "P22",
+  "version": 1,
+  "title": "Reproducible builds and shipped artifacts",
+  "problem": "Working source does not prove the distributed artifact starts correctly.",
+  "rationale": "Before production/release; testing source on the builder machine cannot stand in for testing the shipped artifact.",
+  "applicability": "Produced release artifacts and their configured supported-platform matrix.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/ci-cd-and-automation",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    },
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/shipping-and-launch",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "release"
+  ],
+  "severity": "required",
+  "baseline_policy": "No legacy waiver for required verification or release prerequisites.",
+  "target_check": {
+    "deterministic": "clean environment locked build, install/start smoke of the **produced artifact**, supported-platform matrix where configured, artifact digest/provenance.",
+    "reviewer": "packaging/support assumptions.",
+    "limits": "**D:** clean environment locked build, install/start smoke of the **produced artifact**, supported-platform matrix where configured, artifact digest/provenance. **R:** packaging/support assumptions.",
+    "adapters": [
+      "locked-build",
+      "produced-artifact-smoke"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; Before production/release; testing source on the builder machine cannot stand in for testing the shipped artifact."
+  },
+  "expected_evidence": "**D:** clean environment locked build, install/start smoke of the **produced artifact**, supported-platform matrix where configured, artifact digest/provenance. **R:** packaging/support assumptions.",
+  "repair": "Build from the approved locked clean environment and test installation/start of the produced artifact on the configured platform matrix. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}
