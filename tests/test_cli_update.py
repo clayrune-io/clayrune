@@ -123,6 +123,27 @@ def test_codex_standalone_uses_the_vendor_installer_never_npm(tmp_path, state_fi
     assert not any('install' in c for c in box.calls if 'npm' in c[0])
 
 
+@pytest.mark.parametrize('platform', ['win32', 'darwin', 'linux'])
+def test_qwen_standalone_daily_updates_with_vendor_installer(tmp_path, state_file, monkeypatch, platform):
+    from mc import qwen_cli_install
+    root = tmp_path / 'qwen-install'
+    monkeypatch.setenv('QWEN_INSTALL_ROOT', str(root))
+    for key in ('QWEN_INSTALL_BIN_DIR', 'QWEN_INSTALL_LIB_DIR', 'QWEN_INSTALL_LIB_PARENT'):
+        monkeypatch.delenv(key, raising=False)
+    lib = root / 'qwen-code' if platform == 'win32' else root / 'lib' / 'qwen-code'
+    lib.mkdir(parents=True)
+    (lib / 'manifest.json').write_text('{"name":"@qwen-code/qwen-code"}')
+    binary = root / 'bin' / ('qwen.cmd' if platform == 'win32' else 'qwen')
+    binary.parent.mkdir()
+    binary.write_text('stub')
+    box = Box('0.23.4', '0.25.2', bumps_to='0.25.2')
+    monkeypatch.setattr(cli_update.shutil, 'which', lambda n: n)
+    out = _run([FakeRT('qwen', binary)], box, platform=platform)
+    assert out['checked'] == {'qwen': 'updated'}
+    method = 'standalone-windows' if platform == 'win32' else 'standalone'
+    assert box.updater_calls() == [qwen_cli_install.update_argv(method)]
+
+
 def test_codex_latest_falls_back_to_github_when_npm_is_missing(tmp_path, state_file, monkeypatch):
     tree = tmp_path / '.codex' / 'packages' / 'standalone' / 'current'
     tree.mkdir(parents=True)

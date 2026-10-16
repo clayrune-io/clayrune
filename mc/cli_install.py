@@ -1,20 +1,23 @@
 """How an agent CLI was installed, read off WHERE its resolved binary lives, and
 the updater that matches.
 
-One place for two callers: the in-app "Update Codex CLI" button
+One place for two callers: the in-app provider Update button
 (`mc/agent_runtime.py`, `mc/blueprints/agent_routes.py`) and the daily
 `tools/cli-version-check.py`. The updater MUST match the installer that put the
 binary there -- running npm over a standalone install leaves two copies and
 PATH picks one at random (field case 2026-10-01: a Mac whose codex was
 OpenAI's standalone install had no npm on PATH at all).
 
-Stdlib only, no mc imports: the tool imports this from a bare script.
+Stdlib dependencies only, with Qwen policy in a sibling module: the tool
+imports this from a bare script.
 """
 from __future__ import annotations
 
 import os
 import sys
 from typing import Any, Optional
+
+from mc import qwen_cli_install
 
 # From the README of openai/codex (read 2026-10-01). These exact strings are
 # also the allowlist the install-launch route accepts for {"update": true} --
@@ -75,7 +78,8 @@ def install_method(binary_path: Any, platform: Optional[str] = None,
     brew: the real path sits under a Cellar/ or Caskroom/.
     pipx / uv: the real path sits under pipx/venvs/ or uv/tools/.
     pip (aider only): a console script with an interpreter beside it.
-    `name` only selects the Windows npm shim spelling (<prefix>/npm/<name>).
+    Qwen: official standalone wrapper/runtime paths plus package manifest.
+    `name` selects CLI-specific layouts and Windows npm shim spelling.
     The symlink is resolved first: ~/.local/bin/codex alone says nothing."""
     if not binary_path:
         return ''
@@ -85,15 +89,19 @@ def install_method(binary_path: Any, platform: Optional[str] = None,
     except Exception:
         real = raw
     plat = platform or sys.platform
+    if name == 'qwen':
+        method = qwen_cli_install.standalone_method(real, plat)
+        if method:
+            return method
     for cand in (real, raw):
         c = cand.replace('\\', '/').lower()
-        if '/packages/standalone/' in c:
+        if name == 'codex' and '/packages/standalone/' in c:
             return 'standalone-windows' if plat == 'win32' else 'standalone'
         if '/cellar/' in c or '/caskroom/' in c:
             return 'brew'
         if '/node_modules/' in c or '/.nvm/' in c or '/.npm-global/' in c or ('/npm/' + name) in c:
             return 'npm'
-        if '/programs/openai/codex/' in c:
+        if name == 'codex' and '/programs/openai/codex/' in c:
             return 'standalone-windows'
         if '/pipx/venvs/' in c:
             return 'pipx'
@@ -113,6 +121,8 @@ def update_command(name: str, binary_path: Any, platform: Optional[str] = None) 
     if name == 'codex':
         return CODEX_UPDATE_COMMANDS.get(install_method(binary_path, platform))
     method = install_method(binary_path, platform, name)
+    if name == 'qwen' and method in qwen_cli_install.UPDATE_COMMANDS:
+        return qwen_cli_install.UPDATE_COMMANDS[method]
     if name in NPM_PACKAGES:
         return ('npm install -g %s@latest' % NPM_PACKAGES[name]) if method == 'npm' else None
     if name in PYPI_PACKAGES:

@@ -109,6 +109,7 @@ from mc import memory_state_trigger as _state_trigger  # MC-964 T5: note frontma
 from mc import attend_once_replay as _attend_once_replay  # MC-1055: one tool call, one spend
 from mc import attend_once_pass as _attend_once_pass  # pass record: mode, expiry, spend
 from mc import cli_update as _cli_update
+from mc import qwen_cli_install as _qwen_cli_install
 from mc import engine_fallback as _engine_fallback  # MC-961 opt-in vendor swap
 from mc import engine_pace_dispatch as _engine_pace_dispatch
 from mc import vision_bridge as _vision_bridge  # describe images for models that cannot see
@@ -3020,12 +3021,18 @@ def agent_provider_install_launch(name):
                                   f'no automatic install available for {name}'),
                         'command': ''}), 200
     _merge_registry_path()  # npm/node from an nvm install made after boot
-    if want_update and hint != _agent_runtime.CODEX_UPDATE_COMMANDS['npm']:
+    qwen_npm_update = (name == 'qwen' and
+                      hint == 'npm install -g @qwen-code/qwen-code@latest')
+    npm_update = qwen_npm_update or (name != 'qwen' and
+                                   hint == _agent_runtime.CODEX_UPDATE_COMMANDS['npm'])
+    if want_update and not npm_update:
         # Standalone (install.sh / install.ps1) and Homebrew installs are
         # updated by their OWN tool, run exactly as the vendor documents --
         # never npm over them (two copies, PATH picks one). Fixed strings
         # only: anything the runtime reports outside the allowlist is refused.
-        if hint not in _agent_runtime.CODEX_UPDATE_COMMANDS.values():
+        allowed = (_qwen_cli_install.UPDATE_COMMANDS if name == 'qwen' else
+                   _agent_runtime.CODEX_UPDATE_COMMANDS)
+        if hint not in allowed.values():
             return jsonify({'ok': False,
                             'error': 'unsupported provider update command',
                             'command': ''}), 200
@@ -3039,6 +3046,10 @@ def agent_provider_install_launch(name):
         return jsonify({'ok': True, 'command': hint, 'prerequisite': None,
                         'execution_policy': None,
                         'session_id': session_id, 'pty': False})
+    if want_update and qwen_npm_update:
+        # The existing onboarding helper expects this exact npm spelling;
+        # npm's unpinned package install already selects latest.
+        hint = 'npm install -g @qwen-code/qwen-code'
     command, prerequisite = _provider_install_command(name, hint)
     if prerequisite == 'unsupported':
         return jsonify({'ok': False,

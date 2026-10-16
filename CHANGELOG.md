@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-16] - Update standalone Qwen Code with its own installer (MC-1102)
+
+- Recognised Qwen's Windows and macOS/Linux standalone layouts using their package manifest. Both daily update paths select Qwen's official standalone installer with npm fallback disabled; npm installations keep npm and unknown methods remain report-only.
+- Added Qwen's in-app Update hint from the last daily registry check and allowed its fixed updater commands through the existing passcode gate. Runtime process checks include bundled Node. Contract: `docs/QWEN_STANDALONE_UPDATES.md`. Branch only; no installed CLI changes, merge, push or restart.
+
 ## [2026-10-16] - Create and import projects without a passcode (MC-1080 follow-up)
 
 - Create Project and Claude project import no longer prompt for the dashboard passcode. New browser-origin project records skip proof; agents submitting `id` or `project_path` still receive 403. Existing-project routing edits, including concurrent-create collisions, keep their proof check.
