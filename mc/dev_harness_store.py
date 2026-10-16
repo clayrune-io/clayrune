@@ -9,16 +9,34 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
+import shutil
+import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from mc.atomic_json import read_text_with_retry, write_json_atomic
+from mc.atomic_json import (read_text_with_retry, replace_with_retry,
+                            write_json_atomic)
 from mc.dev_harness_catalogue import digest
 from mc.dev_harness_policy import (MODES, lost_protections, resolve_policy,
                                    validate_enforcement)
+
+
+def _within(path: Path, base: Path) -> bool:
+    """Containment test that survives the Windows extended-length-prefix resolve() quirk.
+
+    Path.resolve() on a path being created by another thread can return the
+    extended-length form (or a stale one) for one side only, so a plain
+    is_relative_to() spuriously reports an escape. Compare with the prefix
+    stripped and case folded; symlink resolution is untouched.
+    """
+    def norm(p: Path) -> Path:
+        text = os.path.normcase(os.fspath(p))
+        return Path(text[4:] if text.startswith('\\\\?\\') else text)
+    return norm(path).is_relative_to(norm(base))
 
 
 class RevisionConflict(ValueError):
@@ -41,7 +59,7 @@ class HarnessStore:
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', project_id):
             raise ValueError('Invalid project identity')
         path = self.root / project_id
-        if not path.resolve().is_relative_to(self.root):
+        if not _within(path.resolve(), self.root):
             raise ValueError('Harness state path escapes its root')
         return path
 
@@ -57,7 +75,7 @@ class HarnessStore:
     def _active_path(self, project_id: str) -> Path:
         folder = self.project_dir(project_id)
         path = folder / 'activated' / 'active.json'
-        if not path.resolve().is_relative_to(folder.resolve()):
+        if not _within(path.resolve(), folder.resolve()):
             raise StoreError('Active snapshot path escapes project')
         return path
 
@@ -94,7 +112,7 @@ class HarnessStore:
             raise ValueError('Invalid evidence identity')
         folder = self.project_dir(project_id)
         path = folder / 'evidence' / f'{evidence_id}.json'
-        if not path.resolve().is_relative_to(folder.resolve()):
+        if not _within(path.resolve(), folder.resolve()):
             raise ValueError('Evidence path escapes project')
         # DH-M3 owns producing trusted measured-preview records. No HTTP or
         # headless caller can submit the body of one to this store.
@@ -142,6 +160,29 @@ class HarnessStore:
             })
             record['snapshot_digest'] = digest(record)
             path = self._active_path(project_id)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            write_json_atomic(path, record, indent=2, allow_nan=False)
+            if current is None:
+                self._write_first(path, record)
+            else:
+                write_json_atomic(path, record, indent=2, allow_nan=False)
             return copy.deepcopy(record)
+
+    @staticmethod
+    def _write_first(path: Path, record: dict[str, Any]) -> None:
+        """First activation: `activated/` must appear already holding active.json.
+
+        read() treats 'activated/ exists, active.json missing' as a deleted
+        snapshot and fails closed. Creating the directory and then writing
+        into it opened a window where any unlocked reader (a per-instance lock
+        does not cover render()'s fresh HarnessStore) saw exactly that state.
+        Stage the whole directory under a sibling name read() never looks at,
+        then rename it into place in one step.
+        """
+        path.parent.parent.mkdir(parents=True, exist_ok=True)
+        stage = Path(tempfile.mkdtemp(prefix='.activated-', suffix='.stage',
+                                      dir=str(path.parent.parent)))
+        try:
+            write_json_atomic(stage / path.name, record, indent=2, allow_nan=False)
+            replace_with_retry(str(stage), path.parent)
+        except BaseException:
+            shutil.rmtree(stage, ignore_errors=True)
+            raise
