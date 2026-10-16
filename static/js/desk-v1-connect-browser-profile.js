@@ -9,14 +9,16 @@ const matches = (sel, info) => sel.type === 'signin' && !['x','linkedin'].includ
 const profileName = () => S.profile.trim();
 // Full name validation belongs to browser_routes on Save/check. Do not maintain
 // another regex here that can reject a profile the browser already supports.
-const problem = () => !S.name.trim() ? C.words.nameRequired : !profileName() ? C.words.profileRequired : '';
+// Instagram / YouTube / TikTok: the server makes an ACCOUNT (mc/desk_connect/pane_account.py) and `name` is its handle.
+const isAccount = () => !!S.info?.service?.makes_account;
+const problem = () => !S.name.trim() ? (isAccount() ? C.words.handleRequired : C.words.nameRequired) : !profileName() ? C.words.profileRequired : '';
 function init(api) {
   S.info = api.info;
-  if (!S.name) S.name = api.info.service?.label || api.info.host;
+  if (!S.name && !isAccount()) S.name = api.info.service?.label || api.info.host;
   if (!S.profile) S.profile = api.info.picker?.flatMap(t=>t.variants).find(v=>v.id==='browser-profile')?.setup?.default_profile || 'main';
 }
 function controls() {
-  return `<label class="desk-v1-conn-add-field">${C.words.name}<input type="text" class="desk-v1-rules-textinput" data-bp-name value="${esc(S.name)}" maxlength="80"></label>
+  return `<label class="desk-v1-conn-add-field">${isAccount() ? C.words.accountHandle : C.words.name}<input type="text" class="desk-v1-rules-textinput" data-bp-name value="${esc(S.name)}" maxlength="80"${isAccount() ? ' placeholder="@yourname" autocapitalize="off" spellcheck="false"' : ''}></label>
     <label class="desk-v1-conn-add-field">${C.words.browserProfile}<input type="text" class="desk-v1-rules-textinput" data-bp-profile value="${esc(S.profile)}" maxlength="64" list="bp-profiles" autocapitalize="off" spellcheck="false"></label>
     <datalist id="bp-profiles">${(S.profiles || []).map(p=>`<option value="${esc(p)}"></option>`).join('')}</datalist>`;
 }
@@ -46,9 +48,9 @@ W?.registerScreen({id:'browser-profile-setup',step:'setup',match:matches,
   },discard:clear,
 });
 window.DeskV1ConnectSummaryStep?.registerBranch({id:'browser-profile',word:C.words.signin,match:matches,
-  problem,save:commit,accountId:()=>'',risks:()=>[C.words.browserNoExecution],
-  factsHTML:()=>`<dl class="desk-v1-cf-facts"><div><dt>${C.words.name}</dt><dd>${esc(S.name)}</dd></div><div><dt>${C.words.browserProfile}</dt><dd>${esc(profileName())}</dd></div></dl>`,
-  result:{rows:(res,st)=>[['Connection',C.words.saved,'connection'],['Browser profile',esc(res.browser_profile),'profile'],['Status',esc(st ? C.status(st.state) : C.words.notChecked),'status']],
+  problem,save:commit,accountId:()=>'',risks:()=>[isAccount() ? C.words.accountNoPost : C.words.browserNoExecution],
+  factsHTML:()=>`<dl class="desk-v1-cf-facts"><div><dt>${isAccount() ? C.words.accountHandle : C.words.name}</dt><dd>${esc(S.name)}</dd></div><div><dt>${C.words.browserProfile}</dt><dd>${esc(profileName())}</dd></div></dl>`,
+  result:{rows:(res,st)=>[['Connection',res.kind==='account' ? C.words.accountAdded : C.words.saved,'connection'],['Browser profile',esc(res.browser_profile),'profile'],['Status',esc(st ? C.status(st.state) : C.words.notChecked),'status']],
     extra:()=>window.DeskV1ConnectBrowserCheck?.html('generic-result') || '',actions:()=>[],
     bind:(root,res,api)=>window.DeskV1ConnectBrowserCheck?.bind(root,'generic-result',()=>({url:res.url,browser_profile:res.browser_profile}),api.ctx,{own:api.own,status:res.status,onStatus:out=>{window.DeskV1ConnectSummaryStep.setStatus(out);api.repaint();}})},
 });

@@ -1,7 +1,7 @@
 """Generic browser-profile references, with no Desk executor or permission.
 
 Saved in desk.json's services section, outside DATA_DIR. X/LinkedIn keep their
-existing account setup. A reviewed check is taken only from the shipped profile;
+existing account setup; Instagram/YouTube/TikTok become accounts (`pane_account`). A reviewed check is taken only from the shipped profile;
 requests and discovery evidence cannot install checks or authorize execution.
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ from threading import Lock
 from mc import desk, desk_services, desk_browser_profiles
 from mc.blueprints import browser_routes
 from mc.core import now_iso
-from mc.desk_connect import registry, url_check
+from mc.desk_connect import pane_account, registry, url_check
 from mc.desk_connect.browser_setup import SetupError, _profile_state
 from mc.desk_connect.commit import clean_request_id
 
@@ -77,6 +77,10 @@ def commit(request_id: str, clean: dict) -> tuple[dict, bool]:
                 raise SetupError('this request was already used for different details', 409, 'request_changed')
             from mc.desk_connect.browser_check import refresh_result
             return refresh_result(result), True
+        if pane_account.platform_of(clean):
+            result = pane_account.save(clean)       # Instagram / YouTube / TikTok: an account, not a service
+            _done[request_id] = (fp, result)
+            return dict(result), False
         with desk._store_lock:
             store = desk._read_store()
             services = store.setdefault('services', {})

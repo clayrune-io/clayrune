@@ -39,6 +39,7 @@ from mc.desk_connect import providers as _providers
 from mc.desk_connect import registry as _registry
 from mc.desk_connect import route_readiness as _ready
 from mc.desk_connect import browser_connections as _browser_connections
+from mc.desk_pane_pages import PANE_ONLY_PLATFORMS
 
 TYPE_ORDER = ('signin', 'api', 'mcp')
 TYPE_LABELS = {'signin': 'Sign in (username/password)', 'api': 'API / developer app', 'mcp': 'MCP server'}
@@ -185,8 +186,9 @@ def project(profile: dict | None, *, provider_for: ProviderFor | None = None, ex
     unavailable = [v for v in variants if v['setup']['mode'] != 'full']
     unavailable.sort(key=lambda v: TYPE_ORDER.index(v['type']))
     service = ({'id': profile['service_id'], 'label': profile['label'], 'recognised': True, 'revision': profile['revision'],
-                'account_kinds': [dict(k) for k in profile['account_kinds']]} if profile is not None else
-               {'id': None, 'label': None, 'recognised': False, 'revision': None, 'account_kinds': []})
+                'account_kinds': [dict(k) for k in profile['account_kinds']],
+                'makes_account': profile['service_id'] in PANE_ONLY_PLATFORMS} if profile is not None else
+               {'id': None, 'label': None, 'recognised': False, 'revision': None, 'account_kinds': [], 'makes_account': False})
     return {'service': service, 'picker': picker[:MAX_PICKER],
             'details': {'unavailable': unavailable, 'delivery': [{'route_id': v['route_id'], 'title': v['title'], 'text': v['explanation']['text']}
                                                                  for v in delivery]},
