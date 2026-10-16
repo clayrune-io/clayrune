@@ -192,7 +192,7 @@ try {
     const hit = STATIC[path];
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return J(PROJECTS);
-    if (path === '/api/config') return J({});
+    if (path === '/api/config') return J({ desk_v1: false }); // explicit legacy opt-out
     if (path === '/api/characters') return J([]);
     if (path.endsWith('/posted') && req.method() === 'POST') {
       postedCalls.push({ path, body: JSON.parse(req.postData() || '{}') });
@@ -1046,7 +1046,7 @@ try {
     const hit = STATIC[path];
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return J(PROJECTS);
-    if (path === '/api/config') return J({});
+    if (path === '/api/config') return J({ desk_v1: false }); // explicit legacy opt-out
     if (path === '/api/characters') return J([
       { scope: 'global', name: 'writer-x', agent_name: 'Writer X', avatar: '📝' },
       { scope: 'global', name: 'writer-y', agent_name: 'Writer Y', avatar: '🖋' },

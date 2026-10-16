@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-16] - Open Desk v1 by default
+
+- Fresh installs open the live Desk workspace. Existing configs switch once, including the old false value pinned by saving unrelated settings; `desk_v1_default_migrated` records the migration atomically. Later Desk v1 toggle choices are preserved.
+- Updated the Settings hint to describe the live workspace. Legacy Desk views remain read-only while Desk v1 is enabled; turning it off restores the legacy Desk.
+
 ## [2026-10-16] - Show recorded dispatch lineage in completed chats (MC-1033)
 
 - Reconstructed history now carries the same durable dispatcher as the conversation list, including children outside its first page and transcript-keyed history twins. The banner also reads recorded conversation metadata when available. Unrecorded lineage stays blank; callback recipients do not become dispatchers.

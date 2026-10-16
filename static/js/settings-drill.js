@@ -787,7 +787,7 @@ async function _renderSettings() {
       <div class="settings-row">
         <div>
           <div class="settings-label">Desk v1</div>
-          <div class="settings-hint">New Desk UI (Home &rarr; campaign &rarr; item), running on fixtures only &mdash; no live posting yet. The legacy Desk stays read-only while this is on. MC-977.</div>
+          <div class="settings-hint">Manage campaigns, content and publishing in the live Desk workspace. The legacy Desk stays read-only while this is on.</div>
         </div>
         ${toggle('desk_v1', cfg.desk_v1)}
       </div>
