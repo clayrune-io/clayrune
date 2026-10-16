@@ -5,7 +5,8 @@ owns the natural-pixel transform and input gestures; `static/css/image-viewer.cs
 owns its layout. `static/index.html` loads the entry module and stylesheet.
 Diagram rendering and gestures remain in `mermaid.js`. Both viewers share the
 `window._viewerWindows` data bridge (stack and z-index) so only the front window
-handles keyboard shortcuts. No dependency or backend route was added.
+handles keyboard shortcuts. No dependency or backend route was added (folder
+navigation reuses the existing `/api/serve-image/siblings`).
 
 ## Entry point and navigation scope
 
@@ -21,8 +22,22 @@ ordinary `.agent-line` siblings, bounded by prompt/tool/status lines. A prompt's
 attachments stay inside that prompt. This follows the chat renderer's existing
 one-div-per-line representation. A source without a message/gallery container
 opens one picture. Media passes its currently filtered images; the Desk library
-passes the shelf's images, excluding videos. There is no directory enumeration
-or `/api/serve-image/siblings` call. Navigation wraps and resets rotation/fit.
+passes the shelf's images, excluding videos. An explicit `images` list keeps its
+own scope and never enumerates a folder.
+
+Folder scope (restored after MC-1100 dropped it): a **source** open (chat
+thumbnail, user attachment, resume preview) whose src is a
+`/api/serve-image?path=` URL also asks `GET /api/serve-image/siblings` for the
+picture's folder (`static/js/image-viewer-folder.js`). When that returns two or
+more files, the folder list replaces the message list for arrows, swipe,
+ArrowLeft/Right, filmstrip and counter. The request is async: the viewer opens
+at once on the message scope and the arrows/filmstrip appear when the list
+arrives, without reloading the shown picture. The upgrade is skipped (message
+scope stays) when the request fails or 404s, lists fewer than two files, the src
+has no `?path=` (`data:`/`blob:`), the viewer was closed first, or the picture
+now shown is not in the folder (user navigated elsewhere meanwhile). The route
+uses the same allowlist as `/api/serve-image`. Navigation wraps and resets
+rotation/fit. Smoke: `tools/smoke/image-viewer-folder.mjs`.
 
 Windows/Linux use dark Photos-style title/toolbar/status bars. Mac detection uses
 `navigator.userAgentData.platform`, then `navigator.platform`. Tests can force

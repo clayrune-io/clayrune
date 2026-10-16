@@ -6,6 +6,10 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-16] - Picture viewer: folder previous/next restored (MC-1100 regression)
+
+- A chat picture that is the only image in its message again steps through every image in its folder (arrows, swipe, ArrowLeft/Right, filmstrip, counter), as before MC-1100. Chat/attachment opens ask `/api/serve-image/siblings` and widen to the folder when it lists 2+ files; failure, a single file or a `data:` src keeps the message scope. Media and Desk library lists keep their own scope. Contract: `docs/IMAGE_VIEWER.md`; smoke: `tools/smoke/image-viewer-folder.mjs`. Branch only; no merge, push or restart.
+
 ## [2026-10-15] - Native-style picture viewer (MC-1100)
 
 - Extracted picture viewing from the diagram module. Windows/Linux get Photos-style filename, toolbar and status bars; Mac gets Preview-style window controls. Existing chat, Media and Desk library entry points remain supported.
