@@ -135,6 +135,7 @@ import mc.dispatch_lineage as _dispatch_lineage  # MC-1082: attributed caller re
 import mc.memory_push as _memory_push      # MC-944 mid-task memory push observer, report mode
 import mc.artifact_coverage as _artifact_coverage  # substitution check: did the turn run what was asked
 import mc.vendor_context_sync as _vendor_context_sync  # mirrors CLAUDE.md into AGENTS.md/GEMINI.md/QWEN.md
+import mc.dev_harness_context as _dev_harness_context
 import mc.usage_breakdown_sampler as _usage_breakdown_sampler  # MC-998 session-fact capture
 from mc.usage_breakdown_store import UsageBreakdownStore as _UsageBreakdownStore  # MC-998
 import mc.project_sync as _project_sync  # MC-998 phase 3: LOC attribution git numstat
@@ -1038,6 +1039,7 @@ def _context_fingerprint(project):
               'read_floor_link_expand', 'sticky_agent_settings',
               'agent_emojis_enabled'):
         h.update(f'{k}={state.CONFIG.get(k)}|'.encode('utf-8', 'replace'))
+    h.update(_dev_harness_context.fingerprint(project, DATA_DIR.parent).encode())
     return h.hexdigest()[:16]
 
 
@@ -1764,7 +1766,7 @@ def _job_on_complete(result):
 
 
 @bp.route('/api/project/<project_id>/agent/<session_id>/job', methods=['POST'])
-def agent_job_start(project_id, session_id):
+def agent_job_start(project_id, session_id, *, job_data=None):
     """MC-958 follow-up (backlog b49cf71f): run a command as a real OS
     subprocess Clayrune owns, for engines with no background-job facility of
     their own (Codex/Gemini/Qwen -- see the context note in
@@ -1810,7 +1812,7 @@ def agent_job_start(project_id, session_id):
                 'directly in this turn instead.'}), 403
         default_cwd = _session_cwd(sess, pp)
 
-    data = request.get_json() or {}
+    data = job_data if job_data is not None else (request.get_json() or {})
     command = (data.get('command') or '').strip()
     if not command:
         return jsonify({'error': 'command required'}), 400
@@ -5560,6 +5562,10 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     ct = project.get('current_task', '')
     if ct:
         parts.append(f"Current task: {ct}")
+
+    _harness = _dev_harness_context.render(project, DATA_DIR.parent)
+    if _harness:
+        parts.append(_harness)
 
     # LAST, always — the point of a tail block is to be the last thing before
     # generation. Provider-agnostic: every dispatch, respawn, and non-Claude

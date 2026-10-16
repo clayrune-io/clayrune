@@ -164,7 +164,7 @@ def test_corruption_reports_error_and_no_mode_reset(client):
     assert path.read_text(encoding='utf-8') == 'broken'
 
 
-@pytest.mark.parametrize('suffix', ['/exceptions', '/install', '/install-plan', '/preview'])
+@pytest.mark.parametrize('suffix', ['/exceptions', '/preview'])
 def test_later_ticket_routes_are_absent(client, suffix):
     c, _ = client
     assert c.post(URL + suffix, json={}).status_code == 404

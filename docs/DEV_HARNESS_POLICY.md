@@ -1,5 +1,10 @@
 # Dev harness policy foundation (DH-M1)
 
+DH-M2 adds pinned guidance inspection/installation and context projection on top
+of this contract; see `DEV_HARNESS_GUIDANCE.md`. Its installation receipt is
+revalidated before Enforce activation. M1 policy/evidence formats and all human
+gates remain unchanged; deterministic/reviewer check coverage is still Unsupported.
+
 MC-960 / `d813ea78`. Implements only the DH-M1 row of
 `DEV_HARNESS_SPEC.md` revision 3. This is a backend contract, not the usable
 six-session MVP. No runner, installer, UI, merge hold or release gate is delivered.
