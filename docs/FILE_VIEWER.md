@@ -1,7 +1,11 @@
 # Agent chat file links
 
 Chat `[file:<absolute path>]` and `[file:<absolute path>|Label]` links use a
-real `/api/serve-file` URL. The full path remains visible beside a label.
+real `/api/serve-file` URL. Labeled chips show their icon and label without a
+trailing path span. The anchor's hover title contains the exact absolute path
+(without an Open/Download prefix); unlabeled chips still use the path as their
+text. Ron's 2026-10-16 call supersedes the 2026-10-12 always-visible rule for
+these links only. The viewer header retains its selectable path on touch.
 
 - Text and source formats open a managed, read-only File viewer. Markdown uses
   the same rich-line and pipe-table renderer as plan files. Other text uses an
@@ -49,7 +53,8 @@ npm test
 ```
 
 The file-viewer smoke serves the real SPA and real modules against hermetic
-fixtures. It covers markdown/tables, exact paths with spaces/quotes/ampersands,
+fixtures. It covers markdown/tables, no trailing path span, exact hover titles,
+unchanged chip icon/label, selectable modal paths with spaces/quotes/ampersands,
 escaped HTML and code, native media URLs, binary downloads, extensionless text
 and binary refusal, UTF-16, HTTP errors, declared and streamed size caps,
 explicit Download, modified clicks, shared plan rendering and viewport bounds
@@ -60,7 +65,8 @@ physical-device file handling is not exercised by the hermetic smoke.
 
 Delivery scope: branch-only; no merge, push, server restart or deployment.
 
-Validated 2026-10-16: dedicated smoke rc=0 (62 checks); full `npm test` rc=0,
+Validated 2026-10-16 after the chip-only scope change: dedicated smoke rc=0
+(82 checks); full `npm test` rc=0,
 including all seven boot scenarios and dispatch/other boot guards. Desktop
 and mobile screenshots were visually inspected. The existing node_modules
 junction was used; no dependency or browser installation was performed.

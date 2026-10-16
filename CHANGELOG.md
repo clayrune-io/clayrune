@@ -8,6 +8,7 @@
 
 ## [2026-10-16] - Read agent file links in place on desktop and phone
 
+- Labeled file chips omit the trailing path span; their hover title carries the exact absolute path. The viewer header keeps its selectable path for touch devices (Ron, 2026-10-16).
 - Text and Markdown file links now open a read-only File viewer with a fully visible absolute path and Download action. Markdown shares the plan viewer's rich-text and pipe-table renderer; source files remain escaped text. Previews enforce a 2 MiB read cap, with download guidance for large, binary or unsupported text.
 - Images, PDFs, audio and video retain native browser tabs through inline URLs; unknown binaries keep downloading. File markers are recognized before bare image paths. Contract: `docs/FILE_VIEWER.md`; desktop/mobile smoke: `tools/smoke/file-viewer.mjs`. Branch only; no backend changes, merge, push or restart.
 

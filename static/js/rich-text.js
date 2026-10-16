@@ -158,17 +158,16 @@ function formatAgentText(raw) {
     if (!path) return m;                                  // malformed → leave literal
     const kind = window.fileLinkKind ? window.fileLinkKind(path) : 'download';
     const href = API_BASE + '/api/serve-file?' + (kind === 'download' ? '' : 'inline=1&') + 'path=' + encodeURIComponent(path);
-    // The full path is ALWAYS visible, never only in a hover title (Ron,
-    // 2026-10-12: a label alone left him tracing which folder a file lives
-    // in). No label → the path is the link text; a label → the path follows
-    // it as selectable text.
+    // Ron, 2026-10-16: keep the chip, remove the trailing visible path, and
+    // put the full absolute path in its title. Supersedes the 2026-10-12
+    // always-visible rule for [file:] links only. The viewer header keeps
+    // a selectable path for touch devices; unlabeled chips still use the path.
     const pathHtml = pathEsc.trim();                      // already escaped
     const labelHtml = labelEsc ? labelEsc.trim() : pathHtml;  // labelEsc already escaped
     const tok = '@@CLFile' + _fileTokens.length + '@@';
     _fileTokens.push(
       `<a class="hl-file-link" dir="ltr" href="${href}" target="_blank" rel="noopener" ` +
-      `title="${kind === 'download' ? 'Download' : 'Open'} ${pathHtml}" ${kind === 'text' ? `data-file-preview="${pathHtml}"` : ''}><span class="hl-file-ic">&#128196;</span>${labelHtml}</a>` +
-      (labelEsc ? ` <span class="hl-file-path" dir="ltr">${pathHtml}</span>` : ''));
+      `title="${pathHtml}" ${kind === 'text' ? `data-file-preview="${pathHtml}"` : ''}><span class="hl-file-ic">&#128196;</span>${labelHtml}</a>`);
     return tok;
   });
 

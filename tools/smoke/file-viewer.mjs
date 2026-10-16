@@ -64,12 +64,21 @@ try {
     const open = async p => { const link = await renderLink(p); await link.click(); return page.locator('.file-viewer-body'); };
     const link = await renderLink(path);
     check(new URL(await link.getAttribute('href'), page.url()).searchParams.get('inline') === '1', `${width}: text href supports open in new tab`);
-    check(await page.locator('#file-link-smoke .hl-file-path').textContent() === path, `${width}: labeled link retains absolute path`);
+    check(await page.locator('#file-link-smoke .hl-file-path').count() === 0, `${width}: no trailing visible path span`);
+    check(await link.getAttribute('title') === path, `${width}: title carries exact absolute path`);
+    check(await link.locator('.hl-file-ic').count() === 1 && (await link.textContent()).endsWith('Read file') && !(await link.textContent()).includes(path), `${width}: labeled chip keeps icon and label only`);
+    const unlabeled = await page.evaluate(p => {
+      const host = document.createElement('div'); host.innerHTML = window.formatAgentText(`[file:${p}]`);
+      const a = host.querySelector('a.hl-file-link');
+      return { title: a.title, text: a.textContent, paths: host.querySelectorAll('.hl-file-path').length };
+    }, path);
+    check(unlabeled.title === path && unlabeled.text.endsWith(path) && unlabeled.paths === 0, `${width}: unlabeled chip retains path text and title without extra span`);
     await link.click();
     await page.waitForSelector('.file-viewer-body .hl-table td');
     check(await page.locator('.file-viewer-body .hl-bold').textContent() === 'Ready to read', `${width}: markdown renders`);
     check(await page.locator('.file-viewer-body td').last().textContent() === 'Open in place', `${width}: pipe table renders`);
     check(await page.locator('.file-viewer-path').textContent() === path, `${width}: modal retains exact path with quotes, spaces and ampersand`);
+    check(await page.locator('.file-viewer-path').evaluate(el => getComputedStyle(el).userSelect === 'text'), `${width}: modal path stays selectable on touch`);
     check(await page.evaluate(() => !window.filePreviewInjected), `${width}: document HTML is escaped`);
     const fits = await page.locator('.file-viewer-content').evaluate(el => {
       const b = el.getBoundingClientRect(), p = el.querySelector('.file-viewer-path');
@@ -91,9 +100,11 @@ try {
       const media = await renderLink('C:/Projects/picture.' + ext);
       check((await media.getAttribute('href')).includes('inline=1&') && await media.getAttribute('data-file-preview') === null, `${width}: ${ext} native link is intact`);
       check(await media.getAttribute('target') === '_blank', `${width}: ${ext} opens new tab`);
+      check(await media.getAttribute('title') === 'C:/Projects/picture.' + ext, `${width}: ${ext} title carries absolute path`);
     }
     const binary = await renderLink('C:/Projects/archive.bin');
     check(!(await binary.getAttribute('href')).includes('inline=') && await binary.getAttribute('data-file-preview') === null, `${width}: unknown binary keeps download URL`);
+    check(await binary.getAttribute('title') === 'C:/Projects/archive.bin', `${width}: binary title carries path without Download prefix`);
     const binaryDownload = page.waitForEvent('download'); await binary.click(); await binaryDownload;
     check(await page.locator('.file-viewer-content').count() === 0, `${width}: binary downloads without modal`);
 
