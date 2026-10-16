@@ -109,7 +109,7 @@ def _point_at_server(with_secret, monkeypatch, server):
 def test_falls_back_to_server_and_prints_its_output(vault, with_secret, monkeypatch, exec_server):
     server, handler = exec_server
     _lock_the_vault(vault)
-    vault.ensure_exec_token()  # writes the token file the fallback reads
+    vault.ensure_exec_token(server.server_port)  # writes the token file the fallback reads
     _point_at_server(with_secret, monkeypatch, server)
     handler.response_body = {'exit_code': 0, 'stdout': 'ok from server\n', 'stderr': ''}
 
@@ -130,7 +130,7 @@ def test_stdout_and_exit_code_pass_through_from_the_server(vault, with_secret, m
                                                             exec_server, capsys):
     server, handler = exec_server
     _lock_the_vault(vault)
-    vault.ensure_exec_token()
+    vault.ensure_exec_token(server.server_port)
     _point_at_server(with_secret, monkeypatch, server)
     handler.response_body = {'exit_code': 3, 'stdout': 'from the server\n', 'stderr': 'oops\n'}
 
@@ -146,7 +146,7 @@ def test_server_reachable_but_also_locked_gives_the_clear_message(vault, with_se
                                                                    exec_server, capsys):
     server, handler = exec_server
     _lock_the_vault(vault)
-    vault.ensure_exec_token()
+    vault.ensure_exec_token(server.server_port)
     _point_at_server(with_secret, monkeypatch, server)
     handler.response_status = 423
     handler.response_body = {'error': 'vault_locked', 'message': 'locked'}
@@ -160,7 +160,7 @@ def test_server_reachable_but_also_locked_gives_the_clear_message(vault, with_se
 def test_server_unreachable_gives_the_clear_message_not_a_crash(vault, with_secret, monkeypatch,
                                                                  capsys):
     _lock_the_vault(vault)
-    vault.ensure_exec_token()
+    vault.ensure_exec_token(1)
     # Port 1 is a privileged, always-refused port — nothing will ever answer.
     monkeypatch.setattr(with_secret.vault, 'exec_route_port', lambda: 1)
 
@@ -177,9 +177,12 @@ def test_no_token_file_gives_the_clear_message_without_any_network_call(vault, w
     than firing a request with an empty/garbage header."""
     _lock_the_vault(vault)
     # Deliberately do NOT call vault.ensure_exec_token() — no token file exists.
-    monkeypatch.setattr(with_secret.vault, 'exec_route_port',
-                        lambda: (_ for _ in ()).throw(AssertionError(
-                            'should never look up a port with no token')))
+    # The token file is keyed by port, so the port IS looked up to find it;
+    # what must never happen is a request going out without a token.
+    monkeypatch.setattr(with_secret.vault, 'exec_route_port', lambda: 1)
+    monkeypatch.setattr(with_secret.urllib.request, 'urlopen',
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError(
+                            'should never fire a request with no token')))
 
     rc = with_secret.main(['--env', 'X=demo.token', '--', 'irrelevant'])
 
@@ -193,7 +196,7 @@ def test_raw_flag_skips_the_one_shot_route_and_uses_the_streaming_client(
     buffering one-shot route (it cannot stream), but go to the streaming client."""
     server, handler = exec_server
     _lock_the_vault(vault)
-    vault.ensure_exec_token()
+    vault.ensure_exec_token(server.server_port)
     _point_at_server(with_secret, monkeypatch, server)
     from mc import secrets_exec_stream_client
     seen = []

@@ -50,7 +50,6 @@ def srv(tmp_path, monkeypatch):
     vault.set_secret('other.token', 'other-project-value-77', scope='other_project')
     vault.set_secret('bank.password', 'bank-value-88', allow_unattended=False)
     vault.set_passphrase('a real passphrase')           # leaves THIS process unlocked
-    token = vault.ensure_exec_token()
     monkeypatch.setattr(process_ledger, '_PID_LEDGER_PATH', tmp_path / 'mc_child_pids.json')
     monkeypatch.setattr(stream, 'HEARTBEAT_S', 0.2)
     monkeypatch.setattr(stream, 'ATTACH_GRACE_S', 5.0)
@@ -61,6 +60,8 @@ def srv(tmp_path, monkeypatch):
     server = make_server('127.0.0.1', 0, app, threaded=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    # The token file is keyed by port: mint it for the port this server bound.
+    token = vault.ensure_exec_token(server.server_port)
     ns = SimpleNamespace(
         port=server.server_port, token=token, home=home, tmp=tmp_path, vault=vault,
         stream=stream, ledger=tmp_path / 'mc_child_pids.json',
