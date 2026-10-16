@@ -5,7 +5,7 @@ work — logging into an account, posting to a social platform, calling an
 authenticated API — without a password ever entering a transcript, a memory
 file, a distilled skill, or the git repo.
 
-- Module: `mc/secrets_store.py`
+- Modules: `mc/secrets_store.py`, `mc/vault_restart_handover.py`
 - HTTP surface: `mc/blueprints/secrets_routes.py`
 - Agent-facing runner: `tools/with-secret.py`
 - Tests: `tests/test_secrets_store.py`, `tests/test_secrets_routes.py`
@@ -298,11 +298,13 @@ read unattended, an agent can read too — the keyring/DPAPI/file backends
 above all share that property. The passphrase lock closes it: the key is
 never written to disk unwrapped. It exists in plaintext only in a
 process-memory variable (`mc.secrets_store._unlocked_key`), set by a
-**human-only** unlock call, and now leaves memory sooner than "the life of
+**human-only** unlock call or verified restart handover, and can leave memory before "the life of
 the process": an idle auto-lock and a manual "Lock now" control (MC-949
 follow-up, both below) can relock it before a restart ever happens. The
-server starts **locked** after every restart until a human unlocks it from
-the dashboard (Settings → Vault).
+server starts **locked** on a cold start until a human unlocks it from
+the dashboard (Settings → Vault). **Exception, approved 2026-10-16:** an
+already-unlocked server can pass its key directly to its own replacement on
+Restart or Update, as described below. A cold start or reboot stays locked.
 
 This is opt-in and additive — a box that has never called `set_passphrase()`
 behaves exactly as every section above describes, unchanged. Setting a
@@ -337,6 +339,59 @@ the same passcode gate to prove a human is asking. The status route
 `unconfigured` / `locked` / `unlocked`, never a key or a value, so a job that
 hits `VaultLocked` downstream can at least report *why* to a human.
 
+### Keep unlocked across a server restart (2026-10-16)
+
+`vault_keep_unlocked_on_restart` (default `true`, Settings → System → Security,
+next to Vault idle auto-lock) retains an existing unlock on a server-initiated
+Restart or Update. Turning it off restores the previous restart-lock behavior.
+It does not unlock a locked parent or change `vault_idle_lock_minutes`.
+
+`mc.vault_restart_handover.spawn_replacement()` writes exactly 32 bytes into
+an anonymous OS pipe before spawning, then closes the writer. The child gets
+only the read descriptor via POSIX `pass_fds`, or its Windows handle via
+`STARTUPINFO.lpAttributeList.handle_list` with `close_fds=True`. The master key
+is never put in a file, environment variable, process argument or log. The
+environment carries only `MC_VAULT_RESTART_PIPE`, a descriptor/handle number;
+the entry points pop it and mark the handle non-inheritable before startup
+subsystems or CLI checks can spawn children.
+
+The shared `server.boot()` consumes the pipe before background jobs start.
+Reads are bounded to 10 seconds. The key must be exactly 32 bytes and match
+the HMAC fingerprint already stored in `secrets.key.wrapped`, using a constant
+time comparison. Only then does the vault reset its idle clock and lock
+notification state and append `vault_unlocked` with `method: pipe` and
+`reason: restart_handover` to the audit log. Missing pipes, a locked/idle-expired
+parent, a disabled flag, setup/read errors, EOF, timeout, malformed frames,
+missing/corrupt wrapped files or a wrong fingerprint leave it locked with a
+diagnostic that contains neither the key nor arbitrary pipe input.
+Receiving a handover also pins passphrase mode for that process, so a wrapped
+file that disappeared cannot send later reads into legacy keyring/file lookup
+or mint a replacement key. Restore the wrapped file before attempting unlock.
+
+Replacement-path audit:
+
+| Path | Handover |
+|---|---|
+| `/api/system/restart` on Windows/macOS/Linux | Shared `_perform_server_restart_async` → `spawn_replacement` |
+| Git `/api/system/update` | Pull only; the UI's subsequent confirmed `/api/system/restart` uses the same helper |
+| Frozen macOS `/api/system/update` | `_spawn_swap` passes the pipe to the bounded swap helper; its first launch runs the verified bundle executable directly, because LaunchServices `open` drops inherited descriptors |
+| Swap rollback after the new app was launched | Cold reopen, locked; pipe metadata is one-use |
+| `app.py` desktop/frozen and `server.py` | Both capture early and consume through shared boot |
+| Autostart, installer, terminal launch, external crash/full-restart helper (`tools/_mc_restart.ps1`) | Cold start, no server-created pipe, locked |
+
+No Tauri server launcher remains in the current tracked tree; historical Tauri
+notes describe an older launcher. No external launcher, scheduled task, crash
+recovery path or credential-management endpoint is given a handover facility.
+The first start of a release containing this feature still needs a human unlock
+if the outgoing server predates the handover code.
+
+Validation: `tests/test_vault_restart_handover.py` exercises real Windows/POSIX
+children, rejection/timeout/cleanup and absence of key material in child
+environment/arguments/logs; existing restart/update suites cover their route
+gates. `tools/smoke/vault-restart-setting.mjs` covers default, save/reopen and
+unchanged idle minutes at desktop/mobile widths. A native packaged macOS
+update still needs release-platform verification.
+
 ### Idle auto-lock and manual "Lock now" (MC-949 follow-up)
 
 Two ways the key now leaves memory before a restart:
@@ -369,7 +424,7 @@ is traceable to which path caused it.
 ### Residual risk — stated plainly
 
 The passphrase lock raises the bar; it does not remove the "same OS user"
-property this document opens with. Two things stay true even with the lock
+property this document opens with. These things stay true even with the lock
 in place:
 
 - **A same-user agent with a raw shell can still rewrite the files the fence
@@ -386,6 +441,21 @@ in place:
   else, no state on disk, no file to steal, stands between a shell and the
   vault. Guard it accordingly: it is not a password to reuse, share, or store
   in another tool's config.
+- **Restart retention extends the unlocked memory window.** A restart no
+  longer clears an existing unlock by default. Anonymous pipe buffers and the
+  replacement's memory briefly hold the key; the macOS swap helper and its
+  trusted utility descendants can inherit the read descriptor until the helper
+  exits (bounded by its existing exit/health waits). After its first launch the
+  helper removes the descriptor metadata, and rollback reopens locked. A
+  same-user debugger, process injection, handle duplication or memory dump can
+  still recover a live key; this is not isolation from a hostile OS user.
+  Windows also requires a short inheritable-handle window around CreateProcess;
+  unrelated legacy spawns that inherit all handles must avoid that window.
+  Python byte copies also cannot promise reliable memory erasure. Manual lock,
+  idle auto-lock and disabling restart retention remain available. Application
+  files still contain only the wrapped key; OS swap, hibernation and crash dumps
+  can preserve live-memory bytes and need OS-level protection. A cold reboot
+  has no inherited pipe.
 
 One window is structural rather than architectural: **the first-time
 `vault-lock/set` call has no prior passphrase to check against** (there is

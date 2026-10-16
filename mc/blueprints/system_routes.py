@@ -36,6 +36,7 @@ from mc.usage_breakdown_aggregate import reset_drop_starts as _ub_reset_drop_sta
 from mc import slash_commands as slash_cmds
 from mc.atomic_json import write_json_atomic
 from mc import update_requirements
+from mc.vault_restart_handover import spawn_replacement
 from mc.provider_env_scope import claude_child_env, relaunch_env
 from mc.core import _atomic_write_text, _log, now_iso, path_is_within, time_ago
 from mc.state import (
@@ -1877,7 +1878,7 @@ def _perform_server_restart_async(audit_entry):
                 # to /dev/null, output to data/logs like the Windows branch.
                 popen_kwargs['stdin'] = subprocess.DEVNULL
                 _redirect_restart_child_output(popen_kwargs)
-            subprocess.Popen([sys.executable] + sys.argv, **popen_kwargs)
+            spawn_replacement([sys.executable] + sys.argv, **popen_kwargs)
             spawned = True
             _log("[restart] spawned new server process")
         except Exception as e:
@@ -1902,7 +1903,8 @@ def _perform_server_restart_async(audit_entry):
 
         # (3) Audit log + exit. Log write is best-effort.
         try: _append_restart_log(audit_entry)
-        except Exception: pass
+        except Exception as e:
+            _log(f'[restart] audit append failed: {e}')
 
         # Brief settle so the new process can claim the port if the OS is
         # quick about it; the new instance is allowed to wait longer.

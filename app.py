@@ -16,6 +16,9 @@ from mc import preflight  # noqa: F401
 import os
 import sys
 
+from mc.vault_restart_handover import capture_inherited_channel
+capture_inherited_channel()
+
 # Hook invocation (MC-975): a frozen build has no Python interpreter to run
 # hook scripts with, so vendor CLIs call this binary as
 # `<app> --clayrune-hook <name> ...`. Handle it before anything else runs:

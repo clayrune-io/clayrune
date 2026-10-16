@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-16] - Retain an unlocked vault across server restarts
+
+- Restart and Update can pass an already-unlocked vault to the replacement over an anonymous inherited pipe, including the frozen macOS swap helper. The child checks the existing wrapped-key HMAC fingerprint, resets the idle clock and audits `restart_handover`. No raw key is written to disk, environment, arguments or logs; missing/invalid/timed-out handovers stay locked.
+- Added **Keep vault unlocked on restart** under Settings → System → Security, default on, beside the independent idle setting. Cold starts and reboots still require a human unlock; off restores restart locking. Contract, path audit and residual risk: `docs/SECRETS.md`. Branch only; no merge, push or restart; native packaged macOS verification remains required.
+
 ## [2026-10-16] - Update standalone Qwen Code with its own installer (MC-1102)
 
 - Recognised Qwen's Windows and macOS/Linux standalone layouts using their package manifest. Both daily update paths select Qwen's official standalone installer with npm fallback disabled; npm installations keep npm and unknown methods remain report-only.
