@@ -258,7 +258,9 @@ try {
     check(await page.locator('.iv-image').isHidden(), `${label} load failure is visible`);await click('close');
     const remaining=await page.evaluate(before=>Object.entries(window.__listeners).filter(([k,v])=>v!==(before[k]||0)),initialListeners);
     check(!remaining.length,`${label} no document listener leak (${JSON.stringify(remaining)})`);
-    check(!requests.includes('/api/serve-image/siblings'), `${label} no unrelated folder enumeration`);
+    // Folder lookup belongs to chat/source opens only (the two real handler opens above);
+    // explicit lists (Media, Desk library) and src-only calls never enumerate a folder.
+    check(requests.filter(p => p === '/api/serve-image/siblings').length === 2, `${label} folder lookup only for the two chat source opens`);
     check(!errors.length, `${label} no runtime exceptions (${errors.join('; ')})`);
     await context.close();
   }

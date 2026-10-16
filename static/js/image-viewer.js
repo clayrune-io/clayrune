@@ -1,6 +1,7 @@
 // Native picture window. Public entry point stays compatible with src-only
 // callers; a source element or explicit list scopes navigation to its message.
 import { imageGestures } from './image-viewer-gestures.js';
+import { folderImages, folderIndex } from './image-viewer-folder.js';
 
 const backgrounds = ['white', 'checker', 'dark'];
 // Shared data bridge with diagram windows; whichever viewer was raised last
@@ -169,7 +170,12 @@ export function openImageViewer(src, options = {}) {
       return null;
     });
   };
-  if (images.length > 1) {
+  // Built once, when the list first has 2+ pictures: at open, or later when the
+  // folder list arrives for a source open (see the upgrade after go(index)).
+  let navBuilt = false;
+  const buildNav = () => {
+    if (navBuilt || images.length < 2) return;
+    navBuilt = true;
     for (const [i, item] of images.entries()) {
       const thumb = document.createElement('button'); thumb.type = 'button'; thumb.className = 'iv-thumb';
       thumb.setAttribute('aria-label', `Show ${item.name || filename(item.src)}`);
@@ -183,8 +189,10 @@ export function openImageViewer(src, options = {}) {
       // Siblings of the stage so swiping/panning never also triggers a button.
       viewer.querySelector('.iv-workspace').append(nav);
     }
-  }
-  $('filmstrip').disabled = images.length < 2;
+    $('filmstrip').disabled = false;
+  };
+  buildNav();
+  $('filmstrip').disabled = !navBuilt;
   $('filmstrip').setAttribute('aria-pressed', 'false');
   $('filmstrip').onclick = () => { strip.hidden = !strip.hidden; $('filmstrip').setAttribute('aria-pressed', String(!strip.hidden)); };
   $('info').setAttribute('aria-pressed', 'false');
@@ -285,8 +293,9 @@ export function openImageViewer(src, options = {}) {
   });
   bar.addEventListener('pointerup', () => { drag = null; });
   bar.addEventListener('pointercancel', () => { drag = null; });
+  const listRequest = new AbortController();
   const close = () => {
-    closed = true; request?.abort(); gestures.destroy(); untrack(); chip?.remove();
+    closed = true; request?.abort(); listRequest.abort(); gestures.destroy(); untrack(); chip?.remove();
     document.removeEventListener('keydown', onKey, true);
     if (document.fullscreenElement === viewer) document.exitFullscreen().catch(error => console.warn('[image-viewer] Exit fullscreen failed:', error.message));
     overlay.remove();
@@ -304,6 +313,24 @@ export function openImageViewer(src, options = {}) {
   };
   $('close').onclick = close; document.addEventListener('keydown', onKey, true);
   applyBackground(); go(index); $('close').focus({ preventScroll: true });
+  // A chat/source open scopes to its message, then widens to the picture's
+  // folder (the pre-1100 behaviour) once the list arrives. The shown picture is
+  // never reloaded; a late answer after close, or after navigating to a picture
+  // the folder does not list, is dropped.
+  if (!options.images && options.source) {
+    const opened = images[index].src;
+    folderImages(opened, listRequest.signal).then(folder => {
+      if (closed || !folder) return;
+      const at = folderIndex(folder, images[index].src, opened);
+      if (at < 0) return;
+      images.splice(0, images.length, ...folder.images);
+      index = at;
+      strip.replaceChildren(); viewer.querySelectorAll('.iv-nav').forEach(el => el.remove()); navBuilt = false;
+      buildNav();
+      viewer.querySelector('.iv-count').textContent = `${index + 1} / ${images.length}`;
+      strip.querySelectorAll('button').forEach((el, i) => el.setAttribute('aria-current', String(i === index)));
+    });
+  }
   return { close, element: viewer };
 }
 
