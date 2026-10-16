@@ -1,0 +1,51 @@
+/* Desk v1 — Where SOURCES tiles + the column-header mark (desk-v1-where-tiles.js). ONE grid of equal cards: mark + name, a status chip, the reason (clamped), the action pinned to the bottom edge so Connect sits on one baseline across tiles. Nothing may run out of its card: name and platform are ellipsised, the reason clamps to two lines, and the full text is on title. Load order is in static/index.html. */
+.desk-v1-where-sources-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(172px, 1fr)); grid-auto-rows: 1fr; gap: 10px; }
+.desk-v1-where-source {
+  min-width: 0; padding: 10px 12px; display: flex; flex-direction: column; align-items: stretch; gap: 8px;
+  overflow: hidden; text-align: left;
+}
+.desk-v1-where-source.is-used { opacity: 0.6; }
+.desk-v1-where-source-off { cursor: default; border-style: dashed; }
+.desk-v1-where-tile-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.desk-v1-where-tile-id { flex: 1 1 auto; min-width: 0; }
+.desk-v1-where-source-handle, .desk-v1-where-handle, .desk-v1-where-source-plat, .desk-v1-where-plat {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.desk-v1-where-source-handle { font-size: 12.5px; font-weight: 700; color: var(--text); }
+.desk-v1-where-source-plat { font-size: 11px; color: var(--text-faint); }
+.desk-v1-where-tile-status { display: flex; flex-wrap: wrap; gap: 4px; min-height: 20px; }
+.desk-v1-where-chip {
+  display: inline-block; max-width: 100%; box-sizing: border-box; padding: 1px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  background: var(--surface2); color: var(--text-dim);
+}
+.desk-v1-where-chip[data-tone="ok"] { background: var(--green-dim); color: var(--green-text); }
+.desk-v1-where-chip[data-tone="warn"] { background: var(--amber-dim); color: var(--amber-text); }
+.desk-v1-where-source-reason {
+  font-size: 11px; line-height: 1.3; color: var(--amber-text);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere;
+}
+/* The action row is always present (empty on a tile with no action) and pushed to the bottom, so every tile in a row is the same height. */
+.desk-v1-where-tile-foot { margin-top: auto; display: flex; min-height: 0; }
+.desk-v1-where-tile-foot:empty { display: none; }
+.desk-v1-where-connect {
+  background: none; border: 1px solid var(--accent); border-radius: 6px; color: var(--accent); font-size: 12px; font-weight: 600;
+  cursor: pointer; font-family: inherit; padding: 3px 12px; min-height: 28px; white-space: nowrap;
+}
+.desk-v1-where-connect:hover { background: var(--accent-dim); }
+/* Column header: the mark replaces the old letter avatar; the name block may shrink so a long handle ellipsises beside the ✕. */
+.desk-v1-where-colhead .desk-v1-svc-icon { --svc-icon-size: 32px; }
+.desk-v1-where-colname { overflow: hidden; }
+
+@media (max-width: 960px) {
+  .desk-v1-where-connect { min-height: 44px; }
+  .desk-v1-where-source { min-height: 44px; }
+  .desk-v1-where-chip, .desk-v1-where-preview { font-size: 11px; }
+}
+/* Phone: two tiles per row, so the 172px minimum can not hold three. */
+@media (max-width: 699px) {
+  .desk-v1-where-sources-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .desk-v1-where-source { padding: 8px 10px; }
+  .desk-v1-where-tile-head { gap: 8px; }
+  .desk-v1-where-connect { width: 100%; justify-content: center; }
+}

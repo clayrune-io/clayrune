@@ -133,18 +133,10 @@
   .desk-v1-eng-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex-direction: unset; }
 }
 
-/* Where source tiles (WH-2 follow-up): the handle was ellipsised ("Clayrune p…") and the
-   platform glyph badge sat at 10px. Handle may take two lines; badge 11px. */
-@media (max-width: 699px) {
-  .desk-v1-where-source-handle { white-space: normal; overflow-wrap: anywhere; line-height: 1.2; }
-  .desk-v1-where-avatar-badge { font-size: 11px; min-width: 17px; height: 17px; line-height: 15px; }
-}
-
 /* 884 Fold inner: the Where board keeps its desktop two-column shape from 700px,
    but the 10px / 10.5px desktop labels are below the 11px floor on a touch device. */
 @media (max-width: 960px) {
-  .desk-v1-where-msg-kind, .desk-v1-where-pill, .desk-v1-where-source-plat, .desk-v1-where-plat { font-size: 11px; }
-  .desk-v1-where-avatar-badge { font-size: 10px; min-width: 16px; height: 16px; line-height: 14px; }
+  .desk-v1-where-msg-kind, .desk-v1-where-pill, .desk-v1-where-plat { font-size: 11px; }
 }
 
 /* Draft delete discoverability (batch 2, Ron from phone): a ⋯ on Draft project

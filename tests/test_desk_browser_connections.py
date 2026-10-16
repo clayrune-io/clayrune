@@ -14,7 +14,7 @@ def store(tmp_path, monkeypatch):
     return tmp_path
 
 
-@pytest.mark.parametrize('url,name', [('https://youtube.com','YouTube'), ('https://example.com','Example'), ('https://notion.so','Notion')])
+@pytest.mark.parametrize('url,name', [('https://example.com','Example'), ('https://notion.so','Notion')])
 def test_save_and_reload_reference_only(store, url, name):
     clean = c.clean_draft({'name':name,'url':url,'browser_profile':'example-login'})
     result, duplicate = c.commit('request-1234',clean)

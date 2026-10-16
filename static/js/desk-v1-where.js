@@ -63,14 +63,16 @@
   function _restorable(state) { return _M18_STATES.has(state) ? state : 'needs_review'; }
 
   const PLATFORMS = {
-    x: { word: 'X', glyph: '𝕏' },
-    linkedin: { word: 'LinkedIn', glyph: 'in' },
-    youtube: { word: 'YouTube', glyph: '▶' },
-    discord: { word: 'Discord', glyph: 'D' },
-    reddit: { word: 'Reddit', glyph: 'R' },
-    blog: { word: 'Blog', glyph: '✎' },
+    x: { word: 'X' },
+    linkedin: { word: 'LinkedIn' },
+    youtube: { word: 'YouTube' },
+    discord: { word: 'Discord' },
+    reddit: { word: 'Reddit' },
+    blog: { word: 'Blog' },
+    instagram: { word: 'Instagram' },
+    tiktok: { word: 'TikTok' },
   };
-  function _platform(ch) { return (ch && PLATFORMS[ch.platform]) || { word: (ch && ch.platform) || '', glyph: '•' }; }
+  function _platform(ch) { return (ch && PLATFORMS[ch.platform]) || { word: (ch && ch.platform) || '' }; }
 
   // `<kind> → <platform format>` on a version card (frame 7b).
   const FORMATS = {
@@ -85,21 +87,9 @@
     return (byKind && ch && byKind[ch.platform]) || `${_platform(ch).word} post`.trim();
   }
 
-  // Avatar: first letter of the handle on a colour picked from a stable hash
-  // of the channel id, so one account keeps its colour across every surface.
-  const AVATAR_COLORS = ['#5b6ee1', '#d9607a', '#2f6fbf', '#c4503a', '#6b4fb8', '#3a9d8a', '#b07a2a'];
-  function _avatarColor(id) {
-    let h = 0;
-    for (let i = 0; i < String(id).length; i++) h = (h * 31 + String(id).charCodeAt(i)) >>> 0;
-    return AVATAR_COLORS[h % AVATAR_COLORS.length];
-  }
-  function _avatarHTML(ch) {
-    const m = String((ch && ch.identity) || '?').match(/[A-Za-z0-9]/);
-    const plat = _platform(ch);
-    return `<span class="desk-v1-where-avatar" style="background:${_avatarColor(ch ? ch.id : '')}" aria-hidden="true">` +
-      `<span class="desk-v1-where-avatar-letter">${esc((m ? m[0] : '?').toUpperCase())}</span>` +
-      `<span class="desk-v1-where-avatar-badge" data-platform="${esc(ch ? ch.platform : '')}">${esc(plat.glyph)}</span></span>`;
-  }
+  // The mark an account wears (column header and SOURCES tile alike) is the
+  // vendor logo from desk-v1-service-icons.js, built in desk-v1-where-tiles.js.
+  function _markHTML(ch) { return window.DeskV1WhereTiles.markHTML(ch); }
 
   // A version counts on the board while it is live and sits on a channel.
   function _isLive(v) { return !!v.channelId && v.state !== 'archived' && v.state !== 'skipped'; }
@@ -394,9 +384,9 @@
       : `<div class="desk-v1-where-colempty" data-where-colempty>Drag a message here to add its ${esc(plat.word)} version.</div>`;
     return `<section class="desk-v1-where-col pd-drop-zone" data-channel-id="${esc(ch.id)}" data-platform="${esc(ch.platform)}" aria-label="${esc(`${ch.identity} on ${plat.word}`)}">
       <header class="desk-v1-where-colhead">
-        ${_avatarHTML(ch)}
+        ${_markHTML(ch)}
         <div class="desk-v1-where-colname">
-          <div class="desk-v1-where-handle">${esc(ch.identity)}</div>
+          <div class="desk-v1-where-handle" title="${esc(ch.identity)}">${esc(ch.identity)}</div>
           <div class="desk-v1-where-plat">${esc(plat.word)}</div>
           ${_previewTag(ch)}
         </div>
@@ -407,44 +397,10 @@
     </section>`;
   }
 
-  function _sourceHTML(camp, ch) {
-    const plat = _platform(ch);
-    const used = (camp.plan.accounts || []).includes(ch.id);
-    return `<div class="desk-v1-where-source${used ? ' is-used' : ''}" role="button" tabindex="0" data-where-source data-channel-id="${esc(ch.id)}" data-platform="${esc(ch.platform)}"
-         aria-label="${esc(`${ch.identity} on ${plat.word}${used ? ', already on this campaign' : '. Press Enter to add its column'}`)}">
-      ${_avatarHTML(ch)}
-      <div class="desk-v1-where-source-handle">${esc(ch.identity)}</div>
-      <div class="desk-v1-where-source-plat">${esc(plat.word)}</div>
-      ${_previewTag(ch)}
-    </div>`;
-  }
-
-  // A live account carries `publish` (R1-W S5): the tile names the account and
-  // says why it cannot be used, the reason the server computed (no token in the
-  // vault, LinkedIn app review pending). A demo tile has neither and stays as it was.
-  function _offSourceHTML(ch) {
-    const plat = _platform(ch);
-    const pub = ch.publish || null;
-    return `<div class="desk-v1-where-source desk-v1-where-source-off" data-where-source-off data-channel-id="${esc(ch.id)}" data-platform="${esc(ch.platform)}"${pub && pub.reason ? ` title="${esc(pub.reason)}"` : ''}>
-      <span class="desk-v1-where-avatar desk-v1-where-avatar-off" aria-hidden="true"><span class="desk-v1-where-avatar-letter">?</span><span class="desk-v1-where-avatar-badge" data-platform="${esc(ch.platform)}">${esc(plat.glyph)}</span></span>
-      <div class="desk-v1-where-source-handle">${pub ? esc(ch.identity) : 'not connected'}</div>
-      <div class="desk-v1-where-source-plat">${esc(plat.word)}</div>
-      ${pub ? `<div class="desk-v1-where-source-reason" data-where-reason>Not connected${pub.reason ? `: ${esc(pub.reason)}` : ''}</div>` : ''}
-      <button type="button" class="desk-v1-where-connect" data-where-connect>Connect ›</button>
-    </div>`;
-  }
-
-  // A read-only account: same card shape as an off source, worded as Connections words it
-  // ("Read only"), with no Connect button and no drag handle: it is not a place to post.
-  function _readOnlySourceHTML(ch) {
-    const plat = _platform(ch);
-    return `<div class="desk-v1-where-source desk-v1-where-source-off" data-where-source-readonly data-channel-id="${esc(ch.id)}" data-platform="${esc(ch.platform)}" title="The Desk reads this account and does not publish there">
-      <span class="desk-v1-where-avatar desk-v1-where-avatar-off" aria-hidden="true"><span class="desk-v1-where-avatar-letter">?</span><span class="desk-v1-where-avatar-badge" data-platform="${esc(ch.platform)}">${esc(plat.glyph)}</span></span>
-      <div class="desk-v1-where-source-handle">${esc(ch.identity)}</div>
-      <div class="desk-v1-where-source-plat">${esc(plat.word)}</div>
-      <div class="desk-v1-where-source-reason" data-where-readonly>Read only</div>
-    </div>`;
-  }
+  // The three tile shapes live in desk-v1-where-tiles.js.
+  function _sourceHTML(camp, ch) { return window.DeskV1WhereTiles.sourceHTML(ch, _platform(ch), (camp.plan.accounts || []).includes(ch.id)); }
+  function _offSourceHTML(ch) { return window.DeskV1WhereTiles.offHTML(ch, _platform(ch)); }
+  function _readOnlySourceHTML(ch) { return window.DeskV1WhereTiles.readOnlyHTML(ch, _platform(ch)); }
 
   // R2-6's Suggest task can leave `how.suggested.where = {channelId, label}`:
   // shown here as a `? suggested` strip (the agent proposes, the user accepts —

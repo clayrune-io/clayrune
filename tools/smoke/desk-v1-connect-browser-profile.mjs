@@ -31,13 +31,20 @@ try {
   await page.goto(origin);await page.waitForFunction(()=>window.ready);
   await page.evaluate(info=>{
    window.calls=[];window.openBrowserPane=(...args)=>calls.push(args);
-   window.humanProofFetch=async(url,opts)=>{window.saved={url,body:JSON.parse(opts.body)};return {ok:true,body:{ok:true,connection_id:'svc-example',browser_profile:saved.body.draft.browser_profile,profile_state:'new',name:saved.body.draft.name,url:saved.body.draft.url}};};
+   window.humanProofFetch=async(url,opts)=>{window.saved={url,body:JSON.parse(opts.body)};return {ok:true,body:{ok:true,kind:info.service.makes_account?'account':undefined,connection_id:'svc-example',browser_profile:saved.body.draft.browser_profile,profile_state:'new',name:saved.body.draft.name,url:saved.body.draft.url}};};
    const ctx={live:true,channels:()=>[],api:async(method,url)=>url==='/api/browser/profiles'?{profiles:[{name:'main'}]}:{},repaint:()=>{const r=document.querySelector('#root');r.innerHTML=DeskV1ConnectWizard.html(ctx);DeskV1ConnectWizard.bind(r,ctx);}};
    DeskV1ConnectWizard.resume(info,{service:info.service.id || info.host,type:'signin',variant:'browser-profile'},'setup');ctx.repaint();
   },types[service]);
   assert.equal(await page.inputValue('[data-bp-profile]'),types[service].picker.flatMap(t=>t.variants).find(v=>v.id==='browser-profile').setup.default_profile);
   const profile=service==='example.com' && width===390?'a.'+'b'.repeat(62):'main';
   await page.fill('[data-bp-profile]',profile);
+  const makesAccount=types[service].service.makes_account===true;
+  if(makesAccount){ // a pane-only site is saved as an ACCOUNT: the name box is its handle and starts empty
+   assert.equal(await page.inputValue('[data-bp-name]'),'');
+   assert.match(await page.locator('label:has([data-bp-name])').textContent(),/Account handle/);
+   assert.equal(await page.locator('[data-cfw-primary]').isDisabled(),true);
+   await page.fill('[data-bp-name]','@clayrune');
+  }
   assert.equal(await page.locator('[data-cfw-title]').textContent(),'Connection details');
   await page.screenshot({path:resolve(shots,`generic-${service}-${width}.png`),fullPage:true});
   await page.click('[data-cfw-primary]');assert.equal(await page.locator('[data-cfw-title]').textContent(),'Permissions');
@@ -50,6 +57,7 @@ try {
   assert.equal(saved.url,'/api/desk/connect/browser-profile/commit');
   assert.deepEqual(Object.keys(saved.body.draft).sort(),['browser_profile','name','url']);
   assert.equal(saved.body.draft.browser_profile,profile);
+  if(makesAccount){assert.equal(saved.body.draft.name,'@clayrune');assert.match(await page.locator('[data-cfw-step="result"]').textContent(),/Added as an account/);}
   assert.equal(await page.locator('[data-sum-verified="yes"]').count(),0);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   assert.deepEqual(errors,[]);await page.close();
