@@ -709,13 +709,14 @@ def update_project(project_id):
     if refusal is not None:
         return refusal
 
-    refusal = require_human_routing_write(data)
-    if refusal is not None:
-        return refusal
-    data.pop('passcode', None)  # request proof must never become project data
-
     filepath = DATA_DIR / f'{project_id}.json'
     is_new = not filepath.exists()
+    refusal = require_human_routing_write(data, is_new=is_new)
+    if refusal is not None:
+        return refusal
+    routing_data = data.copy()  # retain request-only proof for the concurrent-create recheck
+    data.pop('passcode', None)  # request proof must never become project data
+
     existing = json.loads(filepath.read_text(encoding='utf-8')) if not is_new else {'id': project_id}
     existing.setdefault('backlog', [])
 
@@ -825,6 +826,10 @@ def update_project(project_id):
             # committed while this request was validating. Only the first
             # creator performs the generation transition.
             if filepath.exists():
+                # A creation exception must not authorize an existing-record edit.
+                refusal = require_human_routing_write(routing_data, is_new=False)
+                if refusal is not None:
+                    return refusal
                 is_new = False
                 existing = json.loads(filepath.read_text(encoding='utf-8'))
                 existing.setdefault('backlog', [])

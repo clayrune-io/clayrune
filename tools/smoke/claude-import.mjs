@@ -99,7 +99,7 @@ async function scenario(name, { width, scan, refuse = {}, setupDone = false }, r
     if (m && req.method() === 'POST') {
       const body = JSON.parse(req.postData() || '{}');
       created.push({ id: decodeURIComponent(m[1]), body });
-      if (body.passcode !== 'import-smoke-proof') return json(route, { error: 'bad_passcode' }, 403);
+      check(!('passcode' in body), 'import sends no passcode', 'unexpected proof in import body');
       if (refuse[body.project_path]) return json(route, { error: refuse[body.project_path] }, 409);
       return json(route, { ok: true, id: decodeURIComponent(m[1]) });
     }
@@ -143,17 +143,6 @@ const modalRows = (page) => page.evaluate(() => Array.from(document.querySelecto
 const addLabel = (page) => page.evaluate(() => (document.querySelector('#claude-import-root .ci-actions button') || {}).textContent || null);
 const overflowX = (page, sel) => page.evaluate((s) => { const e = document.querySelector(s); return e ? e.scrollWidth - e.clientWidth : -1; }, sel);
 
-async function approveImports(page, count) {
-  for (let i = 0; i < count; i++) {
-    await page.waitForSelector('[data-modal-id^="__human-proof-"]');
-    const id = await page.locator('[data-modal-id^="__human-proof-"]').getAttribute('data-modal-id');
-    const prompt = page.locator(`[data-modal-id="${id}"]`);
-    await prompt.locator('[id^="hp-passcode-"]').fill('import-smoke-proof');
-    await prompt.locator('.btn-add').click();
-    await prompt.waitFor({ state: 'detached' });
-  }
-}
-
 try {
   browser = await chromium.launch();
 
@@ -184,8 +173,9 @@ try {
       if (width < 600) check(await overflowX(page, '#setup-overlay .wt-card') <= 1, 'card does not scroll sideways at 390', `card overflowX=${await overflowX(page, '#setup-overlay .wt-card')}`);
 
       await page.click('#claude-import-root .ci-actions button');
-      await approveImports(page, 5);
       await page.waitForSelector('#claude-import-root .ci-results');
+      check(await page.locator('[data-modal-id^="__human-proof-"]').count() === 0,
+        'wizard imports without a passcode prompt', 'wizard import prompted for proof');
       check(created.length === 5, 'one POST per ticked project', `POSTs: ${created.map(c => c.id)}`);
       const want = ['mission_control', 'dotfiles', 'resume_site', 'trading_bot', 'my_notes'];
       check(created.map(c => c.id).join() === want.join(), 'POSTs go to /api/project/<suggested id>', `ids: ${created.map(c => c.id)}`);
@@ -228,8 +218,9 @@ try {
       if (width < 600) check(await overflowX(page, '[data-modal-id="__claude_import"] .modal-content') <= 1, 'modal does not scroll sideways at 390', 'modal overflows sideways');
       await shot(page, `claude-import-modal-${tag}-${width}.png`);
       await page.click('[data-modal-id="__claude_import"] .ci-actions button');
-      await approveImports(page, 5);
       await page.waitForSelector('[data-modal-id="__claude_import"] .ci-results');
+      check(await page.locator('[data-modal-id^="__human-proof-"]').count() === 0,
+        'standalone imports without a passcode prompt', 'standalone import prompted for proof');
       check(created.length === 5, 'modal Add creates the 5 ticked projects through the same endpoint', `POSTs: ${created.length}`);
     });
   }

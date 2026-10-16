@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-16] - Create and import projects without a passcode (MC-1080 follow-up)
+
+- Create Project and Claude project import no longer prompt for the dashboard passcode. New browser-origin project records skip proof; agents submitting `id` or `project_path` still receive 403. Existing-project routing edits, including concurrent-create collisions, keep their proof check.
+- Typed and Browse workspace changes retain their passcode prompts. Request proof is never saved. Ron accepted the creation-only forged-Origin residual risk on 2026-10-16; the install-directory refusal remains. Contract: `docs/PROJECT_ROUTING_GUARD.md`. Branch only; no merge, push or restart.
+
 ## [2026-10-16] - Pinned dev harness guidance delivery (MC-960, DH-M2)
 
 - Added selected immutable Addy source plans, transitive resource/notice hashes and byte-preserving project imports through the existing quarantine guard; no force override, optional providers or checker installation.

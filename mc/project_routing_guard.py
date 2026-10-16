@@ -10,11 +10,12 @@ from mc.blueprints.secrets_routes import _require_human_passcode
 PROJECT_ROUTING_KEYS = frozenset({'id', 'project_path'})
 
 
-def require_human_routing_write(data: dict) -> tuple[Response, int] | None:
+def require_human_routing_write(data: dict, *, is_new: bool = False) -> tuple[Response, int] | None:
     """Refuse before side effects; presence includes null and unchanged values.
 
     Caller attribution runs before the passcode check, so an attributed agent
     cannot use a forged Origin or even a valid passcode to change routing.
+    Human creation skips proof; existing records still require it.
     The route must discard the proof before persisting its body.
     """
     keys = sorted(PROJECT_ROUTING_KEYS.intersection(data))
@@ -27,4 +28,4 @@ def require_human_routing_write(data: dict) -> tuple[Response, int] | None:
                       'Use the Clayrune UI.'),
             'protected_keys': keys,
         }), 403
-    return _require_human_passcode(data)
+    return None if is_new else _require_human_passcode(data)

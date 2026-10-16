@@ -16,7 +16,7 @@ When asking a human to unlock the vault, include `http://<dashboard-host>:<port>
 | Verb | Path | Purpose |
 |---|---|---|
 | GET | `/api/projects` | List all projects + state (live_agent, last_updated, …). |
-| POST | `/api/project/<project_id>` | Create or update a project. Body is the project dict. Agent writes of `id` or `project_path` are refused (403); human writes containing either field require browser Origin and the dashboard `passcode` in the body. Proof is discarded, never saved. Ordinary agent fields remain writable. |
+| POST | `/api/project/<project_id>` | Create or update a project. Body is the project dict. Agent writes of `id` or `project_path` are refused (403), including creation. Human writes containing either field require browser Origin; creation needs no passcode, while existing-record writes still require the dashboard `passcode` in the body. Proof is discarded, never saved. Ordinary agent fields remain writable. |
 | DELETE | `/api/project/<project_id>` | Delete a project (records only; not the workspace). |
 | POST | `/api/project/<project_id>/generate_summary` | Re-generate the project's one-line summary from recent activity. |
 | GET | `/api/project/<project_id>/scribe-stats` | Memory-Scribe telemetry: extracted/checkpoint/skipped counters. |

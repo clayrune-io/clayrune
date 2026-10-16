@@ -845,13 +845,12 @@ async function createProject() {
   if (!id || !name) { alert('Name and ID are required'); return; }
   if (allProjects.find(p => p.id === id)) { alert('A project with this ID already exists'); return; }
   try {
-    const res = await humanProofFetch(API_BASE + `/api/project/${encodeURIComponent(id)}`, {
+    const res = await fetch(API_BASE + `/api/project/${encodeURIComponent(id)}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ name, domain, status: 'active', project_path: path })
-    }, { title: 'Create project', description: 'Re-enter your dashboard passcode to create this project and choose its workspace.' });
-    if (res === null) return;
-    const data = res.body;
+    });
+    const data = await res.json();
     if (!res.ok || !data.ok) { alert(data.error || 'Failed to create project'); return; }
     newProjDomain = 'general';
     closeModalById('__new_project');

@@ -55,10 +55,11 @@ async function scenario(width) {
     if (m && req.method() === 'POST') {
       const body = JSON.parse(req.postData()), id = decodeURIComponent(m[1]);
       calls.push({ id, body });
-      if (body.passcode !== PROOF) return json({ error: 'bad_passcode' }, 403);
+      let p = projects.find(p => p.id === id);
+      if (p && body.passcode !== PROOF) return json({ error: 'bad_passcode' }, 403);
+      if (!p) assert.equal('passcode' in body, false, 'creation sends no proof');
       if (body.project_path === refusePath && refusePath) return json({ error: 'Workspace test refusal' }, 409);
       accepted.push({ id, body });
-      let p = projects.find(p => p.id === id);
       if (!p) { p = { ...BASE, id }; projects.push(p); }
       const { passcode, ...fields } = body;
       Object.assign(p, fields);
@@ -91,7 +92,8 @@ async function scenario(width) {
     await page.locator('#new-proj-id').fill(id);
     await page.locator('#new-proj-path').fill(path);
     await page.locator('[data-modal-id="__new_project"] button[onclick="createProject()"]').click();
-    await prompt();
+    await page.waitForFunction(() => !document.querySelector('[data-modal-id="__new_project"]'));
+    assert.equal(await page.locator('[data-modal-id^="__human-proof-"]').count(), 0, 'Create has no passcode prompt');
   };
 
   try {
@@ -99,51 +101,44 @@ async function scenario(width) {
     await page.waitForFunction(() => allProjects.some(p => p.id === 'smoke_alpha'));
 
     await startCreate('human_create', '/smoke/create');
-    assert.equal(calls.length, 0, 'opening Create sends no routing write');
-    await cancel();
-    assert.equal(calls.length, 0, 'cancel Create sends no write');
-    assert.equal(await page.locator('#new-proj-path').inputValue(), '/smoke/create', 'Create draft preserved');
-    await page.locator('[data-modal-id="__new_project"] button[onclick="createProject()"]').click();
-    await approve('wrong-proof');
-    assert.equal(accepted.length, 0, 'wrong passcode cannot create');
-    const wrongPrompt = await prompt();
-    assert.match(await wrongPrompt.textContent(), /passcode|correct/i);
-    assert.equal(await wrongPrompt.locator('[id^="hp-passcode-"]').inputValue(), '', 'wrong proof cleared');
-    await approve();
-    await page.waitForFunction(() => !document.querySelector('[data-modal-id="__new_project"]'));
+    assert.equal(calls.length, 1, 'Create sends one routing write without proof');
     assert.equal(accepted[0].id, 'human_create');
     assert.equal(accepted[0].body.project_path, '/smoke/create');
     assert.equal(accepted[0].body.name, 'human_create');
     assert.equal(accepted[0].body.status, 'active');
-    console.log(`PASS Create cancel/wrong/correct with draft and original body @${width}`);
+    console.log(`PASS Create without passcode, original body preserved @${width}`);
 
-    // Same form supports automatic folder creation, and the existing first-use
-    // passcode setup is reachable by a real human click on a fresh install.
+    // Creation works on a fresh install without triggering passcode setup.
     configured = false;
     await startCreate('human_auto', '');
-    const setup = await prompt();
-    await setup.locator('[id^="hp-new-"]').fill(PROOF);
-    await setup.locator('.btn-add').click();
-    await setup.locator('[id^="hp-passcode-"]').waitFor();
-    await setup.locator('.btn-add').click();
-    await setup.waitFor({ state: 'detached' });
     assert.equal(accepted.at(-1).body.project_path, '');
-    console.log(`PASS Create blank workspace through first-use passcode setup @${width}`);
+    console.log(`PASS Create blank workspace without configured passcode @${width}`);
 
     await page.evaluate(() => window.openProjectProfileDialog('smoke_alpha'));
     const input = page.locator('#pfd-path');
     await input.fill('/smoke/typed');
     await input.press('Enter');
+    // Existing workspace changes retain the first-use setup and proof gates.
+    const setup = await prompt();
+    await setup.locator('[id^="hp-new-"]').fill(PROOF);
+    await setup.locator('.btn-add').click();
+    await setup.locator('[id^="hp-passcode-"]').waitFor();
     const beforeEdit = calls.length;
     await cancel();
     assert.equal(calls.length, beforeEdit, 'cancel typed edit sends no write');
     assert.equal(await input.inputValue(), '/smoke/original', 'cancel typed edit restores saved folder');
     await input.fill('/smoke/typed');
     await input.press('Enter');
+    const beforeWrong = accepted.length;
+    await approve('wrong-proof');
+    assert.equal(accepted.length, beforeWrong, 'wrong passcode cannot change workspace');
+    const wrongPrompt = await prompt();
+    assert.match(await wrongPrompt.textContent(), /passcode|correct/i);
+    assert.equal(await wrongPrompt.locator('[id^="hp-passcode-"]').inputValue(), '', 'wrong proof cleared');
     await approve();
     await page.waitForFunction(() => allProjects.find(p => p.id === 'smoke_alpha')?.project_path === '/smoke/typed');
     assert.deepEqual(accepted.at(-1).body, { project_path: '/smoke/typed', passcode: PROOF });
-    console.log(`PASS typed workspace Edit cancel/correct @${width}`);
+    console.log(`PASS typed workspace Edit setup/cancel/wrong/correct @${width}`);
 
     await page.evaluate(() => window.openFolderPicker('smoke_alpha', { startPath: '/smoke/picked' }));
     await page.waitForFunction(() => document.getElementById('fp-path-input')?.value === '/smoke/picked');
@@ -167,20 +162,17 @@ async function scenario(width) {
 
     await page.evaluate(() => window.openClaudeImport());
     await page.waitForSelector('[data-modal-id="__claude_import"] .ci-row');
-    await page.locator('[data-modal-id="__claude_import"] .ci-actions button').click();
+    refusePath = '/smoke/import-b';
     const beforeImport = calls.length;
-    await cancel();
-    assert.equal(calls.length, beforeImport, 'cancel import sends no write');
-    await page.waitForSelector('[data-modal-id="__claude_import"] .ci-row input:checked');
     await page.locator('[data-modal-id="__claude_import"] .ci-actions button').click();
-    await approve();
-    await cancel(); // cancel second project after first succeeds
     await page.waitForSelector('[data-modal-id="__claude_import"] .ci-results');
+    assert.equal(calls.length, beforeImport + 2, 'both selected imports sent without proof');
+    assert.equal(await page.locator('[data-modal-id^="__human-proof-"]').count(), 0, 'Import has no passcode prompt');
     assert.equal(accepted.at(-1).id, 'import_a');
     assert.equal(accepted.at(-1).body.project_path, '/smoke/import-a');
     assert.equal(await page.locator('[data-modal-id="__claude_import"] .ci-row').count(), 1);
     assert.equal(await page.locator('[data-modal-id="__claude_import"] .ci-row input:checked').count(), 1);
-    console.log(`PASS Import cancel/partial-success preserves remaining selection @${width}`);
+    console.log(`PASS Import without passcode, partial failure preserves remaining selection @${width}`);
     assert.equal(alerts.length, 0, `unexpected alerts: ${alerts}`);
     assert.deepEqual(errors, [], 'no page errors');
   } finally { await ctx.close(); }
