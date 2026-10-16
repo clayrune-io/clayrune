@@ -87,9 +87,11 @@ for (const f of files) {
   const handlerRe = /\bon[a-z]+\s*=\s*(["'])([\s\S]*?)\1/gi;
   let m;
   while ((m = handlerRe.exec(src))) {
-    const body = m[2].replace(/\$\{[\s\S]*?\}/g, ' ');   // drop template interpolations
+    const body = m[2]
+      .replace(/\$\{[\s\S]*?\}/g, ' ')                     // drop template interpolations
+      .replace(/(['"`])(?:\\.|(?!\1)[^\\])*\1/g, ' ');     // drop string literals ('name' is data, not a binding)
     const line = src.slice(0, m.index).split('\n').length;
-    const idRe = /[A-Za-z_$][\w$]*/g;
+    const idRe = /(?<![\w$.])[A-Za-z_$][\w$]*/g;          // skip member accesses like this.value
     let idm;
     const seen = new Set();
     while ((idm = idRe.exec(body))) {
