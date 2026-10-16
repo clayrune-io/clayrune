@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-16] - Reuse daily registry results for busy CLI retries (MC-1103)
+
+- Hourly `skipped_in_use` retries now retain the original daily registry timestamp and reuse its version answer until the next daily check. Successful updates, current versions and other statuses stop hourly retries; existing session/process guards remain unchanged.
+- The maintenance script's `--apply` joins the server's persisted retry cycle and auto-update setting, with explicit failure on an unavailable/older server. It retains local PATH-shadow diagnostics and does not sweep or interrupt processes. Contract: `docs/CLI_UPDATE_RETRIES.md`. Branch only; no real CLI updates, merge, push or restart.
+
 ## [2026-10-16] - Update standalone Qwen Code with its own installer (MC-1102)
 
 - Recognised Qwen's Windows and macOS/Linux standalone layouts using their package manifest. Both daily update paths select Qwen's official standalone installer with npm fallback disabled; npm installations keep npm and unknown methods remain report-only.

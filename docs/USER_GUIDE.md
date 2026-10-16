@@ -661,6 +661,20 @@ many projects open.
 
 ## Settings
 
+### Daily agent CLI updates
+
+Clayrune checks installed agent CLIs daily when **Settings → Providers →
+Keep agent CLIs up to date** is on (the default). If a CLI is in use, the check
+defers it and retries about hourly, without stopping sessions or processes.
+Retries reuse the last daily registry answer; the next daily check refreshes
+it. Once updated or already current, hourly retries stop. Other errors wait
+for the next daily check and remain visible on the provider row.
+
+The maintenance script's `--apply` option uses this same server-managed
+cycle and setting. It requires a running server with the CLI update endpoint;
+an unavailable or older server produces an error instead of a local install.
+Its report includes the last result and check time for CLIs not due yet.
+
 ### Updating Qwen Code
 
 Clayrune's daily CLI check can update Qwen Code with the same installation
