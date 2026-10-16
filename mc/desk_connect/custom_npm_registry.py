@@ -24,6 +24,7 @@ from mc.desk_connect.mcp_errors import ActivationError
 
 ACCEPT = 'application/vnd.npm.install-v1+json'
 MAX_DOCUMENT = 16 * 1024 * 1024
+MAX_DOCUMENT_NODES = 500_000
 MAX_VERSIONS = 20000
 FETCH_S = 30.0
 
@@ -37,7 +38,12 @@ def fetch(name: str, *, fetch_fn=None) -> dict:
     Raises ActivationError (`dependency_unavailable`, `registry_mismatch`, ...)."""
     try:
         raw = (fetch_fn or _sources.http_get)(document_url(name), FETCH_S, MAX_DOCUMENT, accept=ACCEPT)
-        doc = _sources._json(raw)
+        # Version lists grow with every release. These bounds belong only to
+        # the fixed npm registry, never to pasted configuration or page evidence.
+        doc = _pp.load_json(raw, allow_dupes=True, max_bytes=MAX_DOCUMENT,
+                            max_nodes=MAX_DOCUMENT_NODES)
+        if not isinstance(doc, dict):
+            raise _sources.SourceError('source_not_json')
     except _sources.SourceError as e:
         status = 404 if e.code == 'source_not_found' else 502
         code = 'dependency_not_found' if e.code == 'source_not_found' else 'dependency_unavailable'

@@ -813,6 +813,7 @@ function _claimAgentOutputEvent(sessionId, msg) {
 }
 
 function connectAgentStream(projectId, sessionId) {
+  if (window.deferAgentStream?.(projectId)) return;
   // A popped-out chat window (index.html `window.__mcPopout`) holds ONE live
   // stream — its own conversation. The 15s running-session poll and other
   // paths call this for every running session in agentHistory; letting them

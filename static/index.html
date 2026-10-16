@@ -2468,6 +2468,7 @@ function refreshModalById(modalId) {
       }
     }
   }
+  window.restoreReportsWaiting?.(content);
   // Observe non-chat panel children (status bar, tab bar, etc.) so
   // sizeAgentChat re-fires when the badge/timer text causes the status
   // row to wrap to a 2nd line during streaming. Without this, the

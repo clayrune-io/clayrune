@@ -112,6 +112,16 @@ def test_the_card_lists_every_dependency_with_exact_version_and_sha512_before_sa
     nothing_written(env)                                        # Review wrote nothing
 
 
+def test_review_accepts_a_large_dependency_packument(env):
+    root(env, {'zod': '^3.0.0'})
+    pub(env, 'zod', '3.0.1')
+    doc = env.reg.docs[registry.document_url('zod')]
+    doc['release_metadata'] = [0] * 25000  # npm's zod document exceeds the page evidence limit
+    card = card_of(env)
+    assert dep_names(card) == {('zod', '3.0.1', 'node_modules/zod')}
+    nothing_written(env)
+
+
 def test_the_operation_holds_exact_versions_and_digests_never_a_range_and_is_fingerprinted(env):
     root(env, {'alpha': '^1.0.0'})
     pub(env, 'alpha', '1.3.0')

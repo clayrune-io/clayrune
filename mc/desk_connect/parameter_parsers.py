@@ -74,32 +74,33 @@ def _no_dupes(pairs):
     return d
 
 
-def load_json(text, *, allow_dupes: bool = False):
+def load_json(text, *, allow_dupes: bool = False, max_bytes: int = MAX_JSON_BYTES,
+              max_nodes: int = MAX_NODES):
     """The JSON value in `text`, or None. Oversized, malformed, over-deep or over-wide
     input yields None; a duplicate key is refused unless `allow_dupes` (registry
     documents sometimes repeat a key; a person's pasted configuration must not)."""
     if isinstance(text, (bytes, bytearray)):
-        if len(text) > MAX_JSON_BYTES:
+        if len(text) > max_bytes:
             return None
         try:
             text = bytes(text).decode('utf-8')
         except UnicodeDecodeError:
             return None
-    if not isinstance(text, str) or len(text) > MAX_JSON_BYTES:
+    if not isinstance(text, str) or len(text) > max_bytes:
         return None
     try:
         data = json.loads(text) if allow_dupes else json.loads(text, object_pairs_hook=_no_dupes)
     except (ValueError, RecursionError):
         return None
-    return data if _within_bounds(data) else None
+    return data if _within_bounds(data, max_nodes=max_nodes) else None
 
 
-def _within_bounds(data) -> bool:
+def _within_bounds(data, *, max_nodes: int = MAX_NODES) -> bool:
     stack, nodes = [(data, 1)], 0
     while stack:
         node, depth = stack.pop()
         nodes += 1
-        if nodes > MAX_NODES or depth > MAX_DEPTH:
+        if nodes > max_nodes or depth > MAX_DEPTH:
             return False
         if isinstance(node, dict):
             stack.extend((v, depth + 1) for v in node.values())

@@ -221,6 +221,8 @@ strip is hidden.
 
 ## Agent dispatch
 
+A dispatched child's chat shows **Dispatched by** above the thread when Clayrune has a recorded dispatcher. This includes completed chats reopened from the conversation rail. If the parent is no longer loaded, the notice identifies its session; an old chat with no recorded lineage has no banner.
+
 **Unlocking a guarded chat:** a dispatched or scheduled chat shows **Guarded**
 with an **Unlock** button. Re-enter your dashboard passcode to choose **Allow
 once** (the next eligible blocked action, expiring after 10 minutes if unused)
@@ -689,6 +691,10 @@ many projects open.
 ---
 
 ## Settings
+
+### Installed App updates
+
+**Settings > System > Installed App > Force update service worker** checks for a new worker and reloads when one activates. It briefly pauses this tab's live chat streams; agents keep running. An unchanged worker shows **Already up to date** and streams reconnect. A check blocked for 12 seconds shows a timeout and enables retry; closing other Clayrune tabs can free browser connection slots.
 
 ### Daily agent CLI updates
 

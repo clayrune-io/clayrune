@@ -1,6 +1,7 @@
 // ── Agent Panel ─────────────────────────────────────────────────────────────
 
 import { openAttendUnlockDialog } from './attend-unlock-dialog.js';
+import { historySpawner } from './conversation-lineage.js';
 
 // Tag agent-bound POST bodies with client="mobile" when the viewport is
 // phone-sized. The backend then decides — based on mobile_brief_replies_enabled
@@ -3908,6 +3909,7 @@ async function openConversation(projectId, csid, mcSessionId, isLive) {
         agentStatusCache[mcSessionId] = {
           status: 'completed', task: rd.task || '', projectId,
           startedAt: rd.started_at || '', claudeSessionId: rd.claude_session_id || csid || '',
+          spawnedBySessionId: rd.spawned_by_session_id || '',
           _readOnlyRevived: true,
         };
         agentOutputBuffers[mcSessionId] = rd.log_lines || [];
@@ -3968,6 +3970,7 @@ async function _openConversationByCsid(projectId, csid) {
       agentStatusCache[csid] = {
         status: 'completed', task: rd.task || '', projectId,
         startedAt: rd.started_at || '', claudeSessionId: csid,
+        spawnedBySessionId: rd.spawned_by_session_id || '',
         _readOnlyRevived: true,
       };
       agentOutputBuffers[csid] = rd.log_lines || [];
@@ -4356,6 +4359,7 @@ async function _resolveConversationSid(projectId, csid, mcSessionId, isLive) {
         agentStatusCache[mcSessionId] = {
           status: 'completed', task: rd.task || '', projectId,
           startedAt: rd.started_at || '', claudeSessionId: rd.claude_session_id || csid || '',
+          spawnedBySessionId: rd.spawned_by_session_id || '',
           _readOnlyRevived: true,
         };
         agentOutputBuffers[mcSessionId] = rd.log_lines || [];
@@ -4392,6 +4396,7 @@ async function _resolveConversationSid(projectId, csid, mcSessionId, isLive) {
       agentStatusCache[csid] = {
         status: 'completed', task: rd.task || '', projectId,
         startedAt: rd.started_at || '', claudeSessionId: csid,
+        spawnedBySessionId: rd.spawned_by_session_id || '',
         _readOnlyRevived: true,
       };
       agentOutputBuffers[csid] = rd.log_lines || [];
@@ -4875,7 +4880,7 @@ window._renderForkNotice = _renderForkNotice;
 // if nameless, notice rather than silence.
 function _dispatchedByBannerHTML(sessionId) {
   const c = agentStatusCache[sessionId] || {};
-  const parentId = c.spawnedBySessionId || '';
+  const parentId = historySpawner(sessionId, c, conversationsCache[c.projectId]);
   if (!parentId) return '';
   const parent = agentStatusCache[parentId];
   const pChar = parent && parent.character;
@@ -6044,6 +6049,7 @@ async function fetchAgentStatus(projectId) {
       // consumes it now. To bring the nudge back, render it somewhere
       // non-intrusive (e.g. an inline session-panel hint) rather than a toast.
       agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, contextTokens: (typeof s.context_tokens === 'number' ? s.context_tokens : null), contextWindow: (typeof s.context_window === 'number' ? s.context_window : null), hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', providerSessionId: s.provider_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, identity: s.identity || null, pinned: !!s.pinned, activeSubagents: s.active_subagents || [], liveCopies: s.live_copies || [], cwdMovedFrom: s.cwd_moved_from || '', processAlive: !!s.process_alive, spawnedBySessionId: s.spawned_by_session_id || '', attendOncePass: s.attend_once_pass || null };
+      agentStatusCache[sid].reportsWaiting = s.reports_waiting || [];
       window.paintBgWait?.(sid, s.bg_wait || '');   // MC-946 (bg-wait-status.js)
       window.paintReportsWaiting?.(sid, s.reports_waiting || []);   // MC-1063 (report-waiting.js)
       // MC-937 Phase 4 (frontend): patch this session's nested subagent

@@ -1,5 +1,21 @@
 # Clayrune — Changelog
 
+## [2026-10-16] - Show recorded dispatch lineage in completed chats (MC-1033)
+
+- Reconstructed history now carries the same durable dispatcher as the conversation list, including children outside its first page and transcript-keyed history twins. The banner also reads recorded conversation metadata when available. Unrecorded lineage stays blank; callback recipients do not become dispatchers.
+
+## [2026-10-16] - Complete service-worker updates with agent streams open (MC-713)
+
+- Force update briefly pauses this tab's agent streams to free browser connection slots. Unchanged workers show a toast and resume streams; changed workers activate and reload. Blocked checks time out after 12 seconds with retry guidance and an enabled button.
+
+## [2026-10-16] - Keep queued report notices through chat rebuilds (MC-1063)
+
+- Parent chats restore their report-waiting notice from cached server status after modal rebuilds, including both split panes. Opening the chat before or after dispatch retains the notice; delivery clears it.
+
+## [2026-10-16] - Read large npm dependency version lists (MC-1048)
+
+- Desk package Review accepts bounded registry metadata up to 16 MiB and 500,000 JSON nodes, so packages depending on zod resolve. Page and pasted configuration limits remain 2 MB / 20,000 nodes; depth and dependency-tree limits remain in force.
+
 > Renamed from "Mission Control" 2026-05-01; the GitHub repo was renamed
 > `mission-control` → `clayrune` 2026-06-09 (in-repo URLs updated; GitHub
 > redirects the old path). Backend identifiers (`mc_remote`, `MC_*` env vars,

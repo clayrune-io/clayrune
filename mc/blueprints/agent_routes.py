@@ -15415,6 +15415,9 @@ def reconstruct_dead_session(project_id, session_id):
     # A live session should go through /agent/status, not here.
     if session_id in agent_sessions:
         return jsonify({'error': 'session is live'}), 409
+    history_rows = _load_agent_log(project_id)
+    by_sid = {e.get('session_id'): e for e in sorted(history_rows, key=lambda e: e.get('ts', ''))}
+    lineage = _row_spawned_by(by_sid.get(session_id), {}, by_sid)
     if _conversation_cutover is not None:
         canonical_lines = _conversation_cutover.display_lines(project_id, session_id)
         if canonical_lines:
@@ -15424,8 +15427,9 @@ def reconstruct_dead_session(project_id, session_id):
                 'session_id': session_id, 'claude_session_id': '',
                 'task': '', 'started_at': '', 'log_lines': lines,
                 'read_only': True, 'resumable': False, 'canonical': True,
+                'spawned_by_session_id': lineage,
             })
-    entries = [e for e in _load_agent_log(project_id) if e.get('session_id') == session_id]
+    entries = [e for e in history_rows if e.get('session_id') == session_id]
     if not entries:
         return jsonify({'error': 'session not in agent log'}), 404
     entries.sort(key=lambda e: e.get('ts', ''))
@@ -15442,6 +15446,7 @@ def reconstruct_dead_session(project_id, session_id):
         return jsonify({
             'session_id': session_id,
             'claude_session_id': claude_sid,
+            'spawned_by_session_id': lineage,
             'task': entry.get('task', ''),
             'started_at': entry.get('timestamp', '') or entry.get('started_at', ''),
             'log_lines': lines,
@@ -15522,6 +15527,7 @@ def reconstruct_dead_session(project_id, session_id):
                 'session_id': session_id,
                 'claude_session_id': '',
                 'provider_session_id': psid,
+                'spawned_by_session_id': lineage,
                 'task': entries[0].get('task', ''),
                 'started_at': entries[0].get('started_at', '') or entries[0].get('ts', ''),
                 'log_lines': lines,
@@ -15560,6 +15566,7 @@ def reconstruct_dead_session(project_id, session_id):
         'read_only': True,
         'resumable': False,
         'provider': provider,
+        'spawned_by_session_id': lineage,
     })
 
 
@@ -15593,9 +15600,14 @@ def reconstruct_from_transcript(project_id, claude_session_id):
     if not lines:
         return jsonify({'error': 'transcript not found or empty'}), 404
     lines.append('[— read-only history; send a message to resume this session —]')
+    history_rows = _load_agent_log(project_id)
+    by_sid = {e.get('session_id'): e for e in sorted(history_rows, key=lambda e: e.get('ts', ''))}
+    matching = [e for e in history_rows if e.get('claude_session_id') == claude_session_id]
+    latest = max(matching, key=lambda e: e.get('ts', ''), default=None)
     return jsonify({
         'session_id': '',
         'claude_session_id': claude_session_id,
+        'spawned_by_session_id': _row_spawned_by(latest, {}, by_sid),
         'task': '',
         'started_at': '',
         'log_lines': lines,

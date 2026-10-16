@@ -44,3 +44,12 @@ function paintReportsWaiting(sessionId, reports) {
 }
 // ES-module cross-boundary rule: conversation.js reaches this via window.
 window.paintReportsWaiting = paintReportsWaiting;
+
+// Modal rebuilds preserve the transcript node, but replace its surrounding
+// notices. Restore both chat panes from the last authoritative status poll.
+window.restoreReportsWaiting = function(root) {
+  root.querySelectorAll('[id^="agent-output-"]').forEach(out => {
+    const sid = out.id.slice('agent-output-'.length);
+    paintReportsWaiting(sid, (agentStatusCache[sid] || {}).reportsWaiting);
+  });
+};
