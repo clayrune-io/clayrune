@@ -11,6 +11,14 @@ from mc.blueprints import browser_routes as br
 from tests.test_browser_agent_read_hidden import (live_pane, _wait, _pane_href, _raw_page_targets)  # noqa: F401
 
 
+@pytest.fixture(autouse=True)
+def _own_port(monkeypatch):
+    # The own-origin guard reads br._SERVER_PORT, which importing server.py
+    # under the test config wires to MC_PORT=0; pin it so localhost:5199
+    # stays "own origin" whatever ran first.
+    monkeypatch.setattr(br, '_SERVER_PORT', 5199)
+
+
 @pytest.fixture
 def client():
     app = Flask(__name__)
