@@ -773,6 +773,26 @@ def is_valid_git_url(url: str) -> bool:
     return bool(_GIT_URL_RE.match(url) or _GH_TREE_RE.match(url))
 
 
+def import_preserved_project_tree(src: Path, target: Path, project_root: Path) -> None:
+    """Guard a DH-M2 resource closure and copy original bytes without renaming.
+
+    This project-only variant retains repository-relative shared resources.
+    It has no force/builtin/overwrite option and never installs plugin hooks.
+    """
+    allowed = project_root.resolve() / '.clayrune' / 'dev-harness' / 'guidance'
+    if target.parent.resolve() != allowed.resolve() or not re.fullmatch(r'[0-9a-f]{64}', target.name):
+        raise ValueError('Guidance destination must be an owned project artifact')
+    _guard.scan_and_gate(src, tier='community', force=False, source_label='dev-harness:Addy-pinned')
+    if target.exists():
+        before = {p.relative_to(src).as_posix(): p.read_bytes() for p in src.rglob('*') if p.is_file()}
+        after = {p.relative_to(target).as_posix(): p.read_bytes() for p in target.rglob('*') if p.is_file()}
+        if before != after:
+            raise FileExistsError('Guidance destination differs; preserve it and inspect a new plan')
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, target)
+
+
 def normalize_git_url(url: str) -> dict[str, Any]:
     """Translate a Git URL (or a GitHub web tree/blob URL) into the parts we need.
 
@@ -828,8 +848,11 @@ def git_clone_to_staging(url: str, ref: str | None = None, timeout: int = 60) ->
     staging_id = uuid.uuid4().hex[:12]
     staging_path = STAGING_SKILLS_DIR / staging_id
 
+    immutable_ref = bool(effective_ref and re.fullmatch(r'[0-9a-f]{40}', effective_ref))
     cmd = ['git', 'clone', '--depth', '1']
-    if effective_ref:
+    if immutable_ref:
+        cmd += ['--config', 'core.autocrlf=false']
+    if effective_ref and not immutable_ref:
         cmd += ['--branch', effective_ref]
     # `--` terminates option parsing so a hostile URL/ref can't smuggle a git
     # flag (e.g. --upload-pack=…) into the positional slots.
@@ -853,6 +876,32 @@ def git_clone_to_staging(url: str, ref: str | None = None, timeout: int = 60) ->
         shutil.rmtree(staging_path, ignore_errors=True)
         stderr = (result.stderr or '').strip()[:500]
         raise RuntimeError(f'git clone failed: {stderr}')
+
+    # A commit SHA is not a branch name. Fetch and detach at the exact pin,
+    # then record the resolved identity before removing .git for the importer.
+    try:
+        if immutable_ref:
+            for args in (['fetch', '--depth', '1', 'origin', effective_ref],
+                         ['checkout', '--detach', 'FETCH_HEAD']):
+                subprocess.run(['git', '-C', str(staging_path), *args], check=True,
+                               capture_output=True, timeout=timeout)
+        head = subprocess.run(['git', '-C', str(staging_path), 'rev-parse', 'HEAD'],
+                              check=True, capture_output=True, text=True, timeout=timeout).stdout.strip()
+        if immutable_ref and head != effective_ref:
+            raise ValueError('Staged Git commit does not match the requested pin')
+        checkout_files = {}
+        if immutable_ref:
+            for path in staging_path.rglob('*'):
+                rel = path.relative_to(staging_path)
+                if '.git' in rel.parts:
+                    continue
+                if path.is_symlink() or getattr(path, 'is_junction', lambda: False)():
+                    raise ValueError('Pinned staging cannot contain linked resources')
+                if path.is_file():
+                    checkout_files[rel.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    except (subprocess.SubprocessError, OSError, ValueError) as exc:
+        shutil.rmtree(staging_path, ignore_errors=True)
+        raise RuntimeError('Could not verify staged Git commit') from exc
 
     # Strip the .git folder so the clone behaves like a plain copy of files
     git_meta = staging_path / '.git'
@@ -911,6 +960,9 @@ def git_clone_to_staging(url: str, ref: str | None = None, timeout: int = 60) ->
     # sidecar reflects what was ACTUALLY cloned, derived server-side from the
     # clone_url. install_from_staging / install_full_plugin read this back.
     (staging_path / _TRUST_TIER_SIDECAR).write_text(trust_tier, encoding='utf-8')
+    (staging_path / '.mc_git_source.json').write_text(json.dumps({
+        'clone_url': clone_url, 'commit': head, 'subpath': subpath,
+        'files': checkout_files}), encoding='utf-8')
 
     out = {
         'staging_id': staging_id,

@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-16] - Pinned dev harness guidance delivery (MC-960, DH-M2)
+
+- Added selected immutable Addy source plans, transitive resource/notice hashes and byte-preserving project imports through the existing quarantine guard; no force override, optional providers or checker installation.
+- Added human-approved install jobs using existing registration/completion delivery. Partial, quarantined or changed sources cannot satisfy Enforce activation or verified guidance delivery.
+- Full/lean/fresh/resume context fixtures for Claude, Codex, Gemini and Qwen preserve persona and active revision; cached resumes invalidate on policy/resource changes. Backend contract: `docs/DEV_HARNESS_GUIDANCE.md`. Real vendor delivery, upstream-pack compatibility and packaged/multi-platform probes remain required before MVP acceptance. Branch only; no merge, push, restart or live activation.
+
 ## [2026-10-16] - Picture viewer: folder previous/next restored (MC-1100 regression)
 
 - A chat picture that is the only image in its message again steps through every image in its folder (arrows, swipe, ArrowLeft/Right, filmstrip, counter), as before MC-1100. Chat/attachment opens ask `/api/serve-image/siblings` and widen to the folder when it lists 2+ files; failure, a single file or a `data:` src keeps the message scope. Media and Desk library lists keep their own scope. Contract: `docs/IMAGE_VIEWER.md`; smoke: `tools/smoke/image-viewer-folder.mjs`. Branch only; no merge, push or restart.

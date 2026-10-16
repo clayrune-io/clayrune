@@ -14,6 +14,7 @@ from mc.dev_harness_catalogue import load_catalogue
 from mc.dev_harness_policy import resolve_policy
 from mc.dev_harness_store import HarnessStore, RevisionConflict, StoreError
 from mc.project_safety_settings import is_agent_caller
+from mc import dev_harness_sources
 
 bp = Blueprint('dev_harness_routes', __name__)
 _store: HarnessStore | None = None
@@ -53,6 +54,27 @@ def catalogue(project_id: str):
     try:
         _project(project_id)
         return jsonify(load_catalogue())
+    except (ValueError, OSError, LookupError, StoreError) as exc:
+        return _error(exc)
+
+
+@bp.post('/api/project/<project_id>/dev-harness/install-plan')
+def install_plan(project_id: str):
+    try:
+        project, store = _project(project_id)
+        return dev_harness_sources.install_plan_request(project_id, store, project)
+    except (ValueError, OSError, LookupError, StoreError) as exc:
+        return _error(exc)
+
+
+@bp.post('/api/project/<project_id>/dev-harness/install')
+def install(project_id: str):
+    # Refuse before even resolving a project/reading an approved plan.
+    if is_agent_caller():
+        return jsonify({'error': 'Guidance installation is human-only'}), 403
+    try:
+        project, store = _project(project_id)
+        return dev_harness_sources.install_request(project_id, store, project)
     except (ValueError, OSError, LookupError, StoreError) as exc:
         return _error(exc)
 
@@ -104,12 +126,21 @@ def activate(project_id: str):
         revision, draft, mode = data.get('expected_revision'), data.get('draft'), data.get('mode')
         if type(revision) is not int or not isinstance(draft, dict) or not isinstance(mode, str):
             raise ValueError('Expected active revision, draft object and explicit mode')
-        _, store = _project(project_id)
+        project, store = _project(project_id)
+        catalogue_data = load_catalogue()
+        if mode == 'enforce':
+            if not isinstance(data.get('evidence_id'), str):
+                raise ValueError('Stored measured Preview evidence is required')
+            current = store.read(project_id)
+            if revision != (current['revision'] if current else 0):
+                raise RevisionConflict('Active revision changed; reload before activating')
+            dev_harness_sources.validate_activation(store, project,
+                resolve_policy(draft, catalogue_data), catalogue_data)
         result = store.activate(project_id, expected_revision=revision,
                                 draft=draft, mode=mode,
                                 evidence_id=data.get('evidence_id'),
                                 acknowledged_losses=data.get('acknowledged_losses'),
-                                catalogue=load_catalogue())
+                                catalogue=catalogue_data)
         return jsonify(result)
     except (ValueError, OSError, LookupError, StoreError) as exc:
         return _error(exc)
