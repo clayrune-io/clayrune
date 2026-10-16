@@ -408,7 +408,7 @@ def retarget_mcp(project: dict, wt: Path) -> bool:
 
 # ── Lifecycle ───────────────────────────────────────────────────────────────
 
-def create(project: dict, session_id: str, base_ref: str = 'HEAD'):
+def create(project: dict, session_id: str, base_ref: str = 'HEAD', *, isolated: bool = False):
     """Create an isolated worktree for one agent session.
 
     Returns (ok, path_or_error). Best-effort: on ANY failure the caller should
@@ -441,9 +441,11 @@ def create(project: dict, session_id: str, base_ref: str = 'HEAD'):
         if not have:
             _capture_loc_baseline(str(wt))
 
-        linked = link_runtime(project, wt)
-        retarget_mcp(project, wt)
-        _sync._ensure_gitignore_entry(base, '.clayrune/')
+        # Frozen verification must never inherit live data/config/venv links.
+        linked = [] if isolated else link_runtime(project, wt)
+        if not isolated:
+            retarget_mcp(project, wt)
+            _sync._ensure_gitignore_entry(base, '.clayrune/')
         _plog(f"[worktree] created {wt.name} on {branch} (linked: {', '.join(linked) or 'none'})")
         if _log_activity:
             _log_activity(pid, f'Agent worktree created: {session_id[:8]} on {branch}')

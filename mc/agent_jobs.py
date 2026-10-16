@@ -163,6 +163,7 @@ def start_job(*, project_id: str, session_id: str, command: str, cwd: str,
               kill_fn: Optional[Callable[[subprocess.Popen], Any]] = None,
               on_complete: Optional[Callable[[Dict[str, Any]], None]] = None,
               popen: Callable[..., subprocess.Popen] = subprocess.Popen,
+              direct_argv: Optional[List[str]] = None,
               ) -> Dict[str, Any]:
     """Start `command` as a subprocess, log its output, watch for exit.
 
@@ -181,8 +182,17 @@ def start_job(*, project_id: str, session_id: str, command: str, cwd: str,
     timed_out, duration_s, log_path, tail) so the callback never needs to
     reach back into this module's own state.
     """
-    resolved = resolve_shell(shell)
-    argv = build_argv(resolved['shell'], resolved['path'], command)
+    # Internal runner integration only; the HTTP job route does not accept this
+    # argument. No interpreter, argument rendering or child output enters logs.
+    if direct_argv is not None:
+        if (not direct_argv or not direct_argv[0]
+                or any(not isinstance(v, str) or '\x00' in v for v in direct_argv)):
+            raise ValueError('Expected nonempty argv strings')
+        argv = list(direct_argv)
+        resolved = {'shell': 'argv', 'path': argv[0], 'note': 'Output suppressed'}
+    else:
+        resolved = resolve_shell(shell)
+        argv = build_argv(resolved['shell'], resolved['path'], command)
 
     job_id = uuid.uuid4().hex
     log_dir = Path(log_dir)
@@ -197,7 +207,8 @@ def start_job(*, project_id: str, session_id: str, command: str, cwd: str,
         # itself valid for inheritance (headless/service-style parents hit
         # this even outside tests).
         proc = popen(argv, shell=False, cwd=cwd or None, stdin=subprocess.DEVNULL,
-                     stdout=log_file, stderr=subprocess.STDOUT,
+                     stdout=subprocess.DEVNULL if direct_argv is not None else log_file,
+                     stderr=subprocess.DEVNULL if direct_argv is not None else subprocess.STDOUT,
                      creationflags=popen_flags, startupinfo=startupinfo)
     except Exception:
         log_file.close()

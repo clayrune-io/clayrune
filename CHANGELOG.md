@@ -22,6 +22,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-16] - Freeze dev harness commands and suppress verifier output (MC-960, DH-M3)
+
+- Added full B/H/M/T integration identities, index/content manifests including untracked previews, and disposable checkouts without shared live runtime links. Dirty/conflicting/stale/mutated inputs cannot pass; source branches are preserved.
+- Reused managed jobs for argv-only configured commands with timeouts/cancellation and stdout/stderr directed to DEVNULL. Internal receipts bind policy/tool/config/source identities; the headless CLI remains report-only and cannot mint activation or merge permission. Native report adapters and managed merge holds remain DH-M4/M5. Contract: `docs/DEV_HARNESS_RUNNER.md`; branch only, no merge, push or restart.
+
 ## [2026-10-16] - Use project media directly in the Desk
 
 - Added **From your projects** to Studio, the shared library picker and campaign media sources, with project filtering, search and picture/video previews. Bounded background discovery combines registered project folders and their chat-media indexes; unidentified historical shared uploads are skipped.
