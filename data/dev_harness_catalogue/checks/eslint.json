@@ -1,0 +1,32 @@
+{
+  "id": "eslint",
+  "schema_version": 1,
+  "tool_version": "9.36.0",
+  "report_contract": "eslint-json-v1",
+  "args": [
+    "--format=json",
+    "--max-warnings=0",
+    "{targets}"
+  ],
+  "configured_command": false,
+  "version_args": [
+    "--version"
+  ],
+  "fail_codes": [
+    1
+  ],
+  "release_source": "https://github.com/eslint/eslint/releases/tag/v9.36.0",
+  "coverage": "native_command_only",
+  "installation": "already_installed_only",
+  "config_globs": [
+    "package.json",
+    "*lock*.json",
+    "*lock*.yaml",
+    "pyproject.toml",
+    "eslint.config.*",
+    "**/eslint.config.*",
+    ".eslint*",
+    "**/.eslint*",
+    "tsconfig*.json"
+  ]
+}

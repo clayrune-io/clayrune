@@ -1,0 +1,16 @@
+{
+  "positive": {
+    "lines": 2,
+    "uncovered": 0,
+    "percent": 100
+  },
+  "finding": {
+    "lines": 2,
+    "uncovered": 1,
+    "percent": 50
+  },
+  "crash": {
+    "exit_code": 2
+  },
+  "format": "lcov"
+}

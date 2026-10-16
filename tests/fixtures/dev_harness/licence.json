@@ -1,0 +1,36 @@
+[
+  {
+    "case": "positive",
+    "exit_code": 0,
+    "report": {
+      "schema_version": 1,
+      "packages": [
+        {
+          "decision": "allowed"
+        }
+      ]
+    },
+    "status": "pass"
+  },
+  {
+    "case": "finding",
+    "exit_code": 1,
+    "report": {
+      "schema_version": 1,
+      "packages": [
+        {
+          "decision": "rejected"
+        }
+      ]
+    },
+    "status": "fail"
+  },
+  {
+    "case": "crash",
+    "exit_code": 2,
+    "report": {
+      "error": "fixture crash"
+    },
+    "status": "error"
+  }
+]

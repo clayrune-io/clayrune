@@ -1,0 +1,28 @@
+{
+  "id": "coverage-javascript",
+  "schema_version": 1,
+  "tool_version": "3.2.4",
+  "report_contract": "coverage-v1",
+  "args": [],
+  "configured_command": true,
+  "version_args": [
+    "--version"
+  ],
+  "fail_codes": [
+    1
+  ],
+  "release_source": "https://github.com/vitest-dev/vitest/releases/tag/v3.2.4",
+  "coverage": "native_command_only",
+  "installation": "already_installed_only",
+  "config_globs": [
+    "package.json",
+    "*lock*.json",
+    "*lock*.yaml",
+    "pyproject.toml",
+    "vitest.config.*",
+    "vite.config.*",
+    "tsconfig*.json"
+  ],
+  "diff_cover_version": "10.2.0",
+  "diff_cover_source": "https://github.com/Bachmann1234/diff_cover/releases/tag/v10.2.0"
+}

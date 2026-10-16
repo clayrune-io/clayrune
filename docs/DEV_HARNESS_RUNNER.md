@@ -1,5 +1,11 @@
 # Frozen native-command runner (DH-M3)
 
+DH-M4 extends this runner with the internal native recipe seam documented in
+`DEV_HARNESS_CHECKS.md`: bounded memory-only stdout validation, source-bound
+fresh coverage, released tool pins and declared distribution/config closure.
+Ordinary M3 commands still discard both streams. The sections below describe
+the original M3 contract; M4 does not add merge/activation authority.
+
 MC-960 / `d813ea78`, spec revision 3. This is a backend foundation for
 DH-M4 recipes and DH-M5 integration, not a managed-merge gate or a complete
 practice assessment. Existing activation/passcode/review gates are unchanged.

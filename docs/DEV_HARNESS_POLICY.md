@@ -1,5 +1,9 @@
 # Dev harness policy foundation (DH-M1)
 
+DH-M4 supplies native recipes and source-bound changed-line coverage through
+the M3 runner; see `DEV_HARNESS_CHECKS.md`. Native command receipts do not
+upgrade full-practice coverage or satisfy activation/independent review.
+
 DH-M3 adds frozen native-command execution and report-only headless inspection;
 see `DEV_HARNESS_RUNNER.md`. Its internal runner receipts are execution
 provenance only, cannot authorize a merge and are not measured Preview

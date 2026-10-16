@@ -13,6 +13,11 @@
 - Fresh installs open the live Desk workspace. Existing configs switch once, including the old false value pinned by saving unrelated settings; `desk_v1_default_migrated` records the migration atomically. Later Desk v1 toggle choices are preserved.
 - Updated the Settings hint to describe the live workspace. Legacy Desk views remain read-only while Desk v1 is enabled; turning it off restores the legacy Desk.
 
+## [2026-10-16] - Validate native dev-harness recipes and fresh coverage (MC-960 DH-M4)
+
+- Added separate released-tool recipes for existing Python/JS unit, lint/type/build, secret/SAST, dependency audit and licence-policy commands. Version/report mismatches and missing tools return Error; unknown licences require review. Scanner output stays in memory and only validated counts/status/digests enter receipts.
+- Bound fresh Coverage.py XML or existing Vitest LCOV to frozen source before invoking installed diff-cover with the explicit base and human-selected floor. Empty/foreign reports and omitted new source cannot pass. This backend foundation adds no installation, activation, managed merge hold or release gate.
+
 ## [2026-10-16] - Show recorded dispatch lineage in completed chats (MC-1033)
 
 - Reconstructed history now carries the same durable dispatcher as the conversation list, including children outside its first page and transcript-keyed history twins. The banner also reads recorded conversation metadata when available. Unrecorded lineage stays blank; callback recipients do not become dispatchers.

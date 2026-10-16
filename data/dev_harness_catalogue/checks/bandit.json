@@ -1,0 +1,30 @@
+{
+  "id": "bandit",
+  "schema_version": 1,
+  "tool_version": "1.8.6",
+  "report_contract": "bandit-json-v1",
+  "args": [
+    "--format=json",
+    "--recursive",
+    "{targets}"
+  ],
+  "configured_command": false,
+  "version_args": [
+    "--version"
+  ],
+  "fail_codes": [
+    1
+  ],
+  "release_source": "https://github.com/PyCQA/bandit/releases/tag/1.8.6",
+  "coverage": "native_command_only",
+  "installation": "already_installed_only",
+  "config_globs": [
+    "package.json",
+    "*lock*.json",
+    "*lock*.yaml",
+    "pyproject.toml",
+    ".bandit",
+    "bandit.yml",
+    "bandit.yaml"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "id": "pip-audit",
+  "schema_version": 1,
+  "tool_version": "2.9.0",
+  "report_contract": "pip-audit-json-v1",
+  "args": [
+    "--format=json",
+    "--disable-pip",
+    "--no-deps",
+    "--requirement",
+    "{targets}"
+  ],
+  "configured_command": false,
+  "version_args": [
+    "--version"
+  ],
+  "fail_codes": [
+    1
+  ],
+  "release_source": "https://github.com/pypa/pip-audit/releases/tag/v2.9.0",
+  "coverage": "native_command_only",
+  "installation": "already_installed_only",
+  "config_globs": [
+    "package.json",
+    "*lock*.json",
+    "*lock*.yaml",
+    "pyproject.toml"
+  ]
+}

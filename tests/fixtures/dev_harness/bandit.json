@@ -1,0 +1,43 @@
+[
+  {
+    "case": "positive",
+    "exit_code": 0,
+    "report": {
+      "errors": [],
+      "metrics": {
+        "_totals": {
+          "loc": 2
+        }
+      },
+      "results": []
+    },
+    "status": "pass"
+  },
+  {
+    "case": "finding",
+    "exit_code": 1,
+    "report": {
+      "errors": [],
+      "metrics": {
+        "_totals": {
+          "loc": 2
+        }
+      },
+      "results": [
+        {
+          "test_id": "B101",
+          "line_number": 1
+        }
+      ]
+    },
+    "status": "fail"
+  },
+  {
+    "case": "crash",
+    "exit_code": 2,
+    "report": {
+      "error": "fixture crash"
+    },
+    "status": "error"
+  }
+]

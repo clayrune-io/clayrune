@@ -1,0 +1,29 @@
+{
+  "id": "pytest",
+  "schema_version": 1,
+  "tool_version": "8.4.2",
+  "report_contract": "exit-only-v1",
+  "args": [
+    "-q"
+  ],
+  "configured_command": true,
+  "version_args": [
+    "--version"
+  ],
+  "fail_codes": [
+    1
+  ],
+  "release_source": "https://github.com/pytest-dev/pytest/releases/tag/8.4.2",
+  "coverage": "native_command_only",
+  "installation": "already_installed_only",
+  "config_globs": [
+    "package.json",
+    "*lock*.json",
+    "*lock*.yaml",
+    "pyproject.toml",
+    "pytest.ini",
+    "setup.cfg",
+    "tox.ini",
+    "**/conftest.py"
+  ]
+}

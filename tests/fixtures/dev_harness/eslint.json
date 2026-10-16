@@ -1,0 +1,34 @@
+[
+  {
+    "case": "positive",
+    "exit_code": 0,
+    "report": [
+      {
+        "errorCount": 0,
+        "warningCount": 0,
+        "fatalErrorCount": 0
+      }
+    ],
+    "status": "pass"
+  },
+  {
+    "case": "finding",
+    "exit_code": 1,
+    "report": [
+      {
+        "errorCount": 1,
+        "warningCount": 0,
+        "fatalErrorCount": 0
+      }
+    ],
+    "status": "fail"
+  },
+  {
+    "case": "crash",
+    "exit_code": 2,
+    "report": {
+      "error": "fixture crash"
+    },
+    "status": "error"
+  }
+]

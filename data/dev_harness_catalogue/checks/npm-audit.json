@@ -1,0 +1,27 @@
+{
+  "id": "npm-audit",
+  "schema_version": 1,
+  "tool_version": "10.9.3",
+  "report_contract": "npm-audit-json-v2",
+  "args": [
+    "audit",
+    "--json",
+    "--ignore-scripts"
+  ],
+  "configured_command": false,
+  "version_args": [
+    "--version"
+  ],
+  "fail_codes": [
+    1
+  ],
+  "release_source": "https://github.com/npm/cli/releases/tag/v10.9.3",
+  "coverage": "native_command_only",
+  "installation": "already_installed_only",
+  "config_globs": [
+    "package.json",
+    "*lock*.json",
+    "*lock*.yaml",
+    "pyproject.toml"
+  ]
+}

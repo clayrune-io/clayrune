@@ -1,7 +1,7 @@
-"""Frozen native-command execution; bounded summaries, internal receipts (DH-M3).
+"""Frozen native-command execution; bounded summaries, internal receipts (DH-M3/4).
 
-All verifier output goes directly to DEVNULL through existing managed jobs.
-Native report adapters belong to DH-M4; this runner never persists scanner text.
+Ordinary output goes to DEVNULL; native adapters validate bounded stdout in memory.
+The existing managed jobs never persist scanner text.
 An exit-code pass proves the named command only, never an entire practice.
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ from mc.dev_harness_diff import (ERROR_CODES, FreezeError, candidate_worktree, f
                                  git_bytes, manifest, preview, preview_worktree, safe_path)
 from mc.dev_harness_store import HarnessStore, StoreError
 
-RUNNER_VERSION = 'dh-m3-v1'
+RUNNER_VERSION = 'dh-m4-v1'
 MAX_STEPS = 64
 MAX_CONFIG_BYTES = 4 * 1024 * 1024
 _ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,79}')
@@ -52,7 +52,9 @@ def prepare_steps(root: Path, steps: list[dict[str, Any]]) -> list[dict[str, Any
         raise ValueError('invalid_steps')
     prepared, identities = [], set()
     for step in steps:
-        if not isinstance(step, dict) or set(step) != {'id', 'argv', 'timeout_seconds', 'fail_codes', 'configs'}:
+        if not isinstance(step, dict) or set(step) not in (
+                {'id', 'argv', 'timeout_seconds', 'fail_codes', 'configs'},
+                {'id', 'argv', 'timeout_seconds', 'fail_codes', 'configs', 'native'}):
             raise ValueError('invalid_step_fields')
         identity, argv = step['id'], step['argv']
         if not isinstance(identity, str) or not _ID.fullmatch(identity) or identity in identities:
@@ -70,6 +72,10 @@ def prepare_steps(root: Path, steps: list[dict[str, Any]]) -> list[dict[str, Any
                 or len(codes) != len(set(codes))):
             raise ValueError('invalid_exit_contract')
         configs = step['configs']
+        if 'native' in step and isinstance(configs, list) and all(isinstance(v, str) for v in configs):
+            from mc.dev_harness_checks.recipes import config_closure
+            configs = config_closure(root, step)
+            step = {**step, 'configs': configs}
         if not isinstance(configs, list) or any(not isinstance(v, str) for v in configs) or len(configs) > 128:
             raise ValueError('invalid_configs')
         config_digests = {}
@@ -88,7 +94,11 @@ def prepare_steps(root: Path, steps: list[dict[str, Any]]) -> list[dict[str, Any
             executable_path = (root / argv[0]).resolve()
         if not executable_path.is_file():
             raise ValueError('tool_unavailable')
-        prepared.append({**step, 'argv': [str(executable_path), *argv[1:]],
+        extra = {}
+        if 'native' in step:
+            from mc.dev_harness_checks.recipes import prepare
+            extra['native_prepared'] = prepare(root, step)
+        prepared.append({**step, **extra, 'argv': [str(executable_path), *argv[1:]],
                          'argv_digest': digest(argv), 'tool_digest': _file_digest(executable_path),
                          'config_digest': digest(config_digests), 'config_digests': config_digests})
     return prepared
@@ -106,6 +116,7 @@ def _execute(step: dict[str, Any], root: Path, logs: Path, project_id: str,
     finished = threading.Event()
     outcome: dict[str, Any] = {}
     holder: list[Any] = [None]
+    capture: list[Any] = [None]
 
     def complete(result: dict[str, Any]) -> None:
         outcome.update(result)
@@ -115,6 +126,8 @@ def _execute(step: dict[str, Any], root: Path, logs: Path, project_id: str,
         _kill_process_tree(proc, holder[0])
 
     def spawn(argv, **kwargs):
+        if step.get('_capture_stdout'):
+            kwargs['stdout'] = subprocess.PIPE
         if os.name != 'nt':
             kwargs['start_new_session'] = True
         else:
@@ -124,6 +137,9 @@ def _execute(step: dict[str, Any], root: Path, logs: Path, project_id: str,
             register(proc, step['id'])
             if os.name == 'nt':
                 holder[0] = _win_job_object_for(proc.pid)
+            if step.get('_capture_stdout'):
+                from mc.dev_harness_checks.output import Capture
+                capture[0] = Capture(proc.stdout)
         except BaseException:
             kill(proc)
             proc.wait(timeout=10)
@@ -146,11 +162,14 @@ def _execute(step: dict[str, Any], root: Path, logs: Path, project_id: str,
         code = outcome['exit_code']
         status = ('error' if cancelled or outcome['timed_out'] else
                   'pass' if code == 0 else 'fail' if code in step['fail_codes'] else 'error')
-        return {'id': step['id'], 'job_id': job['job_id'], 'status': status,
+        result = {'id': step['id'], 'job_id': job['job_id'], 'status': status,
                 'exit_code': code, 'duration_seconds': round(outcome['duration_s'], 3),
                 'cancelled': cancelled, 'timed_out': outcome['timed_out'],
                 'argv_digest': step['argv_digest'], 'tool_digest': step['tool_digest'],
                 'config_digest': step['config_digest'], 'coverage': 'native_command_only'}
+        if capture[0] is not None:
+            result['_stdout'] = capture[0].take()
+        return result
     finally:
         if not finished.is_set():
             # Ctrl+C/other interrupted waits must not orphan the argv child.
@@ -184,7 +203,9 @@ def evaluate(*, project: dict[str, Any], steps: list[dict[str, Any]], logs: Path
         'authorizes_merge': False, 'run_id': run_id, 'project_id': project['id'],
         'checker_digest': digest({'version': RUNNER_VERSION,
             'runner': _file_digest(Path(__file__)),
-            'diff': _file_digest(Path(__file__).with_name('dev_harness_diff.py'))}),
+            'diff': _file_digest(Path(__file__).with_name('dev_harness_diff.py')),
+            'native': {p.name: _file_digest(p) for p in sorted(
+                Path(__file__).with_name('dev_harness_checks').glob('*.py'))}}),
         'created_at': datetime.now(timezone.utc).isoformat(), 'results': [], 'status': 'error'}
     cancelled = cancel if cancel is not None else threading.Event()
     repo = Path(project['project_path']).resolve()
@@ -218,7 +239,12 @@ def evaluate(*, project: dict[str, Any], steps: list[dict[str, Any]], logs: Path
                 if cancelled.is_set():
                     report['code'] = 'cancelled'
                     break
-                result = _execute(step, root, logs, project['id'], run_id, cancelled, register, unregister)
+                if 'native_prepared' in step:
+                    from mc.dev_harness_checks.execution import execute
+                    result = execute(step, root, frozen, lambda command: _execute(
+                        command, root, logs, project['id'], run_id, cancelled, register, unregister))
+                else:
+                    result = _execute(step, root, logs, project['id'], run_id, cancelled, register, unregister)
                 report['results'].append(result)
                 if manifest(root) != before:
                     report['code'] = 'source_mutated'
@@ -236,6 +262,14 @@ def evaluate(*, project: dict[str, Any], steps: list[dict[str, Any]], logs: Path
                 if any(_file_digest(safe_path(root, name)) != expected
                        for name, expected in step['config_digests'].items()):
                     report['code'] = 'config_mutated'
+                if 'native_prepared' in step:
+                    from mc.dev_harness_checks.recipes import closure, config_closure, load_recipe
+                    native = step['native_prepared']
+                    if (closure(native['tool_roots']) != native['closure_digest']
+                            or digest(load_recipe(native['recipe'])) != native['recipe_digest']
+                            or config_closure(root, step) != step['configs']
+                            or digest(dict(os.environ)) != native['environment_digest']):
+                        report['code'] = 'native_inputs_changed'
             current = (freeze_candidate(repo, target, incoming) if target is not None and incoming is not None
                        else preview(repo))
             if manifest(repo) != original or current != frozen:
@@ -245,7 +279,8 @@ def evaluate(*, project: dict[str, Any], steps: list[dict[str, Any]], logs: Path
             if 'code' not in report:
                 report['status'] = ('pass' if len(report['results']) == len(prepared)
                     and all(r['status'] == 'pass' for r in report['results']) else
-                    'fail' if report['results'] and report['results'][-1]['status'] == 'fail' else 'error')
+                    report['results'][-1]['status'] if report['results']
+                    and report['results'][-1]['status'] in ('fail', 'review_required') else 'error')
     except (Exception, KeyboardInterrupt) as exc:
         # Only our fixed vocabulary enters reports. No exception strings, paths,
         # argv, scanner output or traceback can reach managed-job activity.
@@ -295,7 +330,7 @@ def read_receipt(store: HarnessStore, project_id: str, run_id: str) -> dict[str,
     if (record.get('kind') != 'runner_receipt' or record.get('trusted') is not True
             or record.get('authorizes_merge') is not False or record.get('run_id') != run_id
             or record.get('project_id') != project_id or record.get('version') != 1
-            or record.get('status') not in ('pass', 'fail', 'error', 'unsupported')
+            or record.get('status') not in ('pass', 'fail', 'review_required', 'error', 'unsupported')
             or record.get('receipt_digest') != digest({k: v for k, v in record.items() if k != 'receipt_digest'})):
         raise StoreError('Invalid runner receipt')
     if (snapshot is None or record.get('active_revision') != snapshot['revision']
