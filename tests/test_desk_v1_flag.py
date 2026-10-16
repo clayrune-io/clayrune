@@ -1,13 +1,12 @@
 """Desk v1 (MC-977, R0 plan T0a) — the `desk_v1` flag + `user_timezone`.
 
-T0a's whole job is a flag that is OFF by default so the legacy Desk
-(`static/js/desk.js`) is byte-identical in behaviour until someone opts in
-(`docs/desk_v1_r0_plan.md` "Done when"). This pins the three things that make
-that true at the config layer (the JS-side behaviour — `openDesk()` branching,
+Desk v1 is ON by default as of the 2026-10-16 rollout, with an explicit
+opt-out restoring the legacy Desk. This pins that config contract
+(the JS-side behaviour — `openDesk()` branching,
 every v1 route rendering, Back — is covered by
 `tools/smoke/desk-v1-harness.mjs`, which actually boots the page):
 
-1. `server.py`'s `_load_config()` defaults `desk_v1` to `False` and
+1. `server.py`'s `_load_config()` defaults `desk_v1` to `True` and
    `user_timezone` to `''` when no config.json exists yet.
 2. Both keys are on the Settings panel's editable surface
    (`mc/blueprints/settings_routes.py::_CONFIG_EDITABLE_KEYS`) — otherwise the
@@ -61,9 +60,9 @@ def _server_config_defaults():
     raise AssertionError('could not find _load_config defaults dict in server.py')
 
 
-def test_load_config_defaults_desk_v1_off_and_timezone_blank():
+def test_load_config_defaults_desk_v1_on_and_timezone_blank():
     defaults = _server_config_defaults()
-    assert defaults['desk_v1'] is False
+    assert defaults['desk_v1'] is True
     assert defaults['user_timezone'] == ''
 
 
@@ -111,27 +110,31 @@ def ctx(tmp_path, monkeypatch):
 def test_desk_v1_and_timezone_are_editable_keys(ctx):
     assert 'desk_v1' in ctx.sr._CONFIG_EDITABLE_KEYS
     assert 'user_timezone' in ctx.sr._CONFIG_EDITABLE_KEYS
+    assert 'desk_v1_default_migrated' not in ctx.sr._CONFIG_EDITABLE_KEYS
 
 
-def test_get_config_reports_desk_v1_off_by_default(ctx):
+def test_get_config_reports_desk_v1_on_by_default(ctx):
     # Deterministic regardless of what this box's real config.json holds —
     # ctx.state is the snapshotted/restored live CONFIG, set explicitly here
     # to the documented default before reading the projection back.
-    ctx.state.CONFIG['desk_v1'] = False
+    ctx.state.CONFIG['desk_v1'] = True
     ctx.state.CONFIG['user_timezone'] = ''
     body = ctx.client.get('/api/config').get_json()
-    assert body['desk_v1'] is False
+    assert body['desk_v1'] is True
     assert body['user_timezone'] == ''
 
 
-def test_put_config_toggles_desk_v1_and_persists(ctx):
-    resp = ctx.client.put('/api/config', json={'desk_v1': True})
+@pytest.mark.parametrize('enabled', [False, True])
+def test_put_config_toggles_desk_v1_and_persists(ctx, enabled):
+    ctx.state.CONFIG['desk_v1_default_migrated'] = True
+    resp = ctx.client.put('/api/config', json={'desk_v1': enabled})
     assert resp.status_code == 200
     body = resp.get_json()
     assert body['updated'] == ['desk_v1']
-    assert ctx.state.CONFIG['desk_v1'] is True
+    assert ctx.state.CONFIG['desk_v1'] is enabled
     saved = json.loads(ctx.config_path.read_text(encoding='utf-8'))
-    assert saved['desk_v1'] is True
+    assert saved['desk_v1'] is enabled
+    assert saved['desk_v1_default_migrated'] is True
 
 
 def test_put_config_sets_user_timezone_and_persists(ctx):

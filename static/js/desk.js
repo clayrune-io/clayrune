@@ -806,7 +806,7 @@ async function deskCampaignState(id, state) {
 // legacy view is normally never even opened. It stays reachable anyway (a
 // modal opened before the flag was toggled, or a keyboard shortcut/deep link
 // that calls a handler directly) — every write handler below checks this
-// first, because a stale legacy view writing underneath v1's fixtures/future
+// first, because a stale legacy view writing underneath v1's live
 // store would corrupt state nothing on screen shows you touched.
 function _deskReadOnly() {
   const _cfg = (typeof _globalConfig !== 'undefined' && _globalConfig) || {};
@@ -823,7 +823,7 @@ function _deskReadOnlyBlock() {
 // ── open ────────────────────────────────────────────────────────────────────
 
 async function openDesk() {
-  // Desk v1 (MC-977, flag `desk_v1`, default off): while it's on, the v1
+  // Desk v1 (MC-977, flag `desk_v1`, default on): while it's on, the v1
   // shell owns the whole modal instead of legacy Board/Queue/Calendar/Ledger
   // — see desk-v1-shell.js. This branch is desk.js's ONLY v1 edit in R0 plan
   // T0a; T0d adds the other one (legacy views go read-only once this is on).

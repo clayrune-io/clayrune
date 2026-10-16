@@ -1075,6 +1075,14 @@ browser manually.
 
 ---
 
+## The Desk
+
+The Desk opens the live workspace for campaigns, content and publishing by default.
+Existing installs switch to Desk v1 once after updating, including installs whose
+saved settings carried the old off default. After that switch, your choice is
+kept: turn **Settings > Appearance > Experimental > Desk v1** off to return to the
+legacy Desk. Legacy Desk views remain read-only while Desk v1 is on.
+
 ## Desk Connections: add or check a service
 
 To remove a connection, open its tile and choose **Remove**, then confirm in the shared sheet. This also works for a failed software setup that was never registered. Software and generation-engine removal ask for your dashboard passcode. Cancelling either prompt changes nothing; a refusal keeps the connection and shows the reason. Confirmed removal has no Undo.

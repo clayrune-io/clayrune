@@ -612,13 +612,10 @@ def _load_config():
         'habit_report_enabled': True,
         'habit_complaint_exclusion_enabled': True,
 
-        # Desk v1 (MC-977, R0 plan T0a). OFF by default — the new Desk UI
-        # (Home -> campaign -> item, docs/THE_DESK_V1_UI.md) lives entirely
-        # behind this flag so the legacy Desk (static/js/desk.js) is
-        # byte-identical in behaviour while it's off. When on, legacy Desk
-        # views go read-only (T0d) and v1 runs against fixtures only: no new
-        # backend store, no publishing, no spend (docs/desk_v1_r0_plan.md).
-        'desk_v1': False,
+        # Desk v1 is the default workspace (Home -> campaign -> item).
+        # Live data has been the default since R1-W S10. While enabled,
+        # legacy Desk views stay read-only; turning this off restores them.
+        'desk_v1': True,
         # Desk v1 R1-W (MC-1021, docs/desk_v1/R1W_WIRING_PLAN.md S0/S10). Picks
         # the v1 store's source: ON = `GET /api/desk/workspace` (the live
         # Desk store, never demo data), OFF = demo mode, which no longer has
@@ -647,11 +644,9 @@ def _load_config():
             # at module-load time, so write straight to stderr.
             print(f"[config] failed to read {CONFIG_PATH}; running on defaults: {e}",
                   file=sys.stderr, flush=True)
-    else:
-        # Create default config for the user to customize
-        with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
-            json.dump(defaults, f, indent=2, ensure_ascii=False)
-    return defaults
+            return defaults
+    from mc.desk_v1_default import migrate_desk_v1_default
+    return migrate_desk_v1_default(defaults, CONFIG_PATH)
 
 CONFIG = _load_config()
 PORT = int(os.environ.get('MC_PORT', CONFIG.get('port', 5199)))
