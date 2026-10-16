@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-10-16] - Complete service-worker updates with agent streams open (MC-713)
+
+- Force update briefly pauses this tab's agent streams to free browser connection slots. Unchanged workers show a toast and resume streams; changed workers activate and reload. Blocked checks time out after 12 seconds with retry guidance and an enabled button.
+
 ## [2026-10-16] - Keep queued report notices through chat rebuilds (MC-1063)
 
 - Parent chats restore their report-waiting notice from cached server status after modal rebuilds, including both split panes. Opening the chat before or after dispatch retains the notice; delivery clears it.

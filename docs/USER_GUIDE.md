@@ -690,6 +690,10 @@ many projects open.
 
 ## Settings
 
+### Installed App updates
+
+**Settings > System > Installed App > Force update service worker** checks for a new worker and reloads when one activates. It briefly pauses this tab's live chat streams; agents keep running. An unchanged worker shows **Already up to date** and streams reconnect. A check blocked for 12 seconds shows a timeout and enables retry; closing other Clayrune tabs can free browser connection slots.
+
 ### Daily agent CLI updates
 
 Clayrune checks installed agent CLIs daily when **Settings → Providers →

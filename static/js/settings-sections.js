@@ -1,3 +1,5 @@
+import { forceUpdateServiceWorker } from './installed-app-update.js';
+
 // ── Local network access (LAN passcode) ─────────────────────────────────────
 // The dashboard binds 0.0.0.0, so any device on the same network can reach it.
 // Loopback (this PC) and tunneled (CF Access) traffic is always exempt; this
@@ -788,55 +790,6 @@ async function copyInstalledAppLink() {
     showToast('Copied chrome://apps');
   } catch (_) {
     showToast('Could not copy. Select and copy the text manually.', 4000);
-  }
-}
-
-async function forceUpdateServiceWorker() {
-  if (!navigator.serviceWorker) return;
-  const btn = document.getElementById('installed-app-update-btn');
-  const hint = document.getElementById('installed-app-update-hint');
-  if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
-  if (hint) hint.textContent = 'Checking for a new version…';
-  try {
-    const reg = await navigator.serviceWorker.getRegistration('/');
-    if (!reg) {
-      showToast('No service worker registered.', 4000);
-      await refreshInstalledAppSection();
-      return;
-    }
-    // Listen BEFORE update(): install() calls skipWaiting() itself, so a new
-    // worker can activate before we ever see it in reg.installing/waiting.
-    let reloaded = false;
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      if (reloaded) return;
-      reloaded = true;
-      location.reload();
-    });
-    await reg.update();
-    let waiting = reg.waiting;
-    if (!waiting && reg.installing) {
-      waiting = await new Promise((resolve) => {
-        const w = reg.installing;
-        const onChange = () => {
-          if (w.state === 'installed') { w.removeEventListener('statechange', onChange); resolve(reg.waiting || w); }
-          else if (w.state === 'redundant') { w.removeEventListener('statechange', onChange); resolve(null); }
-        };
-        w.addEventListener('statechange', onChange);
-        setTimeout(() => resolve(reg.waiting || null), 8000);
-      });
-    }
-    if (!waiting) {
-      if (reloaded) return;
-      showToast('Already up to date.');
-      await refreshInstalledAppSection();
-      return;
-    }
-    waiting.postMessage({ type: 'SKIP_WAITING' });
-    setTimeout(() => { if (!reloaded) { reloaded = true; location.reload(); } }, 6000);
-  } catch (e) {
-    showToast(`Update check failed: ${e.message || e}`, 5000);
-    if (btn) { btn.disabled = false; btn.textContent = 'Force update service worker'; }
-    if (hint) hint.textContent = 'Checks for a new version, activates it, and reloads.';
   }
 }
 
