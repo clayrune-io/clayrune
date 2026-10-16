@@ -22,6 +22,9 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, send_from_directory, request, send_file, abort, Response, redirect
 import secrets
 
+from mc import vault_restart_handover as _vault_restart_handover
+_vault_restart_handover.capture_inherited_channel()
+
 import mc.skills as _skills
 import mc.mcp as _mcp
 import mc.mcp_installer as _mcpinst
@@ -229,6 +232,7 @@ def _load_config():
         # life). Only takes effect once a passphrase is actually configured;
         # a no-op otherwise.
         'vault_idle_lock_minutes': 120,
+        'vault_keep_unlocked_on_restart': True,
         # Phase 4 Distiller (v2.1 §11 global keys).
         # Self-learning observer parallel to Scribe — extracts cross-session
         # patterns into _proposed/ for human review. Best-effort, never load-
@@ -3498,6 +3502,7 @@ def boot(check_port=True):
     # Keyed by this server's PORT: ~/.clayrune is shared by every MC on the
     # box, so a second boot on another port must not overwrite this one's file.
     _secrets_store_boot.ensure_exec_token(PORT)
+    _vault_restart_handover.consume_inherited_key()
     # Reap child process trees orphaned by a prior MC instance that exited
     # (restart/crash) without killing them. Reads the PID ledger the prior
     # instance persisted; identity-guarded so it can't friendly-fire. Must run

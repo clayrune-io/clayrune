@@ -178,6 +178,7 @@ _CONFIG_EDITABLE_KEYS = {
     # Read live via state.CONFIG.get() on every load_master_key() call and
     # every 60s sweeper tick — no respawn, no restart.
     'vault_idle_lock_minutes',
+    'vault_keep_unlocked_on_restart',
     'projects_base', 'shared_rules_path', 'port', 'log_level',
     # Delivery payload accounting is advisory only: 0 disables the warning,
     # and this setting never gates dispatch or completion.

@@ -18,7 +18,7 @@ only safe answer is to keep the old app and fall back to the download link.
 
 The swap helper is a generated /bin/sh script written into the staging dir at
 run time (no new file for build-macos.spec to bundle). It waits for the app PID
-to exit, renames the old bundle aside, moves the new one in, `open`s it, and
+to exit, renames the old bundle aside, moves the new one in, launches it, and
 waits for /api/system/update/status to report the verified commit. If it does not in time it puts
 the old bundle back and reopens it. The aside copy is deleted only after the new
 app answers.
@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from mc.provider_env_scope import relaunch_env
+from mc.vault_restart_handover import spawn_replacement
 
 # Job states. `idle`/`failed` accept a new job; everything else is in flight.
 IDLE = 'idle'
@@ -344,6 +345,20 @@ LOG={q(log_path)}
 RESULT={q(result_path)}
 STAMP="$(date +%s)"
 
+# LaunchServices (`open`) cannot pass our anonymous pipe. Direct execution of
+# the verified bundle keeps it in this process tree. Only the first launch
+# gets the channel; a rollback after a failed new boot starts locked.
+launch_app() {{
+  if [ -n "${{MC_VAULT_RESTART_PIPE:-}}" ]; then
+    "$EXE" </dev/null >> "$LOG" 2>&1 &
+    # POSIX sh cannot close an arbitrary multi-digit fd. The helper's copy
+    # closes at exit; the app reads once and closes its own copy at boot.
+    unset MC_VAULT_RESTART_PIPE
+  else
+    open "$OLD"
+  fi
+}}
+
 log() {{ printf '%s %s\\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG"; }}
 result() {{ printf '{{"status":"%s","reason":"%s","ts":%s}}\\n' "$1" "$2" "$STAMP" > "$RESULT"; }}
 safe_rm() {{
@@ -397,7 +412,7 @@ if ! mv "$OLD" "$ASIDE"; then
   log "could not move the old bundle aside; reopening it"
   result aborted "could not move the old app aside"
   safe_rm "$STAGE"
-  open "$OLD"
+  launch_app
   exit 1
 fi
 if ! mv "$NEW" "$OLD"; then
@@ -405,11 +420,11 @@ if ! mv "$NEW" "$OLD"; then
   mv "$ASIDE" "$OLD"
   result aborted "could not move the new app into place"
   safe_rm "$STAGE"
-  open "$OLD"
+  launch_app
   exit 1
 fi
 
-open "$OLD"
+launch_app
 log "opened new bundle; waiting for build $EXPECT at $URL"
 END=$(( $(date +%s) + {int(wait_up_s)} ))
 up=0
@@ -444,7 +459,7 @@ if mv "$ASIDE" "$OLD"; then
   result rolled_back "the new version did not start, so the previous version was restored"
   safe_rm "$FAILED"
   safe_rm "$STAGE"
-  open "$OLD"
+  launch_app
   exit 1
 fi
 log "ROLLBACK FAILED: old bundle is at $ASIDE, new at $FAILED"
@@ -457,7 +472,7 @@ def _spawn_swap(script_path: Path, log_path: Path):
     log_path.parent.mkdir(parents=True, exist_ok=True)
     logf = open(log_path, 'ab')
     try:
-        return subprocess.Popen(['/bin/sh', str(script_path)], stdin=subprocess.DEVNULL,
+        return spawn_replacement(['/bin/sh', str(script_path)], stdin=subprocess.DEVNULL,
                                 stdout=logf, stderr=subprocess.STDOUT,
                                 start_new_session=True, close_fds=True,
                                 env=relaunch_env())
