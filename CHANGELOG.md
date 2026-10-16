@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-16] - Read agent file links in place on desktop and phone
+
+- Text and Markdown file links now open a read-only File viewer with a fully visible absolute path and Download action. Markdown shares the plan viewer's rich-text and pipe-table renderer; source files remain escaped text. Previews enforce a 2 MiB read cap, with download guidance for large, binary or unsupported text.
+- Images, PDFs, audio and video retain native browser tabs through inline URLs; unknown binaries keep downloading. File markers are recognized before bare image paths. Contract: `docs/FILE_VIEWER.md`; desktop/mobile smoke: `tools/smoke/file-viewer.mjs`. Branch only; no backend changes, merge, push or restart.
+
 ## [2026-10-16] - Retain an unlocked vault across server restarts
 
 - Restart and Update can pass an already-unlocked vault to the replacement over an anonymous inherited pipe, including the frozen macOS swap helper. The child checks the existing wrapped-key HMAC fingerprint, resets the idle clock and audits `restart_handover`. No raw key is written to disk, environment, arguments or logs; missing/invalid/timed-out handovers stay locked.

@@ -456,31 +456,7 @@ async function openPlanFileViewer(projectId, sessionId) {
   const headingMatch = data.content.match(/^#\s+(.+)/m);
   const filename = headingMatch ? headingMatch[1].trim() : planFileLabel(cached?.task || rawFilename);
   if (headingMatch) planFileTitle[sessionId] = headingMatch[1].trim();
-  const lines = data.content.split('\n');
-
-  // Render markdown lines with rich formatting
-  let bodyHTML = '';
-  let tableLines = [];
-  function flushTable() {
-    if (tableLines.length === 0) return;
-    if (isPipeTable(tableLines)) {
-      bodyHTML += `<div class="hl-table">${buildPipeTable(tableLines)}</div>`;
-    } else {
-      bodyHTML += `<div class="hl-table-pre">${tableLines.map(l => formatTableLine(esc(l))).join('\n')}</div>`;
-    }
-    tableLines = [];
-  }
-  for (const line of lines) {
-    if (isTableLine(line)) {
-      tableLines.push(line);
-    } else if (tableLines.length > 0 && line.trim() === '') {
-      tableLines.push(line);
-    } else {
-      flushTable();
-      bodyHTML += `<div class="agent-line">${formatAgentText(line)}</div>`;
-    }
-  }
-  flushTable();
+  const bodyHTML = window.renderMarkdownDocument(data.content);
 
   const win = document.createElement('div');
   win.className = 'modal-window';

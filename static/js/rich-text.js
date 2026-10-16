@@ -144,6 +144,34 @@ function formatAgentText(raw) {
     return `<span class="hl-h">${t}</span>`;
   }
 
+  // File deep-links: the agent emits [file:<abs path>] or [file:<path>|Label]
+  // and we render a clickable link to /api/serve-file (works locally AND over
+  // the tunnel — plain HTTP, same as images). Tokenized FIRST, like images, so
+  // the path / code regexes below don't shred the anchor. The text is already
+  // esc()'d, so `[` `]` `:` `|` survive verbatim; the path fragment is HTML-
+  // escaped — unescape it for the URL, keep the label's escaped form for display.
+  const _fileTokens = [];
+  t = t.replace(/\[file:([^\]|]+?)(?:\|([^\]]+))?\]/gi, (m, pathEsc, labelEsc) => {
+    const unesc = (s) => (s || '').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+    const path = unesc(pathEsc).trim();
+    if (!path) return m;                                  // malformed → leave literal
+    const kind = window.fileLinkKind ? window.fileLinkKind(path) : 'download';
+    const href = API_BASE + '/api/serve-file?' + (kind === 'download' ? '' : 'inline=1&') + 'path=' + encodeURIComponent(path);
+    // The full path is ALWAYS visible, never only in a hover title (Ron,
+    // 2026-10-12: a label alone left him tracing which folder a file lives
+    // in). No label → the path is the link text; a label → the path follows
+    // it as selectable text.
+    const pathHtml = pathEsc.trim();                      // already escaped
+    const labelHtml = labelEsc ? labelEsc.trim() : pathHtml;  // labelEsc already escaped
+    const tok = '@@CLFile' + _fileTokens.length + '@@';
+    _fileTokens.push(
+      `<a class="hl-file-link" dir="ltr" href="${href}" target="_blank" rel="noopener" ` +
+      `title="${kind === 'download' ? 'Download' : 'Open'} ${pathHtml}" ${kind === 'text' ? `data-file-preview="${pathHtml}"` : ''}><span class="hl-file-ic">&#128196;</span>${labelHtml}</a>` +
+      (labelEsc ? ` <span class="hl-file-path" dir="ltr">${pathHtml}</span>` : ''));
+    return tok;
+  });
+
   // Inline image embeds: an absolute path to an image file becomes a
   // thumbnail (click to enlarge). Tokenized out FIRST so the path / code
   // / bold regexes below don't shred the produced <img> markup; swapped
@@ -185,33 +213,6 @@ function formatAgentText(raw) {
         `onclick="_openImageViewer(this.src, {source: this})"></span>`);
       return tok;
     });
-
-  // File deep-links: the agent emits [file:<abs path>] or [file:<path>|Label]
-  // and we render a clickable link to /api/serve-file (works locally AND over
-  // the tunnel — plain HTTP, same as images). Tokenized FIRST, like images, so
-  // the path / code regexes below don't shred the anchor. The text is already
-  // esc()'d, so `[` `]` `:` `|` survive verbatim; the path fragment is HTML-
-  // escaped — unescape it for the URL, keep the label's escaped form for display.
-  const _fileTokens = [];
-  t = t.replace(/\[file:([^\]|]+?)(?:\|([^\]]+))?\]/gi, (m, pathEsc, labelEsc) => {
-    const unesc = (s) => (s || '').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
-    const path = unesc(pathEsc).trim();
-    if (!path) return m;                                  // malformed → leave literal
-    const href = API_BASE + '/api/serve-file?path=' + encodeURIComponent(path);
-    // The full path is ALWAYS visible, never only in a hover title (Ron,
-    // 2026-10-12: a label alone left him tracing which folder a file lives
-    // in). No label → the path is the link text; a label → the path follows
-    // it as selectable text.
-    const pathHtml = pathEsc.trim();                      // already escaped
-    const labelHtml = labelEsc ? labelEsc.trim() : pathHtml;  // labelEsc already escaped
-    const tok = '@@CLFile' + _fileTokens.length + '@@';
-    _fileTokens.push(
-      `<a class="hl-file-link" dir="ltr" href="${href}" target="_blank" rel="noopener" ` +
-      `title="Download ${pathHtml}"><span class="hl-file-ic">&#128196;</span>${labelHtml}</a>` +
-      (labelEsc ? ` <span class="hl-file-path" dir="ltr">${pathHtml}</span>` : ''));
-    return tok;
-  });
 
   // URLs → real clickable <a> links. Tokenized out BEFORE the path / code /
   // bold regexes below so they can't shred the markup. The absolute-path
