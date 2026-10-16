@@ -426,3 +426,4 @@ def test_server_import_does_not_touch_exec_token_path(tmp_path):
         cwd=str(repo), env=env, capture_output=True, text=True, timeout=90)
     assert result.returncode == 0, result.stdout + result.stderr
     assert not (home / 'secrets_exec_token').exists()
+    assert not list(home.glob('secrets_exec_token.*'))

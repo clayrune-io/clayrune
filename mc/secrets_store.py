@@ -174,7 +174,15 @@ def audit_path() -> Path:
     return clayrune_home() / 'secrets_audit.jsonl'
 
 
-def exec_token_path() -> Path:
+def exec_token_legacy_path() -> Path:
+    """The pre-port-keyed single token file. Nothing writes it any more; it is
+    only read, as a fallback, so a CLI started against a server that was
+    booted before the port-keyed layout (and so still writes only this file)
+    keeps working until that server restarts."""
+    return clayrune_home() / 'secrets_exec_token'
+
+
+def exec_token_path(port: int | None = None) -> Path:
     """Per-boot random token gating ``POST /api/secrets/exec`` (MC-979,
     ``mc/blueprints/secrets_routes.py``). ``tools/with-secret.py`` falls back
     to that route when the vault is passphrase-locked in this process but was
@@ -183,8 +191,17 @@ def exec_token_path() -> Path:
     separate CLI invocation can never read it directly and must ask the
     server to run the command instead. The token file is how that CLI proves
     its request is a legitimate loopback call and not a forged browser POST;
-    never under the repo, never DATA_DIR, same as every other path here."""
-    return clayrune_home() / 'secrets_exec_token'
+    never under the repo, never DATA_DIR, same as every other path here.
+
+    Keyed by the server's port (``secrets_exec_token.<port>``): ``~/.clayrune``
+    is shared by every Clayrune on the box, so a single file let a second
+    server booted on another port (an isolated demo on :5200) overwrite the
+    main server's token — which that server still held in memory — and every
+    same-box fallback then got ``bad_exec_token`` until the main server
+    restarted. ``port=None`` means ``exec_route_port()``."""
+    if port is None:
+        port = exec_route_port()
+    return clayrune_home() / f'secrets_exec_token.{int(port)}'
 
 
 # The per-boot exec token, cached in memory once minted — see
@@ -192,29 +209,49 @@ def exec_token_path() -> Path:
 _exec_token: str | None = None
 
 
-def ensure_exec_token() -> str:
+def ensure_exec_token(port: int | None = None) -> str:
     """The per-boot random token gating ``POST /api/secrets/exec`` and
     ``POST /api/secrets/notify-vault-locked`` (MC-979).
 
     Minted fresh every time this process starts — never reused across a
     restart, so a token leaked from a previous boot (a stale log line, a
     crashed process's leftover file permissions) stops working the moment
-    the server restarts. Persisted to `exec_token_path()` (0600) so a
+    the server restarts. Persisted to `exec_token_path(port)` (0600) so a
     same-box CLI process started AFTER this one (``tools/with-secret.py``'s
     fallback) can read the CURRENT server's token off disk; cached in
     `_exec_token` so repeated calls within THIS process (every request to
     the gated routes) don't re-read the file.
 
-    Call once from server.py's boot(), right after registering
-    `secrets_routes.bp`, so the token exists before any request can reach
-    the routes it gates. Idempotent within a process lifetime either way.
+    Call once from server.py's boot(), passing the port the server binds,
+    so the token exists before any request can reach the routes it gates.
+    Idempotent within a process lifetime either way (`port` only matters on
+    the call that mints).
     """
     global _exec_token
     if _exec_token is not None:
         return _exec_token
     _exec_token = os.urandom(32).hex()
-    _write_private_text(exec_token_path(), _exec_token)
+    _write_private_text(exec_token_path(port), _exec_token)
     return _exec_token
+
+
+def read_exec_token(port: int | None = None) -> str:
+    """The token the server on ``port`` (default `exec_route_port()`) last
+    wrote, or '' if there is none. Falls back to the legacy unsuffixed file
+    ONLY when the port-keyed one does not exist — see `exec_token_legacy_path`.
+    An existing-but-empty port file is not a reason to try the legacy one.
+    Never raises: a missing/unreadable file just means the caller can't
+    authenticate, which callers treat as "server unreachable"."""
+    try:
+        return exec_token_path(port).read_text(encoding='utf-8').strip()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return ''
+    try:
+        return exec_token_legacy_path().read_text(encoding='utf-8').strip()
+    except OSError:
+        return ''
 
 
 def _read_exec_token_file() -> str:
@@ -223,10 +260,7 @@ def _read_exec_token_file() -> str:
     below. Never raises: a missing/unreadable file just means the relay
     can't authenticate, which is treated as "server unreachable", not an
     error of its own."""
-    try:
-        return exec_token_path().read_text(encoding='utf-8').strip()
-    except OSError:
-        return ''
+    return read_exec_token()
 
 
 def exec_route_port() -> int:

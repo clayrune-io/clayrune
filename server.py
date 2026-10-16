@@ -3491,7 +3491,10 @@ def boot(check_port=True):
     # instead of a bare import. `check_port=False` (app.py) is fine running
     # this immediately: that caller already did its own single-instance
     # handling before ever calling boot().
-    _secrets_store_boot.ensure_exec_token()
+    #
+    # Keyed by this server's PORT: ~/.clayrune is shared by every MC on the
+    # box, so a second boot on another port must not overwrite this one's file.
+    _secrets_store_boot.ensure_exec_token(PORT)
     # Reap child process trees orphaned by a prior MC instance that exited
     # (restart/crash) without killing them. Reads the PID ledger the prior
     # instance persisted; identity-guarded so it can't friendly-fire. Must run

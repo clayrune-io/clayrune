@@ -88,10 +88,8 @@ def run(args, cmd: list[str], project: str | None, unattended: bool,
     """Run ``cmd`` through the server and relay it. ``args`` is with-secret's parsed
     namespace (``env``, ``user``, ``totp``, ``stdin``, ``unset``). Returns the child's
     exit code, or 2 for anything that stopped it starting or reaching its end."""
-    try:
-        token = vault.exec_token_path().read_text(encoding='utf-8').strip()
-    except OSError:
-        token = ''
+    port = vault.exec_route_port()
+    token = vault.read_exec_token(port)
     if not token:
         print(f"with-secret: {locked_message}", file=sys.stderr)
         return 2
@@ -111,7 +109,6 @@ def run(args, cmd: list[str], project: str | None, unattended: bool,
         'environ': dict(os.environ),
         'claude_session_id': os.environ.get('CLAUDE_CODE_SESSION_ID', ''),
     }).encode('utf-8')
-    port = vault.exec_route_port()
     conn = http.client.HTTPConnection('127.0.0.1', port, timeout=CONNECT_TIMEOUT_S)
     try:
         conn.request('POST', wire.PATH, body=body, headers={

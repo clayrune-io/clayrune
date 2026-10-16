@@ -93,10 +93,7 @@ def _run_via_server_exec(args: argparse.Namespace, cmd: list[str],
     'vault is locked' message — never a stack trace or a hang — if the
     server is unreachable or also locked.
     """
-    try:
-        token = vault.exec_token_path().read_text(encoding='utf-8').strip()
-    except OSError:
-        token = ''
+    token = vault.read_exec_token(vault.exec_route_port())
     if not token:
         print(f"with-secret: {locked_message}", file=sys.stderr)
         return 2
