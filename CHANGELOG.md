@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-16] - Repair suite triage context and subprocess guard findings
+
+- Context fingerprinting tolerates a missing project without raising from its diagnostic handler; harness errors still produce the existing explicit Error block.
+- Desk install-script and repository start-check cleanup use the shared POSIX process-tree guard, protecting the server's group and unrelated processes. Six simulated POSIX cleanup checks cover both callers and subtree fallback.
+- Browser/OS version probes and skill staging's Git identity lookup explicitly decode UTF-8 with replacement. Validation and scope: `docs/SUITE_TRIAGE_FIXES_2026-10-16.md`. Branch only; no merge, push or restart.
+
 ## [2026-10-16] - Keep concurrent pytest state and refresh stale fixtures
 
 - Test startup preserves another live pytest process's data root; dead-owner roots are still collected, with a real second-process regression check.

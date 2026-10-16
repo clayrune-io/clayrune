@@ -887,7 +887,8 @@ def git_clone_to_staging(url: str, ref: str | None = None, timeout: int = 60) ->
                 subprocess.run(['git', '-C', str(staging_path), *args], check=True,
                                capture_output=True, timeout=timeout)
         head = subprocess.run(['git', '-C', str(staging_path), 'rev-parse', 'HEAD'],
-                              check=True, capture_output=True, text=True, timeout=timeout).stdout.strip()
+                              check=True, capture_output=True, text=True,
+                              encoding='utf-8', errors='replace', timeout=timeout).stdout.strip()
         if immutable_ref and head != effective_ref:
             raise ValueError('Staged Git commit does not match the requested pin')
         checkout_files = {}

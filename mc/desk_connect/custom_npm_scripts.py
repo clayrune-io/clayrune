@@ -21,6 +21,7 @@ import threading
 from pathlib import Path
 
 from mc.core import _log
+from mc import proc_kill
 from mc.desk_connect.mcp_errors import ActivationError
 
 TIMEOUT_S = 120
@@ -63,8 +64,7 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         if os.name == 'nt':
             subprocess.run(['taskkill', '/F', '/T', '/PID', str(proc.pid)], capture_output=True, timeout=15, check=False)
         else:
-            import signal
-            os.killpg(proc.pid, signal.SIGKILL)
+            proc_kill.kill_tree(proc.pid)
     except Exception as e:                                  # noqa: BLE001
         _log(f'[desk_connect] install script tree could not be stopped: {type(e).__name__}', flush=True)
     try:

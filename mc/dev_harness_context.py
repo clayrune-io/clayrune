@@ -10,12 +10,13 @@ from mc.dev_harness_sources import selected_sources, verify_installation
 from mc.dev_harness_store import HarnessStore
 
 
-def render(project: dict[str, Any], data_root: Path) -> str:
+def render(project: dict[str, Any] | None, data_root: Path) -> str:
     """Full/lean/fresh/resume use this same frozen revision, never a draft.
 
     A failure becomes an explicit Error block, not Off or stale guidance.
     Nothing here edits vendor context files or injects upstream skill bodies.
     """
+    project = project or {}
     try:
         store = HarnessStore(data_root)
         try:
@@ -72,6 +73,6 @@ def render(project: dict[str, Any], data_root: Path) -> str:
                 'Repair/revalidate through the human surface; existing safety gates remain in effect.')
 
 
-def fingerprint(project: dict[str, Any], data_root: Path) -> str:
+def fingerprint(project: dict[str, Any] | None, data_root: Path) -> str:
     """Invalidate cached resumes on revision/resource/error changes, including deletions."""
     return digest(render(project, data_root))
