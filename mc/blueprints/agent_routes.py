@@ -5992,6 +5992,7 @@ def _read_agent_stream(proc, session):
                                     session.get('session_id', ''),
                                     _visible,
                                     session.get('task', '') or '',
+                                    agent_name=(session.get('character') or {}).get('agent_name') or '',
                                 )
                             session['last_output_time'] = _time.time()
                         elif block.get('type') == 'tool_use':
@@ -6286,6 +6287,7 @@ def _read_agent_stream_b(proc, session):
                                     session.get('session_id', ''),
                                     _visible,
                                     session.get('task', '') or '',
+                                    agent_name=(session.get('character') or {}).get('agent_name') or '',
                                 )
                             session['last_output_time'] = _time.time()
                         elif block.get('type') == 'tool_use':

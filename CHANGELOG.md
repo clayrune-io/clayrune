@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-16] - Use project media directly in the Desk
+
+- Added **From your projects** to Studio, the shared library picker and campaign media sources, with project filtering, search and picture/video previews. Bounded background discovery combines registered project folders and their chat-media indexes; unidentified historical shared uploads are skipped.
+- Using a project file saves a deduplicated library copy with source provenance, preserving campaign media if the original disappears. Current-root checks guard preview/copy; existing asset deletion protection stays in force. Chat media recording now includes videos and media file markers. Contract: `docs/DESK_PROJECT_MEDIA.md`. Branch only; no merge, push or restart.
+
 ## [2026-10-16] - Reuse daily registry results for busy CLI retries (MC-1103)
 
 - Hourly `skipped_in_use` retries now retain the original daily registry timestamp and reuse its version answer until the next daily check. Successful updates, current versions and other statuses stop hourly retries; existing session/process guards remain unchanged.

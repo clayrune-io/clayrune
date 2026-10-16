@@ -57,6 +57,16 @@ const IMG_ENGINE = (max) => [{ id: 'google', label: 'Google', auth: { kind: 'api
   connected: { ready: true, vault_entry: 'gemini-api', reason: null },
   models: [{ model_id: 'gemini-img', kind: 'image', label: 'Gemini image', status: 'stable', aspect_ratios: ['1:1', '16:9'], inputs: { reference_images_max: max } }] }];
 
+const PROJECT_MEDIA = [
+  { project_id: 'product', title: 'Product', files: 2, items: [
+    { id: 'project-picture', project_id: 'product', title: 'campaign-end.png', kind: 'image', folder: 'Campaign', src: '/api/serve-image?path=project-picture' },
+    { id: 'project-video', project_id: 'product', title: 'campaign.mp4', kind: 'video', folder: 'Campaign', play: '/api/serve-file?inline=1&path=project-video' },
+  ] },
+  { project_id: 'other', title: 'Other <project>', files: 1, items: [
+    { id: 'other-picture', project_id: 'other', title: 'other.png', kind: 'image', folder: '.', src: '/api/serve-image?path=other-picture' },
+  ] },
+];
+
 const PROJECT = (p) => ({
   id: p.id, name: p.name, status: 'active', domain: 'general', emoji: '🧪', description: '', summary: '', current_task: 'Idle',
   next_action: '', blocked: false, blocked_reason: null, activity_log: [], backlog: [], project_path: '/smoke/' + p.id,
@@ -79,7 +89,15 @@ function makeServer({ refsMax = 2 } = {}) {
   srv.handle = ({ method, path, body, J }) => {
     srv.log.push({ method, path, body });
     if (path === '/api/desk/workspace') return J({ ...workspaceFromFixtures(fx), projects, pieces: fx.families.map((f) => JSON.parse(JSON.stringify(f))) });
-    if (path === '/api/desk/materials') return J({ library: FOLDERS, articles: [], online: { video: [], image: [] }, recent: [] });
+    if (path === '/api/desk/materials') return J({ library: FOLDERS, projects: PROJECT_MEDIA, articles: [], online: { video: [], image: [] }, recent: [] });
+    if (path === '/api/desk/project-media/copy') {
+      if (srv.copyError) return J({ error: 'Source file no longer exists' }, 404);
+      const source = PROJECT_MEDIA.flatMap((p) => p.items).find((i) => i.id === body.id);
+      const path = `desk/library/${source.kind}/Projects/Product/${source.title}`;
+      return J({ id: path, path, title: source.title, kind: source.kind, src: source.kind === 'image' ? '/api/serve-image?path=copy' : null, provenance: { project_id: source.project_id } }, 201);
+    }
+    if (path === '/api/desk/project-media/refresh') return J({ refreshing: true }, 202);
+    if (path === '/api/desk/project-media') return J({ projects: PROJECT_MEDIA, refreshing: false, updated_at: 1 });
     if (path === '/api/desk/studio/usage') return J({ rendering: [], files: {} });
     if (path === '/api/desk/engines' && method === 'GET') return J({ engines: IMG_ENGINE(srv.refsMax) });
     if (path === '/api/desk/engines/estimate') return J({ estimate: { usd: 0.04, approximate: false }, job_limit_usd: 5, refusal: null });
@@ -347,6 +365,43 @@ async function live(browser, vp, name) {
     const over = await overflow(page);
     check(over <= 0, `${tag} New image has no horizontal overflow`, `${tag} image overflow ${over}px`);
   }
+  // Project files in Studio and the shared picker: browse before copying; use
+  // only hands callers the returned library path, and a refusal stays visible.
+  await openStudio(page);
+  await page.waitForSelector('[data-pm-project] option[value="product"]', { state: 'attached' });
+  await page.selectOption('[data-pm-project]', 'product');
+  await page.locator('[data-pm-pid="product"] .desk-v1-pm-folder > summary').click();
+  await page.waitForSelector('[data-pm-use]');
+  check(await page.locator('[data-pm-use]').count() === 2, `${tag} Studio groups project pictures and videos by folder`, `${tag} project files missing`);
+  await page.click('[data-pm-view="1"]');
+  await page.waitForSelector('[data-lv-player] video');
+  await page.keyboard.press('Escape');
+  ok(`${tag} a project video previews without copying`);
+  await page.click('[data-pm-use="1"]');
+  await settle(page, () => document.querySelector('[data-pm-status]').textContent === 'Saved to the library.');
+  check(srv.log.some((r) => r.path === '/api/desk/project-media/copy' && r.body.id === 'project-video'), `${tag} Studio saves a project video as a library copy`, `${tag} no copy request`);
+  await page.evaluate(() => { window._pickedProject = null; window.DeskV1LibraryPicker.open({ kinds: ['image'], onPick: (i) => { window._pickedProject = i; } }); });
+  await page.waitForSelector('[data-lp] [data-pm-project] option[value="product"]', { state: 'attached' });
+  await page.selectOption('[data-lp] [data-pm-project]', 'other');
+  await page.locator('[data-lp] .desk-v1-pm-folder > summary').click();
+  await page.waitForSelector('[data-lp] [data-pm-use]');
+  check(await page.locator('[data-lp] [data-pm-use]').count() === 1, `${tag} project filter isolates the other project`, `${tag} project filter leaked files`);
+  await page.selectOption('[data-lp] [data-pm-project]', '');
+  await page.fill('[data-lp] [data-pm-search]', 'campaign-end');
+  check(await page.locator('[data-lp] [data-pm-use]').count() === 1, `${tag} search finds a project picture and excludes videos for an image pick`, `${tag} project search mismatch`);
+  await shot(page, `project_media_picker_${name}.png`);
+  srv.copyError = true;
+  await page.click('[data-lp] [data-pm-use]');
+  await settle(page, () => /Could not use that file/.test(document.querySelector('[data-lp] [data-pm-status]').textContent));
+  check(!(await page.evaluate(() => window._pickedProject)), `${tag} failed copy keeps the chooser open without attaching a source path`, `${tag} failed copy picked a file`);
+  srv.copyError = false;
+  await page.click('[data-lp] [data-pm-use]');
+  await settle(page, () => !!window._pickedProject && !document.querySelector('[data-lp]'));
+  const picked = await page.evaluate(() => window._pickedProject);
+  check(picked.path === 'desk/library/image/Projects/Product/campaign-end.png' && picked.provenance.project_id === 'product', `${tag} picker returns the copied library file and provenance`, `${tag} source path escaped copy boundary: ${JSON.stringify(picked)}`);
+  await page.click('[data-pm-refresh]');
+  await settle(page, () => document.querySelector('[data-pm-status]').textContent === 'Project files refreshed.');
+  if (name === '390') check(await overflow(page) <= 0, `${tag} project browser has no horizontal overflow`, `${tag} project browser overflows`);
   check(realErrors(pageErrors).length === 0, `${tag} no uncaught page errors`, `${tag} page errors: ${pageErrors.join(' | ')}`);
   await ctx.close();
 

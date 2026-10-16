@@ -550,7 +550,7 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
       host.querySelector('[data-eng-ratio]').onchange = (ev) => { st.ratio = ev.target.value; st.estimate = null; paint(engines); estimate(engines); };
       host.querySelector('[data-eng-render-btn]').onclick = () => submit(engines);
       if (window.DeskV1LibraryRefs) window.DeskV1LibraryRefs.wire(host, st.refs, _refsOpts(p, st, (refs, what, it) => {
-        if (what === 'add') window.DeskV1Kit.toast(`Using “${it.title}” from the library. The engine reads that file; nothing was copied.`);
+        if (what === 'add') window.DeskV1Kit.toast(it.provenance ? `Using “${it.title}”. A copy is saved in the library.` : `Using “${it.title}” from the library. The engine reads that file; nothing was copied.`);
         st.estimate = null; paint(engines); estimate(engines);
       }));
     };

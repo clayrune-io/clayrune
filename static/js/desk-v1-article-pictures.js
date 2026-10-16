@@ -47,7 +47,7 @@
     if (!window.DeskV1LibraryPicker) return;
     window.DeskV1LibraryPicker.open({ kinds: ['image'], returnFocus: btn, onPick: (it) => {
       insert(bodyEl, it);
-      window.DeskV1Kit.toast(`Added “${it.title}” from the library to the article. The article points at that file; nothing was copied.`);
+      window.DeskV1Kit.toast(it.provenance ? `Added “${it.title}” to the article. A copy is saved in the library.` : `Added “${it.title}” from the library to the article. The article points at that file; nothing was copied.`);
     } });
   }
 

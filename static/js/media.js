@@ -90,6 +90,7 @@ function _mediaRenderBody() {
           <button class="${_mediaFilter==='all'?'active':''}" onclick="setMediaFilter('all')">All</button>
           <button class="${_mediaFilter==='diagram'?'active':''}" onclick="setMediaFilter('diagram')">Diagrams</button>
           <button class="${_mediaFilter==='image'?'active':''}" onclick="setMediaFilter('image')">Images</button>
+          <button class="${_mediaFilter==='video'?'active':''}" onclick="setMediaFilter('video')">Videos</button>
         </div>
         <label id="media-missing-toggle" style="display:none;font-size:11px;color:var(--text-faint);align-items:center;gap:4px;cursor:pointer">
           <input type="checkbox" ${_mediaShowMissing?'checked':''} onchange="setMediaShowMissing(this.checked)">
@@ -163,8 +164,8 @@ function renderMedia() {
   // by default so the gallery doesn't read as "mostly broken"; the toggle
   // reveals them for anyone auditing what's dead. Nothing is dropped from
   // the underlying index — this is a view filter only.
-  const missingCount = byKind.filter(m => m.kind === 'image' && m.missing).length;
-  const rows = _mediaShowMissing ? byKind : byKind.filter(m => !(m.kind === 'image' && m.missing));
+  const missingCount = byKind.filter(m => m.kind !== 'diagram' && m.missing).length;
+  const rows = _mediaShowMissing ? byKind : byKind.filter(m => !(m.kind !== 'diagram' && m.missing));
   _mediaRows = rows;
   if (countEl) countEl.textContent = rows.length ? `${rows.length} item${rows.length===1?'':'s'}` : '';
   if (missingToggle) {
@@ -177,7 +178,7 @@ function renderMedia() {
     // otherwise reads as a bug rather than the forward-only design.
     let msg;
     if (!_mediaCache.items.length) {
-      msg = 'No media yet.<br>Diagrams and images the agent produces from now on will collect here.<br>'
+      msg = 'No media yet.<br>Diagrams, images and videos the agent produces from now on will collect here.<br>'
         + '<span style="color:var(--text-faint);opacity:.75">Existing history isn\'t indexed — the gallery starts from today.</span>';
     } else if (byKind.length && missingCount === byKind.length) {
       msg = `All ${missingCount} match${missingCount===1?'':'es'} for this filter point at files that no longer exist `
@@ -193,6 +194,13 @@ function renderMedia() {
   grid.innerHTML = `<div class="media-grid">` + rows.map((m, i) => {
     const when = m.ts ? new Date(m.ts * 1000).toLocaleString() : '';
     const label = esc(m.task || '');
+    if (m.kind === 'video') {
+      const src = API_BASE + '/api/serve-file?inline=1&path=' + encodeURIComponent(m.path);
+      return `<div class="media-tile${m.missing ? ' media-dead' : ''}">
+        <div class="media-thumb"><video src="${esc(src)}" controls playsinline preload="none" style="width:100%;height:100%"></video></div>
+        <div class="media-meta"><span class="media-name">${esc(String(m.path).split(/[\\/]/).pop())}</span><span class="media-when">${esc(when)}</span></div>
+        ${label ? `<div class="media-task">${label}</div>` : ''}</div>`;
+    }
     if (m.kind === 'image') {
       const src = API_BASE + '/api/serve-image?path=' + encodeURIComponent(m.path);
       const name = String(m.path).split(/[\\/]/).pop();

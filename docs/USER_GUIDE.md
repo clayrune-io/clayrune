@@ -514,6 +514,25 @@ project's workspace folder.
 
 ## Studio: capture a product page
 
+### Use pictures and videos from your projects
+
+Studio and **Pick from library** include **From your projects**. Choose a
+project, open a folder, or search by file or folder name. Use **View** to
+preview a picture or play a video. **Refresh files** finds recent work; files
+are also refreshed automatically about every five minutes.
+
+Selecting a project file saves a copy in **Material library → Projects /
+project name**, then uses that copy in your scene, article, image or campaign.
+In Studio it saves the copy without attaching it to a campaign. **Add media →
+From your projects** offers the same chooser for an existing piece. Reusing an
+unchanged source reuses its library copy, and removing the original project
+file does not remove media from your campaign. Shared uploads appear when
+Clayrune knows which project they belong to; unassigned older uploads may need
+to be added manually. Discovery skips dependency/build/scratch folders and has
+per-project size and depth limits.
+
+### Capture a screen
+
 Open **The Desk → Studio → New image → Capture from the product**. Pick a
 product (a Clayrune project), choose its page, and press **Capture this screen**.
 The server takes a real 1440 × 900 screenshot and saves the picture in

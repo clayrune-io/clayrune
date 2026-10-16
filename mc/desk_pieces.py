@@ -250,6 +250,7 @@ def v1_piece(piece: dict) -> dict:
         'source': piece.get('source'), 'createdAt': piece.get('created_at'),
         'updatedAt': piece.get('updated_at'),
         'assets': [{'id': a['id'], 'kind': a.get('kind'), 'title': a.get('title') or '',
+                    **({'provenance': a['provenance']} if a.get('provenance') else {}),
                     'path': a.get('path'), 'src': _src_for(a.get('path') or '', a.get('kind') or '')}
                    for a in (piece.get('assets') or [])],
         'versions': [],
@@ -707,6 +708,7 @@ def _asset_title(real: Path, title) -> str:
 def add_asset(piece_id: str, *, path: str, title=None, asset_id: str | None = None) -> dict:
     """Attach a file already under data/uploads (an upload this module saved, a
     library file, a generated output). Returns the piece."""
+    from mc import desk_project_media as project_media
     if asset_id is not None and not (isinstance(asset_id, str) and _CLIENT_ID.match(asset_id)):
         raise PieceError('asset id must be 1-80 letters, digits, - or _')
     real = _resolve_under_uploads(path)
@@ -722,8 +724,8 @@ def add_asset(piece_id: str, *, path: str, title=None, asset_id: str | None = No
             raise PieceError(f'a piece can carry at most {MAX_ASSETS} assets', 409)
         if asset_id and any(a['id'] == asset_id for a in assets):
             raise PieceError('an asset with that id already exists', 409)
-        assets.append({'id': asset_id or _desk._new_id('asset'), 'kind': kind,
-                       'title': _asset_title(real, title), 'path': rel, 'added_at': now_iso()})
+        assets.append(project_media.with_provenance({'id': asset_id or _desk._new_id('asset'), 'kind': kind,
+                       'title': _asset_title(real, title), 'path': rel, 'added_at': now_iso()}))
         piece['updated_at'] = now_iso()
         _desk._write_store(store)
         return v1_piece(piece)
@@ -834,7 +836,7 @@ def _library_items(kind: str, folder: Path, rel_root: Path) -> list[dict]:
 
 
 def materials(campaign_id: str | None = None) -> dict:
-    """`{library:{video[],image[]}, articles[], online:{video[],image[]}, recent[]}`.
+    """`{library:{video[],image[]}, projects[], articles[], online:{video[],image[]}, recent[]}`.
 
     LIBRARY: every folder under `data/uploads/desk/library/<video|image>/` is a
     folder, each file in it an `items[]` entry (so the UI can offer the FILES, not
@@ -845,6 +847,7 @@ def materials(campaign_id: str | None = None) -> dict:
     list, minus the folders in NOT_RECENT_FOLDERS (scene pictures uploaded into a
     storyboard are material, not something made). The exclusion happens before the
     newest-8 cut, so material cannot crowd out what was made."""
+    from mc import desk_project_media as project_media
     root = _uploads_root() if UPLOADS_ROOT is not None else None
     library: dict = {'video': [], 'image': []}
     recent: list[tuple[float, dict]] = []
@@ -853,14 +856,14 @@ def materials(campaign_id: str | None = None) -> dict:
         for kind in ('video', 'image'):
             kdir = base / kind
             try:
-                folders = sorted(d for d in kdir.iterdir() if d.is_dir()) if kdir.is_dir() else []
+                folders = project_media.library_folders(kdir) if kdir.is_dir() else []
             except OSError as e:
                 _log(f'[desk] material library unreadable ({kind}): {e}', flush=True)
                 folders = []
             for d in folders:
                 items = _library_items(kind, d, root)
                 library[kind].append({
-                    'id': f'{kind}:{d.name}', 'title': d.name, 'files': len(items),
+                    'id': f'{kind}:{d.relative_to(kdir).as_posix()}', 'title': d.relative_to(kdir).as_posix(), 'files': len(items),
                     'thumb': next((i['src'] for i in items if i['src']), None), 'items': items})
                 if d.name in NOT_RECENT_FOLDERS:
                     continue
@@ -870,6 +873,7 @@ def materials(campaign_id: str | None = None) -> dict:
                                        {'id': i['id'], 'kind': kind, 'title': i['title']}))
                     except OSError:
                         pass
+    project_media.decorate_library(library)
     recent.sort(key=lambda t: -t[0])
     with _desk._store_lock:
         store = _desk._read_store()
@@ -878,4 +882,4 @@ def materials(campaign_id: str | None = None) -> dict:
                 for p in sorted(_pieces(store).values(), key=lambda p: (p.get('created_at') or '', p['id']))
                 if p.get('kind') == 'article' and p.get('campaign_id') != campaign_id]
     return {'library': library, 'articles': articles, 'online': {'video': [], 'image': []},
-            'recent': [r for _, r in recent[:8]]}
+            'recent': [r for _, r in recent[:8]], 'projects': project_media.grouped()}

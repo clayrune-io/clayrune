@@ -1,4 +1,4 @@
-"""Media index — diagrams and images the agent produced, per project.
+"""Media index — diagrams, images and videos the agent produced, per project.
 
 WHY AN INDEX AND NOT A SCAN
 ---------------------------
@@ -45,25 +45,25 @@ _locks_guard = threading.Lock()
 # without bound; the gallery is a recent-work surface, not an archive.
 MAX_ENTRIES = 500
 
-# Mirrors the image regex in static/js/rich-text.js — an absolute POSIX or
-# Windows path ending in an image extension. Keep the two in sync: the contract
-# is "if the chat renders it as an image, it belongs in the gallery."
+# Extends the image regex in static/js/rich-text.js to supported video paths.
+# Absolute POSIX/Windows paths and media [file:] markers are forward-indexed;
+# actual files must exist before they reach the gallery.
 # The lookbehind also excludes a leading `.` — the renderer's class lets
 # `./assets/x.png` and `../up/y.png` match as the phantom ABSOLUTE paths
 # `/assets/x.png` and `/up/y.png`. The chat gets away with that (a broken <img>
 # just hides itself via onerror); a gallery cannot — it would show dead tiles.
 _IMG_RE = re.compile(
     r'(?<![\w:/%.])((?:[A-Za-z]:(?!//)[\\/]|/)[^\s"\'`<>|]+?'
-    r'\.(?:png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif))(?![A-Za-z0-9])',
+    r'\.(?:png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif|mp4|mov|webm|m4v))(?![A-Za-z0-9])',
     re.IGNORECASE,
 )
 # A `[file:<abs path>]` / `[file:<abs path>|Label]` download marker naming an
-# image. Agents reach for this marker to hand over screenshots (Tobin's ten
+# image or video. Agents reach for this marker to hand over screenshots (Tobin's ten
 # first-run shots, 2026-09-24) and _IMG_RE can never see them: its lookbehind
 # rejects the `:` in `file:`. They are still pictures an agent produced, so
 # they belong in the gallery.
 _FILE_MARKER_IMG_RE = re.compile(
-    r'\[file:([^\]|\r\n]+?\.(?:png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif))(?:\|[^\]]*)?\]',
+    r'\[file:([^\]|\r\n]+?\.(?:png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif|mp4|mov|webm|m4v))(?:\|[^\]]*)?\]',
     re.IGNORECASE,
 )
 # A ```mermaid fenced block. DOTALL so the diagram body spans lines.
@@ -107,14 +107,14 @@ def extract(text: str) -> list[dict]:
     # diagram source, not a rendered image).
     without_diagrams = _MERMAID_RE.sub('', text)
     for path in _IMG_RE.findall(without_diagrams):
-        out.append({'kind': 'image', 'path': path})
+        out.append({'kind': 'video' if Path(path).suffix.lower() in ('.mp4', '.mov', '.webm', '.m4v') else 'image', 'path': path})
     for path in _FILE_MARKER_IMG_RE.findall(without_diagrams):
-        out.append({'kind': 'image', 'path': path.strip()})
+        out.append({'kind': 'video' if Path(path).suffix.lower() in ('.mp4', '.mov', '.webm', '.m4v') else 'image', 'path': path.strip()})
     return out
 
 
 def record_from_text(project_id: str, session_id: str, text: str,
-                     task: str = '') -> int:
+                     task: str = '', *, agent_name: str = '') -> int:
     """Index any media in this assistant message. Best-effort; never raises.
 
     Returns the number of entries written (0 is the overwhelmingly common case
@@ -135,7 +135,7 @@ def record_from_text(project_id: str, session_id: str, text: str,
             # (`/static/icon-badge-72.png`, `/../docs/.../icon-512.png` — code
             # strings, not pictures) does not exist as a file, so it never
             # reaches the gallery. Diagrams have no file, so they skip the check.
-            if item.get('kind') == 'image':
+            if item.get('kind') in ('image', 'video'):
                 try:
                     if not Path(item['path']).is_file():
                         continue
@@ -143,6 +143,8 @@ def record_from_text(project_id: str, session_id: str, text: str,
                     continue        # unreadable / malformed path → not media
             row = dict(item)
             row['session_id'] = session_id or ''
+            if agent_name:
+                row['agent_name'] = agent_name
             row['ts'] = now
             if task:
                 row['task'] = task[:120]
@@ -160,8 +162,8 @@ def record_from_text(project_id: str, session_id: str, text: str,
 
 
 def _key(row: dict) -> str:
-    if row.get('kind') == 'image':
-        return 'image:' + str(row.get('path', ''))
+    if row.get('kind') in ('image', 'video'):
+        return str(row['kind']) + ':' + str(row.get('path', ''))
     return 'diagram:' + str(row.get('source', ''))
 
 
@@ -205,7 +207,7 @@ def list_media(project_id: str) -> list[dict]:
         # trips before it knows which tiles to hide. The scratch dirs and
         # per-agent worktrees these paths point at are torn down long after
         # the index entry is written, so this is routine, not corruption.
-        if row.get('kind') == 'image':
+        if row.get('kind') in ('image', 'video'):
             try:
                 row = dict(row, missing=not Path(row.get('path', '')).is_file())
             except OSError:

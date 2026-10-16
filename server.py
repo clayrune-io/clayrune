@@ -2245,6 +2245,11 @@ _bp_desk.wire(
 )
 app.register_blueprint(_bp_desk.bp)
 
+from mc import desk_project_media as _desk_project_media  # noqa: E402
+_desk_project_media.wire(load_projects_fn=_bp_projects.load_projects,
+                        media_dir=Path(_DATA_ROOT) / 'data' / 'media', uploads_root=UPLOADS_DIR)
+app.register_blueprint(_desk_project_media.bp)
+
 from mc.blueprints import desk_render_recovery_routes as _bp_desk_render_recovery  # noqa: E402
 app.register_blueprint(_bp_desk_render_recovery.bp)
 
@@ -3504,6 +3509,7 @@ def boot(check_port=True):
     # before any subsystem spawns its own children. [leak fix 2026-06-03]
     _boot_phase('reap prior strays', process_ledger._reap_prior_instance_strays)
     _bp_sched._start_scheduler()
+    _desk_project_media.start()
     _start_hivemind_orchestrator()
     _bp_coord.start_coordination_loop()  # cross-agent coordination daemon (9518ec62)
     _boot_phase('worktree gc snapshot', _worktree_gc_snapshot_on_startup)  # gc'd in background

@@ -30,8 +30,8 @@
   // library fresh (a picture made a minute ago must be there); demo reads the fixture.
   function _read() {
     const store = window.DeskV1Store;
-    if (store.live()) return store.api('GET', '/api/desk/materials').then((m) => (m && m.library) || {});
-    return Promise.resolve(store.state().materialLibrary || {});
+    if (store.live()) return store.api('GET', '/api/desk/materials');
+    return Promise.resolve({ library: store.state().materialLibrary || {}, projects: [] });
   }
   function _flatten(lib, kinds) {
     const folders = [];
@@ -81,6 +81,7 @@
       <input type="search" class="desk-v1-sb-edit-input desk-v1-lp-search" data-lp-search placeholder="Search the library" aria-label="Search the library" autocomplete="off">
       <div class="desk-v1-lp-folders" data-lp-folders role="group" aria-label="Folders"></div>
       <div class="desk-v1-lp-body" data-lp-body></div>
+      ${window.DeskV1ProjectMedia ? window.DeskV1ProjectMedia.html() : ''}
     </div>`;
     const returnFocus = opts.returnFocus || document.activeElement;
     const search = el.querySelector('[data-lp-search]');
@@ -142,10 +143,13 @@
     search.focus({ preventScroll: true });
 
     const mine = _open;
-    _read().then((lib) => {
+    _read().then((materials) => {
       if (_open !== mine) return;
-      const flat = _flatten(lib, kinds);
+      const flat = _flatten(materials.library || {}, kinds);
       st.files = flat.files; st.folders = flat.folders; st.loading = false;
+      if (window.DeskV1ProjectMedia) window.DeskV1ProjectMedia.mount(el.querySelector('[data-project-media]'), {
+        projects: materials.projects || [], kinds, onPick: (item) => { _close(); if (typeof opts.onPick === 'function') opts.onPick(item); },
+      });
       paint();
     }).catch((e) => {
       if (_open !== mine) return;
@@ -157,7 +161,7 @@
   // Every library file of the kinds asked for, `{path, kind, title, src, folder}` (the
   // article's picture strip looks its paths up here).
   function files(kinds) {
-    return _read().then((lib) => _flatten(lib, kinds && kinds.length ? kinds : ['image']).files);
+    return _read().then((m) => _flatten(m.library || {}, kinds && kinds.length ? kinds : ['image']).files);
   }
 
   window.DeskV1LibraryPicker = { label: LABEL, buttonHTML, open, close: _close, files };

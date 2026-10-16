@@ -87,7 +87,7 @@
   // The material library behind Studio home, read live from M22 (demo shows the
   // fixture's own folders). `error` is a real failure shown as one, never an
   // empty library.
-  const _lib = { error: null, recent: [], boards: [], loaded: false };
+  const _lib = { error: null, recent: [], boards: [], loaded: false, projectView: {} };
 
   // Studio's own items: what it made (a standalone item has no campaign), as
   // Recent rows. A video still rendering reads its percentage off the item.
@@ -216,6 +216,7 @@
         </div>`).join('') : '<div class="desk-v1-camp-empty">Nothing made yet.</div>'}</div>
       <h3 class="desk-v1-studio-sub">Material library</h3>
       <div class="desk-v1-studio-lib" data-studio-lib>${_libHTML()}</div>
+      ${_isLive() && window.DeskV1ProjectMedia ? window.DeskV1ProjectMedia.html() : ''}
     </div>`;
   }
 
@@ -255,6 +256,7 @@
 
   function _wireStudio(el) {
     _wireLib(el);
+    if (window.DeskV1ProjectMedia) window.DeskV1ProjectMedia.mount(el.querySelector('[data-project-media]'), { projects: _fx().projectMedia || [], state: _lib.projectView });
     el.querySelectorAll('[data-studio-new]').forEach((btn) => {
       btn.onclick = () => {
         window.deskV1Nav('studio-create', { kind: btn.dataset.studioNew });
@@ -299,6 +301,7 @@
   function _loadLibrary() {
     return window.DeskV1Store.api('GET', '/api/desk/materials').then((m) => {
       _fx().materialLibrary = (m && m.library) || { video: [], image: [] };
+      _fx().projectMedia = (m && m.projects) || [];
       const lib = _fx().materialLibrary;
       const all = ['video', 'image'].flatMap((k) => (lib[k] || []).flatMap((f) => f.items || []));
       _lib.recent = ((m && m.recent) || []).map((r) => { const hit = all.find((i) => i.path === r.id); return { kind: r.kind, title: r.title, path: r.id, src: hit ? hit.src : null }; });
@@ -703,7 +706,7 @@
     if (!window.DeskV1LibraryPicker) return;
     window.DeskV1LibraryPicker.open({ kinds: ['image'], returnFocus: btn, onPick: (it) => {
       _applyScenePicture(sceneId, { path: it.path, kind: 'image', title: it.title, src: it.src });
-      DeskV1Kit.toast(`Used “${it.title}” from the library. The scene points at that file; nothing was copied.`);
+      DeskV1Kit.toast(it.provenance ? `Used “${it.title}”. A copy is saved in the library.` : `Used “${it.title}” from the library. The scene points at that file; nothing was copied.`);
     } });
   }
 
