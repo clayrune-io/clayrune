@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-10-16] - Read large npm dependency version lists (MC-1048)
+
+- Desk package Review accepts bounded registry metadata up to 16 MiB and 500,000 JSON nodes, so packages depending on zod resolve. Page and pasted configuration limits remain 2 MB / 20,000 nodes; depth and dependency-tree limits remain in force.
+
 > Renamed from "Mission Control" 2026-05-01; the GitHub repo was renamed
 > `mission-control` → `clayrune` 2026-06-09 (in-repo URLs updated; GitHub
 > redirects the old path). Backend identifiers (`mc_remote`, `MC_*` env vars,
