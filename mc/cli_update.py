@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from mc import cli_install, process_sweep, qwen_cli_install
+from mc import cli_install, cli_update_retry, process_sweep, qwen_cli_install
 from mc.atomic_json import write_json_atomic
 from mc.core import _log
 
@@ -56,9 +56,9 @@ CLI_NAMES = ('claude', 'codex', 'gemini', 'qwen', 'opencode', 'aider')
 
 # A CLI is re-checked once its last check is older than this; the loop wakes
 # hourly, so a daily cadence survives restarts without a second timer.
-CHECK_INTERVAL_S = 23 * 3600
+CHECK_INTERVAL_S = cli_update_retry.CHECK_INTERVAL_S
 # ...except one we could not touch because it was in use: that retries hourly.
-RETRY_STATUSES = frozenset({'skipped_in_use'})
+RETRY_STATUSES = cli_update_retry.RETRY_STATUSES
 UPDATE_TIMEOUT_S = 600
 
 _GITHUB_RELEASES = {'codex': 'openai/codex'}
@@ -69,6 +69,7 @@ _NPM_ORACLE = {'codex': '@openai/codex', 'claude': '@anthropic-ai/claude-code',
 _VER = re.compile(r'(\d+\.\d+\.\d+)')
 
 _lock = threading.Lock()
+_pass_lock = threading.Lock()
 _STATE: Dict[str, Any] = {'clis': {}}
 
 
@@ -310,7 +311,8 @@ def os_users(name: str, binary: Any,
 def check_one(name: str, binary: Any, *, in_use_fn: Callable[[str], List[str]],
               now: float, run_fn: Callable = _run, http_fn: Callable = _http_json,
               list_fn: Callable = process_sweep.list_processes,
-              platform: Optional[str] = None) -> Dict[str, Any]:
+              platform: Optional[str] = None,
+              cached_latest: Optional[Tuple[str, str]] = None) -> Dict[str, Any]:
     """Look at one installed CLI and, if it is behind and nothing is using it,
     update it with the updater matching how it was installed. Returns the
     record to store; never raises."""
@@ -321,7 +323,8 @@ def check_one(name: str, binary: Any, *, in_use_fn: Callable[[str], List[str]],
         if not inst:
             return {**rec, 'status': 'version_unreadable',
                     'detail': '`%s --version` printed no version' % name}
-        latest, src = latest_version(name, binary, run_fn, http_fn)
+        latest, src = (cached_latest if cached_latest is not None
+                       else latest_version(name, binary, run_fn, http_fn))
         rec['latest'], rec['latest_source'] = latest, src
         if not latest:
             return {**rec, 'status': 'latest_unknown',
@@ -373,13 +376,20 @@ def check_one(name: str, binary: Any, *, in_use_fn: Callable[[str], List[str]],
 # ── the pass ─────────────────────────────────────────────────────────────────
 
 def _due(entry: Optional[dict], now: float) -> bool:
-    if not entry:
-        return True
-    age = now - float(entry.get('checked_ts') or 0)
-    return age >= (3600 if entry.get('status') in RETRY_STATUSES else CHECK_INTERVAL_S)
+    return cli_update_retry.due(entry, now)
 
 
-def run_once(*, enabled_fn: Callable[[], bool], runtimes_fn: Callable[[], list],
+def run_once(**kwargs: Any) -> Dict[str, Any]:
+    """Serialize script/daily passes without waiting for another updater."""
+    if not _pass_lock.acquire(blocking=False):
+        return {'ok': True, 'skipped': True, 'reason': 'CLI update pass already running'}
+    try:
+        return _run_pass(**kwargs)
+    finally:
+        _pass_lock.release()
+
+
+def _run_pass(*, enabled_fn: Callable[[], bool], runtimes_fn: Callable[[], list],
              in_use_fn: Callable[[str], List[str]], now_fn: Callable[[], float] = time.time,
              run_fn: Callable = _run, http_fn: Callable = _http_json,
              list_fn: Callable = process_sweep.list_processes,
@@ -390,6 +400,7 @@ def run_once(*, enabled_fn: Callable[[], bool], runtimes_fn: Callable[[], list],
         return {'ok': True, 'skipped': True, 'reason': 'cli_auto_update_enabled is false'}
     now = now_fn()
     out: Dict[str, Any] = {}
+    records: Dict[str, Any] = {}
     for rt in runtimes_fn():
         name = getattr(rt, 'name', '')
         if name not in CLI_NAMES:
@@ -400,13 +411,18 @@ def run_once(*, enabled_fn: Callable[[], bool], runtimes_fn: Callable[[], list],
             continue
         try:
             binary = rt.resolve_binary()
-        except Exception:
+        except Exception as e:
+            _log(f"[cli-update] {name} binary resolution failed: {e}", flush=True)
             binary = None
+        cached = cli_update_retry.cached_latest(prior, now, force=force)
         if not binary or not os.path.isfile(str(binary)):
             rec = {'checked_ts': now, 'checked_at': _iso(now), 'status': 'not_installed'}
         else:
             rec = check_one(name, binary, in_use_fn=in_use_fn, now=now, run_fn=run_fn,
-                            http_fn=http_fn, list_fn=list_fn, platform=platform)
+                            http_fn=http_fn, list_fn=list_fn, platform=platform,
+                            cached_latest=cached)
+        rec['registry_checked_ts'] = (cli_update_retry.registry_timestamp(prior)
+                                      if cached is not None and prior else now)
         # "updated to X on date" must outlive tomorrow's up_to_date record.
         if 'last_update' not in rec and prior and prior.get('last_update'):
             rec['last_update'] = prior['last_update']
@@ -414,12 +430,19 @@ def run_once(*, enabled_fn: Callable[[], bool], runtimes_fn: Callable[[], list],
             _STATE['clis'][name] = rec
             _save()
         out[name] = rec['status']
+        records[name] = rec
         if rec['status'] in ('updated', 'update_failed', 'skipped_in_use', 'unknown_install_method'):
             _log(f"[cli-update] {name}: {rec['status']} {rec.get('detail') or ''}".rstrip(), flush=True)
-    return {'ok': True, 'checked': out}
+    return {'ok': True, 'checked': out, 'records': records}
 
 
 # ── provider row ─────────────────────────────────────────────────────────────
+
+def snapshot() -> Dict[str, Any]:
+    """Persisted results for CLI-script reporting, including checks not due."""
+    with _lock:
+        return {name: dict(rec) for name, rec in _STATE['clis'].items()}
+
 
 def provider_summary(name: str) -> Optional[Dict[str, Any]]:
     """What the provider row shows for this CLI, or None before any check."""

@@ -22,9 +22,11 @@ installer build in ~/.local/bin, whose updater is `claude update`; running
 creates exactly the shadowing this tool exists to catch. So each entry carries
 its own update command and we never derive one from the package name.
 
-Report-only by default. `--apply` performs updates; `--json` prints machine
-output for the scheduled run. Exit code is non-zero when something still needs
-a human, so a scheduler can alert on it.
+Report-only by default. `--apply` asks the running server to perform its due
+guarded checks and joins its persisted hourly in-use retry cycle (MC-1103).
+It respects the auto-update setting and never falls back to local installs
+when the server cannot be reached. `--json` prints machine output for the
+scheduled run. Exit code is non-zero when something still needs attention.
 """
 from __future__ import annotations
 
@@ -583,7 +585,7 @@ def model_upgrades_check(host, apply_updates) -> dict:
 
 
 def process_sweep_before_apply(host) -> dict:
-    """POST /api/system/process-sweep on the running Clayrune server before
+    """Legacy helper, unused by main since MC-1103. POST a process sweep before
     this script attempts any --apply install, so a week-old orphaned CLI
     process (MC-991's original codex.exe) is gone before it can lock a
     package dir again -- same call-seam pattern as `model_upgrades_check`:
@@ -605,9 +607,29 @@ def process_sweep_before_apply(host) -> dict:
         return {'ok': False, 'error': f'{type(e).__name__}: {e}'}
 
 
+def cli_updates_apply(host) -> dict:
+    """Use the server's session guard, cache and retries; never install locally."""
+    url = f'{host}/api/cli-updates/run'
+    req = urllib.request.Request(url, data=b'{}', method='POST',
+                                 headers={'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(req, timeout=3660) as r:
+            report = json.load(r)
+        if (not isinstance(report, dict) or report.get('ok') is not True
+                or not isinstance(report.get('clis'), list)
+                or any(not isinstance(row, dict)
+                       or not isinstance(row.get('name'), str)
+                       or not isinstance(row.get('status'), str)
+                       for row in report['clis'])):
+            return {'error': f'invalid CLI update report from {url}'}
+        return report
+    except Exception as e:
+        return {'error': f'could not run guarded CLI updates at {url}: {type(e).__name__}: {e}'}
+
+
 def main():
     ap = argparse.ArgumentParser(description='Check/update Clayrune agent CLIs.')
-    ap.add_argument('--apply', action='store_true', help='perform updates, not just report')
+    ap.add_argument('--apply', action='store_true', help='run due guarded updates on the server')
     ap.add_argument('--json', action='store_true', help='machine-readable output')
     ap.add_argument('--model-upgrades', action='store_true',
                     help='run the model pin auto-upgrade gate on the running '
@@ -633,36 +655,44 @@ def main():
         return 1 if needs_human else 0
 
     if args.apply:
-        # Best-effort: sweep orphaned agent-CLI processes on the running
-        # server before any install attempt, so a stale locker (the
-        # original MC-991 codex.exe) is gone before it can lock a package
-        # dir again. Never blocks -- see process_sweep_before_apply's
-        # docstring for why an unreachable server must not stop --apply.
-        sweep_report = process_sweep_before_apply(args.host)
-        if sweep_report.get('error'):
-            print(f'[process-sweep] preflight skipped: {sweep_report["error"]}', file=sys.stderr)
+        report = cli_updates_apply(args.host)
+        if report.get('error'):
+            print(json.dumps(report, indent=2))
+            return 1
+        live = report['clis']
+        # Keep PATH-shadow diagnostics from the report-only tool. This
+        # scans PATH locally, never a registry lookup or install.
+        for row in live:
+            if row.get('path'):
+                row['shadowed_by'] = shadow_check(row['name'], row['path'])
+    else:
+        report = {}
+        live = [check_one(c) for c in CLIS]
 
     # Report every row, including not_installed. Hiding those was how a
     # resolution failure looked identical to "we don't run that CLI here".
     # not_installed is informational and does NOT set the exit code -- not
     # every box runs all six.
-    live = [check_one(c, args.apply) for c in CLIS]
-
     if args.json:
-        print(json.dumps({'clis': live}, indent=2))
+        print(json.dumps({**report, 'clis': live}, indent=2))
     else:
+        if report.get('skipped'):
+            print(report['reason'])
         for r in live:
             line = '%-10s %-12s latest=%-12s %s' % (
                 r['name'], str(r.get('installed')), str(r.get('latest')), r['status'])
-            if r.get('updated'):
+            if r.get('updated') or r['status'] == 'updated':
                 line += ' -> %s' % r.get('installed_after')
             print(line)
             for s in r.get('shadowed_by') or []:
                 print('           SHADOW: %s (PATH resolves %s)' % (s, r['path']))
             if r.get('update_error'):
                 print('           UPDATE FAILED: %s' % r['update_error'])
+            elif r.get('detail'):
+                print('           %s' % r['detail'])
 
-    return 1 if any(r['status'] not in ('ok', 'not_installed') for r in live) else 0
+    return 1 if any(r['status'] not in ('ok', 'not_installed', 'updated', 'up_to_date')
+                    or r.get('shadowed_by') for r in live) else 0
 
 
 if __name__ == '__main__':

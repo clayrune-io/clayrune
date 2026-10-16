@@ -258,6 +258,80 @@ def test_skipped_in_use_retries_after_an_hour_others_wait_a_day(npm_gemini, stat
     assert _run(rts, box, now=NOW + 3700 + 24 * 3600)['checked'] == {'gemini': 'up_to_date'}
 
 
+def test_in_use_retries_reuse_registry_until_original_daily_boundary(npm_gemini, state_file):
+    box = Box('0.50.0', '0.60.0', bumps_to='0.60.0')
+    rts = [FakeRT('gemini', npm_gemini)]
+    busy = lambda n: ['session idle']
+    _run(rts, box, in_use=busy)
+    for hour in range(1, 23):
+        assert _run(rts, box, now=NOW + hour * 3600, in_use=busy)['checked'] == {'gemini': 'skipped_in_use'}
+    assert len([c for c in box.calls if 'view' in c]) == 1
+    rec = json.loads(state_file.read_text())['clis']['gemini']
+    assert rec['registry_checked_ts'] == NOW
+    assert rec['checked_ts'] == NOW + 22 * 3600
+    box.latest = '0.61.0'
+    _run(rts, box, now=NOW + 23 * 3600, in_use=busy)
+    assert len([c for c in box.calls if 'view' in c]) == 2
+    assert cli_update.snapshot()['gemini']['latest'] == '0.61.0'
+    assert box.updater_calls() == []
+
+
+def test_retry_cache_survives_reload_and_stops_after_update(npm_gemini, state_file):
+    box = Box('0.50.0', '0.60.0', bumps_to='0.60.0')
+    rts = [FakeRT('gemini', npm_gemini)]
+    _run(rts, box, in_use=lambda n: ['session idle'])
+    cli_update.wire(state_file)
+    assert _run(rts, box, now=NOW + 3599)['checked'] == {}
+    assert _run(rts, box, now=NOW + 3600)['checked'] == {'gemini': 'updated'}
+    assert _run(rts, box, now=NOW + 7200)['checked'] == {}
+    assert len([c for c in box.calls if 'view' in c]) == 1
+    assert len(box.updater_calls()) == 1
+
+
+def test_external_update_stops_retry_without_invoking_installer(npm_gemini, state_file):
+    box = Box('0.50.0', '0.60.0')
+    rts = [FakeRT('gemini', npm_gemini)]
+    _run(rts, box, in_use=lambda n: ['session idle'])
+    box.version = '0.60.0'
+    assert _run(rts, box, now=NOW + 3600)['checked'] == {'gemini': 'up_to_date'}
+    assert _run(rts, box, now=NOW + 7200)['checked'] == {}
+    assert box.updater_calls() == []
+    assert len([c for c in box.calls if 'view' in c]) == 1
+
+
+@pytest.mark.parametrize('status', [
+    'up_to_date', 'updated', 'update_failed', 'update_no_change', 'latest_unknown',
+    'unknown_install_method', 'updater_unavailable', 'version_unreadable',
+    'check_error', 'not_installed',
+])
+def test_other_statuses_never_get_hourly_retries(npm_gemini, state_file, status):
+    cli_update._STATE['clis']['gemini'] = {'status': status, 'checked_ts': NOW}
+    box = Box('0.50.0', '0.60.0')
+    assert _run([FakeRT('gemini', npm_gemini)], box, now=NOW + 3600)['checked'] == {}
+    assert box.calls == []
+
+
+def test_force_refreshes_cached_registry(npm_gemini, state_file):
+    box = Box('0.50.0', '0.60.0')
+    rts = [FakeRT('gemini', npm_gemini)]
+    _run(rts, box, in_use=lambda n: ['session idle'])
+    box.latest = '0.61.0'
+    _run(rts, box, now=NOW + 60, in_use=lambda n: ['session idle'], force=True)
+    assert cli_update.snapshot()['gemini']['latest'] == '0.61.0'
+    assert len([c for c in box.calls if 'view' in c]) == 2
+
+
+def test_overlapping_pass_is_skipped_without_probes(npm_gemini, state_file):
+    box = Box('0.50.0', '0.60.0')
+    cli_update._pass_lock.acquire()
+    try:
+        out = _run([FakeRT('gemini', npm_gemini)], box)
+        assert out['skipped'] and 'already running' in out['reason']
+        assert box.calls == []
+    finally:
+        cli_update._pass_lock.release()
+
+
 # ── toggle off ──────────────────────────────────────────────────────────────
 
 def test_toggle_off_does_nothing_at_all(npm_gemini, state_file):
@@ -453,3 +527,39 @@ def test_provider_list_carries_the_cli_update_summary(srv, monkeypatch, tmp_path
     assert by['gemini']['cli_update']['text'] == 'Up to date (checked 2026-10-02)'
     assert all('cli_update' in r for r in rows)
     assert agent_routes._cli_update is cli_update
+
+
+def test_script_endpoint_uses_guarded_pass_and_persists_hourly_retry(srv, monkeypatch, npm_gemini, state_file):
+    server, sr, state = srv
+    box = Box('0.50.0', '0.60.0', bumps_to='0.60.0')
+    busy = ['session idle']
+    now = [NOW]
+    real_run = cli_update.run_once
+    monkeypatch.setitem(state.CONFIG, 'cli_auto_update_enabled', True)
+
+    def run(**kw):
+        return real_run(**{**kw, 'runtimes_fn': lambda: [FakeRT('gemini', npm_gemini)],
+                           'in_use_fn': lambda n: busy, 'now_fn': lambda: now[0],
+                           'run_fn': box.run, 'http_fn': lambda *a: {}, 'list_fn': lambda: []})
+
+    monkeypatch.setattr(sr.cli_update, 'run_once', run)
+    client = server.app.test_client()
+    first = client.post('/api/cli-updates/run', json={'force': True, 'command': 'ignored'}).get_json()
+    assert first['checked'] == {'gemini': 'skipped_in_use'}
+    assert first['clis'][0]['in_use_by'] == busy
+    assert client.post('/api/cli-updates/run').get_json()['checked'] == {}
+    assert box.updater_calls() == []
+    busy.clear()
+    now[0] += 3600
+    assert sr._run_cli_update()['checked'] == {'gemini': 'updated'}
+    assert len([c for c in box.calls if 'view' in c]) == 1
+    assert len(box.updater_calls()) == 1
+
+
+def test_script_endpoint_honors_disabled_toggle(srv, monkeypatch, state_file):
+    server, _sr, state = srv
+    monkeypatch.setitem(state.CONFIG, 'cli_auto_update_enabled', False)
+    monkeypatch.setattr(cli_update, 'check_one', lambda *a, **k: pytest.fail('disabled must not probe'))
+    report = server.app.test_client().post('/api/cli-updates/run').get_json()
+    assert report['skipped'] and report['clis'] == []
+    assert not state_file.exists()

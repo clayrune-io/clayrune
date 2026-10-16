@@ -354,6 +354,7 @@ mutation.
 | POST | `/api/system/update` | Pull + apply an update. |
 | POST | `/api/system/restart` | Restart the server. **Requires user approval — never call without explicit go-ahead.** |
 | GET | `/api/system/restart/status` | Heartbeat-based restart detection. |
+| POST | `/api/cli-updates/run` | Run due CLI checks through the built-in auto-update setting and in-use guards; no arguments or force override. Returns `checked` statuses plus persisted `clis` rows (including rows not due). `skipped_in_use` retries hourly with the cached daily registry answer. The maintenance script's `--apply` uses this route. No process sweep or session interruption. |
 
 ## Distill (skill proposals)
 

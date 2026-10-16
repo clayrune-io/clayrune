@@ -459,8 +459,7 @@ def _cli_update_loop():
 
 @bp.route('/api/system/process-sweep', methods=['POST'])
 def system_process_sweep():
-    """Manual/pre-update trigger — tools/cli-version-check.py's --apply path
-    calls this before attempting an install (same precedent as
+    """Manual process-sweep trigger (same precedent as
     /api/model-upgrades/run: the caller asks the server to run its own gate,
     it does not decide anything itself). Body: {"dry_run": bool} optional."""
     body = request.get_json(silent=True) or {}
