@@ -81,6 +81,38 @@ def test_own_group_leader_gets_one_killpg(posix):
     assert calls['killpg'] == [(4100, 9)] and calls['kill'] == []
 
 
+@pytest.mark.parametrize('module_name,cleanup', [
+    ('custom_npm_scripts', '_kill_tree'), ('github_start_check', '_stop'),
+])
+@pytest.mark.parametrize('pgid', [SERVER_PGRP, 5555, 4100])
+def test_desk_cleanup_preserves_server_and_siblings(posix, monkeypatch, module_name, cleanup, pgid):
+    """Both Desk cleanup paths use the real guard, including its subtree fallback."""
+    import importlib
+    from types import SimpleNamespace
+
+    module = importlib.import_module(f'mc.desk_connect.{module_name}')
+    monkeypatch.setattr(module, 'os', SimpleNamespace(name='posix'))
+    calls, pgids = posix
+    pgids[4100] = pgid
+    waits = []
+
+    def wait(timeout):
+        waits.append(timeout)
+        if len(waits) == 1:
+            raise subprocess.TimeoutExpired('fixture-child', timeout)
+        return 0
+
+    proc = SimpleNamespace(pid=4100, stdin=None, wait=wait,
+                           kill=lambda: calls['kill'].append((4100, 9)))
+    getattr(module, cleanup)(proc)
+    if pgid == 4100:
+        assert calls['killpg'] == [(4100, 9)]
+    else:
+        assert calls['killpg'] == []
+        assert {pid for pid, _ in calls['kill']} == {4100, 4101, 4102}
+    assert not {ME, 3999, 4200} & {pid for pid, _ in calls['kill']}
+
+
 @pytest.mark.parametrize('victim', [ME, 3999])  # the server itself / its launcher
 def test_refuses_self_and_ancestors(posix, victim):
     calls, pgids = posix

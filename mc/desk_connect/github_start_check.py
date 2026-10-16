@@ -27,6 +27,7 @@ import time
 from datetime import datetime, timezone
 
 from mc.core import _log
+from mc import proc_kill
 from mc.desk_connect import custom_connection_store as store
 from mc.desk_connect.mcp_errors import ActivationError
 
@@ -87,7 +88,8 @@ def _stop(proc: subprocess.Popen) -> None:
         if os.name == 'nt':
             subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)], capture_output=True, timeout=10)
         else:
-            os.killpg(proc.pid, 9)
+            if not proc_kill.kill_tree(proc.pid):
+                proc.kill()
     except Exception as e:
         _log(f'[desk-connect] start check could not stop its server tree: {type(e).__name__}', flush=True)
         proc.kill()

@@ -81,7 +81,7 @@ def _version_flag(chromium: str) -> str | None:
     on Windows: there chrome.exe --version opens a browser instead of printing."""
     try:
         out = subprocess.run([chromium, '--version'], stdin=subprocess.DEVNULL,
-                             capture_output=True, text=True, timeout=10).stdout
+                             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10).stdout
     except Exception as e:
         print(f'[browser] chromium --version failed: {e}', flush=True)
         return None
@@ -123,7 +123,7 @@ def _macos_platform_version() -> str | None:
     raw = ''
     try:
         raw = subprocess.run([_SW_VERS, '-productVersion'], stdin=subprocess.DEVNULL,
-                             capture_output=True, text=True, timeout=10).stdout.strip()
+                             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10).stdout.strip()
     except Exception as e:
         print(f'[browser] sw_vers failed: {e}', flush=True)
     if not _MAC_VERSION_RE.fullmatch(raw):
