@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-10-16] - Keep queued report notices through chat rebuilds (MC-1063)
+
+- Parent chats restore their report-waiting notice from cached server status after modal rebuilds, including both split panes. Opening the chat before or after dispatch retains the notice; delivery clears it.
+
 ## [2026-10-16] - Read large npm dependency version lists (MC-1048)
 
 - Desk package Review accepts bounded registry metadata up to 16 MiB and 500,000 JSON nodes, so packages depending on zod resolve. Page and pasted configuration limits remain 2 MB / 20,000 nodes; depth and dependency-tree limits remain in force.

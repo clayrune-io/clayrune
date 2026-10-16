@@ -72,6 +72,11 @@ try {
         return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(status) });
       if (url.pathname === '/api/floor')
         return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(floor) });
+      if (url.pathname === '/api/projects') {
+        const p = JSON.parse(readFileSync(join(ROOT, 'tools/smoke/fixtures/projects.json'), 'utf8'))[0];
+        return route.fulfill({contentType: 'application/json', body: JSON.stringify([{...p, id: PID, name: 'Report smoke', project_path: '/smoke'}])});
+      }
+      if (url.pathname.endsWith('/agent/stream')) return route.abort();
       if (req.method() !== 'GET') return route.abort();
       if (url.hostname === 'localhost' && url.pathname === '/') {
         return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8',
@@ -96,15 +101,8 @@ try {
     check(bridged, 'checkout JS loaded (paintReportsWaiting, fetchAgentStatus, openFloor bridged)');
     if (!bridged) throw new Error('no bridge');
 
-    await page.evaluate((sid) => {
-      const wrap = document.createElement('div');
-      wrap.className = 'agent-chat';
-      const out = document.createElement('div');
-      out.className = 'agent-output';
-      out.id = `agent-output-${sid}`;
-      wrap.appendChild(out);
-      document.body.appendChild(wrap);
-    }, SID);
+    // Open before a dispatch/report is visible, then feed the server status.
+    await page.evaluate(pid => window.openProjectModal(pid), PID);
     const snap = () => page.evaluate((sid) => {
       const el = document.getElementById(`report-waiting-${sid}`);
       if (!el) return { present: false };
@@ -117,6 +115,10 @@ try {
     const poll = async (reports) => {
       status = { sessions: [row(reports)] };
       await page.evaluate((pid) => window.fetchAgentStatus(pid), PID);
+      await page.evaluate(({pid, sid}) => {
+        activeAgentTab[pid] = sid;
+        refreshModalById(pid);
+      }, {pid: PID, sid: SID});
       return snap();
     };
 
@@ -125,6 +127,9 @@ try {
     check(s.present && s.text.includes('report waiting from Sol_Tobin'),
       `marker shows "${(s.text || '').slice(0, 60)}"`);
     check(s.present && s.stage === 'waiting' && s.above, 'marker is a waiting-stage row placed above the transcript');
+    await page.evaluate(({pid,sid}) => { closeModalById(pid); openProjectModal(pid); switchAgentTab(pid,sid); }, {pid:PID,sid:SID});
+    await page.waitForSelector(`#report-waiting-${SID}`);
+    check((await snap()).present, 'open after dispatch: cached notice survives modal close/reopen');
     check(s.present && s.width > 0 && s.height > 0 && s.left >= 0 && s.right <= s.vw + 1,
       `marker is visible and inside the ${w}px viewport (left=${Math.round(s.left)} right=${Math.round(s.right)})`);
 
