@@ -1,5 +1,10 @@
 # Dev harness policy foundation (DH-M1)
 
+DH-M3 adds frozen native-command execution and report-only headless inspection;
+see `DEV_HARNESS_RUNNER.md`. Its internal runner receipts are execution
+provenance only, cannot authorize a merge and are not measured Preview
+activation evidence. Native adapters and managed integration remain M4/M5.
+
 DH-M2 adds pinned guidance inspection/installation and context projection on top
 of this contract; see `DEV_HARNESS_GUIDANCE.md`. Its installation receipt is
 revalidated before Enforce activation. M1 policy/evidence formats and all human
@@ -7,7 +12,8 @@ gates remain unchanged; deterministic/reviewer check coverage is still Unsupport
 
 MC-960 / `d813ea78`. Implements only the DH-M1 row of
 `DEV_HARNESS_SPEC.md` revision 3. This is a backend contract, not the usable
-six-session MVP. No runner, installer, UI, merge hold or release gate is delivered.
+six-session MVP. This document describes M1; M2 guidance and M3 runner coverage
+are documented separately. No UI, merge hold or release gate is delivered.
 
 ## Ownership and catalogue
 
