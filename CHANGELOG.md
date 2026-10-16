@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-10-16] - Show recorded dispatch lineage in completed chats (MC-1033)
+
+- Reconstructed history now carries the same durable dispatcher as the conversation list, including children outside its first page and transcript-keyed history twins. The banner also reads recorded conversation metadata when available. Unrecorded lineage stays blank; callback recipients do not become dispatchers.
+
 ## [2026-10-16] - Complete service-worker updates with agent streams open (MC-713)
 
 - Force update briefly pauses this tab's agent streams to free browser connection slots. Unchanged workers show a toast and resume streams; changed workers activate and reload. Blocked checks time out after 12 seconds with retry guidance and an enabled button.

@@ -1,6 +1,7 @@
 // ── Agent Panel ─────────────────────────────────────────────────────────────
 
 import { openAttendUnlockDialog } from './attend-unlock-dialog.js';
+import { historySpawner } from './conversation-lineage.js';
 
 // Tag agent-bound POST bodies with client="mobile" when the viewport is
 // phone-sized. The backend then decides — based on mobile_brief_replies_enabled
@@ -3908,6 +3909,7 @@ async function openConversation(projectId, csid, mcSessionId, isLive) {
         agentStatusCache[mcSessionId] = {
           status: 'completed', task: rd.task || '', projectId,
           startedAt: rd.started_at || '', claudeSessionId: rd.claude_session_id || csid || '',
+          spawnedBySessionId: rd.spawned_by_session_id || '',
           _readOnlyRevived: true,
         };
         agentOutputBuffers[mcSessionId] = rd.log_lines || [];
@@ -3968,6 +3970,7 @@ async function _openConversationByCsid(projectId, csid) {
       agentStatusCache[csid] = {
         status: 'completed', task: rd.task || '', projectId,
         startedAt: rd.started_at || '', claudeSessionId: csid,
+        spawnedBySessionId: rd.spawned_by_session_id || '',
         _readOnlyRevived: true,
       };
       agentOutputBuffers[csid] = rd.log_lines || [];
@@ -4356,6 +4359,7 @@ async function _resolveConversationSid(projectId, csid, mcSessionId, isLive) {
         agentStatusCache[mcSessionId] = {
           status: 'completed', task: rd.task || '', projectId,
           startedAt: rd.started_at || '', claudeSessionId: rd.claude_session_id || csid || '',
+          spawnedBySessionId: rd.spawned_by_session_id || '',
           _readOnlyRevived: true,
         };
         agentOutputBuffers[mcSessionId] = rd.log_lines || [];
@@ -4392,6 +4396,7 @@ async function _resolveConversationSid(projectId, csid, mcSessionId, isLive) {
       agentStatusCache[csid] = {
         status: 'completed', task: rd.task || '', projectId,
         startedAt: rd.started_at || '', claudeSessionId: csid,
+        spawnedBySessionId: rd.spawned_by_session_id || '',
         _readOnlyRevived: true,
       };
       agentOutputBuffers[csid] = rd.log_lines || [];
@@ -4875,7 +4880,7 @@ window._renderForkNotice = _renderForkNotice;
 // if nameless, notice rather than silence.
 function _dispatchedByBannerHTML(sessionId) {
   const c = agentStatusCache[sessionId] || {};
-  const parentId = c.spawnedBySessionId || '';
+  const parentId = historySpawner(sessionId, c, conversationsCache[c.projectId]);
   if (!parentId) return '';
   const parent = agentStatusCache[parentId];
   const pChar = parent && parent.character;
