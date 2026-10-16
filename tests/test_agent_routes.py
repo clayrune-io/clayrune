@@ -2460,8 +2460,16 @@ def test_compose_install_batch_posix_runs_each_vendor_independently(monkeypatch)
     """Same property for the POSIX shape, run under a real sh/bash."""
     import shutil as real_shutil
     import subprocess as sp
+    from mc import agent_jobs
     from mc.blueprints import agent_routes as ar
-    sh = real_shutil.which('bash') or real_shutil.which('sh')
+    # System32/bash.exe is a WSL command launcher, not native Git Bash; the
+    # composed command has different exit-status behavior through it. Reuse
+    # the host resolver before pretending to compose on Linux.
+    if sys.platform == 'win32':
+        resolved = agent_jobs.resolve_shell('bash')
+        sh = resolved['path'] if resolved['shell'] == 'bash' else None
+    else:
+        sh = real_shutil.which('bash') or real_shutil.which('sh')
     if not sh:
         pytest.skip('no POSIX shell')
     monkeypatch.setattr(ar.sys, 'platform', 'linux')

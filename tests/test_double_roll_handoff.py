@@ -101,6 +101,14 @@ def env(tmp_path, monkeypatch):
     # Byte backstop stays quiet throughout — isolates the token/interrupted
     # trigger paths this test is actually exercising.
     monkeypatch.setattr(ar, '_session_too_large', lambda pp, sid: (False, 0))
+    # Resume-target healing now checks the transcript before spawning (7e1f8b93).
+    # Model the incident's real old transcript, not just the handoff's text.
+    transcript = tmp_path / f'{OLD_SID}.jsonl'
+    transcript.write_text('{}\n', encoding='utf-8')
+    find_transcript = lambda pp, sid: transcript if sid == OLD_SID else None
+    monkeypatch.setattr(ar, '_find_transcript_file', find_transcript)
+    monkeypatch.setattr(ar._agent_runtime.get_runtime('claude'), 'transcript_path',
+                        find_transcript)
 
     snapshot = dict(mc_state.agent_sessions)
     mc_state.agent_sessions.clear()
@@ -117,6 +125,7 @@ def env(tmp_path, monkeypatch):
 def _session(sid, csid, alive, context_tokens):
     return {
         'session_id': sid, 'project_id': 'p1', 'claude_session_id': csid,
+        '_claude_transcript_history': [csid],
         'status': 'idle', 'task': 'chat', 'log_lines': ['> Ron: hi', 'hello'],
         'started_at': '2026-09-27T12:00:00Z', 'mode': 'B',
         'proc': _Proc(alive), 'process_alive': alive,
