@@ -12,6 +12,12 @@
 - Using a project file saves a deduplicated library copy with source provenance, preserving campaign media if the original disappears. Current-root checks guard preview/copy; existing asset deletion protection stays in force. Chat media recording now includes videos and media file markers. Contract: `docs/DESK_PROJECT_MEDIA.md`. Branch only; no merge, push or restart.
 - Project lists contain only counts, thumbnails and folder names/counts; file rows load separately in bounded pages when opened, with **Load more**, server-side search/kind filters and visible load/retry errors. List calls no longer resolve/stat every indexed file; refresh and preview/copy retain filesystem checks. Payload-shape/size and pagination regression tests prevent the duplicated full-row response from returning.
 
+## [2026-10-16] - Read agent file links in place on desktop and phone
+
+- Labeled file chips omit the trailing path span; their hover title carries the exact absolute path. The viewer header keeps its selectable path for touch devices (Ron, 2026-10-16).
+- Text and Markdown file links now open a read-only File viewer with a fully visible absolute path and Download action. Markdown shares the plan viewer's rich-text and pipe-table renderer; source files remain escaped text. Previews enforce a 2 MiB read cap, with download guidance for large, binary or unsupported text.
+- Images, PDFs, audio and video retain native browser tabs through inline URLs; unknown binaries keep downloading. File markers are recognized before bare image paths. Contract: `docs/FILE_VIEWER.md`; desktop/mobile smoke: `tools/smoke/file-viewer.mjs`. Branch only; no backend changes, merge, push or restart.
+
 ## [2026-10-16] - Retain an unlocked vault across server restarts
 
 - Restart and Update can pass an already-unlocked vault to the replacement over an anonymous inherited pipe, including the frozen macOS swap helper. The child checks the existing wrapped-key HMAC fingerprint, resets the idle clock and audits `restart_handover`. No raw key is written to disk, environment, arguments or logs; missing/invalid/timed-out handovers stay locked.

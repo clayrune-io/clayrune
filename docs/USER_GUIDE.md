@@ -318,6 +318,15 @@ the asset cache. No Windows registry change or provider re-login is needed.
 - **Stop / Continue**: stopped sessions can be revived by typing a new
   message — the agent picks up the same Claude conversation.
 - **Image upload**: paste or drop images into the input to attach them.
+- **File links in replies**: click a text, Markdown, log or source-code file to
+  read it in the File viewer. Markdown shows formatted text and tables; other
+  text preserves its contents. The full absolute path stays visible in the
+  header, with a **Download** action. Images, PDFs, audio and video open in a
+  browser tab; other file types download. Files over 2 MiB or unreadable text
+  offer Download instead. Small files without an extension can also be read.
+  Labeled links show just their chip; hover to see the full path. On touch,
+  select the path in the viewer header to copy it.
+  Middle-click or long-press a link to use the browser's usual link actions.
 - **Inline images in output**: when the agent's reply contains an absolute
   path to an image file (`.png/.jpg/.gif/.webp/.bmp/.svg/.ico/.tiff/.avif`),
   the image renders inline in the chat at its natural size (capped to chat
