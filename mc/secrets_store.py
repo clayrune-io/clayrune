@@ -768,8 +768,9 @@ def load_master_key() -> tuple[bytes, str]:
     every box that hasn't opted in keeps the exact behavior above, unchanged.
     """
     global _key_mismatch
+    from mc.vault_restart_handover import requires_passphrase_lock
     with _lock:
-        if wrapped_key_path().is_file():
+        if wrapped_key_path().is_file() or requires_passphrase_lock():
             # Idle auto-lock (MC-949 follow-up): clear the key BEFORE
             # deciding, so a read that lands exactly at the idle boundary
             # never gets handed back a key that should already be gone.
@@ -949,7 +950,8 @@ def lock_state() -> str:
     process lifetime), or ``'unlocked'``."""
     if _unlocked_key is not None:
         return 'unlocked'
-    if wrapped_key_path().is_file():
+    from mc.vault_restart_handover import requires_passphrase_lock
+    if wrapped_key_path().is_file() or requires_passphrase_lock():
         return 'locked'
     return 'unconfigured'
 
@@ -1505,6 +1507,22 @@ def change_passphrase(old_passphrase: str, new_passphrase: str, *,
     _audit('vault_passphrase_changed', caller_addr=caller_addr)
     _notify_vault_tamper('changed', caller_addr)
     _log("[secrets] passphrase changed")
+
+
+def _unlock_from_restart(key_bytes: bytes) -> None:
+    """Internal boot hook; no route dispenses or accepts a raw master key."""
+    global _unlocked_key, _lock_notified, _key_mismatch
+    with _lock:
+        data = _read_wrapped_key()
+        if (len(key_bytes) != 32 or not hmac.compare_digest(
+                _key_fingerprint(key_bytes), data['fingerprint'])):
+            raise SecretDenied('restart key fingerprint mismatch')
+        _unlocked_key = key_bytes
+        _lock_notified = False
+        _key_mismatch = False
+        _mark_key_used()
+    _audit('vault_unlocked', method='pipe', reason='restart_handover')
+    _log('[secrets] vault unlocked (restart_handover)')
 
 
 def unlock_with_passphrase(passphrase: str) -> None:

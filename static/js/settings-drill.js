@@ -883,6 +883,13 @@ async function _renderSettings() {
         </div>
         ${numInput('vault_idle_lock_minutes', cfg.vault_idle_lock_minutes ?? 120)}
       </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-label">Keep vault unlocked on restart</div>
+          <div class="settings-hint">Pass the unlocked vault to the replacement server through a private pipe on Restart or Update. A fresh start or reboot still requires a human unlock. Off means every restart starts locked.</div>
+        </div>
+        ${toggle('vault_keep_unlocked_on_restart', cfg.vault_keep_unlocked_on_restart !== false)}
+      </div>
     </div>
 
     <div class="settings-section">

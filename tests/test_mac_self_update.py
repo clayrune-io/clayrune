@@ -587,7 +587,8 @@ class TestSwapHelper:
         f.chmod(0o755)
 
     def run(self, layout, *, pid=999999, curl_body='{"commit":"abc1234"}', ps_lines=(),
-            kill_alive=None, fail_failed_mv=False, expect=COMMIT, wait_exit_s=2, wait_up_s=2):
+            kill_alive=None, fail_failed_mv=False, expect=COMMIT, wait_exit_s=2, wait_up_s=2,
+            pipe_spawn=False):
         layout['log'].parent.mkdir(parents=True, exist_ok=True)
         self.stub(layout, 'open', f'echo "$@" >> "{layout["opened"].as_posix()}"')
         if curl_body is None:
@@ -615,8 +616,15 @@ class TestSwapHelper:
         head, rest = text.split('\n', 1)
         with open(script, 'w', newline='\n') as fh:
             fh.write(head + '\n' + funcs + rest)
-        r = subprocess.run([SH, script.as_posix()], stdin=subprocess.DEVNULL,
-                           capture_output=True, text=True, timeout=60)
+        if pipe_spawn:
+            from mc.vault_restart_handover import spawn_replacement
+            proc = spawn_replacement([SH, script.as_posix()], stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout, stderr = proc.communicate(timeout=60)
+            r = subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+        else:
+            r = subprocess.run([SH, script.as_posix()], stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True, timeout=60)
         return r, json.loads(layout['result'].read_text())
 
     @needs_sh
@@ -702,7 +710,7 @@ class TestSwapHelper:
             sleeper.kill()
             sleeper.wait()
         assert (layout['old'] / 'marker').read_text() == 'old'
-        assert (layout['new'] / 'marker').read_text() == 'new' or not layout['new'].exists()
+        assert not layout['new'].exists() or (layout['new'] / 'marker').read_text() == 'new'
         assert res['status'] == 'aborted'
 
     def test_paths_with_spaces_and_quotes_stay_one_word(self, tmp_path):

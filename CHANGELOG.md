@@ -11,6 +11,11 @@
 - Added **From your projects** to Studio, the shared library picker and campaign media sources, with project filtering, search and picture/video previews. Bounded background discovery combines registered project folders and their chat-media indexes; unidentified historical shared uploads are skipped.
 - Using a project file saves a deduplicated library copy with source provenance, preserving campaign media if the original disappears. Current-root checks guard preview/copy; existing asset deletion protection stays in force. Chat media recording now includes videos and media file markers. Contract: `docs/DESK_PROJECT_MEDIA.md`. Branch only; no merge, push or restart.
 
+## [2026-10-16] - Retain an unlocked vault across server restarts
+
+- Restart and Update can pass an already-unlocked vault to the replacement over an anonymous inherited pipe, including the frozen macOS swap helper. The child checks the existing wrapped-key HMAC fingerprint, resets the idle clock and audits `restart_handover`. No raw key is written to disk, environment, arguments or logs; missing/invalid/timed-out handovers stay locked.
+- Added **Keep vault unlocked on restart** under Settings → System → Security, default on, beside the independent idle setting. Cold starts and reboots still require a human unlock; off restores restart locking. Contract, path audit and residual risk: `docs/SECRETS.md`. Branch only; no merge, push or restart; native packaged macOS verification remains required.
+
 ## [2026-10-16] - Reuse daily registry results for busy CLI retries (MC-1103)
 
 - Hourly `skipped_in_use` retries now retain the original daily registry timestamp and reuse its version answer until the next daily check. Successful updates, current versions and other statuses stop hourly retries; existing session/process guards remain unchanged.
