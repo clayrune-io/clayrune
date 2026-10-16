@@ -310,10 +310,20 @@ def test_create_project_auto_installs_fence_hook(client):
 def test_create_project_with_explicit_path_also_installs_fence(client, tmp_path):
     explicit = tmp_path / 'explicit-proj'
     explicit.mkdir()
-    r = _human_project_post(client, '/api/project/explicitproj',
-                    json={'name': 'Explicit', 'project_path': str(explicit)})
+    r = client.post('/api/project/explicitproj',
+                    json={'id': 'explicitproj', 'name': 'Explicit', 'project_path': str(explicit)},
+                    headers={'Origin': 'http://localhost:5199'})
     assert r.status_code == 200
     assert (explicit / '.claude' / 'settings.json').exists()
+
+
+def test_existing_workspace_change_still_needs_passcode(client):
+    original = _seed(client, project_path=str(client.tmp / 'original'))
+    r = client.post('/api/project/tproj', json={'project_path': str(client.tmp / 'changed')},
+                    headers={'Origin': 'http://localhost:5199'})
+    assert r.status_code == 403
+    assert r.get_json()['error'] == 'bad_passcode'
+    assert json.loads((client.data_dir / 'tproj.json').read_text(encoding='utf-8')) == original
 
 
 def test_update_project_log_msg_and_no_data(client):

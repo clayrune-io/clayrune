@@ -80,7 +80,7 @@ heads-down coding session (the Claude CLI is fine for that).
 The fastest way to get value:
 
 1. **Create a project.** Click `+ New Project` (top-right of the toolbar).
-   Give it a name, set a workspace folder, save, and enter your dashboard passcode.
+   Give it a name, set a workspace folder, and save. No dashboard passcode is needed.
 2. **Open the project.** Click its tile on the dashboard.
 3. **Dispatch an agent.** In the Agent tab, type a task like *"Read this
    project and tell me what it does"* and click **Dispatch**.
@@ -90,12 +90,13 @@ The fastest way to get value:
 That's the loop. Everything else — Hivemind, Scheduler, Backlog, Memory,
 Plans — extends or organizes that loop.
 
-Creating a project, adding an existing Claude Code project, or changing a
-project's workspace folder asks for your **Dashboard passcode**. If none is set,
-the same prompt offers to set one first on the host. Import asks once per selected
-project; cancel stops the remaining imports and keeps them selected. Projects
-already added stay added. Cancel on Create keeps your form. Cancel on a typed
-folder change restores the saved folder; cancel in Browse keeps the picker open.
+Creating a project or adding existing Claude Code projects needs no dashboard
+passcode. Import adds selected projects in sequence; failed additions remain
+selected with the server's reason, and successful additions leave the list.
+Changing an existing project's workspace folder asks for your **Dashboard
+passcode**. If none is set, the same prompt offers to set one first on the host.
+Cancel on a typed folder change restores the saved folder; cancel in Browse
+keeps the picker open.
 An unchanged folder needs no prompt. Workspace save refusals show their reason.
 Agents can update ordinary project details, but cannot submit the routing fields
 `id` or `project_path` through the project update API.
