@@ -42,6 +42,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from mc import process_sweep as _process_sweep  # noqa: E402
+from mc import qwen_cli_install  # noqa: E402
 from mc.cli_install import install_method as _install_method  # noqa: E402
 
 _VER = re.compile(r'(\d+\.\d+\.\d+)')
@@ -77,6 +78,7 @@ CLIS = [
     CLI('opencode', 'opencode-ai', ['npm', 'install', '-g', 'opencode-ai@latest']),
     CLI('aider', None, None),
     CLI('goose', None, None),
+    CLI('qwen', '@qwen-code/qwen-code', ['npm', 'install', '-g', '@qwen-code/qwen-code@latest']),
 ]
 
 
@@ -200,9 +202,15 @@ def update_argv(cli, path):
     OpenAI's install script, npm by npm, Homebrew by brew. Running npm over a
     standalone copy leaves two codexes and PATH roulette (Keegan's Mac,
     2026-10-01: no npm on PATH at all). An install method we cannot tell is
-    reported, never guessed at. Every other CLI keeps its fixed `update_cmd`;
+    reported, never guessed at. Qwen uses its own standalone installer or npm;
+    other CLIs keep their fixed `update_cmd`;
     detection lives in mc/cli_install.py, shared with the in-app Update button.
     """
+    if cli.name == 'qwen':
+        method = _install_method(path, name='qwen')
+        if method == 'npm':
+            return list(cli.update_cmd) if cli.update_cmd else None, method
+        return qwen_cli_install.update_argv(method), method
     if cli.name != 'codex':
         return (list(cli.update_cmd) if cli.update_cmd else None), None
     method = _install_method(path)

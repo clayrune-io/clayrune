@@ -7377,6 +7377,9 @@ class QwenRuntime(AgentRuntime):
                 auth_state=AuthState(status='unknown', last_checked=_now_iso()),
                 diagnostic=str(e), install_hint='',
             )
+        from mc.qwen_cli_install import update_advice
+
+        update_hint, update_reason = update_advice(version, p)
         raw_status, method = self._qwen_auth_state()
         has_key = raw_status == 'ok'
         error_text = None
@@ -7401,6 +7404,7 @@ class QwenRuntime(AgentRuntime):
                          '— native Qwen OAuth was discontinued 2026-04-15.')
         return HealthStatus(
             installed=True, binary_path=p, version=version,
+            update_hint=update_hint, update_reason=update_reason,
             auth_state=AuthState(status='ok' if has_key else 'not_logged_in',
                                  method=method, error_text=error_text,
                                  last_checked=_now_iso()),

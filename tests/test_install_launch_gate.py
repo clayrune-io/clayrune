@@ -126,3 +126,10 @@ def test_update_flag_still_gated(env):
     resp = client.post(SINGLE, json={'update': True})
     assert resp.status_code == 403
     assert launched == []
+
+
+def test_qwen_update_still_requires_the_human_passcode(env):
+    client, launched, la = env
+    la._local_auth_set_passcode(PASSCODE)
+    resp = client.post('/api/agent/provider/qwen/install-launch', json={'update': True})
+    assert resp.status_code == 403 and launched == []

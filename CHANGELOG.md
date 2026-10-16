@@ -6,6 +6,11 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-16] - Update standalone Qwen Code with its own installer (MC-1102)
+
+- Recognised Qwen's Windows and macOS/Linux standalone layouts using their package manifest. Both daily update paths select Qwen's official standalone installer with npm fallback disabled; npm installations keep npm and unknown methods remain report-only.
+- Added Qwen's in-app Update hint from the last daily registry check and allowed its fixed updater commands through the existing passcode gate. Runtime process checks include bundled Node. Contract: `docs/QWEN_STANDALONE_UPDATES.md`. Branch only; no installed CLI changes, merge, push or restart.
+
 ## [2026-10-16] - Pinned dev harness guidance delivery (MC-960, DH-M2)
 
 - Added selected immutable Addy source plans, transitive resource/notice hashes and byte-preserving project imports through the existing quarantine guard; no force override, optional providers or checker installation.

@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from mc import cli_install, process_sweep
+from mc import cli_install, process_sweep, qwen_cli_install
 from mc.atomic_json import write_json_atomic
 from mc.core import _log
 
@@ -214,6 +214,16 @@ def build_argv(name: str, binary: Any, command: str,
     env = dict(os.environ)
     bin_dir = os.path.dirname(os.path.realpath(str(binary)))
     env['PATH'] = bin_dir + os.pathsep + env.get('PATH', '')
+    if name == 'qwen' and command in qwen_cli_install.UPDATE_COMMANDS.values():
+        method = cli_install.install_method(binary, plat, name)
+        argv = qwen_cli_install.update_argv(method)
+        if argv is None or command != qwen_cli_install.UPDATE_COMMANDS.get(method):
+            return None, None, 'Qwen updater does not match the installed copy'
+        exe = shutil.which(argv[0])
+        if not exe:
+            return None, None, '%s not found on PATH' % argv[0]
+        argv[0] = exe
+        return argv, env, ''
     if command == 'claude update':
         return [str(binary), 'update'], env, ''
     if '|' in command:
@@ -246,6 +256,10 @@ def install_root(name: str, binary: Any) -> Tuple[str, bool]:
     standalone package tree; else the binary's own dir, and then `exact` is
     True: that dir is shared (~/.local/bin), so only the binary itself counts
     as a locker, not every exe beside it."""
+    if name == 'qwen':
+        root = qwen_cli_install.standalone_root(binary, sys.platform)
+        if root is not None:
+            return str(root), False
     try:
         real = os.path.realpath(str(binary))
     except Exception:

@@ -660,6 +660,18 @@ many projects open.
 
 ## Settings
 
+### Updating Qwen Code
+
+Clayrune's daily CLI check can update Qwen Code with the same installation
+method it already uses. Standalone Windows, macOS and Linux installations use
+Qwen's official installer; npm installations keep npm. Unknown installations
+are reported for manual attention. An active Qwen session defers the daily update.
+
+When the daily check knows a newer Qwen version, its provider row in
+**Settings > Providers** offers **Update**. The button requires your dashboard
+passcode. There is no update button before a newer version is known, and an
+unrecognised installation shows the version notice without an automatic action.
+
 Major sections:
 
 - **Server** — restart the Clayrune server from the dashboard. Shows a
