@@ -122,6 +122,7 @@ import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§
 import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends §9.6's split)
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
 import mc.midturn_rollover as _midturn  # mid-turn context rollover bookkeeping
+import mc.resume_target as _resume_target  # unresumable `-r` ids: heal, don't loop
 from mc import habit_report as _habit_report  # MC-964 Step E report mode (human messages at send time)
 from mc import log_lines_trim as _log_lines_trim  # log_lines cap that keeps user lines
 from mc.rollover_threshold import threshold_for as _rollover_threshold_for
@@ -5904,6 +5905,7 @@ def _read_agent_stream(proc, session):
             line = raw_line.rstrip('\n\r')
             if not line:
                 continue
+            _resume_target.observe_child_line(session, my_proc, line, log=_log)
             # Try to parse stream-json output
             try:
                 msg = json.loads(line)
@@ -5914,8 +5916,10 @@ def _read_agent_stream(proc, session):
                 if not isinstance(msg, dict):
                     raise json.JSONDecodeError('non-dict JSON envelope', line, 0)
                 msg_type = msg.get('type', '')
-                # Capture Claude CLI session UUID from init or result messages
-                if 'session_id' in msg:
+                # Capture Claude CLI session UUID from init or result messages.
+                # Not from `system/hook_*`: the CLI emits those before it has
+                # read stdin, so a child killed there never gets a transcript.
+                if 'session_id' in msg and not _resume_target.is_startup_hook_event(msg):
                     _note_claude_sid(session, msg['session_id'])
                 # Refresh the account-global system status cache from
                 # `system/init` and `rate_limit_event` messages (every claude
@@ -6198,6 +6202,7 @@ def _read_agent_stream_b(proc, session):
             line = raw_line.rstrip('\n\r')
             if not line:
                 continue
+            _resume_target.observe_child_line(session, my_proc, line, log=_log)
             try:
                 msg = json.loads(line)
                 # See Mode A reader: any non-dict JSON envelope crashes the
@@ -6206,7 +6211,7 @@ def _read_agent_stream_b(proc, session):
                 if not isinstance(msg, dict):
                     raise json.JSONDecodeError('non-dict JSON envelope', line, 0)
                 msg_type = msg.get('type', '')
-                if 'session_id' in msg:
+                if 'session_id' in msg and not _resume_target.is_startup_hook_event(msg):
                     _note_claude_sid(session, msg['session_id'])
                 # See Mode A reader: refresh the system-status cache.
                 _capture_system_init(msg)
@@ -11086,6 +11091,16 @@ def _fragile_resume_target(pp, provider, native_id, rolled_from):
         return False
 
 
+def _resume_unresumable(session, project_id, pp, claude_sid):
+    """True when `-r claude_sid` cannot work (no transcript, or the CLI said
+    "No conversation found"). Points `session['_rolled_from']` at the newest
+    earlier id that does have one, so the caller's existing 'interrupted'
+    rollover handoff carries real turns. See mc/resume_target.py."""
+    return _resume_target.assess_resume_target(
+        session, claude_sid, _session_all_claude_session_ids(project_id, session),
+        lambda sid: _find_transcript_file(pp, sid), log=_log)
+
+
 def _context_tokens_over_threshold(context_tokens, session_or_character=None):
     """Token-based auto-fresh trigger (`context_rollover_tokens`, default
     200000, 0 disables) — the live counterpart to `_session_too_large`'s
@@ -13384,9 +13399,10 @@ def agent_followup(project_id):
                     _af_reason, _af_detail = _auto_fresh_trigger(
                         pp, claude_sid, existing.get('context_tokens'),
                         session_or_character=existing)
+                    _unresumable = _resume_unresumable(existing, project_id, pp, claude_sid)
                     _af_rolled_from = existing.get('_rolled_from')
-                    if not _af_reason and _fragile_resume_target(
-                            pp, 'claude', claude_sid, _af_rolled_from):
+                    if not _af_reason and (_unresumable or _fragile_resume_target(
+                            pp, 'claude', claude_sid, _af_rolled_from)):
                         # An earlier roll reset context_tokens to None
                         # (`_mark_context_rolled`), so the trigger above sees
                         # "unknown" and stays quiet — but `claude_sid` itself
@@ -13815,9 +13831,10 @@ def agent_followup(project_id):
                 _af_reason, _af_detail = _auto_fresh_trigger(
                     pp, claude_sid, existing.get('context_tokens'),
                     session_or_character=existing)
+                _unresumable = _resume_unresumable(existing, project_id, pp, claude_sid)
                 _af_rolled_from = existing.get('_rolled_from')
-                if not _af_reason and _fragile_resume_target(
-                        pp, 'claude', claude_sid, _af_rolled_from):
+                if not _af_reason and (_unresumable or _fragile_resume_target(
+                        pp, 'claude', claude_sid, _af_rolled_from)):
                     # Same interrupted-roll case as the Mode B dead-process
                     # branch: context_tokens was reset to None by an earlier
                     # roll, so the trigger stays quiet, but `claude_sid` never
@@ -14026,8 +14043,15 @@ def _bounded_stdin_write(proc, data, *, session=None, lock=None, close_after=Fal
     threading.Thread(target=_writer, daemon=True).start()
 
     def _watchdog():
+        started = _time.time()
         if done.wait(timeout):
             return
+        # The CLI reads no stdin until its SessionStart hooks finish, and
+        # prints hook_progress while they run: a child still talking is slow,
+        # not hung (2026-10-15 failed roll). Silence for `timeout` still kills.
+        while _resume_target.startup_grace_applies(session, proc, started, timeout):
+            if done.wait(1.0):
+                return
         _log(f"[stdin-write] PID {proc.pid}{f' ({context})' if context else ''} "
              f"did not drain stdin within {timeout}s — child never read it; "
              f"killing the process so the pipe breaks")
@@ -14360,10 +14384,15 @@ def agent_interrupt(project_id, *, _internal=None):
                     _af_reason, _af_detail = _auto_fresh_trigger(
                         pp, claude_sid, session.get('context_tokens'),
                         session_or_character=session)
+                # An unwritten/rejected id (failed roll, 2026-10-15) must take
+                # the handoff path too, not `-r` into "No conversation found".
+                if _resume_unresumable(session, project_id, pp, claude_sid) and not _af_reason:
+                    _af_reason, _af_detail = 'interrupted', 0
                 if _af_reason:
                     _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
                         pp, 'claude', claude_sid, project_id, session_id,
-                        reason=_af_reason, detail=_af_detail)
+                        reason=_af_reason, detail=_af_detail,
+                        fallback_native_id=session.get('_rolled_from'))
                     _log_agent_activity(project_id, _activity_line)
                     session['log_lines'].append(_log_line)
                     # `_ctx_task`, not `message`: for a roll `message` is the
