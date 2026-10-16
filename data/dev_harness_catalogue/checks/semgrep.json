@@ -1,0 +1,33 @@
+{
+  "id": "semgrep",
+  "schema_version": 1,
+  "tool_version": "1.136.0",
+  "report_contract": "semgrep-json-v1",
+  "args": [
+    "scan",
+    "--json",
+    "--error",
+    "--strict",
+    "--metrics=off",
+    "--disable-version-check",
+    "--config",
+    "{rules}",
+    "{targets}"
+  ],
+  "configured_command": false,
+  "version_args": [
+    "--version"
+  ],
+  "fail_codes": [
+    1
+  ],
+  "release_source": "https://github.com/semgrep/semgrep/releases/tag/v1.136.0",
+  "coverage": "native_command_only",
+  "installation": "already_installed_only",
+  "config_globs": [
+    "package.json",
+    "*lock*.json",
+    "*lock*.yaml",
+    "pyproject.toml"
+  ]
+}

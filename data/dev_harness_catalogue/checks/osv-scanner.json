@@ -1,0 +1,30 @@
+{
+  "id": "osv-scanner",
+  "schema_version": 1,
+  "tool_version": "2.2.1",
+  "report_contract": "osv-json-v2",
+  "args": [
+    "scan",
+    "source",
+    "--format=json",
+    "--all-packages",
+    "{targets}"
+  ],
+  "configured_command": false,
+  "version_args": [
+    "--version"
+  ],
+  "fail_codes": [
+    1
+  ],
+  "release_source": "https://github.com/google/osv-scanner/releases/tag/v2.2.1",
+  "coverage": "native_command_only",
+  "installation": "already_installed_only",
+  "config_globs": [
+    "package.json",
+    "*lock*.json",
+    "*lock*.yaml",
+    "pyproject.toml",
+    "**/osv-scanner.toml"
+  ]
+}

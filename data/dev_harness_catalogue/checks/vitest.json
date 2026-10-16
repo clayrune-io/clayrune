@@ -1,0 +1,28 @@
+{
+  "id": "vitest",
+  "schema_version": 1,
+  "tool_version": "3.2.4",
+  "report_contract": "exit-only-v1",
+  "args": [
+    "run"
+  ],
+  "configured_command": true,
+  "version_args": [
+    "--version"
+  ],
+  "fail_codes": [
+    1
+  ],
+  "release_source": "https://github.com/vitest-dev/vitest/releases/tag/v3.2.4",
+  "coverage": "native_command_only",
+  "installation": "already_installed_only",
+  "config_globs": [
+    "package.json",
+    "*lock*.json",
+    "*lock*.yaml",
+    "pyproject.toml",
+    "vitest.config.*",
+    "vite.config.*",
+    "tsconfig*.json"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "id": "coverage-python",
+  "schema_version": 1,
+  "tool_version": "7.10.6",
+  "report_contract": "coverage-v1",
+  "args": [],
+  "configured_command": true,
+  "version_args": [
+    "--version"
+  ],
+  "fail_codes": [
+    1
+  ],
+  "release_source": "https://github.com/coveragepy/coveragepy/releases/tag/7.10.6",
+  "coverage": "native_command_only",
+  "installation": "already_installed_only",
+  "config_globs": [
+    "package.json",
+    "*lock*.json",
+    "*lock*.yaml",
+    "pyproject.toml",
+    ".coveragerc",
+    "setup.cfg",
+    "tox.ini",
+    "**/conftest.py"
+  ],
+  "diff_cover_version": "10.2.0",
+  "diff_cover_source": "https://github.com/Bachmann1234/diff_cover/releases/tag/v10.2.0"
+}

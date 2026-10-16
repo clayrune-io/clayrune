@@ -1,0 +1,52 @@
+[
+  {
+    "case": "positive",
+    "exit_code": 0,
+    "report": {
+      "results": [
+        {
+          "packages": [
+            {
+              "package": {
+                "name": "fixture"
+              },
+              "vulnerabilities": []
+            }
+          ]
+        }
+      ]
+    },
+    "status": "pass"
+  },
+  {
+    "case": "finding",
+    "exit_code": 1,
+    "report": {
+      "results": [
+        {
+          "packages": [
+            {
+              "package": {
+                "name": "fixture"
+              },
+              "vulnerabilities": [
+                {
+                  "id": "FIXTURE-1"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "status": "fail"
+  },
+  {
+    "case": "crash",
+    "exit_code": 2,
+    "report": {
+      "error": "fixture crash"
+    },
+    "status": "error"
+  }
+]

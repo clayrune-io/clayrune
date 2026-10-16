@@ -1,0 +1,33 @@
+{
+  "id": "gitleaks",
+  "schema_version": 1,
+  "tool_version": "8.28.0",
+  "report_contract": "gitleaks-json-v8",
+  "args": [
+    "dir",
+    "--redact=100",
+    "--no-banner",
+    "--log-level=error",
+    "--report-format=json",
+    "--report-path=-",
+    "{targets}"
+  ],
+  "configured_command": false,
+  "version_args": [
+    "--version"
+  ],
+  "fail_codes": [
+    1
+  ],
+  "release_source": "https://github.com/gitleaks/gitleaks/releases/tag/v8.28.0",
+  "coverage": "native_command_only",
+  "installation": "already_installed_only",
+  "config_globs": [
+    "package.json",
+    "*lock*.json",
+    "*lock*.yaml",
+    "pyproject.toml",
+    ".gitleaks.toml",
+    ".gitleaksignore"
+  ]
+}

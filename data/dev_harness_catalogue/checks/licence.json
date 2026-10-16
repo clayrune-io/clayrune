@@ -1,0 +1,23 @@
+{
+  "id": "licence",
+  "schema_version": 1,
+  "tool_version": "1.0.0",
+  "report_contract": "licence-policy-v1",
+  "args": [],
+  "configured_command": true,
+  "version_args": [
+    "--version"
+  ],
+  "fail_codes": [
+    1
+  ],
+  "release_source": "project-approved-existing-command",
+  "coverage": "native_command_only",
+  "installation": "already_installed_only",
+  "config_globs": [
+    "package.json",
+    "*lock*.json",
+    "*lock*.yaml",
+    "pyproject.toml"
+  ]
+}

@@ -1,0 +1,42 @@
+[
+  {
+    "case": "positive",
+    "exit_code": 0,
+    "report": {
+      "dependencies": [
+        {
+          "name": "fixture",
+          "version": "1",
+          "vulns": []
+        }
+      ]
+    },
+    "status": "pass"
+  },
+  {
+    "case": "finding",
+    "exit_code": 1,
+    "report": {
+      "dependencies": [
+        {
+          "name": "fixture",
+          "version": "1",
+          "vulns": [
+            {
+              "id": "FIXTURE-1"
+            }
+          ]
+        }
+      ]
+    },
+    "status": "fail"
+  },
+  {
+    "case": "crash",
+    "exit_code": 2,
+    "report": {
+      "error": "fixture crash"
+    },
+    "status": "error"
+  }
+]

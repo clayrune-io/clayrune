@@ -1,0 +1,48 @@
+[
+  {
+    "case": "positive",
+    "exit_code": 0,
+    "report": {
+      "auditReportVersion": 2,
+      "vulnerabilities": {},
+      "metadata": {
+        "dependencies": {
+          "total": 1
+        },
+        "vulnerabilities": {
+          "total": 0
+        }
+      }
+    },
+    "status": "pass"
+  },
+  {
+    "case": "finding",
+    "exit_code": 1,
+    "report": {
+      "auditReportVersion": 2,
+      "vulnerabilities": {
+        "fixture": {
+          "severity": "high"
+        }
+      },
+      "metadata": {
+        "dependencies": {
+          "total": 1
+        },
+        "vulnerabilities": {
+          "total": 1
+        }
+      }
+    },
+    "status": "fail"
+  },
+  {
+    "case": "crash",
+    "exit_code": 2,
+    "report": {
+      "error": "fixture crash"
+    },
+    "status": "error"
+  }
+]
