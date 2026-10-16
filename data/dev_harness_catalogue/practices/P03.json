@@ -1,0 +1,51 @@
+{
+  "id": "P03",
+  "version": 1,
+  "title": "Test-first work and isolated test environment",
+  "problem": "A final green diff cannot establish test-first order or an isolated environment.",
+  "rationale": "Product profile holds coding dispatch when required test environment is unverified; local hobby can use disposable local fixtures. No production data/credentials in test fixtures.",
+  "applicability": "Before ordinary coding begins; bootstrap environment repair is separately scoped.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/test-driven-development",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    },
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/ci-cd-and-automation",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "setup",
+    "merge"
+  ],
+  "severity": "required",
+  "baseline_policy": "No legacy waiver for required verification or release prerequisites.",
+  "target_check": {
+    "deterministic": "approved isolated environment/fixture smoke succeeded before coding begins; commands and environment identity are recorded. Red-before-green run receipts can show that a failing test ran before a later change.",
+    "reviewer": "that it failed for the intended behavior. A final diff alone cannot prove TDD chronology.",
+    "limits": "**D:** approved isolated environment/fixture smoke succeeded before coding begins; commands and environment identity are recorded. Red-before-green run receipts can show that a failing test ran before a later change. **R:** that it failed for the intended behavior. A final diff alone cannot prove TDD chronology.",
+    "adapters": [
+      "test-environment-smoke",
+      "test-order-receipts"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; Product profile holds coding dispatch when required test environment is unverified; local hobby can use disposable local fixtures. No production data/credentials in test fixtures."
+  },
+  "expected_evidence": "**D:** approved isolated environment/fixture smoke succeeded before coding begins; commands and environment identity are recorded. Red-before-green run receipts can show that a failing test ran before a later change. **R:** that it failed for the intended behavior. A final diff alone cannot prove TDD chronology.",
+  "repair": "Repair the isolated fixture/environment and run its approved smoke before ordinary coding; preserve red-before-green receipts where required. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "id": "P10",
+  "version": 1,
+  "title": "Authentication and authorization",
+  "problem": "New or changed routes can bypass identity, role or resource authorization.",
+  "rationale": "Product gate for new/changed routes. Public routes need a recorded reviewed reason. Existing human-only gates cannot be loosened by a reviewer or profile.",
+  "applicability": "New or changed public/protected routes, identity and resource access policies.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/security-and-hardening",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "merge"
+  ],
+  "severity": "required",
+  "baseline_policy": "No legacy waiver for required verification or release prerequisites.",
+  "target_check": {
+    "deterministic": "route inventory diff, explicit public/protected classification, tests for unauthenticated, forbidden-role and cross-resource/tenant access as applicable; configured framework route checks.",
+    "reviewer": "correct policy for every new route. Unknown route-framework discovery requires reviewer declaration; no claim of universal detection.",
+    "limits": "**D:** route inventory diff, explicit public/protected classification, tests for unauthenticated, forbidden-role and cross-resource/tenant access as applicable; configured framework route checks. **R:** correct policy for every new route. Unknown route-framework discovery requires reviewer declaration; no claim of universal detection.",
+    "adapters": [
+      "route-inventory",
+      "authorization-tests",
+      "security-assessment"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; Product gate for new/changed routes. Public routes need a recorded reviewed reason. Existing human-only gates cannot be loosened by a reviewer or profile."
+  },
+  "expected_evidence": "**D:** route inventory diff, explicit public/protected classification, tests for unauthenticated, forbidden-role and cross-resource/tenant access as applicable; configured framework route checks. **R:** correct policy for every new route. Unknown route-framework discovery requires reviewer declaration; no claim of universal detection.",
+  "repair": "Classify the route, enforce the intended identity/role/resource policy, and add unauthenticated, forbidden and cross-resource negative tests. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}

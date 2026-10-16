@@ -1,0 +1,97 @@
+{
+  "id": "external-product",
+  "version": 1,
+  "title": "External-facing product",
+  "mode": "preview",
+  "proposal": true,
+  "practices": {
+    "P01": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P02": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P03": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P04": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P05": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P06": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P07": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P08": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P09": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P10": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P11": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P12": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P13": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P14": {
+      "enabled": true,
+      "severity": "warning"
+    },
+    "P15": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P16": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P17": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P18": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P19": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P20": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P21": {
+      "enabled": true,
+      "severity": "required"
+    },
+    "P22": {
+      "enabled": true,
+      "severity": "required"
+    }
+  }
+}

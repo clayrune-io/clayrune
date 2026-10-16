@@ -1,0 +1,49 @@
+{
+  "id": "P18",
+  "version": 1,
+  "title": "API/schema compatibility and idempotency",
+  "problem": "Local passing callers can hide breaking external contracts.",
+  "rationale": "Product API/schema changes require evidence/review; no silent breaking change because all callers in one repo pass.",
+  "applicability": "Changed external API, schema, serialization or retry/idempotency behavior.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/api-and-interface-design",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    },
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/deprecation-and-migration",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "merge"
+  ],
+  "severity": "required",
+  "baseline_policy": "No legacy waiver for required verification or release prerequisites.",
+  "target_check": {
+    "deterministic": "existing contract/schema/serialization/upgrade tests and approved compatibility tool; new behavior exercises retry/idempotency where applicable.",
+    "reviewer": "observable API contracts, consumers and removal plans.",
+    "limits": "**D:** existing contract/schema/serialization/upgrade tests and approved compatibility tool; new behavior exercises retry/idempotency where applicable. **R:** observable API contracts, consumers and removal plans.",
+    "adapters": [
+      "compatibility-tests"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; Product API/schema changes require evidence/review; no silent breaking change because all callers in one repo pass."
+  },
+  "expected_evidence": "**D:** existing contract/schema/serialization/upgrade tests and approved compatibility tool; new behavior exercises retry/idempotency where applicable. **R:** observable API contracts, consumers and removal plans.",
+  "repair": "Preserve or version the external contract and add serialization/upgrade/retry/idempotency tests for affected consumers. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}

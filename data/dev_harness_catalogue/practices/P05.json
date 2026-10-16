@@ -1,0 +1,50 @@
+{
+  "id": "P05",
+  "version": 1,
+  "title": "Migration rehearsal and safe data evolution",
+  "problem": "A rendered migration plan does not prove execution or recovery works.",
+  "rationale": "Rehearsal before merge where executable, and artifact/schema-bound staging proof before production; no schema/data cap grandfathering. Human approval remains required for production mutation.",
+  "applicability": "Changed migrations or schema, before merge and again before production as applicable.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/deprecation-and-migration",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    },
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/shipping-and-launch",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "merge",
+    "release"
+  ],
+  "severity": "required",
+  "baseline_policy": "No legacy waiver for required verification or release prerequisites.",
+  "target_check": {
+    "deterministic": "changed migrations/schema paths trigger review and run the project's own migration tool against an approved disposable DB/fixture with the relevant schema version; validate resulting schema, app compatibility and recovery rehearsal. A plan/SQL render is additional evidence, not a substitute for executing the rehearsal.",
+    "reviewer": "expand/contract compatibility, destructive/data-loss risk and rollback/forward-fix plan.",
+    "limits": "**D:** changed migrations/schema paths trigger review and run the project's own migration tool against an approved disposable DB/fixture with the relevant schema version; validate resulting schema, app compatibility and recovery rehearsal. A plan/SQL render is additional evidence, not a substitute for executing the rehearsal. **R:** expand/contract compatibility, destructive/data-loss risk and rollback/forward-fix plan.",
+    "adapters": [
+      "migration-rehearsal"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; Rehearsal before merge where executable, and artifact/schema-bound staging proof before production; no schema/data cap grandfathering. Human approval remains required for production mutation."
+  },
+  "expected_evidence": "**D:** changed migrations/schema paths trigger review and run the project's own migration tool against an approved disposable DB/fixture with the relevant schema version; validate resulting schema, app compatibility and recovery rehearsal. A plan/SQL render is additional evidence, not a substitute for executing the rehearsal. **R:** expand/contract compatibility, destructive/data-loss risk and rollback/forward-fix plan.",
+  "repair": "Execute the project migration tool on the disposable versioned schema fixture and rehearse compatibility and recovery. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "id": "P01",
+  "version": 1,
+  "title": "Modularity, size, layering",
+  "problem": "Independently changing concerns become coupled and oversized.",
+  "rationale": "Fast diff preview; new configured violations block merge, legacy debt ratchets.",
+  "applicability": "Changed production modules and their dependency boundaries; native Python/JS/TS analysis only where supported.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/constraint-driven-development",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    },
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/code-simplification",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    },
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/api-and-interface-design",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "diff",
+    "merge"
+  ],
+  "severity": "required",
+  "baseline_policy": "Precise native-rule legacy allowances only; no directory exemption.",
+  "target_check": {
+    "deterministic": "native ESLint size/complexity rules, Ruff complexity/statement rules, existing provider AST guard, configured boundary checker; thin AST fact extraction only for missing class/span identity/ratchet data.",
+    "reviewer": "cohesion and one independently changing concern per file. Do not invent semantic concern counts or rebuild dependency-cruiser's general graph engine.",
+    "limits": "**D:** native ESLint size/complexity rules, Ruff complexity/statement rules, existing provider AST guard, configured boundary checker; thin AST fact extraction only for missing class/span identity/ratchet data. **R:** cohesion and one independently changing concern per file. Do not invent semantic concern counts or rebuild dependency-cruiser's general graph engine.",
+    "adapters": [
+      "ruff",
+      "eslint",
+      "provider-architecture-guard",
+      "dependency-cruiser"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; Fast diff preview; new configured violations block merge, legacy debt ratchets."
+  },
+  "expected_evidence": "**D:** native ESLint size/complexity rules, Ruff complexity/statement rules, existing provider AST guard, configured boundary checker; thin AST fact extraction only for missing class/span identity/ratchet data. **R:** cohesion and one independently changing concern per file. Do not invent semantic concern counts or rebuild dependency-cruiser's general graph engine.",
+  "repair": "Extract the independently changing concern into a module, fix the specific boundary edge, and rerun native checks plus cohesion review. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [
+    "file_lines",
+    "class_lines",
+    "function_lines"
+  ],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "id": "P14",
+  "version": 1,
+  "title": "Performance and resource budgets",
+  "problem": "Resource regressions need representative, repeatable measurements.",
+  "rationale": "Blocking only for an explicitly configured measurable budget; otherwise G/R, visibly unchecked. Do not invent universal latency targets.",
+  "applicability": "An explicitly configured measurable performance/resource budget and representative fixture.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/performance-optimization",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "merge"
+  ],
+  "severity": "warning",
+  "baseline_policy": "No legacy waiver for required verification or release prerequisites.",
+  "target_check": {
+    "deterministic": "existing benchmark/bundle/latency/resource-budget command on controlled fixture and approved baseline, with sample method/tolerance; unknown/noisy data is Inconclusive.",
+    "reviewer": "representative workloads and regression cause.",
+    "limits": "**D:** existing benchmark/bundle/latency/resource-budget command on controlled fixture and approved baseline, with sample method/tolerance; unknown/noisy data is Inconclusive. **R:** representative workloads and regression cause.",
+    "adapters": [
+      "performance-budget"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; Blocking only for an explicitly configured measurable budget; otherwise G/R, visibly unchecked. Do not invent universal latency targets."
+  },
+  "expected_evidence": "**D:** existing benchmark/bundle/latency/resource-budget command on controlled fixture and approved baseline, with sample method/tolerance; unknown/noisy data is Inconclusive. **R:** representative workloads and regression cause.",
+  "repair": "Measure the controlled workload with the approved method; repair the regression or obtain human revalidation of the measured budget. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [
+    "budget"
+  ],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}

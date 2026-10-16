@@ -2358,6 +2358,10 @@ _bp_workflows.wire(
 )
 app.register_blueprint(_bp_workflows.bp)
 
+from mc.blueprints import dev_harness_routes as _bp_dev_harness  # noqa: E402
+_bp_dev_harness.wire(data_root=DATA_DIR.parent, load_project_fn=_bp_projects.load_project)
+app.register_blueprint(_bp_dev_harness.bp)
+
 
 # ── Static ───────────────────────────────────────────────────────────────────
 

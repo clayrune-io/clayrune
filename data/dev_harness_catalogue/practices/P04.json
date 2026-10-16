@@ -1,0 +1,49 @@
+{
+  "id": "P04",
+  "version": 1,
+  "title": "Staging before production",
+  "problem": "Production may receive an artifact never exercised in staging.",
+  "rationale": "Required pre-production prerequisite. Merge may approve code before an artifact exists; it must report release checks Pending, not “production ready”.",
+  "applicability": "Registered production deployment of a built artifact.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/ci-cd-and-automation",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    },
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/shipping-and-launch",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "release"
+  ],
+  "severity": "required",
+  "baseline_policy": "No legacy waiver for required verification or release prerequisites.",
+  "target_check": {
+    "deterministic": "approved pipeline deployment/test receipt for the **same artifact digest**, environment identity and config class, followed by required smoke/integration tests. A staging URL or `ENV=staging` string is insufficient.",
+    "reviewer": "representativeness/capacity assumptions.",
+    "limits": "**D:** approved pipeline deployment/test receipt for the **same artifact digest**, environment identity and config class, followed by required smoke/integration tests. A staging URL or `ENV=staging` string is insufficient. **R:** representativeness/capacity assumptions.",
+    "adapters": [
+      "staging-receipt"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; Required pre-production prerequisite. Merge may approve code before an artifact exists; it must report release checks Pending, not “production ready”."
+  },
+  "expected_evidence": "**D:** approved pipeline deployment/test receipt for the **same artifact digest**, environment identity and config class, followed by required smoke/integration tests. A staging URL or `ENV=staging` string is insufficient. **R:** representativeness/capacity assumptions.",
+  "repair": "Exercise the exact proposed artifact in the approved staging pipeline and retain environment-bound smoke/integration evidence. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "id": "P17",
+  "version": 1,
+  "title": "Formatting, lint, type/build correctness",
+  "problem": "Syntax, lint, type and build failures are different failure classes.",
+  "rationale": "Changed-source fast checks plus required project build/type checks; existing diagnostics baseline by precise rule/location, never broad ignore files.",
+  "applicability": "Changed source and required configured native build/type checks.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/constraint-driven-development",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "diff",
+    "merge"
+  ],
+  "severity": "required",
+  "baseline_policy": "Precise native-rule legacy allowances only; no directory exemption.",
+  "target_check": {
+    "deterministic": "native Ruff/ESLint, existing formatter/type checker and build commands; project configs retained. JS/TS needs its configured parser; lint is not a type checker.",
+    "reviewer": "No separate assessment specified; the existing independent review gate remains applicable.",
+    "limits": "**D:** native Ruff/ESLint, existing formatter/type checker and build commands; project configs retained. JS/TS needs its configured parser; lint is not a type checker.",
+    "adapters": [
+      "ruff",
+      "eslint",
+      "native-type-build"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; Changed-source fast checks plus required project build/type checks; existing diagnostics baseline by precise rule/location, never broad ignore files."
+  },
+  "expected_evidence": "**D:** native Ruff/ESLint, existing formatter/type checker and build commands; project configs retained. JS/TS needs its configured parser; lint is not a type checker.",
+  "repair": "Fix the native formatter/lint/type/build diagnostic under the approved configuration, then rerun the relevant checks without broad suppression. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}

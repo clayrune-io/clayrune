@@ -1,0 +1,43 @@
+{
+  "id": "P07",
+  "version": 1,
+  "title": "Dependency/CVE scanning",
+  "problem": "Locked dependencies may contain known exploitable vulnerabilities.",
+  "rationale": "New high/critical findings block product merge; expiry-bound legacy waivers possible with owner/removal condition. Network/database failure is Error; no result is not zero findings.",
+  "applicability": "Resolved locked application, build, test and deployment dependencies.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/security-and-hardening",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "merge"
+  ],
+  "severity": "required",
+  "baseline_policy": "Owner/removal/expiry-bound vulnerability waivers only; no silent clean result.",
+  "target_check": {
+    "deterministic": "pip-audit, npm audit or OSV-Scanner against resolved locked dependency graph including build/test/deploy exposure; preserve advisory IDs, database/service time and graph hash.",
+    "reviewer": "reachability/fix tradeoffs and unknown severity.",
+    "limits": "**D:** pip-audit, npm audit or OSV-Scanner against resolved locked dependency graph including build/test/deploy exposure; preserve advisory IDs, database/service time and graph hash. **R:** reachability/fix tradeoffs and unknown severity.",
+    "adapters": [
+      "pip-audit",
+      "npm-audit",
+      "osv-scanner"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; New high/critical findings block product merge; expiry-bound legacy waivers possible with owner/removal condition. Network/database failure is Error; no result is not zero findings."
+  },
+  "expected_evidence": "**D:** pip-audit, npm audit or OSV-Scanner against resolved locked dependency graph including build/test/deploy exposure; preserve advisory IDs, database/service time and graph hash. **R:** reachability/fix tradeoffs and unknown severity.",
+  "repair": "Review the advisory and locked graph; propose a reviewed dependency fix or narrow human waiver, then rerun a fresh audit. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}

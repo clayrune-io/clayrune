@@ -1,0 +1,42 @@
+{
+  "id": "P13",
+  "version": 1,
+  "title": "Documentation, changelog and decisions",
+  "problem": "Changed behavior can leave documentation and decisions inaccurate.",
+  "rationale": "Every change supplies the configured doc/changelog update or explicit reviewed N/A under project rules. Reuse existing changelog format; no automatic new documentation hierarchy.",
+  "applicability": "Changed API/UI/configuration or behavior; reviewed N/A only under project rules.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/documentation-and-adrs",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "diff",
+    "merge"
+  ],
+  "severity": "required",
+  "baseline_policy": "No legacy waiver for required verification or release prerequisites.",
+  "target_check": {
+    "deterministic": "configured change-note/changelog fragment present for changed behavior; links/schema/docs build checks; relevant docs paths mapped to changed API/UI/config.",
+    "reviewer": "content explains actual behavior and decisions. An empty fragment does not satisfy review.",
+    "limits": "**D:** configured change-note/changelog fragment present for changed behavior; links/schema/docs build checks; relevant docs paths mapped to changed API/UI/config. **R:** content explains actual behavior and decisions. An empty fragment does not satisfy review.",
+    "adapters": [
+      "documentation-check"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; Every change supplies the configured doc/changelog update or explicit reviewed N/A under project rules. Reuse existing changelog format; no automatic new documentation hierarchy."
+  },
+  "expected_evidence": "**D:** configured change-note/changelog fragment present for changed behavior; links/schema/docs build checks; relevant docs paths mapped to changed API/UI/config. **R:** content explains actual behavior and decisions. An empty fragment does not satisfy review.",
+  "repair": "Update the project changelog and mapped documentation to describe actual behavior, then run native link/schema/docs checks and review content. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}

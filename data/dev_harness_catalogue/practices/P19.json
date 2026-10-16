@@ -1,0 +1,41 @@
+{
+  "id": "P19",
+  "version": 1,
+  "title": "Accessibility and usable UI",
+  "problem": "Automated scans cannot establish usable keyboard and assistive flows.",
+  "rationale": "UI changes require applicable checks/review; no full accessibility certification from a scanner. Non-UI projects show N/A.",
+  "applicability": "Changed user interfaces; non-UI projects require explicit N/A.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/frontend-ui-engineering",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "merge"
+  ],
+  "severity": "required",
+  "baseline_policy": "No legacy waiver for required verification or release prerequisites.",
+  "target_check": {
+    "deterministic": "existing browser accessibility, keyboard/focus and responsive tests against the candidate, using project tools.",
+    "reviewer": "task usability and unsupported assistive scenarios.",
+    "limits": "**D:** existing browser accessibility, keyboard/focus and responsive tests against the candidate, using project tools. **R:** task usability and unsupported assistive scenarios.",
+    "adapters": [
+      "accessibility-keyboard-responsive-tests"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; UI changes require applicable checks/review; no full accessibility certification from a scanner. Non-UI projects show N/A."
+  },
+  "expected_evidence": "**D:** existing browser accessibility, keyboard/focus and responsive tests against the candidate, using project tools. **R:** task usability and unsupported assistive scenarios.",
+  "repair": "Repair the affected keyboard/focus/responsive or accessibility path and rerun project browser tests plus usability review. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}

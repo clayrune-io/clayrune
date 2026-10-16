@@ -1,0 +1,58 @@
+{
+  "id": "P16",
+  "version": 1,
+  "title": "Dependency hygiene and supply chain",
+  "problem": "CVE results do not establish licence compatibility or package-source trust.",
+  "rationale": "Product dependency changes require both vulnerability and licence results; neither substitutes for the other. Reuse an existing approved licence checker; if none exists, show Unsupported until configured, never claim npm audit checks licences. No forced audit fix, automatic package upgrades or execution of newly introduced install scripts before approval.",
+  "applicability": "Dependency, lockfile, install-script, source or licence-policy changes.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/security-and-hardening",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    },
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/api-and-interface-design",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    },
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/ci-cd-and-automation",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "merge"
+  ],
+  "severity": "required",
+  "baseline_policy": "No legacy waiver for required verification or release prerequisites.",
+  "target_check": {
+    "deterministic": "approved lockfiles in sync; frozen/locked install; unexpected source/script/lock changes flagged; project licence-policy/SBOM command checks direct and transitive SPDX identifiers against the approved allow/deny policy. Unknown, absent or ambiguous licence metadata is Review required, not an allowed licence.",
+    "reviewer": "necessity, maintainer/source trust, install scripts, dual-licence choice and licence compatibility.",
+    "limits": "**D:** approved lockfiles in sync; frozen/locked install; unexpected source/script/lock changes flagged; project licence-policy/SBOM command checks direct and transitive SPDX identifiers against the approved allow/deny policy. Unknown, absent or ambiguous licence metadata is Review required, not an allowed licence. **R:** necessity, maintainer/source trust, install scripts, dual-licence choice and licence compatibility.",
+    "adapters": [
+      "lockfile-check",
+      "licence-policy"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; Product dependency changes require both vulnerability and licence results; neither substitutes for the other. Reuse an existing approved licence checker; if none exists, show Unsupported until configured, never claim npm audit checks licences. No forced audit fix, automatic package upgrades or execution of newly introduced install scripts before approval."
+  },
+  "expected_evidence": "**D:** approved lockfiles in sync; frozen/locked install; unexpected source/script/lock changes flagged; project licence-policy/SBOM command checks direct and transitive SPDX identifiers against the approved allow/deny policy. Unknown, absent or ambiguous licence metadata is Review required, not an allowed licence. **R:** necessity, maintainer/source trust, install scripts, dual-licence choice and licence compatibility.",
+  "repair": "Reconcile lockfiles, sources and scripts; run the approved licence-policy command and independently review unknown or incompatible licences. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}

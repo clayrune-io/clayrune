@@ -6,6 +6,12 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-10-15] - Dev harness policy foundation (MC-960, DH-M1)
+
+- Added 22 separate practice descriptors and two project-local Preview profile proposals, with pinned guidance metadata and target checks separate from delivered coverage. M1 check coverage remains Unsupported.
+- Added catalogue/read/activate backend contracts. Activation reuses agent attribution and per-call human passcode proof, checks exact revisions and stored measured evidence/caps, and requires acknowledgement of lost protections.
+- Active policy, catalogue and evidence freeze in one atomic runtime snapshot outside `data/projects/`; corrupt/missing activated state fails closed. Contract and tests: `docs/DEV_HARNESS_POLICY.md`. No runner, installer, UI, merge hold or live activation; branch only.
+
 ## [2026-10-15] - Native-style picture viewer (MC-1100)
 
 - Extracted picture viewing from the diagram module. Windows/Linux get Photos-style filename, toolbar and status bars; Mac gets Preview-style window controls. Existing chat, Media and Desk library entry points remain supported.

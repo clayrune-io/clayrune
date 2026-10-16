@@ -1,0 +1,43 @@
+{
+  "id": "P08",
+  "version": 1,
+  "title": "SAST and unsafe patterns",
+  "problem": "Unsafe source patterns can survive functional tests.",
+  "rationale": "Required configured high-confidence/severity findings hold merge; no blanket “OWASP compliant” badge.",
+  "applicability": "Supported Python/JS/TS source with an approved configured security checker.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/security-and-hardening",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "diff",
+    "merge"
+  ],
+  "severity": "required",
+  "baseline_policy": "Precise native-rule legacy allowances only; no directory exemption.",
+  "target_check": {
+    "deterministic": "Bandit for Python, optional Semgrep CE with approved local licensed rules; native lint security findings where configured. Pin engine **and** rule/config digests.",
+    "reviewer": "triage context and threat coverage.",
+    "limits": "**D:** Bandit for Python, optional Semgrep CE with approved local licensed rules; native lint security findings where configured. Pin engine **and** rule/config digests. **R:** triage context and threat coverage.",
+    "adapters": [
+      "bandit",
+      "semgrep-ce-local-rules"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; Required configured high-confidence/severity findings hold merge; no blanket “OWASP compliant” badge."
+  },
+  "expected_evidence": "**D:** Bandit for Python, optional Semgrep CE with approved local licensed rules; native lint security findings where configured. Pin engine **and** rule/config digests. **R:** triage context and threat coverage.",
+  "repair": "Fix the reported unsafe source pattern or obtain the configured independent triage; rerun the pinned engine and approved rules. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}

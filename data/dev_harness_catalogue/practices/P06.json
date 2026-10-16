@@ -1,0 +1,42 @@
+{
+  "id": "P06",
+  "version": 1,
+  "title": "Secret handling",
+  "problem": "New secrets can enter source, reports or transcripts.",
+  "rationale": "Fast/merge gate; newly introduced secrets never enter a baseline. No auto-rotation/credential write.",
+  "applicability": "Candidate diff and new source files; optional approved full-tree baseline scan.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/security-and-hardening",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "diff",
+    "merge"
+  ],
+  "severity": "required",
+  "baseline_policy": "No newly introduced secrets may be grandfathered.",
+  "target_check": {
+    "deterministic": "Gitleaks on candidate diff/new files, optional full-tree baseline scan; redact stdout/reports before persistence.",
+    "reviewer": "secret use and data flow. Scan clean does not prove absence of all secrets; no matched value in a transcript.",
+    "limits": "**D:** Gitleaks on candidate diff/new files, optional full-tree baseline scan; redact stdout/reports before persistence. **R:** secret use and data flow. Scan clean does not prove absence of all secrets; no matched value in a transcript.",
+    "adapters": [
+      "gitleaks"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; Fast/merge gate; newly introduced secrets never enter a baseline. No auto-rotation/credential write."
+  },
+  "expected_evidence": "**D:** Gitleaks on candidate diff/new files, optional full-tree baseline scan; redact stdout/reports before persistence. **R:** secret use and data flow. Scan clean does not prove absence of all secrets; no matched value in a transcript.",
+  "repair": "Remove the newly introduced secret from the candidate and redact reports; request human credential rotation if exposure occurred, then rerun scanning. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}

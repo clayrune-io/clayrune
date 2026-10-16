@@ -1,0 +1,47 @@
+{
+  "id": "P02",
+  "version": 1,
+  "title": "Unit tests with every change",
+  "problem": "Changed production behavior can land without meaningful test execution or coverage.",
+  "rationale": "Code changes require tests and coverage before merge; docs/config use their explicit verification group. Floor and optional delta tolerance are measured then human-selected; branch coverage separately reported where supported.",
+  "applicability": "Changed executable production paths; non-executable changes require their explicit verification group.",
+  "guidance": [
+    {
+      "source": "addyosmani/agent-skills",
+      "subpath": "skills/test-driven-development",
+      "pin": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+      "licence": "MIT",
+      "origin": "https://github.com/addyosmani/agent-skills",
+      "disposition": "proposed"
+    }
+  ],
+  "stages": [
+    "diff",
+    "merge"
+  ],
+  "severity": "required",
+  "baseline_policy": "No legacy waiver for required verification or release prerequisites.",
+  "target_check": {
+    "deterministic": "mapped unit suites ran on the checked tree; changed executable lines measured with Coverage.py or existing JS coverage + **diff-cover**; optional same-config base-to-candidate coverage delta (section 5.2). Missing/empty reports are Error; no executable changed lines = explicit N/A after classification.",
+    "reviewer": "assertions exercise behavior and negative paths, not implementation mirrors.",
+    "limits": "**D:** mapped unit suites ran on the checked tree; changed executable lines measured with Coverage.py or existing JS coverage + **diff-cover**; optional same-config base-to-candidate coverage delta (section 5.2). Missing/empty reports are Error; no executable changed lines = explicit N/A after classification. **R:** assertions exercise behavior and negative paths, not implementation mirrors.",
+    "adapters": [
+      "unit-suite",
+      "coverage.py",
+      "javascript-coverage",
+      "diff-cover"
+    ],
+    "configuration": "Project-approved native configuration, immutable source/tool/config pins and applicable evidence mappings; Code changes require tests and coverage before merge; docs/config use their explicit verification group. Floor and optional delta tolerance are measured then human-selected; branch coverage separately reported where supported."
+  },
+  "expected_evidence": "**D:** mapped unit suites ran on the checked tree; changed executable lines measured with Coverage.py or existing JS coverage + **diff-cover**; optional same-config base-to-candidate coverage delta (section 5.2). Missing/empty reports are Error; no executable changed lines = explicit N/A after classification. **R:** assertions exercise behavior and negative paths, not implementation mirrors.",
+  "repair": "Add meaningful behavior and negative-path tests for the changed production path, run its mapped suite, and regenerate exact-tree changed-line coverage. Missing prerequisites remain Unsupported/Error.",
+  "numeric_requirements": [
+    "changed_line_floor_percent"
+  ],
+  "delivered_coverage": {
+    "deterministic": "unsupported",
+    "reviewer": "unsupported",
+    "guidance": "guidance_only",
+    "reason": "DH-M1 supplies descriptor references only; guidance installation, runner and target check coverage are not delivered."
+  }
+}
