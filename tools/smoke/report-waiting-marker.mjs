@@ -65,9 +65,16 @@ try {
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message || String(e)));
     let floor = floorBody('report waiting from Sol_Tobin');
+    const actions = [];
     await page.route('**/*', (route) => {
       const req = route.request();
       const url = new URL(req.url());
+      if (req.method() === 'POST' && /\/agent\/delegation\/(retry|mark-handled)$/.test(url.pathname)) {
+        const body = req.postDataJSON();
+        actions.push({ action: url.pathname.split('/').pop(), ...body });
+        status = { sessions: [row(status.sessions[0].reports_waiting.filter(r => r.event_id !== body.event_id))] };
+        return route.fulfill({ contentType: 'application/json', body: '{"ok":true}' });
+      }
       if (url.pathname === `/api/project/${PID}/agent/status`)
         return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(status) });
       if (url.pathname === '/api/floor')
@@ -140,6 +147,51 @@ try {
     // 3. Same list again leaves one notice; empty list removes it.
     s = await poll([held]);
     check((await page.$$(`#report-waiting-${SID}`)).length === 1, 'repeat poll keeps exactly one marker');
+
+    // Multiple parked rows occupy one line until reviewed, even after a modal rebuild.
+    const reviews = Array.from({ length: 13 }, (_, n) => ({ ...held,
+      event_id: `child${n}:turn:1`, table: 'inbox', stage: 'review',
+      label: `report from Agent ${n} may not have arrived, needs review` }));
+    s = await poll(reviews);
+    const notice = page.locator(`#report-waiting-${SID}`);
+    const summary = notice.locator('.report-waiting-summary');
+    check(await summary.getAttribute('aria-expanded') === 'false', '13 reports start collapsed');
+    check(await notice.locator('.report-waiting-rows').isHidden(), 'collapsed report rows are hidden');
+    // A status refresh can replace the notice between locator resolution and
+    // evaluation. Measure a connected, laid-out node in the same browser task.
+    const collapsedHandle = await page.waitForFunction(sid => {
+      const el = document.querySelector(`#report-waiting-${sid} .report-waiting-summary`);
+      if (!el || !el.isConnected) return null;
+      const height = el.getBoundingClientRect().height;
+      const line = parseFloat(getComputedStyle(el).lineHeight);
+      if (!height || !Number.isFinite(line)) return null;
+      return { height, line, notice: el.closest('.report-waiting-notice').getBoundingClientRect().height,
+        nowrap: getComputedStyle(el).whiteSpace === 'nowrap' };
+    }, SID);
+    const collapsed = await collapsedHandle.jsonValue();
+    check(collapsed.nowrap && collapsed.height <= collapsed.line + 1 && collapsed.notice <= collapsed.line + 19,
+      `collapsed notice is one line (text=${collapsed.height}px line=${collapsed.line}px notice=${collapsed.notice}px)`);
+    await summary.click();
+    check(await notice.locator('.report-waiting-row').count() === 13, 'review expands all 13 rows');
+    await page.evaluate(pid => refreshModalById(pid), PID);
+    check(await summary.getAttribute('aria-expanded') === 'true', 'expanded state survives refreshModalById');
+    await poll(reviews);
+    check(await summary.getAttribute('aria-expanded') === 'true', 'poll preserves expanded state');
+    await notice.locator('[data-action="mark-handled"]').first().click();
+    await page.waitForFunction(() => document.querySelector('.report-waiting-summary')?.textContent.startsWith('12 reports'));
+    check(actions[0]?.action === 'mark-handled' && !actions[0]?.reviewed_resolution,
+      'Mark handled posts the event without requesting re-delivery');
+    page.once('dialog', d => d.dismiss());
+    await notice.locator('[data-action="retry"]').first().click();
+    check(actions.length === 1, 'cancelled Retry sends nothing');
+    page.once('dialog', d => d.accept());
+    await notice.locator('[data-action="retry"]').first().click();
+    await page.waitForFunction(() => document.querySelector('.report-waiting-summary')?.textContent.startsWith('11 reports'));
+    check(actions[1]?.action === 'retry' && actions[1]?.table === 'inbox' && actions[1]?.reviewed_resolution,
+      'Retry sends reviewed resolution only after confirmation');
+    await summary.click();
+    await page.evaluate(({pid,sid}) => { closeModalById(pid); openProjectModal(pid); switchAgentTab(pid,sid); }, {pid:PID,sid:SID});
+    check(await summary.getAttribute('aria-expanded') === 'false', 'collapsed notice survives modal close/reopen');
     s = await poll([]);
     check(!s.present, 'marker is removed once the report has been handed over');
 

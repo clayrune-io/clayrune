@@ -225,6 +225,17 @@ A dispatched child's chat shows **Dispatched by** above the thread when Clayrune
 
 Hivemind workers also show the session that created the hivemind when Clayrune could identify it. Manual spawns and retries keep that original creator. Older hiveminds and those opened directly by a person have no recorded creating session.
 
+**Child reports:** a queued report appears above its parent's chat until handed
+over. When several reports need attention, the notice collapses to one line,
+**N reports may not have arrived - review**. Click it to expand or collapse the
+list. Each held or uncertain report has **Retry** and **Mark handled** buttons.
+Retry asks for confirmation because the report may already have arrived and a
+retry can send it twice. Mark handled clears the warning without sending the
+report again; its stored result remains available. Clayrune also checks parent
+Claude transcripts at most once every five minutes and clears lost-acknowledgment
+warnings when the callback appears in a newer user turn. This confirms receipt,
+not that the parent verified the child's work.
+
 **Unlocking a guarded chat:** a dispatched or scheduled chat shows **Guarded**
 with an **Unlock** button. Re-enter your dashboard passcode to choose **Allow
 once** (the next eligible blocked action, expiring after 10 minutes if unused)

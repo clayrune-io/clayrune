@@ -6,6 +6,24 @@
 - Worker lineage is saved before launch and retained by the existing completion writer, so merge-review independence and the **Dispatched by** banner can follow it after a restart. Legacy and unattributed hiveminds are not assigned a guessed creator.
 - Contract and limits: `docs/HIVEMIND_LINEAGE.md`. Branch only; no merge, push or server restart.
 
+## [2026-10-16] - Attribute unrecorded rollover receipts from dispatch inputs (MC-1106)
+
+- Recognize a parent's exact `notify_session` recipient in its own assistant tool-use inputs as transcript ownership evidence, including dispatch JSON embedded in shell commands. Existing provider-id and user-identity ownership signals remain supported.
+- Receipt evidence remains an exact whole-line header in a strictly newer user text block. Assistant prose, tool results, inline quotations and another recipient cannot clear a warning.
+- Added rollover dispatch-input, quoted-analysis, role/type, exact-parent and timestamp regressions. Branch only; no live resolution, merge, push or restart.
+
+## [2026-10-16] - Recognize prefixed report receipts without repeated scans (MC-1106)
+
+- Receipt matching accepts an exact callback header on any whole line of parent user text, including rollover and memory prefixes. Tool results, partial-line headers, old timestamps and unowned transcripts remain excluded.
+- Scan each transcript directory once for all candidate parents, skip files older than the oldest candidate, and load each project's records once per scan. Added a read-only dry-run command with per-project match counts and timing.
+- Added prefix, tool-result, ownership, single-pass, mtime and no-resolution dry-run regressions. The banner smoke waits for a connected rendered node before measuring it across modal rebuilds. Branch only; no merge, push or restart.
+
+## [2026-10-16] - Clear confirmed child-report warnings (MC-1106)
+
+- Reconcile uncertain/blocked callbacks against newer parent Claude user turns every five minutes, including rollovers missing from the agent log. Confirmed receipts leave the banner without replaying the report.
+- Added Mark handled beside Retry for parked reports; handling preserves the result and ends delivery. Retry asks about duplicate delivery before using the existing reviewed-resolution path.
+- Multiple reports collapse to one line and expand for review; polls and chat-modal rebuilds preserve the chosen view. Branch only; no merge, push or restart.
+
 ## [2026-10-16] - Repair suite triage context and subprocess guard findings
 
 - Context fingerprinting tolerates a missing project without raising from its diagnostic handler; harness errors still produce the existing explicit Error block.
