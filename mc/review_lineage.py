@@ -9,7 +9,7 @@ or a grandchild -- of the owner is the author vouching for the author.
 So the review route also walks the reviewer's dispatch ancestry and refuses
 when the branch owner is anywhere in it.
 
-Where a session's spawner is recorded (all of it in `mc/blueprints/agent_routes`):
+Where a session's spawner is recorded (`agent_routes` and `hivemind_lineage`):
 
   * live:    `agent_sessions[sid]['_spawned_by']` -- set once at dispatch/revive.
   * durable: the agent-log row's `dispatched_by_session_id` (same value, written
@@ -24,7 +24,8 @@ unreadable log, or a chain longer than any real delegation tree.
 
 The recorded spawner is the OS-attributed dispatch caller, not the caller's
 `notify_session` (`mc/dispatch_lineage.py`, MC-1082). A caller the OS cannot
-tie to a session records none; hivemind workers carry no lineage link.
+tie to a session records none. Hivemind workers inherit the OS-attributed
+session that created their Hivemind (`mc/hivemind_lineage.py`, MC-1107).
 
 The walk (`owner_in_ancestry`) is pure so it is testable without Flask or
 sessions; `check()` is the production wiring the route calls.

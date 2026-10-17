@@ -121,6 +121,33 @@ def test_live_child_of_the_owner_is_refused(logs):
     assert 'descends from the branch owner' in ei.value.message
 
 
+@pytest.mark.parametrize('durable', [False, True])
+def test_hivemind_worker_chain_to_owner_is_refused(logs, durable):
+    # owner -> creator session -> Hivemind -> worker. The Hivemind itself
+    # is metadata, not a managed session: its creator is the worker's spawner.
+    worker = {'session_id': 'hm_worker', 'trigger_type': 'hivemind_worker',
+              'hivemind_id': 'hm_run', 'dispatched_by_session_id': 'creator'}
+    rows = [{'session_id': 'creator', 'dispatched_by_session_id': 'owner'}]
+    if durable:
+        rows.append(worker)
+    else:
+        state.agent_sessions['hm_worker'] = {'_spawned_by': 'creator'}
+    logs('p', rows)
+    with pytest.raises(ReviewRefused) as ei:
+        rl.check('hm_worker', 'owner')
+    assert ei.value.extra['lineage'] == ['owner', 'creator', 'hm_worker']
+
+
+def test_unrelated_hivemind_worker_is_independent(logs):
+    logs('p', [
+        {'session_id': 'hm_worker', 'trigger_type': 'hivemind_worker',
+         'hivemind_id': 'hm_other', 'dispatched_by_session_id': 'dave'},
+        {'session_id': 'dave', 'trigger_type': 'manual'},
+        {'session_id': 'owner', 'dispatched_by_session_id': 'dave'},
+    ])
+    rl.check('hm_worker', 'owner')
+
+
 def test_chain_through_a_finished_intermediate_in_the_log_is_refused(logs):
     """The builder's child has ended and lives only in the agent log."""
     state.agent_sessions['rev'] = {'session_id': 'rev', '_spawned_by': 'mid'}

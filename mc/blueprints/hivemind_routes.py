@@ -47,6 +47,7 @@ import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 
 import mc.agent_worktree as _agent_worktree
 import mc.hivemind_integration as _hm_integration
+import mc.hivemind_lineage as _hm_lineage
 import mc.project_sync as _sync
 from mc import engine_selection, obs, state
 from mc.atomic_json import write_json_atomic
@@ -610,6 +611,7 @@ def hivemind_create():
         'created_at': now_iso(),
         'updated_at': now_iso(),
         'project_generation': project_generation,
+        'created_by_session_id': _hm_lineage.creator_of_request(request),
         'session_count': 0,
         'config': {
             'max_concurrent_workers': data.get('max_concurrent_workers', 3),
@@ -1080,6 +1082,8 @@ def _hm_runtime_dispatch(*, provider_name, project_id, project_path, task,
     mgr = get_manager(project_id)
     mgr.ensure_guardian()
     with mgr.lock:
+        if session_dict.get('trigger_type') == 'hivemind_worker':
+            _hm_lineage.record_worker(session_dict, project_generation)
         agent_sessions[session_id] = session_dict
         mgr.session_ids.add(session_id)
 
@@ -1205,6 +1209,7 @@ def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
         # other isolated agent.
         '_agent_cwd': run_cwd,
         '_worktree_isolated': isolated,
+        **_hm_lineage.worker_metadata(manifest),
     }
     metadata = {
         'hivemind_id': hivemind_id,
@@ -1212,6 +1217,7 @@ def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
         'trigger_type': 'hivemind_worker',
         'trigger_id': ws_id,
         'housekeeping': True,
+        **_hm_lineage.worker_metadata(manifest),
     }
     return _hm_runtime_dispatch(
         provider_name=provider_name, project_id=project_id, project_path=run_cwd,
