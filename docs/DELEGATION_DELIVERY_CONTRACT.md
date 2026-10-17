@@ -62,6 +62,68 @@ removed. This is a test-launch condition, not a delivery-code workaround.
 
 ## Ownership and semantics
 
+### Lost-acknowledgment report confirmation (MC-1106)
+
+`mc/delegation_transcript_reconcile.py` runs before drain/wake in the existing
+delivery loop, never from `/agent/status` or Floor polls. A five-minute in-memory
+gate applies to scans including misses and read errors. Restart permits a new
+scan. Only `uncertain` and `blocked` inbox rows are candidates. No age cutoff
+clears a report, and no reconciliation replays a callback.
+
+The evidence is an exact stored callback header as the first line of a Claude
+user text block, with its JSONL timestamp strictly after inbox `created_at`.
+Assistant text, tool results, quotations with a preceding line, missing or equal
+timestamps do not qualify. All transcripts in the parent's encoded worktree
+directory are considered, even if the worktree was removed or their ids are
+missing from `claude_session_ids`. Shared project transcript directories require
+a recorded parent provider id or the parent's injected job/Floor endpoint
+identity in a user text block. The existing runtime's path-encoding variants
+are reused. Missing/unreadable transcripts retain uncertainty.
+
+Matches become `confirmed_in_transcript`; this is receipt evidence, not task
+acceptance. `DeliveryStore.mark_handled(event_id, project_id)` and
+`POST /api/project/<project_id>/agent/delegation/mark-handled` with
+`{"event_id":"..."}` end a parked report as `handled` without delivery. Both
+operations atomically settle its inbox/outbox copies, preserve immutable
+payloads, clear recovery flags, refuse active claims and remain terminal across
+restart/source recovery. The route returns 400 for invalid input, 404 outside
+the project or for a missing event, and 409 if a handoff is no longer parked.
+No new schema or physical deletion is involved.
+
+The chat notice is one line for multiple reports until expanded. Recovery rows
+offer Retry (existing reviewed-resolution route, with duplicate-delivery
+confirmation) and Mark handled. Expanded/collapsed state survives status polls
+and modal rebuilds, retaining the MC-1063 cache restoration path. Expanded lists
+scroll within 30vh. Live activation requires integration and a server restart;
+branch tests alone do not clear existing production rows.
+
+MC-1106 branch validation (2026-10-16; isolated databases and fake providers):
+
+```powershell
+python -m pytest tests/test_delegation_delivery.py tests/test_delegation_lifecycle.py tests/test_delegation_privacy.py tests/test_delegation_restart.py tests/test_delegation_startup_harness.py tests/test_delegation_status.py tests/test_delegation_storage_usage.py tests/test_delegation_uncertain_rows.py tests/test_delegation_waiting.py tests/test_delegation_wake.py tests/test_delegation_transcript_reconcile.py tests/test_spawner_callback_rearm.py tests/test_callback_shape.py tests/test_question_callback.py tests/test_agent_spawn_notify.py -q -o addopts=''
+node --test tools/smoke/report-waiting.test.mjs
+node tools/smoke/report-waiting-marker.mjs
+node tools/smoke/boot-smoke.mjs
+node tools/smoke/delivery-status-visibility.mjs
+node tools/smoke/agent-stream-dedupe.mjs
+pyright mc/delegation_transcript_reconcile.py mc/blueprints/delegation_report_routes.py mc/delegation_delivery.py mc/delegation_waiting.py
+```
+
+Results: 177 Python passes, 1 skip (the existing opt-in full-startup subprocess
+harness requires explicit process-registration configuration); 4 JS unit passes;
+46 report-notice smoke checks across 1440px and 390px; boot (7 scenarios plus
+interaction guards), recovery visibility and stream dedupe passed; four modules
+type-check with zero errors. The smoke dependency junction was borrowed from
+the main checkout and removed before commit. No live provider or production
+database mutation was exercised.
+
+UI check after integration/approved restart:
+1. Open a parent chat with multiple unresolved reports; confirm one summary line,
+   expand it, and reopen the chat to check the view survives.
+2. Mark a report handled; confirm it disappears without starting a parent turn.
+3. Wait up to five minutes: reports already present as newer parent Claude user
+   turns clear; an unmatched report remains available for review/Retry.
+
 ### Delivery-loop lifecycle
 
 Start, stop admission and dependency rewiring serialize under a lifecycle lock.

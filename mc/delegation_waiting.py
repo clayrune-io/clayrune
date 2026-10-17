@@ -17,6 +17,10 @@ A row stops being reported when it is no longer in one of the listed states --
 `submitted` (handed to the parent) or `delivered`/`processed`. Parked rows stay
 reported on purpose: the alternative is a marker that vanishes at the moment the
 report is actually stuck.
+
+MC-1106: the delivery-loop reconciler can end a lost acknowledgment as
+`confirmed_in_transcript`; a person's Mark handled action ends it as `handled`.
+Both are terminal, without re-delivery. This projection remains read-only.
 """
 from __future__ import annotations
 
@@ -70,7 +74,7 @@ _DETAIL = {
     'held': 'This chat cannot take it right now (stopped, errored or quota-blocked). '
             'It is not retried automatically.',
     'review': 'Delivery outcome is unknown. It is not retried automatically; '
-              'see the delegation status list.',
+              'review the chat before retrying, or mark it handled.',
 }
 
 
@@ -91,7 +95,9 @@ def waiting_by_parent(project_id: str = '') -> dict[str, list[dict[str, Any]]]:
     sql = (f"SELECT event_id,parent_session_id,state,payload,created_at,1 AS stage_rank "
            f"FROM inbox WHERE state IN ({marks}){scope} UNION ALL "
            f"SELECT event_id,parent_session_id,state,payload,created_at,0 AS stage_rank "
-           f"FROM outbox WHERE state IN ({marks}){scope} ORDER BY created_at")
+           f"FROM outbox WHERE state IN ({marks}){scope} "
+           "AND NOT EXISTS (SELECT 1 FROM inbox i WHERE i.event_id=outbox.event_id "
+           "AND i.state IN ('confirmed_in_transcript','handled')) ORDER BY created_at")
     try:
         # A plain connection with query_only: a mode=ro URI cannot open a WAL
         # database whose -shm is gone (every connection closed), which is the
@@ -121,6 +127,7 @@ def waiting_by_parent(project_id: str = '') -> dict[str, list[dict[str, Any]]]:
         stage = STAGE_BY_STATE[state]
         out.setdefault(parent, []).append({
             'event_id': event_id,
+            'table': 'inbox' if _rank else 'outbox',
             'child_session_id': child or (event_id.rsplit(':turn:', 1)[0]
                                           if ':turn:' in event_id else ''),
             'who': who,

@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-16] - Clear confirmed child-report warnings (MC-1106)
+
+- Reconcile uncertain/blocked callbacks against newer parent Claude user turns every five minutes, including rollovers missing from the agent log. Confirmed receipts leave the banner without replaying the report.
+- Added Mark handled beside Retry for parked reports; handling preserves the result and ends delivery. Retry asks about duplicate delivery before using the existing reviewed-resolution path.
+- Multiple reports collapse to one line and expand for review; polls and chat-modal rebuilds preserve the chosen view. Branch only; no merge, push or restart.
+
 ## [2026-10-16] - Repair suite triage context and subprocess guard findings
 
 - Context fingerprinting tolerates a missing project without raising from its diagnostic handler; harness errors still produce the existing explicit Error block.

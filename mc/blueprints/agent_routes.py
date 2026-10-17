@@ -130,6 +130,8 @@ from mc.rollover_threshold import threshold_for as _rollover_threshold_for
 import mc.background_tasks as _bg_tasks  # MC-958 background-job wake tracking (Mode B)
 import mc.delegation_waiting as _delegation_waiting  # MC-1063: queued child reports shown on the parent
 import mc.delegation_wake as _delegation_wake  # MC-1063: a parent's turn-end wakes its queued reports
+from mc.delegation_transcript_reconcile import TranscriptReconciler
+from mc.blueprints.delegation_report_routes import register_routes as _register_report_routes
 import mc.desk_connect.custom_package_manifest as _custom_package_manifest  # MC-1054: detect-only file drift of approved npm MCPs
 import mc.agent_jobs as _agent_jobs  # MC-958 follow-up: engine-agnostic background command jobs
 import mc.caller_attribution as _caller_attribution  # backlog 40260b57: who is really calling dispatch
@@ -169,6 +171,7 @@ from mc import pty_backend
 from mc import claude_signin_channel as _signin_channel    # backlog 1d940d0f
 
 bp = Blueprint('agent_routes', __name__)
+_register_report_routes(bp, store_fn=lambda: _delivery_store)
 
 # ── wired by server.py (see wire()) ──────────────────────────────────────────
 DATA_DIR: Path = None  # type: ignore[assignment]
@@ -9099,6 +9102,7 @@ def start_delegation_delivery(interval_s: float = 5.0):
                     _log(f'[delegation-delivery] log recovery failed for {log_file.name}: {exc}')
             stop_event = threading.Event()
             waker = _delegation_wake.ParentWaker()
+            reconciler = TranscriptReconciler()
 
             def _loop(local_store=store, local_stop=stop_event, local_waker=waker):
                 while True:
@@ -9111,6 +9115,7 @@ def start_delegation_delivery(interval_s: float = 5.0):
                         if local_stop.is_set():
                             break
                         try:
+                            reconciler.tick(local_store, agent_sessions, load_project, _load_agent_log)
                             drain_once(local_store, send_outbox=_deliver_outbox,
                                        process_inbox=_process_inbox)
                             local_waker.tick(local_store, agent_sessions)

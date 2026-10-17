@@ -9,6 +9,28 @@ from mc.blueprints import agent_routes as ar
 from mc.delegation_delivery import DeliveryStore
 
 
+def test_transcript_confirmation_runs_before_drain_and_wake(lifecycle, monkeypatch):
+    trace = []
+    entered = threading.Event()
+
+    class Reconciler:
+        def tick(self, store, sessions, load_project, load_log):
+            trace.append('confirm')
+
+    class Waker:
+        def tick(self, store, sessions):
+            trace.append('wake')
+            entered.set()
+
+    monkeypatch.setattr(ar, 'TranscriptReconciler', Reconciler)
+    monkeypatch.setattr(ar._delegation_wake, 'ParentWaker', Waker)
+    monkeypatch.setattr(ar, 'drain_once', lambda *a, **kw: trace.append('drain'))
+    ar.start_delegation_delivery(interval_s=60)
+    assert entered.wait(2)
+    assert ar.stop_delegation_delivery(1)['joined']
+    assert trace == ['confirm', 'drain', 'wake']
+
+
 @pytest.fixture
 def lifecycle(tmp_path, monkeypatch):
     monkeypatch.setattr(ar, '_delivery_path', tmp_path / 'delivery.sqlite3')

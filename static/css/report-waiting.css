@@ -7,4 +7,20 @@
 }
 .report-waiting-row[data-stage="held"], .report-waiting-row[data-stage="review"] { color: #b45309; }
 .report-waiting-detail { opacity: .8; }
+.report-waiting-notice { min-width: 0; }
+.report-waiting-summary {
+  display: block; width: 100%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; border: 0; padding: 0; background: none;
+  color: inherit; text-align: left; font: inherit; cursor: pointer;
+}
+.report-waiting-rows[hidden] { display: none; }
+.report-waiting-summary[aria-expanded="true"] + .report-waiting-rows {
+  max-height: 30vh; overflow-y: auto; margin-top: 6px;
+}
+.report-waiting-row { overflow-wrap: anywhere; }
+.report-waiting-row + .report-waiting-row { margin-top: 6px; }
+.report-waiting-actions { display: flex; gap: 8px; margin-top: 4px; }
+.report-waiting-actions button { font: inherit; cursor: pointer; }
+.report-waiting-error:empty { display: none; }
+.report-waiting-error { display: block; color: #b45309; }
 .fl-report { font-size: 11px; color: #d97706; margin-top: 3px; font-weight: 600; }

@@ -493,6 +493,47 @@ class DeliveryStore:
                        (event_id, project_id, parent_session_id, encoded, self.clock()))
             db.execute('COMMIT')
 
+    def resolve_report(self, event_id: str, project_id: str, *,
+                       confirmed: bool = False) -> bool:
+        """End a parked report without replay; preserve payload and audit reason.
+
+        Both transport copies must stop: a pending outbox copy must not make a
+        resolved inbox report reappear. Active claims cannot be handled here.
+        """
+        terminal = 'confirmed_in_transcript' if confirmed else 'handled'
+        parked = ('blocked', 'uncertain', 'recovery_required')
+        with self._db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            rows = [(table, db.execute(
+                f'SELECT state,lease_until FROM {table} WHERE event_id=? AND project_id=?',
+                (event_id, project_id)).fetchone()) for table in ('inbox', 'outbox')]
+            existing = [(table, row) for table, row in rows if row is not None]
+            if not existing:
+                db.execute('COMMIT')
+                return False
+            primary = existing[0][1]
+            if primary['state'] == terminal:
+                db.execute('COMMIT')
+                return True
+            if primary['state'] not in parked or (confirmed and existing[0][0] != 'inbox'):
+                db.execute('ROLLBACK')
+                raise ValueError('report is no longer parked')
+            if any(row['state'] == 'dispatch_intent' or
+                   (row['state'] == 'pending' and row['lease_until'] > self.clock())
+                   for _, row in existing):
+                db.execute('ROLLBACK')
+                raise ValueError('report handoff is in flight')
+            for table, _ in existing:
+                db.execute(f"UPDATE {table} SET state=?,lease_until=0,fence_token='',"
+                           "recovery_required=0,last_error=? WHERE event_id=? AND project_id=?",
+                           (terminal, 'report found in parent transcript' if confirmed else
+                            'marked handled without re-delivery', event_id, project_id))
+            db.execute('COMMIT')
+            return True
+
+    def mark_handled(self, event_id: str, project_id: str) -> bool:
+        return self.resolve_report(event_id, project_id)
+
     def recover_sources(self) -> int:
         recovered = 0
         with self._db() as db:
