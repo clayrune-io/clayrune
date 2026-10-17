@@ -223,6 +223,8 @@ strip is hidden.
 
 A dispatched child's chat shows **Dispatched by** above the thread when Clayrune has a recorded dispatcher. This includes completed chats reopened from the conversation rail. If the parent is no longer loaded, the notice identifies its session; an old chat with no recorded lineage has no banner.
 
+Hivemind workers also show the session that created the hivemind when Clayrune could identify it. Manual spawns and retries keep that original creator. Older hiveminds and those opened directly by a person have no recorded creating session.
+
 **Unlocking a guarded chat:** a dispatched or scheduled chat shows **Guarded**
 with an **Unlock** button. Re-enter your dashboard passcode to choose **Allow
 once** (the next eligible blocked action, expiring after 10 minutes if unused)

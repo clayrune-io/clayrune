@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-16] - Preserve Hivemind worker dispatch lineage (MC-1107)
+
+- Hivemind creation records its OS-attributed creating session; manual and automatic workers inherit that spawner through provider runtime adapters. Caller-supplied identities cannot replace it.
+- Worker lineage is saved before launch and retained by the existing completion writer, so merge-review independence and the **Dispatched by** banner can follow it after a restart. Legacy and unattributed hiveminds are not assigned a guessed creator.
+- Contract and limits: `docs/HIVEMIND_LINEAGE.md`. Branch only; no merge, push or server restart.
+
 ## [2026-10-16] - Repair suite triage context and subprocess guard findings
 
 - Context fingerprinting tolerates a missing project without raising from its diagnostic handler; harness errors still produce the existing explicit Error block.

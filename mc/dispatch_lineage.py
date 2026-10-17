@@ -15,8 +15,8 @@ Callers the OS cannot tie to a managed session (the UI, a human's own curl, a
 scheduler or workflow dispatch) record no caller, and the route falls back to
 the previous behaviour for them.
 
-Hivemind workers (`hm_*`) are spawned by the orchestrator, not by a builder,
-so they cannot choose a reviewer for a branch; they carry no lineage link.
+Hivemind workers (`hm_*`) inherit their OS-attributed creating session through
+`mc.hivemind_lineage`; no worker request field can select that identity.
 """
 from __future__ import annotations
 
