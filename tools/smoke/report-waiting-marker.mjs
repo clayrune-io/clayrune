@@ -157,12 +157,18 @@ try {
     const summary = notice.locator('.report-waiting-summary');
     check(await summary.getAttribute('aria-expanded') === 'false', '13 reports start collapsed');
     check(await notice.locator('.report-waiting-rows').isHidden(), 'collapsed report rows are hidden');
-    const collapsed = await summary.evaluate(el => ({
-      height: el.getBoundingClientRect().height,
-      line: parseFloat(getComputedStyle(el).lineHeight),
-      notice: el.closest('.report-waiting-notice').getBoundingClientRect().height,
-      nowrap: getComputedStyle(el).whiteSpace === 'nowrap',
-    }));
+    // A status refresh can replace the notice between locator resolution and
+    // evaluation. Measure a connected, laid-out node in the same browser task.
+    const collapsedHandle = await page.waitForFunction(sid => {
+      const el = document.querySelector(`#report-waiting-${sid} .report-waiting-summary`);
+      if (!el || !el.isConnected) return null;
+      const height = el.getBoundingClientRect().height;
+      const line = parseFloat(getComputedStyle(el).lineHeight);
+      if (!height || !Number.isFinite(line)) return null;
+      return { height, line, notice: el.closest('.report-waiting-notice').getBoundingClientRect().height,
+        nowrap: getComputedStyle(el).whiteSpace === 'nowrap' };
+    }, SID);
+    const collapsed = await collapsedHandle.jsonValue();
     check(collapsed.nowrap && collapsed.height <= collapsed.line + 1 && collapsed.notice <= collapsed.line + 19,
       `collapsed notice is one line (text=${collapsed.height}px line=${collapsed.line}px notice=${collapsed.notice}px)`);
     await summary.click();

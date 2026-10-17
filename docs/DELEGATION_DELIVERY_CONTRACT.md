@@ -70,15 +70,38 @@ gate applies to scans including misses and read errors. Restart permits a new
 scan. Only `uncertain` and `blocked` inbox rows are candidates. No age cutoff
 clears a report, and no reconciliation replays a callback.
 
-The evidence is an exact stored callback header as the first line of a Claude
+The evidence is an exact stored callback header as any whole line of a Claude
 user text block, with its JSONL timestamp strictly after inbox `created_at`.
-Assistant text, tool results, quotations with a preceding line, missing or equal
-timestamps do not qualify. All transcripts in the parent's encoded worktree
-directory are considered, even if the worktree was removed or their ids are
+Rollover preambles and injected standing-position/memory prefixes are accepted.
+Assistant text, tool results, inline/partial-line headers, missing or equal
+timestamps do not qualify. Transcripts in the parent's encoded worktree
+directory are considered even if the worktree was removed or their ids are
 missing from `claude_session_ids`. Shared project transcript directories require
 a recorded parent provider id or the parent's injected job/Floor endpoint
 identity in a user text block. The existing runtime's path-encoding variants
 are reused. Missing/unreadable transcripts retain uncertainty.
+
+Each directory is scanned once across all pending parent groups. Its files whose
+mtime predates that directory's oldest pending `created_at` are skipped; skipped
+files never count as receipt evidence. Binary prefiltering avoids decoding tool
+records without candidate markers; user/text/whole-line/timestamp/ownership
+validation remains authoritative. Project records and logs are loaded once per
+project per scan. The delivery loop keeps the five-minute gate.
+
+A read-only measurement entry point uses the same scanner and ownership rules:
+
+```powershell
+python -m mc.delegation_transcript_reconcile --dry-run --database /path/to/data/delegation_delivery.sqlite3 --data-dir /path/to/data/projects
+```
+
+It opens SQLite with `mode=ro` and `query_only=ON`, closes the connection before
+scanning, never constructs a `DeliveryStore` or calls resolution, and reads saved
+project/agent-log records plus real transcript directories. Live in-memory
+session ids are not supplied in this offline mode. `--projects-home` can select a
+test transcript root. Output includes per-project matched/parked/eligible counts,
+event ids, files scanned/skipped, and elapsed scan/total dry-run tick seconds.
+Unmatched reports remain unresolved; an unmatched count is not evidence of loss.
+Install-specific measurement snapshots belong in the ticket journal.
 
 Matches become `confirmed_in_transcript`; this is receipt evidence, not task
 acceptance. `DeliveryStore.mark_handled(event_id, project_id)` and
@@ -109,7 +132,7 @@ node tools/smoke/agent-stream-dedupe.mjs
 pyright mc/delegation_transcript_reconcile.py mc/blueprints/delegation_report_routes.py mc/delegation_delivery.py mc/delegation_waiting.py
 ```
 
-Results: 177 Python passes, 1 skip (the existing opt-in full-startup subprocess
+Results after review correction: 186 Python passes, 1 skip (the existing opt-in full-startup subprocess
 harness requires explicit process-registration configuration); 4 JS unit passes;
 46 report-notice smoke checks across 1440px and 390px; boot (7 scenarios plus
 interaction guards), recovery visibility and stream dedupe passed; four modules

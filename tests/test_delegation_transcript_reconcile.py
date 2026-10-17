@@ -1,5 +1,6 @@
 """Lost-ack confirmation must never replay or infer delivery from age."""
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -8,7 +9,8 @@ from flask import Flask
 
 from mc.agent_runtime import ClaudeRuntime
 from mc.delegation_delivery import DeliveryStore
-from mc.delegation_transcript_reconcile import TranscriptReconciler
+import mc.delegation_transcript_reconcile as reconcile
+from mc.delegation_transcript_reconcile import TranscriptReconciler, dry_run
 from mc import delegation_waiting as dw
 from mc.blueprints.delegation_report_routes import register_routes
 
@@ -73,7 +75,7 @@ def test_match_confirms_unrecorded_parent_rollover_without_replay(setup, parked)
 
 
 @pytest.mark.parametrize('case', ['missing', 'wrong_header', 'assistant', 'older', 'equal',
-                                  'missing_timestamp', 'tool_result', 'quoted', 'shared_unowned'])
+                                  'missing_timestamp', 'tool_result', 'inline_header', 'shared_unowned'])
 def test_non_evidence_keeps_warning(setup, case):
     options = {
         'wrong_header': {'content': HEADER.replace('child', 'other')},
@@ -82,7 +84,7 @@ def test_non_evidence_keeps_warning(setup, case):
         'equal': {'stamp': '1970-01-01T00:16:40Z'},
         'missing_timestamp': {'stamp': ''},
         'tool_result': {'content': [{'type': 'tool_result', 'content': HEADER}]},
-        'quoted': {'content': 'Here is a quotation:\n' + HEADER},
+        'inline_header': {'content': 'Quoted inline: ' + HEADER},
         'shared_unowned': {'shared': True},
     }
     if case != 'missing':
@@ -94,6 +96,120 @@ def test_non_evidence_keeps_warning(setup, case):
 def test_text_blocks_and_newer_row_timestamp_match(setup):
     write_transcript(setup, content=[{'type': 'text', 'text': HEADER + '\nbody'}])
     assert tick(setup) == 1
+
+
+@pytest.mark.parametrize('prefix', [
+    '=== End of prior conversation (rollover) ===\n\n',
+    '--- STANDING POSITIONS ---\nA saved position\n--- RELEVANT MEMORY ---\nA saved memory\n\n',
+])
+@pytest.mark.parametrize('blocks', [False, True])
+def test_callback_whole_line_after_injected_prefix_matches(setup, prefix, blocks):
+    text = prefix + HEADER + '\n\nIts final message follows.'
+    content = [{'type': 'text', 'text': text}] if blocks else text
+    write_transcript(setup, content=content)
+    assert tick(setup) == 1
+
+
+def test_prefixed_header_only_in_nested_tool_result_is_not_receipt(setup):
+    write_transcript(setup, content=[
+        {'type': 'text', 'text': 'A tool returned this historical excerpt.'},
+        {'type': 'tool_result', 'content': [{'type': 'text', 'text': 'Preamble\n' + HEADER}]},
+    ])
+    assert tick(setup) == 0
+    assert state(setup[0]) == 'uncertain'
+
+
+def test_unowned_prefixed_receipt_and_tool_result_identity_do_not_clear(setup):
+    write_transcript(setup, shared=True, content=[
+        {'type': 'text', 'text': 'Preamble\n' + HEADER},
+        {'type': 'tool_result', 'content': '/api/project/p/agent/parent/job'},
+    ])
+    assert tick(setup) == 0
+
+
+def test_shared_directory_scanned_once_for_all_parent_groups(setup, monkeypatch):
+    store, rec, project = setup
+    header2 = HEADER.replace('child', 'child2')
+    store.enqueue('child2:turn:1', 'p', 'parent2', {'message': header2})
+    store.accept('child2:turn:1', 'p', 'parent2', {'message': header2})
+    with sqlite3.connect(store.path) as db:
+        db.execute("UPDATE inbox SET state='uncertain'")
+    path = write_transcript(setup, shared=True, name='shared', content=HEADER + '\n' + header2)
+    calls = []
+    original = reconcile._scan_file
+
+    def scan(path, *args):
+        calls.append(path)
+        return original(path, *args)
+
+    monkeypatch.setattr(reconcile, '_scan_file', scan)
+    project_reads = []
+    log_reads = []
+
+    def load_project(pid):
+        project_reads.append(pid)
+        return {'project_path': str(project)}
+
+    def load_log(pid):
+        log_reads.append(pid)
+        return [{'session_id': p, 'claude_session_ids': ['shared']}
+                for p in ('parent', 'parent2')]
+
+    assert rec.tick(store, {}, load_project, load_log) == 2
+    assert calls == [path]
+    assert project_reads == log_reads == ['p']
+
+
+def test_scan_skips_old_files_but_keeps_equal_mtime(setup, monkeypatch):
+    old = write_transcript(setup, name='old')
+    equal = write_transcript(setup, name='equal')
+    os.utime(old, (999, 999))
+    os.utime(equal, (1000, 1000))
+    calls = []
+    original = reconcile._scan_file
+
+    def scan(path, *args):
+        calls.append(path)
+        return original(path, *args)
+
+    monkeypatch.setattr(reconcile, '_scan_file', scan)
+    assert tick(setup) == 1
+    assert calls == [equal]
+
+
+def test_dry_run_uses_readonly_db_and_real_ownership_without_resolve(setup, monkeypatch, tmp_path):
+    store, rec, project = setup
+    write_transcript(setup, shared=True, name='known', content='Rollover\n' + HEADER)
+    data = tmp_path / 'project-records'
+    data.mkdir()
+    (data / 'p.json').write_text(json.dumps({'project_path': str(project)}), encoding='utf-8')
+    (data / 'p_agent_log.json').write_text(json.dumps([
+        {'session_id': 'parent', 'claude_session_ids': ['known']}]), encoding='utf-8')
+    before = store.status('inbox', 'child:turn:1', 'p')
+    original = sqlite3.connect
+    connections = []
+
+    def connect(database, *args, **kwargs):
+        assert str(database).endswith('?mode=ro') and kwargs.get('uri') is True
+        db = original(database, *args, **kwargs)
+        connections.append(db)
+        return db
+
+    def cannot_resolve(*args, **kwargs):
+        pytest.fail('dry run attempted to resolve')
+
+    with monkeypatch.context() as m:
+        m.setattr(reconcile.sqlite3, 'connect', connect)
+        m.setattr(DeliveryStore, 'resolve_report', cannot_resolve)
+        result = dry_run(store.path, data, projects_home=rec.projects_home)
+    assert len(connections) == 1
+    assert result['projects'] == {'p': {'parked': 1, 'eligible': 1, 'matched': 1}}
+    assert result['dry_run'] and result['tick_seconds'] >= result['scan_seconds']
+    assert store.status('inbox', 'child:turn:1', 'p') == before
+    assert state(store, 'outbox') == 'pending'
+    # Same whole-line evidence without a saved parent identity must remain unconfirmed.
+    (data / 'p_agent_log.json').write_text('[]', encoding='utf-8')
+    assert dry_run(store.path, data, projects_home=rec.projects_home)['projects']['p']['matched'] == 0
 
 
 def test_shared_transcript_requires_recorded_id_or_parent_identity(setup):

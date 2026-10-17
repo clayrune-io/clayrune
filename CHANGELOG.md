@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-16] - Recognize prefixed report receipts without repeated scans (MC-1106)
+
+- Receipt matching accepts an exact callback header on any whole line of parent user text, including rollover and memory prefixes. Tool results, partial-line headers, old timestamps and unowned transcripts remain excluded.
+- Scan each transcript directory once for all candidate parents, skip files older than the oldest candidate, and load each project's records once per scan. Added a read-only dry-run command with per-project match counts and timing.
+- Added prefix, tool-result, ownership, single-pass, mtime and no-resolution dry-run regressions. The banner smoke waits for a connected rendered node before measuring it across modal rebuilds. Branch only; no merge, push or restart.
+
 ## [2026-10-16] - Clear confirmed child-report warnings (MC-1106)
 
 - Reconcile uncertain/blocked callbacks against newer parent Claude user turns every five minutes, including rollovers missing from the agent log. Confirmed receipts leave the banner without replaying the report.
