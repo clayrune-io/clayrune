@@ -224,6 +224,62 @@ def test_shared_unrecorded_rollover_has_injected_parent_identity(setup):
     assert tick(setup) == 1
 
 
+@pytest.mark.parametrize('tool_input', [
+    {'notify_session': 'parent', 'task': 'Review the work'},
+    {'command': 'curl -s localhost:5199/api/project/p/agent/dispatch -d \'{"notify_session":"parent","task":"Review the work"}\''},
+    {'command': r'curl -d "{\"notify_session\":\"parent\"}" localhost:5199/api/project/p/agent/dispatch'},
+    {'arguments': [{'command': 'dispatch(notify_session=parent, task="Review")'}]},
+])
+@pytest.mark.parametrize('owner_after_receipt', [False, True])
+def test_unrecorded_shared_rollover_owned_only_by_assistant_dispatch(setup, tool_input, owner_after_receipt):
+    path = write_transcript(setup, shared=True, name='unrecorded-rollover',
+                            content='=== End of prior conversation ===\n\n' + HEADER)
+    dispatch = json.dumps({'type': 'assistant', 'message': {'role': 'assistant', 'content': [
+        {'type': 'tool_use', 'name': 'Bash', 'input': tool_input}]}})
+    receipt = path.read_text(encoding='utf-8')
+    path.write_text(receipt + '\n' + dispatch if owner_after_receipt else dispatch + '\n' + receipt,
+                    encoding='utf-8')
+    assert tick(setup, log=[]) == 1  # no recorded provider id or user identity marker
+    assert state(setup[0]) == 'confirmed_in_transcript'
+
+
+@pytest.mark.parametrize('record', [
+    {'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': '{"notify_session":"parent"}'}]}},
+    {'type': 'user', 'message': {'content': [{'type': 'tool_use', 'input': {'notify_session': 'parent'}}]}},
+    {'type': 'user', 'message': {'content': [{'type': 'tool_result', 'content': '{"notify_session":"parent"}'}]}},
+    {'type': 'assistant', 'message': {'content': [{'type': 'tool_result', 'content': '{"notify_session":"parent"}'}]}},
+    {'type': 'assistant', 'message': {'content': [{'type': 'tool_use', 'input': {'notify_session': 'parent-other'}}]}},
+    {'type': 'assistant', 'message': {'content': [{'type': 'tool_use', 'input': {'command': 'dispatch(notify_session=parent_other)'}}]}},
+    {'type': 'assistant', 'message': {'content': [{'type': 'tool_use', 'input': {'command': 'dispatch(other_notify_session=parent)'}}]}},
+])
+def test_notify_session_requires_assistant_tool_input_and_exact_parent(setup, record):
+    path = write_transcript(setup, shared=True, content='Rollover preamble\n' + HEADER)
+    path.write_text(json.dumps(record) + '\n' + path.read_text(encoding='utf-8'), encoding='utf-8')
+    assert tick(setup) == 0
+    assert state(setup[0]) == 'uncertain'
+
+
+@pytest.mark.parametrize('owned_by_dispatch', [False, True])
+def test_analysis_chat_quoting_header_is_not_a_user_receipt(setup, owned_by_dispatch):
+    path = write_transcript(setup, shared=True, name='analysis-chat',
+                            content='I found this header in a transcript: ' + HEADER)
+    content = [{'type': 'text', 'text': HEADER}]  # assistant text is never a receipt
+    if owned_by_dispatch:
+        content.append({'type': 'tool_use', 'input': {'notify_session': 'parent'}})
+    path.write_text(path.read_text(encoding='utf-8') + '\n' + json.dumps(
+        {'type': 'assistant', 'timestamp': '1970-01-01T00:16:42Z',
+         'message': {'content': content}}), encoding='utf-8')
+    assert tick(setup) == 0
+
+
+def test_assistant_dispatch_ownership_does_not_relax_receipt_timestamp(setup):
+    path = write_transcript(setup, shared=True, stamp='1970-01-01T00:16:39Z')
+    path.write_text(path.read_text(encoding='utf-8') + '\n' + json.dumps(
+        {'type': 'assistant', 'message': {'content': [
+            {'type': 'tool_use', 'input': {'notify_session': 'parent'}}]}}), encoding='utf-8')
+    assert tick(setup) == 0
+
+
 def test_rate_limit_includes_no_match_and_missing_transcripts(setup):
     assert tick(setup) == 0
     write_transcript(setup)

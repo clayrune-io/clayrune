@@ -3,12 +3,14 @@
 Runs in the delivery loop, never on a status poll. A five-minute gate covers
 even failed/missing transcript reads. Each directory is scanned once for all
 parents, skipping files older than its oldest candidate. Shared project dirs
-require a known provider id or the parent's injected session identity.
+require a known provider id, injected user identity, or the parent's own
+assistant tool-use dispatch recipient. Ownership evidence is never a receipt.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import time
 from datetime import datetime
@@ -22,6 +24,9 @@ from mc.delegation_delivery import DeliveryStore
 INTERVAL_SECONDS = 300.0
 GroupKey = tuple[str, str]
 HeaderIndex = dict[str, list[tuple[GroupKey, str, float]]]
+_NOTIFY_SESSION = re.compile(
+    r'''(?<![\w])(?:\\*["'])?notify_session(?:\\*["'])?\s*[:=]\s*'''
+    r'''(?:\\*["'])?([A-Za-z0-9_-]+)(?=$|[\s\\"',}])''')
 
 
 def _markers(key: GroupKey) -> tuple[str, str]:
@@ -41,16 +46,55 @@ def _user_text(record: dict) -> list[str]:
     return []
 
 
+def _assistant_notify_sessions(record: dict) -> set[str]:
+    """Ownership evidence only: dispatch recipients in assistant tool inputs.
+
+    Native tool arguments can carry a structured notify_session field, while
+    shell tools carry JSON inside command strings (sometimes shell-escaped).
+    Assistant prose, user text and tool results cannot supply this signal.
+    """
+    message = record.get('message')
+    if record.get('type') != 'assistant' or not isinstance(message, dict):
+        return set()
+    blocks = message.get('content')
+    if not isinstance(blocks, list):
+        return set()
+    found: set[str] = set()
+
+    def visit(value):
+        if isinstance(value, dict):
+            recipient = value.get('notify_session')
+            if isinstance(recipient, str):
+                found.add(recipient)
+            for inner in value.values():
+                visit(inner)
+        elif isinstance(value, list):
+            for inner in value:
+                visit(inner)
+        elif isinstance(value, str):
+            found.update(_NOTIFY_SESSION.findall(value))
+
+    for block in blocks:
+        if isinstance(block, dict) and block.get('type') == 'tool_use':
+            visit(block.get('input'))
+    return found
+
+
 def _scan_file(path: Path, headers: HeaderIndex,
                markers: dict[str, set[GroupKey]], owned: set[GroupKey]) -> set[tuple[str, str]]:
     """Read once for every parent sharing a directory; retain only owned matches."""
     found: set[tuple[GroupKey, str]] = set()
+    keys_by_parent: dict[str, set[GroupKey]] = {}
+    for entries in headers.values():
+        for key, _, _ in entries:
+            keys_by_parent.setdefault(key[1], set()).add(key)
     try:
         with path.open('rb') as stream:
             for line in stream:
                 # Byte prefilter only; JSON user/text/timestamp checks below
                 # remain authoritative. No per-parent or per-header file reads.
-                if b'[dispatched agent finished]' not in line and b'/agent/' not in line and b'/floor/figure/' not in line:
+                if (b'[dispatched agent finished]' not in line and b'/agent/' not in line
+                        and b'/floor/figure/' not in line and b'notify_session' not in line):
                     continue
                 try:
                     record = json.loads(line)
@@ -58,6 +102,8 @@ def _scan_file(path: Path, headers: HeaderIndex,
                     continue  # a CLI write may leave the last line incomplete
                 if not isinstance(record, dict):
                     continue
+                for parent in _assistant_notify_sessions(record):
+                    owned.update(keys_by_parent.get(parent, set()))
                 texts = _user_text(record)
                 for marker, keys in markers.items():
                     if any(marker in t for t in texts):
@@ -225,7 +271,7 @@ def dry_run(database: Path, data_dir: Path, *, projects_home: Path | None = None
         rows, {}, lambda pid: read(f'{pid}.json', {}),
         lambda pid: read(f'{pid}_agent_log.json', []))
     result.update({'dry_run': True, 'tick_seconds': time.perf_counter() - started,
-                   'ownership': 'dedicated directory, saved parent provider ids, or injected parent identity'})
+                   'ownership': 'dedicated directory, saved parent provider ids, injected user identity, or assistant tool-use notify_session'})
     return result
 
 

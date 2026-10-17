@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-16] - Attribute unrecorded rollover receipts from dispatch inputs (MC-1106)
+
+- Recognize a parent's exact `notify_session` recipient in its own assistant tool-use inputs as transcript ownership evidence, including dispatch JSON embedded in shell commands. Existing provider-id and user-identity ownership signals remain supported.
+- Receipt evidence remains an exact whole-line header in a strictly newer user text block. Assistant prose, tool results, inline quotations and another recipient cannot clear a warning.
+- Added rollover dispatch-input, quoted-analysis, role/type, exact-parent and timestamp regressions. Branch only; no live resolution, merge, push or restart.
+
 ## [2026-10-16] - Recognize prefixed report receipts without repeated scans (MC-1106)
 
 - Receipt matching accepts an exact callback header on any whole line of parent user text, including rollover and memory prefixes. Tool results, partial-line headers, old timestamps and unowned transcripts remain excluded.

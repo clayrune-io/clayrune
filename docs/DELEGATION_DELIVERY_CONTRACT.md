@@ -77,9 +77,15 @@ Assistant text, tool results, inline/partial-line headers, missing or equal
 timestamps do not qualify. Transcripts in the parent's encoded worktree
 directory are considered even if the worktree was removed or their ids are
 missing from `claude_session_ids`. Shared project transcript directories require
-a recorded parent provider id or the parent's injected job/Floor endpoint
-identity in a user text block. The existing runtime's path-encoding variants
-are reused. Missing/unreadable transcripts retain uncertainty.
+a recorded parent provider id, the parent's injected job/Floor endpoint identity
+in a user text block, or a matching `notify_session` recipient in the parent's
+own assistant `tool_use.input`. That last signal covers structured arguments,
+nested arguments and dispatch JSON embedded in shell commands, including escaped
+JSON and `notify_session=<parent>` notation. Parent ids must match exactly.
+Assistant prose, user text containing `notify_session`, and tool results cannot
+supply the new ownership signal. Ownership applies to the file; an assistant
+tool input never counts as the receipt itself. The existing runtime's
+path-encoding variants are reused. Missing/unreadable transcripts retain uncertainty.
 
 Each directory is scanned once across all pending parent groups. Its files whose
 mtime predates that directory's oldest pending `created_at` are skipped; skipped
@@ -132,7 +138,8 @@ node tools/smoke/agent-stream-dedupe.mjs
 pyright mc/delegation_transcript_reconcile.py mc/blueprints/delegation_report_routes.py mc/delegation_delivery.py mc/delegation_waiting.py
 ```
 
-Results after review correction: 186 Python passes, 1 skip (the existing opt-in full-startup subprocess
+Results after ownership review correction: 204 Python passes (56 reconciliation
+checks), 1 skip (the existing opt-in full-startup subprocess
 harness requires explicit process-registration configuration); 4 JS unit passes;
 46 report-notice smoke checks across 1440px and 390px; boot (7 scenarios plus
 interaction guards), recovery visibility and stream dedupe passed; four modules
