@@ -1,7 +1,7 @@
 # Settings ownership audit and Floor additions
 
-Date: 2026-10-21. Status: implemented on the feature branch; activation and
-live-provider execution are not claimed. Source baseline: `b4d309ca`.
+Date: 2026-10-21. Status: implemented and integrated into `master`;
+live-provider execution is not claimed. Source baseline: `b4d309ca`.
 
 ## Verdict
 

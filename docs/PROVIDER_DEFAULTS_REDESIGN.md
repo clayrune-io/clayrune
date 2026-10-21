@@ -1,7 +1,7 @@
 # Provider defaults and project inheritance
 
-Status: approved and implemented on `feature/provider-defaults-floor`,
-2026-10-21. Activation awaits an explicitly approved server restart. See
+Status: approved, implemented and integrated into `master`,
+2026-10-21. Backend activation requires a server restart and client hard reload. See
 `SETTINGS_OWNERSHIP_AUDIT.md` for the expanded settings audit and Floor changes.
 No live preferences or provider accounts were changed during implementation.
 

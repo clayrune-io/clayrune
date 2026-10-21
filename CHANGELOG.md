@@ -5,7 +5,7 @@
 - Providers owns each runtime's model, effort and background-model defaults; project Providers supplies optional per-provider overrides. Shared previews show the effective source without launching a model call.
 - Retired Settings > Agent. Floor defaults now edits identity, turn/tool policy and replies with draft Save/Cancel. Wake/runtime and unattended safety controls moved to System, display controls to Appearance, and the duplicate scheduler-pause editor was removed.
 - Scoped field patches distinguish inheritance, native default, tier tracking and exact/custom pins. First writes retain legacy values and save an external rollback snapshot; config writes persist atomically before changing live state. Existing human gates and conversation engine snapshots remain intact.
-- Audited 58 static rows plus dynamic sections and visibility controls. Full disposition and verification limits: `docs/SETTINGS_OWNERSHIP_AUDIT.md`. Branch only; no live preference changes, merge, push or server restart.
+- Audited 58 static rows plus dynamic sections and visibility controls. Full disposition and verification limits: `docs/SETTINGS_OWNERSHIP_AUDIT.md`. Integrated into master; backend activation requires a server restart and client hard reload. No live preference changes or provider calls are part of verification.
 
 ## [2026-10-16] - Preserve Hivemind worker dispatch lineage (MC-1107)
 
