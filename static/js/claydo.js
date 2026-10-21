@@ -1230,11 +1230,13 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
     modelSel.disabled = !providerSel.value;
     modelSel.innerHTML = providerSel.value ? _peModelOptions('', providerSel.value)
       : '<option value="">Project default — choose a provider to pin a model</option>';
+    panel.querySelector('#claydo-save-effort').innerHTML = _peEffortOptions('', providerSel.value);
   };
   // Floor can open this before the lazy provider catalog has loaded.
   if (typeof _ensureAgentProviders === 'function') {
     Promise.resolve(_ensureAgentProviders()).then(() => {
       providerSel.innerHTML = _peProviderOptions(providerSel.value);
+      panel.querySelector('#claydo-save-effort').innerHTML = _peEffortOptions('', providerSel.value);
     }).catch(() => showErr('Could not load providers. Close and reopen to retry, or save with the project default.'));
   }
 
@@ -1492,10 +1494,19 @@ function _peOpts(pairs, cur) {
 // don't share top-level bindings. An empty/unpinned provider still needs a
 // sensible catalog to show, so it resolves to 'claude' — the same fallback
 // every other provider-less code path in this app already uses.
+function _peEffectiveProvider(provider) {
+  const pid = _claydoFocusedProjectId();
+  const project = typeof allProjects === 'undefined' ? null : allProjects.find(p => p.id === pid);
+  return provider || project?.provider || _globalConfig?.default_provider || '';
+}
+
 function _peModelOptions(cur, provider) {
   const fn = window._providerModelChoices;
-  const provChoices = fn ? fn(provider || 'claude') : [];
-  const choices = [['', 'Default']].concat(provChoices);
+  const resolved = _peEffectiveProvider(provider);
+  const rec = (window._agentProvidersList?.() || []).find(p => p.name === resolved);
+  const provChoices = fn ? fn(resolved) : [];
+  const tiers = Object.keys(rec?.tiers || {}).map(tier => ['tier:' + tier, 'Track ' + tier]);
+  const choices = [['', 'Use project/provider preferences']].concat(tiers, provChoices);
   // A model pinned by hand that we no longer offer must still round-trip;
   // dropping it from the list would silently clear the pin on the next save.
   if (cur && !choices.some(c => c[0] === cur)) choices.push([cur, cur + ' (pinned)']);
@@ -1510,8 +1521,11 @@ function _peProviderOptions(cur) {
   return _peOpts(choices, cur);
 }
 
-function _peEffortOptions(cur) {
-  const choices = (window.MC_EFFORT_CHOICES || [['', 'Default']]).slice();
+function _peEffortOptions(cur, provider) {
+  const resolved = _peEffectiveProvider(provider);
+  const rec = (window._agentProvidersList?.() || []).find(p => p.name === resolved);
+  const choices = [['', 'Use project/provider preferences'], ...(rec?.efforts || []).map(value => [value, value])];
+  if (cur && !choices.some(([value]) => value === cur)) choices.push([cur, cur + ' (saved pin)']);
   return _peOpts(choices, cur);
 }
 
@@ -1600,7 +1614,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       <div class="persona-engine-row">
         <select id="pe-provider">${_peProviderOptions((rec.engine || {}).provider)}</select>
         <select id="pe-model">${_peModelOptions((rec.engine || {}).model, (rec.engine || {}).provider)}</select>
-        <select id="pe-effort">${_peEffortOptions((rec.engine || {}).effort)}</select>
+        <select id="pe-effort">${_peEffortOptions((rec.engine || {}).effort, (rec.engine || {}).provider)}</select>
       </div>
       <label>Belongs to <span class="claydo-save-hint">(a global persona works in every project; a project one only works in its own)</span></label>
       <div class="persona-move-row">
@@ -1659,10 +1673,13 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
     const newProvider = providerSel.value;
     const curModel = modelSel.value;
     const fn = window._providerModelChoices;
-    const liveChoices = fn ? fn(newProvider || 'claude') : [];
-    const stillValid = !curModel || liveChoices.some((c) => c[0] === curModel);
+    const liveChoices = fn ? fn(_peEffectiveProvider(newProvider)) : [];
+    const foreign = (window._agentProvidersList?.() || []).some(p => p.name !== _peEffectiveProvider(newProvider) && (p.models || []).some(m => m.id === curModel));
+    const stillValid = !curModel || liveChoices.some((c) => c[0] === curModel) || !foreign;
     const nextModel = stillValid ? curModel : '';
     modelSel.innerHTML = _peModelOptions(nextModel, newProvider);
+    const effort = panel.querySelector('#pe-effort');
+    effort.innerHTML = _peEffortOptions(effort.value, newProvider);
     if (!stillValid) {
       const provLabel = providerSel.options[providerSel.selectedIndex]?.textContent || newProvider;
       showErr(`Model reset to Default — "${curModel}" isn't offered by ${provLabel}.`);

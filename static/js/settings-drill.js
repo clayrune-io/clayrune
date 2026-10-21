@@ -1,3 +1,7 @@
+import './engine-preferences.js';
+import './settings-ownership.js';
+import './floor-preferences.js';
+
 // ── Settings categories + drill-down (WhatsApp-style) ────────────────────────
 // The settings modal is a master list of categories; tapping one drills into a
 // detail screen (back arrow in the header returns). A search box filters every
@@ -13,10 +17,9 @@ let _settingsView = 'list'; // 'list' (categories) | 'subs' (sub-category list) 
 let _efOrder = [];
 const _settingsIcon = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
 const SETTINGS_CATS = [
-  { key:'providers',  group:1, label:'Providers',    sub:'Claude, Gemini, Codex — sign-in & API keys', icon:_settingsIcon('<circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 9.3-9.3"/><path d="M17 5l2.5 2.5"/>') },
-  { key:'agent',      group:1, label:'Agent',        sub:'Identity, model, behavior & integration',    icon:_settingsIcon('<rect x="4" y="9" width="16" height="11" rx="2"/><path d="M12 9V5.5"/><circle cx="12" cy="3.5" r="1.5"/><path d="M9 14h.01M15 14h.01"/>') },
+  { key:'providers',  group:1, label:'Providers',    sub:'Connections, models, effort & defaults', icon:_settingsIcon('<circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 9.3-9.3"/><path d="M17 5l2.5 2.5"/>') },
   { key:'memory',     group:1, label:'Memory',       sub:'Auto-condense & tuning',                     icon:_settingsIcon('<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/>') },
-  { key:'appearance', group:2, label:'Appearance',   sub:'Theme, accent, density & writing style',     icon:_settingsIcon('<path d="M12 2.7l5.7 5.7a8 8 0 1 1-11.4 0z"/>') },
+  { key:'appearance', group:2, label:'Appearance',   sub:'Theme, interface, writing style & visibility',     icon:_settingsIcon('<path d="M12 2.7l5.7 5.7a8 8 0 1 1-11.4 0z"/>') },
   { key:'connect',    group:2, label:'Connectivity', sub:'Remote access, push & mobile pairing',       icon:_settingsIcon('<path d="M5 12.5a10 10 0 0 1 14 0"/><path d="M8.5 16a5 5 0 0 1 7 0"/><path d="M2 9a15 15 0 0 1 20 0"/><path d="M12 19.5h.01"/>') },
   { key:'addons',     group:2, label:'Add-ons',      sub:'Software agents ask for & you approve',      icon:_settingsIcon('<path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/>') },
   { key:'system',     group:2, label:'System',       sub:'Paths, advanced features, server & help',    icon:_settingsIcon('<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="2" y1="14" x2="6" y2="14"/><line x1="10" y1="8" x2="14" y2="8"/><line x1="18" y1="16" x2="22" y2="16"/>') },
@@ -113,12 +116,14 @@ function _applySettingsView() {
     const noRes = document.getElementById('settings-no-results');
     if (noRes) noRes.classList.add('settings-hidden');
   }
+  if (_settingsView !== 'search') SettingsOwnership.search('');
   body.scrollTop = 0;
 }
 
 // Layer 1 → drill a category. Multi-section → sub-list (layer 2); single-section →
 // straight to its settings (layer 3, no pointless one-item middle screen).
 function drillSettings(cat) {
+  if (cat === 'agent') { openFloorPreferences(); return; }
   _settingsActiveCat = cat;
   _settingsActiveSub = 0;
   _settingsView = (_settingsSectionEls(cat).length > 1) ? 'subs' : 'detail';
@@ -158,6 +163,7 @@ function settingsBack() {
 function filterSettings(q) {
   q = (q || '').trim().toLowerCase();
   if (!q) {
+    SettingsOwnership.search('');
     if (_settingsView === 'search' && _mcSettingsNavDepth > 0) { _mcSettingsNavDepth--; _mcUnwindHistory(1); }
     _settingsView = 'list';
     _applySettingsView();
@@ -171,7 +177,7 @@ function filterSettings(q) {
     mcPushSettingsNav();  // hardware/UI back exits search → category list
   }
   _applySettingsView();
-  let anyMatch = false;
+  let anyMatch = SettingsOwnership.search(q);
   document.querySelectorAll('#settings-detail .settings-detail-pane').forEach(pane => {
     let paneHasMatch = false;
     // Direct .settings-section children only (avoids :scope for WebView2 safety).
@@ -191,6 +197,7 @@ function filterSettings(q) {
           rows.forEach(r => {
             const m = titleMatch || r.textContent.toLowerCase().includes(q);
             r.classList.toggle('settings-hidden', !m);
+            if (m && r.closest('details')) r.closest('details').open = true;
             if (m) rowMatch = true;
           });
           sec.classList.toggle('settings-hidden', !rowMatch);
@@ -260,15 +267,15 @@ async function openSettings() {
 }
 
 // MC-961: the blocked-run card's "Set up a fallback" button lands here — the
-// only discovery path to this control besides browsing Agent > Advanced by
+// only discovery path to this control besides browsing Providers > Advanced by
 // hand (deliberately excluded from first-run and the beginner path per Ron's
 // 2026-09-26 placement note). Opens Settings if needed, drills straight to
-// the Agent category and its "Advanced" section (expanded, not the collapsed
+// the Providers category and its "Advanced" section (expanded, not the collapsed
 // sub-list a cold open would show).
 async function openSettingsToEngineFallback() {
   await openSettings();
-  drillSettings('agent');
-  const idx = _settingsSectionEls('agent').findIndex(s => {
+  drillSettings('providers');
+  const idx = _settingsSectionEls('providers').findIndex(s => {
     const t = s.querySelector('.settings-section-title');
     return t && t.textContent.trim() === 'Advanced';
   });
@@ -318,52 +325,11 @@ async function _renderSettings() {
   try {
     const res = await fetch(API_BASE + '/api/config');
     cfg = await res.json();
+    try { await EnginePreferences.load('', true); } catch (_) { /* The editor shows an explicit unavailable state. */ }
   } catch(e) {
     body.innerHTML = '<div class="process-empty">Failed to load settings.</div>';
     return;
   }
-
-  // "Auto" folds the old separate Auto-pick toggle into the model picker — one
-  // control for "which model", no duplication. saveModelChoice() handles the split.
-  const _autoModel = !!cfg.auto_model_enabled;
-  const modelOptions = [
-    ['__auto__', 'Auto — pick per task'],
-    ['', 'Default'],
-    ['claude-fable-5-1', 'Fable 5.1'],
-    ['claude-fable-5', 'Fable 5'],
-    ['claude-opus-5-5', 'Opus 5.5'],
-    ['claude-opus-5', 'Opus 5'],
-    ['claude-sonnet-5-5', 'Sonnet 5.5'],
-    ['claude-sonnet-5', 'Sonnet 5'],
-    ['claude-haiku-5-5', 'Haiku 5.5'],
-    ['claude-haiku-4-5-20251001', 'Haiku 4.5'],
-  ];
-  // If the saved model has since been retired from the list (e.g. Opus 4.8),
-  // keep it as a one-off option so the picker still reflects the live config
-  // instead of silently snapping to the first entry — and so merely OPENING
-  // Settings can't rewrite the user's model behind their back.
-  const _savedModel = cfg.agent_model || '';
-  if (!_autoModel && _savedModel && !modelOptions.some(([v]) => v === _savedModel)) {
-    const _lbl = (typeof window._modelShortLabel === 'function')
-      ? window._modelShortLabel(_savedModel) : _savedModel;
-    modelOptions.push([_savedModel, _lbl + ' (retired)']);
-  }
-  const modelSel = modelOptions.map(([v, l]) => {
-    const sel = v === '__auto__' ? _autoModel : (!_autoModel && (cfg.agent_model || '') === v);
-    return `<option value="${v}" ${sel ? 'selected' : ''}>${l}</option>`;
-  }).join('');
-
-  const effortOptions = [
-    ['', 'Default (CLI default)'],
-    ['low', 'Low'],
-    ['medium', 'Medium'],
-    ['high', 'High'],
-    ['xhigh', 'Extra high'],
-    ['max', 'Max'],
-  ];
-  const effortSel = effortOptions.map(([v, l]) =>
-    `<option value="${v}" ${(cfg.agent_effort || '') === v ? 'selected' : ''}>${l}</option>`
-  ).join('');
 
   const permOptions = [
     ['', 'Default'],
@@ -442,12 +408,13 @@ async function _renderSettings() {
       <svg class="settings-search-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
       <input class="settings-search" id="settings-search" type="text" placeholder="Search settings&hellip;" autocomplete="off" spellcheck="false" oninput="filterSettings(this.value)">
     </div>
+    <div id="settings-moved-results" class="settings-hidden"></div>
     <div id="settings-master">
-      <button type="button" class="settings-profile" onclick="drillSettings('agent')">
+      <button type="button" class="settings-profile" onclick="openUserProfile()">
         <span class="settings-avatar">${esc(((cfg.user_name || 'You').trim().charAt(0) || 'Y').toUpperCase())}</span>
         <span style="min-width:0">
           <span class="settings-profile-name">${esc(cfg.user_name || 'You')}</span>
-          <span class="settings-profile-sub">Agent: ${esc(cfg.agent_name || '—')} &middot; tap to edit identity</span>
+          <span class="settings-profile-sub">Your name and timezone</span>
         </span>
       </button>
       <div class="settings-group">
@@ -464,131 +431,7 @@ async function _renderSettings() {
       <div class="settings-detail-pane settings-hidden" data-cat="providers">
       <div class="settings-cat-label">Providers</div>
     ${_renderProviderSettings(cfg)}
-      </div>
-
-      <div class="settings-detail-pane settings-hidden" data-cat="agent">
-      <div class="settings-cat-label">Agent</div>
-    <div class="settings-section">
-      <div class="settings-section-title">Identity</div>
-      <div class="settings-row">
-        <div><div class="settings-label">User Name</div><div class="settings-hint">Shown in agent context</div></div>
-        ${textInput('user_name', cfg.user_name)}
-      </div>
-      <div class="settings-row">
-        <div><div class="settings-label">Agent Name</div><div class="settings-hint">Display name for agents</div></div>
-        ${textInput('agent_name', cfg.agent_name)}
-      </div>
-      <div class="settings-row settings-row-stack">
-        <div><div class="settings-label">Agent Face</div><div class="settings-hint">Shown on the Floor. A hired persona keeps its own face; this is the default agent's.</div></div>
-        <div class="settings-face-wrap">
-          <span class="settings-face-now" id="agent-face-preview">${window.avatarHTML(cfg.agent_avatar, 34)}</span>
-          ${textInput('agent_avatar', cfg.agent_avatar, 'maxlength="40" spellcheck="false" placeholder="\u{1F642} or fig:navigator" id="agent-face-input"')}
-        </div>
-        <div class="settings-fig-row" id="agent-face-figs"></div>
-      </div>
-    </div>
-
-    <div class="settings-section">
-      <div class="settings-section-title">Model</div>
-      <div class="settings-row">
-        <div><div class="settings-label">Model</div><div class="settings-hint">Default for new chats. Auto picks per task to save budget.</div></div>
-        <select class="settings-select" onchange="saveModelChoice(this.value)">${modelSel}</select>
-      </div>
-      <div class="settings-row">
-        <div><div class="settings-label">Effort</div><div class="settings-hint">How hard the model thinks per request.</div></div>
-        <select class="settings-select" onchange="saveSetting('agent_effort',this.value)">${effortSel}</select>
-      </div>
-    </div>
-
-    <div class="settings-section">
-      <div class="settings-section-title">Behavior</div>
-      <div class="settings-row">
-        <div><div class="settings-label">Max turns</div><div class="settings-hint">0 = unlimited.</div></div>
-        ${numInput('agent_max_turns', cfg.agent_max_turns)}
-      </div>
-      <div class="settings-row">
-        <div><div class="settings-label">Permissions</div><div class="settings-hint">Agent tool-permission mode.</div></div>
-        <select class="settings-select" onchange="saveSetting('agent_permission_mode',this.value)">${permSel}</select>
-      </div>
-      <div class="settings-row" id="codex-sandbox-row">
-        <div>
-          <div class="settings-label">Sandbox unattended Codex runs</div>
-          <div class="settings-hint">Scheduled, workflow, dispatched and hivemind Codex runs are confined to their working folder (workspace-write, no network). Off lets those runs bypass the sandbox entirely. Chats you start yourself are never sandboxed. Changing it needs your dashboard passcode; an agent cannot change it.</div>
-        </div>
-        ${toggle('codex_unattended_sandbox', cfg.codex_unattended_sandbox !== false)}
-      </div>
-      <div class="settings-row">
-        <div>
-          <div class="settings-label">Brief replies</div>
-          <div class="settings-hint">Short, conversational answers that elaborate only when you ask. Choose where it applies — code and file edits are never shortened.</div>
-        </div>
-        <div class="mc-seg">
-          <button class="${briefMode==='off'?'active':''}" onclick="setBriefRepliesMode('off')">Off</button>
-          <button class="${briefMode==='phone'?'active':''}" onclick="setBriefRepliesMode('phone')">Phone</button>
-          <button class="${briefMode==='all'?'active':''}" onclick="setBriefRepliesMode('all')">Everywhere</button>
-        </div>
-      </div>
-      <div class="settings-row">
-        <div>
-          <div class="settings-label">Agents may use emojis</div>
-          <div class="settings-hint">Lets agents add an occasional emoji where it adds warmth — never in code, commit messages, or published text. Off by default; an individual agent type can override this in its editor.</div>
-        </div>
-        ${toggle('agent_emojis_enabled', cfg.agent_emojis_enabled)}
-      </div>
-      <div class="settings-row">
-        <div>
-          <div class="settings-label">Sticky settings</div>
-          <div class="settings-hint">Bakes brevity + model/effort into each chat at spawn (cached, fewer tokens per turn) instead of re-sending every message. Changing one of those mid-chat resumes the agent so it takes effect. Experimental.</div>
-        </div>
-        ${toggle('sticky_agent_settings', cfg.sticky_agent_settings)}
-      </div>
-      <div class="settings-row">
-        <div>
-          <div class="settings-label">Live activity states</div>
-          <div class="settings-hint">Shows what the agent is actually doing right now — a spinner while it thinks, dots while it writes the reply — instead of one generic bubble. Claude only. Experimental; off reverts to the plain dots.</div>
-        </div>
-        ${toggle('activity_states_enabled', cfg.activity_states_enabled)}
-      </div>
-      <div class="settings-row">
-        <div>
-          <div class="settings-label">Keep machine awake</div>
-          <div class="settings-hint">Holds an OS wake lock while any agent is running, so the computer can't sleep out from under a working agent. Releases the moment the last agent finishes. Takes effect without a restart.</div>
-        </div>
-        ${toggle('keep_awake_enabled', cfg.keep_awake_enabled)}
-      </div>
-      <div class="settings-row">
-        <div>
-          <div class="settings-label">Pause all scheduled runs</div>
-          <div class="settings-hint">Master switch: stops every scheduled task and every steward from dispatching, at any hour. Agents you start yourself — and "Run Now" — still work. Individual schedules keep their settings, so turning this back off resumes exactly what was running before.</div>
-        </div>
-        ${toggle('scheduler_paused', cfg.scheduler_paused)}
-      </div>
-    </div>
-
-    <div class="settings-section">
-      <div class="settings-section-title">Integration</div>
-      <div class="settings-row">
-        <div><div class="settings-label">Streaming (Mode B)</div><div class="settings-hint">One persistent process per chat.</div></div>
-        ${toggle('use_streaming_agent', cfg.use_streaming_agent)}
-      </div>
-      <div class="settings-row">
-        <div>
-          <div class="settings-label">Remote control <span style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:6px;background:var(--accent-dim);color:var(--accent);margin-left:6px;letter-spacing:.3px">EXPERIMENTAL</span></div>
-          <div class="settings-hint">Headless sessions don't reach claude.ai yet — use Push notifications.</div>
-        </div>
-        ${toggle('agent_remote_control', cfg.agent_remote_control)}
-      </div>
-      <div class="settings-row">
-        <div><div class="settings-label">Channels</div><div class="settings-hint">MCP plugin channels (e.g. plugin:telegram@…).</div></div>
-        ${textInput('agent_channels', cfg.agent_channels)}
-      </div>
-    </div>
-
-    <div class="settings-section" id="engine-fallback-section">
-      <div class="settings-section-title">Advanced</div>
-      <div class="settings-label" style="margin-bottom:6px">Engine fallback</div>
-      ${engineFallbackHTML}
-    </div>
+    ${SettingsOwnership.providerRuntime(cfg, {toggle, textInput, engineFallbackHTML})}
       </div>
 
       <div class="settings-detail-pane settings-hidden" data-cat="memory">
@@ -607,10 +450,7 @@ async function _renderSettings() {
 
     <div class="settings-section">
       <div class="settings-section-title">Tuning</div>
-      <div class="settings-row">
-        <div><div class="settings-label">Model</div><div class="settings-hint">Housekeeping model (blank = default).</div></div>
-        ${textInput('condense_model', cfg.condense_model)}
-      </div>
+
       <div class="settings-row">
         <div><div class="settings-label">Executor</div><div class="settings-hint">Structured = one server-side JSON call (no agent).</div></div>
         <select class="settings-select" onchange="saveSetting('condense_mode',this.value)">${condenseModeSel}</select>
@@ -773,6 +613,7 @@ async function _renderSettings() {
 
     <div class="settings-section">
       <div class="settings-section-title">Interface</div>
+      ${SettingsOwnership.appearanceRow(cfg, {toggle})}
       <div class="settings-row">
         <div><div class="settings-label">Enter Key Behavior</div><div class="settings-hint">How Enter works in agent input</div></div>
         <select class="settings-select" onchange="setEnterMode(this.value)">
@@ -782,23 +623,21 @@ async function _renderSettings() {
       </div>
     </div>
 
+
     <div class="settings-section">
-      <div class="settings-section-title">Experimental</div>
-      <div class="settings-row">
-        <div>
-          <div class="settings-label">Desk v1</div>
-          <div class="settings-hint">Manage campaigns, content and publishing in the live Desk workspace. The legacy Desk stays read-only while this is on.</div>
-        </div>
-        ${toggle('desk_v1', cfg.desk_v1)}
-      </div>
-      <div class="settings-row">
-        <div>
-          <div class="settings-label">Your timezone</div>
-          <div class="settings-hint">Used for Desk v1 schedule times. Blank uses this computer's timezone. Example: America/New_York.</div>
-        </div>
-        ${textInput('user_timezone', cfg.user_timezone, 'placeholder="e.g. America/New_York" spellcheck="false"')}
-      </div>
+      <div class="settings-section-title">Feature visibility</div>
+      <div class="settings-hint" style="margin-bottom:10px">Mostly off by default for a simpler view. Enable what you need.</div>
+      ${ADV_FEATURES.map(f => `
+        <div class="settings-row">
+          <div><div class="settings-label">${esc(f.label)}</div><div class="settings-hint">${esc(f.hint)}</div></div>
+          <label class="mc-seg" style="cursor:pointer">
+            <input type="checkbox" ${advancedFlags[f.key] ? 'checked' : ''}
+              onchange="setAdvancedFlag('${esc(f.key)}',this.checked)"
+              style="width:16px;height:16px;cursor:pointer;accent-color:var(--accent)">
+          </label>
+        </div>`).join('')}
     </div>
+
       </div>
 
       <div class="settings-detail-pane settings-hidden" data-cat="connect">
@@ -825,6 +664,7 @@ async function _renderSettings() {
 
       <div class="settings-detail-pane settings-hidden" data-cat="system">
       <div class="settings-cat-label">System</div>
+      ${SettingsOwnership.systemExtras(cfg, {toggle})}
     <div class="settings-section">
       <div class="settings-section-title">Paths &amp; Server</div>
       <div class="settings-row">
@@ -876,6 +716,7 @@ async function _renderSettings() {
 
     <div class="settings-section">
       <div class="settings-section-title">Security</div>
+      ${SettingsOwnership.securityRow(cfg, {toggle})}
       <div class="settings-row">
         <div>
           <div class="settings-label">Vault idle auto-lock</div>
@@ -892,19 +733,6 @@ async function _renderSettings() {
       </div>
     </div>
 
-    <div class="settings-section">
-      <div class="settings-section-title">Advanced features</div>
-      <div class="settings-hint" style="margin-bottom:10px">Mostly off by default for a simpler view. Enable what you need.</div>
-      ${ADV_FEATURES.map(f => `
-        <div class="settings-row">
-          <div><div class="settings-label">${esc(f.label)}</div><div class="settings-hint">${esc(f.hint)}</div></div>
-          <label class="mc-seg" style="cursor:pointer">
-            <input type="checkbox" ${advancedFlags[f.key] ? 'checked' : ''}
-              onchange="setAdvancedFlag('${esc(f.key)}',this.checked)"
-              style="width:16px;height:16px;cursor:pointer;accent-color:var(--accent)">
-          </label>
-        </div>`).join('')}
-    </div>
 
     <div class="settings-section">
       <div class="settings-section-title">Server</div>
@@ -955,7 +783,6 @@ async function _renderSettings() {
   try { refreshPushSection(); } catch (_) {}
   try { refreshInstalledAppSection(); } catch (_) {}
   try { refreshMobilePairingSection(); } catch (_) {}
-  try { refreshAgentFaceSection(); } catch (_) {}
   try { refreshBackupScheduleSection(); } catch (_) {}
   try { if (window.refreshAddonsSection) window.refreshAddonsSection(); } catch (_) {}
   try { if (window.refreshPasskeysSection) window.refreshPasskeysSection(); } catch (_) {}
@@ -963,48 +790,6 @@ async function _renderSettings() {
   // Restore the master/detail/search view (persisted across re-renders so that
   // setTone/setAccent/etc. don't bounce you back to the list mid-edit).
   _applySettingsView();
-}
-
-
-// ── Agent Face: the figure strip ────────────────────────────────────────────
-// Fetched, never hardcoded, for the reason the persona editor's picker gives:
-// dropping a file into assets/avatars/ is meant to be the whole install step,
-// and a hardcoded list disagrees with the directory the first time anyone adds
-// one. Clicking saves immediately — this is a one-field screen, not a form, so
-// there is no Save button to be the thing you forgot to press.
-async function refreshAgentFaceSection() {
-  const row = document.getElementById('agent-face-figs');
-  const input = document.getElementById('agent-face-input');
-  if (!row || !input) return;
-  let figs = [];
-  try {
-    const r = await fetch(API_BASE + '/api/avatars');
-    figs = (await r.json()).figures || [];
-  } catch (_) { return; }   // typing an emoji still works; the strip stays empty
-  const paint = (cur) => {
-    row.querySelectorAll('.settings-fig').forEach(
-      (b) => b.classList.toggle('sel', b.dataset.face === cur));
-    const prev = document.getElementById('agent-face-preview');
-    if (prev) prev.innerHTML = window.avatarHTML(cur, 34);
-  };
-  row.innerHTML = figs.map((n) => {
-    const v = 'fig:' + n;
-    return `<button type="button" class="settings-fig" data-face="${esc(v)}"
-      title="${esc(n)}">${window.avatarHTML(v, 34)}</button>`;
-  }).join('');
-  row.querySelectorAll('.settings-fig').forEach((b) => {
-    b.onclick = () => {
-      // Clicking the face you already have takes it off, so the strip is not a
-      // one-way door — with no Clear button, the only other way back to no face
-      // is knowing you can empty the text field.
-      const next = (input.value.trim() === b.dataset.face) ? '' : b.dataset.face;
-      input.value = next;
-      saveSetting('agent_avatar', next);
-      paint(next);
-    };
-  });
-  input.addEventListener('change', () => paint(input.value.trim()));
-  paint((input.value || '').trim());
 }
 
 

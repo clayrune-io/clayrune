@@ -88,10 +88,10 @@ const openBehavior = async () => {
   await page.evaluate(() => { window.closeModalById && window.closeModalById('__settings'); });
   await page.evaluate(() => window.openSettings());
   await page.waitForSelector('#codex-sandbox-row', { state: 'attached', timeout: 10000 });
-  await page.evaluate(() => window.drillSettings('agent'));
+  await page.evaluate(() => window.drillSettings('system'));
   await page.evaluate(() => {
-    const idx = [...document.querySelectorAll('[data-cat="agent"] .settings-section-title')]
-      .findIndex(t => t.textContent.trim() === 'Behavior');
+    const idx = [...document.querySelectorAll('[data-cat="system"] .settings-section-title')]
+      .findIndex(t => t.textContent.trim() === 'Security');
     window.drillSettingsSub(idx);
   });
   await page.waitForFunction(() => {

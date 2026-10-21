@@ -1,3 +1,5 @@
+import {refreshWorkflowEnginePreview} from './workflow-engine-preview.js';
+
 // ── Workflow Builder (MC-871, R2-D7 — "the canvas") ──────────────────────────
 //
 // The authoring surface on top of the already-merged runner + CRUD + DAG store
@@ -243,25 +245,10 @@ function _wfPersonFromCharacter(st, character) {
 
 // ── Engine hover tooltip (Ron, 2026-09-11 — "what will this step cost to
 // run") ──────────────────────────────────────────────────────────────────
-// Mirrors mc/blueprints/agent_routes.py's dispatch precedence EXACTLY —
-// this is a display of what mc/workflows.py's _dispatch_step actually hands
-// to _dispatch_agent_internal, not an independent guess:
-//   1. the resolved persona's own engine pin (`_character_engine`) — always
-//      wins and, for model, BYPASSES the auto-router entirely (agent_routes.py
-//      ~5794/~5925: a character's pinned model sets `model_override`, and the
-//      router is never consulted once that's set).
-//   2. otherwise, if the resolved provider is 'claude' and the auto-router
-//      is on (`state.CONFIG.auto_model_enabled`), the model is chosen BY A
-//      CLASSIFIER AT DISPATCH TIME (Haiku/Sonnet/Opus, from the prompt) —
-///     this is a per-turn decision, so there is no static number to show.
-//   3. otherwise: the project's own `agent_model`/`agent_effort`, then the
-//      global config's, exactly like `_build_claude_flags`.
-// A non-claude provider (gemini/codex/...) never reaches the router at all
-// (agent_routes.py:5816 returns through `_dispatch_via_runtime` first) and
-// effort is a claude-CLI-only flag (`_dispatch_via_runtime` never threads
-// one through) — so both are gated on the resolved provider being 'claude'.
-// A resolved-but-deleted persona, or a project this node no longer points
-// at, renders an em dash and the reason — never a guessed model id.
+// Ask the shared server resolver for model/effort and provenance. Explicit
+// persona pins win over project/provider defaults. Task routing remains a
+// dispatch-time decision for its supported provider, never a guessed model.
+// Read responses patch labels in place so draft fields and drags survive.
 function _wfProjectFor(node) {
   return (typeof allProjects !== 'undefined' ? allProjects : [])
     .find(p => p.id === (node && node.project_id)) || null;
@@ -310,57 +297,24 @@ function _wfModelLabel(provider, modelId) {
 // means we genuinely do not know what a drop will inherit and must say so,
 // never guess a project or global default that might not be the one used.
 function _wfEngineLine(person, proj, cfg, who) {
-  const label = who || (person && (person.display || person.name)) || 'this persona';
-  const pinModel = (person && person.model) || '';
-  const pinProvider = (person && person.provider) || '';
-  const pinEffort = (person && person.effort) || '';
-  const provider = pinProvider || (proj && proj.provider) || cfg.default_provider || 'claude';
-
-  let line;
-  let resolved = true;
-  if (pinModel) {
-    line = `${_wfModelLabel(provider, pinModel)} — pinned on ${label}`;
-  } else if (provider !== 'claude') {
-    // The router only ever produces a claude id and never runs for another
-    // provider's dispatch path — no static number to fall back to either,
-    // since agent_model/agent_effort are claude ids the runtime would reject.
-    line = `— (no model pinned on ${label}; ${provider} runtime uses its own default)`;
-  } else if (cfg.auto_model_enabled) {
-    line = 'chosen at dispatch — auto-router is ON (Haiku / Sonnet / Opus by task)';
-  } else if (proj && proj.agent_model) {
-    line = `${_wfModelLabel(provider, proj.agent_model)} — inherited, project default`;
-  } else if (proj && cfg.agent_model) {
-    line = `${_wfModelLabel(provider, cfg.agent_model)} — inherited, global default`;
-  } else if (!proj) {
-    line = `— (pins nothing; no project yet, so its default depends on where it lands)`;
-    resolved = false;
-  } else {
-    // MC-871 follow-up: nothing pinned, provider is claude, auto-router is
-    // off, and neither the project nor the global config has a model —
-    // dispatch has genuinely nothing to run on. `resolved` used to stay at
-    // its default `true` here (only the `!proj` branch above ever cleared
-    // it), so the unresolvable-engine check callers now do against this
-    // flag never fired for the one case the brief specifically named
-    // ("a character that pins nothing AND a project with no model
-    // default"). Fixed as part of that check, not a cosmetic change.
-    line = '— (no model configured anywhere in the chain)';
-    resolved = false;
-  }
-
-  if (provider === 'claude' && resolved) {
-    const effort = pinEffort || (proj && proj.agent_effort) || cfg.agent_effort || '';
-    if (effort) {
-      // With no project yet (palette hover on a person whose home project is
-      // empty and no builder hint), a pinned MODEL still resolves but the
-      // effort chain does not: the project it lands in can override the
-      // global default, so don't assert one we can't know.
-      const src = pinEffort ? ''
-        : ((proj && proj.agent_effort) ? ', project default'
-        : (proj ? ', global default' : ', global default unless its project overrides'));
-      line += ` · effort ${effort}${src}`;
-    }
-  }
-  return { text: 'Model: ' + line, resolved, provider };
+  const label = who || person?.display || person?.name || 'this persona';
+  const provider = person?.provider || proj?.provider || cfg.default_provider || '';
+  if (!proj?.id) return {text: 'Model: no project yet; depends on the destination project', resolved: false, provider};
+  const result = window.EnginePreferences?.preview(proj.id, person || {}, () => {
+    const st = _wfEntry()?._wf;
+    if (st) refreshWorkflowEnginePreview(st, {resolveEngine: _wfEngineResolution,
+      warningFor: _wfEngineWarning, paletteLine: _wfPaletteEngineLine, benchLookup: _wfBenchLookup});
+  });
+  if (!result || result.pending) return {text: 'Model: loading effective engine…', resolved: true, pending: true, provider};
+  if (result.error) return {text: 'Model: ' + result.error, resolved: false, error: result.error, provider};
+  const engine = result.engine;
+  const model = cfg.auto_model_enabled && engine.provider === 'claude' && !person?.model
+    ? 'chosen by task routing at dispatch'
+    : _wfModelLabel(engine.provider, engine.model) || 'provider default';
+  const source = engine.model_source === 'character' ? 'pinned on ' + label
+    : 'inherited, ' + engine.model_source + ' default';
+  return {text: 'Model: ' + model + ' · ' + engine.provider + ' · ' + source
+    + (engine.effort ? ' · effort ' + engine.effort : ''), resolved: true, provider: engine.provider};
 }
 
 // MC-871 follow-up (Item A, case 2): a persona can pin a model id its
@@ -376,6 +330,7 @@ function _wfEngineLine(person, proj, cfg, who) {
 // on missing data (a false "no longer exists" would be worse than no check).
 function _wfModelUnknown(provider, modelId) {
   if (!modelId) return false;
+  if (['tier:best', 'tier:balanced', 'tier:fast'].includes(modelId)) return false;
   const list = (typeof _agentProviders !== 'undefined' && _agentProviders) || null;
   if (!list) return false;
   const provRec = list.find(x => x.name === provider);
@@ -409,7 +364,7 @@ function _wfEngineResolution(st, node) {
   const cfg = (typeof _globalConfig !== 'undefined' ? _globalConfig : {}) || {};
   const who = person ? (person.display || person.name) : '';
   const line = _wfEngineLine(person, proj, cfg, who);
-  return { text: line.text, resolved: line.resolved, provider: line.provider, proj, person };
+  return { ...line, proj, person };
 }
 
 function _wfEngineTooltip(st, node) {
@@ -501,6 +456,8 @@ function _wfProviderAuthWarning(provider) {
 // that runs fine — a false "no" the user cannot override.
 function _wfEngineWarning(st, node, info) {
   if (!info) return '';
+  if (info.pending) return '';
+  if (info.error) return info.error;
   if (!info.resolved && node.project_id) {
     const projLabel = (info.proj && (info.proj.name || info.proj.id)) || 'its project';
     const who = info.person ? (info.person.display || info.person.name) : 'This step';
@@ -1851,6 +1808,8 @@ function _wfPalettePersonHover(event, scope, name) {
   if (!st || !pop || !row) return;
   const b = _wfBenchLookup(st, scope, name);
   if (!b) return;
+  pop.dataset.engineScope = scope;
+  pop.dataset.engineName = name;
 
   pop.innerHTML = `<div class="wfb-palette-popover-desc">${esc(b.description || b.display || b.name)}</div>
     <div class="wfb-palette-popover-engine">${esc(_wfPaletteEngineLine(st, b))}</div>`;

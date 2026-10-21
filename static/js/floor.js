@@ -1,3 +1,5 @@
+import './floor-preferences.js';
+
 // ── The Floor ────────────────────────────────────────────────────────────────
 // MC-897 phase 1. docs/AGENT_FLOOR_DESIGN.md.
 //
@@ -45,7 +47,7 @@ async function openFloor() {
   // of its own, which reads as a mistake rather than as a grid.
   _clampModalSize(content, 1120);
   content.innerHTML = `
-    <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
+    <div class="modal-header fl-preferences-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
       <span style="font-size:16px;font-weight:700;color:var(--text)">The Floor
         <span class="dave-sub" id="floor-counts">loading…</span></span>
       <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
@@ -53,6 +55,7 @@ async function openFloor() {
           onclick="LearnEngine.start('floor-v1','floor-header')">Learn the Floor</button>
         <button class="btn-header-action" style="padding:5px 12px;font-size:11px;margin-right:6px"
           onclick="refreshFloor()">Refresh</button>
+        <button class="btn-header-action" onclick="openFloorPreferences()">Floor defaults</button>
         <button class="modal-minimize" onclick="minimizeModal('${FLOOR_MODAL}')" title="Minimize">&#x2015;</button>
         <button class="modal-close" onclick="closeFloor()" title="Close">&#10005;</button>
       </div>

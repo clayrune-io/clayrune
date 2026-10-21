@@ -45,6 +45,22 @@ def _get(client):
     return r.get_json()
 
 
+def test_native_model_snapshot_does_not_acquire_current_default():
+    from mc.blueprints import floor_routes as fr
+    assert fr._figure_model({'model': '', 'provider': 'claude'}, 'claude-opus-5') == ('', 'own')
+    assert fr._figure_model({'agent_model': '', 'provider': 'codex'}, 'claude-opus-5') == ('', 'own')
+
+
+def test_scoped_defaults_do_not_relabel_legacy_unknown_sessions(floor, monkeypatch):
+    from mc import state
+    _, client, sessions, projects, _ = floor
+    monkeypatch.setitem(state.CONFIG, 'provider_defaults', {'claude': {'model': 'claude-opus-5'}})
+    projects.append({'id': 'a', 'name': 'Alpha', 'agent_model': 'old-model'})
+    sessions['1'] = _session('a', '1')
+    figure = _get(client)['rooms'][0]['figures'][0]
+    assert figure['model'] == ''
+
+
 # ── a figure is a session ───────────────────────────────────────────────────
 
 def test_one_character_appears_in_every_room_it_is_running_in(floor):

@@ -314,9 +314,10 @@ def _figure_model(s, proj_default):
     chose anything are two different facts, and the board rendered them
     identically (Ron, 2026-09-01).
     """
-    own = s.get('model') or s.get('agent_model') or ''
-    if own:
-        return own, 'own'
+    if 'model' in s:
+        return s['model'] or '', 'own'
+    if 'agent_model' in s:
+        return s['agent_model'] or '', 'own'
     if (s.get('provider') or 'claude') == 'claude' and proj_default:
         return proj_default, 'project'
     return '', ''
@@ -481,7 +482,9 @@ def floor():
     # Global default under the project's own, mirroring the chat header's
     # resolution order (`agent_status`: project agent_model, then CONFIG).
     _global = state.CONFIG.get('agent_model') or ''
-    defaults = {p.get('id'): (p.get('agent_model') or _global) for p in projects}
+    defaults = {p.get('id'): ('' if isinstance(state.CONFIG.get('provider_defaults'), dict)
+                             or isinstance(p.get('provider_overrides'), dict)
+                             else p.get('agent_model') or _global) for p in projects}
     rooms = _live_sessions(defaults, read_labels(), projects)
     live, quiet = [], []
     for p in projects:

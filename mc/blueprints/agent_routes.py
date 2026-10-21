@@ -54,6 +54,7 @@ from mc import empty_turn as _empty_turn
 from mc import mid_turn_send as _mid_turn_send  # MC-1086: steer / queue / interrupt routing
 from mc import triggered_turns as _triggered_turns  # seed-line label for non-human turns
 from mc import engine_selection
+from mc import provider_preferences as _provider_preferences
 from mc import provider_env_scope as _provider_env_scope  # saved keys stay with their provider
 from mc import launch_marker as _launch_marker  # per-launch unattended marker (fence fail-open, MC-1040)
 from mc import proc_kill as _proc_kill
@@ -825,7 +826,7 @@ def _build_claude_flags(project=None, streaming=False, model_override=None,
     model, _model_source = engine_selection.resolve_model(
         'claude', state.CONFIG, project, override=model_override)
     effort, _effort_source = engine_selection.resolve_effort(
-        state.CONFIG, project, override=effort_override)
+        state.CONFIG, project, override=effort_override, provider='claude')
     return _agent_runtime.get_runtime('claude').build_command(
         model=model,
         max_turns=(max_turns_override if max_turns_override is not None
@@ -2306,6 +2307,7 @@ def agent_providers():
             'display_name': rt.display_name,
             'remote_login': remote_login,
             'models': models,
+            **_provider_preferences.runtime_metadata(rt),
             'installed': h.installed,
             'binary_path': str(h.binary_path) if h.binary_path else None,
             'version': h.version,
@@ -10075,7 +10077,9 @@ def _route_dispatch_model(prompt, fallback_model):
         return fallback_model, 'manual'
     if not prompt or not prompt.strip():
         return fallback_model, 'fallback'
-    classifier_model = state.CONFIG.get('auto_model_classifier_model', '') or 'haiku'
+    from mc.provider_preferences import background_model
+    classifier_model = background_model(
+        state.CONFIG, 'claude', 'auto_model_classifier_model', default='haiku')
     try:
         raw = _scribe_call(classifier_model, _AUTO_MODEL_CLASSIFIER_PROMPT, prompt.strip())
     except Exception:
@@ -10192,16 +10196,11 @@ def _apply_mobile_brief(message: str, request_data: dict) -> str:
 
 
 def _resolve_runtime_model(runtime, p, model_override='', provider_name=''):
-    """Pick the model id to hand a non-claude runtime.
+    """Resolve fresh work through the selected provider's project/global defaults.
 
-    An explicit per-chat pick (composer Model picker) wins and is passed
-    through verbatim — the user may name a model newer than our catalog.
-
-    Otherwise we may only inherit the project/global `agent_model` if THIS
-    runtime actually accepts it. That guard is the point: `agent_model` is
-    always a claude id (the Agent-settings picker offers nothing else), and
-    the old code forwarded it unconditionally — so a project pinned to Opus
-    spawned `codex -m claude-opus-5`, which the CLI rejects outright.
+    Explicit pins are validated without a catalog-only ban on custom IDs.
+    Unscoped legacy defaults use the compatibility read path. Resume callers
+    use their saved selection rather than importing current preferences.
     """
     runtime_name = provider_name or getattr(runtime, 'name', '')
     if not runtime_name:
@@ -10315,6 +10314,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
     # thread configuration, rather than importing today's project default.
     model = model_override if resume_id else _resolve_runtime_model(
         runtime, p, model_override, provider_name)
+    model = _provider_preferences.resolve_tracking_request(runtime, model)
 
     mgr = get_manager(project_id)
     mgr.ensure_guardian()
@@ -10369,7 +10369,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             'provider': provider_name,
             'agent_model': model,
             'requested_effort': _requested_effort(
-                p, character_meta, override=effort_override,
+                p, character_meta, override=effort_override, provider_name=provider_name,
                 prior=(_prior_conversation_settings(project_id, resume_id, provider_name)
                        if resume_id else None)),
             # Wired per provider, not blanket-'unsupported': codex honours
@@ -10822,7 +10822,7 @@ def _continuation_effort(session):
     return session.get('requested_effort', '') or ''
 
 
-def _requested_effort(project, character=None, override=None, prior=None):
+def _requested_effort(project, character=None, override=None, prior=None, provider_name=''):
     """None means omitted; an explicit empty override selects native default."""
     if override is not None:
         return override
@@ -10831,7 +10831,8 @@ def _requested_effort(project, character=None, override=None, prior=None):
     character_effort = _character_engine(character, 'effort')
     if character_effort:
         return character_effort
-    effort, _source = engine_selection.resolve_effort(state.CONFIG, project)
+    effort, _source = engine_selection.resolve_effort(
+        state.CONFIG, project, provider=provider_name or _character_engine(character, 'provider'))
     return effort
 
 
@@ -10842,10 +10843,16 @@ def _continuation_model(session, project=None):
     Explicit auto routing happens outside that lock in the live-turn handler.
     """
     if session.get('model_auto_requested'):
-        return _resolve_dispatch_model(project, '')[0]
+        provider = session.get('provider') or 'claude'
+        return (_resolve_dispatch_model(project, '')[0] if provider == 'claude'
+                else engine_selection.resolve_model(provider, state.CONFIG, project)[0])
     if 'agent_model' in session:
-        return session.get('pinned_model') or session.get('agent_model') or ''
-    return session.get('pinned_model') or _requested_model_snapshot(session)
+        requested = session.get('pinned_model') or session.get('agent_model') or ''
+    else:
+        requested = session.get('pinned_model') or _requested_model_snapshot(session)
+    # Keep the requested tracking policy in the durable pin. Each provider's
+    # launch boundary resolves it; storing today's head here loses tracking.
+    return requested
 
 
 def _prior_conversation_provider(project_id, resume_id, explicit_provider=''):
@@ -11976,8 +11983,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # (post-router). See docs/DISPATCH_AND_ROUTING_ANALYSIS.md §B.5.
     _router_stat(
         project_id,
-        requested_model=(model_override or p.get('agent_model', '')
-                         or state.CONFIG.get('agent_model', '') or 'sonnet'),
+        requested_model=(model_override or engine_selection.resolve_model(
+            'claude', state.CONFIG, p)[0]),
         chosen_model=routed_model,
         source=routed_source,
         reason=_router_fallback_reason,
@@ -14767,18 +14774,13 @@ def delete_plans():
 
 
 def _session_model_field(s, proj_default_model):
-    """Model string to report for a session, with the project default applied
-    only where it is actually meaningful.
+    """Captured native/model policy wins, including an explicit empty value.
 
-    A project's `agent_model` is always a claude id — the Agent-settings picker
-    offers nothing else — so it must not be used as the fallback for a session
-    running on another runtime. Doing so made a codex session's header pill read
-    "codex · claude-opus-5" for a spawn that got no --model at all. For those,
-    an empty string is the truth: the provider's own default applies.
+    The fallback is only for unversioned legacy sessions. Scoped preferences
+    must never relabel an existing session with today's model default.
     """
-    own = s.get('agent_model') or ''
-    if own:
-        return own
+    if 'model' in s or 'agent_model' in s:
+        return _requested_model_snapshot(s)
     return proj_default_model if (s.get('provider') or 'claude') == 'claude' else ''
 
 
@@ -14888,8 +14890,9 @@ def agent_status(project_id):
     # as a fallback for legacy sessions that were dispatched before
     # session['agent_model'] was captured per-dispatch.
     _proj = load_project(project_id) or {}
-    _proj_default_model = (_proj.get('agent_model')
-                           or state.CONFIG.get('agent_model') or '')
+    _proj_default_model = ('' if isinstance(_proj.get('provider_overrides'), dict)
+                           or isinstance(state.CONFIG.get('provider_defaults'), dict) else
+                           _proj.get('agent_model') or state.CONFIG.get('agent_model') or '')
     # Per-conversation pin state is computed SERVER-SIDE: the server always knows
     # a live session's claude_session_id (the durable pin key), whereas the
     # client's cached copy can lag a freshly-assigned id (Mode B receives it via
@@ -14985,7 +14988,7 @@ def agent_status(project_id):
                 # surface a usable model string. Empty = provider default.
                 #
                 # The fallback is claude-ONLY: `agent_model` on a project is
-                # always a claude id, so applying it to a codex/gemini session
+                # a legacy unscoped value, so applying it to another provider's session
                 # made the header pill claim "codex · claude-opus-5" for a run
                 # that never received a --model at all.
                 'agent_model': _session_model_field(s, _proj_default_model),

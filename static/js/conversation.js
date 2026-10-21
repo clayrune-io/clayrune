@@ -428,17 +428,16 @@ function _composerModelPicker(p, resumeId) {
   if (!p || resumeId) return '';
   const prov = _composerProvider(p);
   const choices = _providerModelChoices(prov);
-  if (!choices.length) return '';
+  const providerMeta = (_agentProviders || []).find(p => p.name === prov);
+  if (providerMeta?.model_selection === false || (!choices.length && !providerMeta)) return '';
   const cur = pendingDispatchModel[_modelKey(p.id, prov)] || '';
-  // What "Default" resolves to. The project's agent_model only seeds claude —
-  // for any other runtime it's a claude id the CLI would reject, so the server
-  // drops it and the provider's own default applies (mirror that here).
-  const defLabel = (() => {
-    if (prov !== 'claude') return 'Default';
-    if (_globalConfig && _globalConfig.auto_model_enabled && !p.agent_model) return 'Auto';
-    const m = choices.find(c => c[0] === (p.agent_model || ''));
-    return (p.agent_model && m) ? `Default (${m[1]})` : 'Default';
-  })();
+  // Effective preferences come from the shared server resolver, with source.
+  // The composer keeps its deliberate per-chat selection separate.
+  const effective = window.EnginePreferences?.effective(p.id, prov, () => refreshModalById(p.id));
+  const defLabel = effective
+    ? (_globalConfig.auto_model_enabled && prov === 'claude' ? 'Auto by task' :
+      `Use preferences (${choices.find(([id]) => id === effective.model)?.[1] || effective.model || 'provider default'} · ${effective.model_source})`)
+    : 'Use provider preferences';
   // Custom = the box is armed, or the armed id isn't in the catalog (the user
   // typed it). Keep it selected rather than silently reverting to Default.
   const isCustom = !!pendingModelCustom[_modelKey(p.id, prov)]

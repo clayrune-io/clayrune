@@ -1,3 +1,11 @@
+// Model preferences belong to the provider selected in this setup draft.
+function _setupSavedModel() {
+  const provider = setupExplicitDefault || _globalConfig?.default_provider || '';
+  const scoped = _globalConfig?.provider_defaults;
+  return typeof scoped === 'object' && scoped !== null
+    ? String(scoped[provider]?.model || '') : String(_globalConfig?.agent_model || '');
+}
+
 // ── First-run setup ───────────────────────────────────────────────────────────
 // Welcome -> Agent connections -> Essentials -> optional tour offer.
 //
@@ -80,7 +88,7 @@ const SETUP_STEPS = [
         </div><div class="prov-install-policy-note" style="margin-top:6px;font-size:11px;color:var(--text-faint)">${esc(_providerInstallPolicyNoteText || '')}</div>`
         + `<div class="setup-section">
           <div class="setup-section-label">Default model</div>
-          <div class="setup-section-hint">Applies across every agent unless overridden per project or per chat. Balanced is recommended.</div>
+          <div class="setup-section-hint">Applies to the selected default provider. Projects, agent types and chats can override it. Balanced is recommended.</div>
           <div class="mc-seg" id="setup-model-tier-seg">`
         + Object.keys(MODEL_TIER_LABEL).map(t => `<button type="button" class="${setupModelTier === t ? 'active' : ''}" data-tier="${t}" onclick="setupPickModelTier('${t}',this)">${MODEL_TIER_LABEL[t]}</button>`).join('')
         + `</div>
@@ -98,7 +106,7 @@ const SETUP_STEPS = [
       // an existing tier or exact pin just because the step was shown.
       if (!setupModelTierVisited) {
         setupModelTierVisited = true;
-        const cur = String((_globalConfig && _globalConfig.agent_model) || '').trim();
+        const cur = _setupSavedModel().trim();
         if (!cur) setupPickModelTier(setupModelTier);
       }
     },
@@ -547,6 +555,8 @@ function setupSelectProvider(name, selected) {
 async function setupSetDefaultProvider(name) {
   if (!setupSelectedProviders.has(name)) return;
   setupExplicitDefault = name;
+  const savedModel = _setupSavedModel();
+  setupModelTier = savedModel.startsWith('tier:') ? savedModel.slice(5) : (savedModel ? '' : 'balanced');
   _agentProviders = null;
   try { await _ensureAgentProviders(); } catch (e) { /* auth refresh still uses config */ }
   if (typeof refreshAuthStatus === 'function') refreshAuthStatus();
@@ -823,7 +833,7 @@ function startFirstRun(opts) {
   setupProviderChoiceVisited = false;
   // Reflect what is already saved; a pin (non-tier value) highlights nothing
   // and is left alone unless the user clicks a tier.
-  const curModel = String((_globalConfig && _globalConfig.agent_model) || '').trim();
+  const curModel = _setupSavedModel().trim();
   setupModelTier = curModel.startsWith('tier:') ? curModel.slice(5)
     : (curModel ? '' : 'balanced');
   setupModelTierVisited = false;
@@ -895,9 +905,10 @@ function _setupPendingConfigBody() {
   // setupModelTier only reflects a TIER pick (see startFirstRun: an existing
   // exact-model pin leaves it '' and untouched) — an empty value here means
   // "user never touched this control while pinned", not "clear the pin".
-  const curModel = String((_globalConfig && _globalConfig.agent_model) || '').trim();
+  const curModel = _setupSavedModel().trim();
   const wantModel = setupModelTier ? 'tier:' + setupModelTier : '';
-  if (wantModel && wantModel !== curModel) body.agent_model = wantModel;
+  const modelProvider = setupExplicitDefault || _globalConfig.default_provider;
+  if (wantModel && wantModel !== curModel && modelProvider) body.provider_defaults = {[modelProvider]: {model: wantModel}};
   const curDefault = String((_globalConfig && _globalConfig.default_provider) || '').trim();
   if (setupExplicitDefault && setupExplicitDefault !== curDefault) body.default_provider = setupExplicitDefault;
   if (!(_globalConfig && _globalConfig.setup_completed)) body.setup_completed = true;
@@ -950,7 +961,10 @@ async function _setupPersistCompleted() {
       _setupBackupDest.override = '';
     }
     if (body.backup_schedule) _globalConfig.backup_schedule = body.backup_schedule;
-    if (body.agent_model) _globalConfig.agent_model = body.agent_model;
+    if (body.provider_defaults) {
+      _globalConfig.provider_defaults = {...(_globalConfig.provider_defaults || {}), ...body.provider_defaults};
+      window.EnginePreferences?.invalidate();
+    }
     if (body.default_provider) _globalConfig.default_provider = body.default_provider;
     if (body.setup_completed) _globalConfig.setup_completed = true;
   } catch (_) {}

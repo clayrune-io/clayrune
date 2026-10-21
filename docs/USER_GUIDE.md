@@ -197,15 +197,14 @@ The **3-dot menu** (top-right of the modal) holds:
   and a box to add a new domain.
 - ✎ **Edit Profile…** — one dialog for the project's emoji (shown on its
   tile and in lists), its description, and ✨ **Auto-generate**, which
-  asks Claude to read the workspace and write the one-paragraph summary
+  asks the selected provider to read the workspace and write the one-paragraph summary
   shown in tile previews.
-- ⚙ **Agent Settings…** — per-project overrides of the global agent
-  config (defaults live in Settings → Agent): **model**, **effort**,
-  **default provider** (seeds new chats; each chat can still switch in
-  the composer), and **process mode** — Mode A spawns a fresh `claude`
-  per turn, Mode B keeps a streaming process alive across turns (faster
-  follow-ups, heavier). Every row has a "Default (global)" choice that
-  clears the override.
+- ⚙ **Providers**: choose this project's default provider, or **Use global**.
+  Each provider has its own optional model and effort overrides. **Use global**
+  inherits its global preference; **Provider-managed default** deliberately uses
+  the provider's native choice. Track a tier, pin a listed model or enter a
+  custom model ID. Advanced runtime keeps the project process-lifetime override.
+  Identity, tool permissions, turn limits and reply defaults live on the Floor.
 - **GitHub Sync** — link a repo, sync backlog ↔ Issues
 - 🔁 **Code Sync** — bidirectional code sync via a per-machine sync branch
 - **Memory & Rules** — edit `MEMORY.md` and per-project agent rules
@@ -378,7 +377,7 @@ or quick experiments that you don't want polluting any project.
 - **Not attached to a project**: it lives in a global pseudo-project
   that's hidden from the dashboard grid; you only reach it via the
   sidebar entry.
-- **Use it when**: you want to ask Claude a quick question without
+- **Use it when**: you want to ask an agent a quick question without
   context bleed, throw together a sketch, or test a prompt before
   committing it to a real project's agent.
 
@@ -401,9 +400,9 @@ every hivemind across every project is listed there.
 **How a hivemind works**:
 1. **Goal**: you set a goal in plain English (e.g. *"Investigate which
    detection method is most cost-effective for fiber-tether drones"*).
-2. **Orchestrator**: a Claude session decomposes the goal into
+2. **Orchestrator**: an agent session decomposes the goal into
    **workstreams**, each handled by its own worker agent.
-3. **Workers**: each workstream runs as its own Claude session, posting
+3. **Workers**: each workstream runs as its own agent session, posting
    findings, decisions, and questions to a shared message bus.
 4. **Synthesis**: the orchestrator periodically synthesizes worker output
    into a unified document.
@@ -672,10 +671,10 @@ Remote Access → enable. Once enabled, opening clayrune.io on your phone
 authenticates via email OTP and you see the same dashboard.
 
 > **Don't confuse with the agent Remote control toggle** (Settings →
-> Agent → Remote control). They're different features:
+> Providers → Advanced → CLI integration → Remote control). They're different features:
 > - **Settings → Remote Access (clayrune.io tunnel)** = *you* reach the
 >   *MC dashboard* from your phone.
-> - **Settings → Agent → Remote control** = the *claude.ai app* reaches
+> - **Settings → Providers → Advanced → CLI integration → Remote control** = the *claude.ai app* reaches
 >   *agent sessions* and can push instructions to them.
 
 The mobile UI:
@@ -704,6 +703,55 @@ many projects open.
 ---
 
 ## Settings
+
+The categories are **Providers**, **Memory**, **Appearance**, **Connectivity**,
+**Add-ons** and **System**. The profile card edits **Your name** and **Your
+timezone**. The old Agent category is retired; searching its former labels
+links to their current homes.
+
+### Provider defaults and project overrides
+
+**Settings > Providers > Connections** manages installation, sign-in and the
+default provider for new work. **Model defaults** stores a separate model and
+effort preference for each provider, using its own catalog and supported effort
+levels. A runtime that manages its own model has no inactive model picker.
+
+- **Track best/balanced/fast** follows that provider's supported tier on launch.
+- A listed exact model or custom ID stays pinned. A missing catalog entry does
+  not automatically mean a saved model was retired.
+- **Provider-managed default** is an intentional native choice, distinct from
+  inheriting a project/global preference.
+- **Background models** keeps Scribe, condense and Distiller separate from chat
+  model budgets. A role override wins over that provider's background default.
+- **Advanced** keeps opt-in engine fallback, Claude task routing and native CLI
+  integrations. Task routing and tier tracking are different choices.
+
+The project menu's **Providers** editor overrides these preferences per provider.
+Changing provider never carries a model or effort into another provider. Reset
+one field with **Use global**; sibling preferences and other providers remain
+unchanged. Chat/agent-type/job pins still take priority. Existing conversations
+keep their saved provider and model policy rather than acquiring a newly edited
+default; a saved tracking policy resolves its tier when relaunched.
+
+Changes use the existing human gates. The first scoped save retains legacy
+preferences and creates a preference-only rollback snapshot outside the
+repository. Opening an editor changes nothing. Unsupported selections show an
+error instead of silently selecting another provider or model.
+
+### Floor defaults
+
+Open **The Floor > Floor defaults** to edit the global default agent's name and
+face, turn limit, tool-permission mode, brief replies and emoji preference.
+Face picks are a draft until **Save**. **Cancel** leaves saved preferences alone;
+Save asks for the dashboard passcode. A hired type and a figure's chosen label
+keep their own identities. Use the Bench card's existing edit action to change
+an individual type's instructions, identity or engine.
+
+The related controls link to provider preferences, scheduled runs and unattended
+safety. **Pause all scheduled runs** has one editor in Scheduler. Machine wake
+lock and sticky application of settings are under **System > Runtime and
+availability**; the Codex unattended sandbox stays human-gated in **System >
+Security**. Live activity presentation is under **Appearance > Interface**.
 
 ### Installed App updates
 
@@ -765,9 +813,9 @@ Major sections:
     at a time, so by default each paragraph lands as its own bubble. Flow
     runs them together as one continuous block of text. Your own messages
     stay right-hand bubbles either way, so you can still see who said what.
-- **Advanced features** — show/hide the token counter, `[tool: …]` lines,
-  GitHub badges, Agent Log tab, Memory & Rules menu entries. All off by
-  default — turn on the ones that fit your level.
+- **Appearance > Feature visibility** — show/hide the token counter, `[tool: …]` lines,
+  GitHub badges, Agent Log tab, Memory & Rules menu entries. Existing presets
+  and saved visibility choices are preserved; Memory & Rules is on by default.
 - **Remote access** — enable the clayrune.io tunnel (see above).
 - **Tour** — re-run the walkthrough.
 

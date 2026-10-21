@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from mc import agent_runtime
+from mc import provider_preferences
 
 
 class EngineSelectionError(ValueError):
@@ -204,6 +205,9 @@ def resolve_model_full(
         return ModelResolution(value, source, '')
 
     if override is not None:
+        if _text(override) and not getattr(runtime, 'MODEL_SELECTION', True):
+            raise EngineSelectionError(
+                f"Provider '{provider}' manages model selection; choose its native default.")
         kind, value = classify_value(override)
         if kind == 'inherit':
             return ModelResolution('', 'native', '')
@@ -211,16 +215,16 @@ def resolve_model_full(
             return _tier(value, 'explicit')
         return _pin(value, 'explicit', explicit=True)
 
-    kind, value = classify_value((project or {}).get('agent_model'))
-    source = 'project'
+    present, raw, source, scoped = provider_preferences.selected_field(
+        config, project, provider, 'model')
+    if not present:
+        return ModelResolution('', 'native', '')
+    kind, value = classify_value(raw)
     if kind == 'inherit':
-        kind, value = classify_value(config.get('agent_model'))
-        source = 'global'
-        if kind == 'inherit':
-            return ModelResolution('', 'native', '')
+        return ModelResolution('', source if scoped else 'native', '')
     if kind == 'tier':
         return _tier(value, source)
-    return _pin(value, source, explicit=False)
+    return _pin(value, source, explicit=scoped)
 
 
 def resolve_model(
@@ -234,7 +238,7 @@ def resolve_model(
 
 def resolve_effort(
     config: Mapping[str, Any], project: Mapping[str, Any] | None = None,
-    *, override: str | None = None,
+    *, override: str | None = None, provider: str = '',
 ) -> tuple[str, str]:
     """Resolve reasoning effort through project > global.
 
@@ -246,13 +250,10 @@ def resolve_effort(
     if override is not None:
         text = _text(override)
         return text, ('explicit' if text else 'native')
-    project_value = _text((project or {}).get('agent_effort'))
-    if project_value:
-        return project_value, 'project'
-    global_value = _text(config.get('agent_effort'))
-    if global_value:
-        return global_value, 'global'
-    return '', 'native'
+    provider = provider or resolve_provider(config, project, legacy_default='claude')[0]
+    present, value, source, _scoped = provider_preferences.selected_field(
+        config, project, provider, 'effort')
+    return (_text(value), source) if present else ('', 'native')
 
 
 def resolve_engine(
@@ -273,7 +274,7 @@ def resolve_engine(
     character_effort = _text((character or {}).get('effort'))
     use_character_effort = effort_override is None and bool(character_effort)
     effort, effort_source = resolve_effort(
-        config, project,
+        config, project, provider=provider,
         override=character_effort if use_character_effort else effort_override)
     if use_character_effort:
         effort_source = 'character'

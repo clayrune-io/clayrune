@@ -2020,7 +2020,7 @@ def reframe_exploration_to_skill(directory: str) -> dict | None:
         return None
     if art is None or art.get('kind') != 'exploration':
         return None
-    model = _cfg('distiller_model', '') or 'haiku'
+    model = _provider_model(None)
     body_in = (
         "EXPLORATION record to reframe:\n\n"
         f"Title: {art.get('description', '')}\n\n"

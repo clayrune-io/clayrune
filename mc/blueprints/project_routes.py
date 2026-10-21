@@ -50,6 +50,7 @@ from flask import Blueprint, abort, jsonify, request, send_file
 
 import mc.agent_runtime as _agent_runtime
 from mc import engine_selection
+from mc import provider_preferences
 from mc import state
 from mc.delegation_delivery import DeliveryStore
 from mc.atomic_json import write_json_atomic
@@ -700,6 +701,7 @@ def _refuse_project_path_in_install_dir(candidate_path: str, previous_path):
 
 
 @bp.route('/api/project/<project_id>', methods=['POST'])
+@provider_preferences.serialized_write
 def update_project(project_id):
     data = request.get_json()
     if not data:
@@ -719,6 +721,16 @@ def update_project(project_id):
 
     existing = json.loads(filepath.read_text(encoding='utf-8')) if not is_new else {'id': project_id}
     existing.setdefault('backlog', [])
+    if 'provider_overrides' in data:
+        try:
+            data['provider_overrides'] = provider_preferences.patch_preferences(
+                existing, data['provider_overrides'], project=True)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
+        data['provider_preferences_version'] = provider_preferences.SCHEMA_VERSION
+    if (isinstance(existing.get('provider_overrides'), dict) or 'provider_overrides' in data) and any(
+            key in data for key in ('agent_model', 'agent_effort')):
+        return jsonify({'error': 'Use provider_overrides for project engine preferences'}), 409
 
     # ── Auto-create a dedicated workspace folder when creating a project with no path.
     if is_new:
@@ -805,6 +817,23 @@ def update_project(project_id):
                 return jsonify({'error': 'default_character must look like '
                                          '"project:name" or "global:name"'}), 400
             data['default_character'] = f'{scope.strip().lower()}:{cname.strip()}'
+
+    if 'provider_overrides' in data:
+        try:
+            provider_preferences.backup_legacy_preferences(existing, identity=project_id, project=True)
+        except OSError as exc:
+            return jsonify({'error': f'Could not back up engine preferences: {exc}'}), 500
+    if 'provider' in data:
+        provider = data['provider']
+        if not isinstance(provider, str):
+            return jsonify({'error': 'Provider must be a string'}), 400
+        provider = provider.strip().lower()
+        if provider:
+            try:
+                engine_selection.resolve_provider({}, override=provider)
+            except engine_selection.EngineSelectionError as exc:
+                return jsonify({'error': str(exc)}), 400
+        data['provider'] = provider
 
     for k, v in data.items():
         if k not in ('log_msg', 'backlog'):
@@ -952,10 +981,8 @@ def generate_project_summary(project_id):
         legacy_default='claude',
     )
     try:
-        model = (resolved.model if 'model' in body else (
-            (state.CONFIG.get('condense_model', '') or resolved.model)
-            if resolved.provider == 'claude'
-            else resolved.model))
+        model = (resolved.model if 'model' in body else provider_preferences.background_model(
+            state.CONFIG, resolved.provider, 'condense_model', default='haiku'))
         content = _agent_runtime.run_text_transform(
             resolved.provider, prompt=prompt, model=model,
             effort=str(body.get('effort') or '').strip(),

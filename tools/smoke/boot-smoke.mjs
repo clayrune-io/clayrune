@@ -715,6 +715,7 @@ async function runIdentityPrefillGuard(browser) {
       {name: 'claude', display_name: 'Claude Code', installed: true,
         models: [{id: 'sonnet', label: 'Sonnet'}]},
       {name: 'codex', display_name: 'Codex', installed: true,
+        efforts: ['low', 'medium', 'high'],
         models: [{id: 'gpt-6-astra', label: 'GPT-6 Astra'}]},
     ]});
     if (path === '/api/avatars') return json({
@@ -2538,136 +2539,65 @@ async function runFloorGuard(browser) {
 }
 
 
-// ── The default agent's face (Settings > Agent > Identity) ───────────────────
-// A hired type keeps its face in its own file forever; the DEFAULT agent had no
-// such slot, so the only way to give it one was a Floor label keyed on the
-// session id — which dies with the chat. This guards the durable slot: the row
-// renders, the strip is built from /api/avatars rather than a hardcoded list,
-// and a click actually PUTs. The strip is hydrated after innerHTML by
-// refreshAgentFaceSection(), the exact ordering that left the push section
-// stuck on its placeholder when it was fired too early.
+// The durable default face is edited as a draft on the Floor.
 async function runAgentFaceGuard(browser) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await ctx.newPage();
   const puts = [];
-  await page.route('**/*', (route) => {
+  let config = {agent_name: 'Vector', agent_avatar: 'fig:navigator', agent_max_turns: 0,
+    agent_permission_mode: '', agent_emojis_enabled: false};
+  await page.route('**/*', route => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
-    const json = (body) => route.fulfill({ status: 200, contentType: 'application/json',
-      body: JSON.stringify(body) });
+    const json = body => route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(body)});
     if (path === '/api/config') {
-      if (req.method() === 'PUT') {
-        puts.push(JSON.parse(req.postData() || '{}'));
-        return json({ ok: true, updated: ['agent_avatar'] });
-      }
-      return json({ agent_name: 'Vector', agent_avatar: 'fig:navigator' });
+      if (req.method() === 'PUT') { const body = JSON.parse(req.postData() || '{}'); puts.push(body); Object.assign(config, body); return json({ok: true}); }
+      return json(config);
     }
-    if (path === '/api/avatars')
-      return json({ figures: ['navigator', 'wizard', 'warden'], prefix: 'fig:' });
-    if (path.startsWith('/api/avatars/')) return route.fulfill({
-      status: 200, contentType: 'image/png',
-      body: Buffer.from(PNG.split(',')[1], 'base64') });
-    if (path === '/api/local-auth/status') return json({ configured: true });
+    if (path === '/api/avatars') return json({figures: ['navigator','wizard','warden']});
+    if (path.startsWith('/api/avatars/')) return route.fulfill({status: 200, contentType: 'image/png', body: Buffer.from(PNG.split(',')[1], 'base64')});
+    if (path === '/api/local-auth/status') return json({configured: true});
     return fulfillStaticOrAbort(route);
   });
-  const pageErrors = [];
-  page.on('pageerror', (err) => pageErrors.push(err.message || String(err)));
-  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
   try {
-    await page.waitForSelector('#projects-col .card', { timeout: BOOT_TIMEOUT_MS });
-  } catch {
-    console.error('❌ agent-face guard: grid never rendered.');
-    await ctx.close();
-    return false;
-  }
-
-  const out = await page.evaluate(async () => {
-    const r = { err: null };
-    const settle = (ms) => new Promise((res) => setTimeout(res, ms || 400));
-    // Face picks save via saveSetting(), which now routes through the
-    // human-proof passcode modal (MC-995) instead of firing PUT /api/config
-    // directly — poll for the modal and answer it with a fixture passcode.
-    const answerHumanProofModal = async () => {
-      let win = null;
-      for (let i = 0; i < 20 && !win; i++) {
-        win = document.querySelector('[data-modal-id^="__human-proof-"]');
-        if (!win) await settle(50);
-      }
-      if (!win) return false;
-      const modalId = win.dataset.modalId;
-      const input = document.getElementById(`hp-passcode-${modalId}`);
-      if (input) input.value = 'smoke-dash-passcode';
-      window._hpSubmit(modalId);
-      return true;
+    await page.goto(ORIGIN + '/', {waitUntil: 'domcontentloaded'});
+    await page.waitForSelector('#projects-col .card', {timeout: BOOT_TIMEOUT_MS});
+    await page.evaluate(() => window.openFloorPreferences());
+    await page.waitForSelector('#agent-face-figs .settings-fig');
+    const input = page.locator('#floor-pref-agent_avatar');
+    if (await input.inputValue() !== 'fig:navigator') throw new Error('Saved face was not loaded');
+    if (await page.locator('#agent-face-figs .settings-fig').count() !== 3) throw new Error('Avatar inventory was not used');
+    if (await page.locator('.settings-fig.sel').getAttribute('data-face') !== 'fig:navigator') throw new Error('Saved chip is not selected');
+    if (!/navigator$/.test(await page.locator('#agent-face-preview img').getAttribute('src'))) throw new Error('Preview has wrong face');
+    await page.locator('[data-face="fig:wizard"]').click();
+    if (await input.inputValue() !== 'fig:wizard') throw new Error('Picking a face did not change the draft');
+    if (await page.locator('.settings-fig.sel').count() !== 1) throw new Error('Selection is not exclusive');
+    if (puts.length) throw new Error('Picking a face saved before confirmation');
+    const save = async () => {
+      await page.locator('[data-modal-id="__floor_preferences"] button[type="submit"]').click();
+      await page.waitForSelector('[data-modal-id^="__human-proof-"]');
+      await page.evaluate(() => {
+        const id = document.querySelector('[data-modal-id^="__human-proof-"]').dataset.modalId;
+        document.getElementById('hp-passcode-' + id).value = 'smoke-dash-passcode'; window._hpSubmit(id);
+      });
+      await page.waitForSelector('[data-modal-id="__floor_preferences"]', {state: 'detached'});
     };
-    try {
-      sidebarNav('settings');
-      await settle(700);
-      const input = document.getElementById('agent-face-input');
-      const row = document.getElementById('agent-face-figs');
-      if (!input) throw new Error('the Agent Face field never rendered');
-      r.value = input.value;
-      r.chips = row ? row.querySelectorAll('.settings-fig').length : 0;
-      r.faces = row ? Array.from(row.querySelectorAll('.settings-fig'))
-        .map((b) => b.dataset.face) : [];
-      // The saved face is the selected chip, and the preview shows it.
-      r.selected = row ? Array.from(row.querySelectorAll('.settings-fig.sel'))
-        .map((b) => b.dataset.face) : [];
-      const prev = document.getElementById('agent-face-preview');
-      r.previewSrc = prev && prev.querySelector('img')
-        ? prev.querySelector('img').getAttribute('src') : '';
-      // Picking a different one saves immediately — no Save button to forget.
-      const wizard = row.querySelector('[data-face="fig:wizard"]');
-      wizard.click();
-      await answerHumanProofModal();
-      await settle(250);
-      r.afterPick = input.value;
-      r.selectedAfter = Array.from(row.querySelectorAll('.settings-fig.sel'))
-        .map((b) => b.dataset.face);
-      // Clicking the one you already wear takes it off, so the strip is not a
-      // one-way door for someone who never guesses the field can be emptied.
-      wizard.click();
-      await answerHumanProofModal();
-      await settle(250);
-      r.afterUnpick = input.value;
-    } catch (e) {
-      r.err = e.message + ' | ' + ((e.stack || '').split('\n')[1] || '').trim();
-    }
-    return r;
-  });
-
-  await ctx.close();
-
-  const fails = [];
-  if (out.err) fails.push(`threw — ${out.err}`);
-  pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e))
-    .forEach((e) => fails.push(`uncaught: ${e}`));
-  if (out.value !== 'fig:navigator')
-    fails.push(`the saved face did not reach the field: ${JSON.stringify(out.value)}`);
-  if (out.chips !== 3)
-    fails.push(`the strip is not built from /api/avatars (${out.chips} chips, expected 3)`);
-  if (JSON.stringify(out.selected || []) !== JSON.stringify(['fig:navigator']))
-    fails.push('the saved face is not the selected chip: ' + JSON.stringify(out.selected));
-  if (!/\/api\/avatars\/navigator$/.test(out.previewSrc || ''))
-    fails.push(`the preview does not show the saved face: ${out.previewSrc}`);
-  if (out.afterPick !== 'fig:wizard')
-    fails.push(`picking a figure did not set the field: ${JSON.stringify(out.afterPick)}`);
-  if (JSON.stringify(out.selectedAfter || []) !== JSON.stringify(['fig:wizard']))
-    fails.push('two chips read as selected at once: ' + JSON.stringify(out.selectedAfter));
-  if (out.afterUnpick !== '')
-    fails.push(`clicking the worn face did not take it off: ${JSON.stringify(out.afterUnpick)}`);
-  const saved = puts.filter((p) => 'agent_avatar' in p).map((p) => p.agent_avatar);
-  if (JSON.stringify(saved) !== JSON.stringify(['fig:wizard', '']))
-    fails.push('the picks did not reach the server: ' + JSON.stringify(saved));
-
-  if (fails.length) {
-    console.error('❌ agent-face guard:');
-    fails.forEach((f) => console.error(`       • ${f}`));
-    return false;
-  }
-  console.log('✅ agent face: the default agent has a durable face — the strip comes from '
-    + '/api/avatars, the saved one is preselected, and a pick saves without a Save button.');
-  return true;
+    await save();
+    await page.evaluate(() => window.openFloorPreferences());
+    await page.waitForSelector('#agent-face-figs .settings-fig');
+    if (await input.inputValue() !== 'fig:wizard') throw new Error('Saved face did not survive reopen');
+    await page.locator('[data-face="fig:wizard"]').click();
+    if (await input.inputValue() !== '') throw new Error('Clicking selected face did not clear it');
+    await save();
+    if (JSON.stringify(puts.map(p => p.agent_avatar)) !== JSON.stringify(['fig:wizard',''])) throw new Error('Face writes did not preserve the exact selection');
+    if (puts.some(p => Object.keys(p).some(k => !['agent_avatar','passcode'].includes(k)))) throw new Error('Face save changed unrelated preferences');
+    if (errors.some(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e))) throw new Error(errors.join('; '));
+    console.log('✅ Floor face: inventory, saved selection, exclusive draft, confirmation, reopen and clear all work.');
+    return true;
+  } catch (error) { console.error('❌ Floor face: ' + error.message); return false; }
+  finally { await ctx.close(); }
 }
 
 

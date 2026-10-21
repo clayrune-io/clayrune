@@ -5,15 +5,8 @@
 // setup is reachable from Settings at any time (F1) and no vendor is
 // special-cased in how it looks.
 function _renderProviderSettings(cfg) {
-  // Fall back to a synthetic claude entry if the providers endpoint hasn't
-  // resolved — the Claude sign-in card must never silently disappear.
-  let provs = _agentProviders || [];
-  if (provs.length === 0) {
-    provs = [{ name: 'claude', display_name: 'Claude Code', installed: true,
-               auth_status: 'unknown' }];
-  }
-
-  const defProv = cfg.default_provider || 'claude';
+  const provs = _agentProviders || [];
+  const defProv = cfg.default_provider || '';
   const rows = provs.map(p => window._renderProviderRow(p, {
     mode: 'settings',
     defaultName: defProv,
@@ -27,10 +20,11 @@ function _renderProviderSettings(cfg) {
   const anyMissing = provs.some(p => !p.installed);
   return `
     <div class="settings-section" id="settings-providers-section">
+      <div class="settings-section-title">Connections</div>
       <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px"><!-- not a .settings-row: keeps the section a search "custom-content" unit so vendor names match -->
         <div>
           <div class="settings-label">Vendors</div>
-          <div class="settings-hint">Install, sign in and pick the default for every vendor. The default is used for new chats; change it per chat in the composer.</div>
+          <div class="settings-hint">Connect providers and choose the default provider. Model and effort preferences are stored separately for each provider below.</div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           ${anyMissing ? `<button type="button" class="btn-add" id="settings-prov-install-selected"
@@ -47,8 +41,9 @@ function _renderProviderSettings(cfg) {
         <div class="settings-toggle ${cfg.cli_auto_update_enabled === false ? '' : 'on'}" id="settings-cli-auto-update" onclick="toggleSetting(this,'cli_auto_update_enabled')"></div>
       </div>
       <div class="prov-install-policy-note" style="font-size:11px;color:var(--text-faint);margin-top:6px">${esc(_providerInstallPolicyNoteText || '')}</div>
-      <div class="prov-rows" style="display:flex;flex-direction:column;gap:8px;margin-top:8px">${rows}</div>
-    </div>`;
+      <div class="prov-rows" style="display:flex;flex-direction:column;gap:8px;margin-top:8px">${rows || '<p class="settings-hint">Provider inventory is unavailable. Use Check setup status to retry.</p>'}</div>
+    </div>
+    <div class="settings-section"><div class="settings-section-title">Model defaults</div>${EnginePreferences.render()}</div>`;
 }
 
 

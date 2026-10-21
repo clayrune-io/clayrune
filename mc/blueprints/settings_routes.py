@@ -50,6 +50,7 @@ import json
 
 from flask import Blueprint, jsonify, request
 
+from mc import provider_preferences
 from mc import state
 from mc.characters import clean_avatar
 from mc.atomic_json import write_json_atomic
@@ -105,6 +106,7 @@ def _save_settings(settings):
 
 _CONFIG_EDITABLE_KEYS = {
     'user_name', 'agent_name', 'agent_avatar', 'agent_model', 'agent_effort',
+    'provider_defaults',
     'agent_max_turns',
     'agent_permission_mode', 'agent_channels', 'agent_remote_control',
     'use_streaming_agent', 'condense_enabled', 'condense_threshold_kb',
@@ -335,6 +337,7 @@ def get_config():
     return jsonify({k: state.CONFIG.get(k) for k in _CONFIG_EDITABLE_KEYS})
 
 @bp.route('/api/config', methods=['PUT'])
+@provider_preferences.serialized_write
 def update_config():
     """Update config keys and persist to config.json."""
     if is_unattended_caller():
@@ -356,6 +359,15 @@ def update_config():
     refusal = _require_human_passcode(data)
     if refusal is not None:
         return refusal
+    if 'provider_defaults' in data:
+        try:
+            data['provider_defaults'] = provider_preferences.patch_preferences(
+                state.CONFIG, data['provider_defaults'])
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
+    if (isinstance(state.CONFIG.get('provider_defaults'), dict) or 'provider_defaults' in data) and any(
+            key in data for key in ('agent_model', 'agent_effort', *provider_preferences.ROLE_FIELDS)):
+        return jsonify({'error': 'Use provider_defaults for model and effort preferences'}), 409
     if 'delegation_payload_warning_bytes' in data:
         value = data['delegation_payload_warning_bytes']
         if isinstance(value, bool):
@@ -435,14 +447,16 @@ def update_config():
             # is the only thing stopping that (mc.characters.clean_avatar).
             if k == 'agent_avatar':
                 v = clean_avatar(v)
-            state.CONFIG[k] = v
             updated[k] = v
     if updated:
         try:
-            with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
-                json.dump(state.CONFIG, f, indent=2, ensure_ascii=False)
+            if 'provider_defaults' in updated:
+                provider_preferences.backup_legacy_preferences(state.CONFIG, identity='global')
+                updated['provider_preferences_version'] = provider_preferences.SCHEMA_VERSION
+            write_json_atomic(CONFIG_PATH, {**state.CONFIG, **updated}, indent=2, ensure_ascii=False)
         except Exception as e:
             return jsonify({'error': f'failed to save config: {e}'}), 500
+    state.CONFIG.update(updated)
     # Sticky settings: if a spawn-baked (Tier-1) key changed, flag live Mode B
     # claude sessions to resume into a fresh process at their next turn boundary
     # so the change actually takes effect (a running CLI can't see spawn-baked

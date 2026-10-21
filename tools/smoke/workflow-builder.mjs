@@ -402,13 +402,29 @@ try {
   // needed since _wfEnsureProviderAuthFresh caches per-provider and this
   // route is read fresh on every request.
   const providerAuthResponses = {};
-  await page.route('**/*', (route) => {
+  await page.route('**/*', async (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
     if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
     const hit = STATIC[path];
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/engine/preview') {
+      const request = req.postDataJSON();
+      // The harness edits its project fixture in the browser for the existing
+      // engine scenarios. Resolve that same fixture; production uses Flask.
+      const data = await page.evaluate(body => {
+        const p = allProjects.find(p => p.id === body.project_id) || {};
+        const c = body.character || {}, cfg = _globalConfig || {};
+        const provider = c.provider || p.provider || cfg.default_provider || 'claude';
+        const projectModel = p.provider_overrides?.[provider]?.model ?? p.agent_model;
+        const globalModel = cfg.provider_defaults?.[provider]?.model ?? cfg.agent_model;
+        const model = c.model || projectModel || globalModel || '';
+        return {provider, model, model_source:c.model ? 'character' : projectModel ? 'project' : globalModel ? 'global' : 'native',
+          effort:c.effort || p.agent_effort || cfg.agent_effort || ''};
+      }, request);
+      return route.fulfill({status:200, contentType:'application/json', body:JSON.stringify(data)});
+    }
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
@@ -1507,10 +1523,9 @@ try {
     dead: await readEngineWarning('c13-deadmodel'),
     legacy: await readEngineWarning('c13-legacymodel'),
   };
-  (c13Warnings.noengine && c13Warnings.noengine.warn && !c13Warnings.noengine.err
-    && /pins no model.*"Some Other Project" sets no default/.test(c13Warnings.noengine.text))
-    ? ok(`empty chain warns honestly about CLI drift, in amber: "${c13Warnings.noengine.text}"`)
-    : fail(`expected an amber CLI-default warning, got ${JSON.stringify(c13Warnings.noengine)}`);
+  (c13Warnings.noengine && !c13Warnings.noengine.warn && !c13Warnings.noengine.err)
+    ? ok('an unpinned native default is valid and does not produce a false model warning')
+    : fail(`expected a valid provider-native default, got ${JSON.stringify(c13Warnings.noengine)}`);
   (c13Warnings.dead && c13Warnings.dead.warn && !c13Warnings.dead.err
     && /"claude-retired-1" is pinned on Retiro but claude no longer lists it/.test(c13Warnings.dead.text))
     ? ok(`off-catalog pin warns without asserting it is dead: "${c13Warnings.dead.text}"`)
@@ -1581,6 +1596,14 @@ try {
     const hit = STATIC[path];
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/engine/preview') {
+      const body = req.postDataJSON();
+      const p = JSON.parse(PROJECTS_JSON).find(p => p.id === body.project_id) || {};
+      const c = body.character || {};
+      return route.fulfill({status:200, contentType:'application/json', body:JSON.stringify({
+        provider:c.provider || p.provider || 'claude', model:c.model || p.agent_model || '',
+        model_source:c.model ? 'character' : p.agent_model ? 'project' : 'native', effort:c.effort || p.agent_effort || ''})});
+    }
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
@@ -1835,6 +1858,14 @@ try {
     const hit = STATIC[path];
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/engine/preview') {
+      const body = req.postDataJSON();
+      const p = JSON.parse(PROJECTS_JSON).find(p => p.id === body.project_id) || {};
+      const c = body.character || {};
+      return route.fulfill({status:200, contentType:'application/json', body:JSON.stringify({
+        provider:c.provider || p.provider || 'claude', model:c.model || p.agent_model || '',
+        model_source:c.model ? 'character' : p.agent_model ? 'project' : 'native', effort:c.effort || p.agent_effort || ''})});
+    }
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
@@ -2058,6 +2089,14 @@ try {
     const hit = STATIC[path];
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/engine/preview') {
+      const body = req.postDataJSON();
+      const p = JSON.parse(PROJECTS_JSON).find(p => p.id === body.project_id) || {};
+      const c = body.character || {};
+      return route.fulfill({status:200, contentType:'application/json', body:JSON.stringify({
+        provider:c.provider || p.provider || 'claude', model:c.model || p.agent_model || '',
+        model_source:c.model ? 'character' : p.agent_model ? 'project' : 'native', effort:c.effort || p.agent_effort || ''})});
+    }
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
@@ -2253,6 +2292,14 @@ try {
     const hit = STATIC[path];
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/engine/preview') {
+      const body = req.postDataJSON();
+      const p = JSON.parse(PROJECTS_JSON).find(p => p.id === body.project_id) || {};
+      const c = body.character || {};
+      return route.fulfill({status:200, contentType:'application/json', body:JSON.stringify({
+        provider:c.provider || p.provider || 'claude', model:c.model || p.agent_model || '',
+        model_source:c.model ? 'character' : p.agent_model ? 'project' : 'native', effort:c.effort || p.agent_effort || ''})});
+    }
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
@@ -2400,6 +2447,14 @@ try {
     const hit = STATIC[path];
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/engine/preview') {
+      const body = req.postDataJSON();
+      const p = JSON.parse(PROJECTS_JSON).find(p => p.id === body.project_id) || {};
+      const c = body.character || {};
+      return route.fulfill({status:200, contentType:'application/json', body:JSON.stringify({
+        provider:c.provider || p.provider || 'claude', model:c.model || p.agent_model || '',
+        model_source:c.model ? 'character' : p.agent_model ? 'project' : 'native', effort:c.effort || p.agent_effort || ''})});
+    }
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
@@ -2662,6 +2717,14 @@ try {
     const hit = STATIC[path];
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/engine/preview') {
+      const body = req.postDataJSON();
+      const p = JSON.parse(PROJECTS_JSON).find(p => p.id === body.project_id) || {};
+      const c = body.character || {};
+      return route.fulfill({status:200, contentType:'application/json', body:JSON.stringify({
+        provider:c.provider || p.provider || 'claude', model:c.model || p.agent_model || '',
+        model_source:c.model ? 'character' : p.agent_model ? 'project' : 'native', effort:c.effort || p.agent_effort || ''})});
+    }
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
@@ -2789,6 +2852,14 @@ try {
     const hit = STATIC[path];
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/engine/preview') {
+      const body = req.postDataJSON();
+      const p = JSON.parse(PROJECTS_JSON).find(p => p.id === body.project_id) || {};
+      const c = body.character || {};
+      return route.fulfill({status:200, contentType:'application/json', body:JSON.stringify({
+        provider:c.provider || p.provider || 'claude', model:c.model || p.agent_model || '',
+        model_source:c.model ? 'character' : p.agent_model ? 'project' : 'native', effort:c.effort || p.agent_effort || ''})});
+    }
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
@@ -2902,6 +2973,14 @@ try {
     const hit = STATIC[path];
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/engine/preview') {
+      const body = req.postDataJSON();
+      const p = JSON.parse(PROJECTS_JSON).find(p => p.id === body.project_id) || {};
+      const c = body.character || {};
+      return route.fulfill({status:200, contentType:'application/json', body:JSON.stringify({
+        provider:c.provider || p.provider || 'claude', model:c.model || p.agent_model || '',
+        model_source:c.model ? 'character' : p.agent_model ? 'project' : 'native', effort:c.effort || p.agent_effort || ''})});
+    }
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
@@ -2971,6 +3050,14 @@ try {
     const hit = STATIC[path];
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/engine/preview') {
+      const body = req.postDataJSON();
+      const p = JSON.parse(PROJECTS_JSON).find(p => p.id === body.project_id) || {};
+      const c = body.character || {};
+      return route.fulfill({status:200, contentType:'application/json', body:JSON.stringify({
+        provider:c.provider || p.provider || 'claude', model:c.model || p.agent_model || '',
+        model_source:c.model ? 'character' : p.agent_model ? 'project' : 'native', effort:c.effort || p.agent_effort || ''})});
+    }
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
@@ -3115,6 +3202,14 @@ try {
     const hit = STATIC[path];
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/engine/preview') {
+      const body = req.postDataJSON();
+      const p = JSON.parse(PROJECTS_JSON).find(p => p.id === body.project_id) || {};
+      const c = body.character || {};
+      return route.fulfill({status:200, contentType:'application/json', body:JSON.stringify({
+        provider:c.provider || p.provider || 'claude', model:c.model || p.agent_model || '',
+        model_source:c.model ? 'character' : p.agent_model ? 'project' : 'native', effort:c.effort || p.agent_effort || ''})});
+    }
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
@@ -3179,6 +3274,14 @@ try {
     const hit = STATIC[path];
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/engine/preview') {
+      const body = req.postDataJSON();
+      const p = JSON.parse(PROJECTS_JSON).find(p => p.id === body.project_id) || {};
+      const c = body.character || {};
+      return route.fulfill({status:200, contentType:'application/json', body:JSON.stringify({
+        provider:c.provider || p.provider || 'claude', model:c.model || p.agent_model || '',
+        model_source:c.model ? 'character' : p.agent_model ? 'project' : 'native', effort:c.effort || p.agent_effort || ''})});
+    }
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
@@ -3541,6 +3644,14 @@ try {
     const hit = STATIC[path];
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/engine/preview') {
+      const body = req.postDataJSON();
+      const p = JSON.parse(PROJECTS_JSON).find(p => p.id === body.project_id) || {};
+      const c = body.character || {};
+      return route.fulfill({status:200, contentType:'application/json', body:JSON.stringify({
+        provider:c.provider || p.provider || 'claude', model:c.model || p.agent_model || '',
+        model_source:c.model ? 'character' : p.agent_model ? 'project' : 'native', effort:c.effort || p.agent_effort || ''})});
+    }
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });

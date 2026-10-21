@@ -1,7 +1,9 @@
 # Provider defaults and project inheritance
 
-Status: proposed design, source-audited on 2026-10-21. No runtime or settings
-changes are implemented by this document.
+Status: approved and implemented on `feature/provider-defaults-floor`,
+2026-10-21. Activation awaits an explicitly approved server restart. See
+`SETTINGS_OWNERSHIP_AUDIT.md` for the expanded settings audit and Floor changes.
+No live preferences or provider accounts were changed during implementation.
 
 ## Purpose
 
@@ -43,7 +45,7 @@ proof of account entitlement or a ban on custom model IDs.
 | --- | --- |
 | Settings > Providers | Select the global default provider. Each provider has connection state, default model and model-appropriate effort. Advanced background-work defaults live here too. |
 | Project > Providers | Default provider: Use global, or a named provider. Provider-specific model/effort rows inherit globally until overridden. Show overrides for other providers without making them the project's default provider. |
-| Settings > Agent and project Agent settings | Identity, behavior, tool permissions and other agent policies. Engine choices move out of these sections. Existing entry points link to Providers. |
+| The Floor > Floor defaults | Identity, reply preferences, turn limits and agent tool policy. The Settings > Agent category is retired; project engine settings are Providers. |
 | New chat and existing chat header | Show the effective provider/model and allow a deliberate conversation override. These controls change that conversation, not global/project preferences. |
 | Agent type editor | Optional provider/model/effort pins for that type. Blank means inherit; a provider-only pin uses that provider's project/global defaults. |
 | Schedule, workflow and Hivemind editors | Optional job/step or coordinator/worker overrides, clearly scoped. Inherited engines use the same preview as chats. Resuming an existing chat follows its saved engine policy. |
@@ -98,7 +100,7 @@ for UI labels. Previews do not start model calls or sign-in flows.
 
 ## Preference representation
 
-Proposed additions to the existing config and project records:
+Implemented scoped fields in the existing config and project records (schema version 1):
 
 ```json
 {
@@ -216,3 +218,30 @@ and an added runtime appearing without another hardcoded menu change.
 No agent fan-out, live configuration mutation, provider call, server restart or
 deployment is required to review this design. Implementation completion requires
 the execution and UI gates above; this proposal itself makes no shipping claim.
+
+## Implementation notes
+
+`mc/provider_preferences.py` owns scoped views, field patches, metadata, tracking
+requests and rollback snapshots. `mc/blueprints/provider_preferences_routes.py`
+owns read-only inventory/previews; existing config/project write routes retain
+their human and unattended gates. Missing maps use the legacy read path. First
+scoped writes materialize the legacy effective preferences, save a deduplicated
+preference-only snapshot outside the repo, keep old fields and stamp version 1.
+An empty scoped map is authoritative. Old unscoped writes after cutover get 409.
+
+`static/js/engine-preferences.js` is the shared global/project editor and preview
+client; `floor-preferences.js` owns the new Floor form; `settings-ownership.js`
+wires moved controls into their appropriate categories. Visibility switches are
+in Appearance. Workflow preview responses patch labels/warnings in place via
+`workflow-engine-preview.js`, preserving unsaved fields and drag state.
+
+The native-only runtime explicitly declares that it manages model selection;
+an empty catalog for a custom-capable runtime still permits a custom ID.
+Per-provider effort metadata describes levels the adapter passes through.
+Existing unsupported effort pins remain visible and can be cleared; they are
+not promoted into a false working capability.
+
+Execution-profile certification, actual account entitlement and live provider
+canaries remain outside this settings verification. Existing legacy executor
+ownership is explicit and unchanged. The audit records a pre-existing provider
+architecture guard failure reproduced on the original baseline.

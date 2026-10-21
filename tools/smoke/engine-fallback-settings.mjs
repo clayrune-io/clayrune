@@ -121,13 +121,13 @@ const openAgentSubs = async () => {
   await page.evaluate(() => { window.closeModalById && window.closeModalById('__settings'); });
   await page.evaluate(() => window.openSettings());
   await page.waitForSelector('#engine-fallback-section', { state: 'attached', timeout: 10000 });
-  await page.evaluate(() => window.drillSettings('agent'));
+  await page.evaluate(() => window.drillSettings('providers'));
 };
 
 const drillToAdvanced = async () => {
   await openAgentSubs();
   await page.evaluate(() => {
-    const idx = [...document.querySelectorAll('[data-cat="agent"] .settings-section-title')]
+    const idx = [...document.querySelectorAll('[data-cat="providers"] .settings-section-title')]
       .findIndex(t => t.textContent.trim() === 'Advanced');
     window.drillSettingsSub(idx);
   });

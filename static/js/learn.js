@@ -1149,6 +1149,7 @@ function _showOffer(L) {
 window.LearnEngine = {
   LESSON_ID: DEFAULT_LESSON_ID,
   start: startLesson, leave, notify, onFloorOpened, startFromHub: hubStart,
+  dismissOffer: _dismissOffer,
   hand: { click: Hand.click, drag: Hand.drag, stop: Hand.stop },
   hasLesson: (id) => Object.prototype.hasOwnProperty.call(LESSONS, id),
   lessonChip: (id) => (LESSONS[id] ? LESSONS[id].chip : ''),

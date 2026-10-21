@@ -259,6 +259,7 @@
   }
 </script>
 <link rel="stylesheet" href="/static/css/app.css">
+<link rel="stylesheet" href="/static/css/provider-preferences.css">
 <link rel="stylesheet" href="/static/css/image-viewer.css">
 <link rel="stylesheet" href="/static/css/file-viewer.css">
 <link rel="stylesheet" href="/static/css/masked-input.css">
@@ -3224,6 +3225,7 @@ async function saveSetting(key, value) {
   // (e.g. the mobile-brief-replies gate that tags outgoing messages with
   // client="mobile") picks up the new value without a page reload.
   try { _globalConfig[key] = value; } catch (_) {}
+  if (window.EnginePreferences) window.EnginePreferences.invalidate();
   showToast('Setting saved');
 }
 
@@ -3263,7 +3265,7 @@ async function setBriefRepliesMode(mode) {
 async function saveModelChoice(v) {
   const body = (v === '__auto__')
     ? { auto_model_enabled: true }
-    : { auto_model_enabled: false, agent_model: v };
+    : { auto_model_enabled: false, provider_defaults: {[_globalConfig.default_provider || 'claude']: {model: v}} };
   // MC-995: same gated PUT /api/config as saveSetting above.
   try {
     const result = await humanProofFetch(API_BASE + '/api/config', {

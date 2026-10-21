@@ -600,28 +600,15 @@ async function togglePinConversationSession(projectId, sessionId) {
 }
 
 async function setProjectModel(projectId, model) {
-  document.querySelectorAll('.modal-menu-dropdown.open').forEach(d => d.classList.remove('open'));
-  try {
-    await fetch(API_BASE + `/api/project/${projectId}`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ agent_model: model })
-    });
-    await refreshSilent();
-  } catch(e) {}
+  const project = allProjects.find(p => p.id === projectId);
+  const provider = project?.provider || _globalConfig.default_provider;
+  return EnginePreferences.saveField(projectId, provider, 'model', model || null);
 }
 
 async function setProjectEffort(projectId, effort) {
-  document.querySelectorAll('.modal-menu-dropdown.open').forEach(d => d.classList.remove('open'));
-  document.querySelectorAll('.modal-menu-sub.open').forEach(d => d.classList.remove('open'));
-  try {
-    await fetch(API_BASE + `/api/project/${projectId}`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ agent_effort: effort })
-    });
-    await refreshSilent();
-  } catch(e) {}
+  const project = allProjects.find(p => p.id === projectId);
+  const provider = project?.provider || _globalConfig.default_provider;
+  return EnginePreferences.saveField(projectId, provider, 'effort', effort || null);
 }
 
 async function setProjectProvider(projectId, provider) {
@@ -903,70 +890,17 @@ let _agentSettingsProjectId = null;
 
 async function openAgentSettingsDialog(projectId) {
   _agentSettingsProjectId = projectId;
-  // Provider row needs the runtime list; cached after the first fetch, and
-  // awaiting here closes the old menu's lost-race-on-mobile gap for good.
-  await _ensureAgentProviders();
-  _renderAgentSettingsDialog();
-  document.getElementById('agent-settings-overlay').classList.add('visible');
+  return window.EnginePreferences.openProject(projectId);
 }
 
 function closeAgentSettingsDialog() {
+  window.EnginePreferences?.dismissProject();
   document.getElementById('agent-settings-overlay').classList.remove('visible');
   _agentSettingsProjectId = null;
 }
 
 function _renderAgentSettingsDialog() {
-  const p = allProjects.find(x => x.id === _agentSettingsProjectId);
-  const box = document.getElementById('agent-settings-box');
-  if (!p || !box) return;
-  const modelSel = MC_MODEL_CHOICES.map(([v, l]) =>
-    `<option value="${v}"${(p.agent_model || '') === v ? ' selected' : ''}>${l}</option>`).join('');
-  const effortSel = MC_EFFORT_CHOICES.map(([v, l]) =>
-    `<option value="${v}"${(p.agent_effort || '') === v ? ' selected' : ''}>${l}</option>`).join('');
-
-  // Provider row only when more than one runtime is registered — with just
-  // claude available it'd be noise (same rule as the composer picker).
-  const provs = _agentProviders || [];
-  let providerRow = '';
-  if (provs.length > 1) {
-    const current = (p.provider || 'claude').toLowerCase();
-    const opts = provs.map(rt =>
-      `<option value="${esc(rt.name)}"${current === rt.name ? ' selected' : ''}${(!rt.installed && rt.name !== 'claude') ? ' disabled' : ''}>${esc(rt.display_name)}${rt.installed ? '' : ' (not installed)'}</option>`).join('');
-    providerRow = `
-    <div class="settings-row">
-      <div><div class="settings-label">Default provider</div><div class="settings-hint">Seeds new chats — each chat keeps its provider; switch per-chat in the composer</div></div>
-      <select class="settings-select" onchange="_agentSettingsSet('provider', this.value)">${opts}</select>
-    </div>`;
-  }
-
-  const globalMode = _globalConfig.use_streaming_agent ? 'Mode B' : 'Mode A';
-  const modeVal = (p.use_streaming_agent === true) ? 'b' : (p.use_streaming_agent === false) ? 'a' : '';
-  box.innerHTML = `
-    <div class="mc-dialog-header">
-      <span>Agent settings — ${esc(p.name || p.id)}</span>
-      <button class="mc-dialog-close" onclick="closeAgentSettingsDialog()" title="Close">&#10005;</button>
-    </div>
-    <div class="settings-hint" style="margin-bottom:10px">Project defaults that seed <em>new</em> chats. Global defaults live in Settings &rarr; Agent; switch a single conversation from its header model pill.</div>
-    <div class="settings-row">
-      <div><div class="settings-label">Model</div><div class="settings-hint">Default for new chats in this project</div></div>
-      <select class="settings-select" onchange="_agentSettingsSet('agent_model', this.value)">${modelSel}</select>
-    </div>
-    <div class="settings-row">
-      <div><div class="settings-label">Effort</div><div class="settings-hint">How hard the model thinks per request</div></div>
-      <select class="settings-select" onchange="_agentSettingsSet('agent_effort', this.value)">${effortSel}</select>
-    </div>
-    ${providerRow}
-    <div class="settings-row">
-      <div><div class="settings-label">Process mode</div><div class="settings-hint">Mode B keeps one persistent process per chat; Mode A spawns per turn</div></div>
-      <select class="settings-select" onchange="_agentSettingsSet('use_streaming_agent', this.value)">
-        <option value=""${modeVal === '' ? ' selected' : ''}>Default (global — ${globalMode})</option>
-        <option value="b"${modeVal === 'b' ? ' selected' : ''}>Mode B — persistent</option>
-        <option value="a"${modeVal === 'a' ? ' selected' : ''}>Mode A — spawn per turn</option>
-      </select>
-    </div>
-    <div class="mc-dialog-footer">
-      <button class="btn-add" onclick="closeAgentSettingsDialog()">Done</button>
-    </div>`;
+  if (_agentSettingsProjectId) return window.EnginePreferences.openProject(_agentSettingsProjectId);
 }
 
 // Selects apply immediately (same as the old menu pickers did); the re-render

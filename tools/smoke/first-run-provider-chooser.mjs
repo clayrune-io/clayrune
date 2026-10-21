@@ -247,7 +247,7 @@ try {
       if (!balanced || !balanced.active) fail(`Balanced should be pre-selected, got: ${JSON.stringify(tierState)}`);
       else ok('Balanced is pre-selected');
     }
-    if (configPuts.some((p) => 'agent_model' in p))
+    if (configPuts.some((p) => 'agent_model' in p || 'provider_defaults' in p))
       fail(`the pre-selected tier must not PUT /api/config immediately — got: ${JSON.stringify(configPuts)}`);
     else ok('pre-selecting the default tier makes no immediate PUT /api/config (held for the batched Finish write)');
 
@@ -317,10 +317,10 @@ try {
     await page.waitForTimeout(150);
     await page.click('button:has-text("Confirm")');
     await page.waitForTimeout(150);
-    const finishPut = configPuts.find((p) => 'agent_model' in p);
-    if (!finishPut || finishPut.agent_model !== 'tier:balanced')
-      fail(`expected the batched Finish PUT /api/config to carry agent_model='tier:balanced', got: ${JSON.stringify(configPuts)}`);
-    else ok("Finish's batched write carries agent_model='tier:balanced' — the one passcode interaction covers it too");
+    const finishPut = configPuts.find((p) => 'provider_defaults' in p);
+    if (!finishPut || finishPut.provider_defaults?.claude?.model !== 'tier:balanced' || 'agent_model' in finishPut)
+      fail(`expected Finish to save the selected provider's Balanced tier, got: ${JSON.stringify(configPuts)}`);
+    else ok("Finish saves provider_defaults.claude.model='tier:balanced' in the single passcode-gated write");
   }
 
   if (pageErrors.length) fail('uncaught exception(s): ' + pageErrors.join(' | '));

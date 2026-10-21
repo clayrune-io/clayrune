@@ -354,7 +354,20 @@ mutation.
 |---|---|---|
 | GET | `/api/config` | Read live MC config (flags, ports, scribe state). |
 | PUT | `/api/config` | Patch config (partial JSON merge). |
+| GET | `/api/engine/preferences?project_id=<optional>` | Read-only provider catalogs, supported effort/tier/model-selection metadata, global defaults, optional project overrides and effective engine provenance. Never launches a provider or migrates data. |
+| POST | `/api/engine/preview` | Resolve `{project_id?, provider?, model?, effort?, character?: {provider?,model?,effort?}}` through the same engine resolver used by execution. Read-only, no provider call. Missing model/effort inherits; explicit empty selects native. |
 | GET | `/api/usage` | API usage / token-cost telemetry. |
+
+Provider model preferences use `provider_defaults` on config and
+`provider_overrides` on project records. Write only the changed provider/field:
+`{"provider_defaults":{"codex":{"model":"tier:balanced"}}}`. A null field
+resets it to inheritance; an empty string explicitly selects the provider's
+native default; a null provider resets its entry. Config writes retain the
+existing passcode/unattended gate. First scoped saves retain legacy preferences,
+save an external preference-only snapshot and stamp schema version 1. Unscoped
+model/effort/background writes after cutover return 409 instead of being ignored.
+Agent identity, turn/tool policy and reply defaults are edited on the Floor;
+global and project engine defaults are edited in Providers.
 
 ## System (health, restart, update)
 

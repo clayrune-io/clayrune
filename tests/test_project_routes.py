@@ -206,6 +206,33 @@ def _human_project_post(client, url, *, json):
                        headers={'Origin': 'http://localhost:5199'})
 
 
+def test_provider_preferences_patch_and_reset_preserve_project_data(client, monkeypatch):
+    from mc import engine_selection, provider_preferences
+    monkeypatch.setattr(provider_preferences, 'BACKUP_ROOT', client.tmp / 'preference-backups')
+    _seed(client, agent_model='claude-opus-5', agent_effort='high', description='Keep this')
+    response = client.post('/api/project/tproj', json={
+        'provider_overrides': {'codex': {'model': 'future-codex-model', 'effort': 'low'}}})
+    assert response.status_code == 200
+    stored = json.loads((client.data_dir / 'tproj.json').read_text())
+    assert stored['provider_preferences_version'] == 1
+    assert stored['description'] == 'Keep this'
+    assert stored['agent_model'] == 'claude-opus-5'
+    assert stored['provider_overrides']['claude']['model'] == 'claude-opus-5'
+    response = client.post('/api/project/tproj', json={
+        'provider_overrides': {'codex': {'model': None, 'effort': 'high'}}})
+    assert response.status_code == 200
+    stored = json.loads((client.data_dir / 'tproj.json').read_text())
+    engine = engine_selection.resolve_engine({'provider_defaults': {'codex': {'model': 'global-model'}}},
+                                             stored, provider_override='codex')
+    assert (engine.model, engine.effort) == ('global-model', 'high')
+    assert len(list((client.tmp / 'preference-backups').glob('*.json'))) == 1
+    assert client.post('/api/project/tproj', json={'agent_model': 'old-client-write'}).status_code == 409
+    assert client.post('/api/project/tproj', json={'provider': 'unknown-provider'}).status_code == 400
+    assert client.post('/api/project/tproj', json={'provider_overrides': {
+        'codex': {'model': 'claude-opus-5'}}}).status_code == 400
+    assert json.loads((client.data_dir / 'tproj.json').read_text()) == stored
+
+
 # ── /api/projects ────────────────────────────────────────────────────────────
 
 def test_projects_list_happy(client):

@@ -781,8 +781,8 @@ function modalContentHTML(p) {
           <button class="modal-menu-item" onclick="_mcMenuClose();openProjectProfileDialog('${esc(p.id)}')">
             <span class="menu-icon">${p.emoji ? esc(p.emoji) : '<svg class="menu-svg"><use href="#ic-edit"/></svg>'}</span> Edit Profile&#8230;
           </button>
-          <button class="modal-menu-item" onclick="_mcMenuClose();openAgentSettingsDialog('${esc(p.id)}')" title="Project defaults — model/effort/provider that SEED new chats here. To change one conversation, use the model pill in its header.">
-            <span class="menu-icon"><svg class="menu-svg"><use href="#ic-settings"/></svg></span> Agent Settings${p.agent_model ? `<span style="margin-left:4px;color:var(--accent);font-size:11px" title="Project default model">${esc(_modelShortLabel(p.agent_model))}</span>` : '<span style="margin-left:4px;color:var(--text-faint);font-size:11px">default</span>'}
+          <button class="modal-menu-item" onclick="_mcMenuClose();openAgentSettingsDialog('${esc(p.id)}')" title="Provider-specific project defaults for new work">
+            <span class="menu-icon"><svg class="menu-svg"><use href="#ic-settings"/></svg></span> Providers
           </button>
           ${(() => {
             // Providers not fetched yet — kick a load and refresh this modal

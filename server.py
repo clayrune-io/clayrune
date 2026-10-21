@@ -103,11 +103,10 @@ def _load_config():
         # Essentials) has been completed or skipped. Gates the first-run flow;
         # the guided tour is gated separately by localStorage `walkthrough_done`.
         'setup_completed': False,
-        # Flagship model for new installs (2026-07-27). '' would mean "whatever
-        # the CLI defaults to", which drifts with the CLI and left fresh installs
-        # on an older tier than the picker advertises. Only applies to configs
-        # that predate the key — the merge below preserves an existing choice.
-        'agent_model': 'claude-opus-5',
+        # Legacy compatibility only. New preferences are scoped by provider;
+        # unset means the CLI's native default. First-run recommends Balanced.
+        'agent_model': '',
+        'provider_defaults': None,
         'agent_effort': '',
         'agent_max_turns': 0,
         'agent_permission_mode': '',
@@ -2150,6 +2149,9 @@ _bp_settings.wire(
     settings_path=SETTINGS_PATH,
 )
 app.register_blueprint(_bp_settings.bp)
+from mc.blueprints import provider_preferences_routes as _bp_preferences
+_bp_preferences.wire(data_dir=DATA_DIR)
+app.register_blueprint(_bp_preferences.bp)
 # Inbound shim: test_p2_3_log_shim reads server._CONFIG_EDITABLE_KEYS off the
 # module (the _project_attachment_usage precedent; handlers run on the blueprint).
 _CONFIG_EDITABLE_KEYS = _bp_settings._CONFIG_EDITABLE_KEYS

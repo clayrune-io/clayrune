@@ -1,0 +1,25 @@
+.engine-preference-group { border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin: 14px 0; min-width: 0; }
+.engine-preference-group legend { padding: 0 6px; font-weight: 600; color: var(--text); }
+.engine-preference-group summary { cursor: pointer; min-height: 36px; display: flex; align-items: center; }
+.engine-preference-control { min-width: 0; display: grid; gap: 8px; }
+.engine-preference-control .settings-select, .engine-preference-control .settings-input { width: 100%; max-width: 100%; min-width: 0; }
+.engine-preference-row { align-items: start; gap: 10px; }
+.engine-role-override { padding-top: 8px; }
+.engine-effective { overflow-wrap: anywhere; }
+.engine-project-body { min-height: 0; overflow-y: auto; flex: 1; padding: 4px 0; }
+#agent-settings-box { display: flex; flex-direction: column; max-height: 85dvh; }
+.floor-preferences-modal { display: flex; flex-direction: column; width: min(520px, 100%); max-height: 90dvh; }
+.floor-preferences-modal > .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; flex-shrink: 0; }
+.floor-preferences-modal > .modal-header .modal-close { position: static; }
+.floor-preferences-body { overflow-y: auto; min-height: 0; flex: 1; padding: 0 20px 18px; }
+.floor-preferences-footer { display: flex; justify-content: flex-end; gap: 10px; padding: 12px 20px; border-top: 1px solid var(--border); flex-shrink: 0; }
+.floor-preferences-body input, .floor-preferences-body select { max-width: 100%; min-width: 0; }
+.fl-preferences-header, .fl-preferences-header .modal-window-controls { flex-wrap: wrap; gap: 8px; }
+@media (max-width: 960px) {
+  .engine-preference-row { flex-direction: column; align-items: stretch; }
+  .engine-preference-control select, .engine-preference-control input, .floor-preferences-body input, .floor-preferences-body select { min-height: 44px; }
+  .floor-preferences-modal { max-height: 100dvh; }
+  .floor-preferences-footer button, .floor-preferences-body .btn-browse, .fl-preferences-header .btn-header-action { min-height: 44px; }
+  .fl-preferences-header { padding: 12px !important; }
+  .fl-preferences-header .modal-window-controls { width: 100%; justify-content: flex-end; }
+}

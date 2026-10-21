@@ -204,22 +204,9 @@ def _model_for_provider(config_key: str, provider: str | None,
     model only when its runtime positively recognises it; otherwise its native
     default is selected by passing an empty model.
     """
-    configured = str(state.CONFIG.get(config_key, '') or '').strip()
-    normalized_provider = str(provider or '').strip().lower()
-    if normalized_provider in ('', 'claude'):
-        return configured or default
-    if (not configured or configured.lower() in _CLAUDE_MODEL_ALIASES
-            or configured.lower().startswith('claude-')):
-        return ''
-    try:
-        runtime = _agent_runtime.get_runtime(normalized_provider)
-        supported = getattr(runtime, 'model_supported', None)
-        if callable(supported) and supported(configured):
-            return configured
-    except Exception as e:
-        _log(f"[scribe] model compatibility check failed for "
-             f"provider={normalized_provider}: {e}")
-    return ''
+    from mc.provider_preferences import background_model
+    return background_model(state.CONFIG, str(provider or 'claude').strip().lower(),
+                            config_key, default=default)
 
 
 def _encode_project_path(project_path):
@@ -6772,7 +6759,7 @@ def _dispatch_condense(project):
     )
     prompt = '\n'.join(prompt_parts)
 
-    model = state.CONFIG.get('condense_model', '') or 'sonnet'
+    model = _model_for_provider('condense_model', 'claude', default='sonnet')
     # --max-turns 14 (was 5): the workload is read MEMORY.md + read archive
     # (+ optionally read CLAUDE.md) + fold/demote N entries + append archive
     # + rewrite MEMORY.md. 5 turns were routinely exhausted on the reads
@@ -6780,7 +6767,7 @@ def _dispatch_condense(project):
     # flagged ERROR (it only "self-healed" because the next trigger retried).
     # The post-run integrity guard below makes a truncated run safe; this
     # gives it enough room to actually finish.
-    cmd = [_resolve_claude(), '-p', prompt, '--model', model, '--max-turns', '14',
+    cmd = [_resolve_claude(), '-p', prompt, *(['--model', model] if model else []), '--max-turns', '14',
            '--print', '--verbose', '--output-format', 'stream-json',
            '--dangerously-skip-permissions']
 
@@ -6864,13 +6851,13 @@ def _dispatch_condense(project):
                     # load-bearing watermark over the agent's curation.
                     try:
                         mem_path.write_text(pre_mem, encoding='utf-8')  # pyright: ignore[reportArgumentType]  # moved-verbatim typing debt (mop)
-                    except Exception:
-                        pass
-                    _log(f"[condense] {pid}: heal FAILED ({e}) — restored "
-                         f"pre-image")
+                    except Exception as restore_error:
+                        _log(f'[condense] {pid}: restoring memory pre-image failed: {restore_error}')
+                    _log(f"[condense] {pid}: heal FAILED ({e}) — attempted "
+                         f"pre-image restore")
                     kw = {'state': 'error',
                           'error': f'watermark heal failed ({e}); '
-                                   'restored pre-image'}
+                                   'attempted pre-image restore'}
             if kw:
                 _set_condense_status(pid, **kw)
         except Exception as e:

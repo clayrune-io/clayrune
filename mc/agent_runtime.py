@@ -935,6 +935,7 @@ class AgentRuntime(ABC):
     # empty catalog means "we don't know this provider's ids" → the picker
     # falls back to Custom-only rather than guessing.
     MODEL_CHOICES: List[Tuple[str, str]] = []
+    MODEL_SELECTION = True  # Empty catalogs may still accept custom model IDs.
 
     def model_choices(self) -> List[Tuple[str, str]]:
         """Model ids/labels to offer for this provider. Override for a runtime
@@ -8020,6 +8021,8 @@ class CodexRuntime(AgentRuntime):
     Session files: ~/.codex/sessions/<thread_id>/ (created on first run with auth).
     """
 
+    # Only levels this adapter actually passes through, without clamping.
+    EFFORT_LEVELS = ('low', 'medium', 'high')
     name = 'codex'
     # Same rationale as GeminiRuntime — blanket 'lean', no model in this
     # catalog is known exempt.
@@ -10917,6 +10920,7 @@ class KiroRuntime(AgentRuntime):
     """
 
     name = 'kiro'
+    MODEL_SELECTION = False  # Headless build_command has no model argument.
     display_name = 'Kiro'
     # Same rationale as GeminiRuntime — blanket 'lean', no model in this
     # catalog is known exempt.
