@@ -1,0 +1,14 @@
+.vendor-draft-bar { flex-shrink: 0; border-top: 1px solid var(--border); background: var(--surface); padding: 12px 22px; display: flex; gap: 12px; justify-content: space-between; align-items: center; }
+.vendor-draft-bar[hidden] { display: none; }
+.vendor-draft-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.vendor-draft-status { font-size: 12px; color: var(--text); overflow-wrap: anywhere; }
+.engine-preference-row.is-draft { border-left: 3px solid var(--accent); padding-left: 8px; }
+.settings-toggle.is-draft { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (max-width: 960px), (hover: none), (pointer: coarse) {
+  .mc-settings-modal:has(.vendor-draft-bar:not([hidden])) { max-height: calc(var(--mc-app-vh,100dvh) - var(--vendor-draft-bottom-inset,0px)); }
+}
+@media (max-width: 600px) {
+  .vendor-draft-bar { flex-wrap: wrap; padding: 12px 16px; gap: 8px; }
+  .vendor-draft-actions { width: 100%; justify-content: flex-end; }
+  .vendor-draft-actions button { min-height: 44px; }
+}

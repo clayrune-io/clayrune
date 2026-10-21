@@ -5,6 +5,11 @@ live-provider execution is not claimed. Source baseline: `b4d309ca`.
 
 ## Verdict
 
+Vendor preference edits now collect in a draft across vendor cards and Providers
+submenus. A pinned Save/Cancel bar applies the combined config patch through one
+existing passcode check. Canceling that check preserves the draft; explicit
+Cancel discards it. This does not cache a passcode or create a timed unlock.
+
 Retire the global Settings > Agent category. Its controls have several different
 owners; keeping them together encourages one provider's model or integration to
 look like an installation-wide agent default. Preserve stored preferences and

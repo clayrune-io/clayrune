@@ -437,6 +437,7 @@ async function settingsProviderTerminalLogin(provider, btnEl) {
 // Default: the shared save + refresh (applyDefaultProvider), then repaint
 // the Settings rows so the radio and every "in use" flag agree.
 async function settingsSetDefaultProvider(name) {
+  if (window.VendorPreferenceDraft && document.getElementById('settings-body')) return VendorPreferenceDraft.stageSetting('default_provider',name);
   await applyDefaultProvider(name);
   if (typeof window._renderSettings === 'function') window._renderSettings();
 }

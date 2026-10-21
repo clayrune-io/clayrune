@@ -1,3 +1,4 @@
+import './vendor-preference-draft.js';
 // One preference editor for global and project scopes. Effective labels come
 // from the same server resolver that starts work; no parallel JS inheritance.
 const views = new Map();
@@ -94,7 +95,7 @@ function field(provider, projectId, key, label, compact = false) {
   if (value && !choices.some(([v]) => v === value)) choices.push([value, value + ' (saved)']);
   const id = ['engine-pref', projectId || 'global', provider.name, key].join('-');
   const selected = inherited ? '__inherit__' : value;
-  return `<div class="settings-row engine-preference-row">
+  return `<div class="settings-row engine-preference-row${!projectId && VendorPreferenceDraft.modelDirty(provider.name,key) ? ' is-draft' : ''}">
     <label class="settings-label" for="${esc(id)}">${compact ? '' : esc(provider.display_name) + ' · '}${esc(label)}</label>
     <div class="engine-preference-control">
       <select id="${esc(id)}" class="settings-select" data-engine-field="${esc(key)}" data-provider="${esc(provider.name)}"
@@ -136,7 +137,7 @@ function providerControls(p, projectId = '', compact = false) {
 
 function renderConnection(provider) {
   const entry = views.get('')?.providers.find(p => p.name === provider);
-  return entry ? providerControls(entry, '', true)
+  return entry ? providerControls(VendorPreferenceDraft.providerView(entry), '', true)
     : '<p class="settings-hint">Model preferences are unavailable. Close and reopen Settings to retry.</p>';
 }
 
@@ -184,24 +185,26 @@ async function write(projectId, body) {
 }
 
 async function repaint(projectId) {
-  const expanded = [...document.querySelectorAll('.engine-provider-advanced[open]')].map(el => el.id);
-  await load(projectId, true);
+  const body = document.getElementById('settings-body');
+  const scroll = body?.scrollTop;
+  const expanded = [...document.querySelectorAll('#settings-body details')].map((el,index) => el.open ? index : -1).filter(index => index >= 0);
+  try { await load(projectId, true); }
+  catch (_) { /* Model editors show their unavailable state; other vendor preferences still render. */ }
   if (projectId && activeProject === projectId && document.getElementById('agent-settings-overlay')?.classList.contains('visible')) await openProject(projectId);
   else if (document.getElementById('settings-body')) await window._renderSettings();
-  expanded.forEach(id => { const panel = document.getElementById(id); if (panel) panel.open = true; });
+  const details = document.querySelectorAll('#settings-body details');
+  expanded.forEach(index => { if (details[index]) details[index].open = true; });
+  if (scroll != null && document.getElementById('settings-body')) document.getElementById('settings-body').scrollTop = scroll;
 }
 
 async function resetTasks(provider) {
   const fields = ['background_model','scribe_model','condense_model','distiller_model','auto_model_classifier_model'];
-  try {
-    const saved = await write('', {provider_defaults: {[provider]: Object.fromEntries(fields.map(key => [key, null]))}});
-    if (saved) showToast('CR automatic internal-task models restored');
-  } catch (error) { showToast(error.message || 'Could not restore internal-task defaults', 6000); }
-  try { await repaint(''); } catch (error) { showToast(error.message); }
+  return VendorPreferenceDraft.stageModels(provider,Object.fromEntries(fields.map(key => [key,null])));
 }
 
 async function saveField(projectId, provider, key, value) {
   if (typeof value === 'string') value = value.trim();
+  if (!projectId) return VendorPreferenceDraft.stageModels(provider,{[key]:value});
   try {
     const saved = await write(projectId, {[projectId ? 'provider_overrides' : 'provider_defaults']: {[provider]: {[key]: value}}});
     if (saved) showToast('Provider preference saved');
@@ -250,4 +253,4 @@ async function openProject(projectId) {
 }
 
 function dismissProject() { activeProject = ''; }
-window.EnginePreferences = {load, effective, preview, invalidate, render, renderConnection, modelLabel, choose, saveField, resetTasks, saveProjectProvider, saveProjectMode, openProject, dismissProject};
+window.EnginePreferences = {load, effective, preview, invalidate, render, renderConnection, modelLabel, choose, saveField, resetTasks, repaint, saveProjectProvider, saveProjectMode, openProject, dismissProject};

@@ -39,7 +39,7 @@ function _renderProviderSettings(cfg) {
           <div class="settings-label">Keep agent CLIs up to date</div>
           <div class="settings-hint">Once a day, updates each installed CLI (Claude, Codex, Gemini, Qwen, OpenCode, Aider) with the same tool it was installed with. Skips one while a chat is using it; one whose install method it cannot tell is only reported. Takes effect without a restart.</div>
         </div>
-        <div class="settings-toggle ${cfg.cli_auto_update_enabled === false ? '' : 'on'}" id="settings-cli-auto-update" onclick="toggleSetting(this,'cli_auto_update_enabled')"></div>
+        <div class="settings-toggle ${cfg.cli_auto_update_enabled === false ? '' : 'on'}${VendorPreferenceDraft.settingDirty('cli_auto_update_enabled') ? ' is-draft' : ''}" id="settings-cli-auto-update" onclick="toggleSetting(this,'cli_auto_update_enabled')"></div>
       </div>
       <div class="prov-install-policy-note" style="font-size:11px;color:var(--text-faint);margin-top:6px">${esc(_providerInstallPolicyNoteText || '')}</div>
       <div class="prov-rows" style="display:flex;flex-direction:column;gap:8px;margin-top:8px">${rows || '<p class="settings-hint">Provider inventory is unavailable. Use Check setup status to retry.</p>'}</div>

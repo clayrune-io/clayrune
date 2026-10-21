@@ -118,6 +118,7 @@ function _applySettingsView() {
   }
   if (_settingsView !== 'search') SettingsOwnership.search('');
   body.scrollTop = 0;
+  window.VendorPreferenceDraft?.mount();
 }
 
 // Layer 1 → drill a category. Multi-section → sub-list (layer 2); single-section →
@@ -284,7 +285,7 @@ async function openSettingsToEngineFallback() {
 
 async function _efPersist() {
   await saveSetting('engine_fallback_order', _efOrder);
-  await _renderSettings();
+  if (!window.VendorPreferenceDraft) await _renderSettings();
 }
 
 function moveEngineFallback(idx, delta) {
@@ -325,7 +326,9 @@ async function _renderSettings() {
   try {
     const res = await fetch(API_BASE + '/api/config');
     cfg = await res.json();
-    try { await EnginePreferences.load('', true); } catch (_) { /* The editor shows an explicit unavailable state. */ }
+    try { const preferences = await EnginePreferences.load('', true); VendorPreferenceDraft.begin(cfg,preferences.providers); }
+    catch (_) { VendorPreferenceDraft.begin(cfg,[]); /* The editor shows an explicit unavailable state. */ }
+    cfg = VendorPreferenceDraft.configView(cfg);
   } catch(e) {
     body.innerHTML = '<div class="process-empty">Failed to load settings.</div>';
     return;
@@ -357,7 +360,7 @@ async function _renderSettings() {
     : (cfg.mobile_brief_replies_enabled ? 'phone' : 'off');
 
   function toggle(key, val) {
-    return `<div class="settings-toggle ${val ? 'on' : ''}" onclick="toggleSetting(this,'${key}')"></div>`;
+    return `<div class="settings-toggle ${val ? 'on' : ''}${VendorPreferenceDraft.settingDirty(key) ? ' is-draft' : ''}" onclick="toggleSetting(this,'${key}')"></div>`;
   }
 
   function textInput(key, val, opts = '') {

@@ -108,6 +108,7 @@ await page.route('**/*', (route) => {
 // MC-995: move/remove/add now route through saveSetting() -> humanProofFetch()
 // instead of firing PUT /api/config directly — answer the passcode modal.
 const answerHumanProofModal = async (timeout = 5000) => {
+  await page.locator('#vendor-draft-save').click();
   await page.waitForSelector('[data-modal-id^="__human-proof-"]', { timeout });
   await page.evaluate(() => {
     const win = document.querySelector('[data-modal-id^="__human-proof-"]');
@@ -115,6 +116,7 @@ const answerHumanProofModal = async (timeout = 5000) => {
     document.getElementById(`hp-passcode-${modalId}`).value = 'smoke-dash-passcode';
     window._hpSubmit(modalId);
   });
+  await page.waitForFunction(() => document.getElementById('vendor-draft-bar')?.hidden);
 };
 
 const openAgentSubs = async () => {

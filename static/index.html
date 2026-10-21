@@ -260,6 +260,7 @@
 </script>
 <link rel="stylesheet" href="/static/css/app.css">
 <link rel="stylesheet" href="/static/css/provider-preferences.css">
+<link rel="stylesheet" href="/static/css/vendor-preference-draft.css">
 <link rel="stylesheet" href="/static/css/image-viewer.css">
 <link rel="stylesheet" href="/static/css/file-viewer.css">
 <link rel="stylesheet" href="/static/css/masked-input.css">
@@ -3194,6 +3195,7 @@ function autoSizeNameInput(input) {
 // ── Global Settings ──────────────────────────────────────────────────────────
 
 async function saveSetting(key, value) {
+  if (window.VendorPreferenceDraft?.handles(key) && document.getElementById('settings-body')) return VendorPreferenceDraft.stageSetting(key,value);
   // MC-995: PUT /api/config is human-only-gated server-side (the sharpest
   // route in the inventory -- it can flip an agent's own fence off).
   const result = await humanProofFetch(API_BASE + '/api/config', {

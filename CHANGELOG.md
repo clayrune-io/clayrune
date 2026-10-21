@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-21] - Save vendor preferences with one passcode per batch
+
+- Vendor models, efforts, default provider, CLI auto-update and Providers advanced settings collect as a draft behind a pinned Save changes/Cancel bar. The existing server passcode gate applies once to the combined Save.
+- Canceled or failed saves preserve the draft; Cancel discards without writing. Pending drafts survive Settings navigation/reopen, with a reload warning and a pre-save check for touched settings changed elsewhere.
+- Kept the Save bar inside desktop bounds and above the phone's bottom navigation. Other settings, project overrides and install/sign-in operations retain their existing behavior.
+
 ## [2026-10-21] - Put model defaults in each vendor card
 
 - Each connection card contains its chat model and effort preferences. Internal-task overrides are collapsed under that vendor's Advanced disclosure, with cost guidance and a gated restore-automatic action.

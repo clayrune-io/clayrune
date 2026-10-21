@@ -716,6 +716,15 @@ default provider for new work, and each provider's model and effort defaults
 inside that vendor's connection card. Each provider uses its own catalog and supported effort
 levels. A runtime that manages its own model has no inactive model picker.
 
+Vendor preferences are drafts until **Save changes**. Change several models,
+efforts, the default provider, CLI auto-update or Providers advanced toggles;
+the pinned Save/Cancel bar counts the pending fields. Saving the entire batch
+asks for the dashboard passcode once. Cancel discards the draft without a write;
+canceling the passcode prompt or a failed save keeps it for correction. Drafts
+survive submenu navigation and closing/reopening Settings within the page;
+reloading warns about unsaved changes. Install/sign-in operations and unrelated
+settings retain their own existing actions and gates.
+
 - **Auto-update best/balanced/fast: model** shows the current model name and ID
   requested for that provider's tier when work starts. The mapping can change
   as the provider catalog changes. Provider aliases such as `opus` or names
@@ -732,8 +741,8 @@ levels. A runtime that manages its own model has no inactive model picker.
   unknown. Existing Claude task-specific policies remain in effect. Chat model
   choices do not raise these task defaults. Existing custom overrides remain
   active and are marked; they may increase cost. **Use CR automatic for all
-  internal tasks** removes only that vendor's task overrides, after the existing
-  passcode check, preserving its chat model and effort.
+  internal tasks** drafts removal of only that vendor's task overrides. It takes
+  effect with the batch Save, preserving its chat model and effort.
 - The Providers **Advanced** submenu keeps opt-in engine fallback, Claude task routing and native CLI
   integrations. Task routing and tier tracking are different choices.
 
