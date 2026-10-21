@@ -1491,9 +1491,8 @@ function _peOpts(pairs, cur) {
 // Provider-aware, unlike the old hardcoded-to-Claude version — reuses
 // conversation.js:244 _providerModelChoices (the composer's single source of
 // truth for per-provider catalogs), bridged onto window since ES modules
-// don't share top-level bindings. An empty/unpinned provider still needs a
-// sensible catalog to show, so it resolves to 'claude' — the same fallback
-// every other provider-less code path in this app already uses.
+// don't share top-level bindings. An unpinned provider uses the project or
+// global preference; no provider is invented when neither is selected.
 function _peEffectiveProvider(provider) {
   const pid = _claydoFocusedProjectId();
   const project = typeof allProjects === 'undefined' ? null : allProjects.find(p => p.id === pid);
@@ -1505,7 +1504,8 @@ function _peModelOptions(cur, provider) {
   const resolved = _peEffectiveProvider(provider);
   const rec = (window._agentProvidersList?.() || []).find(p => p.name === resolved);
   const provChoices = fn ? fn(resolved) : [];
-  const tiers = Object.keys(rec?.tiers || {}).map(tier => ['tier:' + tier, 'Track ' + tier]);
+  const tiers = Object.keys(rec?.tiers || {}).map(tier => ['tier:' + tier,
+    window.EnginePreferences?.modelLabel(rec, 'tier:' + tier) || 'Auto-update ' + tier + ': ' + rec.tiers[tier]]);
   const choices = [['', 'Use project/provider preferences']].concat(tiers, provChoices);
   // A model pinned by hand that we no longer offer must still round-trip;
   // dropping it from the list would silently clear the pin on the next save.

@@ -716,7 +716,12 @@ default provider for new work, and each provider's model and effort defaults
 in the same submenu. Each provider uses its own catalog and supported effort
 levels. A runtime that manages its own model has no inactive model picker.
 
-- **Track best/balanced/fast** follows that provider's supported tier on launch.
+- **Auto-update best/balanced/fast: model** shows the current model name and ID
+  requested for that provider's tier when work starts. The mapping can change
+  as the provider catalog changes. Provider aliases such as `opus` or names
+  ending in `-latest` may select newer versions without changing the alias;
+  choose a versioned model ID to keep a specific version. The requested ID is
+  not a claim that the provider has confirmed the model actually served.
 - A listed exact model or custom ID stays pinned. A missing catalog entry does
   not automatically mean a saved model was retired.
 - **Provider-managed default** is an intentional native choice, distinct from

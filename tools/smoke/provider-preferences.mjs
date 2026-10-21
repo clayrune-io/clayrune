@@ -54,7 +54,8 @@ try {
       if (path === '/') return route.fulfill({status:200,contentType:'text/html',body:readFileSync(resolve(ROOT,'static/index.html'),'utf8')});
       if (STATIC[path]) return route.fulfill({status:200,contentType:STATIC[path][0],body:STATIC[path][1]});
       if (path === '/api/projects') return json([project]);
-      if (path === '/api/agent/providers') return json({providers:registry.map(p => ({...p,installed:true,auth_status:'ok',capabilities:{},default:p.name === config.default_provider})), default:config.default_provider});
+      if (path === '/api/agent/providers') return json({providers:registry.map(p => ({...p,tiers:p.models.length ? {balanced:p.models[0].id} : {},installed:true,auth_status:'ok',capabilities:{},default:p.name === config.default_provider})), default:config.default_provider});
+      if (path === '/api/characters/global/example') return json({name:'example',body:'Example instructions',engine:{provider:'codex',model:'tier:balanced'}});
       if (path === '/api/engine/preferences') return json(fixtureView(url.searchParams.get('project_id')));
       if (path === '/api/config') {
         if (req.method() === 'PUT') {
@@ -104,6 +105,11 @@ try {
     const codex = page.locator('#engine-pref-global-codex-model');
     assert.equal(await page.locator('#engine-pref-global-kiro-model').count(),0,'Native-only runtimes have no inert model picker');
     assert.equal(await codex.inputValue(),'gpt-balanced');
+    assert.equal(await codex.locator('option[value="tier:balanced"]').textContent(),'Auto-update balanced: GPT balanced (gpt-balanced)');
+    assert.match(await page.locator('#settings-providers-section .engine-tracking-help').textContent(),/aliases.*-latest.*versioned model ID/);
+    assert.match(await page.locator('#settings-providers-section .engine-effective').nth(1).textContent(),/Model requested at launch: GPT balanced \(gpt-balanced\)/);
+    assert.equal(await page.evaluate(() => window.EnginePreferences.modelLabel({models:[],tiers:{best:'opus'}},'tier:best')),'Auto-update best: opus','An alias is shown honestly without inventing a version');
+    assert.equal(await page.evaluate(() => window.EnginePreferences.modelLabel({models:[],tiers:{}},'tier:best')),'Auto-update best: no model mapped');
     assert.ok(!(await codex.locator('option').allTextContents()).some(label => label.includes('Claude')));
     await codex.selectOption('gpt-fast'); await proof(true);
     await page.waitForFunction(() => document.querySelector('#engine-pref-global-codex-model')?.value === 'gpt-balanced');
@@ -123,6 +129,7 @@ try {
     await page.evaluate(() => window.openAgentSettingsDialog('prefs_test'));
     const projectModel = page.locator('#engine-pref-prefs_test-codex-model');
     assert.equal(await projectModel.inputValue(),'__inherit__');
+    assert.match(await projectModel.locator('option[value="__inherit__"]').textContent(),/gpt-fast/,'Inherited preferences disclose the actual request ID');
     await projectModel.selectOption('');
     await page.waitForFunction(() => document.querySelector('#engine-pref-prefs_test-codex-model')?.value === '');
     assert.equal(project.provider_overrides.codex.model,'','Native explicitly stops inheritance');
@@ -133,6 +140,9 @@ try {
     await page.locator('#toast-container .toast').evaluateAll(elements => elements.forEach(el => el.remove()));
     await page.screenshot({path:resolve(SHOTS,`project-${width}.png`),animations:'disabled'});
     await page.evaluate(() => window.closeAgentSettingsDialog());
+    await page.evaluate(() => window.openPersonaEditor('prefs_test','global','example'));
+    assert.equal(await page.locator('#pe-model option[value="tier:balanced"]').textContent(),'Auto-update balanced: GPT balanced (gpt-balanced)','Agent-type tier labels use the same model mapping');
+    await page.locator('#pe-cancel').click();
     await page.evaluate(() => window.closeModalById('__settings'));
     await page.evaluate(() => window.openFloor());
     await page.locator('[data-modal-id="__floor"]').getByRole('button',{name:'Floor defaults',exact:true}).click();

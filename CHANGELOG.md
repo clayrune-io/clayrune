@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-21] - Show the model behind automatic tier selections
+
+- Provider and agent-type pickers show the current model name and request ID beside each automatic tier, including inherited project defaults. The launch summary also includes the request ID.
+- Explained automatic mapping changes and provider-managed aliases, distinguishing a requested alias from a confirmed served model version.
+
 ## [2026-10-21] - Keep provider defaults inside Connections
 
 - Combined provider model, effort and background-model defaults with connection setup under Settings > Providers > Connections, removing the separate Model defaults submenu.

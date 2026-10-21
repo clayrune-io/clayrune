@@ -70,8 +70,13 @@ function preview(projectId, character = {}, onReady) {
 
 function modelLabel(provider, value) {
   if (!value) return 'Provider-managed default';
-  if (value.startsWith('tier:')) return 'Track ' + value.slice(5);
-  return provider.models.find(m => m.id === value)?.label || value;
+  if (value.startsWith('tier:')) {
+    const tier = value.slice(5), target = provider.tiers?.[tier];
+    return 'Auto-update ' + tier + ': ' + (target && !target.startsWith('tier:')
+      ? modelLabel(provider, target) : 'no model mapped');
+  }
+  const label = provider.models?.find(m => m.id === value)?.label;
+  return label && label !== value ? label + ' (' + value + ')' : value;
 }
 
 function field(provider, projectId, key, label) {
@@ -81,8 +86,8 @@ function field(provider, projectId, key, label) {
   const value = entry[key] ?? '';
   const choices = key === 'effort'
     ? [['', 'Provider-managed default'], ...provider.efforts.map(v => [v, v.charAt(0).toUpperCase() + v.slice(1)])]
-    : [['', 'Provider-managed default'], ...Object.keys(provider.tiers).map(t => ['tier:' + t, 'Track ' + t]),
-       ...provider.models.map(m => [m.id, m.label])];
+    : [['', 'Provider-managed default'], ...Object.keys(provider.tiers).map(t => ['tier:' + t, modelLabel(provider, 'tier:' + t)]),
+       ...provider.models.map(m => [m.id, modelLabel(provider, m.id)])];
   if (projectId) choices.unshift(['__inherit__', 'Use global (' + (key === 'effort'
     ? provider.defaults.effort || 'provider default' : modelLabel(provider, provider.defaults.model || '')) + ')']);
   else if (canInherit) choices.unshift(['__inherit__', key === 'background_model' ? 'Use existing role defaults' : 'Use background default']);
@@ -115,12 +120,13 @@ function render(projectId = '') {
     </select></div>` : '';
   return `${providerChoice}<p class="settings-hint">${projectId
     ? 'New unpinned work inherits global provider preferences. Each provider keeps its own overrides.'
-    : 'Each provider keeps its own model and effort defaults. Exact pins stay pinned; tracking follows that provider’s tier.'}</p>
+    : 'Each provider keeps its own model and effort defaults.'}</p>
+    <p class="settings-hint engine-tracking-help">Auto-update follows a tier's current model mapping when work starts. The model ID is shown in each option. Provider aliases such as opus or names ending in -latest can change versions; choose a versioned model ID to keep a specific version.</p>
     ${data.providers.map(p => `<fieldset class="engine-preference-group"><legend>${esc(p.display_name)}</legend>
       ${p.model_selection === false ? '<p class="settings-hint">Model selection is managed by this provider.</p>' : field(p, projectId, 'model', 'Model')}
       ${p.efforts.length || (projectId ? p.overrides : p.defaults).effort ? field(p, projectId, 'effort', 'Effort') : '<p class="settings-hint">Uses provider-managed reasoning effort.</p>'}
       ${(projectId ? p.overrides : p.defaults).effort && !p.efforts.includes((projectId ? p.overrides : p.defaults).effort) ? '<p class="settings-hint">This saved effort is not applied by the adapter. Choose the provider-managed default to clear it.</p>' : ''}
-      <p class="settings-hint engine-effective">Effective: ${esc(modelLabel(p, p.effective.model))} · from ${esc(p.effective.model_source)}${p.effective.effort ? ' · effort ' + esc(p.effective.effort) : ''}</p>
+      <p class="settings-hint engine-effective">Model requested at launch: ${esc(modelLabel(p, p.effective.model))} · from ${esc(p.effective.model_source)}${p.effective.effort ? ' · effort ' + esc(p.effective.effort) : ''}</p>
       ${projectId || p.model_selection === false ? '' : `<details><summary>Background models</summary>
         <p class="settings-hint">Separate from chat defaults. A role override takes priority over the background default.</p>
         ${field(p, '', 'background_model', 'Background default')}
@@ -213,4 +219,4 @@ async function openProject(projectId) {
 }
 
 function dismissProject() { activeProject = ''; }
-window.EnginePreferences = {load, effective, preview, invalidate, render, choose, saveField, saveProjectProvider, saveProjectMode, openProject, dismissProject};
+window.EnginePreferences = {load, effective, preview, invalidate, render, modelLabel, choose, saveField, saveProjectProvider, saveProjectMode, openProject, dismissProject};
