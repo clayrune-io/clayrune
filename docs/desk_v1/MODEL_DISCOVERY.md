@@ -81,6 +81,40 @@ tables for them. Legacy generation API contracts remain unchanged in this slice.
 Connections receives the original metadata list; Studio discovery does not mutate
 that shared frontend list. Vault unlock reloads the Studio catalogue.
 
+### Availability and quote waiting (MC-1067 follow-up, 2026-10-21)
+
+Studio filters engines by the selected media kind **after** saved-connection
+discovery. OpenAI's curated descriptor is image-only; a connected OpenAI account
+whose discovered catalogue includes a `sora-` video model can still appear in
+the video picker. Those entries keep Price unknown and disabled whole/subset
+Render. An absent connection is not queried: its curated image option says
+not connected, and no OpenAI video option is invented. A successful empty
+catalogue stays empty. The HTTP metadata connection state, rather than a missing
+picker option alone, distinguishes missing configuration from available models.
+
+While a whole-storyboard estimate is pending, **Price again** is disabled. The
+engine/model/shape pickers remain usable, and stale responses cannot replace a
+newer selection. Once a quote succeeds or fails, Price again becomes available.
+This prevents a repeated click from starting another outstanding full-board
+quote. It does not cache prices, change the mandatory pre-approval price check,
+or shorten an individual vendor call.
+
+The render-estimate path quotes scenes serially. Each current Higgsfield MCP
+call performs initialize, initialized notification and the quote tool request;
+schema refresh and a supported preset-decline retry can add work. An isolated
+Flask-route probe with a fresh captured schema and a stub transport counted 18
+MCP requests for six scenes, and 36 for two identical six-scene estimates. These
+are request counts, not a live latency benchmark. The earlier approximately
+21-second observation did not capture per-call timings, so it cannot establish
+which portion was vendor processing, transport or schema refresh. No session
+reuse, parallel vendor calls, timeout change or timing guarantee is introduced.
+
+The follow-up uses deterministic browser fixtures at 1440/390 for saved, absent
+and empty OpenAI catalogues, unknown prices, render gates, delayed quotes and
+selection changes. These fixtures are not authenticated acceptance. The original
+owner-specific comparison remains unperformed. The pending-button repair is
+branch-only until separately integrated; no connection or live state was changed.
+
 ## Sources and verification limits
 
 Official sources checked 2026-10-07:

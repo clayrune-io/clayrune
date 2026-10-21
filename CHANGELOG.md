@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-21] - Prevent repeated Studio price checks while a quote is pending (MC-1067)
+
+- Disabled **Price again** during an outstanding storyboard estimate, preventing repeated clicks from starting overlapping full-board quotes. Engine/model/shape choices and existing price-confirmation, passcode and budget gates retain their behavior.
+- Added deterministic desktop/phone checks for saved, absent and empty OpenAI catalogues, unknown-price Render guards and delayed quotes. Documented media-kind filtering and serial quote work; no vendor latency improvement or authenticated comparison is claimed.
+
 ## [2026-10-21] - Save vendor preferences with one passcode per batch
 
 - Vendor models, efforts, default provider, CLI auto-update and Providers advanced settings collect as a draft behind a pinned Save changes/Cancel bar. The existing server passcode gate applies once to the combined Save.

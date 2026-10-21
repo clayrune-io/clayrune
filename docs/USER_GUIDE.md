@@ -1021,6 +1021,13 @@ sign-in provides free text-only credit quotes without uploads. Services without 
 verified free quote show **Price unknown**; those Render controls stay disabled.
 Higgsfield API-key model discovery currently uses the labelled curated fallback.
 
+Only models for the selected image/video kind appear. OpenAI video models need
+a saved API connection whose discovered catalogue includes video models; without
+that connection, its curated image option says **not connected** and no video
+option is invented. While a storyboard price check is running, **Price again**
+is disabled to prevent overlapping quotes. You can still change the engine,
+model or shape; Price again returns when the current check finishes or fails.
+
 Clayrune reads Higgsfield's model/tool definitions automatically after saving a
 sign-in and on the next price check or Render when those definitions are missing
 or older than 24 hours. You do not need to press **Check it now** for discovery.
