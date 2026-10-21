@@ -42,8 +42,8 @@ function _renderProviderSettings(cfg) {
       </div>
       <div class="prov-install-policy-note" style="font-size:11px;color:var(--text-faint);margin-top:6px">${esc(_providerInstallPolicyNoteText || '')}</div>
       <div class="prov-rows" style="display:flex;flex-direction:column;gap:8px;margin-top:8px">${rows || '<p class="settings-hint">Provider inventory is unavailable. Use Check setup status to retry.</p>'}</div>
-    </div>
-    <div class="settings-section"><div class="settings-section-title">Model defaults</div>${EnginePreferences.render()}</div>`;
+      ${EnginePreferences.render()}
+    </div>`;
 }
 
 

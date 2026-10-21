@@ -711,9 +711,9 @@ links to their current homes.
 
 ### Provider defaults and project overrides
 
-**Settings > Providers > Connections** manages installation, sign-in and the
-default provider for new work. **Model defaults** stores a separate model and
-effort preference for each provider, using its own catalog and supported effort
+**Settings > Providers > Connections** manages installation, sign-in, the
+default provider for new work, and each provider's model and effort defaults
+in the same submenu. Each provider uses its own catalog and supported effort
 levels. A runtime that manages its own model has no inactive model picker.
 
 - **Track best/balanced/fast** follows that provider's supported tier on launch.

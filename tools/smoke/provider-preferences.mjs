@@ -98,7 +98,9 @@ try {
     await page.evaluate(() => window.openSettings());
     assert.equal(await page.locator('[data-cat="agent"]').count(),0,'Retired Agent pane is absent');
     assert.equal(await page.locator('#settings-master button').filter({hasText:/^Agent$/}).count(),0);
-    await settingsSection('providers','Model defaults');
+    await settingsSection('providers','Connections');
+    assert.equal(await page.locator('[data-cat="providers"] > .settings-section > .settings-section-title').filter({hasText:/^Model defaults$/}).count(),0,'Model defaults has no separate submenu');
+    assert.equal(await page.locator('#settings-providers-section #engine-pref-global-codex-model').count(),1,'Model defaults belong to Connections');
     const codex = page.locator('#engine-pref-global-codex-model');
     assert.equal(await page.locator('#engine-pref-global-kiro-model').count(),0,'Native-only runtimes have no inert model picker');
     assert.equal(await codex.inputValue(),'gpt-balanced');

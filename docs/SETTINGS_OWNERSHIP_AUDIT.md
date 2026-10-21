@@ -28,8 +28,8 @@ feature-visibility switches follow separately.
 | Agent > Identity | User Name | Your profile | Move; user identity is separate from an agent. |
 | Agent > Identity | Agent Name | Floor defaults > Identity | Move; preserve the global value and local figure/type identities. |
 | Agent > Identity | Agent Face | Floor defaults > Identity | Move; preview/edit a draft and save explicitly. |
-| Agent > Model | Model | Providers > Model defaults | Replace the single global model with one preference per provider. |
-| Agent > Model | Effort | Providers > Model defaults | Replace the single global effort list with adapter-owned choices. |
+| Agent > Model | Model | Providers > Connections | Replace the single global model with one preference per provider, alongside connection setup. |
+| Agent > Model | Effort | Providers > Connections | Replace the single global effort list with adapter-owned choices alongside connection setup. |
 | Agent > Behavior | Max turns | Floor defaults > Working defaults | Move; keep the current policy and human write gate. |
 | Agent > Behavior | Permissions | Floor defaults > Working defaults | Move; keep the current policy and human write gate. |
 | Agent > Behavior | Sandbox unattended Codex runs | System > Security | Move; retain passcode and unattended-agent refusal. |

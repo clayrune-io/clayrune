@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-21] - Keep provider defaults inside Connections
+
+- Combined provider model, effort and background-model defaults with connection setup under Settings > Providers > Connections, removing the separate Model defaults submenu.
+- Updated the user guide, settings audit and desktop/phone smoke checks for the unified location.
+
 ## [2026-10-21] - Scope model defaults by provider and move agent preferences to the Floor
 
 - Providers owns each runtime's model, effort and background-model defaults; project Providers supplies optional per-provider overrides. Shared previews show the effective source without launching a model call.
