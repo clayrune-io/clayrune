@@ -883,6 +883,7 @@ function _renderProviderRow(p, opts) {
             ${updateRow}
             ${detail}
             ${extra}
+            ${setup ? '' : (opts.preferencesHTML || '')}
             <div id="prov-install-msg-${n}" style="font-size:11px;color:var(--text-faint);padding:2px 8px 0">${esc(_providerInstallMsg[p.name] || '')}</div>
             <div id="prov-install-progress-${n}">${_providerProgressHTML(p.name)}</div>
           </div>`;

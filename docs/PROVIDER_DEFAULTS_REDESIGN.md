@@ -151,7 +151,7 @@ profile/identity generation, workflow review and mail laundering. Their provider
 ownership and tool-free execution requirements stay intact. Do not make a
 background transform follow whichever chat happened to run most recently.
 
-Provide a per-provider background model preference in Providers > Advanced;
+Provide optional background model overrides in each vendor connection card's Advanced disclosure;
 existing explicit subsystem overrides remain visible during migration. Project
 context and existing task ownership determine the provider; the role-specific
 preference determines its model. Keep this role path explicit so moving chat

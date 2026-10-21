@@ -97,7 +97,7 @@ def test_background_defaults_are_separate_and_explicit_native_wins():
     assert pp.background_model(cfg, 'codex', 'scribe_model') == 'gpt-small'
     assert pp.background_model(cfg, 'claude', 'scribe_model', default='haiku') == ''
     assert pp.background_model(cfg, 'claude', 'condense_model', default='haiku') == 'sonnet'
-    assert pp.background_model({'condense_model': 'sonnet'}, 'codex', 'condense_model') == ''
+    assert pp.background_model({'condense_model': 'sonnet'}, 'codex', 'condense_model') == agent_runtime.get_runtime('codex').latest_for('fast')
 
 
 def test_preview_and_execution_share_resolution_without_execution(monkeypatch):

@@ -6,6 +6,12 @@
 .engine-preference-row { align-items: start; gap: 10px; }
 .engine-role-override { padding-top: 8px; }
 .engine-effective { overflow-wrap: anywhere; }
+#settings-providers-section .prov-row .engine-vendor-defaults { padding: 4px 8px; }
+#settings-providers-section .prov-rows > .prov-row { border: 1px solid var(--border); border-radius: 12px; padding: 8px; min-width: 0; }
+.engine-provider-advanced { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 4px; }
+.engine-provider-advanced > summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
+.engine-provider-advanced > summary::after { content: '⌄'; margin-left: auto; }
+.engine-task-policy { overflow-wrap: anywhere; }
 .engine-project-body { min-height: 0; overflow-y: auto; flex: 1; padding: 4px 0; }
 #agent-settings-box { display: flex; flex-direction: column; max-height: 85dvh; }
 .floor-preferences-modal { display: flex; flex-direction: column; width: min(520px, 100%); max-height: 90dvh; }

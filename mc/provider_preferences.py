@@ -16,6 +16,7 @@ import threading
 from typing import Any, Mapping
 
 from mc import agent_runtime
+from mc.background_model_policy import automatic_model
 
 FIELDS = frozenset({'model', 'effort', 'background_model', 'scribe_model',
                     'condense_model', 'distiller_model', 'auto_model_classifier_model'})
@@ -109,7 +110,9 @@ def scoped_view(record: Mapping[str, Any], *, project: bool = False) -> dict:
             for field in ROLE_FIELDS:
                 value = record.get(field)
                 if isinstance(value, str) and value.strip():
-                    entry[field] = _legacy_background_model(record, runtime.name, field)
+                    legacy_model = _legacy_background_model(record, runtime.name, field)
+                    if legacy_model:
+                        entry[field] = legacy_model
         if entry:
             result[runtime.name] = entry
     return result
@@ -187,7 +190,7 @@ def patch_preferences(record: Mapping[str, Any], patch: Any,
 
 def background_model(config: Mapping[str, Any], provider: str, role: str,
                      *, default: str = '') -> str:
-    """Role pin > provider background preference > compatible legacy role."""
+    """Role pin > provider background preference > legacy pin > CR task policy."""
     entry = (config.get('provider_defaults') or {}).get(provider) or {}
     for field in (role, 'background_model'):
         if field in entry:
@@ -195,9 +198,11 @@ def background_model(config: Mapping[str, Any], provider: str, role: str,
             if value.startswith('tier:'):
                 return agent_runtime.get_runtime(provider).latest_for(value[5:])
             return value
-    if isinstance(config.get('provider_defaults'), dict):
-        return default if provider == 'claude' else ''
-    return _legacy_background_model(config, provider, role, default=default)
+    if not isinstance(config.get('provider_defaults'), dict):
+        legacy_model = _legacy_background_model(config, provider, role, default=default)
+        if legacy_model:
+            return legacy_model
+    return automatic_model(provider, default=default)
 
 
 def _legacy_background_model(config: Mapping[str, Any], provider: str, role: str,

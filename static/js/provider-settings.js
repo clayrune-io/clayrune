@@ -12,6 +12,7 @@ function _renderProviderSettings(cfg) {
     defaultName: defProv,
     signInWhenOk: true,   // Settings keeps re-sign-in / account switching
     keyEntry: true,       // API-key vendors get their key field in the row
+    preferencesHTML: EnginePreferences.renderConnection(p.name),
   })).join('');
 
   // Section toolbar: batch install of the ticked not-installed rows (one
@@ -24,7 +25,7 @@ function _renderProviderSettings(cfg) {
       <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px"><!-- not a .settings-row: keeps the section a search "custom-content" unit so vendor names match -->
         <div>
           <div class="settings-label">Vendors</div>
-          <div class="settings-hint">Connect providers and choose the default provider. Model and effort preferences are stored separately for each provider below.</div>
+          <div class="settings-hint">Connect a provider and choose its default model in the same card. CR manages internal-task models; custom overrides are under each provider's Advanced disclosure.</div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           ${anyMissing ? `<button type="button" class="btn-add" id="settings-prov-install-selected"
@@ -42,7 +43,6 @@ function _renderProviderSettings(cfg) {
       </div>
       <div class="prov-install-policy-note" style="font-size:11px;color:var(--text-faint);margin-top:6px">${esc(_providerInstallPolicyNoteText || '')}</div>
       <div class="prov-rows" style="display:flex;flex-direction:column;gap:8px;margin-top:8px">${rows || '<p class="settings-hint">Provider inventory is unavailable. Use Check setup status to retry.</p>'}</div>
-      ${EnginePreferences.render()}
     </div>`;
 }
 

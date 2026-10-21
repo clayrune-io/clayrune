@@ -713,7 +713,7 @@ links to their current homes.
 
 **Settings > Providers > Connections** manages installation, sign-in, the
 default provider for new work, and each provider's model and effort defaults
-in the same submenu. Each provider uses its own catalog and supported effort
+inside that vendor's connection card. Each provider uses its own catalog and supported effort
 levels. A runtime that manages its own model has no inactive model picker.
 
 - **Auto-update best/balanced/fast: model** shows the current model name and ID
@@ -726,9 +726,15 @@ levels. A runtime that manages its own model has no inactive model picker.
   not automatically mean a saved model was retired.
 - **Provider-managed default** is an intentional native choice, distinct from
   inheriting a project/global preference.
-- **Background models** keeps Scribe, condense and Distiller separate from chat
-  model budgets. A role override wins over that provider's background default.
-- **Advanced** keeps opt-in engine fallback, Claude task routing and native CLI
+- Each vendor's collapsed **Advanced** disclosure contains optional internal-task
+  model overrides. CR selects a lightweight tier where the runtime provides one;
+  vendors without a verified mapping use their native default, whose cost is
+  unknown. Existing Claude task-specific policies remain in effect. Chat model
+  choices do not raise these task defaults. Existing custom overrides remain
+  active and are marked; they may increase cost. **Use CR automatic for all
+  internal tasks** removes only that vendor's task overrides, after the existing
+  passcode check, preserving its chat model and effort.
+- The Providers **Advanced** submenu keeps opt-in engine fallback, Claude task routing and native CLI
   integrations. Task routing and tier tracking are different choices.
 
 The project menu's **Providers** editor overrides these preferences per provider.

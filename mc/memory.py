@@ -200,9 +200,8 @@ def _model_for_provider(config_key: str, provider: str | None,
     Scribe/condense historically use Claude tier names as their defaults.  An
     explicit non-Claude session must not inherit those names: they are not
     portable CLI model ids and can turn a harmless memory write into a failed
-    provider invocation.  A foreign provider receives an explicit configured
-    model only when its runtime positively recognises it; otherwise its native
-    default is selected by passing an empty model.
+    provider invocation. A compatible explicit override wins; otherwise CR
+    uses that provider's lightweight mapping when known, then its native choice.
     """
     from mc.provider_preferences import background_model
     return background_model(state.CONFIG, str(provider or 'claude').strip().lower(),

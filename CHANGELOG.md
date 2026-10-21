@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-21] - Put model defaults in each vendor card
+
+- Each connection card contains its chat model and effort preferences. Internal-task overrides are collapsed under that vendor's Advanced disclosure, with cost guidance and a gated restore-automatic action.
+- CR chooses a known lightweight tier for internal tasks rather than inheriting a potentially larger native default. Existing custom overrides and Claude task-specific policies remain intact; runtimes without a lightweight mapping retain a clearly disclosed native fallback.
+- Updated the user guide, model-policy regression checks and desktop/phone interaction checks.
+
 ## [2026-10-21] - Show the model behind automatic tier selections
 
 - Provider and agent-type pickers show the current model name and request ID beside each automatic tier, including inherited project defaults. The launch summary also includes the request ID.

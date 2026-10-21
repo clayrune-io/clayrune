@@ -354,7 +354,7 @@ mutation.
 |---|---|---|
 | GET | `/api/config` | Read live MC config (flags, ports, scribe state). |
 | PUT | `/api/config` | Patch config (partial JSON merge). |
-| GET | `/api/engine/preferences?project_id=<optional>` | Read-only provider catalogs, supported effort/tier/model-selection metadata, global defaults, optional project overrides and effective engine provenance. Never launches a provider or migrates data. |
+| GET | `/api/engine/preferences?project_id=<optional>` | Read-only provider catalogs, supported effort/tier/model-selection metadata, global defaults, optional project overrides, effective engine provenance and `automatic_background_model` (CR lightweight request ID; empty means native fallback with unknown cost). Never launches a provider or migrates data. |
 | POST | `/api/engine/preview` | Resolve `{project_id?, provider?, model?, effort?, character?: {provider?,model?,effort?}}` through the same engine resolver used by execution. Read-only, no provider call. Missing model/effort inherits; explicit empty selects native. |
 | GET | `/api/usage` | API usage / token-cost telemetry. |
 

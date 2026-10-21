@@ -44,7 +44,7 @@ feature-visibility switches follow separately.
 | Agent > Integration | Channels | Providers > Advanced > CLI integration | Move; keep native CLI channel configuration separate from ordinary agent behavior. |
 | Memory > Auto-condense | Auto-condense | Memory > Auto-condense | Keep; ownership remains appropriate. |
 | Memory > Auto-condense | Threshold (KB) | Memory > Auto-condense | Keep; ownership remains appropriate. |
-| Memory > Tuning | Model | Providers > Background models | Remove the unscoped housekeeping model editor; retain condense role overrides per provider. |
+| Memory > Tuning | Model | Providers > Connections > vendor > Advanced | CR selects internal-task defaults; optional condense and other role overrides stay collapsed inside that vendor's card with cost guidance. |
 | Memory > Tuning | Executor | Memory > Tuning | Keep; ownership remains appropriate. |
 | Memory > Retrieval | Memory snippets per task | Memory > Retrieval | Keep; ownership remains appropriate. |
 | Memory > Retrieval | Follow linked notes | Memory > Retrieval | Keep; ownership remains appropriate. |
@@ -179,7 +179,7 @@ Final branch checks:
 
 | Check | Result |
 | --- | --- |
-| 19 selected backend suites, including scoped preference/HTTP/migration, project/Floor, continuation, effort, transforms, routing, ownership and human gates | 525 passed, 0 failed |
+| 20 selected backend suites, including scoped preference/HTTP/migration, internal-task model policy, project/Floor, continuation, effort, transforms, routing, ownership and human gates | 530 passed, 0 failed |
 | `pyright mc/provider_preferences.py mc/blueprints/provider_preferences_routes.py` | 0 errors |
 | `npm --prefix tools/smoke test` | Passed all 10 default frontend scripts, including boot, provider auth/cache, stream dedupe, delivery, paste and viewers |
 | `node tools/smoke/provider-preferences.mjs` | Passed at 1440px and 390px; field-only writes, native/inherit/reset, invalid tuple, canceled proof, Floor drafts, search, security and overflow |

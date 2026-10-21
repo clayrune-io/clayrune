@@ -37,7 +37,7 @@ try {
         const defaults = config.provider_defaults[provider.name] || {};
         const overrides = projectId ? project.provider_overrides[provider.name] || {} : {};
         const own = Object.hasOwn(overrides,'model');
-        return {...provider, tiers:provider.models.length ? {balanced:provider.models[0].id} : {}, defaults, overrides,
+        return {...provider, tiers:provider.models.length ? {balanced:provider.models[0].id} : {}, defaults, overrides, automatic_background_model:provider.models.at(-1)?.id || '',
           effective:{provider:provider.name, model:own ? overrides.model : defaults.model || '',
             requested_model:own ? overrides.model : defaults.model || '', model_source:own ? 'project' : 'global',
             effort:Object.hasOwn(overrides,'effort') ? overrides.effort : defaults.effort || ''}};
@@ -103,10 +103,19 @@ try {
     assert.equal(await page.locator('[data-cat="providers"] > .settings-section > .settings-section-title').filter({hasText:/^Model defaults$/}).count(),0,'Model defaults has no separate submenu');
     assert.equal(await page.locator('#settings-providers-section #engine-pref-global-codex-model').count(),1,'Model defaults belong to Connections');
     const codex = page.locator('#engine-pref-global-codex-model');
+    const codexCard = page.locator('.prov-row[data-provider="codex"]');
+    assert.equal(await codexCard.locator('#engine-pref-global-codex-model').count(),1,'Model defaults live inside their own vendor card');
+    assert.equal(await page.locator('#settings-providers-section > .engine-preference-group').count(),0,'No detached defaults list follows the vendor cards');
+    const advanced = codexCard.locator('.engine-provider-advanced');
+    assert.equal(await advanced.getAttribute('open'),null,'Internal-task options start collapsed');
+    assert.equal(await codexCard.locator('#engine-pref-global-codex-background_model').isVisible(),false);
     assert.equal(await page.locator('#engine-pref-global-kiro-model').count(),0,'Native-only runtimes have no inert model picker');
     assert.equal(await codex.inputValue(),'gpt-balanced');
     assert.equal(await codex.locator('option[value="tier:balanced"]').textContent(),'Auto-update balanced: GPT balanced (gpt-balanced)');
-    assert.match(await page.locator('#settings-providers-section .engine-tracking-help').textContent(),/aliases.*-latest.*versioned model ID/);
+    assert.match(await advanced.locator('.engine-tracking-help').textContent(),/aliases.*-latest.*versioned model ID/);
+    await advanced.locator('summary').click();
+    assert.match(await advanced.textContent(),/increase token cost.*recommended/);
+    assert.equal(await advanced.locator('#engine-pref-global-codex-background_model').inputValue(),'__inherit__');
     assert.match(await page.locator('#settings-providers-section .engine-effective').nth(1).textContent(),/Model requested at launch: GPT balanced \(gpt-balanced\)/);
     assert.equal(await page.evaluate(() => window.EnginePreferences.modelLabel({models:[],tiers:{best:'opus'}},'tier:best')),'Auto-update best: opus','An alias is shown honestly without inventing a version');
     assert.equal(await page.evaluate(() => window.EnginePreferences.modelLabel({models:[],tiers:{}},'tier:best')),'Auto-update best: no model mapped');
@@ -163,6 +172,21 @@ try {
     await page.evaluate(() => window.closeModalById('__floor_preferences'));
     await page.evaluate(() => window.closeFloor());
     await page.evaluate(() => window.openSettings());
+    await settingsSection('providers','Connections');
+    await page.locator('#engine-advanced-codex > summary').click();
+    await page.locator('#engine-pref-global-codex-background_model').selectOption('gpt-balanced'); await proof(false);
+    await page.waitForFunction(() => document.querySelector('#engine-pref-global-codex-background_model')?.value === 'gpt-balanced');
+    assert.equal(await page.locator('#engine-advanced-codex').getAttribute('open'),'','Advanced stays open after a save');
+    const reset = () => page.locator('#engine-advanced-codex').getByRole('button',{name:'Use CR automatic for all internal tasks',exact:true}).click();
+    await reset(); await proof(true);
+    await page.waitForFunction(() => document.querySelector('#engine-pref-global-codex-background_model')?.value === 'gpt-balanced');
+    assert.equal(config.provider_defaults.codex.background_model,'gpt-balanced','Canceled reset preserves overrides');
+    await reset(); await proof(false);
+    await page.waitForFunction(() => document.querySelector('#engine-pref-global-codex-background_model')?.value === '__inherit__');
+    assert.equal(config.provider_defaults.codex.model,'gpt-fast','Restoring task defaults preserves the chat model');
+    assert.equal(config.provider_defaults.codex.effort,'high','Restoring task defaults preserves effort');
+    assert.equal(config.provider_defaults.claude.model,'claude-balanced','Restoring one provider preserves another');
+    await page.evaluate(() => { window._settingsUpUI(); window._settingsUpUI(); });
     await page.locator('#settings-search').fill('brief replies');
     assert.ok(await page.locator('#settings-moved-results').isVisible(),'Settings search links to relocated controls');
     await page.locator('#settings-search').fill('');

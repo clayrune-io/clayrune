@@ -79,7 +79,7 @@ function modelLabel(provider, value) {
   return label && label !== value ? label + ' (' + value + ')' : value;
 }
 
-function field(provider, projectId, key, label) {
+function field(provider, projectId, key, label, compact = false) {
   const entry = projectId ? provider.overrides : provider.defaults;
   const canInherit = projectId || (key !== 'model' && key !== 'effort');
   const inherited = canInherit && !Object.prototype.hasOwnProperty.call(entry, key);
@@ -90,12 +90,12 @@ function field(provider, projectId, key, label) {
        ...provider.models.map(m => [m.id, modelLabel(provider, m.id)])];
   if (projectId) choices.unshift(['__inherit__', 'Use global (' + (key === 'effort'
     ? provider.defaults.effort || 'provider default' : modelLabel(provider, provider.defaults.model || '')) + ')']);
-  else if (canInherit) choices.unshift(['__inherit__', key === 'background_model' ? 'Use existing role defaults' : 'Use background default']);
+  else if (canInherit) choices.unshift(['__inherit__', key === 'background_model' ? 'CR automatic (recommended)' : 'Use CR automatic / background override']);
   if (value && !choices.some(([v]) => v === value)) choices.push([value, value + ' (saved)']);
   const id = ['engine-pref', projectId || 'global', provider.name, key].join('-');
   const selected = inherited ? '__inherit__' : value;
   return `<div class="settings-row engine-preference-row">
-    <label class="settings-label" for="${esc(id)}">${esc(provider.display_name)} · ${esc(label)}</label>
+    <label class="settings-label" for="${esc(id)}">${compact ? '' : esc(provider.display_name) + ' · '}${esc(label)}</label>
     <div class="engine-preference-control">
       <select id="${esc(id)}" class="settings-select" data-engine-field="${esc(key)}" data-provider="${esc(provider.name)}"
         onchange="EnginePreferences.choose('${esc(projectId)}','${esc(provider.name)}','${esc(key)}',this)">
@@ -106,6 +106,38 @@ function field(provider, projectId, key, label) {
         onchange="EnginePreferences.saveField('${esc(projectId)}','${esc(provider.name)}','${esc(key)}',this.value)"/>`}
     </div>
   </div>`;
+}
+
+function providerControls(p, projectId = '', compact = false) {
+  const entry = projectId ? p.overrides : p.defaults;
+  const roleFields = ['scribe_model','condense_model','distiller_model', ...(p.name === 'claude' ? ['auto_model_classifier_model'] : [])];
+  const customTasks = ['background_model', ...roleFields].some(key => Object.hasOwn(p.defaults, key));
+  const automatic = p.automatic_background_model;
+  return `<div class="engine-vendor-defaults">
+    ${p.model_selection === false ? '<p class="settings-hint">Model selection is managed by this provider.</p>' : field(p, projectId, 'model', compact ? 'Default model' : 'Model', compact)}
+    ${p.efforts.length || entry.effort ? field(p, projectId, 'effort', 'Effort', compact) : ''}
+    ${entry.effort && !p.efforts.includes(entry.effort) ? '<p class="settings-hint">This saved effort is not applied by the adapter. Choose the provider-managed default to clear it.</p>' : ''}
+    <p class="settings-hint engine-effective">Model requested at launch: ${esc(modelLabel(p, p.effective.model))} · from ${esc(p.effective.model_source)}${p.effective.effort ? ' · effort ' + esc(p.effective.effort) : ''}</p>
+    ${projectId || p.model_selection === false ? '' : `<details class="engine-provider-advanced" id="engine-advanced-${esc(p.name)}"><summary>Advanced${customTasks ? ' (custom task models)' : ''}</summary>
+      <p class="settings-hint engine-tracking-help">Auto-update follows a tier's current model mapping when work starts. The model ID is shown in each option. Provider aliases such as opus or names ending in -latest can change versions; choose a versioned model ID to keep a specific version.</p>
+      <p class="settings-hint engine-task-policy">${automatic === undefined ? 'CR manages internal-task model defaults.' : automatic
+        ? 'CR automatic uses the lightweight model ' + esc(modelLabel(p, automatic)) + ' for internal tasks. Some task-specific policies may choose a different model.'
+        : 'No lightweight model mapping is available. CR uses the provider default; its cost is unknown.'} Chat model choices do not change these task defaults.</p>
+      <p class="settings-hint">Optional overrides below can increase token cost or usage substantially. Leaving them on CR automatic is recommended.${customTasks ? ' Existing custom task overrides are active.' : ''}</p>
+      ${field(p, '', 'background_model', 'Internal-task default', true)}
+      ${roleFields.map(key => `<div class="engine-role-override">
+        ${field(p, '', key, key === 'auto_model_classifier_model' ? 'Task classifier' : key.split('_')[0], true)}
+        <button type="button" class="btn-browse" onclick="EnginePreferences.saveField('','${esc(p.name)}','${key}',null)">Use CR automatic / background override</button>
+      </div>`).join('')}
+      <button type="button" class="btn-browse" onclick="EnginePreferences.resetTasks('${esc(p.name)}')">Use CR automatic for all internal tasks</button>
+    </details>`}
+  </div>`;
+}
+
+function renderConnection(provider) {
+  const entry = views.get('')?.providers.find(p => p.name === provider);
+  return entry ? providerControls(entry, '', true)
+    : '<p class="settings-hint">Model preferences are unavailable. Close and reopen Settings to retry.</p>';
 }
 
 function render(projectId = '') {
@@ -122,19 +154,7 @@ function render(projectId = '') {
     ? 'New unpinned work inherits global provider preferences. Each provider keeps its own overrides.'
     : 'Each provider keeps its own model and effort defaults.'}</p>
     <p class="settings-hint engine-tracking-help">Auto-update follows a tier's current model mapping when work starts. The model ID is shown in each option. Provider aliases such as opus or names ending in -latest can change versions; choose a versioned model ID to keep a specific version.</p>
-    ${data.providers.map(p => `<fieldset class="engine-preference-group"><legend>${esc(p.display_name)}</legend>
-      ${p.model_selection === false ? '<p class="settings-hint">Model selection is managed by this provider.</p>' : field(p, projectId, 'model', 'Model')}
-      ${p.efforts.length || (projectId ? p.overrides : p.defaults).effort ? field(p, projectId, 'effort', 'Effort') : '<p class="settings-hint">Uses provider-managed reasoning effort.</p>'}
-      ${(projectId ? p.overrides : p.defaults).effort && !p.efforts.includes((projectId ? p.overrides : p.defaults).effort) ? '<p class="settings-hint">This saved effort is not applied by the adapter. Choose the provider-managed default to clear it.</p>' : ''}
-      <p class="settings-hint engine-effective">Model requested at launch: ${esc(modelLabel(p, p.effective.model))} · from ${esc(p.effective.model_source)}${p.effective.effort ? ' · effort ' + esc(p.effective.effort) : ''}</p>
-      ${projectId || p.model_selection === false ? '' : `<details><summary>Background models</summary>
-        <p class="settings-hint">Separate from chat defaults. A role override takes priority over the background default.</p>
-        ${field(p, '', 'background_model', 'Background default')}
-        ${['scribe_model','condense_model','distiller_model', ...(p.name === 'claude' ? ['auto_model_classifier_model'] : [])].map(key => `<div class="engine-role-override">
-          ${field(p, '', key, key === 'auto_model_classifier_model' ? 'Task classifier' : key.split('_')[0])}
-          <button type="button" class="btn-browse" onclick="EnginePreferences.saveField('','${esc(p.name)}','${key}',null)">Use background default</button>
-        </div>`).join('')}</details>`}
-    </fieldset>`).join('')}`;
+    ${data.providers.map(p => `<fieldset class="engine-preference-group"><legend>${esc(p.display_name)}</legend>${providerControls(p, projectId)}</fieldset>`).join('')}`;
 }
 
 function choose(projectId, provider, key, select) {
@@ -164,9 +184,20 @@ async function write(projectId, body) {
 }
 
 async function repaint(projectId) {
+  const expanded = [...document.querySelectorAll('.engine-provider-advanced[open]')].map(el => el.id);
   await load(projectId, true);
   if (projectId && activeProject === projectId && document.getElementById('agent-settings-overlay')?.classList.contains('visible')) await openProject(projectId);
   else if (document.getElementById('settings-body')) await window._renderSettings();
+  expanded.forEach(id => { const panel = document.getElementById(id); if (panel) panel.open = true; });
+}
+
+async function resetTasks(provider) {
+  const fields = ['background_model','scribe_model','condense_model','distiller_model','auto_model_classifier_model'];
+  try {
+    const saved = await write('', {provider_defaults: {[provider]: Object.fromEntries(fields.map(key => [key, null]))}});
+    if (saved) showToast('CR automatic internal-task models restored');
+  } catch (error) { showToast(error.message || 'Could not restore internal-task defaults', 6000); }
+  try { await repaint(''); } catch (error) { showToast(error.message); }
 }
 
 async function saveField(projectId, provider, key, value) {
@@ -219,4 +250,4 @@ async function openProject(projectId) {
 }
 
 function dismissProject() { activeProject = ''; }
-window.EnginePreferences = {load, effective, preview, invalidate, render, modelLabel, choose, saveField, saveProjectProvider, saveProjectMode, openProject, dismissProject};
+window.EnginePreferences = {load, effective, preview, invalidate, render, renderConnection, modelLabel, choose, saveField, resetTasks, saveProjectProvider, saveProjectMode, openProject, dismissProject};

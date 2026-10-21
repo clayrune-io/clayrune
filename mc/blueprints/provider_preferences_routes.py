@@ -9,6 +9,7 @@ import re
 from flask import Blueprint, jsonify, request
 
 from mc import agent_runtime, engine_selection, provider_preferences, state
+from mc.background_model_policy import automatic_model
 
 bp = Blueprint('provider_preferences', __name__)
 DATA_DIR = Path('.')
@@ -46,6 +47,7 @@ def preference_preview(config, project=None):
             **provider_preferences.runtime_metadata(runtime),
             'defaults': defaults.get(provider, {}),
             'overrides': overrides.get(provider, {}),
+            'automatic_background_model': automatic_model(provider, default='haiku'),
             'effective': {**asdict(effective), 'requested_model': requested},
         })
     return {'providers': providers, 'default_provider': config.get('default_provider') or '',

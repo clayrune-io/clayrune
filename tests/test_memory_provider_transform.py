@@ -52,9 +52,10 @@ def test_foreign_provider_does_not_receive_claude_tier_default(monkeypatch):
     from mc import memory
 
     monkeypatch.setitem(memory.state.CONFIG, 'scribe_model', '')
-    assert memory._model_for_provider('scribe_model', 'codex') == ''
+    expected = memory._agent_runtime.get_runtime('codex').latest_for('fast')
+    assert memory._model_for_provider('scribe_model', 'codex') == expected
     monkeypatch.setitem(memory.state.CONFIG, 'scribe_model', 'haiku')
-    assert memory._model_for_provider('scribe_model', 'codex') == ''
+    assert memory._model_for_provider('scribe_model', 'codex') == expected
 
 
 def test_foreign_provider_accepts_only_runtime_compatible_model(monkeypatch):
