@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-21] - Keep history-banner checks compatible with provider defaults
+
+- The completed-child history smoke supplies the engine-preferences API response shape used by the composer. Its generic array stub previously threw during modal rendering and sent the check down an unintended transcript fallback.
+- Retained dispatcher-banner, modal rebuild, composer bounds, transcript-twin and missing-lineage checks at desktop and phone widths. Product behavior and human approval gates are unchanged.
+
 ## [2026-10-21] - Save vendor preferences with one passcode per batch
 
 - Vendor models, efforts, default provider, CLI auto-update and Providers advanced settings collect as a draft behind a pinned Save changes/Cancel bar. The existing server passcode gate applies once to the combined Save.

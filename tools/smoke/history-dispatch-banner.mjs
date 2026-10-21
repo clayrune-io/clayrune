@@ -33,6 +33,10 @@ try {
    if(req.url().includes('mermaid.esm.min.mjs'))return r.fulfill({contentType:'text/javascript',body:'export default {initialize(){},run:async()=>{}};'});
    if(path==='/api/projects')return json(projects);
    if(path==='/api/config')return json({});
+   // The composer loads provider-scoped defaults on modal rebuild. An array
+   // from the catch-all API stub is not an engine-preferences response: it
+   // throws during render and sends openConversation down its CSID fallback.
+   if(path==='/api/engine/preferences')return json({providers:[]});
    if(path.endsWith('/conversations'))return json(rows);
    if(path.endsWith('/agent/status'))return json({sessions:[]});
    const mc=path.match(/\/session\/(child|unknown|shared|offpage)\/reconstruct$/);
