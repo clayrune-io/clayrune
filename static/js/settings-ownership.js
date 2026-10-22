@@ -12,7 +12,7 @@ function systemExtras(cfg, {toggle}) { return `
       <div class="settings-row">
         <div>
           <div class="settings-label">Keep machine awake</div>
-          <div class="settings-hint">Prevents automatic system sleep while Clayrune is running, even with no agents working. Works on Windows, macOS (battery or plugged in), and Linux with systemd-inhibit. The display can still sleep. Off by default; changes take effect within about 20 seconds without a restart. Does not wake a sleeping or powered-off computer or override lid closure or manual sleep.</div>
+          <div class="settings-hint">Prevents automatic system sleep while Clayrune is running, even with no agents working. Works on Windows, macOS (battery or plugged in), and Linux with systemd-inhibit. The display can still sleep. Off by default; changes take effect within about 20 seconds without a restart. Cannot wake a sleeping or powered-off computer. Lid closure and manual sleep follow OS policy; on Linux, turn this off before manually suspending.</div>
         </div>
         ${toggle('keep_awake_enabled', cfg.keep_awake_enabled)}
       </div>      <div class="settings-row">

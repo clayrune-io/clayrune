@@ -4,7 +4,7 @@
 
 - **Settings > System > Runtime and availability > Keep machine awake** now prevents automatic system sleep while the Clayrune server runs, even with zero running agents. It remains off by default; live changes reconcile within about 20 seconds and server exit releases the lock. The display can still sleep.
 - macOS uses an idle-sleep assertion on battery and AC power. Windows checks failed OS calls and retries; Linux retains its `systemd-inhibit` requirement. Parent-death cleanup and dead-inhibitor recovery remain in place, with cleanup failures logged.
-- This does not wake a sleeping or powered-off host or promise to override lid closure or manual sleep. Added deterministic reconciler and settings-persistence coverage; physical platform sleep behavior requires platform verification.
+- This does not wake a sleeping or powered-off host. Lid and manual-sleep behavior follows OS policy; Linux sleep inhibitors can also block manual suspend until the setting is off. Added deterministic reconciler and settings-persistence coverage; physical platform sleep behavior requires platform verification.
 
 ## [2026-10-22] - Keep chat text selected while updates arrive
 

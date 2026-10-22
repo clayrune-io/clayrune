@@ -1,8 +1,9 @@
 """Prevent automatic system sleep while Clayrune runs and the setting is on.
 
 The assertion is independent of agent activity: an idle server stays reachable
-for the next remote request or scheduled run. It does not keep the display on,
-wake a sleeping/powered-off host, or override lid closure or manual sleep.
+for the next remote request or scheduled run. It does not keep the display on
+or wake a sleeping/powered-off host. OS policy determines lid and manual-sleep
+behavior; Linux's sleep inhibitor can also block manual suspend.
 
 ## Design — a reconciler, not lifecycle hooks
 

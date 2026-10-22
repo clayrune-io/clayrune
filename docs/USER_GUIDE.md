@@ -798,9 +798,10 @@ the server releases the wake lock so normal sleep settings can resume.
 The display can still turn off. On macOS the idle-sleep assertion works on both
 battery and AC power. Linux requires `systemd-inhibit` and permission to inhibit
 sleep; platform failures are logged and retried. This setting cannot wake an
-already sleeping or powered-off computer and does not promise to override lid
-closure or manual sleep. A closed desktop window only releases the lock if it
-also stops the server.
+already sleeping or powered-off computer. Lid closure and manual sleep follow
+OS policy; on Linux, the sleep inhibitor can also block manual suspend, so turn
+this setting off first to allow normal sleep. A closed desktop window only
+releases the lock if it also stops the server.
 
 ### Installed App updates
 
