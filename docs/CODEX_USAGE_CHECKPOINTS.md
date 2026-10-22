@@ -92,5 +92,5 @@ Dave owns independent review and integration. After separately authorized releas
 and restart, live validation must confirm source-aligned rows from a running Codex
 thread, repeated-source deduplication, NULL coverage for unmatched concurrent
 threads, and correct interval deltas. A passing isolated suite is not evidence that
-the deployed database or live calibration has changed. No backfill, DB repair,
-restart, merge or push is authorized by this task.
+the deployed database or live calibration has changed. Release and restart require
+separate authorization; this repair performs no backfill or database repair.

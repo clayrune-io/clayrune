@@ -331,7 +331,7 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
         ${st.error ? `<div class="desk-v1-engine-refusal" data-eng-error>${_errorHTML(st.error)}</div>` : ''}
         <div class="desk-v1-engine-actions">
           <button type="button" class="btn-add" data-eng-render-btn${canRender ? '' : ' disabled'}>${busy ? 'Rendering…' : 'Render'}${st.estimate && st.estimate.estimate && !busy ? ` · ${esc(_fmt(p.engine, _amount(p.engine, st.estimate.estimate)))}` : ''}</button>
-          <button type="button" class="btn-secondary" data-eng-reprice${busy ? ' disabled' : ''}>Price again</button>
+          <button type="button" class="btn-secondary" data-eng-reprice${busy || st.estimating ? ' disabled' : ''}>Price again</button>
         </div>
         ${_renderResultHTML(st.render)}
         ${recoveryActionHTML(st.render, st.acknowledging)}
