@@ -786,6 +786,22 @@ lock and sticky application of settings are under **System > Runtime and
 availability**; the Codex unattended sandbox stays human-gated in **System >
 Security**. Live activity presentation is under **Appearance > Interface**.
 
+### Keep machine awake
+
+Turn on **Settings > System > Runtime and availability > Keep machine awake**
+to prevent automatic system sleep whenever the Clayrune server is running,
+including when no agents are working. The same toggle is available on Windows,
+macOS and Linux. It is off by default; enabling or disabling it takes effect
+within about 20 seconds without restarting the server. Turning it off or exiting
+the server releases the wake lock so normal sleep settings can resume.
+
+The display can still turn off. On macOS the idle-sleep assertion works on both
+battery and AC power. Linux requires `systemd-inhibit` and permission to inhibit
+sleep; platform failures are logged and retried. This setting cannot wake an
+already sleeping or powered-off computer and does not promise to override lid
+closure or manual sleep. A closed desktop window only releases the lock if it
+also stops the server.
+
 ### Installed App updates
 
 **Settings > System > Installed App > Force update service worker** checks for a new worker and reloads when one activates. It briefly pauses this tab's live chat streams; agents keep running. An unchanged worker shows **Already up to date** and streams reconnect. A check blocked for 12 seconds shows a timeout and enables retry; closing other Clayrune tabs can free browser connection slots.

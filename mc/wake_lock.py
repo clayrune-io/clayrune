@@ -1,30 +1,22 @@
-"""Keep the machine awake while an agent is working.
+"""Prevent automatic system sleep while Clayrune runs and the setting is on.
 
-Clayrune runs agents on the user's own machine. If that machine goes to sleep,
-the agent stops — and over a tunnel the user just sees it stall. That caveat is
-honest and unavoidable, but it is also *fixable* for the case that matters most:
-while an agent is actually running, hold a wake lock so the box does not sleep
-out from under it.
-
-This turns the product's biggest caveat from an apology into a feature line:
-**"Clayrune keeps your machine awake while an agent is working."** (LAUNCH_PLAN §2
-calls this the single highest-value product ask; backlog `48fc83c5`.)
+The assertion is independent of agent activity: an idle server stays reachable
+for the next remote request or scheduled run. It does not keep the display on,
+wake a sleeping/powered-off host, or override lid closure or manual sleep.
 
 ## Design — a reconciler, not lifecycle hooks
 
-The wake lock is driven by a periodic reconcile against "how many sessions are
-running", NOT by hooking every status transition. Sessions end many ways — clean
-completion, error, a hard kill, a crash — and a reconciler catches all of them
-for free. Worst case after a missed release is one extra poll interval of the
-machine staying awake, which is the safe direction to fail.
+The wake lock is driven by a periodic read of the live setting, not session
+lifecycle hooks. Turning it off releases the lock on the next tick (20 seconds
+by default); no server restart is needed.
 
 ## Posture
 
 - **Off by default** (`keep_awake_enabled`). Opt-in per install.
-- **Best-effort.** Every platform call is guarded; a failure logs once and never
-  touches an agent. Same rule as Scribe.
-- **Fails toward asleep.** On shutdown or any doubt, the lock is released, so we
-  can never wedge a machine permanently awake.
+- **Best-effort.** Platform failures are logged and retried on the next tick;
+  they never touch an agent. Same rule as Scribe.
+- **Bound to the server.** Shutdown attempts a release; OS thread lifetime or
+  the inhibitor's parent-death binding also clears it after a crash.
 
 ## Platform mechanisms
 
@@ -33,7 +25,8 @@ machine staying awake, which is the safe direction to fail.
   thread clears it or exits. That works here because the reconciler thread is
   the sole engage/release caller during runtime; on process exit Windows
   clears it automatically, so a crash can never wedge the machine awake.
-- **macOS:** a `caffeinate -s -w <our pid>` subprocess — `-w` ties it to our
+- **macOS:** a `caffeinate -i -w <our pid>` subprocess prevents idle system sleep
+  on battery and AC power without a display assertion. `-w` ties it to our
   process, so it exits on its own when we die (any death mode, SIGKILL
   included). Killed early to release.
 - **Linux:** a `systemd-inhibit --what=sleep ... cat` subprocess holding OUR
@@ -67,8 +60,12 @@ _proc: Optional[subprocess.Popen] = None   # mac/linux inhibitor process
 
 def _engage_windows() -> bool:
     try:
-        ctypes.windll.kernel32.SetThreadExecutionState(
+        result = ctypes.windll.kernel32.SetThreadExecutionState(
             _ES_CONTINUOUS | _ES_SYSTEM_REQUIRED)
+        if not result:
+            _log("[wake-lock] windows engage failed: SetThreadExecutionState returned 0",
+                 flush=True)
+            return False
         return True
     except Exception as e:
         _log(f"[wake-lock] windows engage failed: {e}", flush=True)
@@ -77,7 +74,11 @@ def _engage_windows() -> bool:
 
 def _release_windows() -> bool:
     try:
-        ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS)
+        result = ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS)
+        if not result:
+            _log("[wake-lock] windows release failed: SetThreadExecutionState returned 0",
+                 flush=True)
+            return False
         return True
     except Exception as e:
         _log(f"[wake-lock] windows release failed: {e}", flush=True)
@@ -111,18 +112,18 @@ def _release_subprocess() -> bool:
         if _proc.stdin is not None:
             try:
                 _proc.stdin.close()   # EOF — the pipe-bound child exits itself
-            except Exception:
-                pass
+            except Exception as e:
+                _log(f"[wake-lock] close inhibitor stdin failed: {e}", flush=True)
         _proc.terminate()
         try:
             _proc.wait(timeout=5)
-        except Exception:
+        except subprocess.TimeoutExpired:
             _proc.kill()
+            _proc.wait(timeout=5)
     except Exception as e:
         _log(f"[wake-lock] release failed: {e}", flush=True)
         return False
-    finally:
-        _proc = None
+    _proc = None
     return True
 
 
@@ -142,11 +143,11 @@ def _engage() -> bool:
     if sys.platform == "darwin":
         # -w: caffeinate exits by itself when OUR pid does (crash-safe).
         return _engage_subprocess(
-            ["caffeinate", "-s", "-w", str(os.getpid())])
+            ["caffeinate", "-i", "-w", str(os.getpid())])
     # linux / other posix — `cat` on our pipe dies on our EOF (crash-safe).
     return _engage_subprocess([
         "systemd-inhibit", "--what=sleep", "--who=Clayrune",
-        "--why=an agent is running", "--mode=block", "cat"],
+        "--why=Keep machine awake is enabled", "--mode=block", "cat"],
         bind_stdin=True)
 
 
@@ -168,12 +169,12 @@ def set_active(active: bool) -> None:
         if active and not _engaged:
             if _engage():
                 _engaged = True
-                _log("[wake-lock] engaged — machine will stay awake while an "
-                     "agent is running", flush=True)
+                _log("[wake-lock] engaged — automatic system sleep prevented "
+                     "while Clayrune runs", flush=True)
         elif not active and _engaged:
             if _release():
                 _engaged = False
-                _log("[wake-lock] released — no agents running", flush=True)
+                _log("[wake-lock] released — Keep machine awake is off", flush=True)
 
 
 def release_now() -> None:
@@ -191,20 +192,18 @@ def release_now() -> None:
             _engaged = False
 
 
-def start(count_running: Callable[[], int], is_enabled: Callable[[], bool],
-          interval_s: int = 20) -> None:
+def start(is_enabled: Callable[[], bool], interval_s: int = 20) -> None:
     """Background reconciler.
 
-    `count_running()` returns the number of sessions currently working;
     `is_enabled()` reads the live config flag (so the toggle takes effect without
-    a restart). When the feature is switched off mid-run, any held lock is
-    released on the next tick.
+    a restart), independently of agent/session count. When the feature is
+    switched off, any held lock is released on the next tick. All runtime
+    engage/release calls stay on this thread for Windows execution-state affinity.
     """
     def _loop():
         while True:
             try:
-                active = is_enabled() and count_running() > 0
-                set_active(active)
+                set_active(is_enabled())
             except Exception as e:
                 _log(f"[wake-lock] reconcile error: {e}", flush=True)
             time.sleep(max(5, interval_s))

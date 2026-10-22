@@ -1,162 +1,253 @@
-"""Wake-lock reconciler logic.
-
-The OS calls (SetThreadExecutionState / caffeinate / systemd-inhibit) are stubbed;
-what matters here is the state machine: engage exactly when an agent is running
-AND the feature is on, release otherwise, idempotently, and never wedge the
-machine awake.
-"""
+"""Real reconciler tests with fake thread/sleep/OS calls; no live inhibitors."""
 from __future__ import annotations
 
-import sys
+import json
 import types
 
 import pytest
 
-# Import wake_lock with a stub _log so it doesn't need the full app.
-_core = types.ModuleType("mc.core")
-_core._log = lambda *a, **k: None
-sys.modules.setdefault("mc.core", _core)
+from mc import wake_lock
 
-from mc import wake_lock  # noqa: E402
+_REAL_ENGAGE = wake_lock._engage
+_REAL_INHIBITOR_DEAD = wake_lock._inhibitor_dead
 
 
 @pytest.fixture(autouse=True)
 def _stub_os(monkeypatch):
-    """Replace the real OS calls with counters, and reset module state."""
-    calls = {"engage": 0, "release": 0}
+    calls = {"engage": 0, "release": 0, "logs": []}
     monkeypatch.setattr(wake_lock, "_engage", lambda: calls.__setitem__("engage", calls["engage"] + 1) or True)
     monkeypatch.setattr(wake_lock, "_release", lambda: calls.__setitem__("release", calls["release"] + 1) or True)
-    wake_lock._engaged = False
-    wake_lock._proc = None
+    monkeypatch.setattr(wake_lock, "_inhibitor_dead", lambda: False)
+    monkeypatch.setattr(wake_lock, "_log", lambda message, **kw: calls["logs"].append(message))
+    monkeypatch.setattr(wake_lock, "_engaged", False)
+    monkeypatch.setattr(wake_lock, "_proc", None)
     yield calls
-    wake_lock._engaged = False
 
 
-def test_engages_when_an_agent_starts(_stub_os):
-    wake_lock.set_active(True)
-    assert wake_lock._engaged is True
+def _run_reconciler(monkeypatch, ticks, *, interval_s=None, after_tick=None):
+    """Capture start's actual target and run exactly len(ticks) iterations."""
+    class EndLoop(BaseException):
+        pass
+
+    targets, threads, registered, sleeps, held = [], [], [], [], []
+
+    def fake_thread(**kwargs):
+        threads.append(kwargs)
+        return types.SimpleNamespace(start=lambda: targets.append(kwargs["target"]))
+
+    def enabled():
+        value = ticks[len(sleeps)]
+        if isinstance(value, Exception):
+            raise value
+        return value() if callable(value) else value
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        held.append(wake_lock._engaged)
+        if after_tick:
+            after_tick(len(sleeps))
+        if len(sleeps) == len(ticks):
+            raise EndLoop
+
+    # Replace local module references, not process-global threading/time calls.
+    monkeypatch.setattr(wake_lock, "threading", types.SimpleNamespace(Thread=fake_thread))
+    monkeypatch.setattr(wake_lock, "time", types.SimpleNamespace(sleep=sleep))
+    monkeypatch.setattr(wake_lock, "atexit", types.SimpleNamespace(register=registered.append))
+    kwargs = {} if interval_s is None else {"interval_s": interval_s}
+    wake_lock.start(is_enabled=enabled, **kwargs)
+    assert len(targets) == 1
+    assert threads[0]["name"] == "wake-lock" and threads[0]["daemon"] is True
+    with pytest.raises(EndLoop):
+        targets[0]()
+    return types.SimpleNamespace(held=held, sleeps=sleeps, registered=registered)
+
+
+def test_enabled_idle_startup_holds_across_ticks(monkeypatch, _stub_os):
+    from mc import state
+    monkeypatch.setattr(state, "agent_sessions", {})
+    def activity(tick):
+        # Start idle, then work starts and ends without changing the setting.
+        state.agent_sessions.clear()
+        if tick == 1:
+            state.agent_sessions["example"] = {"status": "running"}
+    result = _run_reconciler(monkeypatch, [True, True, True], after_tick=activity)
+    assert result.held == [True, True, True]
+    assert result.sleeps == [20, 20, 20]
     assert _stub_os["engage"] == 1
-
-
-def test_releases_when_the_last_agent_stops(_stub_os):
-    wake_lock.set_active(True)
-    wake_lock.set_active(False)
-    assert wake_lock._engaged is False
-    assert _stub_os["release"] == 1
-
-
-def test_is_idempotent_while_agents_keep_running(_stub_os):
-    """The reconciler ticks every ~20s. A running agent must not re-engage the
-    lock on every tick — engage once, hold, release once."""
-    for _ in range(5):
-        wake_lock.set_active(True)
-    assert _stub_os["engage"] == 1
-
-    for _ in range(5):
-        wake_lock.set_active(False)
-    assert _stub_os["release"] == 1
-
-
-def test_a_failed_engage_does_not_mark_it_engaged(monkeypatch, _stub_os):
-    """If the OS refuses the lock, we must retry next tick — not believe we hold
-    a lock we don't."""
-    monkeypatch.setattr(wake_lock, "_engage", lambda: False)
-    wake_lock.set_active(True)
-    assert wake_lock._engaged is False
-
-
-def test_release_now_is_unconditional(_stub_os):
-    wake_lock.set_active(True)
-    wake_lock.release_now()
-    assert wake_lock._engaged is False
-    assert _stub_os["release"] == 1
-
-
-def test_release_now_is_safe_when_nothing_is_held(_stub_os):
-    wake_lock.release_now()          # must not call _release or raise
     assert _stub_os["release"] == 0
 
 
-def test_reconciler_gates_on_both_enabled_and_running(monkeypatch, _stub_os):
-    """The loop's `active` is `is_enabled() AND count_running() > 0`. Prove all
-    four corners resolve correctly through set_active."""
-    def reconcile(enabled, running):
-        wake_lock.set_active(enabled and running > 0)
-        return wake_lock._engaged
-
-    assert reconcile(True, 2) is True     # on + working  -> awake
-    assert reconcile(True, 0) is False    # on + idle     -> asleep
-    assert reconcile(False, 2) is False   # off + working -> asleep (respects the switch)
-    assert reconcile(False, 0) is False
-
-
-def test_disabling_mid_run_releases_the_lock(monkeypatch, _stub_os):
-    """Flip the setting off while an agent is running: the next tick must release,
-    since the reconciler reads the flag live (no restart)."""
-    wake_lock.set_active(True and 1 > 0)          # enabled, running
-    assert wake_lock._engaged is True
-    wake_lock.set_active(False and 1 > 0)         # user flips it off
-    assert wake_lock._engaged is False
+def test_disabled_startup_and_live_off_on(monkeypatch, _stub_os):
+    result = _run_reconciler(monkeypatch, [False, True, True, False, False, True])
+    assert result.held == [False, True, True, False, False, True]
+    assert _stub_os["engage"] == 2
     assert _stub_os["release"] == 1
 
 
-# ── Night-review blockers (2026-07-15/16) — the three verified bugs ──────────
-
-def test_start_registers_atexit_release(monkeypatch, _stub_os):
-    """POSIX orphan bug: a clean server exit never released the inhibitor
-    subprocess — caffeinate/systemd-inhibit kept the box awake forever."""
-    registered = []
-    monkeypatch.setattr(wake_lock.atexit, "register",
-                        lambda fn: registered.append(fn))
-    wake_lock.start(count_running=lambda: 0, is_enabled=lambda: False,
-                    interval_s=9999)
-    assert wake_lock.release_now in registered
+def test_reads_live_setting_instead_of_caching_startup(monkeypatch):
+    config = {"keep_awake_enabled": True}
+    def flip(tick):
+        config["keep_awake_enabled"] = tick != 1
+    result = _run_reconciler(monkeypatch, [lambda: config["keep_awake_enabled"]] * 3,
+                             after_tick=flip)
+    assert result.held == [True, False, True]
 
 
-def test_dead_inhibitor_triggers_reengage(monkeypatch, _stub_os):
-    """Child-liveness: if the inhibitor process dies out from under us, the
-    reconciler must notice and re-engage instead of trusting a stale flag."""
-    calls = _stub_os
-    wake_lock.set_active(True)
-    assert calls["engage"] == 1
-    # Simulate the inhibitor dying while we believe the lock is held.
-    monkeypatch.setattr(wake_lock, "_inhibitor_dead", lambda: True)
-    wake_lock.set_active(True)
-    assert calls["engage"] == 2, "must re-engage after inhibitor death"
-    # Once alive again, no churn.
-    monkeypatch.setattr(wake_lock, "_inhibitor_dead", lambda: False)
-    wake_lock.set_active(True)
-    assert calls["engage"] == 2
+@pytest.mark.parametrize("operation,ticks,expected", [
+    ("engage", [True, True, True], [False, True, True]),
+    ("release", [True, False, False], [True, True, False]),
+])
+def test_failed_os_call_retries_next_tick(monkeypatch, operation, ticks, expected):
+    answers = iter([False, True])
+    monkeypatch.setattr(wake_lock, f"_{operation}", lambda: next(answers))
+    assert _run_reconciler(monkeypatch, ticks).held == expected
 
 
-# Captured at import time — the autouse _stub_os fixture replaces
-# wake_lock._engage in every test, so the parent-death test calls the real
-# implementation through this reference (its globals still see monkeypatches).
-_REAL_ENGAGE = wake_lock._engage
+def test_config_read_failure_logs_and_loop_recovers(monkeypatch, _stub_os):
+    result = _run_reconciler(monkeypatch, [RuntimeError("config unavailable"), True])
+    assert result.held == [False, True]
+    assert any("reconcile error: config unavailable" in line for line in _stub_os["logs"])
 
 
-def test_posix_inhibitors_are_parent_death_bound(monkeypatch):
-    """Crash path: the inhibitor must die WITH us even on SIGKILL — macOS via
-    `caffeinate -w <pid>`, linux via holding our stdin pipe (`cat` + EOF)."""
-    spawned = {}
+@pytest.mark.parametrize("interval,expected", [(1, 5), (35, 35)])
+def test_configured_poll_interval_has_floor(monkeypatch, interval, expected):
+    assert _run_reconciler(monkeypatch, [False], interval_s=interval).sleeps == [expected]
 
-    class _FakeProc:
-        stdin = None
-        def poll(self): return None
 
-    def fake_popen(cmd, **kw):
-        spawned["cmd"] = cmd
-        spawned["stdin"] = kw.get("stdin")
-        return _FakeProc()
+def test_shutdown_callback_releases_enabled_idle_lock(monkeypatch, _stub_os):
+    result = _run_reconciler(monkeypatch, [True])
+    assert result.registered == [wake_lock.release_now]
+    result.registered[0]()
+    assert wake_lock._engaged is False
+    assert _stub_os["release"] == 1
+    wake_lock.release_now()
+    assert _stub_os["release"] == 1
 
+
+def test_dead_posix_child_is_reengaged_by_real_loop(monkeypatch, _stub_os):
+    monkeypatch.setattr(wake_lock.sys, "platform", "darwin")
+    monkeypatch.setattr(wake_lock, "_inhibitor_dead", _REAL_INHIBITOR_DEAD)
+    child = types.SimpleNamespace(exit_code=None)
+    monkeypatch.setattr(wake_lock, "_proc", types.SimpleNamespace(poll=lambda: child.exit_code))
+    result = _run_reconciler(monkeypatch, [True, True, True],
+        after_tick=lambda tick: setattr(child, "exit_code", 1 if tick == 1 else None))
+    assert result.held == [True, True, True]
+    assert _stub_os["engage"] == 2
+    assert any("inhibitor process died" in line for line in _stub_os["logs"])
+
+
+@pytest.mark.parametrize("operation", ["engage", "release"])
+@pytest.mark.parametrize("error", [False, True])
+def test_windows_failure_is_logged(monkeypatch, _stub_os, operation, error):
+    flags = []
+    def execution_state(value):
+        flags.append(value)
+        if error:
+            raise OSError("OS refused assertion")
+        return 0
+    monkeypatch.setattr(wake_lock.ctypes, "windll", types.SimpleNamespace(
+        kernel32=types.SimpleNamespace(SetThreadExecutionState=execution_state)), raising=False)
+    assert getattr(wake_lock, f"_{operation}_windows")() is False
+    assert flags == [wake_lock._ES_CONTINUOUS | (wake_lock._ES_SYSTEM_REQUIRED if operation == "engage" else 0)]
+    detail = "OS refused assertion" if error else "SetThreadExecutionState returned 0"
+    assert any(f"windows {operation} failed: {detail}" in line for line in _stub_os["logs"])
+
+
+def test_windows_reconciler_retries_and_clears_on_same_thread(monkeypatch):
+    import threading
+    calls = []
+    answers = iter([0, 1, 0, 1])
+    def execution_state(flags):
+        calls.append((threading.get_ident(), flags))
+        return next(answers)
+    monkeypatch.setattr(wake_lock.ctypes, "windll", types.SimpleNamespace(
+        kernel32=types.SimpleNamespace(SetThreadExecutionState=execution_state)), raising=False)
+    monkeypatch.setattr(wake_lock.sys, "platform", "win32")
+    monkeypatch.setattr(wake_lock, "_engage", wake_lock._engage_windows)
+    monkeypatch.setattr(wake_lock, "_release", wake_lock._release_windows)
+    result = _run_reconciler(monkeypatch, [True, True, True, False, False])
+    assert result.held == [False, True, True, True, False]
+    assert len({thread for thread, _ in calls}) == 1
+    assert [flags for _, flags in calls] == [0x80000001, 0x80000001, 0x80000000, 0x80000000]
+
+
+def test_posix_inhibitors_are_parent_death_bound_without_display_assertions(monkeypatch):
+    spawned = []
+    def fake_popen(cmd, **kwargs):
+        spawned.append((cmd, kwargs))
+        return types.SimpleNamespace(stdin=None, poll=lambda: None)
     monkeypatch.setattr(wake_lock.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(wake_lock.sys, "platform", "darwin")
     assert _REAL_ENGAGE() is True
-    assert "-w" in spawned["cmd"]
-    assert str(wake_lock.os.getpid()) in spawned["cmd"]
-
+    assert spawned[-1][0] == ["caffeinate", "-i", "-w", str(wake_lock.os.getpid())]
+    assert spawned[-1][1]["stdin"] == wake_lock.subprocess.DEVNULL
     monkeypatch.setattr(wake_lock.sys, "platform", "linux")
     assert _REAL_ENGAGE() is True
-    assert spawned["cmd"][-1] == "cat"
-    assert spawned["stdin"] == wake_lock.subprocess.PIPE
-    wake_lock._proc = None  # don't leak the fake into other tests
+    assert spawned[-1][0] == ["systemd-inhibit", "--what=sleep", "--who=Clayrune",
+        "--why=Keep machine awake is enabled", "--mode=block", "cat"]
+    assert spawned[-1][1]["stdin"] == wake_lock.subprocess.PIPE
+
+
+def test_missing_posix_tool_logs_failure(monkeypatch, _stub_os):
+    def missing(*args, **kwargs):
+        raise FileNotFoundError
+    monkeypatch.setattr(wake_lock.subprocess, "Popen", missing)
+    assert wake_lock._engage_subprocess(["caffeinate", "-i"]) is False
+    assert any("caffeinate not found" in line for line in _stub_os["logs"])
+
+
+@pytest.mark.parametrize("pipe_error,timeout", [(False, False), (True, False), (False, True)])
+def test_subprocess_release_closes_pipe_and_reaps_child(monkeypatch, _stub_os, pipe_error, timeout):
+    calls = []
+    def close():
+        calls.append("close")
+        if pipe_error:
+            raise OSError("pipe close failed")
+    def wait(**kwargs):
+        calls.append("wait")
+        if timeout and calls.count("wait") == 1:
+            raise wake_lock.subprocess.TimeoutExpired("inhibitor", 5)
+    child = types.SimpleNamespace(stdin=types.SimpleNamespace(close=close),
+        terminate=lambda: calls.append("terminate"), wait=wait, kill=lambda: calls.append("kill"))
+    monkeypatch.setattr(wake_lock, "_proc", child)
+    assert wake_lock._release_subprocess() is True
+    assert calls == ["close", "terminate", "wait"] + (["kill", "wait"] if timeout else [])
+    assert wake_lock._proc is None
+    if pipe_error:
+        assert any("close inhibitor stdin failed: pipe close failed" in line for line in _stub_os["logs"])
+
+
+def test_subprocess_release_failure_retains_child_for_retry(monkeypatch, _stub_os):
+    def fail():
+        raise OSError("terminate failed")
+    child = types.SimpleNamespace(stdin=None, terminate=fail)
+    monkeypatch.setattr(wake_lock, "_proc", child)
+    assert wake_lock._release_subprocess() is False
+    assert wake_lock._proc is child
+    assert any("release failed: terminate failed" in line for line in _stub_os["logs"])
+    child.terminate = lambda: None
+    child.wait = lambda **kw: None
+    assert wake_lock._release_subprocess() is True
+    assert wake_lock._proc is None
+
+
+def test_setting_round_trips_through_real_config_route(tmp_path, monkeypatch):
+    """Use a temporary store; existing passcode gate tested in its own suite."""
+    from flask import Flask
+    from mc import state
+    from mc.blueprints import settings_routes as sr
+    config_path = tmp_path / "config.json"
+    monkeypatch.setattr(state, "CONFIG", {"keep_awake_enabled": False})
+    monkeypatch.setattr(sr, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(sr, "is_unattended_caller", lambda: False)
+    monkeypatch.setattr(sr, "_require_human_passcode", lambda data: None)
+    app = Flask(__name__)
+    app.register_blueprint(sr.bp)
+    client = app.test_client()
+    for enabled in (True, False):
+        response = client.put("/api/config", json={"keep_awake_enabled": enabled})
+        assert response.status_code == 200
+        assert response.get_json()["updated"] == ["keep_awake_enabled"]
+        assert state.CONFIG["keep_awake_enabled"] is enabled
+        assert json.loads(config_path.read_text(encoding="utf-8"))["keep_awake_enabled"] is enabled
+        assert client.get("/api/config").get_json()["keep_awake_enabled"] is enabled

@@ -188,7 +188,7 @@ def _load_config():
         # warning). Settings -> Providers toggles it; read live, no restart.
         'cli_auto_update_enabled': True,
 
-        # Keep the machine awake while an agent is running (mc/wake_lock.py).
+        # Prevent automatic system sleep while Clayrune runs (mc/wake_lock.py).
         # The product runs agents on the user's own box; if it sleeps, the agent
         # stops. Off by default — opt-in per install.
         'keep_awake_enabled': False,
@@ -3649,16 +3649,13 @@ def boot(check_port=True):
         _desk_tick.start(enabled=lambda: bool(CONFIG.get('desk_tick_enabled', True)))
     except Exception as e:
         _log(f"[desk_tick] not started: {e}")
-    # Keep-awake reconciler: holds an OS wake lock while any agent is running, so
-    # the machine doesn't sleep out from under a working agent. Off by default
+    # Keep-awake reconciler: prevents automatic system sleep while Clayrune runs,
+    # independently of agent activity. Off by default
     # (keep_awake_enabled); the reconciler reads the flag live so the toggle
     # needs no restart. Roll back: delete this block + mc/wake_lock.py.
     try:
         from mc import wake_lock as _wake_lock
-        from mc.state import agent_sessions as _agent_sessions
         _wake_lock.start(
-            count_running=lambda: sum(
-                1 for s in _agent_sessions.values() if s.get('status') == 'running'),
             is_enabled=lambda: bool(CONFIG.get('keep_awake_enabled', False)),
             interval_s=int(CONFIG.get('keep_awake_poll_s', 20)),
         )

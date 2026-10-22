@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-22] - Keep the host awake between agent runs (MC-1109)
+
+- **Settings > System > Runtime and availability > Keep machine awake** now prevents automatic system sleep while the Clayrune server runs, even with zero running agents. It remains off by default; live changes reconcile within about 20 seconds and server exit releases the lock. The display can still sleep.
+- macOS uses an idle-sleep assertion on battery and AC power. Windows checks failed OS calls and retries; Linux retains its `systemd-inhibit` requirement. Parent-death cleanup and dead-inhibitor recovery remain in place, with cleanup failures logged.
+- This does not wake a sleeping or powered-off host or promise to override lid closure or manual sleep. Added deterministic reconciler and settings-persistence coverage; physical platform sleep behavior requires platform verification.
+
 ## [2026-10-22] - Keep chat text selected while updates arrive
 
 - Enabled native text selection in the desktop app and popped-out chat windows. Drag across user messages, replies and code, then copy with the usual keyboard shortcut.
