@@ -33,6 +33,9 @@ const project = { id: pid, name: 'Selection smoke', status: 'active', domain: 'g
   use_streaming_agent: true, display_order: 0 };
 const shotDir = resolve(root, '_scratch/mac-chat-selection');
 mkdirSync(shotDir, { recursive: true });
+const copyModifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+console.log(`HOST platform=${process.platform}; copy/paste=${copyModifier}+C/${copyModifier}+V (browser engines, not frozen app acceptance)`);
+assert(existsSync(chromium.executablePath()), 'Installed Chromium is required for the normal selection smoke');
 
 for (const [engine, type] of [['chromium', chromium], ['webkit', webkit]]) {
   if (!existsSync(type.executablePath())) {
@@ -135,9 +138,9 @@ for (const [engine, type] of [['chromium', chromium], ['webkit', webkit]]) {
         assert.equal(await selected(), text, 'unrelated modal refresh keeps selected chat text');
         assert(await page.evaluate(sid => document.querySelector(`#agent-output-${sid}`) === window.__selectedNode, sid));
         if (start === 'USER' && end === 'END') await page.screenshot({ path: resolve(shotDir, `${engine}-${mode}.png`) });
-        await page.keyboard.press('Control+c');
+        await page.keyboard.press(`${copyModifier}+c`);
         const composer = page.locator(`#agent-followup-${sid}`);
-        await composer.click(); await page.keyboard.press('Control+v');
+        await composer.click(); await page.keyboard.press(`${copyModifier}+v`);
         assert.equal(await composer.inputValue(), text, 'native copy/paste matches the dragged text');
         await composer.fill('');
         await clear();
