@@ -313,6 +313,10 @@ restart its server; the corrected build sends explicit MIME types and refreshes
 the asset cache. No Windows registry change or provider re-login is needed.
 
 - **Multiple sessions per project**:
+  - Codex chats hide standalone routine skill announcements (such as “I’m using
+    the project-status skill to check the live board and release state.”).
+    Progress, results and approval or failure messages remain visible; original
+    messages remain in the session log.
   - **Desktop** — a horizontal tab strip across the top of the Agent panel.
     Every dispatch adds a tab; click to switch, `×` to close. Tabs from
     automated triggers (schedules, hivemind workers) disappear once they

@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-10-22] - Hide routine Codex skill announcements in chat
+
+- Live and reopened Codex chats omit standalone routine “I'm using … skill to …” lines. Mixed updates, results, approval/failure messages and other providers retain their display; original session logs are preserved.
+
 ## [2026-10-21] - Observe Codex usage at native sample boundaries
 
 - Running Codex sessions can supply cumulative token checkpoints from their owning rollout's exact-time native observations. Cached input is counted once; repeated source observations share the existing dedup key.

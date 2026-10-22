@@ -26,13 +26,32 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { loadStaticJsCss } from './_static.mjs';
+import assert from 'node:assert/strict';
+import { hideSkillAnnouncement } from '../../static/js/skill-announcement.js';
+
+const ANNOUNCEMENT = 'I’m using the project-status skill to check the live board and release state.';
+assert.equal(hideSkillAnnouncement('codex', ANNOUNCEMENT), true);
+assert.equal(hideSkillAnnouncement('codex', "I'm using the memory-search and API skills to recover the handoff."), true);
+for (const text of [
+  ANNOUNCEMENT + ' There are 58 unfinished items.',
+  'I’m using the release skill to check approval for the push.',
+  '> ' + ANNOUNCEMENT,
+  'The project-status skill found 58 unfinished items.',
+  'I’m using the API skill to check the failed request.',
+  'I’m using the API skill to check the board and found 58 unfinished items.',
+  'I’m using the API skill to check the board; 58 items remain.',
+  'I’m using the API skill to check the board\nThe server failed.',
+]) assert.equal(hideSkillAnnouncement('codex', text), false, text);
+for (const provider of ['claude', 'gemini', '', undefined]) {
+  assert.equal(hideSkillAnnouncement(provider, ANNOUNCEMENT), false);
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const JS_DIR = resolve(REPO_ROOT, 'static', 'js');
 const CSS_DIR = resolve(REPO_ROOT, 'static', 'css');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
-const SHOT_DIR = resolve(REPO_ROOT, '_scratch', 'codex-preamble-dim');
+const SHOT_DIR = resolve(REPO_ROOT, '_scratch', 'codex-skill-announcement-2026-10-22');
 mkdirSync(SHOT_DIR, { recursive: true });
 const ORIGIN = 'http://mc.smoke.test';
 const PID = 'smoke_preamble_dim';
@@ -62,14 +81,17 @@ const TURN = [
   'PRE-ONE: I will test setup type, same-time-of-day volume, and previous-day context separately.',
   '[tool: shell] powershell -Command "Get-Content one"',
   '[tool: shell] powershell -Command "Get-Content two"',
+  ANNOUNCEMENT,
   'PRE-TWO: the split check is resolved; I will use only events after the listing date.',
   '[tool: file_change]',
   'FINAL: possibly, but 56.1% was the selected early-2026 result.',
   '\n> Ron: thanks\n',
   'PLAIN: no tools ran for this one, so it is an answer and stays normal.',
+  ANNOUNCEMENT + ' RESULT-UPDATE: 58 items remain.',
+  'I’m using the release skill to check approval for the push. APPROVAL-UPDATE: needs Ron.',
 ];
 const INTERIM = ['PRE-ONE', 'PRE-TWO'];
-const NORMAL = ['FINAL', 'PLAIN'];
+const NORMAL = ['FINAL', 'PLAIN', 'RESULT-UPDATE', 'APPROVAL-UPDATE'];
 
 const ok = (m) => console.log('  ✓ ' + m);
 let bad = 0;
@@ -88,10 +110,12 @@ const measure = (page, sel) => page.evaluate(({ sel, words }) => {
   }
   const tool = [...root.querySelectorAll('.agent-line-tool')].map((e) => parseFloat(getComputedStyle(e).opacity));
   const prompt = [...root.querySelectorAll('.agent-line-prompt')].map((e) => parseFloat(getComputedStyle(e).opacity));
-  return { out, tool, prompt, wrap: root.querySelectorAll('.agent-interim-wrap').length, marked: root.querySelectorAll('.agent-interim').length };
-}, { sel, words: [...INTERIM, ...NORMAL] });
+  const announcement = [...root.querySelectorAll('.agent-line')].some(e => e.textContent === words[words.length - 1]);
+  return { out, tool, prompt, announcement, wrap: root.querySelectorAll('.agent-interim-wrap').length, marked: root.querySelectorAll('.agent-interim').length };
+}, { sel, words: [...INTERIM, ...NORMAL, ANNOUNCEMENT] });
 
 function verify(label, provider, m) {
+  check(m.announcement === (provider !== 'codex'), `${label}: standalone skill announcement hidden only for Codex`);
   if (provider === 'codex') {
     for (const w of INTERIM) {
       const x = m.out[w];
@@ -123,6 +147,7 @@ try {
       if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
       if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
       if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+      if (path === '/api/engine/preferences') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"providers":[]}' });
       if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
       return route.abort();
     });

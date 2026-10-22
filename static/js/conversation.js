@@ -2,6 +2,7 @@
 
 import { openAttendUnlockDialog } from './attend-unlock-dialog.js';
 import { historySpawner } from './conversation-lineage.js';
+import { hideSkillAnnouncement } from './skill-announcement.js';
 
 // Tag agent-bound POST bodies with client="mobile" when the viewport is
 // phone-sized. The backend then decides — based on mobile_brief_replies_enabled
@@ -1601,6 +1602,7 @@ function agentPanelHTML(p) {
         } else {
           flushTable();
           const cls = agentLineCls(line);
+          if (cls === 'agent-line' && hideSkillAnnouncement(activeSession && activeSession.provider, line)) continue;
           // Prompts get the image-aware escaper so an attached "[Screenshot:
           // C:\path\file.jpg]" renders as a thumbnail instead of literal text.
           // Tool / error / status / queued lines stay on plain esc — we don't
@@ -5087,6 +5089,7 @@ function appendAgentLine(sessionId, text, dateHint) {
 
   const div = document.createElement('div');
   const cls = agentLineCls(text);
+  if (cls === 'agent-line' && hideSkillAnnouncement((agentStatusCache[sessionId] || {}).provider, text)) return;
   div.className = cls;
   div.setAttribute('dir', 'auto');
   // Reset stuck-plan counter only when a non-plan-related tool appears
