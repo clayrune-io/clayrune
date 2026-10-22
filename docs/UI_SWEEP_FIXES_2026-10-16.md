@@ -38,3 +38,22 @@ Validation: `python -m pytest tests/test_history_dispatch_lineage.py tests/test_
 - Actual Rusk composer also fits at 412 width: bottom 885/915. Browser screenshots are ignored `_scratch/rusk-fixed-m390.png` and `_scratch/rusk-fixed-m412.png`.
 - No server restart, merge, push, passcode entry, package install or actual child dispatch. Backend UI verification used real branch-produced responses through interception, not a claim of live deployment. Real-device testing remains unperformed.
 - Engram tools were unavailable. The worktree journal retains the plan; its requested global plan-file write was rejected by the unattended fence and was not retried. Dave should copy the ignored journal/scratch evidence if retaining it after worktree removal.
+
+## 2026-10-21: provider-settings compatibility in the history smoke
+
+The composer now loads `/api/engine/preferences` during modal rebuilds. The
+history-banner harness's catch-all API response (`[]`) did not satisfy that
+endpoint's `{providers: [...]}` contract. `effective()` then threw during render,
+and `openConversation` fell through from the MC session reconstruction to a
+transcript-keyed tab. The expected MC-keyed banner could therefore time out while
+the transcript-keyed banner was actually present.
+
+The harness now returns `{providers: []}` for this unrelated catalog. No product
+code, lineage policy, response interception scope or human gate changes. The
+original banner, rebuild, composer, transcript-twin, off-page and missing-lineage
+assertions pass at 1440 and 390 pixels with no uncaught page errors.
+
+Validation: `node tools/smoke/history-dispatch-banner.mjs` exits 0. USER_GUIDE,
+README and agent instructions need no update: this is test-fixture maintenance
+with no user-facing change. Operator-specific acceptance results and live-device
+limits belong in the ignored acceptance journal rather than this source document.
