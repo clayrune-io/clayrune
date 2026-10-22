@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-21] - Observe Codex usage at native sample boundaries
+
+- Running Codex sessions can supply cumulative token checkpoints from their owning rollout's exact-time native observations. Cached input is counted once; repeated source observations share the existing dedup key.
+- Stale last-turn usage, unmatched concurrent boundaries, inherited history, resets and unverified rollover carry remain unavailable with a logged reason. Claude accounting and incognito behavior retain their existing paths.
+
 ## [2026-10-21] - Save vendor preferences with one passcode per batch
 
 - Vendor models, efforts, default provider, CLI auto-update and Providers advanced settings collect as a draft behind a pinned Save changes/Cancel bar. The existing server passcode gate applies once to the combined Save.

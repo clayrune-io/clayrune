@@ -9355,12 +9355,24 @@ def _write_usage_breakdown_sample_tick(session, observed_at: str):
     disagree on the session's totals. Best-effort, same exception handling
     as the other checkpoint writers: one session's transcript read failing
     must never block another session's tick or the allowance sample that
-    already landed."""
+    already landed. Codex uses the source-time/lifetime checks in
+    `mc.codex_usage_checkpoint` instead; see docs/CODEX_USAGE_CHECKPOINTS.md."""
     project_id = session.get('project_id')
     sid = session.get('session_id')
     if not project_id or not sid or session.get('incognito'):
         return
     is_housekeeping = session.get('housekeeping', False)
+    if session.get('provider') == 'codex':
+        from mc.codex_usage_checkpoint import write_sample_tick
+        try:
+            project = load_project(project_id) or {}
+            write_sample_tick(session, observed_at,
+                              store=_UsageBreakdownStore(Path(DATA_DIR).parent / 'usage_breakdown.sqlite'),
+                              project_path=session.get('_agent_cwd') or project.get('project_path', ''),
+                              log=_log)
+        except Exception as e:
+            _log(f"[usage-breakdown] Codex sample-tick write failed for {sid[:12]}: {e}")
+        return
     try:
         _telemetry = _session_cumulative_transcript_telemetry(project_id, session)
     except Exception as e:
