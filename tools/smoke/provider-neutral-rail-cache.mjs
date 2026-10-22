@@ -9,7 +9,9 @@ import vm from 'node:vm';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(resolve(here, '..', '..', 'static', 'js', 'agent-log.js'), 'utf8');
-const previewSource = readFileSync(resolve(here, '..', '..', 'static', 'js', 'resume-preview.js'), 'utf8');
+// The picker-only VM has no DOM; gesture coverage runs in chat-text-selection.
+const previewSource = readFileSync(resolve(here, '..', '..', 'static', 'js', 'resume-preview.js'), 'utf8')
+  .replace("import { deferChatRefresh } from './chat-selection.js';", '');
 const context = vm.createContext({
   window: {}, console, Date,
   conversationsCache: {}, agentLogCache: {}, agentStatusCache: {},
@@ -62,6 +64,7 @@ upsert('', '', 'running', {
 // and its preview has no durable route back to the stored log.
 const previewContext = vm.createContext({
   window: {}, console, setTimeout, clearTimeout,
+  deferChatRefresh: () => false,
   conversationsCache: { project: rows() }, agentLogCache: {},
   pendingResumeId: {}, pendingResumeProvider: {}, pendingResumeMcSessionId: {},
   allProjects: [{ id: 'project', pinned_conversations: [] }],

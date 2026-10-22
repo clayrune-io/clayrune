@@ -3,6 +3,7 @@
 import { openAttendUnlockDialog } from './attend-unlock-dialog.js';
 import { historySpawner } from './conversation-lineage.js';
 import { hideSkillAnnouncement } from './skill-announcement.js';
+import { deferChatRefresh } from './chat-selection.js';
 
 // Tag agent-bound POST bodies with client="mobile" when the viewport is
 // phone-sized. The backend then decides — based on mobile_brief_replies_enabled
@@ -5063,17 +5064,23 @@ function appendAgentLine(sessionId, text, dateHint) {
       block._rawLines.push(text);
     } else {
       block = document.createElement('div');
+      block.className = 'hl-table-pre';  // keep grouping rows even while paint is deferred
       block._rawLines = [text];
       el.appendChild(block);
     }
-    // Rebuild: pipe tables get <table>, box-drawing stays pre-formatted
-    if (isPipeTable(block._rawLines)) {
-      block.className = 'hl-table';
-      block.innerHTML = buildPipeTable(block._rawLines);
-    } else {
-      block.className = 'hl-table-pre';
-      block.innerHTML = block._rawLines.map(l => formatTableLine(esc(l))).join('\n');
-    }
+    // A growing table replaces existing text nodes; preserve a reader's
+    // selection until it clears, then render the latest accumulated rows.
+    const paintTable = () => {
+      if (!block.isConnected) return;
+      if (isPipeTable(block._rawLines)) {
+        block.className = 'hl-table';
+        block.innerHTML = buildPipeTable(block._rawLines);
+      } else {
+        block.className = 'hl-table-pre';
+        block.innerHTML = block._rawLines.map(l => formatTableLine(esc(l))).join('\n');
+      }
+    };
+    if (!deferChatRefresh(el, block, paintTable)) paintTable();
     if (wasPinned) _scheduleAgentPinScroll(sessionId, el, freshMount);
     return;
   }

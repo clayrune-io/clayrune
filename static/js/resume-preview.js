@@ -1,3 +1,5 @@
+import { deferChatRefresh } from './chat-selection.js';
+
 let sseRetryCount = {};       // session_id → number of consecutive reconnect attempts
 // ── Resume-conversation inline preview ───────────────────────────────────────
 // Shows the selected prior conversation's chat in the dead space below the
@@ -736,6 +738,7 @@ function _repaintAgentOutput(sessionId) {
   const el = document.getElementById(`agent-output-${sessionId}`);
   if (!el) return false;
   const buf = agentOutputBuffers[sessionId] || [];
+  if (deferChatRefresh(el, `output:${sessionId}`, () => _repaintAgentOutput(sessionId))) return true;
   el.innerHTML = '';
   delete el.dataset.scrollInitialized;
   // Full replay from scratch — re-arm speaker attribution (MC-937 Phase 2a) so

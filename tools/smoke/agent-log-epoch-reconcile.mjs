@@ -23,7 +23,9 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const source = readFileSync(resolve(here, '..', '..', 'static', 'js', 'resume-preview.js'), 'utf8');
+// This buffer-only VM has no DOM; gesture coverage runs in chat-text-selection.
+const source = readFileSync(resolve(here, '..', '..', 'static', 'js', 'resume-preview.js'), 'utf8')
+  .replace("import { deferChatRefresh } from './chat-selection.js';", '');
 
 const SID = 'sess-revive-1';
 const PID = 'proj-1';
@@ -55,6 +57,7 @@ function makeContext() {
   const dom = { innerHTML: '', dataset: {} };
   const context = vm.createContext({
     window: {}, console, setTimeout, clearTimeout,
+    deferChatRefresh: () => false,
     document: { getElementById: () => dom },
     agentServerLines: {}, agentLogEpoch: {},
     agentOutputBuffers: {}, agentOutputTimestamps: {},

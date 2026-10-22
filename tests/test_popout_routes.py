@@ -125,6 +125,7 @@ class _FakeWebview:
 
     def create_window(self, title, url=None, **kw):
         w = _FakeWindow(url, title)
+        w.text_select = kw.get('text_select', False)
         self.windows.append(w)
         return w
 
@@ -134,6 +135,7 @@ def test_bridge_opens_one_window_per_session_and_focuses_on_repeat():
     api = PopoutApi(wv, 5199, log=lambda *_: None)
     assert api.open_chat_window('p1', 's1', 'T') == {'ok': True, 'existing': False}
     assert wv.windows[0].url == 'http://127.0.0.1:5199/?popout=1&p=p1&s=s1'
+    assert wv.windows[0].text_select is True
     assert api.open_chat_window('p1', 's1') == {'ok': True, 'existing': True}
     assert len(wv.windows) == 1 and wv.windows[0].shown == 1
     assert api.open_chat_window('p1', 's2')['existing'] is False

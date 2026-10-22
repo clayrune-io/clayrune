@@ -5,9 +5,12 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const source = readFileSync(resolve(here, '..', '..', 'static', 'js', 'resume-preview.js'), 'utf8');
+// This cursor-only VM has no DOM; gesture coverage runs in chat-text-selection.
+const source = readFileSync(resolve(here, '..', '..', 'static', 'js', 'resume-preview.js'), 'utf8')
+  .replace("import { deferChatRefresh } from './chat-selection.js';", '');
 const context = vm.createContext({
   window: {}, console, setTimeout, clearTimeout,
+  deferChatRefresh: () => false,
   agentServerLines: {},
   conversationsCache: {}, agentLogCache: {}, pendingResumeId: {},
   pendingResumeProvider: {}, pendingResumeMcSessionId: {}, allProjects: [],

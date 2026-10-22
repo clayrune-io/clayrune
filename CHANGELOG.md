@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-22] - Keep chat text selected while updates arrive
+
+- Enabled native text selection in the desktop app and popped-out chat windows. Drag across user messages, replies and code, then copy with the usual keyboard shortcut.
+- Chat refreshes, recovered history and growing tables preserve an active highlight; streaming output continues without automatically scrolling the selection away. Deferred refreshes catch up when the highlight is cleared.
+
 ## [2026-10-22] - Hide routine Codex skill announcements in chat
 
 - Live and reopened Codex chats omit standalone routine “I'm using … skill to …” lines. Mixed updates, results, approval/failure messages and other providers retain their display; original session logs are preserved.

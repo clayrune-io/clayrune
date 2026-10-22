@@ -576,6 +576,7 @@ if __name__ == '__main__':
                 width=1400,
                 height=900,
                 min_size=(900, 600),
+                text_select=True,
                 js_api=_popout_api,
             )
             # Popped chat windows belong to the main one: closing it ends them

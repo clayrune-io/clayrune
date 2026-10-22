@@ -1,5 +1,7 @@
 // ── Rich text formatting for agent output ────────────────────────────────────
 
+import { chatSelectionActive } from './chat-selection.js';
+
 // RTL helpers (MC-1000). Hebrew + Arabic (+ presentation forms) ranges —
 // deliberately NOT a full Unicode bidi-class table, just enough to answer
 // "is this the first strong-directional character" for the two scripts this
@@ -635,6 +637,7 @@ const _pinScrollQueue = new Map();  // sessionId -> {el, freshMount}
 
 function _isAgentOutputPinned(el, sessionId) {
   if (!el) return true;
+  if (chatSelectionActive(el)) return false;
   // If we have a pending pin-scroll for this session, treat as still pinned —
   // the DOM read below would return the pre-write state during a streaming
   // burst and report "not at bottom" even though we're about to scroll there.
@@ -652,7 +655,7 @@ function _scheduleAgentPinScroll(sessionId, el, freshMount) {
     _pinScrollQueue.delete(sessionId);
     if (!entry) return;
     const target = entry.el;
-    if (!target || !target.isConnected) return;
+    if (!target || !target.isConnected || chatSelectionActive(target)) return;
     target.scrollTop = target.scrollHeight;
     if (entry.freshMount && target.scrollHeight > 0) {
       target.dataset.scrollInitialized = '1';

@@ -1,0 +1,8 @@
+/* WKWebView needs the prefixed property too. Keep controls' own selection
+   rules; only conversation text opts into native drag-to-highlight. */
+.agent-output, .conv-preview-body,
+.agent-output .agent-line, .conv-preview-body .agent-line,
+.agent-output code, .agent-output pre, .agent-output td, .agent-output th {
+  -webkit-user-select: text;
+  user-select: text;
+}

@@ -60,6 +60,7 @@ class PopoutApi:
                     title[:120],
                     url=self._url(project_id, session_id),
                     width=1000, height=860, min_size=(380, 420),
+                    text_select=True,
                 )
             except Exception as e:
                 self._log(f'[popout] create_window failed: {e}')

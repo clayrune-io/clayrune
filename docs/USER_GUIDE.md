@@ -336,6 +336,12 @@ the asset cache. No Windows registry change or provider re-login is needed.
 - **Stop / Continue**: stopped sessions can be revived by typing a new
   message — the agent picks up the same Claude conversation.
 - **Image upload**: paste or drop images into the input to attach them.
+- **Select and copy chat text**: drag across user messages, agent replies or code
+  to highlight text, including text across multiple messages. Press **Cmd+C**
+  on Mac or **Ctrl+C** on Windows/Linux to copy. This also works in popped-out
+  chats. While a highlight is active, live output continues but automatic
+  scrolling and refreshes that replace the selected text wait until you clear
+  the highlight (for example, by clicking the message input).
 - **File links in replies**: click a text, Markdown, log or source-code file to
   read it in the File viewer. Markdown shows formatted text and tables; other
   text preserves its contents. The full absolute path stays visible in the

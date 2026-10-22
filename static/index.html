@@ -259,6 +259,7 @@
   }
 </script>
 <link rel="stylesheet" href="/static/css/app.css">
+<link rel="stylesheet" href="/static/css/chat-selection.css">
 <link rel="stylesheet" href="/static/css/provider-preferences.css">
 <link rel="stylesheet" href="/static/css/vendor-preference-draft.css">
 <link rel="stylesheet" href="/static/css/image-viewer.css">
@@ -2228,6 +2229,9 @@ function refreshModalById(modalId) {
   // changed. Streaming output is unaffected: the SSE append path writes into
   // #agent-output-<sid> directly and doesn't come through here.
   if (entry.element.querySelector('.modal-menu-dropdown.open')) return;
+  if ((modalActiveTab[entry.projectId] || 'agent') === 'agent' &&
+      window.deferChatModalRefresh?.(entry.element, `modal:${modalId}`, () => refreshModalById(modalId),
+        [activeAgentTab[entry.projectId], splitAgentTab[entry.projectId]], pendingResumeId[entry.projectId])) return;
 
   const content = entry.element.querySelector('.modal-content');
   const scrollBody = content.querySelector('.modal-scroll-body');
