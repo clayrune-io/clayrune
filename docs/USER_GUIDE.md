@@ -342,6 +342,9 @@ the asset cache. No Windows registry change or provider re-login is needed.
   chats. While a highlight is active, live output continues but automatic
   scrolling and refreshes that replace the selected text wait until you clear
   the highlight (for example, by clicking the message input).
+  Opening, changing or closing a split pane still takes effect while text is
+  highlighted; the selection hold applies to background refreshes of the same
+  chat arrangement.
 - **File links in replies**: click a text, Markdown, log or source-code file to
   read it in the File viewer. Markdown shows formatted text and tables; other
   text preserves its contents. The full absolute path stays visible in the

@@ -5,6 +5,7 @@
 - Enabled native text selection in the desktop app and popped-out chat windows. Drag across user messages, replies and code, then copy with the usual keyboard shortcut.
 - Chat refreshes, recovered history and growing tables preserve an active highlight; streaming output continues without automatically scrolling the selection away. Deferred refreshes catch up when the highlight is cleared.
 - Normal frontend checks include real chat-selection gestures and clipboard round trips, using Cmd on macOS and Ctrl on Windows/Linux. Installed Chromium is required; WebKit runs when already available.
+- Split-view navigation takes effect while text is highlighted: opening, replacing, closing or reordering panes bypasses the selection hold. Background refreshes of the same pane arrangement retain the highlight.
 
 ## [2026-10-22] - Hide routine Codex skill announcements in chat
 

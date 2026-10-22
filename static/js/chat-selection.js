@@ -27,10 +27,17 @@ export function deferChatRefresh(root, key, refresh) {
 // Background refreshes retain the current view. An explicit session/tab
 // change must still navigate even if the old view has highlighted text.
 function deferChatModalRefresh(root, key, refresh, sessionIds, previewId) {
-  const chats = [...root.querySelectorAll(CHAT)].filter(chat =>
-    chat.classList.contains('agent-output')
-      ? sessionIds.some(sid => sid && chat.id === `agent-output-${sid}`)
-      : previewId && chat.dataset.csid === previewId);
+  const chats = [...root.querySelectorAll(CHAT)];
+  const rendered = chats.filter(chat => chat.classList.contains('agent-output')).map(chat => chat.id);
+  const requested = sessionIds.filter(Boolean).map(sid => `agent-output-${sid}`);
+  const preview = chats.find(chat => chat.classList.contains('conv-preview-body'));
+  // Compare the complete ordered pane arrangement, not membership: A must
+  // not hold A/B -> A/C, A/B -> B/A, or single A <-> split A/B navigation.
+  if (rendered.length !== requested.length || rendered.some((id, i) => id !== requested[i]) ||
+      (preview && preview.dataset.csid !== previewId)) {
+    pending.delete(key);
+    return false;
+  }
   if (!chats.some(chatSelectionActive)) { pending.delete(key); return false; }
   pending.set(key, { root, refresh });
   return true;

@@ -16,7 +16,9 @@ let html = readFileSync(resolve(root, 'static/index.html'), 'utf8');
 // the working tree, and require the same real gesture to survive its updates.
 const baseline = process.argv.find(arg => arg.startsWith('--baseline='))?.slice(11);
 if (baseline) {
-  for (const name of ['index.html', 'js/conversation.js', 'js/resume-preview.js', 'js/rich-text.js']) {
+  const names = ['index.html', 'js/conversation.js', 'js/resume-preview.js', 'js/rich-text.js'];
+  if (execFileSync('git', ['ls-tree', '--name-only', baseline, 'static/js/chat-selection.js'], { cwd: root, encoding: 'utf8' }).trim()) names.push('js/chat-selection.js');
+  for (const name of names) {
     const body = execFileSync('git', ['show', `${baseline}:static/${name}`], { cwd: root, encoding: 'utf8' });
     if (name === 'index.html') html = body;
     else files[`/static/${name}`][1] = body;
@@ -200,6 +202,75 @@ for (const [engine, type] of [['chromium', chromium], ['webkit', webkit]]) {
       await clear();
       console.log(`PASS ${engine}/${mode}: 4 drags + copy/paste, new/growing tables, modal refresh, status/epoch reconcile, stream/queued scroll`);
     }
+    serverSessions = [];
+    const [a, b, c] = ['split-A', 'split-B', 'split-C'];
+    await page.setViewportSize({ width: 1880, height: 1050 });
+    await page.evaluate(({ pid, ids }) => {
+      closeModalById(pid);
+      for (const sid of ids) {
+        const rec = { projectId: pid, sessionId: sid, task: sid, status: 'completed', provider: 'claude', claudeSessionId: sid, startedAt: new Date().toISOString() };
+        agentHistory.unshift(rec); agentStatusCache[sid] = { ...rec };
+        agentOutputBuffers[sid] = ['SELECT split pane anchor text.'];
+        agentOutputTimestamps[sid] = [];
+      }
+      conversationsCache[pid] = ids.map(sid => ({ claude_session_id: sid, mc_session_id: sid,
+        live: false, status: 'completed', label: sid, turns: 1 }));
+      agentLogCache[pid] = [];
+      activeAgentTab[pid] = ids[0]; delete splitAgentTab[pid]; delete agentConvNew[pid];
+      openProjectModal(pid); refreshModal();
+      const modal = openModals.get(pid).element;
+      modal.style.left = '100px'; modal.style.top = '60px';
+      modal.querySelector('.modal-content').style.width = '1600px';
+      refreshModalById(pid);
+    }, { pid, ids: [a, b, c] });
+    const paneOrder = () => page.locator(`.modal-window[data-modal-id="${pid}"] .agent-split-pane`).evaluateAll(panes => panes.map(pane => pane.dataset.sid));
+    async function holdLeft() {
+      await settle();
+      const text = await drag(`#agent-output-${a}`, 'SELECT', 'anchor');
+      await page.evaluate(pid => refreshModalById(pid), pid);
+      await settle();
+      assert.equal(await selected(), text, 'same-view background refresh retains split highlight');
+      return text;
+    }
+    async function activateSelectedControl(selector, text) {
+      // Chromium keeps the highlight when focusing a button. WebKit clears it
+      // on focus, so invoke that real button's click instead: both routes run
+      // its production inline handler with the real drag selection intact.
+      const button = page.locator(selector);
+      if (engine === 'webkit') {
+        assert.equal(await selected(), text, 'real split control receives an intact selection');
+        await button.evaluate(node => node.click());
+      } else {
+        await button.focus();
+        assert.equal(await selected(), text, 'real split control receives an intact selection');
+        await page.keyboard.press('Enter');
+      }
+      await settle();
+    }
+    await page.locator(`.conv-row[data-csid="${b}"] .conv-split`).click(); await settle();
+    assert.deepEqual(await paneOrder(), [a, b], 'initial split A/B is rendered');
+    let text = await holdLeft();
+    await page.evaluate(b => appendAgentLine(b, 'RIGHT pane update remains live', false), b);
+    assert.equal(await selected(), text, 'right-pane streaming retains left selection');
+    assert((await page.locator(`#agent-output-${b}`).innerText()).includes('RIGHT pane update'), 'unselected split pane stays live');
+    await activateSelectedControl(`.conv-row[data-csid="${c}"] .conv-split`, text);
+    assert.deepEqual(await paneOrder(), [a, c], 'replacing B with C bypasses retained A highlight');
+    text = await holdLeft();
+    await activateSelectedControl(`.agent-split-pane[data-sid="${c}"] .agent-split-close`, text);
+    assert.deepEqual(await paneOrder(), [], 'closing right pane bypasses retained A highlight');
+    text = await holdLeft();
+    await activateSelectedControl(`.conv-row[data-csid="${b}"] .conv-split`, text);
+    assert.deepEqual(await paneOrder(), [a, b], 'opening split B bypasses single-view hold');
+    await holdLeft();
+    // There is no swap button. Exercise an ordered identity change through
+    // the actual modal refresh path, without inventing a UI control.
+    await page.evaluate(({ pid, a, b }) => {
+      activeAgentTab[pid] = b; splitAgentTab[pid] = a; refreshModalById(pid);
+    }, { pid, a, b });
+    assert.deepEqual(await paneOrder(), [b, a], 'ordered pane swap bypasses hold even with the same session set');
+    await page.screenshot({ path: resolve(shotDir, `${engine}-split-navigation.png`) });
+    await clear();
+    console.log(`PASS ${engine}/split: real drag + open/replace/close controls, ordered swap refresh, same-view hold, right-pane streaming`);
     assert.deepEqual(errors.filter(e => !/fetch|aborted|EventSource/i.test(e)), []);
   } finally { await browser.close(); }
 }
