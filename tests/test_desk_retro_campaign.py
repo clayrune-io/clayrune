@@ -85,6 +85,21 @@ def _dim(retro, name):
     return next(d for d in retro['dimensions'] if d['dimension'] == name)
 
 
+def test_receipt_outcomes_are_present_even_for_interim_term(client, monkeypatch):
+    from mc import state
+    monkeypatch.setattr(state, 'CONFIG', {'desk_suppression_impressions': 7})
+    _campaign(client, term={'index': 1, 'starts': '2026-06-01', 'ends': '2099-01-01'})
+    pid = _post(client, 0, fmt='post', account='x:test', clicks=None)
+    _desk.record_feed_outcome(pid, 'impressions', 6, at='2026-06-03T00:00:00Z')
+    _desk.record_feed_outcome(pid, 'replies', 0, at='2026-06-03T00:00:00Z')
+    r = _retro(client)
+    assert r['status'] == 'interim'
+    receipt = r['receipt_outcomes'][0]
+    assert receipt['id'] == pid and receipt['impressions'] == 6
+    assert receipt['replies'] == 0 and receipt['possibly_suppressed'] is True
+    assert len(_desk.list_ledger()[0]['outcomes']) == 2  # projection never writes
+
+
 def test_unknown_campaign_is_404_and_bad_term_is_400(client):
     assert client.get('/api/desk/campaigns/nope/retro').status_code == 404
     assert client.post('/api/desk/campaigns/nope/retro').status_code == 404

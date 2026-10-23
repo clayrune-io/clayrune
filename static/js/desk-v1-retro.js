@@ -14,6 +14,8 @@
 //
 // desk_v1_live ON (R1-W S8, docs/desk_v1/R1W_WIRING_PLAN.md M12): the retro,
 // its per-post grid and its findings are the server's (see "Live data" below).
+import { receiptOutcomesHTML } from './desk-v1-outcomes.js';
+
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -111,6 +113,7 @@
     fx.retros[_retroKey(camp)] = {
       term: r.term, status: r.status, metric: r.metric, goal: r.goal || {}, spend: r.spend || {},
       dimensions: r.dimensions || [], summary: r.summary || '', findings: r.findings || [],
+      receipt_outcomes: r.receipt_outcomes || [],
     };
     const pb = _playbook();
     pb.findings = pb.findings || [];
@@ -461,6 +464,7 @@
         ${spend.cost_per_outcome != null ? ` · cost per outcome ${esc(_money(spend.cost_per_outcome))}` : ''}
       </div>
       <div class="desk-v1-retro-dims">${(retro.dimensions || []).map(_dimensionRowHTML).join('')}</div>
+      ${receiptOutcomesHTML(retro.receipt_outcomes, esc)}
       ${closed ? _gridHTML(camp, retro) : ''}
       ${closed ? _findingsHTML(retro) : `<div class="desk-v1-stub-inline">Interim: numbers only — findings are proposed once this term closes.</div>`}
     `;
@@ -479,6 +483,7 @@
             <span class="desk-v1-retro-title">Retro</span>
             <button type="button" class="desk-v1-retro-btn desk-v1-retro-btn--primary" data-retro-run>Run retro now</button>
           </div>
+          ${receiptOutcomesHTML(retro.receipt_outcomes, esc)}
         </div>`;
       hostEl.querySelector('[data-retro-run]').onclick = () => {
         _shownInterim.add(camp.id);

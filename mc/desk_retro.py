@@ -338,6 +338,11 @@ def campaign_retro(campaign_id: str, term: int | None = None, *, metric: str = '
     if inputs is None:
         return None
     camp, idx, rows, closed, arms, slot_account = inputs
+    from mc import state
+    from mc.desk_outcomes import receipt_outcomes, threshold_from_config
+    now = datetime.now(timezone.utc)
+    threshold = threshold_from_config(state.CONFIG)
+    receipts = [receipt_outcomes(r, now=now, threshold=threshold) for r in rows]
     dimensions = []
     for dimension, a in arms.items():
         v = _sane(retro_verdict(dimension, a))
@@ -377,6 +382,7 @@ def campaign_retro(campaign_id: str, term: int | None = None, *, metric: str = '
         'campaign_id': campaign_id, 'project_id': camp.get('project_id'), 'term': idx,
         'status': 'closed' if closed else 'interim', 'metric': metric,
         'computed_at': _desk.now_iso(),
+        'receipt_outcomes': receipts,
         'goal': {'metric': goal.get('metric'), 'target': target, 'actual': actual,
                  'baseline': goal.get('baseline')},
         'spend': {'publishing': publishing, 'media_cost': None, 'total': publishing,

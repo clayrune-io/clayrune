@@ -111,6 +111,21 @@ def test_blueprint_registered(ctx):
     assert 'settings_routes' in server.app.blueprints
 
 
+def test_desk_suppression_threshold_is_tunable_and_persisted(ctx):
+    response = ctx.client.put('/api/config', json={'desk_suppression_impressions': 8})
+    assert response.status_code == 200
+    assert ctx.state.CONFIG['desk_suppression_impressions'] == 8
+    assert json.loads(ctx.config_path.read_text())['desk_suppression_impressions'] == 8
+
+
+@pytest.mark.parametrize('value', [-1, True, None, '5'])
+def test_bad_desk_suppression_threshold_is_not_saved(ctx, value):
+    before = ctx.state.CONFIG.get('desk_suppression_impressions')
+    response = ctx.client.put('/api/config', json={'desk_suppression_impressions': value})
+    assert response.status_code == 400
+    assert ctx.state.CONFIG.get('desk_suppression_impressions') == before
+
+
 def test_all_expected_routes_present_under_blueprint(ctx):
     import server
     owned = {r.rule for r in server.app.url_map.iter_rules()

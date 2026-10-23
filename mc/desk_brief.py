@@ -40,6 +40,7 @@ gate costs.
 from __future__ import annotations
 
 from mc import desk as _desk
+from mc.desk_campaign_results import previous_results_digest
 
 # PLATFORM IS A PROPERTY OF THE VOICE, not a separate choice, and that is the
 # answer to "should a campaign set the platform too?" — no. A voice and a
@@ -471,6 +472,9 @@ def build_suggest_brief(campaign: dict, *, accounts: list[dict], project_name: s
     pid = campaign.get('project_id')
     if pid:
         out += ['', '── ' + _desk.playbook_brief(pid)]
+    previous = previous_results_digest(campaign)
+    if previous:
+        out += ['', previous]
     out += [
         '',
         '── HOW TO DELIVER IT ──',

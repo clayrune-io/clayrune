@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-23] - Show published receipt outcomes in Desk Results (MC-968)
+
+- Results/retro shows impressions and replies per published receipt, including during an active campaign. Missing measurements stay unknown.
+- A receipt with fewer than 5 measured impressions, observed at least 24 hours after publication, reads **possibly suppressed**. This is a low-reach heuristic; missing, young or invalid observations never trigger it. The threshold is config-tunable through `desk_suppression_impressions`.
+- Campaign suggestions include a bounded digest of the previous completed campaign in the same project: measured impressions, replies, possibly-suppressed count and measurement coverage. Existing engagement reads supply the data; no additional platform calls.
+
 ## [2026-10-23] - Preserve setup choices and the active project provider editor
 
 - First-run setup offers only model tiers mapped by the selected provider. Providers without tier support use their native default without sending an unsupported tier.
