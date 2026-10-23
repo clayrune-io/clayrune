@@ -1,3 +1,5 @@
+import {supportsSetupTier, setupModelControl} from './setup-model-preferences.js';
+
 // Model preferences belong to the provider selected in this setup draft.
 function _setupSavedModel() {
   const provider = setupExplicitDefault || _globalConfig?.default_provider || '';
@@ -86,13 +88,7 @@ const SETUP_STEPS = [
           <button type="button" class="setup-btn-utility" onclick="setupInstallSelected(this)">Install selected</button>
           <button type="button" class="setup-btn-utility" onclick="providerRefreshAll()">Check setup status</button>
         </div><div class="prov-install-policy-note" style="margin-top:6px;font-size:11px;color:var(--text-faint)">${esc(_providerInstallPolicyNoteText || '')}</div>`
-        + `<div class="setup-section">
-          <div class="setup-section-label">Default model</div>
-          <div class="setup-section-hint">Applies to the selected default provider. Projects, agent types and chats can override it. Balanced is recommended.</div>
-          <div class="mc-seg" id="setup-model-tier-seg">`
-        + Object.keys(MODEL_TIER_LABEL).map(t => `<button type="button" class="${setupModelTier === t ? 'active' : ''}" data-tier="${t}" onclick="setupPickModelTier('${t}',this)">${MODEL_TIER_LABEL[t]}</button>`).join('')
-        + `</div>
-        </div>`;
+        + setupModelControl(provs, cur, setupModelTier, MODEL_TIER_LABEL);
       // No _SETUP_FOOTER here: the connections step's "No AI vendor selected"
       // callout must sit ABOVE the footer note, not below it — setupShow
       // appends both in that order for this step only (see isConnStep below).
@@ -577,6 +573,8 @@ async function setupSetDefaultProvider(name) {
 // that same single batched write (_setupPendingConfigBody /
 // _setupPersistCompleted), same as the backup destination/schedule fields.
 function setupPickModelTier(tier, btn) {
+  const provider = setupExplicitDefault || _globalConfig?.default_provider || '';
+  if (!supportsSetupTier(_agentProviders, provider, tier)) return;
   setupModelTier = tier;
   if (btn) _setupHighlight(btn);
 }
@@ -908,7 +906,9 @@ function _setupPendingConfigBody() {
   const curModel = _setupSavedModel().trim();
   const wantModel = setupModelTier ? 'tier:' + setupModelTier : '';
   const modelProvider = setupExplicitDefault || _globalConfig.default_provider;
-  if (wantModel && wantModel !== curModel && modelProvider) body.provider_defaults = {[modelProvider]: {model: wantModel}};
+  if (wantModel && wantModel !== curModel && supportsSetupTier(_agentProviders, modelProvider, setupModelTier)) {
+    body.provider_defaults = {[modelProvider]: {model: wantModel}};
+  }
   const curDefault = String((_globalConfig && _globalConfig.default_provider) || '').trim();
   if (setupExplicitDefault && setupExplicitDefault !== curDefault) body.default_provider = setupExplicitDefault;
   if (!(_globalConfig && _globalConfig.setup_completed)) body.setup_completed = true;
@@ -936,7 +936,7 @@ async function _setupPersistCompleted() {
   if (!Object.keys(body).length) return; // nothing changed — no call, no prompt
   const result = await humanProofFetch(API_BASE + '/api/config', {
     method: 'PUT',
-    body: JSON.stringify(body),
+    body: JSON.stringify({...body, setup_save: true}),
   }, {
     title: 'Save your setup',
     description: 'Re-enter your dashboard passcode to save your setup choices.',
@@ -954,20 +954,23 @@ async function _setupPersistCompleted() {
     showToast((result.body && result.body.error) || `Settings were not saved (HTTP ${result.status}).`, 6000);
     return;
   }
-  try {
-    if (body.backup_dest_dir) {
-      _globalConfig.backup_dest_dir = body.backup_dest_dir;
-      _setupBackupDest.configured = body.backup_dest_dir;
-      _setupBackupDest.override = '';
-    }
-    if (body.backup_schedule) _globalConfig.backup_schedule = body.backup_schedule;
-    if (body.provider_defaults) {
-      _globalConfig.provider_defaults = {...(_globalConfig.provider_defaults || {}), ...body.provider_defaults};
-      window.EnginePreferences?.invalidate();
-    }
-    if (body.default_provider) _globalConfig.default_provider = body.default_provider;
-    if (body.setup_completed) _globalConfig.setup_completed = true;
-  } catch (_) {}
+  const modelError = result.body?.rejected?.provider_defaults;
+  if (modelError) {
+    delete body.provider_defaults;
+    showToast('Other setup settings saved. Model preference was not saved: ' + modelError, 8000);
+  }
+  if (body.backup_dest_dir) {
+    _globalConfig.backup_dest_dir = body.backup_dest_dir;
+    _setupBackupDest.configured = body.backup_dest_dir;
+    _setupBackupDest.override = '';
+  }
+  if (body.backup_schedule) _globalConfig.backup_schedule = body.backup_schedule;
+  if (body.provider_defaults) {
+    _globalConfig.provider_defaults = {...(_globalConfig.provider_defaults || {}), ...body.provider_defaults};
+    window.EnginePreferences?.invalidate();
+  }
+  if (body.default_provider) _globalConfig.default_provider = body.default_provider;
+  if (body.setup_completed) _globalConfig.setup_completed = true;
 }
 
 async function setupShow(idx) {

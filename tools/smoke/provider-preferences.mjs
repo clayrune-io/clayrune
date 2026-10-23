@@ -6,6 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {dirname, resolve} from 'node:path';
 import {chromium} from 'playwright';
 import {loadStaticJsCss} from './_static.mjs';
+import {checkProjectPreferenceRaces} from './_project-preferences-race.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const STATIC = loadStaticJsCss(ROOT);
@@ -244,6 +245,10 @@ try {
     writeFileSync(resolve(SHOTS,`inventory-${width}.json`),JSON.stringify(inventory,null,2));
     assert.deepEqual(errors.filter(error => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(error)),[]);
     console.log(`PASS ${width}px: provider fields, cancellation, invalid tuple, project native/inherit, Floor save/cancel, search, security and overflow`);
+    await page.evaluate(() => window.closeModalById('__settings'));
+    await checkProjectPreferenceRaces(page, fixtureView);
+    assert.deepEqual(errors.filter(error => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(error)),[]);
+    console.log(`PASS ${width}px: delayed project success/error, dismissal and same-project reopen`);
     await ctx.close();
   }
 } finally { await browser.close(); }

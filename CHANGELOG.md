@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-23] - Preserve setup choices and the active project provider editor
+
+- First-run setup offers only model tiers mapped by the selected provider. Providers without tier support use their native default without sending an unsupported tier.
+- A refused setup model choice reports its error while preserving valid backup and default-provider choices in the same passcode-confirmed save. Ordinary Settings batches keep their existing validation behavior.
+- Delayed project-provider responses and errors cannot replace a newer editor or rewrite it after dismissal, including reopening the same project.
+
 ## [2026-10-22] - Keep the host awake between agent runs (MC-1109)
 
 - **Settings > System > Runtime and availability > Keep machine awake** now prevents automatic system sleep while the Clayrune server runs, even with zero running agents. It remains off by default; live changes reconcile within about 20 seconds and server exit releases the lock. The display can still sleep.

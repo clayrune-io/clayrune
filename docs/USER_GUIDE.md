@@ -111,6 +111,12 @@ installed. Select one or more vendors, choose an explicit default, and use
 **Install selected** for missing CLIs. Each selected vendor remains available
 for individual agents and chats.
 
+The default-model tier chooser shows only tiers supported by the selected default
+vendor. If that vendor has no tier mappings, setup leaves its native model default
+in place. If the server refuses a model choice when you finish setup, Clayrune
+reports that refusal and still saves valid backup and default-provider choices
+under the same passcode confirmation. Adjust the model later in Settings → Providers.
+
 After an install terminal finishes, click **Check setup status**. An installed
 vendor may still show **not signed in**; use its **Sign in** button and check
 status again. **Next** is never locked: a highlighted note above it says what

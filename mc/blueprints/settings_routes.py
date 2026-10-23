@@ -359,12 +359,11 @@ def update_config():
     refusal = _require_human_passcode(data)
     if refusal is not None:
         return refusal
-    if 'provider_defaults' in data:
-        try:
-            data['provider_defaults'] = provider_preferences.patch_preferences(
-                state.CONFIG, data['provider_defaults'])
-        except ValueError as exc:
-            return jsonify({'error': str(exc)}), 400
+    from mc.setup_preferences import prepare_preferences
+    try:
+        rejected = prepare_preferences(state.CONFIG, data)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     if (isinstance(state.CONFIG.get('provider_defaults'), dict) or 'provider_defaults' in data) and any(
             key in data for key in ('agent_model', 'agent_effort', *provider_preferences.ROLE_FIELDS)):
         return jsonify({'error': 'Use provider_defaults for model and effort preferences'}), 409
@@ -474,7 +473,7 @@ def update_config():
             if respawn_flagged:
                 _log(f"[sticky-settings] {flipped} changed → flagged "
                      f"{respawn_flagged} live Mode B session(s) for respawn")
-    return jsonify({'ok': True, 'updated': list(updated.keys()),
+    return jsonify({'ok': True, 'updated': list(updated.keys()), 'rejected': rejected,
                     'respawn_flagged': respawn_flagged})
 
 

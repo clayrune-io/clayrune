@@ -54,6 +54,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import assert from 'node:assert/strict';
 import { loadStaticJsCss } from './_static.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -78,18 +79,19 @@ const CLAYRUNE_PROJECT = {
   use_streaming_agent: true, roster: [],
 };
 
-// The reported bug's shape: 2 installed (one of them NOT claude, so a
-// naive "skip when <=1 installed" guard wouldn't even be the reason gemini
-// vanished) + 1 registered-but-not-installed. install_hint mirrors the exact
-// command install.sh runs — never invented here or in the app.
+// The reported bug's shape, plus a no-tier provider: 3 installed and one
+// registered-but-not-installed. install_hint mirrors the exact command
+// install.sh runs — never invented here or in the app.
 const PROVIDERS_FIXTURE = {
   providers: [
     { name: 'gemini', display_name: 'Gemini CLI', installed: false, in_use: false,
-      default: false, install_hint: 'npm install -g @google/gemini-cli' },
+      default: false, tiers: {balanced: 'gemini-balanced'}, install_hint: 'npm install -g @google/gemini-cli' },
     { name: 'claude', display_name: 'Claude Code', installed: true, in_use: true,
-      default: true, auth_status: 'ok' },
+      default: true, auth_status: 'ok', tiers: {best: 'opus', balanced: 'sonnet', fast: 'haiku'} },
     { name: 'codex', display_name: 'Codex', installed: true, in_use: false,
-      default: false, auth_status: 'not_logged_in' },
+      default: false, auth_status: 'not_logged_in', tiers: {balanced: 'gpt-balanced'} },
+    { name: 'qwen', display_name: 'Qwen Code', installed: true, in_use: false,
+      default: false, auth_status: 'ok', model_selection: true, tiers: {} },
   ],
   default: 'claude',
 };
@@ -132,6 +134,7 @@ async function readProviderChoiceStep(page) {
 let browser, exitCode = 1;
 try {
   browser = await chromium.launch();
+  for (const scenario of ['tier', 'no-tier', 'refused-tier']) {
   const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
   const page = await ctx.newPage();
   const pageErrors = [];
@@ -150,7 +153,8 @@ try {
     if (path === '/api/config') {
       if (req.method() === 'PUT') {
         try { configPuts.push(JSON.parse(req.postData() || '{}')); } catch (_) {}
-        return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(
+          scenario === 'refused-tier' ? {ok: true, rejected: {provider_defaults: 'claude: tier balanced is not available'}} : {ok: true}) });
       }
       return route.fulfill({ status: 200, contentType: 'application/json', body: '{"setup_completed":false}' }); // no default_provider/agent_model saved; setup never completed
     }
@@ -186,7 +190,7 @@ try {
   if (!step || step.title !== 'Which AI do you work with?') {
     fail(`connections step did not render (got title: ${step && step.title})`);
   } else {
-    ok('connections step rendered on a fresh install with 2 CLIs installed (not just <=1)');
+    ok('connections step rendered on a fresh install with 3 CLIs installed (not just <=1)');
 
     const byName = Object.fromEntries(step.rows.map(r => [r.name, r]));
     if (!byName.gemini) fail('gemini (not installed) is MISSING from the chooser — the exact reported bug');
@@ -216,6 +220,11 @@ try {
     if (geminiIdx !== -1 && geminiIdx !== order.length - 1)
       fail(`not-installed provider should sort last, got order: ${order.join(', ')}`);
     else ok(`installed providers sort first: ${order.join(', ')}`);
+
+    // No explicit default yet: no tier control should offer an inert choice.
+    assert.equal(await page.locator('#setup-model-tier-seg').count(), 0);
+    await page.evaluate(() => window.setupSetDefaultProvider('claude'));
+    await page.waitForSelector('#setup-model-tier-seg');
 
     // Default model tier control: next to the default-provider pick, a
     // provider-neutral Best/Balanced/Fast chooser with Balanced pre-selected
@@ -302,6 +311,22 @@ try {
       fail(`codex should be selected with its own (unchecked) default radio after checking it, got: ${JSON.stringify(codexAfter)}`);
     else ok('multi-select: two vendors selected simultaneously, claude keeps default, codex gets its own unchecked default radio');
 
+    // Qwen accepts exact models, but has no tier mappings. Neither the
+    // control nor an old tier selection may survive switching the default.
+    await page.evaluate(() => window.setupSetDefaultProvider('qwen'));
+    assert.equal(await page.locator('#setup-model-tier-seg').count(), 0, 'No-tier default hides tier controls');
+    await page.evaluate(() => window.setupPickModelTier('best'));
+    await page.evaluate(() => window.setupSetDefaultProvider('claude'));
+    assert.equal(await page.locator('#setup-model-tier-seg button').count(), 3, 'Tier controls return when supported');
+    // Partial mappings offer only the actual tier, not all three labels.
+    await page.evaluate(() => window.setupSetDefaultProvider('codex'));
+    assert.deepEqual(await page.locator('#setup-model-tier-seg button').evaluateAll(bs => bs.map(b => b.dataset.tier)), ['balanced']);
+    await page.evaluate(name => window.setupSetDefaultProvider(name), scenario === 'no-tier' ? 'qwen' : 'claude');
+    await page.evaluate(() => {
+      window._setupBackupDestInput('/smoke/backups');
+      window._setupPickBackupSchedule('daily');
+    });
+
     // Finish the wizard directly (setupFinish) rather than walking every
     // later step's fixture through this smoke's narrower route table — it
     // only needs to prove the tier picked above rides in the SAME batched
@@ -317,13 +342,29 @@ try {
     await page.waitForTimeout(150);
     await page.click('button:has-text("Confirm")');
     await page.waitForTimeout(150);
-    const finishPut = configPuts.find((p) => 'provider_defaults' in p);
-    if (!finishPut || finishPut.provider_defaults?.claude?.model !== 'tier:balanced' || 'agent_model' in finishPut)
-      fail(`expected Finish to save the selected provider's Balanced tier, got: ${JSON.stringify(configPuts)}`);
-    else ok("Finish saves provider_defaults.claude.model='tier:balanced' in the single passcode-gated write");
+    assert.equal(configPuts.length, 1, 'One passcode-gated setup batch');
+    const finishPut = configPuts[0];
+    assert.equal(finishPut.backup_dest_dir, '/smoke/backups');
+    assert.equal(finishPut.backup_schedule, 'daily');
+    assert.equal(finishPut.setup_save, true);
+    assert.equal(finishPut.default_provider, scenario === 'no-tier' ? 'qwen' : 'claude');
+    if (scenario === 'no-tier') assert.ok(!('provider_defaults' in finishPut), 'No unsupported tier is sent');
+    else assert.equal(finishPut.provider_defaults?.claude?.model, 'tier:balanced');
+    assert.ok(!('agent_model' in finishPut));
+    const saved = await page.evaluate(() => ({..._globalConfig}));
+    assert.equal(saved.backup_dest_dir, '/smoke/backups');
+    assert.equal(saved.backup_schedule, 'daily');
+    assert.equal(saved.default_provider, finishPut.default_provider);
+    if (scenario === 'refused-tier') {
+      assert.ok(!saved.provider_defaults?.claude?.model, 'Refused model is not cached as saved');
+      assert.match(await page.locator('#toast-container').innerText(), /Other setup settings saved.*Model preference was not saved/);
+    }
+    ok(`${scenario}: one setup batch retains backup and provider settings, with honest model result`);
   }
 
   if (pageErrors.length) fail('uncaught exception(s): ' + pageErrors.join(' | '));
+  await ctx.close();
+  }
 
   exitCode = bad === 0 ? 0 : 1;
   console.log(exitCode === 0

@@ -5,6 +5,7 @@ const views = new Map();
 const requests = new Map();
 const previews = new Map();
 let activeProject = '';
+let projectRequest = 0;
 const loadedAt = new Map();
 const revisions = new Map();
 const TTL = 30000;
@@ -224,6 +225,7 @@ async function saveProjectMode(projectId, value) {
 }
 
 async function openProject(projectId) {
+  const request = ++projectRequest;
   activeProject = projectId;
   const box = document.getElementById('agent-settings-box');
   const overlay = document.getElementById('agent-settings-overlay');
@@ -232,6 +234,7 @@ async function openProject(projectId) {
   box.innerHTML = '<div class="settings-hint">Loading project providers…</div>';
   try {
     await load(projectId);
+    if (request !== projectRequest || activeProject !== projectId) return;
     const project = allProjects.find(p => p.id === projectId);
     const mode = views.get(projectId).project_streaming;
     box.innerHTML = `<div class="mc-dialog-header"><span>Providers · ${esc(project?.name || projectId)}</span>
@@ -248,9 +251,10 @@ async function openProject(projectId) {
         <button class="btn-browse" onclick="openFloorPreferences()">Floor defaults</button>
       </div><div class="mc-dialog-footer"><button class="btn-add" onclick="closeAgentSettingsDialog()">Done</button></div>`;
   } catch (error) {
+    if (request !== projectRequest || activeProject !== projectId) return;
     box.innerHTML = `<p role="alert">${esc(error.message)}</p><button class="btn-browse" onclick="closeAgentSettingsDialog()">Close</button>`;
   }
 }
 
-function dismissProject() { activeProject = ''; }
+function dismissProject() { projectRequest++; activeProject = ''; }
 window.EnginePreferences = {load, effective, preview, invalidate, render, renderConnection, modelLabel, choose, saveField, resetTasks, repaint, saveProjectProvider, saveProjectMode, openProject, dismissProject};
