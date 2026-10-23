@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-23] - Show passwordless browser accounts in Vault (MC-1105)
+
+- Vault lists saved Desk browser accounts and services as read-only rows, including the browser profile and the sign-in method selected in Connection details: Google, phone code, username/password or other. These rows contain no secret and remain visible while the vault is locked.
+- An existing Check connection that finds a saved session signed out or its profile missing raises **Sign in again** in the Feed's **Needs you** and dashboard's **Waiting on you** lists. Requests are grouped by service, survive restart and clear as affected profiles pass their checks or the existing manual confirmation.
+- Vault reuses Check connection and the named browser pane for recovery. No scheduled vendor probes, new email path, automatic SMS/Google sign-in or changes to credential and permission gates.
+
 ## [2026-10-23] - Preserve setup choices and the active project provider editor
 
 - First-run setup offers only model tiers mapped by the selected provider. Providers without tier support use their native default without sending an unsupported tier.

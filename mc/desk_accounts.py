@@ -185,14 +185,14 @@ def v1_account(acc: dict, vault: dict | None = None) -> dict:
         'created_at': acc.get('created_at'),
         'connected': pub['ready'], 'publish': pub,
     }
-    for k in ('read_via', 'browser_profile', 'organization_id', 'read_pages'):
+    for k in ('read_via', 'browser_profile', 'organization_id', 'read_pages', 'signin_method'):
         if acc.get(k):
             out[k] = acc[k]
     if acc.get('credentials'):          # names of the account's own sign-in, never a value
         out['credentials'] = dict(acc['credentials'])
     setup = _setup_record.of(acc)       # a saved browser sign-in (MC-1062/03): profile and login NAMES, so Connections can show it
     if setup is not None:
-        out['browser_setup'] = {k: setup[k] for k in ('service', 'route_id', 'account_kind', 'refs', 'saved_at') if k in setup}
+        out['browser_setup'] = {k: setup[k] for k in ('service', 'route_id', 'account_kind', 'refs', 'saved_at', 'signin_method') if k in setup}
         from mc.desk_connect.browser_check import account_status
         out['browser_setup'].update(account_status(acc.get('platform'), setup['refs'].get('browser_profile')))
     if acc.get('preview'):

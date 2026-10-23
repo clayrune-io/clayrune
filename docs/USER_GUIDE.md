@@ -1247,6 +1247,14 @@ Each package setup field has guidance underneath it. GitHub setup shows the prog
 
 On a package's Connection details screen, **Help me fill this in** opens a question box. **Ask** explains what this package needs and proposes field values; ask a follow-up in the same box. **Use suggestions for empty fields** fills only empty program/file/argument fields and adds missing credential names. Existing edits are preserved. Review or edit the suggestions and choose saved credentials yourself. Help cannot install, approve or save anything: the existing Review and passcode Save still apply. It needs Claude installed and signed in; if help is unavailable, the fields remain editable.
 
+## Browser accounts in Vault
+
+Vault also shows **Browser accounts** saved through Desk Connect, even while the vault is locked. Each read-only row names the account, browser profile and **How you sign in**: Sign in with Google, Phone code, Username and password, or Other sign-in. Choose this method in **Connection details** before Review and the passcode-confirmed Save. Existing records without a selected method show **Other sign-in**; Clayrune does not guess from cookies. These rows have no Copy ref, Edit or Delete action and hold no password or sign-in code. Manage the connection in Desk.
+
+When **Check connection** finds a saved browser session signed out or its named profile missing, **Sign in again** appears in the Feed's **Needs you** bucket and the dashboard's **Waiting on you** cards. One request covers each service; several expired profiles can share it. Press it to open Vault, then **Check connection** on the affected account. The existing browser pane opens with the saved profile. Complete Google sign-in or the phone code yourself. A successful check clears that profile's request; the service request disappears when all affected profiles pass. For services without an automatic check, use the existing **Yes, I'm signed in** confirmation after signing in; it clears the request but does not claim verification. A failed network check never counts as expired or clears an existing request. Requests persist across restarts.
+
+Clayrune checks sign-in only when you start **Check connection** or its existing short recovery recheck loop. There is no new background website probe; an expired session is not detected until a supported check finds it. An unknown service without a reviewed check still needs your confirmation. Browsing account metadata in Vault or the dashboard performs no sign-in probe and grants no Read or Post permission.
+
 ## Unlock the vault from where you are
 
 In **Settings → System → Security**, **Keep vault unlocked on restart** is on

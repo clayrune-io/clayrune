@@ -196,8 +196,13 @@ def clean_draft(draft) -> dict:
     """Validate a draft into the exact shape that is saved. Reads the profile, the Desk accounts and the
     vault's NAMES; writes nothing. Raises SetupError."""
     _need(isinstance(draft, dict), 'draft must be an object')
-    unknown = sorted(set(draft) - {'service', 'revision', 'route_id', 'account', 'account_kind', 'browser_profile', 'login', 'new_login'})
+    unknown = sorted(set(draft) - {'service', 'revision', 'route_id', 'account', 'account_kind', 'browser_profile', 'login', 'new_login', 'signin_method'})
     _need(not unknown, f'unknown draft field(s): {", ".join(unknown)}')
+    from mc.desk_connect import signin_method
+    try:
+        method = signin_method.clean(draft.get('signin_method', 'other'))
+    except ValueError as e:
+        raise SetupError(str(e)) from e
     service = draft.get('service')
     _need(service in SERVICES, f'a browser connection can be saved for {", ".join(SERVICES)}', 400, 'unknown_service')
     profile = _registry.profile(service)
@@ -218,9 +223,12 @@ def clean_draft(draft) -> dict:
         refs['login'] = login
     if rec is not None:
         _check_existing(rec, route['id'], kind, refs)
+        setup = _record.of(rec)
+        _need(setup is None or signin_method.stored(setup) == method,
+              'this account already has a different sign-in method saved', 409, 'already_set_up')
     _check_conflicts(_all_accounts(), account.get('id'), service, kind, refs)
     out = {'service': service, 'revision': profile['revision'], 'route_id': route['id'], 'account': account,
-           'account_kind': kind, 'refs': refs}
+           'account_kind': kind, 'refs': refs, 'signin_method': method}
     if typed is not None:
         out['new_login'] = typed
     return out
@@ -320,6 +328,7 @@ def _result(account_id: str, created: bool, clean: dict, shared: list, unchanged
     return {'account_id': account_id, 'account_created': created, 'unchanged': unchanged, 'service': clean['service'],
             'route_id': clean['route_id'], 'account_kind': clean['account_kind'], 'browser_profile': refs['browser_profile'],
             'profile_state': _profile_state(refs['browser_profile']), 'login': refs.get('login'),
+            'signin_method': clean.get('signin_method', 'other'),
             'login_created': login_created, 'shared_with': shared, 'url': url,
             'status': status_for(url, refs['browser_profile'])}
 
@@ -334,12 +343,17 @@ def _apply(store: dict, account_id: str, clean: dict, org_id: str) -> tuple[list
     if clean['service'] == 'linkedin' and clean['account_kind'] == 'member' and rec.get('organization_id'):
         raise SetupError('that account has a Company Page id, so it is not a member profile', 400, 'kind_mismatch')
     unchanged = _check_existing(rec, clean['route_id'], clean['account_kind'], clean['refs'])
+    from mc.desk_connect import signin_method
+    setup = _record.of(rec)
+    _need(setup is None or signin_method.stored(setup) == clean.get('signin_method', 'other'),
+          'this account already has a different sign-in method saved', 409, 'already_set_up')
     shared = _check_conflicts(store.get('accounts') or {}, account_id, clean['service'], clean['account_kind'], clean['refs'])
     if unchanged:
         return shared, True
     if org_id:
         rec['organization_id'] = org_id
     rec[_record.FIELD] = _record.build(clean['service'], clean['route_id'], clean['account_kind'], clean['refs'], now_iso())
+    rec[_record.FIELD]['signin_method'] = clean.get('signin_method', 'other')
     return shared, False
 
 

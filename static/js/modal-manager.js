@@ -358,6 +358,7 @@ function closeModalById(modalId) {
   if (modalId.startsWith('__human-proof-') && typeof window._hpTeardown === 'function') {
     window._hpTeardown(modalId);
   }
+  if (modalId === '__secrets') window.BrowserAccounts?.clear();
   // Clean up terminal pop-out resources
   cleanupTerminalModal(modalId);
   if (entry._statusBarObserver) { entry._statusBarObserver.disconnect(); delete entry._statusBarObserver; }

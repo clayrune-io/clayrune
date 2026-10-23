@@ -107,6 +107,25 @@ def _new(identity, **extra):
     return {'new': {'identity': identity, **extra}}
 
 
+@pytest.mark.parametrize('method', ['google', 'phone_code', 'browser_password', 'other'])
+def test_signin_method_round_trip_and_changed_replay(env, method):
+    client = env[0]
+    draft = _draft('x', _new('method_person'), signin_method=method)
+    response = _save(client, draft)
+    assert response.status_code == 201, response.json
+    from mc import desk
+    rec = desk._read_store()['accounts'][response.json['account_id']]
+    assert rec['browser_setup']['signin_method'] == method
+    assert _save(client, {**draft, 'signin_method':'phone_code' if method != 'phone_code' else 'google'}).status_code == 409
+
+
+@pytest.mark.parametrize('method', ['sms', '', None, {}, []])
+def test_bad_signin_method_refused_before_passcode(env, method):
+    client, calls, _, _ = env
+    response = _save(client, _draft('x', _new('method_person'), signin_method=method), passcode=None)
+    assert response.status_code == 400 and calls['n'] == 0
+
+
 def _save(client, draft, rid='req-browser-0001', passcode=PASSCODE, **extra):
     body = {'request_id': rid, 'draft': draft, **extra}
     if passcode is not None:

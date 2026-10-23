@@ -17,6 +17,7 @@ from mc import desk, desk_accounts as _accounts
 from mc.desk_connect.browser_check import status_for
 from mc.desk_connect.browser_setup import SetupError, _profile_state
 from mc.desk_pane_pages import PANE_ONLY_PLATFORMS
+from mc.desk_connect import signin_method
 
 
 def platform_of(clean: dict) -> str | None:
@@ -39,6 +40,7 @@ def view(rec: dict, url: str, unchanged: bool) -> dict:
     return {'connection_id': rec['id'], 'account_id': rec['id'], 'kind': 'account', 'name': v1['label'],
             'url': url, 'service': rec['platform'], 'capability': v1['capability'],
             'browser_profile': profile, 'profile_state': _profile_state(profile),
+            'signin_method': signin_method.stored(rec),
             'read': False, 'post': False, 'executes': False,
             'status': status_for(url, profile), 'unchanged': unchanged}
 
@@ -53,7 +55,7 @@ def save(clean: dict) -> dict:
         held = next((a for a in desk._read_store()['accounts'].values()
                      if a.get('platform') == platform and (a.get('identity') or '').lower() == handle.lower()), None)
     if held is not None:
-        if (held.get('browser_profile') or '') != clean['browser_profile']:
+        if (held.get('browser_profile') or '') != clean['browser_profile'] or signin_method.stored(held) != clean.get('signin_method', 'other'):
             raise SetupError(f'{handle} on {platform} is already an account with a different browser profile; '
                              'change it on that account, it is not replaced here', 409, 'already_set_up')
         return view(held, clean['url'], True)
@@ -64,5 +66,8 @@ def save(clean: dict) -> dict:
     except _accounts.AccountError as e:
         raise SetupError(str(e), getattr(e, 'status', 400)) from e
     with desk._store_lock:
-        rec = desk._read_store()['accounts'][created['id']]
+        store = desk._read_store()
+        rec = store['accounts'][created['id']]
+        rec['signin_method'] = clean.get('signin_method', 'other')
+        desk._write_store(store)
     return view(rec, clean['url'], False)

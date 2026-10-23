@@ -2105,6 +2105,8 @@ app.register_blueprint(_bp_vault_lock_responses.bp)
 from mc import secrets_store as _secrets_store_boot  # noqa: E402
 
 app.register_blueprint(_bp_secrets.bp)
+from mc.blueprints import browser_account_routes as _bp_browser_accounts
+app.register_blueprint(_bp_browser_accounts.bp)
 # MC-1047: streaming server-parented exec for a --raw child on a locked vault.
 from mc.blueprints import secrets_exec_stream_routes as _bp_secrets_stream  # noqa: E402
 

@@ -145,6 +145,9 @@ def run(cleaned: dict) -> dict:
     out.update(verifiable=bool(provider.spec),needs_signin=needs,
                signin_url=route['signin']['url'] if route else (provider.profile or {}).get('home_url') or cleaned['url'],
                browser_profile=cleaned['browser_profile'])
+    if cleaned['check']:
+        from mc import desk_browser_accounts
+        desk_browser_accounts.observe(cleaned, out)
     return out
 
 
