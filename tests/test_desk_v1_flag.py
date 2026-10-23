@@ -149,8 +149,16 @@ def test_put_config_sets_user_timezone_and_persists(ctx):
 
 def test_settings_drill_has_a_desk_v1_toggle_row():
     src = (PROJECT_ROOT / 'static' / 'js' / 'settings-drill.js').read_text(encoding='utf-8')
-    assert "toggle('desk_v1'" in src
-    assert "textInput('user_timezone'" in src
+    ownership = (PROJECT_ROOT / 'static' / 'js' / 'settings-ownership.js').read_text(encoding='utf-8')
+    profile = (PROJECT_ROOT / 'static' / 'js' / 'floor-preferences.js').read_text(encoding='utf-8')
+    # Settings rows moved into their owning modules; retain both row and
+    # mounting assertions so a disconnected row cannot satisfy the guard.
+    assert "import './settings-ownership.js'" in src
+    assert 'SettingsOwnership.systemExtras(cfg, {toggle})' in src
+    assert "toggle('desk_v1'" in ownership
+    assert 'openUserProfile()' in src
+    assert "{key: 'user_timezone'" in profile
+    assert 'window.openUserProfile' in profile
 
 
 def test_open_desk_branches_to_v1_shell_when_flagged():

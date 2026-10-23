@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-23] - Show published receipt outcomes in Desk Results (MC-968)
+
+- Results/retro shows impressions and replies per published receipt, including during an active campaign. Missing measurements stay unknown.
+- A receipt with fewer than 5 measured impressions, observed at least 24 hours after publication, reads **possibly suppressed**. This is a low-reach heuristic; missing, young or invalid observations never trigger it. The threshold is config-tunable through `desk_suppression_impressions`.
+- Campaign suggestions include a bounded digest of the previous completed campaign in the same project: measured impressions, replies, possibly-suppressed count and measurement coverage. Existing engagement reads supply the data; no additional platform calls.
+
 ## [2026-10-23] - Show passwordless browser accounts in Vault (MC-1105)
 
 - Vault lists saved Desk browser accounts and services as read-only rows, including the browser profile and the sign-in method selected in Connection details: Google, phone code, username/password or other. These rows contain no secret and remain visible while the vault is locked.

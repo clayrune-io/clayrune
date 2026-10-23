@@ -281,6 +281,7 @@ _CONFIG_EDITABLE_KEYS = {
     'desk_v1', 'user_timezone',
     # Desk v1 R1-W (MC-1021 S0): the v1 store reads live data only when on.
     'desk_v1_live',
+    'desk_suppression_impressions',
     # MC-964 steps 7 + 8 (Settings > Agent > Retrieval). Both read live off
     # state.CONFIG per turn (mc/memory.py _mint_enabled / negation ledger),
     # default False; human-only like the rest of this set.
@@ -359,6 +360,12 @@ def update_config():
     refusal = _require_human_passcode(data)
     if refusal is not None:
         return refusal
+    if 'desk_suppression_impressions' in data:
+        from mc.desk_outcomes import validate_threshold
+        try:
+            data['desk_suppression_impressions'] = validate_threshold(data['desk_suppression_impressions'])
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
     from mc.setup_preferences import prepare_preferences
     try:
         rejected = prepare_preferences(state.CONFIG, data)

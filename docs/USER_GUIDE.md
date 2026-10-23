@@ -1207,6 +1207,23 @@ saved settings carried the old off default. After that switch, your choice is
 kept: turn **Settings > Appearance > Experimental > Desk v1** off to return to the
 legacy Desk. Legacy Desk views remain read-only while Desk v1 is on.
 
+### Published receipt outcomes
+
+Open a campaign's **Results** (Goal) to see impressions and replies for each
+published receipt in its retro. These numbers also appear while the campaign
+is running, without expanding the full retro. Missing numbers say **unknown**.
+
+**possibly suppressed** means a recorded impressions value is below 5 and was
+measured at least 24 hours after publication. It is a low-reach hint, not proof
+that a platform suppressed the post. A reading taken earlier than 24 hours,
+a missing reading or an invalid value leaves suppression **unknown**. The
+advanced config key `desk_suppression_impressions` adjusts the threshold; a
+config change requires the normal human passcode check.
+
+The agent's campaign-suggestion brief also includes a short digest of the most
+recent completed campaign in the same project, with measurement coverage.
+These results reuse existing engagement reads and do not trigger platform calls.
+
 ## Desk Connections: add or check a service
 
 To remove a connection, open its tile and choose **Remove**, then confirm in the shared sheet. This also works for a failed software setup that was never registered. Software and generation-engine removal ask for your dashboard passcode. Cancelling either prompt changes nothing; a refusal keeps the connection and shows the reason. Confirmed removal has no Undo.

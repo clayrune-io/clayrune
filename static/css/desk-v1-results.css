@@ -84,6 +84,9 @@
 .desk-v1-retro-grid-date { color: var(--text-faint); width: 84px; }
 .desk-v1-retro-grid-format { color: var(--text-dim); width: 56px; }
 .desk-v1-retro-grid-value { color: var(--text); }
+[data-receipt-outcome] { flex-wrap: wrap; overflow-wrap: anywhere; padding: 8px 0; border-bottom: 1px solid var(--border2); }
+[data-receipt-outcome] > span:nth-child(2) { flex: 1 1 100%; }
+[data-receipt-outcome] > span:last-child { font-weight: 600; }
 .desk-v1-retro-paste { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
 .desk-v1-retro-pastearea { min-height: 60px; }
 
