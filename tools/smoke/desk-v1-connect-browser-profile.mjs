@@ -38,6 +38,7 @@ try {
   assert.equal(await page.inputValue('[data-bp-profile]'),types[service].picker.flatMap(t=>t.variants).find(v=>v.id==='browser-profile').setup.default_profile);
   const profile=service==='example.com' && width===390?'a.'+'b'.repeat(62):'main';
   await page.fill('[data-bp-profile]',profile);
+  await page.selectOption('[data-signin-method]', 'google');
   const makesAccount=types[service].service.makes_account===true;
   if(makesAccount){ // a pane-only site is saved as an ACCOUNT: the name box is its handle and starts empty
    assert.equal(await page.inputValue('[data-bp-name]'),'');
@@ -55,7 +56,8 @@ try {
   catch(e) {console.log(await page.locator('#root').textContent(),errors,await page.evaluate(()=>window.saved));throw e;}
   const saved=await page.evaluate(()=>window.saved);
   assert.equal(saved.url,'/api/desk/connect/browser-profile/commit');
-  assert.deepEqual(Object.keys(saved.body.draft).sort(),['browser_profile','name','url']);
+  assert.deepEqual(Object.keys(saved.body.draft).sort(),['browser_profile','name','signin_method','url']);
+  assert.equal(saved.body.draft.signin_method,'google');
   assert.equal(saved.body.draft.browser_profile,profile);
   if(makesAccount){assert.equal(saved.body.draft.name,'@clayrune');assert.match(await page.locator('[data-cfw-step="result"]').textContent(),/Added as an account/);}
   assert.equal(await page.locator('[data-sum-verified="yes"]').count(),0);

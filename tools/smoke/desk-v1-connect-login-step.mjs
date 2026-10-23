@@ -409,6 +409,7 @@ async function run(browser, width, height) {
     await toSetup(page, 'x.com', X_NEW);
     await mode(page, 'manual');
     check((await page.textContent('[data-cfw-title]')).trim() === 'Sign in yourself' && /Sign in in the browser pane/.test(await page.textContent('[data-cfw-copy]')), 'In browser: "Sign in yourself", "Sign in in the browser pane…"', 'manual title/copy wrong');
+    await page.selectOption('[data-signin-method]', 'phone_code');
     check((await page.$$('[data-lg-user], [data-lg-pass], [data-lg-pick]')).length === 0, 'no login fields on this way', 'login fields showed');
     await rules(page, 'In browser');
     await shot(page, 'manual', width);
@@ -423,6 +424,7 @@ async function run(browser, width, height) {
     await waitStep(page, 'result');
     const d = logOf(srv, '/api/desk/connect/browser-setup/commit')[0].body.draft;
     check(d.login === undefined && d.new_login === undefined && d.browser_profile === 'x-ronx-pane', 'the draft carries the profile and no login at all', JSON.stringify(d));
+    check(d.signin_method === 'phone_code', 'the Details sign-in method reaches the passcode-gated Save', JSON.stringify(d));
     await ctx.close();
   }
 

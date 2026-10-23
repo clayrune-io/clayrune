@@ -643,6 +643,7 @@ function _wireWaitingOnYou(col) {
     row.addEventListener('click', () => {
       const pid = row.dataset.projectId, sid = row.dataset.sessionId;
       if (pid === '__addons__' && window.openAddonsSettings) { window.openAddonsSettings(); return; }
+      if (pid === '__browser_signin__' && window.openSecretsVault) { window.openSecretsVault(); return; }
       if (sid && typeof openProjectAtSession === 'function') openProjectAtSession(pid, sid);
       else if (typeof openProjectModal === 'function') openProjectModal(pid);
     });

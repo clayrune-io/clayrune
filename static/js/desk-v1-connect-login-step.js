@@ -35,6 +35,7 @@
 //     setTarget({ kind, account: { id } | { new: { identity, label?, organization_id? } }, identity? })
 // `kind` is one of the service's account kinds (account / member / organization); `identity` is only
 // used to suggest a profile and a vault name. With no target the screen says so and offers no way on.
+import { SigninMethod } from './desk-v1-connect-signin-method.js';
 (function () {
   const W = window.DeskV1ConnectWizard;
   if (!W) return;
@@ -48,7 +49,7 @@
   const MODES = [['saved', 'Saved login'], ['new', 'Username and password'], ['manual', 'In browser']];
 
   function _fresh() {
-    return { mode: null, pick: '', profile: NEW_PROFILE, newProfile: null, vaultName: null, label: '',
+    return { mode: null, signinMethod: 'other', pick: '', profile: NEW_PROFILE, newProfile: null, vaultName: null, label: '',
       loaded: null, loading: false, options: null, optionsFailed: false, vaultNames: [], profiles: [], profilesFailed: false,
       node: null, info: null, sel: null, requestId: null, committing: false, refocus: null };
   }
@@ -222,7 +223,7 @@
     if (!_target) return `${head}<div class="desk-v1-cfw-msg" data-lg-notarget role="alert">Choose which ${esc(_label(info))} account this is first.</div>`;
     if (L.mode === 'saved') return `${head}${_lockedHTML()}${_loginPickHTML(info)}${_profileHTML(info)}${route ? _fillHTML(info, route) : ''}`;
     if (L.mode === 'new') return `${head}${_lockedHTML()}${_typedHTML()}${window.DeskV1ConnectCopy.isEnabled() && route ? _openHTML(route) : ''}`;
-    if (L.mode === 'manual') return `${head}${_profileHTML(info)}${route ? _openHTML(route) : ''}`;
+    if (L.mode === 'manual') return `${head}${_profileHTML(info)}${SigninMethod.html(L.signinMethod)}${route ? _openHTML(route) : ''}`;
     return head;
   }
 
@@ -270,6 +271,7 @@
       },
     }),
     bind: (root, api) => {
+      SigninMethod.bind(root, value => { L.signinMethod = value; L.requestId = null; });
       L.info = api.info; L.sel = api.sel;
       const route = _route(api.sel, api.info);
       if (!L.loaded && _target) _load(api);
@@ -342,6 +344,7 @@
     if (account.new) account.new.identity = _identity();
     if (account.new && L.label.trim()) account.new.label = L.label.trim();
     const draft = { service: _service(info), revision: info.service.revision, route_id: route.route_id, account, account_kind: _target.kind, browser_profile: _profileName(info) };
+    draft.signin_method = L.mode === 'manual' ? L.signinMethod : 'browser_password';
     if (L.mode === 'saved') draft.login = L.pick;
     if (L.mode === 'new') draft.new_login = { name: _vaultName(info), username: L.node.querySelector('[data-lg-user]').value.trim(), value: L.node.querySelector('[data-lg-pass]').value };
     return { draft };
@@ -377,6 +380,7 @@
   function summary() {
     if (!L.mode || !L.info) return null;
     return { mode: L.mode, login: L.mode === 'saved' ? L.pick : (L.mode === 'new' ? _vaultName(L.info) : ''),
+      signinMethod: SigninMethod.labels[L.mode === 'manual' ? L.signinMethod : 'browser_password'],
       accountIdentity: _identity(), newLogin: L.mode === 'new', username: _username(),
       hasPassword: L.mode === 'new' && !!(L.node && L.node.querySelector('[data-lg-pass]').value),
       profile: _profileName(L.info), newProfile: L.profiles.indexOf(_profileName(L.info)) < 0 };

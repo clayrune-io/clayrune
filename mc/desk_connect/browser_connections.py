@@ -14,7 +14,7 @@ from threading import Lock
 from mc import desk, desk_services, desk_browser_profiles
 from mc.blueprints import browser_routes
 from mc.core import now_iso
-from mc.desk_connect import pane_account, registry, url_check
+from mc.desk_connect import pane_account, registry, url_check, signin_method
 from mc.desk_connect.browser_setup import SetupError, _profile_state
 from mc.desk_connect.commit import clean_request_id
 
@@ -35,12 +35,13 @@ def variant(service: str | None) -> dict:
 
 
 def clean_draft(raw, own_hosts=()) -> dict:
-    if not isinstance(raw, dict) or set(raw) != {'name', 'url', 'browser_profile'}:
-        raise SetupError('name, url and browser_profile are required; no other settings are accepted')
+    if not isinstance(raw, dict) or not {'name', 'url', 'browser_profile'} <= set(raw) or set(raw) - {'name', 'url', 'browser_profile', 'signin_method'}:
+        raise SetupError('name, url and browser_profile are required; only signin_method is optional')
     try:
         name = desk_services._clean_name(raw['name'])
         got = url_check.check_url(raw['url'], own_hosts=own_hosts)
-    except (desk_services.ServiceError, url_check.UrlError) as e:
+        method = signin_method.clean(raw.get('signin_method', 'other'))
+    except (desk_services.ServiceError, url_check.UrlError, ValueError) as e:
         raise SetupError(str(e)) from e
     profile = raw['browser_profile']
     if not isinstance(profile, str) or browser_routes._profile_dir(profile) is None:
@@ -50,7 +51,7 @@ def clean_draft(raw, own_hosts=()) -> dict:
     if svc and svc['id'] in ('x', 'linkedin'):
         raise SetupError('choose the account for this service first')
     return {'name': name, 'url': got['url'], 'browser_profile': profile,
-            'service': svc['id'] if svc else None}
+            'service': svc['id'] if svc else None, 'signin_method': method}
 
 
 def _fingerprint(clean: dict) -> str:
@@ -62,6 +63,7 @@ def view(rec: dict) -> dict:
     setup = rec['browser_connection']
     return {'connection_id': rec['id'], 'name': rec['name'], 'url': rec['link'],
             'service': setup['service'], 'browser_profile': setup['browser_profile'],
+            'signin_method': signin_method.stored(setup),
             'profile_state': _profile_state(setup['browser_profile']),
             'read': False, 'post': False, 'executes': False,
             'status': status_for(rec['link'], setup['browser_profile'])}
@@ -87,7 +89,7 @@ def commit(request_id: str, clean: dict) -> tuple[dict, bool]:
             existing = next((s for s in services.values() if s.get('name', '').casefold() == clean['name'].casefold()), None)
             if existing:
                 held = existing.get('browser_connection') or {}
-                if existing.get('link') != clean['url'] or held.get('browser_profile') != clean['browser_profile'] or held.get('service') != clean['service']:
+                if existing.get('link') != clean['url'] or held.get('browser_profile') != clean['browser_profile'] or held.get('service') != clean['service'] or signin_method.stored(held) != clean.get('signin_method', 'other'):
                     raise SetupError('a service with this name is already saved; its connection is not replaced', 409, 'already_set_up')
                 result = {**view(existing), 'unchanged': True}
             else:
@@ -96,6 +98,7 @@ def commit(request_id: str, clean: dict) -> tuple[dict, bool]:
                 rec = {'id': desk._new_id('svc'), 'name': clean['name'], 'link': clean['url'],
                        'credential': '', 'created_at': now_iso(),
                        'browser_connection': {'service': clean['service'], 'browser_profile': clean['browser_profile'],
+                                              'signin_method': clean.get('signin_method', 'other'),
                                               'read': False, 'post': False}}
                 services[rec['id']] = rec
                 desk._write_store(store)

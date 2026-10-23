@@ -3,6 +3,7 @@
     account['browser_setup'] = {
         'service': 'x', 'route_id': 'x-browser', 'account_kind': 'account',
         'refs': {'browser_profile': 'x-ron', 'login': 'x.ron'},          # `login` only when one was chosen
+        'signin_method': 'google',  # google | phone_code | browser_password | other; legacy absent = other
         'saved_at': '2026-10-06T12:00:00',
     }
 

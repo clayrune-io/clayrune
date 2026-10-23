@@ -10,6 +10,7 @@
 // plaintext-returning route, so "reveal" is not implementable here by design.
 // Editing a secret's metadata leaves the value untouched (PATCH with no value).
 
+import './browser-accounts.js';
 let _secretsAuditOpen = false;
 
 function _secTimeAgo(iso) {
@@ -67,6 +68,7 @@ async function openSecretsVault() {
         </div>
       </div>
       <div id="secrets-list"></div>
+      <div id="browser-accounts-list"></div>
       <div id="secrets-audit" style="display:none;margin-top:16px"></div>
     </div>`;
   win.appendChild(content);
@@ -82,6 +84,7 @@ async function openSecretsVault() {
 }
 
 async function refreshSecretsList() {
+  window.BrowserAccounts.render(document.getElementById('browser-accounts-list'));
   const list = document.getElementById('secrets-list');
   const countEl = document.getElementById('secrets-count');
   const warnEl = document.getElementById('secrets-keywarn');

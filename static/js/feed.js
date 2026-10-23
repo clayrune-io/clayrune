@@ -58,6 +58,7 @@ function _buildAttentionList() {
   });
   // Add-on approval requests (MC-1022) are blocking events that belong to no project.
   if (typeof window.addonAttentionItems === 'function') items.push(...window.addonAttentionItems());
+  if (typeof window.browserSigninAttentionItems === 'function') items.push(...window.browserSigninAttentionItems());
   return items;
 }
 
@@ -354,6 +355,7 @@ function renderFeed() {
       // rows (and any attention row with no live session) fall back to the
       // project modal as before.
       if (el.dataset.projectId === '__addons__') { window.openAddonsSettings(); return; }
+      if (el.dataset.projectId === '__browser_signin__') { window.openSecretsVault(); return; }
       const sid = el.dataset.sessionId;
       if (sid) openProjectAtSession(el.dataset.projectId, sid);
       else openProjectModal(el.dataset.projectId);

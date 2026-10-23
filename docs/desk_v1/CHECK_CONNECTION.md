@@ -1,5 +1,17 @@
 # MC-1074: browser connections and checks
 
+## MC-1105: passwordless account metadata and recovery
+
+Branch-only extension, based on Dave's D1-D3. `mc/secrets_store.py` and vault value/write rules are unchanged. The two browser Save paths accept optional `signin_method` (`google`, `phone_code`, `browser_password`, `other`), defaulting to `other` for older callers. Generic services store it in `browser_connection`; X/LinkedIn in `browser_setup`; pane-only accounts beside their `browser_profile`. Both Details branches import one shared control. Password login branches send `browser_password`. Existing saved setups retain their no-replacement rule; a changed method cannot silently replace an existing setup, and a changed idempotency replay is refused.
+
+`mc/desk_browser_accounts.py` owns the allowlisted read-only projection and expiry requests. `GET /api/secrets/browser-accounts`, in its own blueprint, returns `browser_accounts` and `signin_requests` from Desk, including while Vault is locked. This is distinct from the secret-entry list: names/profile/method only, no credential references, values, cookie data or new vault entry type. It has no write route. Old metadata remains `other` without backfilling or guessing. Removed/replaced references cannot inherit a request raised for a different record.
+
+Only `browser_check.run(check=True)` observes verdicts. `signed_out` failure or a missing local named profile after an explicit check raises a request; unchecked/status projections and inconclusive or transport failures do not. Requests live under `browser_signin_requests` in `desk.json` (outside DATA_DIR), keyed by canonical service and failed profile, bound to projected source IDs. Repeated expiry is a no-op. A verified check or the existing successful human confirmation clears only the checked profile, retaining failures for other profiles of the same service. Reads and restarts never clear requests.
+
+The existing attention surface is `_buildAttentionList`: Feed **Needs you** and desktop/mobile dashboard **Waiting on you**. A small module polls only local metadata and adds one card per affected service. Its card opens Vault. Read-only Browser accounts use the existing shared BrowserCheck controller, named pane, and existing short recheck loop after a human click; no credential fill or Google/SMS automation is added. Unreviewed services cannot automatically detect vendor expiry; local missing-profile evidence and human confirmation retain the original check contract.
+
+Recovery/report and validation commands: `docs/desk_v1/PASSWORDLESS_SIGNIN.md`. No merge, push or server restart is part of this delivery. Live vendor-account sign-in remains a human integration check.
+
 Branch delivery only. Dave selected option A: two implementation commits on one branch, followed by the requested review fix; no merge, push or restart.
 
 ## Generic browser setup

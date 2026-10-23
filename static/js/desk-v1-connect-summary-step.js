@@ -362,7 +362,7 @@
       const login = s.mode === 'saved' ? `Saved login <code>${esc(s.login)}</code>. Its password stays in the Vault.`
         : s.mode === 'new' ? `New login <code>${esc(s.login)}</code>${s.username ? `, username ${esc(s.username)}` : ''}. Password ${s.hasPassword ? 'entered, hidden' : 'not entered'}. Stored when you save.`
           : 'None stored. You sign in yourself in the browser.';
-      return _rows([['Login', login, 'login'], ['Browser profile', `<code>${esc(s.profile)}</code> (${s.newProfile ? 'new' : 'existing: it keeps the sign-in it already has'})`, 'profile']]);
+      return _rows([['Login', login, 'login'], ['How you sign in', esc(s.signinMethod), 'signin-method'], ['Browser profile', `<code>${esc(s.profile)}</code> (${s.newProfile ? 'new' : 'existing: it keeps the sign-in it already has'})`, 'profile']]);
     },
     risks: () => [],
     result: {
