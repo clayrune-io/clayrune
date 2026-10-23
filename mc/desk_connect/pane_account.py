@@ -55,8 +55,11 @@ def save(clean: dict) -> dict:
         held = next((a for a in desk._read_store()['accounts'].values()
                      if a.get('platform') == platform and (a.get('identity') or '').lower() == handle.lower()), None)
     if held is not None:
-        if (held.get('browser_profile') or '') != clean['browser_profile'] or signin_method.stored(held) != clean.get('signin_method', 'other'):
+        if (held.get('browser_profile') or '') != clean['browser_profile']:
             raise SetupError(f'{handle} on {platform} is already an account with a different browser profile; '
+                             'change it on that account, it is not replaced here', 409, 'already_set_up')
+        if signin_method.stored(held) != clean.get('signin_method', 'other'):
+            raise SetupError(f'{handle} on {platform} is already an account with a different sign-in method saved; '
                              'change it on that account, it is not replaced here', 409, 'already_set_up')
         return view(held, clean['url'], True)
     try:
