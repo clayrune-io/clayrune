@@ -253,11 +253,26 @@ parallel with 2. Step 7 makes it hands-off end to end. Steps 8 and 9 follow.
 2. Apply for LinkedIn Community Management API access (step 8; starting early costs nothing).
 3. Approve the first campaign.
 
-**Unverified, check before step 6 ships:** that X's automation rules and LinkedIn's API terms
-allow scheduled posting under a campaign-level human approval. The spec's
-"approval gate is permanent" finding cited Pinterest and YouTube, which are not v1 platforms.
-It says nothing either way about X or LinkedIn, so this is an open check, not a known
-blocker.
+**Checked 2026-10-23 (Dave): campaign-level approval fits both platforms' terms, on three
+conditions the code already meets.** Sources read: docs.x.com/developer-guidelines and
+linkedin.com/legal/user-agreement (help.x.com and developer.x.com refused the fetch, 403/402).
+
+- **X, scheduled posts: allowed.** The guidelines list scheduled informational posts and "app
+  posts ... on behalf of user" as allowed. Banned: identical content across several accounts,
+  posting into trending topics, unsolicited @mentions. A campaign must not post one body to two
+  X accounts.
+- **X, AI-written replies: need X's prior approval** ("Deploying AI-generated replies without
+  approval is a violation"). The Desk sends none on its own: `POST /api/desk/engagement/<id>/reply`
+  (`mc/blueprints/desk_routes.py`) refuses unattended callers and needs the passcode per reply,
+  so each reply is a person's own click. Any future auto-reply needs X's Policy Support form
+  first.
+- **LinkedIn: API posting fine, pane posting must stay manual.** User Agreement 8.2 #13 bans
+  "unauthorized automated methods" to create or share posts, while 3.3 allows content
+  "automatically generated and shared using tools offered by LinkedIn or others". So scheduled
+  posts go only through the Posts API (`w_organization_social` gate). The pane route
+  (`mc/desk_assisted_post.py`) never clicks the final Post button, which keeps it legal.
+- **Not checked:** X's paid-API terms text and LinkedIn's API terms of use beyond the User
+  Agreement. Both pages were unreachable.
 
 **What this costs vs. the retired per-post variant.** Per-campaign release adds three pieces
 of work that per-post release would not have needed:
