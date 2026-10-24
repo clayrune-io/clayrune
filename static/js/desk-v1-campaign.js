@@ -1042,27 +1042,7 @@
   }
 
   function _acceptSuggestedWhat(camp) {
-    const items = (camp.how && camp.how.suggested && camp.how.suggested.what) || [];
-    if (!items.length) return;
-    const created = items.map((it, i) => ({
-      id: 'fam-suggest-' + Date.now().toString(36) + '-' + i,
-      campaignId: camp.id, kind: 'post', title: it.title,
-      versions: [{ id: 'v-suggest-' + Date.now().toString(36) + '-' + i, channelId: it.channelId || null, state: 'planned', revision: 0 }],
-    }));
-    DeskV1Kit.commandBus.run({
-      label: `Accepted ${created.length} suggested piece${created.length === 1 ? '' : 's'}`,
-      do: () => {
-        created.forEach((fam) => _fx().families.push(fam));
-        camp.how.suggested.what = [];
-        _renderTabBody();
-      },
-      undo: () => {
-        const arr = _fx().families;
-        created.forEach((fam) => { const i = arr.findIndex((f) => f.id === fam.id); if (i >= 0) arr.splice(i, 1); });
-        camp.how.suggested.what = items;
-        _renderTabBody();
-      },
-    });
+    return window.DeskV1SuggestionPieces.accept(camp, (camp.how && camp.how.suggested && camp.how.suggested.what) || []);
   }
 
   // R2-6: the Suggest task itself (`_HOW_SUGGEST_TEXT`, fired by
@@ -1198,16 +1178,11 @@
     menu.querySelector('[data-menu-dup]').onclick = () => { close(); _duplicateFamily(fam, camp); };
     menu.querySelector('[data-menu-skip]').onclick = () => { close(); _skipFamily(fam); };
     menu.querySelector('[data-menu-archive]').onclick = () => { close(); _archiveFamily(fam); };
+    window.DeskV1PieceLifecycle.menu(menu, close, fam);
   }
 
   function _addChannelVersion(fam, channelId) {
-    const ch = _channel(channelId);
-    const v = { id: fam.id + '-v-' + Date.now().toString(36), channelId, state: 'drafting', revision: 0 };
-    DeskV1Kit.commandBus.run({
-      label: `Added a ${ch ? ch.label : channelId} version to “${fam.title}”`,
-      do: () => { fam.versions.push(v); _renderList(_campaign(fam.campaignId)); },
-      undo: () => { const i = fam.versions.indexOf(v); if (i >= 0) fam.versions.splice(i, 1); _renderList(_campaign(fam.campaignId)); },
-    });
+    return window.DeskV1WhereActions.addVersion(_campaign(fam.campaignId), fam, channelId).then(() => _renderList());
   }
 
   // §3.2: "Moving a version to another channel is only available through

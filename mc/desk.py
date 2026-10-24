@@ -2237,7 +2237,8 @@ def v1_accounts(store: dict) -> list[dict]:
 def _v1_pieces(store: dict) -> list[dict]:
     from mc import desk_pieces  # lazy: desk_pieces imports this module
     rows = sorted((store.get('pieces') or {}).values(), key=lambda p: (p.get('created_at') or '', p['id']))
-    return [desk_pieces.v1_piece(p) for p in rows]
+    from mc import desk_suggestion_pieces
+    return [desk_pieces.v1_piece(p) for p in rows] + desk_suggestion_pieces.projected(store)
 
 
 def v1_workspace(projects: Iterable[dict]) -> dict:

@@ -56,11 +56,13 @@
   function _tileHTML(it, n) {
     return `<div class="desk-v1-lp-tile" data-lp-tile="${esc(it.id)}">
       <button type="button" class="desk-v1-lp-pick" data-lp-pick="${n}" aria-label="Use ${esc(it.title)} from ${esc(it.folder)}">
-        <span class="desk-v1-lp-thumb">${it.src ? `<img src="${esc(it.src)}" alt="" loading="lazy">` : `<span aria-hidden="true">${it.kind === 'video' ? '▶' : '🖼'}</span>`}</span>
+        <span class="desk-v1-lp-thumb">${it.src ? `<img src="${esc(it.src)}" alt="" loading="lazy">` : `<span aria-hidden="true">${it.kind === 'video' ? '▶' : it.kind === 'audio' ? '♫' : it.kind === 'file' ? '📎' : '🖼'}</span>`}</span>
         <span class="desk-v1-lp-name">${esc(it.title)}</span>
         <span class="desk-v1-lp-folder">${esc(it.folder)}</span>
       </button>
-      <button type="button" class="desk-v1-lp-view" data-lp-view="${n}" aria-label="View ${esc(it.title)} full size" title="View full size">⤢</button>
+      ${!['image', 'video'].includes(it.kind) && (it.download || it.play)
+        ? `<a class="desk-v1-lp-view" href="${esc(it.download || it.play)}" target="_blank" rel="noopener" aria-label="Open ${esc(it.title)}" title="Open file">↗</a>`
+        : `<button type="button" class="desk-v1-lp-view" data-lp-view="${n}" aria-label="View ${esc(it.title)} full size" title="View full size">⤢</button>`}
     </div>`;
   }
 
@@ -105,7 +107,7 @@
           const it = st.shown[Number(b.dataset.lpPick)];
           if (!it) return;
           _close();
-          if (typeof opts.onPick === 'function') opts.onPick({ path: it.path, kind: it.kind, title: it.title, src: it.src || '', folder: it.folder });
+          if (typeof opts.onPick === 'function') opts.onPick({ path: it.path, kind: it.kind, title: it.title, src: it.src || '', play: it.play || '', download: it.download || '', folder: it.folder });
         };
       });
       body.querySelectorAll('[data-lp-view]').forEach((b) => {

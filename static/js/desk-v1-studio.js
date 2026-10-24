@@ -1214,7 +1214,9 @@
     if (!targets.length) targets = [{ id: 'tab-draft', platform: 'default', label: 'Draft' }];
     // A piece that already carries text (a Studio article added to the campaign)
     // opens with that text in its first tab, not the canned sample.
-    fam.draft = { status: 'drafting', tabs: targets.map((t, n) => ({ id: t.id, label: t.label, body: (n === 0 && fam.body) || (DRAFT_BODY[t.platform] || DRAFT_BODY.default)(fam.title) })) };
+    fam.draft = { status: 'drafting', tabs: targets.map((t, n) => ({ id: t.id, label: t.label,
+      body: ((fam.versions || []).find((v) => v.id === t.id) || {}).body || (n === 0 && fam.body) ||
+        (_isLive() ? '' : (DRAFT_BODY[t.platform] || DRAFT_BODY.default)(fam.title)) })) };
     return fam.draft;
   }
 
@@ -1227,6 +1229,8 @@
   }
   function _bodyHTML(body) {
     return String(body).split('\n').map((line) => {
+      const embed = window.DeskV1ArticleMedia && window.DeskV1ArticleMedia.html(line);
+      if (embed) return embed;
       let html = ''; let last = 0; let m;
       CLAIM_RE.lastIndex = 0;
       while ((m = CLAIM_RE.exec(line))) {
@@ -1249,6 +1253,7 @@
       const walk = (n) => {
         if (n.nodeType === 3) { line += n.nodeValue; return; }
         if (n.nodeType !== 1) return;
+        if (n.dataset && n.dataset.articleMarker) { line += n.dataset.articleMarker; return; }
         if (n.matches && n.matches('[data-claim-chip]')) return;
         if (n.dataset && n.dataset.claim) { line += `[[${n.dataset.claim}|${n.textContent}]]`; return; }
         if (n.tagName === 'BR') return;
@@ -1313,6 +1318,7 @@
     });
     root.querySelector('[data-writer-save]').onclick = handlers.onSave;
     root.querySelector('[data-writer-back]').onclick = handlers.onBack;
+    if (window.DeskV1ArticleMedia) window.DeskV1ArticleMedia.wire(root, tab);
   }
 
   // Save to What: the draft is handed to review. Placed versions still in

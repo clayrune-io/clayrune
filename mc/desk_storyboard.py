@@ -74,12 +74,12 @@ def _check_owner_id(owner_id) -> str:
     return owner_id
 
 
-def _check_owner(store: dict, owner_kind: str, owner_id: str) -> None:
+def _check_owner(store: dict, owner_kind: str, owner_id: str, *, writable: bool = False) -> None:
     """A piece storyboard needs a real VIDEO piece. A studio one needs only a
     well-formed id (the draft lives in the browser until it is first saved)."""
     _check_owner_id(owner_id)
     if owner_kind == 'piece':
-        piece = _pieces._find(store, owner_id)
+        piece = (_pieces._writable if writable else _pieces._find)(store, owner_id)
         if piece.get('kind') != 'video':
             raise PieceError('only a video piece has a storyboard')
     elif owner_kind != 'studio':
@@ -311,7 +311,7 @@ def put_storyboard(owner_kind: str, owner_id: str, body) -> dict:
         raise PieceError('the storyboard is not valid', 400, problems)
     with _desk._store_lock:
         store = _desk._read_store()
-        _check_owner(store, owner_kind, owner_id)
+        _check_owner(store, owner_kind, owner_id, writable=True)
         boards = _boards(store)
         key = _owner_key(owner_kind, owner_id)
         board = boards.get(key) or {}
@@ -337,7 +337,7 @@ def save_picture(owner_kind: str, owner_id: str, filename: str, stream) -> dict:
     IMAGES only: a video is refused here, before a byte is kept. The scene is not
     changed: the caller PUTs the list with the new picture on it."""
     with _desk._store_lock:
-        _check_owner(_desk._read_store(), owner_kind, owner_id)
+        _check_owner(_desk._read_store(), owner_kind, owner_id, writable=True)
     if _pieces.asset_kind_for(filename) != 'image':
         raise PieceError('a scene picture must be an image (png, jpg, gif, webp)')
     dest = _pieces._write_library_file(filename, stream, STORYBOARD_FOLDER)[0]

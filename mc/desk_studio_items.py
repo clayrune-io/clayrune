@@ -96,7 +96,10 @@ def _norm(rel) -> str:
 def _references(store: dict) -> tuple[dict, dict]:
     """`(attached, in_boards)`: library path -> the campaign piece carrying it as an
     asset, and path -> every Studio/piece storyboard whose scenes use it."""
-    attached: dict[str, dict] = {}
+    from mc import desk_article_media
+    attached, article_drafts = desk_article_media.references(store)
+    from mc import desk_piece_lifecycle
+    attached.update(desk_piece_lifecycle.trash_references())
     for piece in _pieces._pieces(store).values():
         for a in piece.get('assets') or []:
             path = _norm(a.get('path'))
@@ -104,7 +107,7 @@ def _references(store: dict) -> tuple[dict, dict]:
                 cid = piece.get('campaign_id')
                 attached[path] = {'piece_id': piece.get('id'), 'campaign_id': cid,
                                   'campaign_title': _campaign_title(store, cid)}
-    in_boards: dict[str, list] = {}
+    in_boards: dict[str, list] = article_drafts
     for key, board in (store.get('storyboards') or {}).items():
         if not isinstance(board, dict):
             continue
@@ -290,6 +293,10 @@ def restore(token: str) -> dict:
         key = f"studio:{manifest.get('id')}"
         if manifest.get('kind') == 'draft' and key in boards:
             raise PieceError('a draft with that id exists again, so the deleted one was not restored', 409)
+        if manifest.get('kind') == 'piece':
+            from mc import desk_piece_lifecycle
+            desk_piece_lifecycle.restore_deleted_locked(store, manifest)
+            _desk._write_store(store)
         _put_back(entry, manifest)
         if manifest.get('kind') == 'draft':
             boards[key] = manifest['board']

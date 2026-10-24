@@ -249,6 +249,7 @@ def v1_piece(piece: dict) -> dict:
         'body': piece.get('body') or '', 'wordCount': piece.get('word_count'),
         'source': piece.get('source'), 'createdAt': piece.get('created_at'),
         'updatedAt': piece.get('updated_at'),
+        'archivedAt': (piece.get('archive') or {}).get('at'),
         'assets': [{'id': a['id'], 'kind': a.get('kind'), 'title': a.get('title') or '',
                     **({'provenance': a['provenance']} if a.get('provenance') else {}),
                     'path': a.get('path'), 'src': _src_for(a.get('path') or '', a.get('kind') or '')}
@@ -304,6 +305,21 @@ def _find(store: dict, piece_id: str) -> dict:
     if piece is None:
         raise PieceError('piece not found', 404)
     return piece
+
+
+def _writable(store: dict, piece_id: str) -> dict:
+    piece = _find(store, piece_id)
+    if piece.get('archive'):
+        raise PieceError('restore this archived post before editing it', 409)
+    return piece
+
+
+def _set_version_state(ver: dict, state: str) -> None:
+    cur = ver.get('state')
+    ver['state'] = state
+    if state != cur and cur in APPROVED_STATES:
+        ver['approved'] = None
+        ver['slot_id'] = None
 
 
 def _find_version(piece: dict, version_id: str) -> dict:
@@ -394,7 +410,7 @@ def update_piece(piece_id: str, patch: dict) -> dict:
         clean['draft_status'] = ds
     with _desk._store_lock:
         store = _desk._read_store()
-        piece = _find(store, piece_id)
+        piece = _writable(store, piece_id)
         if ('body' in clean or 'claims' in clean) and any(
                 v.get('state') in APPROVED_STATES + SENT_STATES for v in piece.get('versions') or []):
             raise PieceError('a version of this piece is already approved or sent; '
@@ -405,21 +421,29 @@ def update_piece(piece_id: str, patch: dict) -> dict:
         return v1_piece(piece)
 
 
+def _check_delete(piece: dict) -> None:
+    sent = [v['id'] for v in piece.get('versions') or [] if v.get('state') in SENT_STATES]
+    if sent:
+        raise PieceError('this piece has a version that is sending or already sent '
+                         f'({", ".join(sent)}); it cannot be deleted', 409)
+
+
+def _delete_piece_locked(store: dict, piece_id: str) -> bool:
+    piece = _pieces(store).get(piece_id)
+    if piece is None:
+        return False
+    _check_delete(piece)
+    del _pieces(store)[piece_id]
+    store.get('storyboards', {}).pop(f'piece:{piece_id}', None)
+    return True
+
+
 def delete_piece(piece_id: str) -> bool:
-    """False when there is no such piece. 409 (PieceError) once a version has
-    been handed to a platform: the ledger and the receipt still point at it."""
+    """Existing permanent-delete contract; reversible removal wraps this cascade."""
     with _desk._store_lock:
         store = _desk._read_store()
-        pieces = _pieces(store)
-        piece = pieces.get(piece_id)
-        if piece is None:
+        if not _delete_piece_locked(store, piece_id):
             return False
-        sent = [v['id'] for v in piece.get('versions') or [] if v.get('state') in SENT_STATES]
-        if sent:
-            raise PieceError('this piece has a version that is sending or already sent '
-                             f'({", ".join(sent)}); it cannot be deleted', 409)
-        del pieces[piece_id]
-        store.get('storyboards', {}).pop(f'piece:{piece_id}', None)   # its storyboard (mc/desk_storyboard.py)
         _desk._write_store(store)
         return True
 
@@ -454,7 +478,7 @@ def add_version(piece_id: str, account_id: str, *, body=None, version_id: str | 
         raise PieceError('format must be short text')
     with _desk._store_lock:
         store = _desk._read_store()
-        piece = _find(store, piece_id)
+        piece = _writable(store, piece_id)
         for v in piece.get('versions') or []:
             if version_id and v['id'] == version_id:
                 raise PieceError('a version with that id already exists', 409)
@@ -522,7 +546,7 @@ def update_version(piece_id: str, version_id: str, patch: dict) -> dict:
         raise PieceError('that account is not connected to this workspace')
     with _desk._store_lock:
         store = _desk._read_store()
-        piece = _find(store, piece_id)
+        piece = _writable(store, piece_id)
         ver = _find_version(piece, version_id)
         cur = ver.get('state')
         if cur in SENT_STATES:
@@ -543,12 +567,7 @@ def update_version(piece_id: str, version_id: str, patch: dict) -> dict:
             clean['account_id'] = acc
         ver.update(clean)
         if state is not None:
-            ver['state'] = state
-            if state != cur and cur in APPROVED_STATES:
-                # Withdrawing the approval is the point of leaving these states:
-                # a stale stamp on an unreviewed version would read as consent.
-                ver['approved'] = None
-                ver['slot_id'] = None
+            _set_version_state(ver, state)
         piece['updated_at'] = now_iso()
         _desk._write_store(store)
         return v1_piece(piece)
@@ -637,7 +656,7 @@ def approve_version(piece_id: str, version_id: str, *, scheduled_at: object = ..
         when = _clean_when(scheduled_at)
     with _desk._store_lock:
         store = _desk._read_store()
-        piece = _find(store, piece_id)
+        piece = _writable(store, piece_id)
         ver = _find_version(piece, version_id)
         cur = ver.get('state')
         if cur not in APPROVABLE_FROM:
@@ -718,7 +737,7 @@ def add_asset(piece_id: str, *, path: str, title=None, asset_id: str | None = No
     rel = _rel_of(real)
     with _desk._store_lock:
         store = _desk._read_store()
-        piece = _find(store, piece_id)
+        piece = _writable(store, piece_id)
         assets = piece.setdefault('assets', [])
         if len(assets) >= MAX_ASSETS:
             raise PieceError(f'a piece can carry at most {MAX_ASSETS} assets', 409)
@@ -736,7 +755,7 @@ def remove_asset(piece_id: str, asset_id: str) -> dict:
     use, and deleting user media on an Undo is not what Undo means."""
     with _desk._store_lock:
         store = _desk._read_store()
-        piece = _find(store, piece_id)
+        piece = _writable(store, piece_id)
         assets = piece.get('assets') or []
         keep = [a for a in assets if a.get('id') != asset_id]
         if len(keep) == len(assets):
@@ -881,5 +900,6 @@ def materials(campaign_id: str | None = None) -> dict:
                  'projectId': p.get('project_id')}
                 for p in sorted(_pieces(store).values(), key=lambda p: (p.get('created_at') or '', p['id']))
                 if p.get('kind') == 'article' and p.get('campaign_id') != campaign_id]
-    return {'library': library, 'articles': articles, 'online': {'video': [], 'image': []},
+    from mc import desk_article_media
+    return {'library': desk_article_media.decorate(library), 'articles': articles, 'online': {'video': [], 'image': []},
             'recent': [r for _, r in recent[:8]], 'projects': project_media.grouped()}

@@ -165,7 +165,7 @@
     } catch (e) {
       const msg = e && e.message ? e.message : String(e);
       cmd.unapply();
-      _toast(`${cmd.label || 'That change'} was not saved: ${msg}`);
+      _toast(`This change was not saved: ${msg}`);
       repaint();
       return { ok: false, error: msg };
     }

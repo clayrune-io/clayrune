@@ -1207,6 +1207,35 @@ saved settings carried the old off default. After that switch, your choice is
 kept: turn **Settings > Appearance > Experimental > Desk v1** off to return to the
 legacy Desk. Legacy Desk views remain read-only while Desk v1 is on.
 
+### Campaign posts, archive and placement
+
+In a campaign's **What**, use a post's three-dot menu for **Archive** or
+**Delete post**. **Archived** finds whole archived posts, including empty
+ones; **Restore post** returns the post and each suspended version to its
+previous state. Published history stays intact. Restore an archived post
+before editing it. **Undo** in the Desk header reverses a delete; deleting
+approved drafts withdraws their approval, so an undeleted approved draft needs
+review again. A post already sending or sent cannot be deleted.
+
+In **Where**, drag a configured connector from **Sources** into the outlined
+drop area, or focus it and press Enter. Disconnected and read-only accounts
+can be placed for planning; this does not connect them or grant publishing
+permission. A new channel starts empty. Drag the messages you want into it.
+A suggestion becomes a saved piece on its first action, before a channel
+version is saved. Existing assignments remain in place. The channel's **X**
+removes it from this campaign, leaving its configured connection in Sources.
+A version's **X** removes that unsent assignment; published history remains.
+These removals have Undo.
+
+Open an article and choose **Edit article**, or write an article in Studio.
+**Pick from library** inserts images, videos, audio or file links in the
+article body. Pictures open full size, video/audio have playback controls,
+and other files have an Open link. Save retains the library references and
+the edited text. The library refuses removal while a saved article references
+a file or a deleted post can still be restored (the existing 30-day trash
+window). Picking existing library files does not copy them; picking from
+another project's files uses the existing copy-to-library flow.
+
 ### Published receipt outcomes
 
 Open a campaign's **Results** (Goal) to see impressions and replies for each

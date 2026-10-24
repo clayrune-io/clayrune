@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-10-23] - Restore campaign posts and place suggestions reliably (MC-1112)
+
+- What has Delete post with Undo and an Archived filter with Restore post. Whole-post archive handles empty and mixed posts, preserves published history, and restores each suspended version's exact prior state.
+- Where shows configured channel accounts even when disconnected or read-only, with draggable tiles, a persistent drop hint, empty new channel tiles, and removal controls for channels and unsent versions. Planning placement does not grant publishing access.
+- A suggestion's first action creates a real saved piece before adding a channel version. Suggestions no longer pre-fill channels; failed saves say the change was not saved. Original suggestion records and existing piece assignments are preserved.
+- Both article writers embed library images, videos, audio and files inside the body. Campaign saves persist the edited body; saved references survive reopen and prevent library deletion while in use or available for post undelete.
+
 ## [2026-10-23] - Show published receipt outcomes in Desk Results (MC-968)
 
 - Results/retro shows impressions and replies per published receipt, including during an active campaign. Missing measurements stay unknown.

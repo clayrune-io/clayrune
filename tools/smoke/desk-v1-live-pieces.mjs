@@ -406,8 +406,8 @@ async function writerSave(browser) {
   const pp = calls(srv, 'PATCH', new RegExp(`^/api/desk/pieces/${id}$`));
   (vp.length === 1 && vp[0].body.state === 'needs_review' && Object.keys(vp[0].body).join() === 'state')
     ? ok('Save to What moves the placed version through M18 as {state: needs_review} and sends no body') : fail('version PATCH: ' + JSON.stringify(vp.map((r) => r.body)));
-  (pp.length === 1 && pp[0].body.draft_status === 'in_review')
-    ? ok('and the piece draft status through M15 {draft_status: in_review}') : fail('piece PATCH: ' + JSON.stringify(pp.map((r) => r.body)));
+  (pp.length === 2 && typeof pp[0].body.body === 'string' && pp[1].body.draft_status === 'in_review')
+    ? ok('and M15 persists the article body and draft status') : fail('piece PATCH: ' + JSON.stringify(pp.map((r) => r.body)));
   const sp = srv.pieces.find((p) => p.id === id);
   (sp.versions[0].state === 'needs_review' && sp.draft && sp.draft.status === 'in_review') ? ok('the server holds both') : fail('server state: ' + JSON.stringify(sp));
   const approvals = srv.log.filter((r) => /approved|scheduled/.test(JSON.stringify(r.body || {})));

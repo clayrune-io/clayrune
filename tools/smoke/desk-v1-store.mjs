@@ -118,7 +118,7 @@ async function liveOk(browser) {
   (refused.r.ok === false && refused.n === 0 && refused.r.error === 'refused by the server')
     ? ok('run(): refusal resolves {ok:false} with the server text and rolls the optimistic change back')
     : fail('run() refusal: ' + JSON.stringify(refused.r) + ' n=' + refused.n);
-  /Pause was not saved: refused by the server/.test(refused.text) ? ok('run(): refusal toast names the change and the server error') : fail('no refusal toast text');
+  /This change was not saved: refused by the server/.test(refused.text) ? ok('run(): refusal toast reports the server error without a success prefix') : fail('no refusal toast text');
 
   const accepted = await page.evaluate(async () => {
     const st = { n: 0 };

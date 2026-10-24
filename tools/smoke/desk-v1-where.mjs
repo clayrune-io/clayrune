@@ -87,7 +87,7 @@ const POST = '30 Windows testers wanted'; // frame 7b's `Post` piece
 const EXPECT = {
   messages: { 'Undo anything: restore points in Clayrune 2.1': 2, 'Install in two minutes': 3, '30 Windows testers wanted': 2, 'Agent live run': 1, 'Home status table': 2, 'Where board': 1 },
   columns: { 'ch-x-ron': 5, 'ch-li-page': 4, 'ch-blog': 2 },
-  sources: ['ch-x-ron', 'ch-li-page', 'ch-blog', 'ch-x-clayrune', 'ch-yt-clayrune', 'ch-discord-community'],
+  sources: ['ch-x-ron', 'ch-li-page', 'ch-blog', 'ch-x-clayrune', 'ch-yt-clayrune', 'ch-discord-community', 'ch-reddit'],
   offSources: ['ch-reddit'],
 };
 
@@ -274,10 +274,10 @@ async function runRender(browser, tone) {
     `${tag} 2 X accounts render as 2 source cards with distinct handles: ${xs.map((s) => s.handle).join(', ')}`,
     `${tag} X source cards wrong: ${JSON.stringify(xs)}`);
   const prev = b.sources.filter((s) => s.preview).map((s) => s.channelId).sort();
-  check(JSON.stringify(prev) === JSON.stringify(['ch-discord-community', 'ch-yt-clayrune']),
+  check(JSON.stringify(prev) === JSON.stringify(['ch-discord-community', 'ch-reddit', 'ch-yt-clayrune']),
     `${tag} YouTube + Discord carry "Preview · not connected"; X/LinkedIn/blog do not`, `${tag} preview labels wrong: ${JSON.stringify(prev)}`);
-  check(b.off.length === 1 && /not connected/.test(b.off[0].text) && b.off[0].connect && !b.off[0].draggable,
-    `${tag} the not-connected card reads "${b.off[0] && b.off[0].text}" and is not draggable`, `${tag} off card wrong: ${JSON.stringify(b.off)}`);
+  check(b.off.length === 1 && /not connected/i.test(b.off[0].text) && b.off[0].connect && b.off[0].draggable,
+    `${tag} the not-connected card reads "${b.off[0] && b.off[0].text}" and is draggable`, `${tag} off card wrong: ${JSON.stringify(b.off)}`);
 
   // Ron 2026-10-16: equal-size tiles, a vendor mark on each, nothing running out of its card.
   const geo = await page.evaluate(() => {

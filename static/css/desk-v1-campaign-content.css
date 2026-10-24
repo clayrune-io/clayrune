@@ -1,0 +1,13 @@
+/* Persistent placement affordance, including before the first drag. */
+.desk-v1-where-drop-hint { margin: 0; padding: 12px; color: var(--text); background: var(--accent-dim); border-radius: 8px; }
+.desk-v1-where-board { border: 2px dashed var(--accent); border-radius: 12px; background: var(--accent-dim); padding: 12px; min-height: 220px; }
+.desk-v1-where-board.pd-drop-hover { outline: 3px solid var(--accent); outline-offset: 2px; }
+.desk-v1-where-vcard { position: relative; padding-right: 42px; }
+[data-where-remove-version] { position: absolute; top: 2px; right: 2px; min-width: 36px; min-height: 36px; }
+.desk-v1-where-source-off[data-where-source] { cursor: grab; }
+.desk-v1-article-embed { display: block; margin: 12px 0; padding: 8px; border: 1px solid var(--border2); border-radius: 8px; white-space: normal; }
+.desk-v1-article-embed img, .desk-v1-article-embed video { display: block; max-width: 100%; max-height: 320px; object-fit: contain; }
+.desk-v1-article-embed figcaption { font-size: 12px; color: var(--text-dim); }
+.desk-v1-article-embed [data-article-open] { display: block; padding: 0; border: none; background: transparent; max-width: 100%; cursor: zoom-in; }
+.desk-v1-article-embed [data-article-remove] { float: right; min-height: 36px; min-width: 36px; }
+@media (max-width: 960px) { [data-where-remove-version] { min-width: 44px; min-height: 44px; } .desk-v1-where-vcard { padding-right: 48px; } }
