@@ -1,5 +1,6 @@
 """Host browse/copy scope cannot widen through path spelling, aliases or files."""
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,17 @@ def put(root, path, data=b'media'):
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
+    # Windows' default pytest temp is under real AppData, now deliberately
+    # forbidden even when a project/root is registered inside it.
+    repo = Path(__file__).resolve().parents[1]
+    for parent in repo.parents:
+        if parent.name == '.clayrune':
+            repo = parent.parent
+            break
+    scratch = repo / '_scratch'
+    scratch.mkdir(exist_ok=True)
+    temporary = tempfile.TemporaryDirectory(dir=scratch)
+    tmp_path = Path(temporary.name)
     home = tmp_path / 'home'
     home.mkdir()
     project = tmp_path / 'project'
@@ -36,7 +48,10 @@ def env(tmp_path, monkeypatch):
     app = Flask(__name__)
     app.register_blueprint(desk_file_explorer_routes.bp)
     app.register_blueprint(desk_library_folders_routes.bp)
-    return home, project, uploads, projects, app.test_client()
+    try:
+        yield home, project, uploads, projects, app.test_client()
+    finally:
+        temporary.cleanup()
 
 
 def test_default_media_all_files_and_shortcuts(env):

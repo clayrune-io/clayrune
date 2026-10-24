@@ -43,9 +43,9 @@ def open_media(root_id: str, relative: str) -> tuple[dict, Path, BinaryIO]:
         # Reauthorize against current registrations AND validate the actual file
         # handle's final name. A swapped junction cannot redirect the read.
         _, current = explorer.authorize(root_id, relative)
-        explorer._check_parts(opened)
         if opened != current or not explorer.project_media._under(opened, root['root']):
             raise pieces.PieceError('That file moved while opening it. Try again.', 409)
+        explorer.guard.check_chain(opened, explorer._home)
         a, b = os.fstat(stream.fileno()), current.stat()
         if (a.st_dev, a.st_ino) != (b.st_dev, b.st_ino):
             raise pieces.PieceError('That file changed while opening it. Try again.', 409)

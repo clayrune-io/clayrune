@@ -18,7 +18,9 @@ try {
   for (const width of [1440, 390]) {
     const ctx = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 1000 } });
     const page = await ctx.newPage();
-    const errors = [], calls = [];
+    const errors = [], calls = [], aborted = [];
+    let remote = false;
+    page.on('requestfailed', (r) => { if (r.url().includes('/api/desk/explorer?')) aborted.push(r.url()); });
     page.on('pageerror', (e) => errors.push(e.message));
     const fx = loadFixtures();
     let folder = { id: 'Folder-owned', title: 'Launch photos', files: 0, items: [] }, deleted = false, failDelete = false, failCopy = false, failBrowse = false;
@@ -59,13 +61,14 @@ try {
       if (path === '/api/desk/explorer') {
         if (failBrowse) return J({ error: 'Could not read that folder. Try again.' }, 503);
         const here = u.searchParams.get('path') || '', all = u.searchParams.get('filter') === 'all', q = u.searchParams.get('q') || '';
+        if (q === 'slow') await new Promise((r) => setTimeout(r, 600));
         let items = here ? [
           { title: 'hero.png', path: here + '/hero.png', kind: 'image', selectable: true, src: '/api/desk/explorer/preview?image' },
           { title: 'clip.mp4', path: here + '/clip.mp4', kind: 'video', selectable: true },
           ...(all ? [{ title: 'readme.txt', path: here + '/readme.txt', selectable: false }] : []),
         ] : [{ title: 'Pictures', path: 'Pictures', directory: true }];
         if (q) items = items.filter((it) => it.title.includes(q));
-        return J({ items, shortcuts, limited: q === 'limit', breadcrumbs: [{ title: 'Home', path: '' }, ...(here ? [{ title: here, path: here }] : [])] });
+        return J({ items, shortcuts, truncated: q === 'limit', allow_all_files: !remote, breadcrumbs: [{ title: 'Home', path: '' }, ...(here ? [{ title: here, path: here }] : [])] });
       }
       return J({});
     });
@@ -101,6 +104,16 @@ try {
     await page.fill('[data-fe-search]', 'hero');
     await page.waitForFunction(() => document.querySelectorAll('[data-fe-pick]').length === 1);
     assert.equal(await page.locator('[data-fe-count]').textContent(), '2 selected');
+    await page.fill('[data-fe-search]', 'limit');
+    await page.waitForSelector('.desk-fe-limit');
+    assert.match(await page.locator('.desk-fe-limit').textContent(), /Search truncated/);
+    const slowRequest = page.waitForRequest((r) => r.url().includes('/api/desk/explorer?') && new URL(r.url()).searchParams.get('q') === 'slow');
+    await page.fill('[data-fe-search]', 'slow');
+    await slowRequest;
+    await page.fill('[data-fe-search]', 'hero');
+    await page.waitForFunction(() => document.querySelectorAll('[data-fe-pick]').length === 1);
+    assert(aborted.some((u) => new URL(u).searchParams.get('q') === 'slow'), 'old browser fetch was aborted');
+    assert(calls.some((c) => c.path === '/api/desk/explorer/search' && c.method === 'DELETE'), 'server cancellation sent');
     failCopy = true;
     await page.click('[data-fe-copy]');
     await page.waitForFunction(() => document.querySelector('[data-fe-count]').textContent === '1 selected');
@@ -138,8 +151,14 @@ try {
     await page.click('[data-lf-confirm]');
     await page.waitForFunction(() => !document.querySelector('[data-lf-open]'));
     assert.equal(calls.filter((c) => c.path.endsWith('/folders/copy')).length, 2);
+    remote = true;
+    await page.evaluate(() => window.DeskV1FileExplorer.open({ id: 'remote-test', title: 'Remote', files: 0, items: [] }));
+    await page.waitForSelector('[data-fe-dir]');
+    assert.equal(await page.locator('[data-fe-filter] option').count(), 1);
+    assert.equal(await page.locator('[data-fe-filter]').inputValue(), 'media');
+    await page.keyboard.press('Escape');
     assert.deepEqual(errors, []);
-    console.log(`PASS MC-1111 ${width}: create/open, browse/breadcrumb, filter/search, multiselect, partial-copy retry, rename, picker, delete guard, layout`);
+    console.log(`PASS MC-1111 ${width}: create/open, browse/breadcrumb, truncation, search abort/cancel, local-only All files, multiselect, partial-copy retry, rename, picker, delete guard, layout`);
     await ctx.close();
   }
 } finally { await browser.close(); }

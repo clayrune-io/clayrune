@@ -194,48 +194,5 @@ def delete(key) -> dict:
 
 
 def copy_files(key, selections) -> dict:
-    from mc import desk_file_explorer as explorer, desk_explorer_file
-    if not isinstance(selections, list) or not 1 <= len(selections) <= 50:
-        raise pieces.PieceError('Choose between 1 and 50 pictures or videos.')
-    with _lock:
-        folder = _folder(key)
-        items, errors = [], []
-        for selection in selections:
-            dest = None
-            try:
-                if not isinstance(selection, dict):
-                    raise pieces.PieceError('Choose a picture or video.')
-                root, source, stream = desk_explorer_file.open_media(selection.get('root', ''), selection.get('path', ''))
-                with stream:
-                    stat = source.stat()
-                    kind = pieces.asset_kind_for(source.name)
-                    if not kind:
-                        raise pieces.PieceError('Only pictures and videos can be added.', 415)
-                    if stat.st_size > pieces.MAX_UPLOAD_BYTES[kind]:
-                        raise pieces.PieceError('That file is too large.', 413)
-                    _directories(key)
-                    dest, kind = pieces._write_library_file(source.name, stream, key)
-                _, checked = explorer.authorize(selection['root'], selection['path'])
-                after = checked.stat()
-                if checked != source or (after.st_ino, after.st_mtime_ns, after.st_size) != (stat.st_ino, stat.st_mtime_ns, stat.st_size):
-                    raise pieces.PieceError('That file changed while copying. Try again.', 409)
-                rel = pieces._rel_of(dest.resolve())
-                item = {'id': rel, 'path': rel, 'kind': kind, 'title': source.name,
-                        'src': pieces._src_for(rel, kind), 'play': pieces._play_for(rel, kind),
-                        'provenance': {'source_path': str(source), 'source_name': source.name,
-                                       'location': root['title'], 'mtime_ns': stat.st_mtime_ns, 'size': stat.st_size}}
-                receipts = _state_path('_explorer_copies.json')
-                saved = json.loads(receipts.read_text(encoding='utf-8')) if receipts.exists() else {}
-                saved[rel] = item['provenance']
-                write_json_atomic(receipts, saved)
-                items.append(item)
-            except (pieces.PieceError, OSError, ValueError) as e:
-                if not isinstance(e, pieces.PieceError):
-                    _log(f'[desk-library] copy failed: {e}', flush=True)
-                if dest is not None:
-                    dest.unlink(missing_ok=True)
-                errors.append({'title': Path(str(selection.get('path', 'File'))).name if isinstance(selection, dict) else 'File',
-                               'root': selection.get('root') if isinstance(selection, dict) else None,
-                               'path': selection.get('path') if isinstance(selection, dict) else None,
-                               'error': str(e) if isinstance(e, pieces.PieceError) else 'Could not copy this file. Try again.'})
-        return {'items': items, 'errors': errors, 'folder': folder['title']}
+    from mc import desk_explorer_copy
+    return desk_explorer_copy.copy_files(key, selections)

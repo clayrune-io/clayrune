@@ -3,10 +3,24 @@
   const esc = (s) => window.esc(String(s == null ? '' : s));
   const api = (...args) => window.DeskV1Store.api(...args);
   let active = null;
+  const client = Array.from(crypto.getRandomValues(new Uint8Array(16)), (n) => n.toString(16).padStart(2, '0')).join('');
+  let requestId = 0;
+
+  function stop(st) {
+    clearTimeout(st.timer);
+    ++st.seq;
+    if (!st.request) return;
+    st.request.controller.abort();
+    // Target the old request: a delayed cancellation must not cancel its successor.
+    api('DELETE', '/api/desk/explorer/search?' + new URLSearchParams({ client, search: st.request.id }))
+      .catch((e) => console.warn('Could not cancel file search:', e.message));
+    st.request = null;
+  }
 
   function close() {
     if (!active || active.busy) return;
     const old = active;
+    stop(old);
     active = null;
     document.removeEventListener('keydown', old.keys, true);
     old.el.remove();
@@ -30,7 +44,7 @@
       <div class="desk-fe-workspace"><nav class="desk-fe-rail" aria-label="Locations" data-fe-shortcuts></nav>
         <div class="desk-fe-main"><nav class="desk-fe-crumbs" aria-label="Current folder" data-fe-crumbs></nav>
           <div class="desk-fe-tools"><input type="search" data-fe-search aria-label="Search this folder" placeholder="Search this folder" maxlength="200">
-            <select data-fe-filter aria-label="Show files"><option value="media">Media only</option><option value="all">All files</option></select></div>
+            <select data-fe-filter aria-label="Show files"><option value="media">Media only</option></select></div>
           <p class="desk-fe-note">Browse your computer. Pictures and videos are copied here; originals stay where they are.</p>
           <div data-fe-results class="desk-fe-results" aria-live="polite"></div>
         </div>
@@ -38,7 +52,7 @@
       <footer class="desk-fe-footer"><div><span data-fe-count>0 selected</span><button data-fe-clear>Clear selection</button></div><button class="btn-add" data-fe-copy disabled>Copy to folder</button></footer>
     </section>`;
     const st = active = { el, folder, onChanged, focus: document.activeElement, busy: false, changed: false,
-      root: 'home', path: '', query: '', filter: 'media', selected: new Map(), seq: 0, keys: null, rows: [] };
+      root: 'home', path: '', query: '', filter: 'media', selected: new Map(), seq: 0, keys: null, rows: [], request: null, timer: null };
     const results = el.querySelector('[data-fe-results]');
     const copy = el.querySelector('[data-fe-copy]');
     const paintSelection = () => {
@@ -54,12 +68,21 @@
       window.DeskV1LibraryViewer.wireShelf(el, st.folder.items);
     };
     const load = async () => {
+      stop(st);
       const seq = ++st.seq;
+      const id = String(++requestId), controller = new AbortController();
+      st.request = { id, controller };
       results.innerHTML = '<p>Reading this folder…</p>';
       try {
-        const qs = new URLSearchParams({ root: st.root, path: st.path, q: st.query, filter: st.filter });
-        const data = await api('GET', '/api/desk/explorer?' + qs);
+        const qs = new URLSearchParams({ root: st.root, path: st.path, q: st.query, filter: st.filter, client, search: id });
+        const response = await fetch('/api/desk/explorer?' + qs, { signal: controller.signal });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
         if (active !== st || seq !== st.seq) return;
+        const filter = el.querySelector('[data-fe-filter]');
+        filter.innerHTML = '<option value="media">Media only</option>' + (data.allow_all_files === true ? '<option value="all">All files</option>' : '');
+        if (data.allow_all_files !== true) st.filter = 'media';
+        filter.value = st.filter;
         st.rows = data.items;
         el.querySelector('[data-fe-shortcuts]').innerHTML = data.shortcuts.map((it, i) => `<button data-fe-location="${i}" aria-current="${it.root === st.root && it.path === st.path ? 'location' : 'false'}">${esc(it.title)}</button>`).join('');
         el.querySelectorAll('[data-fe-location]').forEach((b) => b.onclick = () => {
@@ -67,7 +90,7 @@
         });
         el.querySelector('[data-fe-crumbs]').innerHTML = data.breadcrumbs.map((it, i) => `<button data-fe-crumb="${i}">${esc(it.title)}</button>`).join('<span aria-hidden="true">›</span>');
         el.querySelectorAll('[data-fe-crumb]').forEach((b) => b.onclick = () => navigate(st.root, data.breadcrumbs[Number(b.dataset.feCrumb)].path));
-        results.innerHTML = `${data.limited ? '<p class="desk-fe-limit">Some files are not shown. Open a smaller folder or narrow your search.</p>' : ''}
+        results.innerHTML = `${data.truncated || data.limited ? '<p class="desk-fe-limit">Search truncated. Some files are not shown. Open a smaller folder or narrow your search.</p>' : ''}
           ${st.filter === 'all' ? '<p class="desk-fe-note">All files are visible. Only supported pictures and videos can be copied.</p>' : ''}
           ${data.items.length ? `<div class="desk-fe-grid">${data.items.map((it, i) => {
             const key = JSON.stringify([st.root, it.path]);
@@ -85,9 +108,12 @@
           paintSelection();
         });
       } catch (e) {
+        if (e.name === 'AbortError') return;
         if (active !== st || seq !== st.seq) return;
         results.innerHTML = `<p role="alert">${esc(e.message || 'Could not read this folder.')}</p><button data-fe-retry>Try again</button>`;
         results.querySelector('[data-fe-retry]').onclick = load;
+      } finally {
+        if (st.request && st.request.id === id) st.request = null;
       }
     };
     function navigate(root, path) {
@@ -96,9 +122,8 @@
       el.querySelector('[data-fe-search]').value = '';
       load();
     }
-    let timer;
     el.querySelector('[data-fe-search]').oninput = (e) => {
-      st.query = e.target.value; ++st.seq; clearTimeout(timer); timer = setTimeout(load, 250);
+      st.query = e.target.value; stop(st); st.timer = setTimeout(load, 250);
     };
     el.querySelector('[data-fe-filter]').onchange = (e) => { st.filter = e.target.value; load(); };
     el.querySelector('[data-fe-clear]').onclick = () => { st.selected.clear(); paintSelection(); };

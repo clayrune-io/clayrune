@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request, send_file
 
 from mc import desk_file_explorer as explorer, desk_pieces as pieces, desk_explorer_file
-from mc.core import _log
+from mc.core import _log, _is_loopback_request
+from mc import desk_explorer_search as search
 
 bp = Blueprint('desk_file_explorer', __name__)
 
@@ -21,8 +22,48 @@ def call(fn):
 
 @bp.get('/api/desk/explorer')
 def browse():
-    return call(lambda: jsonify(explorer.browse(request.args.get('root', 'home'), request.args.get('path', ''),
-                                               query=request.args.get('q', ''), all_files=request.args.get('filter') == 'all')))
+    def read():
+        local = _is_loopback_request() and not any(k.lower().startswith('cf-') for k in request.headers.keys())
+        all_files = request.args.get('filter') == 'all'
+        if all_files and not local:
+            raise pieces.PieceError('All files is available only on this computer.', 403)
+        with search.flight(_client(), _request_id()) as lease:
+            if not lease.acquired or lease.stopped():
+                raise pieces.PieceError('File search was cancelled. Try again.', 409)
+            disconnected = request.environ.get('werkzeug.socket')
+            def stopped():
+                return (lease.stopped() or not lease.acquired
+                        or (disconnected is not None and disconnected.fileno() < 0))
+            out = explorer.browse(request.args.get('root', 'home'), request.args.get('path', ''),
+                                  query=request.args.get('q', ''), all_files=all_files,
+                                  stopped=stopped, deadline=lease.deadline)
+            out['allow_all_files'] = local
+            return jsonify(out)
+    return call(read)
+
+
+def _client() -> str:
+    # The browser ID is a cancellation channel, never an authorization token.
+    # Bound its length and the live registry; slots disappear after the last user.
+    client = request.args.get('client', '')
+    if len(client) > 64 or any(not (c.isalnum() or c in '-_') for c in client):
+        raise pieces.PieceError('Invalid file search client.')
+    return repr((request.remote_addr, request.headers.get('Cf-Connecting-Ip', '')[:64], client))
+
+
+def _request_id() -> str:
+    value = request.args.get('search', '')
+    if len(value) > 32 or (value and not value.isdecimal()):
+        raise pieces.PieceError('Invalid file search request.')
+    return value
+
+
+@bp.delete('/api/desk/explorer/search')
+def cancel_search():
+    def cancel():
+        search.cancel(_client(), _request_id())
+        return jsonify({'cancelled': True})
+    return call(cancel)
 
 
 @bp.get('/api/desk/explorer/preview')
