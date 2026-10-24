@@ -343,8 +343,8 @@ async function live(browser, vp, name) {
   await page.waitForSelector('[data-lp] [data-lp-tile]');
   await page.fill('[data-lp-search]', 'hero');
   await page.locator('[data-lp-pick]').first().click();
-  await settle(page, () => /!\[hero\.png\]\(desk\/library\/image\/Studio\/hero\.png\)/.test(document.querySelector('[data-writer-body]').innerText));
-  ok(`${tag} the picture is a line in the article body`);
+  await settle(page, () => !!document.querySelector('[data-writer-body] [data-article-marker*="hero.png"] img'));
+  ok(`${tag} the picture is embedded inline in the article body`);
   await settle(page, () => !!document.querySelector('[data-sa-pic] img'));
   ok(`${tag} the strip under the writer shows the picture`);
   await settle(page, () => /Saved/.test((document.querySelector('[data-sa-status]') || {}).textContent || ''));

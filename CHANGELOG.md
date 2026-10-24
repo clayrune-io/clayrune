@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-10-23] - Restore campaign posts and place suggestions reliably (MC-1112)
+
+- What has Delete post with Undo and an Archived filter with Restore post. Whole-post archive handles empty and mixed posts, preserves published history, and restores each suspended version's exact prior state.
+- Where shows configured channel accounts even when disconnected or read-only, with draggable tiles, a persistent drop hint, empty new channel tiles, and removal controls for channels and unsent versions. Planning placement does not grant publishing access.
+- A suggestion's first action creates a real saved piece before adding a channel version. Suggestions no longer pre-fill channels; failed saves say the change was not saved. Original suggestion records and existing piece assignments are preserved.
+- Both article writers embed library images, videos, audio and files inside the body. Campaign saves persist the edited body; saved references survive reopen and prevent library deletion while in use or available for post undelete.
+- Merge fix: folder delete no longer crashes on article drafts stored without an `id` field (now falls back to the store key). Explorer smoke retries a scroll when Studio re-renders mid-step (flaked 2/5 on master).
+
 ## [2026-10-23] - Close Studio explorer security audit findings (MC-1111)
 
 - Refuse symlinks and Windows reparse points on every path component, OS-private names (including AppData and home Library), hidden flags and Firefox profile markers before browsing, previewing or copying.

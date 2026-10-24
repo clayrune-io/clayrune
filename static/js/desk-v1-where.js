@@ -40,7 +40,7 @@
   function _fx() { return window.DeskV1Store.state(); }
   function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id) || null; }
   function _channel(id) { return (_fx().channels || []).find((c) => c.id === id) || null; }
-  function _familiesFor(campaignId) { return (_fx().families || []).filter((f) => f.campaignId === campaignId); }
+  function _familiesFor(campaignId) { return (_fx().families || []).filter((f) => f.campaignId === campaignId && !f.archivedAt); }
 
   let _seq = 0;
   function _uid() { return Date.now().toString(36) + (++_seq).toString(36); }
@@ -94,7 +94,7 @@
   // A version counts on the board while it is live and sits on a channel.
   function _isLive(v) { return !!v.channelId && v.state !== 'archived' && v.state !== 'skipped'; }
   // Already out the door (or on its way): moving it would rewrite history.
-  const _LOCKED = new Set(['verified_published', 'you_reported', 'sending', 'submitted']);
+  const _LOCKED = new Set(['verified_published', 'you_reported', 'sending', 'submitted', 'unknown_outcome', 'failed']);
 
   function _columnChannels(camp) {
     return ((camp.plan && camp.plan.accounts) || []).map((id) => _channel(id) || { id, platform: '', identity: id, label: id });
@@ -128,6 +128,7 @@
 
   function _repaint(focusSel) {
     if (!_st || !_st.el || !_st.el.isConnected) return;
+    if (_st.el.dataset.panel && _st.el.dataset.panel !== 'where') return;
     const camp = _camp();
     if (!camp) return;
     _paint(_st.el, camp);
@@ -141,7 +142,7 @@
     const ch = _channel(channelId);
     if (!ch) return;
     if (camp.plan.accounts.includes(channelId)) { DeskV1Kit.toast(`${ch.label} is already on “${camp.plan.title}”.`); return; }
-    DeskV1Store.write({
+    return DeskV1Store.write({
       label: `Added ${ch.label} to “${camp.plan.title}”`,
       apply: () => { camp.plan.accounts.push(channelId); _repaint(); },
       unapply: () => { const i = camp.plan.accounts.indexOf(channelId); if (i >= 0) camp.plan.accounts.splice(i, 1); },
@@ -204,11 +205,17 @@
     });
   }
 
-  function _addVersion(camp, fam, channelId) {
+  async function _addVersion(camp, fam, channelId) {
+    if (fam.suggestion || String(fam.id).startsWith('fam-suggest-')) {
+      return window.DeskV1SuggestionPieces.act(fam, () => _addVersion(camp, fam, channelId));
+    }
+    if ((fam.versions || []).some((v) => v.channelId === channelId && _isLive(v))) {
+      DeskV1Kit.toast('This piece already has a version on that channel.'); return;
+    }
     const ch = _channel(channelId);
     if (!camp.plan.accounts.includes(channelId)) return;
     const v = { id: `${fam.id}-v-${_uid()}`, channelId, state: 'drafting', revision: 0 };
-    DeskV1Store.write({
+    return DeskV1Store.write({
       label: `Added a ${ch ? ch.label : 'new'} version of “${fam.title}”`,
       apply: () => { fam.versions.push(v); _repaint(); },
       unapply: () => { const i = fam.versions.indexOf(v); if (i >= 0) fam.versions.splice(i, 1); },
@@ -326,7 +333,7 @@
   // precedent) so a drop never also opens the menu.
   function _wireCard(node, data, onActivate) {
     node.addEventListener('click', (e) => {
-      if (Date.now() - _lastDragEnd < 300) { e.stopImmediatePropagation(); e.preventDefault(); }
+      if (!e.target.closest('button') && Date.now() - _lastDragEnd < 300) { e.stopImmediatePropagation(); e.preventDefault(); }
     }, true);
     node.addEventListener('pointerdown', (e) => {
       if (e.target.closest && e.target.closest('button')) return; // a ✕ / Connect inside the card is its own control
@@ -350,6 +357,7 @@
 
   // ── view ─────────────────────────────────────────────────────────────────
   function _previewTag(ch) {
+    if (ch && !ch.preview && ch.connected === false) return `<span class="desk-v1-where-chip" data-tone="warn">${ch.capability === 'none' ? 'Read only' : 'Not connected'}</span>`;
     return ch && ch.preview ? '<span class="desk-v1-where-preview" data-preview data-short="Preview" title="Preview · not connected">Preview · not connected</span>' : '';
   }
 
@@ -371,6 +379,7 @@
       <div class="desk-v1-where-vcard" role="button" tabindex="0" data-where-version data-family-id="${esc(fam.id)}" data-version-id="${esc(v.id)}" data-state="${esc(v.state)}"
            aria-haspopup="menu" aria-label="${esc(`${fam.title}, ${_kindWord(fam.kind)} to ${_formatWord(fam.kind, ch)}, ${state.word}. Press Enter to move it to another account.`)}">
         <div class="desk-v1-where-vtitle">${esc(fam.title)}</div>
+        <button type="button" class="desk-v1-where-colremove" data-where-remove-version="${esc(v.id)}" aria-label="Remove ${esc(fam.title)} from this channel" ${_LOCKED.has(v.state) ? 'disabled title="Published history is retained"' : ''}>✕</button>
         <div class="desk-v1-where-vformat">${esc(_kindWord(fam.kind))} → ${esc(_formatWord(fam.kind, ch))}</div>
       </div>
     </div>`;
@@ -432,6 +441,7 @@
     el.innerHTML = `<div class="desk-v1-where" data-where data-campaign-id="${esc(camp.id)}">
       ${_suggestHTML(camp)}
       ${_awaitingHTML(camp)}
+      <p class="desk-v1-where-drop-hint" data-where-drop-hint>Drop a connector below to add an empty channel. Then drag the messages you want into it.</p>
       <div class="desk-v1-where-board" data-where-board>
         <section class="desk-v1-where-msgs" data-where-messages aria-label="Messages">
           <header class="desk-v1-where-msghead"><div class="desk-v1-where-msgtitle">Messages</div><div class="desk-v1-where-msgsub">every piece from What</div></header>
@@ -447,6 +457,7 @@
       </section>
     </div>`;
     _wire(el, camp);
+    window.DeskV1WhereRemoval.wire(el, camp, _repaint);
   }
 
   function _wire(el, camp) {
@@ -527,5 +538,14 @@
     _paint(el, camp);
   }
 
+  window.DeskV1WhereActions = {
+    addVersion: async (camp, fam, channelId) => {
+      if (!camp.plan.accounts.includes(channelId)) {
+        const result = await _addColumn(camp, channelId);
+        if (!result || !result.ok) return result;
+      }
+      return _addVersion(camp, fam, channelId);
+    },
+  };
   window.deskV1RenderWhere = deskV1RenderWhere;
 })();

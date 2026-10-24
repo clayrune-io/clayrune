@@ -111,7 +111,8 @@
         <span class="desk-v1-piece-rowend">${DeskV1Kit.stateLabelHTML(v.state)}${action}${assisted}</span>
       </div>`;
     }).join('');
-    return (excerpt ? `<div class="desk-v1-piece-excerpt" data-piece-excerpt>${esc(excerpt)}</div>` : '') +
+    const edit = fam.kind === 'article' && !fam.archivedAt ? '<button type="button" class="btn-secondary" data-piece-edit-article>Edit article</button>' : '';
+    return edit + (excerpt ? `<div class="desk-v1-piece-excerpt" data-piece-excerpt>${esc(excerpt)}</div>` : '') +
       (rows || '<div class="desk-v1-piece-empty">No versions yet — add one from the Where board.</div>');
   }
 
@@ -165,6 +166,8 @@
       ${_sectionHTML('media', 'Media', _mediaHTML(fam))}
       ${_sectionHTML('versions', 'Versions', _versionsHTML(fam))}
     </div>`;
+    const article = el.querySelector('[data-piece-edit-article]');
+    if (article) article.onclick = () => window.deskV1WhatEditArticle(fam);
     el.querySelectorAll('[data-review-btn]').forEach((b) => b.onclick = () => {
       window.deskV1Nav('review', { campaignId: fam.campaignId, versionId: b.dataset.reviewBtn, projectId: params.projectId });
     });

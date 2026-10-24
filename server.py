@@ -2328,6 +2328,8 @@ app.register_blueprint(_bp_passkeys.bp)
 # Desk Studio's delete + Undo for Recent rows, over the same Desk store and uploads.
 from mc.blueprints import desk_studio_items_routes as _bp_desk_studio_items  # noqa: E402
 app.register_blueprint(_bp_desk_studio_items.bp)
+from mc.blueprints import desk_piece_lifecycle_routes as _bp_piece_lifecycle  # noqa: E402
+app.register_blueprint(_bp_piece_lifecycle.bp)
 
 # Standalone Studio articles (no campaign behind them), same Desk store. Own module.
 from mc.blueprints import desk_studio_articles_routes as _bp_desk_studio_articles  # noqa: E402

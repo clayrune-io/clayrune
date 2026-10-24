@@ -195,7 +195,7 @@ async function runToneRenderChecks(browser, tone) {
     ? ok(`[${tone.name}] a multi-asset piece shows its 2 thumbnails + ＋ Add media (frame 5a)`)
     : fail(`[${tone.name}] multi-asset row wrong: thumbs=${multi}, add=${!!addMedia}`);
   const filters = await page.$$eval('[data-what-filter]', (els) => els.map((e) => e.textContent.trim()));
-  JSON.stringify(filters) === JSON.stringify(['All', 'Needs review', 'Scheduled', 'Blocked'])
+  JSON.stringify(filters) === JSON.stringify(['All', 'Archived', 'Needs review', 'Scheduled', 'Blocked'])
     ? ok(`[${tone.name}] filters read ${JSON.stringify(filters)}`)
     : fail(`[${tone.name}] filters wrong: ${JSON.stringify(filters)}`);
 
@@ -529,7 +529,14 @@ async function runPauseResume(browser) {
   // IS the campaign's own undo (reverts the resume), not a plain toast
   // dismiss; clicking it here would silently fail the very assertion it
   // follows.
-  await page.evaluate(() => { window.DeskV1Fixtures.channels.find((c) => c.id === 'ch-li-page').health = 'ok'; });
+  await page.evaluate(() => {
+    window.DeskV1Fixtures.channels.find((c) => c.id === 'ch-li-page').health = 'ok';
+    // The static fixture's September deadline has expired. Success-path Resume
+    // needs a future deadline; the explicit expired-deadline case follows below.
+    const tomorrow = new Date(Date.now() + 86400000);
+    window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').plan.end.date =
+      `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`;
+  });
   await page.click('[data-pause-btn]');
   await page.waitForSelector('[data-resume-btn]', { timeout: 2000 });
   await page.click('[data-resume-btn]');

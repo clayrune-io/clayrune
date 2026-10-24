@@ -78,7 +78,11 @@ try {
     await page.waitForSelector('.desk-v1-shell');
     await page.evaluate(() => window.deskV1Nav('studio', {}));
     await page.waitForSelector('[data-lf-open]');
-    await page.locator('[data-lf-open]').scrollIntoViewIfNeeded();
+    // Studio re-renders once the folder list loads; retry if the node is replaced mid-scroll.
+    for (let i = 0; ; i++) {
+      try { await page.locator('[data-lf-open]').scrollIntoViewIfNeeded({ timeout: 2000 }); break; }
+      catch (e) { if (i >= 4 || !/not attached|Timeout/.test(String(e))) throw e; }
+    }
     await page.screenshot({ path: resolve(shots, `folders-${width}.png`) });
     await page.click('[data-lf-new]');
     await page.fill('[data-lf-name]', 'Product launch');

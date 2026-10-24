@@ -49,7 +49,11 @@
   const _chain = {};
   function _after(pieceId) { return _chain[pieceId] || Promise.resolve(); }
   function _queue(pieceId, fn) {
-    const p = _after(pieceId).then(fn);
+    const p = _after(pieceId).then(async () => {
+      const fam = (_fx().families || []).find((f) => f.id === pieceId);
+      if (fam && window.DeskV1SuggestionPieces) await window.DeskV1SuggestionPieces.ensure(fam);
+      return fn();
+    });
     _chain[pieceId] = p.catch(() => {});
     return p;
   }
@@ -81,6 +85,7 @@
   // ── vocabulary ───────────────────────────────────────────────────────────
   const FILTERS = [
     { id: 'all', label: 'All' },
+    { id: 'archived', label: 'Archived' },
     { id: 'needs_review', label: 'Needs review' },
     { id: 'scheduled', label: 'Scheduled' },
     { id: 'blocked', label: 'Blocked' },
@@ -88,6 +93,7 @@
   const _SCHEDULED = new Set(['scheduled', 'approved', 'sending', 'submitted']);
   const FILTER_PRED = {
     all: () => true,
+    archived: (f) => !!f.archivedAt,
     needs_review: (f) => (f.versions || []).some((v) => v.state === 'needs_review'),
     scheduled: (f) => (f.versions || []).some((v) => _SCHEDULED.has(v.state)),
     blocked: (f) => (f.versions || []).some((v) => v.state === 'blocked'),
@@ -142,7 +148,7 @@
   let _lastDragEnd = 0; // swallow the click a mouse-up fires right after a drag (where.js precedent)
 
   function _camp() { return _cur ? _campaign(_cur.campaignId) : null; }
-  function _isMounted() { return !!(_cur && _cur.el && _cur.el.isConnected); }
+  function _isMounted() { return !!(_cur && _cur.el && _cur.el.isConnected && (!_cur.el.dataset.panel || _cur.el.dataset.panel === 'what')); }
 
   // ── commands ─────────────────────────────────────────────────────────────
   function _newTitle(kind) { return `New ${String(kind || 'piece').toLowerCase()}`; }
@@ -338,6 +344,7 @@
   // Per-version status summary, right-aligned on the row. A video still
   // rendering says so (frame 5a: `⟳ rendering`) instead of listing versions.
   function _statusHTML(fam) {
+    if (fam.archivedAt) return '<span class="desk-v1-what-status-item" data-state="archived">Archived</span>';
     if (fam.render && fam.render.status === 'rendering') {
       const n = fam.render.progress != null ? Number(fam.render.progress) : 0;
       return `<span class="desk-v1-what-status-item" data-state="sending"><span class="desk-v1-state-glyph" aria-hidden="true">⟳</span> Rendering ${esc(n)}%</span>` +
@@ -504,16 +511,19 @@
       onBack: () => { st.writer = null; _repaint(); },
       onSave: () => {
         let undoMark = null;
+        const bodyBefore = fam.body || '';
+        const bodyNext = fam.draft.tabs[st.writer.tab].body;
         DeskV1Store.write({
           label: `Saved “${fam.title}” to What`,
-          apply: () => { undoMark = window.DeskV1Studio.markInReview(fam); st.writer = null; _repaint(); },
-          unapply: () => { if (undoMark) undoMark(); },
+          apply: () => { fam.body = bodyNext; undoMark = window.DeskV1Studio.markInReview(fam); st.writer = null; _repaint(); },
+          unapply: () => { fam.body = bodyBefore; if (undoMark) undoMark(); },
           repaint: () => _repaint(),
-          request: () => window.DeskV1Studio.persistInReview(fam, undoMark),
-          undoRequest: () => window.DeskV1Studio.persistInReview(fam, undoMark, true),
+          request: async () => { await _queue(fam.id, () => _api('PATCH', _pieceUrl(fam.id), { body: bodyNext })); return window.DeskV1Studio.persistInReview(fam, undoMark); },
+          undoRequest: async () => { await _queue(fam.id, () => _api('PATCH', _pieceUrl(fam.id), { body: bodyBefore })); return window.DeskV1Studio.persistInReview(fam, undoMark, true); },
         });
       },
     });
+    if (window.DeskV1ArticleMedia) window.DeskV1ArticleMedia.wire(el.querySelector('[data-writer]'), fam.draft.tabs[st.writer.tab]);
     return true;
   }
 
@@ -523,9 +533,9 @@
     const all = _familiesFor(camp.id);
     const openIds = new Set(st.creates.map((c) => c.familyId));
     const pred = FILTER_PRED[st.filter] || FILTER_PRED.all;
-    const rows = all.filter((f) => !openIds.has(f.id) && pred(f));
+    const rows = all.filter((f) => !openIds.has(f.id) && (st.filter === 'archived' ? !!f.archivedAt : !f.archivedAt) && pred(f));
     const creates = st.creates.map((c) => ({ c, f: all.find((f) => f.id === c.familyId) })).filter((x) => x.f);
-    const banner = typeof _bridge().suggestedBannerHTML === 'function' ? _bridge().suggestedBannerHTML(camp) : '';
+    const banner = st.filter !== 'archived' && typeof _bridge().suggestedBannerHTML === 'function' ? _bridge().suggestedBannerHTML(camp) : '';
     el.innerHTML = `<div class="desk-v1-what" data-what>
       <div class="desk-v1-what-panel" data-what-list id="desk-v1-camp-listarea">
         <div class="desk-v1-what-filters" role="group" aria-label="Filter pieces">${FILTERS.map((f) =>
@@ -559,9 +569,9 @@
       const fam = _familiesFor(camp.id).find((f) => f.id === rowEl.dataset.familyId);
       if (!fam) return;
       const primary = rowEl.querySelector('[data-primary-action]');
-      if (primary && typeof _bridge().runPrimary === 'function') primary.onclick = (e) => { e.stopPropagation(); _bridge().runPrimary(fam, camp); };
+      if (primary && typeof _bridge().runPrimary === 'function') primary.onclick = (e) => { e.stopPropagation(); window.DeskV1SuggestionPieces.act(fam, () => _bridge().runPrimary(fam, camp)); };
       const more = rowEl.querySelector('[data-more-btn]');
-      if (more && typeof _bridge().openCardMenu === 'function') more.onclick = (e) => { e.stopPropagation(); _bridge().openCardMenu(e.currentTarget, fam, camp); };
+      if (more && typeof _bridge().openCardMenu === 'function') more.onclick = (e) => { e.stopPropagation(); const trigger = e.currentTarget; window.DeskV1SuggestionPieces.act(fam, () => _bridge().openCardMenu(trigger, fam, camp)); };
       const add = rowEl.querySelector('[data-add-media]');
       if (add) add.onclick = (e) => { e.stopPropagation(); openAddMedia(add, fam, () => _repaint()); };
       rowEl.addEventListener('click', () => { if (typeof _bridge().setSelection === 'function') _bridge().setSelection('card', fam.id, fam.title); });
@@ -770,6 +780,10 @@
   // Repaint the mounted What body (campaign.js's card-menu commands call this).
   function deskV1RepaintWhat() { _repaint(); }
 
+  window.deskV1WhatEditArticle = (fam) => {
+    _state(fam.campaignId).writer = { familyId: fam.id, tab: 0 };
+    window.deskV1GotoCampaignPanel('what', { campaignId: fam.campaignId });
+  };
   window.deskV1FillWhat = deskV1FillWhat;
   window.deskV1RepaintWhat = deskV1RepaintWhat;
   window.deskV1WhatAddMedia = openAddMedia;

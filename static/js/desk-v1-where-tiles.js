@@ -65,8 +65,8 @@
     const pub = ch.publish || null;
     return _tile(ch, plat, {
       cls: ' desk-v1-where-source-off',
-      attrs: 'data-where-source-off',
-      handle: pub ? ch.identity : 'not connected',
+      attrs: 'role="button" tabindex="0" data-where-source data-where-source-off',
+      handle: ch.identity || ch.label,
       title: pub && pub.reason ? pub.reason : '',
       status: chipHTML('Not connected', 'warn'),
       reason: pub && pub.reason ? pub.reason : '',
@@ -80,7 +80,7 @@
   function readOnlyHTML(ch, plat) {
     return _tile(ch, plat, {
       cls: ' desk-v1-where-source-off',
-      attrs: 'data-where-source-readonly',
+      attrs: 'role="button" tabindex="0" data-where-source data-where-source-readonly',
       title: 'The Desk reads this account and does not publish there',
       status: chipHTML('Read only', 'dim', ' data-where-readonly'),
     });
