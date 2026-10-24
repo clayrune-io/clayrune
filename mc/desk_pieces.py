@@ -874,6 +874,8 @@ def materials(campaign_id: str | None = None) -> dict:
                     except OSError:
                         pass
     project_media.decorate_library(library)
+    from mc import desk_library_folders
+    desk_library_folders.decorate_materials(library)
     recent.sort(key=lambda t: -t[0])
     with _desk._store_lock:
         store = _desk._read_store()

@@ -558,7 +558,31 @@ project's workspace folder.
 
 ### Use pictures and videos from your projects
 
-Studio and **Pick from library** include **From your projects**. Choose a
+In **Studio → Material library**, press **New folder**, give it a name, and
+press **Create folder**. Creating or opening a folder opens the computer's
+file explorer. A library folder can hold pictures and videos together.
+**Rename** changes its name without breaking saved media references.
+
+Use **Home**, **Pictures**, **Videos**, **Desktop**, **Downloads**, or a
+registered project in the locations rail; only existing locations appear.
+Open folders or use the breadcrumb to go back. **Search this folder** searches
+inside the current folder, with depth and file-count limits; if a limit is
+reached, open a smaller folder. **Media only** is the default. **All files**
+also shows other files, which cannot be selected. Only supported pictures
+(PNG, JPEG, GIF, WebP) and videos (MP4, MOV, WebM, M4V) can be copied.
+
+Select up to 50 files, then press **Copy to folder**. Images have a 25 MB limit
+and videos a 500 MB limit per file. Originals stay in place. The copied files
+appear under **In this library folder** and in **Pick from library**, including
+storyboard scenes and article pictures. If some files fail, the page lists the
+failures and keeps those files selected for retry. **Delete** asks before
+removing a folder and refuses when any file is used by a piece or draft.
+
+The explorer reads only the host's home folder and registered project folders.
+Secrets, hidden/system locations and browser profiles stay private; links
+cannot escape the selected root. It never modifies host files.
+
+**Pick from library** also includes **From your projects**. Choose a
 project, open a folder, or search by file or folder name. The first 50 matching
 files load when opened; **Load more** shows the next page. Use **View** to
 preview a picture or play a video. **Refresh files** finds recent work; files
@@ -566,7 +590,7 @@ are also refreshed automatically about every five minutes.
 
 Selecting a project file saves a copy in **Material library → Projects /
 project name**, then uses that copy in your scene, article, image or campaign.
-In Studio it saves the copy without attaching it to a campaign. **Add media →
+**Add media →
 From your projects** offers the same chooser for an existing piece. Reusing an
 unchanged source reuses its library copy, and removing the original project
 file does not remove media from your campaign. Shared uploads appear when

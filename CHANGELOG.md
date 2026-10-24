@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-23] - Organize Studio media in your own folders (MC-1111)
+
+- Create, rename and delete mixed picture/video folders in Studio's Material library. Existing files and saved references keep their paths; deletion refuses files used by pieces or drafts.
+- Opening a folder offers a host file explorer with location shortcuts, breadcrumbs, thumbnails, bounded search and Media only / All files filters. Select up to 50 supported pictures and videos to copy into the folder; originals stay in place and copy failures remain visible.
+- Browsing is limited to Home and registered project folders. Secret names, hidden/system locations and browser profiles are excluded; resolved links and opened file handles must stay within the selected root. Phone controls fit the screen with the copy action pinned below the results.
+
 ## [2026-10-23] - Show published receipt outcomes in Desk Results (MC-968)
 
 - Results/retro shows impressions and replies per published receipt, including during an active campaign. Missing measurements stay unknown.

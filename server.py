@@ -2253,6 +2253,13 @@ _desk_project_media.wire(load_projects_fn=_bp_projects.load_projects,
                         media_dir=Path(_DATA_ROOT) / 'data' / 'media', uploads_root=UPLOADS_DIR)
 app.register_blueprint(_desk_project_media.bp)
 
+from mc import desk_file_explorer as _desk_file_explorer  # noqa: E402
+_desk_file_explorer.wire(load_projects_fn=_bp_projects.load_projects)
+from mc.blueprints import desk_file_explorer_routes as _bp_desk_explorer  # noqa: E402
+from mc.blueprints import desk_library_folders_routes as _bp_desk_folders  # noqa: E402
+app.register_blueprint(_bp_desk_explorer.bp)
+app.register_blueprint(_bp_desk_folders.bp)
+
 from mc.blueprints import desk_render_recovery_routes as _bp_desk_render_recovery  # noqa: E402
 app.register_blueprint(_bp_desk_render_recovery.bp)
 
