@@ -1510,9 +1510,20 @@ function buildSlotArray(filteredIds) {
   return slots;
 }
 
-function render() { renderStats(); renderProjects(); renderListView(); renderFeed(); if (typeof renderBeacon === 'function') renderBeacon(); renderSidebarProjects(); applyViewMode(); renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); if (openModals.has('__all_backlog')) renderAllBacklog(); if (openModals.has('__all_social')) renderAllSocial(); if (openModals.has('__desk') && typeof renderDesk === 'function') renderDesk(); if (openModals.has('__all_hivemind')) renderAllHiveminds(); }
+// render() reaches mobile.js functions (renderMobileAppBar, isMobileChatList,
+// ...), and the first fetchProjects() can resolve before deferred modules have
+// evaluated (CI frontend smoke, 390px: 'renderMobileAppBar is not defined').
+// Until DOMContentLoaded, which modules are guaranteed to precede, queue one
+// render for then instead of throwing. Same gate as _modulesReady below.
+let _mcDomReady = document.readyState === 'complete';
+let _mcRenderQueued = false;
+document.addEventListener('DOMContentLoaded', () => {
+  _mcDomReady = true;
+  if (_mcRenderQueued) { _mcRenderQueued = false; render(); }
+}, { once: true });
+function render() { if (!_mcDomReady) { _mcRenderQueued = true; return; } renderStats(); renderProjects(); renderListView(); renderFeed(); if (typeof renderBeacon === 'function') renderBeacon(); renderSidebarProjects(); applyViewMode(); renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); if (openModals.has('__all_backlog')) renderAllBacklog(); if (openModals.has('__all_social')) renderAllSocial(); if (openModals.has('__desk') && typeof renderDesk === 'function') renderDesk(); if (openModals.has('__all_hivemind')) renderAllHiveminds(); }
 
-window.addEventListener('resize', () => { renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); renderProjects(); });
+window.addEventListener('resize', () => { if (!_mcDomReady) return; renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); renderProjects(); });
 
 let projectLastSeen = {};
 try { projectLastSeen = JSON.parse(localStorage.getItem('mc_proj_seen') || '{}') || {}; }

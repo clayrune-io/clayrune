@@ -53,7 +53,12 @@ try {
         let host = document.getElementById('file-link-smoke');
         if (!host) {
           host = document.createElement('div'); host.id = 'file-link-smoke'; host.className = 'agent-output';
-          Object.assign(host.style, { position: 'fixed', left: '10px', top: '80px', zIndex: '199', maxWidth: '90vw' });
+          // Clear of the sidebar even when hover-expanded (z-index 200): on Linux CI
+          // the pointer starts over it, it expands, and swallows a click at left:10px.
+          const sb = document.getElementById('sidebar');
+          const sbExp = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-exp')) || 0;
+          const left = sb && sb.getBoundingClientRect().width > 0 ? Math.max(sb.getBoundingClientRect().right, sbExp) + 10 : 10;
+          Object.assign(host.style, { position: 'fixed', left: `${left}px`, top: '80px', zIndex: '199', maxWidth: `calc(100vw - ${left + 10}px)` });
           document.body.appendChild(host);
         }
         host.innerHTML = window.formatAgentText(`[file:${p}|${label}]`);
