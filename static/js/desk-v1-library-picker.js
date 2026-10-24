@@ -38,8 +38,11 @@
     const files = [];
     kinds.forEach((k) => (lib[k] || []).forEach((f) => {
       const items = (f.items || []).map((it) => Object.assign({}, it, { kind: it.kind || k, folder: f.title }));
-      folders.push({ key: `${k}:${f.title}`, title: f.title, count: items.length });
-      items.forEach((it) => files.push(Object.assign(it, { folderKey: `${k}:${f.title}` })));
+      const existing = folders.find((folder) => folder.title === f.title);
+      const key = existing ? existing.key : `${k}:${f.title}`;
+      if (existing) existing.count += items.length;
+      else folders.push({ key, title: f.title, count: items.length });
+      items.forEach((it) => files.push(Object.assign(it, { folderKey: key })));
     }));
     return { folders, files };
   }

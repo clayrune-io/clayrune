@@ -78,6 +78,26 @@ previews one indexed picture/video. `POST /api/desk/project-media/copy` with
 library path plus provenance (201). No arbitrary source paths accepted.
 See `docs/DESK_PROJECT_MEDIA.md` for discovery limits and upload attribution.
 
+Studio's **Material library** has user-managed mixed-media folders:
+`GET /api/desk/library/folders` lists `{folders:[{id,title,files,items}]}`;
+POST `{title}` creates, PATCH `{id,title}` renames, DELETE `{id}` refuses
+referenced files and removes an unused folder. `POST
+/api/desk/library/folders/copy` accepts `{id,files:[{root,path}]}` (up to 50)
+and returns explicit `{items,errors,folder}`; errors identify their root/path.
+`GET /api/desk/explorer?root=home&path=&filter=media&q=` returns current
+location shortcuts, breadcrumbs, bounded directory/search rows, `truncated`
+(also `limited`) and `allow_all_files`. Search is bounded to 3,000 entries,
+eight levels and two seconds; newer requests cancel older work per client.
+Use root IDs returned by shortcuts for registered projects. Paths are relative
+to that root, never absolute. `filter=all` is loopback-only and excludes all
+Cloudflare-header requests; remote callers receive 403. Browser callers pass
+`client=<page-id>&search=<number>`; `DELETE /api/desk/explorer/search` with the
+same parameters cancels that search only. Copy requests allow 1 GiB total and
+preserve 2 GiB free (413/507 on preflight refusal).
+`/api/desk/explorer/preview?root=…&path=…` serves supported media
+only. Home/current projects only; secrets and browser profiles are refused.
+See `docs/STUDIO_FILE_EXPLORER.md` for storage/reference and scope contracts.
+
 | Verb | Path | Purpose |
 |---|---|---|
 | DELETE | `/api/desk/connect/custom/connections` | Human/passcode-only. `{server_name, scope, project_id?, passcode}` removes an approved custom MCP connection, registration and unshared managed install files, including failed/unregistered setups. For global scope omit `project_id`. No credential or browser-profile deletion. |

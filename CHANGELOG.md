@@ -1,5 +1,17 @@
 # Clayrune — Changelog
 
+## [2026-10-23] - Close Studio explorer security audit findings (MC-1111)
+
+- Refuse symlinks and Windows reparse points on every path component, OS-private names (including AppData and home Library), hidden flags and Firefox profile markers before browsing, previewing or copying.
+- Searches stop at 3,000 entries or two seconds; a newer request cancels the previous search for that client. Truncated results are labeled. All files is available only to local clients, excluding tunnel requests.
+- Copy requests are limited to 1 GiB total and reserve space while preserving 2 GiB free. Transfers stage outside the library mutation lock; publishing rechecks folder existence so a concurrent deletion cannot be undone by a copy.
+
+## [2026-10-23] - Organize Studio media in your own folders (MC-1111)
+
+- Create, rename and delete mixed picture/video folders in Studio's Material library. Existing files and saved references keep their paths; deletion refuses files used by pieces or drafts.
+- Opening a folder offers a host file explorer with location shortcuts, breadcrumbs, thumbnails, bounded search and Media only / All files filters. Select up to 50 supported pictures and videos to copy into the folder; originals stay in place and copy failures remain visible.
+- Browsing is limited to Home and registered project folders. Secret names, hidden/system locations and browser profiles are excluded; resolved links and opened file handles must stay within the selected root. Phone controls fit the screen with the copy action pinned below the results.
+
 ## [2026-10-23] - Show published receipt outcomes in Desk Results (MC-968)
 
 - Results/retro shows impressions and replies per published receipt, including during an active campaign. Missing measurements stay unknown.

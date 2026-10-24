@@ -362,8 +362,9 @@ def _provenance_map() -> dict:
 
 
 def with_provenance(item: dict) -> dict:
+    from mc import desk_library_folders
     provenance = _provenance_map().get(item.get('path'))
-    return dict(item, provenance=provenance) if provenance else item
+    return dict(item, provenance=provenance) if provenance else desk_library_folders.with_provenance(item)
 
 
 def decorate_library(library: dict) -> None:

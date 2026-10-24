@@ -104,6 +104,8 @@ function makeServer({ refsMax = 2 } = {}) {
     srv.log.push({ method, path, query: query?.toString(), body });
     if (path === '/api/desk/workspace') return J({ ...workspaceFromFixtures(fx), projects, pieces: fx.families.map((f) => JSON.parse(JSON.stringify(f))) });
     if (path === '/api/desk/materials') return J({ library: FOLDERS, projects: projectSummaries(), articles: [], online: { video: [], image: [] }, recent: [] });
+    if (path === '/api/desk/library/folders') return J({ folders: Object.values(FOLDERS).flat() });
+    if (path === '/api/desk/explorer') return J({ items: [], shortcuts: [{ root: 'home', path: '', title: 'Home' }], breadcrumbs: [{ path: '', title: 'Home' }], limited: false });
     if (path === '/api/desk/project-media/copy') {
       if (srv.copyError) return J({ error: 'Source file no longer exists' }, 404);
       const source = PROJECT_FILES.flatMap((p) => p.items).find((i) => i.id === body.id);
@@ -212,6 +214,7 @@ const settle = (page, pred, arg) => page.waitForFunction(pred, arg, { timeout: 8
 const shot = (page, name) => page.waitForTimeout(200).then(() => page.screenshot({ path: resolve(SHOT_DIR, name) }));
 const overflow = (page) => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
 const openStudio = async (page) => {
+  await page.evaluate(() => window.DeskV1FileExplorer.close());
   await page.evaluate(() => window.deskV1Nav('studio', {}));
   await page.waitForSelector('[data-studio]', { timeout: 6000 });
 };
@@ -394,9 +397,11 @@ async function live(browser, vp, name) {
     const over = await overflow(page);
     check(over <= 0, `${tag} New image has no horizontal overflow`, `${tag} image overflow ${over}px`);
   }
-  // Project files in Studio and the shared picker: browse before copying; use
+  // Project files remain available in the shared picker; Studio now owns the
+  // host explorer (desk-v1-file-explorer.mjs). Browse before copying; use
   // only hands callers the returned library path, and a refusal stays visible.
   await openStudio(page);
+  await page.evaluate(() => window.DeskV1LibraryPicker.open({ kinds: ['image', 'video'] }));
   await page.waitForSelector('[data-pm-project] option[value="product"]', { state: 'attached' });
   check(!srv.log.some((r) => r.path === '/api/desk/project-media/items'), `${tag} opening Studio reads summaries without requesting file rows`, `${tag} eagerly fetched project files`);
   await page.selectOption('[data-pm-project]', 'product');
@@ -408,8 +413,10 @@ async function live(browser, vp, name) {
   await page.keyboard.press('Escape');
   ok(`${tag} a project video previews without copying`);
   await page.click('[data-pm-use="1"]');
-  await settle(page, () => document.querySelector('[data-pm-status]').textContent === 'Saved to the library.');
+  await settle(page, () => !document.querySelector('[data-lp]'));
   check(srv.log.some((r) => r.path === '/api/desk/project-media/copy' && r.body.id === 'project-video'), `${tag} Studio saves a project video as a library copy`, `${tag} no copy request`);
+  await page.evaluate(() => window.DeskV1LibraryPicker.open({ kinds: ['image', 'video'] }));
+  await page.waitForSelector('[data-pm-project] option[value="paged"]', { state: 'attached' });
   await page.selectOption('[data-pm-project]', 'paged');
   srv.pageError = true;
   await page.locator('[data-pm-pid="paged"] .desk-v1-pm-folder > summary').click();
@@ -455,6 +462,8 @@ async function live(browser, vp, name) {
   await settle(page, () => !!window._pickedProject && !document.querySelector('[data-lp]'));
   const picked = await page.evaluate(() => window._pickedProject);
   check(picked.path === 'desk/library/image/Projects/Product/campaign-end.png' && picked.provenance.project_id === 'product', `${tag} picker returns the copied library file and provenance`, `${tag} source path escaped copy boundary: ${JSON.stringify(picked)}`);
+  await page.evaluate(() => window.DeskV1LibraryPicker.open({ kinds: ['image', 'video'] }));
+  await page.waitForSelector('[data-pm-refresh]');
   await page.click('[data-pm-refresh]');
   await settle(page, () => document.querySelector('[data-pm-status]').textContent === 'Project files refreshed.');
   if (name === '390') check(await overflow(page) <= 0, `${tag} project browser has no horizontal overflow`, `${tag} project browser overflows`);

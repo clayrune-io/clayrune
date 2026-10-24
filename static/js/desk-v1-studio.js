@@ -153,6 +153,7 @@
   }
 
   function _libHTML() {
+    if (_isLive() && window.DeskV1LibraryFolders) return '<div class="desk-lf" data-library-folders></div>';
     if (_isLive() && _lib.error) return `<div class="desk-v1-camp-empty" data-studio-lib-error>Could not load the material library: ${esc(_lib.error)}</div>`;
     const lib = _libFolders();
     const open = _libOpen && lib.find((m) => m.id === _libOpen);
@@ -216,7 +217,6 @@
         </div>`).join('') : '<div class="desk-v1-camp-empty">Nothing made yet.</div>'}</div>
       <h3 class="desk-v1-studio-sub">Material library</h3>
       <div class="desk-v1-studio-lib" data-studio-lib>${_libHTML()}</div>
-      ${_isLive() && window.DeskV1ProjectMedia ? window.DeskV1ProjectMedia.html() : ''}
     </div>`;
   }
 
@@ -234,6 +234,7 @@
 
   // A folder opens in place on the shelf, with a way back to the folders.
   function _wireLib(el) {
+    if (_isLive() && window.DeskV1LibraryFolders) window.DeskV1LibraryFolders.mount(el.querySelector('[data-library-folders]'), { onChanged: () => _recentCtx.reload() });
     const shown = _libOpen && _libFolders().find((m) => m.id === _libOpen);
     if (shown && window.DeskV1LibraryViewer) window.DeskV1LibraryViewer.wireShelf(el, _folderFiles(shown));
     el.querySelectorAll('[data-studio-folder]').forEach((b) => {
