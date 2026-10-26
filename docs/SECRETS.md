@@ -101,6 +101,38 @@ server).
 
 ## Using a secret from an agent
 
+### Saved entries in Desk Setup (MC-1113)
+
+Shared provider fields accept a typed string or a metadata-only reference
+`{"name": "saved-app", "part": "username"}` / `{"name": "saved-app", "part": "value"}`.
+The picker uses `GET /api/secrets` metadata, never a dispensing endpoint. Desk-wide
+connections have no project identity and offer global sources only; server resolution
+still enforces the actual consumer's project scope and unattended policy.
+
+`mc/secret_field_refs.py` owns these bindings. A human-passcode-approved provider Save
+stores `field_refs` on the existing canonical vault entry, with no ciphertext/value
+copy for a referenced slot. A mixed key pair may retain an encrypted typed value or
+the ordinary typed username beside its referenced slot. `get_secret_value` and
+`get_username` resolve bindings at use time. The source's value policy remains in
+force; the username part retains the existing username policy below. Both require
+an unlocked vault when used as a referenced Setup field. Cycles fail closed.
+
+The same resolver covers start-held, Save, token client authentication, refresh and
+engine/MCP consumers. Missing, empty, damaged or out-of-scope sources produce one
+plain reconnect sentence and a value-free log. No failure falls back to the former
+canonical value. Source changes invalidate a previous key verification. A changed
+X Client ID blocks even a fresh access token and asks for sign-in again; a changed
+secret is read on the next token call. Authorization for a referenced app opens in
+the server's browser pane and returns only its session ID to Setup, keeping the
+resolved identifier out of the Setup JSON response. Existing human proof, pane
+profile ownership and held-authorization claims remain unchanged.
+
+Choosing a different saved entry can rebind existing canonical details inside the
+provider's compensating undo stack. A failed Save restores the earlier record;
+rollback refuses to overwrite an intervening edit. Source entries are never changed.
+Typed-only saves retain their existing behavior. Encrypted backups preserve bindings
+as metadata instead of freezing their resolved values into copies.
+
 Reference the credential by **name**; the server resolves it at the moment of
 use. Placeholder syntax is `{{secret:name}}`.
 

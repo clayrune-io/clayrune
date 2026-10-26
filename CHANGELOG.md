@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-10-26] - Reuse saved Secrets entries in provider Setup fields (MC-1113)
+
+- Shared provider fields offer typing or choosing a saved entry by name and its Value or Username/key ID part, including app credentials and key pairs. Review names the selection without displaying its value.
+- Saved selections remain references in the canonical vault entries. Sign-in, Save and later token calls resolve the current source under its own policy; rotating a source secret takes effect at the next use. Typed credentials retain their existing storage path.
+- Missing, empty, unreadable or out-of-scope sources show a reconnect message; a locked vault offers unlocking. A changed Client ID requires signing in again. Broken references never fall back to older canonical values.
+- Saved-app authorization opens server-side so Setup responses carry a browser session ID instead of an authorization URL containing the resolved app identifier. Existing passcode and human-only gates remain in place.
+
 ## [2026-10-23] - Restore campaign posts and place suggestions reliably (MC-1112)
 
 - What has Delete post with Undo and an Archived filter with Restore post. Whole-post archive handles empty and mixed posts, preserves published history, and restores each suspended version's exact prior state.

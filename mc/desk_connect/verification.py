@@ -15,7 +15,7 @@ and not persisted: after a restart everything reads "not verified" until checked
 again, which is the safe direction.
 
 The probe runs only when a human asks (`verify`); `status` never touches the
-network, never decrypts anything.
+network. Referenced Setup fields are validated server-side to detect broken sources.
 """
 from __future__ import annotations
 
@@ -58,6 +58,9 @@ def _stamp(entry) -> tuple | None:
     try:
         for s in _vault.list_secrets():
             if s['name'] == entry:
+                if s.get('has_field_refs'):
+                    from mc import secret_field_refs
+                    return (s.get('created_at'), s.get('updated_at'), secret_field_refs.stamp(entry))
                 return (s.get('created_at'), s.get('updated_at'))
     except _vault.SecretsError:
         return None
@@ -77,12 +80,14 @@ def _provider(service_id, method):
 
 
 def status(service_id, method, account_id=None, *, provider=None) -> dict:
-    """The derived state. Metadata only; no network."""
+    """The derived state. Saved field sources are validated server-side; no network."""
     prov = provider or _provider(service_id, method)
     cs = prov.credential_state(method, account_id)
     state = {'not_connected': 'not_connected', 'needs_signin': 'sign_in_required',
              'key_unreadable': 'key_unreadable', 'probe_ready': 'sign_in_required'}.get(cs['state'], cs['state'])
     out = {'state': state, 'entry': cs.get('entry')}
+    if cs.get('reason'):
+        out['message'] = cs['reason']
     if cs['state'] in ('key_stored', 'signed_in', 'probe_ready'):
         rec = _records.get((service_id, method, account_id or ''))
         current_stamp = cs['stamp'] if 'stamp' in cs else _stamp(cs.get('entry'))
@@ -101,7 +106,7 @@ def verify(service_id, method, account_id=None, *, provider=None) -> dict:
     cs = prov.credential_state(method, account_id)
     if cs['state'] not in ('key_stored', 'signed_in', 'probe_ready'):
         out = status(service_id, method, account_id, provider=prov)
-        out['message'] = {'not_connected': 'Nothing is stored for this yet, so there is nothing to check.',
+        out['message'] = cs.get('reason') or {'not_connected': 'Nothing is stored for this yet, so there is nothing to check.',
                           'needs_signin': 'Sign in again, then check.',
                           'key_unreadable': 'The stored key cannot be opened (its key changed). Replace it, then check.',
                           'vault_locked': 'Your vault is locked. Unlock it, then check. What you saved is still there.'

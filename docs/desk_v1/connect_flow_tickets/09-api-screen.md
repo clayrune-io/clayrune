@@ -23,3 +23,14 @@ Existing stored credential reuse; no duplicate account when attaching API to an 
 ## Boundary
 
 Small provider UI slice. The current X provider creates a new account: attaching API to an existing browser account is a required backend gap in 03, not functionality claimed to exist. No generic API executor and no LinkedIn gate change; a newly supplied API is not redirected to another integration.
+
+## MC-1113 follow-up: saved field sources
+
+The shared adapter now uses `desk-v1-connect-saved-fields.js` for entry-name/part
+selection on secret and app-credential fields. The provider draft keeps either the
+typed string or `{name, part}`; start-held and Save retain separate human proof.
+`secret_field_refs.py` stores metadata-only bindings at the canonical vault names
+and resolves them at each use. Source changes, lock state and app identity determine
+the card's reconnect/unlock/sign-in message. No source entry is rewritten.
+See [Secrets contract](../../SECRETS.md#saved-entries-in-desk-setup-mc-1113) and
+`tools/smoke/desk-v1-connect-saved-fields.mjs` for the 1440/390 flow checks.

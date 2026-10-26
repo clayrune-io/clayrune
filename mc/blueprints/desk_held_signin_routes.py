@@ -27,6 +27,8 @@ from mc import desk_oauth as _oauth
 from mc.blueprints.secrets_routes import _require_human_passcode
 from mc.desk_connect.providers.key_paste import MAX_VALUE
 from mc.desk_connect import account_attach, x_account_attach
+from mc.desk_connect import saved_fields
+from mc.desk_connect.providers.base import ProviderError
 from mc.unattended import is_unattended_caller
 
 bp = Blueprint('desk_held_signin_routes', __name__)
@@ -42,6 +44,9 @@ def _app_fields(raw) -> dict:
     for key in ('client_id', 'client_secret'):
         v = raw.get(key)
         if v in (None, ''):
+            continue
+        if isinstance(v, dict):
+            out[key] = saved_fields.reference(v)
             continue
         if not isinstance(v, str) or len(v) > MAX_VALUE:
             raise ValueError(f'{key.replace("_", " ")} must be text of at most {MAX_VALUE} characters')
@@ -61,7 +66,7 @@ def start_held(service):
         return refused
     try:
         hold = _app_fields(d.get('hold'))
-    except ValueError as e:
+    except (ValueError, ProviderError) as e:
         return jsonify({'error': str(e), 'code': 'invalid'}), 400
     account_id, arg = None, None
     if 'account_id' in d:

@@ -12,6 +12,8 @@ from __future__ import annotations
 from mc import desk_vault_lock as _vault_lock
 from mc import secrets_store as _vault
 from mc.desk_connect.providers import base
+from mc.desk_connect import saved_fields
+from mc import secret_field_refs
 
 MAX_VALUE = 8192
 MAX_USER = 200
@@ -31,7 +33,7 @@ class KeyPaste:
     def fields(self, names) -> list[dict]:
         out = []
         if self.user_label:
-            out.append(base.text_field('key_id', self.user_label, hint=self.user_hint))
+            out.append({**base.text_field('key_id', self.user_label, hint=self.user_hint), 'saved_entry': True})
         out.append(base.secret_field('secret', self.secret_label, self.vault, names=names, hint=self.hint))
         out.append(base.checkbox_field('allow_unattended', 'Scheduled and unattended runs may use it', default=True))
         return out
@@ -40,12 +42,15 @@ class KeyPaste:
         allowed = {'secret', 'allow_unattended'} | ({'key_id'} if self.user_label else set())
         raw = base.take_fields(raw, allowed)
         secret = raw.get('secret')
-        if not isinstance(secret, str) or not secret:
+        if isinstance(secret, dict):
+            secret = saved_fields.reference(secret)
+        elif not isinstance(secret, str) or not secret:
             raise base.ProviderError(f'{self.secret_label} is required')
         if len(secret) > MAX_VALUE:
             raise base.ProviderError(f'{self.secret_label} is limited to {MAX_VALUE} characters')
-        user = base.text_value(raw, 'key_id', self.user_label or '', MAX_USER, required=True) if self.user_label else ''
-        if names is not None and self.vault in names:
+        user = (saved_fields.reference(raw['key_id']) if isinstance(raw.get('key_id'), dict)
+                else base.text_value(raw, 'key_id', self.user_label or '', MAX_USER, required=True)) if self.user_label else ''
+        if names is not None and self.vault in names and not (isinstance(secret, dict) or isinstance(user, dict)):
             raise self.exists()
         return {'secret': secret, 'username': user,
                 'allow_unattended': base.bool_value(raw, 'allow_unattended', 'Unattended use', True)}
@@ -56,15 +61,21 @@ class KeyPaste:
                                   409, 'secret_exists')
 
     def apply(self, clean: dict, undo, names) -> None:
-        if self.vault in names:
+        referenced = isinstance(clean['secret'], dict) or isinstance(clean['username'], dict)
+        if self.vault in names and not referenced:
             raise self.exists()
         try:
-            _vault.set_secret(self.vault, clean['secret'], username=clean['username'], description=DESCRIPTION,
-                              scope='global', allow_unattended=clean['allow_unattended'],
-                              entry_type=self.entry_type)
+            if isinstance(clean['secret'], dict) or isinstance(clean['username'], dict):
+                saved_fields.create(self.vault, clean['secret'], username=clean['username'],
+                                    allow_unattended=clean['allow_unattended'], entry_type=self.entry_type, undo=undo)
+            else:
+                _vault.set_secret(self.vault, clean['secret'], username=clean['username'], description=DESCRIPTION,
+                                  scope='global', allow_unattended=clean['allow_unattended'],
+                                  entry_type=self.entry_type)
         except _vault.SecretsError as e:
             raise base.ProviderError(f'the credential could not be stored: {e}', 400, 'vault_refused') from e
-        undo.push(f'vault entry {self.vault}', lambda: _vault.delete_secret(self.vault))
+        if not referenced:
+            undo.push(f'vault entry {self.vault}', lambda: _vault.delete_secret(self.vault))
 
     def state(self) -> dict:
         try:
@@ -73,6 +84,9 @@ class KeyPaste:
             return {'state': 'not_connected', 'entry': None}
         if self.vault not in have:
             return {'state': 'not_connected', 'entry': None}
+        issue = secret_field_refs.health(self.vault)
+        if issue:
+            return issue
         opened = _vault_lock.probe(self.vault)
         if opened == _vault_lock.LOCKED:         # the key is saved; the vault needs unlocking, not the key replacing
             return {'state': _vault_lock.VAULT_LOCKED, 'entry': self.vault}

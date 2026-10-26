@@ -140,7 +140,7 @@ def publish_state(acc: dict, vault: dict | None = None) -> dict:
             meta = vault.get(entry) or {}
             return {'ready': True, 'reason': None, 'secret': entry,
                     'unattended_ok': bool(meta.get('allow_unattended', True))}
-        if st['state'] == 'needs_signin':
+        if st['state'] in ('needs_signin', 'key_unreadable'):
             return {'ready': False, 'reason': st['reason'], 'secret': None, 'unattended_ok': None}
         if st['state'] == _vault_lock.VAULT_LOCKED:     # the sign-in is saved; the card offers Unlock, not Sign in
             return {'ready': False, 'reason': st['reason'], 'secret': None, 'unattended_ok': None,

@@ -597,6 +597,11 @@ def connection(engine_id: str, project_id: str | None = None) -> dict:
             return {'ready': False, 'vault_entry': name, 'exists': False,
                     'reason': f"no vault entry named '{name}' (add it in the Vault)"}
         exists = True
+        from mc import secret_field_refs
+        issue = secret_field_refs.health(name)
+        if issue:
+            return {'ready': False, 'vault_entry': name, 'exists': True,
+                    'state': issue['state'], 'reason': issue['reason']}
         opened = _vault_lock.probe(name)
         if opened == _vault_lock.LOCKED:
             return {'ready': False, 'vault_entry': name, 'exists': True, 'state': _vault_lock.VAULT_LOCKED,

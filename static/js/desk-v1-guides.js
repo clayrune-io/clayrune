@@ -64,7 +64,8 @@
     }
     say(`The ${label} sign-in page is opening. Finish signing in there; this page updates by itself.`);
     try {
-      if (typeof window.openBrowserPane === 'function') await window.openBrowserPane(start.auth_url, null, null, start.profile);
+      if (start.pane_session_id && typeof window.attachBrowserPane === 'function') await window.attachBrowserPane(start.pane_session_id);
+      else if (typeof window.openBrowserPane === 'function') await window.openBrowserPane(start.auth_url, null, null, start.profile);
       else say(`Open this address to sign in: ${start.auth_url}`);
     } catch (e) { /* the pane failing to open does not end the flow: the link below still works */ }
     const deadline = Date.now() + 10 * 60 * 1000;
