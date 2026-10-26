@@ -38,10 +38,10 @@ def test_rotation_applies_at_next_use_and_source_policy_is_not_copied(vault):
     refs.create('canonical', ref())
     vault.set_secret('app', VALUE + '-rotated', allow_unattended=False)
     assert vault.get_secret_value('canonical', consumer='test') == VALUE + '-rotated'
-    with pytest.raises(refs.ReferenceError):
+    with pytest.raises(refs.FieldRefError):
         vault.get_secret_value('canonical', consumer='test', unattended=True)
     vault.set_secret('app', VALUE, scope='another-project')
-    with pytest.raises(refs.ReferenceError):
+    with pytest.raises(refs.FieldRefError):
         vault.get_secret_value('canonical', consumer='test')
 
 
@@ -58,12 +58,13 @@ def test_source_exception_text_never_enters_resolver_logs(vault, monkeypatch):
     vault.set_secret('app', VALUE)
     monkeypatch.setattr(refs, '_log', lambda msg, **kw: lines.append(msg))
     monkeypatch.setattr(vault, 'get_secret_value', lambda *a, **kw: (_ for _ in ()).throw(vault.SecretsError(VALUE)))
-    with pytest.raises(refs.ReferenceError) as failure:
+    with pytest.raises(refs.FieldRefError) as failure:
         refs.resolve(ref())
     assert VALUE not in json.dumps(lines) + str(failure.value)
 
 
-def test_private_authorization_pane_reuses_profile_without_returning_url(monkeypatch):
+@pytest.mark.parametrize('initial', ['https://old.example', 'same-authorize-url'])
+def test_private_authorization_pane_reuses_profile_without_returning_url(monkeypatch, initial):
     from queue import Queue
     from mc import desk_oauth_private_pane
     from mc.blueprints import browser_routes
@@ -75,8 +76,12 @@ def test_private_authorization_pane_reuses_profile_without_returning_url(monkeyp
         return session, None
     monkeypatch.setattr(browser_routes, '_launch_browser', launch)
     url = 'https://x.example/authorize?client_id=' + VALUE
+    if initial == 'same-authorize-url':
+        session['url'] = url
     assert desk_oauth_private_pane.open_signin(url, 'saved-profile') == 'pane-opaque'
     assert calls == [{'profile': 'saved-profile'}]
+    assert session['url'] == 'about:blank'
+    assert VALUE not in json.dumps({k: v for k, v in session.items() if k != 'cmd_queue'})
     assert session['cmd_queue'].get_nowait() == ('Page.navigate', {'url': url})
     lines = []
     monkeypatch.setattr(desk_oauth_private_pane, '_log', lambda msg, **kw: lines.append(msg))
@@ -90,7 +95,7 @@ def test_rebinding_existing_details_restores_prior_record_on_rollback(vault):
     vault.set_secret('app', VALUE)
     vault.set_secret('canonical', 'prior-typed-value')
     undo = UndoStack()
-    refs.create('canonical', ref(), undo=undo)
+    refs.create('canonical', ref(), undo=undo, confirm_replace=True)
     assert vault.get_secret_value('canonical', consumer='test') == VALUE
     assert not undo.unwind()
     assert vault.get_secret_value('canonical', consumer='test') == 'prior-typed-value'
@@ -149,10 +154,10 @@ def test_start_and_save_refuse_broken_sources_without_leaking(env, monkeypatch, 
         monkeypatch.setattr(store, 'is_locked', lambda: True)
     fields = {'client_id': ref(part=part)}
     start = client.post('/api/desk/connect/x/start-held', json={'passcode': PASSCODE, 'hold': fields})
-    assert start.status_code == 409
+    assert start.status_code == (400 if setup in ('missing', 'scope') else 409)
     saved = client.post('/api/desk/connect/commit', json={'passcode': PASSCODE, 'request_id': 'broken-save-1113',
         'draft': {'url': 'https://x.com', 'method': 'oauth', 'fields': {**fields, 'identity': 'example'}}})
-    assert saved.status_code == 409
+    assert saved.status_code == (400 if setup in ('missing', 'scope') else 409)
     assert VALUE not in start.get_data(as_text=True) + saved.get_data(as_text=True)
 
 
@@ -175,7 +180,7 @@ def test_broken_sources_fail_closed_and_report_plain_card_status(vault, monkeypa
         data = vault._load_store()
         data['secrets']['app']['ciphertext'] = 'invalid'
         vault._save_store(data)
-    with pytest.raises(refs.ReferenceError):
+    with pytest.raises(refs.FieldRefError):
         vault.get_secret_value('canonical', consumer='test')
     issue = refs.health('canonical')
     assert issue['state'] == ('vault_locked' if broken == 'locked' else 'key_unreadable')
@@ -186,12 +191,13 @@ def test_broken_sources_fail_closed_and_report_plain_card_status(vault, monkeypa
 
 def test_reference_scope_and_username_semantics(vault):
     vault.set_secret('app', VALUE, username=USER, scope='project-a', allow_unattended=False)
-    assert refs.resolve(ref(part='username'), project_id='project-a', unattended=True) == USER
-    with pytest.raises(refs.ReferenceError):
+    with pytest.raises(refs.FieldRefError):
+        refs.resolve(ref(part='username'), project_id='project-a', unattended=True)
+    with pytest.raises(refs.FieldRefError):
         refs.resolve(ref(), project_id='project-b')
-    with pytest.raises(refs.ReferenceError):
+    with pytest.raises(refs.FieldRefError):
         refs.resolve(ref(), project_id='project-a', unattended=True)
-    with pytest.raises(refs.ReferenceError):
+    with pytest.raises(refs.FieldRefError):
         refs.create('canonical', ref())  # Desk-wide setup cannot borrow a project-only entry.
 
 
@@ -210,11 +216,11 @@ def test_mixed_key_pair_and_rollback(vault):
 def test_reference_cycle_and_invalid_parts_are_refused(vault):
     vault.set_secret('app', VALUE)
     refs.create('canonical', ref())
-    refs.create('app', ref('canonical'), undo=UndoStack())
-    with pytest.raises(refs.ReferenceError):
-        vault.get_secret_value('canonical', consumer='test')
+    with pytest.raises(refs.FieldRefError):
+        refs.create('app', ref('canonical'), undo=UndoStack(), confirm_replace=True)
+    assert vault.get_secret_value('canonical', consumer='test') == VALUE
     for raw in ({'name': 'app', 'part': 'bad'}, {'name': 'app', 'part': []}, {'name': 'app', 'part': 'value', 'value': VALUE}):
-        with pytest.raises(refs.ReferenceError):
+        with pytest.raises(refs.FieldRefError):
             refs.clean(raw)
 
 
@@ -225,7 +231,7 @@ def test_damaged_binding_fails_with_plain_message_instead_of_type_error(vault, d
     records = vault._load_store()
     records['secrets']['canonical']['field_refs'] = damaged
     vault._save_store(records)
-    with pytest.raises(refs.ReferenceError, match='Reconnect'):
+    with pytest.raises(refs.FieldRefError, match='Reconnect'):
         vault.get_secret_value('canonical', consumer='test')
     assert refs.health('canonical')['reason'] == refs.RECONNECT
 

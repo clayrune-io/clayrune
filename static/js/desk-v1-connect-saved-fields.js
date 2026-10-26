@@ -68,5 +68,12 @@
     if (!selected) return null;
     return selected.value ? `from Secrets: <code>${esc(selected.value.name)}</code> (${selected.value.part === 'username' ? 'username or key ID' : 'value'})` : 'no saved entry selected';
   }
-  window.DeskV1ConnectSavedFields = { html, bind, selection, summary };
+  function replaces(host, fields) {
+    return fields.some((f) => f.present && selection(host, f)?.value);
+  }
+  function confirmHTML(host, fields) {
+    return replaces(host, fields) ? `<label class="desk-v1-cf-check"><input type="checkbox" data-cfs-confirm-replace>
+      <span>Save replaces the saved key. I confirm replacing it with the selected entry from Secrets.</span></label>` : '';
+  }
+  window.DeskV1ConnectSavedFields = { html, bind, selection, summary, replaces, confirmHTML };
 })();

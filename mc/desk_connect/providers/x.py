@@ -56,11 +56,12 @@ class XProvider(base.Provider):
         ]
 
     def clean(self, method, fields, vault_names=None):
-        raw = base.take_fields(fields, {'identity', 'label', 'client_id', 'client_secret', 'allow_unattended'})
+        raw = base.take_fields(fields, {'identity', 'label', 'client_id', 'client_secret', 'allow_unattended', 'confirm_replace'})
         identity = base.text_value(raw, 'identity', 'X handle', 40, required=True).lstrip('@')
         if not _HANDLE.match(identity):
             raise base.ProviderError('an X handle is 1-15 letters, digits or _ (for example @yourname)')
         out = {'identity': identity, 'label': base.text_value(raw, 'label', 'Name', 80, required=False),
+               'confirm_replace': base.bool_value(raw, 'confirm_replace', 'Replace saved key', False),
                'allow_unattended': base.bool_value(raw, 'allow_unattended', 'Unattended use', True)}
         for key, label, vault in (('client_id', 'X app Client ID', _CLIENT_ID),
                                   ('client_secret', 'X app Client Secret', _CLIENT_SECRET)):
@@ -101,7 +102,8 @@ class XProvider(base.Provider):
                 continue
             try:
                 if isinstance(clean[key], dict):
-                    saved_fields.create(vault, clean[key], allow_unattended=clean['allow_unattended'], undo=undo)
+                    saved_fields.create(vault, clean[key], allow_unattended=clean['allow_unattended'], undo=undo,
+                                        confirm_replace=clean.get('confirm_replace') is True)
                 else:
                     _vault.set_secret(vault, clean[key], description=f'{what} (from Connect by address)',
                                       scope='global', allow_unattended=clean['allow_unattended'],

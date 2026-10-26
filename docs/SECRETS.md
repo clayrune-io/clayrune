@@ -106,8 +106,10 @@ server).
 Shared provider fields accept a typed string or a metadata-only reference
 `{"name": "saved-app", "part": "username"}` / `{"name": "saved-app", "part": "value"}`.
 The picker uses `GET /api/secrets` metadata, never a dispensing endpoint. Desk-wide
-connections have no project identity and offer global sources only; server resolution
-still enforces the actual consumer's project scope and unattended policy.
+connections have no project identity and offer global sources only. `clean()` and
+backup import enforce the same source restrictions: no project-scoped, TOTP,
+`oauth.*` or server-internal entries. Server resolution still enforces the actual
+consumer's project scope and unattended policy.
 
 `mc/secret_field_refs.py` owns these bindings. A human-passcode-approved provider Save
 stores `field_refs` on the existing canonical vault entry, with no ciphertext/value
@@ -115,7 +117,17 @@ copy for a referenced slot. A mixed key pair may retain an encrypted typed value
 the ordinary typed username beside its referenced slot. `get_secret_value` and
 `get_username` resolve bindings at use time. The source's value policy remains in
 force; the username part retains the existing username policy below. Both require
-an unlocked vault when used as a referenced Setup field. Cycles fail closed.
+an unlocked vault when used as a referenced Setup field. Creation walks the
+existing dependency graph and refuses cycles before any binding is written.
+
+`health()` and readability/status probes use metadata and `_open`-style decrypt
+checks, never the dispensing resolver. They do not audit, increment `use_count`,
+change `last_used_at`, rewrite the store or call `register_dispensed`. X token
+metadata includes `app_id_sha256`, a SHA-256 fingerprint of the bound Client ID,
+so status compares app identity without dispensing/parsing the token record.
+An older token with no fingerprint and a referenced Client ID asks for sign-in
+again to confirm the app. Real token/publish use still resolves live sources and
+checks the token's actual bound Client ID. The Client ID itself is not returned.
 
 The same resolver covers start-held, Save, token client authentication, refresh and
 engine/MCP consumers. Missing, empty, damaged or out-of-scope sources produce one
@@ -124,14 +136,22 @@ canonical value. Source changes invalidate a previous key verification. A change
 X Client ID blocks even a fresh access token and asks for sign-in again; a changed
 secret is read on the next token call. Authorization for a referenced app opens in
 the server's browser pane and returns only its session ID to Setup, keeping the
-resolved identifier out of the Setup JSON response. Existing human proof, pane
+resolved identifier out of the Setup JSON response and pane session URL metadata
+(which retains `about:blank`). Existing human proof, pane
 profile ownership and held-authorization claims remain unchanged.
 
-Choosing a different saved entry can rebind existing canonical details inside the
-provider's compensating undo stack. A failed Save restores the earlier record;
-rollback refuses to overwrite an intervening edit. Source entries are never changed.
+Choosing a different saved entry can rebind existing canonical details only when
+the Save's fields carry boolean `confirm_replace: true`. Review explains that
+Save replaces the saved key and offers a checkbox. The existing `scope` and
+`allow_unattended` remain unchanged, regardless of the new form defaults.
+The provider's compensating undo stack restores the earlier record on failed Save;
+rollback refuses to overwrite an intervening edit. Source credentials and policies are never changed; real dispensing still updates source usage counters.
 Typed-only saves retain their existing behavior. Encrypted backups preserve bindings
-as metadata instead of freezing their resolved values into copies.
+as metadata instead of freezing their resolved values into copies. Import checks
+the complete resulting source graph before writing, independent of archive order.
+An unknown source name is retained as a broken binding (reconnect); it is never
+silently redirected. Names still resolve to the same-named entry on the target
+machine. Ineligible known sources and cycles are refused.
 
 Reference the credential by **name**; the server resolves it at the moment of
 use. Placeholder syntax is `{{secret:name}}`.

@@ -2777,7 +2777,7 @@ def export_all_for_backup(passphrase: str, *, consumer: str,
     }).encode('utf-8')
 
 
-def _import_entry_raw(entry: dict[str, Any]) -> None:
+def _import_entry_raw(entry: dict[str, Any], *, reference_records=None) -> None:
     """Write one exported entry straight into the store under THIS machine's
     master key. Deliberately bypasses ``set_secret``'s otpauth-URI sniffing —
     the value here is already the normalized secret ``_open`` returned, not
@@ -2790,11 +2790,14 @@ def _import_entry_raw(entry: dict[str, Any]) -> None:
     with _lock:
         store = _load_store()
         refs = entry.get('field_refs')
-        if refs is not None:
+        if 'field_refs' in entry:
             from mc import secret_field_refs
             if not isinstance(refs, dict) or not refs or set(refs) - {'value', 'username'}:
                 raise SecretsError('Invalid saved field reference in backup.')
-            refs = {part: secret_field_refs.clean(ref) for part, ref in refs.items()}
+            records = reference_records if reference_records is not None else store['secrets']
+            refs = {part: secret_field_refs.clean(ref, records=records, allow_missing=True)
+                    for part, ref in refs.items()}
+            secret_field_refs.validate_chain(name, refs, records, allow_missing=True)
         rec = {} if refs and 'value' in refs else _seal(name, entry['value'])
         if refs:
             rec['field_refs'] = refs
@@ -2848,17 +2851,24 @@ def import_all_from_backup(blob: bytes, passphrase: str, *, consumer: str,
         raise SecretsError(
             f'could not decrypt vault archive — wrong passphrase or corrupted archive: {e}') from e
 
-    existing_names = {r['name'] for r in list_secrets()}
     imported: list[str] = []
     skipped: list[str] = []
-    for entry in data.get('entries', []):
-        if rescope and entry.get('scope') == rescope[0]:
-            entry = dict(entry, scope=rescope[1])
-        name = entry['name']
-        if name in existing_names and on_collision == 'skip':
-            skipped.append(name)
-            continue
-        _import_entry_raw(entry)
-        imported.append(name)
+    with _lock:
+        records = _load_store()['secrets']
+        existing_names = set(records)
+        entries = []
+        for entry in data.get('entries', []):
+            if rescope and entry.get('scope') == rescope[0]:
+                entry = dict(entry, scope=rescope[1])
+            if entry['name'] in existing_names and on_collision == 'skip':
+                skipped.append(entry['name'])
+                continue
+            entries.append(entry)
+            existing_names.add(entry['name'])
+        from mc import secret_field_refs
+        projected = secret_field_refs.validate_backup(entries, records)
+        for entry in entries:
+            _import_entry_raw(entry, reference_records=projected)
+            imported.append(entry['name'])
     _audit('import', consumer=consumer, imported=len(imported), skipped=len(skipped))
     return {'imported': imported, 'skipped': skipped}

@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-26] - Require confirmation when replacing a saved Setup key (MC-1113)
+
+- Review states that Save replaces the saved key and requires a confirmation control; the server refuses unconfirmed replacements and preserves the key's scope and unattended policy.
+- Connection status and readability checks no longer dispense referenced sources or update usage/audit records. X checks app identity using a fingerprint in token metadata, without dispensing the token record.
+- Setup and backup import reject TOTP, project-scoped and server-internal sources and reference cycles. Restored references with missing sources remain unavailable until reconnected. Browser pane metadata keeps the blank launch URL instead of the resolved authorization URL.
+
 ## [2026-10-26] - Reuse saved Secrets entries in provider Setup fields (MC-1113)
 
 - Shared provider fields offer typing or choosing a saved entry by name and its Value or Username/key ID part, including app credentials and key pairs. Review names the selection without displaying its value.

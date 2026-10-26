@@ -68,5 +68,34 @@ try {
     assert.deepEqual(pageErrors, []);
     await ctx.close();
     console.log(`PASS saved-field Setup, metadata scope, held invalidation, review and Save at ${width}px`);
+
+    const existing = makeServer();
+    existing.present = true;
+    existing.secrets = [{ name: 'x_app', scope: 'global', kind: 'password' }];
+    const replacement = await newPage(browser, { srv: existing, width, height: width === 390 ? 844 : 900 });
+    const p = replacement.page;
+    await toSetup(p, 'x.com', X_NEW);
+    await p.selectOption(field('client_id', 'mode'), 'saved');
+    await p.waitForSelector(field('client_id', 'name') + ' option[value="x_app"]', { state: 'attached' });
+    await p.selectOption(field('client_id', 'name'), 'x_app');
+    await p.click('[data-cfw-primary]');
+    await toReview(p);
+    assert.match(await p.textContent('[data-fx-facts]'), /Save replaces the saved key/);
+    const refused = await p.evaluate(() => window.DeskV1ConnectApiStep.commit());
+    assert.equal(refused.ok, false);
+    assert.equal(refused.step, 'review');
+    assert.equal(existing.log.filter((r) => r.path.endsWith('/commit')).length, 0);
+    await p.check('[data-cfs-confirm-replace]');
+    await p.screenshot({ path: resolve(shots, `replace_review_${width}.png`) });
+    await p.evaluate(() => { window.humanProofFetch = async (url, init) => {
+      const r = await fetch(url, { method: init.method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...JSON.parse(init.body), passcode: 'right-passcode' }) });
+      return { ok: r.ok, status: r.status, body: await r.json() };
+    }; });
+    assert.equal((await p.evaluate(() => window.DeskV1ConnectApiStep.commit())).ok, true);
+    assert.equal(existing.log.find((r) => r.path.endsWith('/commit')).body.draft.fields.confirm_replace, true);
+    assert.equal(await p.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    assert.deepEqual(replacement.pageErrors, []);
+    await replacement.ctx.close();
+    console.log(`PASS explicit saved-key replacement confirmation on Review at ${width}px`);
   }
 } finally { await browser.close(); }

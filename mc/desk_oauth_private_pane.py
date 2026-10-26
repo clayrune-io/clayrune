@@ -10,9 +10,8 @@ def open_signin(url: str, profile: str) -> str:
         session, error = browser_routes._launch_browser(None, 'about:blank', profile=profile)
         if error or session is None:
             raise RuntimeError()
-        if session.get('url') != url:
-            session['url'] = url
-            session['cmd_queue'].put(('Page.navigate', {'url': url}))
+        session['url'] = 'about:blank'
+        session['cmd_queue'].put(('Page.navigate', {'url': url}))
         return session['session_id']
     except Exception:
         _log('[desk_oauth] could not open saved-app sign-in pane', flush=True)

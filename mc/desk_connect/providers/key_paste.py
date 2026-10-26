@@ -3,9 +3,9 @@ here, stored under the name the Desk engines already read (`gemini-api`,
 `openai-api`, `higgsfield`). Composition, not inheritance: a provider holds one of
 these per key method and keeps its own verify.
 
-An entry that already exists is never replaced (`secret_exists`, 409): replacing a
-stored credential is the explicit-consent step reserved for a later slice, and the
-undo of a write is only safe for an entry this call created.
+Typed-only saves refuse existing entries (`secret_exists`, 409). A reference Save
+may replace one only with explicit Review confirmation and compensating rollback;
+the existing scope and unattended policy stay in force.
 """
 from __future__ import annotations
 
@@ -33,13 +33,14 @@ class KeyPaste:
     def fields(self, names) -> list[dict]:
         out = []
         if self.user_label:
-            out.append({**base.text_field('key_id', self.user_label, hint=self.user_hint), 'saved_entry': True})
+            out.append({**base.text_field('key_id', self.user_label, hint=self.user_hint), 'saved_entry': True,
+                        'vault': self.vault, 'present': names is not None and self.vault in names})
         out.append(base.secret_field('secret', self.secret_label, self.vault, names=names, hint=self.hint))
         out.append(base.checkbox_field('allow_unattended', 'Scheduled and unattended runs may use it', default=True))
         return out
 
     def clean(self, raw, names=None) -> dict:
-        allowed = {'secret', 'allow_unattended'} | ({'key_id'} if self.user_label else set())
+        allowed = {'secret', 'allow_unattended', 'confirm_replace'} | ({'key_id'} if self.user_label else set())
         raw = base.take_fields(raw, allowed)
         secret = raw.get('secret')
         if isinstance(secret, dict):
@@ -53,6 +54,7 @@ class KeyPaste:
         if names is not None and self.vault in names and not (isinstance(secret, dict) or isinstance(user, dict)):
             raise self.exists()
         return {'secret': secret, 'username': user,
+                'confirm_replace': base.bool_value(raw, 'confirm_replace', 'Replace saved key', False),
                 'allow_unattended': base.bool_value(raw, 'allow_unattended', 'Unattended use', True)}
 
     def exists(self) -> base.ProviderError:
@@ -67,7 +69,8 @@ class KeyPaste:
         try:
             if isinstance(clean['secret'], dict) or isinstance(clean['username'], dict):
                 saved_fields.create(self.vault, clean['secret'], username=clean['username'],
-                                    allow_unattended=clean['allow_unattended'], entry_type=self.entry_type, undo=undo)
+                                    allow_unattended=clean['allow_unattended'], entry_type=self.entry_type, undo=undo,
+                                    confirm_replace=clean.get('confirm_replace') is True)
             else:
                 _vault.set_secret(self.vault, clean['secret'], username=clean['username'], description=DESCRIPTION,
                                   scope='global', allow_unattended=clean['allow_unattended'],

@@ -82,6 +82,7 @@
       if (!v) { if (f.required) return { error: `${f.label} is required.`, focus: el }; continue; }
       out[f.key] = v;
     }
+    if (document.querySelector('[data-cfs-confirm-replace]')?.checked) out.confirm_replace = true;
     return { fields: out };
   }
 
@@ -104,8 +105,10 @@
       }
       return `<div><dt>${esc(f.label)}</dt><dd data-cfa-r="${esc(f.key)}">${val}</dd></div>`;
     });
-    return `<dl class="desk-v1-cf-facts" data-cfa-summary>${rows.join('')}</dl>`;
+    return `<dl class="desk-v1-cf-facts" data-cfa-summary>${rows.join('')}</dl>${window.DeskV1ConnectSavedFields?.confirmHTML(_host, _fields) || ''}`;
   }
+
+  function replacementRequired() { return !!window.DeskV1ConnectSavedFields?.replaces(_host, _fields); }
 
   function mounted() { return !!_host; }
 
@@ -116,5 +119,5 @@
     _host = null; _key = ''; _fields = [];
   }
 
-  window.DeskV1ConnectAdapter = { guideHTML, mount, read, summaryHTML, mounted, clear };
+  window.DeskV1ConnectAdapter = { guideHTML, mount, read, summaryHTML, mounted, clear, replacementRequired };
 })();

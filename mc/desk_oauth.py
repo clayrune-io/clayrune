@@ -269,7 +269,9 @@ def _store_record(service: str, rec: dict[str, Any], account_id: str | None = No
     secrets_store.set_secret(
         name, json.dumps(rec, separators=(',', ':')),
         description=f"{d['label']} sign-in made from Connections. Clayrune keeps it fresh.",
-        hint=_hint(rec), scope=old.get('scope') or 'global',
+        hint=(_hint(rec) + (' app_id_sha256=' + hashlib.sha256(str(rec['client_id']).encode()).hexdigest()
+                           if service == 'x' and rec.get('client_id') else '')),
+        scope=old.get('scope') or 'global',
         allow_unattended=bool(old.get('allow_unattended', True)),
         entry_type=secrets_store.ENTRY_TOKEN)
     for key in ('access_token', 'refresh_token'):
@@ -336,11 +338,13 @@ def status(service: str, account_id: str | None = None) -> dict[str, Any]:
     if opened == _vault_lock.UNREADABLE:
         return {'state': 'needs_signin', 'reason': 'the saved sign-in can no longer be opened; sign in again'}
     if service == 'x' and app_refs.bound('x.client-id'):
+        if not parts.get('app_id_sha256'):
+            return {'state': 'needs_signin', 'reason': 'Sign in again to confirm this app\'s saved details.'}
         try:
-            rec = _read_record(service, consumer='desk_oauth:status', account_id=account_id)
-            if not app_refs.check_id(rec.get('client_id'), _vault_plain('x.client-id')):
+            from mc import secret_field_refs
+            if not hmac.compare_digest(parts.get('app_id_sha256', ''), secret_field_refs.fingerprint('x.client-id')):
                 return {'state': 'needs_signin', 'reason': app_refs.CHANGED}
-        except OAuthError:
+        except secrets_store.SecretsError:
             return {'state': 'needs_signin', 'reason': 'Reconnect this service because its saved entry is unavailable.'}
     return {'state': 'connected', 'reason': None}
 
@@ -540,7 +544,7 @@ def start(service: str, account_id: str | None = None, *, hold: dict | None = No
             for key in ('client_id', 'client_secret'):
                 if isinstance(app.get(key), dict):
                     app_refs.value(app[key])
-        except secret_field_refs.ReferenceError as e:
+        except secret_field_refs.FieldRefError as e:
             raise OAuthError(e.code, str(e), 409) from None
     if secrets_store.is_locked():        # the token is written to the vault only after the human finishes at the
         # vendor: a locked vault is reported now, before discovery, a port or the sign-in page, never after.
@@ -621,7 +625,7 @@ def _start_flow(service: str, d: dict, srv: _CallbackServer, disc: dict | None,
         from mc import desk_oauth_app_refs as app_refs, secret_field_refs
         try:
             client_id = app_refs.value(((flow.get('hold') or {}).get('app') or {}).get('client_id')) or _vault_plain(d['client_id_secret'])
-        except secret_field_refs.ReferenceError as e:
+        except secret_field_refs.FieldRefError as e:
             raise OAuthError(e.code, str(e), 409) from None
         if not client_id:
             raise OAuthError('app_missing', 'Save your X Client ID first (step 2), then sign in', 409)
@@ -716,7 +720,7 @@ def save_client_id(service: str, fields: dict) -> str | None:
     from mc import desk_oauth_app_refs as app_refs, secret_field_refs
     try:
         return app_refs.value((fields or {}).get('client_id')) or _vault_plain(SERVICES['x']['client_id_secret'])
-    except secret_field_refs.ReferenceError as e:
+    except secret_field_refs.FieldRefError as e:
         raise OAuthError(e.code, str(e), 409) from None
 
 
@@ -830,7 +834,7 @@ def _client_auth(service: str, form: dict, headers: dict, *, project_id: str | N
         current = app_refs.value(app.get('client_id'), project_id=project_id, unattended=unattended)
         if not current and (check_current or not form.get('client_id')):
             current = _vault_plain(d['client_id_secret'], project_id=project_id, unattended=unattended)
-    except secret_field_refs.ReferenceError as e:
+    except secret_field_refs.FieldRefError as e:
         raise OAuthError(e.code, str(e), 409) from None
     cid = form.get('client_id') or current or ''
     if check_current and not app_refs.check_id(cid, current):
