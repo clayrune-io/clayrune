@@ -287,6 +287,7 @@ import { EngineReconnect } from './desk-v1-connect-engine-reconnect.js';
     const r = Ad && Ad.mounted() ? Ad.read() : { fields: {} };
     if (r.error) return { error: r.error };
     const fields = Object.assign({}, r.fields);
+    if (Ad?.replacementRequired() && !fields.confirm_replace) return { error: 'Save replaces the saved key. Confirm replacement on Review first.', step: 'review' };
     if (_targetMode() === 'new') {                                    // answered by the account choice, not typed here
       const n = _target.account.new;
       fields.identity = n.identity;

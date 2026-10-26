@@ -294,6 +294,9 @@ def api_secrets_patch(name: str):
         current = {s['name']: s for s in vault.list_secrets()}.get(name)
         if current is None:
             return jsonify({'error': f"no secret named '{name}'"}), 404
+        if current.get('has_field_refs'):
+            from mc import secret_field_refs
+            return jsonify(secret_field_refs.patch_metadata(name, data))
         value = data.get('value')
         if not isinstance(value, str) or not value:
             # Re-seal, never return: human-only (passcode above). `internal` lets a

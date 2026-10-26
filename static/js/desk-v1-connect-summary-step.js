@@ -431,14 +431,17 @@
       },
       actions: (res, st) => {
         const out = [];
-        if (res.signin && res.signin.auth_url) out.push(['signin', 'Open the sign-in']);
+        if (res.signin && (res.signin.auth_url || res.signin.pane_session_id)) out.push(['signin', 'Open the sign-in']);
         out.push(['refresh', 'Refresh status']);
         if (st && CAN_CHECK.indexOf(st.state) >= 0) out.push(['check', 'Check it now']);
         return out;
       },
       bind: (root, res) => {
         root.querySelectorAll('[data-sum-act="signin"]').forEach((b) => b.addEventListener('click', () => {
-          try { if (typeof window.openBrowserPane === 'function') window.openBrowserPane(res.signin.auth_url, null, null, res.signin.profile || null); } catch (_) { /* the pane shows its own failure */ }
+          try {
+            if (res.signin.pane_session_id && typeof window.attachBrowserPane === 'function') window.attachBrowserPane(res.signin.pane_session_id);
+            else if (typeof window.openBrowserPane === 'function') window.openBrowserPane(res.signin.auth_url, null, null, res.signin.profile || null);
+          } catch (_) { /* the pane shows its own failure */ }
         }));
       },
     },

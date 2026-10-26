@@ -55,8 +55,8 @@ def apply(clean: dict) -> tuple[Applied, dict]:
     if held:
         if method not in prov.signs_in:
             raise ProviderError('that method has no sign-in to claim', 400, 'method_not_available')
-        save_app = _oauth.save_client_id(clean['service'], clean['fields'])     # the app this Save stores; checked twice
         try:
+            save_app = _oauth.save_client_id(clean['service'], clean['fields'])     # the app this Save stores; checked twice
             account = _oauth.held_account(clean['service'], held['flow_id'], held['claim'], client_id=save_app)
         except _oauth.OAuthError as e:
             raise ProviderError(str(e), e.status, e.code) from e

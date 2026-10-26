@@ -269,7 +269,9 @@ def _store_record(service: str, rec: dict[str, Any], account_id: str | None = No
     secrets_store.set_secret(
         name, json.dumps(rec, separators=(',', ':')),
         description=f"{d['label']} sign-in made from Connections. Clayrune keeps it fresh.",
-        hint=_hint(rec), scope=old.get('scope') or 'global',
+        hint=(_hint(rec) + (' app_id_sha256=' + hashlib.sha256(str(rec['client_id']).encode()).hexdigest()
+                           if service == 'x' and rec.get('client_id') else '')),
+        scope=old.get('scope') or 'global',
         allow_unattended=bool(old.get('allow_unattended', True)),
         entry_type=secrets_store.ENTRY_TOKEN)
     for key in ('access_token', 'refresh_token'):
@@ -306,9 +308,15 @@ def _read_record(service: str, *, consumer: str, project_id: str | None = None,
 
 def status(service: str, account_id: str | None = None) -> dict[str, Any]:
     """`{state: connected|needs_signin|vault_locked|not_connected, reason}` from the
-    vault's metadata only (no token is decrypted or audited). `vault_locked` is not a
+    vault's state. Saved app references are checked server-side, without network
+    calls, including the token's bound Client ID. `vault_locked` is not a
     dead sign-in: nothing needs signing in again, the vault needs unlocking."""
     d = _def(service)
+    if service == 'x':
+        from mc import desk_oauth_app_refs as app_refs
+        issue = app_refs.problem()
+        if issue:
+            return {'state': issue['state'], 'reason': issue['reason']}
     meta = _meta(service, account_id)
     if meta is None:
         return {'state': 'not_connected', 'reason': None}
@@ -329,6 +337,15 @@ def status(service: str, account_id: str | None = None) -> dict[str, Any]:
         return {'state': _vault_lock.VAULT_LOCKED, 'reason': _vault_lock.SIGNIN_REASON}
     if opened == _vault_lock.UNREADABLE:
         return {'state': 'needs_signin', 'reason': 'the saved sign-in can no longer be opened; sign in again'}
+    if service == 'x' and app_refs.bound('x.client-id'):
+        if not parts.get('app_id_sha256'):
+            return {'state': 'needs_signin', 'reason': 'Sign in again to confirm this app\'s saved details.'}
+        try:
+            from mc import secret_field_refs
+            if not hmac.compare_digest(parts.get('app_id_sha256', ''), secret_field_refs.fingerprint('x.client-id')):
+                return {'state': 'needs_signin', 'reason': app_refs.CHANGED}
+        except secrets_store.SecretsError:
+            return {'state': 'needs_signin', 'reason': 'Reconnect this service because its saved entry is unavailable.'}
     return {'state': 'connected', 'reason': None}
 
 
@@ -521,6 +538,14 @@ def start(service: str, account_id: str | None = None, *, hold: dict | None = No
     d = _def(service)
     account_id = _account(service, account_id)
     app = dict(hold) if hold is not None else None
+    if app is not None:
+        from mc import desk_oauth_app_refs as app_refs, secret_field_refs
+        try:
+            for key in ('client_id', 'client_secret'):
+                if isinstance(app.get(key), dict):
+                    app_refs.value(app[key])
+        except secret_field_refs.FieldRefError as e:
+            raise OAuthError(e.code, str(e), 409) from None
     if secrets_store.is_locked():        # the token is written to the vault only after the human finishes at the
         # vendor: a locked vault is reported now, before discovery, a port or the sign-in page, never after.
         raise OAuthError('vault_locked', 'Unlock the vault first, then sign in', 409)
@@ -597,7 +622,11 @@ def _start_flow(service: str, d: dict, srv: _CallbackServer, disc: dict | None,
                   'code_challenge_method': 'S256', 'resource': disc['resource']}
         base = meta['authorization_endpoint']
     else:
-        client_id = ((flow.get('hold') or {}).get('app') or {}).get('client_id') or _vault_plain(d['client_id_secret'])
+        from mc import desk_oauth_app_refs as app_refs, secret_field_refs
+        try:
+            client_id = app_refs.value(((flow.get('hold') or {}).get('app') or {}).get('client_id')) or _vault_plain(d['client_id_secret'])
+        except secret_field_refs.FieldRefError as e:
+            raise OAuthError(e.code, str(e), 409) from None
         if not client_id:
             raise OAuthError('app_missing', 'Save your X Client ID first (step 2), then sign in', 409)
         scope = ' '.join(d['scopes'])
@@ -624,6 +653,18 @@ def _start_flow(service: str, d: dict, srv: _CallbackServer, disc: dict | None,
            'redirect_uri': redirect, 'profile': profile_name(service, account_id)}
     if flow.get('hold'):
         out.update(claim=flow['hold']['claim'], hold_ttl_s=HOLD_TTL_S)
+    if service == 'x':
+        from mc import desk_oauth_app_refs as app_refs
+        if any(isinstance(v, dict) for v in ((flow.get('hold') or {}).get('app') or {}).values()) or app_refs.bound('x.client-id'):
+            from mc import desk_oauth_private_pane
+            try:
+                out['pane_session_id'] = desk_oauth_private_pane.open_signin(out['auth_url'], out['profile'])
+                out['auth_url'] = ''
+            except OAuthError:
+                with _lock:
+                    _flows.pop(state, None)
+                _retire([flow])
+                raise
     return out
 
 
@@ -676,7 +717,11 @@ def save_client_id(service: str, fields: dict) -> str | None:
     (Higgsfield), where there is nothing to compare."""
     if service != 'x':
         return None
-    return (fields or {}).get('client_id') or _vault_plain(SERVICES['x']['client_id_secret'])
+    from mc import desk_oauth_app_refs as app_refs, secret_field_refs
+    try:
+        return app_refs.value((fields or {}).get('client_id')) or _vault_plain(SERVICES['x']['client_id_secret'])
+    except secret_field_refs.FieldRefError as e:
+        raise OAuthError(e.code, str(e), 409) from None
 
 
 def _same_app(held_client_id: Any, save_client_id_: str | None) -> bool:
@@ -781,10 +826,19 @@ def _client_auth(service: str, form: dict, headers: dict, *, project_id: str | N
         return
     d = SERVICES['x']
     app = app or {}
-    secret = app.get('client_secret') or _vault_plain(d['client_secret_secret'], project_id=project_id,
-                                                      unattended=unattended)
-    cid = form.get('client_id') or app.get('client_id') or _vault_plain(d['client_id_secret'], project_id=project_id,
-                                                                        unattended=unattended) or ''
+    from mc import desk_oauth_app_refs as app_refs, secret_field_refs
+    check_current = isinstance(app.get('client_id'), dict) or app_refs.bound(d['client_id_secret'])
+    try:
+        secret = app_refs.value(app.get('client_secret'), project_id=project_id, unattended=unattended) or _vault_plain(
+            d['client_secret_secret'], project_id=project_id, unattended=unattended)
+        current = app_refs.value(app.get('client_id'), project_id=project_id, unattended=unattended)
+        if not current and (check_current or not form.get('client_id')):
+            current = _vault_plain(d['client_id_secret'], project_id=project_id, unattended=unattended)
+    except secret_field_refs.FieldRefError as e:
+        raise OAuthError(e.code, str(e), 409) from None
+    cid = form.get('client_id') or current or ''
+    if check_current and not app_refs.check_id(cid, current):
+        raise OAuthError('needs_signin', app_refs.CHANGED, 409)
     if secret:
         headers['Authorization'] = 'Basic ' + base64.b64encode(f'{cid}:{secret}'.encode()).decode()
         form.pop('client_id', None)
@@ -943,6 +997,11 @@ def access_token(service: str, *, consumer: str, project_id: str | None = None,
     `unreachable` (try again later)."""
     rec = _read_record(service, consumer=consumer, project_id=project_id, unattended=unattended,
                        account_id=account_id)
+    if service == 'x':
+        from mc import desk_oauth_app_refs as app_refs
+        if app_refs.bound('x.client-id') or app_refs.bound('x.client-secret'):
+            _client_auth(service, {'client_id': rec.get('client_id') or ''}, {},
+                         project_id=project_id, unattended=unattended)
     if rec.get('needs_signin'):
         raise OAuthError('needs_signin', f"{SERVICES[service]['label']} needs you to sign in again")
     if rec.get('expires_at', 0) - time.time() > REFRESH_SKEW_S:

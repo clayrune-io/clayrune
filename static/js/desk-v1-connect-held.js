@@ -53,6 +53,10 @@
   async function _openPane() {
     if (!H) return;
     try {
+      if (H.paneSessionId && typeof window.attachBrowserPane === 'function') {
+        await window.attachBrowserPane(H.paneSessionId);
+        return;
+      }
       if (typeof window.openBrowserPane === 'function') await window.openBrowserPane(H.authUrl, null, null, H.profile);
     } catch (_) { /* the pane failing to open does not end the sign-in: "Open the sign-in page again" retries */ }
   }
@@ -122,7 +126,7 @@
       mine.ctx.repaint();
       return;
     }
-    mine.flowId = out.flow_id; mine.claim = out.claim; mine.profile = out.profile; mine.authUrl = out.auth_url;
+    mine.flowId = out.flow_id; mine.claim = out.claim; mine.profile = out.profile; mine.authUrl = out.auth_url; mine.paneSessionId = out.pane_session_id || '';
     mine.phase = 'waiting'; mine.message = '';
     mine.ctx.repaint();
     _openPane();
@@ -187,7 +191,7 @@
     if (host && !host.dataset.cfhWatch) {
       host.dataset.cfhWatch = '1';
       host.addEventListener('input', (e) => {
-        const key = e.target && e.target.dataset ? e.target.dataset.cfaField : '';
+        const key = (e.detail && e.detail.field) || (e.target && e.target.dataset ? e.target.dataset.cfaField : '');
         if (!H || APP_KEYS.indexOf(key) < 0 || (H.phase !== 'waiting' && H.phase !== 'held')) return;
         const ctx = H.ctx, keep = { service: H.service, method: H.method, label: H.label, accountId: H.accountId };
         cancel();

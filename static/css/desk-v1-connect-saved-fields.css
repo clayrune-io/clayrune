@@ -1,0 +1,10 @@
+/* Shared saved-entry controls; scale with text and keep each label beside its own control. */
+.desk-v1-saved-field { min-width: 0; }
+.desk-v1-saved-field select { max-width: 100%; min-width: 0; box-sizing: border-box; }
+.desk-v1-saved-field [data-cfs-saved]:not([hidden]) { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: .4rem .75rem; }
+.desk-v1-saved-field [data-cfs-saved] > p { grid-column: 1 / -1; margin: .2rem 0; }
+.desk-v1-saved-field [data-cfs-message]:empty { display: none; }
+@media (max-width: 640px) {
+  .desk-v1-saved-field [data-cfs-saved]:not([hidden]) { grid-template-columns: minmax(0, 1fr); }
+  .desk-v1-saved-field select { min-height: 2.75rem; }
+}

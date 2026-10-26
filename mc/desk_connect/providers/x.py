@@ -26,6 +26,7 @@ from mc import secrets_store as _vault
 from mc.desk_connect.providers import base
 from mc.desk_connect.providers.key_paste import MAX_VALUE
 from mc.desk_connect import account_attach, x_account_attach
+from mc.desk_connect import saved_fields
 
 _HANDLE = re.compile(r'^[A-Za-z0-9_]{1,15}$')
 _CLIENT_ID = 'x.client-id'
@@ -55,17 +56,21 @@ class XProvider(base.Provider):
         ]
 
     def clean(self, method, fields, vault_names=None):
-        raw = base.take_fields(fields, {'identity', 'label', 'client_id', 'client_secret', 'allow_unattended'})
+        raw = base.take_fields(fields, {'identity', 'label', 'client_id', 'client_secret', 'allow_unattended', 'confirm_replace'})
         identity = base.text_value(raw, 'identity', 'X handle', 40, required=True).lstrip('@')
         if not _HANDLE.match(identity):
             raise base.ProviderError('an X handle is 1-15 letters, digits or _ (for example @yourname)')
         out = {'identity': identity, 'label': base.text_value(raw, 'label', 'Name', 80, required=False),
+               'confirm_replace': base.bool_value(raw, 'confirm_replace', 'Replace saved key', False),
                'allow_unattended': base.bool_value(raw, 'allow_unattended', 'Unattended use', True)}
         for key, label, vault in (('client_id', 'X app Client ID', _CLIENT_ID),
                                   ('client_secret', 'X app Client Secret', _CLIENT_SECRET)):
             v = raw.get(key)
             if v in (None, ''):
                 out[key] = ''
+                continue
+            if isinstance(v, dict):
+                out[key] = saved_fields.reference(v)
                 continue
             if not isinstance(v, str):
                 raise base.ProviderError(f'{label} must be text')
@@ -87,7 +92,7 @@ class XProvider(base.Provider):
                 raise base.ProviderError(str(e), getattr(e, 'status', 400), getattr(e, 'code', 'account_refused')) from e
         names = {s['name'] for s in _vault.list_secrets()}
         for key, vault in (('client_id', _CLIENT_ID), ('client_secret', _CLIENT_SECRET)):
-            if clean[key] and vault in names:
+            if clean[key] and not isinstance(clean[key], dict) and vault in names:
                 raise _exists(vault)
         if not clean['client_id'] and _CLIENT_ID not in names:
             raise base.ProviderError('X app Client ID is required: create your X app first and paste its Client ID')
@@ -96,12 +101,17 @@ class XProvider(base.Provider):
             if not clean[key]:
                 continue
             try:
-                _vault.set_secret(vault, clean[key], description=f'{what} (from Connect by address)',
-                                  scope='global', allow_unattended=clean['allow_unattended'],
-                                  entry_type=_vault.ENTRY_API_KEY)
+                if isinstance(clean[key], dict):
+                    saved_fields.create(vault, clean[key], allow_unattended=clean['allow_unattended'], undo=undo,
+                                        confirm_replace=clean.get('confirm_replace') is True)
+                else:
+                    _vault.set_secret(vault, clean[key], description=f'{what} (from Connect by address)',
+                                      scope='global', allow_unattended=clean['allow_unattended'],
+                                      entry_type=_vault.ENTRY_API_KEY)
             except _vault.SecretsError as e:
                 raise base.ProviderError(f'the credential could not be stored: {e}', 400, 'vault_refused') from e
-            undo.push(f'vault entry {vault}', lambda v=vault: _vault.delete_secret(v))
+            if not isinstance(clean[key], dict):
+                undo.push(f'vault entry {vault}', lambda v=vault: _vault.delete_secret(v))
         if attached:
             acc = {'id': attached['account_id'], 'identity': attached['identity'], 'label': attached['label']}
         else:
@@ -126,8 +136,9 @@ class XProvider(base.Provider):
 
     def credential_state(self, method, account_id=None):
         arg = _refs.oauth_arg_for(account_id)
-        st = _oauth.status('x', arg)['state']
-        return {'state': {'connected': 'signed_in'}.get(st, st),
+        status = _oauth.status('x', arg)
+        st = status['state']
+        return {'state': {'connected': 'signed_in'}.get(st, st), 'reason': status.get('reason'),
                 'entry': _oauth.vault_name('x', arg) if st != 'not_connected' else None}
 
     def verify(self, method, account_id=None):

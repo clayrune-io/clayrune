@@ -112,6 +112,7 @@ async function newPage(browser, { srv, width, height }) {
     if (path === '/api/characters') return J([]);
     if (path === '/api/local-auth/status') return J({ configured: true });
     if (path === '/api/secrets/vault-lock' && method === 'GET') return J({ state: 'unlocked', configured: true });
+    if (path === '/api/secrets' && method === 'GET') return J({ secrets: srv.secrets || [], locked: false });
     let body = null;
     try { body = req.postDataJSON(); } catch (_) { /* none */ }
     if (path.startsWith('/api/secrets') || path === '/api/browser/launch') { srv.log.push({ method, path, body }); return J({ error: 'not expected' }, 500); }
@@ -478,14 +479,18 @@ async function run(browser, width, height) {
   }
 }
 
-const browser = await chromium.launch();
-try {
-  await run(browser, 1440, 900);
-  await run(browser, 390, 844);
-} catch (e) {
-  fail('smoke aborted: ' + (e && e.stack ? e.stack : e));
-} finally {
-  await browser.close();
+export { makeServer, newPage, toSetup, toReview, X_NEW };
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const browser = await chromium.launch();
+  try {
+    await run(browser, 1440, 900);
+    await run(browser, 390, 844);
+  } catch (e) {
+    fail('smoke aborted: ' + (e && e.stack ? e.stack : e));
+  } finally {
+    await browser.close();
+  }
+  console.log(bad ? `\n${bad} check(s) failed` : '\nAll connect-api-step checks passed');
+  process.exit(bad ? 1 : 0);
 }
-console.log(bad ? `\n${bad} check(s) failed` : '\nAll connect-api-step checks passed');
-process.exit(bad ? 1 : 0);

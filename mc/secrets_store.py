@@ -2156,6 +2156,7 @@ def _public(name: str, rec: dict[str, Any]) -> dict[str, Any]:
     preview — a partial reveal is still a reveal."""
     return {
         'name': name,
+        'has_field_refs': 'field_refs' in rec,
         'username': rec.get('username', ''),
         'description': rec.get('description', ''),
         'hint': rec.get('hint', ''),
@@ -2219,6 +2220,12 @@ def is_readable(name: str) -> bool:
     if rec is None:
         return False
     try:
+        if 'field_refs' in rec:
+            from mc import secret_field_refs
+            if secret_field_refs.health(name):
+                return False
+            if 'value' in rec['field_refs']:
+                return True
         _open(name, rec)
         return True
     except SecretsError:
@@ -2545,7 +2552,18 @@ def get_secret_value(name: str,
                 f"secret '{name}' is marked attended-only and cannot be used "
                 f"by an unattended cycle")
 
-        value = _open(name, rec)
+        referenced_value = False
+        if 'field_refs' in rec:
+            from mc import secret_field_refs
+            referenced_value = secret_field_refs.has_slot(rec, 'value')
+        if referenced_value:
+            value = secret_field_refs.slot(rec, 'value', consumer=consumer,
+                                          project_id=project_id, unattended=unattended)
+            # Nested dispensing updates the source's counters; keep those writes.
+            store = _load_store()
+            rec = store['secrets'][name]
+        else:
+            value = _open(name, rec)
         rec['last_used_at'] = now_iso()
         rec['use_count'] = int(rec.get('use_count', 0) or 0) + 1
         _save_store(store)
@@ -2614,6 +2632,10 @@ def get_username(name: str, *, project_id: str | None = None) -> str:
         raise SecretDenied(
             f"secret '{name}' is scoped to project '{scope}' and is not "
             f"available to '{project_id}'")
+    if 'field_refs' in rec:
+        from mc import secret_field_refs
+        if secret_field_refs.has_slot(rec, 'username'):
+            return secret_field_refs.slot(rec, 'username', project_id=project_id)
     username = str(rec.get('username', '') or '')
     if not username:
         raise SecretsError(
@@ -2721,11 +2743,11 @@ def export_all_for_backup(passphrase: str, *, consumer: str,
             if scope_filter is not None and rec.get('scope', 'global') != scope_filter:
                 continue
             try:
-                value = _open(name, rec)
+                value = '' if isinstance(rec.get('field_refs'), dict) and 'value' in rec['field_refs'] else _open(name, rec)
             except SecretsError as e:
                 _log(f"[secrets] export skipped '{name}': {e}")
                 continue
-            entries.append({
+            exported = {
                 'name': name, 'value': value,
                 'username': rec.get('username', ''),
                 'description': rec.get('description', ''),
@@ -2737,7 +2759,10 @@ def export_all_for_backup(passphrase: str, *, consumer: str,
                 'issuer': rec.get('issuer', ''), 'account': rec.get('account', ''),
                 'digits': rec.get('digits', 6), 'period': rec.get('period', 30),
                 'algorithm': rec.get('algorithm', 'SHA1'),
-            })
+            }
+            if 'field_refs' in rec:
+                exported['field_refs'] = rec['field_refs']
+            entries.append(exported)
     payload = json.dumps({'version': STORE_VERSION, 'entries': entries},
                          ensure_ascii=False).encode('utf-8')
     salt = os.urandom(16)
@@ -2752,7 +2777,7 @@ def export_all_for_backup(passphrase: str, *, consumer: str,
     }).encode('utf-8')
 
 
-def _import_entry_raw(entry: dict[str, Any]) -> None:
+def _import_entry_raw(entry: dict[str, Any], *, reference_records=None) -> None:
     """Write one exported entry straight into the store under THIS machine's
     master key. Deliberately bypasses ``set_secret``'s otpauth-URI sniffing —
     the value here is already the normalized secret ``_open`` returned, not
@@ -2764,7 +2789,18 @@ def _import_entry_raw(entry: dict[str, Any]) -> None:
         raise SecretsError(f"invalid secret name in import: {name!r}")
     with _lock:
         store = _load_store()
-        rec = _seal(name, entry['value'])
+        refs = entry.get('field_refs')
+        if 'field_refs' in entry:
+            from mc import secret_field_refs
+            if not isinstance(refs, dict) or not refs or set(refs) - {'value', 'username'}:
+                raise SecretsError('Invalid saved field reference in backup.')
+            records = reference_records if reference_records is not None else store['secrets']
+            refs = {part: secret_field_refs.clean(ref, records=records, allow_missing=True)
+                    for part, ref in refs.items()}
+            secret_field_refs.validate_chain(name, refs, records, allow_missing=True)
+        rec = {} if refs and 'value' in refs else _seal(name, entry['value'])
+        if refs:
+            rec['field_refs'] = refs
         rec.update({
             'username': str(entry.get('username') or ''),
             'description': str(entry.get('description') or ''),
@@ -2815,17 +2851,24 @@ def import_all_from_backup(blob: bytes, passphrase: str, *, consumer: str,
         raise SecretsError(
             f'could not decrypt vault archive — wrong passphrase or corrupted archive: {e}') from e
 
-    existing_names = {r['name'] for r in list_secrets()}
     imported: list[str] = []
     skipped: list[str] = []
-    for entry in data.get('entries', []):
-        if rescope and entry.get('scope') == rescope[0]:
-            entry = dict(entry, scope=rescope[1])
-        name = entry['name']
-        if name in existing_names and on_collision == 'skip':
-            skipped.append(name)
-            continue
-        _import_entry_raw(entry)
-        imported.append(name)
+    with _lock:
+        records = _load_store()['secrets']
+        existing_names = set(records)
+        entries = []
+        for entry in data.get('entries', []):
+            if rescope and entry.get('scope') == rescope[0]:
+                entry = dict(entry, scope=rescope[1])
+            if entry['name'] in existing_names and on_collision == 'skip':
+                skipped.append(entry['name'])
+                continue
+            entries.append(entry)
+            existing_names.add(entry['name'])
+        from mc import secret_field_refs
+        projected = secret_field_refs.validate_backup(entries, records)
+        for entry in entries:
+            _import_entry_raw(entry, reference_records=projected)
+            imported.append(entry['name'])
     _audit('import', consumer=consumer, imported=len(imported), skipped=len(skipped))
     return {'imported': imported, 'skipped': skipped}

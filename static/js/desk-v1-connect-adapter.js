@@ -18,7 +18,7 @@
   function _id(f) { return `cfa-${f.key}`; }
   function _hint(f) { return f.hint ? `<div class="desk-v1-rules-hint">${esc(f.hint)}</div>` : ''; }
 
-  function _fieldHTML(f) {
+  function _typedHTML(f) {
     if (f.kind === 'checkbox') {
       return `<label class="desk-v1-cf-check"><input type="checkbox" id="${_id(f)}" data-cfa-field="${esc(f.key)}" ${f.default ? 'checked' : ''}>
           <span>${esc(f.label)}${f.hint ? `<span class="desk-v1-rules-hint">${esc(f.hint)}</span>` : ''}</span></label>`;
@@ -30,6 +30,11 @@
     return `<label class="desk-v1-conn-add-field" for="${_id(f)}">${esc(f.label)}${f.required ? '' : ' (optional)'}
           <input type="${secret ? 'password' : 'text'}" id="${_id(f)}" class="desk-v1-rules-textinput" data-cfa-field="${esc(f.key)}" data-cfa-kind="${f.kind}"
             maxlength="8192" autocomplete="${secret ? 'new-password' : 'off'}" autocapitalize="off" spellcheck="false"></label>${_hint(f)}`;
+  }
+
+  function _fieldHTML(f) {
+    const typed = _typedHTML(f);
+    return window.DeskV1ConnectSavedFields ? window.DeskV1ConnectSavedFields.html(f, typed) : typed;
   }
 
   function guideHTML(connector) {
@@ -50,6 +55,9 @@
       _host.className = 'desk-v1-cf-adapter';
       _host.dataset.cfaHost = '1';
       _host.innerHTML = _fields.map(_fieldHTML).join('');
+      // Bind after attachment so the metadata response can safely check its host is still open.
+      slot.appendChild(_host);
+      if (window.DeskV1ConnectSavedFields) window.DeskV1ConnectSavedFields.bind(_host, _fields);
     }
     slot.appendChild(_host);
   }
@@ -60,6 +68,12 @@
   function read() {
     const out = {};
     for (const f of _fields) {
+      const selected = window.DeskV1ConnectSavedFields && window.DeskV1ConnectSavedFields.selection(_host, f);
+      if (selected) {
+        if (!selected.value) return { error: `Choose a saved entry for ${f.label}.`, focus: selected.focus };
+        out[f.key] = selected.value;
+        continue;
+      }
       if (f.kind === 'secret' && f.present) continue;
       const el = _el(f);
       if (!el) continue;
@@ -68,6 +82,7 @@
       if (!v) { if (f.required) return { error: `${f.label} is required.`, focus: el }; continue; }
       out[f.key] = v;
     }
+    if (document.querySelector('[data-cfs-confirm-replace]')?.checked) out.confirm_replace = true;
     return { fields: out };
   }
 
@@ -76,7 +91,10 @@
     const rows = _fields.map((f) => {
       const el = _el(f);
       let val;
-      if (f.kind === 'secret') {
+      const saved = window.DeskV1ConnectSavedFields && window.DeskV1ConnectSavedFields.summary(_host, f);
+      if (saved !== null && saved !== undefined) {
+        val = saved;
+      } else if (f.kind === 'secret') {
         val = f.present ? `already stored as <code>${esc(f.vault)}</code>, used as it is`
           : (el && el.value ? 'entered, hidden: shown nowhere' : 'none');
       } else if (f.kind === 'checkbox') {
@@ -87,16 +105,19 @@
       }
       return `<div><dt>${esc(f.label)}</dt><dd data-cfa-r="${esc(f.key)}">${val}</dd></div>`;
     });
-    return `<dl class="desk-v1-cf-facts" data-cfa-summary>${rows.join('')}</dl>`;
+    return `<dl class="desk-v1-cf-facts" data-cfa-summary>${rows.join('')}</dl>${window.DeskV1ConnectSavedFields?.confirmHTML(_host, _fields) || ''}`;
   }
+
+  function replacementRequired() { return !!window.DeskV1ConnectSavedFields?.replaces(_host, _fields); }
 
   function mounted() { return !!_host; }
 
   // Leave the flow or change method: no value stays typed.
   function clear() {
+    if (_host) _host.dataset.cfsDisposed = '1';
     if (_host) _host.querySelectorAll('input').forEach((i) => { if (i.type !== 'checkbox') i.value = ''; });
     _host = null; _key = ''; _fields = [];
   }
 
-  window.DeskV1ConnectAdapter = { guideHTML, mount, read, summaryHTML, mounted, clear };
+  window.DeskV1ConnectAdapter = { guideHTML, mount, read, summaryHTML, mounted, clear, replacementRequired };
 })();
