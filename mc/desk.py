@@ -1721,7 +1721,7 @@ def publish_blockers(campaign_id: str) -> list[str]:
     return approval_problems(camp)
 
 
-def _v1_start_problems(camp: dict) -> list[str]:
+def _v1_start_problems(camp: dict, accounts: dict | None = None) -> list[str]:
     """`_start_gate_problems` plus the plan bounds the v1 client's
     `validatePlan` requires (a project, an account, a cadence ceiling, an end
     date or post cap), so a Start that skipped the browser's gate is refused
@@ -1737,6 +1737,8 @@ def _v1_start_problems(camp: dict) -> list[str]:
     end = plan.get('end') or {}
     if not end.get('date') and end.get('post_cap') is None:
         problems.append('no end date or post cap')
+    from mc.desk_connect import post_consent as _post_consent     # MC-1114: lazy, as the policy module imports this one
+    problems += _post_consent.start_problems(accounts or {}, plan.get('accounts'))      # `accounts`: the store's map, read by the caller under its lock
     return problems + _start_gate_problems(camp)
 
 
@@ -1764,7 +1766,7 @@ def start_campaign(campaign_id: str, *, by: str = 'human', policy_record: dict |
             trial['term'] = {'index': 1, 'starts': today or datetime.now().date().isoformat(),
                              'ends': end.get('date') or None,
                              'post_cap': end.get('post_cap')}
-        problems = _v1_start_problems(trial)
+        problems = _v1_start_problems(trial, store.get('accounts'))
         if problems:
             raise ApprovalRefused('cannot start: ' + '; '.join(problems), problems)
         trial['state'] = 'running'
@@ -1793,7 +1795,7 @@ def approve_campaign(campaign_id: str, *, by: str = 'human') -> dict | None:
         if camp.get('state') not in ('running', 'paused'):
             raise ApprovalRefused(f"campaign is {camp.get('state')!r}; only a started campaign "
                                   f"is approved again (a new one is started)")
-        problems = _v1_start_problems(camp)
+        problems = _v1_start_problems(camp)          # no accounts map: the Post-consent line gates Start only
         if problems:
             raise ApprovalRefused('cannot approve: ' + '; '.join(problems), problems)
         snap = _approval_snapshot(camp, by=by)

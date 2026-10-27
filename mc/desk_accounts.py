@@ -56,6 +56,7 @@ from mc import desk_vault_lock as _vault_lock
 from mc import secrets_store
 from mc.core import _log, now_iso
 from mc.desk_connect import browser_setup_record as _setup_record
+from mc.desk_connect import post_consent as _post_consent
 from mc.desk_pane_pages import PANE_ONLY_PLATFORMS, PLATFORM_PAGES
 from mc.desk_publish import LINKEDIN_TOKEN_SECRET, X_OAUTH_TOKEN_SECRET
 
@@ -197,6 +198,9 @@ def v1_account(acc: dict, vault: dict | None = None) -> dict:
         out['browser_setup'].update(account_status(acc.get('platform'), setup['refs'].get('browser_profile')))
     if acc.get('preview'):
         out['preview'] = True
+    pc = _post_consent.view(acc)         # MC-1114: connected, but Approve would be refused for want of Post consent
+    if pc:
+        out['post_permission'] = pc
     return out
 
 

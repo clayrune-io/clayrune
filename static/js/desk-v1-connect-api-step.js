@@ -148,10 +148,20 @@ import { EngineReconnect } from './desk-v1-connect-engine-reconnect.js';
     return '';
   }
 
+  // MC-1114: a saved account that already holds a sign-in for the saved app keeps it: no authorize view, no held sign-in.
+  // A Client ID typed here is a different app as far as this screen can tell, so it signs in as before.
+  function _keepsSignin() {
+    const R = window.DeskV1ConnectSigninReuse, Ad = window.DeskV1ConnectAdapter;
+    if (!R || !_signs() || _targetMode() !== 'existing' || !R.reusable(_target.account.id)) return false;
+    const typed = Ad && Ad.mounted() ? (Ad.read().fields || {}).client_id : '';
+    return !(typeof typed === 'string' && typed);
+  }
+  function _reuseNote() { return _keepsSignin() ? window.DeskV1ConnectSigninReuse.noteHTML(_target.account.id) : ''; }
+
   function _fieldsBody(api) {
     if (A.reconnect) return `<p data-engine-reconnect>${esc(EngineReconnect.sentence)}</p>`;
     const c = _displayConnector();
-    return `<div class="desk-v1-cfw-group" data-api-fields><div class="desk-v1-cf-cred" data-cfa-slot ${_hasFields() ? '' : 'hidden'}></div></div>${c && c.install ? '<div class="desk-v1-cfw-fact-text" data-api-install>This installs software. You approve it on the Review screen.</div>' : ''}`;
+    return `${_reuseNote()}<div class="desk-v1-cfw-group" data-api-fields><div class="desk-v1-cf-cred" data-cfa-slot ${_hasFields() ? '' : 'hidden'}></div></div>${c && c.install ? '<div class="desk-v1-cfw-fact-text" data-api-install>This installs software. You approve it on the Review screen.</div>' : ''}`;
   }
 
   function _authorizeBody() {
@@ -229,7 +239,7 @@ import { EngineReconnect } from './desk-v1-connect-engine-reconnect.js';
       run: async () => {
         const why = _problem(api, document.querySelector('[data-cfw]'));
         if (why) { api.error(why); return false; }
-        if (_stage() === 'fields' && _signs()) { A.stage = 'authorize'; api.error(''); return false; }       // the sub-view changed: an old message does not follow it
+        if (_stage() === 'fields' && _signs() && !_keepsSignin()) { A.stage = 'authorize'; api.error(''); return false; }       // the sub-view changed: an old message does not follow it
         return true;                                       // Continue writes nothing: the Save is `commit`, on Review
       },
     }),
@@ -237,6 +247,7 @@ import { EngineReconnect } from './desk-v1-connect-engine-reconnect.js';
       const Ad = window.DeskV1ConnectAdapter, Hd = window.DeskV1ConnectHeld, Sg = window.DeskV1ConnectSignin;
       if (_blocked(api.info)) return;
       _load(api);
+      if (_signs() && _targetMode() === 'existing' && window.DeskV1ConnectSigninReuse) window.DeskV1ConnectSigninReuse.check(_target.account.id, api.repaint);
       root.querySelectorAll('[data-api-retry]').forEach((b) => b.addEventListener('click', () => { A.loaded = ''; A.failed = false; api.repaint(); }));
       if (!A.connector) return;
       const label = _label(api.info), method = _provider(api.sel, api.info).setup.method;

@@ -30,7 +30,7 @@ from mc import desk_account_refs as _refs
 from mc import desk_oauth as _oauth
 from mc import secrets_store as _vault
 from mc.core import _log
-from mc.desk_connect import providers, verification
+from mc.desk_connect import providers, signin_reuse, verification
 from mc.desk_connect import signin_login_store as _logins
 from mc.desk_connect.providers.base import Applied, ProviderError
 from mc.desk_connect.undo import UndoStack
@@ -49,6 +49,10 @@ def apply(clean: dict) -> tuple[Applied, dict]:
     if _vault.is_locked() and (method in prov.signs_in or new_login or _writes_secrets(prov, method, clean['fields'])):
         raise ProviderError('the Vault is locked: unlock it, then save again', 409, 'vault_locked')
     held = clean.get('held')
+    # MC-1114: a saved account that already holds a sign-in for this same app keeps it. Nothing is
+    # claimed (a sign-in made anyway is left to expire) and none is started after the Save.
+    reuse = signin_reuse.applies(clean, method in prov.signs_in)
+    held = None if reuse else held
     fields = clean['fields']
     if clean.get('account_id'):
         fields = {**fields, '_attach_account_id': clean['account_id']}
@@ -67,6 +71,8 @@ def apply(clean: dict) -> tuple[Applied, dict]:
     undo = UndoStack()
     try:
         applied = prov.apply(method, fields, undo)
+        if reuse:
+            applied.extra['reused_signin'] = True
         if new_login:
             _logins.write_with_undo(new_login, undo)
         if held:
@@ -100,13 +106,15 @@ def apply(clean: dict) -> tuple[Applied, dict]:
               'account_id': applied.account_id}
     if new_login:
         result['login'] = _logins.public(new_login)
+    if reuse:
+        result['reused_signin'] = True
     return applied, result
 
 
 def follow(clean: dict, applied: Applied) -> dict:
     """What happens after the durable commit: the sign-in. Never raises. Nothing starts for a
     Save that claimed a held sign-in: the person already signed in."""
-    if clean.get('held'):
+    if clean.get('held') or applied.extra.get('reused_signin'):
         from mc import desk_engine_schemas
         desk_engine_schemas.connection_saved(clean['service'], clean['method'])
         return {}

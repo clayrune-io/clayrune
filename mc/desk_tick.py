@@ -113,8 +113,11 @@ def _post_cost(platform: str, body: str) -> float:
     return _spend.post_cost(platform, body)
 
 
-def _failure(reason: str, now: datetime | None = None) -> dict:
-    return {'reason': reason, 'at': (now or _now()).isoformat()}
+def _failure(reason: str, now: datetime | None = None, code: str | None = None) -> dict:
+    out = {'reason': reason, 'at': (now or _now()).isoformat()}
+    if code:
+        out['code'] = code      # MC-1114: lets the review card link to the fix (e.g. 'post_permission')
+    return out
 
 
 def _snapshot(piece_id: str, version_id: str):
@@ -359,7 +362,7 @@ def _process(piece_id: str, version_id: str, *, attended: bool, now: datetime) -
             _log(f'[desk_tick] version {version_id} has an unknown outcome: {e}')
             return 'unknown_outcome'
         _pieces.transition_version(piece_id, version_id, to='failed', expect='sending',
-                                   failure=_failure(str(e), now))
+                                   failure=_failure(str(e), now, getattr(e, 'code', None)))
         _log(f'[desk_tick] version {version_id} failed: {e}')
         return 'failed'
     except Exception as e:

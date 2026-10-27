@@ -150,9 +150,10 @@ class PublishError(Exception):
     have accepted it: the caller must not offer a plain retry (it would double
     post) and records an unknown outcome instead of a failure."""
 
-    def __init__(self, message: str = '', *, maybe_posted: bool = False):
+    def __init__(self, message: str = '', *, maybe_posted: bool = False, code: str | None = None):
         super().__init__(message)
         self.maybe_posted = maybe_posted
+        self.code = code        # a short machine reason a screen can act on (MC-1114: 'post_permission')
 
 
 class ReadConsentDenied(PublishError):
@@ -491,7 +492,7 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
         try:
             _permissions.require_publish(item)
         except _permissions.PermissionDenied as e:
-            raise PublishError(str(e)) from e
+            raise PublishError(str(e), code='post_permission') from e
         x_account = _refs.oauth_arg_for(item.get('account_id')) if platform == 'x' else None
 
         # A paid post must fit what is left of its campaign's budget (an item
