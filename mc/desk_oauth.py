@@ -73,6 +73,7 @@ from typing import Any
 
 from mc import desk_oauth_hold as _hold
 from mc import desk_oauth_profile as _profile
+from mc import desk_oauth_saved_guard as _saved_guard
 from mc import desk_vault_lock as _vault_lock
 from mc import secrets_store
 from mc.core import _log
@@ -934,9 +935,10 @@ def _complete(params: dict[str, str]) -> tuple[bool, str, bool]:
                 cancelled = bool(flow.get('cancelled'))
                 if not cancelled:
                     _hold.put(flow['flow_id'], hold['claim'], service, hold.get('account_id'), rec,
-                              hold.get('app'), HOLD_TTL_S, on_drop=lambda: _forget_profile(flow))
+                              hold.get('app'), HOLD_TTL_S, on_drop=lambda: _forget_profile(flow),
+                              account_arg=account_id)
             if cancelled:
-                revoke_record(service, rec, app=hold.get('app'))
+                _saved_guard.revoke_unless_saved(service, account_id, rec, app=hold.get('app'))
                 rec = None
                 _forget_profile(flow)
                 return False, 'This sign-in was cancelled. Nothing was kept.', False
