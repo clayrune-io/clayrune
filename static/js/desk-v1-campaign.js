@@ -135,6 +135,7 @@
       <div class="desk-v1-camp-summary-top">
         <div class="desk-v1-camp-statuscontrol" data-status-control data-state="${esc(camp.state)}">
           ${stateHTML}
+          ${window.DeskV1Reapproval.badgeHTML(camp)}
           ${camp.state === 'paused'
             ? `<button type="button" class="desk-v1-camp-pause-btn desk-v1-camp-status-action" data-resume-btn>▶ Resume</button>`
             : camp.state === 'active'
@@ -152,6 +153,7 @@
         ${channelsHTML}
       </div>`;
 
+    window.DeskV1Reapproval.bindLinks(el);
     const goalBtn = el.querySelector('[data-goal-btn]');
     // R2-3: 'results' is now the deep-link alias for ① goal (PANEL_ALIASES,
     // shell.js) — this call bypasses `deskV1Nav`'s alias table, so it must
@@ -851,12 +853,12 @@
 
   function _renderLaunchPanel(el, params, camp) {
     if (!camp) { el.innerHTML = '<div class="desk-v1-stub-inline">Campaign not found.</div>'; return; }
-    if (camp.state !== 'draft' && camp.approval && camp.approval.bounds
-        && DeskV1Kit.boundsWiden(camp.approval.bounds, _currentBounds(camp))) {
+    if (camp.state !== 'draft' && window.DeskV1Reapproval.changes(camp).length) {
       el.innerHTML = `
         <div class="desk-v1-map-launch">
           <div class="desk-v1-map-launch-status desk-v1-map-launch-awaiting">⚠ Awaiting approval</div>
-          <div class="desk-v1-stub-inline">A change since the last approval (Brief stop) widens what this campaign can do. An authorized user needs to approve it again before it takes effect.</div>
+          <div class="desk-v1-stub-inline">These changes since the last approval widen what this campaign can do. An authorized user needs to approve them again before they take effect.</div>
+          ${window.DeskV1Reapproval.changesListHTML(camp)}
           <button type="button" class="desk-v1-map-launch-start" data-approve-bounds>Approve the new bounds</button>
         </div>`;
       const approveBtn = el.querySelector('[data-approve-bounds]');

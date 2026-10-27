@@ -324,6 +324,27 @@ def test_route_refusal_carries_the_problem_list(world):
     assert world.wire.posts == []
 
 
+def test_route_refusal_names_a_campaign_awaiting_reapproval(world):
+    """A widened campaign is refused with a machine-readable code and the
+    campaign id, so Review can offer a link to Launch without reading the text;
+    every other refusal carries no code."""
+    campaign(world)
+    piece, vid = version(world)
+    edit_store(lambda s: s['campaigns'][CID]['plan']['cadence'].update(per_week=99))
+    url = f'/api/desk/pieces/{piece}/versions/{vid}/approve'
+    r = world.client.post(url, json={})
+    body = r.get_json()
+    assert r.status_code == 409
+    assert body['code'] == 'campaign_awaiting_approval' and body['campaign_id'] == CID
+    assert any('approve them on Launch' in p for p in body['problems'])
+    assert stored(piece, vid)['state'] == 'needs_review' and world.wire.posts == []
+    # a different refusal (campaign not started) has no code
+    edit_store(lambda s: s['campaigns'][CID].update(state='paused'))
+    p2, v2 = version(world, piece='p2', vid='v2')
+    r2 = world.client.post(f'/api/desk/pieces/{p2}/versions/{v2}/approve', json={})
+    assert r2.status_code == 409 and 'code' not in r2.get_json()
+
+
 def test_passcode_refusal_blocks_the_approval(world, monkeypatch):
     campaign(world)
     piece, vid = version(world)

@@ -59,9 +59,13 @@
           <div class="desk-v1-how-card" data-how-limits-card>
             <div class="desk-v1-how-card-title">Limits</div>
             <div class="desk-v1-rules-inlinerow">Up to <input type="number" min="0" max="30" class="desk-v1-rules-numinput" data-how-limit="per_week" value="${esc(cad.per_week != null ? cad.per_week : '')}" placeholder="—"> posts a week</div>
+            ${window.DeskV1Reapproval.noteHTML('per_week')}
             <div class="desk-v1-rules-inlinerow">At least <input type="number" min="0" max="72" class="desk-v1-rules-numinput" data-how-limit="min_gap_h" value="${esc(cad.min_gap_h != null ? cad.min_gap_h : '')}" placeholder="—"> hours apart</div>
+            ${window.DeskV1Reapproval.noteHTML('min_gap_h')}
             <div class="desk-v1-rules-inlinerow">Ends <input type="date" class="desk-v1-rules-textinput" data-how-limit="end_date" value="${esc(endDate)}"></div>
+            ${window.DeskV1Reapproval.noteHTML('end_date')}
             <div class="desk-v1-rules-inlinerow">Or after <input type="number" min="0" class="desk-v1-rules-numinput" data-how-limit="post_cap" value="${esc(end.post_cap != null ? end.post_cap : '')}" placeholder="none"> posts</div>
+            ${window.DeskV1Reapproval.noteHTML('post_cap')}
             <div class="desk-v1-how-field-label">Budget (optional)</div>
             <div class="desk-v1-how-budget-toggle" role="group" aria-label="Budget">
               <button type="button" data-how-budget-btn="none" aria-pressed="${how.budget.source === 'none'}">None</button>
@@ -69,6 +73,7 @@
             </div>
             ${how.budget.source !== 'none' ? `<div class="desk-v1-rules-inlinerow">$<input type="number" min="0" class="desk-v1-rules-numinput" data-how-budget-amount value="${esc(how.budget.amount || 0)}"></div>` : ''}
             <div class="desk-v1-rules-hint" data-how-budget-hint>${esc(_budgetHint(how))}</div>
+            ${window.DeskV1Reapproval.noteHTML('budget')}
           </div>`;
   }
 
@@ -130,6 +135,7 @@
     }
     _bind(el, camp, project);
     _paintAgent(el, camp, project);
+    window.DeskV1Reapproval.fillSlots(el, camp);
   }
 
   // Last successful choices per project id, so a re-render (every budget
@@ -332,6 +338,7 @@
         parseInt(amountEl.value, 10) || 0, () => {
           const hint = el.querySelector('[data-how-budget-hint]');
           if (hint) hint.textContent = _budgetHint(how);
+          window.DeskV1Reapproval.fillSlots(el, camp);
           amountEl.value = String(how.budget.amount || 0);
         });
     });
