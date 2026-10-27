@@ -349,15 +349,17 @@ def status(service: str, account_id: str | None = None) -> dict[str, Any]:
     return {'state': 'connected', 'reason': None}
 
 
-def overview() -> dict[str, Any]:
+def overview(account_id: str | None = None) -> dict[str, Any]:
     """Everything Connections needs to paint the guided cards, from the vault's
-    metadata only (names and states, never a value)."""
+    metadata only (names and states, never a value). `account_id` (an X account's
+    `oauth_arg`) makes the `x` state that account's own sign-in; None = the legacy
+    singleton, as before."""
     try:
         have = {s['name'] for s in secrets_store.list_secrets()}
     except secrets_store.SecretsError:
         have = set()
     out: dict[str, Any] = {'higgsfield': status('higgsfield'),
-                           'x': {**status('x'), 'app': x_app_state(), 'callback_url': x_redirect_uri(),
+                           'x': {**status('x', account_id), 'app': x_app_state(), 'callback_url': x_redirect_uri(),
                                  'scopes': list(SERVICES['x']['scopes'])}}
     for key, d in KEY_SERVICES.items():
         out[key] = {'saved': d['vault'] in have, 'vault_entry': d['vault']}

@@ -39,23 +39,27 @@
     return res.body;
   }
 
-  let _overview = null;
+  // GET /api/desk/connect/status, cached per account: an X account's wizard reads ITS sign-in (opts.accountId),
+  // the account-less call reads the legacy singleton. Any sign-in change drops every entry.
+  let _overview = new Map();
   function overview(opts) {
-    if (_overview && !(opts && opts.force)) return Promise.resolve(_overview);
-    return _api('GET', '/api/desk/connect/status').then((o) => { _overview = o || {}; return _overview; });
+    const aid = (opts && opts.accountId) || '';
+    if (_overview.has(aid) && !(opts && opts.force)) return Promise.resolve(_overview.get(aid));
+    const url = '/api/desk/connect/status' + (aid ? `?account_id=${encodeURIComponent(aid)}` : '');
+    return _api('GET', url).then((o) => { const ov = o || {}; _overview.set(aid, ov); return ov; });
   }
 
   const LABEL = { higgsfield: 'Higgsfield', x: 'X' };
 
   // ── sign-in (shared) ─────────────────────────────────────────────────────
   // ui = { say(text), alive() }. Resolves { ok, message }.
-  async function signIn(service, ui) {
+  async function signIn(service, ui) {    // ui.accountId: sign in as that Desk account, not the legacy singleton
     const label = LABEL[service] || service;
     const say = (t) => { if (ui && ui.say) ui.say(t); };
     const alive = () => !ui || !ui.alive || ui.alive();
     let start;
     try {
-      start = await humanPost('POST', `/api/desk/connect/${encodeURIComponent(service)}/start`, {}, {
+      start = await humanPost('POST', `/api/desk/connect/${encodeURIComponent(service)}/start`, ui && ui.accountId ? { account_id: ui.accountId } : {}, {
         title: `Sign in to ${label}`,
         description: `Re-enter your dashboard passcode to start signing in to ${label}. The sign-in page opens next to this one.`,
       });
@@ -74,20 +78,20 @@
       if (!alive()) break;
       let f;
       try { f = await _api('GET', `/api/desk/connect/flows/${encodeURIComponent(start.flow_id)}`); } catch (e) { continue; }
-      if (f.status === 'done') { _overview = null; return { ok: true, message: `${label} is connected.` }; }
+      if (f.status === 'done') { _overview.clear(); return { ok: true, message: `${label} is connected.` }; }
       if (f.status === 'error') return { ok: false, message: f.message || `${label} did not accept the sign-in.` };
       if (f.status === 'unknown') return { ok: false, message: f.message || 'The sign-in is no longer waiting. Start again.' };
     }
     return { ok: false, message: alive() ? 'The sign-in took too long. Start again.' : '' };
   }
 
-  async function disconnect(service) {
+  async function disconnect(service, accountId) {
     const label = LABEL[service] || service;
-    const out = await humanPost('POST', `/api/desk/connect/${encodeURIComponent(service)}/disconnect`, {}, {
+    const out = await humanPost('POST', `/api/desk/connect/${encodeURIComponent(service)}/disconnect`, accountId ? { account_id: accountId } : {}, {
       title: `Disconnect ${label}`,
       description: `Re-enter your dashboard passcode to disconnect ${label}. Its saved sign-in is removed from this computer and you will need to sign in again to use it.`,
     });
-    _overview = null;
+    _overview.clear();
     return out;
   }
 
@@ -270,7 +274,7 @@
     const w = root.querySelector('[data-guide="x"]');
     if (!w) return;
     const say = (t, s) => _result(w, t, s);
-    const done = () => { _overview = null; if (hooks && hooks.onChange) hooks.onChange(); };
+    const done = () => { _overview.clear(); if (hooks && hooks.onChange) hooks.onChange(); };
     if (window.DeskV1VaultGate) window.DeskV1VaultGate.attach(w, w.dataset.xState === 'vault_locked' ? { onUnlocked: done } : undefined);    // saving the app and signing in both write to the vault; an unlock re-reads the card
     const portal = w.querySelector('[data-x-portal]');
     portal.onclick = () => {
@@ -306,7 +310,7 @@
     const signin = w.querySelector('[data-x-signin]');
     signin.onclick = async () => {
       signin.disabled = true;
-      const out = await signIn('x', { say: (t) => say(t, 'pending'), alive: () => w.isConnected });
+      const out = await signIn('x', { say: (t) => say(t, 'pending'), alive: () => w.isConnected, accountId: hooks && hooks.accountId });
       if (!w.isConnected) return;
       if (out.ok) { _toast('X is connected'); done(); return; }
       if (out.message) say(out.message, 'bad');
@@ -316,7 +320,7 @@
     const off = w.querySelector('[data-x-disconnect]');
     if (off) off.onclick = async () => {
       off.disabled = true;
-      try { await disconnect('x'); _toast('X disconnected'); done(); } catch (e) { say(e && e.message ? e.message : String(e), 'bad'); off.disabled = false; }
+      try { await disconnect('x', hooks && hooks.accountId); _toast('X disconnected'); done(); } catch (e) { say(e && e.message ? e.message : String(e), 'bad'); off.disabled = false; }
     };
   }
 

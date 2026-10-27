@@ -121,6 +121,10 @@ async function newPage(browser, { live, srv }) {
     if (path === '/api/desk/accounts' && method === 'GET') return J(srv.accounts);
     if (path === '/api/desk/connect/types') return J({ service:{ id:'x', label:'X', recognised:true }, host:'x.com', picker:[] });
     if (path === '/api/desk/connect/purposes') return J({ accounts:[] });
+    if (path === '/api/desk/connect/status') {   // the X wizard: the sign-in is the ACCOUNT's own (?account_id=), never the legacy singleton
+      const mine = url.searchParams.get('account_id') === 'ch-x-ron';
+      return J({ higgsfield: { state: 'not_connected', reason: null }, x: { state: mine ? 'connected' : 'not_connected', reason: null, app: { client_id: true }, callback_url: 'http://127.0.0.1/cb', scopes: ['tweet.read'] }, gemini: { saved: false }, openai: { saved: false } });
+    }
     if (/^\/api\/desk\/connect\/permissions\//.test(path)) return J({ policy:{ state:'legacy', scopes:[] } });
     if (/^\/api\/desk\/engagement\/coverage\//.test(path)) return J({ coverage:[] });
     if (path === '/api/desk/accounts' && method === 'POST') {
@@ -247,6 +251,26 @@ async function connectionsRead(browser) {
   await settle(page, () => (document.querySelector('[data-conn-account="ch-x-ron"]') || {}).dataset.connState === 'ok');
   check(calls(srv, 'GET', /^\/api\/desk\/accounts$/).length === 1, 'Check again is one GET of M2 and the row repaints Connected', 'recheck calls: ' + JSON.stringify(srv.log));
   check(!!(await page.$('[data-conn-account="ch-x-ron"] [data-conn-unattended]')), 'a token that may not be used unattended says scheduled posts will be held', 'no unattended note');
+  realErrors(pageErrors).length ? realErrors(pageErrors).forEach((e) => fail('page error: ' + e)) : ok('no uncaught page errors');
+  await ctx.close();
+}
+
+// ── 1b: the X wizard on an account card shows THAT account's sign-in ───────
+// The per-account steps button exists only while the one Connect wizard is off (the fallback in desk-v1-connections.js).
+async function xGuideAccountState(browser) {
+  const srv = makeServer();
+  const { ctx, page, pageErrors } = await newPage(browser, { live: true, srv });
+  await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
+  await page.evaluate(() => window.DeskV1ConnectWizard.setEnabled(false));
+  await openConnections(page);
+  await selectTile(page, 'ch-x-ron');
+  srv.log.length = 0;
+  await page.click('[data-conn-account="ch-x-ron"] [data-conn-x-guide]');
+  await page.waitForSelector('[data-conn-x-wizard="ch-x-ron"] [data-guide="x"]', { timeout: 6000 });
+  const st = await page.$eval('[data-conn-x-wizard="ch-x-ron"] [data-guide="x"]', (e) => e.dataset.xState);
+  const asked = srv.log.filter((r) => r.method === 'GET' && r.path === '/api/desk/connect/status');
+  check(asked.length === 1 && asked[0].search === '?account_id=ch-x-ron', 'the X wizard asks for status with that account id', 'status requests: ' + JSON.stringify(asked));
+  check(st === 'connected', "a connected X account's wizard says connected, not 'not connected'", 'wizard state: ' + st);
   realErrors(pageErrors).length ? realErrors(pageErrors).forEach((e) => fail('page error: ' + e)) : ok('no uncaught page errors');
   await ctx.close();
 }
@@ -419,6 +443,7 @@ async function demoCallsNothing(browser) {
 const browser = await chromium.launch();
 try {
   console.log('live ON: Connections reads the derived state'); await connectionsRead(browser);
+  console.log('live ON: X wizard per account'); await xGuideAccountState(browser);
   console.log('live ON: add / remove / read via'); await addRemove(browser);
   console.log('live ON: Something else'); await somethingElse(browser);
   console.log('live ON: Where'); await whereLive(browser);
