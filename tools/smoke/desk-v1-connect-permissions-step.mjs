@@ -437,7 +437,7 @@ async function run(browser, width, height) {
     const { ctx, page } = await newPage(browser, { srv: makeServer(), width, height });
     await toPermissions(page, { address: 'linkedin.com', type: 'signin', target: { kind: 'member', identity: 'ron', account: { new: { identity: 'ron', label: '' } } }, signin: { profile: 'li-ron' } });
     check((await boxes(page)).join('|') === 'site', `LinkedIn sign-in offers the site row only: no Desk Read, no Post (${(await boxes(page)).join(', ')})`, 'boxes: ' + (await boxes(page)).join('|'));
-    check(/^Allow agents to read through this sign-in\. Posting is not enabled by signing in\.$/.test(await text(page, '[data-cfw-copy]')), 'the copy says posting is not enabled by signing in', await text(page, '[data-cfw-copy]'));
+    check(/^Allow agents to read through this sign-in\. Posting is not enabled by signing in: Post lives on the API connection\.$/.test(await text(page, '[data-cfw-copy]')), 'the copy says posting is not enabled by signing in', await text(page, '[data-cfw-copy]'));
     await page.click('[data-cfw-details] > summary');
     const dt = await text(page, '[data-cfp-details]');
     check(/The Desk does not run this route for any purpose yet/.test(dt), 'Details: the Desk does not run this route for any purpose yet', 'details: ' + dt);

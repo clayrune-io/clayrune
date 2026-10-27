@@ -315,7 +315,7 @@
     copy: (api) => {
       const m = _mode(api.sel, api.info);
       if (m === 'mcp') return 'Choose who can use this server. Its tools may read or change data.';
-      if (m === 'account') return _offers(_variant(api.sel, api.info), _target.kind).post ? 'Choose what agents may do through this connection. Posting still needs campaign approval.' : 'Allow agents to read through this sign-in. Posting is not enabled by signing in.';
+      if (m === 'account') return _offers(_variant(api.sel, api.info), _target.kind).post ? 'Choose what agents may do through this connection. Posting still needs campaign approval.' : 'Allow agents to read through this sign-in. Posting is not enabled by signing in: Post lives on the API connection.';
       return 'Saving information grants no connection permissions. Credential access follows its existing vault policy.';
     },
     body: _bodyHTML,

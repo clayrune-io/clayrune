@@ -423,7 +423,7 @@
         const acct = res.account ? esc(res.account.label || res.account.identity || '') : '';
         const note = failed && res.setup.message ? `<div class="desk-v1-cfw-fact-text" data-sum-setup>${esc(res.setup.message)}</div>` : '';
         return [
-          ['Connection', res.duplicate ? 'Already saved. Nothing changed.' : 'Saved.', 'connection'],
+          ['Connection', res.duplicate ? 'Already saved. Nothing changed.' : res.reused_signin ? 'Saved. The existing sign-in was kept: nothing was signed in again.' : 'Saved.', 'connection'],
           acct ? ['Account', acct, 'account'] : null,
           ['Stored in the Vault', stored, 'stored'],
           ['Status', `<span data-sum-status="${esc(word.state)}">${esc(word.label)}</span>${note}`, 'status'],

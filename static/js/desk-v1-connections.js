@@ -165,6 +165,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
         </div>
         ${live && window.DeskV1ConnectionStatus ? window.DeskV1ConnectionStatus.accountHTML(ch, window.DeskV1ConnectionStatus.coverageRow(_homeProjectId(ch), ch.platform)) : ''}
         ${live ? _publishHTML(ch) : ''}
+        ${live && window.DeskV1PostPermission ? window.DeskV1PostPermission.noticeHTML(ch) : ''}
         ${readable && !(live && window.DeskV1ConnectionStatus && window.DeskV1ConnectionStatus.replacesReadVia()) ? _readViaHTML(ch) : ''}
       </div>`;
   }
@@ -402,6 +403,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
       }
       _bindReadVia(row, ch, repaint);
       if (window.DeskV1ConnectionStatus) window.DeskV1ConnectionStatus.bindAccount(row, ch, repaint);
+      if (window.DeskV1PostPermission) window.DeskV1PostPermission.bindAccount(row, ch, repaint);
     });
     const recheck = el.querySelector('[data-conn-recheck]');
     if (recheck) recheck.onclick = () => { if (window.DeskV1ConnectionStatus) window.DeskV1ConnectionStatus.invalidate(); _recheck(el, repaint); };

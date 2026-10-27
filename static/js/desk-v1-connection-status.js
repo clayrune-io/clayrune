@@ -293,6 +293,6 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
     facets, accountStatus, accountHTML, bindAccount, replacesReadVia,
     coverage, coverageRow, loadCoverage, invalidate, refresh,
     mcpRows, mcpKey, mcpByKey, mcpStatus, mcpItems, mcpDetailHTML, bindMcp, loadMcp, mcpError: () => _mcpError,
-    setReopen,
+    setReopen, reopen: _openEditor,
   };
 })();

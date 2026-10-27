@@ -20,6 +20,8 @@
 
   // ── data resolution ────────────────────────────────────────────────────
   function _fx() { return window.DeskV1Store.state(); }
+  function _ppFailed(v) { return !!window.DeskV1PostPermission?.failed(v); }
+  function _ppLink(v) { return window.DeskV1PostPermission ? window.DeskV1PostPermission.linkHTML(v) : ''; }
   function _channel(id) { return (_fx().channels || []).find((c) => c.id === id); }
   function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id); }
   function _project(id) { return (_fx().projects || []).find((p) => p.id === id); }
@@ -473,7 +475,7 @@
     if (_live() && version.state === 'held') {
       notice = `<div class="desk-v1-review-notice desk-v1-review-notice-held" data-review-held>⚠ Held — ${esc((version.failure && version.failure.reason) || 'held')}. Nothing was posted. Fix that, then approve again.</div>`;
     } else if (_live() && version.state === 'failed') {
-      notice = `<div class="desk-v1-review-notice desk-v1-review-notice-held" data-review-failed>✗ Failed — ${esc((version.failure && version.failure.reason) || 'the platform refused it')}. Nothing was posted. Approving again retries it.</div>`;
+      notice = `<div class="desk-v1-review-notice desk-v1-review-notice-held" data-review-failed>✗ Failed — ${esc((version.failure && version.failure.reason) || 'the platform refused it')}. Nothing was posted. ${_ppFailed(version) ? 'Tick Post on the account’s Permissions, then approve again.' : 'Approving again retries it.'}${_ppLink(version)}</div>`;
     } else if (_live() && version.state === 'unknown_outcome') {
       notice = `<div class="desk-v1-review-notice desk-v1-review-notice-held" data-review-unknown>? Unknown outcome — ${esc((version.failure && version.failure.reason) || 'the request may have gone out')}. It may already be live: check ${esc((channel && (channel.label || channel.identity)) || 'the account')} before doing anything else.</div>`;
     } else if (channel && channel.health === 'held') {
@@ -1027,7 +1029,7 @@
         else { head = '✓ Approved.'; body = 'The publisher picks it up within a minute.'; }
         break;
       case 'held': head = '⚠ Held.'; body = `${reason}. Nothing was posted. Fix that, then approve again.`; tone = ' desk-v1-review-notice-held'; break;
-      case 'failed': head = '✗ Failed.'; body = `${reason}. Nothing was posted. Approving again retries it.`; tone = ' desk-v1-review-notice-held'; break;
+      case 'failed': head = '✗ Failed.'; body = `${reason}. Nothing was posted. ${_ppFailed(version) ? 'Tick Post on the account’s Permissions, then approve again.' : 'Approving again retries it.'}${_ppLink(version)}`; tone = ' desk-v1-review-notice-held'; break;
       case 'unknown_outcome':
         head = '? Unknown outcome.';
         body = `${reason}. The post may already be live: check ${where} before doing anything else.<div><button type="button" class="desk-v1-review-primary" data-result-posted>It is live: mark as posted</button></div>`;
@@ -1042,6 +1044,7 @@
         <div class="desk-v1-review-empty-body${tone}">${body}</div>
         <button type="button" class="desk-v1-stub-link" data-result-continue>Continue ›</button>
       </div>`;
+    window.DeskV1PostPermission?.bindLink(el);
     const cont = el.querySelector('[data-result-continue]');
     if (cont) cont.onclick = () => { _st.result = null; _advanceOrEmpty(); };
     const posted = el.querySelector('[data-result-posted]');
