@@ -1098,7 +1098,12 @@ def _connect_account(d: dict):
 
 @bp.route('/api/desk/connect/status', methods=['GET'])
 def connect_status():
-    return jsonify(_oauth.overview())
+    """`?account_id=<desk account>` reads that account's own X sign-in; absent = the legacy singleton."""
+    aid = request.args.get('account_id')
+    try:
+        return jsonify(_oauth.overview(None if aid is None else _account_refs.require_oauth_arg(aid)))
+    except LookupError as e:
+        return jsonify({'error': str(e), 'code': 'unknown_account'}), 404
 
 
 @bp.route('/api/desk/connect/<service>/start', methods=['POST'])

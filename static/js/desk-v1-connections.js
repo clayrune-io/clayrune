@@ -42,7 +42,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
   function _campaigns() { return _fx().campaigns || []; }
 
   const _xOpen = new Set();   // account ids whose X steps are open; survives a repaint
-  let _connOv = null;          // GET /api/desk/connect/status, dropped when a sign-in changes
+  const _connOv = new Map();   // account id -> GET /api/desk/connect/status?account_id=…, dropped when a sign-in changes
 
   // Only X has a paid API read route, so only X offers the choice. Every other site (LinkedIn
   // included: it has no API read) is read through the browser pane only. A blog is published by
@@ -148,7 +148,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
           <span class="desk-v1-how-field-label">Publishing</span>
           <span data-conn-publish-text>${pub.ready ? 'connected' : locked ? 'not connected (your vault is locked; your sign-in is still saved)' : `not connected${reason ? ` (${esc(reason)})` : ''}`}</span>
           ${locked && window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML(pub) : fix}
-        </div>${note}${li}${open ? `<div data-conn-x-wizard="${esc(ch.id)}">${_connOv ? window.DeskV1Guides.xWizardHTML(_connOv) : '<div class="desk-v1-stub-empty">Loading…</div>'}</div>` : ''}`;
+        </div>${note}${li}${open ? `<div data-conn-x-wizard="${esc(ch.id)}">${_connOv.has(ch.id) ? window.DeskV1Guides.xWizardHTML(_connOv.get(ch.id)) : '<div class="desk-v1-stub-empty">Loading…</div>'}</div>` : ''}`;
   }
 
   function _accountHTML(ch) {
@@ -389,14 +389,14 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
       if (window.DeskV1AssistedPost) window.DeskV1AssistedPost.bindAccount(row, ch, repaint);
       const xg = row.querySelector('[data-conn-x-guide]');
       if (xg) xg.onclick = () => {
-        if (_xOpen.has(ch.id)) _xOpen.delete(ch.id); else { _xOpen.add(ch.id); _connOv = null; }
+        if (_xOpen.has(ch.id)) _xOpen.delete(ch.id); else { _xOpen.add(ch.id); _connOv.delete(ch.id); }
         repaint();
       };
       const xw = row.querySelector('[data-conn-x-wizard]');
-      if (xw && _connOv) {
-        window.DeskV1Guides.bindXWizard(xw, { onChange: () => { _connOv = null; _recheck(el, repaint); } });
+      if (xw && _connOv.has(ch.id)) {
+        window.DeskV1Guides.bindXWizard(xw, { accountId: ch.id, onChange: () => { _connOv.clear(); _recheck(el, repaint); } });
       } else if (xw) {
-        window.DeskV1Guides.overview({ force: true }).then((o) => { _connOv = o; repaint(); }).catch((err) => {
+        window.DeskV1Guides.overview({ force: true, accountId: ch.id }).then((o) => { _connOv.set(ch.id, o); repaint(); }).catch((err) => {
           xw.innerHTML = `<div class="desk-v1-stub-empty">Could not load the steps: ${esc(err && err.message ? err.message : err)}</div>`;
         });
       }
