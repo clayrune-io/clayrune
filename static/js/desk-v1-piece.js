@@ -102,8 +102,12 @@
     const excerpt = (_fx().contentPreview || {})[fam.id] || _bodyExcerpt(fam.body);
     const rows = versions.map((v) => {
       const claims = (v.claims || []).length;
-      const action = v.state === 'needs_review'
-        ? `<button type="button" class="desk-v1-camp-card-primary" data-review-btn="${esc(v.id)}">${fam.kind === 'video' ? 'Watch & review' : 'Review'}</button>`
+      // Live, a held or failed version is retried from Review ("Approve again",
+      // desk-v1-review.js _LIVE_ACTIONABLE); without this button the piece page
+      // was a dead end for it. unknown_outcome stays out: it may already be live.
+      const retry = window.DeskV1Store.live() && (v.state === 'held' || v.state === 'failed');
+      const action = v.state === 'needs_review' || retry
+        ? `<button type="button" class="desk-v1-camp-card-primary" data-review-btn="${esc(v.id)}">${retry ? 'Review and retry' : fam.kind === 'video' ? 'Watch & review' : 'Review'}</button>`
         : '';
       const assisted = window.DeskV1AssistedPost ? window.DeskV1AssistedPost.fillHTML(_channel(v.channelId), v) : '';
       return `<div class="desk-v1-piece-facetrow" data-copy-row="${esc(v.id)}">
