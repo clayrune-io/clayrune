@@ -65,6 +65,8 @@
   function _label(info) { return info && info.service && info.service.label ? info.service.label : 'the service'; }
   function _service(info) { return info && info.service ? info.service.id : ''; }
   function _variant(sel, info) {
+    // A saved account reopens as type 'account' with its route's id as the variant (desk-v1-connect-saved-route.js).
+    if (sel.type === 'account') return ((info && info.picker) || []).flatMap((x) => x.variants).find((v) => v.id === sel.variant) || null;
     const t = ((info && info.picker) || []).find((x) => x.id === sel.type);
     if (!t) return null;
     if (sel.variant) return t.variants.find((v) => v.id === sel.variant) || null;
