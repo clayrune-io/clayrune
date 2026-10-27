@@ -114,7 +114,7 @@ def apply(clean: dict) -> tuple[Applied, dict]:
 def follow(clean: dict, applied: Applied) -> dict:
     """What happens after the durable commit: the sign-in. Never raises. Nothing starts for a
     Save that claimed a held sign-in: the person already signed in."""
-    if clean.get('held') or applied.extra.get('reused_signin'):
+    if clean.get('held') or (applied is not None and applied.extra.get('reused_signin')):
         from mc import desk_engine_schemas
         desk_engine_schemas.connection_saved(clean['service'], clean['method'])
         return {}
