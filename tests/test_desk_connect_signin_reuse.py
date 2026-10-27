@@ -7,6 +7,7 @@ the Save of the developer-app connection claimed a freshly made sign-in and was 
 from __future__ import annotations
 
 import copy
+import json
 import time
 
 import pytest
@@ -142,3 +143,111 @@ def test_reuse_never_grants_post_the_permission_step_still_does(api):
     with desk._store_lock:
         rec = dict(desk._read_store()['accounts'][aid])
     assert post_consent.reason_for(rec) is None
+
+
+# ── an entry made before MC-1113 put `app_id_sha256` in the hint (Ron's real oauth.x.acct-0362a76b) ──
+
+def make_legacy(aid, *, drop_client_id=False):
+    """Rewrite the account's token entry as an older Clayrune stored it: hint without the app hash."""
+    arg = desk_account_refs.require_oauth_arg(aid)
+    rec = desk_oauth._read_record('x', consumer='test', account_id=arg)
+    name = desk_oauth.vault_name('x', arg)
+    old = next(s for s in secrets_store.list_secrets() if s['name'] == name)
+    if drop_client_id:
+        rec.pop('client_id', None)
+    hint = ' '.join(p for p in old['hint'].split() if not p.startswith('app_id_sha256='))
+    secrets_store.set_secret(name, json.dumps(rec, separators=(',', ':')), description=old.get('description', ''), hint=hint,
+                             scope=old.get('scope') or 'global', allow_unattended=bool(old.get('allow_unattended', True)),
+                             entry_type=secrets_store.ENTRY_TOKEN)
+    assert 'app_id_sha256' not in token_hint(aid)
+    return name
+
+
+def meta_of(name):
+    m = next(s for s in secrets_store.list_secrets() if s['name'] == name)
+    return {k: v for k, v in m.items() if k not in ('last_used_at', 'use_count')}
+
+
+def test_a_pre_hash_entry_is_reusable_when_its_record_names_the_same_app(api):
+    client, p = api
+    aid, _ = signed_in(client, p)
+    make_legacy(aid)
+    assert signin_reuse.check('x', aid) == {'reusable': True, 'reason': None}
+    other = signin_reuse.check('x', aid, {'client_id': 'someone-elses-app'})
+    assert other['reusable'] is False and 'different app' in other['reason']
+
+
+def test_a_pre_hash_entry_is_reusable_even_when_status_asks_to_confirm_the_app(api, monkeypatch):
+    """With the saved Client ID bound by field reference, `status` reports needs_signin for a hash-less entry."""
+    client, p = api
+    aid, _ = signed_in(client, p)
+    make_legacy(aid)
+    monkeypatch.setattr(desk_oauth, 'status', lambda *a, **k: {'state': 'needs_signin', 'reason': desk_oauth.APP_UNCONFIRMED})
+    assert signin_reuse.check('x', aid)['reusable'] is True
+
+
+def test_the_pre_hash_check_returns_and_logs_no_value_and_writes_nothing(api, capsys):
+    client, p = api
+    aid, _ = signed_in(client, p)
+    name = make_legacy(aid)
+    before = (token_hint(aid), _vault_names(), meta_of(name))
+    out = signin_reuse.check('x', aid)
+    assert CLIENT_ID not in repr(out) and CLIENT_ID not in ''.join(capsys.readouterr())
+    assert (token_hint(aid), _vault_names(), meta_of(name)) == before      # only the read's own usage counters may differ
+
+
+def test_a_pre_hash_entry_with_no_client_id_is_not_reusable_and_the_refusal_names_the_way_out(api):
+    client, p = api
+    aid, _ = signed_in(client, p)
+    name = make_legacy(aid, drop_client_id=True)
+    got = signin_reuse.check('x', aid)
+    assert got['reusable'] is False and name in got['reason'] and 'Secrets' in got['reason']
+    out = second_sign_in(client, p, aid)
+    assert _sign_in(out)[0] == 200
+    r = save(client, aid, _held(out), fields={}, request_id='reuse-req-0005')
+    assert r.status_code == 409 and r.get_json()['code'] == 'already_signed_in'
+    assert name in r.get_json()['error'] and 'Secrets' in r.get_json()['error'] and 'Connections' not in r.get_json()['error']
+
+
+def test_a_locked_vault_is_not_reusable_and_says_to_unlock_it(api):
+    client, p = api
+    aid, _ = signed_in(client, p)
+    make_legacy(aid)
+    secrets_store.set_passphrase('a long passphrase for this test')
+    secrets_store.lock_now()
+    got = signin_reuse.check('x', aid)
+    assert got['reusable'] is False and 'Unlock the Vault' in got['reason']
+
+
+def test_a_vault_that_locks_mid_check_is_not_reusable_and_says_to_unlock_it(api, monkeypatch):
+    client, p = api
+    aid, _ = signed_in(client, p)
+    make_legacy(aid)
+    monkeypatch.setattr(desk_oauth, 'status', lambda *a, **k: {'state': 'needs_signin', 'reason': desk_oauth.APP_UNCONFIRMED})
+    def locked(*a, **k):
+        raise desk_oauth.OAuthError('vault_locked', 'locked', 409)
+    monkeypatch.setattr(desk_oauth, '_read_record', locked)
+    got = signin_reuse.check('x', aid)
+    assert got['reusable'] is False and 'Unlock the Vault' in got['reason']
+
+
+def test_the_route_gives_the_browser_the_same_answer_for_a_pre_hash_entry(api):
+    client, p = api
+    aid, _ = signed_in(client, p)
+    make_legacy(aid)
+    from mc.blueprints import desk_connect_signin_reuse_routes as routes
+    app = Flask(__name__)
+    app.register_blueprint(routes.bp)
+    assert app.test_client().get(f'/api/desk/connect/signin-reuse/{aid}').get_json() == signin_reuse.check('x', aid) == {'reusable': True, 'reason': None}
+
+
+def test_a_pre_hash_save_keeps_the_sign_in_and_a_held_one_never_replaces_the_entry(api):
+    client, p = api
+    aid, before = signed_in(client, p)
+    name = make_legacy(aid)
+    hint = token_hint(aid)
+    out = second_sign_in(client, p, aid)
+    assert _sign_in(out)[0] == 200
+    r = save(client, aid, _held(out), fields={}, request_id='reuse-req-0006')
+    assert r.status_code == 201 and r.get_json()['reused_signin'] is True
+    assert token_hint(aid) == hint and desk._read_store()['accounts'][aid] == before

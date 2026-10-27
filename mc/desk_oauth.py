@@ -306,6 +306,11 @@ def _read_record(service: str, *, consumer: str, project_id: str | None = None,
 
 # -- status ---------------------------------------------------------------------
 
+# What `status` says of an X sign-in made before its entry recorded which app made it (no `app_id_sha256`).
+# `desk_connect.signin_reuse` recognises it and checks the stored record instead.
+APP_UNCONFIRMED = 'Sign in again to confirm this app\'s saved details.'
+
+
 def status(service: str, account_id: str | None = None) -> dict[str, Any]:
     """`{state: connected|needs_signin|vault_locked|not_connected, reason}` from the
     vault's state. Saved app references are checked server-side, without network
@@ -339,7 +344,7 @@ def status(service: str, account_id: str | None = None) -> dict[str, Any]:
         return {'state': 'needs_signin', 'reason': 'the saved sign-in can no longer be opened; sign in again'}
     if service == 'x' and app_refs.bound('x.client-id'):
         if not parts.get('app_id_sha256'):
-            return {'state': 'needs_signin', 'reason': 'Sign in again to confirm this app\'s saved details.'}
+            return {'state': 'needs_signin', 'reason': APP_UNCONFIRMED}
         try:
             from mc import secret_field_refs
             if not hmac.compare_digest(parts.get('app_id_sha256', ''), secret_field_refs.fingerprint('x.client-id')):
@@ -755,7 +760,7 @@ def commit_held(service: str, flow_id: str, claim: str, account_id: str | None, 
             raise OAuthError('app_mismatch', _hold.APP_MISMATCH, 409)
         if _meta(service, account_id) is not None:
             raise OAuthError('already_signed_in', f"{SERVICES[service]['label']} is already signed in under that name. "
-                                                  'Disconnect it in Connections first to sign in again.', 409)
+                                                  f"Delete the saved sign-in '{name}' in Secrets, then sign in again.", 409)
         try:
             with _refresh_lock(name):
                 _store_record(service, e['rec'], account_id)
