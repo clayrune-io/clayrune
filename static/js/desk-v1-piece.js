@@ -72,8 +72,10 @@
         <span class="desk-v1-piece-kind">${kindGlyph} ${esc(DeskV1Kit.pieceKindWord(fam.kind))}</span>
         <span class="desk-v1-piece-on">${esc(DeskV1Kit.pieceChannelsText(fam))}</span>
         ${needsReview ? `<span class="desk-v1-camp-tab-badge">${esc(needsReview)} to review</span>` : ''}
+        ${window.DeskV1Reapproval.badgeHTML(_campaign(fam.campaignId))}
       </div>
       <h1 class="desk-v1-piece-title">${esc(fam.title)}</h1>`;
+    window.DeskV1Reapproval.bindLinks(el);
   }
   window.deskV1FillPieceHeader = deskV1FillPieceHeader;
 

@@ -1,0 +1,25 @@
+/* Re-approval made visible (MC-1116): inline note, badge, Review's refusal
+   block, Launch's change list. Amber is the Desk's "needs you" colour. */
+.desk-v1-reapproval-note,
+.desk-v1-reapproval-refusal {
+  background: var(--amber-dim); border: 1px solid var(--amber-text); border-radius: 8px;
+  color: var(--amber-text); font-size: 12.5px; font-weight: 600; padding: 8px 12px;
+}
+.desk-v1-reapproval-slot:empty { display: none; }
+.desk-v1-reapproval-slot { margin: 2px 0 6px; }
+.desk-v1-reapproval-link {
+  background: none; border: none; color: inherit; text-decoration: underline; cursor: pointer;
+  font: inherit; padding: 0 0 0 4px;
+}
+.desk-v1-reapproval-badge {
+  display: inline-flex; align-items: center; min-height: 22px; border-radius: 999px; cursor: pointer;
+  background: var(--amber-dim); border: 1px solid var(--amber-text); color: var(--amber-text);
+  font: inherit; font-size: 11.5px; font-weight: 700; padding: 0 9px;
+}
+.desk-v1-reapproval-refusal { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 8px; }
+.desk-v1-reapproval-launchbtn {
+  min-height: 44px; border-radius: 8px; border: 1px solid var(--amber-text); background: var(--surface);
+  color: var(--amber-text); cursor: pointer; font: inherit; font-weight: 700; padding: 0 14px;
+}
+.desk-v1-reapproval-changes { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text); }
+.desk-v1-reapproval-changelabel { font-weight: 700; }

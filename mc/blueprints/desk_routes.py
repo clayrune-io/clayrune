@@ -736,7 +736,11 @@ def approve_piece_version(piece_id, version_id):
     try:
         return jsonify(_tick.approve_and_send(piece_id, version_id, **kw))
     except _pieces.PieceError as e:
-        return jsonify({'error': str(e), 'problems': e.problems}), e.status
+        out = {'error': str(e), 'problems': e.problems}
+        if e.code:
+            out['code'] = e.code
+            out['campaign_id'] = e.campaign_id
+        return jsonify(out), e.status
 
 
 # "I posted it": the person says a manual version (or an unknown outcome they

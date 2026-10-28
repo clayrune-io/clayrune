@@ -524,10 +524,14 @@ def _cadence_widen(prev: dict, nxt: dict) -> bool:
     n = nxt.get('cadence') or {}
     prev_per_week = p.get('per_week')
     next_per_week = n.get('per_week')
-    if prev_per_week is None:
-        return False
     # A ceiling removed is looser than any finite one.
-    return next_per_week is None or next_per_week > prev_per_week
+    if prev_per_week is not None and (next_per_week is None or next_per_week > prev_per_week):
+        return True
+    # A shorter (or removed) minimum gap lets posts land closer together, and the
+    # publisher enforces the live gap (desk_tick), so it must be re-approved too.
+    prev_gap = p.get('min_gap_h')
+    next_gap = n.get('min_gap_h')
+    return bool(prev_gap) and (not next_gap or next_gap < prev_gap)
 
 
 def _end_widen(prev: dict, nxt: dict) -> bool:

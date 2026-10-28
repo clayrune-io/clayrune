@@ -89,10 +89,15 @@ _SAFE_NAME = re.compile(r'[^A-Za-z0-9._ -]+')
 class PieceError(ValueError):
     """A refusal with the HTTP status the route should answer."""
 
-    def __init__(self, message: str, status: int = 400, problems=None):
+    def __init__(self, message: str, status: int = 400, problems=None, code: str | None = None,
+                 campaign_id: str | None = None):
         super().__init__(message)
         self.status = status
         self.problems = list(problems or [])
+        # A machine-readable reason a client can act on (a button, a link) without
+        # reading `message`. None for the many refusals that only need their text.
+        self.code = code
+        self.campaign_id = campaign_id
 
 
 def _uploads_root() -> Path:
@@ -604,6 +609,21 @@ def _body_sha(text: str) -> str:
     return hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]
 
 
+# The `code` an approve refusal carries when the campaign's limits were widened
+# since the human approved them: the Review screen turns it into a link to Launch,
+# the one place those limits are approved again.
+CODE_CAMPAIGN_AWAITING_APPROVAL = 'campaign_awaiting_approval'
+
+
+def _campaign_awaiting(store: dict, piece: dict) -> dict | None:
+    """The piece's campaign, when it is running and waiting for a human to approve
+    its (widened) limits; else None."""
+    camp = (store.get('campaigns') or {}).get(piece.get('campaign_id'))
+    if camp is not None and camp.get('state') == 'running' and _desk.awaiting_approval(camp):
+        return camp
+    return None
+
+
 def _approval_refusals(store: dict, piece: dict, ver: dict) -> list[str]:
     """Why this version cannot be approved right now (empty = it can). Every
     reason is listed, not just the first, so one click shows the whole fix list."""
@@ -614,7 +634,7 @@ def _approval_refusals(store: dict, piece: dict, ver: dict) -> list[str]:
         problems.append('the campaign this piece belongs to no longer exists')
     elif camp.get('state') != 'running':
         problems.append(f"the campaign is not active (it is {_desk._V1_STATE_OUT.get(camp.get('state'), camp.get('state'))}): start it first")
-    elif _desk.awaiting_approval(camp):
+    elif _campaign_awaiting(store, piece) is not None:
         problems.append('the campaign\'s limits changed since you approved them: approve them on Launch first')
     acc = (store.get('accounts') or {}).get(ver.get('account_id'))
     if acc is None:
@@ -673,7 +693,10 @@ def approve_version(piece_id: str, version_id: str, *, scheduled_at: object = ..
                 raise PieceError('that scheduled time has already passed: pick a later time, or approve now', 409)
         problems = _approval_refusals(store, piece, ver)
         if problems:
-            raise PieceError('cannot approve: ' + '; '.join(problems), 409, problems)
+            waiting = _campaign_awaiting(store, piece)
+            raise PieceError('cannot approve: ' + '; '.join(problems), 409, problems,
+                             code=CODE_CAMPAIGN_AWAITING_APPROVAL if waiting is not None else None,
+                             campaign_id=piece.get('campaign_id') if waiting is not None else None)
         future = parsed is not None and parsed > now
         ver['state'] = 'scheduled' if future else 'approved'
         ver['scheduled_at'] = when if future else None

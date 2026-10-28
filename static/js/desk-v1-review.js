@@ -534,6 +534,7 @@
           </div>
         </div>
         ${info.reason ? `<div class="desk-v1-review-reason">${esc(info.reason)}</div>` : ''}
+        ${_st.refusal && _st.refusal.versionId === version.id ? window.DeskV1Reapproval.refusalHTML(_st.refusal.campaignId) : ''}
         <div class="desk-v1-review-secondary">
           <button type="button" data-act-request>Request changes</button>
           <button type="button" data-act-skip>Skip</button>
@@ -592,6 +593,7 @@
       span.oninput = () => { _st.editValues[span.dataset.editPara] = span.textContent; _scheduleAutosave(); };
     });
 
+    window.DeskV1Reapproval.bindLinks(el);
     const primary = el.querySelector('[data-act-primary]');
     if (primary) primary.onclick = () => _approve(family, version, channel, detail);
     const req = el.querySelector('[data-act-request]');
@@ -951,7 +953,11 @@
     if (typeof window.humanProofFetch !== 'function') throw new Error('the passcode prompt is not available');
     const res = await window.humanProofFetch(url, { method: 'POST', body: JSON.stringify(body || {}) }, proof);
     if (res === null) throw new Error('the dashboard passcode was not entered, so nothing was changed');
-    if (!res.ok) throw new Error((res.body && (res.body.error || res.body.message)) || `HTTP ${res.status}`);
+    if (!res.ok) {
+      const err = new Error((res.body && (res.body.error || res.body.message)) || `HTTP ${res.status}`);
+      if (res.body && res.body.code) { err.code = res.body.code; err.campaignId = res.body.campaign_id; }
+      throw err;
+    }
     return res.body;
   }
 
@@ -976,6 +982,8 @@
       if (_st === st) { st.result = { versionId: version.id }; }
     } catch (e) {
       if (window.DeskV1Kit) window.DeskV1Kit.toast(`Not approved: ${e && e.message ? e.message : e}`, {});
+      // The campaign's widened limits wait on Launch: leave a way there on the screen.
+      if (window.DeskV1Reapproval.isRefusal(e)) st.refusal = { versionId: version.id, campaignId: e.campaignId || family.campaignId };
     } finally {
       st.approving = false;
     }
