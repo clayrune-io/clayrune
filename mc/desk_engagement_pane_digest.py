@@ -40,8 +40,9 @@ Rules shared with the X pane reader and the digest route:
   `NotSignedIn`. Nothing falls back to another HTTP client.
 - Nothing is invented: no timestamp, post link or parent post. `created_at`, `url`,
   `post_id` stay None; `when` and `post` are carried on the item as read, unstored.
-- Cost: every model call is one resource at `PAGE_READ_UNIT_COST`, counted against the
-  project's read budget (`desk_engagement._afford`).
+- Cost: a pane read is free. The model call runs on the user's own `claude` sign-in, so it
+  spends no money from the project's read budget (`unit_cost` is 0.0: `_afford` never blocks
+  it and nothing is recorded as spent). The runaway bound is the per-poll page caps below.
 """
 from __future__ import annotations
 
@@ -59,10 +60,6 @@ from mc import desk_read_gate as _gate
 from mc.core import _log
 from mc.desk_pane_pages import PLATFORM_PAGES
 
-# Notional worst case for one Haiku call over a full `MAX_PAGE_CHARS` page (about 10k
-# tokens in, 1k out at Haiku 4.5 list price). The call runs on the user's own `claude`
-# sign-in, so this is a budget estimate, not a bill.
-PAGE_READ_UNIT_COST = 0.015
 DISCOVERY_CALLS = 3          # worst case beyond the polled pages: a failed re-read, the pick, its check
 REDISCOVERY_INTERVAL = timedelta(days=1)
 MAX_ACTIVITY_PAGES = 5
@@ -325,7 +322,7 @@ class PaneDigestReader(_eng.Reader):
     """Reads one account of any site through a signed-in pane profile. Same interface as
     `PaneXReader`. `acc` is the project's presence account for the platform (or None)."""
     via = 'pane'
-    unit_cost = PAGE_READ_UNIT_COST
+    unit_cost = 0.0          # free: never spends the money budget (see the module docstring)
 
     def __init__(self, project_id: str, platform: str, acc: dict | None, *,
                  pages_factory: Callable[[str, str, list[str]], Any] | None = None,

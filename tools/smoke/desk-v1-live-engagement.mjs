@@ -70,7 +70,9 @@ function makeServer() {
   const srv = { log: [], next: {}, campaigns, fx, rows: feedRows(), refusedProof: [], findings: [], ledger: [], retro: null };
   srv.workspace = () => ({ ...workspaceFromFixtures(fx), projects, campaigns: campaigns.map((c) => JSON.parse(JSON.stringify(c))) });
   srv.coverage = (pid) => (pid === 'clayrune'
-    ? [{ platform: 'linkedin', state: 'not_connected', label: 'LinkedIn', message: 'Not connected (LinkedIn is not read)', reason: 'LinkedIn has no read access' }]
+    ? [{ platform: 'linkedin', state: 'not_connected', label: 'LinkedIn', message: 'Not connected (LinkedIn is not read)', reason: 'LinkedIn has no read access' },
+      // The server's own not_read_yet line already carries its reason in parentheses.
+      { platform: 'youtube', state: 'not_read_yet', label: 'YouTube', message: 'Connected, not read yet on YouTube (no page yet)', reason: 'no page yet' }]
     : []);
   // A closed term with one proposed finding and the numbers behind it.
   srv.ledger = [1, 2, 3].map((n) => ({ id: `led-${n}`, project_id: 'clayrune', campaign_id: 'camp-1', term: 1, platform: 'x', format: 'text',
@@ -365,6 +367,7 @@ async function dashboard(browser) {
   JSON.stringify(sugg) === JSON.stringify(['eng-a1']) ? ok('the Suggested lane lists eng-a1') : fail('suggested: ' + JSON.stringify(sugg));
   const gap = await text(page, '.desk-v1-eng-gaps');
   /Clayrune: Not connected \(LinkedIn is not read\)/.test(gap) ? ok(`what is not being read is listed under the rows: "${gap}"`) : fail('gaps: ' + JSON.stringify(gap));
+  (gap.match(/no page yet/g) || []).length === 1 ? ok('a reason the line already carries is shown once, not repeated') : fail('reason repeated: ' + JSON.stringify(gap));
 
   const disabledAll = await page.$('[data-eng-check][disabled]');
   disabledAll ? ok('Check now is disabled while "All projects" is in scope') : fail('Check now enabled for all projects');
