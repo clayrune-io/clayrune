@@ -72,3 +72,49 @@ so it asserts receipt of cancellation rather than racing the route handler.
 
 Rollback: revert this commit; saved browser records and existing OAuth references
 need no migration. Reverting restores the prior saved-X-account refusal in Setup.
+
+## MC-1114 follow-up: legacy sign-in metadata (2026-10-28)
+
+`mc/desk_connect/signin_reuse.py` owns the Save-only repair for X sign-ins
+created before MC-1113 recorded `app_id_sha256` in their vault hint. Its public
+`check()` remains read-only. During Save, `applies()` opens the legacy record
+under the vault lock, compares its `client_id` with the Save's app using
+`hmac.compare_digest`, then appends the same SHA-256 fingerprint a fresh sign-in
+writes. The entry's ciphertext, timestamps, policy and existing hint text remain
+intact; the ordinary read still updates its usage counters. Holding the lock
+across the comparison and metadata write prevents a concurrent token replacement
+from inheriting the old record's app identity.
+
+This fixes Save returning `reused_signin=true` while the real OAuth status still
+reported `APP_UNCONFIRMED` for a field-bound Client ID. OAuth status is unchanged
+and does not open the OAuth record. Locked Vault, missing stored Client ID and
+different-app cases write no hint. A backfill I/O failure refuses Save, logs only
+the exception class and returns no credential. No Post consent is granted.
+
+Regression coverage in `tests/test_desk_connect_signin_reuse.py` runs the real
+passcode Save, OAuth status and account publish readiness against a temporary
+encrypted vault for both plain and field-bound Client IDs, with Post explicitly
+allowed. Both cases failed on starting master `ffe41be5`: plain lacked the
+expected backfill; field-bound returned `sign_in_required`. Tests also preserve
+unknown hint fields and the encrypted record, repeat Save without rereading the
+OAuth record, and cover refusals, a wrong passcode and I/O failure. The vendor
+is scripted; no real account or paid API is used.
+
+Follow-up validation (worktree root):
+
+```powershell
+python -m pytest -o addopts= tests/test_desk_connect_signin_reuse.py tests/test_desk_oauth.py tests/test_desk_oauth_hold.py tests/test_desk_connect_x_account_attach.py tests/test_desk_post_consent.py -q
+node tools/smoke/desk-v1-connect-signin-reuse.mjs
+pyright mc/desk_connect/signin_reuse.py
+git diff --check
+```
+
+Results: pytest **109 passed in 248.73s**, rc=0; smoke **24 checks passed**
+(1440/390px), rc=0; pyright **0 errors, 0 warnings, 0 informations**, rc=0;
+whitespace check rc=0. Long test/smoke children were registered with the Process
+Manager by a scratch foreground wrapper. The smoke used the main checkout's
+existing dependencies through a temporary junction, removed afterward; no
+installation or regenerated screenshot is included.
+
+Rollback: revert the follow-up commit. Already backfilled hints remain valid;
+unrepaired field-bound legacy sign-ins resume asking to confirm the app.
