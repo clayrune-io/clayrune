@@ -202,5 +202,10 @@
     }
   }
 
-  window.DeskV1ConnectHeld = { begin, cancel, consumed, held, profile, draft, html, bind, reviewRowHTML };
+  // Read-only view of the sign-in for a surface that draws its own copy (the Connections account card, desk-v1-account-signin.js).
+  function state() { return H ? { service: H.service, method: H.method, accountId: H.accountId, phase: H.phase, message: H.message, ttl: H.ttl } : null; }
+  // Start (or restart) the sign-in `begin` set up, exactly as the "Sign in with …" button does: the same passcode-gated request.
+  function start(root) { return _signIn(root); }
+
+  window.DeskV1ConnectHeld = { begin, cancel, consumed, held, profile, draft, html, bind, reviewRowHTML, state, start };
 })();

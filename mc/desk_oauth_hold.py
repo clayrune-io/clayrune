@@ -44,6 +44,7 @@ import threading
 import time
 from typing import Any, Callable
 
+from mc import desk_oauth_saved_guard as _saved_guard
 from mc.core import _log
 
 
@@ -63,17 +64,20 @@ GONE = 'The held sign-in is no longer there (it timed out, was cancelled, or the
 
 
 def put(flow_id: str, claim: str, service: str, account_id: str | None, rec: dict, app: dict | None, ttl: float,
-        on_drop: Callable[[], None] | None = None) -> None:
+        on_drop: Callable[[], None] | None = None, account_arg: str | None = None) -> None:
     """Hold `rec` (the full sign-in record, tokens included) for `ttl` seconds. `on_drop` runs
     once when the held sign-in is DROPPED (expiry, cancel, a replacement), after the vendor
-    revoke, never when a Save consumed it: the flow uses it to remove the pane profile it created."""
+    revoke, never when a Save consumed it: the flow uses it to remove the pane profile it created.
+    `account_arg` is the `desk_oauth` account argument the sign-in is for (None = the legacy
+    singleton): a drop does not revoke when that account already has a saved sign-in from the
+    same app (`desk_oauth_saved_guard`, MC-1117)."""
     timer = threading.Timer(ttl, _expire, args=(flow_id,))
     timer.daemon = True
     with _lock:
         old = _held.pop(flow_id, None)
         _held[flow_id] = {'claim': claim, 'service': service, 'account_id': account_id, 'rec': rec,
                           'app': dict(app or {}), 'expires': time.time() + ttl, 'timer': timer,
-                          'on_drop': on_drop}
+                          'on_drop': on_drop, 'account_arg': account_arg}
     if old:
         old['timer'].cancel()
     timer.start()
@@ -174,11 +178,15 @@ def _drop_entry(e: dict[str, Any]) -> None:
     e['on_drop'] = None
     try:
         from mc import desk_oauth as _oauth      # lazy: desk_oauth imports this module
-        revoked = _oauth.revoke_record(service, rec, app=app)
+        why = _saved_guard.skip_reason(service, e.get('account_arg'), rec)
+        if why:                                  # forget the tokens; never revoke a grant the saved sign-in shares
+            _log(f'[desk_oauth] held {service} sign-in dropped without revoke: {why}', flush=True)
+        else:
+            revoked = _oauth.revoke_record(service, rec, app=app)
+            _log(f'[desk_oauth] held {service} sign-in dropped (revoked={revoked})', flush=True)
     except Exception as ex:                      # best effort: a vendor refusing must not raise out of a timer
-        revoked = None
         _log(f'[desk_oauth] revoking a held {service} sign-in raised {type(ex).__name__}', flush=True)
-    _log(f'[desk_oauth] held {service} sign-in dropped (revoked={revoked})', flush=True)
+        _log(f'[desk_oauth] held {service} sign-in dropped (revoked=None)', flush=True)
     if on_drop:
         try:
             on_drop()
