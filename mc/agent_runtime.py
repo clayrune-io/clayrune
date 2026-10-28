@@ -6913,6 +6913,10 @@ class QwenRuntime(AgentRuntime):
         found = shutil.which('qwen')
         if not found and sys.platform == 'win32':
             for c in [
+                # Qwen's standalone installer (the copy its own updater keeps
+                # current); listed first so a stale PATH can't pick an old npm copy.
+                Path(os.environ.get('LOCALAPPDATA') or
+                     str(Path.home() / 'AppData' / 'Local')) / 'qwen-code' / 'bin' / 'qwen.cmd',
                 Path(os.environ.get('APPDATA', '')) / 'npm' / 'qwen.cmd',
                 Path(os.environ.get('USERPROFILE', '')) / 'AppData' / 'Roaming' / 'npm' / 'qwen.cmd',
                 Path(os.environ.get('USERPROFILE', '')) / '.npm-global' / 'qwen.cmd',
