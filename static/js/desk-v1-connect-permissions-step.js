@@ -7,13 +7,18 @@
 // and this screen keeps them apart, each with its own owner line:
 //   Desk permission      Read / Post consent on the account (mc/desk_connect/permission_policy.py, ticket 05),
 //                        enforced at the executors by tickets 06a-d. Written by POST .../permissions/commit.
-//   Browser permission   one site on a saved browser profile's agent-read list (ticket 07,
-//                        DeskV1ConnectBrowserPermission). It belongs to the PROFILE, so it is shared.
+//   (Browser sign-in)    NOT a row of its own since 2026-10-28 (Ron): when the account is read through a browser
+//                        sign-in, ticking the ONE Read row and saving also puts the service's OWN domain on that
+//                        sign-in's agent-read list (DeskV1ConnectBrowserPermission.apply). No site is typed or picked.
 //   Credential           the saved login's own unattended-use setting. Shown as a fact: it is set in Secrets,
 //                        and password fill stays human-started whatever it says.
 //   MCP reach            one project or all projects. Under Dave's Q2 = A a custom server gets whole-server
 //                        approval ("Use this server's tools"): there is NO Read/Post switch here, because
 //                        nothing enforces one.
+//
+// ONE LIST FOR EVERY ACCOUNT (Ron 2026-10-28). Read this account's activity, and Publish: the same two rows with the
+// same words whatever the connection (API, browser sign-in, no known route). What the chosen route cannot do stays
+// on screen, disabled, with one sentence saying why.
 //
 // WHAT IT OFFERS. Only what the chosen route can actually run and the profile says it covers
 // (variant.runtime.purposes + variant.coverage, the same two facts permission_policy._clean checks; the server stays
@@ -91,6 +96,15 @@
   }
 
   function _isBrowser(v) { return !!v && v.transport === 'browser'; }
+  // The Read row also grants the service's own domain on the sign-in when the Desk reads the account through a browser
+  // sign-in: a browser route, or a saved account whose reading setting is the browser with a profile, even when the route
+  // being reopened is the API one (Ron 2026-10-28: LinkedIn "Clayrune", profile linked_ronlevy, had no way to allow linkedin.com).
+  function _readsByBrowser(v) {
+    if (_isBrowser(v)) return true;
+    const id = _target && _target.account && _target.account.id;
+    const ch = id && _ctx && _ctx.channels ? (_ctx.channels() || []).find((c) => c.id === id) : null;
+    return !!(ch && ch.read_via !== 'api' && ch.browser_profile);
+  }
   function _site(info) {
     const B = window.DeskV1ConnectBrowserPermission;
     return B ? B.siteOf(String((info && info.host) || '').replace(/^www\./i, '')) : '';
@@ -109,9 +123,7 @@
   function _mode(sel, info) {
     if (sel.type === 'mcp') return _variant(sel, info)?.setup?.via === 'provider' ? 'none' : 'mcp';
     if (sel.type === 'reference') return 'reference';
-    if (!_target) return 'none';
-    const v = _variant(sel, info), o = _offers(v, _target.kind);
-    return o.read || o.post || sections.some(s => s.matches(sectionContext({ sel, info, ctx: _ctx }))) || (_isBrowser(v) && window.DeskV1ConnectBrowserPermission && _site(info)) ? 'account' : 'none';
+    return _target ? 'account' : 'none';
   }
 
   // ── scopes: what is allowed, and what saving would record ───────────────
@@ -140,6 +152,35 @@
   function _siteGranted() { return !!(M.bperm && M.bperm.exists && M.bperm.granted); }
   function _siteOn() { return M.wish.site === null ? _siteGranted() : M.wish.site; }
 
+  // The ONE Read row = the Desk read the route offers (if any) + the service's own domain on the browser sign-in (when the
+  // account is read through one). `can.site`: the domain part applies; `can.reason`: why the row is disabled ('' = it works).
+  const NEED_SIGNIN = 'Choose a browser sign-in first.';
+  const READ_UNAVAILABLE = 'Reading is not available through this connection yet.';
+  const POST_UNAVAILABLE = 'Posting is not available through this connection yet.';
+  const READ_UNFINISHED = 'Reading through your sign-in is not switched on yet. Tick this and save to finish it.';
+  const READ_DETAIL ="Agents read this account's own mentions, replies and post stats. They cannot click, type or post.";
+  function _siteApplies(v, info) { return !!(window.DeskV1ConnectBrowserPermission && _readsByBrowser(v) && _profile() && _site(info)); }
+  function _readCan(v, info, offers) {
+    const site = _siteApplies(v, info);
+    if (offers.read || site) return { site, reason: '' };
+    return { site, reason: _readsByBrowser(v) && !_profile() ? NEED_SIGNIN : READ_UNAVAILABLE };
+  }
+  // What the row shows when nobody has touched it: on only when every part that applies is already granted.
+  function _readParts(can, offers) {
+    return [offers.read ? _initial(offers.read).length > 0 : null, can.site ? _siteGranted() : null].filter((p) => p !== null);
+  }
+  function _readInitial(can, offers) {
+    if (can.reason) return false;
+    return _readParts(can, offers).every(Boolean);
+  }
+  // Some parts allowed and some not (the Desk read is saved but the sign-in's domain is not): shown unticked and half-ticked,
+  // so a person is not told Read is on while the card still says Reading is off.
+  function _readMixed(can, offers) {
+    const parts = _readParts(can, offers);
+    return !can.reason && parts.some(Boolean) && !parts.every(Boolean);
+  }
+  function _readOn(can, offers) { return M.wish.read === null ? _readInitial(can, offers) : M.wish.read; }
+
   function _pending(sel, info) {
     const offers = _offers(_variant(sel, info), _target.kind);
     const base = _base(), scopes = _final(base, offers);
@@ -150,7 +191,7 @@
 
   // ── loading: one read of what is saved, names and flags only ────────────
   function _needsFetch(sel, info) {
-    return !!(_target && ((_target.account && _target.account.id) || (_isBrowser(_variant(sel, info)) && _profile()) || _loginName()));
+    return !!(_target && ((_target.account && _target.account.id) || (_readsByBrowser(_variant(sel, info)) && _profile()) || _loginName()));
   }
   function _loadKey(info) { return [_service(info), (_target.account && _target.account.id) || '', _profile(), _site(info), _loginName()].join('|'); }
 
@@ -165,7 +206,7 @@
     Promise.all([
       id ? ctx.api('GET', `/api/desk/connect/permissions/${encodeURIComponent(id)}`).then((r) => r.policy, () => 'failed') : null,
       id ? ctx.api('POST', '/api/desk/connect/purposes', { service: _service(api.info) }).then((r) => (r.accounts || []).find((a) => a.id === id) || null, () => null) : null,
-      B && _isBrowser(v) && _profile() && _site(api.info) ? B.load(_profile(), _site(api.info), { channels: ctx.channels ? ctx.channels() : [], selfId: id }).catch(() => 'failed') : null,
+      B && _readsByBrowser(v) && _profile() && _site(api.info) ? B.load(_profile(), _site(api.info), { channels: ctx.channels ? ctx.channels() : [], selfId: id }).catch(() => 'failed') : null,
       login ? ctx.api('GET', '/api/secrets').then((r) => (r.secrets || []).find((s) => s.name === login) || null, () => null) : undefined,
     ]).then(([policy, bound, bperm, vault]) => {
       if (n !== _seq) return;                                   // discarded or reloaded meanwhile
@@ -179,29 +220,25 @@
   // ── drawing ─────────────────────────────────────────────────────────────
   function _capText(caps) { return caps.map((c) => CAP_LABEL[c] || c).join(', '); }
 
-  function _optionHTML(id, owner, label, detail, checked) {
-    return `<label class="desk-v1-cfw-option desk-v1-cfp-option" data-cfw-option="${id}">
-        <input type="checkbox" data-cfp-box="${id}" ${checked ? 'checked' : ''}>
+  function _optionHTML(id, owner, label, detail, checked, blocked) {
+    return `<label class="desk-v1-cfw-option desk-v1-cfp-option" data-cfw-option="${id}"${blocked ? ' data-cfp-blocked' : ''}>
+        <input type="checkbox" data-cfp-box="${id}" ${checked ? 'checked' : ''}${blocked ? ' disabled' : ''}>
         <span class="desk-v1-cfp-text"><span class="desk-v1-cfw-option-label">${esc(label)}</span><span class="desk-v1-cfp-owner" data-cfp-owner>${esc(owner)}</span>
           <span class="desk-v1-cfw-fact-text">${detail}</span></span>
       </label>`;
   }
 
-  function _readRowHTML(o) {
-    const now = _initial(o), partial = now.length > 0 && now.length < o.caps.length && M.wish.read === null;
-    const label = o.via === 'api' ? 'Read through the API' : 'Read your account in the Desk';
-    const detail = `Covers: ${esc(_capText(o.caps))}.${partial ? ` Allowed now: ${esc(_capText(now.map((s) => s.capability)))}.` : ''}${o.paid ? ` <span data-cfp-paid>${esc(PAID_API_READ)}</span>` : ''}`;
-    return _optionHTML('read', 'Desk permission', label, detail, _checked(o));
+  function _readRowHTML(can, offers) {
+    const o = offers.read, label = "Read this account's activity";
+    if (can.reason) return _optionHTML('read', 'Desk permission', label, esc(can.reason), false, true);
+    const now = o ? _initial(o) : [], partial = !!o && now.length > 0 && now.length < o.caps.length && M.wish.read === null;
+    const unfinished = M.wish.read === null && _readMixed(can, offers) && can.site && !_siteGranted();
+    const detail = `${esc(READ_DETAIL)}${partial ? ` Allowed now: ${esc(_capText(now.map((s) => s.capability)))}.` : ''}${unfinished ? ` ${esc(READ_UNFINISHED)}` : ''}${o && o.paid ? ` <span data-cfp-paid>${esc(PAID_API_READ)}</span>` : ''}`;
+    return _optionHTML('read', 'Desk permission', label, detail, _readOn(can, offers));
   }
   function _postRowHTML(o) {
-    return _optionHTML('post', 'Desk permission', 'Post', 'Covers: Post only. Not Reply, media or Article.', _checked(o));
-  }
-  function _siteRowHTML(info) {
-    const site = _site(info), profile = _profile(), b = M.bperm;
-    const shared = b && b.sharedWith && b.sharedWith.length ? ` Also read through this sign-in: ${esc(b.sharedWith.join(', '))}. They get the same setting.` : '';
-    const where = !profile ? 'Choose a browser sign-in first.' : b && !b.exists ? `The sign-in "${esc(profile)}" is not saved yet. This is applied once you have signed in.`
-      : `Agents get an answer about a page on ${esc(site)} through "${esc(profile)}". They cannot click or post.${shared}`;
-    return _optionHTML('site', profile ? `Browser permission (sign-in "${profile}")` : 'Browser permission', `Read pages on ${site}`, where, _siteOn()).replace('<input type="checkbox"', `<input type="checkbox" ${profile ? '' : 'disabled'}`);
+    if (!o) return _optionHTML('post', 'Desk permission', 'Publish', esc(POST_UNAVAILABLE), false, true);
+    return _optionHTML('post', 'Desk permission', 'Publish', 'Covers: Post only. Not Reply, media or Article.', _checked(o));
   }
 
   function _vaultHTML() {
@@ -242,7 +279,7 @@
   }
 
   function _bodyHTML(api) {
-    M.info = api.info; M.sel = api.sel;
+    M.info = api.info; M.sel = api.sel; _ctx = api.ctx;
     const mode = _mode(api.sel, api.info);
     if (mode === 'mcp' && !(api.info?.picker || []).flatMap(t => t.variants).some(v => v.id === api.sel.variant && v.setup?.via === 'provider')) return _reachHTML();
     if (mode !== 'account') return `<p>${esc(window.DeskV1ConnectCopy.words.noPermission)}</p>`;
@@ -251,9 +288,8 @@
     }
     if (M.failed) return failedHTML();
     const v = _variant(api.sel, api.info), offers = _offers(v, _target.kind);
-    const rows = [offers.read ? _readRowHTML(offers.read) : '', offers.post ? _postRowHTML(offers.post) : '',
-      _isBrowser(v) && window.DeskV1ConnectBrowserPermission && _site(api.info) ? _siteRowHTML(api.info) : ''].join('');
-    return `${sections.map(s => s.html(sectionContext(api))).join('')}${rows ? _stateHTML() : ''}<div class="desk-v1-cfw-options" data-cfp-rows aria-label="Permissions">${rows}</div>${_vaultHTML()}<div data-cfp-notes aria-live="polite">${_notesHTML(api.sel, api.info)}</div>`;
+    const rows = _readRowHTML(_readCan(v, api.info, offers), offers) + _postRowHTML(offers.post);
+    return `${sections.map(s => s.html(sectionContext(api))).join('')}${_stateHTML()}<div class="desk-v1-cfw-options" data-cfp-rows aria-label="Permissions">${rows}</div>${_vaultHTML()}<div data-cfp-notes aria-live="polite">${_notesHTML(api.sel, api.info)}</div>`;
   }
   function failedHTML() {
     return '<div class="desk-v1-cfw-msg" data-cfp-failed role="alert">What is saved could not be read. <button type="button" class="desk-v1-cf-link" data-cfp-retry>Try again</button>.</div>';
@@ -270,7 +306,12 @@
     if (mode === 'none' && !_target) return [{ head: 'Permissions', text: window.DeskV1ConnectCopy.words.noPermission }];
     if (mode === 'reference') { items.push({ head: 'Vault policy', text: 'A credential keeps the scope and unattended-use setting it has in the Vault. Saving a reference does not change them.' }); return items; }
     const v = _variant(api.sel, api.info);
-    if (!v) return items;
+    const siteFacts = () => {
+      if (_readsByBrowser(v) && window.DeskV1ConnectBrowserPermission && M.bperm && M.bperm.profile && M.bperm.site) {
+        window.DeskV1ConnectBrowserPermission.facts(M.bperm, M.wish.site).forEach((t) => items.push({ head: 'Browser sign-in', text: t }));
+      }
+    };
+    if (!v) { siteFacts(); return items; }
     const offers = _offers(v, _target.kind);
     [offers.read, offers.post].forEach((o) => {
       if (o) items.push({ head: `${o.op === 'post' ? 'Post' : 'Read'} covers`, text: `${_capText(o.caps)}, ${VIA_WORD[o.via] || o.via} (${o.route_id}). Exactly these and nothing implied.` });
@@ -279,9 +320,7 @@
     const rest = Array.from(new Set((v.coverage || []).filter((c) => c.account_kind === _target.kind).map((c) => c.capability))).filter((c) => !offeredCaps.has(c));
     if (rest.length || offers.post) items.push({ head: 'Not covered by Read or Post', text: `${rest.length ? `${_capText(rest)}. ` : ''}Reply, media upload, Article and broad listening need their own later permission. Allowing Read never allows Post.` });
     if (v.runtime && v.runtime.note) items.push({ head: 'Desk support', text: v.runtime.note });
-    if (v.transport === 'browser' && window.DeskV1ConnectBrowserPermission && M.bperm && M.bperm.profile && M.bperm.site) {
-      window.DeskV1ConnectBrowserPermission.facts(M.bperm, M.wish.site).forEach((t) => items.push({ head: 'Browser sign-in', text: t }));
-    }
+    siteFacts();
     const kept = _base().filter((s) => !(offers.read && _mine(offers.read, s)) && !(offers.post && _mine(offers.post, s)));
     if (kept.length) items.push({ head: 'Kept as they are', text: kept.map((s) => `${CAP_LABEL[s.capability] || s.capability} (${s.purpose === 'publish' ? 'post' : 'read'}) via ${s.route_id}`).join('; ') + '. Saving here does not change them.' });
     const ch = _target.account && _target.account.id && _ctx && _ctx.channels ? (_ctx.channels() || []).find((c) => c.id === _target.account.id) : null;
@@ -317,7 +356,7 @@
     copy: (api) => {
       const m = _mode(api.sel, api.info);
       if (m === 'mcp') return 'Choose who can use this server. Its tools may read or change data.';
-      if (m === 'account') return _offers(_variant(api.sel, api.info), _target.kind).post ? 'Choose what agents may do through this connection. Posting still needs campaign approval.' : 'Allow agents to read through this sign-in. Posting is not enabled by signing in: Post lives on the API connection.';
+      if (m === 'account') return 'Choose what agents may do with this account. Posting still needs campaign approval.';
       return 'Saving information grants no connection permissions. Credential access follows its existing vault policy.';
     },
     body: _bodyHTML,
@@ -344,13 +383,23 @@
       if (retry) retry.addEventListener('click', () => { M.failed = false; M.loaded = ''; _load(api, true); api.repaint(); });
       root.querySelectorAll('[data-cfp-box]').forEach((box) => {
         const id = box.dataset.cfpBox;
-        if (id !== 'site' && _target) {
-          const o = _offers(_variant(api.sel, api.info), _target.kind)[id];
-          if (o && M.wish[id] === null) { const n = _initial(o).length; box.indeterminate = n > 0 && n < o.caps.length; }
-        }
+        const v = _target ? _variant(api.sel, api.info) : null, offers = _target ? _offers(v, _target.kind) : { read: null, post: null };
+        const o = offers[id];
+        if (id === 'read' && _target && M.wish.read === null) {
+          const can = _readCan(v, api.info, offers), n = o ? _initial(o).length : 0;
+          box.indeterminate = _readMixed(can, offers) || (!!o && n > 0 && n < o.caps.length);
+        } else if (o && M.wish[id] === null) { const n = _initial(o).length; box.indeterminate = n > 0 && n < o.caps.length; }
         box.addEventListener('change', () => {
           box.indeterminate = false;
-          if (id === 'site') M.wish.site = box.checked; else { M.wish[id] = box.checked; M.touched = true; }
+          if (id === 'read') {
+            // One tick, two parts: the Desk read the route offers and the service's own domain on the sign-in. Back at what
+            // the row showed = no wish, so ticking and unticking sends nothing (unless the row started half-ticked).
+            const can = _readCan(v, api.info, offers);
+            const partial = _readMixed(can, offers) || (!!offers.read && _initial(offers.read).length > 0 && _initial(offers.read).length < offers.read.caps.length);
+            M.wish.read = !partial && box.checked === _readInitial(can, offers) ? null : box.checked;
+            M.wish.site = can.site && M.wish.read !== null ? M.wish.read : null;
+            if (offers.read) M.touched = true;               // a domain-only change must not record Desk scopes on a legacy account
+          } else { M.wish.post = box.checked; M.touched = true; }
           sync();
         });
       });
@@ -381,7 +430,7 @@
     if (sel.type === 'reference' || !_target) return { kind: 'reference', pending: false, lines: ['No connection permission is granted.'] };
     const p = _pending(sel, info), lines = [];
     ['read', 'post'].forEach((op) => { const o = p.offers[op]; if (o && p.scopes.some((s) => _mine(o, s))) lines.push(`Desk: ${op === 'post' ? 'Post' : `Read ${_capText(p.scopes.filter((s) => _mine(o, s)).map((s) => s.capability))}`} ${VIA_WORD[o.via] || ''}`.trim()); });
-    if (M.bperm && M.bperm.site && _siteOn()) lines.push(`Browser: read pages on ${M.bperm.site} through "${M.bperm.profile}"`);
+    if (M.bperm && M.bperm.site && _siteOn()) lines.push(`Browser sign-in: read this account's activity on ${M.bperm.site} through "${M.bperm.profile}"`);
     if (!lines.length) lines.push(sel.type === 'account' ? window.DeskV1ConnectCopy.words.permissionsUnchanged : 'No permissions are allowed.');
     const extra = sections.map(s => s.summary());
     extra.forEach(s => lines.push(...s.lines));

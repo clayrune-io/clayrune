@@ -170,7 +170,9 @@ async function run(browser, width, height) {
     const owners = await page.$$eval('[data-cfp-owner]', (e) => e.map((x) => x.textContent.trim()));
     check(owners.join('|') === 'Desk permission|Desk permission', 'each row says it is a Desk permission', 'owners: ' + owners.join('|'));
     check(/Post only\. Not Reply, media or Article\./.test(await text(page, '[data-cfp-box="post"] ~ .desk-v1-cfp-text')), 'Post covers Post only', 'post coverage wrong');
-    check(await checked(page, 'read') && !(await checked(page, 'post')), 'existing scopes show as they are: Read on (saved), Post off', `read=${await checked(page, 'read')} post=${await checked(page, 'post')}`);
+    // The Desk read is saved but x.com is not on the sign-in's list yet: half-ticked, never plain "on" (the card says Reading is off).
+    check(!(await checked(page, 'read')) && await page.$eval('[data-cfp-box="read"]', (b) => b.indeterminate) && !(await checked(page, 'post')) && /Reading through your sign-in is not switched on yet\./.test(await text(page, '[data-cfw-option="read"]')),
+      'the saved Desk read shows half-ticked with a sentence that the sign-in is not switched on, Post off', `read=${await checked(page, 'read')} post=${await checked(page, 'post')}`);
     check(writes(srv).length === 0, 'arriving sent no write', 'a write went out: ' + JSON.stringify(writes(srv).map((r) => r.path)));
     await page.screenshot({ path: resolve(SHOT_DIR, `saved_oauth_${width}.png`) });
 
@@ -211,7 +213,7 @@ async function run(browser, width, height) {
     const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
     await toPermissions(page, 'acct-browser', '[data-cs-reopen]');
     const b = await boxes(page);
-    check(b.includes('read') && !b.includes('post'), `a browser-only account offers Read and no Post (${b.join(', ')})`, 'boxes: ' + b.join('|'));
+    check(b.join('|') === 'read|post' && !(await page.locator('[data-cfp-box="read"]').isDisabled()) && (await page.locator('[data-cfp-box="post"]').isDisabled()), `a browser-only account shows the same two rows: Read works, Publish is disabled (${b.join(', ')})`, 'boxes: ' + b.join('|'));
     check(!(await page.$('[data-cfp-paid]')), 'the browser Read carries no paid-API notice', 'paid notice on browser Read');
     check(writes(srv).length === 0, 'arriving sent no write', 'a write went out');
     check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
@@ -223,7 +225,7 @@ async function run(browser, width, height) {
     const srv = makeServer();
     const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
     await toPermissions(page, 'acct-bare', '[data-cs-reopen]');
-    check((await boxes(page)).length === 0, 'an account with no known route draws no Desk rows', 'boxes: ' + (await boxes(page)).join('|'));
+    check((await boxes(page)).join('|') === 'read|post' && (await page.locator('[data-cfp-box="read"]').isDisabled()) && (await page.locator('[data-cfp-box="post"]').isDisabled()), 'an account with no known route shows the same two rows, both disabled', 'boxes: ' + (await boxes(page)).join('|'));
     check(!!(await page.$('[data-reading-settings]')), 'its reading section still draws', 'the reading section is gone');
     check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
     await ctx.close();

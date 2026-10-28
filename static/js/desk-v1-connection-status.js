@@ -44,9 +44,11 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
     const profile = String(refs.browser_profile || ch.browser_profile || '');
     if (!profile) return null;
     const f = { id: 'browser', profile, login: String(refs.login || ''), route: setup ? String(setup.route_id || '') : '', via: ch.read_via === 'api' ? 'api' : 'pane' };
+    const c = cov && cov.via === 'pane' && f.via === 'pane' ? cov : null;      // the coverage row describes the route that reads the account
+    const off = window.DeskV1ReadsOff?.facet(c, f);                  // reading not allowed yet: its own state, ahead of a sign-in check and never "Needs sign-in"
+    if (off) return off;
     const checked = window.DeskV1BrowserAccount?.facet(ch, f);
     if (checked) return checked;
-    const c = cov && cov.via === 'pane' && f.via === 'pane' ? cov : null;      // the coverage row describes the route that reads the account
     if (c && c.state === 'not_connected') return Object.assign(f, { key: 'reauth', word: 'Needs sign-in', detail: c.reason || c.message || 'The last read hit the sign-in page.' });
     if (c && c.state === 'ok') return Object.assign(f, { key: 'ok', word: 'Reading by browser', detail: c.last_ok_at ? `Last read ${String(c.last_ok_at).replace('T', ' ').slice(0, 16)} UTC.` : '' });
     if (c && c.state === 'not_read_yet') return Object.assign(f, { key: 'saved', word: 'Browser set up, not read yet', detail: c.reason || 'Nothing has been read through it yet.' });
@@ -71,6 +73,8 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
     const list = [browser, api].filter(Boolean);
     const need = list.find((f) => f.key === 'reauth');
     if (need) return { key: 'reauth', word: need.word, action: null };
+    const off = list.find((f) => f.key === 'readsoff');
+    if (off) return { key: 'readsoff', word: off.word, action: null };
     if (ch.capability === 'none') return { key: 'ok', word: 'Read only', action: null };       // a read-only site: the browser is its only route
     if (window.DeskV1AssistedPost && window.DeskV1AssistedPost.statusWord(ch)) return { key: 'ok', word: window.DeskV1AssistedPost.statusWord(ch), action: null };
     if (ch.publish && ch.publish.ready) return { key: 'ok', word: 'Connected', action: null };        // an API sign-in, or a site published by hand
@@ -84,6 +88,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
         <span class="desk-v1-cs-word" data-cs-word>${esc(f.word)}</span>
         ${lines.filter(Boolean).map((l) => `<div class="desk-v1-cs-line">${l}</div>`).join('')}
         ${f.detail ? `<div class="desk-v1-rules-hint" data-cs-detail>${esc(f.detail)}${window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML(f.word) : ''}</div>` : ''}
+        ${window.DeskV1ReadsOff ? window.DeskV1ReadsOff.html(ch, f) : ''}
         ${window.DeskV1AccountSignin ? window.DeskV1AccountSignin.html(ch, f) : ''}
       </div>`;
   }
@@ -271,6 +276,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
   function bindAccount(row, ch, repaint) {
     window.DeskV1BrowserAccount?.bind(row,ch,repaint);
     row.querySelectorAll('[data-cs-facet]').forEach((r) => window.DeskV1AccountSignin?.bind(r, ch, repaint));
+    row.querySelectorAll('[data-cs-facet]').forEach((r) => window.DeskV1ReadsOff?.bind(r, ch, repaint));
     const b = row.querySelector('[data-cs-reopen]');
     if (b) b.addEventListener('click', () => _openEditor({ kind: 'account', id: ch.id, record: ch }, repaint));
   }

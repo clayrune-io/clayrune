@@ -2,6 +2,14 @@
 
 Status: proposed, not dispatched. [Parent design](../CONNECT_FLOW_SIMPLIFY.md).
 
+> **Superseded in part, 2026-10-28 (Ron).** The per-site Read row, its editor (`bind`/`html`) and its sharing list were retired:
+> the Permissions step now shows ONE list for every account (Read this account's activity, Publish), and no site or domain
+> is shown or typed. When the account is read through a browser sign-in, ticking Read and saving still ends in this module's
+> `apply`, which adds (untick: removes) only the service's own domain on that sign-in's agent-read list behind the same
+> passcode prompt. `load`, `apply`, `outcome`, `plan`, `covering` and `facts` (Details only) remain; the
+> `desk-v1-connect-browser-permission.css` stylesheet is gone. A card whose reading is not allowed yet says "Reading is off"
+> and its one button opens that same Permissions step (`static/js/desk-v1-reads-off.js`, `mc/desk_read_gate.py`).
+
 ## Depends on
 
 03, 05.

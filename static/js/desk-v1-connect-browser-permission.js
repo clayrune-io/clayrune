@@ -1,29 +1,30 @@
-// Desk v1 — Connect: the browser Read permission editor (MC-1062 ticket 07,
+// Desk v1 — Connect: the browser-sign-in side of Read (MC-1062 ticket 07,
 // docs/desk_v1/connect_flow_tickets/07-browser-permission.md). Window-bridged module, no `import`
-// (ground rule 1).
+// (ground rule 1). It has NO screen of its own: the Permissions step (desk-v1-connect-permissions-step.js) shows ONE
+// Read row for every account, and when the account is read through a browser sign-in, ticking it and saving calls
+// `apply` here to add (or remove) that service's OWN domain on the sign-in's agent-read list. The old per-site row,
+// its editor and its sharing list were retired on 2026-10-28 (Ron: the Desk follows the user's own accounts, it is not
+// a place to choose arbitrary pages); `facts` survives for the Details section only.
 //
-// Read for a browser connection is ONE thing: a site on a saved browser profile's agent-read list
-// (`GET /api/browser/agent-read`, `PUT /api/browser/profiles/<name>/agent-read`). That list belongs
-// to the PROFILE, not the connection, so this editor is a profile-domain permission and says so:
-// two connections on one profile show the same grant, and other sites on the list are not touched.
-// It is not a new store, not a per-account sandbox and not raw-page access: an agent gets an answer
-// about a page, never the page, and cannot click, type or post.
+// The grant is ONE domain on a saved browser profile's agent-read list (`GET /api/browser/agent-read`,
+// `PUT /api/browser/profiles/<name>/agent-read`). That list belongs to the PROFILE, not the connection, so two
+// connections on one profile share it, and other domains on the list are never touched. It is not a new store, not a
+// per-account sandbox and not raw-page access: an agent gets an answer about a page, never the page, and cannot click,
+// type or post.
 //
 // It reuses `DeskV1ConnectAgentRead` for the read of the list and for the write (`put`: the same PUT
-// behind the same `humanProofFetch` passcode prompt the Browser pane's menu uses). This editor's
-// write is its OWN prompt, never the Review step's: cancelling it, or a wrong passcode, changes
-// nothing. A profile that is not saved yet is not launched and not written to: the choice is held
-// as a pending wish (`onWish`) and `apply()` runs it once the sign-in has saved the profile.
+// behind the same `humanProofFetch` passcode prompt the Browser pane's menu uses). This write is its OWN prompt, never
+// the Review step's: cancelling it, or a wrong passcode, changes nothing. A profile that is not saved yet is not
+// launched and not written to: `apply` answers `deferred` and the Permissions step holds the choice until the
+// sign-in has saved the profile.
 //
 // The PUT replaces the profile's whole list and the server has no compare-and-set, so `apply` re-reads
 // the list immediately before asking for the passcode and sends that list with ONE site added or
 // removed. A list edited elsewhere while the passcode prompt is open would be overwritten; the saved
 // list the server answers with is shown back, so it is never hidden.
 //
-// Never throws out of `bind`/`apply`: a failure is a status the caller can show.
+// Never throws out of `apply`: a failure is a status the caller can show.
 (function () {
-  function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
-
   const MAX_DOMAINS = 20;                                   // mc/browser_agent_read.py MAX_DOMAINS
   const _LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
@@ -124,7 +125,7 @@
     return { kind: 'ok', text: '' };
   }
 
-  // ── drawing ─────────────────────────────────────────────────────────────
+  // ── words (Details only) ────────────────────────────────────────────────
   function _facts(st, wish) {
     const f = [];
     if (!st.profile) return ['Choose a browser sign-in first. Reading is allowed on a sign-in, not on an account.'];
@@ -138,62 +139,5 @@
     return f;
   }
 
-  function _html(st, wish) {
-    const on = st.exists ? st.granted : !!wish;
-    const blocked = !st.profile || !st.site;
-    return `<div class="desk-v1-bperm" data-bperm data-bperm-profile="${esc(st.profile)}" data-bperm-site="${esc(st.site)}">
-        <label class="desk-v1-bperm-toggle"><input type="checkbox" data-bperm-read ${on ? 'checked' : ''} ${blocked ? 'disabled' : ''}>
-          <span>Read pages on <strong>${esc(st.site || 'this site')}</strong></span></label>
-        <ul class="desk-v1-bperm-facts" data-bperm-facts>${_facts(st, wish).map((t) => `<li>${esc(t)}</li>`).join('')}</ul>
-        <div class="desk-v1-bperm-status" data-bperm-status role="status" aria-live="polite"></div>
-      </div>`;
-  }
-
-  // Fill `mount` and keep it live. opts: { profile, site, channels?, selfId?, wish?, onWish?(bool), onResult?(result) }.
-  // `wish` is the held choice for a profile that is not saved yet; `onWish` stores a new one.
-  async function bind(mount, opts) {
-    if (!mount) return null;
-    const o = opts || {};
-    const profile = String(o.profile || '').trim().toLowerCase();
-    let wish = !!o.wish;
-    let st;
-    mount.innerHTML = '<div class="desk-v1-rules-hint" data-bperm-loading>Loading…</div>';
-    try { st = await load(profile, o.site, o); }
-    catch (e) {
-      if (mount.isConnected) mount.innerHTML = '<div class="desk-v1-rules-hint" data-bperm-error>Could not load which sites agents may read.</div>';
-      return null;
-    }
-    if (!mount.isConnected) return null;
-    const paint = (say) => {
-      mount.innerHTML = _html(st, wish);
-      const status = mount.querySelector('[data-bperm-status]');
-      if (status && say) status.textContent = say;
-      const box = mount.querySelector('[data-bperm-read]');
-      if (!box) return;
-      box.addEventListener('change', async () => {
-        const want = box.checked;
-        if (!st.exists) {                                    // held for sign-in: no request, no launch
-          wish = want;
-          if (o.onWish) o.onWish(want);
-          paint(want ? 'Kept. Reading is allowed once you have signed in.' : 'Cleared.');
-          return;
-        }
-        box.disabled = true;
-        const res = await apply(st.profile, st.site, want);
-        if (res.status === 'saved' || res.status === 'unchanged') {
-          const fresh = await load(st.profile, st.site, o).catch(() => null);
-          if (fresh) st = fresh;
-        }
-        if (!mount.isConnected) return;
-        const words = { saved: want ? 'Saved. Agents may read this site.' : 'Saved. Agents may not read this site.',
-          unchanged: 'Already set that way.', cancelled: 'Nothing changed: the passcode was not entered.' };
-        paint(res.status === 'failed' ? `Could not save it: ${res.error}` : words[res.status] || '');
-        if (o.onResult) o.onResult(res);
-      });
-    };
-    paint('');
-    return { state: () => ({ ...st, wish }) };
-  }
-
-  window.DeskV1ConnectBrowserPermission = { siteOf, covering, plan, sharing, load, apply, outcome, facts: _facts, html: _html, bind };
+  window.DeskV1ConnectBrowserPermission = { siteOf, covering, plan, sharing, load, apply, outcome, facts: _facts };
 })();
