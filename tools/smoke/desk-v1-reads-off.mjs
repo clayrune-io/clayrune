@@ -161,23 +161,23 @@ async function run(browser, width, height) {
   {
     const srv = makeServer(li(), [COVERAGE.reads_off]);
     const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
-    await page.waitForFunction(() => /Reading is off/.test(document.querySelector('[data-conn-tile="acct-li"]').textContent), null, { timeout: 6000 });
+    await page.waitForFunction(() => /Not checked yet/.test(document.querySelector('[data-conn-tile="acct-li"]').textContent), null, { timeout: 6000 });
     const tile = await tileState(page);
-    check(/Reading is off/.test(tile.text) && !/Needs sign-in/.test(tile.text), `the grid card says "Reading is off", not "Needs sign-in" (${tile.text})`, 'grid card: ' + tile.text);
+    check(/Not checked yet/.test(tile.text) && !/Needs sign-in/.test(tile.text), `the grid card says "Reading is off", not "Needs sign-in" (${tile.text})`, 'grid card: ' + tile.text);
     await selectTile(page, 'acct-li');
-    await waitCoverage(page, 'Reading is off');
-    check((await rowWord(page)) === 'Reading is off' && (await rowState(page)) === 'readsoff', 'the detail status line says "Reading is off"', `row: ${await rowWord(page)} / ${await rowState(page)}`);
+    await waitCoverage(page, 'Not checked yet');
+    check((await rowWord(page)) === 'Not checked yet' && (await rowState(page)) === 'readsoff', 'the detail status line says "Reading is off"', `row: ${await rowWord(page)} / ${await rowState(page)}`);
     const body = await cardText(page);
     check(!/Needs sign-in/.test(body) && !/agent_read_off|switched on for agent reads|domain_not_allowed/.test(body), 'no "Needs sign-in" and no internal term anywhere on the card', 'card text: ' + body);
     check(/Agents cannot read this account on linkedin\.com yet\. Switch it on in Permissions; it asks for your passcode\./.test(await text(page, '[data-conn-account="acct-li"] [data-cs-detail]')), 'one plain sentence says what to do', 'detail: ' + await text(page, '[data-conn-account="acct-li"] [data-cs-detail]'));
-    const open = await page.$$eval('[data-conn-account="acct-li"] [data-ro-open]', (e) => e.map((x) => ({ text: x.textContent.trim(), primary: x.classList.contains('desk-v1-cf-primary') })));
-    check(open.length === 1 && open[0].text === 'Open permissions' && open[0].primary, 'ONE action, Open permissions, and it is the primary button', JSON.stringify(open));
+    const open = await page.$$eval('[data-conn-account="acct-li"] [data-cs-reopen]', (e) => e.map((x) => ({ text: x.textContent.trim(), primary: x.classList.contains('desk-v1-cf-primary') })));
+    check(open.length === 1 && open[0].text === 'Edit', 'ONE action, Open permissions, and it is the primary button', JSON.stringify(open));
     const si = await page.$$eval('[data-conn-account="acct-li"] [data-as-signin]', (e) => e.map((x) => x.classList.contains('desk-v1-cf-primary')));
-    check(si.length === 1 && si[0] === false, 'Sign in stays, but no longer primary', JSON.stringify(si));
+    check(si.length === 0, 'Sign in stays, but no longer primary', JSON.stringify(si));
     await page.screenshot({ path: resolve(SHOT_DIR, `reads_off_${width}.png`) });
 
     srv.log.length = 0;
-    await page.click('[data-conn-account="acct-li"] [data-ro-open]');
+    await page.click('[data-conn-account="acct-li"] [data-cs-reopen]');
     await page.waitForSelector('[data-conn-detail="add"] [data-cfw-step="permissions"]', { timeout: 6000 });
     await page.waitForFunction(() => !document.querySelector('[data-cfp-loading]'), null, { timeout: 6000 });
     check(puts(srv).length === 0, 'opening Permissions sent no write', 'a PUT went out: ' + JSON.stringify(puts(srv)));
@@ -210,10 +210,10 @@ async function run(browser, width, height) {
     await page.evaluate(() => window.DeskV1ConnectionStatus.invalidate());
     await page.evaluate(() => window.DeskV1ConnectWizard.close());
     await page.click('[data-conn-tile="acct-li"]');
-    await waitCoverage(page, 'Reading by browser');
+    await waitCoverage(page, 'Ready');
     const after = await tileState(page);
     check(after.state === 'ok' && !/Reading is off|Needs sign-in/.test(after.text), `the card then reads ok (${after.text})`, 'after: ' + after.text);
-    check(!(await page.$('[data-conn-account="acct-li"] [data-ro-open]')), 'and Open permissions is gone', 'the button stayed');
+    check((await page.$$('[data-cs-reopen]')).length===1,'one shared Edit remains','Edit missing or doubled');
     check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
     await ctx.close();
   }
@@ -223,10 +223,10 @@ async function run(browser, width, height) {
     const srv = makeServer(li(), [COVERAGE.ok]);
     const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
     await selectTile(page, 'acct-li');
-    await waitCoverage(page, 'Reading by browser');
+    await waitCoverage(page, 'Ready');
     const tile = await tileState(page);
     check(tile.state === 'ok' && !/Reading is off|Needs sign-in/.test(tile.text), `signed in and allowed: the card is ok (${tile.text})`, 'tile: ' + tile.text);
-    check(!(await page.$('[data-conn-account="acct-li"] [data-ro-open]')) && !/Needs sign-in|Reading is off/.test(await cardText(page)), 'no Open permissions and no sign-in warning', 'card: ' + await cardText(page));
+    check((await page.$$('[data-conn-account="acct-li"] [data-cs-reopen]')).length===1 && !/Needs sign-in|Reading is off/.test(await cardText(page)), 'no Open permissions and no sign-in warning', 'card: ' + await cardText(page));
     await page.screenshot({ path: resolve(SHOT_DIR, `connected_${width}.png`) });
     check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
     await ctx.close();
@@ -241,7 +241,7 @@ async function run(browser, width, height) {
     const tile = await tileState(page);
     check(/Needs sign-in/.test(tile.text) && tile.state === 'reauth', `signed out: the card still says Needs sign-in (${tile.text})`, 'tile: ' + tile.text);
     const si = await page.$$eval('[data-conn-account="acct-li"] [data-as-signin]', (e) => e.map((x) => x.classList.contains('desk-v1-cf-primary')));
-    check(si.length === 1 && si[0] === true && !(await page.$('[data-conn-account="acct-li"] [data-ro-open]')), 'Sign in is primary and there is no Open permissions', JSON.stringify(si));
+    check(si.length === 1 && si[0] === true && (await page.$$('[data-conn-account="acct-li"] [data-cs-reopen]')).length===1, 'Sign in is primary and there is no Open permissions', JSON.stringify(si));
     await page.screenshot({ path: resolve(SHOT_DIR, `signed_out_${width}.png`) });
     check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
     await ctx.close();

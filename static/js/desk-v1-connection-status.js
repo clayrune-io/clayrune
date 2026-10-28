@@ -1,35 +1,6 @@
-// Desk v1 — Connections: the ACTUAL status of each connection (MC-1062 ticket 13b,
-// docs/desk_v1/connect_flow_tickets/13b-management-status.md). Window-bridged module, no `import`
-// (ground rule 1). desk-v1-connections.js and its tile grid only delegate here.
-//
-// WHAT IT OWNS
-//   Accounts   one tile status and one detail block built from the account's ROUTES, not from publishing:
-//                Browser  a saved profile (the saved sign-in, or the legacy read profile). Its word comes from
-//                         the free coverage read when it has one: "Reading by browser", "Needs sign-in", or,
-//                         with no evidence either way, "Browser profile saved". Clayrune cannot see inside a
-//                         profile, so none of these says the profile is signed in.
-//                API      X's own sign-in (`publish.ready` is its derived state). A signed-in API is "API signed in".
-//                Publishing stays its own line (desk-v1-connections.js `_publishHTML`) and no longer decides
-//                the tile: a browser connection that works is not "Not connected" because LinkedIn's publishing
-//                gate is closed. An account with both keeps both rows, each with its own profile/login names.
-//   MCP        every approved npm and remote server (POST /api/desk/connect/custom/connections: local reads
-//              only), one tile each. The server's own state word is kept apart: Registered / Saved, cannot run
-//              yet / Saved, setup failed / Changed since approved / Package missing / Credential missing.
-//              Drift (changed package files) and an observed remote change stay visible; the recovery actions
-//              are the existing ones: review again (the setup editor), accept an observed change (its own
-//              passcode), and a check the person starts.
-//
-// WHAT IT NEVER DOES
-//   Open a browser, spend money, write, or contact a server on its own. Refreshing reads saved state and the
-//   no-network coverage route. "Check the connection" on a remote server contacts ONLY its approved address, only
-//   when the person presses it, and is the existing route. Nothing here is Verified: a registry flag, a
-//   registered record or an answering server is never promoted to it (that word belongs to
-//   /api/desk/connect/verify, which this module never calls).
-//
-// THE EDITOR. Setup and permissions are edited in the Connect wizard (tickets 02 to 14). While it is disabled the
-// Read via controls in desk-v1-connections.js stay; once it is enabled they give way to a summary and a Change
-// button, so there is one editor, not two. `setReopen(fn)` is how ticket 14 points Change at the wizard; until then
-// it opens the Add service panel.
+// Saved connection readiness, evidence and editor handoff. Public words are shared; route identifiers stay in collapsed Details.
+import { ConnectionWords as W } from './desk-v1-connection-words.js';
+import { accountHTML as socialHTML, bindAccount as bindSocial, invalidatePermissions } from './desk-v1-connection-account.js';
 import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -49,37 +20,38 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
     if (off) return off;
     const checked = window.DeskV1BrowserAccount?.facet(ch, f);
     if (checked) return checked;
-    if (c && c.state === 'not_connected') return Object.assign(f, { key: 'reauth', word: 'Needs sign-in', detail: c.reason || c.message || 'The last read hit the sign-in page.' });
-    if (c && c.state === 'ok') return Object.assign(f, { key: 'ok', word: 'Reading by browser', detail: c.last_ok_at ? `Last read ${String(c.last_ok_at).replace('T', ' ').slice(0, 16)} UTC.` : '' });
-    if (c && c.state === 'not_read_yet') return Object.assign(f, { key: 'saved', word: 'Browser set up, not read yet', detail: c.reason || 'Nothing has been read through it yet.' });
-    return Object.assign(f, { key: 'saved', word: 'Browser profile saved', detail: f.via === 'api' ? 'This account is read through the X API. The profile is kept for signing in.' : 'Clayrune has not checked that it is signed in.' });
+    if (c && c.state === 'not_connected') return Object.assign(f, { key: 'reauth', word: W.status.signin, detail: c.reason || c.message || 'The last read hit the sign-in page.' });
+    if (c && c.state === 'ok') return Object.assign(f, { key: 'ok', word: W.status.ready, detail: c.last_ok_at ? `Last read ${String(c.last_ok_at).replace('T', ' ').slice(0, 16)} UTC.` : '' });
+    if (c && c.state === 'not_read_yet') return Object.assign(f, { key: 'saved', word: W.status.unchecked, detail: c.reason || 'Nothing has been read through it yet.' });
+    return Object.assign(f, { key: 'saved', word: W.status.unchecked, detail: f.via === 'api' ? 'This account is read through the X API. The profile is kept for signing in.' : 'Clayrune has not checked that it is signed in.' });
   }
 
   function apiFacet(ch) {
     if (ch.platform !== 'x' || ch.capability !== 'direct' || ch.preview || !ch.publish) return null;
     const p = ch.publish, cred = ch.credentials || {};
+    if (!p.ready && !p.secret && !cred.oauth_profile && !cred.oauth_vault) return null;
     const f = { id: 'api', route: 'x-api', profile: String(cred.oauth_profile || '') };
-    if (p.ready) return Object.assign(f, { key: 'ok', word: 'API signed in', detail: p.unattended_ok === false ? 'Scheduled posts will be held: the saved sign-in is not allowed for unattended use.' : '' });
-    if (p.vault_locked) return Object.assign(f, { key: 'reauth', word: 'Vault locked', detail: 'Your sign-in is still saved. Unlock the vault to use it.' });
-    return Object.assign(f, { key: 'off', word: 'API not signed in', detail: p.reason && !/vault/i.test(p.reason) ? p.reason : '' });
+    if (p.ready) return Object.assign(f, { key: 'ok', word: W.status.ready, detail: p.unattended_ok === false ? 'Scheduled posts will be held: the saved sign-in is not allowed for unattended use.' : '' });
+    if (p.vault_locked) return Object.assign(f, { key: 'reauth', word: W.status.broken, locked:true, detail: 'Your sign-in is still saved. Unlock the vault to use it.' });
+    return Object.assign(f, { key: 'reauth', word: W.status.signin, detail: p.reason && !/vault/i.test(p.reason) ? p.reason : '' });
   }
 
   function facets(ch, cov) { return { browser: browserFacet(ch, cov), api: apiFacet(ch) }; }
 
-  // The tile's word. {key, word, action}. Publishing readiness is NOT an input except through the API route.
+  // Readiness and permission are separate. A read grant being off is not a
+  // failed sign-in; the saved browser check remains evidence of readiness.
   function accountStatus(ch, cov) {
-    if (ch.preview) return { key: 'preview', word: 'Preview · not connected', action: null };
-    const { browser, api } = facets(ch, cov);
-    const list = [browser, api].filter(Boolean);
-    const need = list.find((f) => f.key === 'reauth');
-    if (need) return { key: 'reauth', word: need.word, action: null };
-    const off = list.find((f) => f.key === 'readsoff');
-    if (off) return { key: 'readsoff', word: off.word, action: null };
-    if (ch.capability === 'none') return { key: 'ok', word: 'Read only', action: null };       // a read-only site: the browser is its only route
-    if (window.DeskV1AssistedPost && window.DeskV1AssistedPost.statusWord(ch)) return { key: 'ok', word: window.DeskV1AssistedPost.statusWord(ch), action: null };
-    if (ch.publish && ch.publish.ready) return { key: 'ok', word: 'Connected', action: null };        // an API sign-in, or a site published by hand
-    if (browser) return { key: browser.key, word: browser.word, action: null };
-    return { key: 'off', word: 'Not connected', action: null };
+    if (ch.preview) return W.state('unchecked');
+    const {browser,api}=facets(ch,cov);
+    const list=[browser,api].filter(Boolean);
+    if (list.some(f=>f.locked)) return W.state('broken');
+    const checked=ch.browser_setup?.status?.state;
+    if (checked==='sign_in_required') return W.state('signin');
+    if (checked==='check_failed') return W.state('broken');
+    if (list.some(f=>f.key==='reauth' && !f.locked)) return W.state('signin');
+    if (checked==='verified' || list.some(f=>f.key==='ok') || ch.publish?.ready) return W.state('ready');
+    if (/review pending/i.test(ch.publish?.reason || '')) return W.state('waiting', W.serviceName(ch.platform));
+    return W.state('unchecked');
   }
 
   function _routeRow(f, label, lines, ch) {
@@ -87,28 +59,28 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
         <span class="desk-v1-how-field-label">${esc(label)}</span>
         <span class="desk-v1-cs-word" data-cs-word>${esc(f.word)}</span>
         ${lines.filter(Boolean).map((l) => `<div class="desk-v1-cs-line">${l}</div>`).join('')}
-        ${f.detail ? `<div class="desk-v1-rules-hint" data-cs-detail>${esc(f.detail)}${window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML(f.word) : ''}</div>` : ''}
-        ${window.DeskV1ReadsOff ? window.DeskV1ReadsOff.html(ch, f) : ''}
-        ${window.DeskV1AccountSignin ? window.DeskV1AccountSignin.html(ch, f) : ''}
+        ${f.detail ? `<div class="desk-v1-rules-hint" data-cs-detail>${esc(f.detail)}${window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML(f.locked ? {vault_locked:true} : f.detail) : ''}</div>` : ''}
+
       </div>`;
   }
 
   // The routes block for one live account. Browser and API are separate rows so an account holding both shows both.
-  function accountHTML(ch, cov) {
+  function accountHTML(ch, cov, status) {
     const { browser, api } = facets(ch, cov);
-    const rows = [window.DeskV1BrowserAccount?.html(ch)].filter(Boolean);
-    if (browser) rows.push(_routeRow(browser, 'Browser', [
+    const rows=[];
+    if(browser) rows.push(_routeRow(browser, W.labels.browser, [
       `Profile <code>${esc(browser.profile)}</code>${browser.login ? `, login <code>${esc(browser.login)}</code>` : ''}`,
       browser.route ? `Route <code>${esc(browser.route)}</code>` : ''], ch));
-    if (api) rows.push(_routeRow(api, 'API', [api.profile ? `Sign-in profile <code>${esc(api.profile)}</code>` : '', `Route <code>${esc(api.route)}</code>`], ch));
-    if (!rows.length) rows.push('<div class="desk-v1-rules-hint" data-cs-none>No browser or API route is set up for this account.</div>');
-    const via = replacesReadVia() && ch.platform && ch.capability !== 'manual'
-      ? `<div class="desk-v1-cs-line" data-cs-readvia><span class="desk-v1-how-field-label">Read via</span> ${ch.read_via === 'api' ? 'X API (paid, ~$0.005 per read)' : 'Browser pane (no charge)'}</div>` : '';
-    const change = replacesReadVia() ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cs-reopen="${esc(ch.id)}">Edit settings</button>` : '';
-    return `<div class="desk-v1-cs" data-cs-account="${esc(ch.id)}" aria-label="How this account is connected">${rows.join('')}${via}${change}</div>`;
+    if(api) rows.push(_routeRow(api,W.labels.api,[`Profile <code>${esc(api.profile)}</code>`, `Route <code>${esc(api.route)}</code>`],ch));
+    const method=ch.read_via==='api'?'X API (paid, ~$0.005 per read)':'Browser pane (no charge)';
+    rows.push(`<p data-cs-readvia>${esc(method)}</p>`);
+    if(ch.publish?.reason) rows.push(`<p data-conn-publish>${esc(ch.publish.reason)}</p>`);
+    const assisted=window.DeskV1AssistedPost?.accountHTML(ch);
+    if(assisted) rows.push(assisted);
+    return socialHTML(ch,cov,{details:rows.join(''),status});
   }
 
-  // While the wizard is off its Read via controls are the only editor, so they stay. Once it is on it is the editor.
+  // Retained for callers that need to know whether the shared wizard is enabled.
   function replacesReadVia() { const W = window.DeskV1ConnectWizard; return !!(W && typeof W.enabled === 'function' && W.enabled()); }
 
   // ── coverage: the free per-platform read state, no network ──────────────
@@ -126,11 +98,6 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
   }
 
   // ── MCP records ─────────────────────────────────────────────────────────
-  const MCP = {
-    registered: ['ok', 'Registered'], pending_runtime: ['saved', 'Saved, cannot run yet'], setup_failed: ['reauth', 'Saved, setup failed'],
-    changed: ['reauth', 'Changed since approved'], package_missing: ['reauth', 'Package missing'], credential_missing: ['reauth', 'Credential missing'],
-    missing: ['off', 'Not configured'], unknown: ['off', 'Cannot be read'],
-  };
   const OBSERVED = { never_checked: 'Not checked yet.', baseline_recorded: 'Reached once. That first look is the baseline.', unchanged: 'Reached. It matches the last look.', adopted: 'Accepted as the new baseline.', changed: 'Changed since the last look.' };
 
   let _mcp = null, _mcpError = '', _mcpLoading = null;
@@ -153,11 +120,12 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
   }
 
   function mcpStatus(r) {
-    const o = _observation(r);
-    if (r.state === 'registered' && o && o.review_needed) return { key: 'reauth', word: 'Server changed' };
-    if (r.state === 'registered' && r.check) return r.check.status === 'working' ? { key: 'ok', word: 'Working' } : { key: 'reauth', word: 'Not working' };
-    const w = MCP[r.state] || ['off', r.state ? String(r.state).replace(/_/g, ' ') : 'Unknown'];
-    return { key: w[0], word: w[1] };
+    const k=_check[mcpKey(r)] || {}, o=k.out || _observation(r);
+    if(k.error) return W.state('broken');
+    if(o?.review_needed) return W.state('broken');
+    if(r.state==='registered' && r.check) return W.from(r.check.status);
+    if(r.state==='registered' && o && ['unchanged','adopted','baseline_recorded'].includes(o.status)) return W.state('ready');
+    return W.from(r.state);
   }
 
   function mcpItems() {
@@ -201,7 +169,6 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
     const files = r.package_files || {};
     const drift = r.code === 'package_files_changed' ? _drift(files) : '';
     const note = files.status === 'not_recorded' ? '<div class="desk-v1-rules-hint" data-cs-files-note="not_recorded">The package files were not recorded when this was approved, so they are not checked. Approving it again records them.</div>' : '';
-    const recover = ['changed', 'package_missing', 'setup_failed', 'missing'].indexOf(r.state) >= 0;
     const missing = r.state === 'credential_missing' && Array.isArray(r.missing) && r.missing.length ? `<div data-cs-missing>Missing from the Vault: ${r.missing.map((n) => `<code>${esc(n)}</code>`).join(', ')}.</div>` : '';
     const facts = [
       ['Kind', remote ? `Remote server, ${esc(r.protocol || '')}` : 'Package that runs on this computer'],
@@ -215,20 +182,21 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
         <div class="desk-v1-conn-head">
           <span class="desk-v1-channel-badge">${esc(r.server_name)}</span>
           <span class="desk-v1-conn-status" data-conn-status data-state="${esc(st.key)}">${esc(st.word)}</span>
-          ${Remove.html(r.server_name)}
+
         </div>
-        <div class="desk-v1-cf-msg" data-cf-msg="${st.key === 'ok' ? 'ok' : 'warn'}" data-cs-message role="status">${esc(r.message || '')}</div>
-        ${missing}${drift}${note}
+        <p data-connection-next>${esc(st.kind==='unchecked' && !remote && !repo?W.reasons.noCheck:W.next[st.kind])}</p>
+        <details data-connection-details><summary>${W.labels.details}</summary><p data-cs-message>${esc(r.message || '')}</p>${missing}${drift}${note}
         <dl class="desk-v1-cf-facts" data-cs-facts>${facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join('')}</dl>
         ${remote ? _observedHTML(r, key) : ''}
         ${repo && (_check[key] || {}).busy ? '<div class="desk-v1-rules-hint" data-cs-check="busy" role="status">Starting the server to check it…</div>' : ''}
         ${repo && (_check[key] || {}).error ? `<div class="desk-v1-cf-msg" data-cf-msg="error" data-cs-check="error" role="alert">${esc(_check[key].error)}</div>` : ''}
+        </details>
         <div class="desk-v1-cf-actions desk-v1-cf-actions-flat">
-          ${recover ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cs-reopen="${esc(key)}">Review again</button>` : ''}
-          ${(remote || repo) && r.state === 'registered' ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cs-check-run ${(_check[key] || {}).busy ? 'disabled' : ''}>${repo && r.check ? 'Check again' : 'Check the connection'}</button>` : ''}
-          <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cs-refresh>Refresh status</button>
+          <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cs-check-run ${!(remote || repo) || r.state!=='registered' || (_check[key] || {}).busy ? 'disabled' : ''}>${W.buttons.check}</button>
+          <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cs-reopen="${esc(key)}">${W.buttons.edit}</button>
+          ${Remove.html(r.server_name)}
         </div>
-        <div class="desk-v1-rules-hint" data-cs-refresh-note>Refresh status reads what is saved here. It starts nothing and contacts no server.${remote ? ' Check the connection contacts only the approved address, and only when you press it.' : ''}${repo ? ' Checking starts the approved server once, asks for its tools, then stops it.' : ''}</div>
+        <div class="desk-v1-rules-hint" data-cs-refresh-note>${W.buttons.check} ${remote ? 'contacts only the approved address, and only when you press it.' : repo ? 'starts the approved server once, asks for its tools, then stops it.' : 'is unavailable for this connection.'}</div>
       </div>`;
   }
 
@@ -274,6 +242,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
   }
 
   function bindAccount(row, ch, repaint) {
+    bindSocial(row,ch,repaint);
     window.DeskV1BrowserAccount?.bind(row,ch,repaint);
     row.querySelectorAll('[data-cs-facet]').forEach((r) => window.DeskV1AccountSignin?.bind(r, ch, repaint));
     row.querySelectorAll('[data-cs-facet]').forEach((r) => window.DeskV1ReadsOff?.bind(r, ch, repaint));
@@ -294,7 +263,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
   }
 
   // A fresh read of everything this module keeps: the next paint asks again.
-  function invalidate() { _covAsked.clear(); Object.keys(_cov).forEach((k) => { delete _cov[k]; }); }
+  function invalidate() { invalidatePermissions(); _covAsked.clear(); Object.keys(_cov).forEach((k) => { delete _cov[k]; }); }
   function refresh() { invalidate(); return loadMcp(true); }
 
   window.DeskV1ConnectionStatus = {

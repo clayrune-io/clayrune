@@ -4,7 +4,7 @@ const states=new Map(), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;'
 const fresh=()=>({status:null,busy:false,opened:false,asked:false,prompt:false,deferred:false,timer:null,node:null,active:true,started:0});
 function clear(key) {const s=states.get(key);if(s){s.active=false;clearTimeout(s.timer);states.delete(key);}}
 function html(key) {return `<div class="desk-v1-cs-fill-row" data-browser-check="${esc(key)}"></div>`;}
-function bind(root,key,target,ctx,{own,onStatus,status}={}) {
+function bind(root,key,target,ctx,{own,onStatus,status,compact=false}={}) {
  const node=root.querySelector(`[data-browser-check="${CSS.escape(key)}"]`);if(!node)return;
  const wanted=target();
  const signature=JSON.stringify(wanted);
@@ -17,12 +17,12 @@ function bind(root,key,target,ctx,{own,onStatus,status}={}) {
   if(!alive())return;
   const label=s.status ? C.status(s.status.state) : C.words.notChecked;
   s.node.innerHTML=`<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-bc-check ${s.busy?'disabled':''}>${s.busy?C.words.checking:C.words.checkConnection}</button>
-   <span class="desk-v1-conn-status" data-bc-state="${esc(s.status?.state || 'not_connected')}" data-state="${s.status?.state==='verified'?'ok':'needs'}" role="status">${esc(label)}</span>
-   ${s.status?.state==='verified'?`<span class="desk-v1-rules-hint">${C.words.browserProof}</span>`:''}
-   ${s.error?`<span role="alert">${esc(s.error)}</span>`:''}
+   ${compact?'':`<span class="desk-v1-conn-status" data-bc-state="${esc(s.status?.state || 'not_connected')}" data-state="${s.status?.state==='verified'?'ok':'needs'}" role="status">${esc(label)}</span>`}
+   ${!compact && s.status?.state==='verified'?`<span class="desk-v1-rules-hint">${C.words.browserProof}</span>`:''}
+   ${!compact && s.error?`<span role="alert">${esc(s.error)}</span>`:''}
    ${s.prompt || s.deferred?`<div data-bc-confirm>${s.prompt?`<p>${C.words.noAutoCheck} ${C.words.signedInQuestion}</p>`:''}<button type="button" class="desk-v1-conn-btn" data-bc-yes>${C.words.yesSignedIn}</button>${s.prompt?`<button type="button" class="desk-v1-conn-btn" data-bc-no>${C.words.notYet}</button>`:''}</div>`:''}`;
   s.node.querySelector('[data-bc-check]').onclick=()=>{
-   if(JSON.stringify(target())!==signature){bind(root,key,target,ctx,{own,onStatus});root.querySelector(`[data-browser-check="${CSS.escape(key)}"] [data-bc-check]`)?.click();return;}
+   if(JSON.stringify(target())!==signature){bind(root,key,target,ctx,{own,onStatus,compact});root.querySelector(`[data-browser-check="${CSS.escape(key)}"] [data-bc-check]`)?.click();return;}
    s.started=Date.now();s.error='';
    if(own && !s.owned){own(key,()=>{if(states.get(key)===s)clear(key);},'account');s.owned=true;}
    run(false,false);
@@ -51,7 +51,7 @@ function bind(root,key,target,ctx,{own,onStatus,status}={}) {
    else if(s.opened && out.verifiable && out.needs_signin && Date.now()-s.started<600000) s.timer=setTimeout(()=>run(false,true),2000);
   } catch(e) {
    if(!alive())return;
-   s.status={state:'check_failed'};s.error=e.message || C.words.checkFailed;onStatus?.(s.status);
+   s.error=e.message || C.words.checkFailed;s.status={state:'check_failed',message:s.error};onStatus?.(s.status);
   } finally {s.busy=false;paint();}
  }
  paint();

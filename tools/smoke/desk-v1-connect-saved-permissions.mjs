@@ -180,9 +180,9 @@ async function run(browser, width, height) {
     const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
     await selectTile(page, 'acct-oauth');
     const note = await text(page, '[data-conn-account="acct-oauth"] [data-post-permission]');
-    check(/Agents cannot post through this account yet: Post is not ticked\./.test(note) && /Edit settings/.test(note) && !(await page.$('[data-conn-account="acct-oauth"] [data-pp-open]')) && !/Open Permissions/.test(await text(page, '[data-conn-account="acct-oauth"]')),
+    check(/Post is off\./.test(note) && /Edit/.test(note) && !(await page.$('[data-conn-account="acct-oauth"] [data-pp-open]')) && !/Open Permissions/.test(await text(page, '[data-conn-account="acct-oauth"]')),
       'the row says Post is not ticked, points at Edit settings in words and has no Open Permissions button', 'the notice or its button is wrong: ' + note);
-    check((await page.$$eval('[data-conn-account="acct-oauth"] [data-cs-reopen]', (e) => e.map((x) => x.textContent.trim()))).join('|') === 'Edit settings', 'the account has one button into its settings, Edit settings', 'the Edit settings button is missing or doubled');
+    check((await page.$$eval('[data-conn-account="acct-oauth"] [data-cs-reopen]', (e) => e.map((x) => x.textContent.trim()))).join('|') === 'Edit', 'the account has one button into its settings, Edit settings', 'the Edit settings button is missing or doubled');
     await toPermissions(page, 'acct-oauth', '[data-cs-reopen]');
     check((await boxes(page)).join('|') === 'read|post', `Permissions offers the Desk Read and Post rows (${(await boxes(page)).join(', ')})`, 'boxes: ' + (await boxes(page)).join('|'));
     check(!!(await page.$('[data-reading-settings]')), 'the reading section is still there beside them', 'the reading section is gone');

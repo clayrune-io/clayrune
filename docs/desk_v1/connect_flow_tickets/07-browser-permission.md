@@ -2,6 +2,8 @@
 
 Status: proposed, not dispatched. [Parent design](../CONNECT_FLOW_SIMPLIFY.md).
 
+> **Presentation update, 2026-10-28 branch candidate:** [13c: Connections language](13c-connections-language.md) moves reading-off into the common Read row and next-action sentence. The chip uses the connection's readiness from the shared five-status set, and Edit remains the one account-permission editor. The grant and sharing rules below are unchanged.
+
 > **Superseded in part, 2026-10-28 (Ron).** The per-site Read row, its editor (`bind`/`html`) and its sharing list were retired:
 > the Permissions step now shows ONE list for every account (Read this account's activity, Publish), and no site or domain
 > is shown or typed. When the account is read through a browser sign-in, ticking Read and saving still ends in this module's

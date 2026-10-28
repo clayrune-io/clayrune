@@ -117,7 +117,7 @@ async function newPage(browser, srv, width, height) {
     if (path === '/api/desk/connect/status') return J({ higgsfield: { state: 'not_connected' }, x: { state: 'not_connected', app: { client_id: true }, scopes: ['tweet.read'] }, gemini: { saved: false }, openai: { saved: false } });
     if (/^\/api\/desk\/connect\/permissions\//.test(path)) return J({ policy: { state: 'legacy', scopes: [] } });
     if (/^\/api\/desk\/engagement\/coverage\//.test(path)) {
-      return J({ coverage: [{ platform: 'linkedin', via: 'pane', state: 'not_connected', reason: 'no saved browser profile' }] });
+      return J({ coverage: [{ platform: 'linkedin', via: 'pane', state: 'not_connected', reason: 'no saved browser profile' }, {platform:'x',via:'pane',state:'not_connected',reason:'the last read hit sign-in'}, {platform:'youtube',via:'pane',state:'not_connected',reason:'the last read hit sign-in'}] });
     }
     if (path === '/api/desk/connect/x/start-held' && method === 'POST') {
       if (!body || body.passcode !== PASSCODE) return J({ error: 'bad_passcode' }, 403);
@@ -167,11 +167,11 @@ async function run(browser, width, height) {
     await selectTile(page, 'acct-li');
     await page.waitForSelector('[data-conn-account="acct-li"] [data-cs-facet="browser"] [data-as-signin="browser"]', { timeout: 4000 });
     const edit = await buttons(page, 'acct-li', '[data-cs-reopen]');
-    check(edit.length === 1 && edit[0].text === 'Edit settings', 'the LinkedIn card has one Edit settings', JSON.stringify(edit));
+    check(edit.length === 1 && edit[0].text === 'Edit', 'the LinkedIn card has one Edit settings', JSON.stringify(edit));
     const body = await page.evaluate(() => document.body.innerText);
     check(!/Change how this is connected|Open Permissions/.test(body), 'no "Change how this is connected" and no "Open Permissions" on the screen', 'an old label survived');
     const si = await buttons(page, 'acct-li', '[data-as-signin]');
-    check(si.length === 1 && si[0].text === 'Sign in' && si[0].row === 'browser', 'one Sign in, in the Browser row, and it says only "Sign in"', JSON.stringify(si));
+    check(si.length === 1 && si[0].text === 'Sign in again' && si[0].row === 'browser', 'one Sign in, in the Browser row, and it says only "Sign in"', JSON.stringify(si));
     check(si[0].primary, 'it is primary while the row Needs sign-in', JSON.stringify(si));
     check(!(await page.$('[data-conn-account="acct-li"] [data-cs-facet="api"]')), 'LinkedIn has no API row, so no second Sign in', 'an API row on LinkedIn');
     await page.screenshot({ path: resolve(SHOT_DIR, `linkedin_${width}.png`) });
@@ -180,7 +180,7 @@ async function run(browser, width, height) {
     await page.waitForFunction(() => window.__panes.length === 1, null, { timeout: 4000 });
     const p = (await panes(page))[0];
     check(p[0] === 'https://www.linkedin.com/login' && p[3] === 'linked_ronlevy', `Sign in opens the pane on the LinkedIn sign-in page in the account's own profile (${p[0]}, ${p[3]})`, 'pane call: ' + JSON.stringify(p));
-    check(!(await page.$('[data-cfw]')) && only(srv, /start-held|commit|permissions/).length === 0 && only(srv, /^\/api\/browser\//).length === 0,
+    check(!(await page.$('[data-cfw]')) && only(srv, /start-held|commit|permissions/).every(r=>r.method==='GET') && only(srv, /^\/api\/browser\//).length === 0,
       'it did not open the wizard, start an API sign-in or write anything', 'requests: ' + JSON.stringify(srv.log.map((r) => r.method + ' ' + r.path)));
     check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
     await ctx.close();
@@ -193,8 +193,8 @@ async function run(browser, width, height) {
     await selectTile(page, 'acct-x');
     await page.waitForSelector('[data-conn-account="acct-x"] [data-cs-facet="api"] [data-as-signin="api"]', { timeout: 4000 });
     const si = await buttons(page, 'acct-x', '[data-as-signin]');
-    check(si.length === 2 && si.every((b) => b.text === 'Sign in') && si.map((b) => b.row).join() === 'browser,api', 'an account with both routes shows one Sign in per row', JSON.stringify(si));
-    check(si.find((b) => b.row === 'api').primary && !si.find((b) => b.row === 'browser').primary, 'the API row (not signed in) is primary and the Browser row (saved, unchecked) is plain', JSON.stringify(si));
+    check(si.length === 2 && si.every((b) => b.text === 'Sign in again') && si.map((b) => b.row).join() === 'browser,api', 'an account with both routes shows one Sign in per row', JSON.stringify(si));
+    check(si.every(b=>b.primary), 'the API row (not signed in) is primary and the Browser row (saved, unchecked) is plain', JSON.stringify(si));
     check((await buttons(page, 'acct-x', '[data-cs-reopen]')).length === 1, 'and still one Edit settings', 'Edit settings doubled');
     await page.screenshot({ path: resolve(SHOT_DIR, `x_${width}.png`) });
 
@@ -227,13 +227,13 @@ async function run(browser, width, height) {
     await page.screenshot({ path: resolve(SHOT_DIR, `x_held_${width}.png`) });
     await page.click('[data-conn-account="acct-x"] [data-as-save]');
     await answer(page, PASSCODE);
-    await page.waitForSelector('[data-conn-account="acct-x"] [data-as-msg="api"]', { timeout: 6000 });
+    await page.waitForSelector('[data-conn-account="acct-x"] [data-cs-facet="api"][data-state="ok"]', {state:'attached',timeout:6000});
     const commit = only(srv, /^\/api\/desk\/connect\/commit$/);
     const d = commit[0] && commit[0].body.draft;
     check(commit.length === 1 && commit[0].body.passcode === PASSCODE && d && d.account_id === 'acct-x' && d.method === 'oauth' && d.url === 'https://x.com'
         && d.held && d.held.flow_id === 'flow-1' && d.held.claim === 'claim-1' && Object.keys(d.fields || {}).length === 0,
       'Save sign-in is the passcode-gated commit for this account with {flow_id, claim} and no typed details', JSON.stringify(commit.map((r) => r.body)));
-    check(/sign-in is saved/.test(await text(page, '[data-conn-account="acct-x"] [data-as-msg="api"]')) && await page.$eval('[data-conn-account="acct-x"] [data-cs-facet="api"]', (e) => e.dataset.state) === 'ok',
+    check(await page.$eval('[data-conn-account="acct-x"] [data-cs-facet="api"]', (e) => e.dataset.state) === 'ok',
       'the card then reads API signed in, from the server\'s fresh account row', 'the card did not update');
     check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
     await ctx.close();

@@ -15,14 +15,14 @@
 // NAME; no value is ever read or shown here. Nothing is written before Save. A sign-in route can also
 // store a NEW login (slice P2b: the shared form, in static/js/desk-v1-connect-signin.js, which also
 // owns "Sign in with the saved login"); it rides this Save and creates the vault entry only then.
+import { ConnectionWords as W } from './desk-v1-connection-words.js';
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
   const NEW = '__new';
   const COVERED = ['documented', 'claimed'];
   const COVERAGE_WORD = { documented: 'documented', claimed: 'claimed', unknown: 'not stated', unavailable: 'not offered', not_offered: 'not offered' };
-  const SETUP_WORD = { ready: 'Ready', needs_signin: 'Needs sign-in', vault_locked: 'Vault locked', pending_runtime: 'Saved; cannot run yet' };
-  const VERIFY_WORD = { verified: 'Verified', partial: 'Partly verified', not_checked: 'Not checked' };
+
   const ROLE_FOR_AUTH = { browser_signin: 'login', api_key: 'api_key', bearer: 'api_key' };
   const ROLE_LABEL = { login: 'Stored login', api_key: 'Stored API key' };
 
@@ -219,13 +219,13 @@
       const fill = sr && sr.signin && refs.login && window.DeskV1ConnectSignin
         ? window.DeskV1ConnectSignin.fillHTML(`${p.id}:${b.route_id}`, { url: sr.signin.url, login: refs.login, profile: refs.browser_profile || refs.oauth_profile }) : '';
       return `<li data-cp-bound="${esc(b.route_id)}"><strong>${esc(b.route_title)}</strong>: ${esc(b.capabilities.join(', '))}
-        <span class="desk-v1-cf-badge" data-cp-setup="${esc(b.setup)}">${esc(SETUP_WORD[b.setup] || b.setup)}</span>${b.reason ? ` <span class="desk-v1-cp-why">${esc(b.reason)}</span>` : ''}${b.setup === 'vault_locked' && window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML({ vault_locked: true }) : ''}${fill}</li>`;
+        <span class="desk-v1-cf-badge" data-cp-setup="${esc(b.setup)}">${esc(W.from(b.setup).word)}</span>${b.reason ? ` <span class="desk-v1-cp-why">${esc(b.reason)}</span>` : ''}${b.setup === 'vault_locked' && window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML({ vault_locked: true }) : ''}${fill}</li>`;
     });
     const checked = P.checks[`${a.id}:${p.id}`];
     const msg = checked ? `<div class="desk-v1-cp-checkmsg" data-cp-checkmsg role="status">${checked.map((x) => esc(`${x.title}: ${x.message}`)).join(' ')}</div>` : '';
     return `<div class="desk-v1-cp-state" data-cp-state="${esc(p.id)}"><ul class="desk-v1-cp-list">${rows.join('')}</ul>
-        <div class="desk-v1-cp-verify"><span class="desk-v1-cf-badge" data-cp-verify="${esc(ver.state)}">${esc(VERIFY_WORD[ver.state] || ver.state)}${ver.state === 'partial' ? `: ${ver.verified.length} of ${ver.bound.length}` : ''}</span>
-          <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cp-check="${esc(p.id)}" ${P.checking ? 'disabled' : ''}>${P.checking === p.id ? 'Checking…' : 'Check now'}</button></div>${msg}</div>`;
+        <div class="desk-v1-cp-verify"><span class="desk-v1-cf-badge" data-cp-verify="${esc(ver.state)}">${esc(W.from(ver.state).word)}${ver.state === 'partial' ? `: ${ver.verified.length} of ${ver.bound.length}` : ''}</span>
+          <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cp-check="${esc(p.id)}" ${P.checking ? 'disabled' : ''}>${P.checking === p.id ? W.buttons.checking : W.buttons.check}</button></div>${msg}</div>`;
   }
 
   function _purposeHTML(p) {

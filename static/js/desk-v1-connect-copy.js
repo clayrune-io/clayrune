@@ -1,3 +1,5 @@
+import { ConnectionWords as CW } from './desk-v1-connection-words.js';
+export { ConnectionWords } from './desk-v1-connection-words.js';
 // The public vocabulary of every Connect screen (MC-1062/14, Ron 2026-10-06).
 // Screen bodies retain their safety facts; technical names belong in Details.
 let enabled = false;
@@ -18,11 +20,11 @@ const words = Object.freeze({ continue: 'Continue', back: 'Back', save: 'Save', 
   packageSaving: 'Setting up and saving the connection; this can take a few minutes.',
   packageSaveFailed: 'The connection was not saved because setup failed.',
   packageResult: 'Read the connection status below.',
-  packageRegistered: 'Registered', packagePending: 'Saved, cannot run yet',
+  packageRegistered: CW.status.unchecked, packagePending: CW.status.broken,
   packageStartNote: 'Saving does not start the server or check that it works. It starts the first time an agent session uses it.',
-  packageWorking: 'Working', packageNotWorking: 'Not working',
+  packageWorking: CW.status.ready, packageNotWorking: CW.status.broken,
   packageCheckedNote: 'Clayrune started the server once to check it, then stopped it. Agents start it again when they use it.',
-  packageCheckAgain: 'Check again', packageChecking: 'Starting the server to check it…',
+  packageCheckAgain: CW.buttons.check, packageChecking: 'Starting the server to check it…',
   credentialsOptional: 'The instructions also mention these, as optional extras:',
   credentialsTitle: 'Credentials, by name only', credentialsTitleOptional: 'Credentials, by name only (optional)',
   commandHelp: 'This is the program Clayrune starts; keep the suggestion unless the package instructions say otherwise.',
@@ -55,8 +57,8 @@ const words = Object.freeze({ continue: 'Continue', back: 'Back', save: 'Save', 
   newAccount: 'Add another account', addNew: 'Add a new credential', packageHint: 'Enter a package name or a GitHub web address.', command: 'Start command', commandMissing: 'No start command was found. Enter the command to run.', existingAccount: 'Choose an account',
   package: 'Software package', remote: 'Server address', username: 'Username or email', password: 'Password',
   keyId: 'Access key ID', keySecret: 'Access key secret', key: 'Access key', clientId: 'App ID', clientSecret: 'App secret',
-  read: 'Read', post: 'Post', check: 'Check it now', open: 'Open sign-in', retry: 'Try again',
-  change: 'Change connection', checking: 'Checking…', checkFailed: 'Check failed',
+  read: CW.labels.read, post: CW.labels.post, check: CW.buttons.check, open: 'Open sign-in', retry: 'Try again',
+  change: CW.buttons.edit, checking: CW.buttons.checking, checkFailed: CW.status.broken,
   label: 'Display name', address: 'Web address', savedLogin: 'Saved sign-in', browserProfile: 'Browser profile',
   credentialName: 'Saved credential name', name: 'Service name', source: 'Information address',
   cancel: 'Cancel', refresh: 'Refresh status', detect: 'Find the required details', remove: 'Remove',
@@ -70,8 +72,8 @@ const words = Object.freeze({ continue: 'Continue', back: 'Back', save: 'Save', 
   noCredential: 'No credential', newCredential: 'New credential', credentialKind: 'Credential kind',
   authentication: 'Sign-in kind', credentialNames: 'Required credential names', placements: 'Where credentials are used',
   permissionsList: 'Allowed actions', unattended: 'Allow use while you are away',
-  loading: 'Loading saved information…', saved: 'Saved', notSaved: 'Not saved', notChecked: 'Not checked',
-  unchanged: 'Unchanged', connected: 'Connected', notConnected: 'Not connected',
+  loading: 'Loading saved information…', saved: 'Saved', notSaved: 'Not saved', notChecked: CW.status.unchecked,
+  unchanged: 'Unchanged', connected: CW.status.ready, notConnected: CW.status.unchecked,
   statusLabel: 'Status', connectionLabel: 'Connection', signinLabel: 'Sign-in',
   exampleAddress: 'Example: https://example.com', next:'Next', previousPage:'Previous',
   addCredential:'Add a credential', packageFile:'Start file in the package', arguments:'Arguments, one per line',
@@ -106,7 +108,7 @@ const words = Object.freeze({ continue: 'Continue', back: 'Back', save: 'Save', 
   manualHelp:'Sign in in the browser pane. Clayrune keeps the browser session.',
   browserNoExecution:'Read and Post are off. This browser sign-in grants no permission to run actions.',
   saveConnection:'Save connection',saveProof:'Re-enter your dashboard passcode to save this connection.',
-  checkConnection:'Check connection',noAutoCheck:'Clayrune has no automatic sign-in check for this service.',
+  checkConnection:CW.buttons.check,noAutoCheck:'Clayrune has no automatic sign-in check for this service.',
   signedInQuestion:'Are you signed in now?',yesSignedIn:"Yes, I’m signed in",notYet:'Not yet',
   paneUnavailable:'The browser pane could not be opened. Try again.',
   browserProof:'Browser sign-in works. Read and Post keep their own permissions.',
@@ -256,9 +258,6 @@ function bind(root) {
     if(label&&word) label.textContent=words[word];
   });
 }
-const statuses = Object.freeze({verified:'Verified',key_stored:'Key stored; not checked',signed_in:'Signed in, not verified',not_checked:'Not checked',
-  sign_in_required:'Sign-in required',key_unreadable:'Saved key cannot be read',vault_locked:'Saved credentials are locked',
-  check_failed:'Check failed',unknown:'Check unavailable',registered:'Registered; not checked',setup_failed:'Saved; setup failed',not_connected:'Not connected'});
-const connectionStatus = value => statuses[value] || words.checkFailed;
+const connectionStatus = value => CW.from(value).word;
 export const ConnectCopy = Object.freeze({ screens, words, plain, body, screen, bind, status: connectionStatus, isEnabled: () => enabled, enable: () => { enabled = true; } });
 window.DeskV1ConnectCopy = ConnectCopy;

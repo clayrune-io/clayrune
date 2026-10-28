@@ -22,6 +22,7 @@
 //
 // WHAT IT NEVER DOES. Open a pane the person did not ask for, sign in to anything on its own, send a password
 // (none is typed here), or loosen a gate: both API steps stay behind the dashboard passcode. It adds no route.
+import { ConnectionWords as W } from './desk-v1-connection-words.js';
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -94,7 +95,7 @@
         <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cfh-cancel ${saving ? 'disabled' : ''}>Discard it</button>${_msgHTML(ch, 'api')}`;
     }
     const failed = phase === 'failed' && flow.message ? `<div class="desk-v1-cf-msg" data-cf-msg="error" data-as-state="failed" role="alert">${esc(flow.message)}</div>` : '';
-    return `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline${_primary(f)}" data-as-signin="api" ${phase === 'starting' ? 'disabled' : ''}>Sign in</button>${failed}${_msgHTML(ch, 'api')}`;
+    return `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline${_primary(f)}" data-as-signin="api" ${phase === 'starting' ? 'disabled' : ''}>${W.buttons.signin}</button>${failed}${_msgHTML(ch, 'api')}`;
   }
 
   async function _save(ch, repaint) {
@@ -130,7 +131,7 @@
     if (f.id === 'api') return API[ch.platform] ? `<div class="desk-v1-cs-fill-row" data-as-row="api">${_apiHTML(ch, f)}</div>` : '';
     if (f.id !== 'browser' || !f.profile) return '';
     if (_pages[ch.platform] === null) return '<div class="desk-v1-cs-fill-row" data-as-row="browser"><div class="desk-v1-rules-hint" data-as-none>Clayrune has no reviewed sign-in page for this site, so it cannot open one from here.</div></div>';
-    return `<div class="desk-v1-cs-fill-row" data-as-row="browser"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline${_primary(f)}" data-as-signin="browser" data-as-profile="${esc(f.profile)}">Sign in</button>${_msgHTML(ch, 'browser')}</div>`;
+    return `<div class="desk-v1-cs-fill-row" data-as-row="browser"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline${_primary(f)}" data-as-signin="browser" data-as-profile="${esc(f.profile)}">${W.buttons.signin}</button>${_msgHTML(ch, 'browser')}</div>`;
   }
 
   function bind(row, ch, repaint) {

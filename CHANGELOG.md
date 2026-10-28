@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-28] - Unify saved Connections language and social account details
+
+- Connections use Ready, Needs sign-in, Not checked yet, Not working and Waiting on the service, with shared Check now, Edit, Sign in again and Remove labels.
+- Social details show the same Read/Post summary and collapsed technical Details; existing browser sites without an account show both permissions Off. Engine limits and explicit approval/unlock controls keep their existing human gates.
+- Added vocabulary/layout regression coverage and refreshed the affected interaction smokes. Saved engine/MCP setup restoration at Permissions remains a documented gap; no migration is included.
+
 ## [2026-10-28] - Keep older X sign-ins connected after Save (MC-1114)
 
 - Save now adds the app fingerprint to an older sign-in's metadata after confirming that its stored Client ID matches. A Client ID chosen from Secrets no longer leaves that reused sign-in asking to sign in again.

@@ -421,7 +421,7 @@ async function mainScenario(browser, width, height) {
   check(Object.keys(cbody).sort().join() === 'fingerprint,passcode,request_id', 'the Save carries only the request id, the fingerprint and the passcode', 'commit keys: ' + Object.keys(cbody));
   check(cbody.request_id === lastRequest && cbody.fingerprint === srv.cards.get(lastRequest).fingerprint, 'the Save names the LAST review (the card with the ticked script)', 'request id ' + cbody.request_id);
   const rtext = await text(page, '[data-pk-result]');
-  check((await text(page, '[data-cfw-title]')) === 'Registered' && /Registered/.test(rtext) && !/Connected/.test(rtext) && /starts the first time/.test(rtext), 'the result says Registered and when it starts, never Connected', 'result: ' + rtext);
+  check((await text(page, '[data-cfw-title]')) === 'Not checked yet' && /Registered/.test(rtext) && !/Connected/.test(rtext) && /starts the first time/.test(rtext), 'the result distinguishes saved registration from checked readiness', 'result: ' + rtext);
   check(!(await has(page, '[data-cfw-back]')), 'the result has no Back', 'Back on result');
   await rules(page, 'Result');
   await shot(page, 'result', width);
@@ -552,7 +552,7 @@ try {
   for (const [w, h] of [[1440, 900], [390, 844]]) {
     await mainScenario(browser, w, h);
     await invalidateScenario(browser, w, h);
-    await stateScenario(browser, w, h, 'pending_runtime', 'wrapper_missing', 'Saved, cannot run yet', 'Saved, cannot run yet');
+    await stateScenario(browser, w, h, 'pending_runtime', 'wrapper_missing', 'Not working', 'Not working');
     await stateScenario(browser, w, h, 'setup_failed', 'unpack_failed', 'Not saved', 'Not saved');
     await pypiScenario(browser, w, h);
     await bigTextScenario(browser, w, h);

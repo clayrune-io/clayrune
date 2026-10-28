@@ -380,7 +380,7 @@ async function run(browser, width, height) {
     check(/No: the check failed/.test(await text(page, '[data-sum-verified="failed"]')) && /401/.test(await text(page, '[data-sum-row="verified"] dd')) && !(await has(page, '[data-sum-verified="yes"]')), 'a failed check reads as FAILED with the reason, never as verified', 'failed check words wrong');
     await shot(page, 'result_api', width);
     await fits(page, 'API Result');
-    srv.verify = () => ({ state: 'verified', label: 'Verified', capability: 'Read your posts', identity: 'ronx', at: '2026-10-06T10:00:00Z' });
+    srv.verify = () => ({ state: 'verified', label: 'Ready', capability: 'Read your posts', identity: 'ronx', at: '2026-10-06T10:00:00Z' });
     await page.click('[data-sum-act="refresh"]');
     await page.waitForSelector('[data-sum-verified="yes"]');
     const v2 = logOf(srv, /verify/);
