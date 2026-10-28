@@ -55,6 +55,7 @@ from mc import browser_agent_read as _policy
 from mc import browser_digest
 from mc import desk_engagement as _eng
 from mc import desk_pane_pages_store as _store
+from mc import desk_read_gate as _gate
 from mc.core import _log
 from mc.desk_pane_pages import PLATFORM_PAGES
 
@@ -405,15 +406,18 @@ class PaneDigestReader(_eng.Reader):
             return {'connected': False, 'short': self.sign_in_short,
                     'reason': f'no saved browser profile {self._profile!r}'}
         rec = _policy.get_policy(self._profile)
+        # `gate` is the structured twin of `reason`: the Desk says "Reading is off", not "Needs sign-in".
+        start = self._start_url(rec['domains'] or [self.platform])
         if not rec['enabled']:
             return {'connected': False, 'short': 'agent reads are off for this browser profile',
                     'reason': f'profile {self._profile!r} is not switched on for agent reads; '
-                              'only a human can switch it on'}
-        start = self._start_url(rec['domains'])
+                              'only a human can switch it on',
+                    'gate': _gate.reads_off(self._profile, start)}
         if not _policy.url_allowed(start, rec['domains']):
             host = _policy.url_host(start) or start
             return {'connected': False, 'short': f"{host} is not on this profile's allowed list",
-                    'reason': f"{host} is not on profile {self._profile!r}'s agent-read domain list"}
+                    'reason': f"{host} is not on profile {self._profile!r}'s agent-read domain list",
+                    'gate': _gate.reads_off(self._profile, start)}
         return {'connected': True, 'reason': None, 'short': None}
 
     def close(self) -> None:

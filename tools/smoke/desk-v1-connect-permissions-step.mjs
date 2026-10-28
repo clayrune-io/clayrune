@@ -167,6 +167,14 @@ const cancelPrompt = (page) => page.click('.modal-content .btn-secondary');
 const waitPrompt = (page) => page.waitForSelector('input[id^="hp-passcode-"]', { timeout: 4000 });
 const mode = async (page, m) => { await page.check(`[data-cfw-option="${m}"] input`); await page.waitForSelector(`[data-cfw-option="${m}"] input:checked`); };
 const text = (page, sel) => page.$eval(sel, (e) => e.textContent.replace(/\s+/g, ' ').trim());
+// Every page of the paged Details list, first to last (it shows four items to a page), then back to the first.
+async function allDetails(page) {
+  while (await page.locator('[data-cfw-page="prev"]:not([disabled])').count()) await page.click('[data-cfw-page="prev"]');
+  let out = await text(page, '[data-cfp-details]');
+  while (await page.locator('[data-cfw-page="next"]:not([disabled])').count()) { await page.click('[data-cfw-page="next"]'); out += ' ' + await text(page, '[data-cfp-details]'); }
+  while (await page.locator('[data-cfw-page="prev"]:not([disabled])').count()) await page.click('[data-cfw-page="prev"]');
+  return out;
+}
 const has = (page, sel) => page.$(sel).then(Boolean);
 const box = (page, id) => page.$eval(`[data-cfp-box="${id}"]`, (b) => b.checked);
 const boxes = (page) => page.$$eval('[data-cfp-box]', (bs) => bs.map((b) => b.dataset.cfpBox));
@@ -284,13 +292,14 @@ async function run(browser, width, height) {
     check(!(await box(page, 'read')) && !(await box(page, 'post')), 'a new account starts with Read and Post OFF', 'a new grant started on');
     const owners = await page.$$eval('[data-cfp-owner]', (e) => e.map((x) => x.textContent.trim()));
     check(owners.join('|') === 'Desk permission|Desk permission', 'each row says whose permission it is (Desk permission)', 'owners: ' + owners.join('|'));
-    check(/Covers: Your posts\./.test(await text(page, '[data-cfp-box="read"] ~ .desk-v1-cfp-text')) && !/Mentions|Replies|metrics/.test(await text(page, '[data-cfp-box="read"] ~ .desk-v1-cfp-text')), 'API Read covers exactly "Your posts" (the one documented capability), nothing else', 'read coverage wrong');
+    check(/Read this account's activity/.test(await text(page, '[data-cfw-option="read"]')) && /Agents read this account's own mentions, replies and post stats\. They cannot click, type or post\./.test(await text(page, '[data-cfp-box="read"] ~ .desk-v1-cfp-text')), 'the Read row is the one shared sentence, the same for every connection', 'read row wrong: ' + await text(page, '[data-cfw-option="read"]'));
     check(/Covers: Post only\. Not Reply, media or Article\./.test(await text(page, '[data-cfp-box="post"] ~ .desk-v1-cfp-text')), 'Post covers "Post only. Not Reply, media or Article."', 'post coverage wrong');
     check(await has(page, '[data-cfp-paid]') && /may cost money/.test(await text(page, '[data-cfp-paid]')) && /never switches to the API/.test(await text(page, '[data-cfp-paid]')), 'the API Read row carries the paid notice and says a failed browser read never switches to it', 'paid notice missing');
     check(!(await has(page, '[data-cfp-confirm]')), 'with both off there is no confirm notice', 'a confirm notice showed with both off');
     check(writes(srv).length === 0, 'arriving here sent no write (types and read-only lookups only)', 'a write went out: ' + JSON.stringify(writes(srv).map((r) => r.path)));
     await page.click('[data-cfw-details] > summary');
     const dt = await text(page, '[data-cfp-details]');
+    check(/Read coversYour posts, through the API \(x-oauth\)\. Exactly these and nothing implied\./.test(dt) && !/Read covers[^.]*Mentions/.test(dt), 'Details: API Read covers exactly "Your posts" (the one documented capability), nothing else', 'details: ' + dt);
     check(/Read covers/.test(dt) && /Post covers/.test(dt) && /Not covered by Read or Post/.test(dt) && /Reply, media upload, Article and broad listening need their own later permission/.test(dt) && /Allowing Read never allows Post/.test(dt), 'Details: exact coverage, what Read/Post do not cover, Read never allows Post', 'details: ' + dt);
     await rules(page, 'Permissions (X API)');
     await shot(page, 'x_api', width);
@@ -391,21 +400,21 @@ async function run(browser, width, height) {
   {
     const { ctx, page, srv } = await newPage(browser, { srv: makeServer(), width, height });
     await toPermissions(page, { type: 'signin', target: NEW_X, signin: { profile: 'x-ronx' } });
-    check((await boxes(page)).join('|') === 'read|site', `X sign-in offers Desk Read and the browser site, no Post (${(await boxes(page)).join(', ')})`, 'boxes: ' + (await boxes(page)).join('|'));
-    const readText = await text(page, '[data-cfp-box="read"] ~ .desk-v1-cfp-text');
-    check(/Covers: Your posts, Mentions, Replies, Post metrics\./.test(readText) && /Desk permission/.test(readText) && !(await has(page, '[data-cfp-paid]')), 'browser Read covers the four claimed capabilities, is a Desk permission, and carries no paid notice', 'read text: ' + readText);
-    const siteText = await text(page, '[data-cfp-box="site"] ~ .desk-v1-cfp-text');
-    check(/Browser permission \(sign-in "x-ronx"\)/.test(siteText) && /Read pages on x\.com/.test(siteText) && /not saved yet/.test(siteText), 'the site row is a Browser permission on the sign-in "x-ronx" and says the profile is not saved yet', 'site text: ' + siteText);
-    check(!(await box(page, 'read')) && !(await box(page, 'site')), 'both start OFF', 'a browser grant started on');
+    check((await boxes(page)).join('|') === 'read|post', `X sign-in shows the same two rows, Read and Publish, and no site row (${(await boxes(page)).join(', ')})`, 'boxes: ' + (await boxes(page)).join('|'));
+    const readText = await text(page, '[data-cfw-option="read"]');
+    check(/Read this account's activity/.test(readText) && /Desk permission/.test(readText) && !(await has(page, '[data-cfp-paid]')) && !(await has(page, '[data-cfw-option="site"]')), 'browser Read is the shared Read row, a Desk permission, with no paid notice and no site row', 'read text: ' + readText);
+    check((await page.locator('[data-cfp-box="post"]').isDisabled()) && /Posting is not available through this connection yet\./.test(await text(page, '[data-cfw-option="post"]')), 'Publish stays visible, disabled, with one sentence saying why', await text(page, '[data-cfw-option="post"]'));
+    check(!/x-ronx|profile/i.test(await text(page, '[data-cfp-rows]')), 'no sign-in name or internal term in the rows', await text(page, '[data-cfp-rows]'));
+    check(!(await box(page, 'read')), 'Read starts OFF', 'a browser grant started on');
     await page.click('[data-cfw-details] > summary');
-    const dt = await text(page, '[data-cfp-details]');
-    check(/Browser sign-in/.test(dt) && /answer about a page, never the page/.test(dt) && /Read covers/.test(dt) && /through the browser sign-in/.test(dt), 'Details: coverage "through the browser sign-in" and the profile facts', 'details: ' + dt);
+    const dt = await allDetails(page);
+    check(/Browser sign-in/.test(dt) && /not saved yet/.test(dt) && /answer about a page, never the page/.test(dt) && /Read covers/.test(dt) && /through the browser sign-in/.test(dt), 'Details: coverage "through the browser sign-in", the sign-in is not saved yet, and the profile facts', 'details: ' + dt);
     await rules(page, 'Permissions (X sign-in)');
     await shot(page, 'x_signin', width);
     await fits(page, 'Permissions (X sign-in)');
-    await page.check('[data-cfp-box="site"]');
-    let r = await page.evaluate(() => window.DeskV1ConnectPermissionsStep.apply('acct-new'));
-    check(r.desk.status === 'unchanged' && r.site.status === 'deferred' && r.pending === true && logOf(srv, '/api/browser/profiles/x-ronx/agent-read').length === 0 && !(await has(page, 'input[id^="hp-passcode-"]')), 'a profile that is not saved yet defers the site grant: no prompt, no PUT', JSON.stringify(r));
+    await page.check('[data-cfp-box="read"]');
+    let r = await applyWith(page, 'acct-new', ['ok']);
+    check(r.desk.status === 'saved' && r.site.status === 'deferred' && r.pending === true && logOf(srv, '/api/browser/profiles/x-ronx/agent-read').length === 0 && !(await has(page, 'input[id^="hp-passcode-"]')), 'ONE tick: the Desk read is saved, and a sign-in that is not saved yet defers the domain: no second prompt, no PUT', JSON.stringify(r));
     const words = await page.evaluate((x) => window.DeskV1ConnectPermissionsStep.outcome(true, x), r);
     check(words.kind === 'partial' && words.lines.some((l) => /Finish sign-in to apply Read permission/.test(l)), 'the result says to finish sign-in to apply Read', JSON.stringify(words));
     await ctx.close();
@@ -414,21 +423,24 @@ async function run(browser, width, height) {
     const srv = makeServer();
     const { ctx, page } = await newPage(browser, { srv, width, height });
     await toPermissions(page, { type: 'signin', target: acct('acct-2'), signin: { profile: 'x-main' } });
-    check(/Agents get an answer about a page on x\.com through "x-main"\. They cannot click or post\./.test(await text(page, '[data-cfp-box="site"] ~ .desk-v1-cfp-text')), 'an existing profile\'s site row states what agents get and that they cannot click or post', 'site facts wrong');
-    await page.check('[data-cfp-box="site"]');
-    let r = await applyWith(page, 'acct-2', ['ok']);
-    const puts = logOf(srv, '/api/browser/profiles/x-main/agent-read');
-    check(r.desk.status === 'unchanged' && r.site.status === 'saved' && puts.length === 1 && JSON.stringify(puts[0].body.domains) === JSON.stringify(['example.org', 'x.com']) && puts[0].body.enabled === true,
-      'the site grant is ONE prompt and a PUT that keeps the profile\'s other site (example.org) and adds x.com', JSON.stringify({ r, puts: puts.map((p) => p.body) }));
-    // Both: Desk first, then the site; cancelling the first stops the second.
+    await page.click('[data-cfw-details] > summary');
+    { const dt2 = await allDetails(page); check(/Agents get an answer about a page, never the page\. They cannot click, type or post\./.test(dt2), 'Details state what agents get and that they cannot click, type or post', 'details: ' + dt2); }
+    // One tick, two writes: the Desk read first, then the service's own domain, each with its own passcode.
     await page.check('[data-cfp-box="read"]');
-    await page.uncheck('[data-cfp-box="site"]');
+    srv.log.length = 0;
+    let r = await applyWith(page, 'acct-2', ['ok', 'ok']);
+    const puts = logOf(srv, '/api/browser/profiles/x-main/agent-read').filter((x) => x.method === 'PUT');
+    check(r.desk.status === 'saved' && r.site.status === 'saved' && puts.length === 1 && JSON.stringify(puts[0].body.domains) === JSON.stringify(['example.org', 'x.com']) && puts[0].body.enabled === true,
+      'ticking Read saves the Desk read and adds ONLY x.com to the profile list, keeping its other site (example.org)', JSON.stringify({ r, puts: puts.map((p) => p.body) }));
+    // Unticking removes only its own domain; Desk first, and cancelling the first stops the second.
+    await page.uncheck('[data-cfp-box="read"]');
     srv.log.length = 0;
     r = await applyWith(page, 'acct-2', ['cancel']);
     check(r.desk.status === 'cancelled' && r.site.status === 'not_attempted' && logOf(srv, '/api/browser/profiles/x-main/agent-read').filter((x) => x.method === 'PUT').length === 0, 'cancelling the Desk prompt does not go on to the site prompt', JSON.stringify(r));
     r = await applyWith(page, 'acct-2', ['ok', 'ok']);
     const order = srv.log.filter((x) => x.method !== 'GET').map((x) => x.path);
-    check(r.ok && r.desk.status === 'saved' && r.site.status === 'saved' && order.join('|') === '/api/desk/connect/permissions/commit|/api/browser/profiles/x-main/agent-read', 'Desk and site are two prompts, the Desk write first, each with its own passcode', JSON.stringify({ r, order }));
+    const off = logOf(srv, '/api/browser/profiles/x-main/agent-read').filter((x) => x.method === 'PUT').pop();
+    check(r.ok && r.desk.status === 'saved' && r.site.status === 'saved' && order.join('|') === '/api/desk/connect/permissions/commit|/api/browser/profiles/x-main/agent-read' && off && JSON.stringify(off.body.domains) === JSON.stringify(['example.org']), 'Desk and domain are two prompts, the Desk write first, each with its own passcode; unticking removes only x.com', JSON.stringify({ r, order, off: off && off.body }));
     await ctx.close();
   }
 
@@ -436,8 +448,9 @@ async function run(browser, width, height) {
   {
     const { ctx, page } = await newPage(browser, { srv: makeServer(), width, height });
     await toPermissions(page, { address: 'linkedin.com', type: 'signin', target: { kind: 'member', identity: 'ron', account: { new: { identity: 'ron', label: '' } } }, signin: { profile: 'li-ron' } });
-    check((await boxes(page)).join('|') === 'site', `LinkedIn sign-in offers the site row only: no Desk Read, no Post (${(await boxes(page)).join(', ')})`, 'boxes: ' + (await boxes(page)).join('|'));
-    check(/^Allow agents to read through this sign-in\. Posting is not enabled by signing in: Post lives on the API connection\.$/.test(await text(page, '[data-cfw-copy]')), 'the copy says posting is not enabled by signing in', await text(page, '[data-cfw-copy]'));
+    check((await boxes(page)).join('|') === 'read|post', `LinkedIn sign-in shows the same two rows (${(await boxes(page)).join(', ')})`, 'boxes: ' + (await boxes(page)).join('|'));
+    check(!(await page.locator('[data-cfp-box="read"]').isDisabled()) && (await page.locator('[data-cfp-box="post"]').isDisabled()), 'Read is enabled (the domain), Publish is disabled', 'enabled states wrong');
+    check(/^Choose what agents may do with this account\. Posting still needs campaign approval\.$/.test(await text(page, '[data-cfw-copy]')), 'the copy is the one shared sentence', await text(page, '[data-cfw-copy]'));
     await page.click('[data-cfw-details] > summary');
     const dt = await text(page, '[data-cfp-details]');
     check(/The Desk does not run this route for any purpose yet/.test(dt), 'Details: the Desk does not run this route for any purpose yet', 'details: ' + dt);

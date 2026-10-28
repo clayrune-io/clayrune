@@ -73,6 +73,7 @@ from typing import Any, Callable
 from mc import desk as _desk
 from mc import desk_account_refs as _refs
 from mc import desk_oauth as _oauth
+from mc import desk_read_gate as _gate
 from mc import secrets_store
 from mc.core import _log
 
@@ -639,8 +640,9 @@ def platform_coverage(project_id: str, platform: str, reader: Reader | None = No
             'pages': reader.pages_state() if reader else None}
     if not cap['connected']:
         return {**base, 'state': 'not_connected', 'reason': cap.get('reason'),
+                'gate': cap.get('gate'),      # set when reading is not allowed yet (not a sign-in problem)
                 'last_ok_at': rec.get('last_ok_at') if same_route else None,
-                'message': f"Not connected ({cap.get('short') or cap.get('reason')})"}
+                'message': _gate.message(cap.get('gate')) or f"Not connected ({cap.get('short') or cap.get('reason')})"}
     if same_route and rec.get('error_kind') == 'not_signed_in' and reader is not None:
         # The profile exists but its last read hit the login wall.
         return {**base, 'state': 'not_connected', 'reason': rec.get('last_error'),

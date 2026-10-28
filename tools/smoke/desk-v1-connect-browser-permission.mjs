@@ -1,25 +1,22 @@
 #!/usr/bin/env node
 /**
- * Desk v1 — the browser Read permission editor (MC-1062 ticket 07,
- * docs/desk_v1/connect_flow_tickets/07-browser-permission.md). Hermetic: the real index.html + static/,
- * every /api route mocked (the real human-proof passcode modal is used).
+ * Desk v1 — the browser side of Read (MC-1062 ticket 07, docs/desk_v1/connect_flow_tickets/07-browser-permission.md).
+ * Since 2026-10-28 it has NO screen of its own: the Permissions step shows ONE Read row for every account
+ * (desk-v1-connect-permissions-step.mjs covers the row). This smoke covers the module behind that row: the grant of the
+ * service's OWN domain on a saved browser sign-in's agent-read list. Hermetic: the real index.html + static/, every
+ * /api route mocked (the real human-proof passcode modal is used).
  *
- *   1. Grant / revoke   the target site is added to / removed from the profile's list with ONE PUT carrying
- *                       the passcode; every other site on the list is preserved. A switched-off profile's
- *                       leftover domains are not revived. A parent domain that covers the site is shown and
- *                       its removal is said in the prompt.
- *   2. Shared           two connections on one profile (two mounts) show the same grant and each names the
- *                       other; other sites on the list are shown as untouched.
- *   3. No write         cancelling the prompt, a wrong passcode, a refused PUT and a full list send no
- *                       change: the stored policy is identical afterwards and the box shows it.
- *   4. Not saved yet    a profile that does not exist is never written to and never launched: the choice
- *                       is held (onWish), says so, and `apply` runs it only once the profile is saved.
+ *   1. Grant / revoke   the site is added to / removed from the profile's list with ONE PUT carrying the passcode;
+ *                       every other site on the list is preserved. A switched-off profile's leftover domains are
+ *                       not revived. Turning Read off removes only the exact site, never a covering parent or a site another connection on the sign-in reads.
+ *   2. Shared           two connections on one profile see the same grant; `load` names the other pane connection.
+ *   3. No write         cancelling the prompt, a wrong passcode, a refused PUT and a full list change nothing.
+ *   4. Not saved yet    a profile that does not exist is never written to: `apply` answers `deferred`, and runs
+ *                       once the profile is saved.
  *   5. Partial          outcome(): saved connection + failed/cancelled/deferred permission is "partial" or
  *                       "pending", never plain success.
- *   6. Scope            only GET agent-read, GET profiles and PUT agent-read are ever called (no launch,
- *                       read, input); the copy says answers not pages, no click/type/post, and makes no
- *                       claim of automatic LinkedIn feed coverage. The wizard is still dark by default.
- *   7. Fit              no horizontal scroll at 390 wide.
+ *   6. Retired          no per-site editor ships: `bind`/`html` are gone, the old stylesheet is not linked, and
+ *                       only GET agent-read, GET profiles and PUT agent-read are ever called.
  *
  * RUN   cd tools/smoke && node desk-v1-connect-browser-permission.mjs
  */
@@ -119,26 +116,24 @@ async function newPage(browser, viewport) {
   return { ctx, page, pageErrors };
 }
 
-// A mount in the page, bound the way a Permissions screen would.
-async function mountEditor(page, id, opts) {
-  await page.evaluate(async ({ id, opts }) => {
-    let host = document.getElementById('bperm-host');
-    if (!host) { host = document.createElement('div'); host.id = 'bperm-host'; host.style.cssText = 'position:fixed;top:80px;left:300px;width:560px;max-width:calc(100vw - 310px);z-index:50;background:var(--surface);padding:8px'; document.body.appendChild(host); }
-    let m = document.getElementById(id);
-    if (!m) { m = document.createElement('div'); m.id = id; host.appendChild(m); }
-    window.__wish = window.__wish || {};
-    window.__result = window.__result || {};
-    await window.DeskV1ConnectBrowserPermission.bind(m, { ...opts,
-      onWish: (v) => { window.__wish[id] = v; },
-      onResult: (r) => { window.__result[id] = r; } });
-  }, { id, opts });
-  await page.waitForSelector(`#${id} [data-bperm]`, { timeout: 4000 });
+const apply = (page, profile, site, want, opts) => page.evaluate(([a, b, c, d]) => window.DeskV1ConnectBrowserPermission.apply(a, b, c, d), [profile, site, want, opts || {}]);
+const load = (page, profile, site, opts) => page.evaluate(([a, b, c]) => window.DeskV1ConnectBrowserPermission.load(a, b, c), [profile, site, opts || {}]);
+const factsOf = (page, st, wish) => page.evaluate(([s, w]) => window.DeskV1ConnectBrowserPermission.facts(s, w).join(' '), [st, wish]);
+// apply() with the passcode prompt answered the way `opts` says; returns the apply result and the prompt's words.
+async function applyAnswering(page, profile, site, want, passcode, opts, applyOpts) {
+  const done = apply(page, profile, site, want, applyOpts);
+  const said = await answerPrompt(page, passcode, opts);
+  return { res: await done, said };
 }
-const box = (page, id) => page.locator(`#${id} [data-bperm-read]`);
-const say = (page, id) => page.locator(`#${id} [data-bperm-status]`).innerText();
-const facts = (page, id) => page.locator(`#${id} [data-bperm-facts]`).innerText();
-const settle = (page) => page.waitForTimeout(250);
+// apply() that must send nothing: if a passcode prompt opens anyway it is cancelled and the result says `prompted`, so a regression is a failed check, not a hang.
+async function applyExpectingNone(page, profile, site, want, opts) {
+  const done = apply(page, profile, site, want, opts);
+  const win = await Promise.race([done.then(() => null), page.waitForSelector('[data-modal-id^="__human-proof-"]', { timeout: 3000 }).catch(() => null)]);
+  if (win) { await answerPrompt(page, '', { cancel: true }); return { ...(await done), prompted: true }; }
+  return done;
+}
 const stored = (p) => JSON.stringify(srv.policy[p] || null);
+const noPrompt = async (page) => (await page.locator('[data-modal-id^="__human-proof-"]').count()) === 0;
 
 let browser, exitCode = 1;
 try {
@@ -147,110 +142,104 @@ try {
 
   console.log('Dark by default');
   check(await page.evaluate(() => window.DeskV1ConnectWizard.enabled() === false), 'the wizard is still off');
-  check(await page.locator('[data-bperm]').count() === 0, 'no permission editor is on screen until a screen mounts one');
-  check(await page.evaluate(() => typeof window.DeskV1ConnectBrowserPermission === 'object' && typeof window.DeskV1ConnectAgentRead.put === 'function'), 'the editor is loaded and reuses DeskV1ConnectAgentRead.put');
+  check(await page.evaluate(() => typeof window.DeskV1ConnectBrowserPermission === 'object' && typeof window.DeskV1ConnectAgentRead.put === 'function'), 'the module is loaded and reuses DeskV1ConnectAgentRead.put');
+
+  console.log('6 — the per-site editor is retired');
+  check(await page.evaluate(() => { const B = window.DeskV1ConnectBrowserPermission; return !('bind' in B) && !('html' in B) && typeof B.apply === 'function' && typeof B.load === 'function' && typeof B.facts === 'function'; }), 'bind/html are gone; load/apply/facts remain');
+  check(await page.evaluate(() => ![...document.querySelectorAll('link[rel=stylesheet]')].some((l) => /connect-browser-permission/.test(l.href))), 'the old stylesheet is not linked');
+  check(await page.locator('[data-bperm]').count() === 0, 'no per-site editor is on screen');
 
   console.log('1 — grant and revoke keep every other site');
   setPolicy({ main: { enabled: true, domains: ['reddit.com'] } });
   const channels = [{ id: 'ch-a', label: 'X (Ron)', browser_profile: 'main', read_via: 'pane' }, { id: 'ch-b', label: 'X (Studio)', browser_profile: 'main', read_via: 'pane' },
     { id: 'ch-c', label: 'X (API)', browser_profile: 'main', read_via: 'api' }, { id: 'ch-d', label: 'Elsewhere', browser_profile: 'work', read_via: 'pane' }];
-  await mountEditor(page, 'ed-a', { profile: 'main', site: 'x.com', channels, selfId: 'ch-a' });
-  check(!(await box(page, 'ed-a').isChecked()), 'x.com starts off while reddit.com is on the list');
-  const fa = await facts(page, 'ed-a');
-  check(/sign-in "main" on x\.com and its subdomains/.test(fa), 'it names the sign-in and the site it applies to');
-  check(/Also read through this sign-in: X \(Studio\)\./.test(fa) && !/X \(API\)|Elsewhere/.test(fa), 'it names the other pane connection on the same profile, not an API one or another profile');
-  check(/Other sites on it stay as they are: reddit\.com/.test(fa), 'it shows the other site that is not touched');
-  await box(page, 'ed-a').check();
-  const grantPrompt = await answerPrompt(page, 'smoke-passcode');
-  check(/let agents read x\.com through "main"/.test(grantPrompt || '') && /reddit\.com/.test(grantPrompt || ''), 'its own passcode prompt names the site, the profile and what is kept');
-  await page.waitForSelector('#ed-a [data-bperm-status]:not(:empty)', { timeout: 4000 });
-  check(puts.length === 1 && puts[0].body.passcode === 'smoke-passcode' && puts[0].body.enabled === true
+  let st = await load(page, 'main', 'x.com', { channels, selfId: 'ch-a' });
+  check(st.exists && !st.granted && st.others.join() === 'reddit.com', 'x.com starts off while reddit.com is on the list');
+  const fa = await factsOf(page, st, false);
+  check(/sign-in "main" on x\.com and its subdomains/.test(fa), 'the facts name the sign-in and the site it applies to');
+  check(/Also read through this sign-in: X \(Studio\)\./.test(fa) && !/X \(API\)|Elsewhere/.test(fa), 'they name the other pane connection on the same profile, not an API one or another profile');
+  check(/Other sites on it stay as they are: reddit\.com/.test(fa), 'they show the other site that is not touched');
+  let r = await applyAnswering(page, 'main', 'x.com', true, 'smoke-passcode');
+  check(/let agents read x\.com through "main"/.test(r.said || '') && /reddit\.com/.test(r.said || ''), 'its own passcode prompt names the site, the profile and what is kept');
+  check(r.res.status === 'saved' && puts.length === 1 && puts[0].body.passcode === 'smoke-passcode' && puts[0].body.enabled === true
     && JSON.stringify(puts[0].body.domains) === JSON.stringify(['reddit.com', 'x.com']), `ONE PUT with the passcode: reddit.com kept, x.com added (${JSON.stringify(puts[0] && puts[0].body.domains)})`);
-  check(await box(page, 'ed-a').isChecked() && /Saved/.test(await say(page, 'ed-a')), 'the box shows the saved grant');
 
-  console.log('2 — two connections on one profile show the same grant');
-  await mountEditor(page, 'ed-b', { profile: 'main', site: 'x.com', channels, selfId: 'ch-b' });
-  check(await box(page, 'ed-b').isChecked(), 'the second connection shows x.com granted too');
-  check(/Also read through this sign-in: X \(Ron\)\./.test(await facts(page, 'ed-b')), 'and names the first connection');
-
-  await box(page, 'ed-b').uncheck();
-  const revokePrompt = await answerPrompt(page, 'smoke-passcode');
-  check(/stop agents reading x\.com through "main"/.test(revokePrompt || ''), 'revoking says what stops');
-  await page.waitForFunction(() => /Saved/.test(document.querySelector('#ed-b [data-bperm-status]').textContent), null, { timeout: 4000 });
-  check(puts.length === 2 && JSON.stringify(puts[1].body.domains) === JSON.stringify(['reddit.com']) && puts[1].body.enabled === true, 'revoke removes only x.com; reddit.com stays and stays enabled');
-  await mountEditor(page, 'ed-a', { profile: 'main', site: 'x.com', channels, selfId: 'ch-a' });
-  check(!(await box(page, 'ed-a').isChecked()), 'the first connection now shows it off as well');
+  console.log('2 — two connections on one profile see the same grant');
+  st = await load(page, 'main', 'x.com', { channels, selfId: 'ch-b' });
+  check(st.granted, 'the second connection sees x.com granted too');
+  check(st.sharedWith.join() === 'X (Ron)', 'and names the first connection');
+  r = await applyAnswering(page, 'main', 'x.com', false, 'smoke-passcode');
+  check(/stop agents reading x\.com through "main"/.test(r.said || ''), 'revoking says what stops');
+  check(r.res.status === 'saved' && puts.length === 2 && JSON.stringify(puts[1].body.domains) === JSON.stringify(['reddit.com']) && puts[1].body.enabled === true, 'revoke removes only x.com; reddit.com stays and stays enabled');
+  check(!(await load(page, 'main', 'x.com', { channels, selfId: 'ch-a' })).granted, 'the first connection now shows it off as well');
 
   console.log('1b — a switched-off profile is not revived; a covering parent is disclosed');
   setPolicy({ main: { enabled: false, domains: ['reddit.com', 'x.com'] } });
-  await mountEditor(page, 'ed-c', { profile: 'main', site: 'x.com', channels: [], selfId: 'z' });
-  check(!(await box(page, 'ed-c').isChecked()), 'leftover domains on an off profile are not a grant');
-  await box(page, 'ed-c').check();
-  await answerPrompt(page, 'smoke-passcode');
-  await page.waitForFunction(() => /Saved/.test(document.querySelector('#ed-c [data-bperm-status]').textContent), null, { timeout: 4000 });
-  check(puts.length === 1 && JSON.stringify(puts[0].body.domains) === JSON.stringify(['x.com']) && puts[0].body.enabled === true, 'granting writes only x.com: the stale reddit.com is not revived');
+  check(!(await load(page, 'main', 'x.com')).granted, 'leftover domains on an off profile are not a grant');
+  r = await applyAnswering(page, 'main', 'x.com', true, 'smoke-passcode');
+  check(r.res.status === 'saved' && puts.length === 1 && JSON.stringify(puts[0].body.domains) === JSON.stringify(['x.com']) && puts[0].body.enabled === true, 'granting writes only x.com: the stale reddit.com is not revived');
 
+  // Unticking Read removes ONLY the exact service domain (Dave 2026-10-28): never a covering parent, never a domain another
+  // saved connection on the same sign-in reads.
   setPolicy({ main: { enabled: true, domains: ['linkedin.com', 'reddit.com'] } });
-  await mountEditor(page, 'ed-d', { profile: 'main', site: 'www.linkedin.com', channels: [], selfId: 'z' });
-  check(await box(page, 'ed-d').isChecked() && /Allowed through linkedin\.com, which covers www\.linkedin\.com\. Turning Read off removes linkedin\.com\./.test(await facts(page, 'ed-d')), 'a covering parent shows as granted and says revoking removes the parent');
-  check(/does not read your LinkedIn feed or notifications by itself/.test(await facts(page, 'ed-d')), 'LinkedIn copy denies automatic feed coverage');
-  await box(page, 'ed-d').uncheck();
-  const widerPrompt = await answerPrompt(page, 'smoke-passcode');
-  check(/stop agents reading linkedin\.com through "main"/.test(widerPrompt || ''), 'the prompt names the parent that will be removed');
-  await page.waitForFunction(() => /Saved/.test(document.querySelector('#ed-d [data-bperm-status]').textContent), null, { timeout: 4000 });
-  check(JSON.stringify(puts[0].body.domains) === JSON.stringify(['reddit.com']), 'only the covering parent left the list');
+  st = await load(page, 'main', 'www.linkedin.com');
+  const fd = await factsOf(page, st, false);
+  check(st.granted && /Allowed through linkedin\.com, which covers www\.linkedin\.com\. Turning Read off does not remove linkedin\.com\./.test(fd), 'a covering parent shows as granted and says turning Read off does not remove it');
+  check(/does not read your LinkedIn feed or notifications by itself/.test(fd), 'LinkedIn facts deny automatic feed coverage');
+  r = await applyExpectingNone(page, 'main', 'www.linkedin.com', false);
+  check(r.status === 'unchanged' && !r.prompted && puts.length === 0 && r.stays && r.stays.kind === 'parent' && r.stays.by === 'linkedin.com',
+    'unticking www.linkedin.com under a linkedin.com grant sends nothing (no prompt, no PUT) and names the parent that keeps it');
+  check(/www\.linkedin\.com stays readable because this sign-in allows all of linkedin\.com\./.test(await page.evaluate((x) => window.DeskV1ConnectBrowserPermission.outcome(true, x).text, r)), 'the result says plainly why it stays readable');
+
+  setPolicy({ main: { enabled: true, domains: ['linkedin.com', 'www.linkedin.com', 'reddit.com'] } });
+  r = await applyAnswering(page, 'main', 'www.linkedin.com', false, 'smoke-passcode');
+  check(r.res.status === 'saved' && puts.length === 1 && JSON.stringify(puts[0].body.domains) === JSON.stringify(['linkedin.com', 'reddit.com']) && r.res.stays && r.res.stays.by === 'linkedin.com',
+    `the exact domain leaves while the parent stays (${JSON.stringify(puts[0] && puts[0].body.domains)})`);
+
+  setPolicy({ main: { enabled: true, domains: ['x.com', 'reddit.com'] } });
+  const sharers = [{ id: 'ch-a', label: 'X (Ron)', browser_profile: 'main', read_via: 'pane' }, { id: 'ch-b', label: 'X (Studio)', browser_profile: 'main', read_via: 'pane' }];
+  r = await applyExpectingNone(page, 'main', 'x.com', false, { channels: sharers, selfId: 'ch-a' });
+  check(r.status === 'unchanged' && !r.prompted && puts.length === 0 && r.stays && r.stays.kind === 'shared' && r.stays.by === 'X (Studio)',
+    'unticking a site another saved connection on the same sign-in reads sends nothing and names that connection');
+  check(/x\.com stays readable for X \(Studio\), which uses the same sign-in\./.test(await page.evaluate((x) => window.DeskV1ConnectBrowserPermission.outcome(true, x).text, r)), 'the result says it stays readable for that connection');
+  r = await applyAnswering(page, 'main', 'x.com', false, 'smoke-passcode', undefined, { channels: [sharers[0]], selfId: 'ch-a' });
+  check(r.res.status === 'saved' && JSON.stringify(puts[0].body.domains) === JSON.stringify(['reddit.com']), 'with nobody else on the sign-in the same untick removes the exact domain');
 
   console.log('3 — cancel, wrong passcode, refusal and a full list change nothing');
   setPolicy({ main: { enabled: true, domains: ['reddit.com'] } });
-  await mountEditor(page, 'ed-e', { profile: 'main', site: 'x.com', channels: [], selfId: 'z' });
-  await box(page, 'ed-e').check();
-  await answerPrompt(page, '', { cancel: true });
-  await page.waitForFunction(() => /passcode was not entered/.test(document.querySelector('#ed-e [data-bperm-status]').textContent), null, { timeout: 4000 });
-  check(puts.length === 0 && stored('main') === JSON.stringify({ enabled: true, domains: ['reddit.com'] }), 'cancelling the prompt sent nothing and changed nothing');
-  check(!(await box(page, 'ed-e').isChecked()), 'the box went back to off');
+  r = await applyAnswering(page, 'main', 'x.com', true, '', { cancel: true });
+  check(r.res.status === 'cancelled' && puts.length === 0 && stored('main') === JSON.stringify({ enabled: true, domains: ['reddit.com'] }), 'cancelling the prompt sent nothing and changed nothing');
 
-  await box(page, 'ed-e').check();
+  const wrong = apply(page, 'main', 'x.com', true);
   await answerPrompt(page, 'wrong');
   await page.waitForFunction(() => /Wrong dashboard passcode/i.test((document.querySelector('[data-modal-id^="__human-proof-"]') || {}).textContent || ''), null, { timeout: 4000 }).catch(() => {});
   check(/Wrong dashboard passcode/i.test(await page.locator('[data-modal-id^="__human-proof-"]').innerText()), 'a wrong passcode is refused in the prompt');
   check(stored('main') === JSON.stringify({ enabled: true, domains: ['reddit.com'] }), 'the stored policy is unchanged after the wrong passcode');
   await answerPrompt(page, '', { cancel: true });
-  await page.waitForFunction(() => /passcode was not entered/.test(document.querySelector('#ed-e [data-bperm-status]').textContent), null, { timeout: 4000 });
-  check(!(await box(page, 'ed-e').isChecked()) && stored('main') === JSON.stringify({ enabled: true, domains: ['reddit.com'] }), 'backing out after it leaves the box off and the policy unchanged');
+  check((await wrong).status === 'cancelled' && stored('main') === JSON.stringify({ enabled: true, domains: ['reddit.com'] }), 'backing out after it leaves the policy unchanged');
 
   srv.refusePut = true;
-  await box(page, 'ed-e').check();
-  await answerPrompt(page, 'smoke-passcode');
-  await page.waitForFunction(() => /Could not save it/.test(document.querySelector('#ed-e [data-bperm-status]').textContent), null, { timeout: 4000 });
-  check(/this action needs a human/.test(await say(page, 'ed-e')) && !(await box(page, 'ed-e').isChecked()), 'a refused PUT says why in place and leaves the box off');
+  r = await applyAnswering(page, 'main', 'x.com', true, 'smoke-passcode');
+  check(r.res.status === 'failed' && /this action needs a human/.test(r.res.error || '') && stored('main') === JSON.stringify({ enabled: true, domains: ['reddit.com'] }), 'a refused PUT says why and leaves the policy as it was');
   srv.refusePut = false;
 
   const twenty = Array.from({ length: 20 }, (_, i) => `site${i}.com`);
   setPolicy({ main: { enabled: true, domains: twenty } });
-  await mountEditor(page, 'ed-f', { profile: 'main', site: 'x.com', channels: [], selfId: 'z' });
-  await box(page, 'ed-f').check();
-  await page.waitForFunction(() => /most it can/.test(document.querySelector('#ed-f [data-bperm-status]').textContent), null, { timeout: 4000 });
-  check(puts.length === 0 && (await promptText(page)) === null, 'a full list is refused up front: no prompt, no PUT');
+  r = await apply(page, 'main', 'x.com', true);
+  check(r.status === 'failed' && /most it can/.test(r.error || '') && puts.length === 0 && await noPrompt(page), 'a full list is refused up front: no prompt, no PUT');
 
   console.log('4 — a profile that is not saved yet');
   setPolicy({});
   srv.profiles = ['main'];
   calls.length = 0;
-  await mountEditor(page, 'ed-g', { profile: 'linkedin-new', site: 'linkedin.com', channels: [], selfId: 'z' });
-  check(/"linkedin-new" is not saved yet\. Nothing changes until you sign in/.test(await facts(page, 'ed-g')), 'it says the sign-in is not saved and nothing changes yet');
-  await box(page, 'ed-g').check();
-  await settle(page);
-  check(puts.length === 0 && (await promptText(page)) === null, 'choosing Read sent no PUT and asked for no passcode');
-  check(await page.evaluate(() => window.__wish['ed-g'] === true), 'the choice is held (onWish true)');
-  check(/Kept\. Reading is allowed once you have signed in/.test(await say(page, 'ed-g')), 'it says it is kept for sign-in');
+  st = await load(page, 'linkedin-new', 'linkedin.com');
+  check(!st.exists && /"linkedin-new" is not saved yet\. Nothing changes until you sign in/.test(await factsOf(page, st, true)), 'facts say the sign-in is not saved and nothing changes yet');
+  const deferred = await apply(page, 'linkedin-new', 'linkedin.com', true);
+  check(deferred.status === 'deferred' && puts.length === 0 && await noPrompt(page), 'apply() on an unsaved profile is deferred: no PUT, no passcode prompt');
   check(calls.every((c) => c.method === 'GET'), 'only GETs were made while deferred');
-  const deferred = await page.evaluate(() => window.DeskV1ConnectBrowserPermission.apply('linkedin-new', 'linkedin.com', true));
-  check(deferred.status === 'deferred' && puts.length === 0, 'apply() on an unsaved profile is deferred, nothing written');
   srv.profiles = ['main', 'linkedin-new'];
-  const applied = page.evaluate(() => window.DeskV1ConnectBrowserPermission.apply('linkedin-new', 'linkedin.com', true));
-  await answerPrompt(page, 'smoke-passcode');
-  const done = await applied;
-  check(done.status === 'saved' && puts.length === 1 && puts[0].name === 'linkedin-new' && JSON.stringify(puts[0].body.domains) === JSON.stringify(['linkedin.com']), 'once the profile is saved, apply() writes the held grant');
+  r = await applyAnswering(page, 'linkedin-new', 'linkedin.com', true, 'smoke-passcode');
+  check(r.res.status === 'saved' && puts.length === 1 && puts[0].name === 'linkedin-new' && JSON.stringify(puts[0].body.domains) === JSON.stringify(['linkedin.com']), 'once the profile is saved, apply() writes the held grant');
 
   console.log('5 — partial success is never plain success');
   const out = await page.evaluate(() => {
@@ -263,24 +252,17 @@ try {
   check(out.good.kind === 'ok' && out.none.kind === 'ok', 'a saved permission or none is ok');
   check(out.reverse.kind === 'partial', 'a saved permission with an unsaved connection is partial');
 
-  console.log('6 — scope');
+  console.log('6b — scope');
   const paths = [...new Set(calls.map((c) => `${c.method} ${c.path.replace(/profiles\/[^/]+\//, 'profiles/<p>/')}`))];
   check(paths.every((p) => ['GET /api/browser/agent-read', 'GET /api/browser/profiles', 'PUT /api/browser/profiles/<p>/agent-read'].includes(p)), `only the existing read/PUT routes were used (${paths.join(', ')})`);
-  const copy = await facts(page, 'ed-a');
-  check(/answer about a page, never the page\. They cannot click, type or post\./.test(copy), 'the copy says answers not pages and no click, type or post');
-  check(!/feed/i.test(await facts(page, 'ed-e')), 'no feed claim on a non-LinkedIn site');
-
-  console.log('7 — fit at 390');
-  await page.setViewportSize({ width: 390, height: 800 });
-  await page.evaluate(() => { const h = document.getElementById('bperm-host'); h.style.left = '0'; h.style.maxWidth = '100vw'; h.style.width = 'auto'; h.style.right = '0'; });
-  await mountEditor(page, 'ed-h', { profile: 'main', site: 'x.com', channels, selfId: 'ch-a' });
-  const fit = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, r: document.getElementById('bperm-host').getBoundingClientRect().right }));
-  check(fit.sw <= fit.cw && fit.r <= fit.cw, `no horizontal scroll at 390 (scrollWidth ${fit.sw}, client ${fit.cw}, right edge ${Math.round(fit.r)})`);
+  const copy = await factsOf(page, await load(page, 'main', 'x.com'), false);
+  check(/answer about a page, never the page\. They cannot click, type or post\./.test(copy), 'the facts say answers not pages and no click, type or post');
+  check(!/feed/i.test(copy), 'no feed claim on a non-LinkedIn site');
 
   pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e)).forEach((e) => fail('uncaught: ' + e));
   await ctx.close();
   exitCode = bad === 0 ? 0 : 1;
-  console.log(exitCode === 0 ? '\n✅ PASS — browser Read permission editor.' : `\n❌ FAIL — ${bad} check(s).`);
+  console.log(exitCode === 0 ? '\n✅ PASS — browser side of Read.' : `\n❌ FAIL — ${bad} check(s).`);
 } catch (err) {
   console.error('❌ FAIL — smoke harness error:', err && err.stack ? err.stack : err);
 } finally {
