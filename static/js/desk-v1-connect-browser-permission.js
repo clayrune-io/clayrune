@@ -43,8 +43,13 @@
   function covering(domains, site) { return domains.filter((d) => site === d || site.endsWith('.' + d)); }
 
   // What changing the list would do. `policy` is `{enabled, domains}` as the server stores it: a
-  // switched-off profile reads nothing, so its leftover domains are not part of the grant.
-  function plan(policy, site, want) {
+  // switched-off profile reads nothing, so its leftover domains are not part of the grant. `sharedWith` names the other
+  // saved connections reading through the same sign-in.
+  //
+  // REMOVING (Dave 2026-10-28): only the EXACT service domain ever leaves the list, and only when no other saved connection
+  // reads through this sign-in. A parent domain (linkedin.com for www.linkedin.com) is never removed, and neither is a
+  // domain someone else relies on; `stays` says which of the two kept it, so the screen can say so plainly.
+  function plan(policy, site, want, sharedWith) {
     const active = policy && policy.enabled === true ? (policy.domains || []).slice() : [];
     const hit = covering(active, site);
     if (want) {
@@ -52,8 +57,11 @@
       if (active.length >= MAX_DOMAINS) return { error: `This sign-in already allows ${MAX_DOMAINS} sites, the most it can. Remove one first.` };
       return { change: true, next: active.concat([site]) };
     }
-    if (!hit.length) return { change: false, next: active };
-    return { change: true, next: active.filter((d) => !hit.includes(d)), removed: hit, wider: hit.filter((d) => d !== site) };
+    const parent = hit.find((d) => d !== site) || '';
+    if (!hit.includes(site)) return { change: false, next: active, stays: parent ? { kind: 'parent', by: parent } : null };
+    const sharers = sharedWith || [];
+    if (sharers.length) return { change: false, next: active, stays: { kind: 'shared', by: sharers.join(', ') } };
+    return { change: true, next: active.filter((d) => d !== site), removed: [site], stays: parent ? { kind: 'parent', by: parent } : null };
   }
 
   // Other saved connections that read through the same profile (they share this grant).
@@ -90,25 +98,33 @@
     return st;
   }
 
-  // Grant or revoke `site` on `profile`. -> { status, domains?, error?, wider? }
+  // The plain sentence for a domain that is still readable after Read was turned off (`stays` of plan/apply).
+  function staysText(site, stays) {
+    if (!stays) return '';
+    if (stays.kind === 'shared') return `${site} stays readable for ${stays.by}, which uses the same sign-in.`;
+    return `${site} stays readable because this sign-in allows all of ${stays.by}.`;
+  }
+
+  // Grant or revoke `site` on `profile`. -> { status, domains?, error?, stays? }
+  //   `opts.channels` / `opts.selfId`: the saved connections, so a site another connection relies on is not removed.
   //   saved      the server stored the new list      unchanged   it already said that: nothing sent
   //   cancelled  the passcode prompt was dismissed   deferred    the profile is not saved yet: nothing sent
   //   failed     refused or unreachable: nothing changed (`error` says why)
-  async function apply(profile, site, want) {
+  async function apply(profile, site, want, opts) {
     try {
-      const st = await load(profile, site);
+      const st = await load(profile, site, opts || {});
       if (!st.site) return { status: 'failed', error: 'That is not a site name an agent can be allowed to read.' };
       if (!st.profile || !st.exists) return { status: 'deferred' };
-      const pl = plan({ enabled: st.enabled, domains: st.domains }, st.site, !!want);
+      const pl = plan({ enabled: st.enabled, domains: st.domains }, st.site, !!want, st.sharedWith);
       if (pl.error) return { status: 'failed', error: pl.error };
-      if (!pl.change) return { status: 'unchanged', domains: pl.next };
+      if (!pl.change) return { status: 'unchanged', domains: pl.next, site: st.site, stays: pl.stays || null };
       const keep = pl.next.length ? ` Other sites on it (${pl.next.filter((d) => d !== st.site).join(', ') || 'none'}) are not changed.` : '';
       const said = want
         ? `Re-enter your dashboard passcode to let agents read ${st.site} through "${st.profile}".${keep}`
-        : `Re-enter your dashboard passcode to stop agents reading ${(pl.removed || [st.site]).join(', ')} through "${st.profile}".${keep}`;
+        : `Re-enter your dashboard passcode to stop agents reading ${st.site} through "${st.profile}".${keep}`;
       const saved = await _reader().put(st.profile, pl.next, said);
       if (saved === null) return { status: 'cancelled' };
-      return { status: 'saved', domains: saved, wider: pl.wider || [] };
+      return { status: 'saved', domains: saved, site: st.site, stays: pl.stays || null };
     } catch (e) {
       return { status: 'failed', error: (e && e.message) || 'That did not work.' };
     }
@@ -122,7 +138,7 @@
     if (connectionSaved && r.status === 'cancelled') return { kind: 'partial', text: 'Your connection is saved. Browser reading was not changed: the passcode was not entered.' };
     if (connectionSaved && r.status === 'deferred') return { kind: 'pending', text: 'Your connection is saved. Browser reading starts after you sign in.' };
     if (!connectionSaved && r.status === 'saved') return { kind: 'partial', text: 'Browser reading is saved, but the connection itself did not save.' };
-    return { kind: 'ok', text: '' };
+    return { kind: 'ok', text: r.stays ? staysText(r.site, r.stays) : '' };
   }
 
   // ── words (Details only) ────────────────────────────────────────────────
@@ -131,13 +147,13 @@
     if (!st.profile) return ['Choose a browser sign-in first. Reading is allowed on a sign-in, not on an account.'];
     if (!st.exists) f.push(`The sign-in "${st.profile}" is not saved yet. Nothing changes until you sign in${wish ? '; this choice is kept for then' : ''}.`);
     else f.push(`Applies to every connection using the sign-in "${st.profile}" on ${st.site} and its subdomains.`);
-    if (st.coveredBy && st.coveredBy !== st.site) f.push(`Allowed through ${st.coveredBy}, which covers ${st.site}. Turning Read off removes ${st.coveredBy}.`);
-    if (st.sharedWith.length) f.push(`Also read through this sign-in: ${st.sharedWith.join(', ')}. They get the same setting.`);
+    if (st.coveredBy && st.coveredBy !== st.site) f.push(`Allowed through ${st.coveredBy}, which covers ${st.site}. Turning Read off does not remove ${st.coveredBy}.`);
+    if (st.sharedWith.length) f.push(`Also read through this sign-in: ${st.sharedWith.join(', ')}. ${st.site} stays readable while they use it.`);
     if (st.others.length) f.push(`Other sites on it stay as they are: ${st.others.join(', ')}.`);
     f.push('Agents get an answer about a page, never the page. They cannot click, type or post.');
     if (st.site === 'linkedin.com' || st.site.endsWith('.linkedin.com')) f.push('This does not read your LinkedIn feed or notifications by itself.');
     return f;
   }
 
-  window.DeskV1ConnectBrowserPermission = { siteOf, covering, plan, sharing, load, apply, outcome, facts: _facts };
+  window.DeskV1ConnectBrowserPermission = { siteOf, covering, plan, sharing, load, apply, outcome, staysText, facts: _facts };
 })();

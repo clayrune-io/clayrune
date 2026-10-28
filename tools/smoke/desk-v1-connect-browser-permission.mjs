@@ -8,7 +8,7 @@
  *
  *   1. Grant / revoke   the site is added to / removed from the profile's list with ONE PUT carrying the passcode;
  *                       every other site on the list is preserved. A switched-off profile's leftover domains are
- *                       not revived. A parent domain that covers the site is shown and its removal is said in the prompt.
+ *                       not revived. Turning Read off removes only the exact site, never a covering parent or a site another connection on the sign-in reads.
  *   2. Shared           two connections on one profile see the same grant; `load` names the other pane connection.
  *   3. No write         cancelling the prompt, a wrong passcode, a refused PUT and a full list change nothing.
  *   4. Not saved yet    a profile that does not exist is never written to: `apply` answers `deferred`, and runs
@@ -116,14 +116,21 @@ async function newPage(browser, viewport) {
   return { ctx, page, pageErrors };
 }
 
-const apply = (page, profile, site, want) => page.evaluate(([a, b, c]) => window.DeskV1ConnectBrowserPermission.apply(a, b, c), [profile, site, want]);
+const apply = (page, profile, site, want, opts) => page.evaluate(([a, b, c, d]) => window.DeskV1ConnectBrowserPermission.apply(a, b, c, d), [profile, site, want, opts || {}]);
 const load = (page, profile, site, opts) => page.evaluate(([a, b, c]) => window.DeskV1ConnectBrowserPermission.load(a, b, c), [profile, site, opts || {}]);
 const factsOf = (page, st, wish) => page.evaluate(([s, w]) => window.DeskV1ConnectBrowserPermission.facts(s, w).join(' '), [st, wish]);
 // apply() with the passcode prompt answered the way `opts` says; returns the apply result and the prompt's words.
-async function applyAnswering(page, profile, site, want, passcode, opts) {
-  const done = apply(page, profile, site, want);
+async function applyAnswering(page, profile, site, want, passcode, opts, applyOpts) {
+  const done = apply(page, profile, site, want, applyOpts);
   const said = await answerPrompt(page, passcode, opts);
   return { res: await done, said };
+}
+// apply() that must send nothing: if a passcode prompt opens anyway it is cancelled and the result says `prompted`, so a regression is a failed check, not a hang.
+async function applyExpectingNone(page, profile, site, want, opts) {
+  const done = apply(page, profile, site, want, opts);
+  const win = await Promise.race([done.then(() => null), page.waitForSelector('[data-modal-id^="__human-proof-"]', { timeout: 3000 }).catch(() => null)]);
+  if (win) { await answerPrompt(page, '', { cancel: true }); return { ...(await done), prompted: true }; }
+  return done;
 }
 const stored = (p) => JSON.stringify(srv.policy[p] || null);
 const noPrompt = async (page) => (await page.locator('[data-modal-id^="__human-proof-"]').count()) === 0;
@@ -172,14 +179,31 @@ try {
   r = await applyAnswering(page, 'main', 'x.com', true, 'smoke-passcode');
   check(r.res.status === 'saved' && puts.length === 1 && JSON.stringify(puts[0].body.domains) === JSON.stringify(['x.com']) && puts[0].body.enabled === true, 'granting writes only x.com: the stale reddit.com is not revived');
 
+  // Unticking Read removes ONLY the exact service domain (Dave 2026-10-28): never a covering parent, never a domain another
+  // saved connection on the same sign-in reads.
   setPolicy({ main: { enabled: true, domains: ['linkedin.com', 'reddit.com'] } });
   st = await load(page, 'main', 'www.linkedin.com');
   const fd = await factsOf(page, st, false);
-  check(st.granted && /Allowed through linkedin\.com, which covers www\.linkedin\.com\. Turning Read off removes linkedin\.com\./.test(fd), 'a covering parent shows as granted and says revoking removes the parent');
+  check(st.granted && /Allowed through linkedin\.com, which covers www\.linkedin\.com\. Turning Read off does not remove linkedin\.com\./.test(fd), 'a covering parent shows as granted and says turning Read off does not remove it');
   check(/does not read your LinkedIn feed or notifications by itself/.test(fd), 'LinkedIn facts deny automatic feed coverage');
+  r = await applyExpectingNone(page, 'main', 'www.linkedin.com', false);
+  check(r.status === 'unchanged' && !r.prompted && puts.length === 0 && r.stays && r.stays.kind === 'parent' && r.stays.by === 'linkedin.com',
+    'unticking www.linkedin.com under a linkedin.com grant sends nothing (no prompt, no PUT) and names the parent that keeps it');
+  check(/www\.linkedin\.com stays readable because this sign-in allows all of linkedin\.com\./.test(await page.evaluate((x) => window.DeskV1ConnectBrowserPermission.outcome(true, x).text, r)), 'the result says plainly why it stays readable');
+
+  setPolicy({ main: { enabled: true, domains: ['linkedin.com', 'www.linkedin.com', 'reddit.com'] } });
   r = await applyAnswering(page, 'main', 'www.linkedin.com', false, 'smoke-passcode');
-  check(/stop agents reading linkedin\.com through "main"/.test(r.said || ''), 'the prompt names the parent that will be removed');
-  check(r.res.status === 'saved' && JSON.stringify(puts[0].body.domains) === JSON.stringify(['reddit.com']), 'only the covering parent left the list');
+  check(r.res.status === 'saved' && puts.length === 1 && JSON.stringify(puts[0].body.domains) === JSON.stringify(['linkedin.com', 'reddit.com']) && r.res.stays && r.res.stays.by === 'linkedin.com',
+    `the exact domain leaves while the parent stays (${JSON.stringify(puts[0] && puts[0].body.domains)})`);
+
+  setPolicy({ main: { enabled: true, domains: ['x.com', 'reddit.com'] } });
+  const sharers = [{ id: 'ch-a', label: 'X (Ron)', browser_profile: 'main', read_via: 'pane' }, { id: 'ch-b', label: 'X (Studio)', browser_profile: 'main', read_via: 'pane' }];
+  r = await applyExpectingNone(page, 'main', 'x.com', false, { channels: sharers, selfId: 'ch-a' });
+  check(r.status === 'unchanged' && !r.prompted && puts.length === 0 && r.stays && r.stays.kind === 'shared' && r.stays.by === 'X (Studio)',
+    'unticking a site another saved connection on the same sign-in reads sends nothing and names that connection');
+  check(/x\.com stays readable for X \(Studio\), which uses the same sign-in\./.test(await page.evaluate((x) => window.DeskV1ConnectBrowserPermission.outcome(true, x).text, r)), 'the result says it stays readable for that connection');
+  r = await applyAnswering(page, 'main', 'x.com', false, 'smoke-passcode', undefined, { channels: [sharers[0]], selfId: 'ch-a' });
+  check(r.res.status === 'saved' && JSON.stringify(puts[0].body.domains) === JSON.stringify(['reddit.com']), 'with nobody else on the sign-in the same untick removes the exact domain');
 
   console.log('3 — cancel, wrong passcode, refusal and a full list change nothing');
   setPolicy({ main: { enabled: true, domains: ['reddit.com'] } });

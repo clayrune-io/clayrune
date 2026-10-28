@@ -91,7 +91,9 @@ async function apply(id) {
     return { status:'saved' };
   } catch (e) { return { status:'failed', error:e.message || C.words.notSaved }; }
 }
-P?.registerSection({ matches, html, bind, problem, summary, apply,
+// The reading the account will have once this section's draft is applied (Permissions aims its grants at it).
+function reading() { return R.key && R.via ? { via:R.via, profile:R.via === 'pane' ? R.profile : '' } : null; }
+P?.registerSection({ matches, html, bind, problem, summary, apply, reading,
   discard:() => { seq++; R = fresh(); },
   outcome:r => r.status === 'saved' ? C.words.readingSaved : r.status === 'failed' ? `${C.words.readingFailed}: ${r.error}` : '',
 });

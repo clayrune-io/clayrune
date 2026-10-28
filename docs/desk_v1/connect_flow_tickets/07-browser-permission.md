@@ -9,6 +9,13 @@ Status: proposed, not dispatched. [Parent design](../CONNECT_FLOW_SIMPLIFY.md).
 > passcode prompt. `load`, `apply`, `outcome`, `plan`, `covering` and `facts` (Details only) remain; the
 > `desk-v1-connect-browser-permission.css` stylesheet is gone. A card whose reading is not allowed yet says "Reading is off"
 > and its one button opens that same Permissions step (`static/js/desk-v1-reads-off.js`, `mc/desk_read_gate.py`).
+>
+> **Review fixes, 2026-10-28 (Dave's calls after Fenn's review of 30433660).** (1) Unticking Read removes ONLY the exact service
+> domain, and only when no other saved connection on the same sign-in (`sharing()`) is using it; a covering parent is never removed.
+> When the domain stays, the Desk read scopes still go off and the result says why (`staysText`). (2) The site grant targets the
+> sign-in the account will have AFTER save: a reading section reports its drafted `{via, profile}` through an optional
+> `reading()` hook, and `saved` is reported only if a fresh read of that profile covers the site; the old profile's list is never touched.
+> (3) The one Read tick commits the `read_own` scopes of every route the account is configured to read through (`_offers().reads`).
 
 ## Depends on
 

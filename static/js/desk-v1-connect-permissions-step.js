@@ -81,17 +81,27 @@
     return (v.coverage || []).filter((c) => c.purpose === purpose && c.account_kind === kind && COVERED.indexOf(c.status) >= 0).map((c) => c.capability);
   }
 
-  // The Desk choices this route can honestly offer: `{ read, post }`, each null or { op, purpose, route_id, via, caps, paid }.
-  function _offers(v, kind) {
-    const out = { read: null, post: null };
+  // The Desk choices this route can honestly offer: `{ read, reads, post }`, each null or { op, purpose, route_id, via, caps, paid }.
+  // `reads` is EVERY read route the one Read tick commits: this route's, plus (given `info`) the other routes of the service that
+  // the account is configured to read through (a legacy X account signed in by OAuth but read through the browser needs the
+  // browser route's scopes too, or its mentions and metrics fail the permission check). `read` is `reads[0]`.
+  function _offers(v, kind, info) {
+    const out = { read: null, reads: [], post: null };
     if (!v || !v.route_id || v.transport === 'mcp' || !kind) return out;
     const via = (v.runtime && v.runtime.purposes) || {};
     const basis = v.cost && v.cost.basis;
     if (via.read_own) {
       const caps = _covered(v, 'read_own', kind);
-      if (caps.length) out.read = { op: 'read', purpose: 'read_own', route_id: v.route_id, via: via.read_own, caps, paid: via.read_own === 'api' && basis !== 'free' };
+      if (caps.length) out.reads.push({ op: 'read', purpose: 'read_own', route_id: v.route_id, via: via.read_own, caps, paid: via.read_own === 'api' && basis !== 'free' });
     }
     if (via.publish && _covered(v, 'publish', kind).indexOf('post') >= 0) out.post = { op: 'post', purpose: 'publish', route_id: v.route_id, via: via.publish, caps: ['post'], paid: false };
+    const want = _readVia();
+    if (want && info) ((info.picker || []).flatMap((t) => t.variants || [])).forEach((x) => {
+      if (!x || !x.route_id || x.route_id === v.route_id || ((x.runtime && x.runtime.purposes) || {}).read_own !== want) return;
+      const e = _offers(x, kind).reads[0];
+      if (e && !out.reads.some((o) => o.route_id === e.route_id)) out.reads.push(e);
+    });
+    out.read = out.reads[0] || null;
     return out;
   }
 
@@ -101,9 +111,24 @@
   // being reopened is the API one (Ron 2026-10-28: LinkedIn "Clayrune", profile linked_ronlevy, had no way to allow linkedin.com).
   function _readsByBrowser(v) {
     if (_isBrowser(v)) return true;
+    return _readVia() === 'pane' && !!_profile();
+  }
+  function _channel() {
     const id = _target && _target.account && _target.account.id;
-    const ch = id && _ctx && _ctx.channels ? (_ctx.channels() || []).find((c) => c.id === id) : null;
-    return !!(ch && ch.read_via !== 'api' && ch.browser_profile);
+    return id && _ctx && _ctx.channels ? (_ctx.channels() || []).find((c) => c.id === id) || null : null;
+  }
+  // The reading a section has drafted but not saved yet ({ via, profile }). Sections apply AFTER the Desk and site writes, so
+  // the grant has to be aimed at what the account will have once this save lands, not at what it had when the screen opened.
+  function _drafted() {
+    for (const s of sections) { const r = typeof s.reading === 'function' ? s.reading() : null; if (r) return r; }
+    return null;
+  }
+  // 'api' | 'pane' | '' (nothing configured): how the account's activity is read once this save lands.
+  function _readVia() {
+    const d = _drafted();
+    if (d && d.via) return d.via;
+    const ch = _channel();
+    return ch ? (ch.read_via || (ch.browser_profile ? 'pane' : '')) : '';
   }
   function _site(info) {
     const B = window.DeskV1ConnectBrowserPermission;
@@ -111,11 +136,18 @@
   }
   function _loginStep() { const L = window.DeskV1ConnectLoginStep; return L && typeof L.summary === 'function' ? L.summary() : null; }
   function _loginName() { const s = _loginStep(); return s && s.login ? s.login : ''; }
+  // The sign-in the account will have AFTER save: the Setup step's choice, else a section's drafted profile, else the saved one.
   function _profile() {
     const s = _loginStep();
     if (s && s.profile) return String(s.profile).trim().toLowerCase();
-    const id = _target && _target.account && _target.account.id;
-    const ch = id && _ctx && _ctx.channels ? (_ctx.channels() || []).find((c) => c.id === id) : null;
+    const d = _drafted();
+    if (d && d.via === 'pane') return String(d.profile || '').trim().toLowerCase();       // a cleared field is a cleared profile, not the old one
+    return _savedProfile();
+  }
+  function _savedProfile() {
+    const s = _loginStep();
+    if (s && s.profile) return String(s.profile).trim().toLowerCase();
+    const ch = _channel();
     return ch && ch.browser_profile ? String(ch.browser_profile).trim().toLowerCase() : '';
   }
 
@@ -136,7 +168,7 @@
   // A row nobody touched keeps exactly the scopes it already has; a touched row is replaced by what it now offers.
   function _final(base, offers) {
     let out = base.slice();
-    [offers.read, offers.post].forEach((o) => {
+    offers.reads.concat([offers.post]).forEach((o) => {
       if (!o || M.wish[o.op] === null) return;
       out = out.filter((s) => !_mine(o, s));
       if (M.wish[o.op]) o.caps.forEach((c) => out.push({ purpose: o.purpose, capability: c, route_id: o.route_id }));
@@ -149,7 +181,9 @@
     const has = (p, cap, r) => scopes.some((s) => s.purpose === p && s.capability === cap && s.route_id === r);
     return has('publish', 'post', c.route_id) && !has(c.purpose, c.capability, c.route_id) ? CONFIRM_NOTICE : '';
   }
-  function _siteGranted() { return !!(M.bperm && M.bperm.exists && M.bperm.granted); }
+  // Granted for the sign-in the account will have after save: what was read for another sign-in (the profile field was edited
+  // since) says nothing about this one, so it counts as not allowed until Save checks it.
+  function _siteGranted() { return !!(M.bperm && M.bperm.exists && M.bperm.granted && M.bperm.profile === _profile()); }
   function _siteOn() { return M.wish.site === null ? _siteGranted() : M.wish.site; }
 
   // The ONE Read row = the Desk read the route offers (if any) + the service's own domain on the browser sign-in (when the
@@ -167,7 +201,12 @@
   }
   // What the row shows when nobody has touched it: on only when every part that applies is already granted.
   function _readParts(can, offers) {
-    return [offers.read ? _initial(offers.read).length > 0 : null, can.site ? _siteGranted() : null].filter((p) => p !== null);
+    return offers.reads.map((o) => _initial(o).length > 0).concat(can.site ? [_siteGranted()] : []);
+  }
+  // Some read route has only some of the capabilities it offers; or one read route is allowed and another is not.
+  function _readPartial(offers) {
+    const n = offers.reads.map((o) => _initial(o).length);
+    return offers.reads.some((o, i) => n[i] > 0 && n[i] < o.caps.length) || (n.some((x) => x > 0) && n.some((x) => x === 0));
   }
   function _readInitial(can, offers) {
     if (can.reason) return false;
@@ -182,7 +221,7 @@
   function _readOn(can, offers) { return M.wish.read === null ? _readInitial(can, offers) : M.wish.read; }
 
   function _pending(sel, info) {
-    const offers = _offers(_variant(sel, info), _target.kind);
+    const offers = _offers(_variant(sel, info), _target.kind, info);
     const base = _base(), scopes = _final(base, offers);
     const state = M.policy ? M.policy.state : 'new';
     return { offers, scopes, deskChange: _fp(scopes) !== _fp(base) || ((state === 'legacy' || state === 'invalid') && M.touched),
@@ -193,7 +232,7 @@
   function _needsFetch(sel, info) {
     return !!(_target && ((_target.account && _target.account.id) || (_readsByBrowser(_variant(sel, info)) && _profile()) || _loginName()));
   }
-  function _loadKey(info) { return [_service(info), (_target.account && _target.account.id) || '', _profile(), _site(info), _loginName()].join('|'); }
+  function _loadKey(info) { return [_service(info), (_target.account && _target.account.id) || '', _savedProfile(), _site(info), _loginName()].join('|'); }   // not the drafted profile: typing one repaints nothing, Continue would stall on "Loading"
 
   function _load(api, force) {
     if (!_target || !['signin', 'api', 'account'].includes(api.sel.type)) return;
@@ -229,11 +268,11 @@
   }
 
   function _readRowHTML(can, offers) {
-    const o = offers.read, label = "Read this account's activity";
+    const label = "Read this account's activity";
     if (can.reason) return _optionHTML('read', 'Desk permission', label, esc(can.reason), false, true);
-    const now = o ? _initial(o) : [], partial = !!o && now.length > 0 && now.length < o.caps.length && M.wish.read === null;
+    const now = offers.reads.flatMap(_initial), partial = M.wish.read === null && _readPartial(offers);
     const unfinished = M.wish.read === null && _readMixed(can, offers) && can.site && !_siteGranted();
-    const detail = `${esc(READ_DETAIL)}${partial ? ` Allowed now: ${esc(_capText(now.map((s) => s.capability)))}.` : ''}${unfinished ? ` ${esc(READ_UNFINISHED)}` : ''}${o && o.paid ? ` <span data-cfp-paid>${esc(PAID_API_READ)}</span>` : ''}`;
+    const detail = `${esc(READ_DETAIL)}${partial ? ` Allowed now: ${esc(_capText(Array.from(new Set(now.map((s) => s.capability)))))}.` : ''}${unfinished ? ` ${esc(READ_UNFINISHED)}` : ''}${offers.reads.some((o) => o.paid) ? ` <span data-cfp-paid>${esc(PAID_API_READ)}</span>` : ''}`;
     return _optionHTML('read', 'Desk permission', label, detail, _readOn(can, offers));
   }
   function _postRowHTML(o) {
@@ -287,7 +326,7 @@
       return M.failed ? '' : '<div class="desk-v1-cfw-fact-text" data-cfp-loading>Loading what is saved…</div>';
     }
     if (M.failed) return failedHTML();
-    const v = _variant(api.sel, api.info), offers = _offers(v, _target.kind);
+    const v = _variant(api.sel, api.info), offers = _offers(v, _target.kind, api.info);
     const rows = _readRowHTML(_readCan(v, api.info, offers), offers) + _postRowHTML(offers.post);
     return `${sections.map(s => s.html(sectionContext(api))).join('')}${_stateHTML()}<div class="desk-v1-cfw-options" data-cfp-rows aria-label="Permissions">${rows}</div>${_vaultHTML()}<div data-cfp-notes aria-live="polite">${_notesHTML(api.sel, api.info)}</div>`;
   }
@@ -312,16 +351,16 @@
       }
     };
     if (!v) { siteFacts(); return items; }
-    const offers = _offers(v, _target.kind);
-    [offers.read, offers.post].forEach((o) => {
+    const offers = _offers(v, _target.kind, api.info);
+    offers.reads.concat([offers.post]).forEach((o) => {
       if (o) items.push({ head: `${o.op === 'post' ? 'Post' : 'Read'} covers`, text: `${_capText(o.caps)}, ${VIA_WORD[o.via] || o.via} (${o.route_id}). Exactly these and nothing implied.` });
     });
-    const offeredCaps = new Set([].concat(offers.read ? offers.read.caps : [], offers.post ? offers.post.caps : []));
+    const offeredCaps = new Set([].concat(...offers.reads.map((o) => o.caps), offers.post ? offers.post.caps : []));
     const rest = Array.from(new Set((v.coverage || []).filter((c) => c.account_kind === _target.kind).map((c) => c.capability))).filter((c) => !offeredCaps.has(c));
     if (rest.length || offers.post) items.push({ head: 'Not covered by Read or Post', text: `${rest.length ? `${_capText(rest)}. ` : ''}Reply, media upload, Article and broad listening need their own later permission. Allowing Read never allows Post.` });
     if (v.runtime && v.runtime.note) items.push({ head: 'Desk support', text: v.runtime.note });
     siteFacts();
-    const kept = _base().filter((s) => !(offers.read && _mine(offers.read, s)) && !(offers.post && _mine(offers.post, s)));
+    const kept = _base().filter((s) => !offers.reads.some((o) => _mine(o, s)) && !(offers.post && _mine(offers.post, s)));
     if (kept.length) items.push({ head: 'Kept as they are', text: kept.map((s) => `${CAP_LABEL[s.capability] || s.capability} (${s.purpose === 'publish' ? 'post' : 'read'}) via ${s.route_id}`).join('; ') + '. Saving here does not change them.' });
     const ch = _target.account && _target.account.id && _ctx && _ctx.channels ? (_ctx.channels() || []).find((c) => c.id === _target.account.id) : null;
     if (ch && ch.read_via) items.push({ head: 'Reading settings', text: 'The reading method and activity addresses chosen here are saved separately from connection permissions.' });
@@ -383,11 +422,11 @@
       if (retry) retry.addEventListener('click', () => { M.failed = false; M.loaded = ''; _load(api, true); api.repaint(); });
       root.querySelectorAll('[data-cfp-box]').forEach((box) => {
         const id = box.dataset.cfpBox;
-        const v = _target ? _variant(api.sel, api.info) : null, offers = _target ? _offers(v, _target.kind) : { read: null, post: null };
+        const v = _target ? _variant(api.sel, api.info) : null, offers = _target ? _offers(v, _target.kind, api.info) : { read: null, reads: [], post: null };
         const o = offers[id];
         if (id === 'read' && _target && M.wish.read === null) {
-          const can = _readCan(v, api.info, offers), n = o ? _initial(o).length : 0;
-          box.indeterminate = _readMixed(can, offers) || (!!o && n > 0 && n < o.caps.length);
+          const can = _readCan(v, api.info, offers);
+          box.indeterminate = _readMixed(can, offers) || _readPartial(offers);
         } else if (o && M.wish[id] === null) { const n = _initial(o).length; box.indeterminate = n > 0 && n < o.caps.length; }
         box.addEventListener('change', () => {
           box.indeterminate = false;
@@ -395,7 +434,7 @@
             // One tick, two parts: the Desk read the route offers and the service's own domain on the sign-in. Back at what
             // the row showed = no wish, so ticking and unticking sends nothing (unless the row started half-ticked).
             const can = _readCan(v, api.info, offers);
-            const partial = _readMixed(can, offers) || (!!offers.read && _initial(offers.read).length > 0 && _initial(offers.read).length < offers.read.caps.length);
+            const partial = _readMixed(can, offers) || _readPartial(offers);
             M.wish.read = !partial && box.checked === _readInitial(can, offers) ? null : box.checked;
             M.wish.site = can.site && M.wish.read !== null ? M.wish.read : null;
             if (offers.read) M.touched = true;               // a domain-only change must not record Desk scopes on a legacy account
@@ -429,8 +468,8 @@
     if (sel.type === 'mcp') return { kind: 'mcp', pending: false, lines: [M.reach.scope === 'global' ? 'Use this server\'s tools in all projects.' : 'Use this server\'s tools in one project.'] };
     if (sel.type === 'reference' || !_target) return { kind: 'reference', pending: false, lines: ['No connection permission is granted.'] };
     const p = _pending(sel, info), lines = [];
-    ['read', 'post'].forEach((op) => { const o = p.offers[op]; if (o && p.scopes.some((s) => _mine(o, s))) lines.push(`Desk: ${op === 'post' ? 'Post' : `Read ${_capText(p.scopes.filter((s) => _mine(o, s)).map((s) => s.capability))}`} ${VIA_WORD[o.via] || ''}`.trim()); });
-    if (M.bperm && M.bperm.site && _siteOn()) lines.push(`Browser sign-in: read this account's activity on ${M.bperm.site} through "${M.bperm.profile}"`);
+    p.offers.reads.concat([p.offers.post]).forEach((o) => { const op = o && o.op; if (o && p.scopes.some((s) => _mine(o, s))) lines.push(`Desk: ${op === 'post' ? 'Post' : `Read ${_capText(p.scopes.filter((s) => _mine(o, s)).map((s) => s.capability))}`} ${VIA_WORD[o.via] || ''}`.trim()); });
+    if (M.bperm && M.bperm.site && _siteOn()) lines.push(`Browser sign-in: read this account's activity on ${M.bperm.site} through "${_profile() || M.bperm.profile}"`);
     if (!lines.length) lines.push(sel.type === 'account' ? window.DeskV1ConnectCopy.words.permissionsUnchanged : 'No permissions are allowed.');
     const extra = sections.map(s => s.summary());
     extra.forEach(s => lines.push(...s.lines));
@@ -444,7 +483,7 @@
   // meanwhile is not overwritten. -> { status: 'saved'|'unchanged'|'cancelled'|'failed', error? }
   async function _applyDesk(accountId) {
     const info = M.info, sel = M.sel;
-    const offers = _offers(_variant(sel, info), _target.kind);
+    const offers = _offers(_variant(sel, info), _target.kind, info);
     if (!M.touched && ['read', 'post'].every((op) => !offers[op] || M.wish[op] === null)) return { status: 'unchanged' };
     let view;
     try { view = await _ctx.api('GET', `/api/desk/connect/permissions/${encodeURIComponent(accountId)}`); }
@@ -472,12 +511,19 @@
   async function _applySite() {
     const B = window.DeskV1ConnectBrowserPermission, info = M.info;
     if (!B || M.wish.site === null) return { status: 'unchanged' };
-    const r = await B.apply(_profile(), _site(info), M.wish.site);
+    // Aimed at the sign-in the account will have AFTER this save (a drafted profile change is applied after this write),
+    // never at the one the screen loaded with: the grant on the old profile would be a grant the account no longer uses.
+    const profile = _profile(), site = _site(info), want = M.wish.site;
+    const opts = { channels: _ctx && _ctx.channels ? _ctx.channels() : [], selfId: (_target.account && _target.account.id) || '' };
+    const r = await B.apply(profile, site, want, opts);
     if (r.status === 'saved' || r.status === 'unchanged') {
+      // what the screen now shows is what that profile says, and success is only what that profile actually allows
+      const now = await B.load(profile, site, opts).catch(() => null);
+      if (!now) return { status: 'failed', error: `Could not check what the sign-in "${profile}" now allows.` };
+      M.bperm = now;
+      if (want && !now.granted) return { status: 'failed', error: `The sign-in "${profile}" still does not allow reading ${site}.` };
+      if (!want && now.granted && !r.stays) return { status: 'failed', error: `The sign-in "${profile}" still allows reading ${site}.` };
       M.wish.site = null;
-      // what the screen now shows is what the profile says, not the list as it was when the screen loaded
-      const id = (_target.account && _target.account.id) || '';
-      M.bperm = await B.load(_profile(), _site(info), { channels: _ctx && _ctx.channels ? _ctx.channels() : [], selfId: id }).catch(() => M.bperm);
     }
     return r;
   }

@@ -15,6 +15,11 @@
  *   4. Passcode          the write is the existing permissions/commit path behind the passcode prompt; cancelling sends nothing.
  *   5. Browser only      an account saved only on the sign-in route offers Read (browser) and no Post.
  *   6. Unknown route     an account with no known route draws no Desk rows and nothing breaks.
+ *   7. One Read, whole   a legacy X account signed in by the app but read through the browser: ONE Read tick commits the
+ *                        read scopes of BOTH routes, or its browser mentions and metrics fail the permission check.
+ *   8. Profile switch    drafting another browser profile and ticking Read grants x.com on THAT profile (the one the
+ *                        account will have), leaves the old profile's list alone, and reports saved only when the
+ *                        new profile really covers the site.
  *
  * RUN   cd tools/smoke && node desk-v1-connect-saved-permissions.mjs
  */
@@ -63,11 +68,14 @@ const ACCOUNTS = () => [
     browser_profile: 'main', browser_setup: { account_kind: 'account', route_id: 'x-browser', service: 'x', refs: { browser_profile: 'main', login: 'x.com' } } }),
   account('acct-browser', 'BrowserOnly', { browser_profile: 'main', browser_setup: { account_kind: 'account', route_id: 'x-browser', service: 'x', refs: { browser_profile: 'main', login: 'x.com' } } }),
   account('acct-bare', 'Bare', {}),
+  account('acct-legacy', 'LegacyX', { credentials: { oauth_profile: 'main', oauth_vault: 'oauth.x.acct-legacy' },
+    browser_profile: 'main', browser_setup: { account_kind: 'account', route_id: 'x-browser', service: 'x', refs: { browser_profile: 'main', login: 'x.com' } } }),
 ];
 
 function makeServer() {
   const fx = loadFixtures();
-  const srv = { log: [], fx, accounts: ACCOUNTS(),
+  const srv = { log: [], fx, accounts: ACCOUNTS(), profiles: ['main', 'other'], putMode: 'store', puts: [],
+    agentRead: { main: { enabled: true, domains: ['reddit.com'] }, other: { enabled: true, domains: [] } },
     policies: { 'acct-oauth': explicit('acct-oauth', [X_READ, BROWSER_READ]), 'acct-browser': { state: 'legacy', read: null, post: null, scopes: [], fingerprint: null } } };
   srv.workspace = () => ({ ...workspaceFromFixtures(fx), projects: fx.projects.map((p) => ({ id: p.id, name: p.name, state: 'active', roster: [], presence: { replies: 'drafts', desk_agent: null, state: 'active' } })), accounts: srv.accounts, pieces: [] });
   return srv;
@@ -98,8 +106,17 @@ async function newPage(browser, srv, width = 1400, height = 950) {
     if (path === '/api/local-auth/status') return J({ configured: true });
     if (path === '/api/secrets/vault-lock' && method === 'GET') return J({ state: 'unlocked', configured: true });
     if (path === '/api/secrets' && method === 'GET') return J({ secrets: [] });
-    if (path === '/api/browser/profiles') return J({ profiles: [] });
-    if (path === '/api/browser/agent-read') return J({ profiles: {} });
+    if (path === '/api/browser/profiles') return J({ profiles: srv.profiles.map((name) => ({ name, size_mb: 1, last_used: null, in_use_by: null })) });
+    if (path === '/api/browser/agent-read') return J({ profiles: srv.agentRead });
+    const put = path.match(/^\/api\/browser\/profiles\/([^/]+)\/agent-read$/);
+    if (put && method === 'PUT') {
+      let b = null;
+      try { b = req.postDataJSON(); } catch (_) { /* none */ }
+      srv.puts.push({ name: put[1], body: b });
+      if (!b || b.passcode !== PASSCODE) return J({ error: 'bad_passcode' }, 403);
+      if (srv.putMode === 'store') srv.agentRead[put[1]] = { enabled: !!b.enabled, domains: b.domains };
+      return J({ ok: true, profile: put[1], enabled: !!b.enabled, domains: b.domains });
+    }
     if (!path.startsWith('/api/desk/')) return route.abort();
     let body = null;
     try { body = req.postDataJSON(); } catch (_) { /* none */ }
@@ -108,6 +125,8 @@ async function newPage(browser, srv, width = 1400, height = 950) {
     if (path === '/api/desk/engines' && method === 'GET') return J({ engines: [] });
     if (path === '/api/desk/services' && method === 'GET') return J([]);
     if (path === '/api/desk/accounts' && method === 'GET') return J(srv.accounts);
+    const patch = path.match(/^\/api\/desk\/accounts\/([^/]+)$/);
+    if (patch && method === 'PATCH') { const a = srv.accounts.find((x) => x.id === patch[1]); Object.assign(a, body); return J(a); }
     if (path === '/api/desk/connect/types' && method === 'POST') return J(TYPES);
     if (path === '/api/desk/connect/purposes') return J({ service: 'x', accounts: [] });
     if (path === '/api/desk/connect/status') return J({ higgsfield: { state: 'not_connected' }, x: { state: 'connected', app: { client_id: true }, scopes: ['tweet.read'] }, gemini: { saved: false }, openai: { saved: false } });
@@ -228,6 +247,51 @@ async function run(browser, width, height) {
     check((await boxes(page)).join('|') === 'read|post' && (await page.locator('[data-cfp-box="read"]').isDisabled()) && (await page.locator('[data-cfp-box="post"]').isDisabled()), 'an account with no known route shows the same two rows, both disabled', 'boxes: ' + (await boxes(page)).join('|'));
     check(!!(await page.$('[data-reading-settings]')), 'its reading section still draws', 'the reading section is gone');
     check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
+    await ctx.close();
+  }
+
+  // ── 7: ONE Read tick commits the read scopes of every route the account reads through ─────
+  {
+    const srv = makeServer();
+    srv.agentRead.main = { enabled: true, domains: ['x.com'] };      // the site is already on the sign-in: only the Desk write is left
+    const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
+    await toPermissions(page, 'acct-legacy', '[data-cs-reopen]');
+    check(!(await checked(page, 'read')), 'a legacy account opens with Read off', 'Read was already on');
+    await page.check('[data-cfp-box="read"]');
+    const done = page.evaluate(() => window.DeskV1ConnectPermissionsStep.apply('acct-legacy'));
+    await answer(page, PASSCODE);
+    const r = await done;
+    const sent = commits(srv).pop();
+    const keys = sent ? sent.body.draft.scopes.map((s) => `${s.purpose}|${s.capability}|${s.route_id}`).sort().join(',') : '';
+    const variants = TYPES.picker.flatMap((t) => t.variants);
+    const capsOf = (rid) => ((variants.find((x) => x.route_id === rid) || {}).coverage || []).filter((c) => c.purpose === 'read_own' && c.account_kind === 'account' && ['documented', 'claimed'].includes(c.status)).map((c) => c.capability);
+    const want = ['x-oauth', 'x-browser'].flatMap((rid) => capsOf(rid).map((c) => `read_own|${c}|${rid}`)).sort().join(',');
+    check(capsOf('x-browser').length > 1 && capsOf('x-oauth').length > 0, `the fixture routes cover reads (x-oauth ${capsOf('x-oauth').join('/')}, x-browser ${capsOf('x-browser').join('/')})`, 'the fixture routes cover no reads');
+    check(r.desk.status === 'saved' && keys === want, 'the one Read tick commits every read scope of the API route AND the browser route', `sent: ${keys}\nwant: ${want}`);
+    check(!sent || !sent.body.draft.scopes.some((s) => s.purpose === 'publish'), 'and nothing of Post', keys);
+    check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
+    await ctx.close();
+  }
+
+  // ── 8: a drafted profile change aims the site grant at the NEW profile ─────────────────────
+  for (const mode of ['store', 'ignore']) {
+    const srv = makeServer();
+    srv.putMode = mode;
+    const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
+    await toPermissions(page, 'acct-browser', '[data-cs-reopen]');
+    await page.fill('[data-reading-profile]', 'other');
+    await page.check('[data-cfp-box="read"]');
+    const done = page.evaluate(() => window.DeskV1ConnectPermissionsStep.apply('acct-browser'));
+    await answer(page, PASSCODE);            // the Desk write
+    await answer(page, PASSCODE);            // the site write
+    const r = await done;
+    const patch = srv.log.find((x) => x.method === 'PATCH');
+    check(srv.puts.length === 1 && srv.puts[0].name === 'other' && srv.puts[0].body.domains.includes('x.com'), `[${mode}] the grant went to the drafted profile "other", not the loaded one`, JSON.stringify(srv.puts.map((p) => [p.name, p.body && p.body.domains])));
+    check(JSON.stringify(srv.agentRead.main) === JSON.stringify({ enabled: true, domains: ['reddit.com'] }), `[${mode}] the old profile's list is untouched`, JSON.stringify(srv.agentRead.main));
+    check(!!patch && patch.body.browser_profile === 'other', `[${mode}] the account is switched to that same profile`, JSON.stringify(patch && patch.body));
+    if (mode === 'store') check(r.site.status === 'saved' && r.ok === true, '[store] saved is reported because the new profile really covers x.com', JSON.stringify(r.site));
+    else check(r.site.status === 'failed' && /"other" still does not allow reading x\.com/.test(r.site.error || '') && r.ok === false, '[ignore] a profile that still does not cover the site is reported failed, with the reason', JSON.stringify(r.site));
+    check(realErrors(pageErrors).length === 0, `[${mode}] no uncaught page errors`, JSON.stringify(realErrors(pageErrors)));
     await ctx.close();
   }
 }
