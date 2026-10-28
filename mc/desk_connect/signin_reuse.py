@@ -6,14 +6,15 @@ developer app. The Save of that connection claims a freshly made sign-in, and
 vault entry already holds one: the account was never signed out, so nothing the
 person can do in Connections lets the new sign-in in. This asks the question
 first: does the account already hold a working sign-in for the SAME app? If so
-the Save keeps it and changes nothing else (the permission change is its own
-step), and no new sign-in is made.
+the Save keeps it (the permission change is its own step), and no new sign-in is
+made.
 
 Reads the entry's metadata hint (`state`, `exp`, `refresh`, `app_id_sha256`) and
 compares the Client ID hash. An entry made before the hash existed (MC-1113) has
 none: the stored record is then opened in this process and its own `client_id` is
-compared with `hmac.compare_digest`; the value is never returned or logged and
-nothing is written (no hint backfill). "The same app" is the Client ID this Save
+compared with `hmac.compare_digest`; the value is never returned or logged. A
+probe writes nothing; Save backfills the matching legacy entry's app hash so
+metadata-only status can recognise it too. "The same app" is the Client ID this Save
 would use. Anything it cannot confirm (a locked vault, a sign-in that lapsed, a
 record with no `client_id`, another Client ID) answers False, which leaves the Save
 as it was: a fresh sign-in, or the `already_signed_in` refusal, which says the way out.
@@ -27,7 +28,9 @@ from typing import Any
 from mc import desk_oauth as _oauth
 from mc import desk_vault_lock as _vault_lock
 from mc import secrets_store
+from mc.core import _log
 from mc.desk_connect import account_attach, x_account_attach
+from mc.desk_connect.providers.base import ProviderError
 
 SERVICE = 'x'
 UNLOCK = 'Unlock the Vault to check this sign-in; it is still saved.'
@@ -37,7 +40,11 @@ NO_APP_RECORDED = ("the saved sign-in does not say which app made it, so Save ca
 
 
 def check(service: str, account_id: Any, fields: dict | None = None) -> dict:
-    """`{'reusable': bool, 'reason': str | None}`. Never raises."""
+    """Read-only probe: `{'reusable': bool, 'reason': str | None}`. Never raises."""
+    return _check(service, account_id, fields)
+
+
+def _check(service: str, account_id: Any, fields: dict | None = None, *, backfill: bool = False) -> dict:
     if service != SERVICE or not isinstance(account_id, str) or not account_id:
         return {'reusable': False, 'reason': None}
     try:
@@ -58,7 +65,7 @@ def check(service: str, account_id: Any, fields: dict | None = None) -> dict:
         if saved:
             same = hmac.compare_digest(saved, hashlib.sha256(app.encode()).hexdigest())
         else:
-            return _by_record(arg, app, name)
+            return _by_record(arg, app, name, backfill=backfill)
     except _oauth.OAuthError as e:
         return {'reusable': False, 'reason': UNLOCK if e.code == _vault_lock.VAULT_LOCKED else None}
     except (account_attach.AttachError, LookupError, secrets_store.SecretsError):
@@ -66,25 +73,38 @@ def check(service: str, account_id: Any, fields: dict | None = None) -> dict:
     return {'reusable': True, 'reason': None} if same else {'reusable': False, 'reason': DIFFERENT}
 
 
-def _by_record(arg: str | None, app: str, name: str) -> dict:
+def _by_record(arg: str | None, app: str, name: str, *, backfill: bool = False) -> dict:
     """The entry predates the app hash in its hint (MC-1113): open the stored record in this process and compare
-    its own `client_id` with the Client ID this Save would use. The value is compared, never returned or logged;
-    nothing is written (no hint backfill)."""
-    try:
-        rec = _oauth._read_record(SERVICE, consumer='desk_signin_reuse', account_id=arg)
-    except _oauth.OAuthError as e:
-        if e.code == _vault_lock.VAULT_LOCKED:
-            return {'reusable': False, 'reason': UNLOCK}
-        return {'reusable': False, 'reason': 'the saved sign-in could not be opened'}
-    held = rec.get('client_id')
-    rec = None
-    if not isinstance(held, str) or not held:
-        return {'reusable': False, 'reason': NO_APP_RECORDED.format(name=name)}
-    if not hmac.compare_digest(held.encode(), app.encode()):
-        return {'reusable': False, 'reason': DIFFERENT}
+    its own `client_id` with the Client ID this Save would use. Only Save backfills
+    the hint after a match; the lock keeps a replacement record from inheriting it."""
+    with secrets_store._lock:
+        try:
+            rec = _oauth._read_record(SERVICE, consumer='desk_signin_reuse', account_id=arg)
+        except _oauth.OAuthError as e:
+            if e.code == _vault_lock.VAULT_LOCKED:
+                return {'reusable': False, 'reason': UNLOCK}
+            return {'reusable': False, 'reason': 'the saved sign-in could not be opened'}
+        held = rec.get('client_id')
+        rec = None
+        if not isinstance(held, str) or not held:
+            return {'reusable': False, 'reason': NO_APP_RECORDED.format(name=name)}
+        if not hmac.compare_digest(held.encode(), app.encode()):
+            return {'reusable': False, 'reason': DIFFERENT}
+        if backfill:
+            store = secrets_store._load_store()  # retain the read's usage counters and every other field
+            entry = store['secrets'][name]
+            hint = entry.get('hint') or ''
+            if not any(p.startswith('app_id_sha256=') for p in hint.split()):
+                entry['hint'] = hint + ' app_id_sha256=' + hashlib.sha256(held.encode()).hexdigest()
+                secrets_store._save_store(store)
     return {'reusable': True, 'reason': None}
 
 
 def applies(clean: dict, signs_in: bool) -> bool:
     """For `provider_commit.apply`: this Save is for a saved X account with a sign-in to keep."""
-    return bool(signs_in and clean.get('account_id') and check(clean['service'], clean['account_id'], clean.get('fields'))['reusable'])
+    try:
+        return bool(signs_in and clean.get('account_id') and
+                    _check(clean['service'], clean['account_id'], clean.get('fields'), backfill=True)['reusable'])
+    except OSError as e:
+        _log(f'[desk_connect] saved sign-in hint backfill failed ({type(e).__name__})', flush=True)
+        raise ProviderError('could not confirm the saved sign-in; see the server log', 500, 'record_failed') from None

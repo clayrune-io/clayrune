@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-28] - Keep older X sign-ins connected after Save (MC-1114)
+
+- Save now adds the app fingerprint to an older sign-in's metadata after confirming that its stored Client ID matches. A Client ID chosen from Secrets no longer leaves that reused sign-in asking to sign in again.
+- Reuse checks remain read-only. Locked Vault, missing Client ID and different-app refusals are unchanged; Save preserves the token, other metadata and account permissions.
+
 ## [2026-10-26] - Require confirmation when replacing a saved Setup key (MC-1113)
 
 - Review states that Save replaces the saved key and requires a confirmation control; the server refuses unconfirmed replacements and preserves the key's scope and unattended policy.
