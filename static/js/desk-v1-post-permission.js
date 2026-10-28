@@ -2,22 +2,16 @@
 // The server says it two ways: an account row carries `post_permission` while the account is
 // connected but Post is not ticked, and a version the publisher refused for want of it carries
 // `failure.code === 'post_permission'`. Either way the fix is the same screen: the account's
-// Permissions step, which the saved account's "Change how this is connected" opens. This module
-// only points there; ticking Post stays the person's act on that step.
+// Permissions step, which the saved account's "Edit settings" opens. This module only points there
+// (in words on the account row, by a button on the piece page); ticking Post stays the person's act on that step.
 (function () {
   const CODE = 'post_permission';
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-  // The Connections row for the account, with its Permissions one click away.
+  // The Connections row's notice. It carries no button of its own: the account's one Edit settings is the way in.
   function noticeHTML(ch) {
     if (!ch || !ch.post_permission || ch.post_permission.code !== CODE) return '';
-    return `<div class="desk-v1-rules-hint" data-post-permission="${esc(ch.id)}">Agents cannot post through this account yet: Post is not ticked.
-      <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-pp-open="${esc(ch.id)}">Open Permissions</button></div>`;
-  }
-  function bindAccount(row, ch, repaint) {
-    const b = row.querySelector('[data-pp-open]');
-    const CS = window.DeskV1ConnectionStatus;
-    if (b && CS && CS.reopen) b.addEventListener('click', () => CS.reopen({ kind: 'account', id: ch.id, record: ch }, repaint));
+    return `<div class="desk-v1-rules-hint" data-post-permission="${esc(ch.id)}">Agents cannot post through this account yet: Post is not ticked. Press Edit settings and tick Post on the Permissions step.</div>`;
   }
 
   // A version the publisher refused for want of Post: a button to the account, in place of "Approving again retries it".
@@ -31,5 +25,5 @@
     if (b) b.addEventListener('click', () => window.deskV1Nav && window.deskV1Nav('connections', { account: b.getAttribute('data-pp-goto') }));
   }
 
-  window.DeskV1PostPermission = { CODE, noticeHTML, bindAccount, failed, linkHTML, bindLink };
+  window.DeskV1PostPermission = { CODE, noticeHTML, failed, linkHTML, bindLink };
 })();

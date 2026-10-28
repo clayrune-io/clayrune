@@ -403,7 +403,6 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
       }
       _bindReadVia(row, ch, repaint);
       if (window.DeskV1ConnectionStatus) window.DeskV1ConnectionStatus.bindAccount(row, ch, repaint);
-      if (window.DeskV1PostPermission) window.DeskV1PostPermission.bindAccount(row, ch, repaint);
     });
     const recheck = el.querySelector('[data-conn-recheck]');
     if (recheck) recheck.onclick = () => { if (window.DeskV1ConnectionStatus) window.DeskV1ConnectionStatus.invalidate(); _recheck(el, repaint); };

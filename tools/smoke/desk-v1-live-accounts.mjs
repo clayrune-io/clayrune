@@ -20,7 +20,7 @@
  *                     tile reads "Saved for agents", never Connected; a refusal is rolled back; Remove DELETEs.
  *   5. Flag OFF    -> the same gestures make 0 /api/desk/* requests.
  *   Since MC-1062/14 (one Add service wizard) items 1 to 4b read as the file now checks them: an account detail carries
- *   "Change how this is connected" (no `Connect X`, no Add form, no Read via buttons), Add service is a name-or-address box,
+ *   "Edit settings" (no `Connect X`, no Add form, no Read via buttons), Add service is a name-or-address box,
  *   Remove requires confirmation and has no Undo, Read via is a summary, and a saved service is checked as a tile (its save is the
  *   wizard's, covered by desk-v1-connect-unknown-step.mjs).
  *
@@ -219,15 +219,17 @@ async function connectionsRead(browser) {
   check(x && x.state === 'off' && /^not connected$/.test(x.publish.trim()), `X: Publishing reads "not connected" (a vault-naming reason is left to the steps) ("${x && x.publish}")`, 'X row: ' + JSON.stringify(x));
   check(li && li.state === 'off' && /w_organization_social/.test(li.publish), 'the LinkedIn page shows NOT connected with the app-review reason, never faked', 'LinkedIn row: ' + JSON.stringify(li));
   // Weaker than before (MC-1062/14): "Connect X" on the X account alone is gone. One wizard connects every service, so every live
-  // account carries the same "Change how this is connected" and none carries a per-account X steps button.
-  check(rows.every((r) => r.reopen && !r.xsteps), 'every live account offers Change how this is connected and none a per-account X steps button', 'connect buttons: ' + JSON.stringify(rows.map((r) => [r.id, r.reopen, r.xsteps])));
+  // account carries the same "Edit settings" (2026-10-28: it was "Change how this is connected") and none carries a per-account X steps button.
+  check(rows.every((r) => r.reopen && !r.xsteps), 'every live account offers Edit settings and none a per-account X steps button', 'connect buttons: ' + JSON.stringify(rows.map((r) => [r.id, r.reopen, r.xsteps])));
+  check(await page.$$eval('[data-cs-reopen]', (els) => els.length === 1 && els[0].textContent.trim() === 'Edit settings'), 'the account card has exactly one button, and it says Edit settings', 'the Edit settings label or count is wrong');
+  check(!/Change how this is connected|Open Permissions/.test(await page.evaluate(() => document.body.innerText)), 'neither "Change how this is connected" nor "Open Permissions" is on the screen', 'an old button label survived');
   check(rows.every((r) => !r.action), 'no fixture Connect / Reconnect button on any live row', 'a Connect button survived live');
   const typed = await page.$$('[data-connections] input[type="password"], [data-connections] input[name*="token" i], [data-connections] input[name*="secret" i]');
   check(typed.length === 0, 'no credential field exists on the screen until a guide is opened', 'a credential input is on Connections');
   await selectTile(page, 'ch-x-ron');
   await page.click('[data-conn-account="ch-x-ron"] [data-cs-reopen]');
   await page.waitForSelector('[data-conn-detail="add"] [data-cfw-step="permissions"] [data-reading-settings]', { timeout: 4000 });
-  check(!(await page.evaluate(() => window.__vaultOpened)) && await page.evaluate(() => window.DeskV1ConnectWizard.state().sel.account === 'ch-x-ron'), 'Change how this is connected reopens that account in the one wizard', 'the saved account was not handed to the wizard');
+  check(!(await page.evaluate(() => window.__vaultOpened)) && await page.evaluate(() => window.DeskV1ConnectWizard.state().sel.account === 'ch-x-ron'), 'Edit settings reopens that account in the one wizard', 'the saved account was not handed to the wizard');
 
   const ph = await page.$$eval('[data-conn-placeholder], [data-conn-tile][data-conn-state="preview"]', (els) => els.length);
   const srcs = await page.$$eval('[data-conn-source], [data-conn-tile^="source:"]', (els) => els.length);

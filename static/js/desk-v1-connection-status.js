@@ -78,12 +78,13 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
     return { key: 'off', word: 'Not connected', action: null };
   }
 
-  function _routeRow(f, label, lines) {
+  function _routeRow(f, label, lines, ch) {
     return `<div class="desk-v1-cs-row" data-cs-facet="${esc(f.id)}" data-state="${esc(f.key)}">
         <span class="desk-v1-how-field-label">${esc(label)}</span>
         <span class="desk-v1-cs-word" data-cs-word>${esc(f.word)}</span>
         ${lines.filter(Boolean).map((l) => `<div class="desk-v1-cs-line">${l}</div>`).join('')}
         ${f.detail ? `<div class="desk-v1-rules-hint" data-cs-detail>${esc(f.detail)}${window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML(f.word) : ''}</div>` : ''}
+        ${window.DeskV1AccountSignin ? window.DeskV1AccountSignin.html(ch, f) : ''}
       </div>`;
   }
 
@@ -93,12 +94,12 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
     const rows = [window.DeskV1BrowserAccount?.html(ch)].filter(Boolean);
     if (browser) rows.push(_routeRow(browser, 'Browser', [
       `Profile <code>${esc(browser.profile)}</code>${browser.login ? `, login <code>${esc(browser.login)}</code>` : ''}`,
-      browser.route ? `Route <code>${esc(browser.route)}</code>` : '']));
-    if (api) rows.push(_routeRow(api, 'API', [api.profile ? `Sign-in profile <code>${esc(api.profile)}</code>` : '', `Route <code>${esc(api.route)}</code>`]));
+      browser.route ? `Route <code>${esc(browser.route)}</code>` : ''], ch));
+    if (api) rows.push(_routeRow(api, 'API', [api.profile ? `Sign-in profile <code>${esc(api.profile)}</code>` : '', `Route <code>${esc(api.route)}</code>`], ch));
     if (!rows.length) rows.push('<div class="desk-v1-rules-hint" data-cs-none>No browser or API route is set up for this account.</div>');
     const via = replacesReadVia() && ch.platform && ch.capability !== 'manual'
       ? `<div class="desk-v1-cs-line" data-cs-readvia><span class="desk-v1-how-field-label">Read via</span> ${ch.read_via === 'api' ? 'X API (paid, ~$0.005 per read)' : 'Browser pane (no charge)'}</div>` : '';
-    const change = replacesReadVia() ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cs-reopen="${esc(ch.id)}">Change how this is connected</button>` : '';
+    const change = replacesReadVia() ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cs-reopen="${esc(ch.id)}">Edit settings</button>` : '';
     return `<div class="desk-v1-cs" data-cs-account="${esc(ch.id)}" aria-label="How this account is connected">${rows.join('')}${via}${change}</div>`;
   }
 
@@ -269,6 +270,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
 
   function bindAccount(row, ch, repaint) {
     window.DeskV1BrowserAccount?.bind(row,ch,repaint);
+    row.querySelectorAll('[data-cs-facet]').forEach((r) => window.DeskV1AccountSignin?.bind(r, ch, repaint));
     const b = row.querySelector('[data-cs-reopen]');
     if (b) b.addEventListener('click', () => _openEditor({ kind: 'account', id: ch.id, record: ch }, repaint));
   }

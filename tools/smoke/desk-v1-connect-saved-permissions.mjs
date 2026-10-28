@@ -2,13 +2,13 @@
 /**
  * Desk v1 (MC-1115) — Permissions on a SAVED account offers the Desk Read and Post rows.
  *
- * Live repro: RanLevi15 (X, an app sign-in in the vault, Post not ticked). Connections > Open Permissions
+ * Live repro: RanLevi15 (X, an app sign-in in the vault, Post not ticked). Connections > the Post notice
  * reopened the account as type "account", which is not a picker type, so the Permissions step found no route and
  * drew only the reading section. Everything else is the real page: the real type projection
  * (mc.desk_connect.type_view), the real Connections row, reopen, Permissions, Summary and passcode prompt.
  *
- *   1. Open Permissions  the notice's button reaches Permissions with Read AND Post rows (owner "Desk permission"),
- *                        beside the reading section.
+ *   1. Edit settings     the notice names Edit settings in words (no second button); Edit settings reaches Permissions
+ *                        with Read AND Post rows (owner "Desk permission"), beside the reading section.
  *   2. As saved          existing scopes show as they are: Read on (it is saved), Post off; nothing is sent by arriving,
  *                        Continuing, or reaching Review.
  *   3. Ticking Post      the commit draft carries Post and keeps the scopes it did not touch (the Read, the browser Read).
@@ -160,8 +160,11 @@ async function run(browser, width, height) {
     const srv = makeServer();
     const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
     await selectTile(page, 'acct-oauth');
-    check(!!(await page.$('[data-conn-account="acct-oauth"] [data-pp-open]')), 'the row says Post is not ticked and carries Open Permissions', 'no Open Permissions on the row');
-    await toPermissions(page, 'acct-oauth', '[data-pp-open]');
+    const note = await text(page, '[data-conn-account="acct-oauth"] [data-post-permission]');
+    check(/Agents cannot post through this account yet: Post is not ticked\./.test(note) && /Edit settings/.test(note) && !(await page.$('[data-conn-account="acct-oauth"] [data-pp-open]')) && !/Open Permissions/.test(await text(page, '[data-conn-account="acct-oauth"]')),
+      'the row says Post is not ticked, points at Edit settings in words and has no Open Permissions button', 'the notice or its button is wrong: ' + note);
+    check((await page.$$eval('[data-conn-account="acct-oauth"] [data-cs-reopen]', (e) => e.map((x) => x.textContent.trim()))).join('|') === 'Edit settings', 'the account has one button into its settings, Edit settings', 'the Edit settings button is missing or doubled');
+    await toPermissions(page, 'acct-oauth', '[data-cs-reopen]');
     check((await boxes(page)).join('|') === 'read|post', `Permissions offers the Desk Read and Post rows (${(await boxes(page)).join(', ')})`, 'boxes: ' + (await boxes(page)).join('|'));
     check(!!(await page.$('[data-reading-settings]')), 'the reading section is still there beside them', 'the reading section is gone');
     const owners = await page.$$eval('[data-cfp-owner]', (e) => e.map((x) => x.textContent.trim()));
