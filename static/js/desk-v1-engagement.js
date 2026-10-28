@@ -169,7 +169,7 @@
     const lines = [];
     ids.forEach((id) => (by[id] || []).forEach((g) => {
       const p = _project(id);
-      lines.push(`<div class="desk-v1-eng-gap">${esc(st.project === 'all' && p ? p.name + ': ' : '')}${esc(g.label)}${g.detail && g.detail !== g.label ? ` <span class="desk-v1-eng-gap-detail">${esc(g.detail)}</span>` : ''}${window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML(g.vault_locked ? g : g.detail || g.label) : ''}</div>`);
+      lines.push(`<div class="desk-v1-eng-gap">${esc(st.project === 'all' && p ? p.name + ': ' : '')}${esc(g.label)}${g.detail && !String(g.label).includes(g.detail) ? ` <span class="desk-v1-eng-gap-detail">${esc(g.detail)}</span>` : ''}${window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML(g.vault_locked ? g : g.detail || g.label) : ''}</div>`);
     }));
     return lines.length ? `<div class="desk-v1-eng-gaps">${lines.join('')}</div>` : '';
   }

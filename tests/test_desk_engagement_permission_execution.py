@@ -348,7 +348,7 @@ def test_generic_linkedin_digest_obeys_explicit_policy_without_inventing_allow(w
     if mode == 'legacy':
         assert out['new_items'] == out['metrics_written'] == 1
         assert world.model.call_count == 2 and len(world.generic_pages.reads) == 2
-        assert out['spent'] == 2 * digest.PAGE_READ_UNIT_COST
+        assert out['spent'] == 0          # a pane read is free
     else:
         assert set(out['permission_denied']) == {'mentions', 'post_metrics'}
         assert out['spent'] == 0
@@ -366,17 +366,16 @@ def test_generic_legacy_selected_reader_stops_after_explicit_revocation(world):
     assert (world.model.call_count, len(world.generic_pages.reads)) == before
 
 
-@pytest.mark.parametrize('gate', ['budget', 'agent_read_off', 'domain_off_list'])
-def test_generic_supported_x_allow_retains_budget_and_profile_policy(world, gate):
-    presence('pane', budget=0 if gate == 'budget' else 10)
+@pytest.mark.parametrize('gate', ['agent_read_off', 'domain_off_list'])
+def test_generic_supported_x_allow_retains_profile_policy(world, gate):
+    presence('pane', budget=10)
     consent(('mentions',), route='x-browser')
-    if gate != 'budget':
-        browser_agent_read.set_policy('main', gate != 'agent_read_off',
-                                      ['linkedin.com'] if gate == 'domain_off_list' else ['x.com'])
+    browser_agent_read.set_policy('main', gate != 'agent_read_off',
+                                  ['linkedin.com'] if gate == 'domain_off_list' else ['x.com'])
     reader = digest.PaneDigestReader(PID, 'x', {'browser_profile': 'main', 'read_pages': [
         {'role': 'activity', 'url': eng.X_MENTIONS_URL}]})
     out = poll({'x': reader})['x']
-    assert out.get('budget_blocked') is True if gate == 'budget' else out['state'] == 'not_connected'
+    assert out['state'] == 'not_connected'
     no_calls(world)
 
 

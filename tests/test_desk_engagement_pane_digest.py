@@ -431,24 +431,37 @@ def test_readers_for_project_uses_the_generic_reader_for_pane_accounts(env):
     assert 'tiktok' not in rd                                         # api route has no generic reader
 
 
-def test_poll_counts_each_model_call_against_the_read_budget(env):
+def test_poll_records_each_model_call_but_charges_the_read_budget_nothing(env):
     _allow(['linkedin.com'])
     _project([{'channel_id': 'l1', 'platform': 'linkedin', 'browser_profile': 'main'}])
     rt = FakeRuntime({pd.ACTIVITY_INSTRUCTION: _activity(_row())})
     rd = _reader(_li_pages(), rt)
     rep = eng.poll_project(PID, readers={'linkedin': rd})
     entry = rep['platforms']['linkedin']
-    assert entry['new_items'] == 1 and entry['spent'] == pytest.approx(pd.PAGE_READ_UNIT_COST)
-    assert [r['resources'] for r in _desk.list_reads(project_id=PID)] == [1]
+    assert entry['new_items'] == 1 and entry['spent'] == 0
+    reads = _desk.list_reads(project_id=PID)
+    assert [r['resources'] for r in reads] == [1] and [r['cost'] for r in reads] == [0.0]
+    assert eng.project_spend(PID)['reads'] == 0
 
 
-def test_poll_refuses_when_the_worst_case_does_not_fit_the_budget(env):
+@pytest.mark.parametrize('budget', [0, 0.01])
+def test_pane_read_is_not_blocked_by_a_zero_or_tiny_money_budget(env, budget):
+    """Regression: a notional per-call cost made every generic pane read 'read budget
+    spent' on a project with no money budget (Ron, 2026-10-28)."""
     _allow(['linkedin.com'])
-    _project([{'channel_id': 'l1', 'platform': 'linkedin', 'browser_profile': 'main'}], budget=0.01)
+    _project([{'channel_id': 'l1', 'platform': 'linkedin', 'browser_profile': 'main'}], budget=budget)
     rt = FakeRuntime({pd.ACTIVITY_INSTRUCTION: _activity(_row())})
     rd = _reader(_li_pages(), rt)
     rep = eng.poll_project(PID, readers={'linkedin': rd})
-    assert rep['platforms']['linkedin'].get('budget_blocked') is True and rt.calls == []
+    entry = rep['platforms']['linkedin']
+    assert not entry.get('budget_blocked') and entry['new_items'] == 1 and rt.calls
+    assert not (_desk.get_read_coverage(PID).get('linkedin') or {}).get('last_error')
+
+
+def test_the_pane_reader_is_free_so_the_budget_check_passes_at_zero_room(env):
+    _project([{'channel_id': 'l1', 'platform': 'linkedin', 'browser_profile': 'main'}], budget=0)
+    rd = _reader(_li_pages(), FakeRuntime({}))
+    assert rd.unit_cost == 0.0 and eng._afford(PID, rd, rd.mentions_units, eng._now(None))
 
 
 def test_pages_state_is_exposed_in_coverage(env):
