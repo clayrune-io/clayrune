@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-28] - Restore saved connections into Edit
+
+- Saved Instagram browser sites open the shared Permissions screen. Choose an account or enter its handle; passcode Save attaches it without signing in or deleting the saved reference. Read/Post changes retain their separate gates.
+- Engine and custom MCP Edit restore saved setup metadata at Permissions. Back retains provider fields, credential names, package/version/command, remote authentication and reach. Review requires fresh MCP approval; unchanged engines keep their credentials and saved use policy.
+- Standard sign-in actions say Sign in, with the next step Sign in, then check now. No automatic checks or sign-ins run when Edit opens.
+
 ## [2026-10-28] - Unify saved Connections language and social account details
 
 - Connections use Ready, Needs sign-in, Not checked yet, Not working and Waiting on the service, with shared Check now, Edit, Sign in again and Remove labels.

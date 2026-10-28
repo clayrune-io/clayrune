@@ -1,9 +1,9 @@
 // Public vocabulary for saved connections and Connect. Keys describe evidence,
 // never permission grants: those stay with their existing server owners.
 const status = Object.freeze({ready:'Ready', signin:'Needs sign-in', unchecked:'Not checked yet', broken:'Not working'});
-const buttons = Object.freeze({check:'Check now', edit:'Edit', signin:'Sign in again', remove:'Remove', checking:'Checking…', saveLimit:'Save limit'});
+const buttons = Object.freeze({check:'Check now', edit:'Edit', signin:'Sign in', remove:'Remove', checking:'Checking…', saveLimit:'Save limit'});
 const labels = Object.freeze({permissions:'Permissions', read:'Read', post:'Post', on:'On', off:'Off', details:'Details', browser:'Browser', api:'App', profile:'Browser profile', method:'Connection method', scope:'Scopes'});
-const next = Object.freeze({ready:'No action is needed.', signin:'Sign in again, then check now.', unchecked:'Check now to see whether this connection works.', broken:'Open Edit to review this connection.'});
+const next = Object.freeze({ready:'No action is needed.', signin:'Sign in, then check now.', unchecked:'Check now to see whether this connection works.', broken:'Open Edit to review this connection.'});
 const reasons = Object.freeze({
   readOff:'Read is off. Open Edit and turn on Read in Permissions.',
   postOff:'Post is off. Open Edit and turn on Post in Permissions.',

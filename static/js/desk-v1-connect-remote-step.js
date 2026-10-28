@@ -33,6 +33,7 @@
 // ACTIVATION. The wizard is disabled until ticket 14, and the Package/Server-address choice that sets `variant =
 // custom-remote` is not part of this ticket: until it exists, the screens are reachable only by
 // `api.select({ variant: 'custom-remote' })`.
+import {remoteState} from './desk-v1-connect-mcp-restore.js';
 (function () {
   const W = window.DeskV1ConnectWizard;
   if (!W) return;
@@ -500,5 +501,5 @@
     return { kind: 'mcp-remote', address: P.url.trim(), saved: !!P.result, state: P.result ? P.result.state : null,
       lines: [`Remote server ${P.url.trim()}`, P.auth === 'oauth' ? 'OAuth (save only)' : P.auth === 'header' ? 'A token from the Vault' : 'No sign-in'].concat(c ? [c.reach && c.reach.who] : []).filter(Boolean) };
   }
-  window.DeskV1ConnectRemoteStep = { summary, VARIANT };
+  window.DeskV1ConnectRemoteStep = { summary, VARIANT, restore:d => {P={..._fresh(),...remoteState(d)};} };
 })();

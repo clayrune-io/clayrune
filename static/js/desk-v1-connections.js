@@ -125,7 +125,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
         name: e.label, kindLabel: 'Generation engine', status: st });
     });
     if (live && window.DeskV1ConnectionStatus) window.DeskV1ConnectionStatus.mcpItems().forEach((m) => items.push(m));
-    (window.DeskV1Services.rows() || []).forEach((s) => items.push({
+    (window.DeskV1Services.rows() || []).filter(s => !s.account_id || !_channels().some(c => c.id === s.account_id)).forEach((s) => items.push({
       key: `service:${s.id}`, kind: 'service', link: s.link,
       name: s.name, kindLabel: s.browser_connection ? 'Browser sign-in' : 'Saved service', status: s.browser_connection ? window.DeskV1BrowserService.status(s) : window.DeskV1Services.STATUS,
     }));

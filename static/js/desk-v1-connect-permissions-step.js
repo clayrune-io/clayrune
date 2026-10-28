@@ -378,7 +378,7 @@
   function _problem(sel, info) {
     const mode = sel.type === 'mcp' ? 'mcp' : sel.type === 'reference' ? 'reference' : 'account-ish';
     if (mode === 'mcp' && _variant(sel, info)?.setup?.via === 'provider') return '';
-    if (mode === 'mcp') return M.reach.scope === 'project' && !M.reach.projectId ? 'Choose a project.' : '';
+    if (mode === 'mcp') return M.reach.scope === 'project' && !_projects().some(p => p.id === M.reach.projectId) ? 'Choose a project.' : '';
     if (mode === 'reference') return '';
     if (!_target && ['x', 'linkedin'].includes(_service(info))) return 'Choose the account first.';
     if (_needsFetch(sel, info) && M.loaded !== _loadKey(info)) return M.failed ? 'What is saved could not be read.' : 'Loading what is saved.';
@@ -561,5 +561,5 @@
     return { kind: lines.length ? (r.ok && !r.pending ? 'ok' : 'partial') : 'ok', lines };
   }
 
-  window.DeskV1ConnectPermissionsStep = { setTarget, summary, apply, outcome, reach, registerSection };
+  window.DeskV1ConnectPermissionsStep = { setTarget, summary, apply, outcome, reach, registerSection, restoreReach:d => {M.reach={scope:d.scope,projectId:d.project_id || ''};} };
 })();

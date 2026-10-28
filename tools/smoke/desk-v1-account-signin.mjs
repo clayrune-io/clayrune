@@ -171,7 +171,7 @@ async function run(browser, width, height) {
     const body = await page.evaluate(() => document.body.innerText);
     check(!/Change how this is connected|Open Permissions/.test(body), 'no "Change how this is connected" and no "Open Permissions" on the screen', 'an old label survived');
     const si = await buttons(page, 'acct-li', '[data-as-signin]');
-    check(si.length === 1 && si[0].text === 'Sign in again' && si[0].row === 'browser', 'one Sign in, in the Browser row, and it says only "Sign in"', JSON.stringify(si));
+    check(si.length === 1 && si[0].text === 'Sign in' && si[0].row === 'browser', 'one Sign in, in the Browser row, and it says only "Sign in"', JSON.stringify(si));
     check(si[0].primary, 'it is primary while the row Needs sign-in', JSON.stringify(si));
     check(!(await page.$('[data-conn-account="acct-li"] [data-cs-facet="api"]')), 'LinkedIn has no API row, so no second Sign in', 'an API row on LinkedIn');
     await page.screenshot({ path: resolve(SHOT_DIR, `linkedin_${width}.png`) });
@@ -193,7 +193,7 @@ async function run(browser, width, height) {
     await selectTile(page, 'acct-x');
     await page.waitForSelector('[data-conn-account="acct-x"] [data-cs-facet="api"] [data-as-signin="api"]', { timeout: 4000 });
     const si = await buttons(page, 'acct-x', '[data-as-signin]');
-    check(si.length === 2 && si.every((b) => b.text === 'Sign in again') && si.map((b) => b.row).join() === 'browser,api', 'an account with both routes shows one Sign in per row', JSON.stringify(si));
+    check(si.length === 2 && si.every((b) => b.text === 'Sign in') && si.map((b) => b.row).join() === 'browser,api', 'an account with both routes shows one Sign in per row', JSON.stringify(si));
     check(si.every(b=>b.primary), 'the API row (not signed in) is primary and the Browser row (saved, unchecked) is plain', JSON.stringify(si));
     check((await buttons(page, 'acct-x', '[data-cs-reopen]')).length === 1, 'and still one Edit settings', 'Edit settings doubled');
     await page.screenshot({ path: resolve(SHOT_DIR, `x_${width}.png`) });

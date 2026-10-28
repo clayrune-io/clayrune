@@ -61,6 +61,11 @@ prompt space in every future turn that touches its subject.
 | GET | `/api/rules/shared` | Read SHARED_RULES.md (applies to all projects). |
 | PUT | `/api/rules/shared` | Write SHARED_RULES.md. |
 
+## Desk saved connection Edit
+
+- `POST /api/desk/connect/custom/saved-draft` with `{scope, project_id?, server_name}` reads the saved MCP setup draft (credential names only). Human-only like the custom-connection list; no network, install or approval.
+- `POST /api/desk/connect/saved-site/<service_id>/account` with `{account: {id} | {identity}, source: {url, browser_profile, signin_method}, passcode}` explicitly attaches an older pane-site reference to an account. Human/passcode only; validates the saved source before the passcode and again atomically at Save. New Instagram accounts start with Read/Post off. The source reference is retained with `account_id`; existing account policies and all sign-in state remain intact. Permission changes use their existing separate endpoints.
+
 ## Desk connection removal
 
 Desk project media: `GET /api/desk/materials` includes `projects[]` alongside

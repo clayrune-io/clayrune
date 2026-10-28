@@ -2301,6 +2301,10 @@ app.register_blueprint(_bp_desk_connect_signin_reuse.bp)
 # User-chosen MCP server (slice U2a): Review card + the one passcode Save for a self-contained npm package. Own module.
 from mc.blueprints import desk_connect_custom_routes as _bp_desk_connect_custom  # noqa: E402
 app.register_blueprint(_bp_desk_connect_custom.bp)
+from mc.blueprints import desk_saved_site_account_routes as _bp_saved_site
+app.register_blueprint(_bp_saved_site.bp)
+from mc.blueprints import desk_saved_mcp_draft_routes as _bp_saved_mcp
+app.register_blueprint(_bp_saved_mcp.bp)
 from mc.blueprints import desk_connection_removal_routes as _bp_desk_connection_removal  # noqa: E402
 app.register_blueprint(_bp_desk_connection_removal.bp)
 from mc.blueprints import desk_engine_connection_routes as _bp_desk_engine_connection  # noqa: E402

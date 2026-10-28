@@ -56,4 +56,4 @@ window.DeskV1ConnectSummaryStep?.registerBranch({id:'browser-profile',word:C.wor
     extra:()=>window.DeskV1ConnectBrowserCheck?.html('generic-result') || '',actions:()=>[],
     bind:(root,res,api)=>window.DeskV1ConnectBrowserCheck?.bind(root,'generic-result',()=>({url:res.url,browser_profile:res.browser_profile}),api.ctx,{own:api.own,status:res.status,onStatus:out=>{window.DeskV1ConnectSummaryStep.setStatus(out);api.repaint();}})},
 });
-window.DeskV1ConnectBrowserProfile={matches,controls,profileName};
+window.DeskV1ConnectBrowserProfile={matches,controls,profileName,restore:(s,info)=>{S={...S,name:s.name,profile:s.browser_connection.browser_profile,signinMethod:s.browser_connection.signin_method || 'other',info};}};

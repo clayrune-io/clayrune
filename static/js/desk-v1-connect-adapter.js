@@ -68,6 +68,7 @@
   function read() {
     const out = {};
     for (const f of _fields) {
+      if (window.DeskV1ConnectSavedFields?.stored(_host, f)) continue;
       const selected = window.DeskV1ConnectSavedFields && window.DeskV1ConnectSavedFields.selection(_host, f);
       if (selected) {
         if (!selected.value) return { error: `Choose a saved entry for ${f.label}.`, focus: selected.focus };

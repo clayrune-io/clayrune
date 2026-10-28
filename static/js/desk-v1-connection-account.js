@@ -60,7 +60,7 @@ export function accountHTML(ch,cov,{site=false,details='',status}={}) {
     </details>
     <div class="desk-v1-conn-actions" data-connection-actions>
       ${browserTarget?window.DeskV1BrowserAccount.html(ch):`<button type="button" class="desk-v1-conn-btn" data-connection-check ${!canCheck || site?'disabled':''}>${W.buttons.check}</button>`}
-      <button type="button" class="desk-v1-conn-btn" data-cs-reopen="${esc(ch.id)}" ${site?'disabled':''}>${W.buttons.edit}</button>
+      <button type="button" class="desk-v1-conn-btn" data-cs-reopen="${esc(ch.id)}">${W.buttons.edit}</button>
       ${signin}${Remove.html(ch.label || ch.name)}
     </div>
   </div>`;

@@ -49,14 +49,14 @@ try {
    const chip=panel.locator('[data-conn-status], [data-engine-status]').first();
    assert.ok(Object.values(W.status).includes((await chip.textContent()).trim()),`${id}: chip`);
    assert.equal(await panel.locator('[data-connection-details][open]').count(),0,`${id}: collapsed Details`);
-   const buttons=(await panel.locator('button').allTextContents()).map(x=>x.trim()).filter(x=>['Check now','Edit','Sign in again','Remove'].includes(x));
-   assert.deepEqual(buttons,id==='ch-li-page'?['Check now','Edit','Sign in again','Remove']:['Check now','Edit','Remove'],`${id}: ordered actions`);
+   const buttons=(await panel.locator('button').allTextContents()).map(x=>x.trim()).filter(x=>['Check now','Edit','Sign in','Remove'].includes(x));
+   assert.deepEqual(buttons,id==='ch-li-page'?['Check now','Edit','Sign in','Remove']:['Check now','Edit','Remove'],`${id}: ordered actions`);
    if(!id.startsWith('engine:') && !id.startsWith('mcp:')) {
     assert.deepEqual(await panel.locator('[data-connection-permission]').evaluateAll(ns=>ns.map(n=>n.dataset.connectionPermission)),['read','post']);
     assert.equal(await panel.locator('[data-connection-permission="post"]').getAttribute('data-on'),'false');
    }
    if(id==='service:instagram') {
-    assert.equal(await panel.getByRole('button',{name:'Edit',exact:true}).isDisabled(),true);
+    assert.equal(await panel.getByRole('button',{name:'Edit',exact:true}).isDisabled(),false);
     assert.equal(await panel.locator('[data-connection-permission="read"]').getAttribute('data-on'),'false');
     assert.match(await panel.textContent(),/unavailable for this saved sign-in/);
    }

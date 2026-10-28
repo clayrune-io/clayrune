@@ -14,6 +14,7 @@ const ORIGIN = 'http://mc.smoke.test';
 const SHOT_DIR = resolve(REPO_ROOT, '_scratch', 'connections_language');
 mkdirSync(SHOT_DIR, { recursive: true });
 const STATIC = loadStaticJsCss(REPO_ROOT, { isolateConnectScreens: true });
+const PRODUCTION_STATIC = loadStaticJsCss(REPO_ROOT);
 const BASELINE = {};
 const beforeArg=process.argv.find(a=>a==='--before' || a.startsWith('--before='));
 if(beforeArg) {
@@ -87,8 +88,10 @@ export async function newPage(browser, { srv, width, height, wizard = false }) {
     const path = url.pathname;
     const method = req.method();
     const J = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (srv.handle && await srv.handle({path, method, req, J})) return;
     if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: srv.baseline ? BASELINE['/static/index.html'] : INDEX_HTML });
-    if (STATIC[path]) return route.fulfill({ status: 200, contentType: STATIC[path][0], body: srv.baseline && BASELINE[path] || STATIC[path][1] });
+    const asset = (srv.production ? PRODUCTION_STATIC : STATIC)[path];
+    if (asset) return route.fulfill({ status: 200, contentType: asset[0], body: srv.baseline && BASELINE[path] || asset[1] });
     if (path === '/api/projects') return J(srv.fx.projects.map((p) => ({
       id: p.id, name: p.name, status: 'active', domain: 'general', emoji: '🧪', description: '', summary: '', current_task: 'Idle',
       next_action: '', blocked: false, blocked_reason: null, activity_log: [], backlog: [], project_path: '/smoke/' + p.id,

@@ -101,13 +101,13 @@ P?.registerSection({ matches, html, bind, problem, summary, apply, reading,
 // Existing accounts have a connection already. This registered branch saves only
 // their wishes through Permissions.apply; it neither signs in nor claims a check.
 window.DeskV1ConnectSummaryStep?.registerBranch({ id:'saved-account', word:C.words.currentConnection,
-  match:sel => sel.type === 'account', problem:() => '',
+  match:sel => sel.type === 'account' && sel.variant !== 'saved-site', problem:() => '',
   save:async () => ({ ok:true, result:{ account_id:R.account.id, unchanged:true } }),
   accountId:r => r.account_id,
   factsHTML:() => `<dl class="desk-v1-cf-facts"><div><dt>${C.words.account}</dt><dd>${esc(R.account?.label || R.account?.identity)}</dd></div></dl>`,
   result:{ rows:() => [[C.words.connectionLabel, C.words.unchanged, 'connection']], actions:() => [] },
 });
-W?.registerScreen({ id:'saved-account-setup', step:'setup', match:sel => sel.type === 'account',
+W?.registerScreen({ id:'saved-account-setup', step:'setup', match:sel => sel.type === 'account' && sel.variant !== 'saved-site',
   title:() => C.screens.setup[0], copy:() => C.screens.setup[1],
   body:() => `<p>${esc(R.account?.label || R.account?.identity)}</p><p>${C.words.currentConnection}</p>`,
   primary:() => ({ label:C.words.continue, run:() => true }),

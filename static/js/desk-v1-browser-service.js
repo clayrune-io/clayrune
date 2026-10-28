@@ -12,5 +12,5 @@ function html(s) {
  t.content.querySelector('[data-connection-check]').outerHTML=window.DeskV1ConnectBrowserCheck.html('service-'+s.id);
  return `<div class="desk-v1-conn-row" data-conn-service="${esc(s.id)}" data-browser-service="${esc(s.id)}"><div class="desk-v1-conn-head"><span class="desk-v1-channel-badge">${esc(s.name)}</span><span class="desk-v1-conn-status" data-conn-status data-state="${st.key}">${esc(st.word)}</span></div>${t.innerHTML}</div>`;
 }
-function bind(root,s,repaint) {window.DeskV1ConnectBrowserCheck?.bind(root,'service-'+s.id,()=>({url:s.link,browser_profile:s.browser_connection.browser_profile}),{api:window.DeskV1Store.api},{compact:true,status:s.browser_connection.status,onStatus:out=>{s.browser_connection.status=out;repaint();}});}
+function bind(root,s,repaint) {root.querySelector('[data-cs-reopen]')?.addEventListener('click',()=>window.DeskV1ConnectionStatus.reopen({kind:'service',id:'service:'+s.id,record:s},repaint));window.DeskV1ConnectBrowserCheck?.bind(root,'service-'+s.id,()=>({url:s.link,browser_profile:s.browser_connection.browser_profile}),{api:window.DeskV1Store.api},{compact:true,status:s.browser_connection.status,onStatus:out=>{s.browser_connection.status=out;repaint();}});}
 window.DeskV1BrowserService={status:browserServiceStatus,html,bind};
