@@ -7,11 +7,9 @@ server holds, Launch shows nothing to approve) or Launch asks for an approval th
 server never needed. This runs the same corpus through both, dimension by
 dimension, so a change to one without the other fails here.
 
-One known difference is pinned, not hidden: a LOWER `cadence.min_gap_h` is a
-widening to the client (a tighter gap posts more often) and not to the server.
-The client is the stricter side, so the person is asked once more than the server
-requires; it never hides a hold. If the server learns the rule, the pinned case
-below fails and the entry moves out of KNOWN_CLIENT_ONLY.
+A shorter or removed `cadence.min_gap_h` is a widening on both sides: the
+publisher enforces the live gap (mc/desk_tick.py), so lowering it without a
+re-approval would let posts land closer together than the human approved.
 """
 import json
 import shutil
@@ -72,10 +70,10 @@ CASES = {
     'budget source own to project': variant(budget={'source': 'project', 'amount': 5}),
     'two dimensions': variant(accounts=['a', 'b'], budget={'source': 'own', 'amount': 9}),
     'one up one down': variant(cadence__per_week=1, end__post_cap=50),
-    # the pinned difference (see the module docstring)
     'min gap lowered': variant(cadence__min_gap_h=12),
+    'min gap raised': variant(cadence__min_gap_h=48),
+    'min gap removed': variant(cadence__min_gap_h=None),
 }
-KNOWN_CLIENT_ONLY = {'min gap lowered'}
 
 SERVER_DIMENSIONS = {
     'accounts': desk._accounts_widen,
@@ -113,7 +111,7 @@ def server_dimensions(nxt):
     return {name for name, fn in SERVER_DIMENSIONS.items() if fn(BASE, nxt)}
 
 
-@pytest.mark.parametrize('name', [n for n in CASES if n not in KNOWN_CLIENT_ONLY])
+@pytest.mark.parametrize('name', list(CASES))
 def test_client_and_server_widen_the_same_dimensions(client_keys, name):
     nxt = CASES[name]
     client = {CLIENT_KEY_DIMENSION[k] for k in client_keys[name]}
@@ -126,7 +124,8 @@ def test_the_corpus_exercises_both_outcomes(client_keys):
     assert client_keys['unchanged'] == []
 
 
-def test_a_lower_min_gap_is_the_one_known_client_only_widening(client_keys):
-    nxt = CASES['min gap lowered']
-    assert client_keys['min gap lowered'] == ['min_gap_h']
-    assert desk.bounds_widen(BASE, nxt) is False
+def test_a_lower_or_removed_min_gap_holds_the_publisher(client_keys):
+    for name in ('min gap lowered', 'min gap removed'):
+        assert client_keys[name] == ['min_gap_h'], name
+        assert desk.bounds_widen(BASE, CASES[name]) is True, name
+    assert desk.bounds_widen(BASE, CASES['min gap raised']) is False

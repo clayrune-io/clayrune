@@ -16,10 +16,7 @@
 //
 // `diff` mirrors mc/desk.py bounds_widen dimension by dimension (the server is the
 // authority: it is what holds the publisher). tests/test_desk_reapproval_parity.py
-// pins the two together. Two known differences, both pinned there too: the kit
-// (and so this file) treats a lower `min_gap_h` as a widening and the server does
-// not; the server treats own -> project budget source as one and the kit did not.
-// This file reports the union, so a hold the server applies is never invisible.
+// pins the two together, dimension by dimension, with no known differences.
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -51,8 +48,8 @@
     if (pc.per_week != null && (nc.per_week == null || nc.per_week > pc.per_week)) {
       rows.push({ key: 'per_week', label: 'Posts a week', from: String(pc.per_week), to: nc.per_week == null ? 'no limit' : String(nc.per_week) });
     }
-    if (pc.min_gap_h != null && nc.min_gap_h != null && nc.min_gap_h < pc.min_gap_h) {
-      rows.push({ key: 'min_gap_h', label: 'Minimum gap', from: `${pc.min_gap_h}h`, to: `${nc.min_gap_h}h` });
+    if (pc.min_gap_h && (!nc.min_gap_h || nc.min_gap_h < pc.min_gap_h)) {
+      rows.push({ key: 'min_gap_h', label: 'Minimum gap', from: `${pc.min_gap_h}h`, to: nc.min_gap_h ? `${nc.min_gap_h}h` : 'no gap' });
     }
     const pe = prev.end || {}; const ne = next.end || {};
     if (pe.date && (!ne.date || _ms(ne.date) > _ms(pe.date))) {

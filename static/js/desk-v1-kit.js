@@ -1236,8 +1236,8 @@
     const prev = (prevBounds && prevBounds.cadence) || {};
     const next = (nextBounds && nextBounds.cadence) || {};
     // A tighter minimum gap lets the same campaign post more often, so a
-    // LOWER min_gap_h widens (only when both sides carry one).
-    if (prev.min_gap_h != null && next.min_gap_h != null && next.min_gap_h < prev.min_gap_h) return true;
+    // A LOWER or removed min_gap_h widens (mc/desk.py _cadence_widen).
+    if (prev.min_gap_h && (!next.min_gap_h || next.min_gap_h < prev.min_gap_h)) return true;
     if (prev.per_week == null) return false;
     // A ceiling removed is looser than any finite one.
     return next.per_week == null || next.per_week > prev.per_week;
