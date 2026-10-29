@@ -208,7 +208,7 @@ async function runToneRenderChecks(browser, tone) {
 
   // The content-type tray (frame 5a) replaces the Add tray.
   const types = await page.$$eval('[data-what-type] .desk-v1-what-type-name', (els) => els.map((e) => e.textContent.trim()));
-  JSON.stringify(types) === JSON.stringify(['Post', 'Article', 'Video', 'Image', 'YouTube'])
+  JSON.stringify(types) === JSON.stringify(['Post', 'Article', 'Video', 'Image'])
     ? ok(`[${tone.name}] content-type tray offers ${JSON.stringify(types)}`)
     : fail(`[${tone.name}] content-type tray wrong: ${JSON.stringify(types)}`);
   const oldTray = await page.$('.desk-v1-camp-addtray-details, [data-view-btn], [data-group-show], [data-filter-trigger]');
@@ -431,11 +431,10 @@ async function runWhatTray(browser) {
   await page.waitForSelector('[data-what-create]', { state: 'detached', timeout: 2000 });
   ok('Browse existing -> picking an article finishes the card');
 
-  // YouTube: a Video card carrying the Preview chip (§11.6 Q1 — nothing connects).
-  await page.focus('[data-what-type="youtube"]');
-  await page.keyboard.press('Enter');
-  await page.waitForSelector('[data-what-create][data-kind="video"] [data-preview]', { timeout: 2000 });
-  ok('YouTube opens a Video card labelled Preview (renders, connects nothing)');
+  // No YouTube tile (Ron 2026-10-29): YouTube is a Where destination, not a type.
+  (await page.$('[data-what-type="youtube"]'))
+    ? fail('YouTube tile still in the content-type tray')
+    : ok('no YouTube tile in the content-type tray (it is a Where destination)');
 
   reportUncaught(pageErrors, '[what-tray]');
   await ctx.close();

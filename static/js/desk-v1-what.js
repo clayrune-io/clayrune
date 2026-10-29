@@ -7,7 +7,7 @@
 //   filters  All · Needs review · Scheduled · Blocked
 //   rows     kind label · title · `on N channels` · per-version status
 //            (+ the piece's asset thumbnails and `＋ Add media`)
-//   tray     CONTENT TYPES: Post · Article · Video · Image · YouTube, dragged
+//   tray     CONTENT TYPES: Post · Article · Video · Image, dragged
 //            (or focus + Enter) into the campaign
 //
 // Each drop is its OWN piece — several of one kind are allowed — and opens a
@@ -99,14 +99,13 @@
     blocked: (f) => (f.versions || []).some((v) => v.state === 'blocked'),
   };
 
-  // The tray. `youtube` is a Video create-card with the YouTube source hint
-  // (§11.6 Q1: the tile renders and behaves; nothing connects or publishes).
+  // The tray. No YouTube tile (Ron 2026-10-29): YouTube is a destination, not a
+  // content type. Make a Video here, then add YouTube as a channel on Where.
   const TYPES = [
     { id: 'post', kind: 'post', label: 'Post', glyph: '💬' },
     { id: 'article', kind: 'article', label: 'Article', glyph: '📄' },
     { id: 'video', kind: 'video', label: 'Video', glyph: '🎬' },
     { id: 'image', kind: 'image', label: 'Image', glyph: '🖼' },
-    { id: 'youtube', kind: 'video', label: 'YouTube', glyph: '▶', preview: true },
   ];
 
   // Source tiles per kind (frames 15a/16a). `body` marks which source has a
