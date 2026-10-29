@@ -24,6 +24,14 @@ also fails, forcing the ledger to stay truthful.
 | --- | --- | --- | --- |
 | agent dispatch/recovery | legacy Claude auth, dispatch, follow-up, revival and respawn subprocesses | agent-runtime owner | move each path behind the runtime and durable lifecycle |
 | Memory | legacy agent-condense subprocess | memory owner | replace it with the provider-neutral publication service |
+| Delegation receipt reconciliation (MC-1106) | one module-scope `ClaudeRuntime` import in `mc/delegation_transcript_reconcile.py`, solely for `_encoded_dir_candidates`; no inference invocation | delegation-delivery owner | move Claude receipt scanning behind a provider-neutral transcript reconciliation seam |
+
+The MC-1106 exception preserves the existing Claude JSONL receipt contract,
+including batching across parents and ownership checks for rollover files.
+`tests/test_delegation_transcript_reconcile.py` exercises those reads, rejects
+non-receipt evidence, and checks that confirmation never replays a callback.
+The guard pins the import to module scope with count one; this does not
+exclude the module from scanning or allow concrete inference calls.
 
 The installer, git sync, media, browser, terminal, remote-access, system,
 mail, and backup subprocesses are outside the inference boundary by design.

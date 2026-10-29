@@ -138,6 +138,11 @@ ALLOWLIST: tuple[AllowlistedException, ...] = (
     AllowlistedException("mc/memory.py", "_dispatch_condense._run",
                          "inference-subprocess", 1, "memory owner",
                          "replace legacy agent-condense with the provider-neutral publication service"),
+    # MC-1106: Claude JSONL receipt reconciliation reuses only the runtime's
+    # path-encoding variants; it neither constructs nor invokes inference.
+    AllowlistedException("mc/delegation_transcript_reconcile.py", "<module>",
+                         "concrete-adapter-import", 1, "delegation-delivery owner",
+                         "move Claude receipt scanning behind a provider-neutral transcript reconciliation seam"),
 )
 
 
