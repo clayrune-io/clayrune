@@ -390,6 +390,19 @@ def test_a_piece_carries_several_assets_with_serve_image_src(env):
     assert a['src'].startswith('/api/serve-image?path=') and 'a.png' in a['src']
 
 
+def test_a_video_asset_carries_the_play_url_a_picture_does_not(env):
+    client, uploads, _ = env
+    _put_file(uploads, 'desk/library/image/Shots/a.png')
+    _put_file(uploads, 'desk/library/video/Clips/c.mp4', b'\x00\x00\x00\x18ftypmp42')
+    p = _piece(client)
+    for path in ('desk/library/image/Shots/a.png', 'desk/library/video/Clips/c.mp4'):
+        assert client.post(f"/api/desk/pieces/{p['id']}/assets", json={'path': path}).status_code == 201
+    img, vid = client.get('/api/desk/pieces').get_json()[0]['assets']
+    assert img['play'] is None
+    # the same ranged inline URL the library read hands every video
+    assert vid['src'] is None and vid['play'].startswith('/api/serve-file?inline=1&path=') and 'c.mp4' in vid['play']
+
+
 def test_asset_path_must_stay_under_uploads(env, tmp_path):
     client, uploads, tmp = env
     outside = tmp / 'secret.png'

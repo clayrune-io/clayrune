@@ -15,6 +15,12 @@
 - Active post, image and video piece pages now offer a full draft editor, **Import from file** and **Save**, including when a new post has no versions. Text, Markdown and HTML imports fill the draft locally; HTML becomes plain text. Save or leaving the field persists the body, with visible saved/error feedback and a 100,000-character limit.
 - Failed saves retain typed text across piece repaints, and overlapping saves preserve newer edits. Version rows remain below the editor, with Where described as the next step. Articles keep **Edit article**, archived pieces remain read-only, and fixture edits stay local. Branch candidate only; no merge or deployment.
 
+## [2026-10-29] - Play and remove media on a post's media strip
+
+- Every thumbnail on a post's Media strip (the piece page and the What rows) opens the library viewer: a picture in the image viewer, a video in the player on its own file, stepping through the post's videos. Videos show a real frame with the ▶ kept over it.
+- Each thumbnail has a small ✕ that removes it from this post only; the library file stays. No confirmation, like other Desk removals: the header Undo puts it back. A refusal from the server is shown and the media stays. Archived posts show no ✕.
+- Piece videos now carry the same `play` URL the library read gives. New module `static/js/desk-v1-piece-media.js`; smoke `tools/smoke/desk-v1-piece-media.mjs`. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-29] - Delete a published X post while keeping its receipt (MC-1126)
 
 - A verified published version's piece page offers **Delete from X**, with confirmation and a freshly typed dashboard passcode on every call. The server refuses unattended callers and uses the existing OAuth refresh path, saving rotated refresh tokens before deletion.

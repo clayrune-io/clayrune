@@ -245,7 +245,7 @@
         throw new Error('this source has not produced a file that can be saved yet');
       }
       const saved = ((out && out.assets) || []).find((a) => a.id === asset.id);
-      if (saved) Object.assign(asset, { kind: saved.kind, title: saved.title, path: saved.path, src: saved.src });
+      if (saved) Object.assign(asset, { kind: saved.kind, title: saved.title, path: saved.path, src: saved.src, play: saved.play });
       if (upload) _mats.promise = null; // the file now sits in the library's Uploads folder
       if (repaint) repaint(); // the thumbnail is now the server's, not the local blob
       return out;
@@ -368,16 +368,10 @@
     }).join('');
   }
 
-  function _thumbHTML(a) {
-    return a.src
-      ? `<img class="desk-v1-what-thumb" data-asset-id="${esc(a.id)}" src="${esc(a.src)}" alt="${esc(a.title || 'Asset')}" title="${esc(a.title || '')}">`
-      : `<span class="desk-v1-what-thumb desk-v1-what-thumb-blank" data-asset-id="${esc(a.id)}" title="${esc(a.title || '')}" aria-label="${esc(a.title || 'Asset')}">${esc(a.kind === 'video' ? '▶' : '▣')}</span>`;
-  }
-
   function _rowHTML(fam) {
     const assets = DeskV1Kit.pieceAssets(fam);
     const media = assets.length
-      ? `<div class="desk-v1-what-media" data-what-media>${assets.map(_thumbHTML).join('')}` +
+      ? `<div class="desk-v1-what-media" data-what-media>${window.DeskV1PieceMedia.thumbsHTML(fam)}` +
         `<button type="button" class="desk-v1-what-addmedia" data-add-media="${esc(fam.id)}" aria-haspopup="menu">＋ Add media</button></div>`
       : '';
     return `<div class="desk-v1-camp-card desk-v1-what-row" data-what-row data-family-id="${esc(fam.id)}" data-kind="${esc(fam.kind || '')}">
@@ -571,6 +565,7 @@
       if (primary && typeof _bridge().runPrimary === 'function') primary.onclick = (e) => { e.stopPropagation(); window.DeskV1SuggestionPieces.act(fam, () => _bridge().runPrimary(fam, camp)); };
       const more = rowEl.querySelector('[data-more-btn]');
       if (more && typeof _bridge().openCardMenu === 'function') more.onclick = (e) => { e.stopPropagation(); const trigger = e.currentTarget; window.DeskV1SuggestionPieces.act(fam, () => _bridge().openCardMenu(trigger, fam, camp)); };
+      window.DeskV1PieceMedia.wire(rowEl, fam, () => _repaint());
       const add = rowEl.querySelector('[data-add-media]');
       if (add) add.onclick = (e) => { e.stopPropagation(); openAddMedia(add, fam, () => _repaint()); };
       rowEl.addEventListener('click', () => { if (typeof _bridge().setSelection === 'function') _bridge().setSelection('card', fam.id, fam.title); });

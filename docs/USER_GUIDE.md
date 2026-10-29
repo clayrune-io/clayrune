@@ -602,6 +602,8 @@ Clayrune knows which project they belong to; unassigned older uploads may need
 to be added manually. Discovery skips dependency/build/scratch folders and has
 per-project size and depth limits.
 
+On a post's media strip, click or press Enter on any thumbnail to view the picture or play the video; the small **✕** on its corner removes it from this post only (the file stays in the library). **Undo** in the Desk header puts it back. An archived post cannot be changed until it is restored.
+
 ### Capture a screen
 
 Open **The Desk → Studio → New image → Capture from the product**. Pick a
