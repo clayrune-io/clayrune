@@ -190,8 +190,8 @@ async function run(browser, width, height) {
     check(owners.join('|') === 'Desk permission|Desk permission', 'each row says it is a Desk permission', 'owners: ' + owners.join('|'));
     check(/Post only\. Not Reply, media or Article\./.test(await text(page, '[data-cfp-box="post"] ~ .desk-v1-cfp-text')), 'Post covers Post only', 'post coverage wrong');
     // The Desk read is saved but x.com is not on the sign-in's list yet: half-ticked, never plain "on" (the card says Reading is off).
-    check(!(await checked(page, 'read')) && await page.$eval('[data-cfp-box="read"]', (b) => b.indeterminate) && !(await checked(page, 'post')) && /Reading through your sign-in is not switched on yet\./.test(await text(page, '[data-cfw-option="read"]')),
-      'the saved Desk read shows half-ticked with a sentence that the sign-in is not switched on, Post off', `read=${await checked(page, 'read')} post=${await checked(page, 'post')}`);
+    check(!(await checked(page, 'read')) && await page.$eval('[data-cfp-box="read"]', (b) => b.indeterminate) && !(await checked(page, 'post')) && /Reading is not fully allowed yet\./.test(await text(page, '[data-cfw-option="read"]')),
+      'the saved Desk read shows half-ticked with a sentence that Read is incomplete, Post off', `read=${await checked(page, 'read')} post=${await checked(page, 'post')}`);
     check(writes(srv).length === 0, 'arriving sent no write', 'a write went out: ' + JSON.stringify(writes(srv).map((r) => r.path)));
     await page.screenshot({ path: resolve(SHOT_DIR, `saved_oauth_${width}.png`) });
 

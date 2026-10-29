@@ -18,8 +18,8 @@
 //
 // ONE LIST FOR EVERY ACCOUNT (Ron 2026-10-28). Read this account's activity, and Publish: the same two rows with the
 // same words whatever the connection (API, browser sign-in, no known route). What the chosen route cannot do stays
-// on screen, disabled, with one sentence saying why. Existing browser-domain grants remain checked and enabled
-// for revocation even if no read route is projected.
+// on screen, disabled, with one sentence saying why. Existing browser-domain grants remain revocable even if
+// no read route is projected; an explicit Desk denial keeps the combined Read row incomplete and unticked.
 //
 // WHAT IT OFFERS. Only what the chosen route can actually run and the profile says it covers
 // (variant.runtime.purposes + variant.coverage, the same two facts permission_policy._clean checks; the server stays
@@ -193,7 +193,7 @@ import { readUnavailable } from './desk-v1-connect-read-support.js';
   const NEED_SIGNIN = 'Choose a browser sign-in first.';
   const READ_UNAVAILABLE = 'Reading is not available through this connection yet.';
   const POST_UNAVAILABLE = 'Posting is not available through this connection yet.';
-  const READ_UNFINISHED = 'Reading through your sign-in is not switched on yet. Tick this and save to finish it.';
+  const READ_UNFINISHED = 'Reading is not fully allowed yet. Tick this and save to finish it.';
   const READ_DETAIL ="Agents read this account's own mentions, replies and post stats. They cannot click, type or post.";
   function _siteApplies(v, info) { return !!(window.DeskV1ConnectBrowserPermission && _readsByBrowser(v) && _profile() && _site(info)); }
   function _readCan(v, info, offers) {
@@ -203,9 +203,11 @@ import { readUnavailable } from './desk-v1-connect-read-support.js';
     if (offers.read || site) return { site, reason: '' };
     return { site, reason: _readsByBrowser(v) && !_profile() ? NEED_SIGNIN : READ_UNAVAILABLE };
   }
-  // A live browser-domain grant is always on and revocable. Without one, show the Desk read parts as saved.
+  // Browser access cannot override explicit Desk consent. A genuine legacy policy keeps its existing behavior;
+  // domain-only access remains revocable when no Desk read route is projected.
   function _readParts(can, offers) {
-    return offers.reads.map((o) => _initial(o).length > 0).concat(can.site ? [_siteGranted()] : []);
+    const legacy = M.policy && M.policy.state === 'legacy' && can.site && _siteGranted();
+    return offers.reads.map((o) => _initial(o).length > 0 || !!legacy).concat(can.site ? [_siteGranted()] : []);
   }
   // Some read route has only some of the capabilities it offers; or one read route is allowed and another is not.
   function _readPartial(offers) {
@@ -214,14 +216,13 @@ import { readUnavailable } from './desk-v1-connect-read-support.js';
   }
   function _readInitial(can, offers) {
     if (can.reason) return false;
-    if (can.site && _siteGranted()) return true;  // a live browser grant must never be hidden by missing Desk scopes
     return _readParts(can, offers).every(Boolean);
   }
-  // Some Desk parts allowed but the sign-in's domain is not: shown unticked and half-ticked,
-  // so a person is not told Read is on while the card still says Reading is off.
+  // Incomplete consent in either direction is unticked and half-ticked. The existing allowed part remains
+  // revocable: returning to unchecked must not erase an explicit revocation wish.
   function _readMixed(can, offers) {
     const parts = _readParts(can, offers);
-    return !can.reason && !_siteGranted() && parts.some(Boolean) && !parts.every(Boolean);
+    return !can.reason && parts.some(Boolean) && !parts.every(Boolean);
   }
   function _readOn(can, offers) { return M.wish.read === null ? _readInitial(can, offers) : M.wish.read; }
 
@@ -276,7 +277,7 @@ import { readUnavailable } from './desk-v1-connect-read-support.js';
     const label = "Read this account's activity";
     if (can.reason) return _optionHTML('read', 'Desk permission', label, esc(can.reason), false, true);
     const now = offers.reads.flatMap(_initial), partial = M.wish.read === null && _readPartial(offers);
-    const unfinished = M.wish.read === null && _readMixed(can, offers) && can.site && !_siteGranted();
+    const unfinished = M.wish.read === null && _readMixed(can, offers);
     const detail = `${esc(READ_DETAIL)}${partial ? ` Allowed now: ${esc(_capText(Array.from(new Set(now.map((s) => s.capability)))))}.` : ''}${unfinished ? ` ${esc(READ_UNFINISHED)}` : ''}${offers.reads.some((o) => o.paid) ? ` <span data-cfp-paid>${esc(PAID_API_READ)}</span>` : ''}`;
     return _optionHTML('read', 'Desk permission', label, detail, _readOn(can, offers));
   }
@@ -431,7 +432,7 @@ import { readUnavailable } from './desk-v1-connect-read-support.js';
         const o = offers[id];
         if (id === 'read' && _target && M.wish.read === null) {
           const can = _readCan(v, api.info, offers);
-          box.indeterminate = !_siteGranted() && (_readMixed(can, offers) || _readPartial(offers));
+          box.indeterminate = _readMixed(can, offers) || _readPartial(offers);
         } else if (o && M.wish[id] === null) { const n = _initial(o).length; box.indeterminate = n > 0 && n < o.caps.length; }
         box.addEventListener('change', () => {
           box.indeterminate = false;
@@ -440,7 +441,7 @@ import { readUnavailable } from './desk-v1-connect-read-support.js';
             // One tick, two parts: the Desk read the route offers and the service's own domain on the sign-in. Back at what
             // the row showed = no wish, so ticking and unticking sends nothing (unless the row started half-ticked).
             const can = _readCan(v, api.info, offers);
-            const partial = !_siteGranted() && (_readMixed(can, offers) || _readPartial(offers));
+            const partial = _readMixed(can, offers) || _readPartial(offers);
             M.wish.read = !partial && box.checked === _readInitial(can, offers) ? null : box.checked;
             M.wish.site = can.site && M.wish.read !== null ? M.wish.read : null;
             if (offers.read) M.touched = true;               // a domain-only change must not record Desk scopes on a legacy account

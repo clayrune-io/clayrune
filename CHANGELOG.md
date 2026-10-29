@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Keep Desk Read consent separate from browser access (MC-1118)
+
+- An existing browser-domain grant no longer makes Read appear allowed when the account explicitly denies Desk Read. Incomplete consent is unticked, marked as incomplete and explained on the shared Read row.
+- Unticking then reticking saves a real Desk grant; choosing off preserves revocation of existing access. Untouched explicit denials, legacy behavior, unrelated domains and passcode checks are preserved. Branch candidate only; no merge or deployment.
+
 ## [2026-10-29] - Honor LinkedIn Read consent on its executable route (MC-1118)
 
 - LinkedIn pane reads resolve the single registered read_own pane executor, excluding manual routes. A saved Allow can reach the existing mentions and post-metrics reader; missing or ambiguous executor routes remain denied.

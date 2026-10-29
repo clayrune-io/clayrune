@@ -514,3 +514,76 @@ Raw receipts and logs are in `_scratch/mc1118-selector/`; `desk-test-files.json`
 `docs/USER_GUIDE.md` replaces the now-stale blocked-candidate warning; CHANGELOG records the selector fix and preserves branch-only status. No new UI, setup, install, schema or agent-conduct behavior requires README, AGENTS, API-reference or standing-rule changes. No new dependency or production deployment.
 
 The global plan-directory creation was blocked by the steward fence as human-owned `.claude` configuration, so the plan is recorded in the worktree journal. No retry or permission change. Engram memory tools were unavailable; no persistent Engram write is claimed. No real product choice arose; Dave owns integration and live validation.
+
+## Final Desk Read consent correction (2026-10-29)
+
+Fenn's review at `1543bc76` found that a live browser-domain grant overrode an explicitly denied Desk policy in the Permissions checkbox. Untick then retick returned the wish to `null`; applying Save reported success with no permission commit and Desk Read still false.
+
+The shared Read row now derives its initial state from both consent parts, without allowing the browser-domain part to override an explicit Desk denial. Incomplete consent appears unticked and indeterminate with the sentence "Reading is not fully allowed yet. Tick this and save to finish it." Returning an incomplete row to off preserves the revocation wish; reticking produces the actual Desk grant. An untouched incomplete policy writes nothing. Genuine legacy unset-policy behavior remains unchanged, and a browser grant remains revocable when no Desk route is projected. The Read/Publish list and passcode gates stay the same; no site editor or service-specific screen is added.
+
+The production LinkedIn projection drives three new browser regression cases at 1440 and 390 pixels: explicit-deny untick/retick, explicit-deny revocation, and complete-grant plain revocation. Retick asserts one permission commit containing the exact projected LinkedIn read scopes, Desk Read true, and zero browser writes for the already-granted domain. Revocation asserts Desk Read false, only linkedin.com removed, and example.org preserved. Both incomplete cases also verify that an untouched apply preserves the denial without writes. The saved-permissions smoke now expects the same incomplete-consent sentence for the opposite half-complete state.
+
+The new regression was run before the source change: permissions-step **rc 1**, ten failed checks across both widths, including the original zero-write / Read-false result. With the fix, the focused permissions-step smoke passed **rc 0** in 31.05 seconds. Final full-suite receipts are below.
+
+CHANGELOG and USER_GUIDE document the corrected consent state. README, API reference, AGENTS and standing rules need no change: this fixes the existing screen without introducing a setup, API, schema or conduct contract. This is a branch candidate only; no merge, push, restart or live-account verification.
+
+
+### Final consent-fix verification
+
+Full sorted `tests/test_desk*.py`: **3,611 passed in 779.67s, rc 0**; all 119 matching files ran without deselection. The runner invokes `python -m pytest -o addopts= -q --tb=short` with each sorted path explicitly expanded. The exact command and input file list are retained in `_scratch/mc1118-consent/backend-results.json` and `desk-test-files.json`.
+
+All 38 `desk-v1-connect*.mjs` entrypoints plus reads-off and boot: **40/40 rc 0**. Browser checks load this worktree's static files with hermetic API fixtures; the new consent regression uses the production LinkedIn type projection. No live sign-in or external account access. The final permissions-step run includes 1440/390 incomplete-consent screenshots and layout checks, plus the three consent cases.
+
+| Smoke command | rc | Seconds |
+| --- | --- | --- |
+| `node tools/smoke/desk-v1-connect-action-align.mjs` | 0 | 3.49 |
+| `node tools/smoke/desk-v1-connect-api-step.mjs` | 0 | 16.55 |
+| `node tools/smoke/desk-v1-connect-browser-check.mjs` | 0 | 142.08 |
+| `node tools/smoke/desk-v1-connect-browser-permission.mjs` | 0 | 1.15 |
+| `node tools/smoke/desk-v1-connect-browser-profile.mjs` | 0 | 1.76 |
+| `node tools/smoke/desk-v1-connect-custom.mjs` | 0 | 16.06 |
+| `node tools/smoke/desk-v1-connect-discover.mjs` | 0 | 10.0 |
+| `node tools/smoke/desk-v1-connect-edit-regressions.mjs` | 0 | 6.96 |
+| `node tools/smoke/desk-v1-connect-flow.mjs` | 0 | 28.36 |
+| `node tools/smoke/desk-v1-connect-held.mjs` | 0 | 0.7 |
+| `node tools/smoke/desk-v1-connect-login-step.mjs` | 0 | 22.2 |
+| `node tools/smoke/desk-v1-connect-mcp.mjs` | 0 | 15.78 |
+| `node tools/smoke/desk-v1-connect-package-check.mjs` | 0 | 0.04 |
+| `node tools/smoke/desk-v1-connect-package-creds.mjs` | 0 | 6.32 |
+| `node tools/smoke/desk-v1-connect-package-progress.mjs` | 0 | 1.69 |
+| `node tools/smoke/desk-v1-connect-package-save.mjs` | 0 | 1.89 |
+| `node tools/smoke/desk-v1-connect-package-step.mjs` | 0 | 16.62 |
+| `node tools/smoke/desk-v1-connect-permissions-step.mjs` | 0 | 29.34 |
+| `node tools/smoke/desk-v1-connect-purpose.mjs` | 0 | 30.45 |
+| `node tools/smoke/desk-v1-connect-read-support.mjs` | 0 | 0.34 |
+| `node tools/smoke/desk-v1-connect-remote-step.mjs` | 0 | 25.47 |
+| `node tools/smoke/desk-v1-connect-remote.mjs` | 0 | 26.09 |
+| `node tools/smoke/desk-v1-connect-save-refresh.mjs` | 0 | 2.41 |
+| `node tools/smoke/desk-v1-connect-saved-edit.mjs` | 0 | 10.91 |
+| `node tools/smoke/desk-v1-connect-saved-fields.mjs` | 0 | 4.57 |
+| `node tools/smoke/desk-v1-connect-saved-permissions.mjs` | 0 | 9.63 |
+| `node tools/smoke/desk-v1-connect-signin-details.mjs` | 0 | 22.21 |
+| `node tools/smoke/desk-v1-connect-signin-fill.mjs` | 0 | 0.9 |
+| `node tools/smoke/desk-v1-connect-signin-reuse.mjs` | 0 | 5.41 |
+| `node tools/smoke/desk-v1-connect-simplify.mjs` | 0 | 25.36 |
+| `node tools/smoke/desk-v1-connect-slice2.mjs` | 0 | 0.63 |
+| `node tools/smoke/desk-v1-connect-summary-step.mjs` | 0 | 14.7 |
+| `node tools/smoke/desk-v1-connect-unknown-step.mjs` | 0 | 8.8 |
+| `node tools/smoke/desk-v1-connect-wizard.mjs` | 0 | 7.23 |
+| `node tools/smoke/desk-v1-connection-language.mjs` | 0 | 4.12 |
+| `node tools/smoke/desk-v1-connection-remove.mjs` | 0 | 7.59 |
+| `node tools/smoke/desk-v1-connection-status.mjs` | 0 | 2.22 |
+| `node tools/smoke/desk-v1-connections.mjs` | 0 | 3.22 |
+| `node tools/smoke/desk-v1-reads-off.mjs` | 0 | 13.92 |
+| `node tools/smoke/boot-smoke.mjs` | 0 | 46.5 |
+
+| Additional command | rc |
+| --- | --- |
+| `node --check static/js/desk-v1-connect-permissions-step.js` | 0 |
+| `node --check tools/smoke/desk-v1-connect-permissions-step.mjs` | 0 |
+| `node --check tools/smoke/desk-v1-connect-saved-permissions.mjs` | 0 |
+| `git diff --check` | 0 |
+
+All 623 pre-existing documentation PNGs were backed up and SHA-256 checked; 71 overwritten images were restored to their starting bytes. No screenshot changes belong to this fix. Smoke dependencies were linked from the main checkout and the junction removed nonrecursively before commit; no install.
+
+Raw logs, the red/green regression receipts and full command matrices: `_scratch/mc1118-consent/`. Visual review of the mobile incomplete state confirmed the single shared Read/Publish list, explanation and reachable Back/Continue. The worktree journal records the plan and checkpoints. No real design choice arose. Merge, push, restart and live verification remain with Dave.
