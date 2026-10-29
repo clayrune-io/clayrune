@@ -124,9 +124,7 @@
 
   function _mediaHTML(fam) {
     const assets = DeskV1Kit.pieceAssets(fam);
-    const thumbs = assets.map((a) => a.src
-      ? `<img class="desk-v1-what-thumb" data-asset-id="${esc(a.id)}" src="${esc(a.src)}" alt="${esc(a.title || 'Asset')}" title="${esc(a.title || '')}">`
-      : `<span class="desk-v1-what-thumb desk-v1-what-thumb-blank" data-asset-id="${esc(a.id)}" title="${esc(a.title || '')}">${esc(a.kind === 'video' ? '▶' : '▣')}</span>`).join('');
+    const thumbs = window.DeskV1PieceMedia.thumbsHTML(fam);
     const render = fam.render
       ? `<div class="desk-v1-piece-facetrow" data-piece-render><span>Render</span><span>${esc(fam.render.status)}${fam.render.progress != null && fam.render.status === 'rendering' ? ` ${esc(fam.render.progress)}%` : ''} · r${esc(fam.render.revision)}</span></div>`
       : '';
@@ -182,6 +180,7 @@
     window.DeskV1PostDelete.bind(el, fam, _repaint);
     const videoBtn = el.querySelector('[data-video-btn]');
     if (videoBtn) videoBtn.onclick = () => window.deskV1Nav('video', { campaignId: fam.campaignId, familyId: fam.id, projectId: params.projectId });
+    window.DeskV1PieceMedia.wire(el, fam, () => _repaint());
     const add = el.querySelector('[data-add-media]');
     if (add) add.onclick = () => {
       if (typeof window.deskV1WhatAddMedia === 'function') window.deskV1WhatAddMedia(add, fam, () => _repaint());

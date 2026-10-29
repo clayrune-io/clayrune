@@ -257,7 +257,8 @@ def v1_piece(piece: dict) -> dict:
         'archivedAt': (piece.get('archive') or {}).get('at'),
         'assets': [{'id': a['id'], 'kind': a.get('kind'), 'title': a.get('title') or '',
                     **({'provenance': a['provenance']} if a.get('provenance') else {}),
-                    'path': a.get('path'), 'src': _src_for(a.get('path') or '', a.get('kind') or '')}
+                    'path': a.get('path'), 'src': _src_for(a.get('path') or '', a.get('kind') or ''),
+                    'play': _play_for(a.get('path') or '', a.get('kind') or '')}
                    for a in (piece.get('assets') or [])],
         'versions': [],
     }
