@@ -1013,6 +1013,8 @@ _UA_OVERRIDE_TYPES = ('page', 'iframe', 'service_worker', 'shared_worker')
 # neither Network. nor Emulation.setUserAgentOverride on the held worker
 # changes it (both return {}, measured) -- see the MC-1090 journal.
 _UA_GUARD_BROWSER_FILTER = [{'type': 'page'}, {'type': 'shared_worker'}, {'type': 'service_worker'}]
+# Marks the UA guard's throwaway probe tab so `_without_hidden_reads` can hide it.
+_UA_PROBE_FRAGMENT = '#clayrune-ua-probe'
 
 
 _NO_AUTOMATION_MARKER = '--disable-blink-features=AutomationControlled'
@@ -1103,10 +1105,20 @@ def _start_ua_guard(session, port):
             # session reads it off Chromium's own devtools page; a pipe session
             # has no HTTP endpoint, and chrome://version is a secure context
             # too (measured: isSecureContext true, userAgentData present).
-            tid = call('Target.createTarget', {
-                'url': 'chrome://version/' if _cdp_transport(session) is not None
-                else f'http://127.0.0.1:{port}/json/version',
-                'background': True})['targetId']
+            # The probe tab IS visible to `_cdp_targets` callers on other threads
+            # (`/json/list`, the pipe's target list): `ProfilePageReader.read()` polls
+            # from the moment `_launch_browser` returns, and `_pick_page_target`
+            # prefers any non-blank page over the root's about:blank, so a poll inside
+            # this window read the probe tab as "the page". Measured 2026-10-29: 2 of 5
+            # Desk-suite orderings, href http://127.0.0.1:<cdp port>/json/version ->
+            # own_origin_blocked. A fragment makes the URL unique to this probe (never
+            # sent to the server, ignored by chrome://version), and it stays in
+            # `hidden_read_urls` for the session's life so a target still listed just
+            # after closeTarget is hidden too.
+            probe_url = ('chrome://version/' if _cdp_transport(session) is not None
+                         else f'http://127.0.0.1:{port}/json/version') + _UA_PROBE_FRAGMENT
+            session.setdefault('hidden_read_urls', set()).add(probe_url)
+            tid = call('Target.createTarget', {'url': probe_url, 'background': True})['targetId']
             sid = call('Target.attachToTarget', {'targetId': tid, 'flatten': True})['sessionId']
             lo, t_end = None, _time.time() + 3
             while not lo and _time.time() < t_end:
