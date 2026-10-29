@@ -71,8 +71,15 @@ non-blocking; delegate long work to background threads.
 ### DTOs
 
 `ProviderStatus` (frozen): `enrolled, online, hostname, username,
-last_seen, error_code, error_message, connecting`. `error_code` is one
+last_seen, error_code, error_message, connecting, down_seconds, cloudflared`. `error_code` is one
 of `docs/remote-access/error-codes` values or `None`.
+
+`cloudflared` is an optional cached update-status dictionary (default `None`)
+passed through `/api/remote/status`. It reports installed/latest/minimum
+versions, the last update error, out-of-date/pending flags and progress.
+Providers without cloudflared need not populate it. See
+[`09-cloudflared-updates.md`](../docs/remote-access/09-cloudflared-updates.md)
+for the reference provider's fields and update policy.
 
 `ProviderCaps` (frozen): `bandwidth_quota_period_bytes,
 bandwidth_used_period_bytes, rate_limit_rps, max_response_bytes,

@@ -719,6 +719,14 @@ Clayrune can be reached from your phone via the **clayrune.io tunnel**
 Remote Access → enable. Once enabled, opening clayrune.io on your phone
 authenticates via email OTP and you see the same dashboard.
 
+Clayrune manages updates for its cloudflared tunnel executable when the
+supervisor starts or refreshes the connector. Versions below 2026.10.2 or
+90 days past their release month are eligible for a verified update. A
+running connector waits until its next natural restart before replacement;
+an unavailable download keeps the previous executable usable. Release
+checks retry daily. The remote-status API includes version and update-error
+details; these fields do not add a new Settings control or banner.
+
 > **Don't confuse with the agent Remote control toggle** (Settings →
 > Providers → Advanced → CLI integration → Remote control). They're different features:
 > - **Settings → Remote Access (clayrune.io tunnel)** = *you* reach the

@@ -36,6 +36,8 @@ class ProviderStatus:
     # a dead tunnel leaves a healthy-looking timestamp frozen in place — which is
     # exactly how a one-hour outage on 2026-08-14 read as "online" to anyone
     # polling this. Anything monitoring remote access should watch this field.
+    # Optional, provider-owned cached binary update state; no network on poll.
+    cloudflared: Optional[dict] = None
 
 
 @dataclass(frozen=True)
