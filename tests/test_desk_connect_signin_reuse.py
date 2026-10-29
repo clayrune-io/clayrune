@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import copy
 import json
-import time
 
 import pytest
 from flask import Flask
@@ -32,13 +31,8 @@ def signed_in(client, p):
 
 
 def second_sign_in(client, p, aid):
-    """A further start-held on the account: the first flow's return-address listener closes a moment after its Save."""
-    for _ in range(40):
-        out = start(client, p, aid).get_json()
-        if out.get('code') != 'port_busy':
-            return out
-        time.sleep(0.25)
-    return out
+    """A further start-held on the account (the X port is ephemeral in tests, conftest)."""
+    return start(client, p, aid).get_json()
 
 
 def token_hint(aid):
