@@ -32,13 +32,14 @@
       const media = lead.src
         ? `<img class="desk-v1-wc-img" data-asset-id="${esc(lead.id)}" src="${esc(lead.src)}" alt="${esc(lead.title || fam.title || 'Piece media')}">`
         : `<span class="desk-v1-wc-nosrc" aria-hidden="true">${esc(isVideo ? '' : '▣')}</span>`;
-      // The preview opens the same viewer as the strip's tiles (desk-v1-piece-media.js
-      // wires every [data-pmed-fam] [data-pmed-open]), so the big ▶ plays the video.
+      // The preview opens the lead tile on the strip below (desk-v1-what.js forwards
+      // the click), so the big ▶ plays the video in the same player. It is not a
+      // [data-pmed-open] itself: the strip stays the one list of the piece's media.
       const name = lead.title || (isVideo ? 'video' : 'picture');
       const label = esc(`${isVideo ? 'Play' : 'View'} ${name}`);
       return {
         look: isVideo ? 'video' : 'image',
-        html: `<span class="desk-v1-wc-openwrap" data-pmed-fam="${esc(fam.id)}"><button type="button" class="desk-v1-wc-open" data-pmed-open="${esc(lead.id)}" aria-label="${label}" title="${label}">` +
+        html: `<span class="desk-v1-wc-openwrap"><button type="button" class="desk-v1-wc-open" data-wc-open="${esc(lead.id)}" aria-label="${label}" title="${label}">` +
           media + (isVideo ? '<span class="desk-v1-wc-play" aria-hidden="true">▶</span>' : '') + '</button></span>',
       };
     }

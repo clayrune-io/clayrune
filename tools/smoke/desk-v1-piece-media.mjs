@@ -168,6 +168,15 @@ async function exerciseSurface(page, srv, surface, tag) {
   await page.keyboard.press('Escape');
   await settle(page, () => !document.querySelector('.image-viewer-overlay'));
 
+  // What card: the big preview opens its lead asset in the same viewer
+  if (tag === '[what]') {
+    await page.click(`${surface} [data-wc-open="a-img1"]`);
+    await page.waitForSelector('.image-viewer-overlay', { timeout: 4000 });
+    ok(`${tag} the card's preview opens its lead picture in the viewer`);
+    await page.keyboard.press('Escape');
+    await settle(page, () => !document.querySelector('.image-viewer-overlay'));
+  }
+
   // keyboard: Enter on the focused tile opens it
   await page.focus(`${strip} [data-pmed-open="a-vid2"]`);
   await page.keyboard.press('Enter');

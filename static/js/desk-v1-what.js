@@ -559,6 +559,12 @@
       const more = rowEl.querySelector('[data-more-btn]');
       if (more && typeof _bridge().openCardMenu === 'function') more.onclick = (e) => { e.stopPropagation(); const trigger = e.currentTarget; window.DeskV1SuggestionPieces.act(fam, () => _bridge().openCardMenu(trigger, fam, camp)); };
       window.DeskV1PieceMedia.wire(rowEl, fam, () => _repaint());
+      const lead = rowEl.querySelector('[data-wc-open]');
+      if (lead) lead.onclick = (e) => {
+        e.stopPropagation();
+        const tile = rowEl.querySelector(`[data-pmed-open="${CSS.escape(lead.dataset.wcOpen)}"]`);
+        if (tile) tile.click();
+      };
       const add = rowEl.querySelector('[data-add-media]');
       if (add) add.onclick = (e) => { e.stopPropagation(); openAddMedia(add, fam, () => _repaint()); };
       rowEl.addEventListener('click', () => { if (typeof _bridge().setSelection === 'function') _bridge().setSelection('card', fam.id, fam.title); });
