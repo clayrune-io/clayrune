@@ -463,6 +463,38 @@ def test_refused_uploads_leave_no_file(env, monkeypatch):
     assert not folder.exists() or not [f for f in folder.rglob('*') if f.is_file()]
 
 
+def test_video_browser_upload_keeps_id_and_can_be_undone(env, monkeypatch):
+    client, uploads, _ = env
+    p = _piece(client, 'video')
+    url = f"/api/desk/pieces/{p['id']}/assets"
+    r = client.post(url, data={'id': 'browser-upload', 'file': (io.BytesIO(b'video bytes'), 'Clip.MP4')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 201, r.get_json()
+    asset = r.get_json()['assets'][0]
+    assert asset['id'] == 'browser-upload' and asset['kind'] == 'video'
+    assert asset['path'].startswith('desk/library/video/Uploads/')
+    assert (uploads / asset['path']).read_bytes() == b'video bytes'
+    assert client.get('/api/desk/workspace').get_json()['pieces'][0]['assets'] == [asset]
+    assert client.delete(url + '/browser-upload').get_json()['assets'] == []
+    assert (uploads / asset['path']).exists()  # Undo detaches; it never deletes a library file.
+    monkeypatch.setitem(_pieces.MAX_UPLOAD_BYTES, 'video', 3)
+    refused = client.post(url, data={'file': (io.BytesIO(b'large'), 'Large.mp4')}, content_type='multipart/form-data')
+    assert refused.status_code == 413
+    assert len(list((uploads / 'desk/library/video/Uploads').iterdir())) == 1
+
+
+def test_post_name_persists_in_workspace_and_article_picker(env):
+    client, _, _ = env
+    p = _piece(client, 'article', title='New article')
+    url = f"/api/desk/pieces/{p['id']}"
+    for title in ('Launch notes', 'New article'):  # Rename and its Undo use the same route.
+        assert client.patch(url, json={'title': title}).status_code == 200
+        assert client.get('/api/desk/workspace').get_json()['pieces'][0]['title'] == title
+        assert client.get('/api/desk/materials').get_json()['articles'][0]['title'] == title
+    assert client.patch(url, json={'title': 'x' * 201}).status_code == 400
+    assert client.get('/api/desk/pieces').get_json()[0]['title'] == 'New article'
+
+
 # -- Studio saves into the library, attached to nothing (MC-1024) ------------------
 
 def test_studio_save_lands_in_the_library_with_no_piece_and_is_listed(env):

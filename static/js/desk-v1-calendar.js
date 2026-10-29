@@ -363,7 +363,7 @@
     // was pushing "⚠ held" past the ellipsis at a ~98px month column
     // (measured: "Retro FAQ · li…" with held silently gone).
     const line2 = slot.filled
-      ? `<span class="desk-v1-cal-slotchip-title">${esc(slot.filled.title)}${held ? ' <span class="desk-v1-cal-slotchip-held">⚠ held</span>' : ''}</span>`
+      ? `<span class="desk-v1-cal-slotchip-title">${esc((_findFamilyVersion(slot.filled.versionId) || {}).family?.title || slot.filled.title)}${held ? ' <span class="desk-v1-cal-slotchip-held">⚠ held</span>' : ''}</span>`
       : `<span class="desk-v1-cal-slotchip-origin">${esc(originWord)}</span>`;
     return `
       <button type="button" class="${cls.join(' ')}" data-slot-id="${esc(slot.id)}" data-slot-origin="${esc(slot.origin)}"

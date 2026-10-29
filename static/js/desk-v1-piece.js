@@ -74,8 +74,9 @@
         ${needsReview ? `<span class="desk-v1-camp-tab-badge">${esc(needsReview)} to review</span>` : ''}
         ${window.DeskV1Reapproval.badgeHTML(_campaign(fam.campaignId))}
       </div>
-      <h1 class="desk-v1-piece-title">${esc(fam.title)}</h1>`;
+      ${window.DeskV1PieceTitle.html(fam)}`;
     window.DeskV1Reapproval.bindLinks(el);
+    window.DeskV1PieceTitle.bind(el, fam, () => deskV1FillPieceHeader(el, params));
   }
   window.deskV1FillPieceHeader = deskV1FillPieceHeader;
 
