@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Respect campaign agents in Desk Home planner labels
+
+- Home project blocks use their default planner when set, otherwise show the shared agent of their live campaigns or **Each campaign has its own agent**. The pick warning remains when a live campaign has no resolvable agent; ended campaigns do not trigger it.
+- The project chat's **Set this project's default planner ›** button opens the same picker as the header. Selection and Undo keep their existing behavior; campaign agent assignments and labels stay unchanged. Branch candidate only; no merge or deployment.
+
 ## [2026-10-29] - Start a post by typing or importing copy
 
 - Active post, image and video piece pages now offer a full draft editor, **Import from file** and **Save**, including when a new post has no versions. Text, Markdown and HTML imports fill the draft locally; HTML becomes plain text. Save or leaving the field persists the body, with visible saved/error feedback and a 100,000-character limit.
