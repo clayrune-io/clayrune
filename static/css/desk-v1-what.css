@@ -9,10 +9,10 @@
   font-size: 12px; font-weight: 600; padding: 5px 12px; cursor: pointer; font-family: inherit;
 }
 .desk-v1-what-filter[aria-pressed="true"] { background: var(--accent-dim); border-color: var(--accent); color: var(--text); }
-.desk-v1-what-rows, .desk-v1-what-creates { display: flex; flex-direction: column; gap: 10px; }
+.desk-v1-what-creates { display: flex; flex-direction: column; gap: 10px; }
+/* the piece cards (rows) and the empty state are desk-v1-what-cards.css */
 
-/* list row: KIND · title / on N channels / assets · per-version status · ⋯ */
-.desk-v1-what-row { align-items: flex-start; }
+/* piece card text: kind · title / on N channels · per-version status (layout: desk-v1-what-cards.css) */
 .desk-v1-what-kind {
   flex: 0 0 62px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; color: var(--text-faint); padding-top: 3px;
 }
@@ -122,10 +122,7 @@
 .desk-v1-piece-media { margin-top: 0; }
 
 @media (max-width: 960px) {
-  .desk-v1-what-row { flex-direction: row; flex-wrap: wrap; }
   .desk-v1-what-kind { flex-basis: auto; }
-  .desk-v1-what-main { flex-basis: calc(100% - 100px); }
-  .desk-v1-what-status { flex-basis: 100%; align-items: flex-start; text-align: left; flex-direction: row; flex-wrap: wrap; gap: 4px 12px; }
   .desk-v1-what-filter, .desk-v1-what-title, .desk-v1-what-addmedia, .desk-v1-what-change, .desk-v1-what-create-x { min-height: 44px; }
   .desk-v1-what-source { min-height: 44px; }
   .desk-v1-piece-facetrow { flex-wrap: wrap; }

@@ -648,7 +648,7 @@ async function runImageBodies(browser, tone) {
     ok('capture screenshot saved: r2_8_capture_1440.png');
   }
   await page.click('[data-cap-take]');
-  await page.waitForSelector('[data-what-row] [data-what-media] img', { timeout: 4000 });
+  await page.waitForSelector('[data-what-row] [data-wc-preview] img', { timeout: 4000 });
   check((await page.$$('[data-what-create]')).length === 0, `${tag} capturing attaches the screenshot and closes the create-card`, `${tag} create-card still open`);
 
   // Online source, image
@@ -686,7 +686,7 @@ async function runImageBodies(browser, tone) {
   check(/Abstract visuals only — never the product UI/.test(await text(page, '[data-gen-abstract-only]')), `${tag} Generate body carries the abstract-only rule`, `${tag} abstract-only rule missing`);
   await page.fill('[data-gen-prompt]', 'calm blue waves');
   await page.click('[data-gen-go]');
-  await page.waitForFunction(() => document.querySelectorAll('[data-what-row] [data-what-media] img[src^="data:image/svg"]').length >= 1, null, { timeout: 4000 });
+  await page.waitForFunction(() => document.querySelectorAll('[data-what-row] [data-wc-preview] img[src^="data:image/svg"]').length >= 1, null, { timeout: 4000 });
   check(true, `${tag} Generate attaches an abstract image (svg data URI)`, '');
   reportUncaught(pageErrors, tag);
   await ctx.close();

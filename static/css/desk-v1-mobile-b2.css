@@ -45,27 +45,6 @@
   .desk-v1-what-filters { isolation: isolate; }
 }
 
-/* WT-6 piece cards: kind label column + title offset left a ~60px empty band at
-   the left, and an always-reserved 15px result line plus the wrapped ⋯ row left
-   another above the button. On phone the card is kind label (11px, above the
-   title), title, "on N channels", status -- stacked at content height -- with the
-   ⋯ tucked into the top-right corner instead of a row of its own. */
-@media (max-width: 640px) {
-  .desk-v1-what-row {
-    display: flex; flex-direction: column; align-items: stretch; flex-wrap: nowrap;
-    position: relative; gap: 4px; padding: 10px 12px;
-  }
-  .desk-v1-what-row .desk-v1-what-kind { flex: 0 0 auto; padding: 0 44px 0 0; font-size: 11px; line-height: 1.2; }
-  .desk-v1-what-row .desk-v1-what-main { flex: 0 0 auto; padding-right: 44px; gap: 2px; }
-  /* the title keeps its 44px hit area; it overlaps the (pointer-transparent) kind and
-     channels lines above and below instead of adding 2 x 12px of empty band */
-  .desk-v1-what-row .desk-v1-what-title { padding: 0; margin: -10px 0; position: relative; }
-  .desk-v1-what-row .desk-v1-what-kind, .desk-v1-what-row .desk-v1-what-on { pointer-events: none; }
-  .desk-v1-what-row .desk-v1-camp-card-result:empty { display: none; }
-  .desk-v1-what-row .desk-v1-what-status { flex: 0 0 auto; }
-  .desk-v1-what-row .desk-v1-camp-card-more { position: absolute; top: 0; right: 0; }
-}
-
 /* Touch targets (<=960px). The review found 100+ controls under 44px across the
    shared form styles, Posy box, calendar, Presence and Review. One rule for the
    class, then the few shapes where a bare min-height would wrap a label. */

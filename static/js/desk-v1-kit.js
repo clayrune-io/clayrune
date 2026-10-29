@@ -401,6 +401,13 @@
     if (modal) bounds = inter(bounds, modal.getBoundingClientRect());
     const scroller = trigger.closest('#desk-v1-body');
     if (scroller) bounds = inter(bounds, scroller.getBoundingClientRect());
+    // The phone's bottom tab bar paints over the scroller's lower edge: a menu that fits
+    // "below" by the scroller's own bounds can end under it, its last item unreachable.
+    const tabbar = document.getElementById('bottom-tab-bar');
+    if (tabbar && getComputedStyle(tabbar).display !== 'none') {
+      const tb = tabbar.getBoundingClientRect();
+      if (tb.height > 0 && tb.top < bounds.bottom) bounds.bottom = Math.max(bounds.top, tb.top);
+    }
     pop.style.maxWidth = '';
     // The pop's own CSS max-width (the ⓘ popover's 260px) still applies; the
     // bounds only ever tighten it.
