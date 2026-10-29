@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Delete a published X post while keeping its receipt (MC-1126)
+
+- A verified published version's piece page offers **Delete from X**, with confirmation and a freshly typed dashboard passcode on every call. The server refuses unattended callers and uses the existing OAuth refresh path, saving rotated refresh tokens before deletion.
+- Successful deletion preserves the receipt and publication state, adding a timestamp and human attribution. Platform refusals show their reason; uncertain responses never claim success. LinkedIn deletion explicitly reports unsupported while its adapter lacks scoped, refreshing sign-in. Branch candidate only; no merge, deployment or real platform calls.
+
 ## [2026-10-29] - Keep campaign terms aligned with end-date edits (MC-1125)
 
 - Extending a started campaign's end date carries its current term end forward, capped at 90 days from that term's start. Widened bounds still require human approval before publishing.

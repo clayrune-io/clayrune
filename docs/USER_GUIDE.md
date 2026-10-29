@@ -1260,6 +1260,17 @@ before editing it. **Undo** in the Desk header reverses a delete; deleting
 approved drafts withdraws their approval, so an undeleted approved draft needs
 review again. A post already sending or sent cannot be deleted.
 
+To remove a post from its platform, open the piece page and find the verified
+published version under **Versions**. **Delete from X** asks for confirmation
+and your dashboard passcode each time. This permanently removes the X post;
+it has no Undo. The Desk keeps the original receipt and publication history,
+and marks the version **Deleted from X** with the time and human attribution.
+If X refuses, the page shows its reason. If X does not confirm the result,
+check the post on X before trying again. **Delete from LinkedIn** currently
+reports unsupported because its adapter has no scoped, refreshing sign-in
+for deletion; remove that post on LinkedIn. Drafts and unverified sends have
+no platform-delete action. Archiving only changes the Desk's view.
+
 In **Where**, drag a configured connector from **Sources** into the outlined
 drop area, or focus it and press Enter. Disconnected and read-only accounts
 can be placed for planning; this does not connect them or grant publishing

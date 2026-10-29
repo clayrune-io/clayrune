@@ -275,6 +275,8 @@ def v1_piece(piece: dict) -> dict:
             ver['format'] = v['format']
         if v.get('manual'):
             ver['manual'] = v['manual']
+        if v.get('deleted'):
+            ver['deleted'] = dict(v['deleted'])
         if v.get('scheduled_at'):
             ver['publishAt'] = v['scheduled_at']
         receipt = v.get('receipt')
