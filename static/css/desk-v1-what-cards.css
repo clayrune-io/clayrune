@@ -1,0 +1,111 @@
+/* Desk v1 ③ What: the campaign's pieces as media cards, the list header, the
+   empty state, and the Add-a-piece tray. Markup: desk-v1-what-cards.js.
+   Behaviour hooks (data-*) stay desk-v1-what.js's. Loaded after desk-v1-mobile-b2.css. */
+
+/* header: this list IS the campaign's media */
+.desk-v1-wc-head { display: flex; flex-direction: column; gap: 3px; }
+.desk-v1-wc-head-title { margin: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; font-size: 17px; font-weight: 800; color: var(--text); }
+.desk-v1-wc-count {
+  font-size: 12px; font-weight: 700; color: var(--text); background: var(--accent-dim);
+  border: 1px solid var(--accent); border-radius: 999px; padding: 1px 10px;
+}
+.desk-v1-wc-head-sub { margin: 0; font-size: 12.5px; color: var(--text-dim); line-height: 1.4; }
+
+/* the grid: columns appear as the room does, one at phone width */
+.desk-v1-what-rows { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; align-items: stretch; }
+
+/* the card (no overflow clip: the ⋯ menu drops out of it) */
+.desk-v1-wc-card {
+  position: relative; display: flex; flex-direction: column; gap: 0; padding: 0;
+  background: var(--surface); border: 1px solid var(--border2); border-radius: 12px;
+}
+.desk-v1-wc-card:hover { border-color: var(--accent); }
+.desk-v1-wc-preview {
+  position: relative; aspect-ratio: 16 / 9; width: 100%; box-sizing: border-box; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--surface2); border-bottom: 1px solid var(--border2); border-radius: 11px 11px 0 0;
+}
+.desk-v1-wc-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.desk-v1-wc-nosrc { font-size: 28px; color: var(--text-faint); }
+[data-preview="video"] .desk-v1-wc-preview { background: #1c1a17; }
+.desk-v1-wc-play {
+  position: absolute; inset: 0; margin: auto; width: 46px; height: 46px; border-radius: 50%; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center; padding-left: 3px;
+  background: rgba(20, 18, 15, 0.72); border: 2px solid rgba(255, 255, 255, 0.85); color: #fff; font-size: 17px; pointer-events: none;
+}
+
+/* kind badge sits on the preview, so the kind reads before the title does */
+.desk-v1-wc-badge {
+  position: absolute; top: 8px; left: 8px; z-index: 1; flex: none; padding: 3px 9px 3px 7px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border2); color: var(--text); font-size: 10.5px; line-height: 1.3;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+}
+.desk-v1-wc-badge::before { content: attr(data-glyph); margin-right: 5px; font-size: 12px; letter-spacing: 0; }
+
+/* a post or article with no media yet: the first lines of its copy on a sheet of paper */
+[data-preview="paper"] .desk-v1-wc-preview { align-items: flex-end; padding: 34px 26px 0; }
+.desk-v1-wc-paper {
+  width: 100%; height: 100%; box-sizing: border-box; padding: 12px 14px; overflow: hidden;
+  background: var(--surface); border: 1px solid var(--border2); border-bottom: none; border-radius: 6px 6px 0 0;
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.12); font-family: Georgia, 'Times New Roman', serif;
+  font-size: 12.5px; line-height: 1.5; color: var(--text-dim);
+  display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical;
+}
+
+/* nothing at all: a kind glyph that invites the media in */
+.desk-v1-wc-empty {
+  position: absolute; inset: 0; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  background: none; border: 2px dashed var(--border2); border-radius: 0; margin: 0; padding: 0; cursor: pointer; font-family: inherit; color: var(--text-dim);
+}
+.desk-v1-wc-empty:hover { border-color: var(--accent); background: var(--accent-dim); color: var(--text); }
+.desk-v1-wc-empty-glyph { font-size: 30px; line-height: 1; opacity: 0.8; }
+.desk-v1-wc-empty-text { font-size: 12px; font-weight: 600; }
+.desk-v1-wc-empty-add { font-size: 11.5px; font-weight: 700; color: var(--accent); }
+
+/* body */
+.desk-v1-wc-body { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 12px; min-width: 0; }
+.desk-v1-wc-card .desk-v1-what-main { gap: 2px; padding-right: 0; }
+.desk-v1-wc-card .desk-v1-what-title { font-size: 14.5px; line-height: 1.3; }
+.desk-v1-wc-card .desk-v1-what-status { align-items: flex-start; text-align: left; flex-direction: row; flex-wrap: wrap; gap: 3px 12px; }
+.desk-v1-wc-card .desk-v1-camp-card-result:empty { display: none; }
+.desk-v1-wc-strip { margin-top: 2px; }
+.desk-v1-wc-thumb-current { border-color: var(--accent); }
+.desk-v1-wc-more { position: absolute; top: 6px; right: 6px; }
+.desk-v1-wc-more .desk-v1-camp-card-morebtn {
+  background: var(--surface); border: 1px solid var(--border2); border-radius: 999px; color: var(--text-dim);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18); padding: 2px 9px;
+}
+
+/* the empty state: no pieces at all */
+.desk-v1-wc-nopieces {
+  grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;
+  padding: 28px 16px; border: 2px dashed var(--border2); border-radius: 12px; color: var(--text-dim); font-size: 13px;
+}
+.desk-v1-wc-nopieces strong { font-size: 15px; color: var(--text); }
+.desk-v1-wc-nopieces-glyph { font-size: 28px; line-height: 1; }
+.desk-v1-what-rows > .desk-v1-camp-empty { grid-column: 1 / -1; }
+
+/* the tray: a palette for NEW pieces. Dashed and quiet, never the list's own surface. */
+.desk-v1-what-tray { background: var(--bg); border: 2px dashed var(--border2); }
+.desk-v1-wc-tray-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; text-transform: none; letter-spacing: 0; }
+.desk-v1-wc-tray-name { font-size: 13px; font-weight: 800; color: var(--text-dim); }
+.desk-v1-what-tray-drag { font-size: 11.5px; font-weight: 500; color: var(--text-faint); }
+.desk-v1-what-tray .desk-v1-what-type { background: none; border: 1px dashed var(--border2); position: relative; }
+.desk-v1-what-tray .desk-v1-what-type::after {
+  content: '＋'; position: absolute; top: 3px; right: 6px; font-size: 12px; font-weight: 700; color: var(--text-faint);
+}
+.desk-v1-what-tray .desk-v1-what-type:hover, .desk-v1-what-tray .desk-v1-what-type:focus-visible {
+  border-style: solid; border-color: var(--accent); background: var(--accent-dim);
+}
+.desk-v1-what-tray .desk-v1-what-type:hover::after { color: var(--accent); }
+
+@media (max-width: 960px) {
+  .desk-v1-wc-more .desk-v1-camp-card-morebtn { min-width: 44px; min-height: 44px; }
+  .desk-v1-wc-card .desk-v1-what-title { padding: 0; margin: -6px 0; position: relative; }
+}
+@media (max-width: 640px) {
+  .desk-v1-what-rows { grid-template-columns: minmax(0, 1fr); }
+  .desk-v1-wc-preview { aspect-ratio: 2 / 1; }
+  .desk-v1-wc-more { top: 4px; right: 4px; }
+  .desk-v1-what-tray .desk-v1-what-type::after { display: none; }
+}

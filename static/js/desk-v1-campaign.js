@@ -1151,7 +1151,8 @@
       <button type="button" data-menu-dup>Duplicate</button>
       <button type="button" data-menu-skip>Skip</button>
       <button type="button" data-menu-archive>Archive</button>`;
-    host.style.position = 'relative';
+    // Only anchor a static host: the What card's ⋯ wrapper is already absolute.
+    if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
     host.appendChild(menu);
     DeskV1Kit.placePopover(menu, triggerEl);
     const close = () => { menu.remove(); document.removeEventListener('click', closer); };
@@ -1181,6 +1182,9 @@
     menu.querySelector('[data-menu-skip]').onclick = () => { close(); _skipFamily(fam); };
     menu.querySelector('[data-menu-archive]').onclick = () => { close(); _archiveFamily(fam); };
     window.DeskV1PieceLifecycle.menu(menu, close, fam);
+    // The lifecycle adds Delete after the first placement: measure again so the
+    // taller menu flips above or scrolls instead of ending under the phone tab bar.
+    DeskV1Kit.placePopover(menu, triggerEl);
   }
 
   function _addChannelVersion(fam, channelId) {

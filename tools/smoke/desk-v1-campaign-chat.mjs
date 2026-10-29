@@ -173,7 +173,7 @@ async function conversation(browser) {
   await page.evaluate(() => window.deskV1GotoCampaignPanel('what', { campaignId: 'camp-1' }));
   await settle(page, () => !!document.querySelector('[data-what-row]'));
   const fam = await page.$eval('[data-what-row]', (e) => e.dataset.familyId);
-  await page.click('[data-what-row]');
+  await page.click('[data-what-row] .desk-v1-wc-body'); // the preview of a piece with no media is an Add-media button
   await settle(page, () => /About: /.test(document.querySelector('[data-scope-trigger]').textContent) && !!document.querySelector('[data-camp-chat]'));
   await page.fill('#desk-v1-camp-posy-input', 'is this card ok?');
   await page.press('#desk-v1-camp-posy-input', 'Enter');

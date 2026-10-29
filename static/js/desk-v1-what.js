@@ -5,9 +5,9 @@
 // `deskV1FillWhat(el, params, camp)` for panel 'what'.
 //
 //   filters  All · Needs review · Scheduled · Blocked
-//   rows     kind label · title · `on N channels` · per-version status
-//            (+ the piece's asset thumbnails and `＋ Add media`)
-//   tray     CONTENT TYPES: Post · Article · Video · Image, dragged
+//   rows     media cards (desk-v1-what-cards.js): preview · kind · title ·
+//            `on N channels` · per-version status · `＋ Add media`
+//   tray     Add a piece (the content types): Post · Article · Video · Image, dragged
 //            (or focus + Enter) into the campaign
 //
 // Each drop is its OWN piece — several of one kind are allowed — and opens a
@@ -368,31 +368,14 @@
     }).join('');
   }
 
-  function _thumbHTML(a) {
-    return a.src
-      ? `<img class="desk-v1-what-thumb" data-asset-id="${esc(a.id)}" src="${esc(a.src)}" alt="${esc(a.title || 'Asset')}" title="${esc(a.title || '')}">`
-      : `<span class="desk-v1-what-thumb desk-v1-what-thumb-blank" data-asset-id="${esc(a.id)}" title="${esc(a.title || '')}" aria-label="${esc(a.title || 'Asset')}">${esc(a.kind === 'video' ? '▶' : '▣')}</span>`;
-  }
-
+  // The card itself is desk-v1-what-cards.js's; this hands it the words and the
+  // status it must show. Every behaviour stays here (wired in _wire).
   function _rowHTML(fam) {
-    const assets = DeskV1Kit.pieceAssets(fam);
-    const media = assets.length
-      ? `<div class="desk-v1-what-media" data-what-media>${assets.map(_thumbHTML).join('')}` +
-        `<button type="button" class="desk-v1-what-addmedia" data-add-media="${esc(fam.id)}" aria-haspopup="menu">＋ Add media</button></div>`
-      : '';
-    return `<div class="desk-v1-camp-card desk-v1-what-row" data-what-row data-family-id="${esc(fam.id)}" data-kind="${esc(fam.kind || '')}">
-      <span class="desk-v1-what-kind">${esc(DeskV1Kit.pieceKindWord(fam.kind).toUpperCase())}</span>
-      <div class="desk-v1-what-main">
-        <button type="button" class="desk-v1-what-title" data-primary-action>${esc(fam.title)}</button>
-        <div class="desk-v1-what-on" data-what-on>${esc(DeskV1Kit.pieceChannelsText(fam))}</div>
-        ${media}
-        <div class="desk-v1-camp-card-result" aria-live="polite"></div>
-      </div>
-      <div class="desk-v1-what-status" data-what-status>${_statusHTML(fam)}</div>
-      <div class="desk-v1-camp-card-more">
-        <button type="button" class="desk-v1-camp-card-morebtn" data-more-btn aria-haspopup="menu" aria-label="More actions">⋯</button>
-      </div>
-    </div>`;
+    const copy = (_fx().contentPreview || {})[fam.id] || String(fam.body || '').trim();
+    return window.DeskV1WhatCards.cardHTML(fam, DeskV1Kit.pieceAssets(fam), {
+      kindWord: DeskV1Kit.pieceKindWord(fam.kind), channelsText: DeskV1Kit.pieceChannelsText(fam),
+      statusHTML: _statusHTML(fam), copy,
+    });
   }
 
   function _sourceTilesHTML(card, kind) {
@@ -488,7 +471,7 @@
 
   function _trayHTML() {
     return `<div class="desk-v1-what-tray" data-what-tray>
-      <div class="desk-v1-what-tray-title">CONTENT TYPES<span class="desk-v1-what-tray-drag"> — DRAG ONE INTO THE CAMPAIGN</span></div>
+      ${window.DeskV1WhatCards.trayHeadHTML()}
       <div class="desk-v1-what-tray-row">${TYPES.map((t) => `
         <div class="desk-v1-what-type" role="button" tabindex="0" data-what-type="${esc(t.id)}"
              aria-label="${esc(`${t.label}. Press Enter to add a ${t.label.toLowerCase()} to this campaign`)}">
@@ -535,14 +518,18 @@
     const rows = all.filter((f) => !openIds.has(f.id) && (st.filter === 'archived' ? !!f.archivedAt : !f.archivedAt) && pred(f));
     const creates = st.creates.map((c) => ({ c, f: all.find((f) => f.id === c.familyId) })).filter((x) => x.f);
     const banner = st.filter !== 'archived' && typeof _bridge().suggestedBannerHTML === 'function' ? _bridge().suggestedBannerHTML(camp) : '';
+    const total = all.filter((f) => !f.archivedAt).length;
+    const none = !all.length && !creates.length;
     el.innerHTML = `<div class="desk-v1-what" data-what>
       <div class="desk-v1-what-panel" data-what-list id="desk-v1-camp-listarea">
+        ${window.DeskV1WhatCards.headerHTML(total, rows.length + creates.length, st.filter !== 'all')}
         <div class="desk-v1-what-filters" role="group" aria-label="Filter pieces">${FILTERS.map((f) =>
           `<button type="button" class="desk-v1-what-filter" data-what-filter="${f.id}" aria-pressed="${st.filter === f.id}">${esc(f.label)}</button>`).join('')}</div>
         ${banner}
         <div class="desk-v1-what-creates" data-what-creates>${creates.map((x) => _createHTML(x.c, x.f, camp)).join('')}</div>
         <div class="desk-v1-what-rows" data-what-rows>${rows.map(_rowHTML).join('') ||
-          `<div class="desk-v1-camp-empty">${all.length && st.filter !== 'all' ? 'Nothing matches this filter.' : creates.length ? '' : 'No pieces yet — drag a content type from the tray below.'}</div>`}</div>
+          (none ? window.DeskV1WhatCards.emptyHTML()
+            : `<div class="desk-v1-camp-empty">${all.length && st.filter !== 'all' ? 'Nothing matches this filter.' : ''}</div>`)}</div>
       </div>
       ${_trayHTML()}
     </div>`;
