@@ -33,6 +33,7 @@
   cursor: pointer; font-family: inherit; padding: 3px 12px; min-height: 28px; white-space: nowrap;
 }
 .desk-v1-where-connect:hover { background: var(--accent-dim); }
+.desk-v1-where-source [data-where-service-connect] { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left; }
 /* Column header: the mark replaces the old letter avatar; the name block may shrink so a long handle ellipsises beside the ✕. */
 .desk-v1-where-colhead .desk-v1-svc-icon { --svc-icon-size: 32px; }
 .desk-v1-where-colname { overflow: hidden; }

@@ -62,7 +62,10 @@
         ? '<button type="button" class="btn-secondary" data-piece-edit-article>Edit article</button>' : '';
       if (excerpt) copy += `<div class="desk-v1-piece-excerpt" data-piece-excerpt>${esc(excerpt)}</div>`;
     }
-    return copy + (rows || `<div class="desk-v1-piece-empty">${editable(fam) ? 'Next, add a version from the Where board.' : 'No versions yet — add one from the Where board.'}</div>`);
+    const camp = (state().campaigns || []).find((c) => c.id === fam.campaignId);
+    return copy + (rows || `<div class="desk-v1-piece-empty">${camp
+      ? '<button type="button" class="btn-secondary" data-piece-copy-where>Add a version from the Where board ›</button>'
+      : 'Add this piece to a campaign in What before creating a version. <button type="button" class="btn-secondary" data-piece-copy-campaign>Choose a campaign ›</button>'}</div>`);
   }
 
   // Repainting through the existing piece hook must not drop typing/caret when
@@ -133,6 +136,8 @@
   }
 
   function bind(el, fam, repaint) {
+    el.querySelector('[data-piece-copy-where]')?.addEventListener('click', () => window.deskV1GotoCampaignPanel('where', { campaignId: fam.campaignId }));
+    el.querySelector('[data-piece-copy-campaign]')?.addEventListener('click', () => window.deskV1Nav('home', {}));
     const root = el.querySelector('[data-piece-copy]');
     if (!root || !editable(fam)) return;
     const d = draft(fam);

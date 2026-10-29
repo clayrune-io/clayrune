@@ -26,6 +26,7 @@ import re
 from flask import Blueprint, jsonify, request
 
 from mc import secrets_store as _vault
+from mc.blueprints.desk_connect_catalog_routes import bp as catalog_bp
 
 from mc.blueprints.secrets_routes import _require_human_passcode
 from mc.core import _log
@@ -38,6 +39,7 @@ from mc.desk_connect.url_check import UrlError
 from mc.unattended import is_unattended_caller
 
 bp = Blueprint('desk_connect_routes', __name__)
+bp.register_blueprint(catalog_bp)
 
 _ACCOUNT_ID = re.compile(r'^[A-Za-z0-9_.-]{1,80}$')
 

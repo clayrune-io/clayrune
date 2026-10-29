@@ -1291,7 +1291,10 @@ message. Drafts may contain up to 100,000 characters. If saving fails, the
 page shows the server's reason and keeps your text so you can retry.
 
 Destination versions and their review controls remain below the editor.
-Next, add a version from the **Where** board. Articles continue to use
+With no versions yet, choose **Add a version from the Where board ›** to
+open this piece's campaign in **Where**. If the piece has no campaign,
+**Choose a campaign ›** returns to Desk Home; add the piece in the
+campaign's **What** before creating a version. Articles continue to use
 **Edit article**. Restore an archived piece before editing it. In demo
 mode, **Saved in demo only** means the change stays in the demo data.
 
@@ -1323,6 +1326,14 @@ version is saved. Existing assignments remain in place. The channel's **X**
 removes it from this campaign, leaving its configured connection in Sources.
 A version's **X** removes that unsent assignment; published history remains.
 These removals have Undo.
+
+Sources also lists services from the Connect catalogue that have no saved
+account, including YouTube and Instagram. Choose **Connect YouTube ›** (or
+another service) to open its connection options in the existing Add service
+flow. These service tiles cannot be dragged; after an account is connected,
+its account tile appears instead. Connection options describe what that
+service can currently do; appearing in Sources does not grant publishing
+permission. If the catalogue cannot load, **Retry** fetches it again.
 
 Open an article and choose **Edit article**, or write an article in Studio.
 **Pick from library** inserts images, videos, audio or file links in the
