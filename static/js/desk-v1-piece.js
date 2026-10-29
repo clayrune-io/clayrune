@@ -5,7 +5,7 @@
 // ONE drill-in page under ③ What (`‹ <campaign> · What`), a single scroll with
 // three sections:
 //
-//   Copy      one row per destination version, its state, claims; `Review`
+//   Copy      draft editor plus one row per destination version; `Review`
 //             opens 12b as a child (`‹ <piece>`)
 //   Media     the piece's assets (`piece.assets[]`, thumbnails + `＋ Add media`),
 //             render status, the video director hand-off
@@ -19,7 +19,7 @@
 // and the approval-window gate is the calendar's, not a second copy.
 //
 // Reads come from DeskV1Store (the fixtures in demo mode, M1's pieces live).
-// The only write on this page is `＋ Add media`, which is desk-v1-what.js's own
+// Copy editing lives in desk-v1-piece-copy.js. `＋ Add media` is desk-v1-what.js's own
 // (`deskV1WhatAddMedia`): live it is M21, demo local only. The publish time is
 // the calendar's reschedule command, wired in slice S6, not here.
 (function () {
@@ -92,34 +92,8 @@
     return ch ? DeskV1Kit.channelBadge(ch, {}) : '<span class="desk-v1-camp-nochannel">No channel</span>';
   }
 
-  // A real piece carries its own text (M13 `body`); the fixture's pieces do not
-  // and keep using `contentPreview`.
-  function _bodyExcerpt(body) {
-    const t = String(body || '').trim();
-    return t.length > 400 ? t.slice(0, 400).trimEnd() + '…' : t;
-  }
-
   function _copyHTML(fam) {
-    const versions = fam.versions || [];
-    const excerpt = (_fx().contentPreview || {})[fam.id] || _bodyExcerpt(fam.body);
-    const rows = versions.map((v) => {
-      const claims = (v.claims || []).length;
-      // Live, a held or failed version is retried from Review ("Approve again",
-      // desk-v1-review.js _LIVE_ACTIONABLE); without this button the piece page
-      // was a dead end for it. unknown_outcome stays out: it may already be live.
-      const retry = window.DeskV1Store.live() && (v.state === 'held' || v.state === 'failed');
-      const action = v.state === 'needs_review' || retry
-        ? `<button type="button" class="desk-v1-camp-card-primary" data-review-btn="${esc(v.id)}">${retry ? 'Review and retry' : fam.kind === 'video' ? 'Watch & review' : 'Review'}</button>`
-        : '';
-      const assisted = window.DeskV1AssistedPost ? window.DeskV1AssistedPost.fillHTML(_channel(v.channelId), v) : '';
-      return `<div class="desk-v1-piece-facetrow" data-copy-row="${esc(v.id)}">
-        <span>${_versionBadge(v)}${claims ? ` · ${esc(claims)} claim${claims === 1 ? '' : 's'}` : ''}</span>
-        <span class="desk-v1-piece-rowend">${window.DeskV1PostDelete.stateHTML(v)}${action}${assisted}</span>
-      </div>`;
-    }).join('');
-    const edit = fam.kind === 'article' && !fam.archivedAt ? '<button type="button" class="btn-secondary" data-piece-edit-article>Edit article</button>' : '';
-    return edit + (excerpt ? `<div class="desk-v1-piece-excerpt" data-piece-excerpt>${esc(excerpt)}</div>` : '') +
-      (rows || '<div class="desk-v1-piece-empty">No versions yet — add one from the Where board.</div>');
+    return window.DeskV1PieceCopy.html(fam);
   }
 
   function _mediaHTML(fam) {
@@ -168,11 +142,13 @@
   window.deskV1FillPieceBody = deskV1FillPieceBody;
 
   function _paintBody(el, fam, params) {
+    window.DeskV1PieceCopy.beforeRepaint(el);
     el.innerHTML = `<div class="desk-v1-piece-facetbody">
       ${_sectionHTML('copy', 'Copy', _copyHTML(fam))}
       ${_sectionHTML('media', 'Media', _mediaHTML(fam))}
       ${_sectionHTML('versions', 'Versions', _versionsHTML(fam))}
     </div>`;
+    window.DeskV1PieceCopy.bind(el, fam, _repaint);
     const article = el.querySelector('[data-piece-edit-article]');
     if (article) article.onclick = () => window.deskV1WhatEditArticle(fam);
     el.querySelectorAll('[data-review-btn]').forEach((b) => b.onclick = () => {

@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Start a post by typing or importing copy
+
+- Active post, image and video piece pages now offer a full draft editor, **Import from file** and **Save**, including when a new post has no versions. Text, Markdown and HTML imports fill the draft locally; HTML becomes plain text. Save or leaving the field persists the body, with visible saved/error feedback and a 100,000-character limit.
+- Failed saves retain typed text across piece repaints, and overlapping saves preserve newer edits. Version rows remain below the editor, with Where described as the next step. Articles keep **Edit article**, archived pieces remain read-only, and fixture edits stay local. Branch candidate only; no merge or deployment.
+
 ## [2026-10-29] - Delete a published X post while keeping its receipt (MC-1126)
 
 - A verified published version's piece page offers **Delete from X**, with confirmation and a freshly typed dashboard passcode on every call. The server refuses unattended callers and uses the existing OAuth refresh path, saving rotated refresh tokens before deletion.

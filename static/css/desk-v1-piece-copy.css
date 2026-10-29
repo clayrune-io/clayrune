@@ -1,0 +1,19 @@
+.desk-v1-piece-copy { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+.desk-v1-piece-copy-label { font-size: 12px; font-weight: 600; color: var(--text-dim); }
+.desk-v1-piece-copy textarea {
+  box-sizing: border-box; width: 100%; min-height: 168px; resize: vertical;
+  padding: 12px; border: 1px solid var(--border2); border-radius: 8px;
+  background: var(--surface2); color: var(--text); font: inherit; font-size: 14px; line-height: 1.6;
+}
+.desk-v1-piece-copy textarea:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+.desk-v1-piece-copy textarea::placeholder { color: var(--text-faint); }
+.desk-v1-piece-copy-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.desk-v1-piece-copy-actions button { flex: 0 0 auto; }
+.desk-v1-piece-copy-actions button:disabled { opacity: 0.5; cursor: default; }
+.desk-v1-piece-copy-help, [data-piece-copy-status] { font-size: 12px; line-height: 1.5; color: var(--text-faint); }
+[data-piece-copy-status] { overflow-wrap: anywhere; }
+[data-piece-copy-status][data-failed] { color: var(--red, #e55b5b); }
+@media (max-width: 960px) {
+  .desk-v1-piece-copy-actions button { min-height: 44px; }
+  [data-piece-copy-status] { flex-basis: 100%; }
+}
