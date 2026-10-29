@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-28] - Recognize empty Company Page activity reads (MC-1121)
+
+- The activity extractor explicitly treats a Company Page's empty activity state as an activity page with zero rows. The existing strict zero-row success path records no new items and clears a prior read error; login, unrelated/loading pages and malformed rows remain failures.
+- Covered with synthetic Company Page polling and envelope regressions. Authenticated extraction and the choice of Company Page activity source remain unverified and undecided.
+
 ## [2026-10-28] - Exclude hidden data islands from browser reads (MC-1121)
 
 - Browser reads exclude hidden and display-none payload subtrees, including JSON scripts, before collecting text or consuming the character cap. `hidden_content.data_islands` counts excluded subtrees; visible code stays readable.

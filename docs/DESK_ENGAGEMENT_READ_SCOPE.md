@@ -50,6 +50,14 @@ This guard establishes destination scope, not that every admin page has readable
 notifications. The generic activity schema still validates the page's content.
 No authenticated company admin read was exercised in the regression suite.
 
+The extractor contract explicitly includes Company Page activity and empty states
+such as `0 notifications total`. A classified activity page with `rows: []` is a
+successful read: zero new items, no read error, and a refreshed successful coverage
+record. It does not invent activity or trigger discovery. A login wall, unrelated
+or blank/loading page, malformed row list, or wholly rejected rows remains a gap.
+Synthetic Company Page poll checks cover these cases; they do not establish what
+an authenticated LinkedIn page or the real extraction model returns.
+
 ### Editing a saved LinkedIn destination
 
 Connections > the account > **Edit settings** > **Permissions** always shows

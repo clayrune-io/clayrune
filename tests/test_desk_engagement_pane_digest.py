@@ -262,6 +262,51 @@ def test_quiet_activity_page_is_zero_items_not_a_failure(env):
     assert got['items'] == [] and got['rejected'] == 0
 
 
+def test_empty_company_activity_poll_is_success_after_hidden_payload_filtering(env):
+    from mc.blueprints import browser_routes as br
+
+    _allow(['linkedin.com'])
+    admin = 'https://www.linkedin.com/company/777/admin/notifications/all/'
+    _project([{'channel_id': 'company-1', 'platform': 'linkedin', 'browser_profile': 'main'}])
+    # A prior failed read is cleared by a genuinely successful empty read.
+    _desk.set_read_coverage(PID, 'linkedin', ok=False, error='page did not look like activity', via='pane')
+    body, status = br._build_read_envelope(admin, {
+        'content_type': 'text/html', 'title': 'Notifications | LinkedIn',
+        'runs': [{'text': '0 notifications total', 'hidden': None}],
+        'data_island_count': 7,
+    })
+    assert status == 200 and body['hidden_content'] == {'data_islands': 7}
+    pages = FakePages({admin: body})
+    rt = FakeRuntime({pd.ACTIVITY_INSTRUCTION: _activity()})
+    rd = _reader(pages, rt, acc={'organization_id': '777',
+                               'read_pages': [{'role': 'activity', 'url': admin}]})
+    report = eng.poll_project(PID, readers={'linkedin': rd})['platforms']['linkedin']
+    coverage = _desk.get_read_coverage(PID)['linkedin']
+    assert report['state'] == 'ok' and report['new_items'] == 0 and not report.get('error')
+    assert not coverage.get('last_error') and coverage['last_ok_at']
+    assert _desk.list_engagement_items(project_id=PID) == []
+    assert _desk.list_reads(project_id=PID)[0]['ok'] is True
+    assert pages.reads == [admin] and pages.closed == 1
+    assert len(rt.calls) == 1 and rt.calls[0][1].endswith('0 notifications total')
+
+
+@pytest.mark.parametrize('reply,error,match', [
+    (_activity(page='other'), pd._Unusable, 'did not look like an activity page'),
+    (_activity(page='login'), eng.NotSignedIn, 'sign in'),
+    ({'page': 'activity', 'suspicious': False, 'rows': None}, pd._Unusable, 'fit the schema'),
+    (_activity(_row(snippet='')), pd._Unusable, 'fit the schema'),
+])
+def test_zero_items_never_overrides_company_classification_or_schema(env, reply, error, match):
+    _allow(['linkedin.com'])
+    admin = 'https://www.linkedin.com/company/777/admin/notifications/all/'
+    pages = FakePages({admin: _body('0 notifications total', admin)})
+    rd = _reader(pages, FakeRuntime({pd.ACTIVITY_INSTRUCTION: reply}), acc={
+        'organization_id': '777', 'read_pages': [{'role': 'activity', 'url': admin}]})
+    with pytest.raises(error, match=match):
+        rd.fetch_mentions(since_id=None, known_posts={})
+    assert pages.reads == [admin]  # No discovery or personal-page substitute.
+
+
 def test_signed_out_page_raises_not_signed_in_without_a_model_call(env):
     _allow(['linkedin.com'])
     wall = 'https://www.linkedin.com/login?session_redirect=x'
