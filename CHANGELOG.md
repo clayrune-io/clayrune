@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Pin existing delegation behavior in regression guards
+
+- Added MC-1106's shipped `mark-handled` route to the exact agent route set and documented the reconciler's single Claude runtime import for transcript path encoding, with an owner and removal gate. Runtime behavior and provider-boundary scanning stay unchanged. Branch candidate only; no merge, push or restart.
+- Kept the privacy concurrency test focused on the inner manager-guard race by bypassing the outer `serialized_write` wrapper only in its test app. That wrapper, added in `c92bd0cc`, had prevented the second request from reaching the test barrier; production locking stays unchanged.
+
 ## [2026-10-29] - Keep campaign Sources to post destinations
 
 - Where's missing-account service tiles now include only profiles with a publishing purpose or platforms already modeled as workspace channels. YouTube and Instagram remain; Higgsfield, Google AI Studio, OpenAI, Notion, Google Drive and Google Photos stay in Connections. The server reuses the account platform definition and profile purposes, so new destinations appear without another vendor list. Branch candidate only; no merge, push or restart.

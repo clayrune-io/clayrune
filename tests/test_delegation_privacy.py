@@ -165,6 +165,10 @@ def test_concurrent_create_rechecks_missing_state_under_manager_guard(tmp_path, 
     monkeypatch.setattr(pr, '_refuse_project_path_in_install_dir', synchronize)
     app = Flask('concurrent-create')
     app.register_blueprint(pr.bp)
+    # c92bd0cc added the outer serialized_write lock. Bypass it on purpose
+    # in this test app so the barrier still exercises the inner manager-guard
+    # race; production locking remains unchanged.
+    app.view_functions['project_routes.update_project'] = pr.update_project.__wrapped__
     responses = []
     def create():
         responses.append(app.test_client().post('/api/project/p', json={
