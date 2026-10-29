@@ -57,7 +57,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
   function _routeRow(f, label, lines, ch) {
     return `<div class="desk-v1-cs-row" data-cs-facet="${esc(f.id)}" data-state="${esc(f.key)}">
         <span class="desk-v1-how-field-label">${esc(label)}</span>
-        <span class="desk-v1-cs-word" data-cs-word>${esc(f.word)}</span>
+        ${window.DeskV1StatusSignin?.routeWord(ch, f) || `<span class="desk-v1-cs-word" data-cs-word>${esc(f.word)}</span>`}
         ${lines.filter(Boolean).map((l) => `<div class="desk-v1-cs-line">${l}</div>`).join('')}
         ${f.detail ? `<div class="desk-v1-rules-hint" data-cs-detail>${esc(f.detail)}${window.VaultUnlockUI ? window.VaultUnlockUI.buttonHTML(f.locked ? {vault_locked:true} : f.detail) : ''}</div>` : ''}
 
@@ -246,6 +246,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
     window.DeskV1BrowserAccount?.bind(row,ch,repaint);
     row.querySelectorAll('[data-cs-facet]').forEach((r) => window.DeskV1AccountSignin?.bind(r, ch, repaint));
     row.querySelectorAll('[data-cs-facet]').forEach((r) => window.DeskV1ReadsOff?.bind(r, ch, repaint));
+    window.DeskV1StatusSignin?.bind(row, ch, repaint);
     const b = row.querySelector('[data-cs-reopen]');
     if (b) b.addEventListener('click', () => _openEditor({ kind: 'account', id: ch.id, record: ch }, repaint));
   }

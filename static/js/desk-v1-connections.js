@@ -30,11 +30,12 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
   }
 
   function _accountHTML(ch) {
-    const st=_status(ch);
+    const st=_status(ch), CS=window.DeskV1ConnectionStatus, cov=CS.coverageRow(_homeProjectId(ch),ch.platform);
+    const word=_isLiveRow(ch) && window.DeskV1StatusSignin?.cardWord(ch,st,CS.facets(ch,cov));      // a button when it Needs sign-in and there is a sign-in to start
     return `<div class="desk-v1-conn-row" data-conn-account="${esc(ch.id)}" data-platform="${esc(ch.platform)}" data-conn-state="${st.key}">
       <div class="desk-v1-conn-head"><span class="desk-v1-channel-badge">${esc(W.serviceName(ch.platform))} · ${esc(window.DeskV1ConnTiles.plainName(ch.label) || ch.identity)}</span>
-      <span class="desk-v1-conn-status" data-conn-status data-state="${st.key}">${esc(st.word)}</span></div>
-      ${window.DeskV1ConnectionStatus.accountHTML(ch,window.DeskV1ConnectionStatus.coverageRow(_homeProjectId(ch),ch.platform),st)}
+      ${word || `<span class="desk-v1-conn-status" data-conn-status data-state="${st.key}">${esc(st.word)}</span>`}</div>
+      ${CS.accountHTML(ch,cov,st)}
     </div>`;
   }
 
