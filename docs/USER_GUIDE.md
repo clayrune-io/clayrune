@@ -1252,6 +1252,20 @@ approval again after its cause is fixed.
 
 ### Campaign posts, archive and placement
 
+Open a post's piece page to write its **Copy**. For a new post, type in
+**Start typing your post…** or choose **Import from file**. The same editor
+is available on image and video pieces and shows the full saved text.
+Imports accept `.txt`, `.md`, `.markdown`, `.html` and `.htm` files, up to
+4 MB; HTML becomes plain text. Importing fills the editor without saving.
+Choose **Save** or leave the text field to save, then check the **Saved**
+message. Drafts may contain up to 100,000 characters. If saving fails, the
+page shows the server's reason and keeps your text so you can retry.
+
+Destination versions and their review controls remain below the editor.
+Next, add a version from the **Where** board. Articles continue to use
+**Edit article**. Restore an archived piece before editing it. In demo
+mode, **Saved in demo only** means the change stays in the demo data.
+
 In a campaign's **What**, use a post's three-dot menu for **Archive** or
 **Delete post**. **Archived** finds whole archived posts, including empty
 ones; **Restore post** returns the post and each suspended version to its
