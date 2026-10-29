@@ -1301,7 +1301,7 @@ Provider key and app fields offer **Type it here** or **Choose from Secrets**. F
 
 When editing an X account's app connection, **Save** keeps its working sign-in when it belongs to the same app, including older sign-ins and Client IDs chosen from Secrets. You still choose **Post** separately on Permissions. A different app requires a new sign-in; a locked Vault must be unlocked first.
 
-**Known limitation in this branch candidate:** existing Read grants can be shown and revoked, but newly saved LinkedIn Read permissions still cannot run. The candidate is blocked pending the remaining fix; it is not live.
+**Branch candidate:** existing Read grants can be shown and revoked, and newly saved LinkedIn Read permissions use its existing browser reader. Other browser, budget and permission checks still apply. These changes are not merged or live.
 
 Saved Connections use **Ready**, **Needs sign-in**, **Not checked yet**, **Not working**, or **Waiting on** the service. A saved profile or registered server alone does not mean Ready. Each social detail shows its status and next step, then **Permissions** with **Read** and **Post**, each **On** or **Off** with a reason when off. **Details** holds the connection method, profile, scope names, review restrictions and cost notes. Readiness never grants permission.
 

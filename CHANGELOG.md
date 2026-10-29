@@ -1,10 +1,15 @@
 # Clayrune — Changelog
 
-## [2026-10-29] - Keep existing Read grants visible and revocable (MC-1118, blocked candidate)
+## [2026-10-29] - Honor LinkedIn Read consent on its executable route (MC-1118)
+
+- LinkedIn pane reads resolve the single registered read_own pane executor, excluding manual routes. A saved Allow can reach the existing mentions and post-metrics reader; missing or ambiguous executor routes remain denied.
+- X routing, shared permission decisions, legacy unset-policy behavior and existing browser, budget and human approval gates are unchanged. Branch candidate only; no merge or deployment.
+
+## [2026-10-29] - Keep existing Read grants visible and revocable (MC-1118)
 
 - Permissions shows an existing browser-domain Read grant checked and enabled even when route data is missing. Turning it off removes that service's domain and keeps other domains.
 - LinkedIn's existing browser reader is now declared in the route projection, so fresh member and Company Page connections can offer Read. Instagram without an existing grant remains unavailable; a stale grant can be revoked.
-- Candidate remains blocked: LinkedIn explicit Read consent reaches an ambiguous backend route selector. Execution regression is red; no runtime backend fix or merge is included.
+- The follow-up selector fix above resolves the LinkedIn explicit-consent blocker. Both changes remain branch candidates; neither is merged or live.
 
 ## [2026-10-28] - Correct saved connection edits (MC-1118)
 

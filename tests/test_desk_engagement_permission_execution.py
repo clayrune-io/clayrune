@@ -370,6 +370,44 @@ def test_generic_legacy_selected_reader_stops_after_explicit_revocation(world):
     assert (world.model.call_count, len(world.generic_pages.reads)) == before
 
 
+def test_linkedin_read_with_two_pane_executor_routes_fails_closed(world, monkeypatch):
+    from mc.desk_connect import route_readiness
+
+    presence('pane', aid='page', platform='linkedin')
+    post(platform='linkedin')
+    consent(('mentions', 'post_metrics'), aid='page', service='linkedin',
+            kind='organization', route='linkedin-browser')
+    profile = registry.profile
+    ambiguous = copy.deepcopy(profile('linkedin'))
+    second = copy.deepcopy(next(r for r in ambiguous['routes'] if r['id'] == 'linkedin-browser'))
+    second['id'] = 'linkedin-browser-second'
+    ambiguous['routes'].append(second)
+    monkeypatch.setattr(registry, 'profile', lambda service: ambiguous if service == 'linkedin' else profile(service))
+    monkeypatch.setitem(route_readiness.EXECUTORS, ('linkedin', second['id'], 'read_own'), 'pane')
+
+    out = poll()['linkedin']
+
+    assert set(out['permission_denied']) == {'mentions', 'post_metrics'}
+    assert out['new_items'] == out['metrics_written'] == out['spent'] == 0
+    no_calls(world)
+
+
+def test_linkedin_manual_route_is_excluded_even_with_an_executor_entry(world, monkeypatch):
+    from mc.desk_connect import route_readiness
+
+    presence('pane', aid='page', platform='linkedin')
+    post(platform='linkedin')
+    consent(('mentions', 'post_metrics'), aid='page', service='linkedin',
+            kind='organization', route='linkedin-browser')
+    monkeypatch.setitem(route_readiness.EXECUTORS, ('linkedin', 'linkedin-manual', 'read_own'), 'pane')
+
+    out = poll()['linkedin']
+
+    assert out['new_items'] == out['metrics_written'] == 1
+    assert 'permission_denied' not in out
+    assert world.model.call_count == len(world.generic_pages.reads) == 2
+
+
 @pytest.mark.parametrize('gate', ['budget', 'agent_read_off', 'domain_off_list'])
 def test_generic_supported_x_allow_retains_budget_and_profile_policy(world, gate):
     presence('pane', budget=0 if gate == 'budget' else 10)

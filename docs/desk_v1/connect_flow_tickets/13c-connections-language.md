@@ -474,3 +474,43 @@ Receipts/logs: _scratch/mc1118-read-revocation/{backend,execution,smokes,saved-p
 All 559 pre-existing screenshot files were copied and hashed before their tests, including eight untracked Studio outputs. 71 refreshed files restored to this round's starting bytes and every manifest hash verified. This does not recover the originals lost in the prior round. Mobile stale-Instagram and fresh-LinkedIn fixtures were visually reviewed; no layout problem, live grant visibly checked, fresh grant unchecked/enabled, Publish disabled, Continue reachable. Captures are retained under _scratch/mc1118-read-revocation/captures. Smoke dependency junction removed nonrecursively before commit.
 
 Global plan creation was denied by the steward fence as out-of-project configuration; the full plan and checkpoints are in the worktree journal, not retried outside the project. No live sign-in, cookie/profile access, external installation, production restart, merge or push. **Open decision for Dave: authorize the bounded backend selector fix above.**
+
+## Authorized LinkedIn backend selector fix (2026-10-29)
+
+Dave authorized the bounded selector change in the latest `DECIDED WITHOUT RON` entry of `docs/_journal/39aba274-connections-one-vocabulary.md`. This follow-up supersedes the backend-scope blocker above. Work continues on `clayrune/agent/73607ec1a093`, parent `37f6564a`; no rebase, squash, merge, push or restart.
+
+### Change and boundaries
+
+`mc/desk_engagement_poll.py::_require_read` now considers a non-X browser route only when it is not manual and the existing executor table registers its `read_own` executor as `pane`. Exactly one candidate supplies the route ID. Zero or multiple candidates still supply `''`, so explicit consent fails closed through the unchanged shared permission check. The selector never derives its route from the consent record.
+
+The X branch, permission_check/permission_policy semantics, legacy unset-policy path and existing profile, budget, permission and passcode gates are unchanged. Activity addresses and Company Page scoping are untouched; this branch is not rebased onto the later engagement work on master. No service capability or executor is added in this follow-up. The existing LinkedIn executor declaration remains the one introduced in `37f6564a`.
+
+The real-Allow regression now reaches both mentions and post metrics. Missing-executor/forged-Allow refusal stays covered. Two new regressions reject two registered pane routes without reading a page, laundering content or spending, and exclude a manual route even if an executor entry is mistakenly supplied for it. No production permission seam is mocked to turn a refusal into success.
+
+### Verification receipts
+
+Focused command: `python -m pytest -o addopts= -q --tb=short tests/test_desk_engagement_permission_execution.py`: **49 passed in 1.97s, rc 0**.
+
+Full command (all 119 matching files, sorted and explicitly expanded, same command as the earlier 13c run):
+
+```powershell
+$deskTests = @(Get-ChildItem -Path tests/test_desk*.py | Sort-Object FullName | ForEach-Object FullName)
+python -m pytest -o addopts= -q --tb=short @deskTests
+```
+
+Full Desk result: **3,611 passed in 740.47s (12m20s), rc 0**. All 119 matching files ran, including the 49 execution-permission cases; no subset or deselection.
+
+| Requested smoke | rc | Duration |
+| --- | --- | --- |
+| `node tools/smoke/desk-v1-reads-off.mjs` | 0 | 13.72s |
+| `node tools/smoke/boot-smoke.mjs` | 0 | 46.52s |
+
+Reads-off exercises the production UI at 1440 and 390 pixels, fresh LinkedIn Read, cancellation, existing grant visibility and revocation, and Instagram regrant refusal. Boot passes all seven scenarios plus its dispatch, identity, backlog, memory, calendar, scheduler and Floor guards. These fixtures do not sign in to a live account.
+
+All **577** pre-existing screenshot files were copied and SHA-256 hashed before tests (the 559 files under `docs/desk_v1/screens` plus 18 prior reads-off captures). Nine refreshed reads-off files were restored, and every manifest hash verified. The smoke dependency junction was removed nonrecursively; the main checkout's dependencies were retained. No screenshot is included in this follow-up commit.
+
+Raw receipts and logs are in `_scratch/mc1118-selector/`; `desk-test-files.json` lists the entire full-suite input set. All test processes are registered with the Process Manager. The first smoke runner passed reads-off but exited 1 while printing its Unicode log to a Windows cp1252 console, before boot ran. The runner was corrected to UTF-8 and both requested smokes rerun; this was a receipt-runner error, not a product failure.
+
+`docs/USER_GUIDE.md` replaces the now-stale blocked-candidate warning; CHANGELOG records the selector fix and preserves branch-only status. No new UI, setup, install, schema or agent-conduct behavior requires README, AGENTS, API-reference or standing-rule changes. No new dependency or production deployment.
+
+The global plan-directory creation was blocked by the steward fence as human-owned `.claude` configuration, so the plan is recorded in the worktree journal. No retry or permission change. Engram memory tools were unavailable; no persistent Engram write is claimed. No real product choice arose; Dave owns integration and live validation.

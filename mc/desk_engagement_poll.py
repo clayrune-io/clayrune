@@ -21,6 +21,7 @@ from mc import desk_spend_guard as _spend
 from mc.desk_connect import permission_check as _permissions
 from mc.desk_connect import permission_policy as _policy
 from mc.desk_connect import registry as _registry
+from mc.desk_connect import route_readiness as _readiness
 
 
 def _require_read(account_id: str | None, platform: str, reader: _eng.Reader,
@@ -36,7 +37,9 @@ def _require_read(account_id: str | None, platform: str, reader: _eng.Reader,
         explicit = isinstance(rec, dict) and (_policy.POLICY_KEY in rec or _policy.VERSION_KEY in rec)
         profile = _registry.profile(platform) if explicit else None
         routes = [r['id'] for r in (profile or {}).get('routes', [])
-                  if r.get('transport') == 'browser' and reader.via == 'pane']
+                  if r.get('transport') == 'browser' and r.get('support') != 'manual'
+                  and reader.via == 'pane'
+                  and _readiness.executor(platform, r['id'], 'read_own') == 'pane']
         route = routes[0] if len(routes) == 1 else ''
     _permissions.require_permission(account_id, platform, 'read', purpose='read_own',
                                     capability=capability, route_id=route,
