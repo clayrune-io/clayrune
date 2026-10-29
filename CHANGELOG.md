@@ -5,6 +5,11 @@
 - Home project blocks use their default planner when set, otherwise show the shared agent of their live campaigns or **Each campaign has its own agent**. The pick warning remains when a live campaign has no resolvable agent; ended campaigns do not trigger it.
 - The project chat's **Set this project's default planner ›** button opens the same picker as the header. Selection and Undo keep their existing behavior; campaign agent assignments and labels stay unchanged. Branch candidate only; no merge or deployment.
 
+## [2026-10-29] - Name campaign posts and add media from this computer
+
+- Piece pages offer **Edit name** and **Save name**, with a naming prompt for a fresh **New post**. Names persist through the existing title route and support Undo; What, Where, calendar and piece pickers use the saved name. Filled calendar slots now resolve the current name instead of keeping a stale copy.
+- **Add media → From this computer…** opens the browser's image or video chooser, including on a phone. Files use the existing upload-and-attach route and Undo detaches the asset. Local upload remains available when the material library cannot load; its error is still shown. Branch candidate only; no merge or deployment.
+
 ## [2026-10-29] - Start a post by typing or importing copy
 
 - Active post, image and video piece pages now offer a full draft editor, **Import from file** and **Save**, including when a new post has no versions. Text, Markdown and HTML imports fill the draft locally; HTML becomes plain text. Save or leaving the field persists the body, with visible saved/error feedback and a 100,000-character limit.

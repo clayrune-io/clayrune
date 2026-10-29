@@ -1267,6 +1267,20 @@ approval again after its cause is fixed.
 
 ### Campaign posts, archive and placement
 
+Use **Edit name** on a post's piece page, enter a **Post name**, and choose
+**Save name** (or press Enter). A fresh **New post** shows the name field
+immediately. Names may contain up to 200 characters and appear in What,
+Where, the calendar and menus that list pieces. **Undo** restores the previous
+name. Naming a post does not change its copy.
+
+In **Media**, choose **Add media → From this computer…** to select an image
+for a post/image piece, or a video for a video piece. On a phone, this opens
+that phone's file chooser. Supported files are PNG, JPG, GIF, WebP and MP4,
+MOV, WebM, M4V. Uploads are saved in the Material library's **Uploads** folder
+and attached to the piece. **Undo** removes the attachment and keeps the
+library file. Upload errors show the reason; failed files are not attached.
+The computer chooser remains available if loading the library fails.
+
 Open a post's piece page to write its **Copy**. For a new post, type in
 **Start typing your post…** or choose **Import from file**. The same editor
 is available on image and video pieces and shows the full saved text.

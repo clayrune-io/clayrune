@@ -446,6 +446,22 @@ def test_upload_lands_in_the_library_and_is_attached(env):
     assert r2.get_json()['assets'][1]['path'] != a['path']
 
 
+def test_asset_upload_lifts_the_app_body_cap_for_this_route_only(env, monkeypatch):
+    # server.py caps every request at 50 MB; a phone video is bigger. The
+    # assets route raises its own cap to the writer's limit, nothing else does.
+    client, uploads, _ = env
+    client.application.config['MAX_CONTENT_LENGTH'] = 512
+    monkeypatch.setattr(_pieces, 'MAX_UPLOAD_BYTES', {'image': 8192, 'video': 8192})
+    p = _piece(client)
+    big = PNG + b'0' * 2000
+    r = client.post(f"/api/desk/pieces/{p['id']}/assets", data={'file': (io.BytesIO(big), 'big.png')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 201, r.get_json()
+    assert (uploads / r.get_json()['assets'][0]['path']).read_bytes() == big
+    r = client.post('/api/desk/pieces', json={'campaign_id': CID, 'kind': 'post', 'title': 'x' * 2000})
+    assert r.status_code == 413
+
+
 def test_refused_uploads_leave_no_file(env, monkeypatch):
     client, uploads, _ = env
     p = _piece(client)
@@ -461,6 +477,38 @@ def test_refused_uploads_leave_no_file(env, monkeypatch):
     assert r.status_code == 404
     folder = uploads / 'desk' / 'library'
     assert not folder.exists() or not [f for f in folder.rglob('*') if f.is_file()]
+
+
+def test_video_browser_upload_keeps_id_and_can_be_undone(env, monkeypatch):
+    client, uploads, _ = env
+    p = _piece(client, 'video')
+    url = f"/api/desk/pieces/{p['id']}/assets"
+    r = client.post(url, data={'id': 'browser-upload', 'file': (io.BytesIO(b'video bytes'), 'Clip.MP4')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 201, r.get_json()
+    asset = r.get_json()['assets'][0]
+    assert asset['id'] == 'browser-upload' and asset['kind'] == 'video'
+    assert asset['path'].startswith('desk/library/video/Uploads/')
+    assert (uploads / asset['path']).read_bytes() == b'video bytes'
+    assert client.get('/api/desk/workspace').get_json()['pieces'][0]['assets'] == [asset]
+    assert client.delete(url + '/browser-upload').get_json()['assets'] == []
+    assert (uploads / asset['path']).exists()  # Undo detaches; it never deletes a library file.
+    monkeypatch.setitem(_pieces.MAX_UPLOAD_BYTES, 'video', 3)
+    refused = client.post(url, data={'file': (io.BytesIO(b'large'), 'Large.mp4')}, content_type='multipart/form-data')
+    assert refused.status_code == 413
+    assert len(list((uploads / 'desk/library/video/Uploads').iterdir())) == 1
+
+
+def test_post_name_persists_in_workspace_and_article_picker(env):
+    client, _, _ = env
+    p = _piece(client, 'article', title='New article')
+    url = f"/api/desk/pieces/{p['id']}"
+    for title in ('Launch notes', 'New article'):  # Rename and its Undo use the same route.
+        assert client.patch(url, json={'title': title}).status_code == 200
+        assert client.get('/api/desk/workspace').get_json()['pieces'][0]['title'] == title
+        assert client.get('/api/desk/materials').get_json()['articles'][0]['title'] == title
+    assert client.patch(url, json={'title': 'x' * 201}).status_code == 400
+    assert client.get('/api/desk/pieces').get_json()[0]['title'] == 'New article'
 
 
 # -- Studio saves into the library, attached to nothing (MC-1024) ------------------

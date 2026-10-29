@@ -702,8 +702,9 @@
     const isVideo = fam.kind === 'video';
     const folders = (isVideo ? lib.video : lib.image) || [];
     const items = folders.map((m) => ({ id: m.id, label: `${m.title} (${m.files})` }));
-    if (!items.length) { DeskV1Kit.toast('No material folders to add from yet.'); return; }
+    items.push({ id: '__computer', label: 'From this computer…' });
     DeskV1Kit.addToMenu(triggerEl, items, (id) => {
+      if (id === '__computer') { window.DeskV1LocalUpload.open(fam, (asset, file) => _addMedia(fam, asset, onDone, file)); return; }
       const m = folders.find((x) => x.id === id);
       if (!m) return;
       const asset = { id: 'asset-' + _uid(), kind: isVideo ? 'video' : 'image', title: m.title, src: m.thumb };
@@ -711,14 +712,14 @@
     }, { noAppendNew: true });
   }
 
-  function _addMedia(fam, asset, onDone) {
+  function _addMedia(fam, asset, onDone, upload) {
     const repaint = () => { if (onDone) onDone(); };
-    DeskV1Store.write({
+    return DeskV1Store.write({
       label: `Added “${asset.title}” to “${fam.title}”`,
       apply: () => { fam.assets = (fam.assets || []).concat([asset]); repaint(); },
       unapply: () => { fam.assets = (fam.assets || []).filter((a) => a.id !== asset.id); },
       repaint,
-      request: _assetRequest(fam, asset, null, repaint),
+      request: _assetRequest(fam, asset, upload, repaint),
       undoRequest: _assetUndo(fam, asset),
     });
   }
@@ -726,11 +727,12 @@
   // Live: the menu lists the library's FILES (a piece carries files), each one
   // an M21 attach by path. A failed materials read is said, not shown as empty.
   function _openAddMediaLive(triggerEl, fam, onDone) {
-    if (_mats.error) { DeskV1Kit.toast(`Could not load the material library: ${_mats.error}`); return; }
+    if (_mats.error) DeskV1Kit.toast(`Could not load the material library: ${_mats.error}`);
     const lib = _fx().materialLibrary || {};
-    const files = ((fam.kind === 'video' ? lib.video : lib.image) || [])
+    const files = (_mats.error ? [] : ((fam.kind === 'video' ? lib.video : lib.image) || []))
       .flatMap((m) => (m.items || []).map((it) => ({ it, folder: m.title })));
-    DeskV1Kit.addToMenu(triggerEl, files.map(({ it, folder }) => ({ id: it.path, label: `${folder} / ${it.title}` })).concat([{ id: '__projects', label: 'From your projects…' }]), (path) => {
+    DeskV1Kit.addToMenu(triggerEl, [{ id: '__computer', label: 'From this computer…' }].concat(files.map(({ it, folder }) => ({ id: it.path, label: `${folder} / ${it.title}` })), [{ id: '__projects', label: 'From your projects…' }]), (path) => {
+      if (path === '__computer') { window.DeskV1LocalUpload.open(fam, (asset, file) => _addMedia(fam, asset, onDone, file)); return; }
       if (path === '__projects') { window.DeskV1LibraryPicker.open({ kinds: [fam.kind === 'video' ? 'video' : 'image'], onPick: (it) => _addMedia(fam, { id: 'asset-' + _uid(), kind: it.kind, title: it.title, path: it.path, src: it.src }, onDone) }); return; }
       const hit = files.find((x) => x.it.path === path);
       if (!hit) return;

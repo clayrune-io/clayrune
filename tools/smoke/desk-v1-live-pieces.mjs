@@ -280,8 +280,8 @@ async function assets(browser) {
   await page.click(`[data-what-row][data-family-id="${id}"] [data-add-media]`);
   await page.waitForSelector('.desk-v1-addto-menu button', { timeout: 8000 });
   const labels = await page.$$eval('.desk-v1-addto-menu button', (els) => els.map((e) => e.textContent));
-  (labels.length === 3 && labels[0] === 'Launch shots / a.png' && labels[2] === 'From your projects…') ? ok(`＋ Add media lists library files and the project chooser: ${JSON.stringify(labels)}`) : fail('add-media menu: ' + JSON.stringify(labels));
-  await page.click('.desk-v1-addto-menu button:nth-of-type(2)');
+  (labels.length === 4 && labels[0] === 'From this computer…' && labels[1] === 'Launch shots / a.png' && labels[3] === 'From your projects…') ? ok(`＋ Add media lists computer upload, library files and the project chooser: ${JSON.stringify(labels)}`) : fail('add-media menu: ' + JSON.stringify(labels));
+  await page.getByRole('menuitem', { name: 'Launch shots / b.png', exact: true }).click();
   await settle(page, (i) => ((window.DeskV1Store.state().families.find((f) => f.id === i) || {}).assets || []).length === 2, id);
   const lib = calls(srv, 'POST', new RegExp(`^/api/desk/pieces/${id}/assets$`));
   (lib.length === 1 && !lib[0].multipart && lib[0].body.path === 'desk/library/image/Launch shots/b.png')
@@ -293,7 +293,7 @@ async function assets(browser) {
   srv.next[`POST /api/desk/pieces/${id}/assets`] = 'a piece can carry at most 50 assets';
   await page.click(`[data-what-row][data-family-id="${id}"] [data-add-media]`);
   await page.waitForSelector('.desk-v1-addto-menu button', { timeout: 8000 });
-  await page.click('.desk-v1-addto-menu button:nth-of-type(1)');
+  await page.getByRole('menuitem', { name: 'Launch shots / a.png', exact: true }).click();
   await page.waitForFunction(() => /was not saved: a piece can carry at most 50 assets/.test(document.body.innerText), null, { timeout: 8000 });
   const afterRefuse = await famOf(page, id);
   afterRefuse.assets.length === 2 ? ok('a refused attach is rolled back (2 assets remain) with the server text') : fail('after refusal: ' + afterRefuse.assets.length);
@@ -362,6 +362,27 @@ async function piecePage(browser) {
   const ex = await page.textContent('[data-piece-excerpt]').catch(() => '');
   /server-held text/.test(ex) ? ok('the Copy excerpt is the piece\'s own body from M1') : fail('excerpt: ' + ex);
 
+  // The piece page's name uses the same title PATCH as the create card, and
+  // Undo must find the current family after a workspace refresh replaces it.
+  const oldTitle = srv.pieces.find((p) => p.id === 'fam-restore-points').title;
+  await page.click('[data-piece-name-edit]');
+  await page.fill('[data-piece-name-input]', 'Launch article');
+  await page.click('[data-piece-name-save]');
+  await settle(page, () => document.querySelector('.desk-v1-piece-title').textContent === 'Launch article');
+  srv.pieces.find((p) => p.id === 'fam-restore-points').title === 'Launch article'
+    ? ok('piece-page name PATCH persists on the live server') : fail('piece-page title not saved');
+  await page.evaluate(async () => { await window.DeskV1Store.load({ force: true }); window.deskV1PieceRepaint(); });
+  (await page.textContent('.desk-v1-piece-title')) === 'Launch article'
+    ? ok('piece-page name survives a fresh workspace read') : fail('piece-page title lost on refresh');
+  await page.evaluate(() => {
+    window.deskV1Nav('campaign', { campaignId: 'camp-1' });
+    window.deskV1Nav('piece', { campaignId: 'camp-1', familyId: 'fam-restore-points' });
+  });
+  await page.click('#desk-v1-undo');
+  await settle(page, (title) => document.querySelector('.desk-v1-piece-title').textContent === title, oldTitle);
+  srv.pieces.find((p) => p.id === 'fam-restore-points').title === oldTitle
+    ? ok('name Undo restores the live server and refreshed/remounted family') : fail('name Undo did not persist');
+
   // fam-restore-points is an article: no Add media there. Use the image piece.
   await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1' }));
   await page.waitForSelector('[data-what]', { timeout: 8000 });
@@ -370,7 +391,7 @@ async function piecePage(browser) {
   srv.log.length = 0;
   await page.click('.desk-v1-piece [data-add-media]');
   await page.waitForSelector('.desk-v1-addto-menu button', { timeout: 8000 });
-  await page.click('.desk-v1-addto-menu button:nth-of-type(1)');
+  await page.getByRole('menuitem', { name: 'Launch shots / a.png', exact: true }).click();
   await settle(page, () => (window.DeskV1Store.state().families.find((f) => f.id === 'fam-where-board').assets || []).length === 2);
   const lib = calls(srv, 'POST', /^\/api\/desk\/pieces\/fam-where-board\/assets$/);
   (lib.length === 1 && lib[0].body.path === 'desk/library/image/Launch shots/a.png')

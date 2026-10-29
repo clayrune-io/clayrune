@@ -828,6 +828,9 @@ def revise_piece_version(piece_id, version_id):
 # material library's Uploads folder and attaches it.
 @bp.route('/api/desk/pieces/<piece_id>/assets', methods=['POST'])
 def add_piece_asset(piece_id):
+    # The app-wide 50 MB body cap would 413 a video the asset writer allows
+    # (500 MB); lift it for this route only, before the body is parsed.
+    request.max_content_length = max(_pieces.MAX_UPLOAD_BYTES.values()) + 1024 * 1024
     if request.files.get('file') is not None:
         f = request.files['file']
         return _piece_call(_pieces.save_upload, piece_id, f.filename or '', f.stream,
