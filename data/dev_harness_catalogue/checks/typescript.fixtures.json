@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "recipe_id": "typescript",
+  "recipe_digest": "3e6c559154fb8ac7df28cd6175b2976d96e44e426764fffa46377cce9228dda2",
+  "validator_digest": "86fed3ac82cb4f7049d98500c8bce68a96c4978fb171dc39731c34d3d5d9c993",
+  "fixture_file": "tests/fixtures/dev_harness/typescript.json",
+  "fixture_file_digest": "6d13932cf4748f4f94c1bcdd0a5df56f54c276c5160ba0cf596b757ec5e21feb",
+  "cases": [
+    "positive",
+    "finding",
+    "crash"
+  ]
+}

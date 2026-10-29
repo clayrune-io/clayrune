@@ -338,16 +338,21 @@ All six sessions include their owned tests and docs; independent lead review, me
 
 MVP exit evidence must demonstrate a Python and a JS/TS candidate each held for failing tests, uncovered changed executable code, a synthetic secret, a supported SAST finding and a vulnerable dependency fixture; actual fixture values never reach chat. It also demonstrates a configured licence rejection, no-op/empty report rejection, changed policy/source invalidation, an independent-review hold, target advancement invalidation, Preview without new holds, a human-only supported-subset activation on a disposable fixture, and failed activation of an incomplete product profile. Existing native coverage/report compatibility is probed rather than assuming every JS runner emits the needed format. If no approved coverage export exists for a dogfood subtree, record the gap and keep that requirement in Preview; do not invent coverage.
 
-### 10.1a DH-M5 contract addendum (A1; awaiting Dave review)
+### 10.1a DH-M5 contract addendum (A1 approved; staged A2)
 
 [DH-M5 execution-plan, activation and landing contract](DEV_HARNESS_M5_CONTRACT.md)
-is the normative A2 build contract after Dave approves A1. It records the
+is the normative A2 build contract, approved by Dave with section 9's
+A2a/A2b split and warning-only coverage amendment. It records the
 2026-10-29 journal decision, option A staged, and supersedes the M5 row's
 previous assumptions that an approved native execution plan, shared merge lock
 and run/read/preview routes already exist. It defines those missing prerequisites
 without upgrading Unsupported practice coverage or granting activation authority
 to agents. A1 changes documentation only; it does not authorize A2 execution,
 live activation, installation, merge, push, restart or release.
+
+[A2a implementation and verification](DEV_HARNESS_NATIVE_APPROVAL.md) covers
+nonexecuting plan inspection, human approval and trusted evidence composition
+only. A2b execution, applicability and landing integration remain pending.
 
 ### 10.2 Later Phase 1 sequence
 

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "recipe_id": "licence",
+  "recipe_digest": "75c6c0dc0026a97f807932fa6f36ccee2b58fa7d4221699f6d3d1a06d3e3de3c",
+  "validator_digest": "86fed3ac82cb4f7049d98500c8bce68a96c4978fb171dc39731c34d3d5d9c993",
+  "fixture_file": "tests/fixtures/dev_harness/licence.json",
+  "fixture_file_digest": "81d16627f94776fb03ed353767be73e2b7303815b3fd6d5c4fb346ca62c6fbc1",
+  "cases": [
+    "positive",
+    "finding",
+    "crash"
+  ]
+}

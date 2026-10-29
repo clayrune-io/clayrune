@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "recipe_id": "npm-build",
+  "recipe_digest": "140949b7b8c1c2e59a3f00c08ab97de0133df64ca7ee42751566deb44f87e2e9",
+  "validator_digest": "86fed3ac82cb4f7049d98500c8bce68a96c4978fb171dc39731c34d3d5d9c993",
+  "fixture_file": "tests/fixtures/dev_harness/npm-build.json",
+  "fixture_file_digest": "7e9351a9c8beeb2f5a43c8b90b98bef81688f7a1c94b8b49eb61051da266db8d",
+  "cases": [
+    "positive",
+    "finding",
+    "crash"
+  ]
+}

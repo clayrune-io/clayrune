@@ -20,6 +20,10 @@
 tools/git-hooks/pre-merge-commit text eol=lf
 tools/git-hooks/commit-msg text eol=lf
 
+# Shipped native adapter manifests pin these exact file bytes on every OS.
+mc/dev_harness_checks/*.py text eol=lf
+tests/fixtures/dev_harness/*.json text eol=lf
+
 # Binary assets — never touch.
 *.png       binary
 *.jpg       binary

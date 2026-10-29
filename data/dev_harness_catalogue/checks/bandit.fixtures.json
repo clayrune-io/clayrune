@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "recipe_id": "bandit",
+  "recipe_digest": "d8a124fd26577824041cae4522cb1b54dbc50f291e9f13f11df6cbf11f870781",
+  "validator_digest": "86fed3ac82cb4f7049d98500c8bce68a96c4978fb171dc39731c34d3d5d9c993",
+  "fixture_file": "tests/fixtures/dev_harness/bandit.json",
+  "fixture_file_digest": "e04a27457b7c8d5ff873a9238a236954aaa64919a9253b801ce1bb2e3c7aeaef",
+  "cases": [
+    "positive",
+    "finding",
+    "crash"
+  ]
+}

@@ -196,3 +196,15 @@ Final branch validation on Windows:
   16001 deselected, rc=0** (163.47s).
 - Scoped pyright: **0 errors, 0 warnings, rc=0**; diff check: rc=0.
 - The existing skip is the POSIX newline-filename test; Windows forbids that name.
+
+## DH-M5 A2a compatibility binding
+
+[Native approval](DEV_HARNESS_NATIVE_APPROVAL.md) pins each recipe and adapter
+code identity through its separate shipped `<recipe>.fixtures.json` manifest.
+Tests recompute the fixture-file digests and exercise positive/finding/crash
+cases; runtime validates shipped metadata without requiring test files. These
+manifests do not prove native project execution. Required coverage recipes
+are refused with `coverage_required_unmeasurable` under the approved M5
+section 9 amendment; explicitly selected warning coverage still needs a
+human-selected P02 changed-line floor. M4 execution and report behavior remain
+unchanged. A2b approved execution and M6 real-tool acceptance remain pending.

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "recipe_id": "gitleaks",
+  "recipe_digest": "7497756220f5463396b8d0a36d50967be82b6435990075680514d10cfbc0c6ec",
+  "validator_digest": "86fed3ac82cb4f7049d98500c8bce68a96c4978fb171dc39731c34d3d5d9c993",
+  "fixture_file": "tests/fixtures/dev_harness/gitleaks.json",
+  "fixture_file_digest": "005817af17a07969023a3d2d5bb991f574d7e8e366529d70d9bd84f881c18a11",
+  "cases": [
+    "positive",
+    "finding",
+    "crash"
+  ]
+}

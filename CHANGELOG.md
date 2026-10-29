@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Bind native harness proposals to human approval (DH-M5 A2a)
+
+- Added nonexecuting native-plan inspection, immutable plan storage, explicit policy v2 native selections and fixture compatibility manifests. Required coverage recipes are refused; full-practice Unsupported coverage remains unchanged.
+- Existing human-only Activate now binds the exact native plan and separate native loss acknowledgements into its atomic snapshot/audit. Native measured Preview evidence composes only stored M3/M4 receipts and verified M2 guidance, with source/config/tool/plan revalidation before Enforce.
+- Added a leaf `/native-plan` route without execution or landing integration. Branch candidate only; A2b execution/merge enforcement remains unavailable. No merge, push, restart or live activation.
+
 ## [2026-10-29] - Pin existing delegation behavior in regression guards
 
 - Added MC-1106's shipped `mark-handled` route to the exact agent route set and documented the reconciler's single Claude runtime import for transcript path encoding, with an owner and removal gate. Runtime behavior and provider-boundary scanning stay unchanged. Branch candidate only; no merge, push or restart.
