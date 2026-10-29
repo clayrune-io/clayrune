@@ -341,6 +341,7 @@ def test_per_turn_ledger_flag_off_is_byte_identical_to_pre_step8(tmp_data_dir):
     mem.write_position(p, 'widget calibration offset', 'declined', 'because reasons',
                         decided='2026-09-20')
     mc_state.CONFIG.pop('negation_ledger_enabled', None)  # explicit default OFF
-    result = mt.refresh_for_turn(p, {}, 'widget calibration offset drift')
+    result = mt.refresh_for_turn(
+        p, {'trigger_type': 'manual'}, 'widget calibration offset drift')
     assert 'NEGATION LEDGER' not in result['block']
     assert 'STANDING POSITIONS' in result['block']

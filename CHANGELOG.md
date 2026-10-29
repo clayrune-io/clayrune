@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Apply unattended-origin filtering at memory delivery callers (MC-1122)
+
+- Steward charter refresh, dispatch read floors, dispatch suppression seeding, and per-turn memory refresh now request the existing unattended-origin filter. Live turns use session provenance so a markerless follow-up retains the gate; manual delivery remains unchanged.
+- Link expansion now builds its graph using the same origin predicate as lexical scoring, preventing outbound links and backlinks from reintroducing unattended notes. Manual consumers and unstamped/legacy eligibility retain their existing behavior.
+- Added mixed-origin caller and link regressions, including a composed second hop, and documented the full caller audit in `docs/MEMORY_CONSUMER_SAFETY.md`. Branch candidate only; no merge or deployment.
+
 ## [2026-10-29] - Save confirmed X card re-sign-ins automatically
 
 - A saved X account's Sign in asks for the start passcode, confirms its handle with one `/2/users/me` lookup and saves a match on callback. A mismatch offers Discard only; lookup or save failures keep the sign-in held for manual Save. The new-account wizard retains its explicit Save.

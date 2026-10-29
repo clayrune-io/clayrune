@@ -18,6 +18,8 @@ Conventions borrowed from tests/test_memory_search_bm25.py (`_mem`/`_seed`
 reload-server fixture) and tests/test_memory_fts.py (`_write_transcript`/
 `_wire_claude_home` for the cold tier).
 """
+# These delivery/compaction scenarios model human chats. MC-1122 treats a
+# missing trigger as unattended; that fail-closed path has dedicated rail tests.
 import importlib
 
 from mc import agent_runtime
@@ -70,7 +72,7 @@ def test_a_live_followup_surfaces_what_the_stale_dispatch_task_missed(tmp_data_d
     p = {"id": "acceptanceproj"}
     _seed(m, p, {DESIGN_NOTE: DESIGN_TEXT, UNRELATED_NOTE: UNRELATED_TEXT})
 
-    session = {}
+    session = {"trigger_type": "manual"}
     # Dispatch: the task string that actually broke B5 in the trace.
     mt.seed_delivered(p, session, "Hi Dave")
     assert not session.get("_mem_turn_delivered"), (
@@ -106,7 +108,7 @@ def test_a_note_delivered_once_is_suppressed_on_the_next_turn(tmp_data_dir):
     mt = _turn(m)
     p = {"id": "dedupeproj"}
     _seed(m, p, {DESIGN_NOTE: DESIGN_TEXT})
-    session = {}
+    session = {"trigger_type": "manual"}
 
     first = mt.refresh_for_turn(p, session, "tell me about the memory redesign")
     assert DESIGN_NOTE in first["delivered"]
@@ -129,7 +131,7 @@ def test_seed_delivered_prevents_a_dispatch_hit_from_looking_new_later(tmp_data_
     mt = _turn(m)
     p = {"id": "seedproj"}
     _seed(m, p, {DESIGN_NOTE: DESIGN_TEXT})
-    session = {}
+    session = {"trigger_type": "manual"}
 
     mt.seed_delivered(p, session, "tell me about the memory redesign")
     assert DESIGN_NOTE in session["_mem_turn_delivered"]
@@ -154,7 +156,7 @@ def test_a_position_re_surfaces_every_turn_unlike_a_note(tmp_data_dir):
         p, subject="Adopt Obsidian as the memory substrate", verdict="declined",
         reason="already evaluated and rejected on portability grounds",
         triggers="obsidian")
-    session = {}
+    session = {"trigger_type": "manual"}
 
     first = mt.refresh_for_turn(p, session, "should we use obsidian for this")
     assert fname in first["positions"]
@@ -184,7 +186,7 @@ def test_first_delivery_is_full_repeat_match_is_compact(tmp_data_dir):
     p = {"id": "poscompactproj"}
     _seed(m, p, {})
     fname = _seed_position(m, p)
-    session = {}
+    session = {"trigger_type": "manual"}
 
     first = mt.refresh_for_turn(p, session, "should we use obsidian for this")
     assert "already evaluated and rejected" in first["block"], (
@@ -209,7 +211,7 @@ def test_hash_change_forces_a_full_re_render(tmp_data_dir):
     p = {"id": "poshashproj"}
     _seed(m, p, {})
     fname = _seed_position(m, p)
-    session = {}
+    session = {"trigger_type": "manual"}
 
     mt.refresh_for_turn(p, session, "should we use obsidian for this")   # full
     compact = mt.refresh_for_turn(p, session, "should we use obsidian for this")
@@ -233,7 +235,7 @@ def test_every_n_turns_forces_a_full_re_render_even_with_no_change(tmp_data_dir)
     _seed_position(m, p)
     from mc import state
     state.CONFIG['memory_turn_position_full_every'] = 3
-    session = {}
+    session = {"trigger_type": "manual"}
 
     r1 = mt.refresh_for_turn(p, session, "should we use obsidian for this")  # turn 1: full
     r2 = mt.refresh_for_turn(p, session, "should we use obsidian for this")  # turn 2: compact
@@ -255,7 +257,7 @@ def test_reset_conversation_state_restores_full_on_the_next_match(tmp_data_dir):
     p = {"id": "posresetproj"}
     _seed(m, p, {})
     _seed_position(m, p)
-    session = {}
+    session = {"trigger_type": "manual"}
 
     mt.refresh_for_turn(p, session, "should we use obsidian for this")   # full
     mt.refresh_for_turn(p, session, "should we use obsidian for this")   # compact
@@ -273,7 +275,7 @@ def test_position_compact_disabled_keeps_todays_full_every_turn_behaviour(tmp_da
     _seed_position(m, p)
     from mc import state
     state.CONFIG['memory_turn_position_compact_enabled'] = False
-    session = {}
+    session = {"trigger_type": "manual"}
 
     mt.refresh_for_turn(p, session, "should we use obsidian for this")
     second = mt.refresh_for_turn(p, session, "should we use obsidian for this")
@@ -321,7 +323,7 @@ def test_cold_probe_fires_only_when_the_warm_floor_is_truly_empty(tmp_data_dir, 
     ])
     fts.build_index(p)
 
-    session = {}
+    session = {"trigger_type": "manual"}
     result = mt.refresh_for_turn(p, session, "two-level lazy index proposal")
     assert result["cold_used"] is True
     assert "cold tier" in result["block"]
@@ -336,7 +338,7 @@ def test_cold_probe_does_not_fire_when_the_note_was_merely_suppressed(tmp_data_d
     mt = _turn(m)
     p = {"id": "nomisscoldproj"}
     _seed(m, p, {DESIGN_NOTE: DESIGN_TEXT})
-    session = {}
+    session = {"trigger_type": "manual"}
     mt.refresh_for_turn(p, session, "tell me about the memory redesign")
     second = mt.refresh_for_turn(p, session, "tell me about the memory redesign")
     assert second["cold_used"] is False
@@ -355,7 +357,7 @@ def test_the_per_turn_block_never_exceeds_the_configured_budget(tmp_data_dir):
     for i in range(8):
         files[f"note_{i}.md"] = f"memory design note {i}. {long_body}"
     _seed(m, p, files)
-    session = {}
+    session = {"trigger_type": "manual"}
 
     result = mt.refresh_for_turn(p, session, "memory design redesign prompt budget")
     assert result["bytes"] <= 300
@@ -394,7 +396,7 @@ def test_disabling_the_feature_is_a_full_bypass(tmp_data_dir):
     _seed(m, p, {DESIGN_NOTE: DESIGN_TEXT})
     from mc import state
     state.CONFIG['memory_turn_refresh_enabled'] = False
-    session = {}
+    session = {"trigger_type": "manual"}
     result = mt.refresh_for_turn(p, session, "compare okf agent memory to our memory layer")
     assert result == {'block': '', 'delivered': [], 'suppressed': [],
                        'positions': [], 'cold_used': False, 'bytes': 0}
@@ -414,7 +416,7 @@ def test_a_position_the_dispatch_prompt_rendered_in_full_is_compact_on_the_first
     p = {"id": "posseedproj"}
     _seed(m, p, {})
     fname = _seed_position(m, p)
-    session = {}
+    session = {"trigger_type": "manual"}
 
     mt.seed_delivered(p, session, "should we use obsidian for this")
     live = mt.refresh_for_turn(p, session, "should we use obsidian for this")
@@ -422,7 +424,7 @@ def test_a_position_the_dispatch_prompt_rendered_in_full_is_compact_on_the_first
     assert "DECLINED" in live["block"]
     assert "already evaluated and rejected" not in live["block"]
 
-    cold_session = {}   # never seeded: respawn / restart / unmatched at dispatch
+    cold_session = {"trigger_type": "manual"}   # never seeded: respawn / restart / unmatched at dispatch
     full = mt.refresh_for_turn(p, cold_session, "should we use obsidian for this")
     assert "already evaluated and rejected" in full["block"]
     assert live["bytes"] < full["bytes"]
@@ -434,7 +436,7 @@ def test_a_seeded_position_that_changed_since_dispatch_renders_full(tmp_data_dir
     p = {"id": "posseedchangedproj"}
     _seed(m, p, {})
     fname = _seed_position(m, p)
-    session = {}
+    session = {"trigger_type": "manual"}
     mt.seed_delivered(p, session, "should we use obsidian for this")
     m.write_position(
         p, subject="Adopt Obsidian as the memory substrate", verdict="adopted",
@@ -454,7 +456,7 @@ def test_seed_with_the_compact_lever_off_records_nothing(tmp_data_dir):
     _seed_position(m, p)
     state.CONFIG['memory_turn_position_compact_enabled'] = False
     try:
-        session = {}
+        session = {"trigger_type": "manual"}
         mt.seed_delivered(p, session, "should we use obsidian for this")
         assert not session.get('_mem_turn_pos_state')
     finally:

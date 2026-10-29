@@ -5370,7 +5370,8 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
                 project, task,
                 int(state.CONFIG.get('read_floor_topk', 6) or 6),
                 expand=int(state.CONFIG.get('read_floor_link_expand', 2) or 0),
-                record='read_floor')  # phase-4 delivery telemetry
+                record='read_floor',  # phase-4 delivery telemetry
+                consumer_unattended=_distiller.is_unattended_task(task))
         except Exception as e:
             # Was a bare `pass`. The read floor is the ONLY retrieval channel that
             # actually runs — agents open a memory file in 5% of sessions — so a
