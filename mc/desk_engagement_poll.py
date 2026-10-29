@@ -98,7 +98,9 @@ def poll_platform(project_id: str, platform: str, reader: _eng.Reader,
         for it in got['items']:
             led = ledger_by_id.get(it.get('post_id') or '')
             _row, created = _desk.upsert_engagement_item({
-                **it, 'platform': platform, 'account': got.get('account'),
+                **it, 'platform': platform,
+                'account': got.get('account') or (account or {}).get('identity'),
+                'account_id': got.get('account_id') or account_id,
                 'project_id': (led or {}).get('project_id') or project_id,
                 'campaign_id': (led or {}).get('campaign_id'),
             })

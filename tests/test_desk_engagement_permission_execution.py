@@ -101,7 +101,8 @@ def presence(via='api', aid='first', platform='x', budget=10, *, no_id=False):
     if platform != 'x':
         root = 'https://www.linkedin.com/' if platform == 'linkedin' else 'https://example.com/'
         acc['url'] = root
-        acc['read_pages'] = [{'role': 'activity', 'url': root + 'notifications/'},
+        activity = root + ('company/777/admin/notifications/' if platform == 'linkedin' else 'notifications/')
+        acc['read_pages'] = [{'role': 'activity', 'url': activity},
                              {'role': 'post', 'url': root + 'posts/'}]
     desk.upsert_presence(PID, {'accounts': [acc], 'budget': {'amount': budget, 'period': 'month'}})
 

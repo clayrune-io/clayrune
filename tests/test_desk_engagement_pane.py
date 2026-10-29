@@ -109,6 +109,25 @@ def test_read_via_defaults_to_pane_for_absent_or_garbage():
     assert _desk.account_read_via({'read_via': 'api'}) == 'api'
 
 
+def test_x_pane_reader_attributes_rows_to_the_bound_workspace_account(store, monkeypatch):
+    _project()
+    with _desk._store_lock:
+        data = _desk._read_store()
+        data['accounts']['ch-x-ron']['identity'] = '@ron'
+        _desk._write_store(data)
+    fake = FakePages({eng.X_MENTIONS_URL: _body(MENTIONS_TEXT)})
+    monkeypatch.setattr(eng, '_default_page_reader', lambda *_args: fake)
+    monkeypatch.setattr(eng, '_default_profile_exists', lambda _name: True)
+    _desk.set_account_read_settings(PID, 'ch-x-ron', browser_profile='main')
+    reader = eng.readers_for_project(PID)['x']
+    got = reader.fetch_mentions(since_id=None, known_posts={})
+    assert got['account'] == '@ron' and got['account_id'] == 'ch-x-ron'
+    eng.poll_project(PID, readers={'x': reader}, now=NOW)
+    rows = _desk.list_engagement_items(project_id=PID)
+    assert len(rows) == 2
+    assert all(row['account'] == '@ron' and row['account_id'] == 'ch-x-ron' for row in rows)
+
+
 def test_readers_follow_each_accounts_choice(store):
     _project(accounts=[_acc(), {'channel_id': 'ch-li', 'platform': 'linkedin'}])
     rd = eng.readers_for_project(PID)
@@ -226,6 +245,9 @@ def test_login_wall_is_not_connected_then_retried_once_signed_in(store):
                      _body(STATUS_TEXT, final_url='https://x.com/ron/status/111')}}
     rep2 = eng.poll_project(PID, readers=_readers(rd), now=NOW)
     assert rep2['platforms']['x']['new_items'] == 2
+    assert rep2['platforms']['x']['state'] == 'ok'
+    assert rep2['platforms']['x']['reason'] is None
+    assert rep2['platforms']['x']['message'] == ''
     assert eng.platform_coverage(PID, 'x', rd)['state'] == 'ok'
 
 

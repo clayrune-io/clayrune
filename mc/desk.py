@@ -2393,6 +2393,7 @@ def upsert_engagement_item(item: dict) -> tuple[dict, bool]:
             'campaign_id': item.get('campaign_id'),
             'platform': platform,
             'account': item.get('account'),
+            'account_id': item.get('account_id'),
             'source': item.get('source') or 'mentions',
             'post_id': item.get('post_id'),
             'external_id': ext,
