@@ -427,10 +427,12 @@ class PaneXReader(Reader):
     sign_in_short = 'sign in to X in the browser pane'
 
     def __init__(self, project_id: str, profile: str | None, *,
+                 account: dict | None = None,
                  page_reader_factory: Callable[[str, str], Any] | None = None,
                  profile_exists: Callable[[str], bool] | None = None):
         self._project_id = project_id
         self._profile = (profile or '').strip().lower()
+        self._account = account or {}
         self._factory = page_reader_factory or _default_page_reader
         self._profile_exists = profile_exists or _default_profile_exists
         self._pages: Any = None
@@ -472,7 +474,8 @@ class PaneXReader(Reader):
             raise ReadError('the mentions page did not look like X notifications '
                             '(layout changed or page not loaded); nothing was read')
         return {'items': parse_x_mentions_text(text), 'resources': 0,
-                'cursor': None, 'account': None}
+                'cursor': None, 'account': self._account.get('identity'),
+                'account_id': self._account.get('channel_id') or self._account.get('id')}
 
     def fetch_metrics(self, external_ids):
         metrics: dict[str, dict] = {}
@@ -532,7 +535,7 @@ def readers_for_project(project_id: str) -> dict[str, Reader]:
         via = _desk.account_read_via(acc)
         if platform == 'x':
             out['x'] = (XReader(account_id=acc.get('channel_id') if isinstance(acc, dict) else acc) if via == 'api'
-                        else PaneXReader(project_id, (acc or {}).get('browser_profile')))
+                        else PaneXReader(project_id, (acc or {}).get('browser_profile'), account=acc))
         elif via == 'pane':
             # No dedicated reader: any other site is read generically (page addresses
             # are data, mc/desk_pane_pages.py + the account's `read_pages`).
@@ -609,7 +612,8 @@ def platform_account(project_id: str, platform: str) -> dict | None:
     """The project's first presence account on `platform`, or None."""
     for acc in ((_desk.get_presence(project_id) or {}).get('accounts') or []):
         if _account_platform(acc) == platform:
-            return acc
+            from mc.desk_engagement_account import resolve
+            return resolve(acc)
     return None
 
 
@@ -619,6 +623,17 @@ def _x_post_id(row: dict) -> str | None:
 
 
 # -- coverage -------------------------------------------------------------------
+
+def _coverage_time(value: Any) -> datetime | None:
+    """Parse stored instants; missing/malformed timestamps cannot hide an error."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
 
 def platform_coverage(project_id: str, platform: str, reader: Reader | None = None) -> dict:
     """`state`: `ok` | `not_connected` | `not_read_yet`. `message` is the exact
@@ -636,6 +651,12 @@ def platform_coverage(project_id: str, platform: str, reader: Reader | None = No
                                               'reason': f'no reader for {platform}'}
     via = reader.via if reader else None
     same_route = reader is not None and (rec.get('via') or 'api') == reader.via
+    # Older records may retain an error even when their latest attempt succeeded.
+    # Keep a later failure visible; do not turn a past success into current silence.
+    last_ok = _coverage_time(rec.get('last_ok_at'))
+    last_attempt = _coverage_time(rec.get('last_attempt_at'))
+    latest_ok = last_ok is not None and last_attempt is not None and last_ok >= last_attempt
+    error = rec.get('last_error') if same_route and not latest_ok else None
     base = {'platform': platform, 'label': label, 'via': via,
             'pages': reader.pages_state() if reader else None}
     if not cap['connected']:
@@ -643,16 +664,23 @@ def platform_coverage(project_id: str, platform: str, reader: Reader | None = No
                 'gate': cap.get('gate'),      # set when reading is not allowed yet (not a sign-in problem)
                 'last_ok_at': rec.get('last_ok_at') if same_route else None,
                 'message': _gate.message(cap.get('gate')) or f"Not connected ({cap.get('short') or cap.get('reason')})"}
-    if same_route and rec.get('error_kind') == 'not_signed_in' and reader is not None:
+    if ((base.get('pages') or {}).get('status') == 'pages_needed'
+            or (same_route and not latest_ok and rec.get('error_kind') == 'pages_needed')):
+        reason = (base.get('pages') or {}).get('reason') or error or 'the activity page address is needed'
+        base['pages'] = {**(base.get('pages') or {}), 'status': 'pages_needed', 'reason': reason}
+        return {**base, 'state': 'not_read_yet', 'reason': reason,
+                'last_ok_at': rec.get('last_ok_at') if same_route else None,
+                'message': f'Activity pages needed on {label} ({reason})'}
+    if same_route and not latest_ok and rec.get('error_kind') == 'not_signed_in' and reader is not None:
         # The profile exists but its last read hit the login wall.
         return {**base, 'state': 'not_connected', 'reason': rec.get('last_error'),
                 'last_ok_at': rec.get('last_ok_at'),
                 'message': f'Not connected ({reader.sign_in_short})'}
     if not same_route or not rec.get('last_ok_at'):
-        err = rec.get('last_error') if same_route else None
+        err = error
         return {**base, 'state': 'not_read_yet', 'reason': err, 'last_ok_at': None,
                 'message': f'Connected, not read yet on {label}' + (f' ({err})' if err else '')}
-    return {**base, 'state': 'ok', 'reason': rec.get('last_error'),
+    return {**base, 'state': 'ok', 'reason': error,
             'last_ok_at': rec['last_ok_at'], 'message': ''}
 
 
@@ -689,6 +717,8 @@ def poll_project(project_id: str, *, readers: dict[str, Reader] | None = None,
             _desk.set_read_coverage(project_id, platform, ok=False, error=str(e), via=reader.via)
         finally:
             reader.close()
+        cov = platform_coverage(project_id, platform, reader)
+        entry.update({k: cov[k] for k in ('state', 'reason', 'message')})
     return report
 
 

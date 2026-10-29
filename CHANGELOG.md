@@ -1,5 +1,16 @@
 # Clayrune — Changelog
 
+## [2026-10-28] - Bind company read redirects and compare coverage instants
+
+- Company admin reads keep the configured company destination after navigation, including accounts without a stored organization ID. A different company is refused before activity extraction.
+- Engagement coverage compares parsed timestamps, so fractional-second precision or timezone formatting cannot hide a newer read failure.
+
+## [2026-10-28] - Report fresh engagement reads and retain account attribution
+
+- Check now reports coverage after the read, clearing a previous budget or sign-in message after success. Historical errors no longer appear as the current reason when the latest attempt succeeded.
+- Pane engagement carries the bound account identity and stable account ID. Channel filters use the ID first; older rows with unknown or ambiguous accounts remain visible for the selected platform and say **Account unknown**.
+- LinkedIn Company Pages and older accounts without a saved destination kind require an explicit company admin activity address. They never fall back to member notifications or automatic page discovery. Redirects to member activity or a different known company are refused before extraction; missing addresses show **Activity pages needed**.
+
 ## [2026-10-28] - Keep older X sign-ins connected after Save (MC-1114)
 
 - Save now adds the app fingerprint to an older sign-in's metadata after confirming that its stored Client ID matches. A Client ID chosen from Secrets no longer leaves that reused sign-in asking to sign in again.

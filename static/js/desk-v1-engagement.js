@@ -85,7 +85,14 @@
     if (st.project !== 'all' && c.projectId !== st.project) return false;
     if (st.campaign === '__none__') { if (c.campaignId) return false; }
     else if (st.campaign !== 'all' && c.campaignId !== st.campaign) return false;
-    if (st.channel !== 'all' && c.channelId !== st.channel) return false;
+    // Old/unattributed rows stay visible, explicitly labeled, rather than being
+    // silently lost when a channel is selected. Never guess their account.
+    if (st.channel !== 'all' && c.channelId && c.channelId !== st.channel) return false;
+    if (st.channel !== 'all' && !c.channelId) {
+      const selected = _channel(st.channel);
+      const platform = _detail(c.id).platform;
+      if (selected && platform && platform !== selected.platform) return false;
+    }
     if (st.source !== 'all' && c.source !== st.source) return false;
     return true;
   }
@@ -107,9 +114,10 @@
     const author = d.author || (channel && channel.identity) || 'Someone';
     const age = d.ageLabel ? `<span class="desk-v1-eng-age">${esc(d.ageLabel)}</span>` : '';
     const campLabel = camp ? esc(camp.plan.title) : 'No campaign';
+    const accountLabel = channel ? '' : ' · Account unknown';
     return `
       <button type="button" class="desk-v1-eng-row" data-eng-conv="${esc(conv.id)}" data-eng-campaign="${esc(conv.campaignId || '')}">
-        <div class="desk-v1-eng-row-meta">${esc(proj ? proj.name : '')} · ${campLabel}</div>
+        <div class="desk-v1-eng-row-meta">${esc(proj ? proj.name : '')} · ${campLabel}${accountLabel}</div>
         <div class="desk-v1-eng-row-head"><span class="desk-v1-eng-author">${esc(author)}</span>${age}</div>
         <div class="desk-v1-eng-snippet">${esc(conv.excerpt || '')}</div>
       </button>`;

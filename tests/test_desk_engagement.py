@@ -219,6 +219,50 @@ def test_zero_budget_means_no_paid_read_not_unlimited(store):
     assert rep['platforms']['x']['budget_blocked'] is True
     assert _desk.list_reads(project_id=PID) == []
     assert _desk.get_read_coverage(PID)['x']['last_error'].startswith('read budget spent')
+    assert rep['platforms']['x']['reason'].startswith('read budget spent')
+    assert 'read budget spent' in rep['platforms']['x']['message']
+
+
+def test_poll_reports_the_new_success_instead_of_the_previous_budget_error(store):
+    _project(budget=0)
+    fake = FakeX(mentions=[REPLY])
+    eng.poll_project(PID, readers=_reader(fake), now=NOW)
+    _project(budget=10)
+    result = eng.poll_project(PID, readers=_reader(fake), now=NOW)['platforms']['x']
+    assert result['new_items'] == 1
+    assert (result['state'], result['reason'], result['message']) == ('ok', None, '')
+
+
+@pytest.mark.parametrize('newer_failure', [False, True])
+def test_coverage_suppresses_only_errors_older_than_the_latest_success(store, monkeypatch, newer_failure):
+    reader = eng.XReader(token='t', transport=FakeX())
+    monkeypatch.setattr(_desk, 'get_read_coverage', lambda _p: {'x': {
+        'via': 'api', 'last_ok_at': '2026-10-28T12:00:00Z',
+        'last_attempt_at': '2026-10-28T13:00:00Z' if newer_failure else '2026-10-28T12:00:00Z',
+        'last_error': 'sign-in required', 'error_kind': 'not_signed_in'}})
+    cov = eng.platform_coverage(PID, 'x', reader)
+    assert cov['state'] == ('not_connected' if newer_failure else 'ok')
+    assert cov['reason'] == ('sign-in required' if newer_failure else None)
+
+
+def test_coverage_keeps_a_newer_fractional_second_failure_visible(store, monkeypatch):
+    reader = eng.XReader(token='t', transport=FakeX())
+    monkeypatch.setattr(_desk, 'get_read_coverage', lambda _p: {'x': {
+        'via': 'api', 'last_ok_at': '2026-10-28T12:00:00Z',
+        'last_attempt_at': '2026-10-28T12:00:00.100000Z',
+        'last_error': 'sign-in required', 'error_kind': 'not_signed_in'}})
+    cov = eng.platform_coverage(PID, 'x', reader)
+    assert cov['state'] == 'not_connected'
+    assert cov['reason'] == 'sign-in required'
+
+
+def test_unexpected_poll_exception_refreshes_the_reported_reason(store, monkeypatch):
+    _project()
+    def broken(*args):
+        raise RuntimeError('poll failed')
+    monkeypatch.setattr(eng, '_poll_platform', broken)
+    result = eng.poll_project(PID, readers=_reader(FakeX()), now=NOW)['platforms']['x']
+    assert result['reason'] == 'poll failed' and 'poll failed' in result['message']
 
 
 def test_budget_spent_by_publishing_blocks_reads(store):

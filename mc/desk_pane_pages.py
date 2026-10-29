@@ -1,5 +1,5 @@
 """Default pages the generic pane reader (`mc/desk_engagement_pane_digest.py`) reads, one
-table entry per platform. DATA ONLY: no per-platform logic lives anywhere, so a new site
+table entry per platform. DATA ONLY: no per-platform text parser is needed, so a new site
 is a new entry here, or just addresses on the account (`read_pages`), never new code.
 
 Each entry:
@@ -22,6 +22,8 @@ PLATFORM_PAGES: dict[str, dict] = {
     'linkedin': {
         'label': 'LinkedIn',
         'home': 'https://www.linkedin.com/',
+        # Member only. desk_pane_activity_scope refuses this default for Company
+        # Pages and legacy accounts without a kind; they need an explicit admin address.
         'activity': ['https://www.linkedin.com/notifications/'],
         'post': ['https://www.linkedin.com/feed/update/'],
     },

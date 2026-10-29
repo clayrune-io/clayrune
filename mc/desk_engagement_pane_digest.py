@@ -1,6 +1,5 @@
 """The Desk's GENERIC pane reader (backlog 44712cf4 part 2): one reader for any site,
-the sibling of `desk_engagement.PaneXReader` with no per-platform code and no
-hand-written page-text parser.
+the sibling of `desk_engagement.PaneXReader` with no hand-written page-text parser.
 
 Where the pages are is DATA, not code:
   1. pages a human set on the account (`read_pages`: `[{role, url}]`), authoritative;
@@ -59,6 +58,7 @@ from mc import desk_pane_pages_store as _store
 from mc import desk_read_gate as _gate
 from mc.core import _log
 from mc.desk_pane_pages import PLATFORM_PAGES
+from mc import desk_pane_activity_scope as _scope
 
 DISCOVERY_CALLS = 3          # worst case beyond the polled pages: a failed re-read, the pick, its check
 REDISCOVERY_INTERVAL = timedelta(days=1)
@@ -331,6 +331,8 @@ class PaneDigestReader(_eng.Reader):
         self.platform = platform
         self._project_id = project_id
         acc = acc if isinstance(acc, dict) else {}
+        self._account = acc
+        self._company_page = _scope.needs_company_page(platform, acc)
         self._profile = (acc.get('browser_profile') or '').strip().lower()
         self._account_url = acc.get('url') if _policy.url_host(acc.get('url')) else None
         self._user_pages = clean_user_pages(acc.get('read_pages'))
@@ -353,6 +355,11 @@ class PaneDigestReader(_eng.Reader):
     def _activity_pages(self) -> tuple[list[str], str]:
         """`(addresses, source)`: user > discovered > default > none."""
         user = [p['url'] for p in self._user_pages if p['role'] == 'activity']
+        if self._company_page:
+            # Discovery is project/platform scoped and may have saved the member's
+            # notifications. Only an explicit admin address can scope this read.
+            admin = [url for url in user if _scope.is_company_admin(url, self._account.get('organization_id'))]
+            return (admin[:MAX_ACTIVITY_PAGES], 'user') if admin and len(admin) == len(user) else ([], 'none')
         if user:
             return user[:MAX_ACTIVITY_PAGES], 'user'
         rec = _store.get(self._project_id, self.platform)
@@ -383,6 +390,9 @@ class PaneDigestReader(_eng.Reader):
         `{source, status, reason, pages, last_discovery_at}`."""
         urls, source = self._activity_pages()
         rec = _store.get(self._project_id, self.platform)
+        if self._company_page and not urls:
+            return {'source': 'none', 'status': 'pages_needed', 'reason': _scope.COMPANY_PAGE_REQUIRED,
+                    'pages': [], 'last_discovery_at': rec.get('last_discovery_at')}
         return {'source': source, 'status': rec.get('status'), 'reason': rec.get('reason'),
                 'pages': urls, 'last_discovery_at': rec.get('last_discovery_at')}
 
@@ -472,6 +482,9 @@ class PaneDigestReader(_eng.Reader):
 
     def _read_activity(self, url: str) -> tuple[list[dict], int]:
         text, final, _domains = self._page(url)
+        if self._company_page and not _scope.is_company_admin(
+                final, self._account.get('organization_id'), configured_url=url):
+            raise PagesNeeded(_scope.COMPANY_PAGE_REQUIRED)
         data = self._model_json(ACTIVITY_INSTRUCTION, text[:browser_digest.MAX_PAGE_CHARS], final)
         if data.get('page') == 'login':
             raise _eng.NotSignedIn(self.sign_in_short)
@@ -494,13 +507,17 @@ class PaneDigestReader(_eng.Reader):
                 seen.add(it['external_id'])
                 items.append(it)
         return {'items': items, 'resources': self._calls - calls_before, 'cursor': None,
-                'account': None, 'rejected': rejected}
+                'account': self._account.get('identity'),
+                'account_id': self._account.get('channel_id') or self._account.get('id'),
+                'rejected': rejected}
 
     # -- the Reader interface ------------------------------------------------------
 
     def fetch_mentions(self, *, since_id, known_posts):
         calls_before = self._calls
         urls, source = self._activity_pages()
+        if self._company_page and not urls:
+            raise PagesNeeded(_scope.COMPANY_PAGE_REQUIRED)
         why, signed_out = 'no activity page is known for this account yet', False
         if urls:
             try:

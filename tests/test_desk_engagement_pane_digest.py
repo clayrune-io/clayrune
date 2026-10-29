@@ -93,7 +93,9 @@ def _activity(*rows, page='activity', suspicious=False):
 
 
 def _reader(pages, runtime, *, platform='linkedin', acc=None, profile='main', now=NOW):
-    acc = {'platform': platform, 'browser_profile': profile, **(acc or {})}
+    acc = {'platform': platform, 'browser_profile': profile,
+           'browser_setup': {'route_id': 'linkedin-browser', 'refs': {}, 'account_kind': 'member'},
+           **(acc or {})}
     return pd.PaneDigestReader(PID, platform, acc, pages_factory=lambda _p, _n, _d: pages,
                                profile_exists=lambda _n: True, runtime=runtime, now=lambda: NOW if now is None else now)
 
@@ -122,6 +124,108 @@ def test_valid_rows_become_items_at_one_call_per_page(env):
     assert got['items'][0]['post_ref'] == 'Restore points' and got['items'][0]['when'] == '2h'
     # the page text, marked untrusted, is what the model was shown
     assert 'untrusted' in rt.calls[0][1] and 'Does restore include memory?' in rt.calls[0][1]
+
+
+def test_generic_pane_attributes_items_to_the_bound_account(env):
+    _allow(['linkedin.com'])
+    binding = {'channel_id': 'member-1', 'platform': 'linkedin', 'browser_profile': 'main'}
+    _project([binding])
+    with _desk._store_lock:
+        data = _desk._read_store()
+        data['accounts']['member-1'].update(identity='Member One', browser_setup={
+            'route_id': 'linkedin-browser', 'refs': {}, 'account_kind': 'member'})
+        _desk._write_store(data)
+    account = eng.platform_account(PID, 'linkedin')
+    assert account['identity'] == 'Member One' and account['channel_id'] == 'member-1'
+    pages = _li_pages()
+    rt = FakeRuntime({pd.ACTIVITY_INSTRUCTION: _activity(_row())})
+    rd = pd.PaneDigestReader(PID, 'linkedin', account, pages_factory=lambda *_: pages,
+                             profile_exists=lambda _: True, runtime=rt)
+    got = rd.fetch_mentions(since_id=None, known_posts={})
+    assert got['account'] == 'Member One' and got['account_id'] == 'member-1'
+    entry = eng.poll_project(PID, readers={'linkedin': rd})['platforms']['linkedin']
+    row = _desk.list_engagement_items(project_id=PID)[0]
+    assert entry['state'] == 'ok' and entry['new_items'] == 1
+    assert row['account'] == 'Member One' and row['account_id'] == 'member-1'
+
+
+@pytest.mark.parametrize('acc', [
+    {'browser_setup': {}},  # legacy organization: no kind/id recorded
+    {'organization_id': '777'},
+    {'browser_setup': {'route_id': 'linkedin-browser', 'refs': {}, 'account_kind': 'organization'}},
+    {'organization_id': '777', 'read_pages': [{'role': 'activity', 'url': LI_NOTES}]},
+    {'organization_id': '777', 'read_pages': [{'role': 'activity', 'url': 'https://www.linkedin.com/company/888/admin/notifications/'}]},
+])
+def test_company_never_reads_member_defaults_or_discovers_personal_activity(env, acc):
+    _allow(['linkedin.com'])
+    pages, rt = _li_pages(), FakeRuntime({})
+    store_mod.update(PID, 'linkedin', status='ok', pages=[{'role': 'activity', 'url': LI_NOTES}])
+    rd = _reader(pages, rt, acc=acc)
+    assert rd.pages_state()['status'] == 'pages_needed'
+    with pytest.raises(pd.PagesNeeded, match='admin activity address is required'):
+        rd.fetch_mentions(since_id=None, known_posts={})
+    assert pages.reads == [] and rt.calls == []
+
+
+@pytest.mark.parametrize('organization_id', ['777', None])
+def test_company_reads_explicit_admin_activity_only(env, organization_id):
+    _allow(['linkedin.com'])
+    admin = 'https://www.linkedin.com/company/777/admin/notifications/'
+    pages = FakePages({admin: _body(NOTES_TEXT, admin)})
+    rt = FakeRuntime({pd.ACTIVITY_INSTRUCTION: _activity(_row())})
+    rd = _reader(pages, rt, acc={'browser_setup': {}, 'organization_id': organization_id,
+                               'read_pages': [{'role': 'activity', 'url': admin}]})
+    assert len(rd.fetch_mentions(since_id=None, known_posts={})['items']) == 1
+    assert pages.reads == [admin] and rd.pages_state()['source'] == 'user'
+
+
+@pytest.mark.parametrize('final', [LI_NOTES, 'https://www.linkedin.com/company/888/admin/notifications/'])
+def test_company_admin_redirect_to_member_or_other_company_is_refused(env, final):
+    _allow(['linkedin.com'])
+    admin = 'https://www.linkedin.com/company/777/admin/notifications/'
+    pages = FakePages({admin: _body(NOTES_TEXT, final)})
+    rt = FakeRuntime({})
+    rd = _reader(pages, rt, acc={'organization_id': '777', 'read_pages': [{'role': 'activity', 'url': admin}]})
+    with pytest.raises(pd.PagesNeeded):
+        rd.fetch_mentions(since_id=None, known_posts={})
+    assert pages.reads == [admin] and rt.calls == []
+
+
+def test_company_redirect_without_org_id_stays_bound_to_configured_company(env):
+    _allow(['linkedin.com'])
+    admin = 'https://www.linkedin.com/company/777/admin/notifications/'
+    other = 'https://www.linkedin.com/company/888/admin/notifications/'
+    pages = FakePages({admin: _body(NOTES_TEXT, other)})
+    rt = FakeRuntime({pd.ACTIVITY_INSTRUCTION: _activity(_row())})
+    rd = _reader(pages, rt, acc={'browser_setup': {}, 'read_pages': [{'role': 'activity', 'url': admin}]})
+    with pytest.raises(pd.PagesNeeded):
+        rd.fetch_mentions(since_id=None, known_posts={})
+    assert pages.reads == [admin] and rt.calls == []
+
+
+def test_company_redirect_gap_is_visible_even_after_an_earlier_success(env):
+    _allow(['linkedin.com'])
+    admin = 'https://www.linkedin.com/company/777/admin/notifications/'
+    _project([{'channel_id': 'company-1', 'platform': 'linkedin', 'browser_profile': 'main'}])
+    _desk.set_read_coverage(PID, 'linkedin', ok=True, via='pane')
+    pages, rt = FakePages({admin: _body(NOTES_TEXT, LI_NOTES)}), FakeRuntime({})
+    rd = _reader(pages, rt, acc={'organization_id': '777', 'read_pages': [{'role': 'activity', 'url': admin}]})
+    entry = eng.poll_project(PID, readers={'linkedin': rd})['platforms']['linkedin']
+    assert entry['state'] == 'not_read_yet' and 'admin activity address' in entry['message']
+    assert eng.platform_coverage(PID, 'linkedin', rd)['pages']['status'] == 'pages_needed'
+    assert rt.calls == []
+
+
+def test_company_scope_gap_overrides_old_member_success_in_poll_and_coverage(env):
+    _allow(['linkedin.com'])
+    _project([{'channel_id': 'company-1', 'platform': 'linkedin', 'browser_profile': 'main'}])
+    _desk.set_read_coverage(PID, 'linkedin', ok=True, via='pane')
+    pages, rt = _li_pages(), FakeRuntime({})
+    rd = _reader(pages, rt, acc={'browser_setup': {}})
+    entry = eng.poll_project(PID, readers={'linkedin': rd})['platforms']['linkedin']
+    assert entry['state'] == 'not_read_yet' and 'admin activity address' in entry['reason']
+    assert 'Activity pages needed' in entry['message']
+    assert _desk.list_engagement_items(project_id=PID) == [] and pages.reads == [] and rt.calls == []
 
 
 def test_malformed_rows_are_dropped_and_counted(env):

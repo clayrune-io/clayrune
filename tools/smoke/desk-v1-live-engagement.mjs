@@ -381,6 +381,38 @@ async function dashboard(browser) {
   await ctx.close();
 }
 
+async function channelAttribution(browser) {
+  const srv = makeServer();
+  const company = srv.fx.channels.find((c) => c.platform === 'linkedin');
+  const x = srv.fx.channels.find((c) => c.platform === 'x');
+  const other = { ...company, id: 'other-linkedin', label: 'Other LinkedIn' };
+  srv.fx.channels.push(other); // duplicate display identities cannot disambiguate a row
+  const base = { ...srv.rows[2], source: 'mentions', campaign_id: null };
+  srv.rows = [
+    { ...base, id: 'stable', account_id: company.id, account: 'older display identity' },
+    { ...base, id: 'null-account', account: null },
+    { ...base, id: 'removed-account', account_id: 'deleted-account', account: company.identity },
+    { ...base, id: 'ambiguous-identity', account: company.identity },
+    { ...base, id: 'other-account', account_id: other.id, account: company.identity },
+  ];
+  const { ctx, page, pageErrors } = await newPage(browser, { live: true, srv });
+  await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
+  await page.evaluate(() => window.deskV1Nav('engagement', {}));
+  await settle(page, () => !!document.querySelector('.desk-v1-engagement'));
+  await page.selectOption('[data-eng-filter="channel"]', company.id);
+  const ids = await rowIds(page, '[data-eng-conv]');
+  JSON.stringify(ids.sort()) === JSON.stringify(['ambiguous-identity', 'null-account', 'removed-account', 'stable'])
+    ? ok('channel filter uses the stable account ID and retains unknown rows without guessing')
+    : fail('channel attribution: ' + JSON.stringify(ids));
+  const unknown = await page.locator('[data-eng-conv]').filter({ hasText: 'Account unknown' }).count();
+  unknown === 3 ? ok('null, removed and ambiguous accounts are visibly labeled Account unknown') : fail('unknown labels: ' + unknown);
+  await page.selectOption('[data-eng-filter="channel"]', x.id);
+  (await rowIds(page, '[data-eng-conv]')).length === 0
+    ? ok('unattributed LinkedIn rows do not appear as X activity') : fail('unknown platform crossed channel filter');
+  realErrors(pageErrors).length === 0 ? ok('channel attribution causes no browser errors') : fail('channel errors: ' + JSON.stringify(pageErrors));
+  await ctx.close();
+}
+
 // ── 7: retro ───────────────────────────────────────────────────────────────
 async function retro(browser) {
   const srv = makeServer();
@@ -469,6 +501,7 @@ try {
   console.log('live ON: send'); await send(browser);
   console.log('live ON: suggest'); await suggest(browser);
   console.log('live ON: dashboard'); await dashboard(browser);
+  console.log('live ON: channel attribution'); await channelAttribution(browser);
   console.log('live ON: retro'); await retro(browser);
   console.log('live OFF'); await flagOff(browser);
 } finally {

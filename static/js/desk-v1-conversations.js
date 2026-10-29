@@ -58,8 +58,10 @@
     return m < 1440 ? Math.round(m / 60) + 'h' : Math.round(m / 1440) + 'd';
   }
   function _channelIdFor(row) {
-    const ch = (_fx().channels || []).find((c) => c.platform === row.platform && c.identity && c.identity === row.account);
-    return ch ? ch.id : null;
+    const channels = (_fx().channels || []).filter((c) => c.platform === row.platform);
+    if (row.account_id) return channels.some((c) => c.id === row.account_id) ? row.account_id : null;
+    const matches = channels.filter((c) => c.identity && c.identity === row.account);
+    return matches.length === 1 ? matches[0].id : null;
   }
   function _toConversation(row) {
     return {
