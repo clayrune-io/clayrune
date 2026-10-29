@@ -134,6 +134,29 @@ import { ConnectionWords as W } from './desk-v1-connection-words.js';
     return `<div class="desk-v1-cs-fill-row" data-as-row="browser"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline${_primary(f)}" data-as-signin="browser" data-as-profile="${esc(f.profile)}">${W.buttons.signin}</button></div>`;
   }
 
+  function _ctx(ch, repaint) { return { api: window.DeskV1Store.api, repaint, saved: () => _saved(ch, repaint) }; }
+  // The API sign-in, started exactly as the row's "Sign in" button starts it; `api` is the `[data-as-row="api"]` element it draws into.
+  function _startApi(ch, api, repaint) {
+    _say(ch, 'api', '', '');
+    _held().begin(ch.platform, API[ch.platform].method, API[ch.platform].label, _ctx(ch, repaint), ch.id);
+    _held().start(api);
+  }
+
+  // Whether `start` can begin a sign-in for this route now. Mirrors when `html` draws the route's Sign in button, so a
+  // second entry point (the "Needs sign-in" status word, desk-v1-status-signin.js) is offered exactly where the button is.
+  function canStart(ch, f) {
+    if (!ch || !f) return false;
+    if (f.id === 'api') { const flow = _flow(ch); return !!API[ch.platform] && !!_held() && !['waiting', 'held', 'starting'].includes(flow ? flow.phase : 'idle'); }
+    return f.id === 'browser' && !!f.profile && _pages[ch.platform] !== null;
+  }
+
+  // Begin the sign-in for route `facetId` ('browser' | 'api'). `scope` is the account's card element (the API route draws into it).
+  function start(ch, facetId, profile, scope, repaint) {
+    if (facetId === 'browser') return _signInBrowser(ch, profile, repaint);
+    const api = scope && scope.querySelector('[data-as-row="api"]');
+    if (facetId === 'api' && api && API[ch.platform] && _held()) _startApi(ch, api, repaint);
+  }
+
   function bind(row, ch, repaint) {
     if (!row || !ch) return;
     const browser = row.querySelector('[data-as-signin="browser"]');
@@ -142,20 +165,15 @@ import { ConnectionWords as W } from './desk-v1-connection-words.js';
     }
     const api = row.querySelector('[data-as-row="api"]');
     if (!api || !API[ch.platform] || !_held()) return;
-    const ctx = { api: window.DeskV1Store.api, repaint, saved: () => _saved(ch, repaint) };
     const start = api.querySelector('[data-as-signin="api"]');
-    if (start) start.addEventListener('click', () => {
-      _say(ch, 'api', '', '');
-      _held().begin(ch.platform, API[ch.platform].method, API[ch.platform].label, ctx, ch.id);
-      _held().start(api);
-    });
+    if (start) start.addEventListener('click', () => _startApi(ch, api, repaint));
     if (_flow(ch)) {
-      _held().begin(ch.platform, API[ch.platform].method, API[ch.platform].label, ctx, ch.id);   // same sign-in: only the repaint target is refreshed
+      _held().begin(ch.platform, API[ch.platform].method, API[ch.platform].label, _ctx(ch, repaint), ch.id);   // same sign-in: only the repaint target is refreshed
       _held().bind(api);
     }
     const save = api.querySelector('[data-as-save]');
     if (save) save.addEventListener('click', () => _save(ch, repaint));
   }
 
-  window.DeskV1AccountSignin = { html, bind };
+  window.DeskV1AccountSignin = { html, bind, canStart, start };
 })();

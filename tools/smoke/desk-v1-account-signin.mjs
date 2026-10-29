@@ -32,6 +32,8 @@ const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf
 const ORIGIN = 'http://mc.smoke.test';
 const SHOT_DIR = resolve(REPO_ROOT, '_scratch', 'conn_buttons');
 mkdirSync(SHOT_DIR, { recursive: true });
+const SHOT_DIR_NS = resolve(REPO_ROOT, '_scratch', 'needs_signin');
+mkdirSync(SHOT_DIR_NS, { recursive: true });
 const STATIC = loadStaticJsCss(REPO_ROOT);
 
 let bad = 0;
@@ -158,6 +160,7 @@ const selectTile = async (page, id) => {
   if ((await page.getAttribute(`[data-conn-tile="${id}"]`, 'aria-pressed')) !== 'true') await page.click(`[data-conn-tile="${id}"]`);
   await page.waitForSelector(`[data-conn-detail="${id}"] [data-conn-account="${id}"]`, { timeout: 6000 });
 };
+const openDetails = (page, id) => page.evaluate((i) => { const d = document.querySelector('[data-conn-account="' + i + '"] [data-connection-details]'); if (d) d.open = true; }, id);
 const panes = (page) => page.evaluate(() => window.__panes);
 const only = (srv, re) => srv.log.filter((r) => re.test(r.path));
 const waitPrompt = (page) => page.waitForSelector('input[id^="hp-passcode-"]', { timeout: 4000 });
@@ -356,6 +359,104 @@ async function run(browser, width, height) {
     check((await panes(page)).length === 0, 'no pane was opened by looking at them', 'a pane opened on its own');
     check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
     await ctx.close();
+  }
+
+  // ── 6: the "Needs sign-in" word is a second way into the SAME sign-in ──────────
+  {
+    const word = (page, id, facet) => page.$eval(`[data-conn-account="${id}"] [data-cs-facet="${facet}"][data-state] [data-cs-word]`, (e) => ({ tag: e.tagName, text: e.textContent.trim(), aria: e.getAttribute('aria-label') }));
+    const head = (page, id) => page.$eval(`[data-conn-account="${id}"] .desk-v1-conn-head [data-conn-status]`, (e) => ({ tag: e.tagName, text: e.textContent.trim(), aria: e.getAttribute('aria-label') }));
+
+    // Browser facet: card word, route word and the Sign in button open the same pane call.
+    const calls = {};
+    for (const via of ['button', 'route', 'card']) {
+      const srv = makeServer();
+      const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
+      await selectTile(page, 'acct-li');
+      await page.waitForSelector('[data-conn-account="acct-li"] [data-as-signin="browser"]');
+      if (via === 'route') {
+        await page.click('[data-conn-account="acct-li"] [data-connection-details] > summary');
+        const w = await word(page, 'acct-li', 'browser');
+        check(w.tag === 'BUTTON' && w.text === 'Needs sign-in' && w.aria === 'Sign in to LinkedIn', 'LinkedIn Browser row: "Needs sign-in" is a button labelled "Sign in to LinkedIn"', JSON.stringify(w));
+        await page.screenshot({ path: resolve(SHOT_DIR_NS, `linkedin_word_${width}.png`) });
+      }
+      if (via === 'card') {
+        const h = await head(page, 'acct-li');
+        check(h.tag === 'BUTTON' && h.text === 'Needs sign-in' && h.aria === 'Sign in to LinkedIn', 'LinkedIn card head: "Needs sign-in" is a button labelled "Sign in to LinkedIn"', JSON.stringify(h));
+      }
+      srv.log.length = 0;
+      const sel = via === 'button' ? '[data-conn-account="acct-li"] [data-as-signin="browser"]' : via === 'route' ? '[data-conn-account="acct-li"] [data-cs-facet="browser"] button[data-cs-word]' : '[data-conn-account="acct-li"] .desk-v1-conn-head button[data-conn-status]';
+      if (via === 'card') await page.locator(sel).press('Enter');   // the card word by keyboard
+      else await page.click(sel);
+      await page.waitForFunction(() => window.__panes.length === 1, null, { timeout: 4000 });
+      calls[via] = (await panes(page))[0];
+      check(!(await page.$('[data-cfw]')) && only(srv, /start-held|commit/).length === 0 && only(srv, /^\/api\/browser\//).length === 0, `browser ${via}: no wizard, no API sign-in, no write`, JSON.stringify(srv.log.map((r) => r.method + ' ' + r.path)));
+      check(realErrors(pageErrors).length === 0, `browser ${via}: no uncaught page errors`, JSON.stringify(realErrors(pageErrors)));
+      await ctx.close();
+    }
+    check(JSON.stringify(calls.route) === JSON.stringify(calls.button) && JSON.stringify(calls.card) === JSON.stringify(calls.button) && calls.button[3] === 'linked_ronlevy',
+      'the route word and the card word open exactly what the Sign in button opens (same page, same profile)', JSON.stringify(calls));
+
+    // API facet (X, App row): the word posts the same passcode-gated start-held as the Sign in button.
+    const starts = {};
+    for (const via of ['button', 'route']) {
+      const srv = makeServer();
+      const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
+      await selectTile(page, 'acct-x');
+      await page.waitForSelector('[data-conn-account="acct-x"] [data-cs-facet="api"] [data-as-signin="api"]');
+      const rows = [await word(page, 'acct-x', 'browser'), await word(page, 'acct-x', 'api')];
+      check(rows.every((w) => w.tag === 'BUTTON' && w.text === 'Needs sign-in') && rows[1].aria === 'Sign in to X (app)' && rows[0].aria === 'Sign in to X', 'X with both routes: each Needs sign-in word is its own button', JSON.stringify(rows));
+      const h = await head(page, 'acct-x');
+      check(h.tag === 'BUTTON', 'X card head is a button too', JSON.stringify(h));
+      if (via === 'route') { await page.click('[data-conn-account="acct-x"] [data-connection-details] > summary'); await page.screenshot({ path: resolve(SHOT_DIR_NS, `x_words_${width}.png`) }); }
+      srv.log.length = 0;
+      await openDetails(page, 'acct-x'); await page.click(via === 'button' ? '[data-conn-account="acct-x"] [data-as-signin="api"]' : '[data-conn-account="acct-x"] [data-cs-facet="api"] button[data-cs-word]');
+      await cancel(page);
+      check(only(srv, /start-held/).length === 0, `api ${via}: cancelling the passcode sends nothing`);
+      await openDetails(page, 'acct-x'); await page.click(via === 'button' ? '[data-conn-account="acct-x"] [data-as-signin="api"]' : '[data-conn-account="acct-x"] [data-cs-facet="api"] button[data-cs-word]');
+      await answer(page, PASSCODE);
+      await page.waitForSelector('[data-conn-account="acct-x"] [data-as-state="waiting"]', { timeout: 4000 });
+      starts[via] = only(srv, /start-held/).map((r) => r.body);
+      check(only(srv, /commit/).length === 0 && (await panes(page)).length >= 1 && (await panes(page)).every((p) => p[0] !== 'https://x.com/i/flow/login'), `api ${via}: waiting state shown, the browser route was not touched`);
+      if (via === 'route') {
+        const waiting = await word(page, 'acct-x', 'api');
+        check(waiting.tag === 'SPAN', 'while the sign-in is waiting the App word is plain text (no second start)', JSON.stringify(waiting));
+      }
+      check(realErrors(pageErrors).length === 0, `api ${via}: no uncaught page errors`, JSON.stringify(realErrors(pageErrors)));
+      await ctx.close();
+    }
+    check(starts.button.length === 1 && JSON.stringify(starts.route) === JSON.stringify(starts.button) && starts.route[0].account_id === 'acct-x' && starts.route[0].passcode === PASSCODE,
+      'the App word posts the same start-held request as the Sign in button', JSON.stringify(starts));
+
+    // Not a sign-in: Ready, a locked vault, and a platform with no sign-in page stay plain text.
+    {
+      const srv = makeServer();
+      srv.accounts.find((a) => a.id === 'acct-x').publish = { ready: false, vault_locked: true, reason: 'vault locked', secret: null, unattended_ok: null };
+      const { ctx, page } = await newPage(browser, srv, width, height);
+      await selectTile(page, 'acct-x');
+      const lockedApi = await word(page, 'acct-x', 'api');
+      check(lockedApi.tag === 'SPAN' && lockedApi.text === 'Not working', 'locked vault: the App word keeps its own wording and is not a button', JSON.stringify(lockedApi));
+      const lockedHead = await head(page, 'acct-x');
+      check(lockedHead.tag === 'SPAN' && lockedHead.text === 'Not working', 'locked vault: the card word is not a button', JSON.stringify(lockedHead));
+      await selectTile(page, 'acct-bare');
+      const ready = await head(page, 'acct-bare');
+      check(ready.tag === 'SPAN' && ready.text === 'Ready', 'Ready is plain text, not a button', JSON.stringify(ready));
+      await selectTile(page, 'acct-yt');
+      await page.click('[data-conn-account="acct-yt"] [data-as-signin="browser"]');
+      await page.waitForSelector('[data-conn-account="acct-yt"] [data-as-none]');
+      const yt = await head(page, 'acct-yt'), ytRow = await word(page, 'acct-yt', 'browser');
+      check(yt.tag === 'SPAN' && ytRow.tag === 'SPAN', 'a platform with no sign-in page: the word gives way to text, like the button', JSON.stringify([yt, ytRow]));
+      await ctx.close();
+    }
+    {
+      const srv = makeServer();
+      srv.accounts.find((a) => a.id === 'acct-x').publish = { ready: true, reason: null, secret: 'x.oauth', unattended_ok: true };
+      srv.accounts.find((a) => a.id === 'acct-x').browser_setup.status = { state: 'verified' };
+      const { ctx, page } = await newPage(browser, srv, width, height);
+      await selectTile(page, 'acct-x');
+      const both = [await word(page, 'acct-x', 'browser'), await word(page, 'acct-x', 'api'), await head(page, 'acct-x')];
+      check(both.every((w) => w.tag === 'SPAN' && w.text === 'Ready'), 'X with both routes Ready: no word is a button', JSON.stringify(both));
+      await ctx.close();
+    }
   }
 }
 

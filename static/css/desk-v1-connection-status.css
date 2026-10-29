@@ -8,3 +8,7 @@
 .desk-v1-cs-line { font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
 .desk-v1-cs-obs { font-size: 13px; }
 [data-conn-mcp] .desk-v1-conn-status[data-state="saved"] { color: var(--text-dim); }
+/* "Needs sign-in" as a button (desk-v1-status-signin.js): still the status word, underlined so it reads as a link, no accent fill. */
+.desk-v1-ss-btn { background: none; border: 0; padding: 8px 4px; margin: -8px -4px; font-family: inherit; font-size: inherit; line-height: inherit; text-align: left; align-self: flex-start; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.desk-v1-ss-btn:hover { text-decoration-thickness: 2px; }
+.desk-v1-ss-btn:focus-visible { outline: 2px solid currentColor; outline-offset: 0; border-radius: 3px; }
