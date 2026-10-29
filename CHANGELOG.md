@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-28] - Set a saved LinkedIn account's Company Page reading destination
+
+- LinkedIn browser accounts always offer **Company Page admin address** in Permissions. Review and Save set the numeric company ID from the supplied admin activity URL and save that activity address together; page names and non-admin addresses show a correction message.
+- Clearing the field removes the company ID and saved activity pages, including the local list used on reopen. Reading edits preserve connection bindings and permissions; a stale member binding can still conflict with company permission validation.
+
 ## [2026-10-28] - Bind company read redirects and compare coverage instants
 
 - Company admin reads keep the configured company destination after navigation, including accounts without a stored organization ID. A different company is refused before activity extraction.

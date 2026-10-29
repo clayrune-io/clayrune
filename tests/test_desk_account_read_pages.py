@@ -67,6 +67,47 @@ def _copy(cid):
     return next(a for a in (_desk.get_presence('alpha') or {})['accounts'] if a['channel_id'] == cid)
 
 
+def test_saved_linkedin_company_address_overrides_member_kind_and_clear_restores_it(env):
+    from mc import desk_engagement as engagement, desk_pane_activity_scope as scope
+    from mc.desk_connect import browser_setup_record, permission_policy, purpose_view
+
+    client, caller = env
+    _desk.upsert_presence('alpha', {'accounts': [
+        {'channel_id': 'ch-li', 'platform': 'linkedin', 'identity': 'Company', 'browser_profile': 'main'}]})
+    client.get('/api/desk/accounts')
+    member = {'read_own': {'own_posts': {'account_kind': 'member', 'route_id': 'linkedin-browser'}}}
+    with _desk._store_lock:
+        store = _desk._read_store()
+        store['accounts']['ch-li']['connections'] = member
+        _desk._write_store(store)
+    assert not scope.needs_company_page('linkedin', engagement.platform_account('alpha', 'linkedin'))
+    url = 'https://www.linkedin.com/company/123456/admin/notifications/'
+    patch = {'organization_id': '123456', 'read_pages': [{'role': 'activity', 'url': url}], 'project_id': 'alpha'}
+
+    caller['unattended'] = True
+    assert _patch(client, 'ch-li', **patch).status_code == 403
+    assert not _by_id(client)['ch-li'].get('organization_id')
+    caller['unattended'] = False
+    saved = _patch(client, 'ch-li', **patch)
+    assert saved.status_code == 200, saved.get_json()
+    acc = engagement.platform_account('alpha', 'linkedin')
+    assert scope.needs_company_page('linkedin', acc)
+    assert scope.is_company_admin(acc['read_pages'][0]['url'], acc['organization_id'])
+    assert _copy('ch-li')['read_pages'] == patch['read_pages']
+    assert acc['connections'] == member and browser_setup_record.kind_of(acc) == 'member'
+    # Report this separate permission conflict; changing reading scope must not rewrite consent.
+    assert purpose_view.account_kind(acc) == 'member'
+    with pytest.raises(permission_policy.PolicyError, match='different kind'):
+        permission_policy._check_identity(acc, {'account_id': 'ch-li', 'service': 'linkedin', 'account_kind': 'organization'})
+
+    cleared = _patch(client, 'ch-li', organization_id='', read_pages=[], project_id='alpha')
+    assert cleared.status_code == 200, cleared.get_json()
+    acc = engagement.platform_account('alpha', 'linkedin')
+    assert not acc.get('organization_id') and 'read_pages' not in acc
+    assert 'read_pages' not in _copy('ch-li')
+    assert not scope.needs_company_page('linkedin', acc) and acc['connections'] == member
+
+
 @pytest.mark.parametrize('cid', ['ch-yt', 'ch-ig', 'ch-forum'])
 def test_a_non_x_account_takes_a_profile_and_pages(env, cid):
     client, _ = env
