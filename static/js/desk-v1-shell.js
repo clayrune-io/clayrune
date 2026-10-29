@@ -56,7 +56,9 @@
     // reads `‹ Back to What` (see _backLabel) and its title `New video ·
     // Storyboard`. Both render from desk-v1-studio.js.
     studio:        { parent: 'home',     label: 'Studio',       render: () => window.deskV1RenderStudio },
-    storyboard:    { parent: 'campaign', label: 'New video · Storyboard', render: () => window.deskV1RenderStoryboard },
+    // Every video piece opens here (desk-v1-video-open.js), so the title is the
+    // piece's own; a fresh "New video" still reads `New video · Storyboard`.
+    storyboard:    { parent: 'campaign', label: _storyboardLabel, render: () => window.deskV1RenderVideoEditor || window.deskV1RenderStoryboard },
     // MC-1024: Studio's own creation page, no campaign: {kind} opens a new
     // video/image, {itemId} an item Studio already made. Back is `‹ Studio`.
     'studio-create': { parent: 'studio', label: (params) => (window.deskV1StudioCreateLabel ? window.deskV1StudioCreateLabel(params) : 'New'), render: () => window.deskV1RenderStudioCreate },
@@ -121,6 +123,12 @@
     const families = window.DeskV1Store.state().families || [];
     const f = families.find(x => x.id === (params || {}).familyId);
     return f ? f.title : 'Video';
+  }
+
+  function _storyboardLabel(params) {
+    const families = window.DeskV1Store.state().families || [];
+    const f = families.find(x => x.id === (params || {}).familyId);
+    return `${f && f.title ? f.title : 'New video'} · Storyboard`;
   }
 
   function _routeLabel(entry) {

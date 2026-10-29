@@ -331,15 +331,18 @@ async function runNeedsYouDeepLinks(browser) {
   if (/1 video to watch \+1/.test(camp1PillText2)) ok(`A12 setup: with the piece resolved, camp-1 Needs you promotes video: "${camp1PillText2.trim()}"`);
   else fail(`A12 setup: camp-1 pill did not read "1 video to watch +1": ${JSON.stringify(camp1PillText2)}`);
   await page.click('.desk-v1-home-row[data-campaign-id="camp-1"] .desk-v1-home-needsyou-pill');
-  await page.waitForSelector('.desk-v1-stub-title:has-text("Video"), .desk-v1-video', { timeout: 8000 });
-  // Route-name assertion (Dave's review): a video row must land on the
-  // 'video' route (12d, T5's surface — still a stub in this ticket's tree),
-  // never 'review' (12b) — §2's "12b, 12c, or 12d, not to a list" names them
-  // as three distinct surfaces. The crumb title is ROUTES.video's own label
-  // ('Video'), so it's the route-table entry talking, not a guess.
+  await page.waitForSelector('[data-storyboard]', { timeout: 8000 });
+  // Route-name assertion (Dave's review): a video row must land on the video
+  // piece's editor, never 'review' (12b) — §2's "12b, 12c, or 12d, not to a
+  // list" names them as distinct surfaces. Every video piece opens the Studio
+  // video editor (the 'storyboard' route, desk-v1-video-open.js), whose crumb
+  // title is the piece's own title, so it's the route-table entry talking.
   const crumbAfterVideo = (await page.textContent('#desk-v1-crumb .desk-v1-crumb-title').catch(() => '') || '');
-  if (/^Video$/.test(crumbAfterVideo.trim())) ok(`A12: "1 video to watch" deep-links to route 'video' (12d), not 'review': crumb "${crumbAfterVideo.trim()}"`);
+  if (/^Install in two minutes · Storyboard$/.test(crumbAfterVideo.trim())) ok(`A12: "1 video to watch" deep-links to the Studio video editor, not 'review': crumb "${crumbAfterVideo.trim()}"`);
   else fail(`A12: video row landed on the wrong route: crumb ${JSON.stringify(crumbAfterVideo)}`);
+  const backAfterVideo = (await page.textContent('#desk-v1-crumb .desk-v1-back').catch(() => '') || '').trim();
+  if (/Back to What$/.test(backAfterVideo)) ok(`A12: the video editor's Back reads "${backAfterVideo}"`);
+  else fail(`A12: the video editor's Back wrong: ${JSON.stringify(backAfterVideo)}`);
 
   // camp-3 is naturally reply-only (no held channel, no needs_review family)
   // — no mutation needed to isolate the 'reply' kind.

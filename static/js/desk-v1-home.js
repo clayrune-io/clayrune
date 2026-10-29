@@ -581,6 +581,8 @@
   function _goToNeedsYou(ds) {
     const { needsyouKind, campaignId, projectId, versionId, conversationId } = ds;
     if (needsyouKind === 'piece') { deskV1HomeGotoReview(campaignId, versionId); return; }
+    // A video row lands in the Studio video editor, under the campaign's What.
+    if (needsyouKind === 'video' && window.DeskV1VideoOpen && window.DeskV1VideoOpen.openFromDeepLink({ campaignId, projectId, versionId })) return;
     // (G-4: no project push — Back returns to Home, where the user came from.)
     // 'retro' lands on ① Goal, where the Retro section and its findings live.
     deskV1Nav('campaign', needsyouKind === 'retro' ? { campaignId, projectId: projectId || null, panel: 'goal' } : { campaignId, projectId: projectId || null });
@@ -702,8 +704,11 @@
     const camp = _campaign(campaignId);
     const projectId = camp && camp.projectId;
     // G-4: no project push — Back walks piece -> campaign -> Home (the real path).
-    deskV1Nav('campaign', { campaignId, projectId });
-    deskV1Nav('piece', { campaignId, versionId, projectId });
+    // A video piece's middle frame is the Studio video editor, not the piece page.
+    if (!(window.DeskV1VideoOpen && window.DeskV1VideoOpen.openFromDeepLink({ campaignId, projectId, versionId }))) {
+      deskV1Nav('campaign', { campaignId, projectId });
+      deskV1Nav('piece', { campaignId, versionId, projectId });
+    }
     deskV1Nav('review', { campaignId, versionId, projectId });
   }
   window.deskV1HomeGotoReview = deskV1HomeGotoReview;
