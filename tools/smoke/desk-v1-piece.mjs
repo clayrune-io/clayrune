@@ -7,7 +7,8 @@
  * ＋ Add media, with Undo), header + Posy staying the SAME DOM node across
  * repaints, the publish time being the calendar's own value, Back reading
  * `‹ <campaign> · What`, What -> Review -> Back reading '‹ <piece title>',
- * and the video director hand-off returning to the same piece.
+ * and a video piece opening the Studio video editor (one editor), with the
+ * piece's copy/media/versions one click away.
  *
  * Real headless boot (real index.html + real static/js|css, no network),
  * same hermetic shape as desk-v1-review.mjs / desk-v1-video.mjs.
@@ -244,25 +245,77 @@ async function runBackLabels(browser) {
   await ctx.close();
 }
 
-// ── Media -> video director -> Back returns to the same piece. ───────────
-async function runMediaToVideoBack(browser) {
+// ── Video piece: one editor. A video card opens the Studio video editor (not
+// this page); the piece's copy/media/versions stay one click away; and the
+// piece page's own `Open video editor` returns to that editor. ──────────────
+async function runVideoOpensStudioEditor(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
-  await navToPieceViaCard(page, 'fam-install-video');
-  await page.waitForSelector('[data-video-btn]', { timeout: 8000 });
+  await navToCampaign(page);
+  await page.waitForSelector('[data-family-id="fam-install-video"] [data-primary-action]', { timeout: 8000 });
+  await page.click('[data-family-id="fam-install-video"] [data-primary-action]');
+  await page.waitForSelector('[data-storyboard]', { timeout: 8000 });
+  if (await page.$('.desk-v1-piece')) fail('video card: opened the generic piece page as well');
+  else ok('video card -> Studio video editor (storyboard with scenes), not the piece page');
+  if (await page.$('[data-storyboard] .desk-v1-sb-scene')) ok('video card -> editor shows the scenes');
+  else fail('video card -> editor shows no scenes');
+  const edBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
+  if (/Back to What$/.test(edBack)) ok(`video editor: Back reads "${edBack}"`);
+  else fail(`video editor: Back wrong: ${JSON.stringify(edBack)}`);
+  const crumb = (await page.textContent('.desk-v1-crumb-title').catch(() => '') || '').trim();
+  if (crumb === 'Install in two minutes · Storyboard') ok(`video editor: crumb names the piece ("${crumb}")`);
+  else fail(`video editor: crumb wrong: ${JSON.stringify(crumb)}`);
 
-  await page.click('[data-video-btn]');
-  await page.waitForSelector('.desk-v1-video-director', { timeout: 8000 });
-  const videoBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
-  if (videoBack.includes('Install in two minutes')) ok(`Media -> video director: Back reads "${videoBack}"`);
-  else fail(`Media -> video director: Back wrong: ${JSON.stringify(videoBack)}`);
-
+  // A version waiting for review is one click from the editor (v-install-li).
+  await page.waitForSelector('[data-vo-review="v-install-li"]', { timeout: 8000 });
+  await page.click('[data-vo-review="v-install-li"]');
+  await page.waitForSelector('.desk-v1-review, [data-review]', { timeout: 8000 });
+  const revBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
+  if (revBack.includes('Install in two minutes')) ok(`editor -> Review: Back reads "${revBack}"`);
+  else fail(`editor -> Review: Back wrong: ${JSON.stringify(revBack)}`);
   await page.click('.desk-v1-back');
-  await page.waitForSelector('.desk-v1-piece', { timeout: 8000 });
-  const title = (await page.textContent('.desk-v1-piece-title').catch(() => '') || '').trim();
-  if (title === 'Install in two minutes') ok('Media -> video director -> Back: returns to the same piece');
-  else fail(`Media -> video director -> Back: landed on ${JSON.stringify(title)}`);
+  await page.waitForSelector('[data-storyboard]', { timeout: 8000 });
+  ok('editor -> Review -> Back: returns to the editor');
 
-  reportUncaught(pageErrors, '[media-video-back]');
+  // Copy, media and versions are one click away from the editor.
+  await page.waitForSelector('[data-vo-details]', { timeout: 8000 });
+  await page.click('[data-vo-details]');
+  await page.waitForSelector('.desk-v1-piece', { timeout: 8000 });
+  const sections = await page.$$eval('[data-piece-section]', (els) => els.map((e) => e.dataset.pieceSection));
+  if (['copy', 'media', 'versions'].every((s) => sections.includes(s))) ok('editor -> "Copy, media & versions": the piece page with Copy · Media · Versions');
+  else fail(`editor -> details: sections ${JSON.stringify(sections)}`);
+  const pieceBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
+  if (pieceBack.includes('Install in two minutes')) ok(`piece page: Back reads "${pieceBack}"`);
+  else fail(`piece page: Back wrong: ${JSON.stringify(pieceBack)}`);
+
+  // The piece page's button returns to the SAME editor (no second copy on the stack).
+  const btn = (await page.textContent('[data-video-btn]').catch(() => '') || '').trim();
+  if (btn === 'Open video editor') ok('piece page: the button reads "Open video editor"');
+  else fail(`piece page: button wrong: ${JSON.stringify(btn)}`);
+  await page.click('[data-video-btn]');
+  await page.waitForSelector('[data-storyboard]', { timeout: 8000 });
+  await page.click('.desk-v1-back');
+  await page.waitForSelector('[data-what]', { timeout: 8000 });
+  ok('piece page -> Open video editor -> Back: lands on the campaign What (editor was not pushed twice)');
+
+  // A piece page reached some other way pushes the editor.
+  await page.evaluate(() => window.deskV1Nav('piece', { campaignId: 'camp-1', familyId: 'fam-install-video' }));
+  await page.waitForSelector('[data-video-btn]', { timeout: 8000 });
+  await page.click('[data-video-btn]');
+  await page.waitForSelector('[data-storyboard]', { timeout: 8000 });
+  ok('piece page (not from the editor) -> Open video editor: opens the editor');
+
+  // Home's review deep link for a VIDEO version goes campaign -> editor -> review.
+  await page.evaluate(() => window.deskV1Nav('home', {}));
+  await page.waitForSelector('.desk-v1-home', { timeout: 8000 });
+  await page.evaluate(() => window.deskV1HomeGotoReview('camp-1', 'v-install-li'));
+  await page.waitForSelector('.desk-v1-review, [data-review]', { timeout: 8000 });
+  await page.click('.desk-v1-back');
+  await page.waitForSelector('[data-storyboard]', { timeout: 8000 });
+  const dlBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
+  if (/Back to What$/.test(dlBack)) ok(`Home review deep link (video): review -> Back -> editor -> Back reads "${dlBack}"`);
+  else fail(`Home review deep link (video): editor's Back wrong: ${JSON.stringify(dlBack)}`);
+
+  reportUncaught(pageErrors, '[video-one-editor]');
   await ctx.close();
 }
 
@@ -273,7 +326,7 @@ try {
   await runSectionsAndIdentity(browser);
   await runVersionTime(browser);
   await runBackLabels(browser);
-  await runMediaToVideoBack(browser);
+  await runVideoOpensStudioEditor(browser);
   exitCode = bad ? 1 : 0;
 } catch (e) {
   console.error('❌ FAIL — smoke harness error: ' + (e && e.message ? e.message : e));
@@ -284,5 +337,5 @@ try {
 
 console.log(bad
   ? `\n❌ FAIL — ${bad} Desk v1 piece check(s) regressed.`
-  : '\n✅ PASS — Desk v1 R2-7 piece page: card -> piece, Copy · Media · Versions, multi-asset + Add media, publish time via the calendar command, Back labels, Media -> video -> Back all hold.');
+  : '\n✅ PASS — Desk v1 R2-7 piece page: card -> piece, Copy · Media · Versions, multi-asset + Add media, publish time via the calendar command, Back labels, video piece -> Studio video editor -> details -> editor all hold.');
 process.exit(exitCode);

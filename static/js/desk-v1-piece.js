@@ -104,7 +104,7 @@
       ? `<div class="desk-v1-piece-facetrow" data-piece-render><span>Render</span><span>${esc(fam.render.status)}${fam.render.progress != null && fam.render.status === 'rendering' ? ` ${esc(fam.render.progress)}%` : ''} · r${esc(fam.render.revision)}</span></div>`
       : '';
     const director = fam.kind === 'video'
-      ? `<div class="desk-v1-piece-facetrow"><span>Video director</span><button type="button" class="desk-v1-camp-card-primary" data-video-btn>Open video director</button></div>`
+      ? `<div class="desk-v1-piece-facetrow"><span>Video editor</span><button type="button" class="desk-v1-camp-card-primary" data-video-btn>Open video editor</button></div>`
       : '';
     const addable = fam.kind === 'video' || fam.kind === 'image' || fam.kind === 'post';
     return `<div class="desk-v1-what-media desk-v1-piece-media" data-piece-media>${thumbs}${addable
@@ -156,7 +156,7 @@
     if (window.DeskV1AssistedPost) (fam.versions || []).forEach((v) => window.DeskV1AssistedPost.bindFill(el, fam, v, _channel(v.channelId)));
     window.DeskV1PostDelete.bind(el, fam, _repaint);
     const videoBtn = el.querySelector('[data-video-btn]');
-    if (videoBtn) videoBtn.onclick = () => window.deskV1Nav('video', { campaignId: fam.campaignId, familyId: fam.id, projectId: params.projectId });
+    if (videoBtn) videoBtn.onclick = () => window.DeskV1VideoOpen.open(fam, _campaign(fam.campaignId), { fromEditor: !!params.fromEditor });
     window.DeskV1PieceMedia.wire(el, fam, () => _repaint());
     const add = el.querySelector('[data-add-media]');
     if (add) add.onclick = () => {

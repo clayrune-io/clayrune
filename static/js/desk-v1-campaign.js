@@ -1128,6 +1128,8 @@
   // own facet actions. Replaces the old kind-branched review/video/toast
   // dispatch (the toast's "later ticket" is this one).
   function _runPrimaryAction(fam, camp) {
+    // A video piece opens the Studio video editor, never the generic piece page.
+    if (window.DeskV1VideoOpen && window.DeskV1VideoOpen.isVideo(fam)) { window.DeskV1VideoOpen.open(fam, camp); return; }
     const action = _primaryAction(fam);
     deskV1Nav('piece', { campaignId: camp.id, familyId: fam.id, projectId: camp.projectId, versionId: action.versionId || null });
   }

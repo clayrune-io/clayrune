@@ -1,0 +1,14 @@
+/* Desk v1: the strip above the Studio video editor when it is opened for a
+   campaign's video piece. Markup: desk-v1-video-open.js. It keeps the piece's
+   copy, media and versions one click away (the editor holds the scenes only). */
+.desk-v1-vo-strip {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px;
+  margin-bottom: 12px; padding: 8px 12px; box-sizing: border-box;
+  background: var(--surface); border: 1px solid var(--border2); border-radius: 10px;
+}
+.desk-v1-vo-sum { font-size: 12.5px; color: var(--text-dim); min-width: 0; }
+.desk-v1-vo-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+@media (max-width: 600px) {
+  .desk-v1-vo-strip { flex-direction: column; align-items: stretch; }
+  .desk-v1-vo-actions > button { flex: 1 1 auto; }
+}
