@@ -114,7 +114,7 @@
       const assisted = window.DeskV1AssistedPost ? window.DeskV1AssistedPost.fillHTML(_channel(v.channelId), v) : '';
       return `<div class="desk-v1-piece-facetrow" data-copy-row="${esc(v.id)}">
         <span>${_versionBadge(v)}${claims ? ` · ${esc(claims)} claim${claims === 1 ? '' : 's'}` : ''}</span>
-        <span class="desk-v1-piece-rowend">${DeskV1Kit.stateLabelHTML(v.state)}${action}${assisted}</span>
+        <span class="desk-v1-piece-rowend">${window.DeskV1PostDelete.stateHTML(v)}${action}${assisted}</span>
       </div>`;
     }).join('');
     const edit = fam.kind === 'article' && !fam.archivedAt ? '<button type="button" class="btn-secondary" data-piece-edit-article>Edit article</button>' : '';
@@ -152,7 +152,8 @@
           <label class="desk-v1-piece-time"><span class="desk-v1-piece-time-label">Publish time</span>
             <input type="datetime-local" data-version-time="${esc(v.id)}" value="${esc(_toInputValue(when))}" ${frozen ? 'disabled' : ''} aria-label="Publish time">
           </label>
-          ${DeskV1Kit.stateLabelHTML(v.state)}
+          ${window.DeskV1PostDelete.stateHTML(v)}
+          ${window.DeskV1PostDelete.html(v, _channel(v.channelId))}
         </span>
       </div>`;
     }).join('');
@@ -178,6 +179,7 @@
       window.deskV1Nav('review', { campaignId: fam.campaignId, versionId: b.dataset.reviewBtn, projectId: params.projectId });
     });
     if (window.DeskV1AssistedPost) (fam.versions || []).forEach((v) => window.DeskV1AssistedPost.bindFill(el, fam, v, _channel(v.channelId)));
+    window.DeskV1PostDelete.bind(el, fam, _repaint);
     const videoBtn = el.querySelector('[data-video-btn]');
     if (videoBtn) videoBtn.onclick = () => window.deskV1Nav('video', { campaignId: fam.campaignId, familyId: fam.id, projectId: params.projectId });
     const add = el.querySelector('[data-add-media]');

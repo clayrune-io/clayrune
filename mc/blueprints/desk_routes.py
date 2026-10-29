@@ -55,10 +55,12 @@ from mc import desk_storyboard as _storyboard
 from mc import desk_tick as _tick
 from mc import desk_voice_seed as _seed
 from mc.blueprints.secrets_routes import _require_human_passcode
+from mc.blueprints import desk_post_delete_routes
 from mc.core import _log
 from mc.unattended import is_unattended_caller
 
 bp = Blueprint('desk_routes', __name__)
+bp.register_blueprint(desk_post_delete_routes.bp)
 
 # -- wired by server.py (see wire()) ------------------------------------------
 load_projects: Callable[[], list] = None  # type: ignore[assignment]
