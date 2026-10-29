@@ -21,8 +21,12 @@ for (const kind of ['member', 'organization']) {
  assert.equal(readUnavailable(li.info, kind), '', `fresh LinkedIn ${kind} has a working pane route`);
 }
 const instagram = cases.find(c => c.info.service.id === 'instagram');
-assert.ok(readUnavailable(instagram.info, instagram.kind));
-assert.equal(readUnavailable(instagram.info, instagram.kind, true), '', 'a stale Instagram grant remains revocable');
+assert.equal(readUnavailable(instagram.info, instagram.kind), '', 'Instagram declares a pane read_own route (c2d9a245)');
+// TikTok has no Read route in the registry (supported=false above); it carries the unavailable path.
+const tiktok = cases.find(c => c.info.service.id === 'tiktok');
+assert.equal(tiktok.supported, false, 'TikTok has no Read route; pick another unsupported service if this changes');
+assert.match(readUnavailable(tiktok.info, tiktok.kind), /Reading isn't available for TikTok yet/);
+assert.equal(readUnavailable(tiktok.info, tiktok.kind, true), '', 'a stale TikTok grant remains revocable');
 
 const variant={route_id:'test-browser',transport:'browser',runtime:{purposes:{read_own:'pane'}},coverage:[{purpose:'read_own',account_kind:'account',status:'claimed'}]};
 const info=v=>({service:{label:'A new service'},picker:[{variants:[v]}]});

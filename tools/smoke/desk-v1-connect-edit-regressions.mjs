@@ -26,9 +26,9 @@ try {for(const test of ['attachment','engine','prefix','site','label']) {
  const {ctx,page,pageErrors}=await newPage(browser,{srv,width:1440,height:1000});
  try {
   if(test==='attachment') {
-   await edit(page,'service:instagram');await page.fill('[data-site-identity]','example');
+   await edit(page,'service:tiktok');await page.fill('[data-site-identity]','example');
    assert.equal(await page.locator('[data-cfp-box="read"]').isDisabled(),true);
-   assert.match(await page.locator('[data-cfw-option="read"]').innerText(),/Reading isn't available for Instagram yet/);
+   assert.match(await page.locator('[data-cfw-option="read"]').innerText(),/Reading isn't available for TikTok yet/);
    await page.click('[data-cfw-primary]');await page.waitForSelector('[data-cfw-step="review"]');
    await page.click('[data-cfw-primary]');await answer(page);
    // Answer each independent permission prompt until Result appears.
@@ -44,7 +44,7 @@ from mc.desk_connect.permission_check import PermissionDenied
 with tempfile.TemporaryDirectory() as tmp:
  desk.STORE_PATH=Path(tmp)/'desk.json'
  store=desk._read_store()
- store.setdefault('services',{})['saved']={'id':'saved','link':'https://www.instagram.com','browser_connection':{'service':None,'browser_profile':'main'}}
+ store.setdefault('services',{})['saved']={'id':'saved','link':'https://www.tiktok.com','browser_connection':{'service':None,'browser_profile':'main'}}
  desk._write_store(store)
  aid=sites.attach('saved',{'identity':'example'})['account_id']
  for draft in json.loads(input()):
@@ -52,7 +52,7 @@ with tempfile.TemporaryDirectory() as tmp:
   policy.commit('regression-read-policy',draft)
  reader=eng.Reader();reader.via='pane'
  for cap in ['mentions','post_metrics']:
-  try: _require_read(aid,'instagram',reader,cap)
+  try: _require_read(aid,'tiktok',reader,cap)
   except PermissionDenied: pass
   else: raise AssertionError('attachment must retain default-deny')
  assert policy.read_policy(desk._read_store()['accounts'][aid])['read'] is False
