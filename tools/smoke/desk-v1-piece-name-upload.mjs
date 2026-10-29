@@ -44,6 +44,9 @@ try {
       window.deskV1Nav('piece', { campaignId: 'camp-1', familyId: f.id });
     });
     const input = page.locator('[data-piece-name-input]');
+    // The title is the control: no Edit name / Post name / Save name chrome.
+    assert.equal(await page.locator('[data-piece-name-edit], [data-piece-name-save], [data-piece-name-form]').count(), 0);
+    await page.click('[data-piece-title-edit]');
     assert.equal(await input.inputValue(), '');
     await input.fill('Autumn launch update');
     await page.screenshot({ path: resolve(shots, `title-edit-${width}.png`), fullPage: true });
@@ -85,6 +88,7 @@ try {
         return {};
       };
     });
+    await page.click('[data-piece-title-edit]');
     await input.fill('Autumn launch update');
     await input.press('Enter');
     await page.waitForFunction(() => window.__savedTitle === 'Autumn launch update');
@@ -109,11 +113,12 @@ try {
     await page.click('#desk-v1-undo');
     await page.waitForFunction(() => window.__savedTitle === 'New post');
     await page.evaluate(() => { window.__refuse = true; });
+    await page.click('[data-piece-title-edit]');
     await input.fill('Keep my failed draft');
     await input.press('Enter');
     await page.waitForFunction(() => document.querySelector('[data-piece-name-status]').textContent.includes('test refusal'));
     assert.equal(await input.inputValue(), 'Keep my failed draft');
-    assert.equal(await page.textContent('.desk-v1-piece-title'), 'New post');
+    assert.equal(await page.evaluate(() => window.DeskV1Store.state().families.find((f) => f.id === 'fam-30-testers').title), 'New post');
     await page.evaluate(() => { window.__refuse = false; });
     await input.fill('Autumn launch update');
     await input.press('Enter');

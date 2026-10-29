@@ -62,7 +62,7 @@ async function boot(browser, width, failCatalog = false) {
   };
   const piece = async () => {
     await page.evaluate(() => window.deskV1Nav('piece', { familyId: 'p-empty', campaignId: 'camp-1' }));
-    await page.waitForSelector('[data-piece-copy-where], [data-piece-copy-campaign]');
+    await page.waitForSelector('[data-piece-put-on-channel], [data-piece-choose-campaign]');
   };
   return { ctx, page, errors, calls, where, piece, failNextTypes: () => { failTypes = true; } };
 }
@@ -117,14 +117,14 @@ try {
       await page.evaluate(kind => { window.DeskV1Store.state().families.find(f => f.id === 'p-empty').kind = kind; }, kind);
       await piece();
       if (kind === 'post') await page.screenshot({ path: resolve(shots, `copy-${width}.png`) });
-      await page.locator('[data-piece-copy-where]').click();
+      await page.locator('[data-piece-put-on-channel]').click();
       await page.waitForSelector('[data-where][data-campaign-id="camp-1"]');
     }
     await page.evaluate(() => { const p = window.DeskV1Store.state().families.find(f => f.id === 'p-empty'); p.campaignId = null; p.kind = 'post'; });
     await piece();
-    assert.match(await page.locator('[data-piece-section="copy"]').innerText(), /Add this piece to a campaign in What/);
+    assert.match(await page.locator('[data-piece-section="versions"]').innerText(), /not in a campaign yet/);
     await page.screenshot({ path: resolve(shots, `copy-no-campaign-${width}.png`) });
-    await page.locator('[data-piece-copy-campaign]').click();
+    await page.locator('[data-piece-choose-campaign]').click();
     await page.waitForSelector('.desk-v1-home');
     assert.deepEqual(errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e)), []);
     await ctx.close();

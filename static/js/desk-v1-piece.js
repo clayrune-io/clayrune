@@ -114,7 +114,7 @@
 
   function _versionsHTML(fam) {
     const versions = fam.versions || [];
-    if (!versions.length) return '<div class="desk-v1-piece-empty">No destinations yet.</div>';
+    if (!versions.length) return window.DeskV1PieceVersionsEmpty.html(fam);
     return versions.map((v) => {
       const fmt = v.format ? ` · ${esc(v.format)}` : '';
       const when = _versionWhen(v);
@@ -148,6 +148,7 @@
       ${_sectionHTML('versions', 'Versions', _versionsHTML(fam))}
     </div>`;
     window.DeskV1PieceCopy.bind(el, fam, _repaint);
+    window.DeskV1PieceVersionsEmpty.bind(el, fam);
     const article = el.querySelector('[data-piece-edit-article]');
     if (article) article.onclick = () => window.deskV1WhatEditArticle(fam);
     el.querySelectorAll('[data-review-btn]').forEach((b) => b.onclick = () => {

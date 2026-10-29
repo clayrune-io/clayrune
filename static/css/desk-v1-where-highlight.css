@@ -1,0 +1,7 @@
+.desk-v1-where-msg.desk-v1-where-highlight {
+  border-color: var(--accent); background: var(--surface3);
+  box-shadow: 0 0 0 2px var(--accent) inset;
+  animation: desk-v1-where-highlight-pulse 1.4s ease-out 2;
+}
+@keyframes desk-v1-where-highlight-pulse { 50% { background: var(--surface2); } }
+@media (prefers-reduced-motion: reduce) { .desk-v1-where-msg.desk-v1-where-highlight { animation: none; } }
