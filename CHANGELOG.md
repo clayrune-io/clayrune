@@ -5,6 +5,11 @@
 - Where keeps existing account tiles and adds **Connect service ›** tiles for services without an account, using the complete existing Connect registry. These tiles open the same connection options with the service selected and cannot be dragged onto the board. Catalogue failures show Retry; newly connected accounts replace their service tile.
 - Empty Copy sections offer **Add a version from the Where board ›**, opening that piece's campaign. Pieces without a campaign explain the prerequisite and offer **Choose a campaign ›** to return to Desk Home. Branch candidate only; no merge or deployment.
 
+## [2026-10-29] - Discuss Studio article drafts with their agent
+
+- Studio article writers now include the shared agent conversation box, scoped to the draft title. The saved project's default planner answers; drafts with **No project** use Studio's default engine. Each message includes the current draft tab's complete text, including unsaved edits, and the conversation survives reopening the draft.
+- Rewrites appear as text proposals with **Accept proposal**. Acceptance and **Undo** check both revision and text so newer writing cannot be overwritten; asking a question changes no draft text. Failed sends restore the message with the server's reason. Branch candidate only; no merge, push, restart or live model call.
+
 ## [2026-10-29] - Respect campaign agents in Desk Home planner labels
 
 - Home project blocks use their default planner when set, otherwise show the shared agent of their live campaigns or **Each campaign has its own agent**. The pick warning remains when a live campaign has no resolvable agent; ended campaigns do not trigger it.

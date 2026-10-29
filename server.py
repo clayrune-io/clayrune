@@ -2340,6 +2340,8 @@ app.register_blueprint(_bp_piece_lifecycle.bp)
 # Standalone Studio articles (no campaign behind them), same Desk store. Own module.
 from mc.blueprints import desk_studio_articles_routes as _bp_desk_studio_articles  # noqa: E402
 app.register_blueprint(_bp_desk_studio_articles.bp)
+from mc.blueprints import desk_article_chat_routes as _bp_desk_article_chat  # noqa: E402
+app.register_blueprint(_bp_desk_article_chat.bp)
 
 from mc.blueprints import desk_capture_routes as _bp_desk_capture  # noqa: E402
 app.register_blueprint(_bp_desk_capture.bp)
