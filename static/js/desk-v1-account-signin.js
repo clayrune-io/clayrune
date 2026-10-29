@@ -13,15 +13,12 @@
 //             on paint (desk-v1-connection-status.mjs pins that opening a card makes no POST); a platform whose
 //             profile has no reviewed browser sign-in page (YouTube today) therefore learns that on the first
 //             press and shows a note in place of the button from then on.
-//   API       X's own sign-in: the existing passcode-gated held sign-in, POST /api/desk/connect/x/start-held
-//             with this account's id, run by desk-v1-connect-held.js (`begin`/`start`/`bind`, so there is one
-//             state machine); the sign-in finishes in its named pane and the server HOLDS the token. Its Save
-//             completion is the same passcode-gated POST /api/desk/connect/commit the wizard's Save sends, with
-//             this account's id and the held `{flow_id, claim}` and no typed app details (the app already saved in
-//             the Vault is the one used). Nothing is stored until that second step, which the person presses.
+//   API       X's passcode-gated start-held with this existing account's id. The server makes one
+//             /2/users/me lookup: matching handle saves immediately; mismatch offers Discard only;
+//             lookup or save failure stays held with a passcode-gated manual Save fallback.
+//             The wizard still holds its token for its explicit Save. No vendor token reaches this module.
 //
-// WHAT IT NEVER DOES. Open a pane the person did not ask for, sign in to anything on its own, send a password
-// (none is typed here), or loosen a gate: both API steps stay behind the dashboard passcode. It adds no route.
+// Status messages live above the shared action row; only buttons go inside that row.
 import { ConnectionWords as W } from './desk-v1-connection-words.js';
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -75,27 +72,34 @@ import { ConnectionWords as W } from './desk-v1-connection-words.js';
       if (page === undefined) _say(ch, 'browser', 'error', 'The sign-in page could not be looked up. Try again.');
       repaint(); return;
     }
-    try { window.openBrowserPane(page.url, null, null, profile); }
+    try { await window.openBrowserPane(page.url, null, null, profile); }
     catch (e) { _say(ch, 'browser', 'error', 'The browser pane could not be opened.'); repaint(); }
   }
 
   // ── the API route: the held sign-in, then its Save ─────────────────────
-  function _apiHTML(ch, f) {
+  function _apiHTML(ch, f, messages) {
     const flow = _flow(ch), phase = flow ? flow.phase : 'idle';
-    const lbl = esc(API[ch.platform].label);
-    if (phase === 'waiting') {
-      return `<div class="desk-v1-cf-msg" data-cf-msg="ok" data-as-state="waiting" role="status">The sign-in page is open in its own browser pane. Finish signing in there; this page updates by itself.</div>
-        <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cfh-open>Open the sign-in page again</button>
-        <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cfh-cancel>Cancel</button>`;
+    if (messages) {
+      let state = '';
+      if (phase === 'waiting') state = '<div class="desk-v1-cf-msg" data-cf-msg="ok" data-as-state="waiting" role="status">The sign-in page is open in its own browser pane. Finish signing in there; this page updates by itself.</div>';
+      if (phase === 'held') state = `<div class="desk-v1-cf-msg" data-cf-msg="${flow.saveAllowed ? 'warn' : 'error'}" data-as-state="held" role="${flow.saveAllowed ? 'status' : 'alert'}">${esc(flow.message || `Signed in to ${API[ch.platform].label}. It is kept in memory only until you press Save sign-in.`)} It expires in about ${Math.max(1, Math.round((flow.ttl || 0) / 60))} minutes.</div>`;
+      if (phase === 'failed' && flow.message) state = `<div class="desk-v1-cf-msg" data-cf-msg="error" data-as-state="failed" role="alert">${esc(flow.message)}</div>`;
+      return state + _msgHTML(ch, 'api');
     }
+    if (phase === 'waiting') return '<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cfh-open>Open sign-in</button><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cfh-cancel>Cancel</button>';
     if (phase === 'held') {
       const saving = (_saving[ch.id] || {}).busy;
-      return `<div class="desk-v1-cf-msg" data-cf-msg="ok" data-as-state="held" role="status">Signed in to ${lbl}. It is kept in memory only, for about ${Math.max(1, Math.round((flow.ttl || 0) / 60))} more minutes, until you press Save sign-in.</div>
-        <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline desk-v1-cf-primary" data-as-save ${saving ? 'disabled' : ''}>Save sign-in</button>
-        <button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cfh-cancel ${saving ? 'disabled' : ''}>Discard it</button>${_msgHTML(ch, 'api')}`;
+      return `${flow.saveAllowed ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline desk-v1-cf-primary" data-as-save ${saving ? 'disabled' : ''}>Save sign-in</button>` : ''}<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-cfh-cancel ${saving ? 'disabled' : ''}>Discard it</button>`;
     }
-    const failed = phase === 'failed' && flow.message ? `<div class="desk-v1-cf-msg" data-cf-msg="error" data-as-state="failed" role="alert">${esc(flow.message)}</div>` : '';
-    return `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline${_primary(f)}" data-as-signin="api" ${phase === 'starting' ? 'disabled' : ''}>${W.buttons.signin}</button>${failed}${_msgHTML(ch, 'api')}`;
+    return `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline${_primary(f)}" data-as-signin="api" ${phase === 'starting' ? 'disabled' : ''}>${W.buttons.signin}</button>`;
+  }
+
+  async function _saved(ch, repaint) {
+    delete _saving[ch.id];
+    try { const rows = await window.DeskV1Store.api('GET', '/api/desk/accounts'); Object.assign(ch, (rows || []).find((r) => r.id === ch.id) || {}); }
+    catch (e) { console.error('[account-signin] the account could not be re-read after the save', e); }
+    _say(ch, 'api', 'ok', `The ${API[ch.platform].label} sign-in is saved.`);
+    repaint();
   }
 
   async function _save(ch, repaint) {
@@ -115,23 +119,19 @@ import { ConnectionWords as W } from './desk-v1-connection-words.js';
     if (res === null) { repaint(); return; }                                  // cancelled at the passcode: nothing was sent, the sign-in stays held
     const body = res.body || {};
     if (!res.ok) { _say(ch, 'api', 'error', body.error || body.message || `The sign-in could not be saved (HTTP ${res.status}).`); repaint(); return; }
-    delete _saving[ch.id];
-    H.consumed();                                                              // the Save stored it
-    // The card reads the account row: take the server's fresh one now, never wait for "Check again".
-    try { const rows = await window.DeskV1Store.api('GET', '/api/desk/accounts'); Object.assign(ch, (rows || []).find((r) => r.id === ch.id) || {}); }
-    catch (e) { console.error('[account-signin] the account could not be re-read after the save', e); }
-    _say(ch, 'api', 'ok', `The ${api.label} sign-in is saved.`);
-    repaint();
+    H.consumed();
+    await _saved(ch, repaint);
   }
 
   // ── what the route row draws and binds ─────────────────────────────────
   // `f` is the facet (desk-v1-connection-status.js `facets`): `{ id: 'browser' | 'api', key, profile }`.
-  function html(ch, f) {
+  function html(ch, f, messages = false) {
     if (!ch || !f) return '';
-    if (f.id === 'api') return API[ch.platform] ? `<div class="desk-v1-cs-fill-row" data-as-row="api">${_apiHTML(ch, f)}</div>` : '';
+    if (f.id === 'api') return API[ch.platform] ? (messages ? _apiHTML(ch, f, true) : `<div class="desk-v1-cs-fill-row" data-as-row="api">${_apiHTML(ch, f, false)}</div>`) : '';
     if (f.id !== 'browser' || !f.profile) return '';
-    if (_pages[ch.platform] === null) return '<div class="desk-v1-cs-fill-row" data-as-row="browser"><div class="desk-v1-rules-hint" data-as-none>Clayrune has no reviewed sign-in page for this site, so it cannot open one from here.</div></div>';
-    return `<div class="desk-v1-cs-fill-row" data-as-row="browser"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline${_primary(f)}" data-as-signin="browser" data-as-profile="${esc(f.profile)}">${W.buttons.signin}</button>${_msgHTML(ch, 'browser')}</div>`;
+    if (messages) return _msgHTML(ch, 'browser') + (_pages[ch.platform] === null ? '<div class="desk-v1-rules-hint" data-as-none>Clayrune has no reviewed sign-in page for this site, so it cannot open one from here.</div>' : '');
+    if (_pages[ch.platform] === null) return '';
+    return `<div class="desk-v1-cs-fill-row" data-as-row="browser"><button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline${_primary(f)}" data-as-signin="browser" data-as-profile="${esc(f.profile)}">${W.buttons.signin}</button></div>`;
   }
 
   function bind(row, ch, repaint) {
@@ -142,7 +142,7 @@ import { ConnectionWords as W } from './desk-v1-connection-words.js';
     }
     const api = row.querySelector('[data-as-row="api"]');
     if (!api || !API[ch.platform] || !_held()) return;
-    const ctx = { api: window.DeskV1Store.api, repaint };
+    const ctx = { api: window.DeskV1Store.api, repaint, saved: () => _saved(ch, repaint) };
     const start = api.querySelector('[data-as-signin="api"]');
     if (start) start.addEventListener('click', () => {
       _say(ch, 'api', '', '');

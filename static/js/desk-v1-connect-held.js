@@ -13,6 +13,8 @@
 // What this module keeps: the flow id and the `claim` the start answered with (the claim is the
 // proof the Save and the cancel present, never a vendor token), the pane profile and the state.
 // It never sees a token or a password. Window-bridged module, no `import` (ground rule 1).
+// Saved-account cards supply accountId and request auto_save at the human start. A done poll
+// then calls ctx.saved to refresh the card; wizard callers omit accountId and still hold for Save.
 // Server side: mc/blueprints/desk_held_signin_routes.py.
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -81,8 +83,12 @@
       try { f = await mine.ctx.api('GET', `/api/desk/connect/flows/${encodeURIComponent(mine.flowId)}`); } catch (_) { continue; }
       if (f.status === 'held') {
         const was = mine.phase;
-        mine.phase = 'held'; mine.ttl = f.held_ttl_s || 0; mine.message = '';
+        mine.phase = 'held'; mine.ttl = f.held_ttl_s || 0; mine.message = f.message || ''; mine.saveAllowed = f.save_allowed !== false;
         if (was !== 'held') mine.ctx.repaint();
+      } else if (f.status === 'done' && mine.accountId && mine.ctx.saved) {
+        consumed();
+        await mine.ctx.saved();
+        return;
       } else if (f.status === 'error' || f.status === 'unknown') {
         mine.phase = 'failed';
         mine.message = f.message || 'The sign-in is no longer waiting. Sign in again.';
@@ -108,7 +114,7 @@
     try {
       // Opening a sign-in needs the dashboard passcode: the one proof an agent cannot forge.
       res = await window.humanProofFetch(`/api/desk/connect/${encodeURIComponent(mine.service)}/start-held`,
-        { method: 'POST', body: JSON.stringify({ hold: app.hold, ...(mine.accountId ? { account_id: mine.accountId } : {}) }) },
+        { method: 'POST', body: JSON.stringify({ hold: app.hold, ...(mine.accountId ? { account_id: mine.accountId, auto_save: true } : {}) }) },
         { title: 'Sign in', description: `Re-enter your dashboard passcode to sign in to ${mine.label}.` });
     } catch (e) {
       res = { ok: false, status: 0, body: { error: e && e.message ? e.message : 'could not reach the server' } };
@@ -203,7 +209,7 @@
   }
 
   // Read-only view of the sign-in for a surface that draws its own copy (the Connections account card, desk-v1-account-signin.js).
-  function state() { return H ? { service: H.service, method: H.method, accountId: H.accountId, phase: H.phase, message: H.message, ttl: H.ttl } : null; }
+  function state() { return H ? { service: H.service, method: H.method, accountId: H.accountId, phase: H.phase, message: H.message, ttl: H.ttl, saveAllowed: H.saveAllowed !== false } : null; }
   // Start (or restart) the sign-in `begin` set up, exactly as the "Sign in with …" button does: the same passcode-gated request.
   function start(root) { return _signIn(root); }
 

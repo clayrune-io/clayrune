@@ -2,13 +2,16 @@
 (`mc/desk_oauth_hold.py`; Dave 2026-10-05, option B, after Ron: "if step 3 is the login
 details, all options should be covered there").
 
-    POST /api/desk/connect/<service>/start-held   {passcode, account_id?, hold?: {client_id?, client_secret?}}
+    POST /api/desk/connect/<service>/start-held   {passcode, account_id?, auto_save?, hold?: {client_id?, client_secret?}}
          Opens the sign-in like `/start`, but the callback holds the token instead of
          storing it. Answers `{flow_id, auth_url, profile, claim, hold_ttl_s, account_id?}`.
          `claim` is the secret the Save and the cancel must present: the flow id alone,
          which the poll shows, claims nothing. X's `account_id` is the Desk account the
          Save will create when no id was supplied. An explicit existing X id is validated
          through account_attach and uses only that saved account's own OAuth profile.
+         With auto_save=true, that explicit existing X account is saved on a matching
+         /2/users/me callback identity; mismatch is discard-only, lookup/save failure
+         stays held. Wizard starts omit auto_save and retain their explicit Save.
     POST /api/desk/connect/flows/<flow_id>/cancel {claim}
          The person backed out: drop the held token and revoke it. No passcode (it only
          ever removes something), but it needs the claim.
@@ -64,6 +67,9 @@ def start_held(service):
     refused = _require_human_passcode(d)
     if refused is not None:
         return refused
+    if d.get('auto_save') is not None and (not isinstance(d['auto_save'], bool)
+                                         or (d['auto_save'] and 'account_id' not in d)):
+        return jsonify({'error': 'auto-save requires an explicit existing X account', 'code': 'invalid'}), 400
     try:
         hold = _app_fields(d.get('hold'))
     except (ValueError, ProviderError) as e:
@@ -82,7 +88,9 @@ def start_held(service):
         if service == 'higgsfield' and _oauth.status('higgsfield')['state'] == 'connected':
             raise _oauth.OAuthError('already_signed_in', 'Higgsfield is already signed in. Disconnect it in '
                                     'Connections first to sign in again.', 409)
-        out = _oauth.start(service, arg, hold={**hold, 'account_id': account_id})
+        # Only an explicit, validated existing account gets the card auto-save policy.
+        out = _oauth.start(service, arg, hold={**hold, 'account_id': account_id,
+                          **({'auto_save_account_id': account_id} if d.get('auto_save') is True else {})})
     except _oauth.OAuthError as e:
         return jsonify({'error': str(e), 'code': e.code}), e.status
     if account_id:

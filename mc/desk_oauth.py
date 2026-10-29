@@ -540,6 +540,8 @@ def start(service: str, account_id: str | None = None, *, hold: dict | None = No
 
     `hold` (the Connect flow's Details step): the token is NOT stored when the
     callback arrives, it is held in memory (`desk_oauth_hold`) for the Save to claim.
+    The human card route may stamp `auto_save_account_id` for a validated existing
+    X account: `x_card_signin` verifies the handle and claims it on callback.
     `{'account_id': the Desk account the Save will create, 'client_id' /
     'client_secret': X's app as typed and not stored yet}`. The answer then also
     carries `claim`, the secret that binds the held sign-in to this caller, and
@@ -606,6 +608,7 @@ def _start_flow(service: str, d: dict, srv: _CallbackServer, disc: dict | None,
                             'status': 'pending', 'message': '', 'listener': srv, 'account_id': account_id}
     if hold is not None:
         flow['hold'] = {'claim': pysecrets.token_urlsafe(24), 'account_id': hold.get('account_id'),
+                        'auto_save_account_id': hold.get('auto_save_account_id'),
                         'app': {k: hold[k] for k in ('client_id', 'client_secret') if hold.get(k)}}
         flow['profile'] = profile_name(service, account_id)
         flow['profile_created'] = bool(profile_created)
@@ -690,7 +693,9 @@ def flow_status(flow_id: str) -> dict[str, Any]:
                     left = _hold.alive(flow_id)
                     if not left:
                         return {'status': 'unknown', 'message': _hold.GONE, 'service': f['service']}
-                    return {'status': 'held', 'message': f['message'], 'service': f['service'], 'held_ttl_s': left}
+                    from mc.desk_connect import x_card_signin
+                    return {'status': 'held', 'message': f['message'], 'service': f['service'], 'held_ttl_s': left,
+                            **x_card_signin.public(f)}
                 return {'status': f['status'], 'message': f['message'], 'service': f['service']}
     return {'status': 'unknown', 'message': 'No sign-in is waiting. If the server restarted, a sign-in that was not saved is gone: sign in again.'}
 
@@ -749,6 +754,9 @@ def commit_held(service: str, flow_id: str, claim: str, account_id: str | None, 
     The hold is TAKEN in one step (`desk_oauth_hold.take`), so an expiry cannot revoke it
     mid-write, and is given back when the write fails so the person can press Save again.
     Raises OAuthError; never returns a token."""
+    from mc.desk_connect import x_card_signin
+    with _lock:
+        x_card_signin.require_save_allowed(_flow_by_id(flow_id))
     try:
         e = _hold.take(flow_id, claim, service)
     except _hold.HoldError as ex:
@@ -779,15 +787,19 @@ def commit_held(service: str, flow_id: str, claim: str, account_id: str | None, 
     return {'vault': name}
 
 
-def consume_held(flow_id: str) -> None:
+def consume_held(flow_id: str, *, keep_result: bool = False) -> None:
     """The Save is durable: the held sign-in is now the saved one. Forget it, no revoke, and
-    keep the pane profile (it is now the saved login's browser)."""
+    keep the pane profile (it is now the saved login's browser). `keep_result`
+    retains a value-free done result so the card's poll can observe auto-save."""
     _hold.consume(flow_id)
     with _lock:
         for k, f in list(_flows.items()):
             if f['flow_id'] == flow_id:
                 f.pop('profile_created', None)
-                _flows.pop(k, None)
+                if keep_result:
+                    f['status'] = 'done'
+                else:
+                    _flows.pop(k, None)
 
 
 def held_account(service: str, flow_id: str, claim: str, client_id: str | None = None) -> str | None:
@@ -928,6 +940,8 @@ def _complete(params: dict[str, str]) -> tuple[bool, str, bool]:
         secrets_store.register_dispensed(vault, rec['access_token'])
         if rec['refresh_token']:
             secrets_store.register_dispensed(vault, rec['refresh_token'])
+        from mc.desk_connect import x_card_signin
+        x_card_signin.confirm(flow, rec)
         if hold:        # the Connect flow's Details step: the Save writes it (commit_held), a back-out never does
             with _lock:     # cancelled while the code was being exchanged: hold nothing, undo what the vendor minted
                 cancelled = bool(flow.get('cancelled'))
@@ -950,8 +964,10 @@ def _complete(params: dict[str, str]) -> tuple[bool, str, bool]:
     except Exception as e:      # e.g. a vault OSError: end the flow and free the port, never leave it 'working'
         _log(f'[desk_oauth] saving the {service} sign-in failed: {type(e).__name__}', flush=True)
         return fail(f'Signed in, but the sign-in could not be saved ({type(e).__name__}). Try again.')
-    held = bool(hold)
-    msg = f'{label} is signed in. Go back to Clayrune and press Save.' if held else f'{label} is connected.'
+    saved = x_card_signin.save(flow) if hold else False
+    held = bool(hold) and not saved
+    msg = (x_card_signin.public(flow).get('message') or
+           (f'{label} is signed in. Go back to Clayrune and press Save.' if held else f'{label} is connected.'))
     with _lock:
         flow['status'], flow['message'] = ('held' if held else 'done'), msg
         flow.pop('verifier', None)
@@ -962,7 +978,7 @@ def _complete(params: dict[str, str]) -> tuple[bool, str, bool]:
     if not held:
         from mc import desk_engine_schemas
         desk_engine_schemas.connection_saved(service, 'oauth', token=rec['access_token'])
-    return True, msg, held
+    return True, msg, held and x_card_signin.public(flow).get('save_allowed', True)
 
 
 # -- use + refresh --------------------------------------------------------------
