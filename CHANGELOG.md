@@ -6,6 +6,12 @@
 - Focus rings on the name and Copy fields sit inside the border, so the Desk body's scroll clipping no longer cuts them at the left/right edges; the piece page's Dave column may shrink instead of overflowing a narrow Desk.
 - The dashed **Add a version from the Where board** box is removed. An empty **Versions** section reads **No destinations yet** with **Put this on a channel ›**, which opens Where with that piece's card marked and focused (`DeskV1PieceVersionsEmpty`, `DeskV1WhereHighlight`). Branch candidate only; no merge or deployment.
 
+## [2026-10-29] - Show add-piece sources in a centered What popup
+
+- Clicking, keyboard-adding or dropping a type from What's Add a piece palette now opens a centered popup with its name field and large source cards. A separate module owns the per-type registry and dialog; Escape/backdrop close it, focus stays inside, and the layout fits 390px screens. Existing piece-open routing is unchanged.
+- Added separate Article Import from file and Post Reuse adapters using existing routes. Article import shares the piece editor's text/Markdown/HTML validation and conversion; post reuse copies text and uploads independent media files without inheriting versions, approvals or schedules. Both support persistence, failure reporting and Undo.
+- Added an isolated real Flask/filesystem browser regression for reload persistence, refused writes, import limits and independent copies. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-29] - Bind native harness proposals to human approval (DH-M5 A2a)
 
 - Added nonexecuting native-plan inspection, immutable plan storage, explicit policy v2 native selections and fixture compatibility manifests. Required coverage recipes are refused; full-practice Unsupported coverage remains unchanged.

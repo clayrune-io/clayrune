@@ -1277,6 +1277,29 @@ approval again after its cause is fixed.
 
 ### Campaign posts, archive and placement
 
+In **What**, click a type under **Add a piece**, press Enter on it, or drag it
+onto the campaign's list. A centered popup names the type and keeps its **Name**
+field beside large source cards:
+
+- **Video:** Record from the product, Upload, Online source, Create new in Studio.
+- **Article:** Browse existing, Write new, Import from file.
+- **Post:** Write new, Reuse an existing post.
+- **Image:** Upload, From library, Generate.
+
+**Escape**, the close button or the backdrop closes the popup and keeps the
+new draft in What. **Discard this draft** removes it. Tab stays inside the popup.
+**Change source** returns to the source cards.
+
+Article **Import from file** accepts the same text, Markdown and HTML formats
+and limits as the post editor below. HTML becomes plain text. A successful
+import saves the article in What; errors leave the popup open for retry.
+
+Post **Reuse an existing post** lists posts from this campaign and the workspace
+post library. Selecting one copies its text and uploads independent copies of
+its media into the new piece. The original stays unchanged. Destination
+versions, schedules and approvals are not copied. **Undo** reverses the import
+or post copy without changing the original or deleting library files.
+
 On a post's piece page, click the title (for example **New post**) to rename
 it in place. Press Enter or click away to save, Esc to cancel; the title also
 opens from the keyboard (Tab to it, then Enter). Names may contain up to 200
