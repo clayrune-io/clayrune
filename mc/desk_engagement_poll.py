@@ -46,20 +46,30 @@ def _require_read(account_id: str | None, platform: str, reader: _eng.Reader,
                                     account_kind='account' if platform == 'x' else None)
 
 
+def _set_cov(project_id: str, key: str, account_id: str | None, **kw) -> None:
+    """Coverage is stored per read target (`desk_engagement_targets`) and stamped with its account."""
+    _desk.set_read_coverage(project_id, key, account_id=account_id, **kw)
+
+
 def _denied(project_id: str, platform: str, reader: _eng.Reader, entry: dict,
-            capability: str, error: _permissions.PermissionDenied) -> None:
+            capability: str, error: _permissions.PermissionDenied,
+            key: str, account_id: str | None) -> None:
     reason = str(error)
     entry.setdefault('permission_denied', {})[capability] = reason
     entry['error'] = reason
     _desk.record_read(platform=platform, project_id=project_id,
                       kind='replies' if capability == 'mentions' else 'metrics',
                       resources=0, cost=0.0, ok=False, error=reason)
-    _desk.set_read_coverage(project_id, platform, ok=False, error=reason, via=reader.via)
+    _set_cov(project_id, key, account_id, ok=False, error=reason, via=reader.via)
 
 
 def poll_platform(project_id: str, platform: str, reader: _eng.Reader,
-                   entry: dict, now_dt: datetime) -> None:
-    account = _eng.platform_account(project_id, platform)
+                   entry: dict, now_dt: datetime, target: dict | None = None) -> None:
+    """`target` is the read target (one account) being polled; without it, the platform's first."""
+    if target is None:
+        from mc.desk_engagement_targets import target_for
+        target = target_for(project_id, platform) or {'key': platform, 'account': None, 'account_id': None}
+    key, account = target['key'], target.get('account')
     account_id = account.get('channel_id') if isinstance(account, dict) else None
     rows = [r for r in _desk.list_ledger(limit=100000, platform=platform, project_id=project_id)]
     known = {}
@@ -69,25 +79,27 @@ def poll_platform(project_id: str, platform: str, reader: _eng.Reader,
             known[ext] = r['id']
 
     # 1. replies + mentions
-    cursor = (_desk.get_read_coverage(project_id).get(platform) or {}).get('cursor')
+    from mc.desk_engagement_targets import record_matches
+    prev = _desk.get_read_coverage(project_id).get(key) or {}
+    cursor = prev.get('cursor') if record_matches(prev, account_id) else None
     try:
         _require_read(account_id, platform, reader, 'mentions')
         if not _eng._afford(project_id, reader, reader.mentions_units, now_dt):
             msg = 'read budget spent: replies not read this period'
             entry['budget_blocked'] = True
-            _desk.set_read_coverage(project_id, platform, ok=False, error=msg, via=reader.via)
+            _set_cov(project_id, key, account_id, ok=False, error=msg, via=reader.via)
             got = None    # no mentions this period; metrics below may be a campaign's to pay
         else:
             got = reader.fetch_mentions(since_id=cursor, known_posts=known)
     except _permissions.PermissionDenied as e:
-        _denied(project_id, platform, reader, entry, 'mentions', e)
+        _denied(project_id, platform, reader, entry, 'mentions', e, key, account_id)
         got = None
     except _eng.ReadError as e:
         _desk.record_read(platform=platform, project_id=project_id, kind='replies',
                           resources=0, cost=0.0, ok=False, error=str(e))
         entry['error'] = str(e)
-        _desk.set_read_coverage(project_id, platform, ok=False, error=str(e),
-                                via=reader.via, error_kind=e.kind)
+        _set_cov(project_id, key, account_id, ok=False, error=str(e),
+                 via=reader.via, error_kind=e.kind)
         if e.kind == 'not_signed_in':
             entry['state'] = 'not_connected'
             entry['message'] = f'Not connected ({reader.sign_in_short})'
@@ -108,8 +120,8 @@ def poll_platform(project_id: str, platform: str, reader: _eng.Reader,
                 'campaign_id': (led or {}).get('campaign_id'),
             })
             entry['new_items'] += 1 if created else 0
-        _desk.set_read_coverage(project_id, platform, ok=True, cursor=got.get('cursor'),
-                                via=reader.via)
+        _set_cov(project_id, key, account_id, ok=True, cursor=got.get('cursor'),
+                 via=reader.via)
 
     # 2. per-post metrics: once a day per post, recent posts only, each batch
     # costed before it is sent.
@@ -140,7 +152,7 @@ def poll_platform(project_id: str, platform: str, reader: _eng.Reader,
                 break
             res = reader.fetch_metrics([ext for _lid, ext in batch])
         except _permissions.PermissionDenied as e:
-            _denied(project_id, platform, reader, entry, 'post_metrics', e)
+            _denied(project_id, platform, reader, entry, 'post_metrics', e, key, account_id)
             break
         except _spend.SpendRefused as e:
             reason = str(e)
@@ -148,7 +160,7 @@ def poll_platform(project_id: str, platform: str, reader: _eng.Reader,
             entry['error'] = reason
             _desk.record_read(platform=platform, project_id=project_id, kind='metrics',
                               resources=0, cost=0.0, ok=False, error=reason, campaign_id=cid)
-            _desk.set_read_coverage(project_id, platform, ok=False, error=reason, via=reader.via)
+            _set_cov(project_id, key, account_id, ok=False, error=reason, via=reader.via)
             continue          # another campaign's posts may still fit its own budget
         except _eng.ReadError as e:
             _spend.release(held)
@@ -156,8 +168,8 @@ def poll_platform(project_id: str, platform: str, reader: _eng.Reader,
                               resources=0, cost=0.0, ok=False, error=str(e))
             entry['error'] = str(e)
             if e.kind == 'not_signed_in':
-                _desk.set_read_coverage(project_id, platform, ok=False, error=str(e),
-                                        via=reader.via, error_kind=e.kind)
+                _set_cov(project_id, key, account_id, ok=False, error=str(e),
+                         via=reader.via, error_kind=e.kind)
             break
         except BaseException:
             _spend.release(held)

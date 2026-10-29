@@ -25,7 +25,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
   // with no Connect / Reconnect: nothing on this screen can connect it.
   function _status(ch) {
     const CS=window.DeskV1ConnectionStatus;
-    if(_isLiveRow(ch) && CS) return CS.accountStatus(ch,CS.coverageRow(_homeProjectId(ch),ch.platform));
+    if(_isLiveRow(ch) && CS) return CS.accountStatus(ch,CS.coverageRow(_homeProjectId(ch),ch.platform,ch.id));
     return W.state(ch.preview || ch.connected===false?'unchecked':ch.health==='held'?'signin':'ready');
   }
 
@@ -34,7 +34,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
     return `<div class="desk-v1-conn-row" data-conn-account="${esc(ch.id)}" data-platform="${esc(ch.platform)}" data-conn-state="${st.key}">
       <div class="desk-v1-conn-head"><span class="desk-v1-channel-badge">${esc(W.serviceName(ch.platform))} · ${esc(window.DeskV1ConnTiles.plainName(ch.label) || ch.identity)}</span>
       <span class="desk-v1-conn-status" data-conn-status data-state="${st.key}">${esc(st.word)}</span></div>
-      ${window.DeskV1ConnectionStatus.accountHTML(ch,window.DeskV1ConnectionStatus.coverageRow(_homeProjectId(ch),ch.platform),st)}
+      ${window.DeskV1ConnectionStatus.accountHTML(ch,window.DeskV1ConnectionStatus.coverageRow(_homeProjectId(ch),ch.platform,ch.id),st)}
     </div>`;
   }
 

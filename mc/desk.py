@@ -2561,7 +2561,7 @@ def list_reads(*, project_id: str | None = None, since: str | None = None) -> li
 
 def set_read_coverage(project_id: str, platform: str, *, ok: bool, cursor: str | None = None,
                       error: str | None = None, via: str | None = None,
-                      error_kind: str | None = None) -> dict:
+                      error_kind: str | None = None, account_id: str | None = None) -> dict:
     """Remember the outcome of the latest read attempt. `last_ok_at` only moves
     on success, so "connected but never successfully read" stays distinguishable
     from "read, found nothing". `cursor` only moves on a successful read.
@@ -2569,12 +2569,23 @@ def set_read_coverage(project_id: str, platform: str, *, ok: bool, cursor: str |
     `via` is the read route (`api` | `pane`) the attempt used: a success on one
     route must not read as "ok" once the account is switched to the other
     (`desk_engagement.platform_coverage` compares it). `error_kind` tags a
-    failure the UI words specially (`not_signed_in`)."""
+    failure the UI words specially (`not_signed_in`).
+
+    `platform` is the read-target key (`desk_engagement_targets`): the platform for its first
+    account, `<platform>:<channel_id>` for later ones. `account_id` stamps the record with the
+    account it describes; a record stamped for ANOTHER account (the keys moved when an account
+    was removed) is started afresh, so its success, error and cursor are never carried over."""
     with _store_lock:
         store = _read_store()
-        rec = store['engagement']['coverage'].setdefault(project_id, {}).setdefault(
+        by_key = store['engagement']['coverage'].setdefault(project_id, {})
+        old = by_key.get(platform)
+        if account_id and isinstance(old, dict) and old.get('account_id') not in (None, account_id):
+            by_key.pop(platform)
+        rec = by_key.setdefault(
             platform, {'last_ok_at': None, 'last_attempt_at': None,
                        'last_error': None, 'cursor': None})
+        if account_id:
+            rec['account_id'] = account_id
         rec['last_attempt_at'] = now_iso()
         if via:
             rec['via'] = via

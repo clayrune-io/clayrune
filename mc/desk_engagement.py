@@ -524,25 +524,34 @@ def default_readers() -> dict[str, Reader]:
     return {'x': XReader(), 'linkedin': LinkedInReader()}
 
 
+def build_reader(project_id: str, platform: str, acc: dict | None) -> Reader | None:
+    """The reader for ONE account (or the platform's default when it has no account
+    record), chosen by that account's `read_via` (absent = `pane`)."""
+    via = _desk.account_read_via(acc)
+    if platform == 'x':
+        return (XReader(account_id=acc.get('channel_id') if isinstance(acc, dict) else acc) if via == 'api'
+                else PaneXReader(project_id, (acc or {}).get('browser_profile'), account=acc))
+    if via == 'pane':
+        # No dedicated reader: any other site is read generically (page addresses
+        # are data, mc/desk_pane_pages.py + the account's `read_pages`).
+        from mc.desk_engagement_pane_digest import PaneDigestReader
+        return PaneDigestReader(project_id, platform, acc)
+    if platform == 'linkedin':
+        return LinkedInReader(via=via)
+    return None
+
+
 def readers_for_project(project_id: str) -> dict[str, Reader]:
-    """One reader per platform the project is present on, chosen by that
-    account's `read_via` (absent = `pane`). The project's first account on a
-    platform decides; a platform it only published to (no account record)
-    reads the default way."""
+    """One reader per READ TARGET (`desk_engagement_targets`): one per presence account,
+    keyed by the target key (the platform for its first account, `<platform>:<channel_id>`
+    for later ones). A platform the project only published to (no account record) reads
+    the default way."""
+    from mc.desk_engagement_targets import read_targets
     out: dict[str, Reader] = {}
-    for platform in project_platforms(project_id):
-        acc = platform_account(project_id, platform)
-        via = _desk.account_read_via(acc)
-        if platform == 'x':
-            out['x'] = (XReader(account_id=acc.get('channel_id') if isinstance(acc, dict) else acc) if via == 'api'
-                        else PaneXReader(project_id, (acc or {}).get('browser_profile'), account=acc))
-        elif via == 'pane':
-            # No dedicated reader: any other site is read generically (page addresses
-            # are data, mc/desk_pane_pages.py + the account's `read_pages`).
-            from mc.desk_engagement_pane_digest import PaneDigestReader
-            out[platform] = PaneDigestReader(project_id, platform, acc)
-        elif platform == 'linkedin':
-            out['linkedin'] = LinkedInReader(via=via)
+    for t in read_targets(project_id):
+        reader = build_reader(project_id, t['platform'], t['account'])
+        if reader is not None:
+            out[t['key']] = reader
     return out
 
 
@@ -608,13 +617,16 @@ def _account_platform(acc) -> str | None:
     return p or None
 
 
-def platform_account(project_id: str, platform: str) -> dict | None:
-    """The project's first presence account on `platform`, or None."""
-    for acc in ((_desk.get_presence(project_id) or {}).get('accounts') or []):
-        if _account_platform(acc) == platform:
-            from mc.desk_engagement_account import resolve
-            return resolve(acc)
-    return None
+def platform_account(project_id: str, platform: str, account_id: str | None = None) -> dict | None:
+    """The project's presence account on `platform` with channel id `account_id`, else
+    (no id, or no such account) its first; None when it has none."""
+    accounts = [acc for acc in ((_desk.get_presence(project_id) or {}).get('accounts') or [])
+                if _account_platform(acc) == platform]
+    accounts.sort(key=lambda acc: not (account_id and acc.get('channel_id') == account_id))
+    if not accounts:
+        return None
+    from mc.desk_engagement_account import resolve
+    return resolve(accounts[0])
 
 
 def _x_post_id(row: dict) -> str | None:
@@ -635,17 +647,25 @@ def _coverage_time(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def platform_coverage(project_id: str, platform: str, reader: Reader | None = None) -> dict:
+def platform_coverage(project_id: str, platform: str, reader: Reader | None = None,
+                      target: dict | None = None) -> dict:
     """`state`: `ok` | `not_connected` | `not_read_yet`. `message` is the exact
     line the UI shows (`Not connected (<why>)`); `reason` is the specific why;
-    `via` the route the account is read by.
+    `via` the route the account is read by. `target` (`desk_engagement_targets`)
+    names which account on the platform this row is for; without it, the
+    platform's first. The row carries `key` and `account_id`.
 
     A record written by the OTHER route (the user switched the account) says
     nothing about this one: it counts as not read yet, and its last error is not
     shown against a route it did not happen on."""
-    reader = reader or readers_for_project(project_id).get(platform)
+    from mc.desk_engagement_targets import record_matches, target_for
+    target = target or target_for(project_id, platform) or {'key': platform, 'account_id': None}
+    key, account_id = target['key'], target.get('account_id')
+    reader = reader or readers_for_project(project_id).get(key)
     label = PLATFORM_LABELS.get(platform, platform)
-    rec = _desk.get_read_coverage(project_id).get(platform) or {}
+    rec = _desk.get_read_coverage(project_id).get(key) or {}
+    if not record_matches(rec, account_id):
+        rec = {}          # another account's record (keys moved): says nothing about this one
     cap = reader.capability() if reader else {'connected': False,
                                               'short': f'no reader for {platform}',
                                               'reason': f'no reader for {platform}'}
@@ -658,6 +678,7 @@ def platform_coverage(project_id: str, platform: str, reader: Reader | None = No
     latest_ok = last_ok is not None and last_attempt is not None and last_ok >= last_attempt
     error = rec.get('last_error') if same_route and not latest_ok else None
     base = {'platform': platform, 'label': label, 'via': via,
+            'key': key, 'account_id': account_id, 'account_label': _target_label(target),
             'pages': reader.pages_state() if reader else None}
     if not cap['connected']:
         return {**base, 'state': 'not_connected', 'reason': cap.get('reason'),
@@ -688,6 +709,13 @@ def platform_coverage(project_id: str, platform: str, reader: Reader | None = No
             'last_ok_at': rec['last_ok_at'], 'message': ''}
 
 
+def _target_label(target: dict) -> str | None:
+    acc = target.get('account')
+    if not isinstance(acc, dict):
+        return None
+    return acc.get('label') or acc.get('identity') or None
+
+
 # -- poll -----------------------------------------------------------------------
 
 def poll_project(project_id: str, *, readers: dict[str, Reader] | None = None,
@@ -701,27 +729,31 @@ def poll_project(project_id: str, *, readers: dict[str, Reader] | None = None,
     readers = readers if readers is not None else readers_for_project(project_id)
     now_dt = _now(now)
     report: dict[str, Any] = {'project_id': project_id, 'platforms': {}}
-    for platform in project_platforms(project_id):
-        reader = readers.get(platform)
-        cov = platform_coverage(project_id, platform, reader)
+    from mc.desk_engagement_targets import read_targets
+    for target in read_targets(project_id):
+        platform, key = target['platform'], target['key']
+        reader = readers.get(key)
+        cov = platform_coverage(project_id, platform, reader, target)
         entry: dict[str, Any] = {'state': cov['state'], 'reason': cov['reason'],
                                  'via': cov['via'], 'message': cov['message'],
+                                 'account_id': target.get('account_id'),
                                  'new_items': 0, 'metrics_written': 0,
                                  'metrics_unavailable': 0, 'spent': 0.0}
-        report['platforms'][platform] = entry
+        report['platforms'][key] = entry
         # Decided on capability, not on the recorded state: a profile that hit
         # the login wall last time must be retried once the user signs in.
         if reader is None or not reader.capability()['connected']:
             continue          # no credential/approval/profile: no call, no spend
         try:
-            _poll_platform(project_id, platform, reader, entry, now_dt)
+            _poll_platform(project_id, platform, reader, entry, now_dt, target)
         except Exception as e:
-            _log(f'[desk_engagement] {platform} poll for {project_id} failed: {e}')
+            _log(f'[desk_engagement] {key} poll for {project_id} failed: {e}')
             entry['error'] = str(e)
-            _desk.set_read_coverage(project_id, platform, ok=False, error=str(e), via=reader.via)
+            _desk.set_read_coverage(project_id, key, ok=False, error=str(e), via=reader.via,
+                                    account_id=target.get('account_id'))
         finally:
             reader.close()
-        cov = platform_coverage(project_id, platform, reader)
+        cov = platform_coverage(project_id, platform, reader, target)
         entry.update({k: cov[k] for k in ('state', 'reason', 'message')})
     return report
 
@@ -732,9 +764,9 @@ def _afford(project_id: str, reader: Reader, resources: int, now_dt: datetime) -
 
 
 def _poll_platform(project_id: str, platform: str, reader: Reader,
-                   entry: dict, now_dt: datetime) -> None:
+                   entry: dict, now_dt: datetime, target: dict | None = None) -> None:
     from mc.desk_engagement_poll import poll_platform
-    poll_platform(project_id, platform, reader, entry, now_dt)
+    poll_platform(project_id, platform, reader, entry, now_dt, target)
 
 
 # -- aggregates (the §6 landing) -------------------------------------------------
@@ -753,13 +785,14 @@ def project_bundle(project_id: str, *, period: str = 'week',
     lane view by construction (`lanes` uses the same state -> lane mapping as
     static/js/desk-v1-engagement.js `LANES`)."""
     readers = readers if readers is not None else readers_for_project(project_id)
-    cov = [platform_coverage(project_id, p, readers.get(p))
-           for p in project_platforms(project_id)]
+    from mc.desk_engagement_targets import read_targets
+    cov = [platform_coverage(project_id, t['platform'], readers.get(t['key']), t)
+           for t in read_targets(project_id)]
     covered = [c for c in cov if c['state'] == 'ok']
     gaps = [c for c in cov if c['state'] != 'ok']
     items = _desk.list_engagement_items(project_id=project_id, limit=100000)
     base = {'project_id': project_id, 'period': period, 'coverage': cov,
-            'gaps': [{'platform': g['platform'], 'state': g['state'],
+            'gaps': [{'platform': g['platform'], 'account_id': g['account_id'], 'state': g['state'],
                       'message': g['message'], 'reason': g['reason']} for g in gaps]}
     if not covered:
         # No platform read: the honest answer is "not connected", NOT zero.
