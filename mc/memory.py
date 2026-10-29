@@ -5017,7 +5017,7 @@ def _checkpoint_watermark(p, sid):
             return r
         mp = _get_memory_path(p)
         if not mp.exists():
-            return 0
+            return {}
         _c, _e, legacy_wm = _mem_split_full(mp.read_text(encoding='utf-8'))
         r = _wm_find(legacy_wm, sid)
         return r or {}
