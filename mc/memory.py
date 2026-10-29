@@ -2521,6 +2521,17 @@ def corpus_uids(project):
     return out
 
 
+def _mem_unit_allowed(unit, *, consumer_unattended):
+    """One origin policy for lexical candidates and link-graph membership.
+
+    The unattended-loop rail covers both topic mints and positions, regardless
+    of their write path. Legacy/unstamped units retain their existing treatment.
+    """
+    return not (consumer_unattended
+                and unit.get('cls') in ('topic', 'position')
+                and _note_frontmatter(unit['text']).get('origin') == 'unattended')
+
+
 def _memory_search(project, query, topk=3, expand=None, record=None,
                     keep_internal=False, consumer_unattended=False):
     """BM25 ranking over the project's memory corpus (SPEC §3 Leg B).
@@ -2633,17 +2644,8 @@ def _memory_search(project, query, topk=3, expand=None, record=None,
             score += idf[t] * (f * (_BM25_K1 + 1.0)) / (f + denom_len)
         if not matched:
             continue
-        if consumer_unattended and u.get('cls') in ('topic', 'position'):
-            # MC-944 step 8 (Condition 11/12) — the negation obligation scan
-            # can write a position from the SAME unattended triggers mint
-            # already fires from (hivemind close, backlog->done, docs
-            # artifact scan). CLAUDE.md's learning-safety rail ("a human
-            # must be on at least one side of every learning loop") makes no
-            # exception for cls: this gate is a property of `origin`, not of
-            # which write path produced the file, so it must cover positions
-            # exactly as it already covers topic mints below.
-            if _note_frontmatter(u['text']).get('origin') == 'unattended':
-                continue
+        if not _mem_unit_allowed(u, consumer_unattended=consumer_unattended):
+            continue
         _trig = u.get('subject_terms') or set()
         _hit_trig = _trig & set(terms)
         if _hit_trig and not u.get('trigger_explicit'):
@@ -2710,7 +2712,9 @@ def _memory_search(project, query, topk=3, expand=None, record=None,
     hits = _reserved + scored[:max(1, topk - len(_reserved))]
     n_expand = max(0, int(expand or 0))
     if n_expand:
-        hits = hits + _mem_expand_links(units, hits, terms, n_expand)
+        hits = hits + _mem_expand_links(
+            units, hits, terms, n_expand,
+            consumer_unattended=consumer_unattended)
 
     # Delivery telemetry (DAVE_DESIGN §9 phase 4) runs HERE, before the
     # internal keys are stripped: `uid` is the only thing that distinguishes one
@@ -3831,13 +3835,18 @@ def _mem_snippet(text, terms):
     return (text or '')[start:start + 400].replace('\n', ' ').strip()
 
 
-def _mem_expand_links(units, hits, terms, n_expand):
+def _mem_expand_links(units, hits, terms, n_expand, *, consumer_unattended=False):
     """One `[[wikilink]]` hop out from `hits` — see _memory_search's LINK EXPANSION.
 
     Returns at most n_expand extra result dicts, each with `via` naming the hit
     it was reached from. Notes already in `hits` are skipped, so expansion never
     duplicates and never displaces a lexical match.
     """
+    if consumer_unattended:
+        # Filter before graph construction: neither direction may reintroduce
+        # a lexical exclusion, even when expanding another hop's results.
+        units = [u for u in units if _mem_unit_allowed(
+            u, consumer_unattended=consumer_unattended)]
     graph = _mem_link_graph(units)
     if not graph:
         return []
@@ -5017,7 +5026,7 @@ def _checkpoint_watermark(p, sid):
             return r
         mp = _get_memory_path(p)
         if not mp.exists():
-            return 0
+            return {}
         _c, _e, legacy_wm = _mem_split_full(mp.read_text(encoding='utf-8'))
         r = _wm_find(legacy_wm, sid)
         return r or {}

@@ -10,8 +10,8 @@
  *   2. Browser route   Sign in sits in the Browser row (primary while it Needs sign-in) and opens the browser pane on the
  *                      platform's reviewed sign-in page with THE ACCOUNT'S OWN named profile. No wizard, no server write.
  *   3. API route (X)   Sign in sits in the API row (primary while not signed in) and runs the passcode-gated start-held for
- *                      that account; cancelling the passcode sends nothing; the held token is stored only by Save sign-in,
- *                      a second passcode-gated POST /api/desk/connect/commit that carries that account and {flow_id, claim}.
+ *                      that account; cancelling the passcode sends nothing; the server saves a confirmed match automatically; lookup failures retain Save sign-in,
+ *                      a fallback passcode-gated POST /api/desk/connect/commit that carries that account and {flow_id, claim}.
  *   4. Both routes     an account with a Browser and an API route shows one Sign in per row.
  *   5. No mechanism    an account with no profile and no API route gets no button; a platform with no reviewed sign-in page
  *                      (YouTube) is learned on the first press (never on paint), opens nothing and shows a note instead.
@@ -123,7 +123,15 @@ async function newPage(browser, srv, width, height) {
       if (!body || body.passcode !== PASSCODE) return J({ error: 'bad_passcode' }, 403);
       return J({ flow_id: 'flow-1', claim: 'claim-1', auth_url: 'https://x.com/i/oauth2/authorize?state=s', profile: 'x_oauth_acct_x', account_id: body.account_id, hold_ttl_s: 600 }, 201);
     }
-    if (path === '/api/desk/connect/flows/flow-1' && method === 'GET') return J(srv.flow === 'held' ? { status: 'held', held_ttl_s: 540 } : { status: 'pending' });
+    if (path === '/api/desk/connect/flows/flow-1' && method === 'GET') {
+      if (srv.flow === 'done') {
+        srv.accounts.find(a => a.id === 'acct-x').publish = {ready:true,reason:null,secret:'x.oauth',unattended_ok:true};
+        return J({status:'done',message:'The X sign-in is saved.'});
+      }
+      if (srv.flow === 'mismatch') return J({status:'held',held_ttl_s:540,save_allowed:false,message:'You signed in as @other_user, but this account is @RanLevi15. Nothing was saved. Discard this sign-in and sign in to the correct account.'});
+      if (srv.flow === 'error') return J({status:'error',message:'The X sign-in failed. The service could not finish signing in. Sign in again to retry.'});
+      return J(srv.flow === 'held' ? {status:'held',held_ttl_s:540,save_allowed:true,message:'The X identity could not be confirmed. Nothing was saved. You can save this sign-in manually or discard it.'} : {status:'pending'});
+    }
     if (path === '/api/desk/connect/commit' && method === 'POST') {
       if (!body || body.passcode !== PASSCODE) return J({ error: 'bad_passcode' }, 403);
       if (srv.commitStatus !== 201) return J({ error: 'the held sign-in is no longer there' }, srv.commitStatus);
@@ -157,6 +165,36 @@ const answer = async (page, code) => { await waitPrompt(page); await page.fill('
 const cancel = async (page) => { await waitPrompt(page); await page.click('.modal-content .btn-secondary'); };
 const buttons = (page, id, sel) => page.$$eval(`[data-conn-account="${id}"] ${sel}`, (e) => e.map((x) => ({ text: x.textContent.trim(), primary: x.classList.contains('desk-v1-cf-primary'), row: (x.closest('[data-cs-facet]') || {}).dataset ? x.closest('[data-cs-facet]').dataset.csFacet : '' })));
 
+// The state line must never participate in button sizing/wrapping, at either viewport.
+async function layout(page, width, state, id = 'acct-x') {
+  await page.locator(`[data-conn-account="${id}"] [data-connection-actions]`).scrollIntoViewIfNeeded();
+  const info = await page.$eval(`[data-conn-account="${id}"]`, el => {
+    const row=el.querySelector('[data-connection-actions]');
+    const buttons=[...row.querySelectorAll('button')].filter(b=>b.getBoundingClientRect().width);
+    const rects=buttons.map(b=>b.getBoundingClientRect());
+    const msgs=[...el.querySelectorAll('[data-account-signin-messages] > *')];
+    const rr=row.getBoundingClientRect();
+    return {tops:rects.map(r=>Math.round(r.top)), messagesAbove:msgs.every(m=>m.getBoundingClientRect().bottom<=rr.top+1),
+      inline:!!row.querySelector('.desk-v1-cf-msg,[data-as-none]'),
+      pageOverflow:document.documentElement.scrollWidth>innerWidth,
+      rowFits:rr.width<=el.getBoundingClientRect().width+1};
+  });
+  check(new Set(info.tops).size===1 && info.messagesAbove && !info.inline && info.rowFits && !info.pageOverflow,
+    `${width}px ${state}: full-width messages above one button row, no page overflow`,JSON.stringify(info));
+  if (width===390) {
+    const end=await page.$eval(`[data-conn-account="${id}"] [data-connection-actions]`,row=>{
+      row.scrollLeft=row.scrollWidth;
+      const last=[...row.querySelectorAll('button')].at(-1).getBoundingClientRect();
+      const box=row.getBoundingClientRect();
+      return last.right<=box.right+1 && last.left>=box.left;
+    });
+    check(end,`${state}: scrolling the phone action row exposes Remove`);
+    await page.screenshot({path:resolve(SHOT_DIR,`${id}_${state.replaceAll(' ','_')}_actions_end_${width}.png`)});
+    await page.$eval(`[data-conn-account="${id}"] [data-connection-actions]`,row=>{row.scrollLeft=0;});
+  }
+
+}
+
 async function run(browser, width, height) {
   console.log(`\n== ${width}px ==`);
 
@@ -182,6 +220,10 @@ async function run(browser, width, height) {
     check(p[0] === 'https://www.linkedin.com/login' && p[3] === 'linked_ronlevy', `Sign in opens the pane on the LinkedIn sign-in page in the account's own profile (${p[0]}, ${p[3]})`, 'pane call: ' + JSON.stringify(p));
     check(!(await page.$('[data-cfw]')) && only(srv, /start-held|commit|permissions/).every(r=>r.method==='GET') && only(srv, /^\/api\/browser\//).length === 0,
       'it did not open the wizard, start an API sign-in or write anything', 'requests: ' + JSON.stringify(srv.log.map((r) => r.method + ' ' + r.path)));
+    await page.evaluate(()=>{window.openBrowserPane=()=>Promise.reject(new Error('scripted pane failure'));});
+    await page.click('[data-conn-account="acct-li"] [data-as-signin="browser"]');
+    await page.waitForSelector('[data-conn-account="acct-li"] [data-as-msg="browser"]');
+    await layout(page,width,'browser error','acct-li');
     check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
     await ctx.close();
   }
@@ -214,17 +256,27 @@ async function run(browser, width, height) {
     await answer(page, PASSCODE);
     await page.waitForSelector('[data-conn-account="acct-x"] [data-as-state="waiting"]', { timeout: 4000 });
     const start = only(srv, /start-held/);
-    check(start.length === 1 && start[0].body.account_id === 'acct-x' && start[0].body.passcode === PASSCODE && Object.keys(start[0].body.hold || {}).length === 0,
+    check(start.length === 1 && start[0].body.account_id === 'acct-x' && start[0].body.auto_save === true && start[0].body.passcode === PASSCODE && Object.keys(start[0].body.hold || {}).length === 0,
       'the API row posts start-held for THIS account behind the passcode, typing no app details', JSON.stringify(start.map((r) => r.body)));
     await page.waitForFunction(() => window.__panes.length === 2, null, { timeout: 4000 });
     const ap = (await panes(page))[1];
     check(ap[0].startsWith('https://x.com/i/oauth2/authorize') && ap[3] === 'x_oauth_acct_x', `the sign-in page opened in the profile the server named (${ap[3]})`, 'pane call: ' + JSON.stringify(ap));
     check(only(srv, /commit/).length === 0, 'nothing is saved while waiting', 'a commit went out');
 
+    await layout(page, width, 'waiting');
     srv.flow = 'held';
     await page.waitForSelector('[data-conn-account="acct-x"] [data-as-state="held"]', { timeout: 6000 });
-    check(!!(await page.$('[data-conn-account="acct-x"] [data-as-save]')) && only(srv, /commit/).length === 0, 'once signed in it is held and Save sign-in is offered; still nothing saved', 'no Save sign-in, or a commit went out');
+    check(!!(await page.$('[data-conn-account="acct-x"] [data-as-save]')) && only(srv, /commit/).length === 0, 'identity lookup failure keeps it held with manual Save; no commit from polling', 'no Save sign-in, or a commit went out');
+    await layout(page, width, 'held');
     await page.screenshot({ path: resolve(SHOT_DIR, `x_held_${width}.png`) });
+    srv.commitStatus=500;
+    await page.click('[data-conn-account="acct-x"] [data-as-save]');
+    await answer(page,PASSCODE);
+    await page.waitForSelector('[data-conn-account="acct-x"] [data-as-msg="api"][data-cf-msg="error"]');
+    await layout(page,width,'manual save error');
+    await page.screenshot({path:resolve(SHOT_DIR,`x_save_error_${width}.png`)});
+    check(!!(await page.$('[data-as-save]')),'manual Save failure keeps its retry button and held token');
+    srv.commitStatus=201; srv.log.length=0;
     await page.click('[data-conn-account="acct-x"] [data-as-save]');
     await answer(page, PASSCODE);
     await page.waitForSelector('[data-conn-account="acct-x"] [data-cs-facet="api"][data-state="ok"]', {state:'attached',timeout:6000});
@@ -234,8 +286,55 @@ async function run(browser, width, height) {
         && d.held && d.held.flow_id === 'flow-1' && d.held.claim === 'claim-1' && Object.keys(d.fields || {}).length === 0,
       'Save sign-in is the passcode-gated commit for this account with {flow_id, claim} and no typed details', JSON.stringify(commit.map((r) => r.body)));
     check(await page.$eval('[data-conn-account="acct-x"] [data-cs-facet="api"]', (e) => e.dataset.state) === 'ok',
-      'the card then reads API signed in, from the server\'s fresh account row', 'the card did not update');
+      'manual fallback re-reads the saved API account row', 'the card did not update');
+    await layout(page, width, 'saved');
+    await page.screenshot({ path: resolve(SHOT_DIR, `x_manual_saved_${width}.png`) });
     check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
+    await ctx.close();
+  }
+
+  // Server auto-save, known mismatch, and callback failure: no second passcode or client commit.
+  for (const state of ['done','mismatch','error']) {
+    const srv=makeServer();
+    const {ctx,page,pageErrors}=await newPage(browser,srv,width,height);
+    await selectTile(page,'acct-x');
+    await page.click('[data-conn-account="acct-x"] [data-as-signin="api"]');
+    await answer(page,PASSCODE);
+    await page.waitForSelector('[data-as-state="waiting"]');
+    srv.flow=state;
+    await page.waitForSelector(state==='done'?'[data-as-msg="api"]':state==='mismatch'?'[data-as-state="held"]':'[data-as-state="failed"]');
+    if(state==='done') {
+      check((await text(page,'[data-as-msg="api"]'))==='The X sign-in is saved.' && !(await page.$('[data-as-save]')),
+        'confirmed card sign-in reports saved without Save sign-in');
+      check(only(srv,/^\/api\/desk\/accounts$/).length>=1,'auto-save re-reads the account row');
+    } else if(state==='mismatch') {
+      check(!(await page.$('[data-as-save]')) && !!(await page.$('[data-cfh-cancel]')),
+        'known wrong handle offers Discard only');
+    }
+    check(only(srv,/commit/).length===0 && !(await page.$('input[id^="hp-passcode-"]')),
+      `${state}: polling sends no commit and opens no second passcode prompt`);
+    await layout(page,width,state);
+    await page.screenshot({path:resolve(SHOT_DIR,`x_${state==='done'?'saved':state}_${width}.png`)});
+    check(realErrors(pageErrors).length===0,'no page errors in '+state,JSON.stringify(realErrors(pageErrors)));
+    await ctx.close();
+  }
+
+  // Wizard contract: absent account id does not request auto-save and remains held for Review's Save.
+  {
+    const srv=makeServer();
+    const {ctx,page}=await newPage(browser,srv,width,height);
+    await page.evaluate(()=>{
+      window.DeskV1ConnectHeld.begin('x','oauth','X',{api:window.DeskV1Store.api,repaint:()=>{}});
+      window.DeskV1ConnectHeld.start(document.body);
+    });
+    await answer(page,PASSCODE);
+    srv.flow='held';
+    await page.waitForFunction(()=>window.DeskV1ConnectHeld.state()?.phase==='held');
+    const request=only(srv,/start-held/)[0];
+    check(!request.body.account_id && !request.body.auto_save && only(srv,/commit/).length===0,
+      'wizard starts without auto-save or an existing account and retains its explicit Save');
+    check(await page.evaluate(()=>!!window.DeskV1ConnectHeld.draft() && /Save stores it/.test(window.DeskV1ConnectHeld.reviewRowHTML())),
+      'wizard Review still holds the claim for Save');
     await ctx.close();
   }
 

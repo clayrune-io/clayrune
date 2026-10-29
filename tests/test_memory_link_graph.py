@@ -8,6 +8,9 @@ written kebab still reaches a snake_case filename) and expansion that is strictl
 ADDITIVE, so switching it on can never push a real lexical match out of the floor.
 """
 import importlib
+import json
+
+import pytest
 
 
 def _mem(tmp_data_dir):
@@ -174,3 +177,63 @@ def test_expand_off_leaves_the_result_shape_untouched(tmp_data_dir):
                  m._memory_search(p, "widget", topk=2, expand=None)):
         assert [h["file"] for h in hits] == ["a.md"]
         assert set(hits[0]) == {"file", "score", "snippet"}
+
+
+@pytest.mark.parametrize('direction', ['out', 'in'])
+@pytest.mark.parametrize('consumer_unattended', [True, False])
+def test_expansion_obeys_origin_gate_in_both_directions(
+        tmp_data_dir, direction, consumer_unattended):
+    """MC-1122: the scratch repro, including the backlink delivery path."""
+    m = _mem(tmp_data_dir)
+    p = {'id': 'linkrail'}
+    human = '---\norigin: interactive\n---\nquartz calibration'
+    loop = '---\norigin: unattended\n---\nsaffron isolated evidence'
+    if direction == 'out':
+        human += ' [[loop_note]]'
+    else:
+        loop += ' [[human]]'
+    _seed(m, p, {'human.md': human, 'loop_note.md': loop})
+    hits = m._memory_search(p, 'quartz calibration', 6, expand=2,
+                           consumer_unattended=consumer_unattended)
+    assert hits[0]['file'] == 'human.md'
+    assert ('loop_note.md' in [h['file'] for h in hits]) == (not consumer_unattended)
+    if not consumer_unattended:
+        assert hits[1]['via'] == 'human.md'
+        assert hits[1]['link'] == direction
+        # Default/explicit False preserve every public result byte.
+        default = m._memory_search(p, 'quartz calibration', 6, expand=2)
+        assert json.dumps(hits) == json.dumps(default)
+
+
+@pytest.mark.parametrize('consumer_unattended', [True, False])
+def test_second_hop_cannot_reach_unattended_note_through_attended_intermediate(
+        tmp_data_dir, consumer_unattended):
+    m = _mem(tmp_data_dir)
+    p = {'id': 'linkrailchain'}
+    _seed(m, p, {
+        'human.md': '---\norigin: interactive\n---\nquartz calibration [[middle]]',
+        'middle.md': '---\norigin: interactive\n---\ncobalt bridge [[loop_note]]',
+        'loop_note.md': '---\norigin: unattended\n---\nsaffron isolated evidence',
+    })
+    first = m._memory_search(p, 'quartz calibration', 6, expand=2,
+                            consumer_unattended=consumer_unattended)
+    assert [h['file'] for h in first] == ['human.md', 'middle.md']
+    # expand=2 is an extra-result cap, NOT recursive depth. Compose a second
+    # hop explicitly to check the helper itself cannot bypass the gate.
+    second = m._mem_expand_links(
+        _corpus(m, p), first, m._mem_tokens('quartz calibration'), 2,
+        consumer_unattended=consumer_unattended)
+    assert ('loop_note.md' in [h['file'] for h in second]) == (not consumer_unattended)
+
+
+@pytest.mark.parametrize('origin', ['', 'legacy'])
+def test_expansion_keeps_legacy_origin_policy(tmp_data_dir, origin):
+    m = _mem(tmp_data_dir)
+    p = {'id': 'linkraillegacy'}
+    _seed(m, p, {
+        'human.md': '---\norigin: interactive\n---\nquartz calibration [[old_note]]',
+        'old_note.md': f'---\norigin: {origin}\n---\nsaffron isolated evidence',
+    })
+    hits = m._memory_search(p, 'quartz calibration', 6, expand=2,
+                           consumer_unattended=True)
+    assert [h['file'] for h in hits] == ['human.md', 'old_note.md']

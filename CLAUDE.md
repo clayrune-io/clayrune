@@ -301,8 +301,9 @@ markdown in a terminal" case. Detail: memory `reference-show-image-in-chat`.
 
 New/moved modules under `mc/` must pass `pyright` basic (scope:
 `pyproject.toml` `[tool.pyright]`; CI: `.github/workflows/pyright.yml`,
-non-blocking until the 23-error baseline in `mc/distiller.py` /
-`mc/agent_runtime.py` is cleared).
+still non-blocking). `mc/distiller.py` and `mc/agent_runtime.py` are at 0
+since 2026-10-29; 177 older errors remain elsewhere in scope
+(`docs/PYRIGHT_BASELINE_PART2.md`). Don't add new ones.
 
 ## Hosted SaaS lives elsewhere now (2026-07-11)
 

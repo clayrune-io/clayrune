@@ -25,12 +25,10 @@ THIS message and returns text to prepend.
 WHAT THIS DOES vs WHAT IT DELIBERATELY DOES NOT DO (MC-944 scope):
   DOES      — recompute STANDING POSITIONS + RELEVANT MEMORY for the live
               message, via the SAME `mc.memory._memory_search` the dispatch
-              floor already calls (unchanged: same ranking, same corpus, same
-              lack of an origin filter — this module does not touch or
-              weaken the unattended-origin gate, because `_memory_search` has
-              never had one; see mc/distiller.py's gate, which governs
-              Distiller/exploration artifacts, a different channel this
-              module does not call).
+              floor already calls (same ranking and corpus). MC-1122 applies
+              its unattended-origin gate at dispatch seeding and each live
+              refresh; the latter uses session provenance, so a markerless
+              follow-up cannot turn an unattended session into an attended one.
   DOES      — track a per-CONVERSATION delivered-set (stored on the live
               session dict, so it lives exactly as long as the session does)
               so a note already sent once this conversation is not resent as
@@ -277,9 +275,14 @@ def seed_delivered(project, session, task, *, topk=None, expand=None) -> None:
         return
     try:
         from mc import state
+        from mc import distiller as _distiller
         _topk = int(topk if topk is not None else state.CONFIG.get('read_floor_topk', 6) or 6)
         _expand = int(expand if expand is not None else state.CONFIG.get('read_floor_link_expand', 2) or 0)
-        hits = _mem._memory_search(project, task, _topk, expand=_expand, record=None)
+        # Match _build_agent_context's task-scoped gate exactly: withheld
+        # dispatch hits must not enter the suppression/position ledgers.
+        hits = _mem._memory_search(
+            project, task, _topk, expand=_expand, record=None,
+            consumer_unattended=_distiller.is_unattended_task(task))
         delivered = session.setdefault(_DELIVERED_KEY, set())
         added = 0
         # MC-1057: the dispatch-time system prompt carried these positions in
@@ -393,7 +396,10 @@ def refresh_for_turn(project, session, message, *, topk=None, expand=None,
 
 def _refresh_for_turn(project, session, message, *, topk, expand, context):
     from mc import state
+    from mc import distiller as _distiller
     pid = (project or {}).get('id')
+    consumer_unattended = _distiller.is_unattended_session(
+        session.get('task', ''), session.get('trigger_type', ''))
     topk = int(topk if topk is not None else state.CONFIG.get('read_floor_topk', 6) or 6)
     expand = int(expand if expand is not None else state.CONFIG.get('read_floor_link_expand', 2) or 0)
     budget = turn_budget_bytes()
@@ -406,7 +412,8 @@ def _refresh_for_turn(project, session, message, *, topk, expand, context):
     # backfilled from the next-ranked one instead of the block silently
     # shrinking every time a topic recurs in a long conversation.
     raw = _mem._memory_search(project, message, max(topk * 2, topk + 4),
-                               expand=expand, record=context)
+                               expand=expand, record=context,
+                               consumer_unattended=consumer_unattended)
 
     pos_hits = [h for h in raw if _is_position_hit(h)]
     note_hits = [h for h in raw if not _is_position_hit(h)]
@@ -474,11 +481,9 @@ def _refresh_for_turn(project, session, message, *, topk, expand, context):
     # flipped it, matching this module's "flag off = unchanged behaviour"
     # contract for the other two sections.
     try:
-        from mc import distiller as _distiller
         ledger_block = _mem.render_negation_ledger(
             project, task=message, trigger_type=session.get('trigger_type', ''),
-            consumer_unattended=_distiller.is_unattended_session(
-                session.get('task', ''), session.get('trigger_type', '')))
+            consumer_unattended=consumer_unattended)
     except Exception as e:
         _log(f"[mem-turn] {pid}: negation ledger render failed: {e}")
         ledger_block = ''

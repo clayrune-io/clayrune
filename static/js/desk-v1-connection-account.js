@@ -49,6 +49,7 @@ export function accountHTML(ch,cov,{site=false,details='',status}={}) {
   // Keep route bindings for real sign-in flows, but offer only routes that
   // actually need sign-in. Their labels come from the same button vocabulary.
   const signin=live && st.kind==='signin'?list.filter(f=>f.key==='reauth' && !f.locked).map(f=>`<div data-cs-facet="${esc(f.id)}">${window.DeskV1AccountSignin?.html(ch,f)||''}</div>`).join(''):'';
+  const messages=live?list.map(f=>window.DeskV1AccountSignin?.html(ch,f,true)||'').join(''):'';
   const off=window.DeskV1ReadsOff?.gateOf(cov);
   const sentence=site?W.reasons.noAccount:off?W.reasons.readOff:list.some(f=>f.locked)?W.reasons.locked:st.kind==='waiting'?W.waiting(W.serviceName(ch.platform)):!canCheck && st.kind==='unchecked'?W.reasons.noCheck:W.next[st.kind];
   return `<div class="desk-v1-cs" data-cs-account="${esc(ch.id)}">
@@ -58,6 +59,7 @@ export function accountHTML(ch,cov,{site=false,details='',status}={}) {
       ${p?.scopes?.length?`<p>${W.labels.scope}: <code>${esc(JSON.stringify(p.scopes))}</code></p>`:''}
       ${p?.state==='legacy'?`<p>${W.reasons.legacy}</p>`:''}
     </details>
+    <div data-account-signin-messages>${messages}</div>
     <div class="desk-v1-conn-actions" data-connection-actions>
       ${browserTarget?window.DeskV1BrowserAccount.html(ch):`<button type="button" class="desk-v1-conn-btn" data-connection-check ${!canCheck || site?'disabled':''}>${W.buttons.check}</button>`}
       <button type="button" class="desk-v1-conn-btn" data-cs-reopen="${esc(ch.id)}">${W.buttons.edit}</button>

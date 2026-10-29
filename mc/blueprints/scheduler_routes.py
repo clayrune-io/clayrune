@@ -516,7 +516,8 @@ def _steward_cycle_task(project_id):
             hits = _mem._memory_search(
                 p, objective,
                 int(state.CONFIG.get('read_floor_topk', 6) or 6),
-                expand=int(state.CONFIG.get('read_floor_link_expand', 2) or 0))
+                expand=int(state.CONFIG.get('read_floor_link_expand', 2) or 0),
+                consumer_unattended=True)  # _UNATTENDED_LOOP_RULE
             if hits:
                 blocks.append(
                     "--- RELEVANT MEMORY (auto-surfaced for your charter; use "

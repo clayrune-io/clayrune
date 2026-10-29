@@ -36,7 +36,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, cast, Dict, Iterator, List, Literal, Optional, Tuple
+from typing import (
+    Any, Callable, cast, Dict, Iterable, Iterator, List, Literal, Mapping, Optional, Tuple,
+)
 
 from mc.core import TimestampedLines
 from mc import doc_write_cache_store as _doc_cache_store
@@ -644,7 +646,8 @@ def stop_hook_block_kind_before(records: Dict[str, Dict[str, Any]], uuid: str) -
                 return stop_hook_kind_from_reasons([be or ''])
         elif t == 'user':
             return stop_hook_kind(cur) if is_stop_hook_feedback(cur) else None
-        cur = records.get(cur.get('parentUuid'))
+        # A missing parent is a valid lookup miss; dict.get accepts None.
+        cur = cast(Mapping[object, Dict[str, Any]], records).get(cur.get('parentUuid'))
     return None
 
 
@@ -4938,7 +4941,8 @@ class GeminiRuntime(AgentRuntime):
                     session['log_lines'].append(f"[callback {name} error: {e}]")
 
         try:
-            for raw_line in proc.stdout:
+            # Both launch paths supply stdout=PIPE and text=True.
+            for raw_line in cast(Iterable[str], proc.stdout):
                 if session.get('proc') is not proc:
                     break
                 line = raw_line.rstrip('\n\r')
@@ -6324,7 +6328,8 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 session['log_lines'].append(f"[callback {name} error: {e}]")
 
     try:
-        for raw_line in proc.stdout:
+        # Mode-A launchers supply stdout=PIPE and text=True.
+        for raw_line in cast(Iterable[str], proc.stdout):
             if session.get('proc') is not proc:
                 break
             line = raw_line.rstrip('\n\r')
@@ -9908,7 +9913,8 @@ class OpenCodeRuntime(AgentRuntime):
         def _n(v: Any) -> int:
             return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
 
-        cache = tokens.get('cache') if isinstance(tokens.get('cache'), dict) else {}
+        cache = (cast(Dict[str, Any], tokens.get('cache'))
+                 if isinstance(tokens.get('cache'), dict) else {})
         usage = {
             'input_tokens': _n(tokens.get('input')),
             'output_tokens': _n(tokens.get('output')),
@@ -9985,7 +9991,8 @@ class OpenCodeRuntime(AgentRuntime):
             )
 
         etype = msg.get('type', '')
-        part = msg.get('part') if isinstance(msg.get('part'), dict) else {}
+        part = (cast(Dict[str, Any], msg.get('part'))
+                if isinstance(msg.get('part'), dict) else {})
         session_id = msg.get('sessionID') or part.get('sessionID') or None
         if not isinstance(session_id, str):
             session_id = None
@@ -10004,7 +10011,8 @@ class OpenCodeRuntime(AgentRuntime):
             if text:
                 return _ev(EventType.THINKING, {'text': text})
         elif etype == 'tool_use':
-            state = part.get('state') if isinstance(part.get('state'), dict) else {}
+            state = (cast(Dict[str, Any], part.get('state'))
+                     if isinstance(part.get('state'), dict) else {})
             tinput = state.get('input')
             block: Dict[str, Any] = {
                 'type': 'tool_use',

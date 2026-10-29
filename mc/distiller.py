@@ -42,21 +42,22 @@ import threading
 import time
 from collections import Counter
 from pathlib import Path
+from typing import Callable, cast
 
 # ── Injected helpers (set by register()) ─────────────────────────────────────
 
 _data_root: Path | None = None        # data/projects/
 _skills_root: Path | None = None      # data/skills/
-_atomic_write_text = None             # server._atomic_write_text
-_scribe_call = None                   # server._scribe_call (cheap-model wrapper)
+_atomic_write_text: Callable[[Path, str], None] | None = None  # server._atomic_write_text
+_scribe_call: Callable[[str, str, str], str] | None = None  # cheap-model wrapper
 _text_transform = None                # memory._provider_transform seam
 _resolve_model = None                 # memory._model_for_provider seam
-_scribe_render_transcript = None      # server._scribe_render_transcript
+_scribe_render_transcript: Callable[[Path], str] | None = None  # transcript renderer
 _log = None                           # server._log
-_load_project = None
+_load_project: Callable[[str], dict | None] | None = None
 _load_agent_log = None
 _save_project = None
-_now_iso = None
+_now_iso: Callable[[], str] | None = None
 _config_get = None                    # CONFIG.get-equivalent (callable: key, default)
 _get_per_project_semaphore = None     # parent design BoundedSemaphore cap=2
 
@@ -437,13 +438,15 @@ def _get_skill_stats_lock(project_id: str) -> threading.Lock:
 # }
 
 
+# Required-hook/path casts below express register()'s startup precondition;
+# keep the None sentinels and existing pre-registration failure behavior.
 def _skill_stats_path(project_id: str) -> Path:
     """Flat sidecar form (D9): data/projects/<pid>_skill_stats.json."""
-    return _data_root / f'{project_id}_skill_stats.json'
+    return cast(Path, _data_root) / f'{project_id}_skill_stats.json'
 
 
 def _skill_stats_summary_path(project_id: str) -> Path:
-    return _data_root / f'{project_id}_skill_stats_summary.json'
+    return cast(Path, _data_root) / f'{project_id}_skill_stats_summary.json'
 
 
 def _read_skill_stats(project_id: str) -> dict:
@@ -485,7 +488,8 @@ def _write_skill_stats(project_id: str, stats: dict) -> None:
     """Atomic write — caller MUST hold _get_skill_stats_lock."""
     stats['_updated'] = _now_iso() if _now_iso else ''
     p = _skill_stats_path(project_id)
-    _atomic_write_text(p, json.dumps(stats, indent=2, ensure_ascii=False))
+    cast(Callable[[Path, str], None], _atomic_write_text)(
+        p, json.dumps(stats, indent=2, ensure_ascii=False))
 
 
 def _increment_counter(project_id: str, key: str, n: int = 1) -> None:
@@ -894,7 +898,7 @@ def _distill_extract_and_aggregate_inner(project_id: str, sid: str,
     """Inner: kill-switch gate → semaphore → extract → aggregate →
     per-kind generate → cross-project pass."""
     _structured_log(f"inner_entered:project_id={project_id}:sid={sid[:12]}")
-    project = _load_project(project_id)
+    project = cast(Callable[[str], dict | None], _load_project)(project_id)
     if project is None:
         _structured_log(f"inner_skip_no_project:project_id={project_id}")
         _increment_counter(project_id, 'skipped_no_project')
@@ -941,7 +945,8 @@ def _do_extract_aggregate(project_id: str, project: dict,
     # Render transcript (reuses Scribe's renderer)
     if jsonl_path:
         try:
-            transcript = _scribe_render_transcript(Path(jsonl_path))
+            transcript = cast(Callable[[Path], str], _scribe_render_transcript)(
+                Path(jsonl_path))
         except Exception as e:
             _structured_log(f"do_skip_render_exc:project_id={project_id}:err={e!r}")
             _increment_counter(project_id, 'skipped_render_exception')
@@ -1374,7 +1379,7 @@ def _within_cost_cap(project_id: str, project: dict) -> bool:
     log + counter exactly once per cap-hit per day).
     """
     cap = int(_cfg('distiller_cost_cap_tokens_per_project_per_day', 100000))
-    today = (_now_iso() or '')[:10]
+    today = (cast(Callable[[], str], _now_iso)() or '')[:10]
     try:
         stats = _read_skill_stats(project_id)
         used = int(stats.get('cost', {}).get(today, 0))
@@ -1410,7 +1415,7 @@ def _cross_project_walk_debounced(project_id: str) -> bool:
         elapsed = time.time() - last_epoch if last_epoch else float('inf')
         sess_delta = last_sess + 1
         if elapsed >= secs_cap or sess_delta >= sess_cap:
-            stats['last_walk_ts'] = _now_iso()
+            stats['last_walk_ts'] = cast(Callable[[], str], _now_iso)()
             stats['last_walk_session_count'] = 0
             _write_skill_stats(project_id, stats)
             return True
@@ -1547,8 +1552,9 @@ def _update_summary_cache(project_id: str) -> None:
                 for k, v in summary.items()
             }
             p = _skill_stats_summary_path(project_id)
-            _atomic_write_text(
-                p, json.dumps({'_updated': _now_iso(), 'fingerprints': out},
+            cast(Callable[[Path, str], None], _atomic_write_text)(
+                p, json.dumps({'_updated': cast(Callable[[], str], _now_iso)(),
+                               'fingerprints': out},
                               indent=2, ensure_ascii=False))
     except Exception:
         pass
@@ -1821,12 +1827,12 @@ def _generate_and_write_artifact(project_id: str, project: dict,
             return
         # Atomic write via .tmp + rename
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write_text(target_path, body)
+        cast(Callable[[Path, str], None], _atomic_write_text)(target_path, body)
         # Outbox marker (D7) — under lock, after successful artifact land
         with _get_skill_stats_lock(project_id):
             stats = _read_skill_stats(project_id)
             stats.setdefault('outbox', {})[f"{candidate['exact']}:{kind}"] = {
-                'last_proposed_at': _now_iso(),
+                'last_proposed_at': cast(Callable[[], str], _now_iso)(),
                 'last_proposed_path': str(target_path),
             }
             _write_skill_stats(project_id, stats)
@@ -1865,10 +1871,10 @@ def _proposal_target(project_id: str, scope_tag: str, kind: str,
     Cross-project → data/skills/_proposed/global/<...>
     Project-specific → data/skills/_proposed/<project_id>/<...>
     """
-    ts = (_now_iso() or '').replace(':', '-').replace('+', '_')[:19]
+    ts = (cast(Callable[[], str], _now_iso)() or '').replace(':', '-').replace('+', '_')[:19]
     scope_dir = 'global' if scope_tag == 'cross-project' else project_id
     sub = f"{ts}-{fingerprint_exact[:12]}-{name_slug}"
-    base = _skills_root / '_proposed' / scope_dir / sub
+    base = cast(Path, _skills_root) / '_proposed' / scope_dir / sub
     kind_to_file = {
         'skill': 'SKILL.md', 'update': 'UPDATE.md',
         'exploration': 'EXPLORATION.md', 'preference': 'PREFERENCE.md',
@@ -2027,7 +2033,8 @@ def reframe_exploration_to_skill(directory: str) -> dict | None:
         f"{art.get('body', '')}"
     )
     try:
-        out = _scribe_call(model, _REFRAME_EXPLORATION_TO_SKILL_PREAMBLE, body_in)
+        out = cast(Callable[[str, str, str], str], _scribe_call)(
+            model, _REFRAME_EXPLORATION_TO_SKILL_PREAMBLE, body_in)
     except Exception:
         return None
     if _is_refusal(out):
@@ -2062,15 +2069,15 @@ def _build_evidence_block(signals: list[dict]) -> str:
         if s.get('summary'):
             lines.append(f"    summary: {s.get('summary')}")
         if s.get('problem'):
-            lines.append(f"    problem: {s.get('problem')[:400]}")
+            lines.append(f"    problem: {cast(str, s.get('problem'))[:400]}")
         if s.get('resolution'):
-            lines.append(f"    resolution: {s.get('resolution')[:600]}")
+            lines.append(f"    resolution: {cast(str, s.get('resolution'))[:600]}")
         if s.get('evidence_quote'):
             lines.append(f"    quote: \"{s.get('evidence_quote', '')[:300]}\"")
         if s.get('question'):
             lines.append(f"    question: {s.get('question')}")
         if s.get('outcome'):
-            lines.append(f"    outcome: {s.get('outcome')[:200]}")
+            lines.append(f"    outcome: {cast(str, s.get('outcome'))[:200]}")
     return '\n'.join(lines)
 
 
@@ -2131,7 +2138,7 @@ def _wrap_skill_body(model_output: str, project_id: str, candidate: dict,
         'origin': ('unattended' if candidate.get('unattended')
                    else 'interactive'),
         'source_session': source_session,
-        'created_at': _now_iso() or '',
+        'created_at': cast(Callable[[], str], _now_iso)() or '',
     }
     # If the model already produced frontmatter, splice our required fields
     text = _strip_code_fences(model_output)
@@ -2225,7 +2232,7 @@ def record_push(project_id: str, body: dict) -> tuple[dict, int]:
         stats = _read_skill_stats(project_id)
         if decision == 'no':
             stats.setdefault('suppressions', {})[key] = {
-                'decided_at': _now_iso(),
+                'decided_at': cast(Callable[[], str], _now_iso)(),
                 'decision': 'no',
             }
         else:  # later
@@ -2241,7 +2248,7 @@ def record_push(project_id: str, body: dict) -> tuple[dict, int]:
                     and s.get('coarse') == coarse),
             )
             stats.setdefault('suppressions', {})[key] = {
-                'decided_at': _now_iso(),
+                'decided_at': cast(Callable[[], str], _now_iso)(),
                 'decision': 'later',
                 'wait_until_recurrence': cur_count + 1,
             }
