@@ -95,7 +95,7 @@ def test_a_read_during_the_ua_probe_reads_the_real_page(transport, page_url, tmp
 
 
 def test_the_probe_url_is_hidden_from_target_pickers():
-    session = {'hidden_read_urls': {'http://127.0.0.1:9/json/version' + br._UA_PROBE_FRAGMENT}}
+    session = {}                                            # nothing registered: the fragment alone hides it
     targets = [
         {'id': 'probe', 'type': 'page', 'url': 'http://127.0.0.1:9/json/version' + br._UA_PROBE_FRAGMENT,
          'webSocketDebuggerUrl': 'ws://x/probe'},

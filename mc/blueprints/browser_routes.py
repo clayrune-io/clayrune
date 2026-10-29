@@ -781,13 +781,13 @@ def _without_hidden_reads(session, targets):
     """Drop the background tabs an agent read opened (mc/browser_hidden_read.py). Every
     caller of `_cdp_targets` means "the user's tabs": once a hidden tab has navigated to a
     real page, `_pick_page_target` would prefer it over the pane's own, and a read, a click
-    or a pick would land in it."""
+    or a pick would land in it. The UA guard's probe tab (`_UA_PROBE_FRAGMENT`) is dropped
+    the same way."""
     hidden_urls = session.get('hidden_read_urls') or ()
     hidden_ids = {t for t, d in (session.get('page_disposition') or {}).items() if d == 'hidden'}
-    if not hidden_urls and not hidden_ids:
-        return targets
     return [t for t in targets
-            if t.get('id') not in hidden_ids and (t.get('url') or '') not in hidden_urls]
+            if t.get('id') not in hidden_ids and (t.get('url') or '') not in hidden_urls
+            and not (t.get('url') or '').endswith(_UA_PROBE_FRAGMENT)]
 
 
 def _cdp_version(session, timeout=2):
@@ -1112,12 +1112,11 @@ def _start_ua_guard(session, port):
             # this window read the probe tab as "the page". Measured 2026-10-29: 2 of 5
             # Desk-suite orderings, href http://127.0.0.1:<cdp port>/json/version ->
             # own_origin_blocked. A fragment makes the URL unique to this probe (never
-            # sent to the server, ignored by chrome://version), and it stays in
-            # `hidden_read_urls` for the session's life so a target still listed just
-            # after closeTarget is hidden too.
+            # sent to the server, ignored by chrome://version), and `_without_hidden_reads`
+            # drops any target carrying it, including one still listed just after
+            # closeTarget. No session state, so nothing to register or clean up.
             probe_url = ('chrome://version/' if _cdp_transport(session) is not None
                          else f'http://127.0.0.1:{port}/json/version') + _UA_PROBE_FRAGMENT
-            session.setdefault('hidden_read_urls', set()).add(probe_url)
             tid = call('Target.createTarget', {'url': probe_url, 'background': True})['targetId']
             sid = call('Target.attachToTarget', {'targetId': tid, 'flatten': True})['sessionId']
             lo, t_end = None, _time.time() + 3
