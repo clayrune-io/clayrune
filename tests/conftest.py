@@ -173,6 +173,23 @@ def _desk_oauth_reads_no_real_vault(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _desk_oauth_x_port_is_ephemeral(monkeypatch):
+    """X's sign-in return address is a FIXED port (`desk_oauth.X_CALLBACK_PORT`,
+    53682) and a port is machine-wide: every pytest run on this box (parallel agent
+    worktrees run the Desk suite at once) and a live Clayrune mid-sign-in all bind
+    the same one. A test that took it lost the race to whichever process held it
+    and got `port_busy`, a different test each run (2026-10-29: two other agents'
+    Desk suites were holding 53682 while these failed). Port 0 = the OS picks a free
+    one per flow; the flow's redirect follows the port actually bound. A test of the
+    busy-port refusal sets its own port."""
+    try:
+        from mc import desk_oauth
+    except Exception:
+        return
+    monkeypatch.setattr(desk_oauth, 'X_CALLBACK_PORT', 0)
+
+
+@pytest.fixture(autouse=True)
 def _no_inherited_unattended_launch_marker(monkeypatch):
     """A dispatched agent runs with CLAYRUNE_LAUNCHED_UNATTENDED=1, and
     steward/fence.py arms on it when the server lookup is unavailable. Inherited

@@ -85,22 +85,8 @@ def api(env, monkeypatch, profiles):
     app.register_blueprint(desk_held_signin_routes.bp)
     app.register_blueprint(desk_routes.bp)      # the flow poll
     hold._forget_all_for_tests()
-    _wait_x_port_free()
     yield app.test_client(), p
     hold._forget_all_for_tests()
-    _wait_x_port_free()
-
-
-def _wait_x_port_free():
-    """A finished flow closes its listener on a background thread; X's callback port is fixed,
-    so the next test must wait for it."""
-    import socket
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        with socket.socket() as sk:
-            if sk.connect_ex(('127.0.0.1', oauth.X_CALLBACK_PORT)) != 0:
-                return
-        time.sleep(0.05)
 
 
 def _vault_names():

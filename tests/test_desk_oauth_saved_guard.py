@@ -17,7 +17,6 @@ no real sign-in, no named browser profile.
 """
 from __future__ import annotations
 
-import time
 
 import pytest
 
@@ -109,13 +108,9 @@ def test_a_held_sign_in_from_another_app_still_revokes(api, logs):
     aid, _ = signed_in(client, p)
     before = saved_blob(aid)
     p.on('POST', X_TOKEN, (200, {'access_token': ACCESS_1, 'refresh_token': REFRESH_1, 'expires_in': 7200}))
-    for _ in range(40):         # the first flow's return-address listener closes a moment after its Save
-        r = client.post('/api/desk/connect/x/start-held',
-                        json={'passcode': PASSCODE, 'account_id': aid, 'hold': {'client_id': 'another-app-9999'}})
-        out = r.get_json()
-        if out.get('code') != 'port_busy':
-            break
-        time.sleep(0.25)
+    r = client.post('/api/desk/connect/x/start-held',
+                    json={'passcode': PASSCODE, 'account_id': aid, 'hold': {'client_id': 'another-app-9999'}})
+    out = r.get_json()
     assert r.status_code == 201, out
     _sign_in(out)
     assert cancel(client, out).get_json() == {'ok': True}
