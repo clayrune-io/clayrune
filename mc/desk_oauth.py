@@ -73,6 +73,7 @@ from typing import Any
 
 from mc import desk_oauth_hold as _hold
 from mc import desk_oauth_profile as _profile
+from mc import desk_oauth_replace as _replace
 from mc import desk_oauth_saved_guard as _saved_guard
 from mc import desk_vault_lock as _vault_lock
 from mc import secrets_store
@@ -741,7 +742,8 @@ def _same_app(held_client_id: Any, save_client_id_: str | None) -> bool:
 def commit_held(service: str, flow_id: str, claim: str, account_id: str | None, undo,
                 *, client_id: str | None = None) -> dict[str, Any]:
     """The Save claims a held sign-in: write it to the vault under the account's own entry and
-    push the undo that removes it. `account_id` is the `account_id` ARGUMENT of this module
+    push an undo that restores the previous entry (or removes a new one). A dead saved X
+    sign-in may be replaced; a live saved sign-in is refused. `account_id` is the ARGUMENT of this module
     (None = the legacy singleton). `client_id` is the app the Save stores or uses
     (`save_client_id`): the held sign-in was minted for one app and is refused for another.
     The hold is TAKEN in one step (`desk_oauth_hold.take`), so an expiry cannot revoke it
@@ -759,12 +761,9 @@ def commit_held(service: str, flow_id: str, claim: str, account_id: str | None, 
     try:
         if not _same_app(e['rec'].get('client_id'), client_id):
             raise OAuthError('app_mismatch', _hold.APP_MISMATCH, 409)
-        if _meta(service, account_id) is not None:
-            raise OAuthError('already_signed_in', f"{SERVICES[service]['label']} is already signed in under that name. "
-                                                  f"Delete the saved sign-in '{name}' in Secrets, then sign in again.", 409)
         try:
             with _refresh_lock(name):
-                _store_record(service, e['rec'], account_id)
+                _replace.store_with_undo(service, e['rec'], account_id, undo)
         except secrets_store.SecretsError as ex:
             raise OAuthError('vault_refused', f'the sign-in could not be saved: {_safe(ex)}', 400) from ex
     except BaseException:
@@ -774,7 +773,6 @@ def commit_held(service: str, flow_id: str, claim: str, account_id: str | None, 
                 f['saving'] = False
         _hold.give_back(flow_id, e)
         raise
-    undo.push(f'vault entry {name}', lambda: secrets_store.delete_secret(name))
     e['rec'] = None
     e['app'] = {}
     e['on_drop'] = None

@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Allow Save after a dead X sign-in
+
+- Signing in again can replace the same saved X sign-in when X has rejected it or it has expired without a refresh token. A live or still-refreshable saved sign-in remains protected from replacement.
+- A later Save failure restores the exact previous encrypted vault entry and its policy. Replacement and rollback do not revoke tokens, preserving MC-1117's shared-grant protection. Branch candidate only; no merge or deployment.
+
 ## [2026-10-29] - Keep Desk Read consent separate from browser access (MC-1118)
 
 - An existing browser-domain grant no longer makes Read appear allowed when the account explicitly denies Desk Read. Incomplete consent is unticked, marked as incomplete and explained on the shared Read row.
