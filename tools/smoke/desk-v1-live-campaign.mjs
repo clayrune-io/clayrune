@@ -80,9 +80,12 @@ const enterPasscode = async (page, code) => {
 
 const boundsOf = (c) => ({ accounts: c.plan.accounts, cadence: c.plan.cadence, end: c.plan.end, term: c.term || {}, budget: (c.how && c.how.budget) || {} });
 
-async function newPage(browser, { live, srv }) {
+async function newPage(browser, { live, srv, now = '2026-10-01T12:00:00Z' }) {
   const ctx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
   const page = await ctx.newPage();
+  // Existing success cases use October fixtures. Freeze their clock so Resume
+  // reaches the fake API instead of refusing an expired plan before the PATCH.
+  await page.clock.setFixedTime(new Date(now));
   if (!live) await installDemoFixtures(page);   // demo mode is the harness's: the page ships no fixtures (S10)
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
@@ -123,6 +126,9 @@ async function newPage(browser, { live, srv }) {
       const c = srv.campaigns.find((x) => x.id === m[1]);
       if (!c) return J({ error: 'campaign not found' }, 404);
       Object.assign(c, body);
+      // MC-1125: a fixture-selected authoritative term returned on plan saves.
+      // Backend derivation itself is covered against the real API in pytest.
+      if (body.plan && srv.termOnPlanSave) c.term = { ...srv.termOnPlanSave };
       return J(c);
     }
     m = path.match(/^\/api\/desk\/campaigns\/([^/]+)\/(start|approve|renew)$/);
@@ -278,7 +284,7 @@ async function briefAndApprove(browser) {
   await settle(page, () => (window.DeskV1Store.state().campaigns.find((c) => c.id === 'camp-1').approval || {}).at === '2031-02-03T04:05:06Z');
   const post = calls(srv, 'POST', /^\/api\/desk\/campaigns\/camp-1\/approve$/)[0];
   const pre = calls(srv, 'PATCH', /^\/api\/desk\/campaigns\/camp-1$/)[0];
-  (post && pre && srv.log.indexOf(pre) < srv.log.indexOf(post) && pre.body.plan.cadence.per_week === before + 4)
+  (post && pre && srv.log.indexOf(pre) < srv.log.indexOf(post) && pre.body.plan.cadence.per_week === before + 4 && !('term' in pre.body))
     ? ok('Approve saves the bounds, then POSTs /approve') : fail('approve calls: ' + JSON.stringify(srv.log.map((r) => r.method + ' ' + r.path)));
   const c = await camp(page, 'camp-1');
   (c.approval.at === '2031-02-03T04:05:06Z' && c.approval.bounds.cadence.per_week === before + 4)
@@ -301,6 +307,45 @@ async function renew(browser) {
   const c = await camp(page, 'camp-4');
   (c.term.ends === '2020-05-30' && c.approval.bounds_hash === 'srv-hash-2')
     ? ok("the campaign takes the server's next term and approval") : fail('after renew: ' + JSON.stringify({ t: c.term, a: c.approval && c.approval.bounds_hash }));
+  await ctx.close();
+}
+
+// MC-1125: the real Brief edit -> Launch approval path with a stale browser
+// term, and a short-horizon campaign's formerly missing Renew action.
+async function shortTermRecovery(browser) {
+  const srv = makeServer();
+  const serverCamp = srv.campaigns.find((c) => c.id === 'camp-1');
+  serverCamp.goal = { current: 0, horizon: 'short' };
+  serverCamp.plan.end.date = '2026-10-28';
+  serverCamp.term = { index: 1, starts: '2026-10-15', ends: '2026-10-28', post_cap: null };
+  serverCamp.approval = SRV_APPROVAL(JSON.parse(JSON.stringify(boundsOf(serverCamp))), 1);
+  const { ctx, page } = await newPage(browser, { live: true, srv, now: '2026-10-29T12:00:00Z' });
+  await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
+  await openLaunch(page, 'camp-1');
+  (await page.locator('[data-renew-term]').isEnabled())
+    ? ok('a short-horizon campaign with an ended term exposes Renew term') : fail('short campaign has no enabled Renew term');
+
+  // The server has changed since this tab loaded, just as in Ron's incident.
+  serverCamp.term.ends = '2026-11-05';
+  srv.termOnPlanSave = { ...serverCamp.term, ends: '2026-11-28' };
+  await openHow(page, 'camp-1');
+  srv.log.length = 0;
+  await page.fill('[data-how-limit="end_date"]', '2026-11-28');
+  await page.press('[data-how-limit="end_date"]', 'Tab');
+  await settle(page, () => /widens what/.test(document.body.innerText));
+  await page.click('[data-confirm-accept]');
+  await settle(page, () => document.querySelector('[data-how-limit="end_date"]')?.value === '2026-11-28');
+  await page.evaluate(() => window.deskV1GotoCampaignPanel('launch', { campaignId: 'camp-1' }));
+  await settle(page, () => !!document.querySelector('[data-approve-bounds]'));
+  await page.click('[data-approve-bounds]');
+  await enterPasscode(page, PASSCODE);
+  await settle(page, () => window.DeskV1Store.state().campaigns.find((c) => c.id === 'camp-1').approval?.at === '2031-02-03T04:05:06Z');
+  const saves = calls(srv, 'PATCH', /^\/api\/desk\/campaigns\/camp-1$/);
+  (saves.length === 2 && saves.every((r) => r.body.plan.end.date === '2026-11-28' && !('term' in r.body)))
+    ? ok('Brief end-date edit and pre-approval save both omit the stale term') : fail('end-date saves: ' + JSON.stringify(saves));
+  const c = await camp(page, 'camp-1');
+  (c.term.ends === '2026-11-28' && c.approval.bounds.term.ends === '2026-11-28')
+    ? ok('approval adopts the authoritative server term, preserving the extended end') : fail('extended term: ' + JSON.stringify(c.term));
   await ctx.close();
 }
 
@@ -374,6 +419,7 @@ try {
   console.log('live ON: pause / resume'); await pauseResume(browser);
   console.log('live ON: brief edit + approve'); await briefAndApprove(browser);
   console.log('live ON: renew'); await renew(browser);
+  console.log('live ON: short campaign term recovery'); await shortTermRecovery(browser);
   console.log('live ON: human proof'); await humanProof(browser);
   console.log('live OFF: demo'); await demoCallsNothing(browser);
 } catch (e) { fail('harness error: ' + (e && e.stack || e)); }

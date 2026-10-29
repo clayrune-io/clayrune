@@ -685,7 +685,7 @@
   // question is a `Needs your answer` card in the panel's right column. Once
   // the campaign has started the same table stays (same bounds shown) under
   // a Live block: Live since, the term, the approval on file, Pause/Resume
-  // and — for a long-horizon goal — `Renew term`.
+  // and `Renew term` for every campaign that has a term.
   //
   // The Awaiting-approval branch is R2-6's: `camp.approval.bounds` vs the live
   // plan, so a How-stop budget widen on a running campaign is visible here. A
@@ -844,7 +844,7 @@
       unapply: () => { camp.approval = prevApproval; camp.approvals = prevApprovals; },
       repaint,
       request: async () => {
-        const out = await window.deskV1CampaignAction(camp, 'approve', ['plan', 'how', 'goal', 'term']);
+        const out = await window.deskV1CampaignAction(camp, 'approve', ['plan', 'how', 'goal']);
         repaint();
         return out;
       },
@@ -909,8 +909,8 @@
         <div class="desk-v1-launch-need" data-launch-need${result.ok ? ' hidden' : ''}>${result.ok ? '' : esc(_launchNeedsSentence(result.missing))}</div>`;
     } else {
       const since = camp.startedAt ? String(camp.startedAt).slice(0, 10) : (camp.term && camp.term.starts) || null;
-      const long = camp.goal && camp.goal.horizon === 'long' && camp.term;
-      const ended = long && _termEnded(camp);
+      const hasTerm = !!camp.term;
+      const ended = hasTerm && _termEnded(camp);
       const live = camp.state === 'paused' ? '⏸ Paused' : (camp.state === 'active' ? '● Live' : DeskV1Kit.stateLabel(camp.state).word);
       footHTML = `
         <div class="desk-v1-launch-live" data-launch-live>
@@ -921,9 +921,9 @@
             ${camp.state === 'paused'
               ? '<button type="button" class="desk-v1-camp-pause-btn" data-launch-resume>▶ Resume</button>'
               : `<button type="button" class="desk-v1-camp-pause-btn" data-launch-pause ${camp.state !== 'active' ? 'disabled' : ''}>⏸ Pause</button>`}
-            ${long ? `<button type="button" class="desk-v1-camp-pause-btn" data-renew-term ${ended ? '' : 'disabled'}>Renew term</button>` : ''}
+            ${hasTerm ? `<button type="button" class="desk-v1-camp-pause-btn" data-renew-term ${ended ? '' : 'disabled'}>Renew term</button>` : ''}
           </div>
-          ${long && !ended ? `<div class="desk-v1-rules-hint">Renew opens when this term ends, ${esc(_fmtDateLong(camp.term.ends))}.</div>` : ''}
+          ${hasTerm && !ended ? `<div class="desk-v1-rules-hint">Renew opens when this term ends, ${esc(_fmtDateLong(camp.term.ends))}.</div>` : ''}
         </div>`;
     }
 

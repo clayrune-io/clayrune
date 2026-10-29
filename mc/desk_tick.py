@@ -148,14 +148,16 @@ def _cadence_refusal(camp: dict, ledger: list, now: datetime) -> str | None:
     def when(r):
         return _parse(r.get('published_at'))
 
-    if term.get('ends'):
-        ends = _parse(term['ends'])
-        if ends is not None and now >= ends + timedelta(days=1):
-            return f"term {term.get('index') or 1} ended {str(term['ends'])[:10]}: renew the campaign to keep posting"
     if end.get('date'):
         ends = _parse(end['date'])
         if ends is not None and now >= ends + timedelta(days=1):
-            return f"the campaign's end date ({str(end['date'])[:10]}) has passed"
+            return (f"the campaign's end date ({str(end['date'])[:10]}) has passed: "
+                    'in Brief > Limits, move Ends later; then in Launch choose Approve the new bounds')
+    if term.get('ends'):
+        ends = _parse(term['ends'])
+        if ends is not None and now >= ends + timedelta(days=1):
+            return (f"term {term.get('index') or 1} ended {str(term['ends'])[:10]}: "
+                    'in Launch, choose Renew term')
     cap = end.get('post_cap')
     if cap is not None and len(rows) >= cap:
         return f'the campaign has reached its post cap ({len(rows)} of {cap})'
