@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Reading-off and signed-out stay distinct. MC-1118 option B disables Read
-// without declared profile coverage and a route executor, even when a browser
-// domain was previously granted. Hermetic production UI at 1440 and 390 widths.
+// Reading-off and signed-out stay distinct. Existing browser grants always stay
+// visible and revocable, even without a projected route. LinkedIn can grant new
+// reads; Instagram cannot. Hermetic production UI at 1440 and 390 widths.
 
 import { readFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -29,7 +29,7 @@ import json, sys
 sys.path.insert(0, ${JSON.stringify(REPO_ROOT)})
 from mc.desk_connect import registry, resolve, type_view
 out = {}
-for plat in ('x', 'linkedin'):
+for plat in ('x', 'linkedin', 'instagram'):
     got = resolve.resolve('https://' + plat + '.com', own_hosts=('mc.smoke.test',))
     svc = got.pop('service') or registry.lookup(got['host'])
     out['https://' + plat + '.com'] = {**got, **type_view.project_service(svc['id'] if svc else None)}
@@ -52,7 +52,7 @@ const li = (extra) => ({ id: 'acct-li', platform: 'linkedin', identity: 'Clayrun
 
 function makeServer(account, coverage) {
   const fx = loadFixtures();
-  const srv = { log: [], fx, accounts: [account], coverage, policy: { main: { enabled: true, domains: ['x.com'] }, [PROFILE]: { enabled: true, domains: ['x.com'] } } };
+  const srv = { log: [], fx, accounts: [account], coverage, types: structuredClone(TYPES), permission: { state: 'legacy', scopes: [] }, policy: { main: { enabled: true, domains: ['x.com'] }, [PROFILE]: { enabled: true, domains: ['x.com'] } } };
   srv.workspace = () => ({ ...workspaceFromFixtures(fx), projects: fx.projects.map((p) => ({ id: p.id, name: p.name, state: 'active', roster: [], presence: { replies: 'drafts', desk_agent: null, state: 'active' } })), accounts: srv.accounts, pieces: [] });
   return srv;
 }
@@ -103,11 +103,16 @@ async function newPage(browser, srv, width, height) {
     if (path === '/api/desk/engines' && method === 'GET') return J({ engines: [] });
     if (path === '/api/desk/services' && method === 'GET') return J([]);
     if (path === '/api/desk/accounts' && method === 'GET') return J(srv.accounts);
-    if (path === '/api/desk/connect/types' && method === 'POST') return J(TYPES[body && body.input] || { host: '', picker: [] });
+    if (path === '/api/desk/connect/types' && method === 'POST') return J(srv.types[body && body.input] || { host: '', picker: [] });
     if (path === '/api/desk/connect/purposes') return J({ service: 'linkedin', accounts: [] });
     if (path === '/api/desk/connect/suggest') return J({ suggestions: [] });
     if (path === '/api/desk/connect/status') return J({ higgsfield: { state: 'not_connected' }, x: { state: 'not_connected' }, gemini: { saved: false }, openai: { saved: false } });
-    if (/^\/api\/desk\/connect\/permissions\//.test(path)) return J({ policy: { state: 'legacy', scopes: [] } });
+    if (path === '/api/desk/connect/permissions/commit') {
+      if (body.passcode !== PASSCODE) return J({ error: 'bad_passcode' }, 403);
+      srv.permission = { state: 'explicit', scopes: body.draft.scopes };
+      return J({ policy: srv.permission });
+    }
+    if (/^\/api\/desk\/connect\/permissions\//.test(path)) return J({ policy: srv.permission });
     return route.abort();
   });
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
@@ -139,6 +144,7 @@ const waitCoverage = (page, word) => page.waitForFunction((w) => { const e = doc
 async function run(browser, width, height) {
   console.log(`\n== ${width}px ==`);
 
+  if (!process.argv.includes('--revocation-only')) {
   // ── 1: reading is off ──────────────────────────────────────────────────────
   {
     const srv = makeServer(li(), [COVERAGE.reads_off]);
@@ -165,22 +171,26 @@ async function run(browser, width, height) {
     check(puts(srv).length === 0, 'opening Permissions sent no write', 'a PUT went out: ' + JSON.stringify(puts(srv)));
     check((await boxes(page)).join('|') === 'read|post' && !(await page.$('[data-cfw-option="site"]')), 'Permissions is the one list, Read and Publish, with no site row', 'boxes: ' + (await boxes(page)).join('|'));
     const readOpt = await text(page, '[data-cfw-option="read"]'), postOpt = await text(page, '[data-cfw-option="post"]');
-    check(/Reading isn't available for LinkedIn yet/.test(readOpt) && (await page.locator('[data-cfp-box="read"]').isDisabled()) && !(await page.locator('[data-cfp-box="read"]').isChecked()), 'unsupported Read is disabled and off with its reason', readOpt);
+    check(!await page.locator('[data-cfp-box="read"]').isDisabled() && !await page.locator('[data-cfp-box="read"]').isChecked(), 'LinkedIn Read is enabled and off without a grant', readOpt);
     check(/Publish/.test(postOpt) && (await page.locator('[data-cfp-box="post"]').isDisabled()) && /Posting is not available through this connection yet\./.test(postOpt), 'Publish stays visible, disabled, with one sentence saying why', postOpt);
     check(!/linked_ronlevy|agent_read_off|profile/i.test(await text(page, '[data-cfp-rows]')), 'no profile name or internal term in the rows', await text(page, '[data-cfp-rows]'));
     await page.locator('[data-cfp-rows]').scrollIntoViewIfNeeded(); await page.screenshot({ path: resolve(SHOT_DIR, `permissions_from_reads_off_${width}.png`) });
 
-    await page.locator('[data-cfp-box="read"]').evaluate(e => {e.checked=true;e.dispatchEvent(new Event('change',{bubbles:true}));});
-    const r = await page.evaluate(() => window.DeskV1ConnectPermissionsStep.apply('acct-li'));
-    check(!await page.locator('[data-cfp-box="read"]').isChecked() && r.site.status === 'unchanged' && puts(srv).length === 0,
-      'a synthetic change on disabled Read makes no grant', JSON.stringify(r));
+    await page.check('[data-cfp-box="read"]');
+    check(puts(srv).length === 0, 'ticking Read changes only the draft', JSON.stringify(puts(srv)));
+    const cancelled = page.evaluate(() => window.DeskV1ConnectPermissionsStep.apply('acct-li'));
+    await cancel(page);
+    const r = await cancelled;
+    check(r.desk.status === 'cancelled' && r.site.status === 'not_attempted' && puts(srv).length === 0, 'cancelling Desk consent sends no browser grant', JSON.stringify(r));
     await page.click('[data-cfw-primary]');
     await page.waitForSelector('[data-cfw-step="review"]', { timeout: 4000 });
     await page.click('[data-cfw-primary]');
+    await answer(page, PASSCODE);       // Desk consent
+    await answer(page, PASSCODE);       // browser domain, a separate human gate
     await page.waitForFunction(() => document.querySelector('[data-cfw-step="result"]'), null, { timeout: 6000 });
     const sent = puts(srv);
-    check(sent.length === 0, 'saving unsupported Read sends no browser grant', JSON.stringify(sent));
-    check(srv.log.every((x) => x.method === 'GET' || x.method === 'PUT' || ['/api/desk/connect/types', '/api/desk/connect/purposes'].includes(x.path)), 'nothing else was written', JSON.stringify(srv.log.map((x) => x.method + ' ' + x.path)));
+    check(sent.length === 1 && sent[0].body.passcode === PASSCODE && JSON.stringify(sent[0].body.domains) === JSON.stringify(['x.com', 'linkedin.com']), 'passcode Save adds linkedin.com and keeps x.com', JSON.stringify(sent));
+    check(srv.permission.scopes.length > 0 && srv.permission.scopes.every(s => s.route_id === 'linkedin-browser' && s.purpose === 'read_own'), 'Save records only LinkedIn browser read scopes', JSON.stringify(srv.permission));
     await page.evaluate(() => window.DeskV1ConnectWizard.close());
     await page.click('[data-conn-tile="acct-li"]');
     check((await page.$$('[data-cs-reopen]')).length===1,'one shared Edit remains','Edit missing or doubled');
@@ -227,44 +237,79 @@ async function run(browser, width, height) {
     await page.waitForFunction(() => !document.querySelector('[data-cfp-loading]'), null, { timeout: 6000 });
     check((await boxes(page)).join('|') === 'read|post' && !(await page.$('[data-cfw-option="site"]')), `${label}: Permissions shows Read and Publish and no site row`, `${label}: boxes ${(await boxes(page)).join('|')}`);
     const readOpt = await text(page, '[data-cfw-option="read"]');
-    check(/Reading isn't available for LinkedIn yet/.test(readOpt) && (await page.locator('[data-cfp-box="read"]').isDisabled()), `${label}: unsupported Read is disabled with its reason`, readOpt);
+    check(!await page.locator('[data-cfp-box="read"]').isDisabled(), `${label}: LinkedIn browser Read is offered`, readOpt);
     check(!(await page.locator('[data-cfp-box="read"]').isChecked()), `${label}: it is off while reading is off`, 'the box was ticked');
     check((await page.locator('[data-cfp-box="post"]').isDisabled()) && /Posting is not available through this connection yet\./.test(await text(page, '[data-cfw-option="post"]')), `${label}: Publish is visible, disabled, with the reason`, await text(page, '[data-cfw-option="post"]'));
     await page.locator('[data-cfp-rows]').scrollIntoViewIfNeeded(); await page.screenshot({ path: resolve(SHOT_DIR, `permissions_${label.startsWith('API') ? 'api' : 'browser'}_${width}.png`) });
     srv.log.length = 0;
+    await page.check('[data-cfp-box="read"]');
     const pending = await page.evaluate(() => window.DeskV1ConnectPermissionsStep.summary());
-    check(!pending.permissionPending, `${label}: unsupported Read drafts no grant`, JSON.stringify(pending));
+    check(pending.permissionPending && pending.lines.some(l => /linkedin\.com/.test(l)), `${label}: Review names the browser grant`, JSON.stringify(pending));
     await page.click('[data-cfw-primary]');
     await page.waitForSelector('[data-cfw-step="review"]', { timeout: 4000 });
     await page.click('[data-cfw-primary]');
+    await answer(page, PASSCODE);
+    await answer(page, PASSCODE);
     await page.waitForFunction(() => document.querySelector('[data-cfw-step="result"]'), null, { timeout: 6000 });
     const sent = puts(srv);
-    check(sent.length === 0, `${label}: Save sends no browser grant`, JSON.stringify(sent));
-    check(srv.log.filter((x) => x.method === 'POST' && x.path.includes('/permissions/commit')).length === 0, `${label}: no Desk scope was written (this route has none to record)`, 'a Desk commit went out');
+    check(sent.length === 1 && JSON.stringify(sent[0].body.domains) === JSON.stringify(['x.com', 'linkedin.com']), `${label}: Save adds only linkedin.com`, JSON.stringify(sent));
+    check(srv.permission.scopes.length > 0 && srv.permission.scopes.every(s => s.route_id === 'linkedin-browser'), `${label}: existing reader scopes are recorded`, JSON.stringify(srv.permission));
     check(realErrors(pageErrors).length === 0, `${label}: no uncaught page errors`, JSON.stringify(realErrors(pageErrors)));
     await ctx.close();
   }
 
-  // ── 5: already allowed -> Read is on; unticking removes only its own domain ─────────────────────────
-  {
-    const srv = makeServer(li(), [COVERAGE.ok]);
-    srv.policy[PROFILE] = { enabled: true, domains: ['x.com', 'linkedin.com'] };
+  }
+
+  // 5: prior LinkedIn grant is on; revocation works even with an old/missing runtime projection.
+  // 6: stale Instagram grant is also shown and revocable, although no new Read is offered.
+  for (const [service, missingRuntime] of [['linkedin', false], ['linkedin', true], ['instagram', true]]) {
+    const account = service === 'linkedin' ? li() : li({platform: 'instagram', identity: '@fixture', label: 'Instagram fixture', browser_setup: {service: 'instagram', account_kind: 'account', route_id: 'instagram-browser', refs: {browser_profile: PROFILE}}});
+    const srv = makeServer(account, [{...COVERAGE.ok, platform: service}]);
+    const domain = service + '.com', label = `${service}${missingRuntime ? ' without projected runtime' : ''}`;
+    if (missingRuntime) srv.types['https://' + domain].picker.forEach(t => t.variants.forEach(v => {v.runtime.purposes = {};}));
+    srv.policy[PROFILE] = { enabled: true, domains: ['x.com', domain] };
     const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
     await selectTile(page, 'acct-li');
     await page.click('[data-conn-account="acct-li"] [data-cs-reopen]');
     await page.waitForSelector('[data-conn-detail="add"] [data-cfw-step="permissions"]', { timeout: 6000 });
     await page.waitForFunction(() => !document.querySelector('[data-cfp-loading]'), null, { timeout: 6000 });
-    check(await page.locator('[data-cfp-box="read"]').isDisabled() && !await page.locator('[data-cfp-box="read"]').isChecked(), 'a prior domain grant does not enable unsupported Read', 'the box was enabled or ticked');
+    const box = page.locator('[data-cfp-box="read"]');
+    check(!await box.isDisabled() && await box.isChecked() && !await box.evaluate(e => e.indeterminate), `${label}: existing domain grant is checked and enabled`, 'the live grant was hidden');
+    const before = await page.evaluate(() => window.DeskV1ConnectPermissionsStep.summary());
+    check(!before.permissionPending && before.lines.some(l => l.includes(domain)), `${label}: unchanged Review discloses the live domain grant`, JSON.stringify(before));
+    await page.locator('[data-cfp-rows]').scrollIntoViewIfNeeded();
+    await page.screenshot({path: resolve(SHOT_DIR, `revoke_${service}_${missingRuntime ? 'missing' : 'declared'}_${width}.png`)});
     srv.log.length = 0;
+    // Report each pre-fix failure without waiting on a known-disabled control.
+    if (await box.isDisabled()) { await ctx.close(); continue; }
+    await box.uncheck();
+    check(puts(srv).length === 0, `${label}: unticking drafts revocation only`, JSON.stringify(puts(srv)));
     await page.click('[data-cfw-primary]');
     await page.waitForSelector('[data-cfw-step="review"]', { timeout: 4000 });
     await page.click('[data-cfw-primary]');
+    if (!missingRuntime) await answer(page, PASSCODE);   // explicit Desk deny for a legacy account
+    await answer(page, PASSCODE);
     await page.waitForFunction(() => document.querySelector('[data-cfw-step="result"]'), null, { timeout: 6000 });
     const sent = puts(srv);
-    check(sent.length === 0 && JSON.stringify(srv.policy[PROFILE].domains) === JSON.stringify(['x.com','linkedin.com']), 'unsupported Read does not rewrite the existing domain list', JSON.stringify(sent));
-    check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
+    check(sent.length === 1 && sent[0].body.passcode === PASSCODE && JSON.stringify(sent[0].body.domains) === JSON.stringify(['x.com']), `${label}: unticking removes only ${domain}`, JSON.stringify(sent));
+    check(missingRuntime ? srv.log.every(x => !x.path.includes('/permissions/commit')) : srv.permission.scopes.length === 0, `${label}: revocation grants no Desk scope`, JSON.stringify(srv.permission));
+    if (service === 'instagram') {
+      await page.evaluate(() => window.DeskV1ConnectWizard.close());
+      await selectTile(page, 'acct-li');
+      await page.click('[data-conn-account="acct-li"] [data-cs-reopen]');
+      await page.waitForSelector('[data-cfw-step="permissions"]');
+      await page.waitForFunction(() => !document.querySelector('[data-cfp-loading]'));
+      const off = page.locator('[data-cfp-box="read"]');
+      check(await off.isDisabled() && !await off.isChecked() && /Reading isn't available for Instagram yet/.test(await text(page, '[data-cfw-option="read"]')), 'Instagram without a grant stays unavailable after revocation', await text(page, '[data-cfw-option="read"]'));
+      srv.log.length = 0;
+      await off.evaluate(e => {e.checked = true; e.dispatchEvent(new Event('change', {bubbles: true}));});
+      const result = await page.evaluate(() => window.DeskV1ConnectPermissionsStep.apply('acct-li'));
+      check(!await off.isChecked() && result.site.status === 'unchanged' && puts(srv).length === 0, 'synthetic disabled Instagram change cannot restore a grant', JSON.stringify(result));
+    }
+    check(realErrors(pageErrors).length === 0, `${label}: no uncaught page errors`, JSON.stringify(realErrors(pageErrors)));
     await ctx.close();
   }
+
 }
 
 const browser = await chromium.launch();

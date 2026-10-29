@@ -208,7 +208,7 @@ def test_linkedin_has_no_bindable_publish_route_and_the_org_switch_is_off(env):
     assert li['support'] == 'restricted' and 'limits' in li['status']['why'].lower() or not li['status']['bindable']
     read = next(p for p in out['purposes'] if p['id'] == 'read_own')
     browser = next(r for r in read['routes'] if r['id'] == 'linkedin-browser')
-    assert browser['status']['bindable'] and not browser['status']['executes'] and 'cannot read' in browser['status']['why']
+    assert browser['status']['bindable'] and browser['status']['executes'] and browser['status']['via'] == 'pane'
 
 
 def test_unknown_service_is_404_and_view_writes_nothing(env):
@@ -305,7 +305,7 @@ def test_routes_clayrune_cannot_run_are_not_bound(env, purpose, route, caps, cod
     assert _store_bytes() == before
 
 
-def test_a_browser_route_with_no_reader_is_saved_and_says_so(env, pane):
+def test_linkedin_browser_route_uses_the_existing_pane_reader(env, pane):
     client, _, _ = env
     acc = _li('Ron Levy')
     r = _save(client, _draft('linkedin', {'id': acc['id']}, 'member', [_b('read_own', 'linkedin-browser', ['own_posts'], browser_profile='li-ron')]))
@@ -313,7 +313,7 @@ def test_a_browser_route_with_no_reader_is_saved_and_says_so(env, pane):
     from mc.desk_connect import purpose_view
     view = purpose_view.view('linkedin')
     bound = view['accounts'][0]['bound'][0]
-    assert bound['setup'] == 'pending_runtime' and 'cannot run this route' in bound['reason']
+    assert bound['setup'] == 'ready' and bound['reason'] is None
 
 
 def test_linkedin_company_page_publishing_is_not_enabled_by_a_binding(env):

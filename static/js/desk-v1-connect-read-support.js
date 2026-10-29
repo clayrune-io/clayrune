@@ -1,6 +1,8 @@
 // The type projection combines profile coverage with route_readiness executors.
-// A browser domain grant alone does not make a Desk read route available.
-export function readUnavailable(info, kind) {
+// An existing browser grant must remain visible and revocable even if a route
+// is no longer projected. This exception never authorizes a new grant.
+export function readUnavailable(info, kind, liveGrant = false) {
+  if (liveGrant) return '';
   const supported = (info?.picker || []).flatMap(t => t.variants || []).some(v =>
     v.route_id && v.transport !== 'mcp' && v.runtime?.purposes?.read_own &&
     (v.coverage || []).some(c => c.purpose === 'read_own' && c.account_kind === kind &&

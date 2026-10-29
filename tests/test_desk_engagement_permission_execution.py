@@ -326,13 +326,17 @@ def test_real_registry_refuses_unknown_x_api_read_allow_and_forged_consent(world
     no_calls(world)
 
 
-@pytest.mark.parametrize('mode', ['deny', 'unsupported_allow', 'legacy'])
-def test_generic_linkedin_digest_obeys_explicit_policy_without_inventing_allow(world, mode):
+@pytest.mark.parametrize('mode', ['deny', 'allow', 'unsupported_allow', 'legacy'])
+def test_generic_linkedin_digest_obeys_explicit_policy_without_inventing_allow(world, mode, monkeypatch):
     presence('pane', aid='page', platform='linkedin')
     post(platform='linkedin')
     if mode == 'deny':
         consent((), aid='page', service='linkedin', kind='organization')
+    elif mode == 'allow':
+        consent(('mentions', 'post_metrics'), aid='page', service='linkedin', kind='organization', route='linkedin-browser')
     elif mode == 'unsupported_allow':
+        from mc.desk_connect import route_readiness
+        monkeypatch.delitem(route_readiness.EXECUTORS, ('linkedin', 'linkedin-browser', 'read_own'))
         with pytest.raises(policy.PolicyError, match='executor'):
             consent(('mentions',), aid='page', service='linkedin', kind='organization', route='linkedin-browser')
         # A forged/stale record cannot override the absent executor registration.
@@ -345,8 +349,8 @@ def test_generic_linkedin_digest_obeys_explicit_policy_without_inventing_allow(w
                     {'purpose': 'read_own', 'capability': 'mentions', 'route_id': 'linkedin-browser'}]})
             desk._write_store(store)
     out = poll()['linkedin']
-    if mode == 'legacy':
-        assert out['new_items'] == out['metrics_written'] == 1
+    if mode in ('allow', 'legacy'):
+        assert out['new_items'] == out['metrics_written'] == 1, json.dumps(out, sort_keys=True)
         assert world.model.call_count == 2 and len(world.generic_pages.reads) == 2
         assert out['spent'] == 2 * digest.PAGE_READ_UNIT_COST
     else:

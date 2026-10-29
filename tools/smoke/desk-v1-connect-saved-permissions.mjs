@@ -253,13 +253,13 @@ async function run(browser, width, height) {
   // ── 7: ONE Read tick commits the read scopes of every route the account reads through ─────
   {
     const srv = makeServer();
-    srv.agentRead.main = { enabled: true, domains: ['x.com'] };      // the site is already on the sign-in: only the Desk write is left
     const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
     await toPermissions(page, 'acct-legacy', '[data-cs-reopen]');
     check(!(await checked(page, 'read')), 'a legacy account opens with Read off', 'Read was already on');
     await page.check('[data-cfp-box="read"]');
     const done = page.evaluate(() => window.DeskV1ConnectPermissionsStep.apply('acct-legacy'));
-    await answer(page, PASSCODE);
+    await answer(page, PASSCODE);       // Desk read scopes
+    await answer(page, PASSCODE);       // browser domain was not granted yet
     const r = await done;
     const sent = commits(srv).pop();
     const keys = sent ? sent.body.draft.scopes.map((s) => `${s.purpose}|${s.capability}|${s.route_id}`).sort().join(',') : '';
@@ -269,6 +269,20 @@ async function run(browser, width, height) {
     check(capsOf('x-browser').length > 1 && capsOf('x-oauth').length > 0, `the fixture routes cover reads (x-oauth ${capsOf('x-oauth').join('/')}, x-browser ${capsOf('x-browser').join('/')})`, 'the fixture routes cover no reads');
     check(r.desk.status === 'saved' && keys === want, 'the one Read tick commits every read scope of the API route AND the browser route', `sent: ${keys}\nwant: ${want}`);
     check(!sent || !sent.body.draft.scopes.some((s) => s.purpose === 'publish'), 'and nothing of Post', keys);
+    check(JSON.stringify(srv.agentRead.main.domains) === JSON.stringify(['reddit.com', 'x.com']), 'the separate browser grant adds x.com and preserves reddit.com', JSON.stringify(srv.agentRead));
+    check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
+    await ctx.close();
+  }
+
+  // Existing browser access is visible even without a Desk policy. Untouched Save must not infer any new scopes.
+  {
+    const srv = makeServer();
+    srv.agentRead.main = { enabled: true, domains: ['x.com'] };
+    const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
+    await toPermissions(page, 'acct-legacy', '[data-cs-reopen]');
+    check(await checked(page, 'read') && !await page.locator('[data-cfp-box="read"]').isDisabled() && !await page.$eval('[data-cfp-box="read"]', b => b.indeterminate), 'legacy account with a live domain grant opens with Read on and enabled', 'the live grant was hidden');
+    const result = await page.evaluate(() => window.DeskV1ConnectPermissionsStep.apply('acct-legacy'));
+    check(result.desk.status === 'unchanged' && result.site.status === 'unchanged' && commits(srv).length === 0 && srv.puts.length === 0, 'untouched live grant creates neither Desk scopes nor browser writes', JSON.stringify(result));
     check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
     await ctx.close();
   }

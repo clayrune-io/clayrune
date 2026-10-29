@@ -18,7 +18,8 @@
 //
 // ONE LIST FOR EVERY ACCOUNT (Ron 2026-10-28). Read this account's activity, and Publish: the same two rows with the
 // same words whatever the connection (API, browser sign-in, no known route). What the chosen route cannot do stays
-// on screen, disabled, with one sentence saying why.
+// on screen, disabled, with one sentence saying why. Existing browser-domain grants remain checked and enabled
+// for revocation even if no read route is projected.
 //
 // WHAT IT OFFERS. Only what the chosen route can actually run and the profile says it covers
 // (variant.runtime.purposes + variant.coverage, the same two facts permission_policy._clean checks; the server stays
@@ -185,7 +186,7 @@ import { readUnavailable } from './desk-v1-connect-read-support.js';
   // Granted for the sign-in the account will have after save: what was read for another sign-in (the profile field was edited
   // since) says nothing about this one, so it counts as not allowed until Save checks it.
   function _siteGranted() { return !!(M.bperm && M.bperm.exists && M.bperm.granted && M.bperm.profile === _profile()); }
-  function _siteOn() { return !readUnavailable(M.info, _target?.kind) && (M.wish.site === null ? _siteGranted() : M.wish.site); }
+  function _siteOn() { return !readUnavailable(M.info, _target?.kind, _siteGranted()) && (M.wish.site === null ? _siteGranted() : M.wish.site); }
 
   // The ONE Read row = the Desk read the route offers (if any) + the service's own domain on the browser sign-in (when the
   // account is read through one). `can.site`: the domain part applies; `can.reason`: why the row is disabled ('' = it works).
@@ -196,13 +197,13 @@ import { readUnavailable } from './desk-v1-connect-read-support.js';
   const READ_DETAIL ="Agents read this account's own mentions, replies and post stats. They cannot click, type or post.";
   function _siteApplies(v, info) { return !!(window.DeskV1ConnectBrowserPermission && _readsByBrowser(v) && _profile() && _site(info)); }
   function _readCan(v, info, offers) {
-    const unavailable = readUnavailable(info, _target?.kind);
+    const unavailable = readUnavailable(info, _target?.kind, _siteGranted());
     if (unavailable) return { site: false, reason: unavailable };
     const site = _siteApplies(v, info);
     if (offers.read || site) return { site, reason: '' };
     return { site, reason: _readsByBrowser(v) && !_profile() ? NEED_SIGNIN : READ_UNAVAILABLE };
   }
-  // What the row shows when nobody has touched it: on only when every part that applies is already granted.
+  // A live browser-domain grant is always on and revocable. Without one, show the Desk read parts as saved.
   function _readParts(can, offers) {
     return offers.reads.map((o) => _initial(o).length > 0).concat(can.site ? [_siteGranted()] : []);
   }
@@ -213,13 +214,14 @@ import { readUnavailable } from './desk-v1-connect-read-support.js';
   }
   function _readInitial(can, offers) {
     if (can.reason) return false;
+    if (can.site && _siteGranted()) return true;  // a live browser grant must never be hidden by missing Desk scopes
     return _readParts(can, offers).every(Boolean);
   }
-  // Some parts allowed and some not (the Desk read is saved but the sign-in's domain is not): shown unticked and half-ticked,
+  // Some Desk parts allowed but the sign-in's domain is not: shown unticked and half-ticked,
   // so a person is not told Read is on while the card still says Reading is off.
   function _readMixed(can, offers) {
     const parts = _readParts(can, offers);
-    return !can.reason && parts.some(Boolean) && !parts.every(Boolean);
+    return !can.reason && !_siteGranted() && parts.some(Boolean) && !parts.every(Boolean);
   }
   function _readOn(can, offers) { return M.wish.read === null ? _readInitial(can, offers) : M.wish.read; }
 
@@ -429,7 +431,7 @@ import { readUnavailable } from './desk-v1-connect-read-support.js';
         const o = offers[id];
         if (id === 'read' && _target && M.wish.read === null) {
           const can = _readCan(v, api.info, offers);
-          box.indeterminate = _readMixed(can, offers) || _readPartial(offers);
+          box.indeterminate = !_siteGranted() && (_readMixed(can, offers) || _readPartial(offers));
         } else if (o && M.wish[id] === null) { const n = _initial(o).length; box.indeterminate = n > 0 && n < o.caps.length; }
         box.addEventListener('change', () => {
           box.indeterminate = false;
@@ -438,7 +440,7 @@ import { readUnavailable } from './desk-v1-connect-read-support.js';
             // One tick, two parts: the Desk read the route offers and the service's own domain on the sign-in. Back at what
             // the row showed = no wish, so ticking and unticking sends nothing (unless the row started half-ticked).
             const can = _readCan(v, api.info, offers);
-            const partial = _readMixed(can, offers) || _readPartial(offers);
+            const partial = !_siteGranted() && (_readMixed(can, offers) || _readPartial(offers));
             M.wish.read = !partial && box.checked === _readInitial(can, offers) ? null : box.checked;
             M.wish.site = can.site && M.wish.read !== null ? M.wish.read : null;
             if (offers.read) M.touched = true;               // a domain-only change must not record Desk scopes on a legacy account
@@ -514,7 +516,8 @@ import { readUnavailable } from './desk-v1-connect-read-support.js';
 
   async function _applySite() {
     const B = window.DeskV1ConnectBrowserPermission, info = M.info;
-    if (readUnavailable(info, _target?.kind)) return { status: 'unchanged' };
+    // A missing route can forbid adding access, never removing existing access.
+    if (M.wish.site !== false && readUnavailable(info, _target?.kind)) return { status: 'unchanged' };
     if (!B || M.wish.site === null) return { status: 'unchanged' };
     // Aimed at the sign-in the account will have AFTER this save (a drafted profile change is applied after this write),
     // never at the one the screen loaded with: the grant on the old profile would be a grant the account no longer uses.

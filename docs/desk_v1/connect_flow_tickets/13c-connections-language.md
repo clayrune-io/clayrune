@@ -378,3 +378,99 @@ Commands run from this branch root. ?Final rc? includes only the two documented 
 | `node tools/smoke/desk.mjs` | 0 | 0 |
 
 Review-round code and regression commit: `fbbe267493a6daf1ee4ae8e47029ba00fdf5c502`. The following documentation commit contains this report and the guide/changelog/API updates; both remain local on `clayrune/agent/73607ec1a093`.
+
+
+## P1 follow-up: grant revocation fixed; LinkedIn execution BLOCKED (2026-10-29)
+
+**Not ready to merge.** Dave explicitly required a stop if fresh LinkedIn Read needs backend changes beyond the projection. The new execution regression proves it does. No backend implementation beyond the executor-table declaration has been changed. This follow-up is retained as a WIP commit after f1a8f093, without rebase/squash/merge/push/restart. Master 433a6701's CHANGELOG conflict is left for Dave.
+
+### Completed and proposed changes
+
+- A live browser-domain grant takes precedence in Permissions: checked and enabled even without projected runtime or coverage, including stale Instagram. Unticking and passcode Save removes the exact service domain while preserving x.com in the regression. Untouched grants are disclosed and do not create Desk scopes. Existing shared-profile and broader-domain safeguards in browser-permission are unchanged; this fix removes the projection barrier to revocation, not those safeguards.
+- The proposed LinkedIn browser read_own -> pane executor-table entry uses its already-declared member/organization coverage. Fresh LinkedIn Read is offered by the projection; **the real explicit-consent execution is still blocked below**, so UI smoke success is not end-to-end readiness. Instagram without an existing grant remains disabled; a synthetic change cannot restore it after revocation. Service profiles and default-deny policy are unchanged.
+- Owners: static/js/desk-v1-connect-read-support.js, desk-v1-connect-permissions-step.js, and the single declaration in mc/desk_connect/route_readiness.py. Tests and guide/changelog/ticket 08 capture the intended contract, but LinkedIn's new-consent behavior is not shipped. No install or agent-conduct change, so README/AGENTS/standing rules need no update.
+
+### Backend blocker and proposed bounded next step
+
+mc/desk_engagement_poll.py `_require_read`, lines 37-40, enumerates every browser transport route. LinkedIn has both linkedin-browser and linkedin-manual. Two candidates cause route_id='', so the explicit policy rejects both read_own/mentions and read_own/post_metrics, despite a valid stored Allow. Legacy reads succeed because their policy is unset. The exact same selector is present at master 433a6701; master having a working pane reader and Company Page activity scoping does not repair this consent-routing seam.
+
+The new allow case in tests/test_desk_engagement_permission_execution.py demonstrates the production poll result: permission_denied for both capabilities with an empty route ID, 0 new_items, 0 metrics_written, 0 spent. The existing absent-executor test is retained by explicitly removing the LinkedIn executor inside that test fixture; it still refuses a forged/stale Allow. No production permission check was changed to make the test pass.
+
+Recommended next step for Dave's authorization: resolve the actual registered read_own pane executor, excluding manual browser routes and failing closed if it is still missing or ambiguous. This is a backend execution/consent selector change, not projection data. **Stopped before implementing it**, as requested. Its review should retain Company Page activity-address scoping and the existing profile, budget, permission and passcode gates.
+
+### Exact verification results
+
+Full Desk command, same complete sorted tests/test_desk*.py set, explicitly expanded (no subset):
+
+```powershell
+$deskTests = @(Get-ChildItem -Path tests/test_desk*.py | Sort-Object FullName | ForEach-Object FullName)
+python -m pytest -o addopts= -q --tb=short @deskTests
+```
+
+**rc 1: 3,607 passed, 1 failed in 752.83s.** Failure: the old unsupported_allow case expected LinkedIn's executor to be absent. The updated execution file retains that missing-executor case with fixture removal and adds a real Allow case. Its rerun **rc 1: 46 passed, 1 failed** exposes the backend selector above. The full suite was not rerun after that test-only revision because the required backend-scope stop had been reached. No claim of green backend validation is made.
+
+`python -m pytest -o addopts= -q --tb=short tests/test_desk_engagement_permission_execution.py`: rc **1**, allow denied by empty route_id. No network, live profile or real credential accessed. Earlier pre-fix `node tools/smoke/desk-v1-reads-off.mjs --revocation-only`: rc **1**, 12 hidden-grant/disclosure failures at 1440 and 390. After fix: rc **0**; final complete reads-off below adds fresh grant, cancellation and revoked-Instagram regrant refusal.
+
+All 35 Connect entry points (34 desk-v1-connect-* plus desk-connect-guides), four Connections entry points, reads-off, boot and core Desk: **42/42 final rc 0**. Initial runner rc **1**, 41/42 passed: saved-permissions still expected a live x.com grant to open with Read off and waited for a prompt on an unchanged tick. Updated it to distinguish fresh-grant writes from untouched live grants; rerun rc **0**. Raw original matrix is retained; final-smokes-results.json overlays that one rerun. These are hermetic production-UI fixtures, not live authentication or proof that LinkedIn explicit-consent execution works. The prior wider 103-entry sweep was not repeated.
+
+| Command | Initial rc | Final rc |
+| --- | --- | --- |
+| `node tools/smoke/boot-smoke.mjs` | 0 | 0 |
+| `node tools/smoke/desk-connect-guides.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-action-align.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-api-step.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-browser-check.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-browser-permission.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-browser-profile.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-custom.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-discover.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-edit-regressions.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-flow.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-held.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-login-step.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-mcp.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-package-check.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-package-creds.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-package-progress.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-package-save.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-package-step.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-permissions-step.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-purpose.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-read-support.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-remote-step.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-remote.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-save-refresh.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-saved-edit.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-saved-fields.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-saved-permissions.mjs` | 1 | 0 |
+| `node tools/smoke/desk-v1-connect-signin-details.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-signin-fill.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-signin-reuse.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-simplify.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-slice2.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-summary-step.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-unknown-step.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connect-wizard.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connection-language.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connection-remove.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connection-status.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-connections.mjs` | 0 | 0 |
+| `node tools/smoke/desk-v1-reads-off.mjs` | 0 | 0 |
+| `node tools/smoke/desk.mjs` | 0 | 0 |
+
+| Additional command | rc |
+| --- | --- |
+| `node --check static/js/desk-v1-connect-read-support.js` | 0 |
+| `node --check static/js/desk-v1-connect-permissions-step.js` | 0 |
+| `node --check tools/smoke/desk-v1-connect-read-support.mjs` | 0 |
+| `node --check tools/smoke/desk-v1-connect-permissions-step.mjs` | 0 |
+| `node --check tools/smoke/desk-v1-connect-saved-permissions.mjs` | 0 |
+| `node --check tools/smoke/desk-v1-reads-off.mjs` | 0 |
+| `pyright mc/desk_connect/route_readiness.py` | 0 |
+| `git diff --check` | 0 |
+
+Receipts/logs: _scratch/mc1118-read-revocation/{backend,execution,smokes,saved-permissions-rerun,final-smokes,checks}-results.json and *.log; blocked-results.json holds the handoff summary. The initial receipt helper used nonexistent pyright.cmd; fixed to installed pyright.EXE, final six syntax checks + pyright + diff check all rc 0.
+
+All 559 pre-existing screenshot files were copied and hashed before their tests, including eight untracked Studio outputs. 71 refreshed files restored to this round's starting bytes and every manifest hash verified. This does not recover the originals lost in the prior round. Mobile stale-Instagram and fresh-LinkedIn fixtures were visually reviewed; no layout problem, live grant visibly checked, fresh grant unchecked/enabled, Publish disabled, Continue reachable. Captures are retained under _scratch/mc1118-read-revocation/captures. Smoke dependency junction removed nonrecursively before commit.
+
+Global plan creation was denied by the steward fence as out-of-project configuration; the full plan and checkpoints are in the worktree journal, not retried outside the project. No live sign-in, cookie/profile access, external installation, production restart, merge or push. **Open decision for Dave: authorize the bounded backend selector fix above.**

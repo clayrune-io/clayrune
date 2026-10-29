@@ -8,7 +8,7 @@
  *
  *   1. Own step     no permission control on the Connection or Setup screens; the screen opens after Setup.
  *   2. Offers       only what the chosen route runs AND the profile covers: X API = Read your posts + Post; X sign-in =
- *                   Read (4 capabilities, through the browser) + the site row, no Post; LinkedIn sign-in = the site row only.
+ *                   Read (4 capabilities, through the browser), no Post; LinkedIn sign-in = its covered pane reads.
  *   3. Start OFF    a new account's rows start unchecked; Continue and the choices send nothing.
  *   4. Post w/o Read  the Desk-cannot-confirm notice sits next to the choices, appears and clears with the choice.
  *   5. Exact scopes the commit draft names exactly route/purpose/capability: Post is `publish/post` only (no Reply,
@@ -444,16 +444,16 @@ async function run(browser, width, height) {
     await ctx.close();
   }
 
-  // ── 2: LinkedIn sign-in: the Desk runs this route for nothing, so only the site row ────
+  // LinkedIn's existing pane reader is offered to a fresh member account.
   {
     const { ctx, page } = await newPage(browser, { srv: makeServer(), width, height });
     await toPermissions(page, { address: 'linkedin.com', type: 'signin', target: { kind: 'member', identity: 'ron', account: { new: { identity: 'ron', label: '' } } }, signin: { profile: 'li-ron' } });
     check((await boxes(page)).join('|') === 'read|post', `LinkedIn sign-in shows the same two rows (${(await boxes(page)).join(', ')})`, 'boxes: ' + (await boxes(page)).join('|'));
-    check((await page.locator('[data-cfp-box="read"]').isDisabled()) && (await page.locator('[data-cfp-box="post"]').isDisabled()) && /Reading isn't available for LinkedIn yet/.test(await text(page, '[data-cfw-option="read"]')), 'Read and Publish are disabled without declared coverage and executor', 'enabled states wrong');
+    check(!(await page.locator('[data-cfp-box="read"]').isDisabled()) && !(await page.locator('[data-cfp-box="read"]').isChecked()) && (await page.locator('[data-cfp-box="post"]').isDisabled()), 'fresh LinkedIn offers Read off and keeps Publish disabled', 'enabled states wrong');
     check(/^Choose what agents may do with this account\. Posting still needs campaign approval\.$/.test(await text(page, '[data-cfw-copy]')), 'the copy is the one shared sentence', await text(page, '[data-cfw-copy]'));
     await page.click('[data-cfw-details] > summary');
     const dt = await text(page, '[data-cfp-details]');
-    check(/The Desk does not run this route for any purpose yet/.test(dt), 'Details: the Desk does not run this route for any purpose yet', 'details: ' + dt);
+    check(/Your posts.*through the browser sign-in \(linkedin-browser\)/.test(dt), 'Details names the existing LinkedIn pane reader and own-post coverage', 'details: ' + dt);
     await page.click('[data-cfw-page="next"]');
     const dt2 = await text(page, '[data-cfp-details]');
     check(/does not read your LinkedIn feed or notifications by itself/.test(dt2), 'Details (page 2): reading the site does not read the LinkedIn feed', 'details page 2: ' + dt2);

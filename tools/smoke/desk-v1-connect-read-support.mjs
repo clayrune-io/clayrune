@@ -16,6 +16,13 @@ for profile in registry.registry()['snapshot']['profiles']:
 print(json.dumps(out))
 `],{encoding:'utf8'}));
 for(const {info,kind,supported} of cases) assert.equal(!readUnavailable(info,kind),supported,`${info.service.label}/${kind}`);
+for (const kind of ['member', 'organization']) {
+ const li = cases.find(c => c.info.service.id === 'linkedin' && c.kind === kind);
+ assert.equal(readUnavailable(li.info, kind), '', `fresh LinkedIn ${kind} has a working pane route`);
+}
+const instagram = cases.find(c => c.info.service.id === 'instagram');
+assert.ok(readUnavailable(instagram.info, instagram.kind));
+assert.equal(readUnavailable(instagram.info, instagram.kind, true), '', 'a stale Instagram grant remains revocable');
 
 const variant={route_id:'test-browser',transport:'browser',runtime:{purposes:{read_own:'pane'}},coverage:[{purpose:'read_own',account_kind:'account',status:'claimed'}]};
 const info=v=>({service:{label:'A new service'},picker:[{variants:[v]}]});

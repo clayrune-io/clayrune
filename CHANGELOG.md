@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Keep existing Read grants visible and revocable (MC-1118, blocked candidate)
+
+- Permissions shows an existing browser-domain Read grant checked and enabled even when route data is missing. Turning it off removes that service's domain and keeps other domains.
+- LinkedIn's existing browser reader is now declared in the route projection, so fresh member and Company Page connections can offer Read. Instagram without an existing grant remains unavailable; a stale grant can be revoked.
+- Candidate remains blocked: LinkedIn explicit Read consent reaches an ambiguous backend route selector. Execution regression is red; no runtime backend fix or merge is included.
+
 ## [2026-10-28] - Correct saved connection edits (MC-1118)
 
 - Read stays visible but disabled with a service-specific reason when the service profile has no supported read coverage and executor. Attaching a saved Instagram site keeps Read and Publish off and grants no browser access.
