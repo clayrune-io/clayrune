@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Keep campaign Sources to post destinations
+
+- Where's missing-account service tiles now include only profiles with a publishing purpose or platforms already modeled as workspace channels. YouTube and Instagram remain; Higgsfield, Google AI Studio, OpenAI, Notion, Google Drive and Google Photos stay in Connections. The server reuses the account platform definition and profile purposes, so new destinations appear without another vendor list. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-29] - Find every Connect service from campaign Sources
 
 - Where keeps existing account tiles and adds **Connect service ›** tiles for services without an account, using the complete existing Connect registry. These tiles open the same connection options with the service selected and cannot be dragged onto the board. Catalogue failures show Retry; newly connected accounts replace their service tile.

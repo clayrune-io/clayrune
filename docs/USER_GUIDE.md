@@ -1329,8 +1329,10 @@ removes it from this campaign, leaving its configured connection in Sources.
 A version's **X** removes that unsent assignment; published history remains.
 These removals have Undo.
 
-Sources also lists services from the Connect catalogue that have no saved
-account, including YouTube and Instagram. Choose **Connect YouTube ›** (or
+Sources also lists campaign destinations from the Connect catalogue that have
+no saved account, including YouTube and Instagram. Generation and storage
+services stay in Connections rather than appearing as campaign destinations.
+Choose **Connect YouTube ›** (or
 another service) to open its connection options in the existing Add service
 flow. These service tiles cannot be dragged; after an account is connected,
 its account tile appears instead. Connection options describe what that

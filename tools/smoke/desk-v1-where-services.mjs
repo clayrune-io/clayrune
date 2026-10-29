@@ -14,9 +14,10 @@ const index = readFileSync(resolve(root, 'static/index.html'), 'utf8');
 const files = loadStaticJsCss(root);
 const shots = resolve(root, '_scratch/where-services-copy');
 mkdirSync(shots, { recursive: true });
-// Read the actual registry and actual connection choices, without a live server.
+// Exercise the actual server-side destination filter and connection choices,
+// without a live server or a second copy of the destination rule.
 const catalog = JSON.parse(execFileSync('python', ['-c',
-  'import json; from mc.desk_connect import registry, type_view; print(json.dumps([{**registry.brief(s), "types": type_view.project_service(s["id"])} for s in registry.registry()["services"]]))',
+  'import json; from flask import Flask; from mc.blueprints.desk_connect_routes import bp; from mc.desk_connect import type_view; app = Flask(__name__); app.register_blueprint(bp); rows = app.test_client().get("/api/desk/connect/services").get_json()["services"]; print(json.dumps([{**s, "types": type_view.project_service(s["id"])} for s in rows]))',
 ], { cwd: root, encoding: 'utf8' }));
 
 async function boot(browser, width, failCatalog = false) {
@@ -76,6 +77,10 @@ try {
     await page.waitForSelector('[data-where-service="youtube"]');
     const ids = await page.locator('[data-where-service]').evaluateAll(nodes => nodes.map(n => n.dataset.whereService));
     assert.deepEqual(ids.sort(), catalog.filter(s => !['x', 'linkedin'].includes(s.id)).map(s => s.id).sort());
+    for (const id of ['youtube', 'instagram']) assert.ok(ids.includes(id), `${id} stays a campaign channel`);
+    for (const id of ['higgsfield', 'google_ai', 'openai', 'notion', 'google_drive', 'google_photos']) {
+      assert.ok(!ids.includes(id), `${id} is not a campaign destination`);
+    }
     assert.equal(await page.locator('[data-where-source]').count(), 3);
     assert.equal(await page.locator('[data-where-service][data-where-source]').count(), 0);
     assert.equal(await page.locator('[data-where-service]').evaluateAll(nodes => nodes.some(n => n.draggable || n.hasAttribute('tabindex') || n.hasAttribute('data-channel-id'))), false);
@@ -123,7 +128,7 @@ try {
     await page.waitForSelector('.desk-v1-home');
     assert.deepEqual(errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e)), []);
     await ctx.close();
-    console.log(`PASS ${width}px: complete catalogue, retry, no drag, keyboard Connect, real wizard selection, connected replacement, Copy routes including articles/orphans`);
+    console.log(`PASS ${width}px: destination catalogue, generator/storage exclusions, YouTube/Instagram retained, retry, no drag, keyboard Connect, real wizard selection, connected replacement, Copy routes including articles/orphans`);
   }
 } catch (e) { console.error(e.stack || e); process.exitCode = 1; }
 finally { if (browser) await browser.close(); }
