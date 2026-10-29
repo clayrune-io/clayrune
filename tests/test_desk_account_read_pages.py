@@ -25,6 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from mc import desk as _desk  # noqa: E402
 from mc import desk_accounts as _accounts  # noqa: E402
 from mc.blueprints import desk_routes  # noqa: E402
+from mc.blueprints.secrets_routes import local_auth  # noqa: E402
 from mc.desk_engagement_pane_digest import MAX_USER_PAGES, PaneDigestReader  # noqa: E402
 
 PROJECTS = [{'id': 'alpha', 'name': 'Alpha'}]
@@ -37,6 +38,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(_accounts.secrets_store, 'is_readable', lambda name: False)
     caller = {'unattended': False}
     monkeypatch.setattr(desk_routes, 'is_unattended_caller', lambda: caller['unattended'])
+    monkeypatch.setattr(local_auth, '_local_auth_is_configured', lambda: True)
+    monkeypatch.setattr(local_auth, '_local_auth_try_passcode', lambda value: value == 'test-human-proof')
     app = Flask(__name__)
     app.config['TESTING'] = True
     desk_routes.wire(
@@ -57,6 +60,8 @@ def env(tmp_path, monkeypatch):
 
 
 def _patch(client, cid, **body):
+    if 'organization_id' in body:
+        body['passcode'] = 'test-human-proof'
     return client.patch(f'/api/desk/accounts/{cid}', json=body)
 
 
@@ -202,6 +207,81 @@ def test_human_resaving_a_stale_company_destination_repairs_its_member_binding(e
     _, clean = permission_policy.clean_submission({'request_id': 'stale-company-repair', 'draft': draft})
     assert clean == draft
     assert purpose_view.account_kind(_desk._read_store()['accounts']['ch-li']) == 'organization'
+
+
+@pytest.mark.parametrize('trigger', ['manual', 'dispatch'])
+@pytest.mark.parametrize('origin', [False, True])
+@pytest.mark.parametrize('org', ['', '123'])
+def test_company_kind_change_requires_human_proof_even_with_origin(env, monkeypatch, trigger, origin, org):
+    from mc import unattended
+    client, _ = env
+    monkeypatch.setattr(desk_routes, 'is_unattended_caller', unattended.is_unattended_caller)
+    monkeypatch.setattr(unattended, 'agent_sessions', {
+        'synthetic': {'status': 'running', 'trigger_type': trigger}})
+    _desk.upsert_presence('alpha', {'accounts': [
+        {'channel_id': 'ch-li', 'platform': 'linkedin', 'identity': 'Company'}]})
+    client.get('/api/desk/accounts')
+    before = copy.deepcopy(_desk._read_store())
+    body = {'organization_id': org, 'read_pages': []}
+    headers = {'Origin': 'http://localhost:5199'} if origin else {}
+    refused = client.patch('/api/desk/accounts/ch-li', json=body, headers=headers)
+    assert refused.status_code == 403
+    assert _desk._read_store() == before
+
+
+@pytest.mark.parametrize('org', ['', '123'])
+def test_company_kind_change_human_ui_path_checks_proof_and_does_not_store_it(env, monkeypatch, org):
+    from mc import unattended
+    client, _ = env
+    monkeypatch.setattr(desk_routes, 'is_unattended_caller', unattended.is_unattended_caller)
+    monkeypatch.setattr(unattended, 'agent_sessions', {
+        'synthetic': {'status': 'running', 'trigger_type': 'dispatch'}})
+    _desk.upsert_presence('alpha', {'accounts': [
+        {'channel_id': 'ch-li', 'platform': 'linkedin', 'identity': 'Company'}]})
+    client.get('/api/desk/accounts')
+    with _desk._store_lock:
+        store = _desk._read_store()
+        store['accounts']['ch-li']['account_kind'] = 'member' if org else 'organization'
+        _desk._write_store(store)
+    body = {'organization_id': org, 'read_pages': [], 'passcode': 'wrong'}
+    headers = {'Origin': 'http://localhost:5199'}
+    assert client.patch('/api/desk/accounts/ch-li', json=body, headers=headers).status_code == 403
+    body['passcode'] = 'test-human-proof'
+    result = client.patch('/api/desk/accounts/ch-li', json=body, headers=headers)
+    assert result.status_code == 200, result.json
+    assert result.json['account_kind'] == ('organization' if org else 'member')
+    assert 'passcode' not in str(_desk._read_store())
+    assert 'passcode' not in result.json
+
+
+@pytest.mark.parametrize('include_id', [True, False])
+@pytest.mark.parametrize('path', [
+    '/company/123/admin/../../../notifications/',
+    '/company/123/admin/%2e%2e/%2E%2E/%2e%2E/notifications/',
+    '/company/123/admin/.%2e/%2E./../notifications/',
+    '/company/123/admin/./notifications/',
+    '/company/123/admin/%2E/notifications/',
+    '/company/123/admin/child/../notifications/',
+    '/company/123/admin/child/%2e./notifications/',
+    '/company/123/admin/../../456/admin/notifications/',
+    '/company/123/%2E/admin/notifications/',
+    '/company/456/admin/notifications/',
+    '/company/123/admin-other/notifications/',
+    '/notifications/',
+])
+def test_company_admin_patch_rejects_escaped_or_mismatched_destination_atomically(env, include_id, path):
+    client, _ = env
+    _desk.upsert_presence('alpha', {'accounts': [
+        {'channel_id': 'ch-li', 'platform': 'linkedin', 'identity': 'Company', 'organization_id': '123'}]})
+    client.get('/api/desk/accounts')
+    assert _patch(client, 'ch-li', organization_id='123').status_code == 200
+    before = copy.deepcopy(_desk._read_store())
+    body = {'label': 'Must not save', 'read_pages': [{'role': 'activity', 'url': 'https://www.linkedin.com' + path}]}
+    if include_id:
+        body['organization_id'] = '123'
+    response = _patch(client, 'ch-li', **body)
+    assert response.status_code == 400, response.json
+    assert _desk._read_store() == before
 
 
 @pytest.mark.parametrize('cid', ['ch-yt', 'ch-ig', 'ch-forum'])

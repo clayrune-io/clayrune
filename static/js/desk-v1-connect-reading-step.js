@@ -91,12 +91,22 @@ async function apply(id) {
   const body = draft();
   if (!Object.keys(body).length) return { status:'unchanged' };
   try {
-    const saved = await R.ctx.api('PATCH', `/api/desk/accounts/${encodeURIComponent(id)}`, { ...body, ...(R.pid ? { project_id:R.pid } : {}) });
+    const url = `/api/desk/accounts/${encodeURIComponent(id)}`;
+    const patch = { ...body, ...(R.pid ? { project_id:R.pid } : {}) };
+    let saved;
+    if ('organization_id' in body) {
+      const res = await window.humanProofFetch(url, { method:'PATCH', body:JSON.stringify(patch) },
+        { title:'Change LinkedIn destination', description:'Re-enter your dashboard passcode to change which LinkedIn profile or Company Page this account reads.' });
+      if (res === null) return { status:'cancelled' };
+      if (!res.ok) return { status:'failed', error:res.body?.error || res.body?.message || `HTTP ${res.status}` };
+      saved = res.body;
+    } else saved = await R.ctx.api('PATCH', url, patch);
     if (current.account) {
       Object.assign(current.account, saved);
       // PATCH omits read_pages after a clear; a merge alone keeps the old list
       // in the workspace and puts it back into the editor on the next reopen.
       if ('read_pages' in body && !saved.read_pages) delete current.account.read_pages;
+      if ('organization_id' in body && !saved.organization_id) delete current.account.organization_id;
     }
     if ('organization_id' in body && saved.account_kind) {
       P.setTarget({ kind:saved.account_kind, account:{ id }, identity:current.account?.identity });
@@ -109,7 +119,7 @@ async function apply(id) {
 function reading() { return R.key && R.via ? { via:R.via, profile:R.via === 'pane' ? R.profile : '' } : null; }
 P?.registerSection({ matches, html, bind, problem, summary, apply, reading,
   discard:() => { seq++; R = fresh(); },
-  outcome:r => r.status === 'saved' ? C.words.readingSaved : r.status === 'failed' ? `${C.words.readingFailed}: ${r.error}` : '',
+  outcome:r => r.status === 'saved' ? C.words.readingSaved : r.status === 'failed' ? `${C.words.readingFailed}: ${r.error}` : r.status === 'cancelled' ? 'Reading settings unchanged: the passcode was not entered.' : '',
 });
 
 // Existing accounts have a connection already. This registered branch saves only

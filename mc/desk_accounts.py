@@ -388,8 +388,12 @@ def update_account(account_id: str, patch: dict) -> dict:
         if read_via == 'api' and rec.get('platform') not in API_READ_PLATFORMS:
             raise AccountError('only X accounts can be read through an API; '
                                'this one is read through the browser pane')
+        from mc.desk_connect import linkedin_destination
+        try:
+            linkedin_destination.validate_pages(rec, org, pages)
+        except ValueError as e:
+            raise AccountError(str(e)) from e
         if org is not None:
-            from mc.desk_connect import linkedin_destination
             linkedin_destination.apply(rec, org)
         rec.update(clean)
         if reading:

@@ -6,9 +6,30 @@ This helper never writes a store or bypasses an identity/coverage check.
 """
 from __future__ import annotations
 
+import re
+from urllib.parse import urlsplit
+
+from mc import desk_pane_activity_scope as _scope
 from mc.desk_connect import browser_setup_record as _setup
 from mc.desk_connect import permission_policy as _policy
 from mc.desk_connect import purpose_bindings as _bindings
+
+
+def validate_pages(rec: dict, organization_id: str | None, pages: list[dict] | None) -> None:
+    """Validate the saved company destination before any identity or store edit."""
+    if rec.get('platform') != 'linkedin' or pages is None:
+        return
+    candidate = dict(rec)
+    if organization_id is not None:
+        candidate.update(organization_id=organization_id, account_kind='organization' if organization_id else 'member')
+    company = _scope.needs_company_page('linkedin', candidate)
+    for page in pages:
+        url = page['url']
+        if not company and '/company/' not in urlsplit(url).path:
+            continue
+        if (not _scope.is_company_admin(url, candidate.get('organization_id'))
+                or not re.match(r'^/company/[0-9]{1,20}/admin(?:/|$)', urlsplit(url).path)):
+            raise ValueError('Company Page address must be a LinkedIn numeric company admin URL matching organization_id; dot segments are not allowed')
 
 
 def apply(rec: dict, organization_id: str) -> None:

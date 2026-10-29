@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-28] - Require human proof for Company Page destination changes
+
+- Company Page Save and Clear use the shared dashboard passcode prompt and server guard; an agent session or forged Origin alone cannot change the account kind.
+- Both browser and server reject literal or encoded dot segments and destinations outside the matching numeric company admin path. Clear also removes the omitted company ID from the local account, preventing a stale ID on reopen.
+
 ## [2026-10-28] - Keep a saved LinkedIn destination's account kind consistent
 
 - Saving a Company Page admin address through Permissions switches the account, browser setup and saved bindings to organization; Clear switches them back to member. Saving an unchanged address also repairs an older stale member binding.

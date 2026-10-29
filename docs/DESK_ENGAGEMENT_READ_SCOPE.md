@@ -56,16 +56,27 @@ Connections > the account > **Edit settings** > **Permissions** always shows
 **Company Page admin address** when reading LinkedIn through a browser sign-in,
 including a saved member with no page-address gap. The optional field is a draft;
 Review shows the address before Save uses the existing human-only account PATCH.
+Company Page Save and Clear use the existing `_human_only` /
+`_require_human_passcode` gate and shared `humanProofFetch` prompt. An unattended
+caller is refused; manual sessions and forged Origin headers cannot substitute
+for the retyped dashboard passcode. Cancelling sends no PATCH. The proof is
+discarded before the account store sees the update.
 It accepts a plain HTTPS address on `linkedin.com` or `www.linkedin.com` with
 `/company/<digits>/admin/` (or a path ending at `/admin`). The company number must
 contain 1–20 digits, matching the account store's ID limit. Names/slugs, member
 notifications and non-admin paths are refused with a plain correction message.
 The field is not a general site or domain editor.
+Validation checks the normalized admin path and refuses all literal and encoded
+dot segments (including mixed-case `%2e` and literal/encoded combinations).
+The server applies the same restriction before any store or identity mutation,
+including a direct pages-only PATCH on an existing company account. A supplied
+company ID must match the address; personal notifications cannot be saved as
+company activity.
 
 Save derives `organization_id` from the user-supplied URL and sends it together
 with `read_pages: [{role: 'activity', url: <address>}]`. Changing the company
 address replaces the saved activity-page list. Clearing sends an empty organization
-ID and `read_pages: []`; the local account also drops the omitted list from the
+ID and `read_pages: []`; the local account also drops the omitted ID and list from the
 PATCH response so reopening cannot resurrect it. An untouched field sends no
 update unless a previously saved company address still has a member kind: that
 repair waits for the human to press Save, never runs just by opening the editor.

@@ -7,6 +7,7 @@ the address is supplied. This is account scoping, not a platform text parser.
 """
 from __future__ import annotations
 
+import posixpath
 import re
 from urllib.parse import urlsplit
 
@@ -26,7 +27,10 @@ def _company_segment(url: str) -> str | None:
         parsed = urlsplit(url)
     except ValueError:
         return None
-    match = re.match(r'^/company/([^/]+)/admin(?:/|$)', parsed.path)
+    path = re.sub(r'%2e', '.', parsed.path, flags=re.IGNORECASE)
+    if any(segment in ('.', '..') for segment in path.split('/')):
+        return None
+    match = re.match(r'^/company/([^/]+)/admin(?:/|$)', posixpath.normpath(path))
     if (parsed.scheme == 'https' and parsed.hostname in ('linkedin.com', 'www.linkedin.com')
             and match is not None):
         return match[1]

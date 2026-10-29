@@ -971,9 +971,10 @@ def update_account(account_id):
     if any(k in d for k in ('read_via', 'browser_profile', 'read_pages', 'organization_id')) and is_unattended_caller():
         return jsonify({'error': 'this action needs a human: an unattended agent '
                                  'session cannot choose how an account is read'}), 403
-    if d.get('capability') in _accounts._PATCH_CAPABILITIES:
+    if 'organization_id' in d or d.get('capability') in _accounts._PATCH_CAPABILITIES:
         # What an account may do is a permission, not a label: human, passcode retyped.
-        refused = _human_only('change', d, 'what an account can do')
+        refused = (_human_only('choose how', d, 'an account is read') if 'organization_id' in d
+                   else _human_only('change', d, 'what an account can do'))
         if refused:
             return refused
         d = {k: v for k, v in d.items() if k != 'passcode'}

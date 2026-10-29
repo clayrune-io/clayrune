@@ -12,10 +12,10 @@ function companyId(value) {
   if (url.protocol !== 'https:' || !['linkedin.com', 'www.linkedin.com'].includes(url.hostname)
       || authority.includes('@') || /[^\x00-\x7f]/.test(authority)
       || /[\s\\\x00-\x1f\x7f]/.test(value) || value.length > 2048) return null;
-  // Check the supplied path before URL's dot-segment normalization, just as
-  // Python's urlsplit does in is_company_admin.
+  // Reject literal and encoded dot segments even if they stay within admin.
   const path = value.replace(/^[^:]+:\/\/[^/?#]+/, '').split(/[?#]/)[0];
-  return path.match(/^\/company\/([0-9]{1,20})\/admin(?:\/|$)/)?.[1] ?? null;
+  if (path.replace(/%2e/ig, '.').split('/').some(p => p === '.' || p === '..')) return null;
+  return url.pathname.match(/^\/company\/([0-9]{1,20})\/admin(?:\/|$)/)?.[1] ?? null;
 }
 export function createCompanyPageDraft(account) {
   const saved = account?.read_pages || [];

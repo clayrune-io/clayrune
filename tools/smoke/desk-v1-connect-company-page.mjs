@@ -32,6 +32,7 @@ const check = (cond, good, badMsg) => (cond ? ok(good) : fail(badMsg || good));
 
 const NOT_READY = { ready: false, reason: 'read-only account: the Desk reads it and does not publish there', secret: null, unattended_ok: null };
 const ADDR = 'https://studio.youtube.com/channel/UC123/comments';
+const PASSCODE = 'test-human-proof';
 
 function makeServer() {
   const fx = loadFixtures();
@@ -93,14 +94,16 @@ async function open(browser, srv, viewport) {
     if (m && method === 'PATCH') {
       const acc = srv.accounts.find((x) => x.id === m[1]);
       if (!acc) return J({ error: 'account not found' }, 404);
+      if ('organization_id' in body && body.passcode !== PASSCODE) return J({error:'bad_passcode'},403);
       if (srv.refuse) return J({ error: srv.refuse }, 400);
-      const { project_id: _p, ...rest } = body;
+      const { project_id: _p, passcode: _proof, ...rest } = body;
       Object.assign(acc, rest);
       if ('organization_id' in rest) {
         acc.account_kind = rest.organization_id ? 'organization' : 'member';
         if (acc.browser_setup) acc.browser_setup.account_kind = acc.account_kind;
       }
       if (Array.isArray(acc.read_pages) && !acc.read_pages.length) delete acc.read_pages;
+      if (!acc.organization_id) delete acc.organization_id;
       return J(acc);
     }
     return route.abort();
@@ -130,7 +133,16 @@ async function reopen(page, id) {
 }
 async function next(page, step) {
   await page.click('[data-cfw-primary]');
+  if (step === 'result') {
+    await page.waitForSelector('[data-cfw-step="result"], input[id^="hp-passcode-"]');
+    if (await page.$('input[id^="hp-passcode-"]')) await answerProof(page);
+  }
   await page.waitForSelector(`[data-cfw-step="${step}"]`);
+}
+async function answerProof(page) {
+  await page.waitForSelector('input[id^="hp-passcode-"]');
+  await page.fill('input[id^="hp-passcode-"]', PASSCODE);
+  await page.click('.modal-content .btn-add');
 }
 async function save(page) { await next(page,'review'); await next(page,'result'); }
 const writes = srv => srv.log.filter(r => !['GET'].includes(r.method) && !['/api/desk/connect/types','/api/desk/connect/purposes','/api/desk/connect/suggest','/api/desk/connect/custom/connections'].includes(r.path));
@@ -161,6 +173,13 @@ async function run(browser, viewport) {
     'https://@www.linkedin.com/company/123/admin/',
     'https://ｗｗｗ.linkedin.com/company/123/admin/',
     'https://www.linkedin.com/company/123456789012345678901/admin/',
+    'https://www.linkedin.com/company/123/admin/../../../notifications/',
+    'https://www.linkedin.com/company/123/admin/%2e%2e/%2E%2E/%2e%2E/notifications/',
+    'https://www.linkedin.com/company/123/admin/.%2e/%2E./../notifications/',
+    'https://www.linkedin.com/company/123/admin/%2e/notifications/',
+    'https://www.linkedin.com/company/123/admin/./notifications/',
+    'https://www.linkedin.com/company/123/admin/child/%2E./notifications/',
+    'https://www.linkedin.com/company/123/admin/../../456/admin/notifications/',
   ]) {
     await page.fill(field,invalid);
     check(await page.locator('[data-cfw-primary]').isDisabled() && /numeric company ID/.test(await page.textContent('[data-reading-company-error]')), `invalid address blocked: ${invalid}`);
@@ -180,11 +199,22 @@ async function run(browser, viewport) {
   await page.click('[data-cfw-back]');
   await page.waitForSelector(field);
   check(await page.inputValue(field)===COMPANY, 'Back preserves the draft');
+  await next(page,'review');
+  await page.click('[data-cfw-primary]');
+  await page.waitForSelector('input[id^="hp-passcode-"]');
+  check(patches(srv,li.id).length===0, 'Save waits for human proof before sending a destination PATCH');
+  await page.locator('.modal-content button', {hasText:'Cancel'}).click();
+  await page.waitForSelector('[data-cfw-step="result"]');
+  check(patches(srv,li.id).length===0 && !li.organization_id
+    && (await page.textContent('[data-sum-banner="partial"]')).includes('passcode was not entered'), 'cancelled human proof leaves destination unchanged and reports cancellation');
   srv.refuse='human-only update refused';
-  await save(page);
+  await page.click('[data-sum-act="perms"]');
+  await answerProof(page);
+  await page.waitForFunction(() => document.querySelector('[data-sum-banner="partial"]')?.textContent.includes('human-only update refused'));
   check((await page.textContent('[data-sum-banner="partial"]')).includes(srv.refuse) && !li.organization_id, 'failed Save shows reason and leaves account unchanged');
   srv.refuse=null;
   await page.click('[data-sum-act="perms"]');
+  await answerProof(page);
   await page.waitForFunction(()=>!document.querySelector('[data-sum-banner="partial"]'));
   const sent=patches(srv,li.id).at(-1).body;
   check(sent.organization_id==='123456' && JSON.stringify(sent.read_pages)===JSON.stringify([{role:'activity',url:COMPANY}]), 'Save derives ID from address and PATCHes activity page together');
@@ -203,8 +233,14 @@ async function run(browser, viewport) {
   const clear=patches(srv,li.id).at(-1).body;
   check(clear.organization_id==='' && JSON.stringify(clear.read_pages)==='[]', 'Clear PATCH removes both organization ID and activity pages');
   check(li.account_kind==='member' && li.browser_setup.account_kind==='member', 'Clear response carries member kind');
+  const cached = await page.evaluate(id => window.DeskV1Store.state().channels.find(a => a.id === id), li.id);
+  check(!('organization_id' in cached) && !('read_pages' in cached), 'Clear drops both omitted fields from frontend state');
   await reopen(page,li.id);
   check(await page.inputValue(field)==='', 'cleared field reopens empty');
+  const afterClear = patches(srv,li.id).length;
+  await save(page);
+  check(patches(srv,li.id).length===afterClear, 'saving unchanged personal profile sends no stale organization ID PATCH');
+  await reopen(page,li.id);
   await page.fill(field,COMPANY);
   await reopen(page,'ch-yt');
   check(!(await page.$(field)), 'company editor is LinkedIn only');
