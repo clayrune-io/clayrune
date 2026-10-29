@@ -87,7 +87,12 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
   const _cov = {};            // project id -> [coverage rows]; set once per id until invalidate()
   const _covAsked = new Set();
   function coverage(pid) { return pid && _cov[pid] ? _cov[pid] : null; }
-  function coverageRow(pid, platform) { const rows = coverage(pid); return rows ? rows.find((x) => x.platform === platform) || null : null; }
+  // One row per read target (an account): with `accountId`, that account's row; a row with no account (a platform the project only published to) is the fallback.
+  function coverageRow(pid, platform, accountId) {
+    const rows = coverage(pid); if (!rows) return null;
+    const on = rows.filter((x) => x.platform === platform);
+    return (accountId && on.find((x) => x.account_id === accountId)) || on.find((x) => !x.account_id) || (accountId ? null : on[0]) || null;
+  }
   function loadCoverage(pids, repaint) {
     const want = Array.from(new Set((pids || []).filter(Boolean))).filter((p) => !_covAsked.has(p));
     want.forEach((pid) => {

@@ -43,6 +43,7 @@ from mc import desk_engines as _engines
 from mc import desk_oauth as _oauth
 from mc import desk_account_refs as _account_refs
 from mc import desk_engagement as _engagement
+from mc.desk_engagement_targets import read_targets as _read_targets
 from mc import desk_harvest as _harvest
 from mc import desk_pieces as _pieces
 from mc import desk_publish as _publish
@@ -1378,7 +1379,8 @@ def send_engagement_reply(item_id):
         return jsonify({'error': f'a reply is at most {_desk._ENGAGEMENT_DRAFT_MAX} characters'}), 400
     reply = {'id': f'reply-{item_id}', 'platform': item['platform'], 'body': text,
              'in_reply_to': item.get('external_id')}
-    acct = _engagement.platform_account(item.get('project_id') or '', item['platform'])
+    acct = _engagement.platform_account(item.get('project_id') or '', item['platform'],
+                                        item.get('account_id'))     # the account the reply arrived on
     acct_id = acct.get('channel_id') if isinstance(acct, dict) else acct
     if acct_id:                         # the project's account on that platform picks which sign-in replies
         reply['account_id'] = acct_id
@@ -1457,8 +1459,8 @@ def engagement_coverage(project_id):
     network call: capability checks only look at the vault / the profile dir."""
     readers = _engagement.readers_for_project(project_id)
     return jsonify({'project_id': project_id, 'coverage': [
-        _engagement.platform_coverage(project_id, p, readers.get(p))
-        for p in _engagement.project_platforms(project_id)]})
+        _engagement.platform_coverage(project_id, t['platform'], readers.get(t['key']), t)
+        for t in _read_targets(project_id)]})
 
 
 @bp.route('/api/desk/presence/<project_id>/accounts/<channel_id>/read', methods=['PATCH'])

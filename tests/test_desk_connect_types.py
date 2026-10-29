@@ -91,8 +91,9 @@ def test_setup_support_is_separate_from_runtime_execution():
     assert li['runtime']['purposes'] == {'read_own': 'pane'} and li['runtime']['desk_executes']
     assert {c['account_kind'] for c in li['coverage'] if c['purpose'] == 'read_own' and c['status'] == 'claimed'} == {'member', 'organization'}
     instagram = _variants(type_view.project_service('instagram'))['instagram-browser']
-    assert instagram['runtime']['purposes'] == {} and not instagram['runtime']['desk_executes']
-    assert not instagram['coverage'] and 'does not run' in instagram['runtime']['note']
+    assert instagram['runtime']['purposes'] == {'read_own': 'pane'} and instagram['runtime']['desk_executes']
+    assert {(c['purpose'], c['capability']) for c in instagram['coverage']} == {('read_own', 'mentions'), ('read_own', 'post_metrics')}
+    assert 'does not run' not in (instagram['runtime'].get('note') or '')
 
 
 def test_custom_variants_never_claim_execution():
