@@ -10,13 +10,15 @@ const types=JSON.parse(execFileSync(process.env.MC_PYTHON || 'python',['-c',`
 import json
 from mc.desk_connect import registry, resolve, type_view
 out={}
-for text in ['https://www.instagram.com','https://aistudio.google.com','https://higgsfield.ai','https://example.com']:
+for text in ['https://www.instagram.com','https://www.tiktok.com','https://aistudio.google.com','https://higgsfield.ai','https://example.com']:
     got=resolve.resolve(text)
     svc=got.pop('service') or registry.lookup(got['host'])
     out[text]={**got,**type_view.project_service(svc['id'] if svc else None)}
 print(json.dumps(out))
 `],{encoding:'utf8'}));
-const site={id:'instagram',name:'www.instagram.com',link:'https://www.instagram.com',browser_connection:{service:null,browser_profile:'main',read:false,post:false,status:{state:'verified'}}};
+const savedSite=(id,host)=>({id,name:host,link:`https://${host}`,browser_connection:{service:null,browser_profile:'main',read:false,post:false,status:{state:'verified'}}});
+// Instagram's pane Read is declared (c2d9a245); TikTok's is not, so it carries the "Read unavailable" path.
+const site=savedSite('instagram','www.instagram.com'), tiktok=savedSite('tiktok','www.tiktok.com');
 const engine={id:'google',label:'Google',currency:'usd',connected:{ready:true,state:'ready'},job_limit_usd:10,models:[]};
 const keyConnector={service:'google_ai',signs_in:false,fields:[{key:'secret',label:'Gemini API key',kind:'secret',vault:'gemini-api',present:true,required:true},{key:'allow_unattended',label:'Scheduled and unattended runs may use it',kind:'checkbox',default:true}]};
 const pairConnector={service:'higgsfield',signs_in:false,fields:[{key:'key_id',label:'API key ID',kind:'text',vault:'higgsfield',saved_entry:true,present:true,required:true},{key:'secret',label:'API key secret',kind:'secret',vault:'higgsfield',present:true,required:true},{key:'allow_unattended',label:'Scheduled and unattended runs may use it',kind:'checkbox',default:true}]};
@@ -28,7 +30,7 @@ export const writes=srv=>srv.log.filter(r=>r.method!=='GET' && r.path!=='/api/di
 const prompt=p=>p.waitForSelector('input[id^="hp-passcode-"]');
 export async function answer(p,cancel=false) {const input=await prompt(p),id=await input.getAttribute('id');if(cancel) await p.click('.modal-content .btn-secondary');else {await p.fill(`#${id}`,'test-passcode');await p.click('.modal-content .btn-add');}await p.waitForSelector(`#${id}`,{state:'detached'});}
 export function server() {
- const srv=makeServer({services:[structuredClone(site)]});srv.production=true;srv.engines=[structuredClone(engine),{...engine,id:'higgsfield_mcp',label:'Higgsfield',auth:{kind:'oauth',service:'higgsfield'}},{...engine,id:'higgsfield',label:'Higgsfield API key'}];
+ const srv=makeServer({services:[structuredClone(site),structuredClone(tiktok)]});srv.production=true;srv.engines=[structuredClone(engine),{...engine,id:'higgsfield_mcp',label:'Higgsfield',auth:{kind:'oauth',service:'higgsfield'}},{...engine,id:'higgsfield',label:'Higgsfield API key'}];
  srv.fx.projects.push({id:'p1',name:'Saved project'});
  srv.connections.push({...npm,server_name:'saved-github',ecosystem:'github',state:'registered',package:github.package,version:github.version});
  srv.agentRead={main:{enabled:true,domains:['youtube.com']}};
@@ -45,11 +47,13 @@ export function server() {
   if(path==='/api/browser/profiles') return send({profiles:[{name:'main'}]});
   if(path==='/api/browser/agent-read') return send({profiles:srv.agentRead});
   if(path==='/api/desk/connect/purposes') return send({accounts:[]});
-  if(path==='/api/desk/connect/saved-site/instagram/account') {
+  const attach=path.match(/^\/api\/desk\/connect\/saved-site\/(instagram|tiktok)\/account$/);
+  if(attach) {
+   const sid=attach[1],aid=`attached-${sid}`,svc=srv.services.find(s=>s.id===sid);
    srv.log.push({path,method,body:b});assert.equal(b.passcode,'test-passcode');
-   assert.deepEqual(b.source,{url:site.link,browser_profile:'main',signin_method:'other'});
-   if(!srv.accounts.find(a=>a.id==='attached-instagram')) srv.accounts.push({id:'attached-instagram',platform:'instagram',identity:b.account.identity.replace(/^@/,''),label:'Instagram account',capability:'assisted',browser_profile:'main'});
-   srv.services[0].account_id='attached-instagram';return send({ok:true,account_id:'attached-instagram',unchanged:false});
+   assert.deepEqual(b.source,{url:svc.link,browser_profile:'main',signin_method:'other'});
+   if(!srv.accounts.find(a=>a.id===aid)) srv.accounts.push({id:aid,platform:sid,identity:b.account.identity.replace(/^@/,''),label:`${sid[0].toUpperCase()+sid.slice(1)} account`,capability:'assisted',browser_profile:'main'});
+   svc.account_id=aid;return send({ok:true,account_id:aid,unchanged:false});
   }
   if(path==='/api/browser/profiles/main/agent-read' && method==='PUT') {srv.log.push({path,method,body:b});assert.equal(b.passcode,'test-passcode');srv.agentRead.main={enabled:b.enabled,domains:b.domains};return send({ok:true,...srv.agentRead.main});}
   return false;
