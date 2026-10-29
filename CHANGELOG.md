@@ -1,5 +1,39 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Keep Desk Read consent separate from browser access (MC-1118)
+
+- An existing browser-domain grant no longer makes Read appear allowed when the account explicitly denies Desk Read. Incomplete consent is unticked, marked as incomplete and explained on the shared Read row.
+- Unticking then reticking saves a real Desk grant; choosing off preserves revocation of existing access. Untouched explicit denials, legacy behavior, unrelated domains and passcode checks are preserved. Branch candidate only; no merge or deployment.
+
+## [2026-10-29] - Honor LinkedIn Read consent on its executable route (MC-1118)
+
+- LinkedIn pane reads resolve the single registered read_own pane executor, excluding manual routes. A saved Allow can reach the existing mentions and post-metrics reader; missing or ambiguous executor routes remain denied.
+- X routing, shared permission decisions, legacy unset-policy behavior and existing browser, budget and human approval gates are unchanged. Branch candidate only; no merge or deployment.
+
+## [2026-10-29] - Keep existing Read grants visible and revocable (MC-1118)
+
+- Permissions shows an existing browser-domain Read grant checked and enabled even when route data is missing. Turning it off removes that service's domain and keeps other domains.
+- LinkedIn's existing browser reader is now declared in the route projection, so fresh member and Company Page connections can offer Read. Instagram without an existing grant remains unavailable; a stale grant can be revoked.
+- The follow-up selector fix above resolves the LinkedIn explicit-consent blocker. Both changes remain branch candidates; neither is merged or live.
+
+## [2026-10-28] - Correct saved connection edits (MC-1118)
+
+- Read stays visible but disabled with a service-specific reason when the service profile has no supported read coverage and executor. Attaching a saved Instagram site keeps Read and Publish off and grants no browser access.
+- Saved key engines can change unattended use or one credential half while preserving the other saved fields. Replacements still require confirmation and the dashboard passcode.
+- Generic saved-site edits update the original record rather than creating another one. Remote MCP edits preserve an empty Authorization prefix exactly; Connections displays the Check now label correctly.
+
+## [2026-10-28] - Restore saved connections into Edit
+
+- Saved Instagram browser sites open the shared Permissions screen. Choose an account or enter its handle; passcode Save attaches it without signing in or deleting the saved reference. Read/Post changes retain their separate gates.
+- Engine and custom MCP Edit restore saved setup metadata at Permissions. Back retains provider fields, credential names, package/version/command, remote authentication and reach. Review requires fresh MCP approval; unchanged engines keep their credentials and saved use policy.
+- Standard sign-in actions say Sign in, with the next step Sign in, then check now. No automatic checks or sign-ins run when Edit opens.
+
+## [2026-10-28] - Unify saved Connections language and social account details
+
+- Connections use Ready, Needs sign-in, Not checked yet, Not working and Waiting on the service, with shared Check now, Edit, Sign in again and Remove labels.
+- Social details show the same Read/Post summary and collapsed technical Details; existing browser sites without an account show both permissions Off. Engine limits and explicit approval/unlock controls keep their existing human gates.
+- Added vocabulary/layout regression coverage and refreshed the affected interaction smokes. Saved engine/MCP setup restoration at Permissions remains a documented gap; no migration is included.
+
 ## [2026-10-28] - Bind company read redirects and compare coverage instants
 
 - Company admin reads keep the configured company destination after navigation, including accounts without a stored organization ID. A different company is refused before activity extraction.

@@ -2,6 +2,8 @@
 
 Status: proposed, not dispatched. [Parent design](../CONNECT_FLOW_SIMPLIFY.md).
 
+> **Presentation update, 2026-10-28 branch candidate:** [13c: Connections language](13c-connections-language.md) replaces this ticket's display words and detail layout with five statuses, shared actions and the common Read/Post summary. The existing route evidence, checks, drift review and human gates remain authoritative.
+
 ## Depends on
 
 13a.

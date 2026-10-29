@@ -31,6 +31,7 @@
 // ACTIVATION. The wizard is disabled until ticket 14, and the Package/Server-address choice that sets
 // `variant = custom-npm` is not part of this ticket: until it exists, the screens are reachable only by
 // `api.select({ variant: 'custom-npm' })`.
+import {packageState, stageSavedGithub} from './desk-v1-connect-mcp-restore.js';
 import {createPackageHelper} from './desk-v1-connect-package-helper.js';
 import {packageResultHTML, packageResultTitle} from './desk-v1-connect-package-result.js';
 import {createPackageCreds} from './desk-v1-connect-package-creds.js';
@@ -152,9 +153,9 @@ import {createPackageCreds} from './desk-v1-connect-package-creds.js';
   }
 
   function _detailsViewHTML() {
-    return `${P.git?window.DeskV1ConnectGithub.commandHTML(P.command,P.git.manual_command):''}${P.git?.build_required ? `<p class="desk-v1-cfw-fact-text" data-pk-build>${esc(window.DeskV1ConnectCopy.words.packageBuild)}</p>` : ''}<div class="desk-v1-cfk-pkgline" data-pk-pkgline><span data-connect-value><strong>${esc(_spec())}</strong></span>
+    return `${P.git || P.savedGithub?window.DeskV1ConnectGithub.commandHTML(P.command,P.git?.manual_command):''}${P.git?.build_required ? `<p class="desk-v1-cfw-fact-text" data-pk-build>${esc(window.DeskV1ConnectCopy.words.packageBuild)}</p>` : ''}<div class="desk-v1-cfk-pkgline" data-pk-pkgline><span data-connect-value><strong>${esc(_spec())}</strong></span>
         <button type="button" class="desk-v1-cf-link" data-pk-change>Change package</button></div>
-      ${P.git ? '' : `<label class="desk-v1-conn-add-field">Start file inside the package (optional)
+      ${P.git || P.savedGithub ? '' : `<label class="desk-v1-conn-add-field">Start file inside the package (optional)
         <input type="text" class="desk-v1-rules-textinput" data-pk-entry data-cfw-focus value="${esc(P.entry)}" maxlength="200" autocapitalize="off" spellcheck="false" aria-describedby="pk-entry-help"><span class="desk-v1-cfw-fact-text" id="pk-entry-help">${window.DeskV1ConnectCopy.words.packageFileHelp}</span></label>`}
       <label class="desk-v1-conn-add-field">Arguments, one per line (optional)
         <textarea class="desk-v1-rules-textinput" data-pk-args rows="2" spellcheck="false" aria-describedby="pk-args-help">${esc(P.args)}</textarea><span class="desk-v1-cfw-fact-text" id="pk-args-help">${window.DeskV1ConnectCopy.words.argumentsHelp}</span></label>
@@ -195,7 +196,7 @@ import {createPackageCreds} from './desk-v1-connect-package-creds.js';
     const body = P.git ? {stage_id:P.git.stage_id,command:P.command.trim(),scope:r.scope} : {package:_spec(),scope:r.scope};
     if (r.scope === 'project') body.project_id = r.project_id;
     if (P.name.trim()) body.server_name = P.name.trim();
-    if (P.entry.trim() && !P.git) body.entry = P.entry.trim();
+    if (P.entry.trim() && !P.git && !P.savedGithub) body.entry = P.entry.trim();
     const args = P.args.split('\n').map((a) => a.trim()).filter(Boolean);
     if (args.length) body.args = args;
     const creds = P.creds.list();
@@ -208,7 +209,15 @@ import {createPackageCreds} from './desk-v1-connect-package-creds.js';
     R.busy = true; R.error = ''; R.card = null;
     api.repaint();
     let card = null, error = '';
-    try { card = await api.ctx.api('POST', '/api/desk/connect/custom/review', Object.assign({}, body, R.scripts.length ? { approve_scripts: R.scripts.slice() } : {})); }
+    try {
+      if (P.savedGithub && !P.git) {
+        const staged=await stageSavedGithub(api,P);
+        if (gen !== _gen) return;
+        P.git=staged;
+        body=_requestBody().body;
+        R.key=JSON.stringify(body);
+      }
+      card = await api.ctx.api('POST', '/api/desk/connect/custom/review', Object.assign({}, body, R.scripts.length ? { approve_scripts: R.scripts.slice() } : {})); }
     catch (e) { error = (e && e.message) || 'The review failed.'; }
     if (gen !== _gen) return;
     R.busy = false;
@@ -371,7 +380,7 @@ import {createPackageCreds} from './desk-v1-connect-package-creds.js';
     bind: (root, api) => {
       _focusTitle(root);
       const primary = root.querySelector('[data-cfw-primary]');
-      const field = (sel, key) => { const n = root.querySelector(sel); if (n) n.addEventListener('input', () => { P[key] = n.value; if(key==='command' && primary) primary.disabled=!P.command.trim();if (key === 'pkg') { _gen++;P.helper.reset();P.staging=false;P.git=null;P.command='';P.det = { busy: false, answer: null, alt: null, kind: '', error: '' }; sync(); } }); };
+      const field = (sel, key) => { const n = root.querySelector(sel); if (n) n.addEventListener('input', () => { P[key] = n.value; if(key==='command' && primary) primary.disabled=!P.command.trim();if (key === 'pkg') { _gen++;P.helper.reset();P.staging=false;P.git=null;P.savedGithub=false;P.savedPin=null;P.command='';P.det = { busy: false, answer: null, alt: null, kind: '', error: '' }; sync(); } }); };
       const sync = () => {
         const d = root.querySelector('[data-pk-detect]');
         if (d) { d.disabled = !P.pkg.trim() || _busy(); d.setAttribute('aria-busy', String(_busy())); d.textContent = window.DeskV1ConnectCopy.words[_busy() ? 'checking' : 'detect']; }
@@ -471,5 +480,5 @@ import {createPackageCreds} from './desk-v1-connect-package-creds.js';
     return { kind: 'mcp-package', package: _spec(), saved: !!P.result && P.result.state !== 'setup_failed', state: P.result ? P.result.state : null,
       lines: [`npm package ${_spec()}`].concat(c ? [`Version ${c.package && c.package.version}, pinned`, c.reach && c.reach.who] : []).filter(Boolean) };
   }
-  window.DeskV1ConnectPackageStep = { summary, VARIANT };
+  window.DeskV1ConnectPackageStep = { summary, VARIANT, restore:d => {P={..._fresh(),...packageState(d)};P.creds.restore(d.credentials);} };
 })();

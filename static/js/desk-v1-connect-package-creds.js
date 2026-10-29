@@ -138,6 +138,7 @@ export function createPackageCreds() {
     setDocumented(list) { reset(); (list || []).forEach((c) => add(c.env, true)); },
     // a suggestion fills a blank row first, else adds one (never past the cap)
     suggest(env) { if (rows.length >= MAX_ROWS) return; const empty = rows.find((r) => !r.fixed && !r.env.trim() && !has(r)); if (empty) empty.env = env; else add(env, false); },
+    restore(list) { reset(); (list || []).forEach(c => {add(c.env);rows[rows.length-1].vault=c.vault;}); },
     envs: () => rows.map((r) => r.env.trim()).filter(Boolean),
     // {env, vault} for the Review request; a row still waiting to be saved has no vault name yet and is left out
     list: () => rows.map(trimmed).filter((c) => c.env && c.vault),

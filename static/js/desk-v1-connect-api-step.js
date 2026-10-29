@@ -34,6 +34,7 @@
 //   * none      the provider's own fields are shown, as the old flow showed them;
 //   * { id }    X attaches to the saved id (MC-1062/03b): start-held and Save both name it, and the server
 //               validates its own OAuth references. Other providers keep their existing refusal.
+import { restoreEngine, unchangedEngine, engineNote, savedEngineFields } from './desk-v1-connect-engine-saved.js';
 import { EngineReconnect } from './desk-v1-connect-engine-reconnect.js';
 (function () {
   const W = window.DeskV1ConnectWizard;
@@ -129,7 +130,7 @@ import { EngineReconnect } from './desk-v1-connect-engine-reconnect.js';
   // Saved logins (names only) for the optional sign-in help. Failing to load them only hides the help.
   function _loadLogins(api) {
     const svc = _service(api.info), v = _provider(api.sel, api.info);
-    if (!v || !_signs() || A.optionsFor === svc) return;
+    if (!v || !_signs() || A.savedEngine || A.optionsFor === svc) return;
     A.optionsFor = svc;
     const n = _seq;
     api.ctx.api('POST', '/api/desk/connect/signin/options', { service: svc }).then((o) => {
@@ -152,11 +153,12 @@ import { EngineReconnect } from './desk-v1-connect-engine-reconnect.js';
   // A Client ID typed here is a different app as far as this screen can tell, so it signs in as before.
   function _keepsSignin() {
     const R = window.DeskV1ConnectSigninReuse, Ad = window.DeskV1ConnectAdapter;
+    if (A.savedEngine && _signs()) return true;
     if (!R || !_signs() || _targetMode() !== 'existing' || !R.reusable(_target.account.id)) return false;
     const typed = Ad && Ad.mounted() ? (Ad.read().fields || {}).client_id : '';
     return !(typeof typed === 'string' && typed);
   }
-  function _reuseNote() { return _keepsSignin() ? window.DeskV1ConnectSigninReuse.noteHTML(_target.account.id) : ''; }
+  function _reuseNote() { return A.savedEngine ? engineNote(A) : _keepsSignin() ? window.DeskV1ConnectSigninReuse.noteHTML(_target.account.id) : ''; }
 
   function _fieldsBody(api) {
     if (A.reconnect) return `<p data-engine-reconnect>${esc(EngineReconnect.sentence)}</p>`;
@@ -297,7 +299,7 @@ import { EngineReconnect } from './desk-v1-connect-engine-reconnect.js';
     if (_blocked(info)) return { error: 'This account cannot be used for an API connection yet.' };
     const r = Ad && Ad.mounted() ? Ad.read() : { fields: {} };
     if (r.error) return { error: r.error };
-    const fields = Object.assign({}, r.fields);
+    const fields = savedEngineFields(A, r.fields);
     if (Ad?.replacementRequired() && !fields.confirm_replace) return { error: 'Save replaces the saved key. Confirm replacement on Review first.', step: 'review' };
     if (_targetMode() === 'new') {                                    // answered by the account choice, not typed here
       const n = _target.account.new;
@@ -323,6 +325,8 @@ import { EngineReconnect } from './desk-v1-connect-engine-reconnect.js';
   // prompt was closed: nothing was sent) or `{ ok: false, error, code, status }`. A failure keeps everything typed and the
   // same request id, so a repeat is a replay, not a second write. A success empties the typed values and the held sign-in.
   async function commit() {
+    const unchanged = unchangedEngine(A);
+    if (unchanged) return unchanged;
     if (A.committing) return { ok: false, error: 'A save is already running.', code: 'busy', status: 0 };
     if (A.reconnect) {
       A.committing = true;
@@ -372,5 +376,5 @@ import { EngineReconnect } from './desk-v1-connect-engine-reconnect.js';
   // The install card the Review screen must show and have approved, or null.
   function installCard() { return A.connector && A.connector.install ? A.connector.install : null; }
 
-  window.DeskV1ConnectApiStep = { setTarget, commit, reviewHTML, installCard };
+  window.DeskV1ConnectApiStep = { setTarget, commit, reviewHTML, installCard, restore:(info,sel,connector,engine) => {A={..._fresh(),...restoreEngine(info,sel,connector,engine)};} };
 })();

@@ -11,6 +11,7 @@
           ${f.present ? '<option value="stored">Use the saved details</option>' : '<option value="typed">Type it here</option>'}
           <option value="saved">Choose from Secrets</option>
         </select></label>
+      ${f.present && f.kind !== 'secret' ? '<div class="desk-v1-rules-hint" data-cfs-stored>Already saved.</div>' : ''}
       <div data-cfs-typed>${typed}</div>
       <div data-cfs-saved hidden>
         <p class="desk-v1-rules-hint">Choose a saved entry and the part to use for this field.</p>
@@ -28,7 +29,9 @@
     for (const box of boxes) {
       const mode = box.querySelector('[data-cfs-mode]');
       const changed = () => {
-        box.querySelector('[data-cfs-typed]').hidden = mode.value === 'saved';
+        const stored = box.querySelector('[data-cfs-stored]');
+        box.querySelector('[data-cfs-typed]').hidden = mode.value === 'saved' || (mode.value === 'stored' && !!stored);
+        if (stored) stored.hidden = mode.value !== 'stored';
         box.querySelector('[data-cfs-saved]').hidden = mode.value !== 'saved';
         // Moving to a saved source clears the typed secret immediately.
         if (mode.value === 'saved') box.querySelectorAll('input').forEach((i) => { i.value = ''; });
@@ -63,7 +66,12 @@
     return { value: name.value ? { name: name.value, part: box.querySelector('[data-cfs-part]').value } : null, focus: name };
   }
 
+  function stored(host, f) {
+    return !!f.present && host?.querySelector(`[data-cfs-field="${f.key}"] [data-cfs-mode]`)?.value === 'stored';
+  }
+
   function summary(host, f) {
+    if (stored(host, f)) return `already stored as <code>${esc(f.vault)}</code>, used as it is`;
     const selected = selection(host, f);
     if (!selected) return null;
     return selected.value ? `from Secrets: <code>${esc(selected.value.name)}</code> (${selected.value.part === 'username' ? 'username or key ID' : 'value'})` : 'no saved entry selected';
@@ -75,5 +83,5 @@
     return replaces(host, fields) ? `<label class="desk-v1-cf-check"><input type="checkbox" data-cfs-confirm-replace>
       <span>Save replaces the saved key. I confirm replacing it with the selected entry from Secrets.</span></label>` : '';
   }
-  window.DeskV1ConnectSavedFields = { html, bind, selection, summary, replaces, confirmHTML };
+  window.DeskV1ConnectSavedFields = { html, bind, selection, stored, summary, replaces, confirmHTML };
 })();

@@ -89,7 +89,7 @@ async function newPage(browser, { srv, width, height }) {
     if (path === '/api/desk/connect/custom/connections') return J({connections:[]});
     if (path === '/api/browser/agent-read') return J({policies:{},profiles:[]});
     if (path === '/api/browser/profiles') return J({profiles:srv.profiles});
-    if (path === '/api/desk/connect/verify') return J({state:srv.checkFail?'check_failed':'verified',label:srv.checkFail?'Check failed':'Verified'});
+    if (path === '/api/desk/connect/verify') return J({state:srv.checkFail?'check_failed':'verified',label:srv.checkFail?'Check failed':'Ready'});
     if (path === '/api/desk/connect/signin/options') return J({routes:[], logins:[],vault_locked:false});
     if (path === '/api/desk/connect/higgsfield/start-held') return body.passcode===PASSCODE?J({flow_id:'flow-1',claim:'claim-1',auth_url:'https://signin.example.test',profile:'desk-higgsfield'}):J({error:'bad_passcode'},403);
     if (path === '/api/desk/connect/flows/flow-1') return J({status:'held',held_ttl_s:600});
@@ -269,10 +269,10 @@ try {
         check(await p.locator('[data-sum-act="check"]').count()===1,'newly saved connection also offers Check it now');
         await primary(p);await p.waitForSelector('[data-conn-tile="engine:higgsfield"]');await p.click('[data-conn-tile="engine:higgsfield"]');
         check(!srv.log.some(r=>r.path==='/api/desk/connect/verify'&&r.body.check),'tile selection does not probe automatically');
-        await p.click('[data-saved-check]');await p.waitForFunction(()=>document.querySelector('[data-saved-check-status]')?.textContent==='Verified');
+        await p.click('[data-saved-check]');await p.waitForFunction(()=>document.querySelector('[data-saved-check-status]')?.textContent==='Ready');
         check(srv.log.filter(r=>r.path==='/api/desk/connect/verify'&&r.body.check).length===1,'saved tile Check it now uses one free human-click verify');
         await p.screenshot({path:resolve(SHOT_DIR,`saved_check_${width}.png`)});
-        srv.checkFail=true;await p.click('[data-saved-check]');await p.waitForFunction(()=>document.querySelector('[data-saved-check-status]')?.textContent==='Check failed');
+        srv.checkFail=true;await p.click('[data-saved-check]');await p.waitForFunction(()=>document.querySelector('[data-saved-check-status]')?.textContent==='Not working');
       }
       check(service!=='unknown'||srv.log.filter(r=>r.path==='/api/desk/connect/discover').length===1,'unknown investigation ran automatically exactly once');
       check(!pageErrors.filter(e=>!/aborted|net::ERR|Failed to fetch|EventSource/.test(e)).length,`${service} ${width}: no runtime exception`);

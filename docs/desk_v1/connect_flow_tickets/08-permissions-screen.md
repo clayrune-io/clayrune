@@ -2,6 +2,8 @@
 
 Status: proposed, not dispatched. [Parent design](../CONNECT_FLOW_SIMPLIFY.md).
 
+> **MC-1118 review decision, updated 2026-10-29 (Dave):** Offering a new Read grant requires the service profile's declared read coverage **and** a route_readiness executor for the account kind. LinkedIn's existing pane reader is declared for both member and Company Page coverage. An existing browser-domain grant always renders checked and enabled, even without projected runtime or coverage, so it can be revoked; unticking removes only that domain. Without a supported route or an existing grant, Read stays unchecked and disabled with “Reading isn't available for <service> yet.” Instagram's profile and new-account default-deny policy remain unchanged; attaching a site does not create a browser grant.
+
 ## Depends on
 
 02, 06, 07; Q2.

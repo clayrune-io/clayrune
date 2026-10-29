@@ -252,15 +252,15 @@ async function connections(browser) {
   // Higgsfield has no tile and no card while it is unconnected, so its not-connected wording is checked on the card
   // renderer itself, given the server's unconnected engine.
   const hrow = await page.evaluate((e) => { const h = document.createElement('div'); h.innerHTML = window.DeskV1Engines.rowHTML(e); return { rows: h.querySelectorAll('[data-conn-engine]').length, status: (h.querySelector('[data-engine-status]').textContent || '').replace(/\s+/g, ' ').trim() }; }, ENGINES(srv)[0]);
-  (hrow.rows === 1 && /^Not connected$/.test(hrow.status)) ? ok('an unconnected engine says so in plain words (no vault or Secrets jargon): "' + hrow.status + '"') : fail('higgsfield status: ' + JSON.stringify(hrow));
+  (hrow.rows === 1 && /^Not checked yet$/.test(hrow.status)) ? ok('an unconnected engine uses the shared unchecked label: "' + hrow.status + '"') : fail('higgsfield status: ' + JSON.stringify(hrow));
   await openEngine('google');
   const rows = await page.$$eval('[data-conn-engine]', (els) => els.map((e) => e.dataset.connEngine));
   JSON.stringify(rows) === '["google"]' ? ok('the opened engine is the one card on screen') : fail('engines: ' + JSON.stringify(rows));
   const gs = await txt(page, '[data-conn-engine="google"] [data-engine-status]');
-  (/^Connected$/.test(gs)) ? ok('a connected engine says Connected: "' + gs + '"') : fail('google status: ' + gs);
+  (/^Ready$/.test(gs)) ? ok('a connected engine says Ready: "' + gs + '"') : fail('google status: ' + gs);
   // The connect/replace controls live in the one Add service wizard now: the saved engine's card carries Change connection only.
   const gb = async (id) => txt(page, `[data-conn-detail="engine:${id}"] [data-saved-change]`);
-  ((await gb('google')) === 'Change connection' && !(await page.$('[data-conn-engine="google"] [data-engine-guide], [data-conn-engine="google"] [data-engine-signin]')))
+  ((await gb('google')) === 'Edit' && !(await page.$('[data-conn-engine="google"] [data-engine-guide], [data-conn-engine="google"] [data-engine-signin]')))
     ? ok('a connected engine offers Change connection (the guided steps are the Add service wizard, not a second Connect/Replace key on the card)') : fail('Change button: ' + (await gb('google')));
   (await page.$$('[data-conn-engine="google"] input[type="password"], [data-conn-engine="google"] input[type="text"]:not([data-engine-limit-input])')).length === 0
     ? ok('the engine card has no credential field') : fail('a text/password field is in the engine card');

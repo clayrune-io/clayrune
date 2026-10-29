@@ -8,7 +8,7 @@
  *
  *   1. Own step     no permission control on the Connection or Setup screens; the screen opens after Setup.
  *   2. Offers       only what the chosen route runs AND the profile covers: X API = Read your posts + Post; X sign-in =
- *                   Read (4 capabilities, through the browser) + the site row, no Post; LinkedIn sign-in = the site row only.
+ *                   Read (4 capabilities, through the browser), no Post; LinkedIn sign-in = its covered pane reads.
  *   3. Start OFF    a new account's rows start unchecked; Continue and the choices send nothing.
  *   4. Post w/o Read  the Desk-cannot-confirm notice sits next to the choices, appears and clears with the choice.
  *   5. Exact scopes the commit draft names exactly route/purpose/capability: Post is `publish/post` only (no Reply,
@@ -142,7 +142,7 @@ async function newPage(browser, { srv, width, height }) {
       if (!body || body.passcode !== PASSCODE) return J({ error: 'bad_passcode' }, 403);
       if (srv.commitMode === 'refuse') return J({ error: 'that route does not cover this exact capability', code: 'unsupported_scope' }, 400);
       const d = body.draft;
-      srv.policies[d.account_id] = { ...explicit(d.account_id, d.scopes), account_kind: d.account_kind };
+      srv.policies[d.account_id] = { ...explicit(d.account_id, d.scopes), service: d.service, account_kind: d.account_kind };
       return J({ ok: true, duplicate: false, account_id: d.account_id, policy: srv.policies[d.account_id] }, 201);
     }
     return route.abort();
@@ -444,16 +444,66 @@ async function run(browser, width, height) {
     await ctx.close();
   }
 
-  // ── 2: LinkedIn sign-in: the Desk runs this route for nothing, so only the site row ────
+  // MC-1118 / Fenn: domain access must not override an explicit Desk denial.
+  for (const action of ['retick', 'revoke-denied', 'revoke-granted']) {
+    const srv = makeServer(), id = 'acct-li', profile = 'li-main';
+    const variant = TYPES['linkedin.com'].picker.flatMap(t => t.variants).find(v => v.route_id === 'linkedin-browser');
+    const scopes = variant.coverage.filter(c => c.purpose === 'read_own' && c.account_kind === 'member' && ['documented', 'claimed'].includes(c.status))
+      .map(c => ({ purpose: c.purpose, capability: c.capability, route_id: variant.route_id }));
+    check(scopes.length > 0, 'LinkedIn regression uses real projected pane scopes');
+    srv.policies[id] = { ...explicit(id, action === 'revoke-granted' ? scopes : []), service: 'linkedin', account_kind: 'member' };
+    srv.profiles.push(profile);
+    srv.agentRead[profile] = { enabled: true, domains: ['example.org', 'linkedin.com'] };
+    const { ctx, page, pageErrors } = await newPage(browser, { srv, width, height });
+    await toPermissions(page, { address: 'linkedin.com', type: 'signin', target: { kind: 'member', account: { id } }, signin: { profile } });
+    const read = page.locator('[data-cfp-box="read"]');
+    const complete = action === 'revoke-granted';
+    check(await read.isChecked() === complete && await read.evaluate(b => b.indeterminate) === !complete && !await read.isDisabled(),
+      `${action}: Read reflects Desk consent and incomplete consent is unticked and distinguishable`);
+    if (action === 'retick') {
+      await shot(page, 'linkedin_incomplete_consent', width);
+      await fits(page, 'LinkedIn incomplete consent');
+    }
+    if (!complete) {
+      check(/not fully allowed yet/.test(await text(page, '[data-cfw-option="read"]')), `${action}: incomplete consent explains how to finish Read`);
+      const unchanged = await page.evaluate(i => window.DeskV1ConnectPermissionsStep.apply(i), id);
+      check(unchanged.desk.status === 'unchanged' && unchanged.site.status === 'unchanged' && writes(srv).length === 0,
+        `${action}: untouched incomplete consent preserves the explicit denial without writes`);
+      await read.check();
+    }
+    await read.uncheck();
+    if (action === 'retick') await read.check();
+    srv.log.length = 0;
+    // Avoid a hanging prompt on the original no-write regression: only answer a pending Desk change.
+    const pending = await page.evaluate(() => window.DeskV1ConnectPermissionsStep.summary());
+    const answers = action === 'retick' ? (pending.permissionPending ? ['ok'] : [])
+      : action === 'revoke-granted' ? ['ok', 'ok'] : ['ok'];
+    const result = await applyWith(page, id, answers);
+    const commits = logOf(srv, '/api/desk/connect/permissions/commit');
+    const puts = logOf(srv, `/api/browser/profiles/${profile}/agent-read`).filter(r => r.method === 'PUT');
+    if (action === 'retick') {
+      check(result.ok && result.desk.status === 'saved' && commits.length === 1 && srv.policies[id].service === 'linkedin' && srv.policies[id].read === true
+        && JSON.stringify(srv.policies[id].scopes) === JSON.stringify(scopes.slice().sort((a, b) => `${a.purpose}|${a.capability}|${a.route_id}`.localeCompare(`${b.purpose}|${b.capability}|${b.route_id}`))) && puts.length === 0,
+      'LinkedIn untick + retick writes a real Desk grant, deskRead=true, and keeps the existing domain', JSON.stringify({ result, commits, policy: srv.policies[id] }));
+    } else {
+      check(result.ok && srv.policies[id].read === false && srv.policies[id].scopes.length === 0
+        && commits.length === (complete ? 1 : 0) && puts.length === 1 && JSON.stringify(srv.agentRead[profile].domains) === JSON.stringify(['example.org']),
+      `${action}: explicit revocation removes only LinkedIn and leaves Desk Read denied`, JSON.stringify({ result, commits, puts }));
+    }
+    check(realErrors(pageErrors).length === 0, `${action}: no uncaught page errors`, JSON.stringify(realErrors(pageErrors)));
+    await ctx.close();
+  }
+
+  // LinkedIn's existing pane reader is offered to a fresh member account.
   {
     const { ctx, page } = await newPage(browser, { srv: makeServer(), width, height });
     await toPermissions(page, { address: 'linkedin.com', type: 'signin', target: { kind: 'member', identity: 'ron', account: { new: { identity: 'ron', label: '' } } }, signin: { profile: 'li-ron' } });
     check((await boxes(page)).join('|') === 'read|post', `LinkedIn sign-in shows the same two rows (${(await boxes(page)).join(', ')})`, 'boxes: ' + (await boxes(page)).join('|'));
-    check(!(await page.locator('[data-cfp-box="read"]').isDisabled()) && (await page.locator('[data-cfp-box="post"]').isDisabled()), 'Read is enabled (the domain), Publish is disabled', 'enabled states wrong');
+    check(!(await page.locator('[data-cfp-box="read"]').isDisabled()) && !(await page.locator('[data-cfp-box="read"]').isChecked()) && (await page.locator('[data-cfp-box="post"]').isDisabled()), 'fresh LinkedIn offers Read off and keeps Publish disabled', 'enabled states wrong');
     check(/^Choose what agents may do with this account\. Posting still needs campaign approval\.$/.test(await text(page, '[data-cfw-copy]')), 'the copy is the one shared sentence', await text(page, '[data-cfw-copy]'));
     await page.click('[data-cfw-details] > summary');
     const dt = await text(page, '[data-cfp-details]');
-    check(/The Desk does not run this route for any purpose yet/.test(dt), 'Details: the Desk does not run this route for any purpose yet', 'details: ' + dt);
+    check(/Your posts.*through the browser sign-in \(linkedin-browser\)/.test(dt), 'Details names the existing LinkedIn pane reader and own-post coverage', 'details: ' + dt);
     await page.click('[data-cfw-page="next"]');
     const dt2 = await text(page, '[data-cfp-details]');
     check(/does not read your LinkedIn feed or notifications by itself/.test(dt2), 'Details (page 2): reading the site does not read the LinkedIn feed', 'details page 2: ' + dt2);

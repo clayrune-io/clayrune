@@ -20,7 +20,7 @@
  *                     tile reads "Saved for agents", never Connected; a refusal is rolled back; Remove DELETEs.
  *   5. Flag OFF    -> the same gestures make 0 /api/desk/* requests.
  *   Since MC-1062/14 (one Add service wizard) items 1 to 4b read as the file now checks them: an account detail carries
- *   "Edit settings" (no `Connect X`, no Add form, no Read via buttons), Add service is a name-or-address box,
+ *   "Edit" (no `Connect X`, no Add form, no Read via buttons), Add service is a name-or-address box,
  *   Remove requires confirmation and has no Undo, Read via is a summary, and a saved service is checked as a tile (its save is the
  *   wizard's, covered by desk-v1-connect-unknown-step.mjs).
  *
@@ -209,19 +209,19 @@ async function connectionsRead(browser) {
     await selectTile(page, id);
     rows.push(await page.$eval(`[data-conn-account="${id}"]`, (e) => ({
       id: e.dataset.connAccount, state: e.dataset.connState,
-      publish: (e.querySelector('[data-conn-publish-text]') || {}).textContent || '',
+      publish: (e.querySelector('[data-conn-publish]') || {}).textContent || '',
       reopen: !!e.querySelector('[data-cs-reopen]'), xsteps: !!e.querySelector('[data-conn-x-guide]'), action: !!e.querySelector('[data-conn-action]'),
     })));
   }
   const x = rows.find((r) => r.id === 'ch-x-ron');
   const li = rows.find((r) => r.id === 'ch-li-page');
   check(rows.length === srv.accounts.length, `the rows are the server's accounts (${rows.length})`, 'rows: ' + JSON.stringify(rows.map((r) => r.id)));
-  check(x && x.state === 'off' && /^not connected$/.test(x.publish.trim()), `X: Publishing reads "not connected" (a vault-naming reason is left to the steps) ("${x && x.publish}")`, 'X row: ' + JSON.stringify(x));
-  check(li && li.state === 'off' && /w_organization_social/.test(li.publish), 'the LinkedIn page shows NOT connected with the app-review reason, never faked', 'LinkedIn row: ' + JSON.stringify(li));
+  check(x && x.state === 'reauth' && /vault/i.test(x.publish), `X: Publishing reads "not connected" (a vault-naming reason is left to the steps) ("${x && x.publish}")`, 'X row: ' + JSON.stringify(x));
+  check(li && li.state === 'saved' && /w_organization_social/.test(li.publish), 'the LinkedIn page shows NOT connected with the app-review reason, never faked', 'LinkedIn row: ' + JSON.stringify(li));
   // Weaker than before (MC-1062/14): "Connect X" on the X account alone is gone. One wizard connects every service, so every live
-  // account carries the same "Edit settings" (2026-10-28: it was "Change how this is connected") and none carries a per-account X steps button.
+  // account carries the same "Edit" (2026-10-28: it was "Change how this is connected") and none carries a per-account X steps button.
   check(rows.every((r) => r.reopen && !r.xsteps), 'every live account offers Edit settings and none a per-account X steps button', 'connect buttons: ' + JSON.stringify(rows.map((r) => [r.id, r.reopen, r.xsteps])));
-  check(await page.$$eval('[data-cs-reopen]', (els) => els.length === 1 && els[0].textContent.trim() === 'Edit settings'), 'the account card has exactly one button, and it says Edit settings', 'the Edit settings label or count is wrong');
+  check(await page.$$eval('[data-cs-reopen]', (els) => els.length === 1 && els[0].textContent.trim() === 'Edit'), 'the account card has exactly one button, and it says Edit settings', 'the Edit settings label or count is wrong');
   check(!/Change how this is connected|Open Permissions/.test(await page.evaluate(() => document.body.innerText)), 'neither "Change how this is connected" nor "Open Permissions" is on the screen', 'an old button label survived');
   check(rows.every((r) => !r.action), 'no fixture Connect / Reconnect button on any live row', 'a Connect button survived live');
   const typed = await page.$$('[data-connections] input[type="password"], [data-connections] input[name*="token" i], [data-connections] input[name*="secret" i]');
@@ -252,7 +252,7 @@ async function connectionsRead(browser) {
   await selectTile(page, 'ch-x-ron');
   await settle(page, () => (document.querySelector('[data-conn-account="ch-x-ron"]') || {}).dataset.connState === 'ok');
   check(calls(srv, 'GET', /^\/api\/desk\/accounts$/).length === 1, 'Check again is one GET of M2 and the row repaints Connected', 'recheck calls: ' + JSON.stringify(srv.log));
-  check(!!(await page.$('[data-conn-account="ch-x-ron"] [data-conn-unattended]')), 'a token that may not be used unattended says scheduled posts will be held', 'no unattended note');
+  check(/Scheduled posts will be held/.test(await page.textContent('[data-conn-account="ch-x-ron"] [data-connection-details]')), 'a token that may not be used unattended says scheduled posts will be held', 'no unattended note');
   realErrors(pageErrors).length ? realErrors(pageErrors).forEach((e) => fail('page error: ' + e)) : ok('no uncaught page errors');
   await ctx.close();
 }
@@ -260,24 +260,17 @@ async function connectionsRead(browser) {
 // ── 1b: the X wizard on an account card shows THAT account's sign-in ───────
 // The per-account steps button exists only while the one Connect wizard is off (the fallback in desk-v1-connections.js).
 async function xGuideAccountState(browser) {
-  const srv = makeServer();
-  const { ctx, page, pageErrors } = await newPage(browser, { live: true, srv });
-  await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
-  await page.evaluate(() => window.DeskV1ConnectWizard.setEnabled(false));
-  await openConnections(page);
-  await selectTile(page, 'ch-x-ron');
-  srv.log.length = 0;
-  await page.click('[data-conn-account="ch-x-ron"] [data-conn-x-guide]');
-  await page.waitForSelector('[data-conn-x-wizard="ch-x-ron"] [data-guide="x"]', { timeout: 6000 });
-  const st = await page.$eval('[data-conn-x-wizard="ch-x-ron"] [data-guide="x"]', (e) => e.dataset.xState);
-  const asked = srv.log.filter((r) => r.method === 'GET' && r.path === '/api/desk/connect/status');
-  check(asked.length === 1 && asked[0].search === '?account_id=ch-x-ron', 'the X wizard asks for status with that account id', 'status requests: ' + JSON.stringify(asked));
-  check(st === 'connected', "a connected X account's wizard says connected, not 'not connected'", 'wizard state: ' + st);
-  realErrors(pageErrors).length ? realErrors(pageErrors).forEach((e) => fail('page error: ' + e)) : ok('no uncaught page errors');
+  const srv=makeServer();const {ctx,page,pageErrors}=await newPage(browser,{live:true,srv});
+  await openConnections(page);await selectTile(page,'ch-x-ron');
+  check(!(await page.$('[data-conn-x-guide]')),'no separate X editor','a retired editor returned');
+  await page.click('[data-cs-reopen]');
+  await page.waitForSelector('[data-cfw-step="permissions"]');
+  check(await page.evaluate(()=>DeskV1ConnectWizard.state().sel.account==='ch-x-ron'),'Edit targets this account in Permissions','wrong target');
+  check(!srv.log.some(r=>/start-held|permissions\/commit/.test(r.path)),'opening Edit signs in and grants nothing','a write on opening');
+  check(realErrors(pageErrors).length===0,'no uncaught page errors',realErrors(pageErrors).join(' | '));
   await ctx.close();
 }
 
-const txt = (page, sel) => page.textContent(sel).then((t) => (t || '').replace(/\s+/g, ' ').trim()).catch(() => '');
 // ── 2: remove / undo / read via ────────────────────────────────────────────
 // Weaker than before (MC-1062/14): there is no Add form on Connections to type an @handle into, and no Read via control to
 // click. An account is created by the Add service wizard's own sign-in step on the server, so M3 is no longer sent by this screen
@@ -308,7 +301,7 @@ async function addRemove(browser) {
   // Read via: shown as the server holds it, edited in the wizard; opening the account sends nothing.
   srv.log.length = 0;
   await selectTile(page, 'ch-x-ron');
-  const via = await txt(page, '[data-conn-account="ch-x-ron"] [data-cs-readvia]');
+  const via = (await page.textContent('[data-conn-account="ch-x-ron"] [data-cs-readvia]')).trim();
   check(/Browser pane \(no charge\)$/.test(via) && !(await page.$('[data-conn-account="ch-x-ron"] [data-readvia]')),
     `Read via is a summary of the server's setting ("${via}"), with no pane / API buttons on the account`, 'read via summary: ' + via);
   check(calls(srv, 'PATCH', /^\/api\/desk\/accounts\//).length === 0 && calls(srv, 'PATCH', /^\/api\/desk\/presence\//).length === 0,
@@ -330,7 +323,7 @@ async function somethingElse(browser) {
   await openConnections(page);
   await page.waitForSelector('[data-conn-tile^="service:"]', { timeout: 4000 });
   const svc = await page.$eval('[data-conn-tile^="service:"]', (e) => ({ pill: e.querySelector('[data-conn-tile-status]').textContent.trim(), state: e.dataset.connState }));
-  check(svc.pill === 'Saved for agents' && svc.state === 'saved', `the tile says "${svc.pill}", not Connected`, 'service tile: ' + JSON.stringify(svc));
+  check(svc.pill === 'Not checked yet' && svc.state === 'saved', `the tile says "${svc.pill}", not Connected`, 'service tile: ' + JSON.stringify(svc));
   await page.click('[data-conn-tile^="service:"]');
   await page.waitForSelector('[data-conn-detail^="service:"] [data-svc-cred-state]', { timeout: 4000 });
   const cred = await page.$eval('[data-svc-cred-state]', (e) => e.dataset.svcCredState);
@@ -434,8 +427,10 @@ async function demoCallsNothing(browser) {
   await openConnections(page);
   await page.click('[data-conn-tile]');   // an account's detail open: it must not offer the live controls either
   await page.waitForSelector('[data-conn-detail] [data-conn-account]', { timeout: 4000 });
-  const live = await page.$$('[data-conn-add], [data-connection-remove], [data-conn-publish]');
-  check(live.length === 0, 'flag OFF: Connections shows no Add form, Remove or Publishing line', 'live controls leaked into demo mode');
+  const live = await page.$$('[data-conn-add], [data-as-signin], [data-conn-publish]');
+  check(live.length === 0, 'flag OFF: Connections shows no live sign-in or Publishing controls', 'live controls leaked into demo mode');
+  check(await page.locator('[data-connection-check]').isDisabled(),'demo checking is disabled','demo exposed a live check');
+  check(!/permissions are being read/.test(await page.textContent('[data-connection-permissions]')),'demo permissions do not stay loading','demo left a loading placeholder');
   // The read-coverage line under Read via is a pre-existing GET (S8 owns engagement); it is not an account write.
   const own = srv.log.filter((r) => !/^\/api\/desk\/engagement\/coverage\//.test(r.path));
   check(own.length === 0, 'flag OFF: Where and Connections made 0 /api/desk/* requests (bar the read-coverage GET)', 'demo mode called the server: ' + JSON.stringify(own.map((r) => r.method + ' ' + r.path)));

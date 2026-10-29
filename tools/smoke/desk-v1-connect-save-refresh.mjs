@@ -88,7 +88,7 @@ async function newPage(browser, { srv, width, height }) {
     if (path === '/api/desk/connect/custom/connections') return J({connections:[]});
     if (path === '/api/browser/agent-read') return J({policies:{},profiles:[]});
     if (path === '/api/browser/profiles') return J({profiles:srv.profiles});
-    if (path === '/api/desk/connect/verify') return J({state:srv.checkFail?'check_failed':'verified',label:srv.checkFail?'Check failed':'Verified'});
+    if (path === '/api/desk/connect/verify') return J({state:srv.checkFail?'check_failed':'verified',label:srv.checkFail?'Check failed':'Ready'});
     if (path === '/api/desk/connect/signin/options') return J({routes:[], logins:[],vault_locked:false});
     if (path === '/api/desk/connect/higgsfield/start-held') return body.passcode===PASSCODE?J({flow_id:'flow-1',claim:'claim-1',auth_url:'https://signin.example.test',profile:'desk-higgsfield'}):J({error:'bad_passcode'},403);
     if (path === '/api/desk/connect/flows/flow-1') return J({status:'held',held_ttl_s:600});

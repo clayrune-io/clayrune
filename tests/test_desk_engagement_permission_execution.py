@@ -327,13 +327,17 @@ def test_real_registry_refuses_unknown_x_api_read_allow_and_forged_consent(world
     no_calls(world)
 
 
-@pytest.mark.parametrize('mode', ['deny', 'unsupported_allow', 'legacy'])
-def test_generic_linkedin_digest_obeys_explicit_policy_without_inventing_allow(world, mode):
+@pytest.mark.parametrize('mode', ['deny', 'allow', 'unsupported_allow', 'legacy'])
+def test_generic_linkedin_digest_obeys_explicit_policy_without_inventing_allow(world, mode, monkeypatch):
     presence('pane', aid='page', platform='linkedin')
     post(platform='linkedin')
     if mode == 'deny':
         consent((), aid='page', service='linkedin', kind='organization')
+    elif mode == 'allow':
+        consent(('mentions', 'post_metrics'), aid='page', service='linkedin', kind='organization', route='linkedin-browser')
     elif mode == 'unsupported_allow':
+        from mc.desk_connect import route_readiness
+        monkeypatch.delitem(route_readiness.EXECUTORS, ('linkedin', 'linkedin-browser', 'read_own'))
         with pytest.raises(policy.PolicyError, match='executor'):
             consent(('mentions',), aid='page', service='linkedin', kind='organization', route='linkedin-browser')
         # A forged/stale record cannot override the absent executor registration.
@@ -346,8 +350,8 @@ def test_generic_linkedin_digest_obeys_explicit_policy_without_inventing_allow(w
                     {'purpose': 'read_own', 'capability': 'mentions', 'route_id': 'linkedin-browser'}]})
             desk._write_store(store)
     out = poll()['linkedin']
-    if mode == 'legacy':
-        assert out['new_items'] == out['metrics_written'] == 1
+    if mode in ('allow', 'legacy'):
+        assert out['new_items'] == out['metrics_written'] == 1, json.dumps(out, sort_keys=True)
         assert world.model.call_count == 2 and len(world.generic_pages.reads) == 2
         assert out['spent'] == 0          # a pane read is free
     else:
@@ -365,6 +369,44 @@ def test_generic_legacy_selected_reader_stops_after_explicit_revocation(world):
     before = (world.model.call_count, len(world.generic_pages.reads))
     assert 'mentions' in poll(readers)['linkedin']['permission_denied']
     assert (world.model.call_count, len(world.generic_pages.reads)) == before
+
+
+def test_linkedin_read_with_two_pane_executor_routes_fails_closed(world, monkeypatch):
+    from mc.desk_connect import route_readiness
+
+    presence('pane', aid='page', platform='linkedin')
+    post(platform='linkedin')
+    consent(('mentions', 'post_metrics'), aid='page', service='linkedin',
+            kind='organization', route='linkedin-browser')
+    profile = registry.profile
+    ambiguous = copy.deepcopy(profile('linkedin'))
+    second = copy.deepcopy(next(r for r in ambiguous['routes'] if r['id'] == 'linkedin-browser'))
+    second['id'] = 'linkedin-browser-second'
+    ambiguous['routes'].append(second)
+    monkeypatch.setattr(registry, 'profile', lambda service: ambiguous if service == 'linkedin' else profile(service))
+    monkeypatch.setitem(route_readiness.EXECUTORS, ('linkedin', second['id'], 'read_own'), 'pane')
+
+    out = poll()['linkedin']
+
+    assert set(out['permission_denied']) == {'mentions', 'post_metrics'}
+    assert out['new_items'] == out['metrics_written'] == out['spent'] == 0
+    no_calls(world)
+
+
+def test_linkedin_manual_route_is_excluded_even_with_an_executor_entry(world, monkeypatch):
+    from mc.desk_connect import route_readiness
+
+    presence('pane', aid='page', platform='linkedin')
+    post(platform='linkedin')
+    consent(('mentions', 'post_metrics'), aid='page', service='linkedin',
+            kind='organization', route='linkedin-browser')
+    monkeypatch.setitem(route_readiness.EXECUTORS, ('linkedin', 'linkedin-manual', 'read_own'), 'pane')
+
+    out = poll()['linkedin']
+
+    assert out['new_items'] == out['metrics_written'] == 1
+    assert 'permission_denied' not in out
+    assert world.model.call_count == len(world.generic_pages.reads) == 2
 
 
 @pytest.mark.parametrize('gate', ['agent_read_off', 'domain_off_list'])

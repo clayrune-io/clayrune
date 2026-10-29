@@ -69,7 +69,7 @@ print(json.dumps({'js':EVIDENCE_JS,'checks':{s:registry.profile(s).get('signin_c
    await page.waitForFunction(()=>[...document.querySelector('[data-lg-profile]').options].some(o=>o.value==='main'));
    await page.selectOption('[data-lg-profile]','main');
   }else await page.fill('[data-bp-profile]','main');
-  assert.equal(await page.locator('[data-bc-check]').textContent(),'Check connection');
+  assert.equal(await page.locator('[data-bc-check]').textContent(),'Check now');
   assert.equal(await page.evaluate(()=>calls.length),0);
   await page.click('[data-bc-check]');
   if(flow==='already'){
@@ -93,7 +93,7 @@ print(json.dumps({'js':EVIDENCE_JS,'checks':{s:registry.profile(s).get('signin_c
     assert.equal(await page.locator('[data-bc-yes]').count(),1);
    }
    await page.click('[data-bc-yes]');await page.waitForSelector('[data-bc-state="not_checked"]');
-   assert.equal(await page.locator('[data-bc-state]').textContent(),'Not checked');
+   assert.equal(await page.locator('[data-bc-state]').textContent(),'Not checked yet');
    assert.equal(await page.locator('[data-bc-state="verified"]').count(),0);
    await page.click('[data-bc-check]');await page.waitForFunction(()=>calls.length===3);
    assert.equal(await page.locator('[data-bc-confirm]').count(),0);
@@ -116,7 +116,7 @@ print(json.dumps({'js':EVIDENCE_JS,'checks':{s:registry.profile(s).get('signin_c
     const root=document.querySelector('#root');root.innerHTML=DeskV1ConnectBrowserCheck.html('unavailable-fixture');
     DeskV1ConnectBrowserCheck.bind(root,'unavailable-fixture',()=>({url:'https://example.com',browser_profile:'bad..profile'}),{api:()=>{throw new Error('render ran a check');}},{status:{state:'unknown',verifiable:false,needs_signin:false}});
    });
-   assert.equal(await page.locator('[data-bc-state]').textContent(),'Check unavailable');
+   assert.equal(await page.locator('[data-bc-state]').textContent(),'Not checked yet');
    assert.equal(await page.locator('[data-bc-state="verified"]').count(),0);
   }
   assert.deepEqual(errors,[]);await page.close();console.log(`PASS ${service} ${flow} ${width}`);

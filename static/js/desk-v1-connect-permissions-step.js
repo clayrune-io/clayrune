@@ -1,7 +1,7 @@
 // Desk v1 — Connections: the Connect wizard's PERMISSIONS screen (MC-1062 ticket 08,
 // docs/desk_v1/connect_flow_tickets/08-permissions-screen.md; frame and rules in desk-v1-connect-wizard.js).
-// Window-bridged module, no `import` (ground rule 1). It registers ONE Permissions screen through
-// `registerScreen`; the frame owns nothing here, and the old purpose editor is not touched.
+// Registers ONE Permissions screen through the window bridge; read-support owns the availability rule.
+// The frame owns nothing here, and the old purpose editor is not touched.
 //
 // WHAT IT IS. Permissions are their own step, after Setup. Four different things are called "permission"
 // and this screen keeps them apart, each with its own owner line:
@@ -18,7 +18,8 @@
 //
 // ONE LIST FOR EVERY ACCOUNT (Ron 2026-10-28). Read this account's activity, and Publish: the same two rows with the
 // same words whatever the connection (API, browser sign-in, no known route). What the chosen route cannot do stays
-// on screen, disabled, with one sentence saying why.
+// on screen, disabled, with one sentence saying why. Existing browser-domain grants remain revocable even if
+// no read route is projected; an explicit Desk denial keeps the combined Read row incomplete and unticked.
 //
 // WHAT IT OFFERS. Only what the chosen route can actually run and the profile says it covers
 // (variant.runtime.purposes + variant.coverage, the same two facts permission_policy._clean checks; the server stays
@@ -40,6 +41,7 @@
 // WHICH ACCOUNT. Chosen by an earlier screen (not part of this ticket), handed over like the sign-in screen's:
 //     setTarget({ kind, account: { id } | { new: { identity, ... } }, identity? })   // after api.select({ account })
 // The screen matches an account type only once it has that target; MCP and reference-only match always.
+import { readUnavailable } from './desk-v1-connect-read-support.js';
 (function () {
   const W = window.DeskV1ConnectWizard;
   if (!W) return;
@@ -184,24 +186,28 @@
   // Granted for the sign-in the account will have after save: what was read for another sign-in (the profile field was edited
   // since) says nothing about this one, so it counts as not allowed until Save checks it.
   function _siteGranted() { return !!(M.bperm && M.bperm.exists && M.bperm.granted && M.bperm.profile === _profile()); }
-  function _siteOn() { return M.wish.site === null ? _siteGranted() : M.wish.site; }
+  function _siteOn() { return !readUnavailable(M.info, _target?.kind, _siteGranted()) && (M.wish.site === null ? _siteGranted() : M.wish.site); }
 
   // The ONE Read row = the Desk read the route offers (if any) + the service's own domain on the browser sign-in (when the
   // account is read through one). `can.site`: the domain part applies; `can.reason`: why the row is disabled ('' = it works).
   const NEED_SIGNIN = 'Choose a browser sign-in first.';
   const READ_UNAVAILABLE = 'Reading is not available through this connection yet.';
   const POST_UNAVAILABLE = 'Posting is not available through this connection yet.';
-  const READ_UNFINISHED = 'Reading through your sign-in is not switched on yet. Tick this and save to finish it.';
+  const READ_UNFINISHED = 'Reading is not fully allowed yet. Tick this and save to finish it.';
   const READ_DETAIL ="Agents read this account's own mentions, replies and post stats. They cannot click, type or post.";
   function _siteApplies(v, info) { return !!(window.DeskV1ConnectBrowserPermission && _readsByBrowser(v) && _profile() && _site(info)); }
   function _readCan(v, info, offers) {
+    const unavailable = readUnavailable(info, _target?.kind, _siteGranted());
+    if (unavailable) return { site: false, reason: unavailable };
     const site = _siteApplies(v, info);
     if (offers.read || site) return { site, reason: '' };
     return { site, reason: _readsByBrowser(v) && !_profile() ? NEED_SIGNIN : READ_UNAVAILABLE };
   }
-  // What the row shows when nobody has touched it: on only when every part that applies is already granted.
+  // Browser access cannot override explicit Desk consent. A genuine legacy policy keeps its existing behavior;
+  // domain-only access remains revocable when no Desk read route is projected.
   function _readParts(can, offers) {
-    return offers.reads.map((o) => _initial(o).length > 0).concat(can.site ? [_siteGranted()] : []);
+    const legacy = M.policy && M.policy.state === 'legacy' && can.site && _siteGranted();
+    return offers.reads.map((o) => _initial(o).length > 0 || !!legacy).concat(can.site ? [_siteGranted()] : []);
   }
   // Some read route has only some of the capabilities it offers; or one read route is allowed and another is not.
   function _readPartial(offers) {
@@ -212,8 +218,8 @@
     if (can.reason) return false;
     return _readParts(can, offers).every(Boolean);
   }
-  // Some parts allowed and some not (the Desk read is saved but the sign-in's domain is not): shown unticked and half-ticked,
-  // so a person is not told Read is on while the card still says Reading is off.
+  // Incomplete consent in either direction is unticked and half-ticked. The existing allowed part remains
+  // revocable: returning to unchecked must not erase an explicit revocation wish.
   function _readMixed(can, offers) {
     const parts = _readParts(can, offers);
     return !can.reason && parts.some(Boolean) && !parts.every(Boolean);
@@ -271,7 +277,7 @@
     const label = "Read this account's activity";
     if (can.reason) return _optionHTML('read', 'Desk permission', label, esc(can.reason), false, true);
     const now = offers.reads.flatMap(_initial), partial = M.wish.read === null && _readPartial(offers);
-    const unfinished = M.wish.read === null && _readMixed(can, offers) && can.site && !_siteGranted();
+    const unfinished = M.wish.read === null && _readMixed(can, offers);
     const detail = `${esc(READ_DETAIL)}${partial ? ` Allowed now: ${esc(_capText(Array.from(new Set(now.map((s) => s.capability)))))}.` : ''}${unfinished ? ` ${esc(READ_UNFINISHED)}` : ''}${offers.reads.some((o) => o.paid) ? ` <span data-cfp-paid>${esc(PAID_API_READ)}</span>` : ''}`;
     return _optionHTML('read', 'Desk permission', label, detail, _readOn(can, offers));
   }
@@ -378,7 +384,7 @@
   function _problem(sel, info) {
     const mode = sel.type === 'mcp' ? 'mcp' : sel.type === 'reference' ? 'reference' : 'account-ish';
     if (mode === 'mcp' && _variant(sel, info)?.setup?.via === 'provider') return '';
-    if (mode === 'mcp') return M.reach.scope === 'project' && !M.reach.projectId ? 'Choose a project.' : '';
+    if (mode === 'mcp') return M.reach.scope === 'project' && !_projects().some(p => p.id === M.reach.projectId) ? 'Choose a project.' : '';
     if (mode === 'reference') return '';
     if (!_target && ['x', 'linkedin'].includes(_service(info))) return 'Choose the account first.';
     if (_needsFetch(sel, info) && M.loaded !== _loadKey(info)) return M.failed ? 'What is saved could not be read.' : 'Loading what is saved.';
@@ -431,6 +437,7 @@
         box.addEventListener('change', () => {
           box.indeterminate = false;
           if (id === 'read') {
+            if (_readCan(v, api.info, offers).reason) { box.checked = false; return; }
             // One tick, two parts: the Desk read the route offers and the service's own domain on the sign-in. Back at what
             // the row showed = no wish, so ticking and unticking sends nothing (unless the row started half-ticked).
             const can = _readCan(v, api.info, offers);
@@ -510,6 +517,8 @@
 
   async function _applySite() {
     const B = window.DeskV1ConnectBrowserPermission, info = M.info;
+    // A missing route can forbid adding access, never removing existing access.
+    if (M.wish.site !== false && readUnavailable(info, _target?.kind)) return { status: 'unchanged' };
     if (!B || M.wish.site === null) return { status: 'unchanged' };
     // Aimed at the sign-in the account will have AFTER this save (a drafted profile change is applied after this write),
     // never at the one the screen loaded with: the grant on the old profile would be a grant the account no longer uses.
@@ -561,5 +570,5 @@
     return { kind: lines.length ? (r.ok && !r.pending ? 'ok' : 'partial') : 'ok', lines };
   }
 
-  window.DeskV1ConnectPermissionsStep = { setTarget, summary, apply, outcome, reach, registerSection };
+  window.DeskV1ConnectPermissionsStep = { setTarget, summary, apply, outcome, reach, registerSection, restoreReach:d => {M.reach={scope:d.scope,projectId:d.project_id || ''};} };
 })();

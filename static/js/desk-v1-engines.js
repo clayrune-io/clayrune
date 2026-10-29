@@ -25,6 +25,7 @@
 // page paints is the library path the server answers with, never a vendor URL.
 import { confirmationMatches, priceConfirmation, heldPriceConfirmation, renderStatusWord, dismissedPriceHold, dismissPriceHold } from './desk-v1-render-price.js';
 import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.js';
+import { ConnectionWords as W } from './desk-v1-connection-words.js';
 import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
 import { submissionHeld, renderNeedsPolling, recoveryActionHTML, bindRenderRecovery } from './desk-v1-render-recovery.js';
 import { wireSceneRenderPanel, sceneResultNote } from './desk-v1-render-scenes.js';
@@ -80,11 +81,11 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
 
   function _stateWord(e) {
     const c = e.connected || {};
-    if (c.ready) return { key: 'ok', word: 'Connected' };
-    if (c.state === 'needs_signin') return { key: 'reauth', word: 'Needs sign-in' };
-    if (c.state === 'connection_unreadable') return { key: 'reauth', word: 'Connection unavailable' };
-    if (c.state === 'vault_locked') return { key: 'locked', word: 'Vault locked' };   // the sign-in is saved; unlock, do not sign in again
-    return { key: 'off', word: 'Not connected' };
+    if (c.state === 'needs_signin') return { key: 'reauth', word: W.status.signin };
+    if (c.state === 'connection_unreadable') return { key: 'reauth', word: W.status.broken };
+    if (c.state === 'vault_locked') return { key: 'locked', word: W.status.broken };   // the sign-in is saved; unlock, do not sign in again
+    if (c.ready) return window.DeskV1ConnectSavedCheck?.readiness(e.id) || W.state('ready');
+    return { key: 'off', word: W.status.unchecked };
   }
 
   function _limitHTML(e) {
@@ -95,7 +96,7 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
             <input type="number" min="0" step="${credits ? '1' : '0.5'}" class="desk-v1-sb-edit-input" data-engine-limit-input
               value="${lim == null ? '' : esc(lim)}" placeholder="not set" aria-label="Per-job limit in ${credits ? 'credits' : 'USD'} for ${esc(e.label)}">
           </label>
-          <button type="button" class="btn-secondary" data-engine-limit-save>Save limit</button>
+          <button type="button" class="btn-secondary" data-engine-limit-save>${W.buttons.saveLimit}</button>
           <span class="desk-v1-engine-limit-note" data-engine-limit-note>${lim == null
             ? 'Not set: a Studio render is refused until you set one (nothing else caps it).'
             : `A render over ${_fmt(e, lim)} is refused before anything is sent.`}</span>
@@ -114,8 +115,8 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
       action = '<button type="button" class="desk-v1-conn-btn" data-engine-unlock>Unlock the vault</button>';
     } else if (oauth) {
       action = c.ready
-        ? '<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-engine-signin>Sign in again</button>'
-        : `<button type="button" class="desk-v1-conn-btn" data-engine-signin>${st.key === 'reauth' ? 'Sign in again' : 'Sign in with Higgsfield'}</button>`;
+        ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-engine-signin>${W.buttons.signin}</button>`
+        : `<button type="button" class="desk-v1-conn-btn" data-engine-signin>${st.key === 'reauth' ? W.buttons.signin : 'Sign in with Higgsfield'}</button>`;
     } else if (guide) {
       action = `<button type="button" class="desk-v1-conn-btn${c.ready ? ' desk-v1-conn-btn-inline' : ''}" data-engine-guide aria-expanded="${open}">${open ? 'Hide steps' : (c.ready ? 'Replace key' : 'Connect')}</button>`;
     }
@@ -123,7 +124,7 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
       <div class="desk-v1-conn-main">
         <strong>${esc(e.label)}</strong> <span class="desk-v1-conn-kind">${esc(kinds)}</span>
         <div class="desk-v1-conn-status" data-engine-status data-ready="${c.ready ? 'true' : 'false'}" data-state="${st.key}">
-          ${esc(st.word)}${c.ready || !c.reason || !oauth || st.key === 'locked' ? '' : ` · ${esc(c.reason)}`}
+          ${esc(st.word)}
         </div>
         ${st.key === 'locked' ? `<div class="desk-v1-rules-hint" data-engine-locked-note>${esc(c.reason || '')}</div>` : oauth ? `<div class="desk-v1-rules-hint">${c.ready ? 'Signed in. Renders use the credits in your Higgsfield plan.' : 'Uses the credits in your Higgsfield plan. Nothing is charged in dollars.'}</div>` : ''}
         <div class="desk-v1-guide-status" data-guide-status role="status"></div>
@@ -140,7 +141,7 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
   // offered by the Add service panel, not shown as an unconnected placeholder.
   function tileState(e) {
     const st = _stateWord(e);
-    return st.key === 'off' ? null : st;
+    return st.key === 'off' && !e.connected?.ready ? null : st;
   }
 
   function kindsOf(e) { return Array.from(new Set((e.models || []).map((m) => m.kind))).join(' + '); }
@@ -159,7 +160,7 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
       const status = row.querySelector('[data-guide-status]');
       const reload = () => list(null, { force: true }).then(() => repaint()).catch(() => repaint());
       const gateAt = row.querySelector('.desk-v1-conn-main');
-      if (gateAt && window.DeskV1VaultGate && (e.auth && e.auth.kind === 'oauth' || (G && G.keyGuideFor(e.id)) || _stateWord(e).key === 'locked')) window.DeskV1VaultGate.attach(gateAt, _stateWord(e).key === 'locked' ? { onUnlocked: reload } : undefined);   // a sign-in or a pasted key ends in a vault write; after an unlock the card re-reads and is Connected, no new sign-in
+      if (gateAt && window.DeskV1VaultGate && (e.auth && e.auth.kind === 'oauth' || (G && G.keyGuideFor(e.id)) || _stateWord(e).key === 'locked')) window.DeskV1VaultGate.attach(gateAt, _stateWord(e).key === 'locked' ? { onUnlocked: reload } : undefined);   // a sign-in or a pasted key ends in a vault write; after an unlock the card re-reads and is ready, no new sign-in
       const unlock = row.querySelector('[data-engine-unlock]');
       if (unlock) unlock.onclick = async () => {
         window.addEventListener('vault-unlocked', reload, { once: true });   // re-read the card once the popup unlocks, as the inline gate did
@@ -178,11 +179,11 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
       const gbtn = row.querySelector('[data-engine-guide]');
       if (gbtn) gbtn.onclick = () => { if (_openGuides.has(e.id)) _openGuides.delete(e.id); else _openGuides.add(e.id); repaint(); };
       if (G && G.keyGuideFor(e.id) && _openGuides.has(e.id)) {
-        // A saved key flips the card to Connected in place (the guide stays open for the test).
+        // A saved key flips the card to ready in place (the guide stays open for the test).
         G.bindKeyGuide(row, e.id, { onSaved: () => list(null, { force: true }).then((fresh) => {
           Object.assign(e, fresh.find((x) => x.id === e.id) || {});
           const s = row.querySelector('[data-engine-status]');
-          if (s) { s.textContent = (e.connected && e.connected.ready) ? 'Connected' : 'Not connected'; s.dataset.ready = String(!!(e.connected && e.connected.ready)); s.dataset.state = (e.connected && e.connected.ready) ? 'ok' : 'off'; }
+          if (s) { s.textContent = (e.connected && e.connected.ready) ? W.status.ready : W.status.unchecked; s.dataset.ready = String(!!(e.connected && e.connected.ready)); s.dataset.state = (e.connected && e.connected.ready) ? 'ok' : 'off'; }
         }).catch(() => {}) });
       }
       const save = row.querySelector('[data-engine-limit-save]');

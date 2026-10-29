@@ -12,13 +12,14 @@
 // Live: the records are the server's (GET/POST/PATCH/DELETE /api/desk/services).
 // Demo (desk_v1_live OFF): kept in memory only, with the Add service undo, and no
 // request is made; the toast says nothing was saved.
+import { ConnectionWords as W } from './desk-v1-connection-words.js';
 import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
   function _api(method, url, body) { return window.DeskV1Store.api(method, url, body); }
   function _live() { return window.DeskV1Store.live(); }
 
-  const STATUS = { key: 'saved', word: 'Saved for agents' };
+  const STATUS = W.state('unchecked');
 
   let _rows = null;        // live: the server's list, null until loaded
   let _loadError = null;

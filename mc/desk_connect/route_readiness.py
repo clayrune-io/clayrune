@@ -36,6 +36,7 @@ EXECUTORS: dict[tuple[str, str, str], str] = {
     ('x', 'x-oauth', 'publish'): 'api',
     ('x', 'x-oauth', 'read_own'): 'api',
     ('x', 'x-browser', 'read_own'): 'pane',
+    ('linkedin', 'linkedin-browser', 'read_own'): 'pane',
 }
 
 # Where the read setting stored per account (`read_via`) comes from.

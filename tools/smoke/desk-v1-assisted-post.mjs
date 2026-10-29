@@ -232,12 +232,14 @@ async function connections(browser) {
     await page.evaluate((i) => { const t = [...document.querySelectorAll('[data-conn-tile]')].find((e) => (e.dataset.connTile || e.dataset.id || '') === i || e.textContent.includes(i.toUpperCase())); if (t) t.click(); }, id);
   };
   await tileFor('ch-ig');
+  await page.click('[data-connection-details] > summary');
   await page.waitForSelector('[data-assisted-account]', { timeout: 8000 });
   const line = await page.locator('[data-assisted-account]').innerText();
   check(/press the final button yourself/.test(line), `an assisted account says who presses the final button (${line.trim()})`, 'line: ' + line);
   check(await page.locator('[data-assisted-enable]').count() === 0, 'and offers no switch', 'enable button on an assisted account');
 
   await tileFor('ch-ig-ro');
+  await page.click('[data-connection-details] > summary');
   await page.waitForSelector('[data-assisted-enable]', { timeout: 8000 });
   srv.log.length = 0;
   await page.click('[data-assisted-enable]');

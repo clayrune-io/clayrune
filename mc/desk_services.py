@@ -65,6 +65,8 @@ def v1_service(rec: dict, vault: set | None = None) -> dict:
         'credential': {'name': cred, 'in_vault': None},
         'kind': KIND, 'publish': False, 'created_at': rec.get('created_at'),
     }
+    if rec.get('account_id'):
+        out['account_id'] = rec['account_id']
     if 'reference_draft' in rec:
         from mc.desk_connect.reference_draft import stored
         out['reference_draft'] = stored(rec['reference_draft'])

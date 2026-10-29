@@ -180,9 +180,9 @@ async function run(browser, width, height) {
     const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
     await selectTile(page, 'acct-oauth');
     const note = await text(page, '[data-conn-account="acct-oauth"] [data-post-permission]');
-    check(/Agents cannot post through this account yet: Post is not ticked\./.test(note) && /Edit settings/.test(note) && !(await page.$('[data-conn-account="acct-oauth"] [data-pp-open]')) && !/Open Permissions/.test(await text(page, '[data-conn-account="acct-oauth"]')),
+    check(/Post is off\./.test(note) && /Edit/.test(note) && !(await page.$('[data-conn-account="acct-oauth"] [data-pp-open]')) && !/Open Permissions/.test(await text(page, '[data-conn-account="acct-oauth"]')),
       'the row says Post is not ticked, points at Edit settings in words and has no Open Permissions button', 'the notice or its button is wrong: ' + note);
-    check((await page.$$eval('[data-conn-account="acct-oauth"] [data-cs-reopen]', (e) => e.map((x) => x.textContent.trim()))).join('|') === 'Edit settings', 'the account has one button into its settings, Edit settings', 'the Edit settings button is missing or doubled');
+    check((await page.$$eval('[data-conn-account="acct-oauth"] [data-cs-reopen]', (e) => e.map((x) => x.textContent.trim()))).join('|') === 'Edit', 'the account has one button into its settings, Edit settings', 'the Edit settings button is missing or doubled');
     await toPermissions(page, 'acct-oauth', '[data-cs-reopen]');
     check((await boxes(page)).join('|') === 'read|post', `Permissions offers the Desk Read and Post rows (${(await boxes(page)).join(', ')})`, 'boxes: ' + (await boxes(page)).join('|'));
     check(!!(await page.$('[data-reading-settings]')), 'the reading section is still there beside them', 'the reading section is gone');
@@ -190,8 +190,8 @@ async function run(browser, width, height) {
     check(owners.join('|') === 'Desk permission|Desk permission', 'each row says it is a Desk permission', 'owners: ' + owners.join('|'));
     check(/Post only\. Not Reply, media or Article\./.test(await text(page, '[data-cfp-box="post"] ~ .desk-v1-cfp-text')), 'Post covers Post only', 'post coverage wrong');
     // The Desk read is saved but x.com is not on the sign-in's list yet: half-ticked, never plain "on" (the card says Reading is off).
-    check(!(await checked(page, 'read')) && await page.$eval('[data-cfp-box="read"]', (b) => b.indeterminate) && !(await checked(page, 'post')) && /Reading through your sign-in is not switched on yet\./.test(await text(page, '[data-cfw-option="read"]')),
-      'the saved Desk read shows half-ticked with a sentence that the sign-in is not switched on, Post off', `read=${await checked(page, 'read')} post=${await checked(page, 'post')}`);
+    check(!(await checked(page, 'read')) && await page.$eval('[data-cfp-box="read"]', (b) => b.indeterminate) && !(await checked(page, 'post')) && /Reading is not fully allowed yet\./.test(await text(page, '[data-cfw-option="read"]')),
+      'the saved Desk read shows half-ticked with a sentence that Read is incomplete, Post off', `read=${await checked(page, 'read')} post=${await checked(page, 'post')}`);
     check(writes(srv).length === 0, 'arriving sent no write', 'a write went out: ' + JSON.stringify(writes(srv).map((r) => r.path)));
     await page.screenshot({ path: resolve(SHOT_DIR, `saved_oauth_${width}.png`) });
 
@@ -253,13 +253,13 @@ async function run(browser, width, height) {
   // ── 7: ONE Read tick commits the read scopes of every route the account reads through ─────
   {
     const srv = makeServer();
-    srv.agentRead.main = { enabled: true, domains: ['x.com'] };      // the site is already on the sign-in: only the Desk write is left
     const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
     await toPermissions(page, 'acct-legacy', '[data-cs-reopen]');
     check(!(await checked(page, 'read')), 'a legacy account opens with Read off', 'Read was already on');
     await page.check('[data-cfp-box="read"]');
     const done = page.evaluate(() => window.DeskV1ConnectPermissionsStep.apply('acct-legacy'));
-    await answer(page, PASSCODE);
+    await answer(page, PASSCODE);       // Desk read scopes
+    await answer(page, PASSCODE);       // browser domain was not granted yet
     const r = await done;
     const sent = commits(srv).pop();
     const keys = sent ? sent.body.draft.scopes.map((s) => `${s.purpose}|${s.capability}|${s.route_id}`).sort().join(',') : '';
@@ -269,6 +269,20 @@ async function run(browser, width, height) {
     check(capsOf('x-browser').length > 1 && capsOf('x-oauth').length > 0, `the fixture routes cover reads (x-oauth ${capsOf('x-oauth').join('/')}, x-browser ${capsOf('x-browser').join('/')})`, 'the fixture routes cover no reads');
     check(r.desk.status === 'saved' && keys === want, 'the one Read tick commits every read scope of the API route AND the browser route', `sent: ${keys}\nwant: ${want}`);
     check(!sent || !sent.body.draft.scopes.some((s) => s.purpose === 'publish'), 'and nothing of Post', keys);
+    check(JSON.stringify(srv.agentRead.main.domains) === JSON.stringify(['reddit.com', 'x.com']), 'the separate browser grant adds x.com and preserves reddit.com', JSON.stringify(srv.agentRead));
+    check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
+    await ctx.close();
+  }
+
+  // Existing browser access is visible even without a Desk policy. Untouched Save must not infer any new scopes.
+  {
+    const srv = makeServer();
+    srv.agentRead.main = { enabled: true, domains: ['x.com'] };
+    const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
+    await toPermissions(page, 'acct-legacy', '[data-cs-reopen]');
+    check(await checked(page, 'read') && !await page.locator('[data-cfp-box="read"]').isDisabled() && !await page.$eval('[data-cfp-box="read"]', b => b.indeterminate), 'legacy account with a live domain grant opens with Read on and enabled', 'the live grant was hidden');
+    const result = await page.evaluate(() => window.DeskV1ConnectPermissionsStep.apply('acct-legacy'));
+    check(result.desk.status === 'unchanged' && result.site.status === 'unchanged' && commits(srv).length === 0 && srv.puts.length === 0, 'untouched live grant creates neither Desk scopes nor browser writes', JSON.stringify(result));
     check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
     await ctx.close();
   }

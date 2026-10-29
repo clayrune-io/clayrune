@@ -199,7 +199,7 @@ def test_kind_from_existing_bindings_is_respected(env):
     assert calls == []
 
 
-def test_linkedin_deny_valid_but_browser_digest_is_a_separate_policy(env):
+def test_linkedin_browser_read_scopes_can_be_granted_and_revoked(env):
     client, _ = env
     store = desk._read_store()
     store['accounts']['li-one'] = account(id='li-one', platform='linkedin', organization_id='123')
@@ -208,8 +208,10 @@ def test_linkedin_deny_valid_but_browser_digest_is_a_separate_policy(env):
     assert save(client, data).status_code == 201
     response = save(client, {**data, 'read': True, 'scopes': [{**READ, 'route_id': 'linkedin-browser'}]},
                     request_id='another-permission-request')
-    assert response.status_code == 400
-    assert response.json['code'] == 'unsupported_scope'
+    assert response.status_code == 201
+    assert response.json['policy']['scopes'] == [{**READ, 'route_id': 'linkedin-browser'}]
+    assert save(client, data, request_id='revoke-linkedin-read-request').status_code == 201
+    assert policy.view('li-one')['policy']['scopes'] == []
 
 
 def test_read_only_view_and_preservation_of_unrelated_grants(env):

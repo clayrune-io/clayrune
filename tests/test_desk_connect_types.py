@@ -8,8 +8,8 @@ Pinned:
     an available one;
   * a custom npm package and a remote server are offered for every address, a known service
     and an unknown one, without being in any catalogue;
-  * setup support and runtime execution are separate answers: LinkedIn browser setup works
-    and the Desk still does not run it; a PyPI detection and API details never execute;
+  * setup support and runtime execution are separate answers: LinkedIn browser setup and
+    its existing pane reader work; Instagram, PyPI detection and API details claim no read executor;
   * Q1: only variants Clayrune can set up reach `picker`; the rest are under `details`
     with an explanation, and no unavailable route is promoted;
   * a browser route needs no `connect_method` and the projection leaves the version 1 view alone;
@@ -88,8 +88,11 @@ def test_setup_support_is_separate_from_runtime_execution():
     assert x['x-oauth']['runtime']['purposes'] == {'publish': 'api', 'read_own': 'api'}
     li = _variants(type_view.project_service('linkedin'))['linkedin-browser']
     assert li['setup']['mode'] == 'full'
-    assert li['runtime']['purposes'] == {} and li['runtime']['desk_executes'] is False
-    assert 'does not run' in li['runtime']['note']
+    assert li['runtime']['purposes'] == {'read_own': 'pane'} and li['runtime']['desk_executes']
+    assert {c['account_kind'] for c in li['coverage'] if c['purpose'] == 'read_own' and c['status'] == 'claimed'} == {'member', 'organization'}
+    instagram = _variants(type_view.project_service('instagram'))['instagram-browser']
+    assert instagram['runtime']['purposes'] == {} and not instagram['runtime']['desk_executes']
+    assert not instagram['coverage'] and 'does not run' in instagram['runtime']['note']
 
 
 def test_custom_variants_never_claim_execution():
