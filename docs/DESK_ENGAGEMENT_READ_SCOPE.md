@@ -13,6 +13,13 @@ an older successful read, because the old read cannot establish current scope.
 Fractional-second precision and timezone offsets are compared chronologically;
 missing or malformed timestamps cannot suppress a recorded error.
 
+A current read error cannot report `state: ok` merely because a historical
+`last_ok_at` exists. Generic failures (including an unusable activity page) report
+`not_read_yet` with **Last read failed** and retain that historical timestamp.
+Bundles treat the platform as a gap, not a successfully read empty feed. A later
+successful read, including zero rows, clears the error and restores `ok`. Existing
+login-wall, page-address and capability-specific gaps retain their own wording.
+
 ## Attribution
 
 Presence bindings hold `channel_id` and read settings. The workspace account holds
@@ -39,6 +46,21 @@ LinkedIn's `/company/<destination>/admin/` path. When `organization_id` exists,
 the destination must match it. A supplied address without a stored ID is authoritative;
 no company number or URL is inferred from the display name.
 
+A supplied bare `/company/<destination>/admin` or `/admin/` URL is expanded to
+`/admin/notifications/all/`. The same helper in `desk_pane_activity_scope` runs
+when activity addresses are saved to the account/presence copies and when the
+reader selects an address, so older stored bare addresses work without a store
+migration. It retains query strings and fragments. Other sites, non-admin paths,
+already-specific admin paths (including published posts), and non-activity roles
+are not rewritten. Existing validation and matching-company redirect checks apply
+before any extraction; normalization does not repair invalid URLs or grant reads.
+
+The editor's Review and Save use the expanded destination. Opening an old bare
+address performs no write; an explicit human Save normalizes it under the usual
+passcode gate. Reopening the canonical address does not cause repeated PATCHes.
+Notifications is the selected engagement activity source; published-post statistics
+remain a separate read and are not substituted for activity.
+
 Company reads ignore project/platform discovery records, which may contain member
 pages. Without an explicit admin activity URL, they return a `pages_needed` gap
 before opening a page or calling the extractor. After navigation, the final URL must
@@ -49,6 +71,14 @@ fallback and no automatic discovery for a company account.
 This guard establishes destination scope, not that every admin page has readable
 notifications. The generic activity schema still validates the page's content.
 No authenticated company admin read was exercised in the regression suite.
+
+The extractor contract explicitly includes Company Page activity and empty states
+such as `0 notifications total`. A classified activity page with `rows: []` is a
+successful read: zero new items, no read error, and a refreshed successful coverage
+record. It does not invent activity or trigger discovery. A login wall, unrelated
+or blank/loading page, malformed row list, or wholly rejected rows remains a gap.
+Synthetic Company Page poll checks cover these cases; they do not establish what
+an authenticated LinkedIn page or the real extraction model returns.
 
 ### Editing a saved LinkedIn destination
 

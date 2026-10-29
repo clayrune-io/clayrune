@@ -154,6 +154,7 @@ def test_generic_pane_attributes_items_to_the_bound_account(env):
     {'organization_id': '777'},
     {'browser_setup': {'route_id': 'linkedin-browser', 'refs': {}, 'account_kind': 'organization'}},
     {'organization_id': '777', 'read_pages': [{'role': 'activity', 'url': LI_NOTES}]},
+    {'organization_id': '777', 'read_pages': [{'role': 'activity', 'url': 'https://www.linkedin.com/company/888/admin'}]},
     {'organization_id': '777', 'read_pages': [{'role': 'activity', 'url': 'https://www.linkedin.com/company/888/admin/notifications/'}]},
 ])
 def test_company_never_reads_member_defaults_or_discovers_personal_activity(env, acc):
@@ -168,25 +169,31 @@ def test_company_never_reads_member_defaults_or_discovers_personal_activity(env,
 
 
 @pytest.mark.parametrize('organization_id,kind', [('777', None), (None, None), ('777', 'member')])
-def test_company_reads_explicit_admin_activity_only(env, organization_id, kind):
+@pytest.mark.parametrize('path', ['/admin', '/admin/', '/admin/notifications/', '/admin/page-posts/published/'])
+def test_company_reads_explicit_admin_activity_only(env, organization_id, kind, path):
     _allow(['linkedin.com'])
-    admin = 'https://www.linkedin.com/company/777/admin/notifications/'
+    saved = 'https://www.linkedin.com/company/777' + path
+    admin = 'https://www.linkedin.com/company/777/admin/notifications/all/' if path in ('/admin', '/admin/') else saved
     pages = FakePages({admin: _body(NOTES_TEXT, admin)})
     rt = FakeRuntime({pd.ACTIVITY_INSTRUCTION: _activity(_row())})
     rd = _reader(pages, rt, acc={'browser_setup': {}, 'organization_id': organization_id,
                                'connections': {'read_own': {'own_posts': {'account_kind': kind}}},
-                               'read_pages': [{'role': 'activity', 'url': admin}]})
+                               'read_pages': [{'role': 'activity', 'url': saved}]})
     assert len(rd.fetch_mentions(since_id=None, known_posts={})['items']) == 1
     assert pages.reads == [admin] and rd.pages_state()['source'] == 'user'
+    assert rd.pages_state()['pages'] == [admin]
+    assert rd._account['read_pages'][0]['url'] == saved  # Read-time compatibility is not a store migration.
 
 
 @pytest.mark.parametrize('final', [LI_NOTES, 'https://www.linkedin.com/company/888/admin/notifications/'])
-def test_company_admin_redirect_to_member_or_other_company_is_refused(env, final):
+@pytest.mark.parametrize('saved', ['https://www.linkedin.com/company/777/admin',
+                                 'https://www.linkedin.com/company/777/admin/notifications/'])
+def test_company_admin_redirect_to_member_or_other_company_is_refused(env, final, saved):
     _allow(['linkedin.com'])
-    admin = 'https://www.linkedin.com/company/777/admin/notifications/'
+    admin = pd._scope.normalize_activity_url(saved)
     pages = FakePages({admin: _body(NOTES_TEXT, final)})
     rt = FakeRuntime({})
-    rd = _reader(pages, rt, acc={'organization_id': '777', 'read_pages': [{'role': 'activity', 'url': admin}]})
+    rd = _reader(pages, rt, acc={'organization_id': '777', 'read_pages': [{'role': 'activity', 'url': saved}]})
     with pytest.raises(pd.PagesNeeded):
         rd.fetch_mentions(since_id=None, known_posts={})
     assert pages.reads == [admin] and rt.calls == []
@@ -260,6 +267,76 @@ def test_quiet_activity_page_is_zero_items_not_a_failure(env):
     rt = FakeRuntime({pd.ACTIVITY_INSTRUCTION: _activity()})
     got = _reader(_li_pages(), rt).fetch_mentions(since_id=None, known_posts={})
     assert got['items'] == [] and got['rejected'] == 0
+
+
+def test_empty_company_activity_poll_is_success_after_hidden_payload_filtering(env):
+    from mc.blueprints import browser_routes as br
+
+    _allow(['linkedin.com'])
+    admin = 'https://www.linkedin.com/company/777/admin/notifications/all/'
+    _project([{'channel_id': 'company-1', 'platform': 'linkedin', 'browser_profile': 'main'}])
+    # A prior failed read is cleared by a genuinely successful empty read.
+    _desk.set_read_coverage(PID, 'linkedin', ok=False, error='page did not look like activity', via='pane')
+    body, status = br._build_read_envelope(admin, {
+        'content_type': 'text/html', 'title': 'Notifications | LinkedIn',
+        'runs': [{'text': '0 notifications total', 'hidden': None}],
+        'data_island_count': 7,
+    })
+    assert status == 200 and body['hidden_content'] == {'data_islands': 7}
+    pages = FakePages({admin: body})
+    rt = FakeRuntime({pd.ACTIVITY_INSTRUCTION: _activity()})
+    rd = _reader(pages, rt, acc={'organization_id': '777',
+                               'read_pages': [{'role': 'activity', 'url': admin}]})
+    report = eng.poll_project(PID, readers={'linkedin': rd})['platforms']['linkedin']
+    coverage = _desk.get_read_coverage(PID)['linkedin']
+    assert report['state'] == 'ok' and report['new_items'] == 0 and not report.get('error')
+    assert not coverage.get('last_error') and coverage['last_ok_at']
+    assert _desk.list_engagement_items(project_id=PID) == []
+    assert _desk.list_reads(project_id=PID)[0]['ok'] is True
+    assert pages.reads == [admin] and pages.closed == 1
+    assert len(rt.calls) == 1 and rt.calls[0][1].endswith('0 notifications total')
+
+
+def test_unusable_company_read_replaces_old_ok_coverage_until_a_successful_empty_read(env):
+    _allow(['linkedin.com'])
+    admin = 'https://www.linkedin.com/company/777/admin/notifications/all/'
+    _project([{'channel_id': 'company-1', 'platform': 'linkedin', 'browser_profile': 'main'}])
+    _desk.set_read_coverage(PID, 'linkedin', ok=True, via='pane')
+    last_ok = _desk.get_read_coverage(PID)['linkedin']['last_ok_at']
+    pages = FakePages({admin: _body('0 notifications total', admin)})
+    rt = FakeRuntime({pd.ACTIVITY_INSTRUCTION: [_activity(page='other'), _activity()]})
+    rd = _reader(pages, rt, acc={'organization_id': '777',
+                               'read_pages': [{'role': 'activity', 'url': admin}]})
+    failed = eng.poll_project(PID, readers={'linkedin': rd})['platforms']['linkedin']
+    assert failed['state'] == 'not_read_yet'
+    assert 'did not look like an activity page' in failed['message']
+    coverage = eng.platform_coverage(PID, 'linkedin', rd)
+    assert coverage['state'] == 'not_read_yet' and coverage['last_ok_at'] == last_ok
+    bundle = eng.project_bundle(PID, readers={'linkedin': rd})
+    assert bundle['unread'] is None and bundle['total'] is None and bundle['gaps']
+
+    recovered = eng.poll_project(PID, readers={'linkedin': rd})['platforms']['linkedin']
+    assert (recovered['state'], recovered['reason'], recovered['message']) == ('ok', None, '')
+    assert recovered['new_items'] == 0 and not recovered.get('error')
+    assert eng.platform_coverage(PID, 'linkedin', rd)['state'] == 'ok'
+    assert pages.reads == [admin, admin]
+
+
+@pytest.mark.parametrize('reply,error,match', [
+    (_activity(page='other'), pd._Unusable, 'did not look like an activity page'),
+    (_activity(page='login'), eng.NotSignedIn, 'sign in'),
+    ({'page': 'activity', 'suspicious': False, 'rows': None}, pd._Unusable, 'fit the schema'),
+    (_activity(_row(snippet='')), pd._Unusable, 'fit the schema'),
+])
+def test_zero_items_never_overrides_company_classification_or_schema(env, reply, error, match):
+    _allow(['linkedin.com'])
+    admin = 'https://www.linkedin.com/company/777/admin/notifications/all/'
+    pages = FakePages({admin: _body('0 notifications total', admin)})
+    rd = _reader(pages, FakeRuntime({pd.ACTIVITY_INSTRUCTION: reply}), acc={
+        'organization_id': '777', 'read_pages': [{'role': 'activity', 'url': admin}]})
+    with pytest.raises(error, match=match):
+        rd.fetch_mentions(since_id=None, known_posts={})
+    assert pages.reads == [admin]  # No discovery or personal-page substitute.
 
 
 def test_signed_out_page_raises_not_signed_in_without_a_model_call(env):

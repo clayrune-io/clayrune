@@ -73,6 +73,42 @@ def _copy(cid):
     return next(a for a in (_desk.get_presence('alpha') or {})['accounts'] if a['channel_id'] == cid)
 
 
+@pytest.mark.parametrize('path', ['/admin', '/admin/', '/admin/notifications/', '/admin/page-posts/published/'])
+@pytest.mark.parametrize('role', ['activity', 'post'])
+@pytest.mark.parametrize('include_id', [True, False])
+def test_company_activity_save_normalizes_bare_admin_in_account_and_presence(env, path, role, include_id):
+    client, caller = env
+    _desk.upsert_presence('alpha', {'accounts': [{
+        'channel_id': 'ch-li', 'platform': 'linkedin', 'identity': 'Company',
+        'organization_id': '777', 'browser_profile': 'main'}]})
+    client.get('/api/desk/accounts')
+    url = 'https://www.linkedin.com/company/777' + path
+    expected = 'https://www.linkedin.com/company/777/admin/notifications/all/' if (
+        role == 'activity' and path in ('/admin', '/admin/')) else url
+    body = {'read_pages': [{'role': role, 'url': url}], 'project_id': 'alpha'}
+    if include_id:
+        body['organization_id'] = '777'
+    before = copy.deepcopy(_desk._read_store())
+    caller['unattended'] = True
+    assert _patch(client, 'ch-li', **body).status_code == 403
+    assert _desk._read_store() == before
+    caller['unattended'] = False
+    response = _patch(client, 'ch-li', **body)
+    assert response.status_code == 200, response.json
+    pages = [{'role': role, 'url': expected}]
+    assert response.json['read_pages'] == _copy('ch-li')['read_pages'] == pages
+    assert _desk._read_store()['accounts']['ch-li']['read_pages'] == pages
+    assert body['read_pages'][0]['url'] == url  # No mutation of the caller's draft.
+
+
+def test_other_platform_activity_save_does_not_rewrite_a_linkedin_shaped_address(env):
+    client, _ = env
+    pages = [{'role': 'activity', 'url': 'https://www.linkedin.com/company/777/admin/'}]
+    response = _patch(client, 'ch-yt', read_pages=pages)
+    assert response.status_code == 200 and response.json['read_pages'] == pages
+    assert _copy('ch-yt')['read_pages'] == pages
+
+
 @pytest.mark.parametrize('record_type', ['binding', 'setup', 'untyped'])
 @pytest.mark.parametrize('consent', ['legacy', 'deny', 'read', 'invalid', 'invalid_future'])
 def test_saved_linkedin_company_address_overrides_member_kind_and_clear_restores_it(env, monkeypatch, record_type, consent):

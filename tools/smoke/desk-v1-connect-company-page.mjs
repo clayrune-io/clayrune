@@ -185,6 +185,12 @@ async function run(browser, viewport) {
     check(await page.locator('[data-cfw-primary]').isDisabled() && /numeric company ID/.test(await page.textContent('[data-reading-company-error]')), `invalid address blocked: ${invalid}`);
   }
   check(patches(srv,li.id).length===0, 'invalid addresses send no PATCH');
+  const published = 'https://www.linkedin.com/company/123456/admin/page-posts/published/';
+  await page.fill(field,published);
+  await next(page,'review');
+  check((await page.textContent('[data-sum-row="permissions"]')).includes(published), 'a specific published-posts destination stays unchanged');
+  await page.click('[data-cfw-back]');
+  await page.waitForSelector(field);
   await page.fill(field,COMPANY);
   check(await page.locator('[data-cfw-primary]').isEnabled() && await page.textContent('[data-reading-company-error]')==='', 'valid numeric admin address enables Continue');
   await page.locator(field).scrollIntoViewIfNeeded();
@@ -266,12 +272,42 @@ async function repairSavedAddress(browser, viewport) {
   realErrors(pageErrors).forEach(e=>fail('page error: '+e));
   await ctx.close();
 }
+async function normalizeBareAddress(browser, viewport, saved, slash) {
+  const srv = makeServer(), li = srv.accounts.find(a => a.platform === 'linkedin');
+  const bare = `https://www.linkedin.com/company/123456/admin${slash}?trk=admin#top`;
+  const canonical = 'https://www.linkedin.com/company/123456/admin/notifications/all/?trk=admin#top';
+  Object.assign(li, {read_via:'pane', browser_profile:'main', account_kind:saved ? 'organization' : 'member',
+    browser_setup:{service:'linkedin',route_id:'linkedin-browser',account_kind:saved ? 'organization' : 'member',refs:{browser_profile:'main'}}});
+  if (saved) Object.assign(li, {organization_id:'123456',read_pages:[{role:'activity',url:bare}]});
+  const {ctx,page,pageErrors} = await open(browser,srv,viewport);
+  await reopen(page,li.id);
+  check(patches(srv,li.id).length===0, 'opening a bare admin destination sends no PATCH');
+  if (saved) check(await page.inputValue('[data-reading-company-address]')===bare, 'legacy bare admin address remains a draft until Save');
+  else await page.fill('[data-reading-company-address]',bare);
+  await next(page,'review');
+  check((await page.textContent('[data-sum-row="permissions"]')).includes(canonical), 'Review expands bare admin to notifications and preserves query/fragment');
+  check(patches(srv,li.id).length===0, 'normalization waits for human Save');
+  await next(page,'result');
+  check(patches(srv,li.id).length===1 && li.read_pages[0].url===canonical, 'Save PATCH sends the canonical activity destination');
+  await reopen(page,li.id);
+  check(await page.inputValue('[data-reading-company-address]')===canonical, 'reopen displays the canonical saved address');
+  await save(page);
+  check(patches(srv,li.id).length===1, 'canonical saved address does not cause repeated normalization PATCHes');
+  realErrors(pageErrors).forEach(e=>fail('page error: '+e));
+  await ctx.close();
+}
 const browser=await chromium.launch();
 try {
   await run(browser,{width:1440,height:900});
   await run(browser,{width:390,height:844});
   await repairSavedAddress(browser,{width:1440,height:900});
   await repairSavedAddress(browser,{width:390,height:844});
+  for (const viewport of [{width:1440,height:900},{width:390,height:844}]) {
+    for (const slash of ['', '/']) {
+      await normalizeBareAddress(browser,viewport,false,slash);
+      await normalizeBareAddress(browser,viewport,true,slash);
+    }
+  }
 } catch(e) { fail(e.stack || String(e)); }
 await browser.close();
 if(bad) process.exit(1);

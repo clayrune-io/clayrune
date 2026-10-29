@@ -680,6 +680,10 @@ def platform_coverage(project_id: str, platform: str, reader: Reader | None = No
         err = error
         return {**base, 'state': 'not_read_yet', 'reason': err, 'last_ok_at': None,
                 'message': f'Connected, not read yet on {label}' + (f' ({err})' if err else '')}
+    if error:
+        return {**base, 'state': 'not_read_yet', 'reason': error,
+                'last_ok_at': rec['last_ok_at'],
+                'message': f'Last read failed on {label} ({error})'}
     return {**base, 'state': 'ok', 'reason': error,
             'last_ok_at': rec['last_ok_at'], 'message': ''}
 

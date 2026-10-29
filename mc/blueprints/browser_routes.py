@@ -3542,13 +3542,32 @@ _READ_JS_TEMPLATE = r"""
     var totalChars = 0;
     var commentCount = 0;
     var attrTextCount = 0;
+    var dataIslandCount = 0;
     var capped = false;
 
     __HIDDEN_REASON_JS__
-    var walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-    var node, seen = 0;
-    while ((node = walker.nextNode()) && seen < 40000 && !capped) {
-      seen++;
+    // Reject whole hidden payload subtrees before reading their text or applying
+    // the character cap. LinkedIn's hidden <code> JSON can dwarf the actual page.
+    function isDataIsland(el) {
+      return el.hasAttribute('hidden') || getComputedStyle(el).display === 'none' ||
+        (el.tagName === 'SCRIPT' && /(?:^|[+/])json(?:\s*;|$)/i.test(el.type || ''));
+    }
+    var hiddenRoot = false;
+    for (var ancestor = root; ancestor; ancestor = ancestor.parentElement) {
+      if (isDataIsland(ancestor)) { hiddenRoot = true; dataIslandCount++; break; }
+    }
+    var seen = 0;
+    var walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
+      acceptNode: function(el) {
+        // Include rejected nodes in the traversal bound. Returning one at the
+        // bound lets the outer loop stop even on a page of only hidden nodes.
+        if (++seen >= 40000) return NodeFilter.FILTER_ACCEPT;
+        if (isDataIsland(el)) { dataIslandCount++; return NodeFilter.FILTER_REJECT; }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    var node = hiddenRoot ? null : root;
+    for (; node && seen < 40000 && !capped; node = walker.nextNode()) {
       var tag = node.tagName;
       if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') continue;
       if (node.getAttribute && (node.getAttribute('aria-label') ||
@@ -3576,6 +3595,7 @@ _READ_JS_TEMPLATE = r"""
       runs: runs,
       comment_count: commentCount,
       attr_text_count: attrTextCount,
+      data_island_count: dataIslandCount,
       js_capped: capped
     };
   } catch (e) {
@@ -3602,7 +3622,8 @@ def _filter_hidden_runs(runs):
     """Split JS-supplied {text, hidden} runs into the human-visible text and a
     per-reason strip count. Pure function of `runs` — this is the piece the
     brief calls out as needing tests without a real Chromium."""
-    counts = {'offscreen': 0, 'zero_opacity': 0, 'tiny_font': 0, 'low_contrast': 0}
+    counts = {'offscreen': 0, 'zero_opacity': 0, 'tiny_font': 0, 'low_contrast': 0,
+              'display_none': 0, 'visibility_hidden': 0}
     kept = []
     for run in (runs or []):
         text = (run.get('text') or '').strip()
@@ -3655,6 +3676,9 @@ def _build_read_envelope(url, js_result):
     truncated = truncated or bool(js_result.get('js_capped'))
 
     hidden = {k: v for k, v in stripped.items() if v}
+    data_island_count = int(js_result.get('data_island_count') or 0)
+    if data_island_count:
+        hidden['data_islands'] = data_island_count
     attr_text_count = int(js_result.get('attr_text_count') or 0)
     if attr_text_count:
         # aria-label/alt/title text is never in `runs` at all (it isn't a text

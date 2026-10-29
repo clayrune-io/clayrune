@@ -5,6 +5,26 @@
 - Signing in again can replace the same saved X sign-in when X has rejected it or it has expired without a refresh token. A live or still-refreshable saved sign-in remains protected from replacement.
 - A later Save failure restores the exact previous encrypted vault entry and its policy. Replacement and rollback do not revoke tokens, preserving MC-1117's shared-grant protection. Branch candidate only; no merge or deployment.
 
+## [2026-10-29] - Normalize bare Company Page admin activity addresses (MC-1121)
+
+- Bare LinkedIn Company Page `/admin` and `/admin/` activity addresses now expand to `/admin/notifications/all/` on save and read. Existing saved addresses work without a migration; query strings and fragments are retained.
+- Review and an explicit human Save use the expanded address. Specific admin paths, other sites and non-activity roles remain unchanged; company matching, URL validation, passcode and read-policy gates are preserved. Branch candidate only; authenticated acceptance remains unverified.
+
+## [2026-10-28] - Report failed activity reads as coverage gaps (MC-1121)
+
+- A later unusable or failed read no longer reports `ok` from a historical success. Coverage preserves the previous success time and shows the latest failure; engagement summaries treat that platform as a gap until a read succeeds again.
+- A successful empty activity read restores `ok`. Bare Company Page admin URL normalization remains pending the activity-source decision; no address is silently changed.
+
+## [2026-10-28] - Recognize empty Company Page activity reads (MC-1121)
+
+- The activity extractor explicitly treats a Company Page's empty activity state as an activity page with zero rows. The existing strict zero-row success path records no new items and clears a prior read error; login, unrelated/loading pages and malformed rows remain failures.
+- Covered with synthetic Company Page polling and envelope regressions. Authenticated extraction and the choice of Company Page activity source remain unverified and undecided.
+
+## [2026-10-28] - Exclude hidden data islands from browser reads (MC-1121)
+
+- Browser reads exclude hidden and display-none payload subtrees, including JSON scripts, before collecting text or consuming the character cap. `hidden_content.data_islands` counts excluded subtrees; visible code stays readable.
+- Python now strips the display-none and visibility-hidden reasons already produced by the shared detector. Existing HTML refusals and untrusted-content envelopes remain in force. Branch candidate only; no authenticated Company Page acceptance yet.
+
 ## [2026-10-29] - Keep Desk Read consent separate from browser access (MC-1118)
 
 - An existing browser-domain grant no longer makes Read appear allowed when the account explicitly denies Desk Read. Incomplete consent is unticked, marked as incomplete and explained on the shared Read row.

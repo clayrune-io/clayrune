@@ -43,3 +43,17 @@ def is_company_admin(url: str, organization_id: str | None = None, *,
     company = _company_segment(url)
     return bool(company and (not organization_id or company == str(organization_id))
                 and (configured_url is None or company == _company_segment(configured_url)))
+
+
+def normalize_activity_url(url: str) -> str:
+    """Expand only a bare LinkedIn company admin path to engagement notifications.
+
+    Callers retain their URL validation, company binding and profile-policy gates.
+    Specific admin destinations, other sites and non-admin paths stay untouched.
+    """
+    if not is_company_admin(url):
+        return url
+    parsed = urlsplit(url)
+    if not re.fullmatch(r'/company/[^/]+/admin/?', parsed.path):
+        return url
+    return parsed._replace(path=parsed.path.rstrip('/') + '/notifications/all/').geturl()
