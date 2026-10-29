@@ -232,6 +232,7 @@
   }
 
   function _paintWriter(el) {
+    const mine = _cur;
     const a = _cur.a;
     const tab = Math.min(Math.max(_cur.tab || 0, 0), a.draft.tabs.length - 1);
     const chips = [
@@ -241,11 +242,12 @@
     el.innerHTML = `<div class="desk-v1-studio-create desk-v1-sa" data-studio-create data-kind="article" data-view="writer" data-item-id="${esc(a.id)}">
       <h2 class="desk-v1-studio-title">Article</h2>
       <div class="desk-v1-sa-chips" data-sa-meta>${chips.map((c) => `<span class="desk-v1-what-chip">${esc(c)}</span>`).join('')}</div>
-      ${_studio().writerHTML(a, null, tab, {
+      <div class="desk-v1-sa-workspace"><div>${_studio().writerHTML(a, null, tab, {
         provenance: _provenance(a), saveLabel: 'Save draft', backLabel: 'Back to Studio',
         extraHTML: `${window.DeskV1LibraryPicker ? window.DeskV1LibraryPicker.buttonHTML('data-sa-library', 'btn-secondary') : ''}<button type="button" class="btn-secondary" data-sa-use>${esc(_useLabel(a))}</button><span class="desk-v1-sa-status" role="status" aria-live="polite" data-sa-status></span>`,
       })}
       <div class="desk-v1-sa-pictures" data-sa-pictures></div>
+      </div><aside class="desk-v1-sa-agent" data-sa-agent aria-label="Article agent conversation"></aside></div>
     </div>`;
     const root = el.querySelector('[data-writer]');
     _studio().wireWriter(root, a, null, tab, {
@@ -263,6 +265,25 @@
       if (lib) lib.onclick = () => window.DeskV1ArticlePictures.pick(bodyEl, lib);
     }
     el.querySelector('[data-sa-use]').onclick = (ev) => _use(a, ev.currentTarget);
+    if (window.DeskV1ArticleChat) window.DeskV1ArticleChat.mount(el.querySelector('[data-sa-agent]'), {
+      article: a, tab: () => a.draft.tabs[tab],
+      save: () => {
+        if (mine.timer) { clearTimeout(mine.timer); mine.timer = null; }
+        return _save(a);
+      },
+      lock: (busy) => {
+        if (_cur !== mine || !el.querySelector('[data-sa-agent]')) return;
+        el.querySelector('[data-writer-body]').contentEditable = busy ? 'false' : 'true';
+        el.querySelectorAll('[data-writer] button').forEach((b) => { b.disabled = busy; });
+      },
+      adopt: (server) => {
+        // A library reload may have replaced this draft's cached object while
+        // its Undo command was off-screen. Keep every retained copy in sync.
+        const copies = new Set([a, find(a.id), _cur && _cur.a].filter((x) => x && x.id === a.id));
+        copies.forEach((copy) => { _merge(copy, server); copy.draft.tabs = server.tabs.map((t) => ({ ...t })); });
+        if (_cur && _cur.a && _cur.a.id === a.id && _cur.el.isConnected) _paintWriter(_cur.el);
+      },
+    });
   }
 
   // ── add to a campaign ────────────────────────────────────────────────────

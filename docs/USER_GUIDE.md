@@ -1324,6 +1324,21 @@ removes it from this campaign, leaving its configured connection in Sources.
 A version's **X** removes that unsent assignment; published history remains.
 These removals have Undo.
 
+In **Studio → New article**, start a draft to open its agent conversation beside
+the writer (below it on a small screen). **About** shows this draft's title.
+The project's default planner answers; set that planner on the project page
+first if none is chosen. With **No project**, Studio uses its default engine.
+Messages include the current Draft tab's complete text, including unsaved edits.
+The conversation belongs to this draft and returns when you reopen it.
+
+Ask for advice or a rewrite, then read any **Proposed draft** in the conversation.
+**Accept proposal** replaces that tab's text and saves it. **Undo** in the Desk
+header restores the earlier text. If the draft has changed since the proposal
+or acceptance, the change is refused so newer edits stay intact. Asking the
+agent never replaces text by itself. A failed message returns to the input
+with the error so you can retry. The conversation's **A−**, **A+** and large-view
+button work as on other Desk pages. Sample drafts show a disabled conversation.
+
 Open an article and choose **Edit article**, or write an article in Studio.
 **Pick from library** inserts images, videos, audio or file links in the
 article body. Pictures open full size, video/audio have playback controls,

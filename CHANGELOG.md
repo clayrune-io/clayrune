@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Discuss Studio article drafts with their agent
+
+- Studio article writers now include the shared agent conversation box, scoped to the draft title. The saved project's default planner answers; drafts with **No project** use Studio's default engine. Each message includes the current draft tab's complete text, including unsaved edits, and the conversation survives reopening the draft.
+- Rewrites appear as text proposals with **Accept proposal**. Acceptance and **Undo** check both revision and text so newer writing cannot be overwritten; asking a question changes no draft text. Failed sends restore the message with the server's reason. Branch candidate only; no merge, push, restart or live model call.
+
 ## [2026-10-29] - Respect campaign agents in Desk Home planner labels
 
 - Home project blocks use their default planner when set, otherwise show the shared agent of their live campaigns or **Each campaign has its own agent**. The pick warning remains when a live campaign has no resolvable agent; ended campaigns do not trigger it.

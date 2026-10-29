@@ -1,0 +1,18 @@
+/* Studio article writer: conversation alongside text and claims, then stacked. */
+.desk-v1-sa-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; align-items: start; }
+.desk-v1-sa-workspace > div, .desk-v1-sa-agent { min-width: 0; }
+.desk-v1-sa-workspace .desk-v1-writer { grid-template-columns: minmax(0, 1fr); }
+.desk-v1-article-default-name { font-size: 13px; font-weight: 600; }
+.desk-v1-sa-agent .desk-thread-head { flex-wrap: wrap; }
+.desk-v1-sa-agent .desk-v1-posy-scope { white-space: normal; overflow-wrap: anywhere; text-align: left; cursor: default; opacity: 1; }
+.desk-v1-article-chat-status { font-size: 12px; color: var(--text-dim); overflow-wrap: anywhere; }
+.desk-v1-article-proposal { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border2); }
+.desk-v1-article-proposal details { margin: 8px 0; }
+.desk-v1-article-proposal summary { cursor: pointer; }
+.desk-v1-article-proposal [data-proposal-text] { margin-top: 8px; max-height: 240px; overflow: auto; }
+.desk-v1-sa-agent .agent-input-row { min-width: 0; }
+.desk-v1-sa-agent textarea { min-width: 0; }
+@media (max-width: 960px) {
+  .desk-v1-sa-workspace { grid-template-columns: minmax(0, 1fr); }
+  .desk-v1-sa-agent .btn-dispatch, .desk-v1-article-proposal .btn-add { min-height: 44px; }
+}
