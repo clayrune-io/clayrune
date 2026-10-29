@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Save confirmed X card re-sign-ins automatically
+
+- A saved X account's Sign in asks for the start passcode, confirms its handle with one `/2/users/me` lookup and saves a match on callback. A mismatch offers Discard only; lookup or save failures keep the sign-in held for manual Save. The new-account wizard retains its explicit Save.
+- Account sign-in status and errors sit above a single action row at desktop and phone widths. Existing claims, unattended refusal, app matching, dead-versus-live replacement and undo rules remain in force. Branch candidate only; no merge or deployment.
+
 ## [2026-10-29] - Allow Save after a dead X sign-in
 
 - Signing in again can replace the same saved X sign-in when X has rejected it or it has expired without a refresh token. A live or still-refreshable saved sign-in remains protected from replacement.
