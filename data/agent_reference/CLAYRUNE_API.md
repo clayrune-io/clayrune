@@ -61,6 +61,10 @@ prompt space in every future turn that touches its subject.
 | GET | `/api/rules/shared` | Read SHARED_RULES.md (applies to all projects). |
 | PUT | `/api/rules/shared` | Write SHARED_RULES.md. |
 
+## Desk Connect catalogue
+
+- `GET /api/desk/connect/services` returns `{services:[{id,label,host,url}]}` for every service in the existing Connect registry. Read-only public metadata; no lookup, vault access or setup actions. Where uses it for missing-account tiles; recognition alone grants no publishing or reading capability.
+
 ## Desk saved connection Edit
 
 - `POST /api/desk/connect/custom/saved-draft` with `{scope, project_id?, server_name}` reads the saved MCP setup draft (credential names only). Human-only like the custom-connection list; no network, install or approval.

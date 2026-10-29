@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Find every Connect service from campaign Sources
+
+- Where keeps existing account tiles and adds **Connect service ›** tiles for services without an account, using the complete existing Connect registry. These tiles open the same connection options with the service selected and cannot be dragged onto the board. Catalogue failures show Retry; newly connected accounts replace their service tile.
+- Empty Copy sections offer **Add a version from the Where board ›**, opening that piece's campaign. Pieces without a campaign explain the prerequisite and offer **Choose a campaign ›** to return to Desk Home. Branch candidate only; no merge or deployment.
+
 ## [2026-10-29] - Respect campaign agents in Desk Home planner labels
 
 - Home project blocks use their default planner when set, otherwise show the shared agent of their live campaigns or **Each campaign has its own agent**. The pick warning remains when a live campaign has no resolvable agent; ended campaigns do not trigger it.

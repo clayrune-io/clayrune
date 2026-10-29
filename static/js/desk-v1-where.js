@@ -453,10 +453,11 @@
       <p class="desk-v1-where-rule" data-where-rule>Dragging from Messages always ADDS a version (the message stays listed) · dragging a version between columns MOVES it.</p>
       <section class="desk-v1-where-sources" data-where-sources aria-label="Sources">
         <div class="desk-v1-where-sources-title">Sources — drag a channel up into the campaign</div>
-        <div class="desk-v1-where-sources-row">${src.bound.map((ch) => _sourceHTML(camp, ch)).join('')}${src.off.map(_offSourceHTML).join('')}${src.readOnly.map(_readOnlySourceHTML).join('')}</div>
+        <div class="desk-v1-where-sources-row">${src.bound.map((ch) => _sourceHTML(camp, ch)).join('')}${src.off.map(_offSourceHTML).join('')}${src.readOnly.map(_readOnlySourceHTML).join('')}${window.DeskV1WhereServices.html(_fx().channels || [])}</div>
       </section>
     </div>`;
     _wire(el, camp);
+    window.DeskV1WhereServices.bind(el, _repaint);
     window.DeskV1WhereRemoval.wire(el, camp, _repaint);
   }
 
