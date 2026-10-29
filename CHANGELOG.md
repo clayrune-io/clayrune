@@ -34,6 +34,21 @@
 - Social details show the same Read/Post summary and collapsed technical Details; existing browser sites without an account show both permissions Off. Engine limits and explicit approval/unlock controls keep their existing human gates.
 - Added vocabulary/layout regression coverage and refreshed the affected interaction smokes. Saved engine/MCP setup restoration at Permissions remains a documented gap; no migration is included.
 
+## [2026-10-28] - Require human proof for Company Page destination changes
+
+- Company Page Save and Clear use the shared dashboard passcode prompt and server guard; an agent session or forged Origin alone cannot change the account kind.
+- Both browser and server reject literal or encoded dot segments and destinations outside the matching numeric company admin path. Clear also removes the omitted company ID from the local account, preventing a stale ID on reopen.
+
+## [2026-10-28] - Keep a saved LinkedIn destination's account kind consistent
+
+- Saving a Company Page admin address through Permissions switches the account, browser setup and saved bindings to organization; Clear switches them back to member. Saving an unchanged address also repairs an older stale member binding.
+- Exact permission scopes stay unchanged and invalid consent stays refused. Identity and setup guards remain strict, and agents cannot change the destination through an organization-ID-only PATCH.
+
+## [2026-10-28] - Set a saved LinkedIn account's Company Page reading destination
+
+- LinkedIn browser accounts always offer **Company Page admin address** in Permissions. Review and Save set the numeric company ID from the supplied admin activity URL and save that activity address together; page names and non-admin addresses show a correction message.
+- Clearing the field removes the company ID and saved activity pages, including the local list used on reopen. The follow-up keeps the saved connection kind consistent with that choice.
+
 ## [2026-10-28] - Bind company read redirects and compare coverage instants
 
 - Company admin reads keep the configured company destination after navigation, including accounts without a stored organization ID. A different company is refused before activity extraction.

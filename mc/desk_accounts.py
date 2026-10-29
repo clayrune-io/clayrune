@@ -186,9 +186,12 @@ def v1_account(acc: dict, vault: dict | None = None) -> dict:
         'created_at': acc.get('created_at'),
         'connected': pub['ready'], 'publish': pub,
     }
-    for k in ('read_via', 'browser_profile', 'organization_id', 'read_pages', 'signin_method'):
+    for k in ('read_via', 'browser_profile', 'organization_id', 'read_pages', 'signin_method', 'account_kind'):
         if acc.get(k):
             out[k] = acc[k]
+    kind = _setup_record.kind_of(acc)
+    if kind:
+        out['account_kind'] = kind
     if acc.get('credentials'):          # names of the account's own sign-in, never a value
         out['credentials'] = dict(acc['credentials'])
     setup = _setup_record.of(acc)       # a saved browser sign-in (MC-1062/03): profile and login NAMES, so Connections can show it
@@ -385,6 +388,13 @@ def update_account(account_id: str, patch: dict) -> dict:
         if read_via == 'api' and rec.get('platform') not in API_READ_PLATFORMS:
             raise AccountError('only X accounts can be read through an API; '
                                'this one is read through the browser pane')
+        from mc.desk_connect import linkedin_destination
+        try:
+            linkedin_destination.validate_pages(rec, org, pages)
+        except ValueError as e:
+            raise AccountError(str(e)) from e
+        if org is not None:
+            linkedin_destination.apply(rec, org)
         rec.update(clean)
         if reading:
             apply_read_to_store(store, rec, read_via, profile, project_id, pages)

@@ -160,6 +160,9 @@ def test_publish_is_never_stored(env):
 
 
 def test_linkedin_page_is_not_connected_whatever_the_vault_holds(env, monkeypatch):
+    from mc.blueprints.secrets_routes import local_auth
+    monkeypatch.setattr(local_auth, '_local_auth_is_configured', lambda: True)
+    monkeypatch.setattr(local_auth, '_local_auth_try_passcode', lambda value: value == 'test-human-proof')
     client, vault, _ = env
     vault.add('linkedin.oauth-token')
     _create(client, platform='linkedin', identity='Clayrune', id='ch-li')
@@ -171,10 +174,10 @@ def test_linkedin_page_is_not_connected_whatever_the_vault_holds(env, monkeypatc
     monkeypatch.setattr(_accounts, 'LINKEDIN_ORG_POSTING_APPROVED', True)
     no_org = _by_id(client)['ch-li']['publish']
     assert no_org['ready'] is False and 'organization id' in no_org['reason']
-    assert client.patch('/api/desk/accounts/ch-li', json={'organization_id': '12345678'}).status_code == 200
+    assert client.patch('/api/desk/accounts/ch-li', json={'organization_id': '12345678', 'passcode': 'test-human-proof'}).status_code == 200
     assert _by_id(client)['ch-li']['publish']['ready'] is True
     assert _by_id(client)['ch-li']['organization_id'] == '12345678'
-    assert client.patch('/api/desk/accounts/ch-li', json={'organization_id': 'urn:li:organization:1'}).status_code == 400
+    assert client.patch('/api/desk/accounts/ch-li', json={'organization_id': 'urn:li:organization:1', 'passcode': 'test-human-proof'}).status_code == 400
     del vault.entries['linkedin.oauth-token']
     assert _by_id(client)['ch-li']['publish']['ready'] is False
 

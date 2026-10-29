@@ -79,7 +79,7 @@ def kind_of(rec: dict) -> str | None:
         for b in caps.values() if isinstance(caps, dict) else []:
             if isinstance(b, dict) and isinstance(b.get('account_kind'), str):
                 return b['account_kind']
-    return None
+    return rec.get('account_kind')
 
 
 def bound_routes(rec: dict) -> set:

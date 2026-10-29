@@ -50,12 +50,66 @@ This guard establishes destination scope, not that every admin page has readable
 notifications. The generic activity schema still validates the page's content.
 No authenticated company admin read was exercised in the regression suite.
 
+### Editing a saved LinkedIn destination
+
+Connections > the account > **Edit settings** > **Permissions** always shows
+**Company Page admin address** when reading LinkedIn through a browser sign-in,
+including a saved member with no page-address gap. The optional field is a draft;
+Review shows the address before Save uses the existing human-only account PATCH.
+Company Page Save and Clear use the existing `_human_only` /
+`_require_human_passcode` gate and shared `humanProofFetch` prompt. An unattended
+caller is refused; manual sessions and forged Origin headers cannot substitute
+for the retyped dashboard passcode. Cancelling sends no PATCH. The proof is
+discarded before the account store sees the update.
+It accepts a plain HTTPS address on `linkedin.com` or `www.linkedin.com` with
+`/company/<digits>/admin/` (or a path ending at `/admin`). The company number must
+contain 1–20 digits, matching the account store's ID limit. Names/slugs, member
+notifications and non-admin paths are refused with a plain correction message.
+The field is not a general site or domain editor.
+Validation checks the normalized admin path and refuses all literal and encoded
+dot segments (including mixed-case `%2e` and literal/encoded combinations).
+The server applies the same restriction before any store or identity mutation,
+including a direct pages-only PATCH on an existing company account. A supplied
+company ID must match the address; personal notifications cannot be saved as
+company activity.
+
+Save derives `organization_id` from the user-supplied URL and sends it together
+with `read_pages: [{role: 'activity', url: <address>}]`. Changing the company
+address replaces the saved activity-page list. Clearing sends an empty organization
+ID and `read_pages: []`; the local account also drops the omitted ID and list from the
+PATCH response so reopening cannot resurrect it. An untouched field sends no
+update unless a previously saved company address still has a member kind: that
+repair waits for the human to press Save, never runs just by opening the editor.
+
+On the existing human account PATCH, `linkedin_destination.apply` synchronizes
+the account, browser setup, existing purpose bindings and policy identity to
+`organization` for a Company Page or `member` for Clear. Kind is returned in
+account metadata, including older binding-only accounts, so reopen and permission
+retries use the repaired kind. Clearing explicitly selects personal activity even
+for an older account; leaving an untyped empty field untouched makes no choice.
+
+Routes, refs, Read/Post values and exact permission scopes are not added or
+expanded. A valid explicit policy gets its fingerprint updated for the new kind;
+invalid/malformed consent is not re-signed and continues to fail closed. Legacy
+accounts retain their legacy permission path. Binding fingerprints reflect the
+changed kind, so verification of a member is not evidence for an organization.
+The `wrong_kind`, `kind_mismatch`, route-coverage and already-bound setup checks
+are unchanged. An agent cannot change the organization ID even if it omits all
+other reading fields from its PATCH.
+
+The consent-preservation Read test uses a synthetic LinkedIn executor registration:
+this branch does not yet include MC-1118's pane-executor registration. The real
+identity and setup tests use this branch's runtime. Cross-branch integration and
+an authenticated Company Page read remain the integrator's checks.
+
 ## Regression checks
 
 Backend (synthetic readers and model replies, temporary stores):
 
 ```powershell
-python -m pytest tests/test_desk_engagement.py tests/test_desk_engagement_pane.py tests/test_desk_engagement_pane_digest.py tests/test_desk_engagement_permission_execution.py tests/test_desk_conversations.py tests/test_desk.py -q
+python -m pytest tests/test_desk_account_read_pages.py tests/test_desk_accounts.py tests/test_desk_engagement.py tests/test_desk_engagement_pane.py tests/test_desk_engagement_pane_digest.py tests/test_desk_engagement_permission_execution.py tests/test_desk_conversations.py tests/test_desk.py -q
+python -m pytest tests/test_desk_account_read_pages.py tests/test_desk_connect_permission_policy.py tests/test_desk_connect_browser_setup.py tests/test_desk_purposes.py -q
+pyright mc/desk_connect/linkedin_destination.py
 pyright mc/desk_engagement_account.py mc/desk_pane_activity_scope.py mc/desk_engagement.py mc/desk_engagement_pane_digest.py mc/desk_engagement_poll.py
 ```
 
@@ -67,6 +121,7 @@ node tools/smoke/desk-v1-engagement.mjs
 node tools/smoke/desk-v1-live-engagement.mjs
 node tools/smoke/desk-v1-conversations.mjs
 node tools/smoke/desk-v1-live-read-pages.mjs
+node tools/smoke/desk-v1-connect-company-page.mjs
 node tools/smoke/desk-v1-reads-off.mjs
 node tools/smoke/boot-smoke.mjs
 ```

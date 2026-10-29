@@ -167,13 +167,14 @@ def test_company_never_reads_member_defaults_or_discovers_personal_activity(env,
     assert pages.reads == [] and rt.calls == []
 
 
-@pytest.mark.parametrize('organization_id', ['777', None])
-def test_company_reads_explicit_admin_activity_only(env, organization_id):
+@pytest.mark.parametrize('organization_id,kind', [('777', None), (None, None), ('777', 'member')])
+def test_company_reads_explicit_admin_activity_only(env, organization_id, kind):
     _allow(['linkedin.com'])
     admin = 'https://www.linkedin.com/company/777/admin/notifications/'
     pages = FakePages({admin: _body(NOTES_TEXT, admin)})
     rt = FakeRuntime({pd.ACTIVITY_INSTRUCTION: _activity(_row())})
     rd = _reader(pages, rt, acc={'browser_setup': {}, 'organization_id': organization_id,
+                               'connections': {'read_own': {'own_posts': {'account_kind': kind}}},
                                'read_pages': [{'role': 'activity', 'url': admin}]})
     assert len(rd.fetch_mentions(since_id=None, known_posts={})['items']) == 1
     assert pages.reads == [admin] and rd.pages_state()['source'] == 'user'
