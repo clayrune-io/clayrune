@@ -34,7 +34,7 @@
 //   * none      the provider's own fields are shown, as the old flow showed them;
 //   * { id }    X attaches to the saved id (MC-1062/03b): start-held and Save both name it, and the server
 //               validates its own OAuth references. Other providers keep their existing refusal.
-import { restoreEngine, unchangedEngine, engineNote } from './desk-v1-connect-engine-saved.js';
+import { restoreEngine, unchangedEngine, engineNote, savedEngineFields } from './desk-v1-connect-engine-saved.js';
 import { EngineReconnect } from './desk-v1-connect-engine-reconnect.js';
 (function () {
   const W = window.DeskV1ConnectWizard;
@@ -299,7 +299,7 @@ import { EngineReconnect } from './desk-v1-connect-engine-reconnect.js';
     if (_blocked(info)) return { error: 'This account cannot be used for an API connection yet.' };
     const r = Ad && Ad.mounted() ? Ad.read() : { fields: {} };
     if (r.error) return { error: r.error };
-    const fields = Object.assign({}, r.fields);
+    const fields = savedEngineFields(A, r.fields);
     if (Ad?.replacementRequired() && !fields.confirm_replace) return { error: 'Save replaces the saved key. Confirm replacement on Review first.', step: 'review' };
     if (_targetMode() === 'new') {                                    // answered by the account choice, not typed here
       const n = _target.account.new;

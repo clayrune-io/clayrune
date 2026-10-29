@@ -26,3 +26,12 @@ export function unchangedEngine(state) {
   return {ok:true,result:{ok:true,service:state.info.service.id,method:state.method,account_id:null,
     unchanged:true,status:{state:state.savedEngine.connected?.ready ? 'verified':state.savedEngine.connected?.state || 'not_checked'}}};
 }
+
+export function savedEngineFields(state, fields) {
+  if (!state.savedEngine || state.method !== 'api_key') return fields;
+  const out = {...fields, edit_saved:true};
+  for (const f of state.connector.fields) {
+    if (f.present && f.vault && !(f.key in out)) out[f.key] = {keep:true};
+  }
+  return out;
+}

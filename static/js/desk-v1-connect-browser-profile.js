@@ -4,7 +4,7 @@ import { SigninMethod } from './desk-v1-connect-signin-method.js';
 const W = window.DeskV1ConnectWizard;
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let S;
-function clear() { S = {name:'', profile:'', signinMethod:'other', profiles:null, info:null, request:null, result:null}; }
+function clear() { S = {name:'', profile:'', signinMethod:'other', profiles:null, info:null, request:null, result:null, savedId:null}; }
 clear();
 const matches = (sel, info) => sel.type === 'signin' && !['x','linkedin'].includes(info?.service?.id);
 const profileName = () => S.profile.trim();
@@ -26,8 +26,9 @@ function controls() {
 async function commit() {
   if (problem()) return {ok:false,error:problem()};
   S.request ||= window.crypto?.randomUUID ? crypto.randomUUID() : `bp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-  const res = await window.humanProofFetch('/api/desk/connect/browser-profile/commit', {
-    method:'POST', body:JSON.stringify({request_id:S.request,draft:{name:S.name.trim(),url:S.info.url,browser_profile:profileName(),signin_method:S.signinMethod}}),
+  const endpoint = S.savedId ? `/api/desk/connect/browser-profile/${encodeURIComponent(S.savedId)}` : '/api/desk/connect/browser-profile/commit';
+  const res = await window.humanProofFetch(endpoint, {
+    method:S.savedId ? 'PATCH':'POST', body:JSON.stringify({request_id:S.request,draft:{name:S.name.trim(),url:S.info.url,browser_profile:profileName(),signin_method:S.signinMethod}}),
   },{title:C.words.saveConnection,description:C.words.saveProof});
   if (!res) return {cancelled:true};
   if (!res.ok) return {ok:false,error:res.body?.error || C.words.notSaved};
@@ -56,4 +57,4 @@ window.DeskV1ConnectSummaryStep?.registerBranch({id:'browser-profile',word:C.wor
     extra:()=>window.DeskV1ConnectBrowserCheck?.html('generic-result') || '',actions:()=>[],
     bind:(root,res,api)=>window.DeskV1ConnectBrowserCheck?.bind(root,'generic-result',()=>({url:res.url,browser_profile:res.browser_profile}),api.ctx,{own:api.own,status:res.status,onStatus:out=>{window.DeskV1ConnectSummaryStep.setStatus(out);api.repaint();}})},
 });
-window.DeskV1ConnectBrowserProfile={matches,controls,profileName,restore:(s,info)=>{S={...S,name:s.name,profile:s.browser_connection.browser_profile,signinMethod:s.browser_connection.signin_method || 'other',info};}};
+window.DeskV1ConnectBrowserProfile={matches,controls,profileName,restore:(s,info)=>{clear();S={...S,savedId:s.id,name:s.name,profile:s.browser_connection.browser_profile,signinMethod:s.browser_connection.signin_method || 'other',info};}};

@@ -615,7 +615,7 @@ async function invalidateScenario(browser, width, height) {
   const n2 = reviews(srv).length;
   await clickPrimary(page); await waitStep(page, 'permissions');
   await clickPrimary(page); await waitScreen(page, 'remote-review'); await waitCard(page);
-  check(reviews(srv).length === n2 + 1 && reviews(srv)[n2].body.credentials[0].header === 'X-Api-Key' && !('prefix' in reviews(srv)[n2].body.credentials[0]), 'a changed header reviews again with the new header', 'reviews: ' + JSON.stringify(reviews(srv)[n2].body));
+  check(reviews(srv).length === n2 + 1 && reviews(srv)[n2].body.credentials[0].header === 'X-Api-Key' && reviews(srv)[n2].body.credentials[0].prefix === '', 'a changed header reviews again with the new header and exact empty prefix', 'reviews: ' + JSON.stringify(reviews(srv)[n2].body));
   check((await text(page, '[data-rs-credentials]')).includes('X-Api-Key'), 'the card shows the new header', await text(page, '[data-rs-credentials]'));
 
   // A stale card: the server no longer accepts it

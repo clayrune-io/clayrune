@@ -165,7 +165,7 @@ import {remoteState} from './desk-v1-connect-mcp-restore.js';
       if (scopes.length) body.scopes = scopes;
     }
     if (P.auth === 'header') {
-      body.credentials = _creds().filter((c) => c.header || c.vault).map((c) => ({ header: c.header, vault: c.vault, ...(c.prefix.trim() ? { prefix: c.prefix } : {}) }));
+      body.credentials = _creds().filter((c) => c.header || c.vault).map((c) => ({ header: c.header, vault: c.vault, prefix: c.prefix }));
     }
     return { body, problem: '' };
   }

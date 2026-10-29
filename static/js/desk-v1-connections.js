@@ -173,7 +173,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
       <div class="desk-v1-connections" data-connections>
         <div class="desk-v1-conn-top">
           <p class="desk-v1-conn-lede">Everything external is connected here and nowhere else. A campaign only picks from what is connected.</p>
-          ${live ? '<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-conn-recheck>${W.buttons.check}</button>' : ''}
+          ${live ? `<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-conn-recheck>${W.buttons.check}</button>` : ''}
         </div>
         ${Tiles.gridHTML({ items: _items(live, sel) })}
         ${_detail(sel) || ''}

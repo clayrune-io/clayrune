@@ -449,7 +449,7 @@ async function run(browser, width, height) {
     const { ctx, page } = await newPage(browser, { srv: makeServer(), width, height });
     await toPermissions(page, { address: 'linkedin.com', type: 'signin', target: { kind: 'member', identity: 'ron', account: { new: { identity: 'ron', label: '' } } }, signin: { profile: 'li-ron' } });
     check((await boxes(page)).join('|') === 'read|post', `LinkedIn sign-in shows the same two rows (${(await boxes(page)).join(', ')})`, 'boxes: ' + (await boxes(page)).join('|'));
-    check(!(await page.locator('[data-cfp-box="read"]').isDisabled()) && (await page.locator('[data-cfp-box="post"]').isDisabled()), 'Read is enabled (the domain), Publish is disabled', 'enabled states wrong');
+    check((await page.locator('[data-cfp-box="read"]').isDisabled()) && (await page.locator('[data-cfp-box="post"]').isDisabled()) && /Reading isn't available for LinkedIn yet/.test(await text(page, '[data-cfw-option="read"]')), 'Read and Publish are disabled without declared coverage and executor', 'enabled states wrong');
     check(/^Choose what agents may do with this account\. Posting still needs campaign approval\.$/.test(await text(page, '[data-cfw-copy]')), 'the copy is the one shared sentence', await text(page, '[data-cfw-copy]'));
     await page.click('[data-cfw-details] > summary');
     const dt = await text(page, '[data-cfp-details]');

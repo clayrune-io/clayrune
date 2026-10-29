@@ -1,26 +1,8 @@
 #!/usr/bin/env node
-/**
- * Desk v1 (Ron 2026-10-28) — a browser connection whose reading is not allowed yet is "Reading is off", never "Needs sign-in".
- *
- * Live repro: LinkedIn "Clayrune" (profile linked_ronlevy) was signed in, the pane showed his feed, and the card still said
- * "Needs sign-in" with "profile 'linked_ronlevy' is not switched on for agent reads". The profile was not on the agent-read
- * list, and the Edit settings > Permissions screen had no row to put linkedin.com on it. The page is the real one (real type
- * projection from mc.desk_connect, real Connections card, real Permissions step, real passcode prompt); the server and the
- * browser pane are stubs, so no real account or profile is touched.
- *
- *   1. Reads off      the grid card and the detail row say "Reading is off" (not Needs sign-in), in plain words, with ONE
- *                     primary button, Open permissions. It opens Edit settings at the Permissions step; opening writes nothing.
- *                     There: ONE list (Read this account's activity, Publish), no site row; Publish is disabled with a sentence.
- *                     Ticking Read and saving is the passcode-gated PUT /api/browser/profiles/<name>/agent-read with this
- *                     site added to the list, others kept. Cancelling the passcode sends nothing. The card then reads ok.
- *   2. Signed in, on  coverage ok: the card is ok ("Reading by browser"); no Open permissions, no Needs sign-in.
- *   3. Signed out     coverage not_connected without a gate: still "Needs sign-in", Sign in primary, no Open permissions.
- *   4. Reopened       Edit settings > Permissions for a LinkedIn account that reads through the browser profile shows the
- *                     same two rows (no site row), whether or not it also holds an API sign-in; unticking removes only
- *                     its own domain.
- *
- * RUN   cd tools/smoke && node desk-v1-reads-off.mjs
- */
+// Reading-off and signed-out stay distinct. MC-1118 option B disables Read
+// without declared profile coverage and a route executor, even when a browser
+// domain was previously granted. Hermetic production UI at 1440 and 390 widths.
+
 import { readFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -183,36 +165,24 @@ async function run(browser, width, height) {
     check(puts(srv).length === 0, 'opening Permissions sent no write', 'a PUT went out: ' + JSON.stringify(puts(srv)));
     check((await boxes(page)).join('|') === 'read|post' && !(await page.$('[data-cfw-option="site"]')), 'Permissions is the one list, Read and Publish, with no site row', 'boxes: ' + (await boxes(page)).join('|'));
     const readOpt = await text(page, '[data-cfw-option="read"]'), postOpt = await text(page, '[data-cfw-option="post"]');
-    check(/Read this account's activity/.test(readOpt) && !(await page.locator('[data-cfp-box="read"]').isDisabled()) && !(await page.locator('[data-cfp-box="read"]').isChecked()), 'Read this account\'s activity is enabled and off', readOpt);
+    check(/Reading isn't available for LinkedIn yet/.test(readOpt) && (await page.locator('[data-cfp-box="read"]').isDisabled()) && !(await page.locator('[data-cfp-box="read"]').isChecked()), 'unsupported Read is disabled and off with its reason', readOpt);
     check(/Publish/.test(postOpt) && (await page.locator('[data-cfp-box="post"]').isDisabled()) && /Posting is not available through this connection yet\./.test(postOpt), 'Publish stays visible, disabled, with one sentence saying why', postOpt);
     check(!/linked_ronlevy|agent_read_off|profile/i.test(await text(page, '[data-cfp-rows]')), 'no profile name or internal term in the rows', await text(page, '[data-cfp-rows]'));
     await page.locator('[data-cfp-rows]').scrollIntoViewIfNeeded(); await page.screenshot({ path: resolve(SHOT_DIR, `permissions_from_reads_off_${width}.png`) });
 
-    await page.check('[data-cfp-box="read"]');
-    check(puts(srv).length === 0, 'ticking Read changes the draft only', 'a PUT went out on ticking');
-    let done = page.evaluate(() => window.DeskV1ConnectPermissionsStep.apply('acct-li'));
-    await waitPrompt(page);
-    const prompt = await page.$eval('.modal-content:has(input[id^="hp-passcode-"])', (e) => e.innerText);
-    check(/linkedin\.com/.test(prompt) && new RegExp(PROFILE).test(prompt), 'the passcode prompt names the site and the sign-in', prompt);
-    await cancel(page);
-    let r = await done;
-    check(puts(srv).length === 0 && r.site.status === 'cancelled', 'cancelling the passcode prompt sends nothing', JSON.stringify([r, puts(srv)]));
+    await page.locator('[data-cfp-box="read"]').evaluate(e => {e.checked=true;e.dispatchEvent(new Event('change',{bubbles:true}));});
+    const r = await page.evaluate(() => window.DeskV1ConnectPermissionsStep.apply('acct-li'));
+    check(!await page.locator('[data-cfp-box="read"]').isChecked() && r.site.status === 'unchanged' && puts(srv).length === 0,
+      'a synthetic change on disabled Read makes no grant', JSON.stringify(r));
     await page.click('[data-cfw-primary]');
     await page.waitForSelector('[data-cfw-step="review"]', { timeout: 4000 });
     await page.click('[data-cfw-primary]');
-    await answer(page, PASSCODE);
     await page.waitForFunction(() => document.querySelector('[data-cfw-step="result"]'), null, { timeout: 6000 });
     const sent = puts(srv);
-    check(sent.length === 1 && sent[0].path === `/api/browser/profiles/${PROFILE}/agent-read` && sent[0].body.passcode === PASSCODE && sent[0].body.enabled === true
-        && JSON.stringify(sent[0].body.domains) === JSON.stringify(['x.com', 'linkedin.com']),
-      'with the passcode: ONE PUT on this profile, linkedin.com added and x.com kept', JSON.stringify(sent.map((x) => [x.path, x.body])));
+    check(sent.length === 0, 'saving unsupported Read sends no browser grant', JSON.stringify(sent));
     check(srv.log.every((x) => x.method === 'GET' || x.method === 'PUT' || ['/api/desk/connect/types', '/api/desk/connect/purposes'].includes(x.path)), 'nothing else was written', JSON.stringify(srv.log.map((x) => x.method + ' ' + x.path)));
-    await page.evaluate(() => window.DeskV1ConnectionStatus.invalidate());
     await page.evaluate(() => window.DeskV1ConnectWizard.close());
     await page.click('[data-conn-tile="acct-li"]');
-    await waitCoverage(page, 'Ready');
-    const after = await tileState(page);
-    check(after.state === 'ok' && !/Reading is off|Needs sign-in/.test(after.text), `the card then reads ok (${after.text})`, 'after: ' + after.text);
     check((await page.$$('[data-cs-reopen]')).length===1,'one shared Edit remains','Edit missing or doubled');
     check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
     await ctx.close();
@@ -257,24 +227,19 @@ async function run(browser, width, height) {
     await page.waitForFunction(() => !document.querySelector('[data-cfp-loading]'), null, { timeout: 6000 });
     check((await boxes(page)).join('|') === 'read|post' && !(await page.$('[data-cfw-option="site"]')), `${label}: Permissions shows Read and Publish and no site row`, `${label}: boxes ${(await boxes(page)).join('|')}`);
     const readOpt = await text(page, '[data-cfw-option="read"]');
-    check(/Read this account's activity/.test(readOpt) && !(await page.locator('[data-cfp-box="read"]').isDisabled()), `${label}: Read this account's activity is enabled`, readOpt);
+    check(/Reading isn't available for LinkedIn yet/.test(readOpt) && (await page.locator('[data-cfp-box="read"]').isDisabled()), `${label}: unsupported Read is disabled with its reason`, readOpt);
     check(!(await page.locator('[data-cfp-box="read"]').isChecked()), `${label}: it is off while reading is off`, 'the box was ticked');
     check((await page.locator('[data-cfp-box="post"]').isDisabled()) && /Posting is not available through this connection yet\./.test(await text(page, '[data-cfw-option="post"]')), `${label}: Publish is visible, disabled, with the reason`, await text(page, '[data-cfw-option="post"]'));
     await page.locator('[data-cfp-rows]').scrollIntoViewIfNeeded(); await page.screenshot({ path: resolve(SHOT_DIR, `permissions_${label.startsWith('API') ? 'api' : 'browser'}_${width}.png`) });
     srv.log.length = 0;
-    await page.check('[data-cfp-box="read"]');
-    check(puts(srv).length === 0, `${label}: ticking changes the draft only`, 'a PUT went out on ticking');
     const pending = await page.evaluate(() => window.DeskV1ConnectPermissionsStep.summary());
-    check(pending.permissionPending === true && pending.lines.some((l) => /linkedin\.com/.test(l)), `${label}: the Review line says what will be allowed`, JSON.stringify(pending));
+    check(!pending.permissionPending, `${label}: unsupported Read drafts no grant`, JSON.stringify(pending));
     await page.click('[data-cfw-primary]');
     await page.waitForSelector('[data-cfw-step="review"]', { timeout: 4000 });
     await page.click('[data-cfw-primary]');
-    await answer(page, PASSCODE);
     await page.waitForFunction(() => document.querySelector('[data-cfw-step="result"]'), null, { timeout: 6000 });
     const sent = puts(srv);
-    check(sent.length === 1 && sent[0].path === `/api/browser/profiles/${PROFILE}/agent-read` && sent[0].body.passcode === PASSCODE
-        && JSON.stringify(sent[0].body.domains) === JSON.stringify(['x.com', 'linkedin.com']),
-      `${label}: Save is the passcode-gated PUT on that profile, linkedin.com added, x.com kept`, JSON.stringify(sent.map((x) => [x.path, x.body])));
+    check(sent.length === 0, `${label}: Save sends no browser grant`, JSON.stringify(sent));
     check(srv.log.filter((x) => x.method === 'POST' && x.path.includes('/permissions/commit')).length === 0, `${label}: no Desk scope was written (this route has none to record)`, 'a Desk commit went out');
     check(realErrors(pageErrors).length === 0, `${label}: no uncaught page errors`, JSON.stringify(realErrors(pageErrors)));
     await ctx.close();
@@ -289,16 +254,14 @@ async function run(browser, width, height) {
     await page.click('[data-conn-account="acct-li"] [data-cs-reopen]');
     await page.waitForSelector('[data-conn-detail="add"] [data-cfw-step="permissions"]', { timeout: 6000 });
     await page.waitForFunction(() => !document.querySelector('[data-cfp-loading]'), null, { timeout: 6000 });
-    check(await page.locator('[data-cfp-box="read"]').isChecked(), 'allowed account: Read this account\'s activity shows on', 'the box was off');
+    check(await page.locator('[data-cfp-box="read"]').isDisabled() && !await page.locator('[data-cfp-box="read"]').isChecked(), 'a prior domain grant does not enable unsupported Read', 'the box was enabled or ticked');
     srv.log.length = 0;
-    await page.uncheck('[data-cfp-box="read"]');
     await page.click('[data-cfw-primary]');
     await page.waitForSelector('[data-cfw-step="review"]', { timeout: 4000 });
     await page.click('[data-cfw-primary]');
-    await answer(page, PASSCODE);
     await page.waitForFunction(() => document.querySelector('[data-cfw-step="result"]'), null, { timeout: 6000 });
     const sent = puts(srv);
-    check(sent.length === 1 && JSON.stringify(sent[0].body.domains) === JSON.stringify(['x.com']), 'unticking removes linkedin.com and keeps x.com', JSON.stringify(sent.map((x) => x.body)));
+    check(sent.length === 0 && JSON.stringify(srv.policy[PROFILE].domains) === JSON.stringify(['x.com','linkedin.com']), 'unsupported Read does not rewrite the existing domain list', JSON.stringify(sent));
     check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
     await ctx.close();
   }

@@ -5,7 +5,8 @@ these per key method and keeps its own verify.
 
 Typed-only saves refuse existing entries (`secret_exists`, 409). A reference Save
 may replace one only with explicit Review confirmation and compensating rollback;
-the existing scope and unattended policy stay in force.
+the existing scope and unattended policy stay in force. An explicit saved-engine
+edit may update unattended use and retains every untouched credential slot.
 """
 from __future__ import annotations
 
@@ -40,8 +41,11 @@ class KeyPaste:
         return out
 
     def clean(self, raw, names=None) -> dict:
-        allowed = {'secret', 'allow_unattended', 'confirm_replace'} | ({'key_id'} if self.user_label else set())
+        allowed = {'secret', 'allow_unattended', 'confirm_replace', 'edit_saved'} | ({'key_id'} if self.user_label else set())
         raw = base.take_fields(raw, allowed)
+        if base.bool_value(raw, 'edit_saved', 'Edit saved key', False):
+            from mc.desk_connect import saved_key_update
+            return saved_key_update.clean(self.vault, raw, bool(self.user_label))
         secret = raw.get('secret')
         if isinstance(secret, dict):
             secret = saved_fields.reference(secret)
@@ -63,6 +67,10 @@ class KeyPaste:
                                   409, 'secret_exists')
 
     def apply(self, clean: dict, undo, names) -> None:
+        if clean.get('edit_saved') is True:
+            from mc.desk_connect import saved_key_update
+            saved_key_update.apply(self.vault, clean, undo)
+            return
         referenced = isinstance(clean['secret'], dict) or isinstance(clean['username'], dict)
         if self.vault in names and not referenced:
             raise self.exists()

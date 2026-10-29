@@ -12,5 +12,5 @@ export async function stageSavedGithub(api, state) {
 }
 export function remoteState(d) {
   return {url:d.url, protocol:d.protocol, name:d.server_name, auth:d.auth,
-    issuer:d.issuer || '', scopes:(d.scopes || []).join(' '), creds:d.credentials.map(c=>({header:c.header,prefix:c.prefix || '',vault:c.vault}))};
+    issuer:d.issuer || '', scopes:(d.scopes || []).join(' '), creds:d.credentials.map(c=>({header:c.header,prefix:c.prefix ?? '',vault:c.vault}))};
 }

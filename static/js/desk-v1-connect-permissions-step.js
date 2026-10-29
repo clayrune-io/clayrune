@@ -1,7 +1,7 @@
 // Desk v1 — Connections: the Connect wizard's PERMISSIONS screen (MC-1062 ticket 08,
 // docs/desk_v1/connect_flow_tickets/08-permissions-screen.md; frame and rules in desk-v1-connect-wizard.js).
-// Window-bridged module, no `import` (ground rule 1). It registers ONE Permissions screen through
-// `registerScreen`; the frame owns nothing here, and the old purpose editor is not touched.
+// Registers ONE Permissions screen through the window bridge; read-support owns the availability rule.
+// The frame owns nothing here, and the old purpose editor is not touched.
 //
 // WHAT IT IS. Permissions are their own step, after Setup. Four different things are called "permission"
 // and this screen keeps them apart, each with its own owner line:
@@ -40,6 +40,7 @@
 // WHICH ACCOUNT. Chosen by an earlier screen (not part of this ticket), handed over like the sign-in screen's:
 //     setTarget({ kind, account: { id } | { new: { identity, ... } }, identity? })   // after api.select({ account })
 // The screen matches an account type only once it has that target; MCP and reference-only match always.
+import { readUnavailable } from './desk-v1-connect-read-support.js';
 (function () {
   const W = window.DeskV1ConnectWizard;
   if (!W) return;
@@ -184,7 +185,7 @@
   // Granted for the sign-in the account will have after save: what was read for another sign-in (the profile field was edited
   // since) says nothing about this one, so it counts as not allowed until Save checks it.
   function _siteGranted() { return !!(M.bperm && M.bperm.exists && M.bperm.granted && M.bperm.profile === _profile()); }
-  function _siteOn() { return M.wish.site === null ? _siteGranted() : M.wish.site; }
+  function _siteOn() { return !readUnavailable(M.info, _target?.kind) && (M.wish.site === null ? _siteGranted() : M.wish.site); }
 
   // The ONE Read row = the Desk read the route offers (if any) + the service's own domain on the browser sign-in (when the
   // account is read through one). `can.site`: the domain part applies; `can.reason`: why the row is disabled ('' = it works).
@@ -195,6 +196,8 @@
   const READ_DETAIL ="Agents read this account's own mentions, replies and post stats. They cannot click, type or post.";
   function _siteApplies(v, info) { return !!(window.DeskV1ConnectBrowserPermission && _readsByBrowser(v) && _profile() && _site(info)); }
   function _readCan(v, info, offers) {
+    const unavailable = readUnavailable(info, _target?.kind);
+    if (unavailable) return { site: false, reason: unavailable };
     const site = _siteApplies(v, info);
     if (offers.read || site) return { site, reason: '' };
     return { site, reason: _readsByBrowser(v) && !_profile() ? NEED_SIGNIN : READ_UNAVAILABLE };
@@ -431,6 +434,7 @@
         box.addEventListener('change', () => {
           box.indeterminate = false;
           if (id === 'read') {
+            if (_readCan(v, api.info, offers).reason) { box.checked = false; return; }
             // One tick, two parts: the Desk read the route offers and the service's own domain on the sign-in. Back at what
             // the row showed = no wish, so ticking and unticking sends nothing (unless the row started half-ticked).
             const can = _readCan(v, api.info, offers);
@@ -510,6 +514,7 @@
 
   async function _applySite() {
     const B = window.DeskV1ConnectBrowserPermission, info = M.info;
+    if (readUnavailable(info, _target?.kind)) return { status: 'unchanged' };
     if (!B || M.wish.site === null) return { status: 'unchanged' };
     // Aimed at the sign-in the account will have AFTER this save (a drafted profile change is applied after this write),
     // never at the one the screen loaded with: the grant on the old profile would be a grant the account no longer uses.
