@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-28] - Report failed activity reads as coverage gaps (MC-1121)
+
+- A later unusable or failed read no longer reports `ok` from a historical success. Coverage preserves the previous success time and shows the latest failure; engagement summaries treat that platform as a gap until a read succeeds again.
+- A successful empty activity read restores `ok`. Bare Company Page admin URL normalization remains pending the activity-source decision; no address is silently changed.
+
 ## [2026-10-28] - Recognize empty Company Page activity reads (MC-1121)
 
 - The activity extractor explicitly treats a Company Page's empty activity state as an activity page with zero rows. The existing strict zero-row success path records no new items and clears a prior read error; login, unrelated/loading pages and malformed rows remain failures.

@@ -13,6 +13,13 @@ an older successful read, because the old read cannot establish current scope.
 Fractional-second precision and timezone offsets are compared chronologically;
 missing or malformed timestamps cannot suppress a recorded error.
 
+A current read error cannot report `state: ok` merely because a historical
+`last_ok_at` exists. Generic failures (including an unusable activity page) report
+`not_read_yet` with **Last read failed** and retain that historical timestamp.
+Bundles treat the platform as a gap, not a successfully read empty feed. A later
+successful read, including zero rows, clears the error and restores `ok`. Existing
+login-wall, page-address and capability-specific gaps retain their own wording.
+
 ## Attribution
 
 Presence bindings hold `channel_id` and read settings. The workspace account holds

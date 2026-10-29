@@ -290,6 +290,31 @@ def test_empty_company_activity_poll_is_success_after_hidden_payload_filtering(e
     assert len(rt.calls) == 1 and rt.calls[0][1].endswith('0 notifications total')
 
 
+def test_unusable_company_read_replaces_old_ok_coverage_until_a_successful_empty_read(env):
+    _allow(['linkedin.com'])
+    admin = 'https://www.linkedin.com/company/777/admin/notifications/all/'
+    _project([{'channel_id': 'company-1', 'platform': 'linkedin', 'browser_profile': 'main'}])
+    _desk.set_read_coverage(PID, 'linkedin', ok=True, via='pane')
+    last_ok = _desk.get_read_coverage(PID)['linkedin']['last_ok_at']
+    pages = FakePages({admin: _body('0 notifications total', admin)})
+    rt = FakeRuntime({pd.ACTIVITY_INSTRUCTION: [_activity(page='other'), _activity()]})
+    rd = _reader(pages, rt, acc={'organization_id': '777',
+                               'read_pages': [{'role': 'activity', 'url': admin}]})
+    failed = eng.poll_project(PID, readers={'linkedin': rd})['platforms']['linkedin']
+    assert failed['state'] == 'not_read_yet'
+    assert 'did not look like an activity page' in failed['message']
+    coverage = eng.platform_coverage(PID, 'linkedin', rd)
+    assert coverage['state'] == 'not_read_yet' and coverage['last_ok_at'] == last_ok
+    bundle = eng.project_bundle(PID, readers={'linkedin': rd})
+    assert bundle['unread'] is None and bundle['total'] is None and bundle['gaps']
+
+    recovered = eng.poll_project(PID, readers={'linkedin': rd})['platforms']['linkedin']
+    assert (recovered['state'], recovered['reason'], recovered['message']) == ('ok', None, '')
+    assert recovered['new_items'] == 0 and not recovered.get('error')
+    assert eng.platform_coverage(PID, 'linkedin', rd)['state'] == 'ok'
+    assert pages.reads == [admin, admin]
+
+
 @pytest.mark.parametrize('reply,error,match', [
     (_activity(page='other'), pd._Unusable, 'did not look like an activity page'),
     (_activity(page='login'), eng.NotSignedIn, 'sign in'),

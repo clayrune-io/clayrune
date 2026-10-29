@@ -256,6 +256,25 @@ def test_coverage_keeps_a_newer_fractional_second_failure_visible(store, monkeyp
     assert cov['reason'] == 'sign-in required'
 
 
+@pytest.mark.parametrize('attempt,expected', [
+    ('2026-10-28T12:00:00.100000Z', 'not_read_yet'),
+    ('2026-10-28T13:00:00+01:00', 'ok'),  # Same instant as the last success.
+    ('not-a-timestamp', 'not_read_yet'),
+    (None, 'not_read_yet'),
+])
+def test_coverage_cannot_report_ok_for_a_later_generic_read_failure(store, monkeypatch, attempt, expected):
+    reader = eng.XReader(token='t', transport=FakeX())
+    reason = 'page did not look like an activity page'
+    monkeypatch.setattr(_desk, 'get_read_coverage', lambda _p: {'x': {
+        'via': 'api', 'last_ok_at': '2026-10-28T12:00:00Z',
+        'last_attempt_at': attempt, 'last_error': reason, 'error_kind': None}})
+    cov = eng.platform_coverage(PID, 'x', reader)
+    assert cov['state'] == expected
+    assert cov['reason'] == (None if expected == 'ok' else reason)
+    assert cov['last_ok_at'] == '2026-10-28T12:00:00Z'
+    assert (reason in cov['message']) == (expected != 'ok')
+
+
 def test_unexpected_poll_exception_refreshes_the_reported_reason(store, monkeypatch):
     _project()
     def broken(*args):
