@@ -4,8 +4,9 @@ Branch candidate, 2026-10-29. No deployment or live configuration change.
 
 The unattended-loop rail applies to automatic RELEVANT MEMORY delivery as
 well as exploration readback. Four callers now pass `consumer_unattended`
-to the existing memory search gate. Ranking, budgets, and legacy-origin
-handling remain governed by `mc.memory._memory_search`.
+to the existing memory search gate. Lexical candidates and link expansion
+share one origin predicate, `mc.memory._mem_unit_allowed`. Ranking, budgets,
+and legacy-origin handling remain governed by `mc.memory._memory_search`.
 
 ## Caller audit
 
@@ -33,40 +34,51 @@ seeding deliberately retain their existing text-based classifier, as
 requested; an unmarked scheduled task at initial context build is still a
 limitation of that contract.
 
-## Remaining gap requiring integration-owner decision
+## Link expansion and retained boundaries
 
-The four callers now enable the lexical gate, but this is **not a claim
-that the complete rail is closed**. `_memory_search` filters unattended
-topic/position candidates while scoring, then `_mem_expand_links` expands
-against the original unfiltered corpus. An interactive note linking to an
-unattended note reintroduces the latter when expansion is enabled.
+Dave authorized closing the reproduced link bypass on this branch. The
+existing lexical eligibility predicate is extracted without changing its
+policy. `_memory_search` forwards the consumer flag to `_mem_expand_links`,
+which builds its graph from eligible units only. An unattended topic cannot
+return through an outbound link, backlink, or a composed second hop through
+an attended intermediate. Filtering happens before the expansion cap, so
+an excluded neighbor cannot consume a result slot. The scoring corpus and
+its normalization are unchanged.
 
-Reproduced with a two-note synthetic vault: query `quartz calibration`,
-human note `origin: interactive` with `[[loop_note]]`, and `loop_note.md`
-stamped `origin: unattended`. With `consumer_unattended=True`, expansion 0
-returns only the human note; expansion 2 returns both, with
-`via: human.md` on the unattended hit. No live-vault mutation was used.
+The scratch repro is now a regression: query `quartz calibration`, human
+note `origin: interactive` with `[[loop_note]]`, and `loop_note.md` stamped
+`origin: unattended`. With expansion 2, unattended consumers receive only
+the human note; manual consumers receive both. Reversing the link tests
+backlink delivery. Expansion 2 means **two extra results**, not recursive
+depth; the chain regression explicitly composes two one-hop expansions.
 
-Recommended follow-up: extend the primitive's gate to link expansion and
-add an outbound/inbound-link regression. This is a separate scope decision
-for Dave rather than an unreviewed change to the primitive. Explicit search
-API attribution and non-marker initial dispatch provenance also need a
-decision if the rail is intended to cover those channels. Archive/managed
-units and per-turn cold transcript fallback remain outside the existing
-topic/position-origin gate; unstamped legacy notes remain eligible.
+Unstamped/legacy notes remain eligible under the existing policy.
+`consumer_unattended=False` retains the original expansion path and result
+bytes. Explicit search API attribution and non-marker initial dispatch
+provenance remain outside this repair, as do archive/managed units and
+per-turn cold transcript fallback. This closes the authorized lexical/link
+delivery gap without claiming those other channels now enforce provenance.
 
 ## Verification
 
 - New caller regressions: **10 failed / 3 passed before**, **13 passed after**.
   They execute the real prompt, steward-cycle, seeding, and refresh callers
   against a synthetic mixed-origin vault; manual consumers retain both notes.
-- Memory, scheduler, steward-refresh, distiller-safety, position, and
-  read-floor suites: **663 passed, 3 skipped**. Existing human-chat fixtures
+- Link graph suite: **4 failed / 15 passed before**, **19 passed after**,
+  including eight new outbound/backlink, second-hop and legacy/manual cases.
+- Full memory, scheduler, steward-refresh, distiller-safety, position, and
+  read-floor suites after both commits: **rc 0, 671 passed, 3 skipped**.
+  Existing human-chat fixtures
   now state `trigger_type: manual`; unknown provenance is covered separately.
-- Pyright on all three touched production files: **rc 1, 15 errors**.
+- Caller-commit pyright on its three production files: **rc 1, 15 errors**.
   The base revision has the same 15 errors in `agent_routes.py`; diagnostic
   messages/rules/columns match after line-offset mapping. **0 new errors**;
   `memory_turn.py` and `scheduler_routes.py` have none.
+- Follow-up pyright on `mc/memory.py`: **rc 1, 2 existing errors, 0 new**.
+- A paired, frozen live-vault comparison with the caller commit's functions
+  produced byte-identical manual/default results across seven queries. The
+  live charter retained eight hits with this follow-up gate enabled; no
+  live-vault mutation or delivery telemetry was used.
 
 Operator-specific live measurements and exact commands are in the requested
 gitignored worktree journal. Copy that journal when integrating; merging the
