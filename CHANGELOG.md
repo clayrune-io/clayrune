@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Apply unattended-origin filtering at memory delivery callers (MC-1122)
+
+- Steward charter refresh, dispatch read floors, dispatch suppression seeding, and per-turn memory refresh now request the existing unattended-origin filter. Live turns use session provenance so a markerless follow-up retains the gate; manual delivery remains unchanged.
+- Added mixed-origin caller regressions and documented the full caller audit. Branch candidate only: link expansion can still reintroduce filtered notes and needs a follow-up scope decision; see `docs/MEMORY_CONSUMER_SAFETY.md`.
+
 ## [2026-10-29] - Allow Save after a dead X sign-in
 
 - Signing in again can replace the same saved X sign-in when X has rejected it or it has expired without a refresh token. A live or still-refreshable saved sign-in remains protected from replacement.
