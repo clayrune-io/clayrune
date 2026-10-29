@@ -63,7 +63,7 @@ prompt space in every future turn that touches its subject.
 
 ## Desk Connect catalogue
 
-- `GET /api/desk/connect/services` returns `{services:[{id,label,host,url}]}` for every service in the existing Connect registry. Read-only public metadata; no lookup, vault access or setup actions. Where uses it for missing-account tiles; recognition alone grants no publishing or reading capability.
+- `GET /api/desk/connect/services` returns `{services:[{id,label,host,url}]}` for campaign destinations in the existing Connect registry: a profile has a `publish` purpose, or its id belongs to `mc.desk_accounts.ACCOUNT_PLATFORMS` (the workspace channel definition, including YouTube and Instagram). Generation/storage services without either qualification are excluded. Read-only public metadata; no lookup, vault access or setup actions. Where uses it for missing-account tiles; inclusion alone grants no publishing or reading capability.
 
 ## Desk saved connection Edit
 
