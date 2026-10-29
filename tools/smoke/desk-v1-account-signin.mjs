@@ -498,6 +498,107 @@ async function run(browser, width, height) {
       await ctx.close();
     }
   }
+
+  // ── 8: the status PILL on the grid tile starts the sign-in too (Dave/Ron 2026-10-29: option C) ───────
+  // One click on a Needs sign-in pill selects its tile AND starts the tile's sign-in (the same target the panel head word uses).
+  // The tile is a <button>, so the pill is a span role=button; a Ready pill, or one with nothing to start, only selects.
+  {
+    const svc = (id, name, status) => ({ id, name, kind: 'browser_profile', link: 'https://' + name, publish: false, credential: { name: '', in_vault: null },
+      browser_connection: { connection_id: id, browser_profile: 'main', name, read: false, post: false, executes: false, service: null, signin_method: 'other', url: 'https://' + name, status } });
+    const needs = { state: 'sign_in_required', label: 'Sign-in required', needs_signin: true, verifiable: true, signin_url: 'https://www.instagram.com/accounts/login/', browser_profile: 'main' };
+    // The pill of a tile: the action button laid over the tile when it starts a sign-in, else the tile's own plain pill.
+    // `nested` = interactive elements INSIDE the tile button (must be 0); d* = the action pill's box against the tile's own (hidden) pill.
+    const pill = (page, id) => page.evaluate((id) => {
+      const act = document.querySelector(`[data-conn-tile-action="${CSS.escape(id)}"]`), tile = document.querySelector(`[data-conn-tile="${CSS.escape(id)}"]`);
+      const ghost = tile.querySelector('[data-conn-tile-status]'), e = act || ghost;
+      const r = e.getBoundingClientRect(), g = ghost.getBoundingClientRect(), t = tile.getBoundingClientRect(), look = (n) => getComputedStyle(n).backgroundColor + '|' + getComputedStyle(n).color;
+      return { tag: e.tagName, text: e.textContent.trim(), action: !!act, aria: e.getAttribute('aria-label'), tabindex: e.tabIndex, ghostVisible: getComputedStyle(ghost).visibility,
+        nested: tile.querySelectorAll('button, a, [role=button], [tabindex]').length, insideTile: !!e.closest('[data-conn-tile]'),
+        h: Math.round(r.height), w: Math.round(r.width), dx: Math.round(r.left - g.left), dy: Math.round(r.top - g.top), dw: Math.round(r.width - g.width), dh: Math.round(r.height - g.height),
+        within: r.left >= t.left && r.right <= t.right && r.top >= t.top && r.bottom <= t.bottom, sameLook: look(e) === look(ghost) };
+    }, id);
+    const selected = (page, id) => page.getAttribute(`[data-conn-tile="${id}"]`, 'aria-pressed');
+    const nPanes = (page) => page.evaluate(() => window.__panes.length);
+    const sel = (id) => `[data-conn-tile-action="${id}"]`;
+    const plainSel = (id) => `[data-conn-tile="${id}"] [data-conn-tile-status]`;
+    // The action pill is a real <button> OUTSIDE the tile button, exactly over the tile's own pill (which stays only to size the tile).
+    const isActionPill = (p) => p.action && p.tag === 'BUTTON' && !p.insideTile && p.nested === 0 && p.tabindex === 0 && p.text === 'Needs sign-in' && p.ghostVisible === 'hidden';
+    const overlaps = (p) => Math.abs(p.dx) <= 1 && Math.abs(p.dy) <= 1 && Math.abs(p.dw) <= 1 && Math.abs(p.dh) <= 1 && p.within && p.sameLook;
+
+    // Saved service: mouse, Enter, Space.
+    {
+      const srv = makeServer();
+      srv.services = [svc('svc-ig', 'www.instagram.com', needs), svc('svc-ok', 'www.reddit.com', { state: 'verified', label: 'Verified', verifiable: true }), svc('svc-nopage', 'example.com', { ...needs, signin_url: undefined })];
+      const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
+      await page.waitForSelector('[data-conn-tile="service:svc-nopage"]', { timeout: 6000 });
+      const p = await pill(page, 'service:svc-ig'), ready = await pill(page, 'service:svc-ok'), nopage = await pill(page, 'service:svc-nopage');
+      check(isActionPill(p) && p.aria === 'Sign in to www.instagram.com', 'service tile: the Needs sign-in pill is a real <button> beside the tile button (nothing interactive inside the tile)', JSON.stringify(p));
+      check(overlaps(p), 'the action pill sits exactly over the tile\'s own pill (same box, same colours)', JSON.stringify(p));
+      check(p.h === ready.h && ready.action === false && ready.tag === 'SPAN', 'the action pill has the same height as a plain pill (hit area unchanged)', JSON.stringify([p, ready]));
+      check(!ready.action && !nopage.action && nopage.tag === 'SPAN' && nopage.text === 'Needs sign-in' && ready.nested === 0 && nopage.nested === 0, 'Ready, and Needs sign-in with no known sign-in page, are plain pills (not clickable-looking, not focusable)', JSON.stringify([ready, nopage]));
+      const looks = await page.evaluate(() => ({ actions: document.querySelectorAll('[data-conn-tile-action]').length, actionLine: getComputedStyle(document.querySelector('[data-conn-tile-action]')).textDecorationLine,
+        plain: [...document.querySelectorAll('[data-conn-tile-status]:not(.desk-v1-conn-pill-ghost)')].map((e) => getComputedStyle(e).textDecorationLine) }));
+      check(looks.actions >= 1 && looks.actionLine.includes('underline') && looks.plain.length >= 2 && looks.plain.every((l) => l === 'none'), 'only the startable pill is underlined; the plain pills look inert', JSON.stringify(looks));
+      await page.screenshot({ path: resolve(SHOT_DIR_NS, `pill_${width}.png`) });
+      srv.log.length = 0;
+      check((await selected(page, 'service:svc-ig')) === 'false' && (await nPanes(page)) === 0, 'before the click: nothing selected, no pane');
+      await page.click(sel('service:svc-ig'));
+      await page.waitForFunction(() => window.__panes.length === 1, null, { timeout: 4000 });
+      const call = (await panes(page))[0];
+      check((await selected(page, 'service:svc-ig')) === 'true' && !!(await page.$('[data-conn-detail="service:svc-ig"]')), 'one click: the tile is selected and its panel is open');
+      check(call[0] === 'https://www.instagram.com/accounts/login/' && call[3] === 'main' && (await nPanes(page)) === 1, 'one click: exactly one openBrowserPane call, the service\'s sign-in page in its own profile', JSON.stringify(call));
+      check(srv.log.filter((r) => r.method !== 'GET').length === 0 && !(await page.$('[data-cfw]')), 'no write and no wizard');
+      await page.click(sel('service:svc-ig'));
+      await page.waitForFunction(() => window.__panes.length === 2, null, { timeout: 4000 });
+      check((await selected(page, 'service:svc-ig')) === 'true', 'clicking the pill of the selected tile keeps it selected (never closes it) and starts again');
+      for (const key of ['Enter', ' ']) {
+        const before = await nPanes(page);
+        await page.focus(sel('service:svc-ig'));
+        await page.keyboard.press(key === ' ' ? 'Space' : key);
+        await page.waitForFunction((n) => window.__panes.length === n + 1, before, { timeout: 4000 });
+        check((await nPanes(page)) === before + 1 && (await selected(page, 'service:svc-ig')) === 'true', `${key === ' ' ? 'Space' : key} on the focused pill starts exactly one sign-in`);
+      }
+      // A Ready pill only selects.
+      const before = await nPanes(page);
+      await page.click(plainSel('service:svc-ok'));
+      check((await selected(page, 'service:svc-ok')) === 'true' && (await nPanes(page)) === before, 'a Ready pill: the click selects the tile and opens no pane');
+      await page.click(plainSel('service:svc-nopage'));
+      check((await selected(page, 'service:svc-nopage')) === 'true' && (await nPanes(page)) === before, 'a Needs sign-in pill with nothing to start: the click only selects');
+      check(realErrors(pageErrors).length === 0, 'service pill: no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
+      await ctx.close();
+    }
+
+    // Accounts: the pill starts the same route as the card head word (Browser first); no start-held, no wizard.
+    for (const [id, url, profile] of [['acct-li', 'https://www.linkedin.com/login', 'linked_ronlevy'], ['acct-x', 'https://x.com/i/flow/login', 'x_ron']]) {
+      const srv = makeServer();
+      const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
+      await page.waitForFunction((s) => (document.querySelector(s) || {}).textContent?.trim() === 'Needs sign-in', sel(id), { timeout: 6000 });
+      const p = await pill(page, id);
+      check(isActionPill(p) && overlaps(p), `${id}: the Needs sign-in pill is an action button over the tile's pill`, JSON.stringify(p));
+      srv.log.length = 0;
+      await page.click(sel(id));
+      await page.waitForFunction(() => window.__panes.length === 1, null, { timeout: 4000 });
+      const call = (await panes(page))[0];
+      check((await selected(page, id)) === 'true' && !!(await page.$(`[data-conn-detail="${id}"] [data-conn-account="${id}"]`)), `${id}: one click selects the tile and opens its card`);
+      check(call[0] === url && call[3] === profile && (await nPanes(page)) === 1, `${id}: exactly one openBrowserPane call, the Browser route's page in its own profile`, JSON.stringify(call));
+      const head = await page.$eval(`[data-conn-account="${id}"] .desk-v1-conn-head [data-conn-status]`, (e) => e.getAttribute('data-ss-profile'));
+      check(head === profile, `${id}: the pill started the route the card head word names`, String(head));
+      check(only(srv, /start-held|commit/).length === 0 && !(await page.$('[data-cfw]')), `${id}: no API sign-in, no wizard`);
+      check(realErrors(pageErrors).length === 0, `${id} pill: no uncaught page errors`, JSON.stringify(realErrors(pageErrors)));
+      await ctx.close();
+    }
+
+    // An account that is Ready: the pill selects only.
+    {
+      const srv = makeServer();
+      const { ctx, page } = await newPage(browser, srv, width, height);
+      await page.waitForFunction((s) => (document.querySelector(s) || {}).textContent?.trim() === 'Ready', plainSel('acct-bare'), { timeout: 6000 });
+      const p = await pill(page, 'acct-bare');
+      await page.click(plainSel('acct-bare'));
+      check(!p.action && p.text === 'Ready' && (await selected(page, 'acct-bare')) === 'true' && (await nPanes(page)) === 0, 'a Ready account pill: plain, the click selects and opens no pane', JSON.stringify(p));
+      await ctx.close();
+    }
+  }
 }
 
 const browser = await chromium.launch();

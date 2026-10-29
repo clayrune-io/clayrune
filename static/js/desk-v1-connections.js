@@ -29,6 +29,20 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
     return W.state(ch.preview || ch.connected===false?'unchecked':ch.health==='held'?'signin':'ready');
   }
 
+  // What the account's tile pill starts when it says Needs sign-in: the same route as the card head word (the pill's aria-label, or '').
+  function _accountFacets(ch) { const CS = window.DeskV1ConnectionStatus; return CS.facets(ch, CS.coverageRow(_homeProjectId(ch), ch.platform, ch.id)); }
+  function _accountSignin(ch) {
+    return _isLiveRow(ch) && window.DeskV1ConnectionStatus && window.DeskV1StatusSignin ? window.DeskV1StatusSignin.accountTile(ch, _status(ch), _accountFacets(ch)) : '';
+  }
+  // A Needs sign-in pill was clicked: its tile is selected and painted, so start that tile's sign-in.
+  function _pillSignin(el, key, repaint) {
+    const SS = window.DeskV1StatusSignin;
+    if (!SS) return;
+    if (key.indexOf('service:') === 0) { const sv = window.DeskV1Services.byId(key.slice(8)); if (sv) SS.startService(sv); return; }
+    const ch = _channels().find((c) => c.id === key);
+    if (ch) SS.startCard(ch, _status(ch), _accountFacets(ch), el.querySelector(`[data-conn-account="${CSS.escape(ch.id)}"]`), repaint);
+  }
+
   function _accountHTML(ch) {
     const st=_status(ch), CS=window.DeskV1ConnectionStatus, cov=CS.coverageRow(_homeProjectId(ch),ch.platform,ch.id);
     const word=_isLiveRow(ch) && window.DeskV1StatusSignin?.cardWord(ch,st,CS.facets(ch,cov));      // a button when it Needs sign-in and there is a sign-in to start
@@ -114,7 +128,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
     const items = [];
     _channels().filter((ch) => _showAccount(ch, live, sel)).forEach((ch) => items.push({
       key: ch.id, kind: 'account', platform: ch.platform, brand: ch.platform,
-      name: Tiles.plainName(ch.label) || ch.identity || ch.id, kindLabel: 'Social account', status: _status(ch),
+      name: Tiles.plainName(ch.label) || ch.identity || ch.id, kindLabel: 'Social account', status: _status(ch), signin: _accountSignin(ch),
     }));
     _contentSources().filter((a) => a.connected).forEach((a) => items.push({
       key: `source:${a.id}`, kind: 'source', brand: a.id,
@@ -129,6 +143,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
     (window.DeskV1Services.rows() || []).filter(s => !s.account_id || !_channels().some(c => c.id === s.account_id)).forEach((s) => items.push({
       key: `service:${s.id}`, kind: 'service', link: s.link,
       name: s.name, kindLabel: s.browser_connection ? 'Browser sign-in' : 'Saved service', status: s.browser_connection ? window.DeskV1BrowserService.status(s) : window.DeskV1Services.STATUS,
+      signin: s.browser_connection ? window.DeskV1StatusSignin?.serviceTile(s, window.DeskV1BrowserService.status(s)) : '',
     }));
     return items;
   }
@@ -182,7 +197,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
     const scroller = el.querySelector('[data-connections]');
     if (scroller && prevScroll) scroller.scrollTop = prevScroll;
     // Every change of selection starts the Add service panel over at its list.
-    Tiles.bind(el, repaint, () => window.DeskV1AddService.reset());
+    Tiles.bind(el, repaint, () => window.DeskV1AddService.reset(), (key) => _pillSignin(el, key, repaint));
     channels.forEach((ch) => {
       const row = el.querySelector(`[data-conn-account="${CSS.escape(ch.id)}"]`);
       if (!row) return;

@@ -27,10 +27,14 @@
 
   // The mark is the vendor's logo, or a two-letter monogram (desk-v1-service-icons.js
   // picks from `brand` / `platform` / `link` / `name`).
-  // item: { key, kind, brand?, platform?, link?, name, kindLabel, status: {key, word} }
+  // item: { key, kind, brand?, platform?, link?, name, kindLabel, status: {key, word}, signin? }
+  // `signin` (an aria-label) makes the status pill an action. A <button> cannot hold another interactive element, so the
+  // tile becomes a cell: the tile button, with the pill's real button as its SIBLING laid over the tile's own (now
+  // invisible, same-size) pill. See desk-v1-status-signin.js pillHTML and desk-v1-connection-status.css.
   function tileHTML(it) {
     const on = _selected === it.key;
-    return `
+    const act = !!(it.signin && window.DeskV1StatusSignin);
+    const tile = `
         <button type="button" class="desk-v1-conn-tile" data-conn-tile="${esc(it.key)}" data-conn-kind="${esc(it.kind)}"${it.platform ? ` data-platform="${esc(it.platform)}"` : ''}
           data-conn-state="${esc(it.status.key)}" aria-pressed="${on}" aria-controls="desk-v1-conn-detail" title="${esc(it.name)}">
           <span class="desk-v1-conn-tile-top">
@@ -38,8 +42,12 @@
             <span class="desk-v1-conn-tile-name">${esc(it.name)}</span>
           </span>
           <span class="desk-v1-conn-tile-kind">${esc(it.kindLabel)}</span>
-          <span class="desk-v1-conn-pill" data-conn-tile-status data-state="${esc(it.status.key)}">${esc(it.status.word)}</span>
+          <span class="desk-v1-conn-pill${act ? ' desk-v1-conn-pill-ghost' : ''}" data-conn-tile-status data-state="${esc(it.status.key)}">${esc(it.status.word)}</span>
         </button>`;
+    return act ? `
+      <div class="desk-v1-conn-cell" data-conn-state="${esc(it.status.key)}">${tile}
+        ${window.DeskV1StatusSignin.pillHTML(it)}
+      </div>` : tile;
   }
 
   // The last tile, always. It opens the one generic add flow and has no status:
@@ -78,7 +86,9 @@
   // `repaint` is the screen's own; the panel is brought into view afterwards so on
   // a phone, where the grid fills the screen, the click visibly does something.
   // `onSelect(key)` runs before the repaint so a panel can reset its own state.
-  function bind(el, repaint, onSelect) {
+  // A pill button marked `data-conn-tile-action="<tile key>"` selects its tile (never toggles it closed), then runs
+  // `onAction(key)` against the repainted screen. It is its own <button>, so Enter and Space need no handling here.
+  function bind(el, repaint, onSelect, onAction) {
     const pick = (key) => {
       const next = _selected === key ? null : key;
       if (onSelect) onSelect(next, _selected);
@@ -88,6 +98,13 @@
       if (panel && panel.scrollIntoView) panel.scrollIntoView({ block: 'nearest' });
     };
     el.querySelectorAll('[data-conn-tile]').forEach((t) => t.addEventListener('click', () => pick(t.dataset.connTile)));
+    el.querySelectorAll('[data-conn-tile-action]').forEach((a) => a.addEventListener('click', () => {
+      const key = a.dataset.connTileAction;
+      if (_selected !== key) { if (onSelect) onSelect(key, _selected); _selected = key; repaint(); }
+      const panel = el.querySelector('[data-conn-detail]');
+      if (panel && panel.scrollIntoView) panel.scrollIntoView({ block: 'nearest' });
+      if (onAction) onAction(key);
+    }));
     const add = el.querySelector('[data-conn-add-tile]');
     if (add) add.addEventListener('click', () => pick('add'));
     const close = el.querySelector('[data-conn-detail-close]');

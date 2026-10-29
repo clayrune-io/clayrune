@@ -12,3 +12,14 @@
 .desk-v1-ss-btn { background: none; border: 0; padding: 8px 4px; margin: -8px -4px; font-family: inherit; font-size: inherit; line-height: inherit; text-align: left; align-self: flex-start; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .desk-v1-ss-btn:hover { text-decoration-thickness: 2px; }
 .desk-v1-ss-btn:focus-visible { outline: 2px solid currentColor; outline-offset: 0; border-radius: 3px; }
+/* A tile whose Needs sign-in pill starts the sign-in: a cell holding the tile button and, as its sibling (a button cannot hold a button), the pill's real button laid over the tile's own pill, which stays only to size the tile. Same size, same place, underlined so it reads as a link. */
+.desk-v1-conn-cell { display: grid; min-width: 0; }
+.desk-v1-conn-cell > * { grid-area: 1 / 1; }
+.desk-v1-conn-pill-ghost { visibility: hidden; }
+.desk-v1-conn-cell .desk-v1-ss-pill { position: relative; min-height: 0; min-width: 0; box-sizing: border-box; align-self: end; justify-self: start; margin: 0 0 11px 13px; max-width: calc(100% - 26px); font-family: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.desk-v1-conn-cell[data-conn-state="reauth"] .desk-v1-ss-pill, .desk-v1-conn-cell[data-conn-state="readsoff"] .desk-v1-ss-pill, .desk-v1-conn-cell[data-conn-state="locked"] .desk-v1-ss-pill, .desk-v1-conn-cell[data-conn-state="off"] .desk-v1-ss-pill { margin-left: 15px; }
+/* The touch target outgrows the 21px pill by 6px a side (invisible), so the pill keeps the tile's own pill size and the tile's middle stays the tile's. */
+.desk-v1-ss-pill::after { content: ''; position: absolute; inset: -6px; }
+.desk-v1-ss-pill:hover { text-decoration-thickness: 2px; }
+.desk-v1-ss-pill:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; }
+@media (max-width: 640px) { .desk-v1-ss-pill { margin: 0 0 11px 11px; max-width: calc(100% - 22px); } .desk-v1-conn-cell[data-conn-state="reauth"] .desk-v1-ss-pill, .desk-v1-conn-cell[data-conn-state="readsoff"] .desk-v1-ss-pill, .desk-v1-conn-cell[data-conn-state="locked"] .desk-v1-ss-pill, .desk-v1-conn-cell[data-conn-state="off"] .desk-v1-ss-pill { margin-left: 13px; } }
