@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Normalize bare Company Page admin activity addresses (MC-1121)
+
+- Bare LinkedIn Company Page `/admin` and `/admin/` activity addresses now expand to `/admin/notifications/all/` on save and read. Existing saved addresses work without a migration; query strings and fragments are retained.
+- Review and an explicit human Save use the expanded address. Specific admin paths, other sites and non-activity roles remain unchanged; company matching, URL validation, passcode and read-policy gates are preserved. Branch candidate only; authenticated acceptance remains unverified.
+
 ## [2026-10-28] - Report failed activity reads as coverage gaps (MC-1121)
 
 - A later unusable or failed read no longer reports `ok` from a historical success. Coverage preserves the previous success time and shows the latest failure; engagement summaries treat that platform as a gap until a read succeeds again.

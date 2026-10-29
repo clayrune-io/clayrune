@@ -355,7 +355,8 @@ class PaneDigestReader(_eng.Reader):
 
     def _activity_pages(self) -> tuple[list[str], str]:
         """`(addresses, source)`: user > discovered > default > none."""
-        user = [p['url'] for p in self._user_pages if p['role'] == 'activity']
+        user = [_scope.normalize_activity_url(p['url']) if self.platform == 'linkedin' else p['url']
+                for p in self._user_pages if p['role'] == 'activity']
         if self._company_page:
             # Discovery is project/platform scoped and may have saved the member's
             # notifications. Only an explicit admin address can scope this read.

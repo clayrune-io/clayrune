@@ -19,14 +19,17 @@ function companyId(value) {
 }
 export function createCompanyPageDraft(account) {
   const saved = account?.read_pages || [];
-  let original = saved.find(p => p.role === 'activity' && /\/company\/[^/]+\/admin(?:\/|$)/.test(p.url))?.url || '';
+  let original = saved.find(p => p.role === 'activity' && /\/company\/[^/]+\/admin(?:[/?#]|$)/.test(p.url))?.url || '';
   let value = original, originalId = account?.organization_id || '', touched = false;
   let savedKind = account?.browser_setup?.account_kind || account?.account_kind;
+  const activityAddress = () => value && companyId(value) !== null
+    && /^\/company\/[0-9]{1,20}\/admin\/?$/.test(new URL(value).pathname)
+    ? value.replace(/\/admin\/?(?=[?#]|$)/, '/admin/notifications/all/') : value;
   const problem = () => companyId(value) === null
     ? 'Enter a LinkedIn Company Page admin HTTPS address with a numeric company ID, such as https://www.linkedin.com/company/123456/admin/notifications/.' : '';
   // An address saved by the older editor may still have a member connection.
   // A human Save must repair that case even when the address was not retyped.
-  const changed = () => value !== original || (touched && companyId(value) !== originalId)
+  const changed = () => activityAddress() !== original || (touched && companyId(value) !== originalId)
     || (!!original && !!savedKind && savedKind !== 'organization');
   function html() {
     const error = problem();
@@ -45,8 +48,8 @@ export function createCompanyPageDraft(account) {
     });
   }
   return { html, bind, problem, clearInput:() => {},
-    draft:() => changed() && !problem() ? { organization_id:companyId(value), read_pages:value ? [{ role:'activity', url:value }] : [] } : {},
-    summary:() => [`${LABEL}: ${value || 'Personal profile'}`],
-    accept:() => { original = value; originalId = companyId(value); savedKind = originalId ? 'organization' : 'member'; touched = false; },
+    draft:() => changed() && !problem() ? { organization_id:companyId(value), read_pages:value ? [{ role:'activity', url:activityAddress() }] : [] } : {},
+    summary:() => [`${LABEL}: ${activityAddress() || 'Personal profile'}`],
+    accept:() => { original = value = activityAddress(); originalId = companyId(value); savedKind = originalId ? 'organization' : 'member'; touched = false; },
   };
 }

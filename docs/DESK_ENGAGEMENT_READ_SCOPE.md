@@ -46,6 +46,21 @@ LinkedIn's `/company/<destination>/admin/` path. When `organization_id` exists,
 the destination must match it. A supplied address without a stored ID is authoritative;
 no company number or URL is inferred from the display name.
 
+A supplied bare `/company/<destination>/admin` or `/admin/` URL is expanded to
+`/admin/notifications/all/`. The same helper in `desk_pane_activity_scope` runs
+when activity addresses are saved to the account/presence copies and when the
+reader selects an address, so older stored bare addresses work without a store
+migration. It retains query strings and fragments. Other sites, non-admin paths,
+already-specific admin paths (including published posts), and non-activity roles
+are not rewritten. Existing validation and matching-company redirect checks apply
+before any extraction; normalization does not repair invalid URLs or grant reads.
+
+The editor's Review and Save use the expanded destination. Opening an old bare
+address performs no write; an explicit human Save normalizes it under the usual
+passcode gate. Reopening the canonical address does not cause repeated PATCHes.
+Notifications is the selected engagement activity source; published-post statistics
+remain a separate read and are not substituted for activity.
+
 Company reads ignore project/platform discovery records, which may contain member
 pages. Without an explicit admin activity URL, they return a `pages_needed` gap
 before opening a page or calling the extractor. After navigation, the final URL must

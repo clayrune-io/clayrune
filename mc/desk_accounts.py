@@ -52,6 +52,7 @@ from mc import desk as _desk
 from mc import desk_account_refs as _refs
 from mc import desk_oauth as _oauth
 from mc import desk_read_pages as _read_pages
+from mc import desk_pane_activity_scope as _activity_scope
 from mc import desk_vault_lock as _vault_lock
 from mc import secrets_store
 from mc.core import _log, now_iso
@@ -290,7 +291,10 @@ def _apply_pages(acc: dict, pages: list | None) -> None:
     if pages is None:
         return
     if pages:
-        acc['read_pages'] = [dict(p) for p in pages]
+        acc['read_pages'] = [
+            {**p, 'url': _activity_scope.normalize_activity_url(p['url'])}
+            if acc.get('platform') == 'linkedin' and p['role'] == 'activity' else dict(p)
+            for p in pages]
     else:
         acc.pop('read_pages', None)
 

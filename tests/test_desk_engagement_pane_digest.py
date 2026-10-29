@@ -154,6 +154,7 @@ def test_generic_pane_attributes_items_to_the_bound_account(env):
     {'organization_id': '777'},
     {'browser_setup': {'route_id': 'linkedin-browser', 'refs': {}, 'account_kind': 'organization'}},
     {'organization_id': '777', 'read_pages': [{'role': 'activity', 'url': LI_NOTES}]},
+    {'organization_id': '777', 'read_pages': [{'role': 'activity', 'url': 'https://www.linkedin.com/company/888/admin'}]},
     {'organization_id': '777', 'read_pages': [{'role': 'activity', 'url': 'https://www.linkedin.com/company/888/admin/notifications/'}]},
 ])
 def test_company_never_reads_member_defaults_or_discovers_personal_activity(env, acc):
@@ -168,25 +169,31 @@ def test_company_never_reads_member_defaults_or_discovers_personal_activity(env,
 
 
 @pytest.mark.parametrize('organization_id,kind', [('777', None), (None, None), ('777', 'member')])
-def test_company_reads_explicit_admin_activity_only(env, organization_id, kind):
+@pytest.mark.parametrize('path', ['/admin', '/admin/', '/admin/notifications/', '/admin/page-posts/published/'])
+def test_company_reads_explicit_admin_activity_only(env, organization_id, kind, path):
     _allow(['linkedin.com'])
-    admin = 'https://www.linkedin.com/company/777/admin/notifications/'
+    saved = 'https://www.linkedin.com/company/777' + path
+    admin = 'https://www.linkedin.com/company/777/admin/notifications/all/' if path in ('/admin', '/admin/') else saved
     pages = FakePages({admin: _body(NOTES_TEXT, admin)})
     rt = FakeRuntime({pd.ACTIVITY_INSTRUCTION: _activity(_row())})
     rd = _reader(pages, rt, acc={'browser_setup': {}, 'organization_id': organization_id,
                                'connections': {'read_own': {'own_posts': {'account_kind': kind}}},
-                               'read_pages': [{'role': 'activity', 'url': admin}]})
+                               'read_pages': [{'role': 'activity', 'url': saved}]})
     assert len(rd.fetch_mentions(since_id=None, known_posts={})['items']) == 1
     assert pages.reads == [admin] and rd.pages_state()['source'] == 'user'
+    assert rd.pages_state()['pages'] == [admin]
+    assert rd._account['read_pages'][0]['url'] == saved  # Read-time compatibility is not a store migration.
 
 
 @pytest.mark.parametrize('final', [LI_NOTES, 'https://www.linkedin.com/company/888/admin/notifications/'])
-def test_company_admin_redirect_to_member_or_other_company_is_refused(env, final):
+@pytest.mark.parametrize('saved', ['https://www.linkedin.com/company/777/admin',
+                                 'https://www.linkedin.com/company/777/admin/notifications/'])
+def test_company_admin_redirect_to_member_or_other_company_is_refused(env, final, saved):
     _allow(['linkedin.com'])
-    admin = 'https://www.linkedin.com/company/777/admin/notifications/'
+    admin = pd._scope.normalize_activity_url(saved)
     pages = FakePages({admin: _body(NOTES_TEXT, final)})
     rt = FakeRuntime({})
-    rd = _reader(pages, rt, acc={'organization_id': '777', 'read_pages': [{'role': 'activity', 'url': admin}]})
+    rd = _reader(pages, rt, acc={'organization_id': '777', 'read_pages': [{'role': 'activity', 'url': saved}]})
     with pytest.raises(pd.PagesNeeded):
         rd.fetch_mentions(since_id=None, known_posts={})
     assert pages.reads == [admin] and rt.calls == []
