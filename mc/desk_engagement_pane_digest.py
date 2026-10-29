@@ -482,7 +482,8 @@ class PaneDigestReader(_eng.Reader):
 
     def _read_activity(self, url: str) -> tuple[list[dict], int]:
         text, final, _domains = self._page(url)
-        if self._company_page and not _scope.is_company_admin(final, self._account.get('organization_id')):
+        if self._company_page and not _scope.is_company_admin(
+                final, self._account.get('organization_id'), configured_url=url):
             raise PagesNeeded(_scope.COMPANY_PAGE_REQUIRED)
         data = self._model_json(ACTIVITY_INSTRUCTION, text[:browser_digest.MAX_PAGE_CHARS], final)
         if data.get('page') == 'login':

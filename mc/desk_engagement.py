@@ -624,6 +624,17 @@ def _x_post_id(row: dict) -> str | None:
 
 # -- coverage -------------------------------------------------------------------
 
+def _coverage_time(value: Any) -> datetime | None:
+    """Parse stored instants; missing/malformed timestamps cannot hide an error."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def platform_coverage(project_id: str, platform: str, reader: Reader | None = None) -> dict:
     """`state`: `ok` | `not_connected` | `not_read_yet`. `message` is the exact
     line the UI shows (`Not connected (<why>)`); `reason` is the specific why;
@@ -642,8 +653,9 @@ def platform_coverage(project_id: str, platform: str, reader: Reader | None = No
     same_route = reader is not None and (rec.get('via') or 'api') == reader.via
     # Older records may retain an error even when their latest attempt succeeded.
     # Keep a later failure visible; do not turn a past success into current silence.
-    latest_ok = bool(rec.get('last_ok_at') and rec.get('last_attempt_at')
-                     and rec['last_ok_at'] >= rec['last_attempt_at'])
+    last_ok = _coverage_time(rec.get('last_ok_at'))
+    last_attempt = _coverage_time(rec.get('last_attempt_at'))
+    latest_ok = last_ok is not None and last_attempt is not None and last_ok >= last_attempt
     error = rec.get('last_error') if same_route and not latest_ok else None
     base = {'platform': platform, 'label': label, 'via': via,
             'pages': reader.pages_state() if reader else None}

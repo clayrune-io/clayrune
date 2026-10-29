@@ -6,10 +6,12 @@
 read failure or unexpected poll exception. Its `state`, `reason` and `message`
 describe the resulting coverage record rather than the pre-poll snapshot.
 
-`last_ok_at >= last_attempt_at` identifies a latest successful attempt in records
+Comparing parsed `last_ok_at >= last_attempt_at` instants identifies a latest successful attempt in records
 that retain historical error text. Such text, including a stale sign-in error
 kind, is suppressed. A later failure remains visible. Page-address gaps override
 an older successful read, because the old read cannot establish current scope.
+Fractional-second precision and timezone offsets are compared chronologically;
+missing or malformed timestamps cannot suppress a recorded error.
 
 ## Attribution
 
@@ -40,7 +42,8 @@ no company number or URL is inferred from the display name.
 Company reads ignore project/platform discovery records, which may contain member
 pages. Without an explicit admin activity URL, they return a `pages_needed` gap
 before opening a page or calling the extractor. After navigation, the final URL must
-still match the company admin scope before extraction. There is no personal-feed
+still match the configured URL's company segment, as well as the organization ID
+when present, before extraction. There is no personal-feed
 fallback and no automatic discovery for a company account.
 
 This guard establishes destination scope, not that every admin page has readable

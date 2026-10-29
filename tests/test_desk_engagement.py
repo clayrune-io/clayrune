@@ -245,6 +245,17 @@ def test_coverage_suppresses_only_errors_older_than_the_latest_success(store, mo
     assert cov['reason'] == ('sign-in required' if newer_failure else None)
 
 
+def test_coverage_keeps_a_newer_fractional_second_failure_visible(store, monkeypatch):
+    reader = eng.XReader(token='t', transport=FakeX())
+    monkeypatch.setattr(_desk, 'get_read_coverage', lambda _p: {'x': {
+        'via': 'api', 'last_ok_at': '2026-10-28T12:00:00Z',
+        'last_attempt_at': '2026-10-28T12:00:00.100000Z',
+        'last_error': 'sign-in required', 'error_kind': 'not_signed_in'}})
+    cov = eng.platform_coverage(PID, 'x', reader)
+    assert cov['state'] == 'not_connected'
+    assert cov['reason'] == 'sign-in required'
+
+
 def test_unexpected_poll_exception_refreshes_the_reported_reason(store, monkeypatch):
     _project()
     def broken(*args):

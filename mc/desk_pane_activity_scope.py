@@ -21,11 +21,21 @@ def needs_company_page(platform: str, account: dict) -> bool:
                                         or kind_of(account) != 'member')
 
 
-def is_company_admin(url: str, organization_id: str | None = None) -> bool:
+def _company_segment(url: str) -> str | None:
     try:
         parsed = urlsplit(url)
     except ValueError:
-        return False
+        return None
     match = re.match(r'^/company/([^/]+)/admin(?:/|$)', parsed.path)
-    return (parsed.scheme == 'https' and parsed.hostname in ('linkedin.com', 'www.linkedin.com')
-            and match is not None and (not organization_id or match[1] == str(organization_id)))
+    if (parsed.scheme == 'https' and parsed.hostname in ('linkedin.com', 'www.linkedin.com')
+            and match is not None):
+        return match[1]
+    return None
+
+
+def is_company_admin(url: str, organization_id: str | None = None, *,
+                     configured_url: str | None = None) -> bool:
+    """A company admin URL bound to both the saved ID and requested destination."""
+    company = _company_segment(url)
+    return bool(company and (not organization_id or company == str(organization_id))
+                and (configured_url is None or company == _company_segment(configured_url)))

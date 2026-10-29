@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-28] - Bind company read redirects and compare coverage instants
+
+- Company admin reads keep the configured company destination after navigation, including accounts without a stored organization ID. A different company is refused before activity extraction.
+- Engagement coverage compares parsed timestamps, so fractional-second precision or timezone formatting cannot hide a newer read failure.
+
 ## [2026-10-28] - Report fresh engagement reads and retain account attribution
 
 - Check now reports coverage after the read, clearing a previous budget or sign-in message after success. Historical errors no longer appear as the current reason when the latest attempt succeeded.
