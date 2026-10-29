@@ -72,7 +72,7 @@ const ACCOUNTS = () => [
 
 function makeServer() {
   const fx = loadFixtures();
-  const srv = { log: [], fx, accounts: ACCOUNTS(), flow: 'pending', commitStatus: 201 };
+  const srv = { log: [], fx, accounts: ACCOUNTS(), services: [], flow: 'pending', commitStatus: 201 };
   srv.workspace = () => ({ ...workspaceFromFixtures(fx), projects: fx.projects.map((p) => ({ id: p.id, name: p.name, state: 'active', roster: [], presence: { replies: 'drafts', desk_agent: null, state: 'active' } })), accounts: srv.accounts, pieces: [] });
   return srv;
 }
@@ -112,7 +112,7 @@ async function newPage(browser, srv, width, height) {
     srv.log.push({ method, path, body });
     if (path === '/api/desk/workspace') return J(srv.workspace());
     if (path === '/api/desk/engines' && method === 'GET') return J({ engines: [] });
-    if (path === '/api/desk/services' && method === 'GET') return J([]);
+    if (path === '/api/desk/services' && method === 'GET') return J(srv.services);
     if (path === '/api/desk/accounts' && method === 'GET') return J(srv.accounts);
     if (path === '/api/desk/connect/types' && method === 'POST') return J(TYPES[body && body.input] || { host: '', picker: [] });
     if (path === '/api/desk/connect/purposes') return J({ service: 'x', accounts: [] });
@@ -455,6 +455,46 @@ async function run(browser, width, height) {
       await selectTile(page, 'acct-x');
       const both = [await word(page, 'acct-x', 'browser'), await word(page, 'acct-x', 'api'), await head(page, 'acct-x')];
       check(both.every((w) => w.tag === 'SPAN' && w.text === 'Ready'), 'X with both routes Ready: no word is a button', JSON.stringify(both));
+      await ctx.close();
+    }
+  }
+
+  // ── 7: a saved browser-profile SERVICE (live: www.instagram.com) says Needs sign-in too ─────────
+  // Live repro 2026-10-29: after 221cbbfe the only "Needs sign-in" on the Desk was this tile and its panel head, both
+  // plain text: the word was wired for account cards only. The panel head word now opens the reviewed sign-in page the
+  // service's own check reported, in the service's own profile; a service with no such page keeps a plain word.
+  {
+    const svc = (id, name, status) => ({ id, name, kind: 'browser_profile', link: 'https://' + name, publish: false, credential: { name: '', in_vault: null },
+      browser_connection: { connection_id: id, browser_profile: 'main', name, read: false, post: false, executes: false, service: null, signin_method: 'other', url: 'https://' + name, status } });
+    const needs = { state: 'sign_in_required', label: 'Sign-in required', needs_signin: true, verifiable: true, signin_url: 'https://www.instagram.com/accounts/login/', browser_profile: 'main' };
+    const svcHead = (page, id) => page.$eval(`[data-conn-service="${id}"] .desk-v1-conn-head [data-conn-status]`, (e) => ({ tag: e.tagName, text: e.textContent.trim(), aria: e.getAttribute('aria-label') }));
+    const pick = async (page, id) => { await page.click(`[data-conn-tile="service:${id}"]`); await page.waitForSelector(`[data-conn-detail="service:${id}"] [data-conn-service="${id}"]`, { timeout: 6000 }); };
+    {
+      const srv = makeServer();
+      srv.services = [svc('svc-ig', 'www.instagram.com', needs)];
+      const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
+      await pick(page, 'svc-ig');
+      const h = await svcHead(page, 'svc-ig');
+      check(h.tag === 'BUTTON' && h.text === 'Needs sign-in' && h.aria === 'Sign in to www.instagram.com', 'saved service: "Needs sign-in" in the panel head is a button labelled "Sign in to www.instagram.com"', JSON.stringify(h));
+      await page.screenshot({ path: resolve(SHOT_DIR_NS, `service_word_${width}.png`) });
+      srv.log.length = 0;
+      await page.locator('[data-conn-service="svc-ig"] .desk-v1-conn-head button[data-conn-status]').press('Enter');
+      await page.waitForFunction(() => window.__panes.length === 1, null, { timeout: 4000 });
+      const call = (await panes(page))[0];
+      check(call[0] === 'https://www.instagram.com/accounts/login/' && call[3] === 'main', "the word opens the service's reported sign-in page in its own profile", JSON.stringify(call));
+      check(!(await page.$('[data-cfw]')) && srv.log.filter((r) => r.method !== 'GET').length === 0 && only(srv, /^\/api\/browser\//).length === 0, 'no wizard, no write, no direct browser API call', JSON.stringify(srv.log.map((r) => r.method + ' ' + r.path)));
+      check(realErrors(pageErrors).length === 0, 'saved service: no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
+      await ctx.close();
+    }
+    {
+      // No reported sign-in page, Ready, and Not checked yet: plain text, as before.
+      const srv = makeServer();
+      srv.services = [svc('svc-nopage', 'example.com', { ...needs, signin_url: undefined }), svc('svc-ok', 'www.reddit.com', { state: 'verified', label: 'Verified', verifiable: true }), svc('svc-new', 'www.tiktok.com', { state: 'not_checked', label: 'Not checked', verifiable: false })];
+      const { ctx, page } = await newPage(browser, srv, width, height);
+      const seen = {};
+      for (const id of ['svc-nopage', 'svc-ok', 'svc-new']) { await pick(page, id); seen[id] = await svcHead(page, id); }
+      check(seen['svc-nopage'].tag === 'SPAN' && seen['svc-nopage'].text === 'Needs sign-in', 'saved service with no reported sign-in page: the word stays plain text', JSON.stringify(seen['svc-nopage']));
+      check(seen['svc-ok'].tag === 'SPAN' && seen['svc-ok'].text === 'Ready' && seen['svc-new'].tag === 'SPAN', 'Ready and Not checked yet services stay plain text', JSON.stringify([seen['svc-ok'], seen['svc-new']]));
       await ctx.close();
     }
   }

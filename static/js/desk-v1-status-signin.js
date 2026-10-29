@@ -40,5 +40,29 @@ import { ConnectionWords as W } from './desk-v1-connection-words.js';
     }));
   }
 
-  window.DeskV1StatusSignin = { routeWord, cardWord, bind };
+  // A saved browser-profile service (Instagram today, desk-v1-browser-service.js) has no route rows and no
+  // DeskV1AccountSignin route: its sign-in is the reviewed page its own check reported (`status.signin_url`) opened in the
+  // service's own profile, which is exactly what that check does when it finds the profile signed out. The word is a
+  // button only when it Needs sign-in AND that page is known; otherwise it stays plain text.
+  function _serviceTarget(s) {
+    const c = s && s.browser_connection, url = c && c.status && c.status.signin_url;
+    return url && c.browser_profile ? { url: String(url), profile: String(c.browser_profile) } : null;
+  }
+
+  // `st` is the service's status (W.from).
+  function serviceWord(s, st) {
+    if (!st || st.kind !== 'signin' || !(window.DeskV1Store && window.DeskV1Store.live()) || !_serviceTarget(s)) return '';
+    return `<button type="button" class="desk-v1-conn-status desk-v1-ss-btn" data-conn-status data-state="${esc(st.key)}" data-ss-service="${esc(s.id)}" aria-label="Sign in to ${esc(s.name)}">${esc(W.status.signin)}</button>`;
+  }
+
+  function bindService(root, s) {
+    root.querySelectorAll('[data-ss-service]').forEach((b) => b.addEventListener('click', async () => {
+      const t = _serviceTarget(s);
+      if (!t || typeof window.openBrowserPane !== 'function') return;
+      try { await window.openBrowserPane(t.url, null, null, t.profile); }
+      catch (e) { console.error('[status-signin] the browser pane could not be opened', e); window.DeskV1Kit?.toast('The browser pane could not be opened.'); }
+    }));
+  }
+
+  window.DeskV1StatusSignin = { routeWord, cardWord, bind, serviceWord, bindService };
 })();
