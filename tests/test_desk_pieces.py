@@ -446,6 +446,22 @@ def test_upload_lands_in_the_library_and_is_attached(env):
     assert r2.get_json()['assets'][1]['path'] != a['path']
 
 
+def test_asset_upload_lifts_the_app_body_cap_for_this_route_only(env, monkeypatch):
+    # server.py caps every request at 50 MB; a phone video is bigger. The
+    # assets route raises its own cap to the writer's limit, nothing else does.
+    client, uploads, _ = env
+    client.application.config['MAX_CONTENT_LENGTH'] = 512
+    monkeypatch.setattr(_pieces, 'MAX_UPLOAD_BYTES', {'image': 8192, 'video': 8192})
+    p = _piece(client)
+    big = PNG + b'0' * 2000
+    r = client.post(f"/api/desk/pieces/{p['id']}/assets", data={'file': (io.BytesIO(big), 'big.png')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 201, r.get_json()
+    assert (uploads / r.get_json()['assets'][0]['path']).read_bytes() == big
+    r = client.post('/api/desk/pieces', json={'campaign_id': CID, 'kind': 'post', 'title': 'x' * 2000})
+    assert r.status_code == 413
+
+
 def test_refused_uploads_leave_no_file(env, monkeypatch):
     client, uploads, _ = env
     p = _piece(client)
