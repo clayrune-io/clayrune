@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Keep campaign terms aligned with end-date edits (MC-1125)
+
+- Extending a started campaign's end date carries its current term end forward, capped at 90 days from that term's start. Widened bounds still require human approval before publishing.
+- Launch approval saves omit the browser's term; the server ignores client term writes after Start, preventing stale tabs from overwriting a newer term. Draft term proposals retain the Start gate.
+- Short campaigns now expose Renew term in Launch. Expired-plan holds point to Brief > Limits > Ends and Launch approval; term-only holds name Renew term. Existing Start, Approve and Renew passcode gates remain in force. Branch candidate only; no live-data edits, merge or deployment.
+
 ## [2026-10-29] - Apply unattended-origin filtering at memory delivery callers (MC-1122)
 
 - Steward charter refresh, dispatch read floors, dispatch suppression seeding, and per-turn memory refresh now request the existing unattended-origin filter. Live turns use session provenance so a markerless follow-up retains the gate; manual delivery remains unchanged.

@@ -1235,6 +1235,21 @@ saved settings carried the old off default. After that switch, your choice is
 kept: turn **Settings > Appearance > Experimental > Desk v1** off to return to the
 legacy Desk. Legacy Desk views remain read-only while Desk v1 is on.
 
+### Campaign end dates and terms
+
+To extend a campaign, open **Brief > Limits**, move **Ends** later, then open
+**Launch** and choose **Approve the new bounds** with your dashboard passcode.
+The current term follows the new end date, up to 90 days from that term's start.
+Publishing stays blocked until you approve the widened bounds.
+
+If the campaign's end date is still ahead but its term has ended, **Launch >
+Renew term** opens the next term with your passcode. This action is available
+for short campaigns too and becomes enabled when the term ends. The existing
+goal deadline and approval checks still apply; if the goal deadline leaves no
+next term, update it in **Goal** before renewing. Changing the end date never
+grants approval by itself. A post already **Held** still needs review and
+approval again after its cause is fixed.
+
 ### Campaign posts, archive and placement
 
 In a campaign's **What**, use a post's three-dot menu for **Archive** or

@@ -62,6 +62,7 @@ import uuid
 from mc.core import _atomic_write_text, _log, now_iso
 from mc import distiller as _distiller
 from mc.desk_pane_pages import PANE_ONLY_PLATFORMS
+from mc.desk_campaign_term import MAX_TERM_DAYS, prepare_campaign_patch
 
 # -- wired by server.py -------------------------------------------------------
 # Path constants are server.py-owned; this module holds wired placeholders, the
@@ -1166,9 +1167,6 @@ def signal_is_ruled_on(signal_id: str) -> bool:
 CAMPAIGN_STATES = ('draft', 'proposed', 'running', 'paused', 'done', 'dropped')
 
 
-MAX_TERM_DAYS = 90
-
-
 def _parse_term_date(value) -> datetime:
     """A `term.starts`/`term.ends` value as a datetime. Accepts 'YYYY-MM-DD'
     and full ISO timestamps (a trailing 'Z' included)."""
@@ -1495,6 +1493,7 @@ def update_campaign(campaign_id: str, patch: dict, *, forbid_start: bool = False
             # `how.suggested` is the agent's, written only by set_suggestions: a
             # client holding an older copy must not put it back or clear it.
             patch['how'] = {k: v for k, v in patch['how'].items() if k != 'suggested'}
+        patch = prepare_campaign_patch(camp, patch)
         for k, v in (patch or {}).items():
             if k in allowed:
                 camp[k] = v
