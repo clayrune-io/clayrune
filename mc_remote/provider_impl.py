@@ -21,7 +21,7 @@ from typing import Optional
 
 from mc_remote_iface import ProviderCaps, ProviderStatus
 
-from . import config, device_keys, enrollment, tunnel_supervisor
+from . import cloudflared_update, config, device_keys, enrollment, tunnel_supervisor
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +39,7 @@ class ClayruneProvider:
 
     def status(self) -> ProviderStatus:
         """Snapshot of current state. Cheap; safe to poll from request handlers."""
+        binary_status = cloudflared_update.updater.status()
         try:
             identity = device_keys.load_identity()
         except device_keys.KeystoreUnavailable as e:
@@ -47,6 +48,7 @@ class ClayruneProvider:
                 hostname=None, username=None, last_seen=None,
                 error_code="tunnel_keystore_unavailable",
                 error_message=f"Couldn't access secure storage: {e}",
+                cloudflared=binary_status,
             )
 
         if identity is None:
@@ -54,6 +56,7 @@ class ClayruneProvider:
                 enrolled=False, online=False,
                 hostname=None, username=None, last_seen=None,
                 error_code=None, error_message=None,
+                cloudflared=binary_status,
             )
 
         # Merge in supervisor state (online, last attestation result)
@@ -76,6 +79,7 @@ class ClayruneProvider:
             error_message=sup_status.get("error_message"),
             connecting=connecting,
             down_seconds=down_seconds,
+            cloudflared=binary_status,
         )
 
     def get_caps(self) -> Optional[ProviderCaps]:
