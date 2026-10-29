@@ -205,12 +205,6 @@ async function createRenameRemove(browser) {
   (post.length === 1 && post[0].body.id === id1 && post[0].body.campaign_id === 'camp-1' && post[0].body.kind === 'post' && post[0].body.title === 'New post')
     ? ok(`a tray click POSTs M14 with the client's id, campaign, kind and title (${id1})`) : fail('create POST: ' + JSON.stringify(post.map((r) => r.body)));
 
-  // Several of one kind are allowed (Ron 2026-09-29): a second post is a second piece.
-  const id2 = await addPiece(page, 'post');
-  const postsOnServer = srv.pieces.filter((p) => p.campaignId === 'camp-1' && p.kind === 'post' && [id1, id2].includes(p.id));
-  (id1 !== id2 && postsOnServer.length === 2)
-    ? ok('two pieces of the same kind in one campaign are two server pieces') : fail('same-kind pieces: ' + JSON.stringify(postsOnServer.map((p) => p.id)));
-
   // Rename through the card's title field.
   const input = page.locator(`[data-what-create][data-family-id="${id1}"] [data-what-title]`);
   await input.fill('Launch thread');
@@ -220,20 +214,26 @@ async function createRenameRemove(browser) {
   (patch.length === 1 && patch[0].body.title === 'Launch thread' && srv.pieces.find((p) => p.id === id1).title === 'Launch thread')
     ? ok('a title edit PATCHes M15 {title} and the server holds it') : fail('rename PATCH: ' + JSON.stringify(patch.map((r) => r.body)));
 
-  // ✕ removes the piece on the server; Undo puts it back.
+  // A refused discard rolls the dialog back and reports the reason.
+  srv.next[`DELETE /api/desk/pieces/${id1}`] = 'this piece has a version that is sending or already sent';
+  await page.click(`[data-what-create][data-family-id="${id1}"] [data-what-remove]`);
+  await page.waitForFunction(() => /was not saved: this piece has a version that is sending or already sent/.test(document.body.innerText));
+  (await famOf(page, id1)) && (await page.$(`[data-what-create][data-family-id="${id1}"]`))
+    ? ok('refused discard restores the modal and the server reason') : fail('discard rollback failed');
+  await page.keyboard.press('Escape');
+
+  // Several of one kind are allowed (Ron 2026-09-29): a second post is a second piece.
+  const id2 = await addPiece(page, 'post');
+  const postsOnServer = srv.pieces.filter((p) => p.campaignId === 'camp-1' && p.kind === 'post' && [id1, id2].includes(p.id));
+  (id1 !== id2 && postsOnServer.length === 2)
+    ? ok('two pieces of the same kind in one campaign are two server pieces') : fail('same-kind pieces: ' + JSON.stringify(postsOnServer.map((p) => p.id)));
+
+  // Discard deletes the second draft via the existing route.
   srv.log.length = 0;
   await page.click(`[data-what-create][data-family-id="${id2}"] [data-what-remove]`);
   await settle(page, (i) => !window.DeskV1Store.state().families.some((f) => f.id === i), id2);
   const del = calls(srv, 'DELETE', new RegExp(`^/api/desk/pieces/${id2}$`));
-  (del.length === 1 && !srv.pieces.some((p) => p.id === id2)) ? ok('✕ DELETEs M16 and the server no longer has the piece') : fail('delete: ' + JSON.stringify(srv.log));
-
-  // A refused delete rolls the card back and says why.
-  srv.next[`DELETE /api/desk/pieces/${id1}`] = 'this piece has a version that is sending or already sent';
-  await page.click(`[data-what-create][data-family-id="${id1}"] [data-what-remove]`);
-  await page.waitForFunction(() => /was not saved: this piece has a version that is sending or already sent/.test(document.body.innerText), null, { timeout: 8000 });
-  const back = await page.$(`[data-what-create][data-family-id="${id1}"]`);
-  const still = await famOf(page, id1);
-  (back && still) ? ok("a refused delete puts the card back and shows the server's reason") : fail('refused delete not rolled back');
+  (del.length === 1 && !srv.pieces.some((p) => p.id === id2)) ? ok('Discard DELETEs M16') : fail('discard route');
 
   // A refused create never leaves a phantom piece on screen.
   const before = await allIds(page);

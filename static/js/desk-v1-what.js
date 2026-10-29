@@ -11,9 +11,9 @@
 //            (or focus + Enter) into the campaign
 //
 // Each drop is its OWN piece — several of one kind are allowed — and opens a
-// create-card at the top of the list (kind + editable title + ✕). The card is
-// source-first (§8): an Article asks `Browse existing` / `Write new`, a Video
-// four sources, an Image four sources, none preselected, and no file picker
+// centered add dialog (kind + editable title + source choices). The dialog is
+// source-first (§8): its per-type registry lives in desk-v1-what-add-modal.js,
+// none preselected, and no file picker
 // exists in the DOM until the Upload source is chosen. The chosen source shows
 // as a chip + `Change source`. Upload's body is built here (drop zone,
 // `Browse this computer`, Material library folders); Record / Capture /
@@ -108,26 +108,7 @@
     { id: 'image', kind: 'image', label: 'Image', glyph: '🖼' },
   ];
 
-  // Source tiles per kind (frames 15a/16a). `body` marks which source has a
-  // body in this ticket; the rest are R2-8's.
-  const SOURCES = {
-    video: [
-      { id: 'record', label: 'Record from the product', short: 'Record', hint: 'Screen recording of a live run', glyph: '📹' },
-      { id: 'upload', label: 'Upload', hint: 'This computer or the material library', glyph: '⬆', body: true },
-      { id: 'online', label: 'Online source', short: 'Online', hint: 'YouTube channel, Google Drive, Dropbox', glyph: '🌐' },
-      { id: 'create', label: 'Create new', short: 'Create', hint: 'Storyboard it in Studio', glyph: '🎬' },
-    ],
-    image: [
-      { id: 'capture', label: 'Capture from the product', short: 'Capture', hint: 'A real screenshot of the app', glyph: '📸' },
-      { id: 'upload', label: 'Upload', hint: 'This computer or the material library', glyph: '⬆', body: true },
-      { id: 'online', label: 'Online source', short: 'Online', hint: 'YouTube channel, Google Drive, Dropbox', glyph: '🌐' },
-      { id: 'generate', label: 'Generate', hint: 'Abstract visuals only — never the product UI', glyph: '✨' },
-    ],
-    article: [
-      { id: 'browse', label: 'Browse existing', short: 'Browse', hint: 'Articles already in this project', glyph: '📚', body: true },
-      { id: 'write', label: 'Write new', short: 'Write', hint: 'Open the article writer', glyph: '✎' },
-    ],
-  };
+  const SOURCES = window.DeskV1WhatAddModal.sources;
   const R2_8_NOTE = {
     record: 'Recording from the product opens in Studio (R2-8).',
     capture: 'Capturing from the product opens in Studio (R2-8).',
@@ -302,6 +283,7 @@
   function _openStoryboard(camp, fam) {
     const card = _state(camp.id).creates.find((c) => c.familyId === fam.id);
     if (card) _closeCreate(camp, card);
+    window.DeskV1WhatAddModal.hide();
     window.deskV1Nav('storyboard', { campaignId: camp.id, familyId: fam.id });
   }
 
@@ -319,7 +301,7 @@
     const camp = _camp();
     if (!camp) return;
     _paint(_cur.el, camp);
-    if (focusSel) { const f = _cur.el.querySelector(focusSel); if (f) f.focus({ preventScroll: true }); }
+    if (focusSel) { const f = _cur.el.querySelector(focusSel) || document.querySelector('[data-what-add-modal]')?.querySelector(focusSel); if (f) f.focus({ preventScroll: true }); }
   }
 
   // ── view ─────────────────────────────────────────────────────────────────
@@ -378,15 +360,6 @@
     });
   }
 
-  function _sourceTilesHTML(card, kind) {
-    return `<div class="desk-v1-what-sources" role="group" aria-label="Choose a source">${SOURCES[kind].map((s) => `
-      <button type="button" class="desk-v1-what-source" data-what-source="${esc(s.id)}" aria-label="${esc(`${s.label}. ${s.hint}`)}" title="${esc(s.hint)}">
-        <span class="desk-v1-what-source-glyph" aria-hidden="true">${esc(s.glyph)}</span>
-        <span class="desk-v1-what-source-name" data-short="${esc(s.short || s.label)}">${esc(s.label)}</span>
-        <span class="desk-v1-what-source-hint"${s.id === 'generate' ? ' data-what-abstract-only' : ''}>${esc(s.hint)}</span>
-      </button>`).join('')}</div>`;
-  }
-
   // Live, a library tile is one FILE (a piece is given a file, not a folder), so a
   // folder's files are listed flat, the folder name standing where the file count
   // does in demo. A video has no thumbnail URL (/api/serve-image serves images).
@@ -441,13 +414,15 @@
     const srcList = SOURCES[kind];
     let bodyHTML = '';
     if (srcList && !card.source) {
-      bodyHTML = _sourceTilesHTML(card, kind);
+      bodyHTML = window.DeskV1WhatAddModal.choicesHTML(kind);
     } else if (srcList) {
       const src = srcList.find((s) => s.id === card.source);
       const chip = `<div class="desk-v1-what-chiprow"><span class="desk-v1-what-chip" data-what-chip>${esc(src ? src.label : card.source)}</span>` +
         `<button type="button" class="desk-v1-what-change" data-what-change-source>Change source</button></div>`;
       let inner;
-      if (card.source === 'upload') inner = _uploadBodyHTML(kind);
+      if (card.source === 'upload' || card.source === 'library') inner = _uploadBodyHTML(kind);
+      else if (card.source === 'import') inner = window.DeskV1WhatArticleImport.html();
+      else if (card.source === 'reuse') inner = window.DeskV1WhatPostReuse.html();
       else if (card.source === 'browse') inner = _browseBodyHTML();
       else {
         const studioBody = window.DeskV1Studio ? window.DeskV1Studio.sourceBodyHTML(card.source, { card, fam, camp }) : null;
@@ -458,14 +433,14 @@
       bodyHTML = `<div class="desk-v1-what-later" data-what-later>Write the post on its piece page.</div>
         <div class="desk-v1-what-createactions"><button type="button" class="btn-secondary" data-what-open>Open piece</button></div>`;
     }
-    return `<div class="desk-v1-what-create" data-what-create="${esc(card.id)}" data-family-id="${esc(fam.id)}" data-kind="${esc(kind)}">
+    return `<div class="desk-v1-what-create" data-what-create="${esc(card.id)}" data-family-id="${esc(fam.id)}" data-kind="${esc(kind)}" data-source="${esc(card.source || '')}">
       <div class="desk-v1-what-create-head">
-        <span class="desk-v1-what-kind">${esc(DeskV1Kit.pieceKindWord(kind).toUpperCase())}</span>
-        <input type="text" class="desk-v1-what-create-title" data-what-title value="${esc(fam.title)}" aria-label="Title of the new ${esc(kind)}">
+        <label class="desk-v1-what-kind" for="what-name-${esc(card.id)}">Name</label>
+        <input id="what-name-${esc(card.id)}" maxlength="200" type="text" class="desk-v1-what-create-title" data-what-title value="${esc(fam.title)}" aria-label="Title of the new ${esc(kind)}">
         ${type.preview ? '<span class="desk-v1-where-preview" data-preview>Preview · not connected</span>' : ''}
-        <button type="button" class="desk-v1-what-create-x" data-what-remove aria-label="Remove this new ${esc(kind)}">✕</button>
       </div>
       ${bodyHTML}
+      <button type="button" class="desk-v1-what-create-x" data-what-remove>Discard this draft</button>
     </div>`;
   }
 
@@ -511,7 +486,7 @@
 
   function _paint(el, camp) {
     const st = _state(camp.id);
-    if (st.writer && _paintWriter(el, camp, st)) return;
+    if (st.writer && _paintWriter(el, camp, st)) { window.DeskV1WhatAddModal.hide(); return; }
     const all = _familiesFor(camp.id);
     const openIds = new Set(st.creates.map((c) => c.familyId));
     const pred = FILTER_PRED[st.filter] || FILTER_PRED.all;
@@ -526,7 +501,6 @@
         <div class="desk-v1-what-filters" role="group" aria-label="Filter pieces">${FILTERS.map((f) =>
           `<button type="button" class="desk-v1-what-filter" data-what-filter="${f.id}" aria-pressed="${st.filter === f.id}">${esc(f.label)}</button>`).join('')}</div>
         ${banner}
-        <div class="desk-v1-what-creates" data-what-creates>${creates.map((x) => _createHTML(x.c, x.f, camp)).join('')}</div>
         <div class="desk-v1-what-rows" data-what-rows>${rows.map(_rowHTML).join('') ||
           (none ? window.DeskV1WhatCards.emptyHTML()
             : `<div class="desk-v1-camp-empty">${all.length && st.filter !== 'all' ? 'Nothing matches this filter.' : ''}</div>`)}</div>
@@ -534,6 +508,11 @@
       ${_trayHTML()}
     </div>`;
     _wire(el, camp, st);
+    const active = creates[0];
+    if (active) {
+      const modal = window.DeskV1WhatAddModal.render(active.f.kind, _createHTML(active.c, active.f, camp), () => { _closeCreate(camp, active.c); _repaint(); }, el);
+      _wireCreates(modal, camp, st);
+    } else window.DeskV1WhatAddModal.hide(true);
   }
 
   // ── wiring ───────────────────────────────────────────────────────────────
@@ -570,6 +549,21 @@
       rowEl.addEventListener('click', () => { if (typeof _bridge().setSelection === 'function') _bridge().setSelection('card', fam.id, fam.title); });
     });
 
+    // tray
+    el.querySelectorAll('[data-what-type]').forEach((node) => {
+      const type = TYPES.find((t) => t.id === node.dataset.whatType);
+      node.addEventListener('click', (e) => {
+        if (Date.now() - _lastDragEnd < 300) { e.stopImmediatePropagation(); e.preventDefault(); return; }
+        _addCreate(camp, type);
+      });
+      node.addEventListener('pointerdown', (e) => _beginDrag(node, e, type));
+      node.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _addCreate(camp, type); }
+      });
+    });
+  }
+
+  function _wireCreates(el, camp, st) {
     // create-cards
     el.querySelectorAll('[data-what-create]').forEach((cardEl) => {
       const card = st.creates.find((c) => c.id === cardEl.dataset.whatCreate);
@@ -582,14 +576,18 @@
         card.source = b.dataset.whatSource;
         // Write new opens the article writer, Create new the storyboard: each
         // is a page of its own, not a body inside the card.
+        if (card.source === 'write' && fam.kind === 'post') { _closeCreate(camp, card); _repaint(); _bridge().runPrimary(fam, camp); return; }
         if (card.source === 'write' && window.DeskV1Studio) { _closeCreate(camp, card); st.writer = { familyId: fam.id, tab: 0 }; _repaint(); return; }
         if (card.source === 'create' && typeof window.deskV1Nav === 'function') { _openStoryboard(camp, fam); return; }
-        if (_isLive() && (card.source === 'upload' || card.source === 'browse')) {
+        if (_isLive() && ['upload', 'library', 'browse'].includes(card.source)) {
           _ensureMaterials(camp.id).then(() => _repaint('[data-what-change-source]'));
           return;
         }
         _repaint('[data-what-change-source]');
       });
+      const done = () => { _closeCreate(camp, card); _repaint(); };
+      if (card.source === 'import') window.DeskV1WhatArticleImport.wire(cardEl, { fam, camp }, done);
+      if (card.source === 'reuse') window.DeskV1WhatPostReuse.wire(cardEl, { fam, camp }, done);
       if (window.DeskV1Studio) {
         window.DeskV1Studio.wireSourceBody(cardEl, { card, fam, camp }, {
           attach: (asset) => _attachAsset(camp, fam, asset, card),
@@ -638,18 +636,6 @@
       });
     });
 
-    // tray
-    el.querySelectorAll('[data-what-type]').forEach((node) => {
-      const type = TYPES.find((t) => t.id === node.dataset.whatType);
-      node.addEventListener('click', (e) => {
-        if (Date.now() - _lastDragEnd < 300) { e.stopImmediatePropagation(); e.preventDefault(); return; }
-        _addCreate(camp, type);
-      });
-      node.addEventListener('pointerdown', (e) => _beginDrag(node, e, type));
-      node.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _addCreate(camp, type); }
-      });
-    });
   }
 
   // ── drag: a content type onto the list panel ─────────────────────────────

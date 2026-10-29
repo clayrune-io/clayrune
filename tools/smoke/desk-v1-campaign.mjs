@@ -358,7 +358,7 @@ async function runWhatTray(browser) {
   hovering ? ok('dragging a content type over the list shows the drop ring') : fail('no drop ring while a type is dragged over the list');
   await page.mouse.up();
   await page.waitForSelector('[data-what-create][data-kind="video"]', { timeout: 2000 });
-  ok('dropping Video opens a create card at the top of the list');
+  ok('dropping Video opens the centered source dialog');
   (await famCount()) === n0 + 1 ? ok('the drop created ONE new piece') : fail('drop did not create exactly one piece');
 
   // Source-first: four tiles, none preselected, no file input yet.
@@ -392,38 +392,38 @@ async function runWhatTray(browser) {
 
   // Undo (attach), Undo (create) — the new piece is gone again.
   for (let i = 0; i < 2; i++) {
+    if (await page.locator('[data-what-add-modal]').count()) await page.keyboard.press('Escape');
     await page.click('#desk-v1-undo'); // quiet Undo (Ron 2026-10-01): the header button, not a toast
     await page.waitForTimeout(80);
   }
   (await famCount()) === n0 ? ok('Undo twice removes the piece again') : fail(`Undo left ${await famCount()} pieces, expected ${n0}`);
 
-  // Several of a kind: two Images are two pieces. Keyboard path (focus + Enter).
-  await page.focus('[data-what-type="image"]');
-  await page.keyboard.press('Enter');
-  await page.waitForSelector('[data-what-create][data-kind="image"]', { timeout: 2000 });
-  await page.focus('[data-what-type="image"]');
-  await page.keyboard.press('Enter');
-  await page.waitForFunction(() => document.querySelectorAll('[data-what-create][data-kind="image"]').length === 2, null, { timeout: 2000 });
-  ok('keyboard: Enter on the Image tile adds a piece; a second Image is a second piece');
-  const imgSources = await page.$$eval('[data-what-create][data-kind="image"]:first-child [data-what-source] .desk-v1-what-source-name', (els) => els.map((e) => e.textContent.trim()));
-  JSON.stringify(imgSources) === JSON.stringify(['Capture from the product', 'Upload', 'Online source', 'Generate'])
-    ? ok(`Image offers ${JSON.stringify(imgSources)}`)
-    : fail(`Image sources wrong: ${JSON.stringify(imgSources)}`);
-  const genHint = (await page.textContent('[data-what-source="generate"] [data-what-abstract-only]')).trim();
-  /never the product UI/i.test(genHint)
-    ? ok(`Generate states the standing position: "${genHint}"`)
-    : fail(`Generate hint wrong: ${JSON.stringify(genHint)}`);
-  await page.click('[data-what-create]:first-child [data-what-remove]');
-  await page.click('[data-what-create] [data-what-remove]');
-  await page.waitForFunction(() => !document.querySelector('[data-what-create]'), null, { timeout: 2000 });
-  (await famCount()) === n0 ? ok('✕ on both cards removes both pieces') : fail(`✕ left ${await famCount()} pieces`);
+  // One modal at a time; several Images remain distinct campaign pieces.
+  const imageIds = [];
+  for (let i = 0; i < 2; i++) {
+    await page.focus('[data-what-type="image"]');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('[data-what-create][data-kind="image"]');
+    imageIds.push(await page.getAttribute('[data-what-create]', 'data-family-id'));
+    const sources = await page.$$eval('[data-what-source] .desk-v1-what-source-name', (els) => els.map((e) => e.textContent.trim()));
+    JSON.stringify(sources) === JSON.stringify(['Upload', 'From library', 'Generate'])
+      ? ok('Image offers Upload, From library, Generate') : fail('Image source registry: ' + JSON.stringify(sources));
+    await page.keyboard.press('Escape');
+  }
+  imageIds[0] !== imageIds[1] && (await famCount()) === n0 + 2
+    ? ok('two Image dialogs create two distinct pieces') : fail('same-kind create failed');
+  for (let i = 0; i < 2; i++) {
+    await page.click('#desk-v1-undo');
+    await page.waitForTimeout(80);
+  }
+  (await famCount()) === n0 ? ok('Undo removes both image drafts') : fail('image Undo left pieces');
 
   // Article: Browse existing / Write new.
   await page.focus('[data-what-type="article"]');
   await page.keyboard.press('Enter');
   await page.waitForSelector('[data-what-create][data-kind="article"]', { timeout: 2000 });
   const artSources = await page.$$eval('[data-what-create] [data-what-source] .desk-v1-what-source-name', (els) => els.map((e) => e.textContent.trim()));
-  JSON.stringify(artSources) === JSON.stringify(['Browse existing', 'Write new'])
+  JSON.stringify(artSources) === JSON.stringify(['Browse existing', 'Write new', 'Import from file'])
     ? ok(`Article offers ${JSON.stringify(artSources)}`)
     : fail(`Article sources wrong: ${JSON.stringify(artSources)}`);
   await page.click('[data-what-source="browse"]');

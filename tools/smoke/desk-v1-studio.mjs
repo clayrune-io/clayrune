@@ -589,7 +589,7 @@ async function runWriter(browser, tone) {
   await gotoWhat(page);
   await addCreate(page, 'article');
   const srcs = await page.$$eval('[data-what-source]', (els) => els.map((e) => e.dataset.whatSource));
-  check(srcs.join() === 'browse,write', `${tag} Article card offers ${srcs.join(' · ')}`, `${tag} article sources wrong: ${srcs}`);
+  check(srcs.join() === 'browse,write,import', `${tag} Article card offers ${srcs.join(' · ')}`, `${tag} article sources wrong: ${srcs}`);
   await page.click('[data-what-source="write"]');
   await page.waitForSelector('[data-writer]', { timeout: 6000 });
 
@@ -632,55 +632,9 @@ async function runImageBodies(browser, tone) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, tone);
   await gotoWhat(page);
   await addCreate(page, 'image');
-  await page.click('[data-what-source="capture"]');
-  await page.waitForSelector('[data-cap]', { timeout: 4000 });
-  const label = await text(page, '.desk-v1-cap-label');
-  const opts = await page.$$eval('[data-cap-screen] option', (els) => els.length);
-  const imgSrc = await page.getAttribute('[data-cap-preview] img', 'src');
-  check(label === 'Screen:' && opts >= 2 && /desk-thumb/.test(imgSrc || ''), `${tag} Capture shows a "Screen:" picker (${opts} screens) + preview`, `${tag} capture body wrong: ${JSON.stringify([label, opts, imgSrc])}`);
-  await page.selectOption('[data-cap-screen]', 'scr-calendar');
-  check(/calendar/.test((await page.getAttribute('[data-cap-preview] img', 'src')) || ''), `${tag} changing the screen changes the preview`, `${tag} preview did not change`);
-  check((await page.$$('input[type=file]')).length === 0, `${tag} no file picker in the capture body`, `${tag} file input present under Capture`);
-
-  if (tone.name === 'default/dark') {
-    await page.waitForTimeout(80);
-    await page.screenshot({ path: resolve(SHOT_DIR, 'r2_8_capture_1440.png') });
-    ok('capture screenshot saved: r2_8_capture_1440.png');
-  }
-  await page.click('[data-cap-take]');
-  await page.waitForSelector('[data-what-row] [data-wc-preview] img', { timeout: 4000 });
-  check((await page.$$('[data-what-create]')).length === 0, `${tag} capturing attaches the screenshot and closes the create-card`, `${tag} create-card still open`);
-
-  // Online source, image
-  await addCreate(page, 'image');
-  await page.click('[data-what-source="online"]');
-  await page.waitForSelector('[data-online]', { timeout: 4000 });
-  const accts = await page.$$eval('[data-online-acct]', (els) => els.map((e) => e.dataset.onlineAcct));
-  const grids = await page.$$eval('[data-online-grid]', (els) => els.length);
-  check(accts.join() === 'gdrive,gphotos' && grids === 1, `${tag} connected accounts ${accts.join(', ')}, first one expanded (${grids} grid)`, `${tag} online accounts wrong: ${accts} / ${grids}`);
-  const warn = await text(page, '[data-online-unconnected="dropbox"]');
-  const connectEnabled = await page.locator('[data-online-connect="dropbox"]').isEnabled();
-  check(/read access/.test(warn) && /Connect Dropbox/.test(warn) && connectEnabled, `${tag} unconnected Dropbox: read-access warning + "Connect Dropbox" routes to Connections`, `${tag} unconnected card wrong: ${warn} enabled=${connectEnabled}`);
-  const dropboxGrid = await page.$$('[data-online-unconnected="dropbox"] img, [data-online-acct="dropbox"]');
-  check(dropboxGrid.length === 0, `${tag} an unconnected source never shows a file grid`, `${tag} a file grid rendered for Dropbox`);
-  check(/Preview · not connected/.test(warn) && /Connections screen/.test(warn), `${tag} the card points at the Connections screen`, `${tag} no Connections pointer`);
-  await page.click('[data-online-allows]');
-  check(await page.locator('[data-online-scope]').isVisible(), `${tag} "what this allows" expands the scope`, `${tag} scope did not expand`);
-  await page.click('[data-online-toggle="gphotos"]');
-  const grids2 = await page.$$eval('[data-online-grid]', (els) => els.length);
-  check(grids2 === 1 && (await page.getAttribute('[data-online-toggle="gphotos"]', 'aria-expanded')) === 'true', `${tag} opening Google Photos swaps the expanded grid`, `${tag} accordion wrong (${grids2})`);
-
-  if (tone.name === 'default/dark') {
-    await page.waitForTimeout(80);
-    await page.screenshot({ path: resolve(SHOT_DIR, 'r2_8_online_1440.png') });
-    ok('online screenshot saved: r2_8_online_1440.png');
-  }
-  await page.click('[data-online-pick="gphotos:0"]');
-  await page.waitForFunction(() => document.querySelectorAll('[data-what-row] [data-what-media] img').length >= 2, null, { timeout: 4000 });
-  check(true, `${tag} picking a thumbnail attaches it`, '');
-
+  const choices = await page.$$eval('[data-what-source]', (els) => els.map((e) => e.dataset.whatSource));
+  check(choices.join() === 'upload,library,generate', `${tag} image registry matches the new source menu`, `${tag} image registry wrong: ${choices}`);
   // Generate
-  await addCreate(page, 'image');
   await page.click('[data-what-source="generate"]');
   await page.waitForSelector('[data-gen]', { timeout: 4000 });
   check(/Abstract visuals only — never the product UI/.test(await text(page, '[data-gen-abstract-only]')), `${tag} Generate body carries the abstract-only rule`, `${tag} abstract-only rule missing`);
@@ -718,8 +672,8 @@ async function runVideoBodies(browser, tone) {
     camp.projectId = 'project-with-nothing-to-capture';
   });
   await gotoWhat(b.page);
-  await addCreate(b.page, 'image');
-  await b.page.click('[data-what-source="capture"]');
+  await addCreate(b.page, 'video');
+  await b.page.click('[data-what-source="record"]');
   await b.page.waitForSelector('[data-what-unavailable]', { timeout: 4000 });
   check((await text(b.page, '[data-what-unavailable]')) === 'Not available for this project', `${tag} no capturable surface → "Not available for this project"`, `${tag} unavailable message wrong`);
   check((await b.page.$$('[data-cap-screen]')).length === 0, `${tag} and no Screen picker`, `${tag} picker rendered for an unavailable project`);

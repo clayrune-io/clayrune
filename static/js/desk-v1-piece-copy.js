@@ -2,7 +2,6 @@
 // own review flow. Drafts survive piece repaints and failed writes in this tab.
 (function () {
   const MAX_BODY = 100000; // mc/desk_pieces.py MAX_BODY
-  const MAX_FILE_BYTES = 4 * 1024 * 1024;
   const drafts = new Map();
   let repainting = false;
   const esc = (s) => window.esc(String(s == null ? '' : s));
@@ -127,14 +126,6 @@
     if (again) return save(fam, d, repaint, update);
   }
 
-  function htmlText(text) {
-    const doc = new DOMParser().parseFromString(text, 'text/html');
-    doc.querySelectorAll('script,style,template,noscript').forEach((el) => el.remove());
-    doc.querySelectorAll('br').forEach((el) => el.replaceWith('\n'));
-    doc.querySelectorAll('p,div,section,article,li,h1,h2,h3,h4,h5,h6,tr').forEach((el) => el.append('\n'));
-    return (doc.body.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
-  }
-
   function bind(el, fam, repaint) {
     el.querySelector('[data-piece-copy-where]')?.addEventListener('click', () => window.deskV1GotoCampaignPanel('where', { campaignId: fam.campaignId }));
     el.querySelector('[data-piece-copy-campaign]')?.addEventListener('click', () => window.deskV1Nav('home', {}));
@@ -173,11 +164,7 @@
       if (!chosen) return;
       const before = d.text;
       try {
-        if (!/\.(txt|md|markdown|html|htm)$/i.test(chosen.name)) throw new Error('Choose a text, Markdown or HTML file.');
-        if (chosen.size > MAX_FILE_BYTES) throw new Error('The file exceeds the 4 MB import limit.');
-        const raw = await chosen.text();
-        const text = /\.html?$/i.test(chosen.name) ? htmlText(raw) : raw;
-        if (text.length > MAX_BODY) throw new Error('The file exceeds 100,000 characters.');
+        const text = await window.DeskV1TextImport.read(chosen);
         if (d.text !== before) throw new Error('Your text changed while reading the file. Import it again when ready.');
         d.text = text;
         d.failed = false;
