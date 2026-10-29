@@ -2,6 +2,8 @@
 
 Status: proposed, not dispatched. [Parent design](../CONNECT_FLOW_SIMPLIFY.md).
 
+> **MC-1118 review decision, 2026-10-28 (Dave, option B):** The shared Read row requires a service profile's declared read coverage **and** a route_readiness executor for the account kind. A domain grant alone is insufficient. Without both, Read stays visible, unchecked and disabled with ?Reading isn't available for <service> yet.? This applies to new accounts, saved accounts and saved-site attachment; no site grant is sent. Instagram's profile and new-account default-deny policy remain unchanged.
+
 > **Presentation update, 2026-10-28 branch candidate:** [13c: Connections language](13c-connections-language.md) moves reading-off into the common Read row and next-action sentence. The chip uses the connection's readiness from the shared five-status set, and Edit remains the one account-permission editor. The grant and sharing rules below are unchanged.
 
 > **Superseded in part, 2026-10-28 (Ron).** The per-site Read row, its editor (`bind`/`html`) and its sharing list were retired:

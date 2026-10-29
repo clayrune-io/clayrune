@@ -2,6 +2,8 @@
 
 Status: proposed, not dispatched. [Parent design](../CONNECT_FLOW_SIMPLIFY.md).
 
+> **MC-1118 review decision, 2026-10-28 (Dave, option B):** The shared Read row requires a service profile's declared read coverage **and** a route_readiness executor for the account kind. A domain grant alone is insufficient. Without both, Read stays visible, unchecked and disabled with ?Reading isn't available for <service> yet.? This applies to new accounts, saved accounts and saved-site attachment; no site grant is sent. Instagram's profile and new-account default-deny policy remain unchanged.
+
 ## Depends on
 
 02, 06, 07; Q2.

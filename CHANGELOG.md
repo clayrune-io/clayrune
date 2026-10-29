@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-28] - Correct saved connection edits (MC-1118)
+
+- Read stays visible but disabled with a service-specific reason when the service profile has no supported read coverage and executor. Attaching a saved Instagram site keeps Read and Publish off and grants no browser access.
+- Saved key engines can change unattended use or one credential half while preserving the other saved fields. Replacements still require confirmation and the dashboard passcode.
+- Generic saved-site edits update the original record rather than creating another one. Remote MCP edits preserve an empty Authorization prefix exactly; Connections displays the Check now label correctly.
+
 ## [2026-10-28] - Restore saved connections into Edit
 
 - Saved Instagram browser sites open the shared Permissions screen. Choose an account or enter its handle; passcode Save attaches it without signing in or deleting the saved reference. Read/Post changes retain their separate gates.

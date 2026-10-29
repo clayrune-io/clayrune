@@ -64,6 +64,8 @@ prompt space in every future turn that touches its subject.
 ## Desk saved connection Edit
 
 - `POST /api/desk/connect/custom/saved-draft` with `{scope, project_id?, server_name}` reads the saved MCP setup draft (credential names only). Human-only like the custom-connection list; no network, install or approval.
+- `PATCH /api/desk/connect/browser-profile/<connection_id>` with `{request_id, draft: {name, url, browser_profile, signin_method?}, passcode}` updates an existing generic browser-site reference. Human/passcode only; validates the ID, fixed source URL/service and unique name before proof and again under the store lock. Retains the record ID and non-setup metadata; account sites use their account editor. Same-ID requests replay, changed drafts under that ID return 409.
+- Saved key-engine edits use the existing `POST /api/desk/connect/commit` with provider fields `edit_saved:true` and `{keep:true}` for unchanged key fields. Changed fields name a saved entry and part; Review confirmation and passcode are required. The canonical key's ciphertext/reference edges and scope are retained for untouched fields; unattended use follows the explicit edited choice. No secret values are returned.
 - `POST /api/desk/connect/saved-site/<service_id>/account` with `{account: {id} | {identity}, source: {url, browser_profile, signin_method}, passcode}` explicitly attaches an older pane-site reference to an account. Human/passcode only; validates the saved source before the passcode and again atomically at Save. New Instagram accounts start with Read/Post off. The source reference is retained with `account_id`; existing account policies and all sign-in state remain intact. Permission changes use their existing separate endpoints.
 
 ## Desk connection removal
