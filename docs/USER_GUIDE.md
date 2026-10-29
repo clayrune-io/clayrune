@@ -1235,6 +1235,21 @@ saved settings carried the old off default. After that switch, your choice is
 kept: turn **Settings > Appearance > Experimental > Desk v1** off to return to the
 legacy Desk. Legacy Desk views remain read-only while Desk v1 is on.
 
+### Project and campaign planners
+
+Each campaign can choose its own agent on **Brief**. A project's default
+planner fills in for campaigns that have not chosen one. To set that default,
+open the project from Home and use the agent button in its header or
+**Set this project's default planner ›** above its chat input. Both open the
+same picker. Choosing a default leaves existing campaign choices in place;
+**Undo** reverses the default change.
+
+Home shows **[name] plans & writes** for the project default, or for the shared
+agent when all its live campaigns have chosen the same one. When those
+campaigns use different agents, it says **Each campaign has its own agent**.
+The pick warning appears when there is no resolvable project default and at
+least one live campaign has no resolvable agent. Ended campaigns do not count.
+
 ### Campaign end dates and terms
 
 To extend a campaign, open **Brief > Limits**, move **Ends** later, then open

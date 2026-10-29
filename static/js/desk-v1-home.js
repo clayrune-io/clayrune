@@ -476,11 +476,20 @@
     </div>`;
   }
 
-  function _blockHeaderAgentHTML(project) {
-    const resolved = DeskV1Kit.resolveDeskAgent(DeskV1Kit.deskAgentRef({ project }));
-    const label = resolved.name ? `${resolved.name} plans & writes` : DeskV1Kit.UNRESOLVED_AGENT_LABEL;
-    return `<button type="button" class="desk-v1-home-block-agent${resolved.name ? '' : ' desk-v1-home-block-agent-unresolved'}" data-project-id="${esc(project.id)}">
-      <span aria-hidden="true">${resolved.name ? '&#129302;' : '&#9888;'}</span> ${esc(label)}
+  function _blockHeaderAgentHTML(project, camps) {
+    let resolved = DeskV1Kit.resolveDeskAgent(DeskV1Kit.deskAgentRef({ project }));
+    let label = resolved.name ? `${resolved.name} plans & writes` : null;
+    // A project default is optional when every live campaign has its own agent.
+    if (!label && camps.length) {
+      const agents = camps.map((campaign) => DeskV1Kit.resolveDeskAgent(DeskV1Kit.deskAgentRef({ project, campaign })));
+      if (agents.every((a) => a.name)) {
+        resolved = agents[0];
+        label = agents.every((a) => a.ref === resolved.ref)
+          ? `${resolved.name} plans & writes` : 'Each campaign has its own agent';
+      }
+    }
+    return `<button type="button" class="desk-v1-home-block-agent${label ? '' : ' desk-v1-home-block-agent-unresolved'}" data-project-id="${esc(project.id)}">
+      <span aria-hidden="true">${label ? '&#129302;' : '&#9888;'}</span> ${esc(label || DeskV1Kit.UNRESOLVED_AGENT_LABEL)}
     </button>`;
   }
 
@@ -503,7 +512,7 @@
     return `<div class="desk-v1-home-block" data-project-id="${esc(p.id)}">
       <div class="desk-v1-home-block-head">
         <button type="button" class="desk-v1-home-block-name" data-project-id="${esc(p.id)}">${esc(p.name)}</button>
-        ${_blockHeaderAgentHTML(p)}
+        ${_blockHeaderAgentHTML(p, camps)}
         <button type="button" class="desk-v1-home-block-newcamp" data-project-id="${esc(p.id)}">&#65291; New campaign</button>
       </div>
       <div class="desk-v1-home-block-rows">
@@ -808,7 +817,7 @@
     _renderCrumbTools();
     _renderStatusBoard();
     _startHeartbeat(el);
-    // Block headers resolve an agent per PROJECT (`_blockHeaderAgentHTML`),
+    // Block headers resolve the project default or its live campaigns' agents,
     // outside any `.desk-v1-posy-box` — kit.js's own `_repaintDeskAgentBoxes`
     // can't reach them, so a fetch that resolves AFTER this paint (the
     // common case: /api/characters is still in flight on first Home render)

@@ -623,23 +623,47 @@
   function _bindAgentPicker(el, p) {
     const btn = el.querySelector('[data-project-agent]');
     if (!btn || !p) return;
-    DeskV1Kit.onAgentsReady(() => { if (btn.isConnected) btn.innerHTML = _agentLabelHTML(p); });
+    const paintLabels = () => {
+      if (!btn.isConnected) return;
+      btn.innerHTML = _agentLabelHTML(p);
+      const head = el.querySelector('#desk-v1-project-posy .desk-thread-head');
+      if (!head) return;
+      // Keep this project-only prompt here; campaign boxes retain their own labels.
+      // The kit can repaint the name when its roster arrives, so restore it here too.
+      let name = head.querySelector('.desk-thread-name');
+      if (!name) {
+        name = document.createElement('span');
+        name.className = 'desk-thread-name';
+        head.insertBefore(name, head.querySelector('[data-scope-trigger]'));
+      }
+      const resolved = DeskV1Kit.resolveDeskAgent(DeskV1Kit.deskAgentRef({ project: p }));
+      name.innerHTML = resolved.name ? esc(resolved.name)
+        : '<button type="button" class="desk-v1-project-agent-btn" data-project-agent aria-haspopup="listbox">Set this project\'s default planner &#8250;</button>';
+    };
+    paintLabels();
     _fetchAgentList((list) => {
-      btn.setAttribute('aria-haspopup', 'listbox');
-      btn.onclick = () => DeskV1Kit.agentListPopover(btn, list.map((a) => ({ id: a.ref, name: a.name, avatar: a.avatar, role: a.role })), (ref) => {
-        const picked = list.find((a) => a.ref === ref);
-        p.presence = p.presence || {};
-        const prevRef = p.presence.desk_agent;
-        const rerender = () => deskV1RenderProject(el, { projectId: p.id });
-        window.DeskV1Store.write({
-          label: `${picked ? picked.name : ref} now plans for ${p.name}.`,
-          apply: () => { p.presence.desk_agent = ref; rerender(); },
-          unapply: () => { p.presence.desk_agent = prevRef; },
-          repaint: rerender,
-          request: () => window.DeskV1Store.api('PATCH', `/api/desk/presence/${encodeURIComponent(p.id)}`, { desk_agent: ref }),
-          undoRequest: () => window.DeskV1Store.api('PATCH', `/api/desk/presence/${encodeURIComponent(p.id)}`, { desk_agent: prevRef }),
+      const bind = () => {
+        if (!btn.isConnected) return;
+        el.querySelectorAll('[data-project-agent]').forEach((trigger) => {
+          trigger.setAttribute('aria-haspopup', 'listbox');
+          trigger.onclick = () => DeskV1Kit.agentListPopover(trigger, list.map((a) => ({ id: a.ref, name: a.name, avatar: a.avatar, role: a.role })), (ref) => {
+            const picked = list.find((a) => a.ref === ref);
+            p.presence = p.presence || {};
+            const prevRef = p.presence.desk_agent;
+            const rerender = () => deskV1RenderProject(el, { projectId: p.id });
+            window.DeskV1Store.write({
+              label: `${picked ? picked.name : ref} now plans for ${p.name}.`,
+              apply: () => { p.presence.desk_agent = ref; rerender(); },
+              unapply: () => { p.presence.desk_agent = prevRef; },
+              repaint: rerender,
+              request: () => window.DeskV1Store.api('PATCH', `/api/desk/presence/${encodeURIComponent(p.id)}`, { desk_agent: ref }),
+              undoRequest: () => window.DeskV1Store.api('PATCH', `/api/desk/presence/${encodeURIComponent(p.id)}`, { desk_agent: prevRef }),
+            });
+          }, { selectedId: DeskV1Kit.deskAgentRef({ project: p }), label: 'Default planner', title: `Who plans for ${p.name}` });
         });
-      }, { selectedId: DeskV1Kit.deskAgentRef({ project: p }), label: 'Default planner', title: `Who plans for ${p.name}` });
+      };
+      bind();
+      DeskV1Kit.onAgentsReady(() => { paintLabels(); bind(); });
     });
   }
 
