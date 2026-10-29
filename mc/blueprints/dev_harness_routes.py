@@ -15,8 +15,10 @@ from mc.dev_harness_policy import resolve_policy
 from mc.dev_harness_store import HarnessStore, RevisionConflict, StoreError
 from mc.project_safety_settings import is_agent_caller
 from mc import dev_harness_sources
+from mc.blueprints.dev_harness_run_routes import bp as run_bp
 
 bp = Blueprint('dev_harness_routes', __name__)
+bp.register_blueprint(run_bp)
 _store: HarnessStore | None = None
 _load_project: Callable[[str], Any] = lambda _: None
 
@@ -84,6 +86,9 @@ def read(project_id: str):
     try:
         project, store = _project(project_id)
         active = store.read(project_id)
+        if active and active.get('native_plan'):
+            from mc.dev_harness_native_plan import validate_plan
+            validate_plan(store, project, active['policy'], active['native_plan'])
         catalogue_data = load_catalogue()
         # Repository drafts are editable proposals; they never select the mode
         # or replace an active policy. Bad drafts are visible even with an active
@@ -114,14 +119,19 @@ def activate(project_id: str):
     # Refuse before parsing policy or touching project/runtime files.
     if is_agent_caller():
         return jsonify({'error': 'Harness activation and mode changes are human-only'}), 403
-    data = request.get_json(silent=True)
+    from mc.dev_harness_native_plan import strict_loads
+    try:
+        data = strict_loads(request.get_data(cache=True))
+    except (ValueError, UnicodeError):
+        return jsonify({'error': 'Expected strict JSON object'}), 400
     if not isinstance(data, dict):
         return jsonify({'error': 'Expected a JSON object'}), 400
     refusal = _require_human_passcode(data)
     if refusal is not None:
         return refusal
     try:
-        if set(data) - {'passcode', 'expected_revision', 'draft', 'mode', 'evidence_id', 'acknowledged_losses'}:
+        if set(data) - {'passcode', 'expected_revision', 'draft', 'mode', 'evidence_id', 'acknowledged_losses',
+                        'native_plan_digest', 'acknowledged_native_losses'}:
             raise ValueError('Unknown activation fields')
         revision, draft, mode = data.get('expected_revision'), data.get('draft'), data.get('mode')
         if type(revision) is not int or not isinstance(draft, dict) or not isinstance(mode, str):
@@ -140,6 +150,9 @@ def activate(project_id: str):
                                 draft=draft, mode=mode,
                                 evidence_id=data.get('evidence_id'),
                                 acknowledged_losses=data.get('acknowledged_losses'),
+                                native_plan_digest=data.get('native_plan_digest'),
+                                acknowledged_native_losses=data.get('acknowledged_native_losses'),
+                                project=project,
                                 catalogue=catalogue_data)
         return jsonify(result)
     except (ValueError, OSError, LookupError, StoreError) as exc:

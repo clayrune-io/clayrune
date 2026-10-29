@@ -186,3 +186,13 @@ copying, timeout/Event cancellation/Ctrl+C, metadata/output suppression,
 candidate/source/tool mutation, target advancement and receipt integrity.
 Ctrl+C terminates/reaps the in-flight verifier and returns structured
 `cancelled` Error rather than leaving its detached child running.
+
+## DH-M5 A2a approval boundary
+
+[Native approval](DEV_HARNESS_NATIVE_APPROVAL.md) adds nonexecuting immutable
+plan proposals and a separate trusted activation-evidence composer. M3's
+ordinary runner and report-only CLI are unchanged; neither grants activation
+or merge authority. A2a composition tests use synthetic stored receipts only.
+A2b must add approved Preview receipt production and M5 plan/checker metadata
+before live native activation measurement is available. No landing gate or
+native execution route ships in A2a.

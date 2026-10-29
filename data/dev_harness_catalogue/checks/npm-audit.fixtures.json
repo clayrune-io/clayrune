@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "recipe_id": "npm-audit",
+  "recipe_digest": "4e1770c9bd475a47577f9a7699e14fa43ca643b7bed90ae8fecfa65d21fc114c",
+  "validator_digest": "86fed3ac82cb4f7049d98500c8bce68a96c4978fb171dc39731c34d3d5d9c993",
+  "fixture_file": "tests/fixtures/dev_harness/npm-audit.json",
+  "fixture_file_digest": "b6142a62bda224d8c48352acaf27ba6bb3ef37147cbbc4cb9fa091838345209e",
+  "cases": [
+    "positive",
+    "finding",
+    "crash"
+  ]
+}

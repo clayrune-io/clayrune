@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "recipe_id": "pip-audit",
+  "recipe_digest": "56de415d72f1e83995a1fda1ceb8f2cd2ef7598f1d8305f50af00b3d63e07bdd",
+  "validator_digest": "86fed3ac82cb4f7049d98500c8bce68a96c4978fb171dc39731c34d3d5d9c993",
+  "fixture_file": "tests/fixtures/dev_harness/pip-audit.json",
+  "fixture_file_digest": "941d034c2783f3c523c58a1c721c2cf29d3d12248886c6724ae567f78324bdd5",
+  "cases": [
+    "positive",
+    "finding",
+    "crash"
+  ]
+}

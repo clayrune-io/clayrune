@@ -23,7 +23,7 @@ def resolve_policy(draft: dict[str, Any], catalogue: dict[str, Any]) -> dict[str
     Mode is intentionally absent: importing a draft has no activation authority.
     Caps stay unset until the owner supplies measured values.
     """
-    if not isinstance(draft, dict) or set(draft) - {'profile', 'practices', 'digests'}:
+    if not isinstance(draft, dict) or set(draft) - {'profile', 'practices', 'digests', 'native_checks'}:
         raise ValueError('Invalid policy fields')
     profile_id = draft.get('profile', 'local-hobby')
     if not isinstance(profile_id, str):
@@ -58,8 +58,34 @@ def resolve_policy(draft: dict[str, Any], catalogue: dict[str, Any]) -> dict[str
         raise ValueError('Unknown policy digests')
     for pin in pins.values():
         require_digest(pin)
-    return {'version': 1, 'profile': profile['id'], 'practices': selections,
-            'digests': copy.deepcopy(pins), 'catalogue_digest': catalogue['digest']}
+    native = draft.get('native_checks', {})
+    if not isinstance(native, dict) or len(native) > 64:
+        raise ValueError('Invalid native checks')
+    for identity, item in native.items():
+        if (not isinstance(identity, str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', identity)
+                or not isinstance(item, dict) or set(item) != {'enabled', 'severity', 'practice_ids'}
+                or type(item['enabled']) is not bool or item['severity'] not in ('required', 'warning')):
+            raise ValueError('Invalid native selection')
+        ids = item['practice_ids']
+        if (not isinstance(ids, list) or not ids or any(not isinstance(v, str) for v in ids)
+                or ids != sorted(set(ids)) or not set(ids) <= set(selections)):
+            raise ValueError('Invalid native practice mapping')
+        if item['enabled'] and any(not selections[v]['enabled'] for v in ids):
+            raise ValueError('Native checks require enabled guidance practices')
+    return {'version': 2, 'profile': profile['id'], 'practices': selections,
+            'digests': copy.deepcopy(pins), 'catalogue_digest': catalogue['digest'],
+            'native_checks': copy.deepcopy(native)}
+
+
+def resolve_frozen_policy(policy: dict[str, Any], catalogue: dict[str, Any]) -> dict[str, Any]:
+    """Read v1 with its original identity; only new human activations emit v2."""
+    keys = ('profile', 'practices', 'digests', 'native_checks') if policy['version'] == 2 else (
+        'profile', 'practices', 'digests')
+    resolved = resolve_policy({k: policy[k] for k in keys}, catalogue)
+    if policy['version'] == 1:
+        resolved.pop('native_checks')
+        resolved['version'] = 1
+    return resolved
 
 
 def lost_protections(old: dict[str, Any] | None, new: dict[str, Any], mode: str,

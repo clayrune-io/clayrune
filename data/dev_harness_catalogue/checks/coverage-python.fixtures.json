@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "recipe_id": "coverage-python",
+  "recipe_digest": "2370d7d4877ab0d7a1d33e44e743348cb3dfb8045dc1843f23573883960af688",
+  "validator_digest": "86fed3ac82cb4f7049d98500c8bce68a96c4978fb171dc39731c34d3d5d9c993",
+  "fixture_file": "tests/fixtures/dev_harness/coverage-python.json",
+  "fixture_file_digest": "4e4f17c711bf762fab3008dd15b331726e1212d4de35846099894fd601b29b8e",
+  "cases": [
+    "positive",
+    "finding",
+    "crash"
+  ]
+}

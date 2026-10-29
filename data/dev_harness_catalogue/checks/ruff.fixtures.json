@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "recipe_id": "ruff",
+  "recipe_digest": "b3da8affedab5c72fcb4a0b16d084142018901754687651a5418f7103d948304",
+  "validator_digest": "86fed3ac82cb4f7049d98500c8bce68a96c4978fb171dc39731c34d3d5d9c993",
+  "fixture_file": "tests/fixtures/dev_harness/ruff.json",
+  "fixture_file_digest": "4b3bdd8c946f103bb834be8665e8e0317959a3347453f8ca08d8d9b49d6a9090",
+  "cases": [
+    "positive",
+    "finding",
+    "crash"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "recipe_id": "osv-scanner",
+  "recipe_digest": "bfba15710356c6de7eed031d857fd710780a4d07826de2c4edf1e0b611ecd8fc",
+  "validator_digest": "86fed3ac82cb4f7049d98500c8bce68a96c4978fb171dc39731c34d3d5d9c993",
+  "fixture_file": "tests/fixtures/dev_harness/osv-scanner.json",
+  "fixture_file_digest": "92f2fb9b5adc137454d22f3e0994f1568c4b3f42ef375d90e9d8630054ed6875",
+  "cases": [
+    "positive",
+    "finding",
+    "crash"
+  ]
+}

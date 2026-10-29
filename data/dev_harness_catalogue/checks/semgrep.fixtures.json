@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "recipe_id": "semgrep",
+  "recipe_digest": "a08094e9ff3e8c40f79026b8ec0cb4605816a19b2468a769b24fd26982522ca9",
+  "validator_digest": "86fed3ac82cb4f7049d98500c8bce68a96c4978fb171dc39731c34d3d5d9c993",
+  "fixture_file": "tests/fixtures/dev_harness/semgrep.json",
+  "fixture_file_digest": "99ae433fde633e3fe643112ee3327d68e6b929a358fb690e1e6bd4a1402c00b2",
+  "cases": [
+    "positive",
+    "finding",
+    "crash"
+  ]
+}
