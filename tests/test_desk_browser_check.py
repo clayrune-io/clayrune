@@ -193,11 +193,12 @@ def test_caller_cannot_install_probe_or_run_unattended(monkeypatch):
     assert client.post('/api/desk/connect/browser-profile/check',json=data).get_json()['state']=='verified'
 
 
-def test_instagram_profile_loads_with_a_signin_check_and_no_read_or_post_route(monkeypatch):
+def test_instagram_profile_loads_with_a_signin_check_and_only_a_pane_read_route(monkeypatch):
     prof=registry.profile('instagram')
     assert registry.lookup('www.instagram.com')['id']=='instagram' and registry.lookup('instagram.com')['id']=='instagram'
     assert prof['signin_check']=={'url':'https://www.instagram.com/','selectors':["a[href='/direct/inbox/']","a[href='/explore/']"]}
-    assert prof['purposes']==[] and all(r['support']=='info_only' and not r['coverage'] for r in prof['routes'])
+    assert [p['id'] for p in prof['purposes']]==['read_own'] and all(r['support']=='info_only' for r in prof['routes'])
+    assert {c['purpose'] for r in prof['routes'] for c in r['coverage']}=={'read_own'}     # no publish route
     route=[r for r in prof['routes'] if r['transport']=='browser' and r.get('signin')]
     assert route and route[0]['signin']['hosts']==['www.instagram.com']
     # With a spec, the shared check runs and no longer answers "not checked".

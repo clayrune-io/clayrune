@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from mc import desk_accounts as _accounts
 from mc import desk_engagement as _engagement
+from mc.desk_connect import instagram_read as _instagram_read
 
 BINDABLE_PURPOSES = ('publish', 'read_own')
 # A capability is bindable only where the profile has actually said the route covers it.
@@ -38,6 +39,7 @@ EXECUTORS: dict[tuple[str, str, str], str] = {
     ('x', 'x-browser', 'read_own'): 'pane',
     ('linkedin', 'linkedin-browser', 'read_own'): 'pane',
 }
+EXECUTORS.update(_instagram_read.EXECUTORS)
 
 # Where the read setting stored per account (`read_via`) comes from.
 READ_VIA_OF = {'api': 'api', 'pane': 'pane'}
