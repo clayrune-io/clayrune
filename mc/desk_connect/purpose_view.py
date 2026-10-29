@@ -96,6 +96,8 @@ def account_kind(rec: dict) -> str | None:
              if isinstance(caps, dict) for b in caps.values() if isinstance(b, dict)} - {None}
     if len(kinds) == 1:
         return next(iter(kinds))
+    if rec.get('account_kind'):
+        return rec['account_kind']
     if rec.get('platform') == 'x':
         return 'account'
     if rec.get('platform') == 'linkedin' and rec.get('organization_id'):

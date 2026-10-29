@@ -11,6 +11,7 @@ Pinned:
     a bad entry is a 400 that changes nothing, `[]` clears;
   * an unattended agent cannot set `read_pages` (the pane would open what it names).
 """
+import copy
 import sys
 from pathlib import Path
 
@@ -67,45 +68,140 @@ def _copy(cid):
     return next(a for a in (_desk.get_presence('alpha') or {})['accounts'] if a['channel_id'] == cid)
 
 
-def test_saved_linkedin_company_address_overrides_member_kind_and_clear_restores_it(env):
+@pytest.mark.parametrize('record_type', ['binding', 'setup', 'untyped'])
+@pytest.mark.parametrize('consent', ['legacy', 'deny', 'read', 'invalid', 'invalid_future'])
+def test_saved_linkedin_company_address_overrides_member_kind_and_clear_restores_it(env, monkeypatch, record_type, consent):
     from mc import desk_engagement as engagement, desk_pane_activity_scope as scope
-    from mc.desk_connect import browser_setup_record, permission_policy, purpose_view
+    from mc.desk_connect import browser_setup, browser_setup_record, permission_policy, purpose_bindings, purpose_view, registry, route_readiness
+
+    if consent == 'read':
+        # Exercise exact-consent preservation with a synthetic runtime. The
+        # real LinkedIn executor registration is owned by the MC-1118 branch.
+        monkeypatch.setitem(route_readiness.EXECUTORS, ('linkedin', 'linkedin-browser', 'read_own'), 'pane')
 
     client, caller = env
     _desk.upsert_presence('alpha', {'accounts': [
         {'channel_id': 'ch-li', 'platform': 'linkedin', 'identity': 'Company', 'browser_profile': 'main'}]})
     client.get('/api/desk/accounts')
-    member = {'read_own': {'own_posts': {'account_kind': 'member', 'route_id': 'linkedin-browser'}}}
+    binding = {'account_kind': 'member', 'route_id': 'linkedin-browser', 'refs': {'browser_profile': 'main'}, 'scopes': []}
+    binding['fingerprint'] = purpose_bindings.fingerprint('linkedin', 'read_own', 'linkedin-browser', 'member', ['own_posts'], binding['refs'], [])
+    member = {'read_own': {'own_posts': binding}}
+    setup = browser_setup_record.build('linkedin', 'linkedin-browser', 'member', {'browser_profile': 'main'}, 'saved-before')
+    policy_draft = {'account_id': 'ch-li', 'service': 'linkedin', 'account_kind': 'member',
+                    'read': consent == 'read', 'post': False, 'scopes': [
+                        {'purpose': 'read_own', 'capability': 'own_posts', 'route_id': 'linkedin-browser'}] if consent == 'read' else []}
     with _desk._store_lock:
         store = _desk._read_store()
-        store['accounts']['ch-li']['connections'] = member
+        rec = store['accounts']['ch-li']
+        if record_type == 'binding':
+            rec['connections'] = copy.deepcopy(member)
+        elif record_type == 'setup':
+            rec['browser_setup'] = copy.deepcopy(setup)
+        if consent != 'legacy':
+            rec[permission_policy.POLICY_KEY] = permission_policy._record(policy_draft)
+            rec[permission_policy.VERSION_KEY] = permission_policy.VERSION
+            if consent == 'invalid':
+                rec[permission_policy.POLICY_KEY]['fingerprint'] = 'tampered'
+            elif consent == 'invalid_future':
+                rec[permission_policy.POLICY_KEY]['fingerprint'] = permission_policy.fingerprint({**policy_draft, 'account_kind': 'organization'})
         _desk._write_store(store)
-    assert not scope.needs_company_page('linkedin', engagement.platform_account('alpha', 'linkedin'))
     url = 'https://www.linkedin.com/company/123456/admin/notifications/'
     patch = {'organization_id': '123456', 'read_pages': [{'role': 'activity', 'url': url}], 'project_id': 'alpha'}
 
     caller['unattended'] = True
     assert _patch(client, 'ch-li', **patch).status_code == 403
+    assert _patch(client, 'ch-li', organization_id='123456').status_code == 403
+    assert _patch(client, 'ch-li', organization_id='').status_code == 403
     assert not _by_id(client)['ch-li'].get('organization_id')
     caller['unattended'] = False
     saved = _patch(client, 'ch-li', **patch)
     assert saved.status_code == 200, saved.get_json()
+    assert saved.json['account_kind'] == 'organization'
     acc = engagement.platform_account('alpha', 'linkedin')
     assert scope.needs_company_page('linkedin', acc)
     assert scope.is_company_admin(acc['read_pages'][0]['url'], acc['organization_id'])
     assert _copy('ch-li')['read_pages'] == patch['read_pages']
-    assert acc['connections'] == member and browser_setup_record.kind_of(acc) == 'member'
-    # Report this separate permission conflict; changing reading scope must not rewrite consent.
-    assert purpose_view.account_kind(acc) == 'member'
-    with pytest.raises(permission_policy.PolicyError, match='different kind'):
-        permission_policy._check_identity(acc, {'account_id': 'ch-li', 'service': 'linkedin', 'account_kind': 'organization'})
+    def check_kind(acc, kind):
+        assert purpose_view.account_kind(acc) == browser_setup_record.kind_of(acc) == kind
+        _, clean = permission_policy.clean_submission({'request_id': 'company-kind-check', 'draft': {**policy_draft, 'account_kind': kind}})
+        assert clean['account_kind'] == kind
+        if record_type == 'binding':
+            actual = acc['connections']['read_own']['own_posts']
+            assert {k: v for k, v in actual.items() if k not in ('account_kind', 'fingerprint')} == {k: v for k, v in binding.items() if k not in ('account_kind', 'fingerprint')}
+            assert actual['account_kind'] == kind
+            assert actual['fingerprint'] == purpose_bindings.fingerprint('linkedin', 'read_own', 'linkedin-browser', kind, ['own_posts'], binding['refs'], [])
+            browser_setup._clean_account({'id': 'ch-li'}, 'linkedin', kind)
+        else:
+            draft = {'service': 'linkedin', 'revision': registry.profile('linkedin')['revision'], 'route_id': 'linkedin-browser',
+                     'account': {'id': 'ch-li'}, 'account_kind': kind, 'browser_profile': 'main'}
+            setup_clean = browser_setup.clean_draft(draft)
+            assert setup_clean['account_kind'] == kind
+            with _desk._store_lock:
+                assert browser_setup._apply(_desk._read_store(), 'ch-li', setup_clean, '')[1] is (record_type == 'setup')
+        state = permission_policy.read_policy(acc)
+        assert state['state'] == ('legacy' if consent == 'legacy' else 'invalid' if consent.startswith('invalid') else 'explicit')
+        if state['state'] == 'explicit':
+            assert state['read'] is (consent == 'read') and state['post'] is False
+            assert state['scopes'] == policy_draft['scopes']
+            assert state['account_kind'] == kind
+        if record_type == 'setup':
+            assert acc['browser_setup'] == {**setup, 'account_kind': kind}
+
+    check_kind(acc, 'organization')
+    with pytest.raises(permission_policy.PolicyError) as wrong:
+        permission_policy._check_identity(acc, policy_draft)
+    assert wrong.value.code == 'wrong_kind'
+    with pytest.raises(browser_setup.SetupError) as wrong_setup:
+        browser_setup._clean_account({'id': 'ch-li'}, 'linkedin', 'member')
+    assert wrong_setup.value.code == 'kind_mismatch'
 
     cleared = _patch(client, 'ch-li', organization_id='', read_pages=[], project_id='alpha')
     assert cleared.status_code == 200, cleared.get_json()
+    assert cleared.json['account_kind'] == 'member'
     acc = engagement.platform_account('alpha', 'linkedin')
     assert not acc.get('organization_id') and 'read_pages' not in acc
     assert 'read_pages' not in _copy('ch-li')
-    assert not scope.needs_company_page('linkedin', acc) and acc['connections'] == member
+    assert not scope.needs_company_page('linkedin', acc)
+    check_kind(acc, 'member')
+
+
+def test_company_destination_validation_and_unrelated_edits_are_atomic(env):
+    client, _ = env
+    _desk.upsert_presence('alpha', {'accounts': [
+        {'channel_id': 'ch-li', 'platform': 'linkedin', 'identity': 'Company', 'browser_profile': 'main'}]})
+    client.get('/api/desk/accounts')
+    before = _desk._read_store()['accounts']['ch-li']
+    for patch in ({'organization_id': 'bad'}, {'organization_id': '123', 'read_pages': 'bad'},
+                  {'organization_id': '123', 'read_via': 'api'}):
+        assert _patch(client, 'ch-li', **patch).status_code == 400
+        assert _desk._read_store()['accounts']['ch-li'] == before
+    assert _patch(client, 'ch-li', label='Renamed').status_code == 200
+    assert 'account_kind' not in _desk._read_store()['accounts']['ch-li']
+
+
+def test_human_resaving_a_stale_company_destination_repairs_its_member_binding(env):
+    from mc.desk_connect import permission_policy, purpose_view
+
+    client, _ = env
+    _desk.upsert_presence('alpha', {'accounts': [
+        {'channel_id': 'ch-li', 'platform': 'linkedin', 'identity': 'Company', 'browser_profile': 'main'}]})
+    client.get('/api/desk/accounts')
+    page = {'role': 'activity', 'url': 'https://www.linkedin.com/company/123/admin/notifications/'}
+    with _desk._store_lock:
+        store = _desk._read_store()
+        rec = store['accounts']['ch-li']
+        rec.update(organization_id='123', read_pages=[page], connections={
+            'read_own': {'own_posts': {'route_id': 'linkedin-browser', 'account_kind': 'member'}}})
+        _desk._write_store(store)
+    assert _by_id(client)['ch-li']['account_kind'] == 'member'
+    draft = {'account_id': 'ch-li', 'service': 'linkedin', 'account_kind': 'organization', 'read': False, 'post': False, 'scopes': []}
+    with pytest.raises(permission_policy.PolicyError) as refused:
+        permission_policy.clean_submission({'request_id': 'stale-company-repair', 'draft': draft})
+    assert refused.value.code == 'wrong_kind'
+    assert _patch(client, 'ch-li', organization_id='123', read_pages=[page]).json['account_kind'] == 'organization'
+    _, clean = permission_policy.clean_submission({'request_id': 'stale-company-repair', 'draft': draft})
+    assert clean == draft
+    assert purpose_view.account_kind(_desk._read_store()['accounts']['ch-li']) == 'organization'
 
 
 @pytest.mark.parametrize('cid', ['ch-yt', 'ch-ig', 'ch-forum'])

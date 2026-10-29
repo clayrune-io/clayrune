@@ -21,9 +21,13 @@ export function createCompanyPageDraft(account) {
   const saved = account?.read_pages || [];
   let original = saved.find(p => p.role === 'activity' && /\/company\/[^/]+\/admin(?:\/|$)/.test(p.url))?.url || '';
   let value = original, originalId = account?.organization_id || '', touched = false;
+  let savedKind = account?.browser_setup?.account_kind || account?.account_kind;
   const problem = () => companyId(value) === null
     ? 'Enter a LinkedIn Company Page admin HTTPS address with a numeric company ID, such as https://www.linkedin.com/company/123456/admin/notifications/.' : '';
-  const changed = () => value !== original || (touched && companyId(value) !== originalId);
+  // An address saved by the older editor may still have a member connection.
+  // A human Save must repair that case even when the address was not retyped.
+  const changed = () => value !== original || (touched && companyId(value) !== originalId)
+    || (!!original && !!savedKind && savedKind !== 'organization');
   function html() {
     const error = problem();
     return `<div data-reading-company-page><label class="desk-v1-conn-add-field">${LABEL}
@@ -43,6 +47,6 @@ export function createCompanyPageDraft(account) {
   return { html, bind, problem, clearInput:() => {},
     draft:() => changed() && !problem() ? { organization_id:companyId(value), read_pages:value ? [{ role:'activity', url:value }] : [] } : {},
     summary:() => [`${LABEL}: ${value || 'Personal profile'}`],
-    accept:() => { original = value; originalId = companyId(value); touched = false; },
+    accept:() => { original = value; originalId = companyId(value); savedKind = originalId ? 'organization' : 'member'; touched = false; },
   };
 }

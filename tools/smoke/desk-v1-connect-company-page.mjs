@@ -96,6 +96,10 @@ async function open(browser, srv, viewport) {
       if (srv.refuse) return J({ error: srv.refuse }, 400);
       const { project_id: _p, ...rest } = body;
       Object.assign(acc, rest);
+      if ('organization_id' in rest) {
+        acc.account_kind = rest.organization_id ? 'organization' : 'member';
+        if (acc.browser_setup) acc.browser_setup.account_kind = acc.account_kind;
+      }
       if (Array.isArray(acc.read_pages) && !acc.read_pages.length) delete acc.read_pages;
       return J(acc);
     }
@@ -184,7 +188,8 @@ async function run(browser, viewport) {
   await page.waitForFunction(()=>!document.querySelector('[data-sum-banner="partial"]'));
   const sent=patches(srv,li.id).at(-1).body;
   check(sent.organization_id==='123456' && JSON.stringify(sent.read_pages)===JSON.stringify([{role:'activity',url:COMPANY}]), 'Save derives ID from address and PATCHes activity page together');
-  check(!('browser_profile' in sent) && !('read_via' in sent) && !('connections' in sent), 'Save preserves untouched profile, method and member binding');
+  check(!('browser_profile' in sent) && !('read_via' in sent) && !('connections' in sent), 'Save leaves profile, method and binding edits to their server owners');
+  check(li.account_kind==='organization' && li.browser_setup.account_kind==='organization', 'Save response carries organization kind');
   await reopen(page,li.id);
   check(await page.inputValue(field)===COMPANY, 'reopen pre-fills saved company address');
   await save(page);
@@ -197,6 +202,7 @@ async function run(browser, viewport) {
   await next(page,'result');
   const clear=patches(srv,li.id).at(-1).body;
   check(clear.organization_id==='' && JSON.stringify(clear.read_pages)==='[]', 'Clear PATCH removes both organization ID and activity pages');
+  check(li.account_kind==='member' && li.browser_setup.account_kind==='member', 'Clear response carries member kind');
   await reopen(page,li.id);
   check(await page.inputValue(field)==='', 'cleared field reopens empty');
   await page.fill(field,COMPANY);
@@ -208,10 +214,28 @@ async function run(browser, viewport) {
   realErrors(pageErrors).forEach(e=>fail('page error: '+e));
   await ctx.close();
 }
+async function repairSavedAddress(browser, viewport) {
+  const srv = makeServer(), li = srv.accounts.find(a => a.platform === 'linkedin');
+  Object.assign(li, {read_via:'pane', browser_profile:'main', organization_id:'123456', account_kind:'member',
+    read_pages:[{role:'activity',url:COMPANY}],
+    browser_setup:{service:'linkedin',route_id:'linkedin-browser',account_kind:'member',refs:{browser_profile:'main'}}});
+  const {ctx,page,pageErrors} = await open(browser,srv,viewport);
+  await reopen(page,li.id);
+  check(patches(srv,li.id).length===0, 'stale saved address is not repaired just by opening');
+  await save(page);
+  check(patches(srv,li.id).length===1 && li.browser_setup.account_kind==='organization', 'human Save repairs an untouched address with stale member kind');
+  await reopen(page,li.id);
+  await save(page);
+  check(patches(srv,li.id).length===1, 'repaired untouched address no longer sends PATCH');
+  realErrors(pageErrors).forEach(e=>fail('page error: '+e));
+  await ctx.close();
+}
 const browser=await chromium.launch();
 try {
   await run(browser,{width:1440,height:900});
   await run(browser,{width:390,height:844});
+  await repairSavedAddress(browser,{width:1440,height:900});
+  await repairSavedAddress(browser,{width:390,height:844});
 } catch(e) { fail(e.stack || String(e)); }
 await browser.close();
 if(bad) process.exit(1);

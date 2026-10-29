@@ -66,19 +66,30 @@ Save derives `organization_id` from the user-supplied URL and sends it together
 with `read_pages: [{role: 'activity', url: <address>}]`. Changing the company
 address replaces the saved activity-page list. Clearing sends an empty organization
 ID and `read_pages: []`; the local account also drops the omitted list from the
-PATCH response so reopening cannot resurrect it. Untouched fields send no update.
-An empty field selects personal activity only for an explicitly saved member;
-legacy/untyped or organization bindings still require a company address.
+PATCH response so reopening cannot resurrect it. An untouched field sends no
+update unless a previously saved company address still has a member kind: that
+repair waits for the human to press Save, never runs just by opening the editor.
 
-The organization ID makes `needs_company_page()` true even when an old connection
-binding still says `member`. This edit does **not** rewrite bindings or grant
-permissions. That stale kind has separate consequences: `purpose_view.account_kind`
-still reports `member`; permission policy identity validation sees both `member`
-and `organization` and refuses a kind change with `wrong_kind` (existing explicit
-consent becomes invalid/fails closed); saving member browser setup also refuses
-the organization ID with `kind_mismatch`. These conflicts need separate connection
-repair, not an implicit consent migration in the reading editor. Legacy accounts
-without explicit permission records retain the existing legacy permission path.
+On the existing human account PATCH, `linkedin_destination.apply` synchronizes
+the account, browser setup, existing purpose bindings and policy identity to
+`organization` for a Company Page or `member` for Clear. Kind is returned in
+account metadata, including older binding-only accounts, so reopen and permission
+retries use the repaired kind. Clearing explicitly selects personal activity even
+for an older account; leaving an untyped empty field untouched makes no choice.
+
+Routes, refs, Read/Post values and exact permission scopes are not added or
+expanded. A valid explicit policy gets its fingerprint updated for the new kind;
+invalid/malformed consent is not re-signed and continues to fail closed. Legacy
+accounts retain their legacy permission path. Binding fingerprints reflect the
+changed kind, so verification of a member is not evidence for an organization.
+The `wrong_kind`, `kind_mismatch`, route-coverage and already-bound setup checks
+are unchanged. An agent cannot change the organization ID even if it omits all
+other reading fields from its PATCH.
+
+The consent-preservation Read test uses a synthetic LinkedIn executor registration:
+this branch does not yet include MC-1118's pane-executor registration. The real
+identity and setup tests use this branch's runtime. Cross-branch integration and
+an authenticated Company Page read remain the integrator's checks.
 
 ## Regression checks
 
@@ -86,6 +97,8 @@ Backend (synthetic readers and model replies, temporary stores):
 
 ```powershell
 python -m pytest tests/test_desk_account_read_pages.py tests/test_desk_accounts.py tests/test_desk_engagement.py tests/test_desk_engagement_pane.py tests/test_desk_engagement_pane_digest.py tests/test_desk_engagement_permission_execution.py tests/test_desk_conversations.py tests/test_desk.py -q
+python -m pytest tests/test_desk_account_read_pages.py tests/test_desk_connect_permission_policy.py tests/test_desk_connect_browser_setup.py tests/test_desk_purposes.py -q
+pyright mc/desk_connect/linkedin_destination.py
 pyright mc/desk_engagement_account.py mc/desk_pane_activity_scope.py mc/desk_engagement.py mc/desk_engagement_pane_digest.py mc/desk_engagement_poll.py
 ```
 

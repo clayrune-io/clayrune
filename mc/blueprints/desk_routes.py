@@ -968,7 +968,7 @@ def create_account():
 @bp.route('/api/desk/accounts/<account_id>', methods=['PATCH'])
 def update_account(account_id):
     d = request.get_json(silent=True) or {}
-    if ('read_via' in d or 'browser_profile' in d or 'read_pages' in d) and is_unattended_caller():
+    if any(k in d for k in ('read_via', 'browser_profile', 'read_pages', 'organization_id')) and is_unattended_caller():
         return jsonify({'error': 'this action needs a human: an unattended agent '
                                  'session cannot choose how an account is read'}), 403
     if d.get('capability') in _accounts._PATCH_CAPABILITIES:

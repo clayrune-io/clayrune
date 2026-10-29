@@ -98,6 +98,9 @@ async function apply(id) {
       // in the workspace and puts it back into the editor on the next reopen.
       if ('read_pages' in body && !saved.read_pages) delete current.account.read_pages;
     }
+    if ('organization_id' in body && saved.account_kind) {
+      P.setTarget({ kind:saved.account_kind, account:{ id }, identity:current.account?.identity });
+    }
     if (R === current) { R.originalVia = R.via; R.originalProfile = R.profile; R.pages.accept(); }
     return { status:'saved' };
   } catch (e) { return { status:'failed', error:e.message || C.words.notSaved }; }
