@@ -94,7 +94,8 @@ try {
   const { ctx, page, srv, errors, open } = await boot(browser);
   assert.equal(await page.locator(editor).inputValue(), '');
   assert.equal(await page.locator(editor).getAttribute('placeholder'), 'Start typing your post…');
-  assert.match(await page.locator('[data-piece-section="copy"]').innerText(), /Add a version from the Where board/);
+  assert.doesNotMatch(await page.locator('[data-piece-section="copy"]').innerText(), /Add a version from the Where board/);
+  assert.match(await page.locator('[data-piece-section="versions"]').innerText(), /No destinations yet[\s\S]*Put this on a channel ›/);
   await page.screenshot({ path: resolve(screenshots, 'empty-1440.png') });
   check('new post has editor, import, Save and next-step hint');
 

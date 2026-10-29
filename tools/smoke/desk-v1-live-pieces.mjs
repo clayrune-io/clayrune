@@ -365,9 +365,9 @@ async function piecePage(browser) {
   // The piece page's name uses the same title PATCH as the create card, and
   // Undo must find the current family after a workspace refresh replaces it.
   const oldTitle = srv.pieces.find((p) => p.id === 'fam-restore-points').title;
-  await page.click('[data-piece-name-edit]');
+  await page.click('[data-piece-title-edit]');
   await page.fill('[data-piece-name-input]', 'Launch article');
-  await page.click('[data-piece-name-save]');
+  await page.press('[data-piece-name-input]', 'Enter');
   await settle(page, () => document.querySelector('.desk-v1-piece-title').textContent === 'Launch article');
   srv.pieces.find((p) => p.id === 'fam-restore-points').title === 'Launch article'
     ? ok('piece-page name PATCH persists on the live server') : fail('piece-page title not saved');

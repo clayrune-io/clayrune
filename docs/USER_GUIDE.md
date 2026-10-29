@@ -1277,11 +1277,12 @@ approval again after its cause is fixed.
 
 ### Campaign posts, archive and placement
 
-Use **Edit name** on a post's piece page, enter a **Post name**, and choose
-**Save name** (or press Enter). A fresh **New post** shows the name field
-immediately. Names may contain up to 200 characters and appear in What,
-Where, the calendar and menus that list pieces. **Undo** restores the previous
-name. Naming a post does not change its copy.
+On a post's piece page, click the title (for example **New post**) to rename
+it in place. Press Enter or click away to save, Esc to cancel; the title also
+opens from the keyboard (Tab to it, then Enter). Names may contain up to 200
+characters and appear in What, Where, the calendar and menus that list
+pieces. **Undo** restores the previous name. Naming a post does not change
+its copy.
 
 In **Media**, choose **Add media → From this computer…** to select an image
 for a post/image piece, or a video for a video piece. On a phone, this opens
@@ -1301,8 +1302,9 @@ message. Drafts may contain up to 100,000 characters. If saving fails, the
 page shows the server's reason and keeps your text so you can retry.
 
 Destination versions and their review controls remain below the editor.
-With no versions yet, choose **Add a version from the Where board ›** to
-open this piece's campaign in **Where**. If the piece has no campaign,
+With no versions yet, the **Versions** section reads **No destinations yet**;
+choose **Put this on a channel ›** to open this piece's campaign in **Where**
+with the piece's card marked. If the piece has no campaign,
 **Choose a campaign ›** returns to Desk Home; add the piece in the
 campaign's **What** before creating a version. Articles continue to use
 **Edit article**. Restore an archived piece before editing it. In demo

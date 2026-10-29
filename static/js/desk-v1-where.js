@@ -459,6 +459,7 @@
     _wire(el, camp);
     window.DeskV1WhereServices.bind(el, _repaint);
     window.DeskV1WhereRemoval.wire(el, camp, _repaint);
+    window.DeskV1WhereHighlight.mark(el);
   }
 
   function _wire(el, camp) {
@@ -536,6 +537,7 @@
     if (!camp.plan) camp.plan = {};
     if (!camp.plan.accounts) camp.plan.accounts = [];
     _st = { el, campaignId: camp.id };
+    window.DeskV1WhereHighlight.set(params);
     _paint(el, camp);
   }
 

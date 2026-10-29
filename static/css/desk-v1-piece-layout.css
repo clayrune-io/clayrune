@@ -1,0 +1,5 @@
+/* Piece page: the Dave/Posy column may shrink below its 320px basis when the
+   Desk is narrow, instead of overflowing past the modal's right edge. */
+@media (min-width: 961px) {
+  #desk-v1-piece-rightcol { flex: 0 1 320px; min-width: 240px; }
+}
