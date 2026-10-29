@@ -63,9 +63,14 @@ and article picker responses. Screenshots are generated under
 Build validation: 115 backend checks passed; all ten listed Desk smokes and
 the full npm smoke suite returned 0. The copy smoke had one earlier focus
 assertion failure and passed an immediate isolated rerun; no copy code changed.
-Initial invocations of nonexistent `desk-v1-what.mjs`/`desk-v1-live.mjs` names
-were corrected to the actual `desk-v1-live-pieces.mjs` suite; those missing
-script names are not counted as successful runs.
+An initial smoke list contained nonexistent `desk-v1-what.mjs`/`desk-v1-live.mjs`
+names; execution stopped at the first missing script. The corrected list uses
+the actual `desk-v1-live-pieces.mjs` suite. Missing scripts are not counted as
+successful runs.
+
+Rebased onto local master `3f5cd307`; both changelog entries were retained.
+Post-rebase name/upload, live-pieces, copy, piece and boot checks all returned
+0. The copy focus case passed both isolated and post-rebase reruns.
 
 ## Limits and integration
 
