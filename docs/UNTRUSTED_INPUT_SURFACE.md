@@ -564,3 +564,20 @@ steward should never have, unattended, with no fence update accompanying the
 merge. That is the finding to act on first; the hidden-content and
 truncation gaps matter for every caller but don't change *who* can reach
 this endpoint the way the fence gap does.
+
+## MC-1121 data-island follow-up (2026-10-28, branch candidate)
+
+The browser reader rejects hidden-attribute and display-none subtrees, including
+hidden code payloads and JSON scripts, before collecting text or applying the
+character cap. `hidden_content.data_islands` counts maximal excluded subtrees,
+including a selected hidden root or a selection inside a hidden ancestor.
+Rejected nodes still count toward the traversal bound. Visible code remains
+readable; script/style/noscript exclusions and the shared detector are retained.
+Python also strips `display_none` and `visibility_hidden` runs: those reasons
+already existed in the detector but were missing from its consumer's strip list.
+
+This corrects text extraction, not trust: the origin warning, HTML-only gate,
+structured refusals and no-downgrade guidance remain unchanged. Verify with
+`python -m pytest -q tests/test_browser_routes.py tests/test_browser_pick.py` and
+`node tools/smoke/browser-read-data-islands.mjs`. The Chromium check uses synthetic
+HTML, with no network or saved profile; authenticated LinkedIn remains unverified.

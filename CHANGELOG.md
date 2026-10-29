@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-28] - Exclude hidden data islands from browser reads (MC-1121)
+
+- Browser reads exclude hidden and display-none payload subtrees, including JSON scripts, before collecting text or consuming the character cap. `hidden_content.data_islands` counts excluded subtrees; visible code stays readable.
+- Python now strips the display-none and visibility-hidden reasons already produced by the shared detector. Existing HTML refusals and untrusted-content envelopes remain in force. Branch candidate only; no authenticated Company Page acceptance yet.
+
 ## [2026-10-29] - Keep Desk Read consent separate from browser access (MC-1118)
 
 - An existing browser-domain grant no longer makes Read appear allowed when the account explicitly denies Desk Read. Incomplete consent is unticked, marked as incomplete and explained on the shared Read row.
