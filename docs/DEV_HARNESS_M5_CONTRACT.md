@@ -480,3 +480,26 @@ harness body; reuse its existing job_data seam. Shipped practice descriptor
 coverage is not edited. A2 stays branch-only unless Dave explicitly changes its
 brief. A1 itself changes only this document and the specification link/row;
 progress/handoff is appended to the main-checkout gitignored journal.
+
+## 9. Dave review of A1 (2026-10-29): approved with two amendments
+
+The contract is approved as the A2 basis. Two amendments bind A2 and override
+any conflicting line above.
+
+1. **A2 ships as two reviewed units, not one.** A2a: native plan, policy v2,
+   store/snapshot binding, activation evidence and the `/native-plan` route
+   (sections 2, 4, and the plan/approval rows of 6-7). No executable runs, no
+   landing changes. A2b, dispatched only after A2a is reviewed and merged:
+   applicability, landing serialization and lease, pending-merge descriptor,
+   coordinator, dispatch and the `/preview`, `/run`, `/runs` routes, plus the
+   thin `agent_worktree`/`hivemind_integration`/`merge-review-check` wiring.
+   Why: the approval boundary must be proven before anything can execute
+   against it, and a single unit touching both is too large to review well.
+2. **Coverage recipes are warning-only in A2.** Plan inspection rejects
+   `severity: required` for `coverage-python` and `coverage-javascript` with
+   reason code `coverage_required_unmeasurable`. Why: section 4.4 requires every
+   required step to pass during activation measurement on a clean tree, and
+   M4's changed-line denominator is zero there, so a required coverage check
+   could never activate Enforce. `pytest`/`vitest` remain eligible as the
+   required P02 checks. Reopen in M6 once a full-scope coverage measurement
+   is defined.
