@@ -291,12 +291,18 @@ async function runCardMenu(browser) {
   (dupToast === '' && /Duplicated/.test(dupUndo))
     ? ok(`Duplicate raises no toast; the header Undo names it: "${dupUndo}"`)
     : fail(`Duplicate should be quiet with a header Undo: toast=${JSON.stringify(dupToast)} undo=${JSON.stringify(dupUndo)}`);
-  const dupExists = await page.evaluate(() => window.DeskV1Fixtures.families.some((f) => f.id.startsWith('fam-30-testers-copy-')));
+  const dupExists = await page.evaluate(() => window.DeskV1Fixtures.families.some((f) => f.id.startsWith('fam-copy-')));
   dupExists ? ok('the duplicated family exists in fixtures (a new What row)') : fail('duplicated family not found in fixtures');
+  const dupComposer = await page.waitForSelector('[data-composer]', { timeout: 4000 }).then(() => true).catch(() => false);
+  dupComposer ? ok('Duplicate opens the copy in the composer (C4)') : fail('Duplicate did not open the composer');
   await page.click('#desk-v1-undo');
   await page.waitForTimeout(150);
-  const dupGone = await page.evaluate(() => !window.DeskV1Fixtures.families.some((f) => f.id.startsWith('fam-30-testers-copy-')));
+  const dupGone = await page.evaluate(() => !window.DeskV1Fixtures.families.some((f) => f.id.startsWith('fam-copy-')));
   dupGone ? ok('Undo removes the duplicate') : fail('Undo did not remove the duplicated family');
+  const backOnWhat = await page.waitForSelector('[data-what]', { timeout: 4000 }).then(() => true).catch(() => false);
+  backOnWhat && !(await page.$('[data-composer]'))
+    ? ok('Undo from the copy composer returns to ③ What')
+    : fail('Undo left the composer open on a deleted draft');
 
   // A5: Archive acts card-level, on every non-terminal version, through the
   // same commandBus (Undo restores each version's PRIOR state, not a blanket

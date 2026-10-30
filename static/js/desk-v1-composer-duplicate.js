@@ -33,7 +33,12 @@
         const result = await store().write({
           label: 'Duplicated post as a draft',
           apply: () => { if (!families.includes(draft)) families.push(draft); },
-          unapply: () => { const i = families.indexOf(draft); if (i >= 0) families.splice(i, 1); },
+          unapply: () => {
+            const i = families.indexOf(draft); if (i >= 0) families.splice(i, 1);
+            // Undo from inside the copy's composer must not strand you on a deleted draft.
+            const shown = document.querySelector('[data-composer]')?.dataset.composerFamily;
+            if (shown === draft.id && window.deskV1CanGoBack()) window.deskV1Back();
+          },
           request: async () => {
             const saved = await store().api('POST', '/api/desk/pieces/' + encodeURIComponent(source.id) + '/duplicate', { id: draft.id, campaign_id: campaign.id });
             Object.keys(draft).forEach((key) => { delete draft[key]; }); Object.assign(draft, saved);

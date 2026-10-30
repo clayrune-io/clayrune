@@ -140,7 +140,7 @@ import './desk-v1-composer-preview.js';
     mounted = { el, camp, d };
     const locked = d.fam?.archivedAt || (d.fam?.versions || []).some((v) => ['approved', 'scheduled'].includes(v.state) || channels().sent(v));
     d.locked = !!locked;
-    el.innerHTML = `<section class="desk-v1-composer" data-composer>
+    el.innerHTML = `<section class="desk-v1-composer" data-composer data-composer-family="${esc(d.id)}">
       <div class="desk-v1-composer-top"><div class="desk-v1-composer-breadcrumb">Desk <span>›</span> ${esc(camp.plan.title || 'Campaign')} <span>›</span> <strong>${esc(d.fam?.title || 'New post')}</strong></div>
         <div class="desk-v1-composer-actions"><button type="button" class="btn-secondary" data-composer-save>Save draft</button><button type="button" class="btn-secondary" data-composer-when aria-expanded="false">When</button><button type="button" class="btn-add" data-composer-review>Send to Review</button></div></div>
       <div data-composer-schedule hidden></div>
