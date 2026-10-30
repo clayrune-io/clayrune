@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - Add post media in the composer
+
+- Post composers accept multi-file uploads, file drops and clipboard pictures/videos. One Add media picker opens on Upload, with a Library tab showing image/video thumbnails newest first across folders. Valid media can create the first draft without text; every upload stays in Library/Uploads when its attachment is undone or removed.
+- Removed the Post card's empty-preview/strip Add media controls and the legacy Post detail picker. Image/video pickers remain. Media writes reuse the piece queue, attachment routes, viewer and Undo; refusals remain visible and retryable, and approved/sent/archived composer media stays read-only. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-30] - Start campaign posts in one composer
 
 - Post tiles and post-card Open actions enter a text composer directly. Opening it creates no empty piece; the first nonblank text creates the draft. Campaign accounts start selected, and ticks write per-piece versions without widening the campaign account bound.

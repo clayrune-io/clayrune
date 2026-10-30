@@ -150,10 +150,10 @@ async function runSectionsAndIdentity(browser) {
   if (on === 'on 2 channels') ok(`piece header: "${on}" (same helper as What and Where)`);
   else fail(`piece header: expected "on 2 channels", got ${JSON.stringify(on)}`);
 
-  // Multi-asset piece (frame 5a): two thumbnails + `＋ Add media`.
+  // Post media entry is consolidated in the composer; direct-link Media still views it.
   const thumbs = await page.$$eval('[data-piece-media] .desk-v1-what-thumb', (els) => els.length);
   const hasAdd = await page.$('[data-piece-media] [data-add-media]');
-  if (thumbs === 2 && hasAdd) ok('multi-asset piece: 2 thumbnails + ＋ Add media on the Media section');
+  if (thumbs === 2 && !hasAdd) ok('multi-asset post: 2 thumbnails, media entry belongs to the composer');
   else fail(`multi-asset piece: thumbs=${thumbs}, add=${!!hasAdd}`);
 
   await page.evaluate(() => {
@@ -161,7 +161,9 @@ async function runSectionsAndIdentity(browser) {
     document.getElementById('desk-v1-piece-posy-input')._deskv1SmokeMarker = 'same-posy';
   });
 
-  // ＋ Add media picks a Material library folder, through the command bus (Undo).
+  // Exercise the remaining generic media picker on an image, preserving this
+  // suite's header/Posy identity contract without reviving the retired Post UI.
+  await page.evaluate(() => { window.DeskV1Store.state().families.find((f) => f.id === 'fam-30-testers').kind = 'image'; window.deskV1PieceRepaint(); });
   await page.click('[data-piece-media] [data-add-media]');
   await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
   await page.locator('.desk-v1-addto-menu button').first().click();

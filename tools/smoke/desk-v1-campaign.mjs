@@ -191,8 +191,8 @@ async function runToneRenderChecks(browser, tone) {
     : fail(`[${tone.name}] rendering status missing: ${JSON.stringify(agentRow)}`);
   const multi = await page.$$eval('[data-family-id="fam-30-testers"] .desk-v1-what-thumb', (els) => els.length);
   const addMedia = await page.$('[data-family-id="fam-30-testers"] [data-add-media]');
-  multi === 2 && addMedia
-    ? ok(`[${tone.name}] a multi-asset piece shows its 2 thumbnails + ＋ Add media (frame 5a)`)
+  multi === 2 && !addMedia
+    ? ok(`[${tone.name}] a multi-asset post shows 2 thumbnails; Add media belongs to its composer`)
     : fail(`[${tone.name}] multi-asset row wrong: thumbs=${multi}, add=${!!addMedia}`);
   const filters = await page.$$eval('[data-what-filter]', (els) => els.map((e) => e.textContent.trim()));
   JSON.stringify(filters) === JSON.stringify(['All', 'Archived', 'Needs review', 'Scheduled', 'Blocked'])

@@ -614,6 +614,7 @@ def test_materials_lists_folders_files_articles_and_no_invented_online(env):
     shots = out['library']['image'][0]
     assert shots['title'] == 'Screenshots' and shots['files'] == 2
     assert sorted(i['title'] for i in shots['items']) == ['one.png', 'two.png']
+    assert all(i['mtime'] == (uploads / i['path']).stat().st_mtime for i in shots['items'])
     assert shots['thumb'].startswith('/api/serve-image?path=')
     vid = out['library']['video'][0]
     assert vid['files'] == 1 and vid['thumb'] is None and vid['items'][0]['src'] is None

@@ -48,10 +48,10 @@
     }
     return {
       look: 'empty',
-      html: `<button type="button" class="desk-v1-wc-empty" data-add-media="${esc(fam.id)}" aria-haspopup="menu">` +
+      html: `<${fam.kind === 'post' ? 'div' : 'button type="button"'} class="desk-v1-wc-empty" ${fam.kind === 'post' ? '' : `data-add-media="${esc(fam.id)}" aria-haspopup="menu"`}>` +
         `<span class="desk-v1-wc-empty-glyph" aria-hidden="true">${esc(_glyph(fam.kind))}</span>` +
         `<span class="desk-v1-wc-empty-text">${esc(PLACEHOLDER_TEXT[fam.kind] || 'No media yet')}</span>` +
-        '<span class="desk-v1-wc-empty-add">＋ Add media</span></button>',
+        `<span class="desk-v1-wc-empty-add">${fam.kind === 'post' ? 'Open this post to add content' : '＋ Add media'}</span></${fam.kind === 'post' ? 'div' : 'button'}>`,
     };
   }
 
@@ -60,7 +60,7 @@
   function cardHTML(fam, assets, ctx) {
     const pv = _preview(fam, assets, ctx.copy || '');
     const extra = assets.length ? window.DeskV1PieceMedia.thumbsHTML(fam) : ''; // play / remove each one
-    const addBtn = pv.look === 'empty' ? ''
+    const addBtn = pv.look === 'empty' || fam.kind === 'post' ? ''
       : `<button type="button" class="desk-v1-what-addmedia desk-v1-wc-addmedia" data-add-media="${esc(fam.id)}" aria-haspopup="menu">＋ Add media</button>`;
     const strip = extra || addBtn ? `<div class="desk-v1-what-media desk-v1-wc-strip" data-what-media>${extra}${addBtn}</div>` : '';
     return `<div class="desk-v1-camp-card desk-v1-wc-card" data-what-row data-family-id="${esc(fam.id)}" data-kind="${esc(fam.kind || '')}" data-preview="${pv.look}">

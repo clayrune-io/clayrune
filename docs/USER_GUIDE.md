@@ -602,8 +602,9 @@ are also refreshed automatically about every five minutes.
 
 Selecting a project file saves a copy in **Material library → Projects /
 project name**, then uses that copy in your scene, article, image or campaign.
-**Add media →
-From your projects** offers the same chooser for an existing piece. Reusing an
+On image/video pieces, **Add media →
+From your projects** offers the same chooser. Posts use the composer's
+**Add media → Library** for files already copied to the library. Reusing an
 unchanged source reuses its library copy, and removing the original project
 file does not remove media from your campaign. Shared uploads appear when
 Clayrune knows which project they belong to; unassigned older uploads may need
@@ -1305,7 +1306,7 @@ when a version is waiting; the former **Copy, media & versions** link is gone.
 In **What**, click **Post** under **Add a piece**, press Enter or Space on it,
 or drag it onto the campaign's list to open the post composer. A post card's
 **Open** action reopens it. Opening an empty composer creates no piece;
-the first nonblank text creates a **New post** draft. Use **Save draft** for
+the first nonblank text or valid media creates a **New post** draft. Use **Save draft** for
 subsequent text edits and check the **Saved** message. A refused write keeps
 your text available for retry.
 
@@ -1322,8 +1323,26 @@ day asks for confirmation and sends it back for approval. Sent versions
 cannot be rescheduled. **Send to Review** saves the text and destinations,
 then opens the existing Review screen. Approval and publishing still require
 their existing human actions. Approved copy must return to review before
-editing; archived pieces must be restored first. The composer currently
-supports text.
+editing; archived pieces must be restored first.
+
+**Media:** drop or paste pictures/videos anywhere on the composer, including
+the Write box, or choose **Add media**. The picker starts on **Upload** and
+accepts several files at once. On a phone it selects files from that phone.
+The **Library** tab shows image and video thumbnails together, newest first
+across folders, with a search by file or folder name. Every successful upload
+is also saved in **Material library → Uploads**. Library picks attach the
+existing file; they do not create another copy. You can start a post with
+media alone. Ordinary text paste stays in the text field.
+
+Click a thumbnail to view the picture or play the video. The **×** removes
+that attachment from this post; **Undo** restores it. Removing or undoing an
+attachment keeps the library file. Images accept PNG, JPG, GIF and WebP up to
+25 MB; videos accept common video extensions and video MIME types up to
+500 MB, with playback depending on this browser. Upload and Library errors
+show their reason. Choose the file again to retry a refused upload, or use
+**Retry** after a library read error. Approved, sent and archived posts keep
+their viewer but cannot change media in the composer. The Post card and old
+Post detail page no longer have separate Add media pickers.
 
 Other types under **Add a piece** open a centered popup with a **Name** field
 beside source cards:
@@ -1346,7 +1365,7 @@ keyboard (Tab to it, then Enter). Names may contain up to 200 characters.
 **Undo** restores the previous name.
 
 In **Media**, choose **Add media → From this computer…** to select an image
-for a post/image piece, or a video for a video piece. On a phone, this opens
+for an image piece, or a video for a video piece. On a phone, this opens
 that phone's file chooser. Supported images are PNG, JPG, GIF and WebP (up to 25 MB). Videos may be
 up to 500 MB: MP4, M4V, MOV, WebM, MKV, AVI, WMV, MPEG, 3GP, OGV, FLV,
 TS and other common video formats. The chooser names both extensions and
