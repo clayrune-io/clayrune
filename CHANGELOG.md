@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Check an unverified browser service before offering sign-in
+
+- Existing profiles whose verification expired now show **Not checked yet**, including after a restart or ordinary cookie changes. **Needs sign-in** requires a missing profile or a signed-out probe, with negative evidence bound to the same profile snapshot as successful checks.
+- The saved service's status word and tile pill run the existing read-only check first. Success shows **Ready** without opening a pane; signed-out evidence opens recovery in that service's profile; an unavailable check explains the failure without opening sign-in. Connections, account browser routes and Where share the evidence mapping. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-29] - Where shows saved connections, not catalogue placeholders
 
 - Sources lists configured accounts and saved browser destinations only; preview services and destinations that have never been configured no longer appear. Broken configured connections stay visible.

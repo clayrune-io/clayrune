@@ -3,8 +3,8 @@
 //
 // There is no second sign-in path here. The word becomes a button that calls DeskV1AccountSignin.start, the same
 // function behind that route's "Sign in" button: the browser route opens browser sign-in in the account's own profile,
-// the API route runs the passcode-gated start-held. Only the word "Needs sign-in" is ever a button; Ready, Not checked
-// yet, Not working (which includes a locked vault, whose wording is its own) and the read-off state stay plain text.
+// the API route runs the passcode-gated start-held. Account words act only for "Needs sign-in". Saved services also make
+// "Not checked yet" checkable; both service words check first. Ready, Not working and the read-off state stay plain text.
 // The card-level word starts the first route that Needs sign-in (Browser, then App), the first "Sign in" on the card.
 import { ConnectionWords as W } from './desk-v1-connection-words.js';
 (function () {
@@ -47,7 +47,8 @@ import { ConnectionWords as W } from './desk-v1-connection-words.js';
   // A saved browser-profile service (Instagram today, desk-v1-browser-service.js) has no route rows and no
   // DeskV1AccountSignin route: its sign-in is the reviewed page its own check reported (`status.signin_url`) opened in the
   // service's own profile, which is exactly what that check does when it finds the profile signed out. The word is a
-  // button only when it Needs sign-in AND that page is known; otherwise it stays plain text.
+  // button when it needs sign-in, or has a checkable but unverified profile. Both
+  // run the shared check first; only signed-out evidence opens the sign-in page.
   function _serviceTarget(s) {
     const c = s && s.browser_connection, url = c && c.status && c.status.signin_url;
     return url && c.browser_profile ? { url: String(url), profile: String(c.browser_profile) } : null;
@@ -55,15 +56,13 @@ import { ConnectionWords as W } from './desk-v1-connection-words.js';
 
   // `st` is the service's status (W.from).
   function serviceWord(s, st) {
-    if (!st || st.kind !== 'signin' || !(window.DeskV1Store && window.DeskV1Store.live()) || !_serviceTarget(s)) return '';
-    return `<button type="button" class="desk-v1-conn-status desk-v1-ss-btn" data-conn-status data-state="${esc(st.key)}" data-ss-service="${esc(s.id)}" aria-label="Sign in to ${esc(s.name)}">${esc(W.status.signin)}</button>`;
+    const action = serviceTile(s, st);
+    if (!action) return '';
+    return `<button type="button" class="desk-v1-conn-status desk-v1-ss-btn" data-conn-status data-state="${esc(st.key)}" data-ss-service="${esc(s.id)}" aria-label="${esc(action)}">${esc(st.word)}</button>`;
   }
 
-  async function startService(s) {
-    const t = _serviceTarget(s);
-    if (!t || typeof window.openBrowserPane !== 'function') return;
-    try { await window.openBrowserPane(t.url, null, null, t.profile); }
-    catch (e) { console.error('[status-signin] the browser pane could not be opened', e); window.DeskV1Kit?.toast('The browser pane could not be opened.'); }
+  function startService(s) {
+    return window.DeskV1ConnectBrowserCheck?.check('service-' + s.id);
   }
 
   function bindService(root, s) {
@@ -80,7 +79,9 @@ import { ConnectionWords as W } from './desk-v1-connection-words.js';
     return _cardRoute(ch, st, facets) ? `Sign in to ${W.serviceName(ch.platform)}` : '';
   }
   function serviceTile(s, st) {
-    return st && st.kind === 'signin' && _live(s) && _serviceTarget(s) ? `Sign in to ${s.name}` : '';
+    if (!st || !_live(s) || !_serviceTarget(s)) return '';
+    if (st.kind === 'signin') return `Sign in to ${s.name}`;
+    return st.kind === 'unchecked' && s.browser_connection.status?.verifiable !== false ? `Check ${s.name}` : '';
   }
   function pillHTML(it) {
     return `<button type="button" class="desk-v1-conn-pill desk-v1-ss-pill" data-conn-tile-action="${esc(it.key)}" data-state="${esc(it.status.key)}" aria-label="${esc(it.signin)}">${esc(it.status.word)}</button>`;
