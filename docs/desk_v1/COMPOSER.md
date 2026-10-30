@@ -383,3 +383,113 @@ For replay without the temporary registration wrapper, run the named
 `node tools/smoke/<name>.mjs` entries directly from the repo root with the
 main checkout's smoke dependency junction and the `MC_PYTHON` value above.
 Integration/release remains with Dave.
+
+### C5 — Sol_Tobin — 2026-10-30 (branch candidate)
+
+Base `fbfaf484`, branch `clayrune/agent/fa8e76c967e7`. Where is now a
+read-only overview of individual assignments: distinct live post counts per
+campaign account, existing version cards and hover/keyboard/tap previews.
+Archived pieces and archived/skipped versions do not inflate counts; multiple
+versions of the same piece on one account count once. Empty accounts show zero.
+
+Removed Where's pointer handlers, message-add and version-move menus, individual
+assignment removal, drop targets and drag styling. Retired
+`desk-v1-where-removal.js` and its index registration. Account selection is
+click/Enter/Space; account removal, voices, suggestion-account acceptance,
+Connections handoffs, plan persistence, rollback and Undo retain their existing
+contracts. `plan.accounts` still supplies composer defaults and approval bounds.
+Expansion still shows Awaiting approval and routes to Launch; narrowing preserves
+approval, archives pending versions and preserves published history. Undo cannot
+restore a human approval via a plain version PATCH. No backend or gate changes.
+`DeskV1WhereActions.addVersion` remains solely for the existing campaign card
+menu; there is no Where UI path to it. What and Piece were not edited.
+
+Retired smoke assertions (named explicitly for review):
+
+- `desk-v1-where`: message drag adds a version/pill increment; version drag moves
+  with unchanged total/pill; published-version drag is refused; source drag adds
+  an empty column, widens approval and accepts read-only planning; keyboard
+  message/version menus add/move and restore their trigger focus. Replaced by
+  no ghost/drop-target, no assignment mutation/menu/remove controls, correct
+  per-account counts and click/keyboard account selection/approval checks.
+- `desk-v1-post-preview`: preview suppression during drag and drag adding a
+  version. All actual popup/modal, copy/media, platform, Escape and touch checks
+  remain; the Where smoke owns the no-drag invariant.
+- `desk-v1-where-drag-service` and `desk-v1-where-attach`: pointer ghost/hover/drop
+  and dropped account placement. The entry name is retained for existing runners;
+  saved-sign-in explanation, human-only attachment/cancellation/refusal/retry,
+  no permission grant/browser-session use and selected-account persistence remain.
+- `desk-v1-campaign-content`: suggestion drag persists a piece/version and keeps
+  its suggestion, assignment reload, individual X/Undo restores drafting, refused
+  assignment add rolls back with honest copy. Replaced with real-store account
+  bound reload/refusal rollback and absent individual X; piece lifecycle/media
+  checks remain. Composer smokes cover destination persistence/refusal/Undo.
+- `desk-v1-live-accounts`: Where message activation POSTs M17, keeps its account,
+  then a move PATCHes M18 with no approved/scheduled state. Replaced by zero
+  individual version writes; account-removal archive and refusal checks remain.
+- `desk-v1-journey`: source drag and message drag placement. Replaced by account
+  selection and an actual composer draft appearing in the overview; the rest of
+  the continuous journey remains.
+
+Browser validation: all rc 0 from the worktree root using
+`node _scratch/run-smoke.mjs tools/smoke/<name>.mjs`. The gitignored wrapper
+registers its own PID and spawned fixtures/Playwright processes before importing
+the unmodified entry point. Set `MC_PYTHON` to the main checkout's venv Python;
+link that checkout's smoke node_modules (no installation).
+
+| Smoke name | Coverage |
+|---|---|
+| `desk-v1-where` | Three themes, counts including duplicate/inactive/archived cases, no pointer/menu mutations, account widening/narrowing, Undo, empty campaign, 1440/390 layout and touch targets |
+| `desk-v1-where-drag-service` | Missing account explanation, assisted/read-only account selection, both widths |
+| `desk-v1-where-attach` | Existing human-only attachment and selection persistence, both widths |
+| `desk-v1-where-services` | Saved source/status truthfulness, failure/retry, no new connection or grants |
+| `desk-v1-post-preview` | Existing desktop and touch previews |
+| `desk-v1-campaign-content` | Isolated Flask/filesystem store, bound reload/refusal, piece lifecycle/Undo and inline article media |
+| `desk-v1-live-accounts` | Existing live-account writes, bound selection/removal/refusal and demo no-write |
+| `desk-v1-journey` | Full campaign journey, now through composer selection |
+| `desk-v1-campaign` | Campaign controls, themes, responsive layout and Undo |
+| `desk-v1-composer` | C1 creation/races, bounded ticks, save/refusal/retry, schedule/Review and demo |
+| `desk-v1-composer-media` | C2 media and Library contract |
+| `desk-v1-composer-preview` | C3 live panel and account tabs |
+| `desk-v1-composer-duplicate` | C4 real-store copies, bounds, media, lifecycle and Undo |
+| `boot-smoke` | Seven boot scenarios and all dashboard guards |
+
+`python -m pytest -q tests -k desk` completed with rc 0 (the repository's quiet
+configuration suppresses the final test-count summary). Two collection
+SyntaxWarnings concern existing escape sequences in `test_agent_routes.py`
+and `test_process_sweep.py`. Full output: `_scratch/composer_c5/pytest.log`.
+No new Python module means pyright is not applicable. `git diff --check` passes.
+Initial harness failures: the refusal locator matched both toast and screen-reader
+announcement (now scoped to the toast); the new journey tried to click the map
+while still inside the composer (now uses the visible Back button first).
+Both final retries pass. Screenshot review also caught and removed the old dashed
+drop-zone affordance in `desk-v1-campaign-content.css`.
+
+Visually inspected screenshots in this worktree:
+`_scratch/composer_c5/r2_10_where_1440.png` and
+`_scratch/composer_c5/r2_10_where_phone_390.png`. Guide and CHANGELOG updated;
+README/agent-rule/architecture-rule changes are not needed. Actual platform
+publishing is outside this slice and untested. No master merge, push, server
+restart or live Desk writes; Dave owns integration. No product decision is open.
+The home-plan write was fenced; the execution plan and progress are retained in
+the gitignored journal `docs/_journal/fa8e76c967e7-composer-c5-c6.md`.
+
+The unattended fence refused `git restore` for five tracked screenshots generated
+by the existing journey/campaign/services smokes. They are deliberately unstaged.
+Cleanup, in this worktree, for Dave after review (not retried here):
+
+```powershell
+git restore -- docs/desk_v1/screens/r2_13_journey_goal_1440.png docs/desk_v1/screens/t2a_campaign_desktop_1440.png docs/desk_v1/screens/t2a_campaign_phone_390.png docs/desk_v1/screens/where_configured_after_1440.png docs/desk_v1/screens/where_configured_after_390.png
+```
+
+**Handoff blocker:** the fence also refused the required smoke dependency-junction
+removal (`destructive delete outside scratch`). The junction still targets the
+main checkout's dependencies. No alternate deletion was attempted. Because Dave
+explicitly required removing it before committing, C5 remains uncommitted and C6
+has not been applied. C5's named source/test/doc paths are staged; generated PNGs
+are not. After deleting ONLY this junction, resume this session to commit C5 and
+then implement/test/commit C6. Do not recursively remove the dependency directory.
+
+```powershell
+cmd /c rmdir "C:\Users\levir\Documents\_claude\mission-control\.clayrune\agents\fa8e76c967e7\tools\smoke\node_modules"
+```

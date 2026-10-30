@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - Keep campaign placement overview read-only
+
+- Where shows each campaign account's live post count and existing assignments, with hover/tap previews. Individual assignment drags, placement menus and remove buttons are retired; post destinations are selected in the composer.
+- Account selection remains available by click or keyboard. Campaign account bounds, widening approval, narrowing, pending-version archival, Undo, voices and Connections handoffs retain their existing contracts. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-30] - Preview campaign posts while writing
 
 - Added a live composer side panel with one tab per selected account, reusing Where's platform cards and media renderer. Unsaved typing updates the preview; clipped copy shows an approximate See more cut, and X shows its 280-character warning.

@@ -1435,15 +1435,20 @@ reports unsupported because its adapter has no scoped, refreshing sign-in
 for deletion; remove that post on LinkedIn. Drafts and unverified sends have
 no platform-delete action. Archiving only changes the Desk's view.
 
-In **Where**, drag a configured connector from **Sources** into the outlined
-drop area, or focus it and press Enter. Disconnected and read-only accounts
-can be placed for planning; this does not connect them or grant publishing
-permission. A new channel starts empty. Drag the messages you want into it.
-A suggestion becomes a saved piece on its first action, before a channel
-version is saved. Existing assignments remain in place. The channel's **X**
-removes it from this campaign, leaving its configured connection in Sources.
-A version's **X** removes that unsent assignment; published history remains.
-These removals have Undo.
+In **Where**, select a configured account from **Sources** by clicking it or
+focusing it and pressing Enter or Space. This sets the campaign's allowed
+account set, used as the default in new post composers and as the approval
+bound. Adding an account beyond an approved plan requires approval again at
+Launch; removing one narrows the plan. Disconnected and read-only accounts
+can be selected for planning without connecting them or granting permission.
+
+The overview shows each campaign account's post count and its existing
+assignments. Hover a post or use its eye button to preview it. Set individual
+post destinations in the **composer**; the overview has no drag-to-place,
+assignment menu or individual assignment removal. The account's **X** removes
+it from this campaign and archives its pending versions; published history
+and the configured connection remain. **Undo** restores the account and its
+pending versions, returning approved versions to review when necessary.
 
 Sources lists only accounts configured in **Connections** and saved browser
 connections for campaign destinations. Services you have never configured and
@@ -1456,9 +1461,9 @@ An older saved Instagram browser sign-in can appear before it has been attached
 to an account. Its chip says **Needs account**. Choose **Link account ›** to
 open Permissions directly, select its account or enter the handle, and review
 the connection. Save uses the existing passcode gate. Until attached,
-the saved sign-in cannot be dragged into a campaign. This display grants no
+the saved sign-in cannot be selected as a campaign account. This display grants no
 Read or Post permission. After Save, returning to Where shows the account as a
-draggable channel without reloading. **Retry**
+selectable account without reloading. **Retry**
 retries a failed list load. Generation and storage services stay in Connections.
 
 In **Studio → New article**, start a draft to open its agent conversation beside

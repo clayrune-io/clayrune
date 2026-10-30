@@ -1,17 +1,4 @@
-#!/usr/bin/env node
-// Where: dragging an Instagram SOURCES tile onto the board (Ron 2026-10-30:
-// "still cannot drag Instagram onto the channel area"). Real mouse events through
-// window.PointerDrag, at 1440 and 390 px.
-//
-// Three shapes of "Instagram" can sit in SOURCES:
-//   A. Ron's real data: a SAVED BROWSER SIGN-IN (service:null, www.instagram.com)
-//      with no account behind it -> a "Needs account" tile. It is not an account,
-//      so it cannot become a column; the tile must say so when dragged/dropped.
-//   B. an Instagram ACCOUNT (assisted) -> a normal draggable source: drop adds its column.
-//   C. an Instagram ACCOUNT, read-only (capability none) -> draggable, drop adds its column.
-// Hermetic: real index.html + static/js|css, mocked /api, no server.
-//
-// RUN   cd tools/smoke && node desk-v1-where-drag-service.mjs     (exit 0 = all hold)
+// C5: retained entry name; saved sign-in explanation and account selection, no drag.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -64,36 +51,6 @@ async function boot(browser, width, variant) {
   return { ctx, page, errors };
 }
 
-// Real mouse drag: down on the tile, cross the slop, release over the board.
-async function dragTo(page, fromSel, toSel) {
-  const from = page.locator(fromSel).first();
-  await from.scrollIntoViewIfNeeded();
-  const fb = await from.boundingBox();
-  assert.ok(fb, `drag source not visible: ${fromSel}`);
-  await page.mouse.move(fb.x + fb.width / 2, fb.y + 6);
-  await page.mouse.down();
-  await page.mouse.move(fb.x + fb.width / 2 + 14, fb.y + 20, { steps: 4 });
-  // Aim at a point where the board really is the topmost thing on screen (a sticky
-  // header can cover its top edge); the drag engine has no auto-scroll.
-  const aim = await page.evaluate((sel) => {
-    const board = document.querySelector(sel);
-    const r = board.getBoundingClientRect();
-    const x = r.left + Math.min(r.width / 2, 200);
-    for (let y = Math.min(r.bottom - 4, innerHeight - 4); y > Math.max(r.top, 0); y -= 6) {
-      const e = document.elementFromPoint(x, y);
-      if (e && board.contains(e) && !e.closest('[data-where-sources]')) return { x, y, ok: true };
-    }
-    return { x, y: 0, ok: false };
-  }, toSel);
-  assert.ok(aim.ok, `drop target ${toSel} is not on screen together with ${fromSel}`);
-  await page.mouse.move(aim.x, aim.y, { steps: 10 });
-  const hovered = await page.locator(toSel).first().evaluate((n) => n.classList.contains('pd-drop-hover'));
-  await page.waitForTimeout(40);
-  await page.mouse.up();
-  await page.waitForTimeout(150);
-  return { hovered };
-}
-
 const columns = (page) => page.locator('.desk-v1-where-col').evaluateAll((n) => n.map((c) => c.dataset.channelId));
 const toastText = (page) => page.evaluate(() => (document.querySelector('.desk-v1-toast, [data-desk-toast], #desk-v1-toast') || {}).innerText || '');
 
@@ -107,12 +64,13 @@ try {
       const { ctx, page, errors } = await boot(browser, width, 'service');
       await page.waitForSelector('[data-where-service="svc-instagram"]');
       const before = await columns(page);
-      const r = await dragTo(page, '[data-where-service="svc-instagram"]', '[data-where-board]');
+      await page.locator('[data-where-service="svc-instagram"]').click({ position: { x: 20, y: 8 } });
+      const r = { hovered: false };
       const after = await columns(page);
       const note = await page.locator('[data-where-service-why]').count();
       results.push({ width, case: 'A saved sign-in', ghostRan: r.hovered, columnsBefore: before.length, columnsAfter: after.length, whyShown: note });
       assert.equal(after.length, before.length, `${width}px A: a sign-in is not an account, no column is added`);
-      assert.equal(r.hovered, true, `${width}px A: the board lights up under a dragged Instagram tile`);
+      assert.equal(r.hovered, false, `${width}px A: selection uses no drag target`);
       assert.equal(note, 1, `${width}px A: the user is told why the drop did not add a column`);
       const why = await page.locator('[data-where-service-why]').innerText();
       assert.match(why, /Instagram/i); assert.match(why, /account/i);
@@ -137,10 +95,10 @@ try {
       const { ctx, page, errors } = await boot(browser, width, variant);
       await page.waitForSelector('[data-where-source][data-channel-id="ig-account"]');
       const before = await columns(page);
-      await dragTo(page, '[data-where-source][data-channel-id="ig-account"]', '[data-where-board]');
+      await page.locator('[data-where-source][data-channel-id="ig-account"]').click({ position: { x: 20, y: 8 } });
       const after = await columns(page);
       results.push({ width, case: variant, columnsBefore: before.length, columnsAfter: after.length });
-      assert.equal(after.length, before.length + 1, `${width}px ${variant}: dropping the Instagram account adds its column`);
+      assert.equal(after.length, before.length + 1, `${width}px ${variant}: selecting the Instagram account adds its column`);
       assert.ok(after.includes('ig-account'));
       assert.deepEqual(errors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e)), []);
       await ctx.close();

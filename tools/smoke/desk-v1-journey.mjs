@@ -130,7 +130,7 @@ async function lastCampaignId(page) {
   });
 }
 
-const SHOT_DIR = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens');
+const SHOT_DIR = resolve(REPO_ROOT, '_scratch', process.env.COMPOSER_SHOTS || 'composer_c5');
 const text = async (page, sel) => ((await page.textContent(sel).catch(() => '')) || '').replace(/\s+/g, ' ').trim();
 const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const DAY = 86400000;
@@ -340,17 +340,21 @@ async function run(browser) {
   const nSources = await page.locator('[data-where-source]').count();
   nSources > 0 ? ok(`Where: SOURCES offers the project's ${nSources} connected account(s)`) : fail('Where: no sources offered');
   const srcChannel = await page.locator('[data-where-source]').first().getAttribute('data-channel-id');
-  await drag(page, `[data-where-source][data-channel-id="${srcChannel}"]`, '[data-where-messages]');
+  await page.locator(`[data-where-source][data-channel-id="${srcChannel}"]`).click();
   const colSel = `.desk-v1-where-col[data-channel-id="${srcChannel}"]`;
   (await page.$(colSel)) && !(await page.$('[data-where-awaiting]'))
-    ? ok(`Where: a source dragged up opened the ${srcChannel} column (Draft: no approval state)`)
-    : fail(`Where: source drag did not open ${srcChannel} column`);
-  const famId = await page.locator('[data-where-message]').first().getAttribute('data-family-id');
-  await drag(page, `[data-where-message][data-family-id="${famId}"]`, colSel);
+    ? ok(`Where: a source selected opened the ${srcChannel} column (Draft: no approval state)`)
+    : fail(`Where: source selection did not open ${srcChannel} column`);
+  // C5: individual placement belongs to the composer, not the overview.
+  await gotoStop(page, 'what');
+  await page.click('[data-what-type="post"]');
+  await page.waitForSelector('[data-composer]');
+  await page.fill('[data-composer-text]', 'The campaign journey now makes its post in the composer.');
+  await page.waitForFunction(() => /^Saved/.test(document.querySelector('[data-composer-status]')?.textContent || ''));
+  await page.click('.desk-v1-back');
+  await gotoStop(page, 'where');
   const placed = await page.locator(`${colSel} [data-where-version]`).count();
-  placed >= 1
-    ? ok(`Where: dragging message ${famId} into the column placed ${placed} version(s)`)
-    : fail(`Where: message drag placed nothing in ${srcChannel}`);
+  placed >= 1 ? ok('Composer selections appear in the read-only overview') : fail('Composer selections missing from overview');
   await page.screenshot({ path: resolve(SHOT_DIR, 'r2_13_journey_where_1440.png') });
 
   // ── Brief owns the term now (Presence retired); When only places time ────
@@ -565,5 +569,5 @@ try {
 } finally {
   if (browser) await browser.close();
 }
-console.log(bad === 0 ? `\nAll checks passed.` : `\n${bad} check(s) failed.`);
+console.log(exitCode === 0 ? `\nAll checks passed.` : `\nJourney failed (${bad} assertion failures; see harness errors above).`);
 process.exit(exitCode);

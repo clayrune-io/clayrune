@@ -36,7 +36,7 @@
     }).join('');
   }
 
-  // Dropping (or pressing Enter on) a saved sign-in: it holds a login, not an
+  // Clicking (or pressing Enter on) a saved sign-in: it holds a login, not an
   // account, so there is no column to add. Say that and offer the one next step.
   // The drop happens at the bottom of the page (SOURCES), the notice sits at the top: bring it into view.
   function explain(id, repaint) {
@@ -48,7 +48,7 @@
     const s = why && saved && saved.find((x) => x.id === why);
     const dest = s && destination(s);
     if (!dest) return '';
-    return `<div class="desk-v1-where-notice" data-where-service-why role="status">${esc(dest.label)} can't be a channel yet: <strong>${esc(s.name)}</strong> is a saved sign-in, not an account. Link the ${esc(dest.label)} account it is signed in as, then drag that account up.
+    return `<div class="desk-v1-where-notice" data-where-service-why role="status">${esc(dest.label)} can't be a channel yet: <strong>${esc(s.name)}</strong> is a saved sign-in, not an account. Link the ${esc(dest.label)} account it is signed in as, then select that account below.
       <button type="button" class="desk-v1-where-notice-link" data-where-service-open="${esc(s.id)}">Link account ›</button></div>`;
   }
 

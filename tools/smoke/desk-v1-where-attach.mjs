@@ -110,21 +110,13 @@ try {for(const [width,height] of [[1440,1000],[390,844]]) {
  await page.waitForTimeout(80);
  assert.equal(await page.locator('[data-where]').count(),1,'late post-save Connections refresh cannot overwrite Where');
  await source.scrollIntoViewIfNeeded();await shot('attached');
- const box=await source.boundingBox();
- await page.mouse.move(box.x+box.width/2,box.y+25);await page.mouse.down();
- await page.mouse.move(box.x+box.width/2+16,box.y+40,{steps:4});
- await page.waitForSelector('.pd-ghost');
- const board=page.locator('[data-where-board]');await board.scrollIntoViewIfNeeded();
- const dest=await board.boundingBox(), body=await page.locator('#desk-v1-camp-tabbody').boundingBox();
- const top=Math.max(dest.y,body.y), bottom=Math.min(dest.y+dest.height,body.y+body.height);
- await page.mouse.move(dest.x+Math.min(dest.width/2,150),top+(bottom-top)/2,{steps:12});
- await page.mouse.up();
+ await source.click();
  await page.waitForSelector('.desk-v1-where-col[data-channel-id="attached-instagram"]');
  await page.waitForFunction(()=>window.DeskV1Store.state().campaigns.find(c=>c.id==='camp-1').plan.accounts.includes('attached-instagram'));
- assert.ok(srv.log.some(r=>r.method==='PATCH' && r.body?.plan?.accounts?.includes('attached-instagram')),'drag persists campaign placement');
+ assert.ok(srv.log.some(r=>r.method==='PATCH' && r.body?.plan?.accounts?.includes('attached-instagram')),'selection persists campaign placement');
  assert.equal(srv.log.filter(r=>/\/browser\/(launch|input)|\/verify$|\/check$/.test(r.path)).length,0,'never uses the saved browser session');
  assert.deepEqual(pageErrors.filter(m=>!/aborted|net::ERR|Failed to fetch|EventSource/i.test(m)),[]);
- console.log(`PASS ${width}: direct legacy attach, truthful tile, empty handle, cancellation, failed save retry, no grants, refreshed account and pointer drag`);
+ console.log(`PASS ${width}: direct legacy attach, truthful tile, empty handle, cancellation, failed save retry, no grants, refreshed account and account selection`);
  await ctx.close();
 }}
 finally {await browser.close();}
