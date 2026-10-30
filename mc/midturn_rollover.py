@@ -65,8 +65,12 @@ _BG_JOBS_KEEP = 10
 UNANSWERED_KEEP = 5
 USER_MSG_CAP_CHARS = 2000
 _INPUT_PREVIEW = 160
-_GIT_OUT_CAP = 1000
-_GIT_OUT_LINES = 20
+# Line caps, not a character cap: 1,000 characters bound at ~14 `diff --stat`
+# rows, so later files AND the trailing `N files changed` summary vanished.
+# When the line cap bites, the last line is kept (that summary; for `status
+# --short` just the last entry) and the count of omitted lines is stated.
+_GIT_OUT_LINES = 30
+_GIT_LINE_CAP = 160
 _GIT_TIMEOUT_S = 10
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
@@ -353,10 +357,13 @@ def _git(cwd, *args):
     text = (out.stdout or '').strip() or (out.stderr or '').strip()
     if out.returncode != 0:
         return f'(git {" ".join(args)} exited {out.returncode}: {text[:300]})'
-    bounded = '\n'.join(text.splitlines()[:_GIT_OUT_LINES])[:_GIT_OUT_CAP]
-    if bounded != text:
-        text = bounded + '\n[... truncated]'
-    return text or '(clean)'
+    lines = [ln if len(ln) <= _GIT_LINE_CAP else ln[:_GIT_LINE_CAP] + ' [... truncated]'
+             for ln in text.splitlines()]
+    if len(lines) > _GIT_OUT_LINES:
+        omitted = len(lines) - _GIT_OUT_LINES
+        lines = (lines[:_GIT_OUT_LINES - 1]
+                 + [f'[... truncated: {omitted} line(s) omitted]', lines[-1]])
+    return '\n'.join(lines) or '(clean)'
 
 
 def build_roll_state_block(session, cwd):

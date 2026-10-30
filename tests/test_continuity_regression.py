@@ -144,7 +144,7 @@ def test_noisy_git_cannot_consume_recent_turn_budget(monkeypatch, output):
     assert 'historical; may be long finished, not the current task' in block
     assert block.index('Do not recreate it') < block.index('Create the X app')
     assert block.index('X app already exists') < block.index('Create the X app')
-    assert block.count('[... truncated]') == 3
+    assert block.count('[... truncated') == 3
     assert len(block) < 4200
 
 
@@ -154,3 +154,84 @@ def test_latest_is_current_even_when_it_equals_the_first_message(monkeypatch):
                                  '_mt_latest_user_msg': 'repair continuity'}, '.')
     assert '--- Latest user message (current direction) ---\nrepair continuity' in block
     assert block.count('repair continuity') == 2
+
+
+# The USER branch after the repair: a stale first message must not reach the
+# extractor under the strongest label when the injected block does not LEAD
+# the turn (measured 2026-10-29: 74 of 713 USER turns, see mc/scribe_user_turn.py).
+STATE = ("=== Mid-task rollover state ===\n--- Unanswered user messages (answer these first) ---\n"
+         "(none)\n\n--- First message of this chat (historical; may be long finished, "
+         "not the current task) ---\ncreate the X.com app\n--- Original task (verbatim) ---\n"
+         "create the X.com app\n=== End of mid-task rollover state ===\n\n" + mt.ROLL_MESSAGE)
+REPLAY = ("=== Prior conversation, started on claude (session abc), handed off here ===\n\n"
+          "User: create the X.com app\n\nAssistant: opening the portal\n\n"
+          "User: --- STANDING POSITIONS (already decided) ---\n  * old\n\n"
+          "--- RELEVANT MEMORY ---\n  * stale\n\n--- REPLY SHAPE ---\nshort\n")
+
+
+def users(rendered):
+    return [t for t in rendered.splitlines() if t.startswith('USER:')]
+
+
+def test_user_text_before_rollover_block_is_kept_and_block_is_cut():
+    rendered = mem._scribe_render_lines([
+        line('user', 'The X app already exists; stop offering it.\n\n' + STATE),
+        line('user', [{'type': 'text', 'text': '--- RELEVANT MEMORY ---\nold\n\n'
+                                              'signed in\n\n' + STATE}]),
+        line('user', STATE),
+        line('user', "'\n\n" + STATE),
+    ])
+    assert users(rendered) == ['USER: The X app already exists; stop offering it.',
+                               'USER: signed in', "USER: '"]
+    for forbidden in ('Original task', 'create the X.com app', 'rolled over mid-task',
+                      'Mid-task rollover state', 'old'):
+        assert forbidden not in rendered
+
+
+def test_prior_conversation_replay_without_footer_is_cut_wherever_it_starts():
+    rendered = mem._scribe_render_lines([
+        line('user', REPLAY),
+        line('user', 'Restarted\n\n' + REPLAY),
+        line('user', REPLAY + '\n' + mem._agent_runtime.HANDOFF_FOOTER + '\n\nkeep going'),
+    ])
+    assert users(rendered) == ['USER: Restarted', 'USER: keep going']
+    for forbidden in ('Prior conversation', 'create the X.com app', 'STANDING POSITIONS',
+                      'RELEVANT MEMORY', 'REPLY SHAPE', 'opening the portal'):
+        assert forbidden not in rendered
+
+
+def test_dispatched_callback_user_lines_are_dropped():
+    rendered = mem._scribe_render_lines([
+        line('user', '[dispatched agent finished] Dave (session 3ffc561a373a) ended with '
+                     'status=idle.\n\nTask: MC-1089 live E2E test\n\nResult: X app created'),
+        line('user', 'X app is done\n\n[dispatched agent finished] Bram ended with status=idle.'),
+        line('user', [{'type': 'tool_result', 'content': 'ok'},
+                      {'type': 'text', 'text': '[dispatched agent finished] Tilda ended.'}]),
+    ])
+    assert users(rendered) == ['USER: X app is done']
+    assert 'RESULT: ok' in rendered
+    assert 'dispatched agent finished' not in rendered
+    assert 'MC-1089' not in rendered
+
+
+def test_diff_stat_line_cap_keeps_every_early_file_and_the_summary_line(monkeypatch):
+    # Real `diff --stat` rows run ~70 chars, which is why 1,000 chars bound at ~14.
+    rows = [f'mc/blueprints/desk_connect_service_{i:02d}.py | {i + 1:3d} {"+" * 30}'
+            for i in range(45)]  # no leading space: _git strips the output
+    stat = '\n'.join(rows + [' 45 files changed, 1035 insertions(+)'])
+    monkeypatch.setattr(mt.subprocess, 'run', lambda *a, **k: SimpleNamespace(
+        stdout=stat, stderr='', returncode=0))
+    out = mt._git('.', 'diff', '--stat')
+    kept = out.splitlines()
+    assert kept[:mt._GIT_OUT_LINES - 1] == rows[:mt._GIT_OUT_LINES - 1]
+    assert kept[-1] == ' 45 files changed, 1035 insertions(+)'
+    assert kept[-2] == '[... truncated: 16 line(s) omitted]'
+    assert len(kept) == mt._GIT_OUT_LINES + 1
+    assert len(out) > 1000  # the old character cap would have cut at ~14 rows
+
+
+def test_git_output_under_the_line_cap_is_untouched(monkeypatch):
+    stat = '\n'.join([f'f{i}.py | 1 +' for i in range(20)] + [' 20 files changed'])
+    monkeypatch.setattr(mt.subprocess, 'run', lambda *a, **k: SimpleNamespace(
+        stdout=stat, stderr='', returncode=0))
+    assert mt._git('.', 'diff', '--stat') == stat
