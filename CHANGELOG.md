@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Link a saved browser account directly from Where
+
+- Unattached browser destinations show **Needs account** and name the account to link. **Link account ›** opens the existing Permissions attachment form directly, including legacy Instagram references with `service:null`.
+- Returning to Where after attachment exposes the draggable account without reloading. Delayed Connections refreshes and setup reads cannot replace the page after navigation. Account choice, Review, passcode and separate Read/Post gates remain intact. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-29] - Keep current user corrections across continuity rollovers
 
 - Rollover labels the chat's first message as historical and puts the latest direction and unanswered messages first. Git output is capped at 20 lines / 1,000 characters per section.

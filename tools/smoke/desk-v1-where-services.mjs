@@ -54,6 +54,8 @@ async function boot(browser, width, failCatalog = false) {
     if (path === '/api/projects') return J(fx.projects.map(p => ({ ...p, status: 'active', activity_log: [], backlog: [], roster: [], project_path: '/smoke/' + p.id })));
     if (path === '/api/characters') return J([]);
     if (path === '/api/local-auth/status') return J({ configured: true });
+    if (path === '/api/browser/profiles') return J({profiles:[{name:'main'}]});
+    if (path === '/api/browser/agent-read') return J({profiles:{main:{enabled:false,domains:[]}}});
     if (path === '/api/desk/workspace') return J(workspaceFromFixtures(fx));
     if (path === '/api/desk/services') { if (failSaved) { failSaved=false; return J({error:'Saved list offline'},503); } return J(saved); }
     if (path === '/api/desk/connect/services') {
@@ -96,13 +98,13 @@ try {
     if (before) { await ctx.close(); console.log(`BEFORE ${width}px captured`); continue; }
     assert.equal(await page.locator('[data-where-service]').count(),1,'only saved campaign destinations appear');
     assert.equal(await page.locator('[data-platform="tiktok"]').count(),0,'unconnected and preview TikTok hidden');
-    assert.match(await page.locator('[data-where-service="svc-instagram"]').innerText(),/Ready/,'legacy Instagram uses saved check');
+    assert.match(await page.locator('[data-where-service="svc-instagram"]').innerText(),/Needs account/,'legacy Instagram needs an explicit account');
     assert.match(await page.locator('[data-channel-id="ch-li-page"][data-where-source]').innerText(), /Waiting on LinkedIn/);
     assert.equal(await page.locator('[data-where-service]').evaluateAll(nodes=>nodes.some(n=>n.draggable || n.hasAttribute('data-channel-id'))),false,'saved sign-in grants no account placement');
     assert.match(await page.locator('[data-channel-id="ch-x-ron"][data-where-source]').innerText(), /Needs sign-in/,'publish-ready is separate from saved browser sign-in');
     assert.equal(calls.length,0,'Where never starts a new connection');
     await page.locator('[data-where-service-open="svc-instagram"]').click();
-    await page.waitForSelector('[data-browser-service="svc-instagram"]');
+    await page.waitForSelector('[data-site-attach]');
     // Where and Connections consume the same saved read evidence.
     setCoverage([{platform:'linkedin',account_id:'ch-li-page',via:'pane',state:'ok'}]);
     await page.evaluate(()=>window.DeskV1ConnectionStatus.invalidate());
@@ -116,10 +118,10 @@ try {
     assert.match(await page.locator('[data-where-sources]').innerText(),/Saved list offline/);
     await page.locator('[data-where-services-retry]').click();
     await page.waitForSelector('[data-where-service="svc-instagram"]');
-    for (const [state,word] of [['sign_in_required','Needs sign-in'],['check_failed','Not working'],['not_checked','Not checked yet'],['never_checked','Not checked yet']]) {
+    for (const state of ['sign_in_required','check_failed','not_checked','never_checked']) {
       setSaved([{id:'svc-instagram',name:'www.instagram.com',link:'https://www.instagram.com',browser_connection:{service:null,browser_profile:'main',status:{state}}}]);
       await where();
-      await page.waitForFunction(word=>document.querySelector('[data-where-service="svc-instagram"]')?.innerText.includes(word),word);
+      await page.waitForFunction(()=>document.querySelector('[data-where-service="svc-instagram"]')?.innerText.includes('Needs account'));
     }
     await page.evaluate(()=>window.DeskV1Store.state().channels.push({id:'ig-account',platform:'instagram',identity:'My Instagram',connected:true,capability:'assisted'}));
     setSaved([{id:'svc-instagram',name:'www.instagram.com',link:'https://www.instagram.com',account_id:'ig-account',browser_connection:{browser_profile:'main',status:{state:'verified'}}}]);

@@ -1370,11 +1370,12 @@ state separately from publishing readiness. A LinkedIn app-review wait is not a
 missing browser connection.
 
 An older saved Instagram browser sign-in can appear before it has been attached
-to an account. Its chip uses the same check result as Connections. Choose
-**Open Connections ›**, then **Edit** to select its account or enter the handle
-and review Permissions. Save uses the existing passcode gate. Until attached,
+to an account. Its chip says **Needs account**. Choose **Link account ›** to
+open Permissions directly, select its account or enter the handle, and review
+the connection. Save uses the existing passcode gate. Until attached,
 the saved sign-in cannot be dragged into a campaign. This display grants no
-Read or Post permission. Returning to Where refreshes the saved list; **Retry**
+Read or Post permission. After Save, returning to Where shows the account as a
+draggable channel without reloading. **Retry**
 retries a failed list load. Generation and storage services stay in Connections.
 
 In **Studio → New article**, start a draft to open its agent conversation beside
@@ -1442,7 +1443,7 @@ When editing an X account's app connection, **Save** keeps its working sign-in w
 
 Saved Connections use **Ready**, **Needs sign-in**, **Not checked yet**, **Not working**, or **Waiting on** the service. A saved profile or registered server alone does not mean Ready. Each social detail shows its status and next step, then **Permissions** with **Read** and **Post**, each **On** or **Off** with a reason when off. **Details** holds the connection method, profile, scope names, review restrictions and cost notes. Readiness never grants permission.
 
-An existing browser profile shows **Not checked yet** when its verification is missing or expired, including after a server restart or cookie changes. This does not mean you signed out. A missing profile or a check that found you signed out shows **Needs sign-in**. On a saved browser service with an automatic check, press **Not checked yet** on its tile or detail heading to check it. Its **Needs sign-in** word also checks first: success changes it to **Ready** without opening a pane; a signed-out result opens sign-in in its saved profile; a check that cannot run shows an error and opens nothing. Where uses the same saved status and its **Open Connections** button takes you to that check.
+An existing browser profile shows **Not checked yet** when its verification is missing or expired, including after a server restart or cookie changes. This does not mean you signed out. A missing profile or a check that found you signed out shows **Needs sign-in**. On a saved browser service with an automatic check, press **Not checked yet** on its tile or detail heading to check it. Its **Needs sign-in** word also checks first: success changes it to **Ready** without opening a pane; a signed-out result opens sign-in in its saved profile; a check that cannot run shows an error and opens nothing. Where's account channels use the same saved sign-in status. An unattached browser service instead shows **Needs account**, with **Link account ›** opening the account attachment step.
 
 The standard actions are **Check now**, **Edit**, **Sign in** when needed, and **Remove**, in that order. Engines retain their per-job limit and **Save limit**. Checks only run when you press them. Browser checks use the selected profile; a passing check does not open a pane, while a signed-out result opens the existing recovery flow. During sign-in recovery the status says **Waiting for you to sign in**, including while **Checking…** rechecks run. A failed network check or an unsuccessful final check after the ten-minute recovery window shows **Not working**. A service without an automatic check can ask whether you are signed in; your confirmation remains **Not checked yet**, because it is not verification. A browser check grants no Read or Post permission.
 
