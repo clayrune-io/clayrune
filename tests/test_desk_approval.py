@@ -89,6 +89,22 @@ def _started(client):
     return r.get_json()
 
 
+# A capped term inside a longer plan: term 1 ends at the 90-day cap, 2027-01-13,
+# but the plan runs on to 2027-03-01, so Renew has a next term to open (a plan end already passed is
+# refused: test_desk_campaign_hold.py).
+LONG_END = '2027-03-01'
+CAPPED_TERM = {'index': 1, 'starts': '2026-10-15', 'ends': '2027-01-13', 'post_cap': 10}
+
+
+def _started_capped(client):
+    plan = _draft()['plan']
+    plan['end'] = {'date': LONG_END, 'post_cap': 10}
+    client.post('/api/desk/campaigns?shape=v1', json=_draft(plan=plan, term=CAPPED_TERM))
+    r = client.post(f'/api/desk/campaigns/{CID}/start')
+    assert r.status_code == 200, r.get_json()
+    return r.get_json()
+
+
 def _patch(client, body):
     r = client.patch(f'/api/desk/campaigns/{CID}?shape=v1', json=body)
     assert r.status_code == 200, r.get_json()
@@ -180,10 +196,10 @@ def test_a_patch_pause_and_resume_keeps_the_approval(client):
 
 # -- widening voids it --------------------------------------------------------
 
-def _widen_cadence(client, per_week=10):
+def _widen_cadence(client, per_week=10, end='2026-12-01'):
     return _patch(client, {'plan': {'title': 'Alpha campaign', 'accounts': ['x:ron'],
                                     'cadence': {'per_week': per_week},
-                                    'end': {'date': '2026-12-01', 'post_cap': 10}}})
+                                    'end': {'date': end, 'post_cap': 10}}})
 
 
 def test_widening_a_bound_leaves_the_campaign_awaiting_approval(client):
@@ -360,19 +376,35 @@ def test_unattended_is_still_refused_with_the_right_passcode(gated, unattended):
 # -- renew --------------------------------------------------------------------
 
 def test_renew_opens_the_next_term_and_resnapshots(client):
-    _started(client)
+    _started_capped(client)
     r = client.post(f'/api/desk/campaigns/{CID}/renew')
-    # term 1 ends 2026-12-01: not over yet at the real clock of this suite
+    # term 1 ends 2027-01-13: not over yet at the real clock of this suite
     assert r.status_code == 409 and 'not ended' in r.get_json()['error']
-    out = _desk.renew_campaign(CID, today='2026-12-02')
-    assert out['term']['index'] == 2 and out['term']['starts'] == '2026-12-01'
+    out = _desk.renew_campaign(CID, today='2027-01-14')
+    assert out['term']['index'] == 2 and out['term']['starts'] == '2027-01-13'
     assert out['approved']['term'] == 2 and len(out['approvals']) == 2
     assert [t['index'] for t in out['terms']] == [1, 2]
 
 
 def test_renew_refuses_when_something_else_was_widened(client):
-    _started(client)
-    _widen_cadence(client)
+    _started_capped(client)
+    _widen_cadence(client, end=LONG_END)
     with pytest.raises(_desk.ApprovalRefused, match='other than the term'):
-        _desk.renew_campaign(CID, today='2026-12-02')
+        _desk.renew_campaign(CID, today='2027-01-14')
     assert len(_stored()['approvals']) == 1
+
+
+def test_renew_route_answers_409_with_the_ended_message_when_the_plan_end_passed(client):
+    # Plan end long past on any real clock: the route's own `today` is the real one.
+    draft = _desk.create_campaign('Over', 'A short campaign', voiceless_ok=True,
+                                  project_id='alpha', state='draft',
+                                  plan={'accounts': ['x:ron'], 'cadence': {'per_week': 3},
+                                        'end': {'date': '2026-10-28', 'post_cap': 10}},
+                                  goal={'horizon': 'short'},
+                                  term={'index': 1, 'starts': '2026-10-15', 'ends': '2026-10-28',
+                                        'post_cap': 10})
+    _desk.start_campaign(draft['id'], today='2026-10-15')
+    r = client.post(f"/api/desk/campaigns/{draft['id']}/renew")
+    assert r.status_code == 409
+    assert r.get_json()['error'] == ('This campaign ended on 2026-10-28. '
+                                     'Extend its end date, then approve to keep posting.')
