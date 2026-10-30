@@ -39,6 +39,25 @@ stop. Every human-only gate stays as it is.
   `desk-v1-composer-channels.js`, `desk-v1-composer-media.js`,
   `desk-v1-composer-preview.js`. Do not grow `desk-v1-what.js` or `desk-v1-piece.js`.
 
+## Campaign stops after the composer (Dave, 2026-10-30)
+
+Today: Brief, Goal, What, Where, When, Launch. Where does two jobs: it sets the
+campaign's account set (`plan.accounts`, the approval bound; Launch's missing-item
+list points at it) and places each post on accounts. The composer takes the
+second job, so the stops become:
+
+**Brief, Goal, Channels, Posts, When, Launch.**
+
+- **Channels** (was Where, moved before What): pick the accounts this campaign
+  may post to, once. Shows per account how many posts go there (the read-only
+  overview). No drag-to-place.
+- **Posts** (was What): the list of posts as cards; New post and any card open the
+  composer. Its avatars default to the Channels set.
+- **When** and **Launch** unchanged.
+
+Why Channels before Posts: the composer preselects from it, and an empty set is
+what makes a composer show nothing to tick.
+
 ## Build order (one builder, sequential)
 
 | # | Slice | Depends on |
