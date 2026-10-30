@@ -114,3 +114,42 @@ Engram tools were unavailable; this committed report is the durable handoff.
 
 The report is the documentation artifact for this internal typing change;
 user guides, changelog, agent instructions, and rules need no changes.
+
+## CI gate: new errors only (backlog 3f2c103a)
+
+`.github/workflows/pyright.yml` no longer ends in `|| true`. It runs
+`python tools/pyright_baseline_check.py`, which runs `pyright --outputjson`
+and compares against the committed `tools/pyright_baseline.json`.
+
+- **Key:** repo-relative file + rule + first line of the message. Line numbers
+  and pyright's indented detail lines are not part of it, so moving code or a
+  pyright upgrade that rewords the detail does not create "new" errors.
+- **Counted, not de-duplicated.** A second identical error in a file whose
+  baseline holds one fails the check.
+- **Exit codes:** 0 no new errors; 1 new errors (each printed as `NEW`, with
+  baseline vs current count and line numbers); 2 pyright gave no usable report
+  or the baseline is unreadable. Never a silent pass.
+- **Ratchet:** baseline entries that no longer occur print as `FIXED` and do
+  not fail the build. Clear them with `--update` in the same PR that fixed them.
+- **Platform is pinned to Linux** (`--pythonplatform Linux`, CI is ubuntu).
+  Pyright's result depends on the host OS: on this Windows box the same tree is
+  177 errors, under Linux 185 (16 Windows-only `os.setsid`/`fcntl`/`pty` errors
+  vanish, 24 `ctypes.windll`/`winreg`/`_winapi` ones appear). The 177 above is
+  the Windows figure; the baseline file holds the Linux 185. Always regenerate
+  through the script, never from a hand-run `pyright` on Windows.
+
+Regenerate (after fixing errors, or when an intended change adds known ones):
+
+```bash
+python tools/pyright_baseline_check.py --update    # rewrites tools/pyright_baseline.json
+git diff tools/pyright_baseline.json               # review: only removals when ratcheting
+```
+
+Check locally exactly as CI does: `python tools/pyright_baseline_check.py`.
+Diff an already-saved report: `--report saved.json` (must come from
+`pyright --pythonplatform Linux --outputjson`). Tests:
+`tests/test_pyright_baseline_check.py`.
+
+Caveat: `requirements-dev.txt` pins `pyright>=1.1.390`, so CI takes the newest
+pyright. A release that adds new checks or rewords a headline fails the gate
+until the baseline is regenerated. Pinning pyright is a separate decision.
