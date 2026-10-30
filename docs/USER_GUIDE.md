@@ -1302,13 +1302,34 @@ adds a picture without dragging. **Undo** reverses these scene changes.
 The video editor stays focused on scenes and rendering. **Review** appears
 when a version is waiting; the former **Copy, media & versions** link is gone.
 
-In **What**, click a type under **Add a piece**, press Enter on it, or drag it
-onto the campaign's list. A centered popup names the type and keeps its **Name**
-field beside large source cards:
+In **What**, click **Post** under **Add a piece**, press Enter or Space on it,
+or drag it onto the campaign's list to open the post composer. A post card's
+**Open** action reopens it. Opening an empty composer creates no piece;
+the first nonblank text creates a **New post** draft. Use **Save draft** for
+subsequent text edits and check the **Saved** message. A refused write keeps
+your text available for retry.
+
+**Post to** starts with this campaign's accounts selected. Tick or untick an
+account to change this post's destinations. After text creates the draft,
+ticks save immediately; they never add accounts to the campaign's allowed set.
+If no accounts appear, choose them in **Where**. The composer shows a character
+count per selected channel, including an X 280-character warning.
+
+**When** opens one date/time control per destination. Choose a date and time
+in this device's time zone and press **Set time**. The campaign's **When**
+calendar reads the same saved value. Moving an approved version to another
+day asks for confirmation and sends it back for approval. Sent versions
+cannot be rescheduled. **Send to Review** saves the text and destinations,
+then opens the existing Review screen. Approval and publishing still require
+their existing human actions. Approved copy must return to review before
+editing; archived pieces must be restored first. The composer currently
+supports text.
+
+Other types under **Add a piece** open a centered popup with a **Name** field
+beside source cards:
 
 - **Video:** Record from the product, Upload, Online source, Create new in Studio.
 - **Article:** Browse existing, Write new, Import from file.
-- **Post:** Write new, Reuse an existing post.
 - **Image:** Upload, From library, Generate.
 
 **Escape**, the close button or the backdrop closes the popup and keeps the
@@ -1319,18 +1340,10 @@ Article **Import from file** accepts the same text, Markdown and HTML formats
 and limits as the post editor below. HTML becomes plain text. A successful
 import saves the article in What; errors leave the popup open for retry.
 
-Post **Reuse an existing post** lists posts from this campaign and the workspace
-post library. Selecting one copies its text and uploads independent copies of
-its media into the new piece. The original stays unchanged. Destination
-versions, schedules and approvals are not copied. **Undo** reverses the import
-or post copy without changing the original or deleting library files.
-
-On a post's piece page, click the title (for example **New post**) to rename
-it in place. Press Enter or click away to save, Esc to cancel; the title also
-opens from the keyboard (Tab to it, then Enter). Names may contain up to 200
-characters and appear in What, Where, the calendar and menus that list
-pieces. **Undo** restores the previous name. Naming a post does not change
-its copy.
+On an image or video piece page, click the title to rename it in place. Press
+Enter or click away to save, Esc to cancel; the title also opens from the
+keyboard (Tab to it, then Enter). Names may contain up to 200 characters.
+**Undo** restores the previous name.
 
 In **Media**, choose **Add media → From this computer…** to select an image
 for a post/image piece, or a video for a video piece. On a phone, this opens
@@ -1346,9 +1359,9 @@ browser cannot prepare the preview, or the upload reply lacks the saved file,
 Clayrune shows an error. An incomplete reply asks you to reload the piece and
 check its saved media before retrying.
 
-Open a post's piece page to write its **Copy**. For a new post, type in
-**Start typing your post…** or choose **Import from file**. The same editor
-is available on image and video pieces and shows the full saved text.
+Image and video piece pages retain their **Copy** editor and **Import from file**
+control. Existing direct links to a post's generic piece page retain this editor;
+post cards use the composer above. The editor shows the full saved text.
 Imports accept `.txt`, `.md`, `.markdown`, `.html` and `.htm` files, up to
 4 MB; HTML becomes plain text. Importing fills the editor without saving.
 Choose **Save** or leave the text field to save, then check the **Saved**

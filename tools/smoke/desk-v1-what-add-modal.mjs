@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const SHOTS = resolve(ROOT, 'docs/desk_v1/screens');
+const SHOTS = resolve(ROOT, '_scratch/composer_c1');
 mkdirSync(SHOTS, { recursive: true });
 const before = process.argv.includes('--before');
 const state = async (page) => (await page.request.get(origin + '/__state')).json();
@@ -134,61 +134,32 @@ try {
         await saved(page, id, '');
         assert.equal((await state(page)).pieces[article].body, imported, 'Undo affects only this import');
       }
-      // A copied post contains independent body/asset records AND physical files.
-      const post = await add(page, 'post', `Copied post ${width}`);
-      assert.deepEqual(await page.locator('[data-what-source]').evaluateAll((els) => els.map((e) => e.dataset.whatSource)), ['write', 'reuse']);
-      await page.click('[data-what-source="reuse"]');
-      await page.waitForSelector('[data-what-reuse="post-campaign"]');
-      assert.equal(await page.locator('[data-what-reuse="post-library"]').count(), 1, 'library posts listed too');
-      await page.screenshot({ path: resolve(SHOTS, `what_add_post_reuse_${width}.png`) });
-      // Failed media upload rolls body back and keeps the original untouched.
-      let uploads = 0;
-      await page.route(`**/api/desk/pieces/${post}/assets`, (route) => ++uploads === 2
-        ? route.fulfill({ status: 409, contentType: 'application/json', body: '{"error":"media copy refused"}' })
-        : route.continue());
-      await page.click('[data-what-reuse="post-library"]');
-      await page.waitForFunction(() => document.querySelector('[data-what-reuse-status]').textContent.includes('media copy refused'));
-      assert.equal((await state(page)).pieces[post].body, '');
-      assert.equal((await state(page)).pieces[post].assets.length, 0);
-      await page.unroute(`**/api/desk/pieces/${post}/assets`);
-      await page.waitForSelector('[data-what-reuse="post-library"]');
-      const sourceId = width === 1440 ? 'post-library' : 'post-campaign';
-      await page.click(`[data-what-reuse="${sourceId}"]`);
-      await page.waitForSelector('[data-what-add-modal]', { state: 'detached' });
-      let st = await state(page);
-      const copied = st.pieces[post], original = st.pieces[sourceId];
-      assert.equal(copied.body, original.body); assert.equal(copied.assets.length, original.assets.length);
-      assert.notEqual(copied.assets[0].id, original.assets[0].id);
-      assert.notEqual(copied.assets[0].path, original.assets[0].path, 'physical media copy, no shared path');
-      assert.deepEqual(copied.versions, [], 'no approval/schedule/version inherited');
-      assert.equal(st.pieces['post-library'].versions[0].state, 'scheduled', 'original approval retained');
-      const copiedBytes = await page.request.get(origin + '/api/serve-file?path=' + encodeURIComponent(copied.assets[0].path));
-      const originalBytes = await page.request.get(origin + '/api/serve-file?path=' + encodeURIComponent(original.assets[0].path));
-      assert.deepEqual(await copiedBytes.body(), await originalBytes.body());
-      if (width === 390) {
-        await page.click('#desk-v1-undo');
-        await saved(page, post, '');
-        assert.equal((await state(page)).pieces[post].assets.length, 0, 'Undo removes copied attachments');
-        assert.equal((await state(page)).pieces[sourceId].assets.length, original.assets.length);
-      }
-      await boot(page);
-      assert.equal(await page.locator(`[data-what-row][data-family-id="${post}"]`).count(), 1, 'post copy survives reload');
-      await page.request.patch(origin + '/api/desk/pieces/' + post, { data: { body: 'Only the copy changed' } });
-      if (width === 1440) await page.request.delete(origin + `/api/desk/pieces/${post}/assets/${copied.assets[0].id}`);
-      st = await state(page);
-      assert.equal(st.pieces[sourceId].body, original.body);
-      assert.equal(st.pieces[sourceId].assets.length, original.assets.length);
-      assert.equal((await page.request.get(origin + '/api/serve-file?path=' + encodeURIComponent(original.assets[0].path))).status(), 200);
+      // Post no longer has a source fork: keyboard opens the composer without
+      // creating a record. Persist first content through the actual piece routes.
+      const count = Object.keys((await state(page)).pieces).length;
       await page.focus('[data-what-type="post"]'); await page.keyboard.press('Space');
-      await page.waitForSelector('[data-what-source="write"]');
-      await page.click('[data-what-source="write"]');
-      await page.waitForSelector('[data-piece-copy-text]');
-      assert.equal(await page.locator('[data-what-add-modal]').count(), 0, 'Write new opens the existing editor');
+      await page.waitForSelector('[data-composer-text]');
+      assert.equal(await page.locator('[data-what-add-modal]').count(), 0);
+      assert.equal(Object.keys((await state(page)).pieces).length, count);
+      const body = `Real composer post ${width}`;
+      await page.fill('[data-composer-text]', body);
+      await page.waitForFunction(() => document.querySelector('[data-composer-status]').textContent === 'Saved');
+      const post = Object.values((await state(page)).pieces).find((p) => p.body === body);
+      assert(post, 'first content saved in the real store');
+      assert.deepEqual(post.versions, []);
+      assert(await page.locator('[data-composer-review]').isDisabled(), 'empty campaign bound cannot send to review');
+      await page.fill('[data-composer-text]', body + ' updated');
+      await page.click('[data-composer-save]');
+      await saved(page, post.id, body + ' updated');
+      await boot(page);
+      await page.click(`[data-what-row][data-family-id="${post.id}"] [data-primary-action]`);
+      await page.waitForSelector('[data-composer-text]');
+      assert.equal(await page.inputValue('[data-composer-text]'), body + ' updated');
       await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-test', panel: 'what' }));
       await add(page, 'image');
       await page.evaluate(() => window.deskV1Nav('home', {}));
       await page.waitForSelector('[data-what-add-modal]', { state: 'detached' });
-      console.log(`PASS persistence ${width}: HTML import, file validation/refusal, independent post/media copy, rollback, reload`);
+      console.log(`PASS persistence ${width}: HTML import, file validation/refusal, post composer create/save/reload`);
     }
     assert.deepEqual(errors, []);
     console.log(`PASS ${before ? 'baseline' : 'modal'} ${width}`);

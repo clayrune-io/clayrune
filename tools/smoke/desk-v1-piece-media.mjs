@@ -131,6 +131,10 @@ async function toWhat(page) {
 async function toPiece(page) {
   await toWhat(page);
   await page.click(`[data-family-id="${PIECE}"] [data-primary-action]`);
+  await page.waitForSelector('[data-composer]');
+  // C1 sends post cards to the composer. Media remains a generic-piece direct
+  // link contract until the composer's separate media slice is implemented.
+  await page.evaluate((id) => window.deskV1Nav('piece', { campaignId: 'camp-1', familyId: id }), PIECE);
   await page.waitForSelector('.desk-v1-piece [data-piece-media]', { timeout: 8000 });
 }
 
@@ -234,8 +238,7 @@ async function live(browser) {
   await refusalAndArchived(page, srv, what, '[what]');
 
   console.log('live: piece page');
-  await page.click(`${what} [data-primary-action]`);
-  await page.waitForSelector('.desk-v1-piece [data-piece-media]', { timeout: 8000 });
+  await toPiece(page);
   await exerciseSurface(page, srv, '.desk-v1-piece', '[piece]');
   await shot(page, 'piece_1440.png');
   await removeAndUndo(page, srv, '.desk-v1-piece', '[piece]');
