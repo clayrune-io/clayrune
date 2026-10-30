@@ -16,6 +16,7 @@ from mc.dev_harness_store import HarnessStore, RevisionConflict, StoreError
 from mc.project_safety_settings import is_agent_caller
 from mc import dev_harness_sources
 from mc.blueprints.dev_harness_run_routes import bp as run_bp
+from mc.landing_serialization import LandingBusy
 
 bp = Blueprint('dev_harness_routes', __name__)
 bp.register_blueprint(run_bp)
@@ -40,6 +41,8 @@ def _project(project_id: str) -> tuple[dict[str, Any], HarnessStore]:
 
 
 def _error(exc: Exception):
+    if isinstance(exc, LandingBusy):
+        return jsonify({'status': 'error', 'error': 'landing_busy'}), 409
     if isinstance(exc, LookupError):
         return jsonify({'error': 'Project not found'}), 404
     if isinstance(exc, RevisionConflict):
@@ -56,7 +59,7 @@ def catalogue(project_id: str):
     try:
         _project(project_id)
         return jsonify(load_catalogue())
-    except (ValueError, OSError, LookupError, StoreError) as exc:
+    except (ValueError, OSError, LookupError, StoreError, LandingBusy) as exc:
         return _error(exc)
 
 
@@ -109,7 +112,9 @@ def read(project_id: str):
                         'status': 'error' if draft_error else 'active' if active else 'draft' if draft else 'not_configured',
                         'active': active, 'draft': draft, 'draft_error': draft_error,
                         'languages': catalogue_data['languages'],
-                        'merge_enforcement_available': False})
+                        'merge_enforcement_available': bool(active and active['mode'] == 'enforce'
+                            and active.get('native_plan') and any(v['enabled'] and v['severity'] == 'required'
+                                for v in active['policy'].get('native_checks', {}).values()))})
     except (ValueError, OSError, LookupError, StoreError) as exc:
         return _error(exc)
 
@@ -155,5 +160,5 @@ def activate(project_id: str):
                                 project=project,
                                 catalogue=catalogue_data)
         return jsonify(result)
-    except (ValueError, OSError, LookupError, StoreError) as exc:
+    except (ValueError, OSError, LookupError, StoreError, LandingBusy) as exc:
         return _error(exc)

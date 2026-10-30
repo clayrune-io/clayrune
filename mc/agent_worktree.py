@@ -485,6 +485,14 @@ def _base_ref(project: dict) -> str:
 
 
 def merge_back(project: dict, session_id: str, target_ref: str = ''):
+    wt = worktree_path(project, session_id)
+    if wt is None or not wt.exists():
+        return 'nothing', 'no worktree'
+    from mc.dev_harness_landing import merge_back as managed_landing
+    return managed_landing(project, session_id, target_ref, _merge_back_locked)
+
+
+def _merge_back_locked(project: dict, session_id: str, target_ref: str, owner):
     """Merge one agent's committed work back into the project's base branch.
 
     Without this an agent's commits sit stranded on clayrune/agent/<sid> and
@@ -524,11 +532,13 @@ def merge_back(project: dict, session_id: str, target_ref: str = ''):
     if ahead <= 0:
         return 'nothing', 'no new commits'
     branch = branch_name(session_id)
-    merge_ref = branch
+    from mc.dev_harness_landing import prepare
+    candidate = prepare(project, owner, branch)
+    merge_ref = candidate.tip
     # Review gate (MC-1075): only for a landing on the project's base branch.
     # An explicit target_ref is the integration path's own call (see above).
     if _review_gate.enabled(project) and ref == _base_ref(project):
-        tip = _review_gate.branch_tip(project, branch)
+        tip = candidate.tip
         held = _review_gate.hold_reason(project.get('id', ''), branch, tip)
         if held:
             _plog(f"[worktree] {branch} HELD for review: {held}")
@@ -546,8 +556,14 @@ def merge_back(project: dict, session_id: str, target_ref: str = ''):
     args = ['merge', '--no-edit', merge_ref]
     if merge_ref != branch:
         args[2:2] = ['-m', f"Merge branch '{branch}' (reviewed {merge_ref[:8]})"]
-    ok, msg = _sync.git_run(base, args, timeout=120)
+    with candidate.git_environment() as env:
+        if _review_gate.enabled(project) and ref == _base_ref(project):
+            held = _review_gate.hold_reason(project.get('id', ''), branch, candidate.tip)
+            if held:
+                return 'awaiting_review', held
+        ok, msg = _sync.git_run(base, args, timeout=120, env=env)
     if ok:
+        candidate.verify_landed()
         _plog(f"[worktree] merged {branch} into {ref}")
         if _log_activity:
             _log_activity(project.get('id', ''),
@@ -733,6 +749,21 @@ def archive_scratch(wt: Path, session_id: str) -> tuple[bool, str, int]:
 
 def remove(project: dict, session_id: str, delete_branch: bool = False,
            force: bool = False):
+    from mc.landing_serialization import LandingBusy, landing
+    wt = worktree_path(project, session_id)
+    if wt is None or not wt.exists():
+        return True, 'nothing to remove'
+    if force:
+        return _remove_locked(project, session_id, delete_branch, force)
+    try:
+        with landing(Path(project['project_path'])):
+            return _remove_locked(project, session_id, delete_branch, force)
+    except LandingBusy:
+        return False, 'deferred: repository landing is busy'
+
+
+def _remove_locked(project: dict, session_id: str, delete_branch: bool,
+           force: bool = False):
     """Tear down an agent worktree. Unlinks runtime junctions FIRST so the
     delete can never follow one into the real .venv / data/projects.
 
@@ -744,6 +775,9 @@ def remove(project: dict, session_id: str, delete_branch: bool = False,
     wt = worktree_path(project, session_id)
     if wt is None or not wt.exists():
         return True, 'nothing to remove'
+    from mc.dev_harness_landing import held
+    if not force and held(project, branch_name(session_id)):
+        return False, 'refused: awaiting native standards review'
     if not force and has_unmerged_work(project, session_id):
         return False, 'refused: worktree has unmerged or uncommitted work'
     if not force:
@@ -889,12 +923,12 @@ def gc_stale(project: dict, live_session_ids, merge_first: bool = True,
                 out['merged'] += 1
                 if use_cache and cache.pop(sid, None) is not None:
                     cache_dirty = True
-            elif status == 'awaiting_review':
+            elif status in ('awaiting_review', 'awaiting_standards'):
                 # Held by the merge review gate: never remove, and never cache
                 # the verdict -- a pass recorded later changes it without the
                 # worktree's HEAD or dirty flag moving.
                 out['preserved'].append(sid)
-                _plog(f"[worktree] gc PRESERVED {sid[:12]} — awaiting review")
+                _plog(f"[worktree] gc PRESERVED {sid[:12]} — {status}")
                 continue
         # remove() refuses (force=False) when work would be lost.
         ok, msg = remove(project, sid, delete_branch=True)

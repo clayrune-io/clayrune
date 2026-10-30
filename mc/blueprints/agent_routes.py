@@ -1625,10 +1625,10 @@ def _worktree_merge_back_on_end(session, _attempt=0):
             _log_agent_activity(
                 pid, f'Agent worktree needs manual merge ({status}): '
                      f'branch {_agent_worktree.branch_name(sid)} — {detail[:120]}')
-        elif status == 'awaiting_review':
+        elif status in ('awaiting_review', 'awaiting_standards'):
             # MC-1075 merge review gate: branch and worktree stay; nothing merged.
             _log_agent_activity(
-                pid, f'Agent branch awaiting review ({sid[:8]}): '
+                pid, f'Agent branch {status} ({sid[:8]}): '
                      f'branch {_agent_worktree.branch_name(sid)} — {detail[:160]}')
     except Exception as e:
         _log(f"[worktree] merge-back failed for {sid[:12]}: {e}")
@@ -1773,7 +1773,7 @@ def _job_on_complete(result):
 
 
 @bp.route('/api/project/<project_id>/agent/<session_id>/job', methods=['POST'])
-def agent_job_start(project_id, session_id, *, job_data=None):
+def agent_job_start(project_id, session_id, *, job_data=None, completion_hook=None):
     """MC-958 follow-up (backlog b49cf71f): run a command as a real OS
     subprocess Clayrune owns, for engines with no background-job facility of
     their own (Codex/Gemini/Qwen -- see the context note in
@@ -1848,11 +1848,16 @@ def agent_job_start(project_id, session_id, *, job_data=None):
             timeout_minutes=timeout_minutes, log_dir=_job_log_dir(), shell=raw_shell,
             popen_flags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
             kill_fn=lambda proc: _kill_pid(proc.pid, tree=True),
-            on_complete=_job_on_complete)
+            on_complete=completion_hook or _job_on_complete)
     except _agent_jobs.ShellResolutionError as e:
         return jsonify({'error': str(e)}), 400
-    _register_process(job['proc'], f"job {job['job_id'][:8]}", 'agent_job',
-                      session_id, project_id, command)
+    try:
+        _register_process(job['proc'], f"job {job['job_id'][:8]}", 'agent_job',
+                          session_id, project_id, command)
+    except Exception:
+        _kill_pid(job['pid'], tree=True)
+        job['proc'].wait(timeout=10)
+        raise
     return jsonify({'job_id': job['job_id'], 'pid': job['pid'],
                     'shell': job['shell'], 'shell_note': job['shell_note']})
 

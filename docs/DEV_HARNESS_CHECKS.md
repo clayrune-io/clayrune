@@ -207,4 +207,11 @@ manifests do not prove native project execution. Required coverage recipes
 are refused with `coverage_required_unmeasurable` under the approved M5
 section 9 amendment; explicitly selected warning coverage still needs a
 human-selected P02 changed-line floor. M4 execution and report behavior remain
-unchanged. A2b approved execution and M6 real-tool acceptance remain pending.
+unchanged. A2b's branch candidate executes approved steps through M3 and retains
+complete native identities in trusted receipts. Early version failures remain
+incomplete errors; they are never fabricated into complete activation evidence.
+Candidate config/closure changes are checked against the approved payload in
+the disposable checkout before a native process starts. Warning failures remain
+visible and do not skip later required steps. See the
+[A2b handoff](DEV_HARNESS_M5_PLAN_CONTRACT.md#9-a2b-implementation-candidate).
+M6 real installed-tool, packaging and dogfood acceptance remains pending.

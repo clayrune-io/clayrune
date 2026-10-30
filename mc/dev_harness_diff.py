@@ -28,6 +28,8 @@ ERROR_CODES = frozenset({
     'invalid_ref', 'invalid_object', 'dirty_integration_input', 'dirty_incoming_checkout',
     'ambiguous_merge_base', 'invalid_tree', 'worktree_create_failed',
     'candidate_tree_mismatch', 'worktree_cleanup_failed', 'binary_source_requires_adapter',
+    'inputs_changed', 'plan_inputs_changed', 'ambiguous_pending_parents', 'pending_conflicts',
+    'pending_worktree_differs', 'pending_resolution_unsupported',
 })
 
 

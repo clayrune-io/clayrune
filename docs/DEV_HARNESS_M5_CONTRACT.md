@@ -1,7 +1,7 @@
 # DH-M5 contract: approved native checks and managed landing
 
 MC-960 / `d813ea78`, DH-M5 A1, 2026-10-29, Sol_Tobin.
-**Proposed contract for Dave's review; no runtime implementation or activation.**
+**A1 contract approved by Dave (section 9); A2b branch candidate noted in section 10.**
 This is section 10.1a's sibling addendum to [the specification](DEV_HARNESS_SPEC.md).
 Authority is Dave's `DECIDED WITHOUT RON: DH-M5 scope, option A, staged` journal
 entry. Dave reviews A1 before dispatching A2. The
@@ -503,3 +503,14 @@ any conflicting line above.
    could never activate Enforce. `pytest`/`vitest` remain eligible as the
    required P02 checks. Reopen in M6 once a full-scope coverage measurement
    is defined.
+
+## 10. A2b implementation status (branch candidate)
+
+The [handoff section 9](DEV_HARNESS_M5_PLAN_CONTRACT.md#9-a2b-implementation-candidate)
+records the A2b implementation, ownership, verification and remaining M6 limits.
+Applicability, pending-index execution, common-repository serialization/leases,
+trusted receipts/coordinator, existing-job dispatch and thin managed/manual
+landing composition are implemented on the builder branch. A2a remains the
+approval/evidence owner. This does not authorize a live activation, merge,
+push, restart, settings change or deployment. Full-practice Unsupported coverage
+and section 9's warning-only coverage rule remain unchanged.

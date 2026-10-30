@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - Run approved native checks before local landing (DH-M5 A2b)
+
+- Added explicit group applicability, trusted frozen Preview/candidate receipts, measured-native evidence composition and safe Preview/run/read jobs through the existing session-job owner. Requests are single-use; early completion cannot recreate them. Draft plans and uploaded/headless reports cannot approve or authorize a merge.
+- Managed, hivemind and manual merge paths share repository-wide serialization; exact child-hook leases avoid deadlock, final ref/tree checks preserve work, and required native holds survive teardown/GC. Existing human approval and independent review gates remain.
+- Native Enforce availability requires a valid approved plan with a required named check. Full catalogue practice coverage stays Unsupported; coverage remains warning-only. Branch candidate only; no merge, push, restart, live activation/settings change or deployment. M6 panel, installed-tool, packaging and dogfood acceptance remain separate.
+
 ## [2026-10-30] - A reworded continuity thread keeps its age
 
 - Continuity thread stamps now survive paraphrase: an incoming thread that matches a known one at difflib ratio 0.8 or above inherits that thread's confirmation time instead of a fresh one, so a dead thread the Scribe keeps rewording still flags stale at 48 hours. Matching is per slot, best ratio wins, one old thread feeds at most one new thread; each match logs `[continuity] reworded`.

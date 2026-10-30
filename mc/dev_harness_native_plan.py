@@ -71,8 +71,10 @@ def checker_digest() -> str:
     names = ['dev_harness_runner.py', 'dev_harness_diff.py', 'dev_harness_native_plan.py',
              'dev_harness_activation_evidence.py', 'dev_harness_policy.py', 'dev_harness_store.py']
     # Future A2b owners become binding as soon as they ship; no placeholder code.
-    names += [n for n in ('dev_harness_applicability.py', 'dev_harness_integration.py',
-                          'landing_serialization.py') if (folder / n).exists()]
+    names += [n for n in ('dev_harness_applicability.py', 'dev_harness_pending_merge.py',
+                          'dev_harness_integration.py', 'dev_harness_dispatch.py',
+                          'landing_serialization.py', 'dev_harness_landing.py',
+                          'dev_harness_manual.py') if (folder / n).exists()]
     return digest({'owners': {n: file_digest(folder / n) for n in names},
                    'native': validator_digest()})
 

@@ -166,7 +166,8 @@ class HarnessStore:
                 or any(not isinstance(item, str) for item in acknowledged_native_losses)
                 or acknowledged_native_losses != sorted(set(acknowledged_native_losses)))):
             raise ValueError('Invalid native loss acknowledgement')
-        with self._lock:
+        from mc.landing_serialization import approval_serialization
+        with approval_serialization(project), self._lock:
             current = self._read_snapshot(project_id)
             revision = current['revision'] if current else 0
             if revision != expected_revision:

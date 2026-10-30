@@ -193,6 +193,15 @@ Ctrl+C terminates/reaps the in-flight verifier and returns structured
 plan proposals and a separate trusted activation-evidence composer. M3's
 ordinary runner and report-only CLI are unchanged; neither grants activation
 or merge authority. A2a composition tests use synthetic stored receipts only.
-A2b must add approved Preview receipt production and M5 plan/checker metadata
-before live native activation measurement is available. No landing gate or
-native execution route ships in A2a.
+A2b adds the private `run_approved` seam, approved Preview receipt production
+and plan/checker metadata. Each call runs one compiled approved step on the
+same frozen source, so warning findings cannot skip later required checks.
+The coordinator composes measured evidence through A2a, not through the CLI.
+
+Pending merges use the validated B/H/index T descriptor and disposable T
+checkout, with original pending state checked before and after execution.
+Ordinary `freeze_candidate` still refuses dirty inputs; no HTTP caller can
+submit a pending descriptor. See the
+[A2b implementation handoff](DEV_HARNESS_M5_PLAN_CONTRACT.md#9-a2b-implementation-candidate)
+for jobs, locking, live consumption and validation. Historical M3 counts above
+remain scoped to M3; M6 installed-tool/packaged acceptance is not claimed.
