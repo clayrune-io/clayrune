@@ -148,8 +148,7 @@ def test_invalid_end_edit_writes_nothing(client):
 def test_expired_plan_names_the_on_screen_edit_and_approval(client):
     camp = started()
     reason = _cadence_refusal(camp, [], datetime(2026, 10, 29, tzinfo=timezone.utc))
-    assert 'Brief > Limits' in reason and 'move Ends later' in reason
-    assert 'Launch' in reason and 'Approve the new bounds' in reason
+    assert reason == 'This campaign ended on 2026-10-28. Extend its end date, then approve to keep posting.'
 
 
 def test_capped_term_names_the_visible_renew_action(client):

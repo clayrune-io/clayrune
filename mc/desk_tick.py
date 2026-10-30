@@ -23,7 +23,8 @@ THE ORDERED CHECKS (`_refusal`; the first that fails holds the version)
   1. the campaign is active
   2. the campaign's bounds are inside what a human approved
   3. cadence against the story ledger: `per_week` (rolling 7 days), `min_gap_h`,
-     `post_cap` (campaign and term), `term.ends`, `plan.end.date`
+     `post_cap` (campaign and term), `term.ends`, `plan.end.date` (a passed
+     plan end carries code `campaign_ended`; see `desk_campaign_hold`)
   4. the account can publish now (`desk_accounts.publish_state`)
   5. a scheduled send is allowed to use the vault token unattended
 Any refusal moves the version to `held` with the reason on `failure`: nothing
@@ -63,6 +64,7 @@ from urllib.parse import quote
 
 from mc import desk as _desk
 from mc import desk_accounts as _accounts
+from mc import desk_campaign_hold as _hold
 from mc import desk_pieces as _pieces
 from mc import desk_publish as _publish
 from mc import desk_spend_guard as _spend
@@ -148,11 +150,9 @@ def _cadence_refusal(camp: dict, ledger: list, now: datetime) -> str | None:
     def when(r):
         return _parse(r.get('published_at'))
 
-    if end.get('date'):
-        ends = _parse(end['date'])
-        if ends is not None and now >= ends + timedelta(days=1):
-            return (f"the campaign's end date ({str(end['date'])[:10]}) has passed: "
-                    'in Brief > Limits, move Ends later; then in Launch choose Approve the new bounds')
+    passed = _hold.plan_end_passed(camp, now)
+    if passed:
+        return _hold.Refusal(_hold.ended_message(passed))
     if term.get('ends'):
         ends = _parse(term['ends'])
         if ends is not None and now >= ends + timedelta(days=1):
@@ -335,7 +335,7 @@ def _process(piece_id: str, version_id: str, *, attended: bool, now: datetime) -
     reason = _refusal(store, piece, ver, camp, acc, now, attended=attended)
     if reason:
         held = _pieces.transition_version(piece_id, version_id, to='held', expect=('approved', 'scheduled'),
-                                          failure=_failure(reason, now))
+                                          failure=_failure(reason, now, getattr(reason, 'code', None)))
         if held:
             _log(f'[desk_tick] held version {version_id}: {reason}')
         return 'held' if held else None
