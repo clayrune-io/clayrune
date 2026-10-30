@@ -1,0 +1,21 @@
+.desk-v1-composer-media { margin-top: 24px; padding-top: 22px; border-top: 1px solid var(--border, #e2d9ce); }
+.desk-v1-cm-heading { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+.desk-v1-cm-heading h2 { margin: 0; font-size: 16px; }
+.desk-v1-cm-assets { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
+.desk-v1-cm-assets .desk-v1-what-thumb { width: 110px; height: 90px; object-fit: cover; }
+.desk-v1-cm-dragging { outline: 3px dashed var(--accent, #c4663c); outline-offset: -4px; }
+.desk-v1-cm-picker { position: fixed; inset: 0; margin: auto; box-sizing: border-box; width: min(680px, calc(100vw - 32px)); max-height: min(720px, 85dvh); padding: 24px; border: 1px solid var(--border, #e2d9ce); border-radius: 16px; background: var(--surface, #fffdf8); color: var(--text, inherit); overflow: auto; }
+.desk-v1-cm-picker::backdrop { background: #211c1866; }
+.desk-v1-cm-tabs { display: flex; gap: 18px; margin: 20px 0; border-bottom: 1px solid var(--border, #e2d9ce); }
+.desk-v1-cm-tabs button { border: 0; border-bottom: 3px solid transparent; background: none; color: inherit; padding: 12px 4px; font: inherit; cursor: pointer; }
+.desk-v1-cm-tabs [aria-selected="true"] { border-bottom-color: var(--accent, #c4663c); font-weight: 600; }
+.desk-v1-cm-picker p { line-height: 1.6; }
+.desk-v1-cm-file { border: 1px dashed var(--border, #c9bbac); border-radius: 10px; padding: 24px 16px; display: grid; gap: 12px; font-weight: 600; }
+.desk-v1-cm-picker input { display: block; box-sizing: border-box; max-width: 100%; width: 100%; margin-top: 10px; color: inherit; font: inherit; }
+.desk-v1-cm-picker input[type="search"] { border: 1px solid var(--border, #e2d9ce); border-radius: 6px; padding: 10px; background: var(--bg-input, #fff); }
+.desk-v1-cm-library { display: grid; grid-template-columns: repeat(auto-fill, minmax(138px, 1fr)); gap: 14px; margin-top: 18px; }
+.desk-v1-cm-item { min-width: 0; display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--border, #e2d9ce); background: transparent; border-radius: 9px; padding: 8px; color: inherit; text-align: left; cursor: pointer; }
+.desk-v1-cm-item img, .desk-v1-cm-item video { width: 100%; height: 100px; object-fit: cover; border-radius: 5px; background: #ddd4c8; }
+.desk-v1-cm-item span, .desk-v1-cm-item small { overflow-wrap: anywhere; max-width: 100%; }
+.desk-v1-cm-item small { opacity: .65; }
+@media (max-width: 960px) { .desk-v1-cm-picker { padding: 16px; } .desk-v1-cm-library { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; } }

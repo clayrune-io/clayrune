@@ -55,6 +55,9 @@ function makeServer() {
   const fx = loadFixtures();
   const pieces = fx.families.map((f) => JSON.parse(JSON.stringify(f)));
   pieces.find((p) => p.id === PIECE).assets = ASSETS();
+  // Composer media editing is intentionally gated on approved/sent posts.
+  // This suite exercises editable drafts; C2 separately asserts the lock.
+  pieces.find((p) => p.id === PIECE).versions.forEach(v => { v.state = 'drafting'; v.approved = null; });
   const srv = { log: [], next: {}, pieces, fx };
   srv.workspace = () => ({ ...workspaceFromFixtures(fx),
     projects: fx.projects.map((p) => ({ id: p.id, name: p.name, state: 'active', roster: [], presence: { replies: 'drafts', desk_agent: null, state: 'active' } })),
@@ -132,10 +135,7 @@ async function toPiece(page) {
   await toWhat(page);
   await page.click(`[data-family-id="${PIECE}"] [data-primary-action]`);
   await page.waitForSelector('[data-composer]');
-  // C1 sends post cards to the composer. Media remains a generic-piece direct
-  // link contract until the composer's separate media slice is implemented.
-  await page.evaluate((id) => window.deskV1Nav('piece', { campaignId: 'camp-1', familyId: id }), PIECE);
-  await page.waitForSelector('.desk-v1-piece [data-piece-media]', { timeout: 8000 });
+  await page.waitForSelector('[data-composer-media-assets]');
 }
 
 // surface = '[data-what-row][data-family-id=…]' (What) or '.desk-v1-piece' (piece page)
@@ -239,16 +239,16 @@ async function live(browser) {
 
   console.log('live: piece page');
   await toPiece(page);
-  await exerciseSurface(page, srv, '.desk-v1-piece', '[piece]');
+  await exerciseSurface(page, srv, '[data-composer]', '[composer]');
   await shot(page, 'piece_1440.png');
-  await removeAndUndo(page, srv, '.desk-v1-piece', '[piece]');
-  await refusalAndArchived(page, srv, '.desk-v1-piece', '[piece]');
+  await removeAndUndo(page, srv, '[data-composer]', '[composer]');
+  await refusalAndArchived(page, srv, '[data-composer]', '[composer]');
 
   // archived: no ✕ at all (the server refuses the write)
-  await page.evaluate((id) => { window.DeskV1Store.state().families.find((f) => f.id === id).archivedAt = '2026-10-29T00:00:00Z'; window.deskV1PieceRepaint(); }, PIECE);
+  await page.evaluate((id) => { window.DeskV1Store.state().families.find((f) => f.id === id).archivedAt = '2026-10-29T00:00:00Z'; window.deskV1RenderComposer(document.querySelector('[data-composer]').parentElement, { campaignId: 'camp-1', familyId: id }); }, PIECE);
   await page.waitForTimeout(100);
-  const open = await page.$$eval('.desk-v1-piece [data-pmed-open]', (e) => e.length);
-  const xs = await page.$$eval('.desk-v1-piece [data-pmed-remove]', (e) => e.length);
+  const open = await page.$$eval('[data-composer] [data-pmed-open]', (e) => e.length);
+  const xs = await page.$$eval('[data-composer] [data-pmed-remove]', (e) => e.length);
   check(open === 4 && xs === 0, '[piece] an archived piece still opens its media but shows no ✕', `[piece] archived: ${open} tiles, ${xs} ✕`);
   const real = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   check(!real.length, 'no uncaught page error (live)', 'page errors: ' + real.join(' | '));
@@ -260,9 +260,9 @@ async function live(browser) {
   await m.page.waitForFunction(() => window.DeskV1Store.state().campaigns.length > 0, null, { timeout: 8000 });
   await toPiece(m.page);
   await shot(m.page, 'piece_390.png');
-  const box = await m.page.$eval(`.desk-v1-piece [data-pmed-remove="a-vid1"]`, (b) => { const r = b.getBoundingClientRect(); return { w: r.width, h: r.height }; });
+  const box = await m.page.$eval(`[data-composer] [data-pmed-remove="a-vid1"]`, (b) => { const r = b.getBoundingClientRect(); return { w: r.width, h: r.height }; });
   check(box.w === 24 && box.h === 24, `[390] the ✕ is a ${box.w}x${box.h}px circle with a larger tap area`, `[390] ✕ too small: ${box.w}x${box.h}`);
-  await m.page.click('.desk-v1-piece [data-pmed-open="a-vid1"]');
+  await m.page.click('[data-composer] [data-pmed-open="a-vid1"]');
   await m.page.waitForSelector('[data-lv-player] [data-lv-video]', { timeout: 4000 });
   const over = await m.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   check(over <= 0, '[390] the player has no horizontal overflow', `[390] overflow ${over}px`);

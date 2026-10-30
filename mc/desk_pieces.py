@@ -879,7 +879,8 @@ def _library_items(kind: str, folder: Path, rel_root: Path) -> list[dict]:
     files.sort(key=lambda f: (-f.stat().st_mtime, f.name))
     for f in files:
         rel = f.resolve().relative_to(rel_root).as_posix()
-        item = {'id': rel, 'kind': kind, 'title': f.name, 'path': rel, 'src': _src_for(rel, kind)}
+        item = {'id': rel, 'kind': kind, 'title': f.name, 'path': rel, 'src': _src_for(rel, kind),
+                'mtime': f.stat().st_mtime}
         if kind == 'video':
             item['play'] = _play_for(rel, kind)
         items.append(item)

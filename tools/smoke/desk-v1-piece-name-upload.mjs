@@ -55,6 +55,9 @@ try {
     assert.equal(await page.textContent('.desk-v1-crumb-title'), 'Autumn launch update');
     await page.click('#desk-v1-undo');
     await page.waitForFunction(() => document.querySelector('.desk-v1-piece-title').textContent === 'New post');
+    // C2 retires the generic Post media picker. Keep the generic upload and
+    // rename regression on an image piece; composer ingestion has its own smoke.
+    await page.evaluate(() => { window.DeskV1Store.state().families.find(f => f.id === 'fam-30-testers').kind = 'image'; window.deskV1PieceRepaint(); });
     await page.click('[data-piece-media] [data-add-media]');
     const demoChooser = page.waitForEvent('filechooser');
     await page.getByRole('menuitem', { name: 'From this computer…', exact: true }).click();

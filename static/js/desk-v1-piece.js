@@ -106,7 +106,7 @@
     const director = fam.kind === 'video'
       ? `<div class="desk-v1-piece-facetrow"><span>Video editor</span><button type="button" class="desk-v1-camp-card-primary" data-video-btn>Open video editor</button></div>`
       : '';
-    const addable = fam.kind === 'video' || fam.kind === 'image' || fam.kind === 'post';
+    const addable = fam.kind === 'video' || fam.kind === 'image';
     return `<div class="desk-v1-what-media desk-v1-piece-media" data-piece-media>${thumbs}${addable
       ? `<button type="button" class="desk-v1-what-addmedia" data-add-media="${esc(fam.id)}" aria-haspopup="menu">＋ Add media</button>` : ''}</div>` +
       (assets.length || addable ? '' : '<div class="desk-v1-piece-empty">No media on this piece.</div>') + render + director;

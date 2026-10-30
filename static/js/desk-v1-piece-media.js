@@ -63,7 +63,7 @@
     const fid = (window.CSS && CSS.escape) ? CSS.escape(famId) : famId;
     const opens = document.querySelectorAll(`[data-pmed-fam="${fid}"] [data-pmed-open]`);
     const next = opens[Math.min(index, opens.length - 1)];
-    const target = next || document.querySelector(`[data-add-media="${fid}"]`);
+    const target = next || document.querySelector(`[data-add-media="${fid}"]`) || document.querySelector('[data-composer-add-media]');
     if (target) target.focus({ preventScroll: true });
   }
 

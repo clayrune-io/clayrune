@@ -1,4 +1,5 @@
 import './desk-v1-composer-duplicate.js';
+import './desk-v1-composer-media.js';
 // C1: text, bounded destinations, draft persistence and Review handoff. Media
 // and preview have their own later slices. No publish/approval route is used.
 import './desk-v1-composer-preview.js';
@@ -36,13 +37,13 @@ import './desk-v1-composer-preview.js';
     if (!root) return;
     root.querySelector('[data-composer-status]').textContent = d.status;
     root.querySelector('[data-composer-status]').toggleAttribute('data-failed', d.failed);
-    root.querySelector('[data-composer-save]').disabled = d.busy || !!d.fam?.archivedAt || !d.text.trim() && !d.fam;
+    root.querySelector('[data-composer-save]').disabled = d.busy || d.mediaBusy || !!d.fam?.archivedAt || !d.text.trim() && !d.fam;
     root.querySelector('[data-composer-text]').readOnly = d.locked || !!d.reviewing;
     const reviewable = [...d.selected].some((id) => {
       const v = channels().versions(d.fam).find((v) => v.channelId === id);
       return !v || !channels().sent(v);
     });
-    root.querySelector('[data-composer-review]').disabled = d.busy || !reviewable || !d.text.trim() || !!d.fam?.archivedAt;
+    root.querySelector('[data-composer-review]').disabled = d.busy || d.mediaBusy || !reviewable || (!d.text.trim() && !d.fam?.assets?.length) || !!d.fam?.archivedAt;
     root.querySelector('[data-composer-when]').disabled = d.busy || !d.fam || !!d.fam.archivedAt || !channels().versions(d.fam).length;
     root.querySelectorAll('[data-composer-channel]').forEach((b) => {
       b.disabled = d.busy || !!d.fam?.archivedAt || !!channels().versions(d.fam).find((v) => v.channelId === b.dataset.composerChannel && channels().sent(v));
@@ -59,7 +60,7 @@ import './desk-v1-composer-preview.js';
   async function persist(camp, d) {
     d.fam = store().state().families.find((f) => f.id === d.id) || null;
     if (!d.fam) {
-      if (!d.text.trim()) return;
+      if (!d.text.trim() && !d.mediaPending) return;
       const text = d.text;
       const fam = { id: d.id, campaignId: camp.id, kind: 'post', title: 'New post', body: text, assets: [], versions: [] };
       const result = check(await store().write({
@@ -172,6 +173,7 @@ import './desk-v1-composer-preview.js';
     };
     update(d);
     window.DeskV1ComposerPreview.mount(el.querySelector('[data-composer]'), camp, d);
+    window.DeskV1ComposerMedia.mount(el, camp, d, { save: () => save(camp, d, false), update: () => update(d) });
     if (!d.fam) input.focus({ preventScroll: true });
   }
   window.DeskV1Composer = { open };
