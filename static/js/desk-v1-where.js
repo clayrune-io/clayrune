@@ -281,10 +281,13 @@
   // the whole board for a source.
   let _drag = null;
 
+  // A source or a saved sign-in is dropped on the board as a whole; a message or a version on a column.
+  function _toBoard(kind) { return kind === 'source' || kind === 'service'; }
+
   function _targetAt(x, y, data) {
     const el = document.elementFromPoint(x, y);
     if (!el || !el.closest) return null;
-    if (data.kind === 'source') return el.closest('[data-where-board]') ? { type: 'board' } : null;
+    if (_toBoard(data.kind)) return el.closest('[data-where-board]') ? { type: 'board' } : null;
     const col = el.closest('.desk-v1-where-col[data-channel-id]');
     return col ? { type: 'column', channelId: col.dataset.channelId } : null;
   }
@@ -314,7 +317,7 @@
       ghostOffsetX: 18, ghostOffsetY: 18,
       onActivate: () => {
         if (!_st) return;
-        const sel = data.kind === 'source' ? '[data-where-board]' : '.desk-v1-where-col[data-channel-id]';
+        const sel = _toBoard(data.kind) ? '[data-where-board]' : '.desk-v1-where-col[data-channel-id]';
         _st.el.querySelectorAll(sel).forEach((n) => n.classList.add('pd-drop-target'));
       },
       onMove: (st, x, y) => { if (_st) _hoverAt(x, y, data); },
@@ -331,6 +334,8 @@
     const camp = _camp();
     if (!camp) return;
     if (data.kind === 'source' && target.type === 'board') { _addColumn(camp, data.channelId); return; }
+    // A saved sign-in is not an account: it cannot become a column, so say why.
+    if (data.kind === 'service' && target.type === 'board') { window.DeskV1WhereServices.explain(data.serviceId, _repaint); return; }
     if (target.type !== 'column') return;
     const fam = _familiesFor(camp.id).find((f) => f.id === data.familyId);
     if (!fam) return;
@@ -380,6 +385,7 @@
         <div class="desk-v1-where-msg-kind">${esc(_kindWord(fam.kind))}</div>
         <div class="desk-v1-where-msg-title">${esc(fam.title)}</div>
         <span class="desk-v1-where-pill" data-where-pill>${esc(pill)}</span>
+        ${window.DeskV1PostPreview.buttonHTML(fam.title)}
       </div>
     </div>`;
   }
@@ -390,6 +396,7 @@
       <div class="desk-v1-where-vcard" role="button" tabindex="0" data-where-version data-family-id="${esc(fam.id)}" data-version-id="${esc(v.id)}" data-state="${esc(v.state)}"
            aria-haspopup="menu" aria-label="${esc(`${fam.title}, ${_kindWord(fam.kind)} to ${_formatWord(fam.kind, ch)}, ${state.word}. Press Enter to move it to another account.`)}">
         <div class="desk-v1-where-vtitle">${esc(fam.title)}</div>
+        ${window.DeskV1PostPreview.buttonHTML(fam.title)}
         <button type="button" class="desk-v1-where-colremove" data-where-remove-version="${esc(v.id)}" aria-label="Remove ${esc(fam.title)} from this channel" ${_LOCKED.has(v.state) ? 'disabled title="Published history is retained"' : ''}>✕</button>
         <div class="desk-v1-where-vformat">${esc(_kindWord(fam.kind))} → ${esc(_formatWord(fam.kind, ch))}</div>
       </div>
@@ -452,6 +459,7 @@
     el.innerHTML = `<div class="desk-v1-where" data-where data-campaign-id="${esc(camp.id)}">
       ${_suggestHTML(camp)}
       ${_awaitingHTML(camp)}
+      ${window.DeskV1WhereServices.noticeHTML()}
       <p class="desk-v1-where-drop-hint" data-where-drop-hint>Drop a connector below to add an empty channel. Then drag the messages you want into it.</p>
       <div class="desk-v1-where-board" data-where-board>
         <section class="desk-v1-where-msgs" data-where-messages aria-label="Messages">
@@ -507,6 +515,11 @@
         _repaint(`[data-where-source][data-channel-id="${CSS.escape(chId)}"]`);
       });
     });
+    el.querySelectorAll('[data-where-service]').forEach((node) => {
+      const svcId = node.dataset.whereService;
+      _wireCard(node, { kind: 'service', serviceId: svcId, label: node.dataset.serviceName || 'Saved sign-in' },
+        () => window.DeskV1WhereServices.explain(svcId, _repaint));
+    });
     el.querySelectorAll('[data-where-remove]').forEach((btn) => {
       btn.onclick = () => _removeColumn(camp, btn.dataset.channelId);
     });
@@ -531,6 +544,12 @@
           undoRequest: () => _patchPlan(camp),
         });
       });
+    });
+    // Hover (mouse) or the eye button (touch) previews the real post as it will look on its platform.
+    window.DeskV1PostPreview.bind(el, (node) => {
+      const fam = _familiesFor(camp.id).find((f) => f.id === node.dataset.familyId);
+      return fam && { fam, versionId: node.dataset.versionId || null,
+        entries: (fam.versions || []).filter(_isLive).map((v) => ({ v, ch: _channel(v.channelId) })) };
     });
     DeskV1Kit.bindBecauseChips(el, camp.projectId);
     const accept = el.querySelector('[data-where-suggest-accept]');
