@@ -62,9 +62,18 @@ user how much of the credit to use and where to stop.
 
 - `~/.claude/.credentials.json` > `claudeAiOauth` holds `subscriptionType`
   and `rateLimitTier`. On Ron's box (Ultra): `max` / `default_claude_max_20x`.
-- So the CLI still labels Ultra as Max 20x. That mapping is our inference,
-  not documented: `max_20x` -> Ultra ($200), `max_5x` -> Max ($100), `team`
-  -> Team (pooled, up to $500), anything else -> not eligible.
+- So the CLI still labels Ultra as Max 20x. Confirmed 2026-10-30 by
+  Anthropic's rename (x.com/claudeai/status/2116220869479428500): Max 5x ->
+  Max ($100), Max 20x -> Ultra ($200), prices unchanged. Mapping:
+  `max_20x` -> Ultra, `max_5x` -> Max, `team` -> Team (pooled, up to $500),
+  anything else -> not eligible. Match on both old and new labels; the CLI
+  may switch to the new names later.
+- Same announcement: the 5-hour limit is removed for verified Ultra
+  accounts, rolling out from 2026-10-30; weekly limits unchanged. Ron's
+  account still reported a 5-hour window that day (12%). Clayrune copes when
+  it goes null: the usage bar hides empty windows, pace routing reads only
+  the weekly window. Left over: the "Reset 5-hour session" button and the
+  5h default in the usage breakdown should hide when the window is absent.
 - Detection only prefills the amount. The user confirms or edits it,
   because the label can lag a rename, and Clayrune cannot see whether a
   Console org is linked or what balance is left.
