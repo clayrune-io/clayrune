@@ -118,7 +118,7 @@ try {
 
     // 3. VERSIONS empty state -> Where with the piece marked.
     const empty = page.locator('[data-piece-section="versions"] [data-piece-versions-empty]');
-    assert.match(await empty.innerText(), /^No destinations yet\s+Put this on a channel ›$/);
+    assert.match(await empty.innerText(), /^No destinations yet\s+View campaign channels ›$/);
     await page.locator('[data-piece-put-on-channel]').click();
     await page.waitForSelector('[data-where]');
     const mark = page.locator(`.desk-v1-where-highlight[data-where-message][data-family-id="${FAM}"]`);
@@ -128,7 +128,7 @@ try {
     await page.evaluate(() => window.deskV1Back());
     await page.waitForSelector('.desk-v1-piece-title', { state: 'attached' });
     assert.equal(await page.locator('[data-piece-put-on-channel]').count(), 1);
-    ok('"Put this on a channel" opens Where with this piece marked and focused; Back returns');
+    ok('"View campaign channels" opens Where with this piece marked and focused; Back returns');
 
     assert.deepEqual(errors, []);
     await ctx.close();

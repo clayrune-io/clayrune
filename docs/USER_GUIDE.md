@@ -1286,10 +1286,15 @@ approval again after its cause is fixed.
 
 ### Campaign posts, archive and placement
 
-**Studio → New video**, a campaign's **What → Video → Create new**, video
+The campaign stops are **Brief, Goal, Channels, Posts, When, Launch**. Choose
+the campaign account set in Channels before making posts; the composer defaults
+to that set. Posts lists the campaign pieces. When is the shared calendar.
+Launch names missing settings and links to their current stops.
+
+**Studio → New video**, a campaign's **Posts → Video → Create new**, video
 cards, and Home's video links all open the same Studio storyboard editor.
 Studio's draft has no campaign; its optional Product and title controls stay
-available. Back returns to Studio or What according to where you opened it.
+available. Back returns to Studio or Posts according to where you opened it.
 
 The video storyboard has a horizontal **Timeline** above the scene list, both
 in a campaign and in standalone Studio. Each tile shows its duration. Drag a
@@ -1303,7 +1308,7 @@ adds a picture without dragging. **Undo** reverses these scene changes.
 The video editor stays focused on scenes and rendering. **Review** appears
 when a version is waiting; the former **Copy, media & versions** link is gone.
 
-In **What**, click **Post** under **Add a piece**, press Enter or Space on it,
+In **Posts**, click **Post** under **Add a piece**, press Enter or Space on it,
 or drag it onto the campaign's list to open the post composer. A post card's
 **Open** action reopens it. Opening an empty composer creates no piece;
 the first nonblank text or valid media creates a **New post** draft. Use **Save draft** for
@@ -1313,7 +1318,7 @@ your text available for retry.
 **Post to** starts with this campaign's accounts selected. Tick or untick an
 account to change this post's destinations. After text creates the draft,
 ticks save immediately; they never add accounts to the campaign's allowed set.
-If no accounts appear, choose them in **Where**. The composer shows a character
+If no accounts appear, choose them in **Channels**. The composer shows a character
 count per selected channel, including an X 280-character warning.
 
 **Preview** updates as you type, including text you have not saved yet. Choose
@@ -1360,7 +1365,7 @@ on the copy. Editing the copy does not change the source post.
 
 The copy keeps only source destinations allowed by the target campaign's
 accounts. If none overlap, choose destinations in the composer; an empty
-campaign account set must first be configured in **Where**. Schedule, approval
+campaign account set must first be configured in **Channels**. Schedule, approval
 and publishing results are cleared, and the copy needs its own review and
 approval. Missing media refuses the whole copy. **Undo** removes the new draft.
 
@@ -1372,12 +1377,12 @@ beside source cards:
 - **Image:** Upload, From library, Generate.
 
 **Escape**, the close button or the backdrop closes the popup and keeps the
-new draft in What. **Discard this draft** removes it. Tab stays inside the popup.
+new draft in Posts. **Discard this draft** removes it. Tab stays inside the popup.
 **Change source** returns to the source cards.
 
 Article **Import from file** accepts the same text, Markdown and HTML formats
 and limits as the post editor below. HTML becomes plain text. A successful
-import saves the article in What; errors leave the popup open for retry.
+import saves the article in Posts; errors leave the popup open for retry.
 
 On an image or video piece page, click the title to rename it in place. Press
 Enter or click away to save, Esc to cancel; the title also opens from the
@@ -1409,14 +1414,14 @@ page shows the server's reason and keeps your text so you can retry.
 
 Destination versions and their review controls remain below the editor.
 With no versions yet, the **Versions** section reads **No destinations yet**;
-choose **Put this on a channel ›** to open this piece's campaign in **Where**
-with the piece's card marked. If the piece has no campaign,
+choose **View campaign channels ›** to open this piece's campaign in **Channels**
+with the piece's card marked in the read-only overview. Open a post in the composer to select its destinations. If the piece has no campaign,
 **Choose a campaign ›** returns to Desk Home; add the piece in the
-campaign's **What** before creating a version. Articles continue to use
+campaign's **Posts** before creating a version. Articles continue to use
 **Edit article**. Restore an archived piece before editing it. In demo
 mode, **Saved in demo only** means the change stays in the demo data.
 
-In a campaign's **What**, use a post's three-dot menu for **Archive** or
+In a campaign's **Posts**, use a post's three-dot menu for **Archive** or
 **Delete post**. **Archived** finds whole archived posts, including empty
 ones; **Restore post** returns the post and each suspended version to its
 previous state. Published history stays intact. Restore an archived post
@@ -1435,7 +1440,7 @@ reports unsupported because its adapter has no scoped, refreshing sign-in
 for deletion; remove that post on LinkedIn. Drafts and unverified sends have
 no platform-delete action. Archiving only changes the Desk's view.
 
-In **Where**, select a configured account from **Sources** by clicking it or
+In **Channels**, select a configured account from **Sources** by clicking it or
 focusing it and pressing Enter or Space. This sets the campaign's allowed
 account set, used as the default in new post composers and as the approval
 bound. Adding an account beyond an approved plan requires approval again at
@@ -1462,7 +1467,7 @@ to an account. Its chip says **Needs account**. Choose **Link account ›** to
 open Permissions directly, select its account or enter the handle, and review
 the connection. Save uses the existing passcode gate. Until attached,
 the saved sign-in cannot be selected as a campaign account. This display grants no
-Read or Post permission. After Save, returning to Where shows the account as a
+Read or Post permission. After Save, returning to Channels shows the account as a
 selectable account without reloading. **Retry**
 retries a failed list load. Generation and storage services stay in Connections.
 
@@ -1531,7 +1536,7 @@ When editing an X account's app connection, **Save** keeps its working sign-in w
 
 Saved Connections use **Ready**, **Needs sign-in**, **Not checked yet**, **Not working**, or **Waiting on** the service. A saved profile or registered server alone does not mean Ready. Each social detail shows its status and next step, then **Permissions** with **Read** and **Post**, each **On** or **Off** with a reason when off. **Details** holds the connection method, profile, scope names, review restrictions and cost notes. Readiness never grants permission.
 
-An existing browser profile shows **Not checked yet** when its verification is missing or expired, including after a server restart or cookie changes. This does not mean you signed out. A missing profile or a check that found you signed out shows **Needs sign-in**. On a saved browser service with an automatic check, press **Not checked yet** on its tile or detail heading to check it. Its **Needs sign-in** word also checks first: success changes it to **Ready** without opening a pane; a signed-out result opens sign-in in its saved profile; a check that cannot run shows an error and opens nothing. Where's account channels use the same saved sign-in status. An unattached browser service instead shows **Needs account**, with **Link account ›** opening the account attachment step.
+An existing browser profile shows **Not checked yet** when its verification is missing or expired, including after a server restart or cookie changes. This does not mean you signed out. A missing profile or a check that found you signed out shows **Needs sign-in**. On a saved browser service with an automatic check, press **Not checked yet** on its tile or detail heading to check it. Its **Needs sign-in** word also checks first: success changes it to **Ready** without opening a pane; a signed-out result opens sign-in in its saved profile; a check that cannot run shows an error and opens nothing. The Channels stop uses the same saved sign-in status. An unattached browser service instead shows **Needs account**, with **Link account ›** opening the account attachment step.
 
 The standard actions are **Check now**, **Edit**, **Sign in** when needed, and **Remove**, in that order. Engines retain their per-job limit and **Save limit**. Checks only run when you press them. Browser checks use the selected profile; a passing check does not open a pane, while a signed-out result opens the existing recovery flow. During sign-in recovery the status says **Waiting for you to sign in**, including while **Checking…** rechecks run. A failed network check or an unsuccessful final check after the ten-minute recovery window shows **Not working**. A service without an automatic check can ask whether you are signed in; your confirmation remains **Not checked yet**, because it is not verification. A browser check grants no Read or Post permission.
 

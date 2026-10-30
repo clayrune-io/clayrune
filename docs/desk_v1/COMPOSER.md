@@ -493,3 +493,70 @@ then implement/test/commit C6. Do not recursively remove the dependency director
 ```powershell
 cmd /c rmdir "C:\Users\levir\Documents\_claude\mission-control\.clayrune\agents\fa8e76c967e7\tools\smoke\node_modules"
 ```
+
+C5 handoff resolved: Dave removed the junction and verified the main dependency
+directory intact. On resume, absence was checked and the reviewed staged paths
+were committed as `83aea780`. The generated screenshots stayed unstaged.
+
+### C6 — Sol_Tobin — 2026-10-30 (branch candidate)
+
+Base C5 `83aea780`, branch `clayrune/agent/fa8e76c967e7`. Stops now read
+**Brief, Goal, Channels, Posts, When, Launch**. Internal `where`/`what` IDs,
+saved cursors, aliases and selectors remain compatible. Shared navigation drives
+Next/Back and draft-resume labels. Launch's **Fix in Channels** still targets
+`where`; composer guidance, editor return/save labels, suggestions and USER_GUIDE
+use the new names. When's empty-state action opens Posts for composer selection;
+the legacy piece action reads **View campaign channels**.
+
+What and Piece only change strings/comments and do not grow. No approval,
+publish, account-bound or persistence logic changed; Python edits are copy only.
+No dependency, new module, agent-rule, architecture-rule or README change is
+needed. CHANGELOG and USER_GUIDE updated. No master merge, push, running-server
+restart or production Desk writes; actual platform publishing is untested.
+
+Validation from the worktree root, with main-checkout venv `MC_PYTHON` and its
+smoke dependency junction (nothing installed):
+
+| Check | rc | Result |
+|---|---:|---|
+| `python _scratch/run-c6-checks.py` | 1 initially | All 126 `desk*.mjs` entries (fixture helper excluded) plus boot ran; five initial failures retained in the raw record |
+| Final named smoke entries, with targeted replays below | 0 each | **127/127 final passes**, including campaign, all composer entries, post-preview, boot and the 21-child Exit aggregate |
+| `python -m pytest -q tests -k desk` | 0 | 410.9 seconds; quiet configuration prints no final count |
+| `git diff --check` | 0 | Whitespace |
+
+Per-entry logs, raw rc records and the final reconciliation are in
+`_scratch/composer_c6/{results.jsonl,summary.json}`. Entries ran through the
+registered `node _scratch/run-smoke.mjs tools/smoke/<name>.mjs` wrapper, which
+preserves normal Node argv. Default routing used a registered disposable
+route-only server, own data, ephemeral loopback port and `MC_REMOTE_ENABLED=0`;
+no boot workers; only its captured PID was stopped. Its 11 checks passed.
+
+Failures/replays: Map's added helper and expired Resume/Renew success fixtures
+were corrected (expiry-refusal checks remain); campaign-content's 390 Library
+timeout passed an unchanged replay; Default's stale Experimental locator now
+uses System → Runtime and availability; Exit passes after the How correction;
+the video-upload regression now exercises the C2 composer. Final replay logs:
+`desk-v1-map-verified`, `desk-v1-campaign-content-retry`,
+`desk-v1-default-isolated`, `desk-v1-exit-verified`, and
+`desk-video-upload-regression-verified` (all `.log`, all rc 0).
+
+Retired assertions named for review: How's accepted suggestions read **◇ planned**
+and clear the source banner; replacements assert **no versions yet**, zero
+destination versions and all three source proposals retained. Video's Post MP4
+rejection (zero uploads/assets and PNG-only toast) and hidden Library videos are
+replaced by composer MP4 upload/playback and Library video attachment. Generic
+video upload/refusal/malformed-response/preview-failure checks remain. No product
+gate was relaxed.
+
+The initial scratch wrapper left its path in argv[1], skipping the executable
+guards in `desk-v1-connect-api-step` and `desk-v1-connect-signin-reuse`. Those
+initial zero exits are **not passes**. After restoring argv, both passed actual
+checks (their `*-verified.log` files, rc 0). The argv audit found no other affected
+completed entry; QA ran all four desktop/phone cases with corrected argv.
+
+Map coverage checks literal order/names, Channels at 3 and Posts at 4, stable
+IDs, Next/Back and Launch's account-fix link. Visually inspected captures:
+`_scratch/composer_c6/{channels,posts}-{1440,390}.png`. Generated tracked PNGs
+remain unstaged. Home-plan writing remains fenced; the journal retains the plan
+and detailed handoff. Required dependency-junction cleanup is pending before
+the separate C6 commit. No open product decision.

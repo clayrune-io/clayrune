@@ -760,16 +760,16 @@ async function runR219WhenTimeOnly(browser) {
     hasFields: !!document.querySelector('.desk-v1-cal-fields'),
     text: (document.querySelector('[data-cal-empty-where]') || {}).textContent || '',
   }));
-  empty.hasEmpty && /Where/.test(empty.text) && !empty.hasGrid && !empty.hasSlotsBand && empty.hasFields
-    ? ok(`R2-19: a campaign with nothing placed shows the When empty state pointing at Where (no grid, cadence/term fields kept): "${empty.text.trim().replace(/\s+/g, ' ')}"`)
+  empty.hasEmpty && /Posts/.test(empty.text) && !empty.hasGrid && !empty.hasSlotsBand && empty.hasFields
+    ? ok(`R2-19: a campaign with nothing placed shows the When empty state pointing at Posts (no grid, cadence/term fields kept): "${empty.text.trim().replace(/\s+/g, ' ')}"`)
     : fail(`R2-19: When empty state wrong: ${JSON.stringify(empty)}`);
   await page.click('[data-cal-to-where]').catch(() => {});
   await page.waitForSelector('[data-where]', { timeout: 4000 }).catch(() => {});
   const landed = await page.evaluate(() => {
     const here = document.querySelector('.desk-v1-map-stop[data-state="here"]');
-    return { where: !!document.querySelector('[data-where]'), here: here ? here.dataset.stop : null };
+    return { where: !!document.querySelector('[data-what]'), here: here ? here.dataset.stop : null };
   });
-  landed.where && landed.here === 'where'
+  landed.where && landed.here === 'what'
     ? ok('R2-19: "Go to Where ›" from the When empty state lands on the Where stop')
     : fail(`R2-19: Go to Where did not land on Where: ${JSON.stringify(landed)}`);
 

@@ -1439,8 +1439,8 @@ def _clean_campaign_when(value, store: dict, campaign_id: str) -> dict:
                 if vid not in placed:
                     raise ValueError(f'slot {sid!r} is filled with a version this campaign does not have')
                 if filled.get('channelId') not in (None, placed[vid]):
-                    raise ValueError(f'slot {sid!r} names an account other than the one Where placed that '
-                                     'version on; When sets times, it does not move a message')
+                    raise ValueError(f'slot {sid!r} names an account other than the one assigned to that '
+                                     'version; When sets times, it does not move a message')
             clean['filled'] = dict(filled)
         out.append(clean)
     return {'slots': out}

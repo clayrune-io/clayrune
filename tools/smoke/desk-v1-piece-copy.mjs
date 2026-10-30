@@ -95,7 +95,7 @@ try {
   assert.equal(await page.locator(editor).inputValue(), '');
   assert.equal(await page.locator(editor).getAttribute('placeholder'), 'Start typing your post…');
   assert.doesNotMatch(await page.locator('[data-piece-section="copy"]').innerText(), /Add a version from the Where board/);
-  assert.match(await page.locator('[data-piece-section="versions"]').innerText(), /No destinations yet[\s\S]*Put this on a channel ›/);
+  assert.match(await page.locator('[data-piece-section="versions"]').innerText(), /No destinations yet[\s\S]*View campaign channels ›/);
   await page.screenshot({ path: resolve(screenshots, 'empty-1440.png') });
   check('new post has editor, import, Save and next-step hint');
 

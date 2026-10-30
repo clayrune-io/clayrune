@@ -55,14 +55,14 @@ try {
       check(!shell.includes('Demo data - not your workspace'), `[${width}] default Desk has no demo banner`);
       await page.evaluate(async () => {
         await window.openSettings();
-        window.drillSettings('appearance');
-        const sections = Array.from(document.querySelectorAll('[data-cat="appearance"] > .settings-section'));
+        window.drillSettings('system');
+        const sections = Array.from(document.querySelectorAll('[data-cat="system"] > .settings-section'));
         const titles = sections.map(s => s.querySelector('.settings-section-title')?.textContent);
-        const index = titles.findIndex(t => t?.trim() === 'Experimental');
-        if (index < 0) throw new Error('Settings has no Experimental section');
+        const index = titles.findIndex(t => t?.trim() === 'Runtime and availability');
+        if (index < 0) throw new Error('Settings has no Runtime and availability section');
         window.drillSettingsSub(index);
       });
-      const row = page.locator('[data-cat="appearance"] .settings-row')
+      const row = page.locator('[data-cat="system"] .settings-row')
         .filter({ has: page.getByText('Desk v1', { exact: true }) });
       await row.waitFor();
       check(await row.locator('.settings-hint').innerText()

@@ -1,4 +1,4 @@
-// Desk v1 (MC-977) — R2-7: the ③ What stop of the campaign map
+// Desk v1 (MC-977) — R2-7: the ④ Posts stop of the campaign map
 // (docs/THE_DESK_V1_IA_REVISION_2.md §8 row R2-7, §11.4 item 5, §11.6 Q1;
 // frames 5a/5b/5c, 15, 15a, 16a, 16b). Window-bridged module, no `import`
 // (ground rule 1). `desk-v1-campaign.js`'s `deskV1FillCampaignTabBody` calls
@@ -473,7 +473,7 @@
         const bodyBefore = fam.body || '';
         const bodyNext = fam.draft.tabs[st.writer.tab].body;
         DeskV1Store.write({
-          label: `Saved “${fam.title}” to What`,
+          label: `Saved “${fam.title}” to Posts`,
           apply: () => { fam.body = bodyNext; undoMark = window.DeskV1Studio.markInReview(fam); st.writer = null; _repaint(); },
           unapply: () => { fam.body = bodyBefore; if (undoMark) undoMark(); },
           repaint: () => _repaint(),

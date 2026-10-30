@@ -8,13 +8,13 @@
  *   - Studio from Home's header: 3 New tiles, Recent lists the fixture render at
  *     `Rendering 40%`, Material library folders with file counts, Back `‹ Desk`.
  *   - What → Video → Create new opens the storyboard: >= 1 scene pre-filled,
- *     the header reads `‹ Back to What` / `New video · Storyboard`, the
+ *     the header reads `‹ Back to Posts` / `New video · Storyboard`, the
  *     `Returning to ›` strip names campaign + piece, scene 3 moves above 2 by
- *     drag AND by keyboard, Render → Back to What shows `⟳ Rendering` with
+ *     drag AND by keyboard, Render → Back to Posts shows `⟳ Rendering` with
  *     role=progressbar + aria-valuenow (all 3 tones).
  *   - What → Article → Write new opens the writer: one tab per destination
  *     version, provenance line, the `? Assumed` claim both inline and in the
- *     Claims & sources panel, Save to What returns with the piece `in review`.
+ *     Claims & sources panel, Save to Posts returns with the piece `in review`.
  *   - Standalone (MC-1024): the New video / New image tiles open creation with no
  *     campaign picker; a capture is saved to the Material library, listed in
  *     Recent and in a campaign's What library picker; a no-campaign Recent row
@@ -505,9 +505,9 @@ async function runStoryboard(browser, tone) {
   check(scenes.length >= 1, `${tag} storyboard opens with ${scenes.length} scene(s) pre-filled`, `${tag} no scenes`);
   const crumb = await text(page, '.desk-v1-crumb-title');
   const back = await text(page, '.desk-v1-back');
-  check(crumb === 'New video · Storyboard' && /^‹\s*Back to What$/.test(back), `${tag} header reads "${back}" · "${crumb}"`, `${tag} header wrong: ${JSON.stringify([back, crumb])}`);
+  check(crumb === 'New video · Storyboard' && /^‹\s*Back to Posts$/.test(back), `${tag} header reads "${back}" · "${crumb}"`, `${tag} header wrong: ${JSON.stringify([back, crumb])}`);
   const strip = await text(page, '[data-returning-to]');
-  check(/Returning to ›/.test(strip) && /Windows beta testers/.test(strip) && /What · New video/.test(strip),
+  check(/Returning to ›/.test(strip) && /Windows beta testers/.test(strip) && /Posts · New video/.test(strip),
     `${tag} strip names campaign + piece: "${strip}"`, `${tag} Returning-to strip wrong: ${JSON.stringify(strip)}`);
   const firstLine = await text(page, '.desk-v1-sb-scene:first-child .desk-v1-sb-line');
   check(firstLine.length > 0, `${tag} scene 1 has a line ("${firstLine}")`, `${tag} scene 1 line empty`);
@@ -556,7 +556,7 @@ async function runStoryboard(browser, tone) {
     ok('storyboard screenshot saved: r2_8_storyboard_1440.png');
   }
 
-  // Render → Back to What. The scene edits leave an Undo toast over the top
+  // Render → Back to Posts. The scene edits leave an Undo toast over the top
   // right corner where Render sits (same as desk-v1-video.mjs's note), so clear
   // the stack first.
   await page.evaluate(() => document.querySelectorAll('#toast-container .toast').forEach((t) => t.remove()));
@@ -620,7 +620,7 @@ async function runWriter(browser, tone) {
   await page.waitForSelector('[data-what-row]', { timeout: 6000 });
   const row = page.locator('[data-what-row]', { hasText: 'New article' }).first();
   const rowText = ((await row.textContent()) || '').replace(/\s+/g, ' ');
-  check(/in review/.test(rowText), `${tag} Save to What returns with the piece "in review"`, `${tag} row not in review: ${rowText}`);
+  check(/in review/.test(rowText), `${tag} Save to Posts returns with the piece "in review"`, `${tag} row not in review: ${rowText}`);
   check((await page.$$('[data-writer]')).length === 0, `${tag} the writer is gone after Save`, `${tag} writer still mounted`);
   reportUncaught(pageErrors, tag);
   await ctx.close();

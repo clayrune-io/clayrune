@@ -229,7 +229,7 @@ async function suggestButton(browser) {
   await page.click('[data-how-suggest]');
   await settle(page, () => document.querySelectorAll('[data-chat-turn="agent"]:not([data-chat-thinking])').length === 1);
   const p = posts(srv, 'camp-1');
-  (p.length === 1 && p[0].body.message === 'Suggest What / When / Where') ? ok('the Suggest button sends its line to the agent as a message') : fail('suggest POST: ' + JSON.stringify(p.map((r) => r.body)));
+  (p.length === 1 && p[0].body.message === 'Suggest Posts / When / Channels') ? ok('the Suggest button sends its line to the agent as a message') : fail('suggest POST: ' + JSON.stringify(p.map((r) => r.body)));
   (await page.evaluate(() => /not connected/i.test(document.body.innerText))) ? fail('"not connected" is on screen after Suggest') : ok('nothing says "not connected" after Suggest');
   await ctx.close();
 }

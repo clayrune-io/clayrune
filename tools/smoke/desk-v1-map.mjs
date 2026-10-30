@@ -45,7 +45,7 @@
  *   cd tools/smoke && node desk-v1-map.mjs
  * Exit 0 = every case holds; 1 = a case regressed / harness error.
  */
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
@@ -141,9 +141,10 @@ async function stopState(page, stop) {
   return page.$eval(`.desk-v1-map-stop[data-stop="${stop}"]`, (el) => el.dataset.state).catch(() => null);
 }
 
-// R2-19: Where (channel placement) comes BEFORE When (time).
-const MAP_STOPS = ['how', 'goal', 'what', 'where', 'when', 'launch'];
-const MAP_STOP_WORDS = { goal: 'Goal', how: 'Brief', what: 'What', when: 'When', where: 'Where', launch: 'Launch' };
+// R2-19: C6: Channels precedes Posts, then When.
+const MAP_STOPS = ['how', 'goal', 'where', 'what', 'when', 'launch'];
+const MAP_STOP_WORDS = { goal: 'Goal', how: 'Brief', what: 'Posts', when: 'When', where: 'Channels', launch: 'Launch' };
+const check = (condition, message) => condition ? ok(message) : fail(message);
 
 // ── New campaign opens at ① Brief (R2-18; route key `how`); `Next ›` carries a Draft through every
 // stop to ⑥ Launch, marking each one done as it moves past it; `‹ Back`
@@ -163,9 +164,9 @@ async function runNewCampaignStepperFlow(browser) {
     ? ok(`map shows all six stops in order: ${JSON.stringify(stopWords)}`)
     : fail(`map stop order wrong: ${JSON.stringify(stopWords)}`);
   // R2-19: the literal order, independent of the MAP_STOPS constant above.
-  JSON.stringify(stopWords) === JSON.stringify(['Brief', 'Goal', 'What', 'Where', 'When', 'Launch'])
-    ? ok('R2-19: stop order reads Brief, Goal, What, Where, When, Launch (Where before When)')
-    : fail(`R2-19: stop order is not Brief, Goal, What, Where, When, Launch: ${JSON.stringify(stopWords)}`);
+  JSON.stringify(stopWords) === JSON.stringify(['Brief', 'Goal', 'Channels', 'Posts', 'When', 'Launch'])
+    ? ok('R2-19: stop order reads Brief, Goal, Channels, Posts, When, Launch')
+    : fail(`R2-19: stop order is not Brief, Goal, Channels, Posts, When, Launch: ${JSON.stringify(stopWords)}`);
 
   // Next through every stop with no data entry (§4.1: ②⑤ are placeholders
   // this ticket, ①③④ show their absorbed panel) — pure movement mechanics.
@@ -197,12 +198,12 @@ async function runNewCampaignStepperFlow(browser) {
   whenState === 'here'
     ? ok('‹ Back from ⑥ Launch returns to ⑤ When')
     : fail(`Back from Launch landed wrong: when=${JSON.stringify(whenState)}`);
-  // R2-19: and one more Back from When lands on Where (When follows Where).
+  // R2-19: and one more Back from When lands on Posts (When follows Posts).
   await page.click('[data-map-back]');
   await page.waitForTimeout(30);
-  const whereBack = await stopState(page, 'where');
+  const whereBack = await stopState(page, 'what');
   whereBack === 'here'
-    ? ok('R2-19: ‹ Back from When returns to Where')
+    ? ok('R2-19: ‹ Back from When returns to Posts')
     : fail(`R2-19: Back from When landed wrong: where=${JSON.stringify(whereBack)}`);
 
   reportUncaught(pageErrors, '[stepper-flow]');
@@ -268,6 +269,8 @@ async function runLaunchMissingLinks(browser) {
     : fail(`Start campaign disabled-state wrong: ${JSON.stringify(startDisabled)}`);
 
   const missingLinks = await page.$$eval('[data-missing-stop]', (els) => els.map((e) => ({ stop: e.dataset.missingStop, text: e.textContent.trim() })));
+  check(missingLinks.some((m) => m.stop === 'where' && /Fix in Channels/.test(m.text)),
+    'C6: Launch account fix names Channels while retaining the where route');
   missingLinks.length === 2 && missingLinks.some((m) => m.stop === 'where') && missingLinks.some((m) => m.stop === 'how')
     ? ok(`⑥ Launch lists 2 missing items linking to their stops: ${JSON.stringify(missingLinks)}`)
     : fail(`⑥ Launch missing list wrong: ${JSON.stringify(missingLinks)}`);
@@ -330,8 +333,8 @@ async function runFootFollowsScreenStop(browser) {
 
   await page.click('[data-map-back]');
   await page.waitForTimeout(60);
-  (await stopState(page, 'where')) === 'here' ? ok('Back from When (via the alias) lands on Where') : fail('Back from When did not land on Where');
-  (await cursor()) === 'where' ? ok('Back then moves the saved cursor to Where') : fail(`cursor after Back is ${await cursor()}`);
+  (await stopState(page, 'what')) === 'here' ? ok('Back from When (via the alias) lands on Posts') : fail('Back from When did not land on Posts');
+  (await cursor()) === 'what' ? ok('Back then moves the saved cursor to Posts') : fail(`cursor after Back is ${await cursor()}`);
 
   await page.evaluate((id) => window.deskV1Nav('calendar', { campaignId: id }), campaignId);
   await page.waitForTimeout(60);
@@ -932,6 +935,12 @@ async function gotoLaunch(page, campaignId) {
 
 async function runR211LaunchBounds(browser) {
   const { ctx, page, pageErrors } = await newTonePage(browser, { ls: {} });
+  // This scenario tests successful Resume; expired-end refusal has its own case.
+  await page.evaluate(() => {
+    const camp = window.DeskV1Fixtures.campaigns.find(c => c.id === 'camp-2');
+    const end = new Date(); end.setDate(end.getDate() + 21);
+    camp.plan.end.date = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`;
+  });
   await navToProposedCampaign(page, 'camp-2');
   await gotoLaunch(page, 'camp-2');
 
@@ -1050,6 +1059,7 @@ async function runR211RenewTerm(browser) {
     const deadline = new Date(now.getTime() + 200 * 86400000);
     camp.goal.horizon = 'long';
     camp.goal.deadline = iso(deadline);
+    camp.plan.end.date = iso(deadline); // renew a term inside an ongoing plan
     camp.term = { index: 1, starts: iso(began), ends: iso(ended), post_cap: null };
     camp.approval = undefined; camp.approvals = undefined;
     if (window.deskV1CampaignBounds) camp.approval = { bounds: window.deskV1CampaignBounds(camp), at: began.toISOString(), term: 1 };
@@ -1080,9 +1090,37 @@ async function runR211RenewTerm(browser) {
   await ctx.close();
 }
 
+async function runComposerStopOrder(browser) {
+  const shots = resolve(REPO_ROOT, '_scratch/composer_c6');
+  mkdirSync(shots, { recursive: true });
+  for (const width of [1440, 390]) {
+    const { ctx, page, pageErrors } = await newBootedPage(browser, { width, height: 950 });
+    const id = await newCampaign(page, 'engulfing_scanner');
+    const stops = await page.$$eval('[data-stop]', els => els.map(el => ({ id: el.dataset.stop, text: el.textContent.trim() })));
+    check(stops.map(s => s.id).join() === 'how,goal,where,what,when,launch', `${width}: C6 stop order uses stable route IDs`);
+    check(/Channels/.test(stops[2].text) && /Posts/.test(stops[3].text),
+      `${width}: Channels is stop 3 and Posts is stop 4`);
+    for (const [panel, label] of [['where', 'channels'], ['what', 'posts']]) {
+      await page.evaluate(({id, panel}) => window.deskV1GotoCampaignPanel(panel, {campaignId:id}), {id, panel});
+      await page.waitForSelector(panel === 'where' ? '[data-where]' : '[data-what]');
+      check(await stopState(page, panel) === 'here', `${width}: saved ${panel} route opens ${label}`);
+      await page.screenshot({path: resolve(shots, `${label}-${width}.png`)});
+    }
+    await page.click('[data-map-next]');
+    check(await stopState(page, 'when') === 'here', `${width}: Next from Posts opens When`);
+    await page.click('[data-map-back]');
+    check(await stopState(page, 'what') === 'here', `${width}: Back from When opens Posts`);
+    await page.click('[data-map-back]');
+    check(await stopState(page, 'where') === 'here', `${width}: Back from Posts opens Channels`);
+    reportUncaught(pageErrors, `C6 ${width}`);
+    await ctx.close();
+  }
+}
+
 async function main() {
   const browser = await chromium.launch();
   try {
+    await runComposerStopOrder(browser);
     console.log('desk-v1-map: New campaign -> stepper mechanics');
     await runNewCampaignStepperFlow(browser);
     console.log('desk-v1-map: leave at When -> draft card -> Continue');

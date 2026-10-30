@@ -200,12 +200,12 @@
   // first — the old ② How stop is now the FIRST stop and reads `Brief`. The
   // route key stays `how` (deep links, fixtures, `missing[].stop`, `camp.how`
   // all keep working); only the order and the visible word changed.
-  // R2-19 (Ron 2026-09-30, When/Where overlap): Where comes BEFORE When. Where
-  // owns channel placement only (which accounts, which messages go to each);
-  // When owns time only, for versions already placed in Where — so When never
+  // C6: Channels precedes Posts so composer defaults have an account set.
+  // Internal where/what IDs retain saved cursors and deep links.
+  // When owns time only, for existing destination versions — so When never
   // has to handle a channel the campaign has not picked yet.
-  const MAP_STOPS = ['how', 'goal', 'what', 'where', 'when', 'launch'];
-  const MAP_STOP_WORDS = { goal: 'Goal', how: 'Brief', what: 'What', when: 'When', where: 'Where', launch: 'Launch' };
+  const MAP_STOPS = ['how', 'goal', 'where', 'what', 'when', 'launch'];
+  const MAP_STOP_WORDS = { goal: 'Goal', how: 'Brief', what: 'Posts', when: 'When', where: 'Channels', launch: 'Launch' };
 
   function stateLabel(state) {
     return ALL_STATES[state] || { glyph: '?', word: state ? String(state) : 'Unknown' };
