@@ -911,6 +911,10 @@
       const since = camp.startedAt ? String(camp.startedAt).slice(0, 10) : (camp.term && camp.term.starts) || null;
       const hasTerm = !!camp.term;
       const ended = hasTerm && _termEnded(camp);
+      // A passed plan end holds every post whatever the term says, so Renew would
+      // change nothing: say the real fix and offer the way to the Ends field.
+      const CE = window.DeskV1CampaignEnded;
+      const planEnded = CE ? CE.endedOn(camp) : null;
       const live = camp.state === 'paused' ? '⏸ Paused' : (camp.state === 'active' ? '● Live' : DeskV1Kit.stateLabel(camp.state).word);
       footHTML = `
         <div class="desk-v1-launch-live" data-launch-live>
@@ -921,9 +925,10 @@
             ${camp.state === 'paused'
               ? '<button type="button" class="desk-v1-camp-pause-btn" data-launch-resume>▶ Resume</button>'
               : `<button type="button" class="desk-v1-camp-pause-btn" data-launch-pause ${camp.state !== 'active' ? 'disabled' : ''}>⏸ Pause</button>`}
-            ${hasTerm ? `<button type="button" class="desk-v1-camp-pause-btn" data-renew-term ${ended ? '' : 'disabled'}>Renew term</button>` : ''}
+            ${planEnded ? CE.buttonHTML(camp.id) : (hasTerm ? `<button type="button" class="desk-v1-camp-pause-btn" data-renew-term ${ended ? '' : 'disabled'}>Renew term</button>` : '')}
           </div>
-          ${hasTerm && !ended ? `<div class="desk-v1-rules-hint">Renew opens when this term ends, ${esc(_fmtDateLong(camp.term.ends))}.</div>` : ''}
+          ${planEnded ? `<div class="desk-v1-rules-hint" data-launch-ended>${esc(CE.message(planEnded))}</div>` : ''}
+          ${!planEnded && hasTerm && !ended ? `<div class="desk-v1-rules-hint">Renew opens when this term ends, ${esc(_fmtDateLong(camp.term.ends))}.</div>` : ''}
         </div>`;
     }
 
@@ -974,6 +979,7 @@
     };
     const resumeBtn = el.querySelector('[data-launch-resume]');
     if (resumeBtn) resumeBtn.onclick = () => _openResumeSheet(camp, document.getElementById('desk-v1-camp-summary'), params, repaint);
+    if (window.DeskV1CampaignEnded) window.DeskV1CampaignEnded.bind(el);
     const renewBtn = el.querySelector('[data-renew-term]');
     if (renewBtn && !renewBtn.disabled) renewBtn.onclick = () => _renewTerm(camp, repaint);
   }

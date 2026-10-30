@@ -22,6 +22,7 @@
   function _fx() { return window.DeskV1Store.state(); }
   function _ppFailed(v) { return !!window.DeskV1PostPermission?.failed(v); }
   function _ppLink(v) { return window.DeskV1PostPermission ? window.DeskV1PostPermission.linkHTML(v) : ''; }
+  function _ceLink(v, campaignId) { return window.DeskV1CampaignEnded ? window.DeskV1CampaignEnded.linkHTML(v, campaignId) : ''; }
   function _channel(id) { return (_fx().channels || []).find((c) => c.id === id); }
   function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id); }
   function _project(id) { return (_fx().projects || []).find((p) => p.id === id); }
@@ -473,7 +474,7 @@
 
     let notice = '';
     if (_live() && version.state === 'held') {
-      notice = `<div class="desk-v1-review-notice desk-v1-review-notice-held" data-review-held>⚠ Held — ${esc((version.failure && version.failure.reason) || 'held')}. Nothing was posted. Fix that, then approve again.</div>`;
+      notice = `<div class="desk-v1-review-notice desk-v1-review-notice-held" data-review-held>⚠ Held — ${esc((version.failure && version.failure.reason) || 'held')}. Nothing was posted. Fix that, then approve again.${_ceLink(version, family.campaignId)}</div>`;
     } else if (_live() && version.state === 'failed') {
       notice = `<div class="desk-v1-review-notice desk-v1-review-notice-held" data-review-failed>✗ Failed — ${esc((version.failure && version.failure.reason) || 'the platform refused it')}. Nothing was posted. ${_ppFailed(version) ? 'Tick Post on the account’s Permissions, then approve again.' : 'Approving again retries it.'}${_ppLink(version)}</div>`;
     } else if (_live() && version.state === 'unknown_outcome') {
@@ -594,6 +595,7 @@
     });
 
     window.DeskV1Reapproval.bindLinks(el);
+    window.DeskV1CampaignEnded?.bind(el);
     const primary = el.querySelector('[data-act-primary]');
     if (primary) primary.onclick = () => _approve(family, version, channel, detail);
     const req = el.querySelector('[data-act-request]');
@@ -1036,7 +1038,7 @@
         if (version.manual) { head = `✋ Your turn: post it on ${where}.`; body = _manualTaskHTML(version); }
         else { head = '✓ Approved.'; body = 'The publisher picks it up within a minute.'; }
         break;
-      case 'held': head = '⚠ Held.'; body = `${reason}. Nothing was posted. Fix that, then approve again.`; tone = ' desk-v1-review-notice-held'; break;
+      case 'held': head = '⚠ Held.'; body = `${reason}. Nothing was posted. Fix that, then approve again.${_ceLink(version, family.campaignId)}`; tone = ' desk-v1-review-notice-held'; break;
       case 'failed': head = '✗ Failed.'; body = `${reason}. Nothing was posted. ${_ppFailed(version) ? 'Tick Post on the account’s Permissions, then approve again.' : 'Approving again retries it.'}${_ppLink(version)}`; tone = ' desk-v1-review-notice-held'; break;
       case 'unknown_outcome':
         head = '? Unknown outcome.';
@@ -1053,6 +1055,7 @@
         <button type="button" class="desk-v1-stub-link" data-result-continue>Continue ›</button>
       </div>`;
     window.DeskV1PostPermission?.bindLink(el);
+    window.DeskV1CampaignEnded?.bind(el);
     const cont = el.querySelector('[data-result-continue]');
     if (cont) cont.onclick = () => { _st.result = null; _advanceOrEmpty(); };
     const posted = el.querySelector('[data-result-posted]');

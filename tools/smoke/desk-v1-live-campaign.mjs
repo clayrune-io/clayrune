@@ -322,8 +322,10 @@ async function shortTermRecovery(browser) {
   const { ctx, page } = await newPage(browser, { live: true, srv, now: '2026-10-29T12:00:00Z' });
   await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
   await openLaunch(page, 'camp-1');
-  (await page.locator('[data-renew-term]').isEnabled())
-    ? ok('a short-horizon campaign with an ended term exposes Renew term') : fail('short campaign has no enabled Renew term');
+  // Its plan end has passed too, so Renew would change nothing: Launch names the end-date fix instead
+  // (covered at 1440 and 390 by desk-v1-campaign-ended.mjs).
+  ((await page.locator('[data-renew-term]').count()) === 0 && (await page.locator('[data-extend-end-date]').count()) === 1)
+    ? ok('a short campaign whose plan end passed offers Extend end date, not Renew term') : fail('ended short campaign: renew/extend buttons wrong');
 
   // The server has changed since this tab loaded, just as in Ron's incident.
   serverCamp.term.ends = '2026-11-05';
