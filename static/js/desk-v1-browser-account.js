@@ -1,8 +1,9 @@
 // Browser verification display plugs into the account facets; publishing stays separate.
 import { ConnectCopy as C } from './desk-v1-connect-copy.js';
+import { ConnectionWords as W } from './desk-v1-connection-words.js';
 function facet(ch,f) {
  const status=ch.browser_setup?.status;
- return status ? {...f,key:status.state==='verified'?'ok':'saved',word:C.status(status.state),detail:status.state==='verified'?C.words.browserProof:status.message || ''} : null;
+ return status ? {...f,key:W.from(status.state).key,word:C.status(status.state),detail:status.state==='verified'?C.words.browserProof:status.message || ''} : null;
 }
 function target(ch) {
  const setup=ch.browser_setup;

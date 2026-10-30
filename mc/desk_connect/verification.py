@@ -12,7 +12,9 @@ So a changed, replaced or deleted credential un-verifies itself with no code tha
 has to remember to; so does a token refresh (it rewrites the entry), which costs
 one free re-check, never a false "Verified". Records are kept in memory, bounded,
 and not persisted: after a restart everything reads "not verified" until checked
-again, which is the safe direction.
+again, which is the safe direction. Existing browser profiles without matching
+evidence are "not checked", not signed out. Signed-out probe evidence is recorded
+under the same stamp rules and cannot survive invalidation either.
 
 The probe runs only when a human asks (`verify`); `status` never touches the
 network. Referenced Setup fields are validated server-side to detect broken sources.
@@ -84,7 +86,7 @@ def status(service_id, method, account_id=None, *, provider=None) -> dict:
     prov = provider or _provider(service_id, method)
     cs = prov.credential_state(method, account_id)
     state = {'not_connected': 'not_connected', 'needs_signin': 'sign_in_required',
-             'key_unreadable': 'key_unreadable', 'probe_ready': 'sign_in_required'}.get(cs['state'], cs['state'])
+             'key_unreadable': 'key_unreadable', 'probe_ready': 'not_checked'}.get(cs['state'], cs['state'])
     out = {'state': state, 'entry': cs.get('entry')}
     if cs.get('reason'):
         out['message'] = cs['reason']
@@ -93,8 +95,10 @@ def status(service_id, method, account_id=None, *, provider=None) -> dict:
         current_stamp = cs['stamp'] if 'stamp' in cs else _stamp(cs.get('entry'))
         if rec and rec['entry'] == cs.get('entry') and rec['stamp'] == current_stamp:
             # A person's own "I'm signed in" (no probe exists to observe it) is not a sign-in Clayrune saw.
-            out.update(state='verified' if rec.get('verified', True) else 'not_checked', method=method, capability=rec['capability'], identity=rec['identity'],
+            out.update(state=rec.get('state') or ('verified' if rec.get('verified', True) else 'not_checked'), method=method, capability=rec['capability'], identity=rec['identity'],
                        at=rec['at'])
+            if rec.get('failure'):
+                out['failure'] = rec['failure']
     out['label'] = LABELS.get(out['state'], out['state'])
     return out
 
@@ -121,15 +125,20 @@ def verify(service_id, method, account_id=None, *, provider=None) -> dict:
         probe = Probe(False, 'the check could not run; see the server log', kind='unavailable')
     with _lock:
         _records.pop(key, None)
-        if probe.ok is True or (probe.ok is None and probe.kind == 'confirmed'):
+        signed_out = probe.ok is False and probe.kind == 'signed_out'
+        if probe.ok is True or (probe.ok is None and probe.kind == 'confirmed') or signed_out:
             record_stamp = prov.probe_stamp(stamp) if hasattr(prov, 'probe_stamp') else stamp
             _records[key] = {'entry': cs.get('entry'), 'stamp': record_stamp, 'at': now_iso(),
                              'identity': probe.identity or cs.get('entry') or '', 'capability': probe.capability,
                              'verified': probe.ok is True}
+            if signed_out:
+                # Negative evidence is also bound to the exact checked snapshot.
+                # Losing that record means unknown, never proof of sign-out.
+                _records[key].update(state='sign_in_required', failure='signed_out')
             while len(_records) > _REMEMBER:
                 _records.popitem(last=False)
     out = status(service_id, method, account_id, provider=prov)
-    if probe.ok is False:
+    if probe.ok is False and not signed_out:
         out.update(state='check_failed', label=LABELS['check_failed'], failure=probe.kind or 'rejected')
     out['message'] = probe.message
     if probe.ok is None:

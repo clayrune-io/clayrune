@@ -116,7 +116,7 @@ try {
     assert.match(await page.locator('[data-where-sources]').innerText(),/Saved list offline/);
     await page.locator('[data-where-services-retry]').click();
     await page.waitForSelector('[data-where-service="svc-instagram"]');
-    for (const [state,word] of [['sign_in_required','Needs sign-in'],['check_failed','Not working'],['never_checked','Not checked yet']]) {
+    for (const [state,word] of [['sign_in_required','Needs sign-in'],['check_failed','Not working'],['not_checked','Not checked yet'],['never_checked','Not checked yet']]) {
       setSaved([{id:'svc-instagram',name:'www.instagram.com',link:'https://www.instagram.com',browser_connection:{service:null,browser_profile:'main',status:{state}}}]);
       await where();
       await page.waitForFunction(word=>document.querySelector('[data-where-service="svc-instagram"]')?.innerText.includes(word),word);

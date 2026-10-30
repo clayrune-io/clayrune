@@ -42,7 +42,7 @@ def test_pass_only_from_positive_evidence_and_bound_profile(monkeypatch):
     assert b.run(target(check=False))['state']=='verified'
     # Aliases and pasted paths still refer to this service and profile.
     assert b.status_for('https://www.x.com/another','main')['state']=='verified'
-    assert b.status_for('https://x.com','other')['state']=='sign_in_required'
+    assert b.status_for('https://x.com','other')['state']=='not_checked'
     assert len(reader.calls)==2
 
 
@@ -92,25 +92,26 @@ def test_failed_check_never_verified_and_clears_previous(monkeypatch,final,match
     assert b.run(target())['state']=='verified'
     reader=Reader(matches,final,ok);monkeypatch.setattr(b,'reader_for',lambda name:reader)
     out=b.run(target())
-    assert out['state']=='check_failed' and out['failure']==failure and reader.closed
+    expected='sign_in_required' if failure=='signed_out' else 'check_failed'
+    assert out['state']==expected and out['failure']==failure and reader.closed
     assert out['needs_signin'] == (failure=='signed_out')
-    assert b.run(target(check=False))['state']!='verified'
+    assert b.run(target(check=False))['state']==('sign_in_required' if failure=='signed_out' else 'not_checked')
 
 
 def test_manual_confirmation_without_a_check_is_not_checked_never_signed_in(monkeypatch):
     monkeypatch.setattr(b,'reader_for',lambda _:pytest.fail('unknown services have no probe'))
     out=b.run(target('https://example.com'))
-    assert out['state']=='sign_in_required' and not out['verifiable']
+    assert out['state']=='not_checked' and not out['verifiable'] and not out['needs_signin']
     out=b.run(target('https://example.com',confirmed=True))
     assert out['state']=='not_checked' and out['label']=='Not checked'
     assert out['message']=='Clayrune has no automatic sign-in check for this service.'
     assert b.run(target('https://example.com',check=False))['state']=='not_checked'
-    assert b.run(target('https://other.example.com',check=False))['state']=='sign_in_required'
+    assert b.run(target('https://other.example.com',check=False))['state']=='not_checked'
 
 
 def test_confirmation_cannot_bypass_reviewed_check(monkeypatch):
     monkeypatch.setattr(b,'reader_for',lambda _:Reader(matches=[False,False]))
-    assert b.run(target(confirmed=True))['state']=='check_failed'
+    assert b.run(target(confirmed=True))['state']=='sign_in_required'
 
 
 def test_manual_confirmation_requires_existing_profile(monkeypatch):
@@ -129,7 +130,7 @@ def test_success_survives_its_own_graceful_cookie_flush(monkeypatch):
     assert b.run(target())['state']=='verified'
     assert b.run(target(check=False))['state']=='verified'
     stamp[0]=789
-    assert b.run(target(check=False))['state']=='sign_in_required'
+    assert b.run(target(check=False))['state']=='not_checked'
 
 
 def test_native_replayed_save_refreshes_metadata_verdict(monkeypatch):
@@ -148,13 +149,52 @@ def test_absent_replaced_profile_and_restart_lose_verification(monkeypatch):
     monkeypatch.setattr(b,'reader_for',lambda _:Reader())
     assert b.run(target())['state']=='verified'
     monkeypatch.setattr(b,'profile_stamp',lambda name:(name,456))
-    assert b.run(target(check=False))['state']=='sign_in_required'
+    assert b.run(target(check=False))['state']=='not_checked'
     assert b.run(target())['state']=='verified'
     monkeypatch.setattr(b.br,'named_profile_exists',lambda _:False)
     assert b.run(target())['state']=='sign_in_required'
     monkeypatch.setattr(b.br,'named_profile_exists',lambda _:True)
     v._forget_all_for_tests()
-    assert b.run(target(check=False))['state']=='sign_in_required'
+    assert b.run(target(check=False))['state']=='not_checked'
+
+
+def test_existing_profile_without_record_is_not_checked_without_probing(monkeypatch):
+    monkeypatch.setattr(b,'reader_for',lambda _:pytest.fail('status must not probe'))
+    out=b.run(target(check=False))
+    assert out['state']=='not_checked' and out['label']=='Not checked'
+    assert not out['needs_signin'] and out['verifiable']
+
+
+def test_missing_profile_status_requires_signin_without_probing(monkeypatch):
+    monkeypatch.setattr(b.br,'named_profile_exists',lambda _:False)
+    monkeypatch.setattr(b,'reader_for',lambda _:pytest.fail('missing profile must not probe'))
+    out=b.run(target(check=False))
+    assert out['state']=='sign_in_required' and out['needs_signin']
+
+
+def test_signed_out_evidence_is_snapshot_bound_and_a_recheck_can_clear_it(monkeypatch):
+    monkeypatch.setattr(b,'reader_for',lambda _:Reader(matches=[False,False]))
+    assert b.run(target())['state']=='sign_in_required'
+    out=b.run(target(check=False))
+    assert out['state']=='sign_in_required' and out['failure']=='signed_out'
+    monkeypatch.setattr(b,'profile_stamp',lambda name:(name,456))
+    assert b.run(target(check=False))['state']=='not_checked'
+    assert b.run(target())['state']=='sign_in_required'
+    monkeypatch.setattr(b,'reader_for',lambda _:Reader())
+    assert b.run(target())['state']=='verified'
+    assert not b.run(target(check=False))['needs_signin']
+
+
+@pytest.mark.parametrize('state',['not_checked','sign_in_required','verified'])
+def test_account_projection_uses_same_evidence_as_saved_service(monkeypatch,state):
+    from mc import desk_accounts
+    monkeypatch.setattr(b,'reader_for',lambda _:Reader(matches=[False,False] if state=='sign_in_required' else [True,True]))
+    if state!='not_checked':
+        assert b.run(target())['state']==state
+    row=desk_accounts.v1_account({'id':'account','platform':'x','identity':'example','capability':'direct',
+        'browser_setup':{'service':'x','route_id':'x-browser','refs':{'browser_profile':'main'}}},{})
+    assert row['browser_setup']['status']['state']==state
+    assert b.account_status('x','main')['status']['state']==state
 
 
 def test_reader_uses_hidden_tab_only_for_an_open_profile(monkeypatch):
@@ -207,5 +247,5 @@ def test_instagram_profile_loads_with_a_signin_check_and_only_a_pane_read_route(
     assert out['state']=='verified' and out['verifiable']
     reader=Reader(final='https://www.instagram.com/accounts/login/',matches=[False,False]);monkeypatch.setattr(b,'reader_for',lambda _:reader)
     out=b.run(target('https://www.instagram.com'))
-    assert out['state']=='check_failed' and out['failure']=='signed_out' and out['needs_signin']
+    assert out['state']=='sign_in_required' and out['failure']=='signed_out' and out['needs_signin']
     assert out['signin_url']=='https://www.instagram.com/accounts/login/'

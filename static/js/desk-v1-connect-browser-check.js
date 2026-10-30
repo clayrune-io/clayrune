@@ -4,6 +4,8 @@ const states=new Map(), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;'
 const fresh=()=>({status:null,busy:false,waiting:false,opened:false,asked:false,prompt:false,deferred:false,timer:null,node:null,active:true,started:0});
 function clear(key) {const s=states.get(key);if(s){s.active=false;clearTimeout(s.timer);states.delete(key);}}
 function html(key) {return `<div class="desk-v1-cs-fill-row" data-browser-check="${esc(key)}"></div>`;}
+// Status words and tile pills use the same check/recovery path as Check now.
+function check(key) {const s=states.get(key);return s?.start?.();}
 function bind(root,key,target,ctx,{own,onStatus,status,compact=false}={}) {
  const node=root.querySelector(`[data-browser-check="${CSS.escape(key)}"]`);if(!node)return;
  const wanted=target();
@@ -20,16 +22,18 @@ function bind(root,key,target,ctx,{own,onStatus,status,compact=false}={}) {
   s.node.innerHTML=`<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-bc-check ${s.busy?'disabled':''}>${s.busy?C.words.checking:C.words.checkConnection}</button>
    ${compact?'':`<span class="desk-v1-conn-status" data-bc-state="${esc(state)}" data-state="${state==='verified'?'ok':'needs'}" role="status">${esc(label)}</span>`}
    ${!compact && s.status?.state==='verified'?`<span class="desk-v1-rules-hint">${C.words.browserProof}</span>`:''}
-   ${!compact && s.error?`<span role="alert">${esc(s.error)}</span>`:''}
+   ${s.error || s.status?.failure==='unavailable'?`<span role="alert">${esc(s.error || s.status.message || C.words.checkFailed)}</span>`:''}
    ${s.prompt || s.deferred?`<div data-bc-confirm>${s.prompt?`<p>${C.words.noAutoCheck} ${C.words.signedInQuestion}</p>`:''}<button type="button" class="desk-v1-conn-btn" data-bc-yes>${C.words.yesSignedIn}</button>${s.prompt?`<button type="button" class="desk-v1-conn-btn" data-bc-no>${C.words.notYet}</button>`:''}</div>`:''}`;
-  s.node.querySelector('[data-bc-check]').onclick=()=>{
+  s.node.querySelector('[data-bc-check]').onclick=()=>s.start();
+  s.node.querySelector('[data-bc-yes]')?.addEventListener('click',()=>{s.prompt=false;s.deferred=false;run(true,false);});
+  s.node.querySelector('[data-bc-no]')?.addEventListener('click',()=>{s.prompt=false;s.deferred=true;paint();});
+ };
+ s.start=()=>{
+   if(!s.active || !s.node?.isConnected || s.busy)return;
    if(JSON.stringify(target())!==signature){bind(root,key,target,ctx,{own,onStatus,compact});root.querySelector(`[data-browser-check="${CSS.escape(key)}"] [data-bc-check]`)?.click();return;}
    s.started=Date.now();s.error='';
    if(own && !s.owned){own(key,()=>{if(states.get(key)===s)clear(key);},'account');s.owned=true;}
-   run(false,false);
-  };
-  s.node.querySelector('[data-bc-yes]')?.addEventListener('click',()=>{s.prompt=false;s.deferred=false;run(true,false);});
-  s.node.querySelector('[data-bc-no]')?.addEventListener('click',()=>{s.prompt=false;s.deferred=true;paint();});
+   return run(false,false);
  };
  async function run(confirmed,automatic) {
   if(!alive() || s.busy)return;
@@ -60,4 +64,4 @@ function bind(root,key,target,ctx,{own,onStatus,status,compact=false}={}) {
  }
  paint();
 }
-window.DeskV1ConnectBrowserCheck={html,bind,clear};
+window.DeskV1ConnectBrowserCheck={html,bind,clear,check};

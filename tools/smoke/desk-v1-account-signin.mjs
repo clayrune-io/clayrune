@@ -114,6 +114,11 @@ async function newPage(browser, srv, width, height) {
     if (path === '/api/desk/engines' && method === 'GET') return J({ engines: [] });
     if (path === '/api/desk/services' && method === 'GET') return J(srv.services);
     if (path === '/api/desk/accounts' && method === 'GET') return J(srv.accounts);
+    if (path === '/api/desk/connect/browser-profile/check' && method === 'POST') {
+      if (srv.checkDelay) await new Promise(r => setTimeout(r, srv.checkDelay));
+      if (srv.checkError) return J({error:'The connection check could not run.'}, 503);
+      return J(srv.checkResult || {state:'sign_in_required', label:'Sign-in required', failure:'signed_out', needs_signin:true, verifiable:true, signin_url:'https://www.instagram.com/accounts/login/', browser_profile:body.browser_profile});
+    }
     if (path === '/api/desk/connect/types' && method === 'POST') return J(TYPES[body && body.input] || { host: '', picker: [] });
     if (path === '/api/desk/connect/purposes') return J({ service: 'x', accounts: [] });
     if (path === '/api/desk/connect/status') return J({ higgsfield: { state: 'not_connected' }, x: { state: 'not_connected', app: { client_id: true }, scopes: ['tweet.read'] }, gemini: { saved: false }, openai: { saved: false } });
@@ -459,42 +464,81 @@ async function run(browser, width, height) {
     }
   }
 
-  // ── 7: a saved browser-profile SERVICE (live: www.instagram.com) says Needs sign-in too ─────────
-  // Live repro 2026-10-29: after 221cbbfe the only "Needs sign-in" on the Desk was this tile and its panel head, both
-  // plain text: the word was wired for account cards only. The panel head word now opens the reviewed sign-in page the
-  // service's own check reported, in the service's own profile; a service with no such page keeps a plain word.
+  // 7: saved service words check first. Only signed-out evidence opens recovery.
   {
     const svc = (id, name, status) => ({ id, name, kind: 'browser_profile', link: 'https://' + name, publish: false, credential: { name: '', in_vault: null },
       browser_connection: { connection_id: id, browser_profile: 'main', name, read: false, post: false, executes: false, service: null, signin_method: 'other', url: 'https://' + name, status } });
-    const needs = { state: 'sign_in_required', label: 'Sign-in required', needs_signin: true, verifiable: true, signin_url: 'https://www.instagram.com/accounts/login/', browser_profile: 'main' };
-    const svcHead = (page, id) => page.$eval(`[data-conn-service="${id}"] .desk-v1-conn-head [data-conn-status]`, (e) => ({ tag: e.tagName, text: e.textContent.trim(), aria: e.getAttribute('aria-label') }));
-    const pick = async (page, id) => { await page.click(`[data-conn-tile="service:${id}"]`); await page.waitForSelector(`[data-conn-detail="service:${id}"] [data-conn-service="${id}"]`, { timeout: 6000 }); };
-    {
+    const unchecked = { state:'not_checked', label:'Not checked', needs_signin:false, verifiable:true, signin_url:'https://www.instagram.com/accounts/login/', browser_profile:'main' };
+    const svcHead = (page, id) => page.$eval(`[data-conn-service="${id}"] .desk-v1-conn-head [data-conn-status]`, e => ({ tag:e.tagName, text:e.textContent.trim(), aria:e.getAttribute('aria-label') }));
+    const pick = async (page, id) => { await page.click(`[data-conn-tile="service:${id}"]`); await page.waitForSelector(`[data-conn-detail="service:${id}"] [data-conn-service="${id}"]`, {timeout:6000}); };
+    for (const scenario of ['verified','signed_out','unavailable','transport','verified_head']) {
+      const outcome = scenario === 'verified_head' ? 'verified' : scenario;
       const srv = makeServer();
-      srv.services = [svc('svc-ig', 'www.instagram.com', needs)];
-      const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
-      await pick(page, 'svc-ig');
-      const h = await svcHead(page, 'svc-ig');
-      check(h.tag === 'BUTTON' && h.text === 'Needs sign-in' && h.aria === 'Sign in to www.instagram.com', 'saved service: "Needs sign-in" in the panel head is a button labelled "Sign in to www.instagram.com"', JSON.stringify(h));
-      await page.screenshot({ path: resolve(SHOT_DIR_NS, `service_word_${width}.png`) });
+      const initial = scenario === 'verified_head' ? {...unchecked,state:'sign_in_required',needs_signin:true} : unchecked;
+      const initialWord = initial.needs_signin ? 'Needs sign-in' : 'Not checked yet';
+      const initialAction = initial.needs_signin ? 'Sign in to www.instagram.com' : 'Check www.instagram.com';
+      srv.services = [svc('svc-ig','www.instagram.com',initial)];
+      srv.checkDelay = 100;
+      srv.checkError = outcome === 'transport';
+      srv.checkResult = outcome === 'verified' ? {...unchecked,state:'verified',label:'Verified'} : outcome === 'signed_out' ? {...unchecked,state:'sign_in_required',failure:'signed_out',needs_signin:true} : {...unchecked,state:'check_failed',failure:'unavailable',message:'The connection check could not run. Try again.'};
+      const {ctx,page,pageErrors} = await newPage(browser,srv,width,height);
+      const pill = page.locator('[data-conn-tile-action="service:svc-ig"]');
+      check(await pill.innerText() === initialWord && await pill.getAttribute('aria-label') === initialAction,'service tile offers the status action');
+      await pick(page,'svc-ig');
+      const h = await svcHead(page,'svc-ig');
+      check(h.tag === 'BUTTON' && h.text === initialWord && h.aria === initialAction,'service head offers the status action',JSON.stringify(h));
+      check(only(srv,/browser-profile\/check/).length === 0,'painting a card never probes');
       srv.log.length = 0;
-      await page.locator('[data-conn-service="svc-ig"] .desk-v1-conn-head button[data-conn-status]').press('Enter');
-      await page.waitForFunction(() => window.__panes.length === 1, null, { timeout: 4000 });
-      const call = (await panes(page))[0];
-      check(call[0] === 'https://www.instagram.com/accounts/login/' && call[3] === 'main', "the word opens the service's reported sign-in page in its own profile", JSON.stringify(call));
-      check(!(await page.$('[data-cfw]')) && srv.log.filter((r) => r.method !== 'GET').length === 0 && only(srv, /^\/api\/browser\//).length === 0, 'no wizard, no write, no direct browser API call', JSON.stringify(srv.log.map((r) => r.method + ' ' + r.path)));
-      check(realErrors(pageErrors).length === 0, 'saved service: no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
+      // Both entry points, keyboard activation and duplicate clicks in flight.
+      if (scenario === 'verified') await pill.press('Enter');
+      else if (outcome === 'signed_out') await pill.press('Space');
+      else await page.locator('[data-conn-service="svc-ig"] .desk-v1-conn-head button[data-conn-status]').press('Enter');
+      await page.evaluate(()=>document.querySelector('[data-ss-service="svc-ig"]')?.click());
+      await page.waitForFunction(()=>!document.querySelector('[data-bc-check]')?.disabled);
+      const checks = only(srv,/browser-profile\/check/);
+      check(checks.length === 1 && checks[0].body.check === true && checks[0].body.url === 'https://www.instagram.com' && checks[0].body.browser_profile === 'main',outcome+': exactly one read-only check of the saved address/profile',JSON.stringify(checks));
+      if (outcome === 'verified') {
+        check((await svcHead(page,'svc-ig')).text === 'Ready' && (await panes(page)).length === 0,'verified: Ready, no pane opens');
+        check(await page.locator('[data-conn-tile="service:svc-ig"] [data-conn-tile-status]').innerText() === 'Ready','verified: tile status refreshes too');
+        await page.screenshot({path:resolve(SHOT_DIR_NS,`service_checked_${width}.png`)});
+      } else if (outcome === 'signed_out') {
+        const calls = await panes(page);
+        check(calls.length === 1 && calls[0][0] === unchecked.signin_url && calls[0][3] === 'main','signed out: only then opens the reported sign-in page in its own profile',JSON.stringify(calls));
+      } else {
+        check((await panes(page)).length === 0 && await page.locator('[data-browser-check] [role="alert"]').count() === 1,outcome+': explains that the check could not run, no sign-in opens');
+      }
+      check(!(await page.$('[data-cfw]')) && srv.log.filter(r=>r.method!=='GET').every(r=>r.path==='/api/desk/connect/browser-profile/check'),'no wizard or write route');
+      check(realErrors(pageErrors).length === 0,outcome+': no uncaught page errors',JSON.stringify(realErrors(pageErrors)));
       await ctx.close();
     }
     {
-      // No reported sign-in page, Ready, and Not checked yet: plain text, as before.
+      // Account routes consume the same status, even when old coverage says signed out.
       const srv = makeServer();
-      srv.services = [svc('svc-nopage', 'example.com', { ...needs, signin_url: undefined }), svc('svc-ok', 'www.reddit.com', { state: 'verified', label: 'Verified', verifiable: true }), svc('svc-new', 'www.tiktok.com', { state: 'not_checked', label: 'Not checked', verifiable: false })];
-      const { ctx, page } = await newPage(browser, srv, width, height);
-      const seen = {};
-      for (const id of ['svc-nopage', 'svc-ok', 'svc-new']) { await pick(page, id); seen[id] = await svcHead(page, id); }
-      check(seen['svc-nopage'].tag === 'SPAN' && seen['svc-nopage'].text === 'Needs sign-in', 'saved service with no reported sign-in page: the word stays plain text', JSON.stringify(seen['svc-nopage']));
-      check(seen['svc-ok'].tag === 'SPAN' && seen['svc-ok'].text === 'Ready' && seen['svc-new'].tag === 'SPAN', 'Ready and Not checked yet services stay plain text', JSON.stringify([seen['svc-ok'], seen['svc-new']]));
+      srv.accounts = [srv.accounts[0]];
+      srv.accounts[0].browser_setup.status = unchecked;
+      srv.checkResult = {...unchecked,state:'verified',needs_signin:false};
+      const {ctx,page,pageErrors} = await newPage(browser,srv,width,height);
+      await selectTile(page,'acct-li');
+      const route = '[data-conn-account="acct-li"] [data-cs-facet="browser"]';
+      check((await text(page,route+' [data-cs-word]')) === 'Not checked yet' && await page.getAttribute(route,'data-state') === 'saved','account route: unchecked evidence stays unchecked despite stale coverage');
+      await page.locator('[data-conn-account="acct-li"] [data-bc-check]').click();
+      await page.waitForFunction(()=>document.querySelector('[data-conn-tile="acct-li"] [data-conn-tile-status]')?.textContent.trim()==='Ready');
+      check((await panes(page)).length === 0 && await page.getAttribute(route,'data-state') === 'ok','account check success: Ready route and tile, no pane');
+      srv.checkResult = {...unchecked,state:'sign_in_required',failure:'signed_out',needs_signin:true};
+      await page.locator('[data-conn-account="acct-li"] [data-bc-check]').click();
+      await page.waitForFunction(()=>window.__panes.length===1);
+      check(await page.getAttribute(route,'data-state') === 'reauth' && await text(page,route+' [data-cs-word]') === 'Needs sign-in','account signed-out probe: route maps to sign-in required');
+      check(realErrors(pageErrors).length === 0,'account projection: no uncaught page errors',JSON.stringify(realErrors(pageErrors)));
+      await ctx.close();
+    }
+    {
+      const srv = makeServer();
+      srv.services = [svc('svc-ok','www.reddit.com',{state:'verified'}),svc('svc-new','www.tiktok.com',{...unchecked,verifiable:false})];
+      const {ctx,page} = await newPage(browser,srv,width,height);
+      await pick(page,'svc-ok');
+      check((await svcHead(page,'svc-ok')).tag === 'SPAN','Ready service stays plain text');
+      await pick(page,'svc-new');
+      check((await svcHead(page,'svc-new')).tag === 'SPAN','service without an automatic check stays plain text');
       await ctx.close();
     }
   }
@@ -547,16 +591,17 @@ async function run(browser, width, height) {
       const call = (await panes(page))[0];
       check((await selected(page, 'service:svc-ig')) === 'true' && !!(await page.$('[data-conn-detail="service:svc-ig"]')), 'one click: the tile is selected and its panel is open');
       check(call[0] === 'https://www.instagram.com/accounts/login/' && call[3] === 'main' && (await nPanes(page)) === 1, 'one click: exactly one openBrowserPane call, the service\'s sign-in page in its own profile', JSON.stringify(call));
-      check(srv.log.filter((r) => r.method !== 'GET').length === 0 && !(await page.$('[data-cfw]')), 'no write and no wizard');
+      check(only(srv,/browser-profile\/check/).length === 1 && srv.log.filter(r=>r.method!=='GET').every(r=>r.path==='/api/desk/connect/browser-profile/check') && !(await page.$('[data-cfw]')), 'one check, no write and no wizard');
       await page.click(sel('service:svc-ig'));
-      await page.waitForFunction(() => window.__panes.length === 2, null, { timeout: 4000 });
+      await page.waitForFunction(()=>!document.querySelector('[data-bc-check]')?.disabled);
+      check((await nPanes(page)) === 1, 'rechecking during recovery keeps the existing sign-in pane');
       check((await selected(page, 'service:svc-ig')) === 'true', 'clicking the pill of the selected tile keeps it selected (never closes it) and starts again');
       for (const key of ['Enter', ' ']) {
-        const before = await nPanes(page);
+        const before = only(srv,/browser-profile\/check/).length;
         await page.focus(sel('service:svc-ig'));
         await page.keyboard.press(key === ' ' ? 'Space' : key);
-        await page.waitForFunction((n) => window.__panes.length === n + 1, before, { timeout: 4000 });
-        check((await nPanes(page)) === before + 1 && (await selected(page, 'service:svc-ig')) === 'true', `${key === ' ' ? 'Space' : key} on the focused pill starts exactly one sign-in`);
+        await page.waitForFunction(()=>!document.querySelector('[data-bc-check]')?.disabled);
+        check(only(srv,/browser-profile\/check/).length === before + 1 && (await nPanes(page)) === 1 && (await selected(page,'service:svc-ig')) === 'true', `${key === ' ' ? 'Space' : key} on the focused pill runs exactly one check, reuses recovery`);
       }
       // A Ready pill only selects.
       const before = await nPanes(page);
