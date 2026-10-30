@@ -6,6 +6,7 @@
 }
 .desk-v1-where-source.is-used { opacity: 0.6; }
 .desk-v1-where-source-off { cursor: default; border-style: dashed; }
+.desk-v1-where-source[data-where-service] { cursor: grab; }
 .desk-v1-where-tile-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .desk-v1-where-tile-id { flex: 1 1 auto; min-width: 0; }
 .desk-v1-where-source-handle, .desk-v1-where-handle, .desk-v1-where-source-plat, .desk-v1-where-plat {

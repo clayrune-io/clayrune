@@ -43,7 +43,8 @@ try {for(const [width,height] of [[1440,1000],[390,844]]) {
   assert.match(await tile.innerText(),/Needs account/);
   assert.match(await tile.innerText(),/Link the Instagram account it is signed in as/);
   assert.doesNotMatch(await tile.innerText(),/Ready|undefined/);
-  assert.equal(await tile.getAttribute('tabindex'),null,'unattached site cannot be placed');
+ assert.equal(await tile.getAttribute('data-where-source'),null,'unattached site cannot be placed');
+ assert.equal(await tile.getAttribute('data-channel-id'),null,'unattached site carries no account id');
  }
  await page.locator('[data-where-service="instagram"]').scrollIntoViewIfNeeded();
  await shot('where');
