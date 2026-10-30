@@ -134,6 +134,7 @@
   function _newTitle(kind) { return `New ${String(kind || 'piece').toLowerCase()}`; }
 
   function _addCreate(camp, type) {
+    if (type.kind === 'post') return window.DeskV1Composer.open(camp);
     const st = _state(camp.id);
     const fam = {
       id: 'fam-new-' + _uid(), campaignId: camp.id, kind: type.kind, title: _newTitle(type.kind),

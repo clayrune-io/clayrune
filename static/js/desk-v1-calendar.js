@@ -878,7 +878,8 @@
   // drawing it moved and rolling back. Demo keeps its fixtures movable.
   const _SENT_STATES = ['sending', 'submitted', 'verified_published', 'you_reported', 'unknown_outcome', 'failed'];
   // Returns false only when the change was REFUSED (the caller says so); a user
-  // who cancels the approval prompt chose that, so it is not a failure.
+  // who cancels the approval prompt chose that, so it is not a failure. Accepted
+  // writes return their promise so the composer can report persistence failures.
   function _reschedule(found, newWhen, campaign) {
     const { family, version } = found;
     const live = _live();
@@ -910,7 +911,7 @@
     const body = { scheduled_at: newWhen.toISOString() };
     if (movingOutsideWindow) body.state = 'needs_review';
     const priorBody = { scheduled_at: live ? (version.publishAt || null) : priorIso };
-    window.DeskV1Store.write({
+    return window.DeskV1Store.write({
       label,
       apply: () => {
         const iso = newWhen.toISOString();
@@ -937,7 +938,6 @@
       // approve can set it), so there is nothing honest for Undo to do.
       irreversible: movingOutsideWindow ? () => `${label}. Its approval was withdrawn; review it again before it goes out.` : undefined,
     });
-    return true;
   }
 
   // R2-7 (§4.3): the piece page's Versions rows edit a version's publish time

@@ -1150,6 +1150,7 @@
   // own facet actions. Replaces the old kind-branched review/video/toast
   // dispatch (the toast's "later ticket" is this one).
   function _runPrimaryAction(fam, camp) {
+    if (fam.kind === 'post') return window.DeskV1Composer.open(camp, fam);
     // A video piece opens the Studio video editor, never the generic piece page.
     if (window.DeskV1VideoOpen && window.DeskV1VideoOpen.isVideo(fam)) { window.DeskV1VideoOpen.open(fam, camp); return; }
     const action = _primaryAction(fam);
