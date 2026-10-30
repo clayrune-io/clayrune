@@ -67,6 +67,7 @@ what makes a composer show nothing to tick.
 | C3 | Live preview panel per ticked channel, reusing the Where preview module | C1 |
 | C4 | ⋯ Duplicate on any post card: copies text and media, opens the copy in the composer; "Duplicate to campaign…" second | C1 |
 | C5 | Where to read-only overview; remove drag-to-place | C1-C3 shipped, smokes green |
+| C6 | Campaign stops become Brief, Goal, Channels, Posts, When, Launch: rename Where to Channels and move it before Posts (was What); Launch's missing-item links follow | C5 |
 
 Each slice: its own commit(s), smokes for what it touched, screenshots at 1440 and
 390 wide, a short report under this file's `## Reports`.
