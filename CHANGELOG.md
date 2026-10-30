@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - Preview campaign posts while writing
+
+- Added a live composer side panel with one tab per selected account, reusing Where's platform cards and media renderer. Unsaved typing updates the preview; clipped copy shows an approximate See more cut, and X shows its 280-character warning.
+- On narrow screens, Show preview opens a full-width panel below the editor. Account changes keep preview tabs in sync. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-30] - Start campaign posts in one composer
 
 - Post tiles and post-card Open actions enter a text composer directly. Opening it creates no empty piece; the first nonblank text creates the draft. Campaign accounts start selected, and ticks write per-piece versions without widening the campaign account bound.
