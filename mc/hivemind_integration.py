@@ -62,8 +62,8 @@ def integration_path(project: dict, hivemind_id: str) -> Path | None:
     return Path(base) / '.clayrune' / 'hivemind-integration' / hivemind_id
 
 
-def _git(cwd, args, timeout=120):
-    return _sync.git_run(str(cwd), args, timeout=timeout)
+def _git(cwd, args, timeout=120, *, env=None):
+    return _sync.git_run(str(cwd), args, timeout=timeout, env=env)
 
 
 def _run_smoke(wt: Path, name: str) -> tuple[bool, str]:
@@ -188,6 +188,19 @@ def integrate(project: dict, hivemind_id: str, workstreams: list[dict],
 
 
 def _merge_one(project, wt, ws, ws_branch, base_sha, st):
+    from mc.dev_harness_landing import StandardsHold, mark_hold, hold_projection
+    from mc.dev_harness_diff import FreezeError
+    from mc.dev_harness_store import StoreError
+    from mc.landing_serialization import landing, LandingBusy
+    try:
+        with landing(wt) as owner:
+            return _merge_one_locked(project, wt, ws, ws_branch, base_sha, st, owner)
+    except (StandardsHold, FreezeError, StoreError, LandingBusy, OSError) as exc:
+        mark_hold(project, ws_branch, 'awaiting_standards')
+        return {'kind': 'standards', **hold_projection(exc)}
+
+
+def _merge_one_locked(project, wt, ws, ws_branch, base_sha, st, owner):
     """Merge one workstream. Returns None (merged), 'skip' (nothing to merge),
     or a failure dict {kind, detail, ...}."""
     ws_id = ws.get('id')
@@ -205,12 +218,16 @@ def _merge_one(project, wt, ws, ws_branch, base_sha, st):
     ok, pre = _git(wt, ['rev-parse', 'HEAD'], 15)
     if not ok:
         return {'kind': 'git', 'detail': f'rev-parse HEAD failed: {pre}'}
-    ok, msg = _git(wt, ['merge', '--no-edit', ws_branch], 120)
+    from mc.dev_harness_landing import prepare, clear_hold
+    candidate = prepare(project, owner, ws_branch, repo=wt)
+    with candidate.git_environment() as env:
+        ok, msg = _git(wt, ['merge', '--no-edit', candidate.tip], 120, env=env)
     if not ok:
         conflicted = _git(wt, ['rev-parse', '-q', '--verify', 'MERGE_HEAD'], 15)[0]
         _git(wt, ['merge', '--abort'], 30)
         return {'kind': 'conflict' if conflicted else 'merge_error', 'detail': msg[-600:]}
     ok, head = _git(wt, ['rev-parse', 'HEAD'], 15)
+    candidate.verify_landed()
     smokes = clean_smokes(ws.get('smokes'))
     results = []
     for name in smokes:
@@ -226,4 +243,5 @@ def _merge_one(project, wt, ws, ws_branch, base_sha, st):
         'smokes_run': bool(smokes), 'smokes': results,
         'note': '' if smokes else 'no smokes named; none run',
     })
+    clear_hold(project, ws_branch)
     return None

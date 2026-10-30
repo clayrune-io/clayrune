@@ -1,16 +1,16 @@
 # DH-M5 native execution-plan contract
 
 MC-960 / `d813ea78`; requested option-A step 1; Sol_Tobin; 2026-10-30.
-Documentation only, based on master `8062511c`. Dave reviews this handoff before
-dispatching a build. No command execution, activation, merge or deployment is
-implemented or authorized by this document.
+Original handoff based on master `8062511c`; A2b builds from `a7a9eb3a`.
+Sections 1-8 retain the reviewed contract/file map. Section 9 records the branch
+implementation candidate and validation; no live activation or deployment.
 
 ## 1. Existing foundation and scope
 
 The [preflight](DEV_HARNESS_M5_PREFLIGHT.md), commit `cb8f25b8`, identified
 missing plan, approval, dispatch and landing-serialization contracts. Dave's
 2026-10-30 journal decision selects option A: specify them before building.
-Current master already includes the [approved M5 contract](DEV_HARNESS_M5_CONTRACT.md)
+The dispatch-base master already includes the [approved M5 contract](DEV_HARNESS_M5_CONTRACT.md)
 and [A2a approval implementation](DEV_HARNESS_NATIVE_APPROVAL.md). This document
 consolidates the requested plan contract against that current source; it does
 not replace those decisions or commission a second approval implementation.
@@ -18,10 +18,10 @@ not replace those decisions or commission a second approval implementation.
 | State at this base | Owners / remaining boundary |
 | --- | --- |
 | Implemented, nonexecuting A2a | Policy v2, immutable native-plan proposals, snapshot binding, native losses, receipt-based activation-evidence composition, POST `/native-plan`, existing Activate fields and 16 fixture manifests. |
-| Pending A2b | Applicability, shared landing lock and hook lease, pending-index runner input, trusted Preview/candidate receipts, coordinator, run dispatch/read and managed/manual landing wiring. |
+| A2b branch candidate (section 9) | Applicability, shared landing lock and hook lease, pending-index runner input, trusted Preview/candidate receipts, coordinator, run dispatch/read and managed/manual landing wiring. |
 | Not delivered by either | Full deterministic/reviewer coverage for the 22 catalogue practices, CI/release proof, repair agents, exceptions, live dogfood or M6 panel acceptance. |
 
-`merge_enforcement_available` is currently false. A2a synthetic receipts prove
+At the dispatch base, `merge_enforcement_available` is false. A2a synthetic receipts prove
 approval validation, not a working execution path. A2b may report availability
 only when an intact, currently valid native Enforce plan and its actual landing
 integration exist. Required full practices whose coverage is Unsupported remain
@@ -357,7 +357,8 @@ change is planned, so frontend smokes are not applicable to this build scope.
 
 ## 8. Exact expected next-build files and handoff
 
-These are A2b expectations against this master, not edits made by this document.
+These are A2b expectations against the dispatch base. Section 9 records the
+implementation candidate against that manifest.
 A2a modules/tests already exist and must be reused. New concerns stay in leaves;
 existing large owners get composition calls only. No new dependency is needed.
 
@@ -394,5 +395,174 @@ Append operator-specific progress to the main checkout's gitignored journal.
 
 No new product choice is open: preserve Dave's approved contract/amendments and
 reuse A2a. Dave's contract review remains the required next handoff, not a new
-Ron approval gate. This step commits only this new document on its current-master
-branch; no production code, merge, push, restart or live settings change.
+Ron approval gate. The original handoff committed this document only. A2b
+remains branch-only: no merge, push, restart or live settings change.
+
+## 9. A2b implementation candidate
+
+The branch candidate builds on `a7a9eb3a` and reuses A2a's inspected plan,
+human Activate, immutable snapshot and activation-evidence owner. No proposal,
+HTTP report, headless CLI output or historical run can authorize execution or
+a later merge. All public/persisted run records retain `authorizes_merge=false`.
+
+| Owner | Implemented boundary |
+| --- | --- |
+| `dev_harness_applicability` | Union of all matching approved groups, both rename names/deletions and dirty untracked paths; uncovered paths, explicit N/A, all-step activation measurement, independent warning/required aggregation. |
+| `dev_harness_pending_merge` | Actual pending B/H/index T and matching working manifest, unique base and independently reconstructed auto tree; conflicts, manual resolution differences and octopus parents refuse instead of substituting HEAD. |
+| `landing_serialization` | Common-Git-dir key; reentrant thread ownership and Windows byte/POSIX flock lock; kernel process-start identity, random exact-candidate child lease, bounded expiry and finally cleanup. Human activation takes this lock before CAS. |
+| `dev_harness_runner.run_approved` | Private frozen Preview/pending/candidate seam on disposable copies, candidate config reinspection, one approved step per receipt, existing registration/cancellation/output suppression and source/tool/environment checks. Ordinary dirty-candidate refusal and report-only CLI remain. |
+| `dev_harness_integration` | Approved snapshot/plan/source rechecks, ordered independent receipts, safe coordinator records, measured-evidence composition and live locked consumption. A required nonpass holds Enforce; intact Preview/Off add no standards hold. Corrupt active state cannot become Off. |
+| `dev_harness_dispatch` and run routes | Exact Preview/run/read schemas; server-generated request ID and fixed internal Python invocation through existing session jobs; queued-input revalidation, safe completion/termination records and project-scoped stale reads. No caller argv/env/lease/report field. |
+| `dev_harness_landing` and `dev_harness_manual` | New composition leaves keep the existing large owners thin. Managed/hivemind merges use exact H and verify T; hooks inspect actual pending state and reuse only a live exact child lease. Review-off and non-agent merges still evaluate standards; ordinary commits remain outside merge preflight. |
+
+Normal removal also takes landing before lifecycle, so teardown cannot race the
+final merge/T check. Native holds persist separately from successful merges;
+remove/GC preserve held workers without caching a successful fingerprint.
+Only the owned disposable hivemind integration can use its existing smoke
+rollback. A human checkout is never reset after a landed-tree mismatch.
+
+The existing job route has one internal-only completion callback seam and kills
+its own child if outer registration fails. Harness completion still calls its
+existing durable delivery owner. Native children in the server use the existing
+registry directly; worker/manual processes use the existing loopback PID
+registration route. Completed external rows retain the registry's existing
+dead/live projection; no global process-cleanup endpoint is invoked.
+
+All seven new runtime leaves are included in the checker identity. M4 source
+and fixture manifests are unchanged; no validator-pin regeneration is needed.
+No product dependency, human gate, config key, CI workflow, installer, fence or
+agent rule was added or changed. Scratch-only POSIX test packages do not alter
+runtime requirements.
+
+### Validation and remaining delivery
+
+The focused commands below established real Preview/pending receipts and measured-native Enforce,
+warning/required independence, real child-hook execution under the parent lock,
+held-worker remove/GC preservation, fixed session-job execution and native PID
+registration. Tests use disposable repos, synthetic executables and temporary
+trusted state. No live project has been activated.
+
+```text
+python -m pytest -o addopts= -q --tb=short tests/test_dev_harness_applicability.py tests/test_dev_harness_pending_merge.py tests/test_landing_serialization.py tests/test_dev_harness_integration.py tests/test_dev_harness_dispatch.py tests/test_dev_harness_run_routes.py tests/test_dev_harness_landing.py tests/test_dev_harness_coverage.py
+python -m pytest -o addopts= -q --tb=short tests/test_dev_harness_integration.py tests/test_dev_harness_landing.py tests/test_landing_serialization.py tests/test_dev_harness_dispatch.py
+python -m pytest -o addopts= -q --tb=short tests/test_dev_harness_integration.py tests/test_dev_harness_landing.py tests/test_dev_harness_dispatch.py tests/test_dev_harness_run_routes.py
+python -m pytest -o addopts= -q --tb=short tests/test_dev_harness_run_routes.py
+python -m pytest tests -k "dev_harness or agent_worktree or hivemind or agent_jobs or merge_review"
+pyright mc/dev_harness_applicability.py mc/dev_harness_pending_merge.py mc/landing_serialization.py mc/dev_harness_integration.py mc/dev_harness_dispatch.py mc/dev_harness_landing.py mc/dev_harness_manual.py mc/dev_harness_runner.py mc/dev_harness_diff.py mc/dev_harness_native_plan.py mc/dev_harness_store.py mc/hivemind_integration.py mc/blueprints/dev_harness_run_routes.py mc/blueprints/dev_harness_routes.py mc/agent_worktree.py mc/project_sync.py
+python3 -m pytest -o addopts= -q --tb=short tests/test_landing_serialization.py tests/test_dev_harness_pending_merge.py tests/test_dev_harness_applicability.py
+git diff --check
+```
+
+- Broad focused command: **78 passed, rc=0** (109.70s); subsequent final
+  integrity/landing/job command: **30 passed, rc=0** (85.58s). Includes actual
+  pending-index coverage B-to-T, incomplete zero-denominator warning, required
+  continuation, live job dispatch, child hook, hold/GC and post-landing mismatch.
+- Required full regression: **1,010 passed, 15 skipped, 16,796 deselected,
+  rc=0** (389.15s), without warnings. Skips are 13 existing POSIX-sh hook cases,
+  the Windows newline-filename case and optional missing `psutil` inspection.
+  The final routing/worker-output, repository-boundary and request-lifecycle guards followed this
+  full run; the third focused command covers those final changes, including
+  real positive job/hook execution: **28 passed, rc=0** (86.48s). The fourth
+  focused command verifies the last pending-record ref-metadata correction:
+  **4 passed, rc=0** (4.09s), including a target other than HEAD. Both late
+  lifecycle races were reproduced as failing tests before their fixes.
+- Scoped Pyright above: **0 errors, 0 warnings, rc=0** across 16 changed/new
+  owners, including all seven new leaves. Checking the existing
+  `mc/blueprints/agent_routes.py` additionally reports **15 errors, rc=1**;
+  a dispatch-base copy checked under the same config produces the identical
+  15 diagnostic rule/message pairs. No new error was added there.
+- Last pytest command ran under Ubuntu/WSL with scratch-only test packages:
+  **15 passed, rc=0** (9.23s). Exercises real POSIX flock, subprocess contention,
+  waiter/crash release, aliases, lease integrity, cleanup failure, pending index
+  and applicability. The corresponding Windows cases also pass. Full POSIX
+  native integration, macOS and packaged execution remain unverified.
+- Seven changed implementation docs: **19 local links resolve**; whitespace
+  checks pass. No static/UI change: boot/feature smokes, USER_GUIDE and README
+  are N/A. No new standing convention: AGENTS/rules/memory-index edits are N/A.
+
+Early coverage/version errors remain explicitly incomplete and cannot mint
+activation evidence; they do not skip later required observation steps. The
+existing evidence owner still requires complete real input provenance. M4
+receives the exact pending B/H/M/T adapter view while receipts preserve the
+distinct pending-index descriptor; no M4 source/fixture identity was changed.
+Final boundary checks reject a workspace in a different common repository,
+keep approved non-Git/unborn observations manifest-only without a job, and
+project malformed trusted reads/worker requests to fixed safe error codes.
+No traceback or arbitrary exception enters the worker completion tail.
+Completion and queue persistence share a short parent-side lock, so an early
+completion cannot recreate a runnable request. Workers re-read request/terminal
+state after acquiring landing ownership; consumed requests cannot execute again
+or overwrite an earlier terminal result. Both races have explicit refusal tests.
+Pending records retain the original private target/incoming refs for accurate
+staleness reads; those ref strings are excluded from the public projection.
+
+Manual raw-Git limitations remain: fast-forwards and `--no-verify` can bypass
+hooks; standalone preflight is never reusable merge approval. Advisory locking
+cannot prevent external Git writes, so final ref/index/source checks remain.
+Full catalogue practice coverage is still Unsupported; coverage recipes remain
+warning-only. M6 still owns the panel/user guide, real installed-tool acceptance,
+four-vendor probes, dogfood and packaging/frozen-worker acceptance. No merge,
+push, restart, live settings mutation, email or deployment is part of A2b.
+
+### A2b review correction: integration runtime files (2026-10-30)
+
+Dave's [section 9.1 amendment](DEV_HARNESS_M5_CONTRACT.md#91-dave-amendment-2026-10-30-integration-inputs-and-inactive-bypass)
+supersedes integration-only untracked-manifest requirements. The additional
+`mc/dev_harness_integration_inputs.py` leaf owns tracked HEAD/index/working
+identity and private candidate freezing, included in the approved checker
+digest. Candidate, pending/source, trusted runner, coordinator/registered-main
+and server-built dispatch/read boundaries use it. Ordinary/manual candidate
+freezing and full dirty Preview/measurement retain their earlier semantics.
+
+Inactive managed landing (Off, no snapshot, planless Preview) skips all harness
+source freezes/manifests. Main-checkout dirt checks consider tracked files so
+untracked runtime files reach Git's own merge collision check. A collision
+preserves that file, branch, checkout and HEAD; active tracked dirt refuses.
+No runtime file is relocated, ignored, staged or removed by this correction.
+Inactive hooks use the existing parent lease with Git-only B/H/T metadata;
+neither parent nor child hashes source. A subprocess-hook sentinel test enforces
+that boundary. Native pending descriptors remain a separate execution input.
+
+Validation below distinguishes earlier focused checkpoints from the final
+correction. The earlier A2b validation above remains historical, not proof of
+this fix.
+
+Exact correction validation commands (all operate on disposable repositories):
+
+```text
+python -m pytest -o addopts= -q --tb=short tests/test_dev_harness_integration_inputs.py tests/test_dev_harness_landing.py tests/test_dev_harness_pending_merge.py tests/test_dev_harness_integration.py tests/test_dev_harness_diff.py tests/test_dev_harness_dispatch.py tests/test_dev_harness_run_routes.py
+python -m pytest -o addopts= -q --tb=short tests/test_dev_harness_landing.py -k inactive_landing
+python -m pytest tests -k "dev_harness or agent_worktree or hivemind or agent_jobs or merge_review"
+pyright mc/dev_harness_applicability.py mc/dev_harness_pending_merge.py mc/landing_serialization.py mc/dev_harness_integration.py mc/dev_harness_dispatch.py mc/dev_harness_landing.py mc/dev_harness_manual.py mc/dev_harness_runner.py mc/dev_harness_diff.py mc/dev_harness_native_plan.py mc/dev_harness_store.py mc/hivemind_integration.py mc/blueprints/dev_harness_run_routes.py mc/blueprints/dev_harness_routes.py mc/agent_worktree.py mc/project_sync.py mc/dev_harness_integration_inputs.py
+python -m pytest -o addopts= -q --tb=short tests/test_landing_serialization.py
+python3 -m pytest -o addopts= -q --tb=short tests/test_landing_serialization.py tests/test_dev_harness_pending_merge.py tests/test_dev_harness_applicability.py tests/test_dev_harness_integration_inputs.py
+```
+
+- First focused command: **65 passed, 1 Windows newline-filename skip, rc=0**
+  (159.83s), before the final inactive-hook correction. Additional late
+  candidate/index/ref-drift and queued runtime/read tests are covered by the
+  required final regression, rather than attributed to this earlier collection.
+- Second command after the hook correction: **6 passed, rc=0** (6.56s), proving
+  no manifest calls with/without a real hook for no snapshot, Off and planless
+  Preview. The no-snapshot hook case was reproduced failing before its fix.
+- Final required regression after **all** source/test corrections:
+  **1,038 passed, 15 skipped, 16,796 deselected, rc=0** (453.62s), no warnings.
+  Includes dev_harness/landing, agent_worktree, hivemind integration, agent_jobs
+  and merge_review. Skips: optional missing `psutil`, Windows newline filename
+  and 13 existing POSIX-sh review-hook cases. New real inactive/native child-hook
+  cases run on Windows and pass; no source correction followed this full run.
+- Final Pyright command: **0 errors, 0 warnings, rc=0** (1.7s), all original
+  16 owners plus the new integration-input leaf. Tool update notice only.
+- Windows serialization command: **10 passed, rc=0** (3.35s), including actual
+  process contention, ownership, child leases, cleanup and process-exit release.
+- Last command on Ubuntu/WSL with existing scratch-only pytest packages:
+  **20 passed, rc=0** (11.37s), after all source changes. Covers real POSIX
+  serialization and pending/input boundaries; full POSIX native execution,
+  macOS, installed native tools and packaged execution remain unverified.
+- Documentation: **12 local links and amendment anchors resolve**; whitespace
+  checks pass. No UI changes: boot smokes, README and USER_GUIDE are N/A.
+
+An intermediate full-regression attempt was deliberately interrupted before
+the inactive-hook source correction; it is not counted as a passing run. The
+final exact rerun above completed after that correction. No merge, push,
+restart, live activation/settings change, deployment or M6 acceptance is claimed.

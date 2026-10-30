@@ -134,7 +134,7 @@ class GitError(RuntimeError):
 
 
 def git_run(cwd: str, args: list[str], timeout: int = 30,
-            check: bool = False) -> tuple[bool, str]:
+            check: bool = False, env: dict[str, str] | None = None) -> tuple[bool, str]:
     """Run a git subcommand in ``cwd``. Returns (ok, stdout_or_stderr).
 
     ``check=True`` raises GitError on non-zero exit instead of returning
@@ -153,6 +153,7 @@ def git_run(cwd: str, args: list[str], timeout: int = 30,
             timeout=timeout,
             creationflags=_POPEN_FLAGS,
             startupinfo=_STARTUPINFO,
+            env=env,
         )
         if r.returncode != 0:
             err = (r.stderr or r.stdout or 'unknown git error').strip()

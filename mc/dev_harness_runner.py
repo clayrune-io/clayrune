@@ -27,6 +27,7 @@ from mc.dev_harness_catalogue import digest
 from mc.dev_harness_diff import (ERROR_CODES, FreezeError, candidate_worktree, freeze_candidate,
                                  git_bytes, manifest, preview, preview_worktree, safe_path)
 from mc.dev_harness_store import HarnessStore, StoreError
+from mc.dev_harness_integration_inputs import freeze_integration, source_identity
 
 RUNNER_VERSION = 'dh-m4-v1'
 MAX_STEPS = 64
@@ -192,7 +193,9 @@ def evaluate(*, project: dict[str, Any], steps: list[dict[str, Any]], logs: Path
              target: str | None = None, incoming: str | None = None,
              cancel: threading.Event | None = None,
              register: Callable[[Any, str], None] = lambda proc, name: None,
-             unregister: Callable[[int], None] = lambda pid: None) -> dict[str, Any]:
+             unregister: Callable[[int], None] = lambda pid: None,
+             _frozen: dict[str, Any] | None = None,
+             _validate_workspace: Callable[[Path], None] | None = None) -> dict[str, Any]:
     """Report-only evaluator, also used inside existing session-managed jobs.
 
     Commands run in disposable integration or dirty-preview checkouts. Unborn
@@ -212,7 +215,12 @@ def evaluate(*, project: dict[str, Any], steps: list[dict[str, Any]], logs: Path
     try:
         if (target is None) != (incoming is None):
             raise ValueError('both_refs_required')
-        if target is None or incoming is None:
+        if _frozen is not None:
+            frozen = _frozen
+            _revalidate_source(repo, frozen, target, incoming)
+            workspace = (preview_worktree(project, frozen) if frozen['kind'] == 'preview'
+                         else candidate_worktree(project, frozen))
+        elif target is None or incoming is None:
             frozen = preview(repo)
             if not steps or not frozen['head']:
                 report.update(source=frozen, status='unsupported', code='manifest_only')
@@ -225,12 +233,14 @@ def evaluate(*, project: dict[str, Any], steps: list[dict[str, Any]], logs: Path
         # The shared lifecycle's location must already be excluded, without
         # changing the source's .gitignore after freezing it.
         git_bytes(repo, ['check-ignore', '-q', '.clayrune/agents/dh_probe'])
-        original = manifest(repo)
+        original = source_identity(repo, frozen)
         with workspace as root:
+            if _validate_workspace is not None:
+                _validate_workspace(root)
             before = manifest(root)
             report['source_manifest_digest'] = before['digest']
             changed_names = ([v['new_path'] for v in frozen['integration_changes']]
-                             if frozen['kind'] == 'integration' else list(before['files']))
+                             if frozen['kind'] in ('integration', 'pending_merge') else list(before['files']))
             if any(before['files'].get(n, {}).get('kind') == 'binary' for n in changed_names):
                 raise FreezeError('binary_source_requires_adapter')
             prepared = prepare_steps(root, steps)
@@ -241,8 +251,19 @@ def evaluate(*, project: dict[str, Any], steps: list[dict[str, Any]], logs: Path
                     break
                 if 'native_prepared' in step:
                     from mc.dev_harness_checks.execution import execute
-                    result = execute(step, root, frozen, lambda command: _execute(
-                        command, root, logs, project['id'], run_id, cancelled, register, unregister))
+                    # M4's candidate adapter consumes the same B/H/M/T for an
+                    # exact pending merge; receipts retain the pending descriptor.
+                    adapter_source = {**frozen, 'kind': 'integration'} if frozen['kind'] == 'pending_merge' else frozen
+                    try:
+                        result = execute(step, root, adapter_source, lambda command: _execute(
+                            command, root, logs, project['id'], run_id, cancelled, register, unregister))
+                    except ValueError as exc:
+                        if str(exc) not in ('coverage_classification_required', 'empty_diff_coverage'):
+                            raise
+                        # No complete command measurement exists. Keep the
+                        # warning observable without inventing version/exit/pin
+                        # provenance that could satisfy activation evidence.
+                        result = {'id': step['id'], 'status': 'error', 'code': 'empty_diff_coverage'}
                 else:
                     result = _execute(step, root, logs, project['id'], run_id, cancelled, register, unregister)
                 report['results'].append(result)
@@ -270,9 +291,8 @@ def evaluate(*, project: dict[str, Any], steps: list[dict[str, Any]], logs: Path
                             or config_closure(root, step) != step['configs']
                             or digest(dict(os.environ)) != native['environment_digest']):
                         report['code'] = 'native_inputs_changed'
-            current = (freeze_candidate(repo, target, incoming) if target is not None and incoming is not None
-                       else preview(repo))
-            if manifest(repo) != original or current != frozen:
+            current = _revalidate_source(repo, frozen, target, incoming)
+            if source_identity(repo, frozen) != original or current != frozen:
                 report['code'] = 'inputs_changed'
             if cancelled.is_set():
                 report['code'] = 'cancelled'
@@ -290,6 +310,66 @@ def evaluate(*, project: dict[str, Any], steps: list[dict[str, Any]], logs: Path
         report['code'] = ('cancelled' if isinstance(exc, KeyboardInterrupt) else
                           str(exc) if str(exc) in ERROR_CODES | safe_codes else 'evaluation_error')
         report['status'] = 'error'
+    return report
+
+
+def _revalidate_source(repo: Path, frozen: dict[str, Any], target: str | None,
+                       incoming: str | None) -> dict[str, Any]:
+    if frozen['kind'] == 'pending_merge':
+        from mc.dev_harness_pending_merge import freeze_pending
+        current = freeze_pending(repo)
+    elif frozen['kind'] == 'preview':
+        current = preview(repo)
+    elif frozen['kind'] == 'integration' and 'working_identity' in frozen:
+        current = freeze_integration(repo, target or frozen['B'], incoming or frozen['H'])
+    else:
+        current = freeze_candidate(repo, target or frozen['B'], incoming or frozen['H'])
+    if current is None or current != frozen:
+        raise FreezeError('inputs_changed')
+    return current
+
+
+def run_approved(*, store: HarnessStore, project: dict[str, Any], snapshot: dict[str, Any],
+                 frozen: dict[str, Any], check_id: str,
+                 register: Callable[[Any, str], None], unregister: Callable[[int], None],
+                 cancel: threading.Event | None = None,
+                 _workspace_project: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Internal M5 receipt seam, one approved step on the exact frozen source.
+
+    No CLI or HTTP input selects commands, a descriptor or workspace callback.
+    Preview and pending-index provenance retain their distinct source kinds.
+    """
+    from mc.dev_harness_native_plan import INPUT_FIELDS, compile_step, validate_plan
+    if store.read(project['id']) != snapshot or snapshot['mode'] == 'off' or not snapshot.get('native_plan'):
+        raise StoreError('Active approved native plan required')
+    validate_plan(store, project, snapshot['policy'], snapshot['native_plan'])
+    payload = snapshot['native_plan']['payload']
+    item = next(v for v in payload['steps'] if v['id'] == check_id)
+    _, prepared = compile_step(Path(project['project_path']), {k: item[k] for k in INPUT_FIELDS}, snapshot['policy'])
+    step = {k: prepared[k] for k in ('id', 'argv', 'timeout_seconds', 'fail_codes', 'configs', 'native')}
+
+    def validate_workspace(root: Path) -> None:
+        try:
+            computed, _ = compile_step(root, {k: item[k] for k in INPUT_FIELDS}, snapshot['policy'])
+        except (ValueError, OSError, KeyError):
+            raise FreezeError('plan_inputs_changed') from None
+        if computed != item:
+            raise FreezeError('plan_inputs_changed')
+
+    report = evaluate(project=_workspace_project or project, steps=[step], logs=store.project_dir(project['id']) / 'jobs',
+                      _frozen=frozen, _validate_workspace=validate_workspace,
+                      register=register, unregister=unregister, cancel=cancel)
+    if store.read(project['id']) != snapshot:
+        report.update(status='error', code='active_snapshot_changed')
+    validate_plan(store, project, snapshot['policy'], snapshot['native_plan'])
+    report.update(kind='runner_receipt', trusted=True, active_revision=snapshot['revision'],
+                  policy_digest=digest(snapshot['policy']), catalogue_digest=snapshot['catalogue']['digest'],
+                  digests=snapshot['policy']['digests'], stage='native_commands',
+                  native_plan_digest=snapshot['native_plan_digest'], checker_digest=payload['checker_digest'])
+    report['receipt_digest'] = digest(report)
+    path = safe_path(store.project_dir(project['id']), 'runs/' + report['run_id'] + '.json')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(path, report, indent=2, allow_nan=False)
     return report
 
 

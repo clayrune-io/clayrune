@@ -193,6 +193,29 @@ Ctrl+C terminates/reaps the in-flight verifier and returns structured
 plan proposals and a separate trusted activation-evidence composer. M3's
 ordinary runner and report-only CLI are unchanged; neither grants activation
 or merge authority. A2a composition tests use synthetic stored receipts only.
-A2b must add approved Preview receipt production and M5 plan/checker metadata
-before live native activation measurement is available. No landing gate or
-native execution route ships in A2a.
+A2b adds the private `run_approved` seam, approved Preview receipt production
+and plan/checker metadata. Each call runs one compiled approved step on the
+same frozen source, so warning findings cannot skip later required checks.
+The coordinator composes measured evidence through A2a, not through the CLI.
+
+Pending merges use the validated B/H/index T descriptor and disposable T
+checkout, with original pending state checked before and after execution.
+Ordinary `freeze_candidate` still refuses dirty inputs; no HTTP caller can
+submit a pending descriptor. See the
+[A2b implementation handoff](DEV_HARNESS_M5_PLAN_CONTRACT.md#9-a2b-implementation-candidate)
+for jobs, locking, live consumption and validation. Historical M3 counts above
+remain scoped to M3; M6 installed-tool/packaged acceptance is not claimed.
+
+Dave's [integration-boundary amendment](DEV_HARNESS_M5_CONTRACT.md#91-dave-amendment-2026-10-30-integration-inputs-and-inactive-bypass)
+adds a separate private `dev_harness_integration_inputs` owner. Managed
+integration and pending descriptors bind HEAD/index/tracked working bytes;
+their runner checks ignore unrelated untracked runtime writes in the original
+and registered checkouts. Disposable execution checkouts still use complete
+manifests to detect verifier mutations. Ordinary/manual `freeze_candidate`,
+dirty Preview S and activation measurement keep their full original boundaries.
+Off/unconfigured/planless Preview landing performs no harness source hashing.
+Inactive child hooks validate Git-only B/H/T pins through the existing parent
+lease, preserving lock serialization without freezing source or starting checks.
+Those metadata-only pending pins are not native execution descriptors.
+Git still refuses to overwrite colliding untracked files; tracked-dirty active
+inputs still refuse. No user's runtime files are removed, staged or ignored.
