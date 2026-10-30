@@ -215,7 +215,7 @@ def test_check_fails_when_a_selector_is_missing_the_page_is_a_login_page_or_the_
         reader = Reader(matches, final)
         env.setattr(b, 'reader_for', lambda name, r=reader: r)
         out = b.run(_target(sid))
-        assert out['state'] == 'check_failed' and out['failure'] == 'signed_out' and reader.closed, (sid, final)
+        assert out['state'] == 'sign_in_required' and out['failure'] == 'signed_out' and out['needs_signin'] and reader.closed, (sid, final)
         assert b.run({**_target(sid), 'check': False})['state'] != 'verified'
 
 
@@ -231,6 +231,6 @@ def test_snapchat_cannot_be_checked_automatically_and_a_hand_confirmation_is_not
     env.setattr(b, 'reader_for', lambda _: pytest.fail('snapchat has no probe'))
     target = _target('snapchat')
     out = b.run(target)
-    assert out['state'] == 'sign_in_required' and not out['verifiable']
+    assert out['state'] == 'not_checked' and not out['verifiable'] and not out['needs_signin']   # profile exists, no probe: unchecked, not signed out
     out = b.run({**target, 'confirmed': True})
     assert out['state'] == 'not_checked' and out['label'] == 'Not checked'
