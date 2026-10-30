@@ -459,7 +459,7 @@
           </div>
           <div class="desk-v1-video-scenestrip" id="desk-v1-video-scenestrip">${strip}</div>
           ${_st.loadError ? `<div class="desk-v1-camp-empty" data-sb-load-error>Could not load this storyboard: ${esc(_st.loadError)}</div>`
-            : (_isLive() ? `<div class="desk-v1-sb-addrow">${(detail.scenes || []).length ? '' : '<span data-sb-no-scenes>No scenes yet. </span>'}<button type="button" class="btn-secondary" data-add-scene>Add scene</button></div>` : '')}
+            : (_isLive() ? `<div class="desk-v1-sb-addrow">${(detail.scenes || []).length ? '' : '<span data-sb-no-scenes>No scenes yet. </span>'}<button type="button" class="desk-v1-addscene" data-add-scene>Add scene</button></div>` : '')}
           <div class="desk-v1-video-posy" id="desk-v1-video-posy">${posyHTML}</div>
           ${pendingHTML}
         </div>

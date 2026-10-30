@@ -1,0 +1,48 @@
+/* The "Add scene" control: a strip of film with a blank frame to fill (Ron 2026-10-29: the old plain
+   button read like any other button). ONE style for both places a storyboard grows a scene:
+   Studio's editor (desk-v1-studio.js, data-scene-add) and the video director (desk-v1-video.js,
+   data-add-scene). Markup is just <button class="desk-v1-addscene" ...>Add scene</button>; the "+"
+   frame and the sprocket holes are drawn here, so the two screens cannot drift apart.
+   Film body = the text colour mixed toward the page, so it is dark on the light tones and pale on
+   the dark one; holes are punched in the page colour. Colours are theme variables, nothing literal. */
+.desk-v1-shell .desk-v1-addscene {
+  position: relative; display: inline-flex; align-items: center; gap: 12px;
+  box-sizing: border-box; max-width: 100%; min-height: 44px; padding: 18px 20px; margin: 0;
+  background: var(--text); background: color-mix(in srgb, var(--text) 90%, var(--bg));
+  color: var(--bg); border: 1px solid var(--border2); border-radius: 6px;
+  font: inherit; font-size: 14px; font-weight: 700; line-height: 1.2; text-align: left; white-space: normal;
+  cursor: pointer; transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+/* the blank frame: dashed, tinted, with the plus in it */
+.desk-v1-shell .desk-v1-addscene::before {
+  content: "+" / ""; flex: 0 0 auto; box-sizing: border-box; width: 46px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-dim); color: var(--accent); border: 2px dashed var(--accent); border-radius: 3px;
+  font-size: 24px; font-weight: 400; line-height: 1;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+/* the sprocket holes, a row along the top edge and one along the bottom */
+.desk-v1-shell .desk-v1-addscene::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; background: var(--bg);
+  -webkit-mask-image: var(--addscene-mask), var(--addscene-mask);
+  mask-image: var(--addscene-mask), var(--addscene-mask);
+  -webkit-mask-size: 14px 8px, 14px 8px; mask-size: 14px 8px, 14px 8px;
+  -webkit-mask-repeat: repeat-x, repeat-x; mask-repeat: repeat-x, repeat-x;
+  -webkit-mask-position: 3px 4px, 3px calc(100% - 4px); mask-position: 3px 4px, 3px calc(100% - 4px);
+}
+.desk-v1-shell {
+  --addscene-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='8'%3E%3Crect x='3' y='1' width='8' height='6' rx='1.5'/%3E%3C/svg%3E");
+}
+.desk-v1-shell .desk-v1-addscene:hover { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22); transform: translateY(-1px); }
+.desk-v1-shell .desk-v1-addscene:hover::before,
+.desk-v1-shell .desk-v1-addscene:focus-visible::before { background: var(--accent); color: var(--surface); }
+.desk-v1-shell .desk-v1-addscene:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.desk-v1-shell .desk-v1-addscene:active { transform: none; box-shadow: none; }
+/* phone: the whole row is the target */
+@media (max-width: 560px) {
+  .desk-v1-shell .desk-v1-addscene { flex: 1 1 auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .desk-v1-shell .desk-v1-addscene, .desk-v1-shell .desk-v1-addscene::before { transition: none; }
+  .desk-v1-shell .desk-v1-addscene:hover { transform: none; }
+}

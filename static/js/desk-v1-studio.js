@@ -518,7 +518,7 @@
               <div class="desk-v1-sb-bin" data-sb-trash role="img" aria-label="Bin: drag a scene here to delete it" title="Drag a scene here to delete it"><span aria-hidden="true">🗑</span></div>
             </div>` : ''}
           </div>
-          ${_isLive() && !_sb.loadError ? '<div class="desk-v1-sb-addrow"><button type="button" class="btn-secondary" data-scene-add>Add scene</button></div>' : ''}
+          ${_isLive() && !_sb.loadError ? '<div class="desk-v1-sb-addrow"><button type="button" class="desk-v1-addscene" data-scene-add>Add scene</button></div>' : ''}
           ${_isLive() && !_sb.loadError ? '<div data-sb-engine></div>' : ''}
         </div>
         <aside class="desk-v1-sb-agent" data-sb-agent>${_agentBoxHTML(ctx)}</aside>
