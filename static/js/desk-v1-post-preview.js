@@ -6,6 +6,8 @@
 //   bind(root, resolve)  delegated listeners on a container that repaints; `resolve(node)` returns
 //                        { fam, versionId, entries: [{v, ch}] } for a tile, or null.
 //   buttonHTML(title)    the tap-to-preview eye button a tile carries (touch has no hover)
+//   render(fam, v, ch, {large, cutLine, literal})  shared inline card; cutLine adds hidden
+//                        markers for the caller to reveal when text overflows its clamp.
 //
 // What is drawn is only what the post holds: its title, its copy (`version.body ||
 // fam.body`, the same rule as review.js `_liveBody`), its attached assets, and the
@@ -58,14 +60,14 @@
   }
   const PLAT_WORD = { x: 'X', linkedin: 'LinkedIn', youtube: 'YouTube', discord: 'Discord', reddit: 'Reddit', blog: 'Blog', instagram: 'Instagram', tiktok: 'TikTok' };
 
-  function helpers(m, large) {
+  function helpers(m, large, cutLine) {
     const clampStyle = (n) => (n ? ` style="-webkit-line-clamp:${n}"` : '');
     return {
       esc,
       mark: () => (window.DeskV1ServiceIcons && m.ch
         ? window.DeskV1ServiceIcons.markHTML({ platform: m.platform, brand: m.platform, name: m.name }, false) : ''),
       text: (clamp) => (m.body
-        ? `<span class="desk-v1-pv-copy${clamp ? ' is-clamped' : ''}"${clampStyle(clamp)}>${esc(m.body)}</span>`
+        ? `<span class="desk-v1-pv-copy${clamp ? ' is-clamped' : ''}"${clampStyle(clamp)}>${esc(m.body)}</span>${cutLine && clamp && m.platform !== 'x' ? '<span data-pv-cut hidden>See more</span>' : ''}`
         : '<span class="desk-v1-pv-none">No copy written yet.</span>'),
       icons: (names, labelled) => `<div class="desk-v1-pv-actions${labelled ? ' is-labelled' : ''}" aria-hidden="true">${names.map((n) => `<span>${svg(n)}</span>`).join('')}</div>`,
       media: (o) => {
@@ -80,8 +82,15 @@
     };
   }
 
-  function cardHTML(m, large) {
-    return `<article class="desk-v1-pv-card${large ? ' is-large' : ''}" data-pv-platform="${esc(m.platform || 'plain')}">${window.DeskV1PostPreviewSkins.render({ ...m, large }, helpers(m, large))}</article>`;
+  function cardHTML(m, large, cutLine) {
+    return `<article class="desk-v1-pv-card${large ? ' is-large' : ''}" data-pv-platform="${esc(m.platform || 'plain')}">${window.DeskV1PostPreviewSkins.render({ ...m, large }, helpers(m, large, cutLine))}</article>`;
+  }
+
+  // Inline consumers share the same model, media helpers and skins as Where.
+  function render(fam, v, ch, options = {}) {
+    const m = build(fam, v, ch);
+    if (options.literal) m.body = String((v && v.body) || fam.body || '');
+    return cardHTML(m, !!options.large, !!options.cutLine);
   }
 
   // The tabs a tile can show: the plain message, then each live version.
@@ -239,5 +248,5 @@
   }
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && pop) hidePopup(); }, true);
 
-  window.DeskV1PostPreview = { bind, buttonHTML, open: openModal, close: closeModal, hide: hidePopup };
+  window.DeskV1PostPreview = { bind, buttonHTML, render, open: openModal, close: closeModal, hide: hidePopup };
 })();

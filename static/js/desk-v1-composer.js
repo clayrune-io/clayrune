@@ -1,5 +1,6 @@
 // C1: text, bounded destinations, draft persistence and Review handoff. Media
 // and preview have their own later slices. No publish/approval route is used.
+import './desk-v1-composer-preview.js';
 (function () {
   const drafts = new Map();
   const esc = (s) => window.esc(String(s == null ? '' : s));
@@ -169,6 +170,7 @@
       if (d.fam) save(camp, d, false);
     };
     update(d);
+    window.DeskV1ComposerPreview.mount(el.querySelector('[data-composer]'), camp, d);
     if (!d.fam) input.focus({ preventScroll: true });
   }
   window.DeskV1Composer = { open };

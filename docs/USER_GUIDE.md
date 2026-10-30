@@ -1315,6 +1315,14 @@ ticks save immediately; they never add accounts to the campaign's allowed set.
 If no accounts appear, choose them in **Where**. The composer shows a character
 count per selected channel, including an X 280-character warning.
 
+**Preview** updates as you type, including text you have not saved yet. Choose
+an account tab to see the post in that platform's frame, with attached media.
+Only ticked accounts appear. Long copy shows a **See more** cut line; the
+feed layout and cut position are approximate. The X tab warns above 280
+characters using the same Unicode character count as the editor (platform
+URL weighting is not included). On a narrow screen, use **Show preview** or
+**Hide preview**; the panel sits below the editor and keeps its full width.
+
 **When** opens one date/time control per destination. Choose a date and time
 in this device's time zone and press **Set time**. The campaign's **When**
 calendar reads the same saved value. Moving an approved version to another

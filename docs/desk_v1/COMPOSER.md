@@ -153,3 +153,57 @@ git restore -- docs/desk_v1/screens/t4_calendar_desktop_1440.png docs/desk_v1/sc
 ```
 
 No open product choice is required for C1. Integration/release belongs to Dave.
+
+### C3 — Sol_Tobin — 2026-10-30 (branch candidate)
+
+Required C1 base `clayrune/agent/d49def5ca015` merged with
+`git merge --no-edit clayrune/agent/d49def5ca015` (rc 0). Work stays on
+`clayrune/agent/f9c7d01b359c`; no master merge, push, restart or live Desk writes.
+
+Added `static/js/desk-v1-composer-preview.js` and its own stylesheet. The shell
+has exactly one import and one mount line. The module mounts a desktop side
+panel; at <=960px Show preview/Hide preview opens it below the full-width editor.
+Every ticked campaign account gets a tab, with arrow/Home/End navigation and one
+keyboard tab stop. Unticking the active account selects the first remaining
+account; an empty set explains how to get a preview. Unsaved input updates without
+saving. Image additions/removals refresh through the draft and sibling DOM changes.
+
+Where's `DeskV1PostPreview` gains an inline `render(fam, version, channel, options)`
+API; the existing skins, content projection, icons and media helpers are reused.
+An opt-in cut marker is shown only when the shared skin's copy clamp actually
+overflows. Literal composer text stays escaped instead of being parsed as article
+HTML. Where's popup/modal behavior is unchanged and its smoke passes. No new
+dependencies, backend code, approval calls or publishing paths.
+
+Limits: feed cut positions remain the shared skins' approximate line clamps,
+explicitly labelled in the panel. X uses C1's Unicode code-point counter, not
+platform-weighted URLs. C2 media integration is exercised through its draft/DOM
+contract, not the sibling's not-yet-merged implementation. Real platform feeds
+and publishing were not exercised. No open product decision is required.
+
+Validation from the repository root, with
+`$env:MC_PYTHON = Join-Path (Split-Path (git rev-parse --path-format=absolute --git-common-dir)) '.venv/Scripts/python.exe'`.
+Main checkout's `tools/smoke/node_modules` was linked for these runs and the
+junction removed before commit; nothing was installed.
+
+| Exact command | rc | Result |
+|---|---:|---|
+| `node tools/smoke/desk-v1-composer-preview.mjs` | 0 | 1440/390: unsaved text, literal markup, selected-account tabs and keyboard, overflow-only cut line, X 280/281 and emoji boundary, media add/remove, empty selection, no horizontal overflow or mobile editor squeeze |
+| `node tools/smoke/desk-v1-composer.mjs` | 0 | Existing C1 create/race, refusal/retry, bounded ticks, scheduling, Review, reload and demo contracts |
+| `node tools/smoke/desk-v1-post-preview.mjs` | 0 | Existing Where desktop hover/modal/drag and mobile tap contracts |
+| `node tools/smoke/boot-smoke.mjs` | 0 | Seven boot scenarios and all cross-module guards |
+| `git diff --check` | 0 | Whitespace |
+
+Initial C3 smoke iterations exited 1 on harness issues: PowerShell stdin changed
+the emoji fixture to two question marks; the media selector also matched the
+platform logo; a wait expected Saved without pressing Save draft; and a fixture
+search assumed every family had a body. The final smoke fixes those assumptions
+and passes. These failures did not establish product defects.
+
+Screenshots visually inspected in this worktree:
+`_scratch/composer_c3/composer-1440.png`,
+`_scratch/composer_c3/composer-390.png` (preview open), and
+`_scratch/composer_c3/composer-390-editor.png` (preview collapsed).
+Execution plan saved to the home `.claude/plans/desk-composer-c3.md`.
+CHANGELOG and USER_GUIDE updated; no agent-rule or architectural-rule changes
+are needed. Dave owns sibling integration and release verification.
