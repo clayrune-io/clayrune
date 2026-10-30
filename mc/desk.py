@@ -62,6 +62,7 @@ import uuid
 from mc.core import _atomic_write_text, _log, now_iso
 from mc import distiller as _distiller
 from mc import desk_campaign_hold as _hold
+from mc import desk_campaign_trash as _trash
 from mc.desk_pane_pages import PANE_ONLY_PLATFORMS
 from mc.desk_campaign_term import MAX_TERM_DAYS, prepare_campaign_patch
 
@@ -1869,19 +1870,25 @@ def renew_campaign(campaign_id: str, *, by: str = 'human', today: str | None = N
 
 
 def delete_campaign(campaign_id: str) -> bool:
+    # A deleted campaign takes its pieces (and their storyboards) with it (R1-W
+    # S4): nothing else can reach them, and an orphan would still show up in
+    # M1's `pieces`. They go to the trash, not away, so the Desk's Undo can put
+    # them back (mc/desk_campaign_trash.py).
     with _store_lock:
         store = _read_store()
-        if campaign_id not in store['campaigns']:
+        if not _trash.stash(store, campaign_id):
             return False
-        del store['campaigns'][campaign_id]
-        # A deleted campaign takes its pieces with it (R1-W S4): nothing else can
-        # reach them, and an orphan would still show up in M1's `pieces`.
-        pieces = store.get('pieces') or {}
-        for pid in [k for k, p in pieces.items() if p.get('campaign_id') == campaign_id]:
-            pieces.pop(pid, None)
-            store.get('storyboards', {}).pop(f'piece:{pid}', None)   # mc/desk_storyboard.py
         _write_store(store)
         return True
+
+
+def restore_campaign(campaign_id: str) -> dict:
+    """Undo of `delete_campaign`. Raises desk_campaign_trash.RestoreError."""
+    with _store_lock:
+        store = _read_store()
+        camp = _trash.restore(store, campaign_id)
+        _write_store(store)
+        return camp
 
 
 # -- Goal: what a v1 client may write, and what the server derives (R1-W S3) ---

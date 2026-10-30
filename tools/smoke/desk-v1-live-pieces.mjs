@@ -199,10 +199,10 @@ async function createRenameRemove(browser) {
   await openWhat(page);
   srv.log.length = 0;
 
-  const id1 = await addPiece(page, 'post');
+  const id1 = await addPiece(page, 'image');
   await page.waitForFunction(() => document.querySelectorAll('[data-what-create]').length === 1);
   const post = calls(srv, 'POST', /^\/api\/desk\/pieces$/);
-  (post.length === 1 && post[0].body.id === id1 && post[0].body.campaign_id === 'camp-1' && post[0].body.kind === 'post' && post[0].body.title === 'New post')
+  (post.length === 1 && post[0].body.id === id1 && post[0].body.campaign_id === 'camp-1' && post[0].body.kind === 'image' && post[0].body.title === 'New image')
     ? ok(`a tray click POSTs M14 with the client's id, campaign, kind and title (${id1})`) : fail('create POST: ' + JSON.stringify(post.map((r) => r.body)));
 
   // Rename through the card's title field.
@@ -227,9 +227,9 @@ async function createRenameRemove(browser) {
     ? ok('refused discard restores the modal and the server reason') : fail('discard rollback failed');
   await page.keyboard.press('Escape');
 
-  // Several of one kind are allowed (Ron 2026-09-29): a second post is a second piece.
-  const id2 = await addPiece(page, 'post');
-  const postsOnServer = srv.pieces.filter((p) => p.campaignId === 'camp-1' && p.kind === 'post' && [id1, id2].includes(p.id));
+  // Several of one kind are allowed (Ron 2026-09-29): a second image is a second piece.
+  const id2 = await addPiece(page, 'image');
+  const postsOnServer = srv.pieces.filter((p) => p.campaignId === 'camp-1' && p.kind === 'image' && [id1, id2].includes(p.id));
   (id1 !== id2 && postsOnServer.length === 2)
     ? ok('two pieces of the same kind in one campaign are two server pieces') : fail('same-kind pieces: ' + JSON.stringify(postsOnServer.map((p) => p.id)));
 
@@ -476,7 +476,7 @@ async function demoCallsNothing(browser) {
   folders === 3 ? ok('demo mode shows the fixture\'s 3 material folders') : fail('demo folders: ' + folders);
   await page.setInputFiles(`[data-what-create][data-family-id="${id}"] [data-what-file]`, { name: 'shot.png', mimeType: 'image/png', buffer: Buffer.from('x') });
   await settle(page, (i) => ((window.DeskV1Store.state().families.find((f) => f.id === i) || {}).assets || []).length === 1, id);
-  const id2 = await addPiece(page, 'post');
+  const id2 = await addPiece(page, 'image');
   await page.fill(`[data-what-create][data-family-id="${id2}"] [data-what-title]`, 'Local only');
   await page.press(`[data-what-create][data-family-id="${id2}"] [data-what-title]`, 'Tab');
   await page.click(`[data-what-create][data-family-id="${id2}"] [data-what-remove]`);

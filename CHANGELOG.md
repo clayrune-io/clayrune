@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - Start campaign posts in one composer
+
+- Post tiles and post-card Open actions enter a text composer directly. Opening it creates no empty piece; the first nonblank text creates the draft. Campaign accounts start selected, and ticks write per-piece versions without widening the campaign account bound.
+- Save draft keeps text, When uses the calendar's existing schedule command and approval checks, and Send to Review hands selected editable versions to the existing Review screen. Failed saves retain typing for retry. Media, live preview and campaign-stop changes remain separate slices. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-30] - Open every new video in the same Studio editor
 
 - Studio tiles, standalone draft links, campaign creation, video cards and Home links use DeskV1VideoOpen and the storyboard route's VideoEditor renderer. The legacy standalone creation URL is normalized before pushing the navigation stack; no second editor entry is added.
