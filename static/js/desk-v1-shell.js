@@ -36,6 +36,7 @@
     // route below — desk-v1-piece.js fills the slots via deskV1FillPiece*
     // hooks, it never owns the skeleton itself.
     piece:         { parent: 'campaign', label: _pieceLabel,   render: () => _renderPieceSkeleton },
+    composer:      { parent: 'campaign', label: 'Post', render: () => window.deskV1RenderComposer },
     // The one place anything external is connected (MC-977 2026-10-01); the
     // Presence screen it replaces on the project page is retired.
     connections:   { parent: 'home',    label: 'Connections',  render: () => window.deskV1RenderConnections },

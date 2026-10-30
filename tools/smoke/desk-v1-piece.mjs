@@ -105,6 +105,11 @@ async function navToPieceViaCard(page, familyId) {
   await navToCampaign(page);
   await page.waitForSelector(`[data-family-id="${familyId}"] [data-primary-action]`, { timeout: 8000 });
   await page.click(`[data-family-id="${familyId}"] [data-primary-action]`);
+  if (await page.evaluate((id) => window.DeskV1Store.state().families.find((f) => f.id === id)?.kind === 'post', familyId)) {
+    await page.waitForSelector('[data-composer]');
+    ok('post card opens the composer; generic piece checks use its retained direct link');
+    await page.evaluate((id) => window.deskV1Nav('piece', { campaignId: 'camp-1', familyId: id }), familyId);
+  }
   await page.waitForSelector('.desk-v1-piece', { timeout: 8000 });
 }
 
@@ -319,7 +324,7 @@ try {
   if (browser) await browser.close();
 }
 
-console.log(bad
+console.log(exitCode
   ? `\n❌ FAIL — ${bad} Desk v1 piece check(s) regressed.`
   : '\n✅ PASS — Desk v1 R2-7 piece page: card -> piece, Copy · Media · Versions, multi-asset + Add media, publish time via the calendar command, Back labels, video piece -> Studio video editor with Review and no details link all hold.');
 process.exit(exitCode);
