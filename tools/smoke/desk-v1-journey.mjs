@@ -98,6 +98,10 @@ async function newBootedPage(browser) {
   const page = await ctx.newPage();
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
+  // A runaway loop (2026-10-29: Where's message drop recursed on awaited
+  // microtasks) ate ~4 GB before Chromium died with a bare "Target closed".
+  // The heap is capped below, so it now dies in seconds; name it when it does.
+  page.on('crash', () => { console.error('journey smoke error: the page RENDERER CRASHED (out of memory / runaway loop) during: ' + (page.__step || 'unknown step')); process.exit(1); });
   await page.route('**/*', fulfillOrAbort);
 
   await seedDeskV1Fixtures(page);
@@ -134,7 +138,18 @@ const DAY = 86400000;
 // Real pointer drag (same shape as desk-v1-where.mjs's `drag`): mouse down on
 // the source, cross the slop, release over the target's centre. Both ends are
 // scrolled into view first — the drag engine has no auto-scroll.
+// Bound every drag: a drop handler that never returns would otherwise block
+// mouse.up until the renderer runs out of heap. Fail by name instead.
+const DRAG_DEADLINE_MS = 20000;
 async function drag(page, fromSel, toSel) {
+  page.__step = `drag ${fromSel} -> ${toSel}`;
+  let timer;
+  const hung = new Promise((_, rej) => {
+    timer = setTimeout(() => rej(new Error(`drag did not finish in ${DRAG_DEADLINE_MS / 1000}s - the page is hung or looping (${page.__step})`)), DRAG_DEADLINE_MS);
+  });
+  try { await Promise.race([dragSteps(page, fromSel, toSel), hung]); } finally { clearTimeout(timer); }
+}
+async function dragSteps(page, fromSel, toSel) {
   const from = page.locator(fromSel).first();
   const to = page.locator(toSel).first();
   await to.scrollIntoViewIfNeeded();
@@ -540,7 +555,8 @@ async function run(browser) {
 
 let browser, exitCode = 1;
 try {
-  browser = await chromium.launch();
+  // 768 MB renderer heap: any real Desk screen is far under it, a runaway loop hits it in seconds.
+  browser = await chromium.launch({ args: ['--js-flags=--max-old-space-size=768'] });
   await run(browser);
   exitCode = bad === 0 ? 0 : 1;
 } catch (e) {

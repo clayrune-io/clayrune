@@ -205,10 +205,18 @@
     });
   }
 
-  async function _addVersion(camp, fam, channelId) {
+  // A suggestion is saved once (act -> ensure), then placed. Placing must NOT
+  // call back into the suggestion check: ensure() leaves a fam-suggest- id alone
+  // when the store is not live or no proposal matches, so a re-check recursed
+  // forever on awaited microtasks and ran the renderer out of heap (2026-10-29).
+  function _addVersion(camp, fam, channelId) {
     if (fam.suggestion || String(fam.id).startsWith('fam-suggest-')) {
-      return window.DeskV1SuggestionPieces.act(fam, () => _addVersion(camp, fam, channelId));
+      return window.DeskV1SuggestionPieces.act(fam, () => _placeVersion(camp, fam, channelId));
     }
+    return _placeVersion(camp, fam, channelId);
+  }
+
+  function _placeVersion(camp, fam, channelId) {
     if ((fam.versions || []).some((v) => v.channelId === channelId && _isLive(v))) {
       DeskV1Kit.toast('This piece already has a version on that channel.'); return;
     }
