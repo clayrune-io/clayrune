@@ -3069,6 +3069,9 @@ app.register_blueprint(_bp_system.bp)
 
 from mc.blueprints import cli_update_routes as _bp_cli_update  # noqa: E402
 app.register_blueprint(_bp_cli_update.bp)
+from mc.blueprints import api_credits_routes as _bp_api_credits  # noqa: E402
+_bp_api_credits.wire(_DATA_ROOT / 'data')
+app.register_blueprint(_bp_api_credits.bp)
 # Inbound shim: startup starts the update-check daemon (re-homes at 1.13).
 # The _capture_system_init shim re-homed at 1.12: the stream readers moved to
 # agent_routes, which cross-imports it directly; no server.py caller remains.
