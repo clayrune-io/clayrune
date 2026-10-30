@@ -35,6 +35,8 @@ data/merge_reviews/
 !data/media/.gitkeep
 config.json
 data/settings.json
+data/api_credits.json
+data/api_credits_ledger.json
 data/grid_layout.json
 data/schedules.json
 # Extracted from the operator's own claude binary — version-specific, so it is

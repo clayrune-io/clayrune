@@ -56,6 +56,7 @@ from datetime import timedelta
 from mc import allowance_state as _allowance_state
 from mc import empty_turn as _empty_turn
 from mc import transform_sandbox as _transform_sandbox
+from mc import api_credits_offload as _api_credits_offload
 from mc.execution_policy import (
     Blocker, Capability, CapabilityClaim, Certification, ExecutionIdentity,
     Profile, Readiness, RequestedEngine, Support, authorize_execution,
@@ -3215,6 +3216,13 @@ class ClaudeRuntime(AgentRuntime):
         else:
             stdin_payload = instruction
 
+        # API-credits offload (docs/API_CREDITS_BUILD_SPEC.md): None unless mode is
+        # `on`, the budget gate allows it and the Messages API call succeeded.
+        offloaded = _api_credits_offload.try_offload(user_text=stdin_payload, model=model,
+                                                     timeout=timeout)
+        if offloaded is not None:
+            self.last_error = ''
+            return offloaded
         cmd = self._oneshot_argv(model=model, max_turns=max_turns, effort=effort)
         self.last_error = ''
         try:
@@ -3242,7 +3250,10 @@ class ClaudeRuntime(AgentRuntime):
             tail = ((r.stderr or '') + (r.stdout or '')).strip().replace('\n', ' ')
             self.last_error = f'rc={r.returncode}: {tail[:300]}'
             return None
-        return OneshotResult(text=(r.stdout or '').strip())
+        result = OneshotResult(text=(r.stdout or '').strip())
+        _api_credits_offload.note_subscription_call(user_text=stdin_payload,
+                                                    output_text=result.text, model=model)
+        return result
 
     VISION_DESCRIBE_MODEL = 'claude-haiku-5-5'
     _IMAGE_MEDIA_TYPES = {'.png': 'image/png', '.jpg': 'image/jpeg',
