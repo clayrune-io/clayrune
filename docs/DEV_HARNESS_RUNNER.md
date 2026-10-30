@@ -213,6 +213,15 @@ their runner checks ignore unrelated untracked runtime writes in the original
 and registered checkouts. Disposable execution checkouts still use complete
 manifests to detect verifier mutations. Ordinary/manual `freeze_candidate`,
 dirty Preview S and activation measurement keep their full original boundaries.
+
+Approved integration and pending runs allocate their disposable candidate through
+the registered project's worktree lifecycle, rather than nesting it inside a
+Hivemind integration checkout. The runner still freezes and revalidates the
+original integration workspace, checks out its exact T and validates the compiled
+approved inputs there. Preview continues to use its original full source overlay.
+This avoids Git's Windows `$GIT_DIR too big` creation refusal; creation errors
+still produce an Error receipt and standards hold before smokes or merge.
+See [the landing correction](DEV_HARNESS_M5_LANDING_CORRECTION.md).
 Off/unconfigured/planless Preview landing performs no harness source hashing.
 Inactive child hooks validate Git-only B/H/T pins through the existing parent
 lease, preserving lock serialization without freezing source or starting checks.

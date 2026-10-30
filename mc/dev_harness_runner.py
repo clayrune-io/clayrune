@@ -195,7 +195,8 @@ def evaluate(*, project: dict[str, Any], steps: list[dict[str, Any]], logs: Path
              register: Callable[[Any, str], None] = lambda proc, name: None,
              unregister: Callable[[int], None] = lambda pid: None,
              _frozen: dict[str, Any] | None = None,
-             _validate_workspace: Callable[[Path], None] | None = None) -> dict[str, Any]:
+             _validate_workspace: Callable[[Path], None] | None = None,
+             _candidate_project: dict[str, Any] | None = None) -> dict[str, Any]:
     """Report-only evaluator, also used inside existing session-managed jobs.
 
     Commands run in disposable integration or dirty-preview checkouts. Unborn
@@ -218,8 +219,12 @@ def evaluate(*, project: dict[str, Any], steps: list[dict[str, Any]], logs: Path
         if _frozen is not None:
             frozen = _frozen
             _revalidate_source(repo, frozen, target, incoming)
+            # Keep native candidates beside the registered project's workers.
+            # Nesting them inside a Hivemind integration checkout can exceed
+            # Git for Windows' GIT_DIR limit. Source revalidation still uses
+            # the exact integration workspace, not the registered checkout.
             workspace = (preview_worktree(project, frozen) if frozen['kind'] == 'preview'
-                         else candidate_worktree(project, frozen))
+                         else candidate_worktree(_candidate_project or project, frozen))
         elif target is None or incoming is None:
             frozen = preview(repo)
             if not steps or not frozen['head']:
@@ -358,6 +363,7 @@ def run_approved(*, store: HarnessStore, project: dict[str, Any], snapshot: dict
 
     report = evaluate(project=_workspace_project or project, steps=[step], logs=store.project_dir(project['id']) / 'jobs',
                       _frozen=frozen, _validate_workspace=validate_workspace,
+                      _candidate_project=project,
                       register=register, unregister=unregister, cancel=cancel)
     if store.read(project['id']) != snapshot:
         report.update(status='error', code='active_snapshot_changed')
