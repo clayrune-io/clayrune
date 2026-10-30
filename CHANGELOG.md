@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - Show the Studio timeline on campaign videos
+
+- Campaign and standalone storyboards share a timeline module using the existing video strip's drag and edge-trim gestures. Tiles show duration; arrow keys reorder or adjust duration, and dropping pictures or library material inserts scenes through the existing saved storyboard commands and Undo.
+- Kept the scene-list and Add scene selectors. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-30] - Avoid nesting native candidates inside Hivemind checkouts
 
 - Approved native checks create their disposable candidate beside the registered project's workers, avoiding Git's `$GIT_DIR too big` refusal from nested Hivemind paths on Windows. Frozen source validation still binds the integration checkout and exact candidate tree.

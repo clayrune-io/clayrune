@@ -1285,6 +1285,15 @@ approval again after its cause is fixed.
 
 ### Campaign posts, archive and placement
 
+The video storyboard has a horizontal **Timeline** above the scene list, both
+in a campaign and in standalone Studio. Each tile shows its duration. Drag a
+tile or a scene's list handle onto another tile to reorder; focused tiles use
+Left/Right or Up/Down, and list handles keep Up/Down. Drag a tile's edge to
+change its duration, or focus the edge and use an arrow key (minimum one second).
+Drop pictures from your computer or the library chooser onto the timeline to
+add scenes; dropping over a tile inserts before it. **Pick from library** also
+adds a picture without dragging. **Undo** reverses these scene changes.
+
 In **What**, click a type under **Add a piece**, press Enter on it, or drag it
 onto the campaign's list. A centered popup names the type and keeps its **Name**
 field beside large source cards:

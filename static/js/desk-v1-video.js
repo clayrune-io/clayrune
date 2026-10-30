@@ -397,15 +397,16 @@
   }
 
   // One scene tile of the strip. `edges` adds the trim handles (the director
-  // only); the Studio timeline (desk-v1-studio.js, via DeskV1VideoStrip below)
-  // draws the same tile without them, and with the scene's own capture in the
+  // and the Studio timeline, via DeskV1VideoStrip below). Both use the scene's
+  // capture in the
   // thumb slot when the scene carries one (the director's scenes do not).
-  function _sceneTileHTML(s, i, pct, edges) {
+  function _sceneTileHTML(s, i, pct, edges, durations) {
     return `<div class="desk-v1-video-scene${s.edited ? ' desk-v1-video-scene-edited' : ''}" data-scene-id="${esc(s.id)}" style="flex-basis:${pct}%" tabindex="0">
-          ${edges ? `<span class="desk-v1-video-scene-edge desk-v1-video-scene-edge-l" data-trim-edge="l" data-scene-id="${esc(s.id)}"></span>` : ''}
+          ${edges ? `<span class="desk-v1-video-scene-edge desk-v1-video-scene-edge-l" data-trim-edge="l"${durations ? '' : ` data-scene-id="${esc(s.id)}"`}></span>` : ''}
           <div class="desk-v1-video-scene-thumb" aria-hidden="true">${s.thumb ? `<img src="${esc(s.thumb)}" alt="" draggable="false">` : ''}</div>
           <span class="desk-v1-video-scene-label">${i + 1} &middot; ${esc(s.label)}${s.edited ? ' <span class="desk-v1-video-scene-dot">&#8226;</span>' : ''}</span>
-          ${edges ? `<span class="desk-v1-video-scene-edge desk-v1-video-scene-edge-r" data-trim-edge="r" data-scene-id="${esc(s.id)}"></span>` : ''}
+          ${durations ? `<span class="desk-v1-video-scene-duration">${esc(s.durationSec)}s</span>` : ''}
+          ${edges ? `<span class="desk-v1-video-scene-edge desk-v1-video-scene-edge-r" data-trim-edge="r"${durations ? '' : ` data-scene-id="${esc(s.id)}"`}></span>` : ''}
         </div>`;
   }
 
@@ -717,9 +718,9 @@
   // below 1s — an arbitrary but fixed, documented conversion (no real video
   // frame data exists in R0 to derive one from).
   const TRIM_PX_PER_SEC = 1 / 0.15;
-  function _beginTrim(e, handle, detail) {
+  function _beginTrim(e, handle, detail, extra) {
     e.stopPropagation();
-    const sceneId = handle.dataset.sceneId;
+    const sceneId = handle.dataset.sceneId || handle.closest('.desk-v1-video-scene').dataset.sceneId;
     const scene = detail.scenes.find((s) => s.id === sceneId);
     if (!scene) return;
     const startDuration = scene.durationSec;
@@ -733,18 +734,25 @@
         const dx = x - st.startX;
         const dir = edge === 'l' ? -1 : 1;
         const deltaSec = (dx * dir) / TRIM_PX_PER_SEC;
-        scene._liveDuration = Math.max(1, Math.round(startDuration + deltaSec));
+        scene._liveDuration = Math.min(extra && extra.maxDuration || Infinity, Math.max(1, Math.round(startDuration + deltaSec)));
         // Live width feedback only — the committed re-render (on drop) is
         // what actually recomputes every tile's flex-basis from durations;
         // this just previews the ONE tile moving during the drag itself.
-        const tile = document.querySelector(`.desk-v1-video-scene[data-scene-id="${CSS.escape(sceneId)}"]`);
+        const tile = handle.closest('.desk-v1-video-scene');
         if (tile) {
           const total = detail.scenes.reduce((sum, s) => sum + (s.id === sceneId ? scene._liveDuration : s.durationSec), 0);
           tile.style.flexBasis = (total ? (scene._liveDuration / total * 100) : 100) + '%';
         }
       },
       onDrop: () => scene._liveDuration || startDuration,
-      afterDrop: (st, finalDuration) => _commitTrim(detail, scene, startDuration, finalDuration),
+      onTeardown: () => {
+        delete scene._liveDuration;
+        const tile = handle.closest('.desk-v1-video-scene');
+        const total = detail.scenes.reduce((sum, s) => sum + s.durationSec, 0);
+        if (tile) tile.style.flexBasis = (total ? startDuration / total * 100 : 100) + '%';
+      },
+      afterDrop: (st, finalDuration) => extra && extra.onTrim
+        ? extra.onTrim(sceneId, finalDuration) : _commitTrim(detail, scene, startDuration, finalDuration),
     });
   }
 
@@ -814,11 +822,11 @@
   // The scene strip as a reusable piece (MC-1024 follow-up): Studio's timeline
   // bar is this strip over its real scenes, so the tile look and the drag are
   // the director's own, not a second implementation. `onReorder(fromId, toId)`
-  // is the caller's commit; trim handles and insert gaps stay director-only.
+  // is the caller's commit; Studio can opt into trim handles and durations.
   window.DeskV1VideoStrip = {
-    html(scenes) {
+    html(scenes, opts) {
       const total = scenes.reduce((sum, s) => sum + (s.durationSec || 0), 0);
-      return scenes.map((s, i) => _sceneTileHTML(s, i, total ? (s.durationSec / total * 100) : (100 / Math.max(1, scenes.length)), false)).join('');
+      return scenes.map((s, i) => _sceneTileHTML(s, i, total ? (s.durationSec / total * 100) : (100 / Math.max(1, scenes.length)), !!(opts && opts.trim), !!(opts && opts.durations))).join('');
     },
     // `extra` adds the Studio's bin (see _beginReorder) and `onSelect(sceneId)`, called
     // on a plain click. The touchmove guard keeps the page from scrolling under a
@@ -826,7 +834,17 @@
     // never reaches the long-press still scrolls the page as usual.
     wire(stripEl, onReorder, extra) {
       stripEl.querySelectorAll('.desk-v1-video-scene').forEach((tile) => {
-        tile.addEventListener('pointerdown', (e) => _beginReorder(e, tile, onReorder, extra));
+        tile.addEventListener('pointerdown', (e) => { if (!e.target.closest('[data-trim-edge]')) _beginReorder(e, tile, onReorder, extra); });
+        if (extra && extra.onTrim) tile.querySelectorAll('[data-trim-edge]').forEach(handle => {
+          handle.tabIndex = 0;
+          handle.setAttribute('role', 'slider');
+          const scene = extra.scenes().find(s => s.id === tile.dataset.sceneId);
+          handle.setAttribute('aria-label', `Duration of ${scene.label} in seconds`);
+          handle.setAttribute('aria-valuemin', '1');
+          handle.setAttribute('aria-valuemax', String(extra.maxDuration || 3600));
+          handle.setAttribute('aria-valuenow', String(scene.durationSec));
+          handle.addEventListener('pointerdown', e => _beginTrim(e, handle, { scenes: extra.scenes() }, extra));
+        });
         if (extra && extra.onSelect) tile.addEventListener('click', () => extra.onSelect(tile.dataset.sceneId));
         if (extra && extra.activeBodyClass) {
           tile.addEventListener('touchmove', (e) => {
