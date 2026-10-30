@@ -1,0 +1,110 @@
+/* Desk v1 — post preview (desk-v1-post-preview.js, desk-v1-post-preview-skins.js). The card is drawn in each platform's own light/dark chrome, NOT the Desk tone: it shows how the post will look there. Load order is in static/index.html. */
+
+/* The tap-to-preview eye on a tile. Hover devices reveal it on hover/focus; touch has no hover, so it is always there. */
+.desk-v1-pv-eye {
+  position: absolute; top: 4px; right: 4px; z-index: 1; min-width: 30px; min-height: 30px; padding: 0; border: none; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center; background: var(--surface3); color: var(--text-dim); cursor: pointer;
+}
+.desk-v1-pv-eye:hover { background: var(--accent-dim); color: var(--text); }
+.desk-v1-pv-eye:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.desk-v1-pv-eye svg { width: 16px; height: 16px; }
+.desk-v1-where-msg, .desk-v1-where-vcard { position: relative; }
+.desk-v1-where-msg { padding-right: 40px; }
+.desk-v1-where-vcard { padding-right: 76px; }
+.desk-v1-where-vcard .desk-v1-pv-eye { right: 40px; }
+@media (hover: hover) and (pointer: fine) {
+  .desk-v1-pv-eye { opacity: 0; transition: opacity 0.12s; }
+  .desk-v1-where-msg:hover .desk-v1-pv-eye, .desk-v1-where-vcard:hover .desk-v1-pv-eye, .desk-v1-pv-eye:focus-visible { opacity: 1; }
+}
+@media (max-width: 699px) {
+  .desk-v1-pv-eye { min-width: 44px; min-height: 44px; top: 0; right: 0; background: transparent; }
+  .desk-v1-where-msg { padding-right: 52px; }
+  .desk-v1-where-vcard { padding-right: 96px; }
+  .desk-v1-where-vcard .desk-v1-pv-eye { right: 44px; }
+}
+
+/* Popup (small) */
+.desk-v1-pv-pop {
+  position: fixed; z-index: 9000; width: 300px; max-width: calc(100vw - 16px); max-height: min(70vh, 460px); overflow: hidden; cursor: pointer;
+  border-radius: 12px; box-shadow: 0 10px 32px rgba(0, 0, 0, 0.35); background: #fff; outline-offset: 2px;
+}
+.desk-v1-pv-pop:focus-visible { outline: 2px solid var(--accent); }
+.desk-v1-pv-pop .desk-v1-pv-card { max-height: min(70vh, 430px); overflow: hidden; }
+.desk-v1-pv-hint { position: absolute; right: 8px; top: 6px; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; background: rgba(0, 0, 0, 0.62); color: #fff; pointer-events: none; }
+
+/* Modal (large) */
+.desk-v1-pv-overlay { position: fixed; inset: 0; z-index: 10000; background: rgba(0, 0, 0, 0.72); display: flex; align-items: center; justify-content: center; padding: 20px; }
+.desk-v1-pv-box { display: flex; flex-direction: column; width: min(560px, 100%); max-height: 100%; background: var(--surface, #fff); color: var(--text); border-radius: 12px; overflow: hidden; box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5); }
+.desk-v1-pv-bar { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 16px; border-bottom: 1px solid var(--border); }
+.desk-v1-pv-bar-title { flex: 1; min-width: 0; font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desk-v1-pv-close { min-width: 40px; min-height: 40px; border: none; border-radius: 8px; background: none; color: inherit; font-size: 16px; cursor: pointer; }
+.desk-v1-pv-close:hover { background: var(--surface3); }
+.desk-v1-pv-tabs { display: flex; gap: 6px; padding: 8px 12px 0; overflow-x: auto; flex: none; }
+.desk-v1-pv-tab { flex: none; min-height: 36px; padding: 4px 12px; border: 1px solid var(--border2); border-radius: 999px; background: var(--surface2); color: var(--text-dim); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.desk-v1-pv-tab[aria-selected="true"] { border-color: var(--accent); background: var(--accent-dim); color: var(--text); font-weight: 700; }
+.desk-v1-pv-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.desk-v1-pv-stage { padding: 14px; overflow-y: auto; min-height: 0; background: var(--surface2); }
+
+/* Card: shared parts */
+.desk-v1-pv-card { display: flex; flex-direction: column; gap: 10px; padding: 14px; background: #fff; color: #0f1419; font: 14px/1.4 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; text-align: left; border-radius: 10px; }
+.desk-v1-pv-card.is-large { font-size: 15px; }
+.desk-v1-pv-pop .desk-v1-pv-card { border-radius: 12px; }
+.desk-v1-pv-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+/* The mark carries its size inline (--svc-icon-size), so a frame resizes it with !important. */
+.desk-v1-pv-card .desk-v1-svc-icon { flex: none; --svc-icon-size: 40px !important; }
+.desk-v1-pv-who { min-width: 0; }
+.desk-v1-pv-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desk-v1-pv-sub { font-size: 12.5px; color: #536471; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desk-v1-pv-text { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.desk-v1-pv-copy.is-clamped { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+.desk-v1-pv-none { color: #8b98a5; font-style: italic; }
+.desk-v1-pv-media { display: grid; gap: 2px; border-radius: 12px; overflow: hidden; border: 1px solid rgba(0, 0, 0, 0.12); position: relative; background: #000; }
+.desk-v1-pv-media.is-grid { grid-template-columns: 1fr 1fr; }
+.desk-v1-pv-media.is-plain { border: none; border-radius: 8px; }
+.desk-v1-pv-m { display: block; position: relative; min-width: 0; }
+.desk-v1-pv-media img, .desk-v1-pv-media video { display: block; width: 100%; height: 100%; max-height: 360px; object-fit: cover; }
+.desk-v1-pv-media[style*="aspect-ratio"] .desk-v1-pv-m, .desk-v1-pv-media[style*="aspect-ratio"] img, .desk-v1-pv-media[style*="aspect-ratio"] video { height: 100%; max-height: none; }
+.desk-v1-pv-card.is-large .desk-v1-pv-media video { max-height: 70vh; object-fit: contain; background: #000; }
+.desk-v1-pv-media:not([style*="aspect-ratio"]) .desk-v1-pv-m:only-child img, .desk-v1-pv-media:not([style*="aspect-ratio"]) .desk-v1-pv-m:only-child video { height: auto; }
+.desk-v1-pv-play { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 26px; text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7); pointer-events: none; }
+.desk-v1-pv-more { position: absolute; right: 6px; bottom: 6px; padding: 1px 8px; border-radius: 999px; background: rgba(0, 0, 0, 0.7); color: #fff; font-size: 12px; }
+.desk-v1-pv-nomedia { display: flex; align-items: center; justify-content: center; padding: 12px; text-align: center; background: #efefef; color: #737373; font-size: 12.5px; border-radius: 8px; }
+.desk-v1-pv-actions { display: flex; gap: 22px; color: #536471; padding-top: 2px; }
+.desk-v1-pv-actions span { display: inline-flex; }
+
+/* Per-platform frames */
+.desk-v1-pv-card[data-pv-platform="linkedin"] { background: #fff; color: rgba(0, 0, 0, 0.9); border: 1px solid #e0dfdc; }
+.desk-v1-pv-card[data-pv-platform="linkedin"] .desk-v1-pv-sub { color: rgba(0, 0, 0, 0.6); }
+.desk-v1-pv-card[data-pv-platform="linkedin"] .desk-v1-pv-actions { justify-content: space-between; border-top: 1px solid #e0dfdc; padding-top: 8px; color: rgba(0, 0, 0, 0.6); }
+.desk-v1-pv-card[data-pv-platform="linkedin"] .desk-v1-pv-media { border-radius: 0; border: none; }
+.desk-v1-pv-card[data-pv-platform="instagram"] { gap: 8px; padding: 10px 0 12px; }
+.desk-v1-pv-card[data-pv-platform="instagram"] > :not(.desk-v1-pv-media):not(.desk-v1-pv-nomedia) { margin: 0 12px; }
+.desk-v1-pv-card[data-pv-platform="instagram"] .desk-v1-pv-media { border-radius: 0; border: none; }
+.desk-v1-pv-card[data-pv-platform="instagram"] .desk-v1-pv-nomedia { border-radius: 0; }
+.desk-v1-pv-card[data-pv-platform="instagram"] .desk-v1-pv-head .desk-v1-svc-icon { --svc-icon-size: 32px !important; }
+.desk-v1-pv-card[data-pv-platform="instagram"] .desk-v1-pv-actions { gap: 14px; color: #262626; }
+.desk-v1-pv-card[data-pv-platform="youtube"] { background: #fff; color: #0f0f0f; }
+.desk-v1-pv-yt-title { font-size: 16px; font-weight: 700; line-height: 1.3; }
+.desk-v1-pv-yt-chan { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
+.desk-v1-pv-yt-chan .desk-v1-svc-icon { --svc-icon-size: 28px !important; }
+.desk-v1-pv-card[data-pv-platform="tiktok"] { background: #000; color: #fff; padding: 0; position: relative; }
+.desk-v1-pv-card[data-pv-platform="tiktok"] .desk-v1-pv-media { border-radius: 10px; border: none; max-height: 420px; }
+.desk-v1-pv-card[data-pv-platform="tiktok"] .desk-v1-pv-nomedia { border-radius: 10px; background: #1c1c1c; color: #aaa; }
+.desk-v1-pv-tt-cap { position: absolute; left: 12px; right: 12px; bottom: 12px; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8); }
+.desk-v1-pv-card[data-pv-platform="reddit"] { background: #fff; color: #1c1c1c; border: 1px solid #ccc; border-radius: 6px; }
+.desk-v1-pv-card[data-pv-platform="reddit"] .desk-v1-pv-head .desk-v1-svc-icon { --svc-icon-size: 28px !important; }
+.desk-v1-pv-rd-title { font-size: 17px; font-weight: 600; line-height: 1.3; }
+.desk-v1-pv-card[data-pv-platform="discord"] { background: #313338; color: #dbdee1; border-radius: 8px; }
+.desk-v1-pv-dc { display: flex; gap: 12px; align-items: flex-start; }
+.desk-v1-pv-dc-main { min-width: 0; display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.desk-v1-pv-dc .desk-v1-pv-name { color: #f2f3f5; }
+.desk-v1-pv-card[data-pv-platform="blog"] { background: #fbfaf7; color: #222; font-family: Georgia, "Times New Roman", serif; border: 1px solid #e6e2d8; }
+.desk-v1-pv-blog-title { font-size: 21px; font-weight: 700; line-height: 1.25; }
+.desk-v1-pv-card[data-pv-platform="plain"] { background: var(--surface3, #f4f4f4); color: var(--text, #222); border: 1px dashed var(--border2, #bbb); }
+.desk-v1-pv-plain-title { font-weight: 700; font-size: 15px; }
+.desk-v1-pv-card[data-pv-platform="plain"] .desk-v1-pv-none { color: var(--text-faint, #777); }
+
+@media (max-width: 699px) {
+  .desk-v1-pv-overlay { padding: 8px; }
+  .desk-v1-pv-pop { width: calc(100vw - 16px); }
+}

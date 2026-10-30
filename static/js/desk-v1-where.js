@@ -385,6 +385,7 @@
         <div class="desk-v1-where-msg-kind">${esc(_kindWord(fam.kind))}</div>
         <div class="desk-v1-where-msg-title">${esc(fam.title)}</div>
         <span class="desk-v1-where-pill" data-where-pill>${esc(pill)}</span>
+        ${window.DeskV1PostPreview.buttonHTML(fam.title)}
       </div>
     </div>`;
   }
@@ -395,6 +396,7 @@
       <div class="desk-v1-where-vcard" role="button" tabindex="0" data-where-version data-family-id="${esc(fam.id)}" data-version-id="${esc(v.id)}" data-state="${esc(v.state)}"
            aria-haspopup="menu" aria-label="${esc(`${fam.title}, ${_kindWord(fam.kind)} to ${_formatWord(fam.kind, ch)}, ${state.word}. Press Enter to move it to another account.`)}">
         <div class="desk-v1-where-vtitle">${esc(fam.title)}</div>
+        ${window.DeskV1PostPreview.buttonHTML(fam.title)}
         <button type="button" class="desk-v1-where-colremove" data-where-remove-version="${esc(v.id)}" aria-label="Remove ${esc(fam.title)} from this channel" ${_LOCKED.has(v.state) ? 'disabled title="Published history is retained"' : ''}>✕</button>
         <div class="desk-v1-where-vformat">${esc(_kindWord(fam.kind))} → ${esc(_formatWord(fam.kind, ch))}</div>
       </div>
@@ -542,6 +544,12 @@
           undoRequest: () => _patchPlan(camp),
         });
       });
+    });
+    // Hover (mouse) or the eye button (touch) previews the real post as it will look on its platform.
+    window.DeskV1PostPreview.bind(el, (node) => {
+      const fam = _familiesFor(camp.id).find((f) => f.id === node.dataset.familyId);
+      return fam && { fam, versionId: node.dataset.versionId || null,
+        entries: (fam.versions || []).filter(_isLive).map((v) => ({ v, ch: _channel(v.channelId) })) };
     });
     DeskV1Kit.bindBecauseChips(el, camp.projectId);
     const accept = el.querySelector('[data-where-suggest-accept]');
