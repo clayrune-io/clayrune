@@ -11,12 +11,23 @@ while an older assistant inference was repeatedly promoted into working state.
   user message is labelled current direction, including when it equals the
   first message. Missing latest text says unavailable rather than inventing a
   current task. The first message remains verbatim but explicitly historical.
-  Git output is bounded to 20 lines / 1,000 characters plus a truncation marker
-  per invocation, keeping status/diff from consuming the recent-turn budget.
+  Git output is bounded per invocation by LINES, not characters (follow-up,
+  2026-10-29): 30 lines of at most 160 characters each; when the line cap
+  bites, the first 29 lines, an `[... truncated: N line(s) omitted]` marker
+  and the LAST line (the `N files changed` summary of `diff --stat`) are kept.
+  The earlier 1,000-character cap bound at about 14 stat rows, so later files
+  and the summary vanished.
 - `mc/memory.py`: Scribe emits USER for strings and text blocks, capped at 600
   characters per turn after the existing runtime injection filters. Synthetic,
   metadata and compact-summary turns cannot produce USER. Tool results retain
   RESULT and image data is omitted. Malformed/non-object JSON rows are skipped.
+- `mc/scribe_user_turn.py` (follow-up, 2026-10-29): the USER text is cut at the
+  FIRST occurrence anywhere of `=== Mid-task rollover state ===`,
+  `=== Prior conversation, started on` or `[dispatched agent finished]`; what
+  precedes the marker is kept, then the leading-injection strip runs again.
+  The anchored strip alone left the state block in 74 of 713 recent USER turns
+  (73 with the `Original task` line), 2 full handoff replays and 202 callbacks,
+  all arriving under the label the extractor is told outranks ASSISTANT.
 - The extractor takes `delta[-12000:]`. Its model response adds optional
   `confirmed_threads`: exact thread strings supported by the new slice. Merely
   retaining a thread does not refresh it; retained wording should remain stable.

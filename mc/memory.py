@@ -40,6 +40,7 @@ from contextvars import ContextVar
 
 import mc.agent_runtime as _agent_runtime  # multi-provider runtime (transcript + oneshot)
 from mc import continuity_threads as _cont_threads
+from mc import scribe_user_turn as _scribe_user_turn
 import mc.skills as _skills                # frontmatter parse for position notes
 import mc.distiller as _distiller          # Phase 4 learning observer (best-effort)
 import mc.allowance_state as _allowance_state  # live vendor exhaustion state (MC-964 Step D.1)
@@ -5523,8 +5524,10 @@ def _scribe_render_lines(lines):
         if mtype == 'user' and not any(m.get(k) for k in
                                       ('isMeta', 'isSynthetic', 'isCompactSummary')):
             # Tool results share the user role; only actual text blocks belong
-            # under USER. Strip the same injected preambles as chat readers,
-            # before capping, so a long system block cannot bury the human.
+            # under USER. Strip injections and cut at the first rollover /
+            # handoff / callback marker (mc/scribe_user_turn.py) BEFORE
+            # capping, so a long system block cannot bury the human and a
+            # restated first message cannot arrive under the USER label.
             text = ''
             if isinstance(content, str):
                 text = content
@@ -5533,8 +5536,8 @@ def _scribe_render_lines(lines):
                     b.get('text', '') for b in content
                     if isinstance(b, dict) and b.get('type') == 'text'
                     and isinstance(b.get('text'), str))
-            text = _agent_runtime.strip_injected_preamble(text)
-            if text and not _agent_runtime.is_nonuser_message(text):
+            text = _scribe_user_turn.clean_user_turn(text)
+            if text:
                 out.append(f"USER: {text[:600]}")
         if not isinstance(content, list):
             continue
