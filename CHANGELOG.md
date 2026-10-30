@@ -1,5 +1,30 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - Open every new video in the same Studio editor
+
+- Studio tiles, standalone draft links, campaign creation, video cards and Home links use DeskV1VideoOpen and the storyboard route's VideoEditor renderer. The legacy standalone creation URL is normalized before pushing the navigation stack; no second editor entry is added.
+- Standalone drafts keep their Studio owner, title, optional Product selection and Recent reopening; campaign videos keep their existing piece owner and Back to What. Removed Home's fallback into the retired video director. Branch candidate only; no merge, push or restart.
+
+## [2026-10-30] - Report preview and incomplete media-upload failures
+
+- Browser-preview creation now falls inside the upload error handler. An M21 reply without the requested saved asset is refused with a toast and local rollback, instead of retaining a blob whose URL is then revoked.
+- Real-MP4 regression covers the piece-page computer chooser, saved video metadata, server refusal, missing-asset response, preview failure and cleanup. The originally reported no-op on a video piece was not reproduced; these fault-injected failure paths are not claimed as its cause. Branch candidate only; no merge, push or restart.
+
+## [2026-10-30] - Let Windows video choosers show common video formats
+
+- Shared explicit video extensions and MIME hints across piece-page and create-card uploads. Client validation accepts video MIME types or known extensions; the server accepts the same common formats plus host-registered video types, and lists them consistently in the library.
+- Kept the 500 MB video / 25 MB image caps and included them in validation messages; material uploads use the video body cap, as piece uploads already did. Browser codec support still determines preview playback. Branch candidate only; no merge, push or restart.
+
+## [2026-10-30] - Keep the video editor focused on making video
+
+- Removed the Copy, media & versions detour and post-channel summary from the editor. Kept Review for a waiting version. Branch candidate only; no merge, push or restart.
+- Verification found a separate gap: New post's Add media currently filters the Material library to images. Making rendered videos selectable there needs a product decision; no piece/version redesign is included here.
+
+## [2026-10-30] - Show the Studio timeline on campaign videos
+
+- Campaign and standalone storyboards share a timeline module using the existing video strip's drag and edge-trim gestures. Tiles show duration; arrow keys reorder or adjust duration, and dropping pictures or library material inserts scenes through the existing saved storyboard commands and Undo.
+- Kept the scene-list and Add scene selectors. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-30] - Avoid nesting native candidates inside Hivemind checkouts
 
 - Approved native checks create their disposable candidate beside the registered project's workers, avoiding Git's `$GIT_DIR too big` refusal from nested Hivemind paths on Windows. Frozen source validation still binds the integration checkout and exact candidate tree.

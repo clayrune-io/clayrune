@@ -855,6 +855,7 @@ def materials():
 # and no piece. Multipart `file` (+ optional `title`); 201 with the library item.
 @bp.route('/api/desk/materials', methods=['POST'])
 def save_material():
+    request.max_content_length = max(_pieces.MAX_UPLOAD_BYTES.values()) + 1024 * 1024
     f = request.files.get('file')
     if f is None:
         return jsonify({'error': 'a file is required'}), 400

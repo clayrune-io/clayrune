@@ -39,6 +39,7 @@ from urllib.parse import quote
 
 from mc import desk as _desk
 from mc.core import _log, now_iso
+from mc.desk_media_formats import MEDIA_FORMAT_ERROR, VIDEO_EXTS
 
 # Wired by server.py (desk_routes.wire(uploads_root=...)): `data/uploads`. None
 # means nothing can be attached or listed, never "anywhere".
@@ -65,7 +66,6 @@ APPROVED_STATES = ('approved', 'scheduled')
 
 ASSET_KINDS = ('image', 'video')
 IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.webp')
-VIDEO_EXTS = ('.mp4', '.mov', '.webm', '.m4v')
 # Per-file caps for an upload (bytes). A video is the big one; an image over
 # 25 MB is a mistake, not a screenshot.
 MAX_UPLOAD_BYTES = {'image': 25 * 1024 * 1024, 'video': 500 * 1024 * 1024}
@@ -111,6 +111,13 @@ def asset_kind_for(filename: str) -> str | None:
     if ext in IMAGE_EXTS:
         return 'image'
     if ext in VIDEO_EXTS:
+        return 'video'
+    # Also accept video formats registered with the host's MIME database.
+    # Keep this in the common classifier so upload, attach and library reads
+    # agree, including formats outside the explicit native-chooser hints.
+    import mimetypes
+    mime, _ = mimetypes.guess_type(filename or '')
+    if mime and mime.startswith('video/'):
         return 'video'
     return None
 
@@ -759,7 +766,7 @@ def add_asset(piece_id: str, *, path: str, title=None, asset_id: str | None = No
     real = _resolve_under_uploads(path)
     kind = asset_kind_for(real.name)
     if kind is None:
-        raise PieceError('only image (png, jpg, gif, webp) and video (mp4, mov, webm, m4v) files can be attached')
+        raise PieceError(MEDIA_FORMAT_ERROR)
     rel = _rel_of(real)
     with _desk._store_lock:
         store = _desk._read_store()
@@ -799,7 +806,7 @@ def _write_library_file(filename: str, stream, folder_name: str) -> tuple[Path, 
     nothing behind."""
     kind = asset_kind_for(filename)
     if kind is None:
-        raise PieceError('only image (png, jpg, gif, webp) and video (mp4, mov, webm, m4v) files can be uploaded')
+        raise PieceError(MEDIA_FORMAT_ERROR)
     stem, ext = os.path.splitext(Path(filename).name)
     safe = _SAFE_NAME.sub('_', stem).strip(' ._')[:60] or 'upload'
     folder = _uploads_root().joinpath(*LIBRARY_ROOT, kind, folder_name)
@@ -834,7 +841,7 @@ def save_upload(piece_id: str, filename: str, stream, *, title=None, asset_id: s
     and removes the file if attaching then fails, so a refused upload leaves
     nothing behind."""
     if asset_kind_for(filename) is None:
-        raise PieceError('only image (png, jpg, gif, webp) and video (mp4, mov, webm, m4v) files can be uploaded')
+        raise PieceError(MEDIA_FORMAT_ERROR)
     with _desk._store_lock:
         _find(_desk._read_store(), piece_id)
     dest, _kind = _write_library_file(filename, stream, UPLOAD_FOLDER)
@@ -864,9 +871,8 @@ def save_to_library(filename: str, stream, *, title=None) -> dict:
 
 def _library_items(kind: str, folder: Path, rel_root: Path) -> list[dict]:
     items = []
-    exts = IMAGE_EXTS if kind == 'image' else VIDEO_EXTS
     try:
-        files = [f for f in folder.iterdir() if f.is_file() and f.suffix.lower() in exts]
+        files = [f for f in folder.iterdir() if f.is_file() and asset_kind_for(f.name) == kind]
     except OSError as e:
         _log(f'[desk] material folder unreadable {folder.name}: {e}', flush=True)
         return items

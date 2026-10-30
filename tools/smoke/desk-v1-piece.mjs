@@ -276,26 +276,10 @@ async function runVideoOpensStudioEditor(browser) {
   await page.waitForSelector('[data-storyboard]', { timeout: 8000 });
   ok('editor -> Review -> Back: returns to the editor');
 
-  // Copy, media and versions are one click away from the editor.
-  await page.waitForSelector('[data-vo-details]', { timeout: 8000 });
-  await page.click('[data-vo-details]');
-  await page.waitForSelector('.desk-v1-piece', { timeout: 8000 });
-  const sections = await page.$$eval('[data-piece-section]', (els) => els.map((e) => e.dataset.pieceSection));
-  if (['copy', 'media', 'versions'].every((s) => sections.includes(s))) ok('editor -> "Copy, media & versions": the piece page with Copy · Media · Versions');
-  else fail(`editor -> details: sections ${JSON.stringify(sections)}`);
-  const pieceBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
-  if (pieceBack.includes('Install in two minutes')) ok(`piece page: Back reads "${pieceBack}"`);
-  else fail(`piece page: Back wrong: ${JSON.stringify(pieceBack)}`);
-
-  // The piece page's button returns to the SAME editor (no second copy on the stack).
-  const btn = (await page.textContent('[data-video-btn]').catch(() => '') || '').trim();
-  if (btn === 'Open video editor') ok('piece page: the button reads "Open video editor"');
-  else fail(`piece page: button wrong: ${JSON.stringify(btn)}`);
-  await page.click('[data-video-btn]');
-  await page.waitForSelector('[data-storyboard]', { timeout: 8000 });
+  if (await page.$('[data-vo-details]')) fail('video editor still links to Copy, media & versions');
+  else ok('video editor has no Copy, media & versions escape hatch');
   await page.click('.desk-v1-back');
   await page.waitForSelector('[data-what]', { timeout: 8000 });
-  ok('piece page -> Open video editor -> Back: lands on the campaign What (editor was not pushed twice)');
 
   // A piece page reached some other way pushes the editor.
   await page.evaluate(() => window.deskV1Nav('piece', { campaignId: 'camp-1', familyId: 'fam-install-video' }));
@@ -337,5 +321,5 @@ try {
 
 console.log(bad
   ? `\n❌ FAIL — ${bad} Desk v1 piece check(s) regressed.`
-  : '\n✅ PASS — Desk v1 R2-7 piece page: card -> piece, Copy · Media · Versions, multi-asset + Add media, publish time via the calendar command, Back labels, video piece -> Studio video editor -> details -> editor all hold.');
+  : '\n✅ PASS — Desk v1 R2-7 piece page: card -> piece, Copy · Media · Versions, multi-asset + Add media, publish time via the calendar command, Back labels, video piece -> Studio video editor with Review and no details link all hold.');
 process.exit(exitCode);

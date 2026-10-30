@@ -106,6 +106,8 @@
         ? `<div class="desk-v1-lp-grid" data-lp-grid>${st.shown.map(_tileHTML).join('')}</div>`
         : `<div class="desk-v1-camp-empty" data-lp-empty>${st.files.length ? `No ${noun} match that search.` : `The library has no ${noun} yet. Add one from Studio, or upload one.`}</div>`;
       body.querySelectorAll('[data-lp-pick]').forEach((b) => {
+        const item = st.shown[Number(b.dataset.lpPick)];
+        if (window.DeskV1StudioTimeline && document.querySelector('[data-sb-timeline]')) window.DeskV1StudioTimeline.materialDrag(b, item, el, _close);
         b.onclick = () => {
           const it = st.shown[Number(b.dataset.lpPick)];
           if (!it) return;

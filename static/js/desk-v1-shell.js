@@ -126,6 +126,7 @@
   }
 
   function _storyboardLabel(params) {
+    if (params && params.standalone) return window.deskV1StudioCreateLabel(params);
     const families = window.DeskV1Store.state().families || [];
     const f = families.find(x => x.id === (params || {}).familyId);
     return `${f && f.title ? f.title : 'New video'} · Storyboard`;
@@ -145,6 +146,12 @@
 
   function deskV1Nav(route, params) {
     params = params || {};
+    // Old links use studio-create. Canonicalize video drafts before pushing,
+    // so Back never traverses an extra editor and every caller uses VideoOpen.
+    if (route === 'studio-create' && window.DeskV1VideoOpen &&
+        (params.kind === 'video' || window.DeskV1Studio?.isVideoDraft(params))) {
+      window.DeskV1VideoOpen.openStudio(params); return;
+    }
     if (route === 'conversations') route = 'engagement';
     if (Object.prototype.hasOwnProperty.call(PANEL_ALIASES, route)) {
       _gotoCampaignPanel(PANEL_ALIASES[route], params);

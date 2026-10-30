@@ -512,6 +512,42 @@ def test_video_browser_upload_keeps_id_and_can_be_undone(env, monkeypatch):
     assert len(list((uploads / 'desk/library/video/Uploads').iterdir())) == 1
 
 
+@pytest.mark.parametrize('extension', _pieces.VIDEO_EXTS)
+def test_common_video_formats_upload_attach_and_remain_in_library(env, extension):
+    client, uploads, _ = env
+    piece = _piece(client, 'video')
+    url = f'/api/desk/pieces/{piece["id"]}/assets'
+    response = client.post(url, data={'file': (io.BytesIO(b'video bytes'), 'Clip' + extension.upper())},
+                           content_type='multipart/form-data')
+    assert response.status_code == 201, response.get_json()
+    asset = response.get_json()['assets'][-1]
+    assert asset['kind'] == 'video'
+    assert (uploads / asset['path']).read_bytes() == b'video bytes'
+    library = client.get('/api/desk/materials').get_json()['library']['video']
+    assert any(item['path'] == asset['path'] for folder in library for item in folder['items'])
+    assert client.post(url, json={'path': asset['path']}).status_code == 201
+
+
+def test_host_registered_video_format_is_also_visible_in_library(env, monkeypatch):
+    import mimetypes
+    client, _, _ = env
+    monkeypatch.setattr(mimetypes, 'guess_type', lambda name: ('video/x-host-player', None) if name.endswith('.hostvideo') else (None, None))
+    p = _piece(client, 'video')
+    r = client.post(f'/api/desk/pieces/{p["id"]}/assets', data={'file': (io.BytesIO(b'clip'), 'clip.hostvideo')},
+                    content_type='multipart/form-data')
+    assert r.status_code == 201, r.get_json()
+    path = r.get_json()['assets'][0]['path']
+    lib = client.get('/api/desk/materials').get_json()['library']['video']
+    assert any(it['path'] == path for folder in lib for it in folder['items'])
+
+
+def test_video_chooser_hints_match_server_extensions():
+    import re
+    source = (PROJECT_ROOT / 'static/js/desk-v1-media-formats.js').read_text(encoding='utf-8')
+    entries = source.split('const videoExtensions = [', 1)[1].split(']', 1)[0]
+    assert tuple('.' + ext for ext in re.findall(r"'([a-z0-9]+)'", entries)) == _pieces.VIDEO_EXTS
+
+
 def test_post_name_persists_in_workspace_and_article_picker(env):
     client, _, _ = env
     p = _piece(client, 'article', title='New article')

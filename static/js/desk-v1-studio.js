@@ -260,6 +260,7 @@
     if (window.DeskV1ProjectMedia) window.DeskV1ProjectMedia.mount(el.querySelector('[data-project-media]'), { summaries: _fx().projectMedia || [], state: _lib.projectView });
     el.querySelectorAll('[data-studio-new]').forEach((btn) => {
       btn.onclick = () => {
+        if (btn.dataset.studioNew === 'video') { window.DeskV1VideoOpen.openStudio(); return; }
         window.deskV1Nav('studio-create', { kind: btn.dataset.studioNew });
       };
     });
@@ -456,18 +457,6 @@
     </li>`;
   }
 
-  // The Studio timeline bar (MC-1024 follow-up): the director's own scene strip
-  // (desk-v1-video.js, DeskV1VideoStrip) over the REAL scenes, widths in
-  // proportion to duration. The reorder drag is that strip's; its drop commits
-  // through the same _moveScene as the list, so the two stay in sync.
-  function _timelineHTML(detail) {
-    const real = _realScenes(detail);
-    if (!real.length || !window.DeskV1VideoStrip) return '';
-    const total = real.reduce((sum, s) => sum + (s.durationSec || 0), 0);
-    return `<div class="desk-v1-sb-timeline-title">Timeline · ${esc(_mmss(total))}</div>
-      <div class="desk-v1-video-scenestrip desk-v1-sb-timeline" data-sb-timeline aria-label="Timeline of real scenes. Drag a tile to reorder">${window.DeskV1VideoStrip.html(real)}</div>`;
-  }
-
   // The standalone Render button and the note above the list read the real
   // scenes, not the sample rows.
   function _noScenesHTML(detail) {
@@ -510,7 +499,7 @@
       <div class="desk-v1-sb-layout">
         <div class="desk-v1-sb-main">
           ${_isLive() && !_sb.loadError ? window.DeskV1Story.html(!_sb.loading) : ''}
-          ${_sb.standalone ? `<div class="desk-v1-sb-timeline-wrap" data-sb-timeline-wrap>${_timelineHTML(detail)}</div>` : ''}
+          <div class="desk-v1-sb-timeline-wrap" data-sb-timeline-wrap>${window.DeskV1StudioTimeline.html(detail)}</div>
           <div class="desk-v1-sb-listrow">
             <ol class="desk-v1-sb-scenes" data-scenes aria-label="Scenes">${detail.scenes.map((s) => _sceneHTML(s, detail.scenes, _sb.editing === s.id)).join('')}</ol>
             ${_sb.standalone ? `<div class="desk-v1-sb-bincol">
@@ -563,14 +552,12 @@
       ol.innerHTML = ctx.detail.scenes.map((s) => _sceneHTML(s, ctx.detail.scenes, _sb.editing === s.id)).join('');
       _wireScenes(ol);
     }
-    if (_sb.standalone) {
-      const wrap = _sb.el.querySelector('[data-sb-timeline-wrap]');
-      if (wrap) { wrap.innerHTML = _timelineHTML(ctx.detail); _wireTimeline(); }
-      const note = _sb.el.querySelector('[data-sb-notice]');
-      if (note) note.innerHTML = _noScenesHTML(ctx.detail);
-      const render = _sb.el.querySelector('[data-sb-render]');
-      if (render) render.disabled = !_realScenes(ctx.detail).length || !!(ctx.fam.render && ctx.fam.render.status === 'rendering');
-    }
+    const wrap = _sb.el.querySelector('[data-sb-timeline-wrap]');
+    if (wrap) { wrap.innerHTML = window.DeskV1StudioTimeline.html(ctx.detail); _wireTimeline(); }
+    const note = _sb.el.querySelector('[data-sb-notice]');
+    if (note) note.innerHTML = _noScenesHTML(ctx.detail);
+    const render = _sb.el.querySelector('[data-sb-render]');
+    if (render) render.disabled = !_realScenes(ctx.detail).length || !!(ctx.fam.render && ctx.fam.render.status === 'rendering');
     _markSelected();
     window.DeskV1Story.grow(ol);
     if (focusSel) { const f = _sb.el.querySelector(focusSel); if (f) f.focus({ preventScroll: true }); }
@@ -582,15 +569,14 @@
   // The timeline's reorder is the director strip's drag, committing through the
   // same move the list uses.
   function _wireTimeline() {
-    const strip = _sb && _sb.el.querySelector('[data-sb-timeline]');
-    if (!strip || !window.DeskV1VideoStrip) return;
-    // A tile can also be dragged onto the bin: the same delete as the row's.
-    window.DeskV1VideoStrip.wire(strip, (fromId, toId) => _moveScene(fromId, toId), {
-      trashSel: '[data-sb-trash]',
-      onTrash: (sceneId) => _deleteScene(sceneId),
-      onSelect: (sceneId) => _selectScene(sceneId, true),
-      activeBodyClass: 'desk-v1-sb-drag-active',
-      ghostClass: 'pd-ghost desk-v1-video-scene-ghost',
+    const ctx = _sbCtx();
+    if (!ctx) return;
+    window.DeskV1StudioTimeline.wire(_sb.el, {
+      scenes: () => _realScenes(ctx.detail), move: _moveScene, remove: _deleteScene,
+      select: id => _selectScene(id, true), detail: ctx.detail, paint: _paintScenes,
+      command: spec => { _registerItem(ctx.fam); return _sceneCmd(ctx, spec); },
+      newId: () => 'sc-' + _uid(),
+      files: (files, beforeId) => _addPastedPictures(files, null, beforeId),
     });
   }
 
@@ -726,7 +712,7 @@
     return new File([file], `pasted-picture-${stamp}${i ? '-' + (i + 1) : ''}.${ext}`, { type: file.type });
   }
 
-  async function _addPastedPictures(files, targetId) {
+  async function _addPastedPictures(files, targetId, beforeId) {
     const mine = _sb;
     if (!mine || !_isLive() || !files.length) return;
     const refs = [];
@@ -751,7 +737,8 @@
         : target ? `${prev.picture ? 'Replaced' : 'Added'} the picture for “${target.label}”` : 'Pasted a picture as a new scene',
       do: () => {
         if (target) { target.picture = refs[0]; target.thumb = refs[0].src || ''; }
-        detail.scenes.splice(target ? detail.scenes.indexOf(target) + 1 : detail.scenes.length, 0, ...added);
+        const before = detail.scenes.findIndex(s => s.id === beforeId);
+        detail.scenes.splice(target ? detail.scenes.indexOf(target) + 1 : before >= 0 ? before : detail.scenes.length, 0, ...added);
         _paintScenes();
       },
       undo: () => {
@@ -916,8 +903,9 @@
 
   function _sceneIdAt(x, y) {
     const hit = document.elementFromPoint(x, y);
-    const li = hit && hit.closest && hit.closest('.desk-v1-sb-scene[data-scene-id]');
-    return li && _sb.el.contains(li) ? li.dataset.sceneId : null;
+    const li = hit && hit.closest && hit.closest('.desk-v1-sb-scene[data-scene-id], [data-sb-timeline] .desk-v1-video-scene');
+    if (li && _sb.el.contains(li)) return li.dataset.sceneId;
+    return hit && hit.closest('[data-sb-timeline]') && _sb.el.contains(hit) ? (_realScenes(_sbCtx().detail).at(-1) || {}).id : null;
   }
   function _overTrash(x, y) {
     const hit = document.elementFromPoint(x, y);
@@ -1023,16 +1011,21 @@
     if (add) add.onclick = _addScene;
     _wireScenes(el.querySelector('[data-scenes]'));
     window.DeskV1Story.mount(el.querySelector('[data-sb-story-panel]'), _storyBridge());
-    if (_sb.standalone) { _wireTimeline(); _hookSbUndo(el); }
+    _wireTimeline();
+    if (_sb.standalone) _hookSbUndo(el);
     _markSelected();
     _wireAgentBox(el.querySelector('[data-sb-agent]'), ctx);
   }
 
-  function deskV1RenderStoryboard(el, params) {
-    params = params || {};
-    _sb = { el, campaignId: params.campaignId, familyId: params.familyId, editing: null, selected: null, standalone: false };
+  function _mountStoryboard(el, params, standalone) {
+    _sb = { el, campaignId: params.campaignId, familyId: params.familyId, editing: null, selected: null, standalone: !!standalone };
     el.innerHTML = _sbHTML();
     _wireSb(el);
+  }
+  function deskV1RenderStoryboard(el, params) {
+    params = params || {};
+    if (params.standalone) { deskV1RenderStudioCreate(el, params); return; }
+    _mountStoryboard(el, params);
     if (_isLive()) _loadBoard(_sb);
   }
 
@@ -1481,9 +1474,7 @@
       _paintCreate();
     };
     if (view === 'storyboard') {
-      _sb = { el: el.querySelector('[data-sc-body]'), campaignId: null, familyId: _sc.item.id, editing: null, selected: null, standalone: true };
-      _sb.el.innerHTML = _sbHTML();
-      _wireSb(_sb.el);
+      _mountStoryboard(el.querySelector('[data-sc-body]'), { familyId: _sc.item.id }, true);
       const mine = _sb;
       _loadGlobalAgents().then(() => { if (_sb === mine) _paintAgentBox(); });
       // Live: an item Studio already made is read from the server once; a fresh
@@ -1622,6 +1613,7 @@
   window.deskV1StudioCreateLabel = studioCreateLabel;
   window.deskV1RenderStoryboard = deskV1RenderStoryboard;
   window.DeskV1Studio = {
+    isVideoDraft: params => { const it = params.itemId && _itemById(params.itemId); return it && it.kind === 'video' && it.status !== 'saved'; },
     captureAvailable, sourceBodyHTML, wireSourceBody,
     ensureStoryboard, ensureDraft, writerHTML, wireWriter, markInReview, persistInReview,
     campaignsToUse: _campaignsToUse, campaignTitle: _campTitle, campaign: _campaign, project: _project,

@@ -391,8 +391,8 @@ async function runStudioReview(browser, tone) {
   await editSceneTitle(page, 3, 'Third');
   const tiles = await page.$$eval('[data-sb-timeline] .desk-v1-video-scene', (els) => els.map((e) => ({ id: e.dataset.sceneId, w: e.getBoundingClientRect().width })));
   const durs = await page.$$eval('.desk-v1-sb-scene:not([data-scene-placeholder]) .desk-v1-sb-dur', (els) => els.map((e) => e.textContent));
-  check(tiles.length === 3 && (await page.$$('[data-sb-timeline] [data-trim-edge]')).length === 0,
-    `${tag} the timeline has one tile per real scene (${tiles.length}), no trim handles`, `${tag} timeline wrong: ${JSON.stringify(tiles)}`);
+  check(tiles.length === 3 && (await page.$$('[data-sb-timeline] [data-trim-edge]')).length === 6,
+    `${tag} the timeline has one tile per real scene (${tiles.length}), with trim handles`, `${tag} timeline wrong: ${JSON.stringify(tiles)}`);
   const secs = durs.map((d) => { const [m, sec] = d.split(':').map(Number); return m * 60 + sec; });
   const wSum = tiles.reduce((a, x) => a + x.w, 0);
   const sSum = secs.reduce((a, x) => a + x, 0);
