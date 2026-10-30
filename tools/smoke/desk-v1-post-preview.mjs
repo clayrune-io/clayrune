@@ -9,7 +9,7 @@
 // picture is said to be missing); click opens the larger modal with a tab per
 // version; Esc closes and focus returns; leaving the tile hides the popup; touch
 // has no hover, so the eye button opens it and a tap enlarges it; dragging a tile
-// still adds the version.
+// does not change assignments (Where smoke).
 //
 // RUN   cd tools/smoke && node desk-v1-post-preview.mjs     (exit 0 = all hold)
 import assert from 'node:assert/strict';
@@ -151,21 +151,11 @@ try {
     assert.match(t, /none is attached yet/, 'a missing picture is said to be missing');
     await page.screenshot({ path: resolve(shots, 'preview-instagram-empty-pop-1440.png') });
     await page.mouse.move(2, 2);
-    // a drag still works with the eye button on the tile
-    const before = await page.locator('.desk-v1-where-col[data-channel-id="ch-li-page"] [data-where-version]').count();
-    await page.locator('.desk-v1-where-col[data-channel-id="ch-li-page"]').scrollIntoViewIfNeeded();
-    await page.locator(msg('fam-where-board')).scrollIntoViewIfNeeded();
-    const from = await page.locator(msg('fam-where-board')).boundingBox();
-    const to = await page.locator('.desk-v1-where-col[data-channel-id="ch-li-page"]').boundingBox();
-    await page.mouse.move(from.x + 30, from.y + 10); await page.mouse.down();
-    await page.mouse.move(from.x + 50, from.y + 30, { steps: 4 });
-    assert.equal(await page.locator('[data-post-preview-pop]').count(), 0, 'no preview while dragging');
-    await page.mouse.move(to.x + to.width / 2, to.y + 60, { steps: 10 }); await page.mouse.up();
-    await page.waitForTimeout(200);
-    assert.equal(await page.locator('.desk-v1-where-col[data-channel-id="ch-li-page"] [data-where-version]').count(), before + 1, 'drag adds the version');
+    // C5: preview remains, individual placement drag is retired (covered by Where smoke).
+    assert.equal(await page.locator('[data-where-remove-version]').count(), 0);
     assert.deepEqual(real(errors), []);
     await ctx.close();
-    console.log('PASS 1440px: hover popup, platform skins, real copy/media, modal tabs, Esc, drag');
+    console.log('PASS 1440px: hover popup, platform skins, real copy/media, modal tabs, Esc, read-only overview');
   }
 
   // ── phone: no hover; the eye button, then a tap to enlarge ───────────────

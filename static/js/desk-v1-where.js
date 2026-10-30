@@ -1,39 +1,6 @@
-// Desk v1 (MC-977) — R2-10: the ④ Where stop of the campaign map, a board
-// (docs/THE_DESK_V1_IA_REVISION_2.md §8 row R2-10, frames 7a + 7b, §11.6 Q1).
-// R2-19 (Ron 2026-09-30): Where owns CHANNEL PLACEMENT only — which accounts,
-// which messages go to each. A version card carries no time; times belong to
-// the ⑤ When stop, which reads the versions placed here.
-// Window-bridged module, no `import` (ground rule 1). `desk-v1-shell.js`'s
-// `_renderCampaignPanel` calls `deskV1RenderWhere(el, params)` for panel
-// 'where'.
-//
-//   Messages | one column per account the campaign USES | (nothing else)
-//   ----------------------------------------------------------------------
-//   SOURCES: one card per connected account, dragged UP to add its column
-//
-// Three drags, each with a keyboard/click equivalent (UX-05):
-//   message  -> account column   ADDS a version; the message stays listed
-//   version  -> other column     MOVES it (same version, new account)
-//   source   -> the board        ADDS that account's column (plan.accounts)
-// Every drop is a `DeskV1Kit.commandBus` command with an inverse (§10), so
-// each one toasts with Undo. Every command runs through `DeskV1Store.write`
-// (R1-W S5): desk_v1_live ON also calls the routes (the campaign's `plan` for a
-// column or a voice, M17/M18 for a version); OFF is demo mode, local only.
-//
-// Approval: the board never computes "Awaiting approval" itself. Adding a
-// column is a plain `plan.accounts.push`; Launch (desk-v1-campaign.js
-// `_renderLaunchPanel`) already compares `camp.approval.bounds` against the
-// live bounds through `DeskV1Kit.boundsWiden`, where a new account is a
-// widening and a removed one is not — so "✕ keeps approval" and "a source
-// dragged up on an Active campaign → Awaiting approval" both fall out of
-// that one rule instead of a second copy of it here.
-//
-// Reads the R2-7 piece shape (`piece.{id,kind,title,assets[],versions[]}`,
-// `version.{id,channelId,state,publishAt}`) through `DeskV1Kit.piece*` — the
-// same helpers What's list rows use — so a piece's "on N channels" is one
-// number on both surfaces (the count of its live versions), and the kind word
-// is What's. Assets (`piece.assets[]`) are What's and the piece page's; the
-// board never draws them.
+// Campaign accounts and read-only post overview. Composer owns post destinations.
+// Account selection still writes plan.accounts, the campaign approval bound.
+// Legacy What menu placement uses DeskV1WhereActions; no placement UI lives here.
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -59,7 +26,6 @@
   // Undo that would put a version back there lands it in review instead; the
   // user is told, and approves it again.
   const _M18_STATES = new Set(['drafting', 'needs_review', 'planned', 'skipped', 'archived']);
-  const _APPROVED = new Set(['approved', 'scheduled']);
   function _restorable(state) { return _M18_STATES.has(state) ? state : 'needs_review'; }
 
   const PLATFORMS = {
@@ -124,7 +90,6 @@
 
   // ── state ────────────────────────────────────────────────────────────────
   let _st = null;
-  let _lastDragEnd = 0; // swallow the click a mouse-up fires right after a drag (home.js precedent)
 
   function _camp() { return _st ? _campaign(_st.campaignId) : null; }
 
@@ -237,140 +202,17 @@
     });
   }
 
-  function _moveVersion(camp, fam, v, toChannelId) {
-    const to = _channel(toChannelId);
-    if (!v || v.channelId === toChannelId || !camp.plan.accounts.includes(toChannelId)) return;
-    if (_LOCKED.has(v.state)) { DeskV1Kit.toast(`“${fam.title}” is already published — it can't move to another account.`); return; }
-    const from = _channel(v.channelId);
-    const prevChannel = v.channelId;
-    const prevState = v.state;
-    // A reviewed or scheduled version was approved for ITS account and format;
-    // on another account it is a fresh draft again.
-    const nextState = (prevState === 'needs_review' || prevState === 'approved' || prevState === 'scheduled') ? 'drafting' : prevState;
-    // M18 refuses to change an approved version's account in place: it goes back
-    // to review first (which withdraws the approval), then moves as a draft.
-    const request = () => _queue(fam.id, async () => {
-      if (_APPROVED.has(prevState)) await _api('PATCH', _versionUrl(fam.id, v.id), { state: 'needs_review' });
-      const body = { account_id: toChannelId };
-      if (nextState !== prevState) body.state = nextState;
-      return _api('PATCH', _versionUrl(fam.id, v.id), body);
-    });
-    const undoRequest = () => _queue(fam.id, async () => {
-      const back = _restorable(prevState);
-      const out = await _api('PATCH', _versionUrl(fam.id, v.id), { account_id: prevChannel, state: back });
-      if (back !== prevState) {
-        v.state = back;
-        DeskV1Kit.toast(`“${fam.title}” is back in review: approve it again.`);
-        _repaint();
-      }
-      return out;
-    });
-    DeskV1Store.write({
-      label: `Moved “${fam.title}” from ${from ? from.label : 'a column'} to ${to ? to.label : 'a column'}`,
-      apply: () => { v.channelId = toChannelId; v.state = nextState; _repaint(); },
-      unapply: () => { v.channelId = prevChannel; v.state = prevState; },
-      repaint: () => _repaint(),
-      request,
-      undoRequest,
-    });
-  }
-
-  // ── drags ────────────────────────────────────────────────────────────────
-  // One slot, like floor.js and home.js. Targets are resolved by
-  // elementFromPoint at release: account columns for a message or a version,
-  // the whole board for a source.
-  let _drag = null;
-
-  // A source or a saved sign-in is dropped on the board as a whole; a message or a version on a column.
-  function _toBoard(kind) { return kind === 'source' || kind === 'service'; }
-
-  function _targetAt(x, y, data) {
-    const el = document.elementFromPoint(x, y);
-    if (!el || !el.closest) return null;
-    if (_toBoard(data.kind)) return el.closest('[data-where-board]') ? { type: 'board' } : null;
-    const col = el.closest('.desk-v1-where-col[data-channel-id]');
-    return col ? { type: 'column', channelId: col.dataset.channelId } : null;
-  }
-
-  function _hoverAt(x, y, data) {
-    const target = _targetAt(x, y, data);
-    _st.el.querySelectorAll('.pd-drop-hover').forEach((n) => n.classList.remove('pd-drop-hover'));
-    if (!target) return;
-    const node = target.type === 'board'
-      ? _st.el.querySelector('[data-where-board]')
-      : _st.el.querySelector(`.desk-v1-where-col[data-channel-id="${CSS.escape(target.channelId)}"]`);
-    if (node) node.classList.add('pd-drop-hover');
-  }
-
-  function _beginDrag(node, e, data) {
-    if (!window.PointerDrag) return;
-    window.PointerDrag.begin(node, e, {
-      isDragActive: () => !!_drag,
-      getDragState: () => _drag,
-      setDragState: (s) => { _drag = s; },
-      data,
-      draggingClass: 'desk-v1-where-dragging',
-      activeBodyClass: 'desk-v1-where-drag-active',
-      ghostClass: 'pd-ghost desk-v1-home-drag-ghost',
-      ghostHTML: () => `<span class="desk-v1-home-drag-ghost-inner">${esc(data.label)}</span>`,
-      ghostRotationDeg: -3,
-      ghostOffsetX: 18, ghostOffsetY: 18,
-      onActivate: () => {
-        if (!_st) return;
-        const sel = _toBoard(data.kind) ? '[data-where-board]' : '.desk-v1-where-col[data-channel-id]';
-        _st.el.querySelectorAll(sel).forEach((n) => n.classList.add('pd-drop-target'));
-      },
-      onMove: (st, x, y) => { if (_st) _hoverAt(x, y, data); },
-      onDrop: (st, x, y) => _targetAt(x, y, data),
-      afterDrop: (st, target) => { if (target) _applyDrop(data, target); },
-      onTeardown: () => {
-        if (_st && _st.el) _st.el.querySelectorAll('.pd-drop-target, .pd-drop-hover').forEach((n) => n.classList.remove('pd-drop-target', 'pd-drop-hover'));
-      },
-      onEnd: (st, wasDrag) => { if (wasDrag) _lastDragEnd = Date.now(); },
-    });
-  }
-
-  function _applyDrop(data, target) {
-    const camp = _camp();
-    if (!camp) return;
-    if (data.kind === 'source' && target.type === 'board') { _addColumn(camp, data.channelId); return; }
-    // A saved sign-in is not an account: it cannot become a column, so say why.
-    if (data.kind === 'service' && target.type === 'board') { window.DeskV1WhereServices.explain(data.serviceId, _repaint); return; }
-    if (target.type !== 'column') return;
-    const fam = _familiesFor(camp.id).find((f) => f.id === data.familyId);
-    if (!fam) return;
-    if (data.kind === 'message') _addVersion(camp, fam, target.channelId);
-    else if (data.kind === 'version') _moveVersion(camp, fam, (fam.versions || []).find((x) => x.id === data.versionId), target.channelId);
-  }
-
-  // Wires one card for its drag AND its click/Enter path. The click after a
-  // real drag release is swallowed in the capture phase (home.js's shelf-item
-  // precedent) so a drop never also opens the menu.
-  function _wireCard(node, data, onActivate) {
+  // Account selection has click and keyboard paths; no Where node starts a drag.
+  function _wireCard(node, onActivate) {
     node.addEventListener('click', (e) => {
-      if (!e.target.closest('button') && Date.now() - _lastDragEnd < 300) { e.stopImmediatePropagation(); e.preventDefault(); }
-    }, true);
-    node.addEventListener('pointerdown', (e) => {
-      if (e.target.closest && e.target.closest('button')) return; // a ✕ / Connect inside the card is its own control
-      _beginDrag(node, e, data);
-    });
-    node.addEventListener('click', (e) => {
-      if (e.target.closest && e.target.closest('button')) return;
-      onActivate(node);
+      if (!e.target.closest('button')) onActivate(node);
     });
     node.addEventListener('keydown', (e) => {
+      if (e.target.closest('button')) return;
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onActivate(node); }
     });
   }
 
-  // Keyboard/click: pick the destination from a menu.
-  function _openMenu(node, items, onPick, refocusSel) {
-    if (!items.length) return false;
-    DeskV1Kit.addToMenu(node, items, (id) => { onPick(id); _repaint(refocusSel); }, { noAppendNew: true });
-    return true;
-  }
-
-  // ── view ─────────────────────────────────────────────────────────────────
   function _previewTag(ch) {
     if (ch && !ch.preview && ch.publish) return window.DeskV1WhereTiles.statusChipHTML(ch);
     if (ch && !ch.preview && ch.connected === false) return `<span class="desk-v1-where-chip" data-tone="warn">${ch.capability === 'none' ? 'Read only' : 'Not connected'}</span>`;
@@ -380,8 +222,8 @@
   function _messageHTML(camp, fam, cols) {
     const pill = DeskV1Kit.pieceChannelsText(fam);
     return `<div class="desk-v1-addto-wrap desk-v1-where-msgwrap">
-      <div class="desk-v1-where-msg" role="button" tabindex="0" data-where-message data-family-id="${esc(fam.id)}" data-kind="${esc(fam.kind || '')}"
-           aria-haspopup="menu" aria-label="${esc(`${_kindWord(fam.kind)}: ${fam.title}, ${pill}. Press Enter to add a version to an account.`)}">
+      <div class="desk-v1-where-msg" role="group" tabindex="0" data-where-message data-family-id="${esc(fam.id)}" data-kind="${esc(fam.kind || '')}"
+           aria-label="${esc(`${_kindWord(fam.kind)}: ${fam.title}, ${pill}.`)}">
         <div class="desk-v1-where-msg-kind">${esc(_kindWord(fam.kind))}</div>
         <div class="desk-v1-where-msg-title">${esc(fam.title)}</div>
         <span class="desk-v1-where-pill" data-where-pill>${esc(pill)}</span>
@@ -393,11 +235,10 @@
   function _versionHTML(fam, v, ch) {
     const state = DeskV1Kit.stateLabel(v.state);
     return `<div class="desk-v1-addto-wrap desk-v1-where-vwrap">
-      <div class="desk-v1-where-vcard" role="button" tabindex="0" data-where-version data-family-id="${esc(fam.id)}" data-version-id="${esc(v.id)}" data-state="${esc(v.state)}"
-           aria-haspopup="menu" aria-label="${esc(`${fam.title}, ${_kindWord(fam.kind)} to ${_formatWord(fam.kind, ch)}, ${state.word}. Press Enter to move it to another account.`)}">
+      <div class="desk-v1-where-vcard" role="group" tabindex="0" data-where-version data-family-id="${esc(fam.id)}" data-version-id="${esc(v.id)}" data-state="${esc(v.state)}"
+           aria-label="${esc(`${fam.title}, ${_kindWord(fam.kind)} to ${_formatWord(fam.kind, ch)}, ${state.word}.`)}">
         <div class="desk-v1-where-vtitle">${esc(fam.title)}</div>
         ${window.DeskV1PostPreview.buttonHTML(fam.title)}
-        <button type="button" class="desk-v1-where-colremove" data-where-remove-version="${esc(v.id)}" aria-label="Remove ${esc(fam.title)} from this channel" ${_LOCKED.has(v.state) ? 'disabled title="Published history is retained"' : ''}>✕</button>
         <div class="desk-v1-where-vformat">${esc(_kindWord(fam.kind))} → ${esc(_formatWord(fam.kind, ch))}</div>
       </div>
     </div>`;
@@ -406,16 +247,18 @@
   function _columnHTML(camp, ch) {
     const plat = _platform(ch);
     const items = _boardVersions(camp, ch.id);
+    const count = new Set(items.map(({ fam }) => fam.id)).size;
     const body = items.length
       ? items.map(({ fam, v }) => _versionHTML(fam, v, ch)).join('')
-      : `<div class="desk-v1-where-colempty" data-where-colempty>Drag a message here to add its ${esc(plat.word)} version.</div>`;
-    return `<section class="desk-v1-where-col pd-drop-zone" data-channel-id="${esc(ch.id)}" data-platform="${esc(ch.platform)}" aria-label="${esc(`${ch.identity} on ${plat.word}`)}">
+      : `<div class="desk-v1-where-colempty" data-where-colempty>No posts selected for this account yet.</div>`;
+    return `<section class="desk-v1-where-col" data-channel-id="${esc(ch.id)}" data-platform="${esc(ch.platform)}" aria-label="${esc(`${ch.identity} on ${plat.word}`)}">
       <header class="desk-v1-where-colhead">
         ${_markHTML(ch)}
         <div class="desk-v1-where-colname">
           <div class="desk-v1-where-handle" title="${esc(ch.identity)}">${esc(ch.identity)}</div>
           <div class="desk-v1-where-plat">${esc(plat.word)}</div>
           ${_previewTag(ch)}
+          <div class="desk-v1-where-postcount" data-where-post-count="${count}">${count} post${count === 1 ? '' : 's'}</div>
         </div>
         <button type="button" class="desk-v1-where-colremove" data-where-remove data-channel-id="${esc(ch.id)}" aria-label="${esc(`Remove ${ch.identity} (${plat.word}) from this campaign`)}">✕</button>
       </header>
@@ -460,64 +303,39 @@
       ${_suggestHTML(camp)}
       ${_awaitingHTML(camp)}
       ${window.DeskV1WhereServices.noticeHTML()}
-      <p class="desk-v1-where-drop-hint" data-where-drop-hint>Drop a connector below to add an empty channel. Then drag the messages you want into it.</p>
+      <p class="desk-v1-where-drop-hint" data-where-drop-hint>Select campaign accounts below. This overview shows which posts go to each account.</p>
       <div class="desk-v1-where-board" data-where-board>
         <section class="desk-v1-where-msgs" data-where-messages aria-label="Messages">
           <header class="desk-v1-where-msghead"><div class="desk-v1-where-msgtitle">Messages</div><div class="desk-v1-where-msgsub">every piece from What</div></header>
           <div class="desk-v1-where-msglist">${fams.length ? fams.map((f) => _messageHTML(camp, f, cols)).join('') : '<div class="desk-v1-where-colempty" data-where-nomessages>No pieces yet. Add them in What.</div>'}</div>
         </section>
         ${cols.map((ch) => _columnHTML(camp, ch)).join('')}
-        ${cols.length ? '' : '<div class="desk-v1-where-nocols" data-where-nocols>No accounts yet. Drag one up from SOURCES to add its column.</div>'}
+        ${cols.length ? '' : '<div class="desk-v1-where-nocols" data-where-nocols>No accounts yet. Select one from Sources below.</div>'}
       </div>
-      <p class="desk-v1-where-rule" data-where-rule>Dragging from Messages always ADDS a version (the message stays listed) · dragging a version between columns MOVES it.</p>
+      <p class="desk-v1-where-rule" data-where-rule>Post destinations are edited in the composer. This overview does not change individual assignments.</p>
       <section class="desk-v1-where-sources" data-where-sources aria-label="Sources">
-        <div class="desk-v1-where-sources-title">Sources — drag a channel up into the campaign</div>
+        <div class="desk-v1-where-sources-title">Sources — select accounts for this campaign</div>
         <div class="desk-v1-where-sources-row">${src.bound.map((ch) => _sourceHTML(camp, ch)).join('')}${src.off.map(_offSourceHTML).join('')}${src.readOnly.map(_readOnlySourceHTML).join('')}${window.DeskV1WhereServices.html(_fx().channels || [])}</div>
       </section>
     </div>`;
     _wire(el, camp);
     window.DeskV1WhereServices.bind(el, _repaint);
-    window.DeskV1WhereRemoval.wire(el, camp, _repaint);
     window.DeskV1WhereHighlight.mark(el);
   }
 
   function _wire(el, camp) {
-    el.querySelectorAll('[data-where-message]').forEach((node) => {
-      const famId = node.dataset.familyId;
-      const fam = _familiesFor(camp.id).find((f) => f.id === famId);
-      if (!fam) return;
-      _wireCard(node, { kind: 'message', familyId: famId, label: fam.title }, (n) => {
-        const items = _columnChannels(camp).map((ch) => ({ id: ch.id, label: `Add ${ch.identity} (${_platform(ch).word}) version` }));
-        if (!_openMenu(n, items, (chId) => _addVersion(camp, fam, chId), `[data-where-message][data-family-id="${CSS.escape(famId)}"]`)) {
-          DeskV1Kit.toast('Add an account column first: drag one up from SOURCES.');
-        }
-      });
-    });
-    el.querySelectorAll('[data-where-version]').forEach((node) => {
-      const famId = node.dataset.familyId;
-      const vId = node.dataset.versionId;
-      const fam = _familiesFor(camp.id).find((f) => f.id === famId);
-      const v = fam && (fam.versions || []).find((x) => x.id === vId);
-      if (!v) return;
-      _wireCard(node, { kind: 'version', familyId: famId, versionId: vId, label: fam.title }, (n) => {
-        const items = _columnChannels(camp).filter((ch) => ch.id !== v.channelId)
-          .map((ch) => ({ id: ch.id, label: `Move to ${ch.identity} (${_platform(ch).word})` }));
-        if (!items.length) { DeskV1Kit.toast('There is no other account column to move it to.'); return; }
-        _openMenu(n, items, (chId) => _moveVersion(camp, fam, v, chId), null);
-      });
-    });
     el.querySelectorAll('[data-where-source]').forEach((node) => {
       const chId = node.dataset.channelId;
       const ch = _channel(chId);
       if (!ch) return;
-      _wireCard(node, { kind: 'source', channelId: chId, label: ch.label }, () => {
+      _wireCard(node, () => {
         _addColumn(camp, chId);
         _repaint(`[data-where-source][data-channel-id="${CSS.escape(chId)}"]`);
       });
     });
     el.querySelectorAll('[data-where-service]').forEach((node) => {
       const svcId = node.dataset.whereService;
-      _wireCard(node, { kind: 'service', serviceId: svcId, label: node.dataset.serviceName || 'Saved sign-in' },
+      _wireCard(node,
         () => window.DeskV1WhereServices.explain(svcId, _repaint));
     });
     el.querySelectorAll('[data-where-remove]').forEach((btn) => {
