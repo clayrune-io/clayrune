@@ -1,7 +1,7 @@
 // One human-started check controller for every browser sign-in.
 import { ConnectCopy as C } from './desk-v1-connect-copy.js';
 const states=new Map(), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const fresh=()=>({status:null,busy:false,opened:false,asked:false,prompt:false,deferred:false,timer:null,node:null,active:true,started:0});
+const fresh=()=>({status:null,busy:false,waiting:false,opened:false,asked:false,prompt:false,deferred:false,timer:null,node:null,active:true,started:0});
 function clear(key) {const s=states.get(key);if(s){s.active=false;clearTimeout(s.timer);states.delete(key);}}
 function html(key) {return `<div class="desk-v1-cs-fill-row" data-browser-check="${esc(key)}"></div>`;}
 function bind(root,key,target,ctx,{own,onStatus,status,compact=false}={}) {
@@ -15,9 +15,10 @@ function bind(root,key,target,ctx,{own,onStatus,status,compact=false}={}) {
  const alive=()=>s.active && states.get(key)===s && s.node?.isConnected && JSON.stringify(target())===signature;
  const paint=()=>{
   if(!alive())return;
-  const label=s.status ? C.status(s.status.state) : C.words.notChecked;
+  const state=s.waiting?'waiting_signin':s.status?.state || 'not_connected';
+  const label=s.waiting ? C.words.waitingSignin : s.status ? C.status(s.status.state) : C.words.notChecked;
   s.node.innerHTML=`<button type="button" class="desk-v1-conn-btn desk-v1-conn-btn-inline" data-bc-check ${s.busy?'disabled':''}>${s.busy?C.words.checking:C.words.checkConnection}</button>
-   ${compact?'':`<span class="desk-v1-conn-status" data-bc-state="${esc(s.status?.state || 'not_connected')}" data-state="${s.status?.state==='verified'?'ok':'needs'}" role="status">${esc(label)}</span>`}
+   ${compact?'':`<span class="desk-v1-conn-status" data-bc-state="${esc(state)}" data-state="${state==='verified'?'ok':'needs'}" role="status">${esc(label)}</span>`}
    ${!compact && s.status?.state==='verified'?`<span class="desk-v1-rules-hint">${C.words.browserProof}</span>`:''}
    ${!compact && s.error?`<span role="alert">${esc(s.error)}</span>`:''}
    ${s.prompt || s.deferred?`<div data-bc-confirm>${s.prompt?`<p>${C.words.noAutoCheck} ${C.words.signedInQuestion}</p>`:''}<button type="button" class="desk-v1-conn-btn" data-bc-yes>${C.words.yesSignedIn}</button>${s.prompt?`<button type="button" class="desk-v1-conn-btn" data-bc-no>${C.words.notYet}</button>`:''}</div>`:''}`;
@@ -38,6 +39,9 @@ function bind(root,key,target,ctx,{own,onStatus,status,compact=false}={}) {
    const out=await ctx.api('POST','/api/desk/connect/browser-profile/check',{...wanted,confirmed,check});
    if(!alive())return;
    s.status=out;s.error='';
+   // Signed-out evidence starts recovery. Keep that cue through its polls;
+   // definitive failures and the end of the recovery window still show failure.
+   s.waiting=!!out.needs_signin && (out.verifiable===false || Date.now()-s.started<600000);
    onStatus?.(out);
    if(out.needs_signin && !s.opened) {
     if(typeof window.openBrowserPane!=='function')throw new Error(C.words.paneUnavailable);
@@ -51,7 +55,7 @@ function bind(root,key,target,ctx,{own,onStatus,status,compact=false}={}) {
    else if(s.opened && out.verifiable && out.needs_signin && Date.now()-s.started<600000) s.timer=setTimeout(()=>run(false,true),2000);
   } catch(e) {
    if(!alive())return;
-   s.error=e.message || C.words.checkFailed;s.status={state:'check_failed',message:s.error};onStatus?.(s.status);
+   s.waiting=false;s.error=e.message || C.words.checkFailed;s.status={state:'check_failed',message:s.error};onStatus?.(s.status);
   } finally {s.busy=false;paint();}
  }
  paint();

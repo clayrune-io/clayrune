@@ -33,7 +33,7 @@ print(json.dumps({'js':EVIDENCE_JS,'checks':{s:registry.profile(s).get('signin_c
   await page.setContent('<p>Sign in</p>');assert.deepEqual((await page.evaluate(expr)).matches,spec.selectors.map(()=>false));
   await page.close();console.log(`PASS ${service}: real DOM evidence excludes hidden and signed-out controls`);
  }
- for(const width of [1440,390]) for(const service of Object.keys(types)) for(const flow of (['example.com','snapchat.com'].includes(service)?['manual']:['already','signin','failed'])) {
+ for(const width of [1440,390]) for(const service of Object.keys(types)) for(const flow of (['example.com','snapchat.com'].includes(service)?['manual']:['already','signin','failed',...(service==='x.com'?['signin-failed']:[])])) {
   const page=await browser.newPage({viewport:{width,height:900}}),errors=[];
   page.on('pageerror',e=>errors.push(e.message));
   page.setDefaultTimeout(8000);
@@ -55,6 +55,7 @@ print(json.dumps({'js':EVIDENCE_JS,'checks':{s:registry.profile(s).get('signin_c
     if(url==='/api/desk/connect/signin/options')return {logins:[],routes:[],vault_locked:false};
     if(url==='/api/desk/connect/browser-profile/check'){
      calls.push(body);
+     if(window.holdCheck)await new Promise(resolve=>{window.releaseCheck=resolve;});
      const state=fail?'check_failed':manual?(body.confirmed||body.check===false?'not_checked':'sign_in_required'):signedIn?'verified':'check_failed';
      return {state,verifiable:!manual,needs_signin:state==='sign_in_required'||(!fail&&state==='check_failed'),failure:fail?'unavailable':'signed_out',signin_url:info.url};
     }return {};
@@ -64,10 +65,14 @@ print(json.dumps({'js':EVIDENCE_JS,'checks':{s:registry.profile(s).get('signin_c
    if(native)DeskV1ConnectLoginStep.setTarget({kind:info.service.id==='x'?'account':'member',account:{new:{identity:'Example'}}});
    ctx.repaint();
   },{info:types[service],flow});
+  const newProfile=service==='x.com' && flow.startsWith('signin'),profile=newProfile?'sweep-x-test':'main';
   if(['x.com','linkedin.com'].includes(service)){
    await page.check('[data-lg-mode][value="manual"]');
    await page.waitForFunction(()=>[...document.querySelector('[data-lg-profile]').options].some(o=>o.value==='main'));
-   await page.selectOption('[data-lg-profile]','main');
+   if(newProfile){
+    await page.selectOption('[data-lg-profile]',{label:'New profile'});
+    await page.fill('[data-lg-newprofile]',profile);
+   }else await page.selectOption('[data-lg-profile]','main');
   }else await page.fill('[data-bp-profile]','main');
   assert.equal(await page.locator('[data-bc-check]').textContent(),'Check now');
   assert.equal(await page.evaluate(()=>calls.length),0);
@@ -76,15 +81,30 @@ print(json.dumps({'js':EVIDENCE_JS,'checks':{s:registry.profile(s).get('signin_c
    await page.waitForSelector('[data-bc-state="verified"]');assert.equal(await page.evaluate(()=>panes.length),0);
    await page.click('[data-bc-check]');await page.waitForFunction(()=>calls.length===2);
    await page.waitForSelector('[data-bc-state="verified"]');
-  }else if(flow==='signin'){
+  }else if(flow.startsWith('signin')){
    await page.waitForFunction(()=>panes.length===1);
-   await page.evaluate(()=>{window.signedIn=true;});
-   await page.waitForSelector('[data-bc-state="verified"]');
+   await page.waitForSelector('[data-bc-state="waiting_signin"]');
+   assert.equal(await page.locator('[data-bc-state]').textContent(),'Waiting for you to sign in');
+   // A completed signed-out poll is still recovery, not a broken connection.
+   await page.waitForFunction(()=>calls.length>=2 && !document.querySelector('[data-bc-check]').disabled);
+   assert.equal(await page.locator('[data-bc-state]').textContent(),'Waiting for you to sign in');
+   await page.evaluate(()=>{window.holdCheck=true;});
+   await page.waitForFunction(()=>typeof window.releaseCheck==='function');
+   assert.equal(await page.locator('[data-bc-check]').textContent(),'Checking…');
+   assert.equal(await page.locator('[data-bc-state]').textContent(),'Waiting for you to sign in');
+   assert.equal(await page.locator('[data-bc-state]').getAttribute('data-bc-state'),'waiting_signin');
+   await page.screenshot({path:resolve(shots,`${service}-${flow}-waiting-${width}.png`),fullPage:true});
+   await page.evaluate(failed=>{window.signedIn=!failed;window.fail=failed;},flow==='signin-failed');
+   await page.evaluate(()=>{window.holdCheck=false;window.releaseCheck();});
+   await page.waitForSelector(flow==='signin-failed'?'[data-bc-state="check_failed"]':'[data-bc-state="verified"]');
+   assert.equal(await page.locator('[data-bc-state]').textContent(),flow==='signin-failed'?'Not working':'Ready');
    assert.ok((await page.evaluate(()=>calls.length))>=2);assert.equal(await page.evaluate(()=>panes.length),1);
   }else if(flow==='failed'){
    await page.waitForSelector('[data-bc-state="check_failed"]');assert.equal(await page.evaluate(()=>panes.length),0);
+   assert.equal(await page.locator('[data-bc-state]').textContent(),'Not working');
   }else {
    await page.waitForSelector('[data-bc-confirm]');
+   assert.equal(await page.locator('[data-bc-state]').textContent(),'Waiting for you to sign in');
    await page.screenshot({path:resolve(shots,`unknown-prompt-${width}.png`),fullPage:true});
    assert.equal(await page.locator('[data-bc-confirm]').count(),1);
    if(width===390){
@@ -99,12 +119,12 @@ print(json.dumps({'js':EVIDENCE_JS,'checks':{s:registry.profile(s).get('signin_c
    assert.equal(await page.locator('[data-bc-confirm]').count(),0);
    assert.equal(await page.evaluate(()=>panes.length),1);
   }
-  const calls=await page.evaluate(()=>window.calls);assert.ok(calls.every(c=>c.browser_profile==='main'));
+  const calls=await page.evaluate(()=>window.calls);assert.ok(calls.every(c=>c.browser_profile===profile));
   await page.screenshot({path:resolve(shots,`${service}-${flow}-${width}.png`),fullPage:true});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   await page.evaluate(()=>DeskV1ConnectWizard.close());const count=await page.evaluate(()=>calls.length);await page.waitForTimeout(2100);assert.equal(await page.evaluate(()=>calls.length),count);
   // Reopening Result/detail must show its metadata status without a probe.
-  const savedState=flow==='manual'?'not_checked':flow==='failed'?'check_failed':'verified';
+  const savedState=flow==='manual'?'not_checked':flow.endsWith('failed')?'check_failed':'verified';
   await page.evaluate(state=>{
    const root=document.querySelector('#root');root.innerHTML=DeskV1ConnectBrowserCheck.html('saved-fixture');
    DeskV1ConnectBrowserCheck.bind(root,'saved-fixture',()=>({url:'https://example.com',browser_profile:'main'}),{api:()=>{throw new Error('render ran a check');}},{status:{state,verifiable:state!=='not_checked',needs_signin:false}});
