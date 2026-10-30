@@ -38,6 +38,15 @@ while an older assistant inference was repeatedly promoted into working state.
   New threads and explicitly supplied direct writes are stamped at write time.
   Existing extracted threads refresh only when included in `confirmed_threads`.
   Updates that omit threads and legacy shared-to-owner claims preserve age.
+- A reworded thread is the same thread (2026-10-30, Fenn b029cbfb1ef8).
+  `continuity_threads.match_reworded` pairs an incoming thread with a known
+  one at difflib ratio >= 0.8 on casefolded, whitespace-collapsed text; the
+  slot is part of the identity, verbatim keeps consume their old thread first,
+  best ratio wins and one old thread is inherited by at most one new thread.
+  A match inherits the old stamp (an empty legacy stamp stays empty) and logs
+  `[continuity] reworded: <old> -> <new>`; `confirmed_threads` still wins.
+  Replay of the 50 newest Scribe oneshots: 102 threads, 60 verbatim, 12
+  inherit, 30 fresh; the 0.75-0.85 band pairs are in the journal.
 - At 48 hours without confirmation, prompt rendering flags the thread
   `unconfirmed since ... (stale; verify before acting)`. Legacy undated,
   malformed and future stamps are also flagged. Flags apply to own, shared,

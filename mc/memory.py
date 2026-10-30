@@ -1867,8 +1867,16 @@ def write_continuity(project, threads=None, commitments=None,
     shared = by_owner.get('') or _cont_empty_slots()
     previous = {**shared.get('thread_confirmed', {}), **previous}
     known = set(mine['threads']) | set(shared['threads'])
+    # A paraphrased thread is the same thread. Without this, every rewording
+    # by the extractor looked new and took a fresh stamp, so a dead thread
+    # that the Scribe kept rephrasing (even just appending "(cont)") never
+    # aged past the 48h flag. Found in review b029cbfb1ef8, 2026-10-29.
+    reworded = _cont_threads.match_reworded(rec['threads'], known)
+    for new_t, old_t in reworded.items():
+        _log(f'[continuity] reworded: {old_t} -> {new_t}')
     rec['thread_confirmed'] = {
-        t: rec['updated'] if t in confirmed or t not in known else previous.get(t, '')
+        t: (rec['updated'] if t in confirmed or (t not in known and t not in reworded)
+            else previous.get(reworded.get(t, t), ''))
         for t in rec['threads']}
     by_owner[key] = rec
 

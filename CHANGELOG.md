@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - A reworded continuity thread keeps its age
+
+- Continuity thread stamps now survive paraphrase: an incoming thread that matches a known one at difflib ratio 0.8 or above inherits that thread's confirmation time instead of a fresh one, so a dead thread the Scribe keeps rewording still flags stale at 48 hours. Matching is per slot, best ratio wins, one old thread feeds at most one new thread; each match logs `[continuity] reworded`.
+- Evidence from `confirmed_threads` still refreshes a thread. Record shape, owner keys and file size are unchanged. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-29] - Keep current user corrections across continuity rollovers
 
 - Rollover labels the chat's first message as historical and puts the latest direction and unanswered messages first. Git output is capped at 20 lines / 1,000 characters per section.

@@ -235,3 +235,117 @@ def test_git_output_under_the_line_cap_is_untouched(monkeypatch):
     monkeypatch.setattr(mt.subprocess, 'run', lambda *a, **k: SimpleNamespace(
         stdout=stat, stderr='', returncode=0))
     assert mt._git('.', 'diff', '--stat') == stat
+
+
+# --- reworded threads keep their stamp (Fenn b029cbfb1ef8 / Tobin 4ff2433bec0d) ---
+
+def test_reworded_thread_inherits_old_stamp_and_logs(env, monkeypatch):
+    mem.write_continuity(P, threads=['X app setup not started'], owner='Dave')
+    monkeypatch.setattr(mem, 'now_iso', lambda: LATER)
+    monkeypatch.setattr(mem, '_model_call', lambda *a: json.dumps({
+        'threads': ['X app setup not started (cont)']}))
+    mem._extract_continuity(P, 'unrelated chatter', 'fake', owner='Dave')
+    rec = mem.read_continuity(P, owner='Dave')
+    assert rec['thread_confirmed'] == {'X app setup not started (cont)': FIRST}
+    assert ('[continuity] reworded: X app setup not started -> '
+            'X app setup not started (cont)') in env[1]
+
+
+def test_genuinely_new_thread_gets_fresh_stamp(env, monkeypatch):
+    mem.write_continuity(P, threads=['X app setup not started'], owner='Dave')
+    monkeypatch.setattr(mem, 'now_iso', lambda: LATER)
+    monkeypatch.setattr(mem, '_model_call', lambda *a: json.dumps({
+        'threads': ['X app setup not started', 'Desk video editor button restyle']}))
+    mem._extract_continuity(P, 'unrelated chatter', 'fake', owner='Dave')
+    rec = mem.read_continuity(P, owner='Dave')
+    assert rec['thread_confirmed'] == {'X app setup not started': FIRST,
+                                       'Desk video editor button restyle': LATER}
+    assert not [l for l in env[1] if 'reworded' in l]
+
+
+def test_two_near_duplicates_do_not_both_inherit_one_stamp(env, monkeypatch):
+    mem.write_continuity(P, threads=['MC-924 provider pin dropped at dispatch'], owner='Dave')
+    monkeypatch.setattr(mem, 'now_iso', lambda: LATER)
+    monkeypatch.setattr(mem, '_model_call', lambda *a: json.dumps({
+        'threads': ['MC-924 provider pin dropped at dispatch (cont)',
+                    'MC-924 provider pin dropped at dispatch, fix pending']}))
+    mem._extract_continuity(P, 'unrelated chatter', 'fake', owner='Dave')
+    stamps = mem.read_continuity(P, owner='Dave')['thread_confirmed']
+    assert sorted(stamps.values()) == [FIRST, LATER]
+    assert stamps['MC-924 provider pin dropped at dispatch (cont)'] == FIRST
+    assert len([l for l in env[1] if 'reworded' in l]) == 1
+
+
+def test_verbatim_kept_thread_is_not_inherited_by_its_near_duplicate(env):
+    assert continuity_threads.match_reworded(
+        ['task a is open', 'task a is open (cont)'], ['task a is open']) == {}
+
+
+def test_slot_is_part_of_identity_and_case_whitespace_are_not(env):
+    got = continuity_threads.match_reworded(['  Repair   ROLLOVER tail-cut '],
+                                            ['repair rollover tail-cut'])
+    assert got == {'  Repair   ROLLOVER tail-cut ': 'repair rollover tail-cut'}
+    assert (continuity_threads._identity('ship the fix', 'threads')
+            != continuity_threads._identity('ship the fix', 'commitments'))
+
+
+def test_reworded_thread_older_than_48h_still_flags_stale(env, monkeypatch):
+    mem.write_continuity(P, threads=['Position review: 97 due, no verdicts'], owner='Vector')
+    monkeypatch.setattr(mem, 'now_iso', lambda: LATER)  # 72h after FIRST
+    monkeypatch.setattr(mem, '_model_call', lambda *a: json.dumps({
+        'threads': ['Position review: 97 due, no verdicts recorded']}))
+    mem._extract_continuity(P, 'unrelated chatter', 'fake', owner='Vector')
+    rendered = mem.render_continuity(P, owner='Vector')
+    assert (f'Position review: 97 due, no verdicts recorded (unconfirmed since '
+            f'{FIRST} (stale; verify before acting))') in rendered
+    assert 'last confirmed' not in rendered
+
+
+LIVE_SHAPE = """---
+name: continuity
+updated: "2026-10-26T17:20:00+00:00"
+---
+Working state for this project — what is in flight and what was promised, PER AGENT.
+
+## Where things stand
+### Dave — 2026-10-26T17:20:00+00:00
+Master is at abc with repairs live.
+
+### Vector — 2026-10-25T15:01:10+00:00
+Latest CLI check reports tools up to date.
+
+## In flight
+### Dave — 2026-10-26T17:20:00+00:00
+- Builder M5 still running in session 1111 <!-- confirmed: -->
+- Where Sources fix on branch x (afa1d871) is unmerged <!-- confirmed: -->
+- Continuity-loss diagnosis (Fable run 2222); findings to the journal <!-- confirmed:2026-10-26T17:20:00+00:00 -->
+### Vector — 2026-10-25T15:01:10+00:00
+- Position review: 97 due; no verdicts recorded <!-- confirmed: -->
+- MEMORY.md NUL root-cause fix not applied <!-- confirmed: -->
+
+## Promised
+### Dave — 2026-10-26T17:20:00+00:00
+- Report the builder's result when it returns
+### Vector — 2026-10-25T15:01:10+00:00
+- Finish position review of 97 due positions
+"""
+
+
+def test_round_trip_on_live_file_shape_does_not_grow_the_file(env, monkeypatch):
+    fp = env[0] / mem.CONTINUITY_FILE
+    fp.write_text(LIVE_SHAPE, encoding='utf-8')
+    before = mem.read_continuity(P)
+    monkeypatch.setattr(mem, 'now_iso', lambda: LATER)
+    reworded = ['Builder M5 build still running in session 1111 (cont)',
+                'Where Sources fix on branch x (afa1d871) is still unmerged',
+                'Continuity-loss diagnosis (Fable run 2222); findings to the journal']
+    mem.write_continuity(P, threads=reworded, owner='Dave', confirmed_threads=[])
+    size1, lines1 = fp.stat().st_size, fp.read_text(encoding='utf-8').count('\n')
+    mem.write_continuity(P, threads=reworded, owner='Dave', confirmed_threads=[])
+    assert (fp.stat().st_size, fp.read_text(encoding='utf-8').count('\n')) == (size1, lines1)
+    after = mem.read_continuity(P)
+    assert len(after['threads']) == len(before['threads']) == 5
+    assert after['by_owner']['Dave']['thread_confirmed'] == {
+        reworded[0]: '', reworded[1]: '', reworded[2]: '2026-10-26T17:20:00+00:00'}
+    assert after['by_owner']['Vector'] == before['by_owner']['Vector']
+    assert len([l for l in env[1] if 'reworded' in l]) == 2
