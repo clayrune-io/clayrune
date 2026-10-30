@@ -4,6 +4,15 @@
 [data-scene-render-note] { font-size: 12px; padding-top: 4px; }
 .desk-v1-video-scene [data-scene-render-controls] { flex-direction: column; align-items: stretch; padding: 2px; }
 .desk-v1-video-scene [data-scene-render-controls] button { font-size: 11px; padding: 4px; white-space: normal; min-width: 0; }
+/* Studio scene row (.desk-v1-sb-scene): the render controls take their OWN full-width row at the bottom of the
+   card, under the title and the Edit / picture buttons, so nothing is squeezed against them (Ron 2026-10-29: the
+   Render button ran out of the card under the undo/bin column and the title wrapped a word per line).
+   The row wraps: the title column keeps a 160px floor, and the button group drops under it when the card is
+   too narrow to hold both. While editing, the existing rule that gives the body the full width still wins. */
+.desk-v1-sb-scene { flex-wrap: wrap; }
+.desk-v1-sb-scene:not(.desk-v1-sb-scene-editing) > .desk-v1-sb-body { flex: 1 1 160px; }
+.desk-v1-sb-scene:not(.desk-v1-sb-scene-editing) > .desk-v1-sb-meta { flex: 1 1 auto; flex-wrap: wrap; justify-content: flex-end; gap: 2px 8px; }
+.desk-v1-sb-scene > [data-scene-render-controls] { order: 2; flex: 1 1 100%; min-width: 0; padding: 8px 0 0; border-top: 1px dashed var(--border2); }
 @media (max-width: 600px) {
   [data-scene-render-controls] button, [data-scene-render-toolbar] button { min-height: 44px; white-space: normal; }
   [data-scene-render-controls] label { min-height: 44px; }
