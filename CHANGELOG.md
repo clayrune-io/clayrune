@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Keep current user corrections across continuity rollovers
+
+- Rollover labels the chat's first message as historical and puts the latest direction and unanswered messages first. Git output is capped at 20 lines / 1,000 characters per section.
+- Scribe includes bounded user strings and text blocks after stripping injected preambles; tool results retain their separate RESULT label. Continuity consumes the newest 12,000 characters and persists per-thread confirmation times, flagging threads unconfirmed for 48 hours or without a valid timestamp.
+- Successful atomic continuity writes log owner, thread count and write time. Existing owner keys and human gates are unchanged. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-29] - Check an unverified browser service before offering sign-in
 
 - Existing profiles whose verification expired now show **Not checked yet**, including after a restart or ordinary cookie changes. **Needs sign-in** requires a missing profile or a signed-out probe, with negative evidence bound to the same profile snapshot as successful checks.

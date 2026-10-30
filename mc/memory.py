@@ -39,6 +39,7 @@ import uuid
 from contextvars import ContextVar
 
 import mc.agent_runtime as _agent_runtime  # multi-provider runtime (transcript + oneshot)
+from mc import continuity_threads as _cont_threads
 import mc.skills as _skills                # frontmatter parse for position notes
 import mc.distiller as _distiller          # Phase 4 learning observer (best-effort)
 import mc.allowance_state as _allowance_state  # live vendor exhaustion state (MC-964 Step D.1)
@@ -1731,7 +1732,8 @@ def _session_owner(session):
 
 
 def _cont_empty_slots():
-    return {'threads': [], 'commitments': [], 'understanding': '', 'updated': ''}
+    return {'threads': [], 'commitments': [], 'understanding': '', 'updated': '',
+            'thread_confirmed': {}}
 
 
 def read_continuity(project, owner=None, reader_owns=True):
@@ -1767,8 +1769,11 @@ def read_continuity(project, owner=None, reader_owns=True):
     stamps = _cont_owner_stamps(body)
     by_owner = {}
     for k in set(th) | set(cm) | set(un):
+        parsed = [_cont_threads.split_thread(t) for t in th.get(k, [])]
+        thread_texts = _cont_clean([t for t, _ in parsed], _CONT_MAX_THREADS)
         by_owner[k] = {
-            'threads': _cont_clean(th.get(k), _CONT_MAX_THREADS),
+            'threads': thread_texts,
+            'thread_confirmed': {t: stamp for t, stamp in parsed if t in thread_texts},
             'commitments': _cont_clean(cm.get(k), _CONT_MAX_COMMITMENTS),
             'understanding': ' '.join(' '.join(un.get(k) or []).split()
                                       )[:_CONT_MAX_UNDERSTANDING],
@@ -1795,6 +1800,8 @@ def read_continuity(project, owner=None, reader_owns=True):
             for slot, cap in (('threads', _CONT_MAX_THREADS),
                               ('commitments', _CONT_MAX_COMMITMENTS)):
                 mine[slot] = _cont_clean(list(mine[slot]) + list(shared[slot]), cap)
+            mine['thread_confirmed'] = {**shared['thread_confirmed'],
+                                        **mine['thread_confirmed']}
         return {**mine, 'updated': str(meta.get('updated') or ''),
                 'body': body, 'by_owner': by_owner, 'owner': key,
                 'shared_understanding': shared['understanding'] if key else '',
@@ -1806,6 +1813,8 @@ def read_continuity(project, owner=None, reader_owns=True):
     return {
         'threads': _cont_clean([t for k in order for t in by_owner[k]['threads']],
                                _CONT_MAX_THREADS * 2),
+        'thread_confirmed': {t: stamp for k in reversed(order)
+                             for t, stamp in by_owner[k]['thread_confirmed'].items()},
         'commitments': _cont_clean(
             [c for k in order for c in by_owner[k]['commitments']],
             _CONT_MAX_COMMITMENTS * 2),
@@ -1817,7 +1826,7 @@ def read_continuity(project, owner=None, reader_owns=True):
 
 
 def write_continuity(project, threads=None, commitments=None,
-                     understanding=None, owner=None):
+                     understanding=None, owner=None, *, confirmed_threads=None):
     """Replace ONE owner's slots. Returns that owner's record as written.
 
     REPLACE, never append — that is what keeps the size fixed and removes the
@@ -1848,6 +1857,18 @@ def write_continuity(project, threads=None, commitments=None,
         ).split())[:_CONT_MAX_UNDERSTANDING],
         'updated': now_iso(),
     }
+    # Explicit callers confirm supplied threads. The extractor supplies ONLY
+    # confirmations evidenced by its new slice, never the whole retained list.
+    confirmed = set(_cont_clean(
+        threads if confirmed_threads is None else confirmed_threads,
+        _CONT_MAX_THREADS))
+    previous = dict(mine.get('thread_confirmed') or {})
+    shared = by_owner.get('') or _cont_empty_slots()
+    previous = {**shared.get('thread_confirmed', {}), **previous}
+    known = set(mine['threads']) | set(shared['threads'])
+    rec['thread_confirmed'] = {
+        t: rec['updated'] if t in confirmed or t not in known else previous.get(t, '')
+        for t in rec['threads']}
     by_owner[key] = rec
 
     # Claiming completes the migration. An agent rewrites the record it was
@@ -1902,7 +1923,9 @@ def write_continuity(project, threads=None, commitments=None,
                 continue
             wrote = True
             body.append(_cont_heading(k, by_owner[k]['updated']))
-            body += [f'- {t}' for t in by_owner[k][slot]]
+            body += [f'- {_cont_threads.stored_thread(t, by_owner[k]["thread_confirmed"].get(t, ""))}'
+                     if slot == 'threads' else f'- {t}'
+                     for t in by_owner[k][slot]]
         if not wrote:
             body.append(blank)
         body.append('')
@@ -1913,6 +1936,8 @@ def write_continuity(project, threads=None, commitments=None,
         mem_dir / CONTINUITY_FILE,
         _skills.dump_skill_md({'name': 'continuity', 'updated': rec['updated']},
                               '\n'.join(body).rstrip() + '\n'))
+    _log(f'[continuity] wrote owner={key or _CONT_SHARED_LABEL} '
+         f'threads={len(rec["threads"])} updated={rec["updated"]}')
     return rec
 
 
@@ -1936,15 +1961,18 @@ def render_continuity(project, owner=None, reader_owns=True):
     """
     try:
         rec = read_continuity(project, owner=owner, reader_owns=reader_owns)
-    except Exception:
+    except Exception as e:
+        _log(f'[continuity] render failed: {e}')
         return ''
     by_owner = rec.get('by_owner') or {}
     key = _cont_owner_key(owner)
     lines = []
+    now = now_iso()
     if rec['understanding']:
         lines.append(f"  Where things stand: {rec['understanding']}")
     for t in rec['threads']:
-        lines.append(f"  • IN FLIGHT — {t}")
+        age = _cont_threads.age_label(rec['thread_confirmed'].get(t, ''), now)
+        lines.append(f"  • IN FLIGHT — {t} ({age})")
     for c in rec['commitments']:
         lines.append(f"  • YOU SAID YOU WOULD — {c}")
 
@@ -1954,7 +1982,9 @@ def render_continuity(project, owner=None, reader_owns=True):
                          if k and (k != key or not reader_owns)),
                         key=lambda k: by_owner[k]['updated'], reverse=True):
             for t in by_owner[k]['threads']:
-                others.append(f"  • {k or _CONT_SHARED_LABEL} — {t}")
+                age = _cont_threads.age_label(
+                    by_owner[k]['thread_confirmed'].get(t, ''), now)
+                others.append(f"  • {k or _CONT_SHARED_LABEL} — {t} ({age})")
             if len(others) >= _CONT_MAX_OTHER_LINES:
                 break
         others = others[:_CONT_MAX_OTHER_LINES]
@@ -2033,10 +2063,16 @@ _SCRIBE_CONTINUITY = (
     "is IN FLIGHT and what was PROMISED. You are given the current record and "
     "a new slice of conversation.\n\n"
     "Return ONLY minified JSON, no prose, no code fence:\n"
-    '{"threads":["..."],"commitments":["..."],"understanding":"..."}\n\n'
+    '{"threads":["..."],"confirmed_threads":["..."],'
+    '"commitments":["..."],"understanding":"..."}\n\n'
     "Rules:\n"
     "- threads: work STARTED and NOT finished. Drop anything the slice shows "
     "as completed or abandoned. Max 5, one short line each.\n"
+    "- confirmed_threads: exact thread strings actively confirmed by the NEW "
+    "slice only. Retaining a thread from CURRENT RECORD is not confirmation. "
+    "Keep retained thread wording unchanged unless new evidence changes it. "
+    "User corrections supersede older assistant claims; injected historical "
+    "first messages are not current asks.\n"
     "- commitments: things the assistant said it would do and has not done "
     "yet. Drop them once done. Max 5.\n"
     "- understanding: 1-2 sentences on where the work stands right now. "
@@ -2063,9 +2099,9 @@ def _extract_continuity(project, delta, model, owner=None, *, provider=None,
         payload = (
             "CURRENT RECORD:\n"
             + json.dumps({k: cur[k] for k in
-                          ('threads', 'commitments', 'understanding')},
+                          ('threads', 'thread_confirmed', 'commitments', 'understanding')},
                          ensure_ascii=False)
-            + "\n\nNEW CONVERSATION SLICE:\n" + delta[:12000])
+            + "\n\nNEW CONVERSATION SLICE (newest tail):\n" + delta[-12000:])
         raw = _model_call(model, _SCRIBE_CONTINUITY, payload)
         txt = (raw or '').strip()
         if txt.startswith('```'):
@@ -2081,7 +2117,7 @@ def _extract_continuity(project, delta, model, owner=None, *, provider=None,
             threads=d.get('threads') or [],
             commitments=d.get('commitments') or [],
             understanding=d.get('understanding') or '',
-            owner=owner)
+            owner=owner, confirmed_threads=d.get('confirmed_threads') or [])
     except Exception as e:
         _log(f"[continuity] extraction failed: {e}")
         return None
@@ -5477,11 +5513,32 @@ def _scribe_render_lines(lines):
             m = json.loads(line)
         except Exception:
             continue
+        if not isinstance(m, dict):
+            continue
         msg = m.get('message') if isinstance(m.get('message'), dict) else None
-        if not msg or not isinstance(msg.get('content'), list):
+        if not msg:
             continue
         mtype = m.get('type', '')
-        for b in msg['content']:
+        content = msg.get('content')
+        if mtype == 'user' and not any(m.get(k) for k in
+                                      ('isMeta', 'isSynthetic', 'isCompactSummary')):
+            # Tool results share the user role; only actual text blocks belong
+            # under USER. Strip the same injected preambles as chat readers,
+            # before capping, so a long system block cannot bury the human.
+            text = ''
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text = '\n'.join(
+                    b.get('text', '') for b in content
+                    if isinstance(b, dict) and b.get('type') == 'text'
+                    and isinstance(b.get('text'), str))
+            text = _agent_runtime.strip_injected_preamble(text)
+            if text and not _agent_runtime.is_nonuser_message(text):
+                out.append(f"USER: {text[:600]}")
+        if not isinstance(content, list):
+            continue
+        for b in content:
             if not isinstance(b, dict):
                 continue
             bt = b.get('type', '')
