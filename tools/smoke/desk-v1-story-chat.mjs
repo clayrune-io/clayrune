@@ -301,7 +301,7 @@ async function main(browser) {
     change: { mode: 'board', summary: 'Changed scene 1. Added scene 3.', numbers: { changed: [1], added: [3], removed: [] }, scenes: [
       { label: 'Cold open', line: 'A tighter cold open.', duration_sec: 2, from: 1 },
       { label: 'The click', line: MADE[1].line, duration_sec: 3, from: 2 },
-      { label: 'Beat', line: 'A one-second pause.', duration_sec: 1, from: null },
+      { id: 'sc-chat-added-beat', label: 'Beat', line: 'A one-second pause.', duration_sec: 1, from: null },
       { label: 'Done', line: MADE[2].line, duration_sec: 5, from: 3 }] },
   });
   srv.log.length = 0;

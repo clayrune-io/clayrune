@@ -1285,6 +1285,23 @@ approval again after its cause is fixed.
 
 ### Campaign posts, archive and placement
 
+**Studio → New video**, a campaign's **What → Video → Create new**, video
+cards, and Home's video links all open the same Studio storyboard editor.
+Studio's draft has no campaign; its optional Product and title controls stay
+available. Back returns to Studio or What according to where you opened it.
+
+The video storyboard has a horizontal **Timeline** above the scene list, both
+in a campaign and in standalone Studio. Each tile shows its duration. Drag a
+tile or a scene's list handle onto another tile to reorder; focused tiles use
+Left/Right or Up/Down, and list handles keep Up/Down. Drag a tile's edge to
+change its duration, or focus the edge and use an arrow key (minimum one second).
+Drop pictures from your computer or the library chooser onto the timeline to
+add scenes; dropping over a tile inserts before it. **Pick from library** also
+adds a picture without dragging. **Undo** reverses these scene changes.
+
+The video editor stays focused on scenes and rendering. **Review** appears
+when a version is waiting; the former **Copy, media & versions** link is gone.
+
 In **What**, click a type under **Add a piece**, press Enter on it, or drag it
 onto the campaign's list. A centered popup names the type and keeps its **Name**
 field beside large source cards:
@@ -1317,11 +1334,17 @@ its copy.
 
 In **Media**, choose **Add media → From this computer…** to select an image
 for a post/image piece, or a video for a video piece. On a phone, this opens
-that phone's file chooser. Supported files are PNG, JPG, GIF, WebP and MP4,
-MOV, WebM, M4V. Uploads are saved in the Material library's **Uploads** folder
+that phone's file chooser. Supported images are PNG, JPG, GIF and WebP (up to 25 MB). Videos may be
+up to 500 MB: MP4, M4V, MOV, WebM, MKV, AVI, WMV, MPEG, 3GP, OGV, FLV,
+TS and other common video formats. The chooser names both extensions and
+video MIME types so Windows can show MP4 files. Accepting a file does not
+install a browser decoder; playback depends on your browser. Uploads are saved in the Material library's **Uploads** folder
 and attached to the piece. **Undo** removes the attachment and keeps the
 library file. Upload errors show the reason; failed files are not attached.
-The computer chooser remains available if loading the library fails.
+The computer chooser remains available if loading the library fails. If the
+browser cannot prepare the preview, or the upload reply lacks the saved file,
+Clayrune shows an error. An incomplete reply asks you to reload the piece and
+check its saved media before retrying.
 
 Open a post's piece page to write its **Copy**. For a new post, type in
 **Start typing your post…** or choose **Import from file**. The same editor

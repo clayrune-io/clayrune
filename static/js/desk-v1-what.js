@@ -226,7 +226,8 @@
         throw new Error('this source has not produced a file that can be saved yet');
       }
       const saved = ((out && out.assets) || []).find((a) => a.id === asset.id);
-      if (saved) Object.assign(asset, { kind: saved.kind, title: saved.title, path: saved.path, src: saved.src, play: saved.play });
+      if (!saved || !saved.path) throw new Error('the upload response did not return the attached media file; reload the piece to check its saved media');
+      Object.assign(asset, { kind: saved.kind, title: saved.title, path: saved.path, src: saved.src, play: saved.play });
       if (upload) _mats.promise = null; // the file now sits in the library's Uploads folder
       if (repaint) repaint(); // the thumbnail is now the server's, not the local blob
       return out;
@@ -284,7 +285,7 @@
     const card = _state(camp.id).creates.find((c) => c.familyId === fam.id);
     if (card) _closeCreate(camp, card);
     window.DeskV1WhatAddModal.hide();
-    window.deskV1Nav('storyboard', { campaignId: camp.id, familyId: fam.id });
+    window.DeskV1VideoOpen.open(fam, camp);
   }
 
   // Studio's New video / image / article tile: queue an empty create-card on
@@ -389,7 +390,7 @@
       <div class="desk-v1-what-dropzone" data-what-dropzone tabindex="0" role="group" aria-label="Drop a file here">
         <div class="desk-v1-what-dropzone-text">Drop ${kind === 'video' ? 'a video' : 'an image'} here</div>
         <button type="button" class="btn-secondary" data-what-browse>Browse this computer</button>
-        <input type="file" class="desk-v1-what-file" data-what-file accept="${kind === 'video' ? 'video/*' : 'image/*'}" hidden>
+        <input type="file" class="desk-v1-what-file" data-what-file accept="${kind === 'video' ? window.DeskV1MediaFormats.videoAccept : 'image/*'}" hidden>
       </div>
       <div class="desk-v1-what-lib-title">Material library</div>
       <div class="desk-v1-what-lib" data-what-lib>${_libTilesHTML(kind)}</div>
@@ -517,6 +518,8 @@
 
   // ── wiring ───────────────────────────────────────────────────────────────
   function _attachFromFile(camp, fam, card, file, kind) {
+    const error = window.DeskV1MediaFormats.error(file, kind);
+    if (error) { DeskV1Kit.toast(error); return; }
     const isImg = kind === 'image' || /^image\//.test(file.type || '');
     const src = isImg && typeof URL !== 'undefined' && URL.createObjectURL ? URL.createObjectURL(file) : null;
     _attachAsset(camp, fam, { id: 'asset-' + _uid(), kind: kind === 'video' ? 'video' : 'image', title: file.name || 'Upload', src }, card, file);
