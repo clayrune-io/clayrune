@@ -1207,6 +1207,7 @@
     menu.querySelector('[data-menu-skip]').onclick = () => { close(); _skipFamily(fam); };
     menu.querySelector('[data-menu-archive]').onclick = () => { close(); _archiveFamily(fam); };
     window.DeskV1PieceLifecycle.menu(menu, close, fam);
+    window.DeskV1ComposerDuplicate.menu(menu, close, fam, camp, triggerEl);
     // The lifecycle adds Delete after the first placement: measure again so the
     // taller menu flips above or scrolls instead of ending under the phone tab bar.
     DeskV1Kit.placePopover(menu, triggerEl);

@@ -1,3 +1,4 @@
+import './desk-v1-composer-duplicate.js';
 // C1: text, bounded destinations, draft persistence and Review handoff. Media
 // and preview have their own later slices. No publish/approval route is used.
 import './desk-v1-composer-preview.js';
