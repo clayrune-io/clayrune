@@ -1294,6 +1294,9 @@ Drop pictures from your computer or the library chooser onto the timeline to
 add scenes; dropping over a tile inserts before it. **Pick from library** also
 adds a picture without dragging. **Undo** reverses these scene changes.
 
+The video editor stays focused on scenes and rendering. **Review** appears
+when a version is waiting; the former **Copy, media & versions** link is gone.
+
 In **What**, click a type under **Add a piece**, press Enter on it, or drag it
 onto the campaign's list. A centered popup names the type and keeps its **Name**
 field beside large source cards:

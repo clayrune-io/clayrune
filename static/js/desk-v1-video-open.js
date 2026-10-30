@@ -15,11 +15,8 @@
 //   deskV1RenderVideoEditor     the `storyboard` route's renderer: the editor plus
 //                               the strip above it
 //
-// The Studio editor holds the scenes only. The piece page holds what the editor
-// does not: the post name, the copy, the piece's media files, and the versions
-// (publish time, state, Review, delete). So the editor carries a strip that
-// keeps them one click away: `Copy, media & versions ›` (the piece page) and,
-// while a version waits, `Review` (straight to the review surface).
+// New video makes a video. A post carrying it is made through New post and
+// Add media. Only a waiting version's Review remains above the scene editor.
 //
 // Back from the editor reads `‹ Back to What` when it was opened from the
 // campaign's What stop (desk-v1-shell.js `_backLabel`). The piece page's own
@@ -78,19 +75,15 @@
 
   function stripHTML(fam) {
     const review = _toReview(fam);
-    const on = window.DeskV1Kit ? DeskV1Kit.pieceChannelsText(fam) : '';
+    if (!review.length) return '';
     return `<div class="desk-v1-vo-strip" data-video-open-strip data-family-id="${esc(fam.id)}">
-      <span class="desk-v1-vo-sum">Post · <span data-vo-on>${esc(on)}</span></span>
       <span class="desk-v1-vo-actions">
         ${review.length ? `<button type="button" class="desk-v1-camp-card-primary" data-vo-review="${esc(review[0].id)}">Review${review.length > 1 ? ` (${esc(review.length)})` : ''}</button>` : ''}
-        <button type="button" class="btn-secondary" data-vo-details>Copy, media &amp; versions ›</button>
       </span>
     </div>`;
   }
 
   function _bindStrip(host, fam, params) {
-    const details = host.querySelector('[data-vo-details]');
-    if (details) details.onclick = () => window.deskV1Nav('piece', { campaignId: fam.campaignId, familyId: fam.id, projectId: params.projectId, fromEditor: true });
     const review = host.querySelector('[data-vo-review]');
     if (review) review.onclick = () => window.deskV1Nav('review', { campaignId: fam.campaignId, versionId: review.dataset.voReview, projectId: params.projectId });
   }

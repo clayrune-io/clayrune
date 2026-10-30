@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - Keep the video editor focused on making video
+
+- Removed the Copy, media & versions detour and post-channel summary from the editor. Kept Review for a waiting version. Branch candidate only; no merge, push or restart.
+- Verification found a separate gap: New post's Add media currently filters the Material library to images. Making rendered videos selectable there needs a product decision; no piece/version redesign is included here.
+
 ## [2026-10-30] - Show the Studio timeline on campaign videos
 
 - Campaign and standalone storyboards share a timeline module using the existing video strip's drag and edge-trim gestures. Tiles show duration; arrow keys reorder or adjust duration, and dropping pictures or library material inserts scenes through the existing saved storyboard commands and Undo.
