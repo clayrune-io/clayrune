@@ -52,3 +52,51 @@ Ranked by fit:
   exception, not a global env var.
 - How much of $100 the oneshots would use per month. Measure one week of
   token counts before moving anything.
+
+## Feature shape: detect the plan, ask for a budget and a stop point
+
+Ron, 2026-10-30: the feature should detect the plan by itself and ask the
+user how much of the credit to use and where to stop.
+
+### What Clayrune can detect
+
+- `~/.claude/.credentials.json` > `claudeAiOauth` holds `subscriptionType`
+  and `rateLimitTier`. On Ron's box (Ultra): `max` / `default_claude_max_20x`.
+- So the CLI still labels Ultra as Max 20x. That mapping is our inference,
+  not documented: `max_20x` -> Ultra ($200), `max_5x` -> Max ($100), `team`
+  -> Team (pooled, up to $500), anything else -> not eligible.
+- Detection only prefills the amount. The user confirms or edits it,
+  because the label can lag a rename, and Clayrune cannot see whether a
+  Console org is linked or what balance is left.
+
+### What Anthropic controls (checked 2026-10-30)
+
+- **Org spend limit:** Console > Settings > Limits. Set by hand, cannot
+  exceed the usage tier's cap.
+- **Workspace spend limit:** per workspace, below the org limit, not on the
+  Default Workspace. No Admin API endpoint for it, so Clayrune cannot set
+  it. Anthropic's own advice: give the project its own workspace and cap it.
+- **Mismatch:** spend limits reset on the 1st of the calendar month;
+  credits refresh on the billing-cycle date.
+- **Hard stop:** an org with no card and no purchased credits stops at zero
+  ("Your credit balance is too low ..."). Nothing is charged to the plan.
+  If auto-reload or purchased credits exist, spending continues past the
+  included credit, which is the case the user's stop point must guard.
+
+### The setting
+
+1. Detected plan and credit, editable ("Ultra, $200/month").
+2. Budget for Clayrune: dollars, default the full credit.
+3. Stop at: percent of budget, default 90%.
+4. Cycle reset day: prefilled from the credit expiry the user reads off the
+   Console Billing page.
+
+Clayrune keeps its own ledger: each API response's `usage` tokens times the
+model price, summed per cycle. At the stop point, offloaded calls go back to
+the subscription and the user gets one notice. On "credit balance too low"
+the same fallback fires early. The setup card tells the user to also set a
+workspace spend limit in Console as the backstop, since only that one is
+enforced by Anthropic.
+
+Lives in its own module (`mc/api_credits_budget.py`, one unit one file),
+read by the oneshot route only.
