@@ -1,7 +1,8 @@
 # Delete a published platform post (MC-1126)
 
-Branch candidate; no live platform verification. This is separate from deleting
-an unsent Desk piece or archiving its history.
+Implemented in `36df5fc0`, integrated by `731c8141`; no live platform
+verification. This is separate from deleting an unsent Desk piece or archiving
+its history.
 
 ## Human action
 
@@ -79,3 +80,38 @@ pyright mc/desk_post_delete.py mc/blueprints/desk_post_delete_routes.py
 ```
 
 No real sign-in, platform deletion, merge, push or restart is part of this task.
+
+## Verification follow-up (2026-10-29)
+
+The repeated MC-1126 dispatch started at `c11af60b`, which already contains the
+implementation and its integration commit. This follow-up changes only tests
+and this document; it does not rebuild or redeploy the feature. Seven additional
+cases use the real `is_unattended_caller` function with isolated session state:
+dispatch/scheduled/unstamped sessions are refused even with proof, and neither
+a forged Origin nor a manual agent chat replaces the retyped passcode. Refusals
+leave the store unchanged and perform no token reads or platform calls.
+
+Commands run from the worktree root, all with fake platform endpoints:
+
+| Command | Result | rc |
+| --- | --- | --- |
+| `python -m pytest tests/test_desk_post_delete.py tests/test_desk_pieces.py tests/test_desk_oauth.py tests/test_desk_publish.py tests/test_desk_publish_linkedin.py tests/test_desk_tick.py tests/test_desk_account_refs.py tests/test_desk_routes.py -q -o addopts=''` | 323 passed | 0 |
+| `pyright mc/desk_post_delete.py mc/blueprints/desk_post_delete_routes.py` | 0 errors | 0 |
+| `node tools/smoke/desk-v1-post-delete.mjs` | 1440px and 390px passed | 0 |
+| `node tools/smoke/desk-v1-piece.mjs` | Passed | 0 |
+| `node tools/smoke/desk-v1-live-pieces.mjs` | Passed | 0 |
+| `node tools/smoke/desk-v1-live-review.mjs` | Passed | 0 |
+| `node tools/smoke/desk.mjs` | Passed | 0 |
+| `node tools/smoke/boot-smoke.mjs` | 7 boot scenarios and all guards passed | 0 |
+
+The deletion screenshots at `_scratch/post-delete/deleted-{1440,390}.png` were
+also inspected. Both show the retained version and human deletion record.
+The main checkout's smoke dependency junction was used without installation
+and removed before committing. A variable-driven smoke launcher was rejected
+by the unattended command fence before execution; the literal foreground
+commands above subsequently ran successfully. No live sign-in, post, delete,
+server restart, merge or push was performed. LinkedIn remains explicitly
+unsupported because this tree has no scoped, refreshing LinkedIn OAuth adapter.
+
+No user-facing behavior changed in this follow-up; the existing user guide and
+MC-1126 changelog entry remain applicable. Live platform behavior is unverified.

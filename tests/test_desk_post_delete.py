@@ -135,6 +135,33 @@ def test_unattended_refused_even_with_passcode(env, monkeypatch):
     assert not env[1] and not env[3]
 
 
+@pytest.mark.parametrize('trigger', ['dispatch', 'scheduled', None])
+def test_real_agent_classification_refuses_without_origin_even_with_proof(env, monkeypatch, trigger):
+    from mc import unattended
+    monkeypatch.setattr(unattended, 'agent_sessions', {
+        'delete-test': {'status': 'running', 'trigger_type': trigger, 'project_id': 'alpha'}})
+    monkeypatch.setattr(desk_post_delete_routes, 'is_unattended_caller', unattended.is_unattended_caller)
+    before = desk.STORE_PATH.read_bytes()
+    response = env[0].post(URL, json=PROOF)
+    assert response.status_code == 403 and 'unattended' in response.json['error']
+    assert not env[1] and not env[3] and desk.STORE_PATH.read_bytes() == before
+
+
+@pytest.mark.parametrize('trigger', ['dispatch', 'manual'])
+@pytest.mark.parametrize('headers', [{}, ORIGIN])
+def test_real_agent_classification_never_replaces_retyped_passcode(env, monkeypatch, trigger, headers):
+    from mc import unattended
+    monkeypatch.setattr(unattended, 'agent_sessions', {
+        'delete-test': {'status': 'running', 'trigger_type': trigger, 'project_id': 'alpha'}})
+    monkeypatch.setattr(desk_post_delete_routes, 'is_unattended_caller', unattended.is_unattended_caller)
+    before = desk.STORE_PATH.read_bytes()
+    # Origin is forgeable and manual agent chats are exempt from the session
+    # heuristic. Neither grants proof or permits any token/platform access.
+    response = env[0].post(URL, json={}, headers=headers)
+    assert response.status_code == 403
+    assert not env[1] and not env[3] and desk.STORE_PATH.read_bytes() == before
+
+
 def test_passcode_throttle_is_shared(env, monkeypatch):
     monkeypatch.setattr(local_auth, '_local_auth_try_passcode', lambda p: None)
     assert env[0].post(URL, json=PROOF, headers=ORIGIN).status_code == 429
