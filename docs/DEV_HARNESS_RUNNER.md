@@ -205,3 +205,17 @@ submit a pending descriptor. See the
 [A2b implementation handoff](DEV_HARNESS_M5_PLAN_CONTRACT.md#9-a2b-implementation-candidate)
 for jobs, locking, live consumption and validation. Historical M3 counts above
 remain scoped to M3; M6 installed-tool/packaged acceptance is not claimed.
+
+Dave's [integration-boundary amendment](DEV_HARNESS_M5_CONTRACT.md#91-dave-amendment-2026-10-30-integration-inputs-and-inactive-bypass)
+adds a separate private `dev_harness_integration_inputs` owner. Managed
+integration and pending descriptors bind HEAD/index/tracked working bytes;
+their runner checks ignore unrelated untracked runtime writes in the original
+and registered checkouts. Disposable execution checkouts still use complete
+manifests to detect verifier mutations. Ordinary/manual `freeze_candidate`,
+dirty Preview S and activation measurement keep their full original boundaries.
+Off/unconfigured/planless Preview landing performs no harness source hashing.
+Inactive child hooks validate Git-only B/H/T pins through the existing parent
+lease, preserving lock serialization without freezing source or starting checks.
+Those metadata-only pending pins are not native execution descriptors.
+Git still refuses to overwrite colliding untracked files; tracked-dirty active
+inputs still refuse. No user's runtime files are removed, staged or ignored.

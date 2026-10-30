@@ -11,7 +11,8 @@ from typing import Any, Iterator
 from mc import project_sync
 from mc.atomic_json import write_json_atomic
 from mc.dev_harness_catalogue import digest
-from mc.dev_harness_diff import freeze_candidate, git_bytes, resolve_commit, FreezeError, manifest
+from mc.dev_harness_diff import git_bytes, merge_tree, resolve_commit, FreezeError
+from mc.dev_harness_integration_inputs import freeze_integration, tracked_identity
 from mc.dev_harness_integration import Evaluation, consume, evaluate_locked, snapshot_pins
 from mc.dev_harness_store import HarnessStore, StoreError
 from mc.landing_serialization import Ownership, assert_held, child_lease, landing
@@ -71,21 +72,21 @@ class Candidate:
     head: str
     tip: str
     evaluation: Evaluation | None
-    source_manifest: dict[str, Any]
+    source_manifest: dict[str, Any] | None
 
     def revalidate(self) -> dict[str, Any]:
         assert_held(self.owner)
         repo = Path(self.workspace['project_path'])
         if (resolve_commit(repo, 'HEAD') != self.head or resolve_commit(repo, self.incoming) != self.tip
                 or self.store._read_snapshot(self.project['id']) != self.snapshot
-                or manifest(repo) != self.source_manifest):
+                or (self.source_manifest is not None and tracked_identity(repo) != self.source_manifest)):
             raise StandardsHold('landing_inputs_changed')
         if self.evaluation is not None:
             try:
                 return consume(self.store, self.evaluation)
             except (ValueError, OSError, StoreError):
                 raise StandardsHold('awaiting_standards:' + self.evaluation.record['run_id']) from None
-        if self.frozen is not None and freeze_candidate(repo, 'HEAD', self.incoming) != self.frozen:
+        if self.frozen is not None and freeze_integration(repo, 'HEAD', self.incoming) != self.frozen:
             raise StandardsHold('landing_inputs_changed')
         return {**snapshot_pins(self.snapshot), 'kind': 'integration', 'B': self.head, 'H': self.tip,
                 'T': self.frozen['T'] if self.frozen else None,
@@ -94,6 +95,16 @@ class Candidate:
     @contextmanager
     def git_environment(self) -> Iterator[dict[str, str]]:
         pins = self.revalidate()
+        if pins['T'] is None:
+            try:
+                # Inactive hooks still need an exact child lease under the
+                # parent's lock. Compute Git-only pins without freezing source.
+                pins['T'] = merge_tree(Path(self.workspace['project_path']), self.head, self.tip)
+            except FreezeError as exc:
+                if str(exc) != 'git_failed':
+                    raise
+                # A conflicting merge never reaches pre-merge-commit; Git
+                # reports its own refusal without a reusable evaluation.
         if pins['T'] is None:
             yield dict(os.environ)  # Git will report its conflict; no reusable evaluation.
         else:
@@ -116,9 +127,14 @@ def prepare(project: dict[str, Any], owner: Ownership, incoming: str,
     except (StoreError, OSError, ValueError):
         raise StandardsHold('harness_state_unavailable') from None
     head, tip = resolve_commit(root, 'HEAD'), resolve_commit(root, incoming)
+    active = bool(snapshot and snapshot['mode'] != 'off' and (snapshot.get('native_plan') or snapshot['mode'] == 'enforce'))
+    if not active:
+        # No source freeze/hash: let Git retain its existing refusal
+        # for tracked dirt and colliding untracked files in inactive projects.
+        return Candidate(store, project, workspace, owner, snapshot, None, incoming, head, tip, None, None)
     frozen = None
     try:
-        frozen = freeze_candidate(root, 'HEAD', incoming)
+        frozen = freeze_integration(root, 'HEAD', incoming)
     except FreezeError:
         if snapshot and snapshot['mode'] == 'enforce':
             raise StandardsHold('candidate_unavailable') from None
@@ -133,7 +149,7 @@ def prepare(project: dict[str, Any], owner: Ownership, incoming: str,
             if evaluation.record['standards_hold']:
                 raise StandardsHold('awaiting_standards:' + evaluation.record['run_id'])
     return Candidate(store, project, workspace, owner, snapshot, frozen, incoming, head, tip,
-                     evaluation, manifest(root))
+                     evaluation, tracked_identity(root))
 
 
 def merge_back(project, session_id, target_ref, operation):

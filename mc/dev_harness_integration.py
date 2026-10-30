@@ -16,7 +16,8 @@ from typing import Any, Callable
 from mc.atomic_json import write_json_atomic
 from mc.dev_harness_applicability import aggregate, select
 from mc.dev_harness_catalogue import digest
-from mc.dev_harness_diff import FreezeError, freeze_candidate, git_bytes, manifest, preview, safe_path
+from mc.dev_harness_diff import FreezeError, preview, safe_path
+from mc.dev_harness_integration_inputs import freeze_integration, require_tracked_clean, source_identity
 from mc.dev_harness_native_plan import validate_plan
 from mc.dev_harness_runner import _revalidate_source, read_receipt, run_approved
 from mc.dev_harness_store import HarnessStore, StoreError
@@ -51,7 +52,7 @@ class Evaluation:
     project: dict[str, Any]
     workspace: dict[str, Any]
     refs: tuple[str | None, str | None]
-    registered_manifest: dict[str, Any]
+    registered_manifest: dict[str, Any] | None
     environment_digest: str
     seal: object
 
@@ -83,11 +84,13 @@ def evaluate_locked(*, store: HarnessStore, project: dict[str, Any], owner: Owne
     # Integrity-only read establishes the mode. Corruption cannot become Off.
     snapshot = store._read_snapshot(project['id'])
     mode = snapshot['mode'] if snapshot else 'preview'
-    frozen = pending or (freeze_candidate(repo, target, incoming) if target is not None and incoming is not None else preview(repo))
-    if (frozen['kind'] == 'integration' and Path(project['project_path']).resolve() != repo.resolve()
-            and git_bytes(Path(project['project_path']), ['status', '--porcelain', '-z', '--untracked-files=all'])):
-        raise FreezeError('dirty_integration_input')
-    registered = manifest(Path(project['project_path']))
+    frozen = pending or (freeze_integration(repo, target, incoming) if target is not None and incoming is not None else preview(repo))
+    envelope = snapshot.get('native_plan') if snapshot else None
+    registered = None
+    if mode != 'off' and envelope:
+        if frozen['kind'] != 'preview' and Path(project['project_path']).resolve() != repo.resolve():
+            require_tracked_clean(Path(project['project_path']))
+        registered = source_identity(Path(project['project_path']), frozen)
     environment = digest(dict(os.environ))
     pins = {**snapshot_pins(snapshot), 'source': frozen}
     if expected is not None and pins != expected:
@@ -102,7 +105,6 @@ def evaluate_locked(*, store: HarnessStore, project: dict[str, Any], owner: Owne
     evaluation = Evaluation(owner, value, snapshot, frozen, project, workspace, (target, incoming),
                             registered, environment, _SEAL)
     _save(store, project['id'], value)  # Persistence failure precedes native spawn.
-    envelope = snapshot.get('native_plan') if snapshot else None
     if mode == 'off' or not envelope:
         if measurement:
             raise ValueError('approved_preview_required')
@@ -188,7 +190,8 @@ def _validate_live(store: HarnessStore, evaluation: Evaluation) -> None:
             or evaluation.record.get('status') == 'pending'):
         validate_plan(store, evaluation.project, snapshot['policy'], snapshot['native_plan'])
     _revalidate_source(Path(evaluation.workspace['project_path']), evaluation.source, *evaluation.refs)
-    if manifest(Path(evaluation.project['project_path'])) != evaluation.registered_manifest:
+    if (evaluation.registered_manifest is not None
+            and source_identity(Path(evaluation.project['project_path']), evaluation.source) != evaluation.registered_manifest):
         raise FreezeError('inputs_changed')
     if (digest(dict(os.environ)) != evaluation.environment_digest
             and ((snapshot or {}).get('mode') == 'enforce' or evaluation.record.get('status') == 'pending')):
@@ -238,7 +241,7 @@ def read_run(store: HarnessStore, project: dict[str, Any], run_id: str) -> dict[
                 current = preview(Path(project['project_path']))
             else:
                 target, incoming = value.get('_refs', ['HEAD', source['H']])
-                current = freeze_candidate(Path(project['project_path']), target or 'HEAD', incoming or source['H'])
+                current = freeze_integration(Path(project['project_path']), target or 'HEAD', incoming or source['H'])
             stale = identities(current) != source
         if value.get('environment_digest') and value['environment_digest'] != digest(dict(os.environ)):
             stale = True

@@ -15,7 +15,8 @@ from typing import Any
 
 from mc.atomic_json import write_json_atomic
 from mc.dev_harness_catalogue import digest
-from mc.dev_harness_diff import freeze_candidate, preview, safe_path
+from mc.dev_harness_diff import preview, safe_path
+from mc.dev_harness_integration_inputs import freeze_integration
 from mc.dev_harness_integration import _save, evaluate_locked, identities, snapshot_pins
 from mc.dev_harness_store import HarnessStore, RevisionConflict, StoreError
 from mc.landing_serialization import landing
@@ -54,7 +55,7 @@ def dispatch(store: HarnessStore, project: dict[str, Any], data: dict[str, Any],
         measurement = data.get('purpose') == 'activation_measurement'
         if measurement and (not snapshot or snapshot['mode'] != 'preview' or not snapshot.get('native_plan')):
             raise ValueError('approved_preview_required')
-        frozen = freeze_candidate(repo, data['target'], data['incoming']) if kind == 'run' else preview(repo)
+        frozen = freeze_integration(repo, data['target'], data['incoming']) if kind == 'run' else preview(repo)
         manifest_only = kind == 'preview' and not frozen.get('head')
         if measurement and manifest_only:
             raise ValueError('checkoutable_baseline_required')

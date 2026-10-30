@@ -26,6 +26,33 @@ def body(proposal, purpose='observation'):
             'native_plan_digest': proposal['native_plan_digest'], 'purpose': purpose}
 
 
+def test_integration_job_and_read_ignore_runtime_drift(executable, session, monkeypatch):
+    from test_dev_harness_diff import branch
+    from mc.dev_harness_integration import read_run
+    store, project, *_ = executable
+    proposal = inspect(executable)
+    approve(executable, proposal)
+    root = Path(project['project_path'])
+    branch(root)
+    with (root/'runtime.sqlite3').open('wb') as stream:
+        stream.truncate(17 * 1024 * 1024)
+    runtime = root/'runtime.json'
+    runtime.write_text('before queue')
+    monkeypatch.setattr(jobs, 'agent_job_start', lambda *a, **k: jsonify({'job_id': 'runtime-job'}))
+    data = {k:v for k,v in body(proposal).items() if k != 'purpose'}
+    with Flask(__name__).test_request_context():
+        response, code = owner.dispatch(store, project, {**data,'target':'HEAD','incoming':'incoming'}, kind='run')
+        assert code == 202
+        run_id = response.get_json()['run_id']
+    runtime.write_text('after queue')
+    result = owner.run_request(store, 'one', run_id,
+        register=lambda *a: runtime.write_text('during native'), unregister=lambda p: None)
+    assert result['status'] == 'pass', result
+    assert result['receipt_ids'] and runtime.read_text() == 'during native'
+    runtime.write_text('after completion')
+    assert not read_run(store, project, run_id)['stale']
+
+
 def test_server_fixed_job_and_worker_queued_drift(executable, session, monkeypatch):
     proposal = inspect(executable)
     approve(executable, proposal)

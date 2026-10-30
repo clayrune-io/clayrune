@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from mc.dev_harness_diff import FreezeError, freeze_candidate
 from mc.dev_harness_integration import consume, evaluate_locked, snapshot_pins
-from mc.dev_harness_pending_merge import freeze_pending
+from mc.dev_harness_pending_merge import freeze_pending, pending_pins
 from mc.dev_harness_store import HarnessStore, StoreError
 from mc.landing_serialization import LEASE_ENV, LandingBusy, _lease_path, common_dir, landing, validate_lease
 
@@ -46,11 +46,12 @@ def preflight(*, store: HarnessStore, project: dict[str, Any], repo: Path,
         print('standards: harness_state_unavailable')
         return 2
     enforce = bool(snapshot and snapshot['mode'] == 'enforce')
+    native = bool(snapshot and snapshot['mode'] != 'off' and (snapshot.get('native_plan') or enforce))
     try:
         if os.environ.get(LEASE_ENV):
             if branch is not None:
                 raise ValueError('invalid_landing_lease')
-            frozen = freeze_pending(repo)
+            frozen = (freeze_pending if native else pending_pins)(repo)
             if frozen is None:
                 raise ValueError('invalid_landing_lease')
             _leased(store, project, repo, snapshot, frozen)
@@ -62,12 +63,14 @@ def preflight(*, store: HarnessStore, project: dict[str, Any], repo: Path,
                 print('standards: harness_state_unavailable')
                 return 2
             enforce = bool(snapshot and snapshot['mode'] == 'enforce')
+            native = bool(snapshot and snapshot['mode'] != 'off' and (snapshot.get('native_plan') or enforce))
             # Re-freeze after acquiring the OS lock, never reuse an unlocked pass.
-            frozen = freeze_pending(repo) if branch is None else freeze_candidate(repo, 'HEAD', branch)
+            pending_source = freeze_pending if native else pending_pins
+            frozen = pending_source(repo) if branch is None else freeze_candidate(repo, 'HEAD', branch)
             if frozen is None:
                 return 0  # Ordinary commit, no pending merge.
             result = None
-            if snapshot and snapshot['mode'] != 'off' and (snapshot.get('native_plan') or enforce):
+            if native:
                 result = evaluate_locked(store=store, project=project, owner=owner,
                     workspace={**project, 'project_path': str(repo)}, pending=frozen if branch is None else None,
                     target='HEAD' if branch else None, incoming=branch,
@@ -80,7 +83,7 @@ def preflight(*, store: HarnessStore, project: dict[str, Any], repo: Path,
                 consume(store, result)
             elif store._read_snapshot(project['id']) != snapshot:
                 return 2
-            current = freeze_pending(repo) if branch is None else freeze_candidate(repo, 'HEAD', branch)
+            current = pending_source(repo) if branch is None else freeze_candidate(repo, 'HEAD', branch)
             if current != frozen:
                 return 2
             return status

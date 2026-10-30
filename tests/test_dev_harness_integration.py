@@ -63,6 +63,8 @@ def test_real_preview_receipt_measurement_enforce_and_live_consume(executable):
         pins = owner.consume(executable[0], result)
         assert pins['H'] == git(Path(executable[1]['project_path']), 'rev-parse', 'incoming')
         (Path(executable[1]['project_path'])/'unexpected').write_text('mutation')
+        assert owner.consume(executable[0], result)['run_id'] == result.record['run_id']
+        (Path(executable[1]['project_path'])/'app.py').write_text('tracked mutation')
         with pytest.raises(ValueError):
             owner.consume(executable[0], result)
 

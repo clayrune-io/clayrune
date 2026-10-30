@@ -5,7 +5,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-from mc.dev_harness_diff import FreezeError, changes, git_bytes, manifest, resolve_commit
+from mc.dev_harness_diff import FreezeError, changes, git_bytes, resolve_commit
+from mc.dev_harness_integration_inputs import tracked_identity
 
 
 def merge_heads(repo: Path) -> list[str]:
@@ -37,9 +38,9 @@ def freeze_pending(repo: Path) -> dict[str, Any] | None:
     b, h = resolve_commit(repo, 'HEAD'), heads[0]
     if git_bytes(repo, ['ls-files', '--unmerged', '-z']):
         raise FreezeError('pending_conflicts')
-    # Include untracked files as a refusal, rather than running different bytes.
-    if (git_bytes(repo, ['diff', '--name-only', '-z', '--'])
-            or git_bytes(repo, ['ls-files', '--others', '--exclude-standard', '-z'])):
+    # Pending T contains only index bytes; unrelated untracked runtime writes
+    # cannot change it. Git itself refuses an untracked overwrite collision.
+    if git_bytes(repo, ['diff', '--name-only', '-z', '--']):
         raise FreezeError('pending_worktree_differs')
     tree = git_bytes(repo, ['write-tree']).decode('ascii').strip()
     bases = git_bytes(repo, ['merge-base', '--all', b, h]).decode('ascii').split()
@@ -48,12 +49,24 @@ def freeze_pending(repo: Path) -> dict[str, Any] | None:
     auto = git_bytes(repo, ['merge-tree', '--write-tree', b, h]).decode('ascii').splitlines()[0]
     if tree != auto:
         raise FreezeError('pending_resolution_unsupported')
+    identity = tracked_identity(repo)
     result = {'kind': 'pending_merge', 'B': b, 'H': h, 'M': bases[0], 'T': tree,
-              'auto_tree': auto, 'working_manifest': manifest(repo),
+              'auto_tree': auto, 'working_manifest': identity['manifest'],
               'branch_changes': changes(repo, bases[0], h), 'integration_changes': changes(repo, b, tree)}
-    if manifest(repo) != result['working_manifest'] or merge_heads(repo) != heads:
+    if tracked_identity(repo) != identity or merge_heads(repo) != heads:
         raise FreezeError('inputs_changed')
     return result
+
+
+def pending_pins(repo: Path) -> dict[str, Any] | None:
+    """Git-only inactive-hook lease pins; never a native execution descriptor."""
+    heads = merge_heads(repo)
+    if not heads:
+        return None
+    if len(heads) != 1:
+        raise FreezeError('ambiguous_pending_parents')
+    return {'B': resolve_commit(repo, 'HEAD'), 'H': heads[0],
+            'T': git_bytes(repo, ['write-tree']).decode('ascii').strip()}
 
 
 def revalidate(repo: Path, frozen: dict[str, Any]) -> None:

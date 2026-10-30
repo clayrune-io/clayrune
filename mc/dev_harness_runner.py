@@ -27,6 +27,7 @@ from mc.dev_harness_catalogue import digest
 from mc.dev_harness_diff import (ERROR_CODES, FreezeError, candidate_worktree, freeze_candidate,
                                  git_bytes, manifest, preview, preview_worktree, safe_path)
 from mc.dev_harness_store import HarnessStore, StoreError
+from mc.dev_harness_integration_inputs import freeze_integration, source_identity
 
 RUNNER_VERSION = 'dh-m4-v1'
 MAX_STEPS = 64
@@ -232,7 +233,7 @@ def evaluate(*, project: dict[str, Any], steps: list[dict[str, Any]], logs: Path
         # The shared lifecycle's location must already be excluded, without
         # changing the source's .gitignore after freezing it.
         git_bytes(repo, ['check-ignore', '-q', '.clayrune/agents/dh_probe'])
-        original = manifest(repo)
+        original = source_identity(repo, frozen)
         with workspace as root:
             if _validate_workspace is not None:
                 _validate_workspace(root)
@@ -291,7 +292,7 @@ def evaluate(*, project: dict[str, Any], steps: list[dict[str, Any]], logs: Path
                             or digest(dict(os.environ)) != native['environment_digest']):
                         report['code'] = 'native_inputs_changed'
             current = _revalidate_source(repo, frozen, target, incoming)
-            if manifest(repo) != original or current != frozen:
+            if source_identity(repo, frozen) != original or current != frozen:
                 report['code'] = 'inputs_changed'
             if cancelled.is_set():
                 report['code'] = 'cancelled'
@@ -319,6 +320,8 @@ def _revalidate_source(repo: Path, frozen: dict[str, Any], target: str | None,
         current = freeze_pending(repo)
     elif frozen['kind'] == 'preview':
         current = preview(repo)
+    elif frozen['kind'] == 'integration' and 'working_identity' in frozen:
+        current = freeze_integration(repo, target or frozen['B'], incoming or frozen['H'])
     else:
         current = freeze_candidate(repo, target or frozen['B'], incoming or frozen['H'])
     if current is None or current != frozen:

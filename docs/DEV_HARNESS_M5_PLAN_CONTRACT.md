@@ -503,3 +503,66 @@ Full catalogue practice coverage is still Unsupported; coverage recipes remain
 warning-only. M6 still owns the panel/user guide, real installed-tool acceptance,
 four-vendor probes, dogfood and packaging/frozen-worker acceptance. No merge,
 push, restart, live settings mutation, email or deployment is part of A2b.
+
+### A2b review correction: integration runtime files (2026-10-30)
+
+Dave's [section 9.1 amendment](DEV_HARNESS_M5_CONTRACT.md#91-dave-amendment-2026-10-30-integration-inputs-and-inactive-bypass)
+supersedes integration-only untracked-manifest requirements. The additional
+`mc/dev_harness_integration_inputs.py` leaf owns tracked HEAD/index/working
+identity and private candidate freezing, included in the approved checker
+digest. Candidate, pending/source, trusted runner, coordinator/registered-main
+and server-built dispatch/read boundaries use it. Ordinary/manual candidate
+freezing and full dirty Preview/measurement retain their earlier semantics.
+
+Inactive managed landing (Off, no snapshot, planless Preview) skips all harness
+source freezes/manifests. Main-checkout dirt checks consider tracked files so
+untracked runtime files reach Git's own merge collision check. A collision
+preserves that file, branch, checkout and HEAD; active tracked dirt refuses.
+No runtime file is relocated, ignored, staged or removed by this correction.
+Inactive hooks use the existing parent lease with Git-only B/H/T metadata;
+neither parent nor child hashes source. A subprocess-hook sentinel test enforces
+that boundary. Native pending descriptors remain a separate execution input.
+
+Validation below distinguishes earlier focused checkpoints from the final
+correction. The earlier A2b validation above remains historical, not proof of
+this fix.
+
+Exact correction validation commands (all operate on disposable repositories):
+
+```text
+python -m pytest -o addopts= -q --tb=short tests/test_dev_harness_integration_inputs.py tests/test_dev_harness_landing.py tests/test_dev_harness_pending_merge.py tests/test_dev_harness_integration.py tests/test_dev_harness_diff.py tests/test_dev_harness_dispatch.py tests/test_dev_harness_run_routes.py
+python -m pytest -o addopts= -q --tb=short tests/test_dev_harness_landing.py -k inactive_landing
+python -m pytest tests -k "dev_harness or agent_worktree or hivemind or agent_jobs or merge_review"
+pyright mc/dev_harness_applicability.py mc/dev_harness_pending_merge.py mc/landing_serialization.py mc/dev_harness_integration.py mc/dev_harness_dispatch.py mc/dev_harness_landing.py mc/dev_harness_manual.py mc/dev_harness_runner.py mc/dev_harness_diff.py mc/dev_harness_native_plan.py mc/dev_harness_store.py mc/hivemind_integration.py mc/blueprints/dev_harness_run_routes.py mc/blueprints/dev_harness_routes.py mc/agent_worktree.py mc/project_sync.py mc/dev_harness_integration_inputs.py
+python -m pytest -o addopts= -q --tb=short tests/test_landing_serialization.py
+python3 -m pytest -o addopts= -q --tb=short tests/test_landing_serialization.py tests/test_dev_harness_pending_merge.py tests/test_dev_harness_applicability.py tests/test_dev_harness_integration_inputs.py
+```
+
+- First focused command: **65 passed, 1 Windows newline-filename skip, rc=0**
+  (159.83s), before the final inactive-hook correction. Additional late
+  candidate/index/ref-drift and queued runtime/read tests are covered by the
+  required final regression, rather than attributed to this earlier collection.
+- Second command after the hook correction: **6 passed, rc=0** (6.56s), proving
+  no manifest calls with/without a real hook for no snapshot, Off and planless
+  Preview. The no-snapshot hook case was reproduced failing before its fix.
+- Final required regression after **all** source/test corrections:
+  **1,038 passed, 15 skipped, 16,796 deselected, rc=0** (453.62s), no warnings.
+  Includes dev_harness/landing, agent_worktree, hivemind integration, agent_jobs
+  and merge_review. Skips: optional missing `psutil`, Windows newline filename
+  and 13 existing POSIX-sh review-hook cases. New real inactive/native child-hook
+  cases run on Windows and pass; no source correction followed this full run.
+- Final Pyright command: **0 errors, 0 warnings, rc=0** (1.7s), all original
+  16 owners plus the new integration-input leaf. Tool update notice only.
+- Windows serialization command: **10 passed, rc=0** (3.35s), including actual
+  process contention, ownership, child leases, cleanup and process-exit release.
+- Last command on Ubuntu/WSL with existing scratch-only pytest packages:
+  **20 passed, rc=0** (11.37s), after all source changes. Covers real POSIX
+  serialization and pending/input boundaries; full POSIX native execution,
+  macOS, installed native tools and packaged execution remain unverified.
+- Documentation: **12 local links and amendment anchors resolve**; whitespace
+  checks pass. No UI changes: boot smokes, README and USER_GUIDE are N/A.
+
+An intermediate full-regression attempt was deliberately interrupted before
+the inactive-hook source correction; it is not counted as a passing run. The
+final exact rerun above completed after that correction. No merge, push,
+restart, live activation/settings change, deployment or M6 acceptance is claimed.

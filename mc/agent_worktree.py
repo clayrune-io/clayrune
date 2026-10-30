@@ -548,7 +548,8 @@ def _merge_back_locked(project: dict, session_id: str, target_ref: str, owner):
         merge_ref = tip
     # Merge happens in the MAIN tree, so it must be clean — never fight the
     # user's own uncommitted edits.
-    if _sync._dirty(base):
+    from mc.dev_harness_integration_inputs import tracked_dirty
+    if tracked_dirty(Path(base)):
         return 'skipped', 'main working tree is dirty'
     cur = _sync.git_run(base, ['rev-parse', '--abbrev-ref', 'HEAD'])[1].strip()
     if cur != ref:

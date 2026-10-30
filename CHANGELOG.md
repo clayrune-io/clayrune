@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - Keep runtime files outside native landing identity (DH-M5 A2b review)
+
+- Off, unconfigured and planless Preview landings skip harness source hashing, so large untracked runtime files cannot create a standards hold.
+- Private integration checks bind HEAD, index and tracked working bytes; runtime writes no longer invalidate candidate, pending-hook or registered-main evidence. Tracked dirt still refuses, Git protects colliding untracked files, and ordinary/manual candidate freezing plus full Preview/measurement manifests retain their boundaries.
+- Dave's integration-only amendment is recorded in `docs/DEV_HARNESS_M5_CONTRACT.md` section 9.1. Branch candidate only; no merge, push, restart or live change.
+
 ## [2026-10-30] - Run approved native checks before local landing (DH-M5 A2b)
 
 - Added explicit group applicability, trusted frozen Preview/candidate receipts, measured-native evidence composition and safe Preview/run/read jobs through the existing session-job owner. Requests are single-use; early completion cannot recreate them. Draft plans and uploaded/headless reports cannot approve or authorize a merge.

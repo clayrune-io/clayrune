@@ -40,3 +40,18 @@ def test_manual_resolution_and_octopus_refused(repo):
     mh.write_text(git(repo, 'rev-parse', 'incoming')+'\n'+git(repo, 'rev-parse', 'master')+'\n')
     with pytest.raises(FreezeError, match='ambiguous_pending_parents'):
         freeze_pending(repo)
+
+
+def test_pending_identity_ignores_large_changing_untracked_runtime(repo):
+    pending(repo)
+    with (repo/'runtime.sqlite3').open('wb') as stream:
+        stream.truncate(17 * 1024 * 1024)
+    runtime = repo/'runtime.json'
+    runtime.write_text('before')
+    frozen = freeze_pending(repo)
+    runtime.write_text('after')
+    revalidate(repo, frozen)
+    assert 'runtime.sqlite3' not in frozen['working_manifest']['files']
+    (repo/'app.py').write_text('tracked drift\n')
+    with pytest.raises(FreezeError, match='pending_worktree_differs'):
+        revalidate(repo, frozen)

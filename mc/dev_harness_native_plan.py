@@ -74,7 +74,7 @@ def checker_digest() -> str:
     names += [n for n in ('dev_harness_applicability.py', 'dev_harness_pending_merge.py',
                           'dev_harness_integration.py', 'dev_harness_dispatch.py',
                           'landing_serialization.py', 'dev_harness_landing.py',
-                          'dev_harness_manual.py') if (folder / n).exists()]
+                          'dev_harness_manual.py', 'dev_harness_integration_inputs.py') if (folder / n).exists()]
     return digest({'owners': {n: file_digest(folder / n) for n in names},
                    'native': validator_digest()})
 
