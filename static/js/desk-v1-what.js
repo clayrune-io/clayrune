@@ -389,7 +389,7 @@
       <div class="desk-v1-what-dropzone" data-what-dropzone tabindex="0" role="group" aria-label="Drop a file here">
         <div class="desk-v1-what-dropzone-text">Drop ${kind === 'video' ? 'a video' : 'an image'} here</div>
         <button type="button" class="btn-secondary" data-what-browse>Browse this computer</button>
-        <input type="file" class="desk-v1-what-file" data-what-file accept="${kind === 'video' ? 'video/*' : 'image/*'}" hidden>
+        <input type="file" class="desk-v1-what-file" data-what-file accept="${kind === 'video' ? window.DeskV1MediaFormats.videoAccept : 'image/*'}" hidden>
       </div>
       <div class="desk-v1-what-lib-title">Material library</div>
       <div class="desk-v1-what-lib" data-what-lib>${_libTilesHTML(kind)}</div>
@@ -517,6 +517,8 @@
 
   // ── wiring ───────────────────────────────────────────────────────────────
   function _attachFromFile(camp, fam, card, file, kind) {
+    const error = window.DeskV1MediaFormats.error(file, kind);
+    if (error) { DeskV1Kit.toast(error); return; }
     const isImg = kind === 'image' || /^image\//.test(file.type || '');
     const src = isImg && typeof URL !== 'undefined' && URL.createObjectURL ? URL.createObjectURL(file) : null;
     _attachAsset(camp, fam, { id: 'asset-' + _uid(), kind: kind === 'video' ? 'video' : 'image', title: file.name || 'Upload', src }, card, file);

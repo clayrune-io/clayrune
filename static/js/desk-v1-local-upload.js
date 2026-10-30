@@ -6,7 +6,7 @@
     const video = fam.kind === 'video';
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = video ? 'video/*' : 'image/*';
+    input.accept = video ? window.DeskV1MediaFormats.videoAccept : 'image/*';
     input.hidden = true;
     input.dataset.pieceLocalUpload = fam.id;
     document.body.appendChild(input);
@@ -16,10 +16,8 @@
       const file = input.files[0];
       remove();
       if (!file) return;
-      const ext = video ? /\.(mp4|mov|webm|m4v)$/i : /\.(png|jpe?g|gif|webp)$/i;
-      const limit = video ? 500 : 25;
-      if (!ext.test(file.name)) { window.DeskV1Kit.toast(video ? 'Choose an MP4, MOV, WebM or M4V video.' : 'Choose a PNG, JPG, GIF or WebP image.'); return; }
-      if (!file.size || file.size > limit * 1024 * 1024) { window.DeskV1Kit.toast(`Choose a nonempty ${video ? 'video' : 'image'} up to ${limit} MB.`); return; }
+      const error = window.DeskV1MediaFormats.error(file, video ? 'video' : 'image');
+      if (error) { window.DeskV1Kit.toast(error); return; }
       const src = URL.createObjectURL(file);
       const asset = { id: 'asset-' + Date.now().toString(36) + (++seq).toString(36), kind: video ? 'video' : 'image', title: file.name, src };
       try { await attach(asset, file); }

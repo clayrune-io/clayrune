@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - Let Windows video choosers show common video formats
+
+- Shared explicit video extensions and MIME hints across piece-page and create-card uploads. Client validation accepts video MIME types or known extensions; the server accepts the same common formats plus host-registered video types, and lists them consistently in the library.
+- Kept the 500 MB video / 25 MB image caps and included them in validation messages; material uploads use the video body cap, as piece uploads already did. Browser codec support still determines preview playback. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-30] - Keep the video editor focused on making video
 
 - Removed the Copy, media & versions detour and post-channel summary from the editor. Kept Review for a waiting version. Branch candidate only; no merge, push or restart.

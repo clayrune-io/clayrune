@@ -1329,8 +1329,11 @@ its copy.
 
 In **Media**, choose **Add media → From this computer…** to select an image
 for a post/image piece, or a video for a video piece. On a phone, this opens
-that phone's file chooser. Supported files are PNG, JPG, GIF, WebP and MP4,
-MOV, WebM, M4V. Uploads are saved in the Material library's **Uploads** folder
+that phone's file chooser. Supported images are PNG, JPG, GIF and WebP (up to 25 MB). Videos may be
+up to 500 MB: MP4, M4V, MOV, WebM, MKV, AVI, WMV, MPEG, 3GP, OGV, FLV,
+TS and other common video formats. The chooser names both extensions and
+video MIME types so Windows can show MP4 files. Accepting a file does not
+install a browser decoder; playback depends on your browser. Uploads are saved in the Material library's **Uploads** folder
 and attached to the piece. **Undo** removes the attachment and keeps the
 library file. Upload errors show the reason; failed files are not attached.
 The computer chooser remains available if loading the library fails.
