@@ -112,6 +112,7 @@ const words = Object.freeze({ continue: 'Continue', back: 'Back', save: 'Save', 
   checkConnection:CW.buttons.check,noAutoCheck:'Clayrune has no automatic sign-in check for this service.',
   signedInQuestion:'Are you signed in now?',yesSignedIn:"Yes, I’m signed in",notYet:'Not yet',
   paneUnavailable:'The browser pane could not be opened. Try again.',
+  waitingSignin:'Waiting for you to sign in',
   browserProof:'Browser sign-in works. Read and Post keep their own permissions.',
   readingSave:'Save the chosen reading settings.', readingWillSave:'Reading changes are applied when you save.',
 });

@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Show sign-in recovery as waiting in Connections
+
+- Browser checks show **Waiting for you to sign in** while the sign-in recovery loop is active, including during **Checking…** polls. Verified results and real check failures still end the wait; a signed-out poll during recovery no longer says **Not working**.
+- Refreshed the MC-1074 walkthrough to the existing **Check now** and **Not checked yet** wording, corrected the operator checklist's MC-1076 steward-form path, and updated the vault unlock smoke's saved-account fixture. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-29] - Piece editor: click-to-edit title, unclipped focus rings, one empty-Versions link
 
 - The piece title is the rename control: click it (or Tab + Enter) to edit in place; Enter or leaving the field saves through the same title route and Undo, Esc cancels. The **Edit name** button, **Post name** field and **Save name** button are gone. On phones the title now shows (the crumb repeats it, so the crumb title yields).

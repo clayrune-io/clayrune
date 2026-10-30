@@ -128,7 +128,7 @@ try {
     await page.waitForSelector('#studio-test [data-eng-error] [data-open-vault-unlock]');
     await page.evaluate(() => {
       const host = document.createElement('div'); host.id = 'connection-test'; document.body.appendChild(host);
-      host.innerHTML = window.DeskV1ConnectionStatus.accountHTML({ id: 'x', platform: 'x', capability: 'direct', read_via: 'api', publish: { vault_locked: true } });
+      host.innerHTML = window.DeskV1ConnectionStatus.accountHTML({ id: 'x', platform: 'x', capability: 'direct', read_via: 'api', credentials: { oauth_vault: 'fixture-x-signin' }, publish: { ready: false, vault_locked: true } });
     });
     assert.equal(await page.locator('#connection-test [data-open-vault-unlock]').count(), 1);
     assert.match(await page.evaluate(() => window.DeskV1ConnectCopy.body(window.VaultUnlockUI.buttonHTML({ vault_locked: true }))), />Unlock vault</);
