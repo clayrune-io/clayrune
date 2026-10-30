@@ -260,6 +260,7 @@
     if (window.DeskV1ProjectMedia) window.DeskV1ProjectMedia.mount(el.querySelector('[data-project-media]'), { summaries: _fx().projectMedia || [], state: _lib.projectView });
     el.querySelectorAll('[data-studio-new]').forEach((btn) => {
       btn.onclick = () => {
+        if (btn.dataset.studioNew === 'video') { window.DeskV1VideoOpen.openStudio(); return; }
         window.deskV1Nav('studio-create', { kind: btn.dataset.studioNew });
       };
     });
@@ -1016,11 +1017,15 @@
     _wireAgentBox(el.querySelector('[data-sb-agent]'), ctx);
   }
 
-  function deskV1RenderStoryboard(el, params) {
-    params = params || {};
-    _sb = { el, campaignId: params.campaignId, familyId: params.familyId, editing: null, selected: null, standalone: false };
+  function _mountStoryboard(el, params, standalone) {
+    _sb = { el, campaignId: params.campaignId, familyId: params.familyId, editing: null, selected: null, standalone: !!standalone };
     el.innerHTML = _sbHTML();
     _wireSb(el);
+  }
+  function deskV1RenderStoryboard(el, params) {
+    params = params || {};
+    if (params.standalone) { deskV1RenderStudioCreate(el, params); return; }
+    _mountStoryboard(el, params);
     if (_isLive()) _loadBoard(_sb);
   }
 
@@ -1469,9 +1474,7 @@
       _paintCreate();
     };
     if (view === 'storyboard') {
-      _sb = { el: el.querySelector('[data-sc-body]'), campaignId: null, familyId: _sc.item.id, editing: null, selected: null, standalone: true };
-      _sb.el.innerHTML = _sbHTML();
-      _wireSb(_sb.el);
+      _mountStoryboard(el.querySelector('[data-sc-body]'), { familyId: _sc.item.id }, true);
       const mine = _sb;
       _loadGlobalAgents().then(() => { if (_sb === mine) _paintAgentBox(); });
       // Live: an item Studio already made is read from the server once; a fresh
@@ -1610,6 +1613,7 @@
   window.deskV1StudioCreateLabel = studioCreateLabel;
   window.deskV1RenderStoryboard = deskV1RenderStoryboard;
   window.DeskV1Studio = {
+    isVideoDraft: params => { const it = params.itemId && _itemById(params.itemId); return it && it.kind === 'video' && it.status !== 'saved'; },
     captureAvailable, sourceBodyHTML, wireSourceBody,
     ensureStoryboard, ensureDraft, writerHTML, wireWriter, markInReview, persistInReview,
     campaignsToUse: _campaignsToUse, campaignTitle: _campTitle, campaign: _campaign, project: _project,

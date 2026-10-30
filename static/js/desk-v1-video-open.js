@@ -57,6 +57,13 @@
     return true;
   }
 
+  // Studio has no campaign or post to create. It still uses the SAME route
+  // and renderer, with the existing standalone storyboard owner.
+  function openStudio(params) {
+    window.deskV1Nav('storyboard', Object.assign({}, params, { kind: 'video', standalone: true }));
+    return true;
+  }
+
   // A deep link that lands inside a campaign (Home's needs-you rows): pushes the
   // campaign at ③ What, then the editor on top, so Back reads `‹ Back to What`.
   // Returns false (and pushes nothing) when the params name no video piece.
@@ -106,6 +113,6 @@
     _bindStrip(strip, fam, params);
   }
 
-  window.DeskV1VideoOpen = { isVideo, familyFor, open, openFromDeepLink, stripHTML };
+  window.DeskV1VideoOpen = { isVideo, familyFor, open, openStudio, openFromDeepLink, stripHTML };
   window.deskV1RenderVideoEditor = deskV1RenderVideoEditor;
 })();

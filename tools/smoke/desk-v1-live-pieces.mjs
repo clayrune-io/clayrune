@@ -208,7 +208,12 @@ async function createRenameRemove(browser) {
   // Rename through the card's title field.
   const input = page.locator(`[data-what-create][data-family-id="${id1}"] [data-what-title]`);
   await input.fill('Launch thread');
+  // The title is optimistic; seeing it locally does not prove the queued M15
+  // request has reached the server. Wait for that response before inspecting it.
+  const renamed = page.waitForResponse(r => r.request().method() === 'PATCH'
+    && new URL(r.url()).pathname === `/api/desk/pieces/${id1}`);
   await input.press('Tab');
+  await renamed;
   await settle(page, (i) => (window.DeskV1Store.state().families.find((f) => f.id === i) || {}).title === 'Launch thread', id1);
   const patch = calls(srv, 'PATCH', new RegExp(`^/api/desk/pieces/${id1}$`));
   (patch.length === 1 && patch[0].body.title === 'Launch thread' && srv.pieces.find((p) => p.id === id1).title === 'Launch thread')

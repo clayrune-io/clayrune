@@ -285,7 +285,7 @@
     const card = _state(camp.id).creates.find((c) => c.familyId === fam.id);
     if (card) _closeCreate(camp, card);
     window.DeskV1WhatAddModal.hide();
-    window.deskV1Nav('storyboard', { campaignId: camp.id, familyId: fam.id });
+    window.DeskV1VideoOpen.open(fam, camp);
   }
 
   // Studio's New video / image / article tile: queue an empty create-card on

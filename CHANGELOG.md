@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - Open every new video in the same Studio editor
+
+- Studio tiles, standalone draft links, campaign creation, video cards and Home links use DeskV1VideoOpen and the storyboard route's VideoEditor renderer. The legacy standalone creation URL is normalized before pushing the navigation stack; no second editor entry is added.
+- Standalone drafts keep their Studio owner, title, optional Product selection and Recent reopening; campaign videos keep their existing piece owner and Back to What. Removed Home's fallback into the retired video director. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-30] - Report preview and incomplete media-upload failures
 
 - Browser-preview creation now falls inside the upload error handler. An M21 reply without the requested saved asset is refused with a toast and local rollback, instead of retaining a blob whose URL is then revoked.

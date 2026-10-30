@@ -1285,6 +1285,11 @@ approval again after its cause is fixed.
 
 ### Campaign posts, archive and placement
 
+**Studio → New video**, a campaign's **What → Video → Create new**, video
+cards, and Home's video links all open the same Studio storyboard editor.
+Studio's draft has no campaign; its optional Product and title controls stay
+available. Back returns to Studio or What according to where you opened it.
+
 The video storyboard has a horizontal **Timeline** above the scene list, both
 in a campaign and in standalone Studio. Each tile shows its duration. Drag a
 tile or a scene's list handle onto another tile to reorder; focused tiles use

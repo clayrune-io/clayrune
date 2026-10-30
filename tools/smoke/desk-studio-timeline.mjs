@@ -44,6 +44,18 @@ try {
         assert.notDeepEqual(await order(), before);
         await page.click('#desk-v1-undo');
         assert.deepEqual(await order(), before);
+        if (width === 1440) {
+          const source = page.locator(`.desk-v1-sb-scene[data-scene-id="${before[0]}"] [data-scene-handle]`);
+          await source.scrollIntoViewIfNeeded();
+          const a = await source.boundingBox();
+          const target = page.locator(`[data-sb-timeline] .desk-v1-video-scene[data-scene-id="${before[1]}"]`);
+          const b = await target.boundingBox();
+          await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2); await page.mouse.down();
+          await page.mouse.move(a.x + a.width / 2 + 20, a.y + a.height / 2, { steps: 5 });
+          await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 12 }); await page.mouse.up();
+          assert.notDeepEqual(await order(), before, 'scene-list handle drops onto timeline');
+          await page.click('#desk-v1-undo'); assert.deepEqual(await order(), before);
+        }
       }
       const duration = () => page.locator(`[data-sb-timeline] [data-scene-id="${id}"] .desk-v1-video-scene-duration`).innerText();
       const old = parseInt(await duration());
