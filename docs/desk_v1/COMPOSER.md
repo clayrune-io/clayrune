@@ -153,3 +153,87 @@ git restore -- docs/desk_v1/screens/t4_calendar_desktop_1440.png docs/desk_v1/sc
 ```
 
 No open product choice is required for C1. Integration/release belongs to Dave.
+
+### C4 — Sol_Tobin — 2026-10-30 (branch candidate)
+
+Base merged exactly as dispatched: `git merge --no-edit
+clayrune/agent/d49def5ca015` (rc 0), producing `0eff82e7` on
+`clayrune/agent/80723533f165`. C1 is `e6ecc1e0`. No master merge, push,
+server restart or live Desk mutation.
+
+Delivered `static/js/desk-v1-composer-duplicate.js`,
+`mc/desk_piece_duplicate.py` and its own nested blueprint
+`mc/blueprints/desk_piece_duplicate_routes.py`. Composer has one import;
+Campaign has one menu-mount call, and desk_routes has import/registration
+only. What, Piece and the sibling media/preview slices are untouched.
+
+Post-card Duplicate now saves text and all media references atomically and
+opens the copy in the composer. Duplicate to campaign… lists other
+non-archived campaigns with their project names. New drafts keep source
+destinations only where they intersect the target plan.accounts and connected
+workspace accounts; inactive source versions are excluded. An empty
+intersection produces a saved draft with no destinations selected, never a
+widened campaign bound. Per-channel saved text and format are retained.
+The route is `POST /api/desk/pieces/<id>/duplicate` with optional `id` (new
+piece ID) and `campaign_id` (defaults to the source campaign); it returns the
+persisted v1 piece with HTTP 201. Unknown request fields are refused, so a
+caller cannot inject schedule, account or approval state through the route.
+The copy uses the target project, new piece/attachment/version IDs and a
+`(copy)` title suffix. No schedule, slot, approval, receipt, failure, archive,
+manual outcome, claim verdict or revision is inherited. Claim content and
+media provenance remain; claim decisions start fresh. Media stay library
+references, following the existing store contract. Missing/outside-root media
+refuses the entire operation before persistence. Demo makes no mutation
+request. Refusal rolls back the optimistic copy, double activation is guarded,
+and Undo deletes only the copy through the existing writable-piece route.
+
+The picker reuses existing menu styling and placePopover, with its own small
+event lifecycle. It preserves the card corner's position and consumes Escape
+before it reaches the Desk shell. This avoids changing the shared picker or
+its callers. Keyboard arrows move between campaigns; Escape and outside click
+dismiss, with Escape restoring focus to the card trigger.
+
+Validation, from repository root. Smoke environment: `MC_PYTHON` set to the
+main checkout's `.venv/Scripts/python.exe` (machine path kept out of source).
+The new smoke registers itself and its temporary Flask fixture with Process
+Manager and shuts down only its own fixture. Its store/uploads live in an
+OS temporary directory, never the operator's Desk.
+
+| Exact command | rc | Result |
+|---|---:|---|
+| `python -m pytest tests/test_desk_piece_duplicate.py tests/test_desk_pieces.py -q` | 0 | 114 tests (15 new): same/cross campaign, persisted text/media, fresh lifecycle/claims, independent edits, no-bound/disconnected/inactive versions, unavailable/unsafe media atomic refusal, input validation, archived/sent source, unsupported kind/unknown source and archived target |
+| `pyright mc/desk_piece_duplicate.py mc/blueprints/desk_piece_duplicate_routes.py` | 0 | 0 errors/warnings |
+| `node tools/smoke/desk-v1-composer-duplicate.mjs` | 0 | Real Flask/filesystem + real SPA, 1440/390: same/cross campaign, media and text reload/edit, target bounds, empty bound, Undo, double activation, refusal/retry, picker geometry/cancel and demo no-write |
+| `node tools/smoke/desk-v1-composer.mjs` | 0 | Existing C1 contract at 1440/390 and demo |
+| `node tools/smoke/boot-smoke.mjs` | 0 | Seven boot scenarios and all dispatch, migration, model, identity, backlog, memory, calendar, scheduler, question and Floor guards |
+| `node --check static/js/desk-v1-composer-duplicate.js` | 0 | Syntax |
+| `node --check tools/smoke/desk-v1-composer-duplicate.mjs` | 0 | Syntax |
+| `git diff --check` | 0 | Whitespace |
+
+Earlier runs: backend first rc 1 because the disconnected-account test removed
+the account registry entry but left presence data which re-lifts that account;
+the corrected fixture removes both. Browser first rc 1 when the initial shared
+picker closed on its opening click; the expanded cancel check then exposed
+Escape also reaching the shell. The isolated picker resolves both and the
+final runs above pass. The screenshot review also caught the shared helper
+moving the card trigger; the smoke now asserts its rectangle stays unchanged.
+
+Screenshots, all visually inspected, under this worktree's
+`_scratch/composer_c4/`: `menu-1440.png`, `menu-390.png`,
+`campaign-picker-1440.png`, `campaign-picker-390.png`, `composer-1440.png`,
+`composer-390.png`. C1 alone displays text; displaying/editing copied media in
+the composer remains C2's slice. The media copy is verified in the real saved
+store and card thumbnails. Actual platform posting is untested/outside C4.
+
+CHANGELOG and USER_GUIDE are updated. No new dependency or agent/architecture
+rule, README change, live configuration or approval-gate change is required.
+The smoke node_modules junction is removed before commit. No product question
+is open; integration/release belongs to Dave.
+
+The unattended fence refused the requested home `.claude/plans` write; it was
+not retried. The execution plan is retained here and in the gitignored C4
+journal: merge C1, inspect patterns/bounds, implement atomic copy and isolated
+menu, run backend/browser checks, inspect screenshots, document and commit
+only this branch. A variable-in-command-position pytest invocation was also
+fenced; execution through an explicit interpreter path passed, as did the
+portable final command above.

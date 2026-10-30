@@ -1325,6 +1325,18 @@ their existing human actions. Approved copy must return to review before
 editing; archived pieces must be restored first. The composer currently
 supports text.
 
+On a post card, open **⋯ → Duplicate** to copy its saved text and media into
+a new draft in the same campaign. **Duplicate to campaign…** lets you choose
+another campaign; the list includes project names. Both actions open the copy
+in the composer. Media files stay in the library, with independent attachments
+on the copy. Editing the copy does not change the source post.
+
+The copy keeps only source destinations allowed by the target campaign's
+accounts. If none overlap, choose destinations in the composer; an empty
+campaign account set must first be configured in **Where**. Schedule, approval
+and publishing results are cleared, and the copy needs its own review and
+approval. Missing media refuses the whole copy. **Undo** removes the new draft.
+
 Other types under **Add a piece** open a centered popup with a **Name** field
 beside source cards:
 

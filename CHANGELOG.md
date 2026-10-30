@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - Duplicate saved posts into fresh composer drafts
+
+- Post-card **Duplicate** copies saved text and media into the same campaign and opens the new draft in the composer. **Duplicate to campaign…** offers other campaigns, labelled with their projects. Copies retain only source destinations inside the target campaign's account bound; empty intersections stay unassigned.
+- Copies have independent attachment/version IDs and no inherited schedule, approval, outcome or claim verdict. The backend saves the whole copy together and refuses unavailable media without creating a partial draft. Undo removes only the copy; demo copies stay local. Branch candidate only; no merge to master, push or restart.
+
 ## [2026-10-30] - Start campaign posts in one composer
 
 - Post tiles and post-card Open actions enter a text composer directly. Opening it creates no empty piece; the first nonblank text creates the draft. Campaign accounts start selected, and ticks write per-piece versions without widening the campaign account bound.
