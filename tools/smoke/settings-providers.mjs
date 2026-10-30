@@ -137,7 +137,13 @@ const openProviders = async () => {
   await page.evaluate(() => window.closeModalById && window.closeModalById('__settings'));
   await page.evaluate(() => window.openSettings());
   await page.waitForSelector('#settings-providers-section', { state: 'attached', timeout: 10000 });
-  await page.evaluate(() => window.drillSettings('providers'));
+  await page.evaluate(() => {
+    window.drillSettings('providers');
+    // Providers opens as a sub-list; choose the section that holds the vendor rows.
+    const pane = document.querySelector('#settings-detail .settings-detail-pane[data-cat="providers"]');
+    const i = [...pane.children].filter((el) => el.classList.contains('settings-section')).findIndex((s) => s.id === 'settings-providers-section');
+    if (i >= 0) window.drillSettingsSub(i);
+  });
   await page.waitForFunction(
     () => { const s = document.getElementById('settings-providers-section');
             return s && s.offsetParent !== null; }, { timeout: 5000 });
@@ -287,8 +293,9 @@ try {
   await page.check('#settings-providers-section .prov-row[data-provider="codex"] input[type=radio]');
   await page.waitForFunction(() => document.querySelector(
     '#settings-providers-section .prov-row[data-provider="codex"] input[type=radio]')?.checked);
-  // Default radio -> saveSetting() -> now gated by the human-proof passcode
-  // modal (MC-995) instead of firing PUT /api/config directly.
+  // Default radio stages a vendor-preference draft (cbab4e22); Save opens the
+  // human-proof passcode modal (MC-995) before any PUT /api/config.
+  await page.click('#vendor-draft-save');
   await page.waitForSelector('[data-modal-id^="__human-proof-"]', { timeout: 5000 });
   await page.evaluate(() => {
     const win = document.querySelector('[data-modal-id^="__human-proof-"]');
@@ -314,6 +321,7 @@ try {
   check(await page.locator('#settings-cli-auto-update.on').count() === 1,
     'CLI auto-update toggle is ON when config has no value (default on)');
   await page.click('#settings-cli-auto-update');
+  await page.click('#vendor-draft-save');
   await page.waitForSelector('[data-modal-id^="__human-proof-"]', { timeout: 5000 });
   await page.evaluate(() => {
     const win = document.querySelector('[data-modal-id^="__human-proof-"]');

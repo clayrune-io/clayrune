@@ -91,7 +91,13 @@ const openProviders = async () => {
   await page.evaluate(() => window.closeModalById && window.closeModalById('__settings'));
   await page.evaluate(() => window.openSettings());
   await page.waitForSelector('#settings-providers-section', { state: 'attached', timeout: 10000 });
-  await page.evaluate(() => window.drillSettings('providers'));
+  await page.evaluate(() => {
+    window.drillSettings('providers');
+    // Providers opens as a sub-list; choose the section that holds the vendor rows.
+    const pane = document.querySelector('#settings-detail .settings-detail-pane[data-cat="providers"]');
+    const i = [...pane.children].filter((el) => el.classList.contains('settings-section')).findIndex((s) => s.id === 'settings-providers-section');
+    if (i >= 0) window.drillSettingsSub(i);
+  });
   await page.waitForFunction(
     () => { const s = document.getElementById('settings-providers-section');
             return s && s.offsetParent !== null; }, { timeout: 5000 });
