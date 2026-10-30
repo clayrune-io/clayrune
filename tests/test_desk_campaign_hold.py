@@ -54,13 +54,33 @@ def test_capped_term_with_plan_end_ahead_still_says_renew_and_has_no_code():
 
 
 def test_a_renewed_short_campaign_stays_held_with_the_ended_message():
-    # Renew (server) still opens term 2, but the plan end gates first: the hold
-    # must keep naming the end date, never "renew".
-    camp = _started('2026-10-28', '2026-10-28')
+    # Term 1 ended but the plan end is still ahead, so Renew opens term 2. Once the
+    # plan end then passes, the hold must name the end date, never "renew".
+    camp = _started('2026-10-30', '2026-10-28')
     renewed = desk.renew_campaign(camp['id'], today='2026-10-29')
     assert renewed['term']['index'] == 2
-    reason = _cadence_refusal(renewed, [], NOW)
-    assert reason == hold.ended_message('2026-10-28') and reason.code == 'campaign_ended'
+    reason = _cadence_refusal(renewed, [], datetime(2026, 10, 31, tzinfo=timezone.utc))
+    assert reason == hold.ended_message('2026-10-30') and reason.code == 'campaign_ended'
+
+
+def test_renew_is_refused_once_the_plan_end_has_passed():
+    camp = _started('2026-10-28', '2026-10-28')
+    before = desk.STORE_PATH.read_bytes()
+    with pytest.raises(desk.ApprovalRefused) as exc:
+        desk.renew_campaign(camp['id'], today='2026-10-29')
+    assert str(exc.value) == hold.ended_message('2026-10-28')
+    assert desk.STORE_PATH.read_bytes() == before
+
+
+def test_the_plan_end_day_itself_can_still_renew():
+    camp = _started('2026-10-28', '2026-10-27')
+    assert desk.renew_campaign(camp['id'], today='2026-10-28')['term']['index'] == 2
+
+
+def test_renew_with_no_today_uses_the_real_clock_for_the_plan_end():
+    camp = _started('2026-10-28', '2026-10-28')  # long past on any real clock
+    with pytest.raises(desk.ApprovalRefused, match='ended on 2026-10-28'):
+        desk.renew_campaign(camp['id'])
 
 
 def test_renew_still_works_while_the_plan_end_is_ahead():

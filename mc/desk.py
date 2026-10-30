@@ -61,6 +61,7 @@ import uuid
 
 from mc.core import _atomic_write_text, _log, now_iso
 from mc import distiller as _distiller
+from mc import desk_campaign_hold as _hold
 from mc.desk_pane_pages import PANE_ONLY_PLATFORMS
 from mc.desk_campaign_term import MAX_TERM_DAYS, prepare_campaign_patch
 
@@ -1831,6 +1832,14 @@ def renew_campaign(campaign_id: str, *, by: str = 'human', today: str | None = N
         if starts.date() > today_d:
             raise ApprovalRefused(f"term {term.get('index') or 1} has not ended yet "
                                   f"(ends {str(term['ends'])[:10]})")
+        # A new term cannot post past the plan's own end date (the publisher checks
+        # that first), so renewing a campaign whose plan end has passed would only
+        # re-approve a campaign that stays held. Name the fix that works instead.
+        ended_on = _hold.plan_end_passed(
+            camp, datetime(today_d.year, today_d.month, today_d.day, tzinfo=timezone.utc) if today
+            else datetime.now(timezone.utc))
+        if ended_on:
+            raise ApprovalRefused(_hold.ended_message(ended_on))
         ap = camp.get('approved')
         if not isinstance(ap, dict) or not isinstance(ap.get('bounds'), dict):
             raise ApprovalRefused('no human approval on file to renew; approve the campaign first')
