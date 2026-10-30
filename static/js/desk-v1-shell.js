@@ -54,7 +54,7 @@
     video:         { parent: 'campaign', label: _videoLabel,   render: () => window.deskV1RenderVideo },
     // R2-8 (§8, frames 11, 13): Studio is its own Desk route (Home's header
     // `🎬 Studio`); the storyboard is What's Create-new page, so its Back
-    // reads `‹ Back to What` (see _backLabel) and its title `New video ·
+    // reads `‹ Back to Posts` (see _backLabel) and its title `New video ·
     // Storyboard`. Both render from desk-v1-studio.js.
     studio:        { parent: 'home',     label: 'Studio',       render: () => window.deskV1RenderStudio },
     // Every video piece opens here (desk-v1-video-open.js), so the title is the
@@ -73,7 +73,7 @@
   //
   // R2-3 (IA revision 2 §4.1, §7): the tab strip becomes the ①-⑥ map, so the
   // three old panel names retire onto the stop that now absorbs them —
-  // `results` -> ① goal (`desk-v1-results.js`), `content` -> ③ what (T2a's
+  // `results` -> ① goal (`desk-v1-results.js`), `content` -> ④ what (T2a's
   // own content list, unchanged), `calendar` -> ⑤ when. `when` now renders
   // `desk-v1-calendar.js` directly as its own panel (§4.1's "Absorbs" column)
   // rather than the old content-tab's List/Calendar toggle, so the toggle-once
@@ -225,12 +225,12 @@
     }, (projectId) => { deskV1Nav('project', { projectId }); }, { noAppendNew: true });
   }
 
-  // R2-7 (§4.3): a piece is a drill-in under the campaign's ③ What stop, so its
-  // Back reads `‹ <campaign> · What` — the stop it returns to, taken from the
+  // R2-7 (§4.3): a piece is a drill-in under the campaign's ④ Posts stop, so its
+  // Back reads `‹ <campaign> · Posts` — the stop it returns to, taken from the
   // parent campaign entry's own panel. Every other route keeps the plain parent
   // title.
   function _backLabel(entry, parentEntry) {
-    if (entry.route === 'storyboard' && parentEntry.route === 'campaign') return 'Back to What';
+    if (entry.route === 'storyboard' && parentEntry.route === 'campaign') return 'Back to Posts';
     const label = _routeLabel(parentEntry);
     if (entry.route === 'piece' && parentEntry.route === 'campaign') {
       const words = (window.DeskV1Kit && window.DeskV1Kit.MAP_STOP_WORDS) || {};
@@ -337,7 +337,7 @@
   // it lives below the tab body rather than inside the tab strip header.
   function _renderCampaignSkeleton(el, params) {
     // §2/R2-3: "route stays campaign with params.panel" — a fresh/full mount
-    // (Home -> campaign, or a different campaign) lands on ③ what (T2a's
+    // (Home -> campaign, or a different campaign) lands on ④ what (T2a's
     // content list, the same default the old tab strip always opened on),
     // unless the caller asked for another panel (an aliased deep link). A
     // Draft campaign is the one exception (§3 table: "Draft · at <stop> ...
@@ -401,8 +401,8 @@
     // guard something that actually tracks the active stop.
     tabbodyEl.dataset.panel = panel;
     // R2-3 (§4.1 Absorbs column): ① reads `desk-v1-results.js`, ② how reads
-    // `desk-v1-how.js`, ④ Where reads `desk-v1-where.js` and ⑤ When reads
-    // `desk-v1-calendar.js` directly, each a standalone panel — ③ what / ⑥ launch
+    // `desk-v1-how.js`, ③ Channels reads `desk-v1-where.js` and ⑤ When reads
+    // `desk-v1-calendar.js` directly, each a standalone panel — ④ what / ⑥ launch
     // are desk-v1-campaign.js's own job, so both fall through to the generic hook.
     if (panel === 'goal' && typeof window.deskV1RenderResults === 'function') {
       window.deskV1RenderResults(tabbodyEl, params);
@@ -426,7 +426,7 @@
   // the frame, caller fills slots" contract as `_renderCampaignSkeleton` above
   // (T2's own precedent, §4 table: "reused for the project page and the piece
   // page"). R2-7 retired the four facets: the piece is one drill-in page under
-  // ③ What, a single scroll with Copy · Media · Versions, so there is no facet
+  // ④ Posts, a single scroll with Copy · Media · Versions, so there is no facet
   // strip or in-place facet switch any more — header, body and the Posy
   // rightcol are all filled once per mount.
   function _renderPieceSkeleton(el, params) {

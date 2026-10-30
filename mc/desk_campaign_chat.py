@@ -34,7 +34,7 @@ WHAT THE AGENT MAY DO: this v1 changes nothing on its own. If it proposes pieces
 times or a placement, they are saved through the EXISTING suggestions store
 (`desk.set_suggestions`, M10: the same validation an agent's PUT gets, which
 refuses any text that names a limit and any account not in the workspace) and a
-human accepts them on the What / When / Where stops. The chip under the reply
+human accepts them on the Posts / When / Channels stops. The chip under the reply
 (`suggested.summary`) is written HERE from what the store accepted. A proposal
 that does not validate is not saved: the reply is kept and the turn says why
 (`suggest_error`).
@@ -285,7 +285,7 @@ def _suggest_summary(body: dict) -> str:
     if not parts:
         return ''
     return 'Suggested ' + ', '.join(parts[:-1]) + (' and ' if len(parts) > 1 else '') + parts[-1] + \
-        '. They wait on the What, When and Where stops for you to accept.'
+        '. They wait on the Posts, When and Channels stops for you to accept.'
 
 
 # -- one turn --------------------------------------------------------------------------

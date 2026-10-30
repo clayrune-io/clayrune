@@ -15,7 +15,7 @@
  *   4. Article  -> picking an existing article PATCHes title, word_count and source.
  *   5. Piece pg -> `＋ Add media` on the piece page is the same M21 call; the excerpt is
  *                  the piece's own `body`.
- *   6. Writer   -> Save to What moves the versions it changed through M18 (never
+ *   6. Writer   -> Save to Posts moves the versions it changed through M18 (never
  *                  `approved`) and the draft status through M15; Undo reverses both.
  *   7. Flag OFF -> every one of those makes 0 /api/desk/* requests.
  *
@@ -406,7 +406,7 @@ async function piecePage(browser) {
   await ctx.close();
 }
 
-// ── 6: writer Save to What -> in review ────────────────────────────────────
+// ── 6: writer Save to Posts -> in review ────────────────────────────────────
 // Where (slice S5) places versions; the helper stands in for it on both sides.
 async function writerPiece(page, srv) {
   const id = await addPiece(page, 'article');
@@ -431,7 +431,7 @@ async function writerSave(browser) {
   const vp = calls(srv, 'PATCH', new RegExp(`^/api/desk/pieces/${id}/versions/v-writer-x$`));
   const pp = calls(srv, 'PATCH', new RegExp(`^/api/desk/pieces/${id}$`));
   (vp.length === 1 && vp[0].body.state === 'needs_review' && Object.keys(vp[0].body).join() === 'state')
-    ? ok('Save to What moves the placed version through M18 as {state: needs_review} and sends no body') : fail('version PATCH: ' + JSON.stringify(vp.map((r) => r.body)));
+    ? ok('Save to Posts moves the placed version through M18 as {state: needs_review} and sends no body') : fail('version PATCH: ' + JSON.stringify(vp.map((r) => r.body)));
   (pp.length === 2 && typeof pp[0].body.body === 'string' && pp[1].body.draft_status === 'in_review')
     ? ok('and M15 persists the article body and draft status') : fail('piece PATCH: ' + JSON.stringify(pp.map((r) => r.body)));
   const sp = srv.pieces.find((p) => p.id === id);

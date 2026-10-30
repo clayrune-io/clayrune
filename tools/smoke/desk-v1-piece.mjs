@@ -6,7 +6,7 @@
  * Versions. This checks the sections, a multi-asset piece (2 thumbnails +
  * ＋ Add media, with Undo), header + Posy staying the SAME DOM node across
  * repaints, the publish time being the calendar's own value, Back reading
- * `‹ <campaign> · What`, What -> Review -> Back reading '‹ <piece title>',
+ * `‹ <campaign> · Posts`, What -> Review -> Back reading '‹ <piece title>',
  * and a video piece opening the Studio video editor (one editor), with the
  * piece's copy/media/versions one click away.
  *
@@ -225,14 +225,14 @@ async function runVersionTime(browser) {
   await ctx.close();
 }
 
-// ── Back from a piece reads `‹ <campaign> · What`; What -> Review -> Back
+// ── Back from a piece reads `‹ <campaign> · Posts`; What -> Review -> Back
 // reads '‹ <piece title>' (review 12b is a piece child). ──────────────────
 async function runBackLabels(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
   await navToPieceViaCard(page, 'fam-restore-points');
   const campTitle = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').plan.title);
   const pieceBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
-  if (pieceBack.includes(campTitle) && /·\s*What$/.test(pieceBack)) ok(`piece: Back reads "${pieceBack}"`);
+  if (pieceBack.includes(campTitle) && /·\s*Posts$/.test(pieceBack)) ok(`piece: Back reads "${pieceBack}"`);
   else fail(`piece: Back wrong: ${JSON.stringify(pieceBack)} (campaign "${campTitle}")`);
 
   await page.click('[data-review-btn]');
@@ -266,7 +266,7 @@ async function runVideoOpensStudioEditor(browser) {
   if (await page.$('[data-storyboard] .desk-v1-sb-scene')) ok('video card -> editor shows the scenes');
   else fail('video card -> editor shows no scenes');
   const edBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
-  if (/Back to What$/.test(edBack)) ok(`video editor: Back reads "${edBack}"`);
+  if (/Back to Posts$/.test(edBack)) ok(`video editor: Back reads "${edBack}"`);
   else fail(`video editor: Back wrong: ${JSON.stringify(edBack)}`);
   const crumb = (await page.textContent('.desk-v1-crumb-title').catch(() => '') || '').trim();
   if (crumb === 'Install in two minutes · Storyboard') ok(`video editor: crumb names the piece ("${crumb}")`);
@@ -303,7 +303,7 @@ async function runVideoOpensStudioEditor(browser) {
   await page.click('.desk-v1-back');
   await page.waitForSelector('[data-storyboard]', { timeout: 8000 });
   const dlBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
-  if (/Back to What$/.test(dlBack)) ok(`Home review deep link (video): review -> Back -> editor -> Back reads "${dlBack}"`);
+  if (/Back to Posts$/.test(dlBack)) ok(`Home review deep link (video): review -> Back -> editor -> Back reads "${dlBack}"`);
   else fail(`Home review deep link (video): editor's Back wrong: ${JSON.stringify(dlBack)}`);
 
   reportUncaught(pageErrors, '[video-one-editor]');

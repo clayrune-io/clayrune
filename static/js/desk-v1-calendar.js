@@ -776,15 +776,15 @@
         ${_fieldsHTML(campaign, project)}
         ${_toolbarHTML(st, days)}
         <div class="desk-v1-stub-inline desk-v1-cal-empty-where" data-cal-empty-where>
-          <strong>Nothing is placed yet.</strong> When sets times for the messages you place on accounts in Where.
-          <button type="button" class="btn-secondary" data-cal-to-where>Go to Where ›</button>
+          <strong>Nothing is placed yet.</strong> When sets times for post destinations. Choose them in the Posts composer, using the campaign accounts set in Channels.
+          <button type="button" class="btn-secondary" data-cal-to-where>Go to Posts ›</button>
         </div>
       </div>`;
       _bindFields(el, campaign);
       _bindToolbar(el, campaign);
       _bindSuggestedWhen(el, campaign);
       const toWhere = el.querySelector('[data-cal-to-where]');
-      if (toWhere) toWhere.onclick = () => window.deskV1GotoCampaignPanel('where', { campaignId: campaign.id });
+      if (toWhere) toWhere.onclick = () => window.deskV1GotoCampaignPanel('what', { campaignId: campaign.id });
       return;
     }
 

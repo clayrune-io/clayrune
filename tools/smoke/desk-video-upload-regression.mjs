@@ -42,11 +42,12 @@ try {
         if (window.__empty) return { assets: [] };
         return { assets: [{ id: body.get('id'), kind: 'video', title: body.get('file').name, path: 'desk/library/video/Uploads/small.mp4', play: '/small.mp4' }] };
       }
+      if (method === 'POST' && body?.path) return { assets: [{ id: body.id, kind: 'video', title: body.title, path: body.path, play: '/small.mp4' }] };
       return {};
     };
     const f = store.state().families.find(f => f.id === 'fam-30-testers');
-    f.kind = 'post'; f.assets = [];
-    window.deskV1Nav('piece', { campaignId: f.campaignId, familyId: f.id });
+    f.kind = 'post'; f.assets = []; f.versions = []; f.draft_status = 'draft';
+    window.deskV1Nav('composer', { campaignId: f.campaignId, familyId: f.id });
   });
   async function choose() {
     await page.click('[data-piece-media] [data-add-media]');
@@ -57,21 +58,29 @@ try {
     await fc.setFiles({ name: 'small.mp4', mimeType: 'video/mp4', buffer: mp4 });
     await page.waitForTimeout(100);
   }
-  await choose();
+  await page.click('[data-composer-add-media]');
+  assert.match(await page.locator('[data-cm-files]').getAttribute('accept'), /\.mp4/);
+  await page.locator('[data-cm-files]').setInputFiles({ name: 'small.mp4', mimeType: 'video/mp4', buffer: mp4 });
+  await page.waitForFunction(() => !document.querySelector('[data-composer-add-media]').disabled);
   const result = await page.evaluate(() => ({ uploads: window.__uploads, assets: window.DeskV1Store.state().families.find(f => f.id === 'fam-30-testers').assets, toast: document.querySelector('#toast-container')?.textContent }));
   console.log(JSON.stringify(result));
-  // Current post-media policy is the #2 decision for Dave. Do not silently
-  // widen the piece model: pin this evidence until he selects an option.
-  assert.deepEqual(result.uploads, []);
-  assert.equal(result.assets.length, 0);
-  assert.match(result.toast, /PNG, JPG, GIF or WebP/);
-  await page.click('[data-piece-media] [data-add-media]');
-  assert.equal(await page.getByRole('menuitem', { name: 'Studio / Rendered video', exact: true }).count(), 0);
-  console.log('CONFIRMED GAP: New post Add media hides library videos and rejects MP4 before M21');
+  // C2 resolved the old image-only Post gap: media now belongs to the composer.
+  assert.deepEqual(result.uploads, ['small.mp4']);
+  assert.equal(result.assets.length, 1);
+  assert.equal(result.assets[0].kind, 'video');
+  await page.waitForFunction(() => document.querySelector('[data-composer-media-assets] video')?.readyState >= 1);
+  assert(await page.locator('[data-composer-media-assets] video').evaluate(el => el.duration > 0));
+  await page.click('[data-composer-add-media]');
+  await page.click('[data-cm-tab="library"]');
+  await page.locator('[data-cm-pick]').first().click();
+  await page.waitForFunction(() => !document.querySelector('[data-composer-add-media]').disabled);
+  assert.equal(await page.locator('[data-composer-media-assets] [data-pmed-open]').count(), 2);
+  assert.equal(await page.evaluate(() => window.DeskV1Store.state().families.find(f => f.id === 'fam-30-testers').assets.at(-1).path), 'desk/library/video/Studio/render.mp4');
+  console.log('PASS Post composer accepts real MP4 and library videos');
   {
     await page.evaluate(() => {
       const f = window.DeskV1Store.state().families.find(f => f.id === 'fam-30-testers');
-      f.kind = 'video';
+      f.kind = 'video'; f.assets = []; window.__uploads = [];
       window.deskV1Nav('piece', { campaignId: f.campaignId, familyId: f.id });
     });
     await choose();

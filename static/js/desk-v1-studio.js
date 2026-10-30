@@ -474,7 +474,7 @@
     if (!(r && r.status === 'rendering')) return '';
     const tail = _sb && _sb.standalone
       ? 'preview only: the render engine is not wired yet, so this does not finish.'
-      : 'back on What the piece stays usable while it renders.';
+      : 'back on Posts the piece stays usable while it renders.';
     return `<div class="desk-v1-sb-rendering" data-sb-rendering>⟳ Rendering ${esc(r.progress != null ? r.progress : 0)}% — ${tail}</div>`;
   }
 
@@ -487,7 +487,7 @@
     const rendering = fam.render && fam.render.status === 'rendering';
     const strip = _sb.standalone
       ? `<div class="desk-v1-sb-returning" data-sb-standalone>Studio · <strong>not attached to a campaign</strong> <span>· use it in one from the Material library afterwards</span></div>`
-      : `<div class="desk-v1-sb-returning" data-returning-to>Returning to › <strong>${esc(_campTitle(camp))}</strong> <span>· What · ${esc(fam.title)}</span></div>`;
+      : `<div class="desk-v1-sb-returning" data-returning-to>Returning to › <strong>${esc(_campTitle(camp))}</strong> <span>· Posts · ${esc(fam.title)}</span></div>`;
     return `<div class="desk-v1-sb" data-storyboard data-family-id="${esc(fam.id)}">
       ${strip}
       <div class="desk-v1-sb-head">
@@ -1292,8 +1292,8 @@
           <div class="desk-v1-writer-body" data-writer-body contenteditable="true" role="textbox" aria-multiline="true" aria-label="${esc(tab.label)} draft">${_bodyHTML(tab.body)}</div>
         </div>
         <div class="desk-v1-writer-actions">
-          <button type="button" class="btn-add" data-writer-save>${esc(opts.saveLabel || 'Save to What')}</button>
-          <button type="button" class="btn-secondary" data-writer-back>${esc(opts.backLabel || 'Back to What')}</button>${opts.extraHTML || ''}
+          <button type="button" class="btn-add" data-writer-save>${esc(opts.saveLabel || 'Save to Posts')}</button>
+          <button type="button" class="btn-secondary" data-writer-back>${esc(opts.backLabel || 'Back to Posts')}</button>${opts.extraHTML || ''}
         </div>
       </div>
       <aside class="desk-v1-writer-claims" data-writer-claims aria-label="Claims and sources">${_claimsPanelHTML(tab.body)}</aside>
@@ -1315,7 +1315,7 @@
     if (window.DeskV1ArticleMedia) window.DeskV1ArticleMedia.wire(root, tab);
   }
 
-  // Save to What: the draft is handed to review. Placed versions still in
+  // Save to Posts: the draft is handed to review. Placed versions still in
   // drafting / planned become `needs_review`; a piece with none carries the
   // state on its draft. Returns the inverse; the inverse also carries what it
   // changed (`changed`: [{id, from}], `draftFrom`) for persistInReview.

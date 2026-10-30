@@ -16,7 +16,7 @@
       return `<button type="button" class="desk-v1-composer-account" data-composer-channel="${esc(ch.id)}" aria-pressed="${d.selected.has(ch.id)}" ${locked ? 'disabled' : ''}>
         <span class="desk-v1-composer-avatar" data-platform="${esc(ch.platform)}" aria-hidden="true">${esc(ch.platform === 'x' ? 'X' : String(ch.platform || name).slice(0, 2).toUpperCase())}</span>
         <span>${esc(name)}</span><span aria-hidden="true">${d.selected.has(ch.id) ? '✓' : '+'}</span></button>`;
-    }).join('')}</div>${all.length ? '' : '<p class="desk-v1-composer-hint">Choose this campaign’s accounts in Where before sending a post to review.</p>'}`;
+    }).join('')}</div>${all.length ? '' : '<p class="desk-v1-composer-hint">Choose this campaign’s accounts in Channels before sending a post to review.</p>'}`;
   }
 
   // Called inside the composer's per-piece queue. Each successful version write

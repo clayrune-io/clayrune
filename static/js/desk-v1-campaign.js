@@ -17,7 +17,7 @@
   // through the rightcol Posy box — the `onSend` handler below (in
   // `deskV1FillCampaignRightColumn`) matches on this exact string to run
   // `_runSuggestTask` instead of the generic instruction handler.
-  const _HOW_SUGGEST_TEXT = 'Suggest What / When / Where';
+  const _HOW_SUGGEST_TEXT = 'Suggest Posts / When / Channels';
 
   // ── data resolution (same _fx() convention as desk-v1-review.js/-home.js) ─
   function _fx() { return window.DeskV1Store.state(); }
@@ -1001,7 +1001,7 @@
   }
 
   // ────────────────────────────────────────────────────────────────────────
-  // ③ What (R2-7). The list, the CONTENT TYPES tray and the source-first
+  // ④ Posts (R2-7). The list, the CONTENT TYPES tray and the source-first
   // create-cards live in desk-v1-what.js (`deskV1FillWhat`); this file keeps
   // the pieces of the old Content tab that What still leans on — the piece ⋯
   // menu and its commands, the Suggest banner, and the Posy selection — and
@@ -1026,7 +1026,7 @@
     const st = _ensureState(params.campaignId);
     st.el = el;
     if (!camp) { el.innerHTML = '<div class="desk-v1-stub-inline">Campaign not found.</div>'; return; }
-    if (typeof window.deskV1FillWhat !== 'function') { el.innerHTML = '<div class="desk-v1-stub-inline">What is not loaded.</div>'; return; }
+    if (typeof window.deskV1FillWhat !== 'function') { el.innerHTML = '<div class="desk-v1-stub-inline">Posts is not loaded.</div>'; return; }
     window.deskV1FillWhat(el, params, camp);
   }
 
@@ -1045,7 +1045,7 @@
     acceptSuggested: (camp) => _acceptSuggestedWhat(camp),
   };
 
-  // R2-6: the ② How stop's "Suggest What / When / Where" task writes
+  // R2-6: the ② How stop's "Suggest Posts / When / Channels" task writes
   // `camp.how.suggested.what` — an array of draft piece proposals, none of
   // them real content yet. This banner is the ONLY place that offer is
   // visible on the Content tab; "Accept all" is the one action R2-6 builds
@@ -1073,7 +1073,7 @@
   // desk-v1-how.js driving the rightcol Posy box's real Send). Writes
   // DRAFT suggestions only (§4.2 item 3: "never commitments") — ③'s own
   // `_suggestedWhatBannerHTML`/`_acceptSuggestedWhat` above turn `what`
-  // into real pieces; ⑤ When and ④ Where read `how.suggested.when`/`.where` directly
+  // into real pieces; ⑤ When and ③ Channels read `how.suggested.when`/`.where` directly
   // (desk-v1-calendar.js, desk-v1-shell.js's 'where' branch) since neither
   // has a dedicated accept flow yet (R2-9/R2-10). Only refreshes the
   // Content tab body if it's the one currently mounted AND currently the

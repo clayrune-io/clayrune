@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - Put campaign channels before posts
+
+- Campaign stops now read Brief, Goal, Channels, Posts, When, Launch. Channels sets the campaign account bound and shows its post overview; Posts lists campaign pieces and opens post composers. Existing route IDs and saved cursors remain compatible.
+- Launch's missing-account link names Channels. Editor return buttons, composer guidance, suggestions and When's empty-state link follow the new names and order. Approval and publishing gates are unchanged. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-30] - Keep campaign placement overview read-only
 
 - Where shows each campaign account's live post count and existing assignments, with hover/tap previews. Individual assignment drags, placement menus and remove buttons are retired; post destinations are selected in the composer.

@@ -306,8 +306,8 @@
       <p class="desk-v1-where-drop-hint" data-where-drop-hint>Select campaign accounts below. This overview shows which posts go to each account.</p>
       <div class="desk-v1-where-board" data-where-board>
         <section class="desk-v1-where-msgs" data-where-messages aria-label="Messages">
-          <header class="desk-v1-where-msghead"><div class="desk-v1-where-msgtitle">Messages</div><div class="desk-v1-where-msgsub">every piece from What</div></header>
-          <div class="desk-v1-where-msglist">${fams.length ? fams.map((f) => _messageHTML(camp, f, cols)).join('') : '<div class="desk-v1-where-colempty" data-where-nomessages>No pieces yet. Add them in What.</div>'}</div>
+          <header class="desk-v1-where-msghead"><div class="desk-v1-where-msgtitle">Messages</div><div class="desk-v1-where-msgsub">every piece from Posts</div></header>
+          <div class="desk-v1-where-msglist">${fams.length ? fams.map((f) => _messageHTML(camp, f, cols)).join('') : '<div class="desk-v1-where-colempty" data-where-nomessages>No pieces yet. Add them in Posts.</div>'}</div>
         </section>
         ${cols.map((ch) => _columnHTML(camp, ch)).join('')}
         ${cols.length ? '' : '<div class="desk-v1-where-nocols" data-where-nocols>No accounts yet. Select one from Sources below.</div>'}

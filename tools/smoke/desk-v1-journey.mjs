@@ -214,7 +214,7 @@ async function run(browser) {
   await page.waitForSelector('.desk-v1-map-stop[data-stop="how"][data-state="here"]', { timeout: 8000 });
   const stops = await page.$$eval('.desk-v1-map-stop', (els) => els.map((e) => e.dataset.stop));
   const bodyText = await page.evaluate(() => document.body.innerText);
-  JSON.stringify(stops) === JSON.stringify(['how', 'goal', 'what', 'where', 'when', 'launch']) && !/Setup\s+\d\s+of\s+3/.test(bodyText)
+  JSON.stringify(stops) === JSON.stringify(['how', 'goal', 'where', 'what', 'when', 'launch']) && !/Setup\s+\d\s+of\s+3/.test(bodyText)
     ? ok(`new campaign: opens on ① Brief of ${stops.length} stops, no "Setup n of 3"`)
     : fail(`new campaign: wrong stepper ${JSON.stringify(stops)}`);
   const campA = await lastCampaignId(page);
@@ -318,7 +318,7 @@ async function run(browser) {
   await page.waitForSelector('[data-storyboard]', { timeout: 6000 });
   const sbCrumb = await text(page, '.desk-v1-crumb-title');
   const strip = await text(page, '[data-returning-to]');
-  sbCrumb === 'New video · Storyboard' && /Returning to ›/.test(strip) && /What · New video/.test(strip)
+  sbCrumb === 'New video · Storyboard' && /Returning to ›/.test(strip) && /Posts · New video/.test(strip)
     ? ok(`Create new -> storyboard: "${sbCrumb}", strip "${strip}"`)
     : fail(`storyboard header wrong: ${JSON.stringify([sbCrumb, strip])}`);
   await page.evaluate(() => document.querySelectorAll('#toast-container .toast').forEach((t) => t.remove()));

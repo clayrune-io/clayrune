@@ -2,7 +2,7 @@
 // R2-7; first built as IA5). Window-bridged module, no `import` (ground rule 1).
 //
 // A piece is today's content family. R2-7 retired IA5's four facets: a piece is
-// ONE drill-in page under ③ What (`‹ <campaign> · What`), a single scroll with
+// ONE drill-in page under ④ Posts (`‹ <campaign> · Posts`), a single scroll with
 // three sections:
 //
 //   Copy      draft editor plus one row per destination version; `Review`
