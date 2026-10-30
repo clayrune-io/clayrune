@@ -109,11 +109,13 @@
 
   // The tray: every connected workspace account (accounts are the workspace's,
   // connected on the Connections screen — not a per-project list), plus every
-  // not-connected one, whose card routes there. A read-only account (capability `none`: YouTube,
-  // Instagram, TikTok) is neither: the Desk reads it and never publishes there, so it has
-  // nothing to connect and can never be placed. It is listed apart, with no action.
+  // configured but unavailable one, whose card routes there. Preview-only
+  // records and catalogue-only services are not configured connections. Read-only
+  // accounts (capability `none`) have no publish route; they are listed apart
+  // and can still be placed for planning.
   function _sources() {
-    const all = _fx().channels || [];
+    const all = (_fx().channels || []).filter((c) => !c.preview &&
+      (window.DeskV1Store.live() || c.connected !== false || c.userAdded));
     const ro = (c) => c.capability === 'none';
     return { bound: all.filter((c) => c.connected !== false && !ro(c)),
              off: all.filter((c) => c.connected === false && !ro(c)),
@@ -365,6 +367,7 @@
 
   // ── view ─────────────────────────────────────────────────────────────────
   function _previewTag(ch) {
+    if (ch && !ch.preview && ch.publish) return window.DeskV1WhereTiles.statusChipHTML(ch);
     if (ch && !ch.preview && ch.connected === false) return `<span class="desk-v1-where-chip" data-tone="warn">${ch.capability === 'none' ? 'Read only' : 'Not connected'}</span>`;
     return ch && ch.preview ? '<span class="desk-v1-where-preview" data-preview data-short="Preview" title="Preview · not connected">Preview · not connected</span>' : '';
   }
@@ -546,6 +549,8 @@
     if (!camp.plan.accounts) camp.plan.accounts = [];
     _st = { el, campaignId: camp.id };
     window.DeskV1WhereHighlight.set(params);
+    window.DeskV1WhereServices.refresh(_repaint);
+    window.DeskV1WhereTiles.loadStatus(_repaint);
     _paint(el, camp);
   }
 

@@ -9,16 +9,16 @@
  *     (platform mark + handle + platform + ✕); version cards read
  *     `<kind> → <platform format>` and NO time (R2-19: times are When's); the rule line sits under the
  *     board; SOURCES lists one card per connected account (the 2 X accounts
- *     stay 2 cards with distinct handles), YouTube/Discord carry the
- *     `Preview · not connected` label, Reddit is `not connected` + `Connect ›`.
+ *     stay 2 cards with distinct handles), preview-only YouTube/Discord are hidden, and configured offline Reddit stays
+ *     visible with `Not connected` + `Connect ›`.
  *   - The retired campaign Add tray's Channels shelf is gone.
  *   - Drag 1: a message onto @ron ADDS a version (message stays listed, pill
  *     +1, card `Article → X thread`); toast + Undo restores.
  *   - Drag 2: that card @ron -> Clayrune Page MOVES it (total unchanged).
  *   - Drag 3: a source dragged up adds its column. On an Active campaign that
  *     widens the bounds -> Launch reads `Awaiting approval`; ✕ on an
- *     approved account's column keeps approval; a preview-only source
- *     (YouTube) drags and drops like the rest.
+ *     approved account's column keeps approval; a configured read-only source
+ *     (YouTube) drags and drops for planning.
  *   - Keyboard equivalents for all three drags (focus + Enter -> menu).
  *   - A new campaign's Where shows Messages + 0 account columns; `Connect ›`
  *     lands on the project's Presence page.
@@ -87,7 +87,7 @@ const POST = '30 Windows testers wanted'; // frame 7b's `Post` piece
 const EXPECT = {
   messages: { 'Undo anything: restore points in Clayrune 2.1': 2, 'Install in two minutes': 3, '30 Windows testers wanted': 2, 'Agent live run': 1, 'Home status table': 2, 'Where board': 1 },
   columns: { 'ch-x-ron': 5, 'ch-li-page': 4, 'ch-blog': 2 },
-  sources: ['ch-x-ron', 'ch-li-page', 'ch-blog', 'ch-x-clayrune', 'ch-yt-clayrune', 'ch-discord-community', 'ch-reddit'],
+  sources: ['ch-x-ron', 'ch-li-page', 'ch-blog', 'ch-x-clayrune', 'ch-reddit'],
   offSources: ['ch-reddit'],
 };
 
@@ -121,6 +121,7 @@ async function newBootedPage(browser, tone, viewport) {
   await page.route('**/*', fulfillOrAbort);
 
   await seedDeskV1Fixtures(page);
+  await page.addInitScript(() => { const ch = window.DeskV1Fixtures.channels.find(c => c.id === 'ch-reddit'); ch.preview = false; ch.userAdded = true; });
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row', { timeout: 15000 });
   await page.evaluate(() => window.sidebarNav('social'));
@@ -274,8 +275,8 @@ async function runRender(browser, tone) {
     `${tag} 2 X accounts render as 2 source cards with distinct handles: ${xs.map((s) => s.handle).join(', ')}`,
     `${tag} X source cards wrong: ${JSON.stringify(xs)}`);
   const prev = b.sources.filter((s) => s.preview).map((s) => s.channelId).sort();
-  check(JSON.stringify(prev) === JSON.stringify(['ch-discord-community', 'ch-reddit', 'ch-yt-clayrune']),
-    `${tag} YouTube + Discord carry "Preview · not connected"; X/LinkedIn/blog do not`, `${tag} preview labels wrong: ${JSON.stringify(prev)}`);
+  check(JSON.stringify(prev) === JSON.stringify([]),
+    `${tag} preview-only services are absent from Sources`, `${tag} preview labels wrong: ${JSON.stringify(prev)}`);
   check(b.off.length === 1 && /not connected/i.test(b.off[0].text) && b.off[0].connect && b.off[0].draggable,
     `${tag} the not-connected card reads "${b.off[0] && b.off[0].text}" and is draggable`, `${tag} off card wrong: ${JSON.stringify(b.off)}`);
 
@@ -354,13 +355,15 @@ async function runDrags(browser) {
   const aw = await page.$('[data-where-awaiting]');
   check(!!aw, 'drag 3: the Where stop carries the same Awaiting-approval notice', 'drag 3: no awaiting notice on Where');
 
-  // Preview-only account behaves like any other: drag up, drop a message, remove.
+  // A configured read-only account can still be placed for planning.
+  await page.evaluate(() => { const ch = window.DeskV1Fixtures.channels.find(c => c.id === 'ch-yt-clayrune'); ch.preview = false; ch.capability = 'none'; ch.userAdded = true; });
+  await backToWhere(page);
   await drag(page, '[data-where-source][data-channel-id="ch-yt-clayrune"]', '[data-where-messages]');
   await drag(page, '[data-where-message][data-family-id="fam-install-video"]', '.desk-v1-where-col[data-channel-id="ch-yt-clayrune"]');
   b = await readBoard(page);
   const yt = col(b, 'ch-yt-clayrune');
-  check(!!yt && yt.preview && yt.versions.length === 1 && yt.versions[0].format === 'Video → YouTube upload',
-    `preview-only account: column tagged "Preview · not connected", took a drop ("${yt && yt.versions[0] && yt.versions[0].format}")`, `preview-only account wrong: ${JSON.stringify(yt)}`);
+  check(!!yt && !yt.preview && yt.versions.length === 1 && yt.versions[0].format === 'Video → YouTube upload',
+    `configured read-only account: column took a drop ("${yt && yt.versions[0] && yt.versions[0].format}")`, `configured read-only account wrong: ${JSON.stringify(yt)}`);
 
   reportUncaught(pageErrors, '[drags]');
   await ctx.close();
