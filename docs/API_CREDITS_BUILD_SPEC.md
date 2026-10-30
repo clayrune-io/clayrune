@@ -52,8 +52,8 @@ user-set budget and stop point, and a way to measure the cost first.
   entries {ts, caller, model, input/output/cache tokens, cost_usd, estimated
   bool}; keep current + previous cycle only. `can_spend()`, `record()`,
   `status()`. Cycle boundary from reset day (clamp to month length). Price
-  table per model per MTok input/output/cache-read/cache-write, taken from the
-  `claude-api` skill reference (do not use remembered numbers), in one
+  table per model per MTok input/output/cache-read/cache-write, taken from
+  the "Price table" appendix below (do not use remembered numbers), in one
   constant with a dated source comment. Unknown model -> refuse to offload
   (fallback), do not guess a price.
 - `mc/api_credits_transport.py`: one POST to `https://api.anthropic.com/v1/messages`
@@ -99,3 +99,31 @@ section at 1440 and 390, screenshots in `_scratch/api_credits/`. pyright basic
 No live paid call except the test route's code path in tests (mock it). No
 server restart, no merge, no push. Do not change provider_env_scope.py,
 the transform sandbox flags, or any human-only gate.
+
+
+## Appendix: price table (USD per million tokens)
+
+Copied 2026-10-30 by Dave from the bundled `claude-api` skill
+(`shared/models.md`, `shared/model-migration.md`, `shared/prompt-caching.md`,
+skill build 2.1.312). Builders on engines without that skill use this table.
+Only explicitly stated figures are listed; a model or field missing here is
+"price unknown" and must fall back to the subscription path, not be guessed.
+Cache writes: 5-minute TTL = 1.25x input, 1-hour TTL = 2x input (stated as a
+rule for all models). Phase 1 writes 5-minute caches only.
+
+| Model id | Input | Output | Cache read | Cache write 5m | Note |
+|---|---|---|---|---|---|
+| `claude-fable-5-1` | 10.00 | 50.00 | 0.25 | 12.50 | |
+| `claude-fable-5` | 10.00 | 50.00 | 1.00 | 12.50 | |
+| `claude-opus-5-5` | 4.00 | 20.00 | 0.20 | 5.00 | |
+| `claude-sonnet-5-5` | 2.00 | 10.00 | 0.20 | 2.50 | |
+| `claude-sonnet-5` | 2.00 | 10.00 | 0.20 | 2.50 | "same prices" as Sonnet 5.5 |
+| `claude-haiku-5-5` | 0.10 | 0.50 | 0.01 | 0.125 | prompt <= 100K tokens |
+| `claude-haiku-5-5` | 0.50 | 2.50 | 0.05 | 0.625 | prompt > 100K tokens |
+
+`claude-opus-5` is $5 / $25 but its cache-read price is not stated: treat as
+unknown (fallback). Haiku 5.5 picks the rate card from the request's total
+prompt tokens (input + cache read + cache write). The skill says to check the
+live Anthropic pricing page before budgeting on these numbers, so make the
+table overridable from `data/api_credits.json` (`prices` key, same shape) and
+show "estimated" in the UI for any cost computed from it.
