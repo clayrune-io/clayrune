@@ -10,12 +10,18 @@
 
 const _reportWaitingExpanded = new Set();
 function _reportWaitingKey(reports) { return JSON.stringify(reports); }
+function _reportWaitingSummary(reports) {
+  return [['failed', 'not delivered'], ['check_failed', 'could not check'],
+    ['delivering', 'delivering'], ['waiting', 'queued']]
+    .map(([stage, word]) => [reports.filter(r => r.stage === stage).length, word])
+    .filter(([count]) => count).map(([count, word]) => `${count} ${word}`).join(', ');
+}
 
 function _reportWaitingHTML(sessionId, reports) {
   const rows = reports.map(r =>
     `<div class="report-waiting-row" data-stage="${esc(r.stage)}" data-child="${esc(r.child_session_id || '')}">` +
     `<strong>${esc(r.label)}</strong> <span class="report-waiting-detail">${esc(r.detail)}</span>` +
-    (r.stage === 'held' || r.stage === 'review' ?
+    (r.stage === 'failed' || r.stage === 'check_failed' ?
       `<div class="report-waiting-actions"><button type="button" data-action="retry" data-event="${esc(r.event_id)}">Retry</button>` +
       `<button type="button" data-action="mark-handled" data-event="${esc(r.event_id)}">Mark handled</button></div>` : '') +
     `</div>`).join('');
@@ -25,7 +31,7 @@ function _reportWaitingHTML(sessionId, reports) {
     `data-key="${esc(_reportWaitingKey(reports))}" role="status">` +
     (multiple ? `<button type="button" class="report-waiting-summary" data-action="expand" ` +
       `aria-expanded="${expanded}" aria-controls="report-waiting-rows-${esc(sessionId)}">` +
-      `${reports.length} reports may not have arrived - review</button>` : '') +
+      `${esc(_reportWaitingSummary(reports))}</button>` : '') +
     `<div id="report-waiting-rows-${esc(sessionId)}" class="report-waiting-rows"${multiple && !expanded ? ' hidden' : ''}>${rows}</div>` +
     `<span class="report-waiting-error" role="alert"></span></div>`;
 }
@@ -65,15 +71,16 @@ function paintReportsWaiting(sessionId, reports) {
     const projectId = (agentStatusCache[sessionId] || {}).projectId;
     if (!report || !projectId) return;
     const retry = button.dataset.action === 'retry';
-    if (retry && !window.confirm('Retry this report? It may already have arrived, so retrying can send it twice.')) return;
+    const action = retry ? (report.retry_action || 'retry') : 'mark-handled';
+    if (action === 'retry' && !window.confirm('Send this report again?')) return;
     const buttons = fresh.querySelectorAll('.report-waiting-actions button');
     buttons.forEach(b => { b.disabled = true; });
     const error = fresh.querySelector('.report-waiting-error');
     error.textContent = '';
     try {
-      const response = await fetch(`/api/project/${encodeURIComponent(projectId)}/agent/delegation/${retry ? 'retry' : 'mark-handled'}`, {
+      const response = await fetch(`/api/project/${encodeURIComponent(projectId)}/agent/delegation/${action}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event_id: report.event_id, ...(retry ? {
+        body: JSON.stringify({ event_id: report.event_id, ...(action === 'retry' ? {
           table: report.table || 'inbox', reviewed_resolution: true } : {}) }),
       });
       const result = await response.json();

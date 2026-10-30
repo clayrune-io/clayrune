@@ -14,6 +14,9 @@ def test_transcript_confirmation_runs_before_drain_and_wake(lifecycle, monkeypat
     entered = threading.Event()
 
     class Reconciler:
+        def __init__(self, *, parent_guard):
+            assert callable(parent_guard)
+
         def tick(self, store, sessions, load_project, load_log):
             trace.append('confirm')
 

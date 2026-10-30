@@ -1,7 +1,7 @@
 """Confirm lost delegation acknowledgments from parent Claude user turns.
 
-Runs in the delivery loop, never on a status poll. A five-minute gate covers
-even failed/missing transcript reads. Each directory is scanned once for all
+Runs in the delivery loop, never on a status poll. New/changed candidates are
+checked on the next tick, with a five-minute full sweep as backstop. Each directory is scanned once for all
 parents, skipping files older than its oldest candidate. Shared project dirs
 require a known provider id, injected user identity, or the parent's own
 assistant tool-use dispatch recipient. Ownership evidence is never a receipt.
@@ -13,6 +13,7 @@ import json
 import re
 import sqlite3
 import time
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -20,6 +21,7 @@ from typing import Any, Callable, Mapping
 from mc.agent_runtime import ClaudeRuntime
 from mc.core import _log
 from mc.delegation_delivery import DeliveryStore
+from mc.delegation_settlement import settle
 
 INTERVAL_SECONDS = 300.0
 GroupKey = tuple[str, str]
@@ -141,20 +143,22 @@ def transcript_matches(path: Path, rows: list[dict], *, owned: bool,
 
 class TranscriptReconciler:
     def __init__(self, *, projects_home: Path | None = None,
-                 interval: float = INTERVAL_SECONDS):
+                 interval: float = INTERVAL_SECONDS, parent_guard: Callable | None = None):
         self.projects_home = projects_home or Path.home() / '.claude' / 'projects'
         self.interval = interval
         self._next_check = 0.0
         self._last_error = ''
+        self.parent_guard = parent_guard or (lambda pid: nullcontext())
+        self._seen: dict[str, tuple] = {}
 
     def tick(self, store: DeliveryStore, sessions: Mapping[str, Any],
              load_project: Callable, load_log: Callable) -> int:
         now = store.clock()
-        if now < self._next_check:
-            return 0
-        self._next_check = now + self.interval
+        full = now >= self._next_check
+        if full:
+            self._next_check = now + self.interval
         try:
-            changed = self._reconcile(store, sessions, load_project, load_log)
+            changed = self._reconcile(store, sessions, load_project, load_log, full=full)
             self._last_error = ''
             return changed
         except Exception as exc:
@@ -165,18 +169,51 @@ class TranscriptReconciler:
             return 0
 
     def _reconcile(self, store: DeliveryStore, sessions: Mapping[str, Any],
-                   load_project: Callable, load_log: Callable) -> int:
+                   load_project: Callable, load_log: Callable, *, full: bool = True) -> int:
         with store._db() as db:
             rows = [dict(r) for r in db.execute(
-                "SELECT event_id,project_id,parent_session_id,payload,created_at FROM inbox "
-                "WHERE state IN ('uncertain','blocked')").fetchall()]
-        result = self.scan_rows(rows, sessions, load_project, load_log)
+                "SELECT * FROM inbox WHERE state IN ('uncertain','blocked','recovery_required') "
+                "OR (state='submitted' AND handoff_boundary!='')").fetchall()]
+        def signature(row):
+            parent = sessions.get(row['parent_session_id']) or {}
+            try:
+                path = json.loads(row['handoff_boundary'] or '{}').get('path')
+                stat = Path(path).stat() if path else None
+                artifact = (stat.st_mtime_ns, stat.st_size) if stat else None
+            except (OSError, ValueError, TypeError):
+                artifact = None
+            return tuple(row[k] for k in ('state', 'fence_token', 'attempts', 'handoff_boundary',
+                                         'turn_completion', 'check_requested')) + (
+                                             parent.get('status'), bool(parent.get('waiting_for_question')),
+                                             bool(parent.get('pending_questions')),
+                                             bool(parent.get('_stdin_write_uncertain')), artifact)
+        live = {r['event_id'] for r in rows}
+        self._seen = {key: value for key, value in self._seen.items() if key in live}
+        candidates = [r for r in rows if full or self._seen.get(r['event_id']) != signature(r)]
+        if not candidates:
+            return 0
+        # MC-1106's broad positive-only scan still handles historical rollovers
+        # with no recorded boundary. New attempts use their exact owned log.
+        legacy = [r for r in candidates if full or not r['handoff_boundary'] or
+                  json.loads(r['handoff_boundary']).get('error') or
+                  (json.loads(r['turn_completion'] or '{}').get('native') not in
+                   (None, json.loads(r['handoff_boundary']).get('native')))]
+        result = self.scan_rows(legacy, sessions, load_project, load_log)
         changed = 0
+        found = set(result['matches'])
         for pid, event_id in result['matches']:
             try:
                 changed += int(store.resolve_report(event_id, pid, confirmed=True))
             except ValueError:
                 continue  # retry/handle/claim raced the scan; never overwrite it
+        for row in candidates:
+            self._seen[row['event_id']] = signature(row)
+            if (row['project_id'], row['event_id']) in found:
+                continue
+            try:
+                changed += settle(store, row, sessions, self.parent_guard)
+            except ValueError:
+                continue  # explicit recovery/claim won the race
         return changed
 
     def scan_rows(self, rows: list[dict], sessions: Mapping[str, Any],

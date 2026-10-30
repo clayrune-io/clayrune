@@ -44,8 +44,11 @@ const row = (reports) => ({
 const waiting = { event_id: 'child1:turn:1', child_session_id: 'child1', who: 'Sol_Tobin',
   stage: 'waiting', label: 'report waiting from Sol_Tobin',
   detail: 'Queued. It is delivered into this chat when the current turn ends.', since: 1 };
-const held = { ...waiting, stage: 'held', label: 'report from Sol_Tobin is held, needs recovery',
-  detail: 'This chat cannot take it right now (stopped, errored or quota-blocked). It is not retried automatically.' };
+const delivering = { ...waiting, stage: 'delivering', label: 'Delivering report from Sol_Tobin; confirming receipt',
+  detail: 'Checking the chat log to confirm receipt.' };
+const held = { ...waiting, stage: 'check_failed', retry_action: 'check',
+  label: 'Could not check report from Sol_Tobin: chat log unreadable',
+  detail: 'Retry checks the chat log again without resending the report.' };
 const floorBody = (label) => ({
   poll_seconds: 600, activity_states: true, counts: { figures: 1, rooms: 1, quiet: 0 },
   rooms: [{ id: PID, name: 'Report smoke', emoji: '', color: '', figures: [{
@@ -69,7 +72,7 @@ try {
     await page.route('**/*', (route) => {
       const req = route.request();
       const url = new URL(req.url());
-      if (req.method() === 'POST' && /\/agent\/delegation\/(retry|mark-handled)$/.test(url.pathname)) {
+      if (req.method() === 'POST' && /\/agent\/delegation\/(retry|mark-handled|check)$/.test(url.pathname)) {
         const body = req.postDataJSON();
         actions.push({ action: url.pathname.split('/').pop(), ...body });
         status = { sessions: [row(status.sessions[0].reports_waiting.filter(r => r.event_id !== body.event_id))] };
@@ -140,9 +143,22 @@ try {
     check(s.present && s.width > 0 && s.height > 0 && s.left >= 0 && s.right <= s.vw + 1,
       `marker is visible and inside the ${w}px viewport (left=${Math.round(s.left)} right=${Math.round(s.right)})`);
 
-    // 2. A parked report reads differently.
+    // 2. A check in progress stays neutral; failures name the actual reason.
+    s = await poll([delivering]);
+    check(s.present && s.stage === 'delivering' && s.text.includes('confirming receipt'), 'pending check says delivering');
+    check(await page.locator(`#report-waiting-${SID} [data-action="retry"]`).count() === 0,
+      'pending check has no resend button');
+    s = await poll([delivering, { ...waiting, event_id: 'queued:turn:1' }]);
+    check(s.text.includes('1 delivering, 1 queued') && !s.text.includes('not delivered'),
+      'mixed summary counts queued and delivering separately');
     s = await poll([held]);
-    check(s.present && s.stage === 'held' && s.text.includes('is held'), 'a parked report says held, not waiting');
+    check(s.present && s.stage === 'check_failed' && s.text.includes('chat log unreadable'),
+      'a failed check names the reason');
+    await page.locator(`#report-waiting-${SID} [data-action="retry"]`).click();
+    await page.waitForFunction(() => !document.querySelector('[id^="report-waiting-"]'));
+    check(actions[0]?.action === 'check' && !actions[0]?.reviewed_resolution,
+      'Retry on a failed check requests another check without confirming or resending');
+    actions.length = 0;
 
     // 3. Same list again leaves one notice; empty list removes it.
     s = await poll([held]);
@@ -150,8 +166,8 @@ try {
 
     // Multiple parked rows occupy one line until reviewed, even after a modal rebuild.
     const reviews = Array.from({ length: 13 }, (_, n) => ({ ...held,
-      event_id: `child${n}:turn:1`, table: 'inbox', stage: 'review',
-      label: `report from Agent ${n} may not have arrived, needs review` }));
+      event_id: `child${n}:turn:1`, table: 'inbox', stage: 'failed', retry_action: 'retry',
+      label: `report from Agent ${n} was not delivered` }));
     s = await poll(reviews);
     const notice = page.locator(`#report-waiting-${SID}`);
     const summary = notice.locator('.report-waiting-summary');
@@ -178,7 +194,7 @@ try {
     await poll(reviews);
     check(await summary.getAttribute('aria-expanded') === 'true', 'poll preserves expanded state');
     await notice.locator('[data-action="mark-handled"]').first().click();
-    await page.waitForFunction(() => document.querySelector('.report-waiting-summary')?.textContent.startsWith('12 reports'));
+    await page.waitForFunction(() => document.querySelector('.report-waiting-summary')?.textContent === '12 not delivered');
     check(actions[0]?.action === 'mark-handled' && !actions[0]?.reviewed_resolution,
       'Mark handled posts the event without requesting re-delivery');
     page.once('dialog', d => d.dismiss());
@@ -186,7 +202,7 @@ try {
     check(actions.length === 1, 'cancelled Retry sends nothing');
     page.once('dialog', d => d.accept());
     await notice.locator('[data-action="retry"]').first().click();
-    await page.waitForFunction(() => document.querySelector('.report-waiting-summary')?.textContent.startsWith('11 reports'));
+    await page.waitForFunction(() => document.querySelector('.report-waiting-summary')?.textContent === '11 not delivered');
     check(actions[1]?.action === 'retry' && actions[1]?.table === 'inbox' && actions[1]?.reviewed_resolution,
       'Retry sends reviewed resolution only after confirmation');
     await summary.click();

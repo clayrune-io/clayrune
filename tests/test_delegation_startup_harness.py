@@ -44,7 +44,12 @@ socket.socket.sendto = _blocked_sendto
 import subprocess as _subprocess
 def _blocked_process(*args, **kwargs):
     raise RuntimeError("process launch blocked by startup harness")
-_subprocess.Popen = _blocked_process
+# asyncio.windows_utils subclasses Popen on import. Keep that contract while
+# still refusing every construction, including through its derived class.
+class _BlockedPopen(_subprocess.Popen):
+    def __init__(self, *args, **kwargs):
+        _blocked_process(*args, **kwargs)
+_subprocess.Popen = _BlockedPopen
 _subprocess.run = _blocked_process
 _subprocess.call = _blocked_process
 os.system = _blocked_process
@@ -161,10 +166,13 @@ server.boot(check_port=False)
 @server.app.post("/test/seed")
 def seed():
     data = request.get_json(force=True); payload = data["payload"]
-    source_result = ar._delivery_store.record_completion_source(
-        data["event_id"], data["project_id"], data["parent_session_id"], payload)
-    enqueue_result = ar._delivery_store.enqueue(data["event_id"], data["project_id"],
-                                                data["parent_session_id"], payload)
+    # Keep fixture setup deterministic: the live loop's source recovery can
+    # otherwise enqueue between these writes and win the first-insert assertion.
+    with ar._delivery_iteration_lock:
+        source_result = ar._delivery_store.record_completion_source(
+            data["event_id"], data["project_id"], data["parent_session_id"], payload)
+        enqueue_result = ar._delivery_store.enqueue(data["event_id"], data["project_id"],
+                                                    data["parent_session_id"], payload)
     if data.get("accepted"):
         ar._delivery_store.accept(data["event_id"], data["project_id"],
                                   data["parent_session_id"], payload)
@@ -278,7 +286,7 @@ def _wait_lost_response(child, event_id, timeout=8):
             current["rows"][event_id]["outbox"] and
             current["rows"][event_id]["outbox"]["state"] == "pending" and
             current["rows"][event_id]["outbox"]["attempts"] >= 1 and
-            current["rows"][event_id]["inbox"] is not None and
+            (current["rows"][event_id]["inbox"] or {}).get("state") == "submitted" and
             "transport-accepted:" + event_id in current["trace"]):
         if time.monotonic() >= deadline:
             raise AssertionError(f"{event_id} lost-response fault was not observed: {current!r}")
