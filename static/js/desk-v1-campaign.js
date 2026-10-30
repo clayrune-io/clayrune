@@ -287,15 +287,30 @@
   // Undo restores every removed item at its ORIGINAL array index (captured
   // before removal), not just appended at the end, so array order — and any
   // other code that assumes it — survives an undo unchanged.
+  //
+  // Live (Ron 2026-10-30, 'FL3 V2'): this used to splice the local arrays
+  // only, through the bare commandBus, and never called the server, so the
+  // next workspace load put the "deleted" draft back. It is now one
+  // DeskV1Store.write: DELETE after any create still in flight, a refusal
+  // rolls the campaign back with the server's reason, and Undo POSTs
+  // .../restore, which puts back the campaign AND its pieces exactly as the
+  // server trashed them (mc/desk_campaign_trash.py). A 404 is not a refusal:
+  // the server holds no such campaign, so the local row was already a ghost.
   function _deleteCampaignCascade(camp, onDone) {
     const campaigns = _campaigns();
     const families = _families();
     const conversations = _conversations();
+    const S = window.DeskV1Store;
+    const id = encodeURIComponent(camp.id);
     let campIdx, famRemoved, convRemoved;
-    DeskV1Kit.commandBus.run({
+    return S.write({
       label: `Deleted “${camp.plan.title || 'Untitled draft'}”`,
       destructive: true,
-      do: () => {
+      request: () => window.deskV1AfterCampaignSaved(camp.id)
+        .then(() => S.api('DELETE', '/api/desk/campaigns/' + id))
+        .catch((e) => { if (e && e.status === 404) return { ok: true, missing: true }; throw e; }),
+      undoRequest: () => S.api('POST', '/api/desk/campaigns/' + id + '/restore?shape=v1'),
+      apply: () => {
         campIdx = campaigns.indexOf(camp);
         famRemoved = [];
         for (let i = families.length - 1; i >= 0; i--) {
@@ -308,7 +323,8 @@
         if (campIdx >= 0) campaigns.splice(campIdx, 1);
         if (onDone) onDone('deleted');
       },
-      undo: () => {
+      unapply: () => {
+        if (campaigns.includes(camp)) return;
         campaigns.splice(Math.min(campIdx, campaigns.length), 0, camp);
         famRemoved.forEach(({ item, idx }) => families.splice(idx, 0, item));
         convRemoved.forEach(({ item, idx }) => conversations.splice(idx, 0, item));
