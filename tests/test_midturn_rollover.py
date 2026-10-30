@@ -840,9 +840,9 @@ def test_mc1088_roll_carries_midturn_user_messages_verbatim_and_first(env):
     assert head in prompt
     assert first in prompt and second in prompt, 'mid-turn messages must be verbatim'
     assert prompt.index(first) < prompt.index(second)
-    assert prompt.index(head) < prompt.index('--- Original task (verbatim) ---'), \
+    assert prompt.index(head) < prompt.index('--- First message of this chat'), \
         'unanswered messages must come before the original task'
-    assert '--- Latest user message ---\n' + second in prompt, \
+    assert '--- Latest user message (current direction) ---\n' + second in prompt, \
         'the latest message differs from the original task and must be shown'
     assert TASK in prompt
 
@@ -851,14 +851,14 @@ def test_mc1088_roll_without_midturn_messages_says_none(env):
     prompt = _roll_prompt(env, lambda session: None)
     assert ('--- Unanswered user messages (answer these first) ---\n(none)'
             in prompt)
-    assert '--- Latest user message ---' not in prompt
+    assert '--- Latest user message (current direction) ---' in prompt
 
 
-def test_mc1088_latest_message_shown_only_when_it_differs_from_the_task(env):
+def test_mc1088_latest_message_is_current_and_distinct_from_unanswered(env):
     from mc import midturn_rollover as mt
     p = _roll_prompt(env, lambda s: mt.note_user_message(s, 'yes please'))
-    assert '--- Latest user message ---\nyes please' in p
-    assert '(none)' in p.split('--- Original task')[0], \
+    assert '--- Latest user message (current direction) ---\nyes please' in p
+    assert '(none)' in p.split('--- First message of this chat')[0], \
         'a non-mid-turn message is the latest message but not unanswered'
 
 

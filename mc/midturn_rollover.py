@@ -16,7 +16,7 @@ This module holds the parts that need no Flask/agent_routes state:
     message (MC-1088);
   * `should_roll` — the gate, evaluated at a tool_result boundary only;
   * `build_state_block` — what a mid-task roll must carry that the transcript
-    handoff (role/text turns, 8000 chars) does not: the original task verbatim,
+    handoff (role/text turns, 8000 chars) does not: the historical first message,
     branch/worktree, `git status` + `git diff --stat`, the last tool calls,
     and background jobs;
   * `record_roll` — durable per-roll log outside DATA_DIR (the project
@@ -65,7 +65,8 @@ _BG_JOBS_KEEP = 10
 UNANSWERED_KEEP = 5
 USER_MSG_CAP_CHARS = 2000
 _INPUT_PREVIEW = 160
-_GIT_OUT_CAP = 4000
+_GIT_OUT_CAP = 1000
+_GIT_OUT_LINES = 20
 _GIT_TIMEOUT_S = 10
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
@@ -352,8 +353,9 @@ def _git(cwd, *args):
     text = (out.stdout or '').strip() or (out.stderr or '').strip()
     if out.returncode != 0:
         return f'(git {" ".join(args)} exited {out.returncode}: {text[:300]})'
-    if len(text) > _GIT_OUT_CAP:
-        text = text[:_GIT_OUT_CAP] + '\n[... truncated]'
+    bounded = '\n'.join(text.splitlines()[:_GIT_OUT_LINES])[:_GIT_OUT_CAP]
+    if bounded != text:
+        text = bounded + '\n[... truncated]'
     return text or '(clean)'
 
 
@@ -372,8 +374,8 @@ def build_state_block(session, cwd):
     always present; an unavailable one says so instead of vanishing.
 
     MC-1088 puts the user's mid-turn messages FIRST ("Unanswered user messages
-    (answer these first)") and, when it differs from the original task, the
-    latest user message: a roll used to rebuild the session from the first
+    (answer these first)") and the latest user message as current direction:
+    a roll used to rebuild the session from the first
     prompt alone, so messages the CLI had absorbed mid-turn were never
     answered (2026-10-12, transcript 03546a91).
 
@@ -383,7 +385,7 @@ def build_state_block(session, cwd):
     tool_results' first lines (`note_tool_result_text`, capped at
     `TOOL_RESULT_CARRY_CAP_BYTES`) — the transcript handoff carries only
     role/text turns, so command/search OUTPUT otherwise vanishes at the roll."""
-    task = session.get('task') or '(original task text unavailable)'
+    task = session.get('task') or '(first message unavailable)'
     recent = session.get('_mt_recent_tools') or []
     calls = '\n'.join(f"- {c['name']}: {c['input']}" if c['input'] else f"- {c['name']}"
                       for c in recent) or '(none recorded)'
@@ -405,13 +407,14 @@ def build_state_block(session, cwd):
     unanswered_text = ('\n'.join(f"- [{m['ts']}] {m['text']}" for m in unanswered)
                        or '(none)')
     latest = session.get('_mt_latest_user_msg')
-    latest_text = (f"--- Latest user message ---\n{latest}\n\n"
-                   if latest and latest != session.get('task') else '')
+    latest_text = (f"--- Latest user message (current direction) ---\n"
+                   f"{latest or '(not recorded; use the recent conversation)'}\n\n")
     return (
         "=== Mid-task rollover state ===\n"
         f"--- Unanswered user messages (answer these first) ---\n{unanswered_text}\n\n"
         f"{latest_text}"
-        f"--- Original task (verbatim) ---\n{task}\n\n"
+        f"--- First message of this chat (historical; may be long finished, "
+        f"not the current task) ---\n{task}\n\n"
         f"--- Working directory ---\n{cwd}\n"
         f"Branch: {_git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD')}\n\n"
         f"--- git status --short ---\n{_git(cwd, 'status', '--short')}\n\n"
