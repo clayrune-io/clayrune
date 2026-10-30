@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-29] - Where shows saved connections, not catalogue placeholders
+
+- Sources lists configured accounts and saved browser destinations only; preview services and destinations that have never been configured no longer appear. Broken configured connections stay visible.
+- Legacy Instagram browser references use the same saved check status as Connections and open their existing detail. Attaching the sign-in to an account still uses the existing handle, Permissions and passcode flow; no account, browser grant or publishing permission is inferred.
+- Account chips distinguish browser sign-in state from publishing readiness, including LinkedIn app-review waits. Saved connections refresh when returning to Where. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-29] - Show sign-in recovery as waiting in Connections
 
 - Browser checks show **Waiting for you to sign in** while the sign-in recovery loop is active, including during **Checking…** polls. Verified results and real check failures still end the wait; a signed-out poll during recovery no longer says **Not working**.

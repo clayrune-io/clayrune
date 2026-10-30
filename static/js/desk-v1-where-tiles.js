@@ -27,6 +27,30 @@
   function chipHTML(word, tone, extra) {
     return `<span class="desk-v1-where-chip" data-tone="${esc(tone)}"${extra || ''}>${esc(word)}</span>`;
   }
+  // Use Connections' account-to-project rule for saved read evidence, too.
+  function homeProjectId(ch) {
+    const fx = window.DeskV1Store.state();
+    const camp = (fx.campaigns || []).find((c) => c.projectId && (c.plan?.accounts || []).includes(ch.id));
+    return camp?.projectId || fx.projects?.[0]?.id || null;
+  }
+  function accountStatus(ch) {
+    const cs = window.DeskV1ConnectionStatus;
+    return cs.accountStatus(ch, cs.coverageRow(homeProjectId(ch), ch.platform, ch.id));
+  }
+  function loadStatus(repaint) {
+    if (window.DeskV1Store.live()) window.DeskV1ConnectionStatus?.loadCoverage(
+      (window.DeskV1Store.state().channels || []).filter((ch) => !ch.preview).map(homeProjectId), repaint);
+  }
+  function statusChipHTML(ch) {
+    if (!ch || !ch.publish || !window.DeskV1ConnectionStatus) return '';
+    const st = accountStatus(ch);
+    return chipHTML(st.word, st.kind === 'ready' ? 'ok' : 'warn');
+  }
+  function recoveryHTML(ch) {
+    if (!ch || !ch.publish || !window.DeskV1ConnectionStatus ||
+        accountStatus(ch).kind === 'ready') return '';
+    return '<button type="button" class="desk-v1-where-connect" data-where-connect>Open Connections ›</button>';
+  }
   function previewChipHTML(ch) {
     return ch && ch.preview ? chipHTML('Preview', 'dim', ' data-preview data-short="Preview" title="Preview · not connected"') : '';
   }
@@ -54,7 +78,9 @@
     return _tile(ch, plat, {
       cls: used ? ' is-used' : '',
       attrs: `role="button" tabindex="0" data-where-source aria-label="${esc(`${ch.identity} on ${plat.word}${used ? ', already on this campaign' : '. Press Enter to add its column'}`)}"`,
-      status: used ? chipHTML('On campaign', 'dim') : chipHTML('Ready', 'ok'),
+      status: (used ? chipHTML('On campaign', 'dim') : '') +
+        (statusChipHTML(ch) || (used ? '' : chipHTML('Ready', 'ok'))),
+      action: recoveryHTML(ch),
     });
   }
 
@@ -68,7 +94,7 @@
       attrs: 'role="button" tabindex="0" data-where-source data-where-source-off',
       handle: ch.identity || ch.label,
       title: pub && pub.reason ? pub.reason : '',
-      status: chipHTML('Not connected', 'warn'),
+      status: statusChipHTML(ch) || chipHTML('Not connected', 'warn'),
       reason: pub && pub.reason ? pub.reason : '',
       reasonAttr: 'data-where-reason',
       action: '<button type="button" class="desk-v1-where-connect" data-where-connect>Connect ›</button>',
@@ -82,9 +108,10 @@
       cls: ' desk-v1-where-source-off',
       attrs: 'role="button" tabindex="0" data-where-source data-where-source-readonly',
       title: 'The Desk reads this account and does not publish there',
-      status: chipHTML('Read only', 'dim', ' data-where-readonly'),
+      status: chipHTML('Read only', 'dim', ' data-where-readonly') + statusChipHTML(ch),
+      action: recoveryHTML(ch),
     });
   }
 
-  window.DeskV1WhereTiles = { markHTML, sourceHTML, offHTML, readOnlyHTML, previewChipHTML };
+  window.DeskV1WhereTiles = { markHTML, sourceHTML, offHTML, readOnlyHTML, previewChipHTML, statusChipHTML, loadStatus };
 })();

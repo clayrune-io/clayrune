@@ -1362,15 +1362,20 @@ removes it from this campaign, leaving its configured connection in Sources.
 A version's **X** removes that unsent assignment; published history remains.
 These removals have Undo.
 
-Sources also lists campaign destinations from the Connect catalogue that have
-no saved account, including YouTube and Instagram. Generation and storage
-services stay in Connections rather than appearing as campaign destinations.
-Choose **Connect YouTube ›** (or
-another service) to open its connection options in the existing Add service
-flow. These service tiles cannot be dragged; after an account is connected,
-its account tile appears instead. Connection options describe what that
-service can currently do; appearing in Sources does not grant publishing
-permission. If the catalogue cannot load, **Retry** fetches it again.
+Sources lists only accounts configured in **Connections** and saved browser
+connections for campaign destinations. Services you have never configured and
+preview-only services do not appear. A configured account stays visible if it
+needs sign-in or is waiting on the service; its chip shows the saved connection
+state separately from publishing readiness. A LinkedIn app-review wait is not a
+missing browser connection.
+
+An older saved Instagram browser sign-in can appear before it has been attached
+to an account. Its chip uses the same check result as Connections. Choose
+**Open Connections ›**, then **Edit** to select its account or enter the handle
+and review Permissions. Save uses the existing passcode gate. Until attached,
+the saved sign-in cannot be dragged into a campaign. This display grants no
+Read or Post permission. Returning to Where refreshes the saved list; **Retry**
+retries a failed list load. Generation and storage services stay in Connections.
 
 In **Studio → New article**, start a draft to open its agent conversation beside
 the writer (below it on a small screen). **About** shows this draft's title.

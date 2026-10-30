@@ -1,49 +1,59 @@
-// Missing Sources come from Connect's registry, never a second vendor list.
-// These tiles only open Connect: they carry no account or drag payload.
+// Saved browser destinations on Where. The catalogue identifies destination
+// platforms only; it never creates a tile without a saved Connections record.
 (function () {
   const esc = (s) => window.esc(String(s == null ? '' : s));
-  let services = null;
+  let catalog = null;
+  let saved = null;
   let loading = null;
   let error = '';
+  function destination(s) {
+    const bc = s.browser_connection;
+    if (!bc) return null;
+    // Legacy records have service:null. Match their saved URL, never the
+    // display name or logo ("Instagram" could be a note about another site).
+    const named = catalog.find((c) => c.id === bc.service);
+    if (named) return named;
+    let host;
+    try { host = new URL(s.link).hostname.replace(/^www\./, ''); }
+    catch { return null; }
+    return catalog.find((c) => c.host.replace(/^www\./, '') === host) || null;
+  }
 
   function html(channels) {
-    if (services === null) return `<div role="status">${error ? esc(error) + ' <button type="button" class="desk-v1-where-connect" data-where-services-retry>Retry</button>' : 'Loading services…'}</div>`;
-    const present = new Set(channels.map((c) => window.DeskV1ServiceIcons.vendor(c) || c.platform));
-    return services.filter((s) => !present.has(window.DeskV1ServiceIcons.vendor(s) || s.id)).map((s) => `
-      <div class="desk-v1-where-source desk-v1-where-source-off" data-where-service="${esc(s.id)}" data-platform="${esc(s.id)}">
-        <div class="desk-v1-where-tile-head">${window.DeskV1ServiceIcons.markHTML(s, false)}<div class="desk-v1-where-tile-id"><div class="desk-v1-where-source-handle" title="${esc(s.label)}">${esc(s.label)}</div></div></div>
-        <div class="desk-v1-where-tile-status"><span class="desk-v1-where-chip" data-tone="warn">Not connected</span></div>
-        <div class="desk-v1-where-tile-foot"><button type="button" class="desk-v1-where-connect" data-where-service-connect="${esc(s.id)}">Connect ${esc(s.label)} ›</button></div>
-      </div>`).join('');
+    if (!window.DeskV1Store.live()) return '';
+    if (error || saved === null) return `<div role="status">${error ? esc(error) + ' <button type="button" class="desk-v1-where-connect" data-where-services-retry>Retry</button>' : 'Loading saved connections…'}</div>`;
+    return saved.filter((s) => destination(s) &&
+      !(s.account_id && channels.some((c) => c.id === s.account_id))).map((s) => {
+      const st = window.DeskV1BrowserService.status(s);
+      return `<div class="desk-v1-where-source desk-v1-where-source-off" data-where-service="${esc(s.id)}" data-platform="${esc(destination(s).id)}">
+        <div class="desk-v1-where-tile-head">${window.DeskV1ServiceIcons.markHTML(s, false)}<div class="desk-v1-where-tile-id"><div class="desk-v1-where-source-handle" title="${esc(s.name)}">${esc(s.name)}</div></div></div>
+        <div class="desk-v1-where-tile-status"><span class="desk-v1-where-chip" data-tone="${st.kind === 'ready' ? 'ok' : 'warn'}">${esc(st.word)}</span></div>
+        <div class="desk-v1-where-source-reason" title="Choose its account in Connections before placing it.">Choose its account in Connections before placing it.</div>
+        <div class="desk-v1-where-tile-foot"><button type="button" class="desk-v1-where-connect" data-where-service-open="${esc(s.id)}">Open Connections ›</button></div>
+      </div>`;
+    }).join('');
   }
 
   function load(repaint) {
-    if (loading || services !== null || error) return;
-    loading = window.DeskV1Store.api('GET', '/api/desk/connect/services').then((r) => {
-      if (!Array.isArray(r.services)) throw new Error('Invalid service catalogue.');
-      services = r.services;
-    }).catch((e) => { error = 'Could not load services: ' + (e.message || String(e)); })
+    if (loading || !window.DeskV1Store.live()) return;
+    loading = Promise.all([
+      catalog ? Promise.resolve({ services: catalog }) : window.DeskV1Store.api('GET', '/api/desk/connect/services'),
+      window.DeskV1Store.api('GET', '/api/desk/services'),
+    ]).then(([c, rows]) => {
+      if (!Array.isArray(c.services) || !Array.isArray(rows)) throw new Error('Invalid saved connections.');
+      catalog = c.services; saved = rows; error = '';
+    }).catch((e) => { error = 'Could not load saved connections: ' + (e.message || String(e)); })
       .finally(() => { loading = null; repaint(); });
   }
 
+  // Refresh on entry, not on paint: attachment/removal in Connections is visible
+  // on return, without an endless load/repaint loop or a stale private cache.
+  function refresh(repaint) { saved = null; error = ''; load(repaint); }
   function bind(el, repaint) {
-    load(repaint);
-    el.querySelector('[data-where-services-retry]')?.addEventListener('click', () => { error = ''; load(repaint); repaint(); });
-    el.querySelectorAll('[data-where-service-connect]').forEach((btn) => {
-      btn.onclick = async () => {
-        const svc = services.find((s) => s.id === btn.dataset.whereServiceConnect);
-        btn.disabled = true;
-        try {
-          const info = await window.DeskV1Store.api('POST', '/api/desk/connect/types', { input: svc.url });
-          if (!btn.isConnected) return;
-          window.DeskV1ConnectWizard.resume(info, { service: svc.id }, 'connection');
-          window.deskV1Nav('connections', { account: 'add' });
-        } catch (e) {
-          window.DeskV1Kit.toast('Could not open Connect: ' + (e.message || String(e)));
-        } finally { btn.disabled = false; }
-      };
+    el.querySelector('[data-where-services-retry]')?.addEventListener('click', () => { error = ''; load(repaint); });
+    el.querySelectorAll('[data-where-service-open]').forEach((btn) => {
+      btn.onclick = () => window.deskV1Nav('connections', { account: 'service:' + btn.dataset.whereServiceOpen });
     });
   }
-
-  window.DeskV1WhereServices = { html, bind };
+  window.DeskV1WhereServices = { html, bind, refresh };
 })();
