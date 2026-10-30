@@ -545,7 +545,7 @@ python3 -m pytest -o addopts= -q --tb=short tests/test_landing_serialization.py 
 - Second command after the hook correction: **6 passed, rc=0** (6.56s), proving
   no manifest calls with/without a real hook for no snapshot, Off and planless
   Preview. The no-snapshot hook case was reproduced failing before its fix.
-- Final required regression after **all** source/test corrections:
+- Historical Windows-worktree regression after those source/test corrections:
   **1,038 passed, 15 skipped, 16,796 deselected, rc=0** (453.62s), no warnings.
   Includes dev_harness/landing, agent_worktree, hivemind integration, agent_jobs
   and merge_review. Skips: optional missing `psutil`, Windows newline filename
@@ -566,3 +566,19 @@ An intermediate full-regression attempt was deliberately interrupted before
 the inactive-hook source correction; it is not counted as a passing run. The
 final exact rerun above completed after that correction. No merge, push,
 restart, live activation/settings change, deployment or M6 acceptance is claimed.
+
+### Main-checkout review correction (2026-10-30)
+
+The preceding 1,038-pass result is scoped to that Windows worktree run: thirteen
+POSIX-shell hook cases were skipped. It did not validate those hook cases or
+main-checkout execution. Review subsequently exposed the hook fixture omission
+(fixed independently in `05af493a`) and a path-dependent Git candidate-creation
+failure in Hivemind. See the [root cause, correction and main-checkout validation](DEV_HARNESS_M5_LANDING_CORRECTION.md).
+
+Correction validation from main: exact requested selection with `-q -p
+no:cacheprovider` returned **rc=0**. A separate reporting-only verbosity rerun
+returned **1,053 passed, 2 skipped, 16,800 deselected, rc=0** (536.62s).
+All thirteen formerly skipped hook cases executed with Git's `sh` on PATH.
+Both temporary owned-file overlays were restored; main remained `05af493a`.
+The runner's Pyright check returned zero errors and warnings. No merge, push
+or restart is part of this correction.

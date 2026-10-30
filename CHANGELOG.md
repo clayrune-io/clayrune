@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - Avoid nesting native candidates inside Hivemind checkouts
+
+- Approved native checks create their disposable candidate beside the registered project's workers, avoiding Git's `$GIT_DIR too big` refusal from nested Hivemind paths on Windows. Frozen source validation still binds the integration checkout and exact candidate tree.
+- Regression cases verify the candidate location across platforms and preserve a standards hold, worker and original checkout when candidate creation fails. Local branch correction only; no merge, push or restart.
+
 ## [2026-10-30] - Keep runtime files outside native landing identity (DH-M5 A2b review)
 
 - Off, unconfigured and planless Preview landings skip harness source hashing, so large untracked runtime files cannot create a standards hold.
