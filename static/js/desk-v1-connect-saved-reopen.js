@@ -4,7 +4,7 @@ import { savedEngineConnector } from './desk-v1-connect-engine-saved.js';
 const ENGINES = {google:['google_ai','https://aistudio.google.com','api_key'],openai:['openai','https://platform.openai.com','api_key'],
   higgsfield:['higgsfield','https://higgsfield.ai','api_key'],higgsfield_mcp:['higgsfield','https://higgsfield.ai','oauth']};
 let seq = 0;
-export async function reopenSaved(target, repaint) {
+export async function reopenSaved(target, repaint, isCurrent = () => true) {
   if (!['service','engine','mcp'].includes(target.kind)) return false;
   const n=++seq, api=window.DeskV1Store.api, W=window.DeskV1ConnectWizard, r=target.record;
   let input, draft, connector, provider;
@@ -27,7 +27,7 @@ export async function reopenSaved(target, repaint) {
     }
   }
   const selectedId=target.kind==='engine' ? `engine:${r.id}` : target.id;
-  if (n!==seq || window.DeskV1ConnTiles.selected()!==selectedId) return true;
+  if (n!==seq || !isCurrent() || window.DeskV1ConnTiles.selected()!==selectedId) return true;
   if (provider) {
     const variant=info.picker?.flatMap(t=>t.variants).find(v=>v.setup?.via==='provider' && v.setup.method===provider[2]);
     if (!variant) throw new Error('The saved setup could not be found.');

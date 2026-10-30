@@ -24,12 +24,12 @@
     if (error || saved === null) return `<div role="status">${error ? esc(error) + ' <button type="button" class="desk-v1-where-connect" data-where-services-retry>Retry</button>' : 'Loading saved connections…'}</div>`;
     return saved.filter((s) => destination(s) &&
       !(s.account_id && channels.some((c) => c.id === s.account_id))).map((s) => {
-      const st = window.DeskV1BrowserService.status(s);
+      const reason = `Link the ${destination(s).label} account it is signed in as.`;
       return `<div class="desk-v1-where-source desk-v1-where-source-off" data-where-service="${esc(s.id)}" data-platform="${esc(destination(s).id)}">
         <div class="desk-v1-where-tile-head">${window.DeskV1ServiceIcons.markHTML(s, false)}<div class="desk-v1-where-tile-id"><div class="desk-v1-where-source-handle" title="${esc(s.name)}">${esc(s.name)}</div></div></div>
-        <div class="desk-v1-where-tile-status"><span class="desk-v1-where-chip" data-tone="${st.kind === 'ready' ? 'ok' : 'warn'}">${esc(st.word)}</span></div>
-        <div class="desk-v1-where-source-reason" title="Choose its account in Connections before placing it.">Choose its account in Connections before placing it.</div>
-        <div class="desk-v1-where-tile-foot"><button type="button" class="desk-v1-where-connect" data-where-service-open="${esc(s.id)}">Open Connections ›</button></div>
+        <div class="desk-v1-where-tile-status"><span class="desk-v1-where-chip" data-tone="warn">Needs account</span></div>
+        <div class="desk-v1-where-source-reason" title="${esc(reason)}">${esc(reason)}</div>
+        <div class="desk-v1-where-tile-foot"><button type="button" class="desk-v1-where-connect" data-where-service-open="${esc(s.id)}">Link account ›</button></div>
       </div>`;
     }).join('');
   }
@@ -52,7 +52,7 @@
   function bind(el, repaint) {
     el.querySelector('[data-where-services-retry]')?.addEventListener('click', () => { error = ''; load(repaint); });
     el.querySelectorAll('[data-where-service-open]').forEach((btn) => {
-      btn.onclick = () => window.deskV1Nav('connections', { account: 'service:' + btn.dataset.whereServiceOpen });
+      btn.onclick = () => window.deskV1Nav('connections', { account: 'service:' + btn.dataset.whereServiceOpen, attachSite: btn.dataset.whereServiceOpen });
     });
   }
   window.DeskV1WhereServices = { html, bind, refresh };

@@ -2,6 +2,7 @@
 import { ConnectCopy } from './desk-v1-connect-copy.js';
 import { reopenAccount } from './desk-v1-connect-account-reopen.js';
 import { reopenSaved } from './desk-v1-connect-saved-reopen.js';
+import './desk-v1-connect-site-handoff.js';
 ConnectCopy.enable();
 const W = window.DeskV1ConnectWizard;
 W?.setEnabled(true);

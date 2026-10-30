@@ -3,7 +3,12 @@
 ## [2026-10-30] - A reworded continuity thread keeps its age
 
 - Continuity thread stamps now survive paraphrase: an incoming thread that matches a known one at difflib ratio 0.8 or above inherits that thread's confirmation time instead of a fresh one, so a dead thread the Scribe keeps rewording still flags stale at 48 hours. Matching is per slot, best ratio wins, one old thread feeds at most one new thread; each match logs `[continuity] reworded`.
-- Evidence from `confirmed_threads` still refreshes a thread. Record shape, owner keys and file size are unchanged. Branch candidate only; no merge, push or restart.
+- Evidence from `confirmed_threads` still refreshes a thread. Record shape, owner keys and file size are unchanged. Merged c70c44f6.
+
+## [2026-10-29] - Link a saved browser account directly from Where
+
+- Unattached browser destinations show **Needs account** and name the account to link. **Link account ›** opens the existing Permissions attachment form directly, including legacy Instagram references with `service:null`.
+- Returning to Where after attachment exposes the draggable account without reloading. Delayed Connections refreshes and setup reads cannot replace the page after navigation. Account choice, Review, passcode and separate Read/Post gates remain intact. Branch candidate only; no merge, push or restart.
 
 ## [2026-10-29] - Keep current user corrections across continuity rollovers
 

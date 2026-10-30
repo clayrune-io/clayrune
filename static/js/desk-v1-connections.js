@@ -177,7 +177,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
   }
 
   function deskV1RenderConnections(el, params) {
-    const repaint = () => { if (el.isConnected) deskV1RenderConnections(el); };
+    const repaint = () => { if (el.isConnected && el.querySelector('[data-connections]')) deskV1RenderConnections(el); };
     const channels = _channels();
     const live = window.DeskV1Store.live();
     const Tiles = window.DeskV1ConnTiles;
@@ -194,6 +194,7 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
         ${Tiles.gridHTML({ items: _items(live, sel) })}
         ${_detail(sel) || ''}
       </div>`;
+    if (params?.attachSite) window.DeskV1ConnectSiteHandoff?.(el, params.attachSite, repaint);
     const scroller = el.querySelector('[data-connections]');
     if (scroller && prevScroll) scroller.scrollTop = prevScroll;
     // Every change of selection starts the Add service panel over at its list.
