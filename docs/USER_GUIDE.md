@@ -1336,7 +1336,10 @@ video MIME types so Windows can show MP4 files. Accepting a file does not
 install a browser decoder; playback depends on your browser. Uploads are saved in the Material library's **Uploads** folder
 and attached to the piece. **Undo** removes the attachment and keeps the
 library file. Upload errors show the reason; failed files are not attached.
-The computer chooser remains available if loading the library fails.
+The computer chooser remains available if loading the library fails. If the
+browser cannot prepare the preview, or the upload reply lacks the saved file,
+Clayrune shows an error. An incomplete reply asks you to reload the piece and
+check its saved media before retrying.
 
 Open a post's piece page to write its **Copy**. For a new post, type in
 **Start typing your post…** or choose **Import from file**. The same editor

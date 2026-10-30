@@ -226,7 +226,8 @@
         throw new Error('this source has not produced a file that can be saved yet');
       }
       const saved = ((out && out.assets) || []).find((a) => a.id === asset.id);
-      if (saved) Object.assign(asset, { kind: saved.kind, title: saved.title, path: saved.path, src: saved.src, play: saved.play });
+      if (!saved || !saved.path) throw new Error('the upload response did not return the attached media file; reload the piece to check its saved media');
+      Object.assign(asset, { kind: saved.kind, title: saved.title, path: saved.path, src: saved.src, play: saved.play });
       if (upload) _mats.promise = null; // the file now sits in the library's Uploads folder
       if (repaint) repaint(); // the thumbnail is now the server's, not the local blob
       return out;

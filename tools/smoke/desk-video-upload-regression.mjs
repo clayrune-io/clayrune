@@ -22,6 +22,7 @@ try {
     if (path === '/api/config') return json({ desk_v1: true });
     if (path === '/api/projects') return json([{ id: 'clayrune', name: 'Clayrune', status: 'active', domain: 'general', display_order: 0, roster: [] }]);
     if (path === '/api/characters') return json([]);
+    if (path === '/small.mp4') return route.fulfill({ contentType: 'video/mp4', body: mp4 });
     return route.abort();
   });
   await seedDeskV1Fixtures(page);
@@ -38,6 +39,7 @@ try {
       if (body instanceof FormData) {
         window.__uploads.push(body.get('file').name);
         if (window.__refuse) throw new Error('upload refused by server');
+        if (window.__empty) return { assets: [] };
         return { assets: [{ id: body.get('id'), kind: 'video', title: body.get('file').name, path: 'desk/library/video/Uploads/small.mp4', play: '/small.mp4' }] };
       }
       return {};
@@ -77,5 +79,25 @@ try {
   }
   assert.deepEqual(await page.evaluate(() => window.__uploads), ['small.mp4']);
   assert.equal(await page.evaluate(() => window.DeskV1Store.state().families.find(f => f.id === 'fam-30-testers').assets.at(-1).kind), 'video');
+  await page.waitForFunction(() => document.querySelector('[data-piece-media] video')?.readyState >= 1);
+  assert(await page.locator('[data-piece-media] video').evaluate(el => el.duration > 0));
+  const count = await page.locator('[data-pmed-open]').count();
+  for (const [flag, error] of [['__refuse', 'upload refused by server'], ['__empty', 'did not return the attached media file']]) {
+    await page.evaluate(flag => { window[flag] = true; document.querySelector('#toast-container').innerHTML = ''; }, flag);
+    await choose();
+    assert.match(await page.locator('#toast-container').innerText(), new RegExp(error));
+    assert.equal(await page.locator('[data-pmed-open]').count(), count, 'failed upload rolls back');
+    await page.evaluate(flag => { window[flag] = false; }, flag);
+  }
+  await page.evaluate(() => {
+    window.__createURL = URL.createObjectURL;
+    URL.createObjectURL = () => { throw new Error('browser preview failed'); };
+    document.querySelector('#toast-container').innerHTML = '';
+  });
+  await choose();
+  assert.match(await page.locator('#toast-container').innerText(), /Could not add media: browser preview failed/);
+  await page.evaluate(() => { URL.createObjectURL = window.__createURL; });
+  assert.equal(await page.locator('[data-piece-local-upload]').count(), 0);
+  console.log('PASS real MP4 paints/playback metadata; server refusal, malformed response and preview failure toast and roll back');
   assert.deepEqual(errors, []);
 } finally { await browser.close(); }

@@ -13,19 +13,24 @@
     const remove = () => input.remove();
     input.oncancel = remove;
     input.onchange = async () => {
-      const file = input.files[0];
-      remove();
-      if (!file) return;
-      const error = window.DeskV1MediaFormats.error(file, video ? 'video' : 'image');
-      if (error) { window.DeskV1Kit.toast(error); return; }
-      const src = URL.createObjectURL(file);
-      const asset = { id: 'asset-' + Date.now().toString(36) + (++seq).toString(36), kind: video ? 'video' : 'image', title: file.name, src };
-      try { await attach(asset, file); }
+      let src = null, attached = false;
+      try {
+        const file = input.files && input.files[0];
+        remove();
+        if (!file) return;
+        const error = window.DeskV1MediaFormats.error(file, video ? 'video' : 'image');
+        if (error) { window.DeskV1Kit.toast(error); return; }
+        src = URL.createObjectURL(file);
+        const asset = { id: 'asset-' + Date.now().toString(36) + (++seq).toString(36), kind: video ? 'video' : 'image', title: file.name, src };
+        const result = await attach(asset, file);
+        attached = !result || result.ok !== false;
+      }
       catch (e) { window.DeskV1Kit.toast(`Could not add media: ${e && e.message ? e.message : String(e)}`); }
       finally {
+        remove();
         // Demo assets keep their blob until the page closes; live assets now
         // use the server URL, and failed live uploads have been rolled back.
-        if (window.DeskV1Store.live()) URL.revokeObjectURL(src);
+        if (src && (!attached || window.DeskV1Store.live())) URL.revokeObjectURL(src);
       }
     };
     input.click();

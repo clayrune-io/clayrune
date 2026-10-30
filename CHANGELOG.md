@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - Report preview and incomplete media-upload failures
+
+- Browser-preview creation now falls inside the upload error handler. An M21 reply without the requested saved asset is refused with a toast and local rollback, instead of retaining a blob whose URL is then revoked.
+- Real-MP4 regression covers the piece-page computer chooser, saved video metadata, server refusal, missing-asset response, preview failure and cleanup. The originally reported no-op on a video piece was not reproduced; these fault-injected failure paths are not claimed as its cause. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-30] - Let Windows video choosers show common video formats
 
 - Shared explicit video extensions and MIME hints across piece-page and create-card uploads. Client validation accepts video MIME types or known extensions; the server accepts the same common formats plus host-registered video types, and lists them consistently in the library.
