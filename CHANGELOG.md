@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - Format operator email as HTML with a plain-text fallback
+
+- Shared operator mail now includes a styled HTML alternative, so workflow **Send email** reports show headings, lists and bordered zebra tables instead of raw Markdown. The original plain-text part is retained; all input is escaped and styles are inline.
+- Added a stdlib-only renderer, `--plain-only`, observable renderer/import fallback and SMTP-free MIME/CLI regressions, including the 12-column stock-report table. No server restart is needed after merge because the mailer runs per send. Branch candidate only; no merge or restart.
+
 ## [2026-10-30] - A reworded continuity thread keeps its age
 
 - Continuity thread stamps now survive paraphrase: an incoming thread that matches a known one at difflib ratio 0.8 or above inherits that thread's confirmation time instead of a fresh one, so a dead thread the Scribe keeps rewording still flags stale at 48 hours. Matching is per slot, best ratio wins, one old thread feeds at most one new thread; each match logs `[continuity] reworded`.

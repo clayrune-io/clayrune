@@ -494,6 +494,17 @@ done, regardless of restart history.
 
 ---
 
+## Operator email formatting
+
+Workflow **Send email** nodes and other operator notifications using Clayrune's
+shared mailer include both the original plain text and a formatted HTML version.
+Email clients can show headings, emphasis, lists, code and bordered tables
+instead of raw Markdown markers. Wide tables scroll horizontally where the
+email client supports it. Raw HTML is displayed as text. If HTML rendering
+fails, the notification still sends as plain text; delivery setup is unchanged.
+
+---
+
 ## Backlog
 
 A first-class TODO list per project. Each item has:

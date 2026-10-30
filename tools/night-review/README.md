@@ -55,7 +55,20 @@ they just note "email not sent" at the top of the report.
 ## Files
 
 - `send_mail.py` — Gmail SMTP sender (stdlib only). `--subject` + one of
-  `--body` / `--body-file` / stdin; `--to` overrides the recipient.
+  `--body` / `--body-file` / stdin; `--to` overrides the recipient. Sends
+  `multipart/alternative`: the original text first, styled Markdown HTML
+  second. `--plain-only` sends only text. A missing or failing renderer logs
+  to stderr and falls back to text without blocking delivery.
+- `md_html.py` — stdlib-only renderer shared by every caller of this mailer,
+  including workflow **Send email** nodes. Supports headings (`#` to `###`),
+  paragraphs (single line breaks are kept), bold/italic, inline code, HTTP(S)
+  links, flat bullet/numbered lists, pipe tables, `---` rules and backtick
+  code fences. A paragraph containing only one bold span of at most 80
+  displayed characters becomes a small heading. All input is HTML-escaped;
+  unsupported syntax stays visible text. Styling is inline: 14px sans-serif,
+  860px maximum content width, 13px bordered tables with zebra rows and
+  unwrapped headers. Wide tables scroll horizontally in clients that support
+  overflow. No external images, stylesheets or dependencies.
 - `PROMPT.md` — canonical copy of the agent prompt the schedule runs. Edit
   here **and** update the live schedule (`PUT /api/schedules/<id>` or the
   Scheduler UI) to keep them in sync.
@@ -67,3 +80,14 @@ they just note "email not sent" at the top of the report.
   `PUT /api/schedules/<id>`.
 - The dated reports (`docs/night-review-*.md`) and the skips log
   (`docs/night-review-skips.log`) are gitignored runtime output.
+
+## Rendering checks (no email sent)
+
+```bash
+python -m pytest tests/test_send_mail_*.py -q -o addopts=
+```
+
+Tests construct MIME messages and use a fake transport; the existing pytest
+SMTP guard remains in place. Actual Gmail rendering/delivery is not exercised.
+The mailer runs as a fresh subprocess per send, so its source changes need no
+server restart once merged into the running checkout.

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Night-review mailer — send a plain-text email via Gmail SMTP.
+"""Operator mailer — send plain text plus styled Markdown HTML via Gmail SMTP.
 
 Used by the Clayrune night-shift maintenance schedule to email the reviewer a
 summary of each run. Stdlib only; no third-party deps.
+Use --plain-only to omit HTML. Rendering failures log and fall back to text.
 
 Credentials (never committed) are read from, in order of precedence:
   1. Environment: NIGHT_MAIL_USER, NIGHT_MAIL_APP_PASSWORD, NIGHT_MAIL_TO,
@@ -35,6 +36,9 @@ import time
 from email.message import EmailMessage
 from email.utils import make_msgid
 from pathlib import Path
+
+# Support both direct script execution and file-based imports by callers/tests.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 CONFIG_PATH = Path.home() / ".clayrune" / "night-mail.json"
 # No default recipient: the address is this operator's, not the project's.
@@ -157,14 +161,41 @@ def _verify_delivered(user: str, app_password: str, message_id: str,
     return False
 
 
+def build_message(subject: str, body: str, user: str, to_addr: str, *,
+                  message_id: str | None = None, plain_only: bool = False) -> EmailMessage:
+    """Build MIME parts without credentials, file writes or network access."""
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = user
+    msg["To"] = to_addr
+    # Keep the exact needle used by delivery verification and reply matching.
+    if message_id:
+        mid = message_id.strip()
+        msg["Message-ID"] = mid if mid.startswith("<") else f"<{mid}>"
+    else:
+        msg["Message-ID"] = make_msgid(domain="clayrune.local")
+    msg.set_content(body)
+    if not plain_only:
+        try:
+            import md_html
+
+            msg.add_alternative(md_html.render(body), subtype="html")
+        except Exception as e:
+            print(f"[send_mail] HTML rendering failed; sending plain text only: {e}",
+                  file=sys.stderr, flush=True)
+    return msg
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Send a plain-text email via Gmail SMTP.")
+        description="Send plain text plus styled Markdown HTML via Gmail SMTP.")
     ap.add_argument("--subject", required=True)
     ap.add_argument("--body", help="Inline body text.")
     ap.add_argument("--body-file",
                     help="Path to a file whose contents become the body.")
     ap.add_argument("--to", help="Override recipient (default from config/env).")
+    ap.add_argument("--plain-only", action="store_true",
+                    help="Send only the original plain-text body, without HTML.")
     ap.add_argument("--verify", action="store_true",
                     help="After sending, reconnect over IMAP and confirm the "
                          "message actually landed. Exit 3 if it did not.")
@@ -210,8 +241,9 @@ def main() -> int:
                 (args.subject or "")[:100].replace("\t", " "),
                 "refused" if refused_for_pytest else "attempted",
             ]) + "\n")
-    except Exception:
-        pass  # a ledger failure must never stop a real send
+    except Exception as e:
+        print(f"[send_mail] sender ledger write failed: {e}", file=sys.stderr,
+              flush=True)  # a ledger failure must never stop a real send
 
     if refused_for_pytest:
         print("[send_mail] refused: running under pytest (set MC_LIVE_MAIL_TESTS=1 "
@@ -257,18 +289,8 @@ def main() -> int:
         )
         return 2
 
-    msg = EmailMessage()
-    msg["Subject"] = args.subject
-    msg["From"] = user
-    msg["To"] = to_addr
-    # Set explicitly rather than letting the MTA assign one, so --verify has an
-    # exact needle to search on. See _verify_delivered for why not the subject.
-    if args.message_id:
-        mid = args.message_id.strip()
-        msg["Message-ID"] = mid if mid.startswith("<") else f"<{mid}>"
-    else:
-        msg["Message-ID"] = make_msgid(domain="clayrune.local")
-    msg.set_content(body)
+    msg = build_message(args.subject, body, user, to_addr,
+                        message_id=args.message_id, plain_only=args.plain_only)
 
     try:
         ctx = ssl.create_default_context()
