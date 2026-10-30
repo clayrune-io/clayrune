@@ -13,10 +13,10 @@ This is a read-only projection of that queue per parent session, for
 writes, never touches a payload beyond the sender's display name, and never
 raises: a status poll must not fail because the delivery database is busy.
 
-A row stops being reported when it is no longer in one of the listed states --
-`submitted` (handed to the parent) or `delivered`/`processed`. Parked rows stay
-reported on purpose: the alternative is a marker that vanishes at the moment the
-report is actually stuck.
+A row with a recorded handoff boundary stays visible through `submitted` while
+its receipt is checked. Legacy submitted notifications retain their existing
+behavior. Check failures name the reason and offer a check-only Retry; only a
+second proven absence is shown as non-delivery.
 
 MC-1106: the delivery-loop reconciler can end a lost acknowledgment as
 `confirmed_in_transcript`; a person's Mark handled action ends it as `handled`.
@@ -30,16 +30,18 @@ from pathlib import Path
 from typing import Any, Optional
 
 from mc.core import _log
+from mc.delegation_settlement import CHECK_ERRORS
 
 # inbox state -> what the reader needs to know. `dispatch_intent` is a claim in
 # flight, still "waiting" from the parent's side. Outbox rows (child finished,
 # receipt not yet recorded) are the same report one stage earlier.
 STAGE_BY_STATE = {
     'pending': 'waiting',
-    'dispatch_intent': 'waiting',
-    'blocked': 'held',
-    'uncertain': 'review',
-    'recovery_required': 'review',
+    'dispatch_intent': 'delivering',
+    'submitted': 'delivering',
+    'blocked': 'delivering',
+    'uncertain': 'delivering',
+    'recovery_required': 'delivering',
 }
 _WHO_CHARS = 48
 
@@ -66,15 +68,15 @@ def _who(payload_json: str) -> tuple[str, str]:
 
 _LABEL = {
     'waiting': 'report waiting from {who}',
-    'held': 'report from {who} is held, needs recovery',
-    'review': 'report from {who} may not have arrived, needs review',
+    'delivering': 'Delivering report from {who}; confirming receipt',
+    'failed': 'report from {who} was not delivered',
+    'check_failed': 'Could not check report from {who}',
 }
 _DETAIL = {
     'waiting': 'Queued. It is delivered into this chat when the current turn ends.',
-    'held': 'This chat cannot take it right now (stopped, errored or quota-blocked). '
-            'It is not retried automatically.',
-    'review': 'Delivery outcome is unknown. It is not retried automatically; '
-              'review the chat before retrying, or mark it handled.',
+    'delivering': 'Checking the chat log to confirm receipt.',
+    'failed': 'The completed chat log proves non-delivery after one automatic resend. Retry sends it again.',
+    'check_failed': 'Retry checks the chat log again without resending the report.',
 }
 
 
@@ -92,12 +94,13 @@ def waiting_by_parent(project_id: str = '') -> dict[str, list[dict[str, Any]]]:
     marks = ','.join('?' for _ in states)
     scope = ' AND project_id=?' if project_id else ''
     args = [*states, *([project_id] if project_id else [])]
-    sql = (f"SELECT event_id,parent_session_id,state,payload,created_at,1 AS stage_rank "
-           f"FROM inbox WHERE state IN ({marks}){scope} UNION ALL "
-           f"SELECT event_id,parent_session_id,state,payload,created_at,0 AS stage_rank "
+    sql = (f"SELECT event_id,parent_session_id,state,payload,created_at,1 AS stage_rank,check_status "
+           f"FROM inbox WHERE state IN ({marks}){scope} "
+           "AND (state!='submitted' OR handoff_boundary!='') UNION ALL "
+           f"SELECT event_id,parent_session_id,state,payload,created_at,0 AS stage_rank,'' AS check_status "
            f"FROM outbox WHERE state IN ({marks}){scope} "
            "AND NOT EXISTS (SELECT 1 FROM inbox i WHERE i.event_id=outbox.event_id "
-           "AND i.state IN ('confirmed_in_transcript','handled')) ORDER BY created_at")
+           "AND i.state IN ('confirmed_in_transcript','handled','submitted','processed')) ORDER BY created_at")
     try:
         # A plain connection with query_only: a mode=ro URI cannot open a WAL
         # database whose -shm is gone (every connection closed), which is the
@@ -121,10 +124,19 @@ def waiting_by_parent(project_id: str = '') -> dict[str, list[dict[str, Any]]]:
         if row[0] not in best or row[5] >= best[row[0]][5]:
             best[row[0]] = row
     out: dict[str, list[dict[str, Any]]] = {}
-    for event_id, parent, state, payload, created_at, _rank in sorted(
+    for event_id, parent, state, payload, created_at, _rank, check_status in sorted(
             best.values(), key=lambda r: r[4]):
         who, child = _who(payload)
         stage = STAGE_BY_STATE[state]
+        if state in ('pending', 'dispatch_intent'):
+            check_status = ''
+        reason = CHECK_ERRORS.get(check_status, '')
+        if check_status == 'not_delivered':
+            stage = 'failed'
+        elif reason:
+            stage = 'check_failed'
+        elif not _rank and state in ('blocked', 'uncertain', 'recovery_required'):
+            stage, reason = 'check_failed', 'delivery transport could not complete'
         out.setdefault(parent, []).append({
             'event_id': event_id,
             'table': 'inbox' if _rank else 'outbox',
@@ -132,8 +144,10 @@ def waiting_by_parent(project_id: str = '') -> dict[str, list[dict[str, Any]]]:
                                           if ':turn:' in event_id else ''),
             'who': who,
             'stage': stage,
-            'label': _LABEL[stage].format(who=who),
-            'detail': _DETAIL[stage],
+            'label': _LABEL[stage].format(who=who) + (f': {reason}' if reason else ''),
+            'detail': ('Retry continues delivery of this queued report.'
+                       if stage == 'check_failed' and not _rank else _DETAIL[stage]),
+            'retry_action': 'check' if stage == 'check_failed' and _rank else 'retry',
             'since': created_at,
         })
     return out
@@ -143,12 +157,9 @@ def figure_label(reports: Optional[list[dict[str, Any]]]) -> str:
     """One line for a Floor figure; '' when nothing is waiting on this session."""
     if not reports:
         return ''
-    waiting = [r for r in reports if r.get('stage') == 'waiting']
-    if len(waiting) == 1:
-        return waiting[0]['label']
-    if waiting:
-        names = ', '.join(r['who'] for r in waiting[:2])
-        more = ', ...' if len(waiting) > 2 else ''
-        return f'{len(waiting)} reports waiting ({names}{more})'
-    n = len(reports)
-    return f'{n} reports need review' if n != 1 else '1 report needs review'
+    if len(reports) == 1:
+        return reports[0]['label']
+    words = [('failed', 'not delivered'), ('check_failed', 'could not check'),
+             ('delivering', 'delivering'), ('waiting', 'queued')]
+    return ', '.join(f'{n} {word}' for stage, word in words
+                     if (n := sum(r.get('stage') == stage for r in reports)))

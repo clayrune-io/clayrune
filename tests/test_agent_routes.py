@@ -96,6 +96,7 @@ EXPECTED_ROUTES = {
     '/api/project/<project_id>/agent/delegation/inbox',
     # MC-1106: explicitly settle a parked report without retry/redelivery.
     '/api/project/<project_id>/agent/delegation/mark-handled',
+    '/api/project/<project_id>/agent/delegation/check',  # check only, never resends
     '/api/project/<project_id>/agent/delegation/retry',
     '/api/project/<project_id>/agent/delegation/status',
     '/api/project/<project_id>/agent/delegation/status-list',

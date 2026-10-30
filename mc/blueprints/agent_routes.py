@@ -131,6 +131,7 @@ from mc.rollover_threshold import threshold_for as _rollover_threshold_for
 import mc.background_tasks as _bg_tasks  # MC-958 background-job wake tracking (Mode B)
 import mc.delegation_waiting as _delegation_waiting  # MC-1063: queued child reports shown on the parent
 import mc.delegation_wake as _delegation_wake  # MC-1063: a parent's turn-end wakes its queued reports
+import mc.delegation_settlement as _delegation_settlement
 from mc.delegation_transcript_reconcile import TranscriptReconciler
 from mc.blueprints.delegation_report_routes import register_routes as _register_report_routes
 import mc.desk_connect.custom_package_manifest as _custom_package_manifest  # MC-1054: detect-only file drift of approved npm MCPs
@@ -6122,7 +6123,7 @@ def _read_agent_stream(proc, session):
                     _auto_snapshot_notes_on_turn(session)
                     _emit_coverage_advisory(session)
                     _scan_result_event_for_auth(msg)
-                    _midturn.note_turn_complete(session)
+                    _delegation_settlement.note_claude_turn(session, msg, _delivery_store, _midturn.note_turn_complete)
                 # Web push hook: intercept PushNotification tool_use + turn results.
                 _handle_push_signal(
                     session.get('project_id', ''),
@@ -6404,7 +6405,7 @@ def _read_agent_stream_b(proc, session):
                     _auto_snapshot_notes_on_turn(session)
                     _emit_coverage_advisory(session)
                     _scan_result_event_for_auth(msg)
-                    _midturn.note_turn_complete(session)
+                    _delegation_settlement.note_claude_turn(session, msg, _delivery_store, _midturn.note_turn_complete)
                     # Turn boundary — process stays alive
                     session['status'] = 'idle'
                     session['last_status_change_time'] = _time.time()
@@ -9028,6 +9029,7 @@ def _process_inbox(row):
         if _delegation_app is None:
             raise DeliveryBlocked('delegation request context is unavailable; explicit recovery required')
         needs_write_ack = parent.get('mode') == 'B'
+        _delivery_store.record_handoff(row, parent)
         with _delegation_app.test_request_context(
                 json={'message': payload['message'],
                       'session_id': row['parent_session_id'],
@@ -9041,6 +9043,7 @@ def _process_inbox(row):
                 raise DeliveryUncertain(f'guarded parent submission outcome unknown: {exc}')
             status_code = getattr(response, 'status_code', 200)
             body = response.get_json(silent=True) or {}
+            _delivery_store.record_handoff_response(row, body, needs_ack=needs_write_ack)
             write_ack = body.get('stdin_write_ack')
             if needs_write_ack and write_ack == 'failed':
                 raise DeliveryDeferred(body.get('error', 'parent stdin write failed'))
@@ -9105,7 +9108,7 @@ def start_delegation_delivery(interval_s: float = 5.0):
                     _log(f'[delegation-delivery] log recovery failed for {log_file.name}: {exc}')
             stop_event = threading.Event()
             waker = _delegation_wake.ParentWaker()
-            reconciler = TranscriptReconciler()
+            reconciler = TranscriptReconciler(parent_guard=lambda pid: get_manager(pid).lock)
 
             def _loop(local_store=store, local_stop=stop_event, local_waker=waker):
                 while True:
@@ -9757,6 +9760,7 @@ def _runtime_log_completion(ev, session):
     thread during teardown.
     """
     try:
+        _delegation_settlement.note_runtime_exit(session, _delivery_store)
         project_id = session.get('project_id')
         if not project_id:
             return
@@ -9852,10 +9856,10 @@ def _persist_runtime_start_failure(session):
         _log(f'[runtime-dispatch] could not save failure: {e}')
 
 
-_RUNTIME_CALLBACKS = {
+_RUNTIME_CALLBACKS = _delegation_settlement.runtime_callbacks({
     'on_process_exit': _runtime_log_completion,
     'on_init': _runtime_note_init,
-}
+})
 
 
 def _run_runtime_callbacks(session, event=None):

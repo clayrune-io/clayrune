@@ -230,16 +230,24 @@ A dispatched child's chat shows **Dispatched by** above the thread when Clayrune
 
 Hivemind workers also show the session that created the hivemind when Clayrune could identify it. Manual spawns and retries keep that original creator. Older hiveminds and those opened directly by a person have no recorded creating session.
 
-**Child reports:** a queued report appears above its parent's chat until handed
-over. When several reports need attention, the notice collapses to one line,
-**N reports may not have arrived - review**. Click it to expand or collapse the
-list. Each held or uncertain report has **Retry** and **Mark handled** buttons.
-Retry asks for confirmation because the report may already have arrived and a
-retry can send it twice. Mark handled clears the warning without sending the
-report again; its stored result remains available. Clayrune also checks parent
-Claude transcripts at most once every five minutes and clears lost-acknowledgment
-warnings when the callback appears in a newer user turn. This confirms receipt,
-not that the parent verified the child's work.
+**Child reports:** a queued report appears above its parent's chat. During
+handoff the notice says **Delivering**, while Clayrune confirms receipt in the
+chat log. Confirmed reports disappear. Changed delivery states are checked on
+the next delivery tick; a five-minute scan is a backstop. Question waits do not
+count as completed turns.
+
+If the completed, owned chat log proves the report absent after its recorded
+handoff, Clayrune automatically resends it once. That allowance survives a
+restart. A second proven failure says **report from X was not delivered**;
+**Retry** asks before sending it again. If checking fails, the notice names the
+reason, such as **chat log unreadable** or **chat log incomplete**. In that state,
+**Retry** runs the check again without resending. **Mark handled** clears either
+notice without resending; the stored result remains available.
+
+Multiple reports collapse to counts by state, such as **1 delivering, 1 queued**
+or **1 not delivered, 1 could not check, 2 queued**. Queued reports do not count
+as failures. The Floor uses the same states. Receipt confirms delivery, not that
+the parent verified the child's work.
 
 **Unlocking a guarded chat:** a dispatched or scheduled chat shows **Guarded**
 with an **Unlock** button. Re-enter your dashboard passcode to choose **Allow

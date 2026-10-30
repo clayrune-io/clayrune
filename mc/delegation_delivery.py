@@ -19,6 +19,7 @@ from typing import Any, Callable, Optional
 from mc import empty_turn
 from mc.callback_shape import task_line
 from mc.core import _log
+from mc.delegation_settlement import SettlementStore, authorize_absence
 
 
 RESTART_UNCERTAIN_ERROR = 'provider submission status unknown after restart'
@@ -74,7 +75,7 @@ class DeliveryNotHandedOff(DeliveryUncertain):
     """
 
 
-class DeliveryStore:
+class DeliveryStore(SettlementStore):
     """SQLite-backed child outbox and parent inbox.
 
     A connection is opened per operation, making close/reopen and process
@@ -156,6 +157,11 @@ class DeliveryStore:
                 ('inbox', 'fence_token', "TEXT NOT NULL DEFAULT ''"),
                 ('inbox', 'recovery_required', "INTEGER NOT NULL DEFAULT 0"),
                 ('inbox', 'submit_evidence', "TEXT NOT NULL DEFAULT ''"),
+                ('inbox', 'handoff_boundary', "TEXT NOT NULL DEFAULT ''"),
+                ('inbox', 'turn_completion', "TEXT NOT NULL DEFAULT ''"),
+                ('inbox', 'auto_resends', "INTEGER NOT NULL DEFAULT 0"),
+                ('inbox', 'check_status', "TEXT NOT NULL DEFAULT ''"),
+                ('inbox', 'check_requested', "INTEGER NOT NULL DEFAULT 0"),
             ):
                 columns = {r[1] for r in db.execute(f'PRAGMA table_info({table})')}
                 if column not in columns:
@@ -459,23 +465,36 @@ class DeliveryStore:
                      *, state: str = '') -> None:
         self._finish('inbox', event_id, token, False, error, state)
 
-    def retry(self, table: str, event_id: str, project_id: str, *, reviewed: bool = False) -> None:
+    def retry(self, table: str, event_id: str, project_id: str, *, reviewed: bool = False,
+              absence_proof: Optional[dict] = None) -> bool:
         """Explicit operator recovery for blocked/uncertain/recovery rows."""
         if table not in ('outbox', 'inbox'):
             raise ValueError('invalid delivery table')
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')
-            row = db.execute(f"SELECT state FROM {table} WHERE event_id=? AND project_id=?",
+            row = db.execute(f"SELECT * FROM {table} WHERE event_id=? AND project_id=?",
                              (event_id, project_id)).fetchone()
             if row is None:
                 db.execute('COMMIT')
-                return
+                return False
+            if absence_proof is not None:
+                if (table != 'inbox' or self._revoked(db, project_id, row['parent_session_id'], event_id, row['payload'])
+                        or not authorize_absence(db, dict(row), absence_proof)):
+                    db.execute('ROLLBACK')
+                    return False
+                db.execute("UPDATE inbox SET state='pending',recovery_required=0,next_attempt=?,lease_until=0,"
+                           "last_error='',handoff_boundary='',turn_completion='',check_status='confirming' "
+                           "WHERE event_id=? AND project_id=?", (self.clock(), event_id, project_id))
+                db.execute('COMMIT')
+                return True
             if row['state'] in ('uncertain', 'recovery_required') and not reviewed:
                 db.execute('ROLLBACK')
                 raise ValueError('reviewed resolution required before retrying uncertain delivery')
-            db.execute(f"UPDATE {table} SET state='pending',recovery_required=0,next_attempt=?,lease_until=0,last_error='' WHERE event_id=? AND project_id=? AND state IN ('blocked','uncertain','recovery_required')",
+            clear_check = ",handoff_boundary='',turn_completion='',check_status='confirming'" if table == 'inbox' else ''
+            changed = db.execute(f"UPDATE {table} SET state='pending',recovery_required=0,next_attempt=?,lease_until=0,last_error=''{clear_check} WHERE event_id=? AND project_id=? AND state IN ('blocked','uncertain','recovery_required')",
                        (self.clock(), event_id, project_id))
             db.execute('COMMIT')
+            return changed.rowcount == 1
 
     def record_completion_source(self, event_id: str, project_id: str,
                                  parent_session_id: str, payload: dict[str, Any]) -> None:
@@ -505,7 +524,7 @@ class DeliveryStore:
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')
             rows = [(table, db.execute(
-                f'SELECT state,lease_until FROM {table} WHERE event_id=? AND project_id=?',
+                f'SELECT * FROM {table} WHERE event_id=? AND project_id=?',
                 (event_id, project_id)).fetchone()) for table in ('inbox', 'outbox')]
             existing = [(table, row) for table, row in rows if row is not None]
             if not existing:
@@ -515,7 +534,9 @@ class DeliveryStore:
             if primary['state'] == terminal:
                 db.execute('COMMIT')
                 return True
-            if primary['state'] not in parked or (confirmed and existing[0][0] != 'inbox'):
+            submitted = (existing[0][0] == 'inbox' and
+                         primary['state'] == 'submitted' and primary['handoff_boundary'])
+            if (primary['state'] not in parked and not submitted) or (confirmed and existing[0][0] != 'inbox'):
                 db.execute('ROLLBACK')
                 raise ValueError('report is no longer parked')
             if any(row['state'] == 'dispatch_intent' or

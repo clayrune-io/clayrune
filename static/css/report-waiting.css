@@ -5,7 +5,7 @@
   border: 1px solid rgba(217,119,6,.4); background: rgba(217,119,6,.10);
   color: inherit; font-size: 13px; line-height: 1.45;
 }
-.report-waiting-row[data-stage="held"], .report-waiting-row[data-stage="review"] { color: #b45309; }
+.report-waiting-row[data-stage="failed"], .report-waiting-row[data-stage="check_failed"] { color: #b45309; }
 .report-waiting-detail { opacity: .8; }
 .report-waiting-notice { min-width: 0; }
 .report-waiting-summary {

@@ -5,6 +5,12 @@
 - Continuity thread stamps now survive paraphrase: an incoming thread that matches a known one at difflib ratio 0.8 or above inherits that thread's confirmation time instead of a fresh one, so a dead thread the Scribe keeps rewording still flags stale at 48 hours. Matching is per slot, best ratio wins, one old thread feeds at most one new thread; each match logs `[continuity] reworded`.
 - Evidence from `confirmed_threads` still refreshes a thread. Record shape, owner keys and file size are unchanged. Merged c70c44f6.
 
+## [2026-10-29] - Confirm delegated reports before declaring delivery failure
+
+- Child reports show queued or Delivering while their parent chat log is checked on the next delivery tick; a five-minute sweep remains the backstop. Chat and Floor summaries count queued, delivering, failed checks and proven non-delivery separately.
+- A durable handoff boundary, settled submission, later provider completion and complete owned native transcript must prove absence before the store permits one automatic resend. The allowance survives restart; question waits, partial/unreadable logs, queued writers and ambiguous receipt timestamps never authorize replay.
+- Check failures name their reason and Retry runs the check without resending. Only a second proven absence says the report was not delivered. Claude/Codex formats are supported; other providers and historical attempts without evidence fail closed. Documented in `docs/DELEGATION_SETTLEMENT.md`. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-29] - Link a saved browser account directly from Where
 
 - Unattached browser destinations show **Needs account** and name the account to link. **Link account ›** opens the existing Permissions attachment form directly, including legacy Instagram references with `service:null`.

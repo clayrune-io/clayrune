@@ -3,6 +3,11 @@
 Status: offline-tested implementation on the feature branch. No live activation
 or end-to-end production delivery guarantee is claimed.
 
+Current settlement candidate: [Definite report delivery states](DELEGATION_SETTLEMENT.md).
+That evidence contract supersedes the original scan cadence, report wording and
+blanket no-auto-retry description below. The older validation increments remain
+as historical evidence, not live-provider guarantees.
+
 ## Implemented increment and evidence
 
 `mc/delegation_delivery.py` persists exact per-turn completion sources,
@@ -62,7 +67,7 @@ removed. This is a test-launch condition, not a delivery-code workaround.
 
 ## Ownership and semantics
 
-### Lost-acknowledgment report confirmation (MC-1106)
+### Original lost-acknowledgment report confirmation (MC-1106, historical)
 
 `mc/delegation_transcript_reconcile.py` runs before drain/wake in the existing
 delivery loop, never from `/agent/status` or Floor polls. A five-minute in-memory

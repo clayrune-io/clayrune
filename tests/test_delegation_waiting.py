@@ -73,8 +73,8 @@ def test_report_leaves_the_list_once_handed_to_the_parent(store):
 
 
 @pytest.mark.parametrize('exc,stage,wording', [
-    (DeliveryBlocked('parent status error cannot accept'), 'held', 'is held'),
-    (DeliveryUncertain('outcome unknown'), 'review', 'may not have arrived'),
+    (DeliveryBlocked('parent status error cannot accept'), 'delivering', 'confirming receipt'),
+    (DeliveryUncertain('outcome unknown'), 'delivering', 'confirming receipt'),
 ])
 def test_parked_reports_stay_listed_with_their_own_wording(store, exc, stage, wording):
     _queue(store)
@@ -82,14 +82,15 @@ def test_parked_reports_stay_listed_with_their_own_wording(store, exc, stage, wo
     r = dw.waiting_by_parent('p')['parentA'][0]
     assert r['stage'] == stage
     assert wording in r['label']
-    assert 'not retried automatically' in r['detail']
+    assert 'Checking the chat log' in r['detail']
+    assert 'may not have arrived' not in r['label']
 
 
-def test_recovery_required_is_listed_as_review(store):
+def test_recovery_required_is_confirming_until_checked(store):
     _queue(store)
     with sqlite3.connect(store.path) as db:
         db.execute("UPDATE inbox SET state='recovery_required'")
-    assert dw.waiting_by_parent('p')['parentA'][0]['stage'] == 'review'
+    assert dw.waiting_by_parent('p')['parentA'][0]['stage'] == 'delivering'
 
 
 def test_child_finished_but_not_yet_accepted_is_already_waiting(store):
@@ -146,9 +147,10 @@ def test_figure_label_wording():
     one = [{'stage': 'waiting', 'label': 'report waiting from A', 'who': 'A'}]
     assert dw.figure_label(one) == 'report waiting from A'
     three = [{'stage': 'waiting', 'label': '', 'who': w} for w in 'ABC']
-    assert dw.figure_label(three) == '3 reports waiting (A, B, ...)'
-    parked = [{'stage': 'held', 'label': '', 'who': 'A'}]
-    assert dw.figure_label(parked) == '1 report needs review'
+    assert dw.figure_label(three) == '3 queued'
+    parked = [{'stage': 'delivering', 'label': 'Delivering report from A; confirming receipt', 'who': 'A'}]
+    assert dw.figure_label(parked) == 'Delivering report from A; confirming receipt'
+    assert dw.figure_label(three + parked + [{'stage': 'failed'}]) == '1 not delivered, 1 delivering, 3 queued'
     assert dw.figure_label(None) == '' and dw.figure_label([]) == ''
 
 

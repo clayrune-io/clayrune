@@ -7,6 +7,19 @@ from mc.delegation_delivery import DeliveryStore
 
 
 def register_routes(bp, *, store_fn: Callable[[], DeliveryStore | None]):
+    @bp.route('/api/project/<project_id>/agent/delegation/check', methods=['POST'])
+    def delegation_check(project_id):
+        store = store_fn()
+        if store is None:
+            return jsonify({'error': 'delegation delivery unavailable'}), 503
+        data = request.get_json(silent=True)
+        event_id = data.get('event_id') if isinstance(data, dict) else None
+        if not isinstance(event_id, str) or not event_id.strip():
+            return jsonify({'error': 'event_id required'}), 400
+        if not store.request_report_check(event_id.strip(), project_id):
+            return jsonify({'error': 'checkable report not found'}), 404
+        return jsonify({'ok': True, 'event_id': event_id.strip()})
+
     @bp.route('/api/project/<project_id>/agent/delegation/mark-handled', methods=['POST'])
     def delegation_mark_handled(project_id):
         store = store_fn()
