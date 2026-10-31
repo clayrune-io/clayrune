@@ -38,17 +38,19 @@
  *              popover phone docking, the "Ends ..." / Rules chips + Edit hook,
  *              and the t2b_* screenshot capture.
  *
- * Real headless boot (real index.html + real static/js|css, no network), same
- * hermetic shape as desk-v1-setup.mjs / desk-v1-campaign.mjs.
+ * Real headless boot (real index.html + real static/js|css) on this process's
+ * own ephemeral loopback server. Fixture APIs never touch a running Clayrune.
  *
  * RUN
  *   cd tools/smoke && node desk-v1-map.mjs
+ *   DESK_MAP_WIDTH=390 node desk-v1-map.mjs  (PowerShell: $env:DESK_MAP_WIDTH='390')
  * Exit 0 = every case holds; 1 = a case regressed / harness error.
  */
 import { readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { createServer } from 'node:http';
 import { seedDeskV1Fixtures } from './desk-v1-fixture-api.mjs';
 import { loadStaticJsCss } from './_static.mjs';
 
@@ -59,7 +61,11 @@ const CSS_DIR = resolve(REPO_ROOT, 'static', 'css');
 const ASSETS_DIR = resolve(REPO_ROOT, 'assets');
 const SHOT_DIR = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
-const ORIGIN = 'http://mc.smoke.test';
+let ORIGIN;
+// Run the complete flow at either requested width, not just the stepper checks.
+const WIDTH = Number(process.env.DESK_MAP_WIDTH || 1440);
+if (![1440, 390].includes(WIDTH)) throw new Error('DESK_MAP_WIDTH must be 1440 or 390');
+const VIEWPORT = { width: WIDTH, height: 950 };
 
 const MIME = { '.webp': 'image/webp', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml' };
 
@@ -88,26 +94,26 @@ let bad = 0;
 const ok = (m) => console.log('  ✓ ' + m);
 const fail = (m) => { console.error('  ✗ ' + m); bad++; };
 
-async function fulfillOrAbort(route) {
-  const req = route.request();
-  const path = new URL(req.url()).pathname;
-  const J = (body) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
-  if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+function serveSmoke(req, res) {
+  const path = new URL(req.url, ORIGIN).pathname;
+  const send = (type, body) => { res.writeHead(200, { 'Content-Type': type }); res.end(body); };
+  const J = (body) => send('application/json', JSON.stringify(body));
+  if (path === '/' || path === '/index.html') return send('text/html; charset=utf-8', INDEX_HTML);
   const hit = STATIC[path];
-  if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
+  if (hit) return send(hit[0], hit[1]);
   if (path === '/api/projects') return J(PROJECTS);
   if (path === '/api/config') return J({ desk_v1: true, user_timezone: '' });
   if (path === '/api/characters') return J([]);
   if (path === '/api/floor') return J({ bench: [] });
-  return route.abort();
+  res.writeHead(404); res.end();
 }
 
 async function newBootedPage(browser, viewport) {
-  const ctx = await browser.newContext({ viewport: viewport || { width: 1440, height: 950 } });
+  const ctx = await browser.newContext({ viewport: viewport || VIEWPORT });
   const page = await ctx.newPage();
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
-  await page.route('**/*', fulfillOrAbort);
+  await page.route('**/*', route => new URL(route.request().url()).origin === ORIGIN ? route.fallback() : route.abort());
 
   await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
@@ -486,14 +492,14 @@ const TONES = [
 ];
 
 async function newTonePage(browser, tone, viewport) {
-  const ctx = await browser.newContext({ viewport: viewport || { width: 1440, height: 950 } });
+  const ctx = await browser.newContext({ viewport: viewport || VIEWPORT });
   const page = await ctx.newPage();
   await page.addInitScript((ls) => {
     try { for (const k of Object.keys(ls)) localStorage.setItem(k, ls[k]); } catch (e) {}
   }, (tone && tone.ls) || {});
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
-  await page.route('**/*', fulfillOrAbort);
+  await page.route('**/*', route => new URL(route.request().url()).origin === ORIGIN ? route.fallback() : route.abort());
 
   await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
@@ -935,7 +941,7 @@ async function gotoLaunch(page, campaignId) {
 
 async function runR211LaunchBounds(browser) {
   const { ctx, page, pageErrors } = await newTonePage(browser, { ls: {} });
-  // This scenario tests successful Resume; expired-end refusal has its own case.
+  // Successful Resume needs a future end date; explicitly test expiry below.
   await page.evaluate(() => {
     const camp = window.DeskV1Fixtures.campaigns.find(c => c.id === 'camp-2');
     const end = new Date(); end.setDate(end.getDate() + 21);
@@ -967,8 +973,8 @@ async function runR211LaunchBounds(browser) {
   glyph.state === 'needs_you' && /⚠/.test(glyph.text) && /Goal/.test(glyph.text)
     ? ok(`R2-11: the Goal stop's map glyph is ⚠ with its word ("${glyph.text.replace(/\s+/g, ' ')}")`)
     : fail(`R2-11: Goal glyph wrong: ${JSON.stringify(glyph)}`);
-  await page.screenshot({ path: resolve(SHOT_DIR, 'r2_11_launch_1440.png') });
-  ok('screenshot saved: r2_11_launch_1440.png');
+  await page.screenshot({ path: resolve(SHOT_DIR, `r2_11_launch_${WIDTH}.png`) });
+  ok(`screenshot saved: r2_11_launch_${WIDTH}.png`);
 
   // The waiting agent question is a card in the right column with answer buttons.
   const card = await page.$eval('[data-needs-answer]', (el) => ({
@@ -1027,8 +1033,8 @@ async function runR211LaunchBounds(browser) {
   /Live since/.test(live.head) && live.state === 'active' && live.term === 1 && live.approvals === 1 && live.hash && live.rows === 8 && live.pause
     ? ok(`R2-11: Start -> "${live.head.trim()}", term 1 opened, 1 approval record, same 8 bounds shown, Pause offered`)
     : fail(`R2-11: Live state wrong: ${JSON.stringify(live)}`);
-  await page.screenshot({ path: resolve(SHOT_DIR, 'r2_11_launch_live_1440.png') });
-  ok('screenshot saved: r2_11_launch_live_1440.png');
+  await page.screenshot({ path: resolve(SHOT_DIR, `r2_11_launch_live_${WIDTH}.png`) });
+  ok(`screenshot saved: r2_11_launch_live_${WIDTH}.png`);
 
   // Pause -> Resume from the Launch page.
   await page.click('[data-launch-pause]');
@@ -1039,7 +1045,33 @@ async function runR211LaunchBounds(browser) {
   await page.waitForSelector('[data-confirm-accept]', { timeout: 2000 });
   await page.click('[data-confirm-accept]');
   await page.waitForSelector('[data-launch-pause]', { timeout: 2000 });
-  ok('R2-11: Resume returns the page to Live');
+  const resumed = await page.evaluate(() => ({
+    state: window.DeskV1Fixtures.campaigns.find(c => c.id === 'camp-2').state,
+    head: document.querySelector('.desk-v1-launch-live-head').textContent,
+  }));
+  check(resumed.state === 'active' && /Live since/.test(resumed.head),
+    `${WIDTH}: R2-11 Resume returns the campaign and Launch page to Live`);
+
+  // The old timeout was a correct refusal: an expired plan stays paused.
+  // Assert that explanation directly, rather than waiting for Pause to return.
+  await page.click('[data-launch-pause]');
+  await page.waitForSelector('[data-launch-resume]', { timeout: 2000 });
+  await page.evaluate(() => {
+    const end = new Date(); end.setDate(end.getDate() - 1);
+    window.DeskV1Fixtures.campaigns.find(c => c.id === 'camp-2').plan.end.date =
+      `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`;
+  });
+  await page.click('[data-launch-resume]');
+  await page.click('[data-confirm-accept]');
+  await page.waitForFunction(() => /its end date has passed/.test(document.querySelector('.toast')?.textContent || ''));
+  const refused = await page.evaluate(() => ({
+    state: window.DeskV1Fixtures.campaigns.find(c => c.id === 'camp-2').state,
+    resume: !!document.querySelector('[data-launch-resume]'),
+    pause: !!document.querySelector('[data-launch-pause]'),
+    head: document.querySelector('.desk-v1-launch-live-head').textContent,
+  }));
+  check(refused.state === 'paused' && refused.resume && !refused.pause && /Paused/.test(refused.head),
+    `${WIDTH}: R2-11 expired-end Resume explains refusal and stays paused with Resume available`);
 
   reportUncaught(pageErrors, '[r2-11-launch]');
   await ctx.close();
@@ -1118,8 +1150,13 @@ async function runComposerStopOrder(browser) {
 }
 
 async function main() {
-  const browser = await chromium.launch();
+  const server = createServer(serveSmoke);
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  ORIGIN = `http://127.0.0.1:${server.address().port}`;
+  console.log(`desk-v1-map: isolated server ${ORIGIN}, default viewport ${WIDTH}`);
+  let browser;
   try {
+    browser = await chromium.launch();
     await runComposerStopOrder(browser);
     console.log('desk-v1-map: New campaign -> stepper mechanics');
     await runNewCampaignStepperFlow(browser);
@@ -1154,7 +1191,8 @@ async function main() {
     await runR211LaunchBounds(browser);
     await runR211RenewTerm(browser);
   } finally {
-    await browser.close();
+    if (browser) await browser.close();
+    await new Promise((resolve, reject) => server.close(e => e ? reject(e) : resolve()));
   }
   if (bad) {
     console.error(`\n${bad} check(s) failed.`);
