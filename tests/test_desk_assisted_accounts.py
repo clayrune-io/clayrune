@@ -97,7 +97,7 @@ def _stored(piece, vid):
 # -- the capability --------------------------------------------------------------------
 
 def test_the_only_assisted_platform_is_the_one_with_a_route(world):
-    assert _accounts.assisted_platforms() == tuple(ap.ROUTES) == ('instagram',)
+    assert _accounts.assisted_platforms() == tuple(ap.ROUTES) == ('instagram', 'youtube')
     assert 'assisted' in _accounts.CAPABILITIES
 
 
@@ -105,13 +105,13 @@ def test_instagram_defaults_to_assisted_and_other_platforms_do_not(world):
     ig_acc = _accounts.create_account('instagram', 'clayrune', account_id='ch-ig')
     assert ig_acc['capability'] == 'assisted'
     assert ig_acc['publish']['ready'] is True and ig_acc['publish'].get('assisted') is True
-    assert _accounts.create_account('youtube', 'clayrune', account_id='ch-yt')['capability'] == 'none'
+    assert _accounts.create_account('youtube', 'clayrune', account_id='ch-yt')['capability'] == 'assisted'
     assert _accounts.create_account('tiktok', 'clayrune', account_id='ch-tt')['capability'] == 'none'
     # read-only stays available for Instagram when asked for
     assert _accounts.create_account('instagram', 'second', capability='none')['capability'] == 'none'
 
 
-@pytest.mark.parametrize('platform', ['x', 'linkedin', 'blog', 'youtube', 'tiktok'])
+@pytest.mark.parametrize('platform', ['x', 'linkedin', 'blog', 'tiktok'])
 def test_assisted_is_refused_where_there_is_no_route(world, platform):
     with pytest.raises(_accounts.AccountError, match='assisted'):
         _accounts.create_account(platform, 'a', capability='assisted')
@@ -124,8 +124,9 @@ def test_assisted_on_a_platform_without_a_route_is_not_ready():
 
 # -- the migration: an explicit, passcode-gated PATCH ------------------------------------
 
-def test_a_read_only_instagram_account_moves_to_assisted_only_by_a_passcoded_patch(world):
-    _accounts.create_account('instagram', 'old', capability='none', account_id='ch-old')
+@pytest.mark.parametrize('platform', ['instagram', 'youtube'])
+def test_a_read_only_account_moves_to_assisted_only_by_a_passcoded_patch(world, platform):
+    _accounts.create_account(platform, 'old', capability='none', account_id='ch-old')
     # a read never migrates it
     assert _accounts.get_account('ch-old')['capability'] == 'none'
     assert world.client.get('/api/desk/accounts').get_json()[0]['capability'] == 'none'
@@ -138,15 +139,16 @@ def test_a_read_only_instagram_account_moves_to_assisted_only_by_a_passcoded_pat
     assert back.status_code == 200 and back.get_json()['capability'] == 'none'
 
 
-def test_the_capability_patch_is_human_only(world):
-    _accounts.create_account('instagram', 'old', capability='none', account_id='ch-old')
+@pytest.mark.parametrize('platform', ['instagram', 'youtube'])
+def test_the_capability_patch_is_human_only(world, platform):
+    _accounts.create_account(platform, 'old', capability='none', account_id='ch-old')
     world.caller['unattended'] = True
     r = world.client.patch('/api/desk/accounts/ch-old', json={'capability': 'assisted'})
     assert r.status_code == 403
     assert _accounts.get_account('ch-old')['capability'] == 'none' and world.passcodes == []
 
 
-@pytest.mark.parametrize('platform,start', [('x', 'direct'), ('youtube', 'none'), ('blog', 'manual')])
+@pytest.mark.parametrize('platform,start', [('x', 'direct'), ('tiktok', 'none'), ('blog', 'manual')])
 def test_the_capability_patch_is_refused_where_there_is_no_route(world, platform, start):
     _accounts.create_account(platform, 'a', account_id='ch-a')
     assert _accounts.get_account('ch-a')['capability'] == start

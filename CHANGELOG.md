@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - Add YouTube campaign accounts with assisted video upload
+
+- Connect saves a named YouTube channel account and browser profile with assisted capability. It can be selected in campaign Channels and the composer; existing read-only accounts require an explicit passcode-gated change.
+- YouTube requires exactly one video. The first text line supplies the title (100 characters); remaining lines supply the description (5000). Composer and approval validation reject missing/wrong media and over-limit text without truncating it; preview uses the same text mapping.
+- Assisted upload opens Studio, attaches the approved video, replaces the title and description, and stops on Details. The human finishes audience/visibility and presses Publish/Save. Studio may save a private draft on attachment. Signed-in Studio selectors remain unverified live. Local branch candidate; no merge, push or restart.
+
 ## [2026-10-30] - Put campaign channels before posts
 
 - Campaign stops now read Brief, Goal, Channels, Posts, When, Launch. Channels sets the campaign account bound and shows its post overview; Posts lists campaign pieces and opens post composers. Existing route IDs and saved cursors remain compatible.

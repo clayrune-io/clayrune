@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "service_id": "youtube",
-  "revision": 2,
+  "revision": 3,
   "signin_check": {
     "url": "https://www.youtube.com/",
     "selectors": ["button#avatar-btn"]
@@ -16,21 +16,21 @@
     "youtube.com",
     "www.youtube.com",
     "m.youtube.com",
-    "youtu.be"
+    "youtu.be",
+    "studio.youtube.com"
   ],
-  "account_kinds": [],
+  "account_kinds": [{"id": "account", "label": "YouTube channel"}],
   "purposes": [],
   "routes": [
     {
-      "id": "youtube-oauth",
-      "title": "YouTube channel",
-      "guidance": "Information only: Clayrune has no YouTube connector yet.",
-      "transport": "api",
+      "id": "youtube-browser",
+      "title": "YouTube channel: signed-in browser profile",
+      "guidance": "Save your channel identity and a named browser profile. Assisted upload fills one video's title and description in YouTube Studio, then stops on Details. You finish audience, visibility and Publish/Save yourself. Attaching a video can create a private draft. No API upload or publishing permission is granted.",
+      "transport": "browser",
       "support": "info_only",
-      "connect_method": "oauth",
       "auth": [
         {
-          "type": "oauth",
+          "type": "browser_signin",
           "params": [],
           "placement": null,
           "scopes": [],
@@ -39,6 +39,7 @@
           "claim": null
         }
       ],
+      "signin": {"url": "https://www.youtube.com/", "hosts": ["www.youtube.com", "studio.youtube.com"]},
       "coverage": [],
       "requirements": [],
       "limits": [],
@@ -65,6 +66,6 @@
       "result": "unverified"
     }
   ],
-  "change_summary": "P1: converted from the version 1 registry; nothing in it was re-verified. Revision 2 (MC-1074): fixed read-only browser sign-in evidence added; Chromium fixtures checked, live vendor account check pending.",
-  "supersedes": 1
+  "change_summary": "Revision 3: named browser sign-in creates a YouTube channel account with an assisted upload route; API OAuth upload remains out of scope. No automatic read or post grant. Studio selectors and signed-in upload are unverified live. Revision 2 added sign-in evidence checked only in Chromium fixtures.",
+  "supersedes": 2
 }

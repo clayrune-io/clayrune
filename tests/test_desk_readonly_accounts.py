@@ -73,9 +73,9 @@ def test_create_a_read_only_account(env, plat):
     assert r.status_code == 201, r.get_json()
     acc = r.get_json()
     # Instagram has an assisted route (tests/test_desk_assisted_accounts.py), so it defaults to `assisted`.
-    assert acc['capability'] == ('assisted' if plat == 'instagram' else 'none') and acc['platform'] == plat
+    assert acc['capability'] == ('assisted' if plat in ('instagram', 'youtube') else 'none') and acc['platform'] == plat
     assert acc['label'].endswith(' · clayrune') and acc['label'] != ' · clayrune'
-    if plat == 'instagram':
+    if plat in ('instagram', 'youtube'):
         return
     assert acc['publish']['ready'] is False and 'read-only' in acc['publish']['reason']
     assert _by_id(env)[f'ch-{plat}']['publish']['ready'] is False

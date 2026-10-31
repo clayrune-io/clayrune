@@ -23,7 +23,7 @@ def _draft(name, url, profile='main'):
 
 @pytest.mark.parametrize('url,platform,capability', [
     ('https://www.instagram.com', 'instagram', 'assisted'),
-    ('https://youtube.com', 'youtube', 'none'),
+    ('https://youtube.com', 'youtube', 'assisted'),
     ('https://www.tiktok.com', 'tiktok', 'none')])
 def test_pane_site_becomes_an_account_not_a_service(store, url, platform, capability):
     result, duplicate = c.commit('request-1234', _draft('@clayrune', url, 'ig-login'))

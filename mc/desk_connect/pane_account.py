@@ -8,7 +8,7 @@ test campaign's tray listed three accounts and no Instagram).
 `browser_connections.commit` hands such a draft here. The draft shape is unchanged
 (`name`, `url`, `browser_profile`); for these sites `name` is the account's handle. The account
 gets the platform's own default capability from `desk_accounts.create_account` (Instagram
-`assisted`, YouTube/TikTok `none`) and the typed browser profile. Nothing else is granted: no
+and YouTube `assisted`, TikTok `none`) and the typed browser profile. Nothing else is granted: no
 read setting is changed (absent means the browser pane) and no post is made or approved.
 """
 from __future__ import annotations

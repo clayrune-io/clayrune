@@ -119,6 +119,26 @@ class PaneDriver:
         self._conn().call('Input.insertText', {'text': text})
         return True
 
+    def replace_text(self, css: str, text: str) -> bool:
+        # Studio pre-fills the title from the filename. Select only this field's
+        # contents before typing, including when clearing an empty description.
+        focused = self._eval(f'''(function(){{
+          const e=document.querySelector({json.dumps(css)}); if(!e)return false;
+          e.focus();
+          if(document.activeElement!==e&&!e.contains(document.activeElement))return false;
+          if(e instanceof HTMLInputElement||e instanceof HTMLTextAreaElement)e.select();
+          else {{const r=document.createRange();r.selectNodeContents(e);
+            const s=window.getSelection();s.removeAllRanges();s.addRange(r);}}
+          return true;
+        }})()''')
+        if not focused:
+            return False
+        c = self._conn()
+        c.call('Input.dispatchKeyEvent', {'type': 'keyDown', 'key': 'Backspace', 'code': 'Backspace', 'windowsVirtualKeyCode': 8})
+        c.call('Input.dispatchKeyEvent', {'type': 'keyUp', 'key': 'Backspace', 'code': 'Backspace', 'windowsVirtualKeyCode': 8})
+        c.call('Input.insertText', {'text': text})
+        return True
+
 
 def pane_driver_for(profile: str) -> PaneDriver:
     session = br._session_using_profile(profile)

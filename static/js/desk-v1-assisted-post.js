@@ -11,10 +11,11 @@
 // PATCH capability 'assisted', passcode-gated. Wording comes from the shared copy set
 // (desk-v1-connect-copy.js `words`).
 import { ConnectCopy as C } from './desk-v1-connect-copy.js';
+import './desk-v1-youtube-post.js';
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const W = () => C.words;
-const NAMES = { instagram: 'Instagram' };
+const NAMES = { instagram: 'Instagram', youtube: 'YouTube' };
 const name = ch => NAMES[ch?.platform] || (ch?.platform ? ch.platform[0].toUpperCase() + ch.platform.slice(1) : '');
 const isAssisted = ch => !!ch && ch.capability === 'assisted';
 const canEnable = ch => !!ch && ch.capability === 'none' && ch.platform in NAMES;
@@ -55,7 +56,7 @@ function bindFill(root, family, version, channel) {
     button.setAttribute('aria-busy', 'true');
     _say(box, 'working', W().assistedWorking);
     try {
-      const res = await _send(url, 'POST', { title: W().assistedProofTitle, description: W().assistedProofText, busyText: W().assistedWorking });
+      const res = await _send(url, 'POST', { title: W().assistedProofTitle, description: channel.platform === 'youtube' ? window.DeskV1YouTubePost.uploadProof : W().assistedProofText, busyText: W().assistedWorking });
       if (res === null) _say(box, 'cancelled', W().assistedNoPasscode);
       else if (res.ok) _say(box, 'ready', `${res.body.message || W().assistedDone}${res.body.final_button_present === false ? ` ${W().assistedNoFinal}` : ''}`);
       else _say(box, 'failed', (res.body && (res.body.error || res.body.message)) || `${W().assistedFailed} (HTTP ${res.status})`);
