@@ -51,7 +51,6 @@ import './desk-v1-composer-preview.js';
     if (!root) return;
     nameField(root, d);
     root.querySelector('[data-composer-status]').textContent = d.status;
-    root.querySelector('.desk-v1-composer-breadcrumb strong').textContent = d.fam?.title || UNTITLED;
     root.querySelector('[data-composer-status]').toggleAttribute('data-failed', d.failed);
     const saveBtn = root.querySelector('[data-composer-save]');
     saveBtn.disabled = d.busy || d.mediaBusy || !!d.fam?.archivedAt || !d.text.trim() && !d.fam;
