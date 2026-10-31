@@ -8,7 +8,7 @@
 
   // `<Kind><n>`, n one above the highest serial of `kind` among the campaign's pieces.
   function next(families, campaignId, kind) {
-    const re = new RegExp('^' + prefix(kind) + '(\d+)$', 'i');
+    const re = new RegExp('^' + prefix(kind) + '(\\d+)$', 'i');
     let top = 0;
     (families || []).forEach((f) => {
       if (f.campaignId !== campaignId || f.kind !== kind) return;
