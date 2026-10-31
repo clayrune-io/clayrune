@@ -171,19 +171,19 @@ def test_haiku_rate_card_switches_on_total_prompt_tokens():
         (60_000 * 0.50 + 50_000 * 0.05) / 1e6)
 
 
-@pytest.mark.parametrize('model', ['claude-opus-5', 'claude-sonnet-4', 'gpt-6', '', 'haiku'])
+@pytest.mark.parametrize('model', ['claude-no-such-model', 'claude-sonnet-4', 'gpt-6', '', 'haiku'])
 def test_unknown_model_price_is_none(model):
     assert budget.price_for(model, 10, {}) is None
     assert budget.cost_usd(model, {'input_tokens': 5}, {}) is None
 
 
 def test_price_override_from_settings():
-    turn_on(prices={'claude-opus-5': {'input': 5, 'output': 25, 'cache_read': 0.5,
-                                      'cache_write': 6.25}})
+    turn_on(prices={'claude-no-such-model': {'input': 5, 'output': 25, 'cache_read': 0.5,
+                                             'cache_write': 6.25}})
     s = budget.load_settings()
-    assert budget.price_for('claude-opus-5', 1, s['prices'])['output'] == 25.0
-    assert budget.can_spend('claude-opus-5', s)[0] is True
-    assert 'claude-opus-5' in budget.status()['known_models']
+    assert budget.price_for('claude-no-such-model', 1, s['prices'])['output'] == 25.0
+    assert budget.can_spend('claude-no-such-model', s)[0] is True
+    assert 'claude-no-such-model' in budget.status()['known_models']
     assert 'overrides' in budget.status()['cost_basis']
 
 
@@ -203,7 +203,7 @@ def test_gate_reasons():
     assert budget.can_spend(m) == (False, 'no_budget')
     turn_on()
     assert budget.can_spend(m) == (True, '')
-    assert budget.can_spend('claude-opus-5') == (False, 'price_unknown')
+    assert budget.can_spend('claude-no-such-model') == (False, 'price_unknown')
     assert budget.can_spend('mystery') == (False, 'price_unknown')
 
 
@@ -284,6 +284,7 @@ def test_transport_success_shape():
 
 @pytest.mark.parametrize('resp,kind', [
     (Resp(400, err_body('Your credit balance is too low to access the Anthropic API.')), 'credit_low'),
+    (Resp(400, err_body('You have reached your specified API usage limits. You will regain access on 2026-12-01 at 00:00 UTC.')), 'spend_limit'),
     (Resp(401, err_body('invalid x-api-key', 'authentication_error')), 'auth'),
     (Resp(403, err_body('forbidden')), 'auth'),
     (Resp(429, err_body('slow down', 'rate_limit_error')), 'rate_limit'),
@@ -395,6 +396,21 @@ def test_401_stops(isolated):
     assert len(isolated['notices']) == 1
 
 
+SPEND_LIMIT_MSG = 'You have reached your specified API usage limits. You will regain access on 2026-12-01 at 00:00 UTC.'
+
+
+def test_spend_limit_stops_instead_of_retrying(isolated):
+    turn_on()
+    post = poster(Resp(400, err_body(SPEND_LIMIT_MSG)))
+    assert offload.try_offload(user_text='u', model='haiku', timeout=5, post=post) is None
+    st = budget.status()
+    assert st['state'] == 'stopped' and 'spend limit' in st['reason']
+    assert '2026-12-01' in st['reason']
+    # stopped: the next call never reaches the API
+    assert offload.try_offload(user_text='u', model='haiku', timeout=5, post=post) is None
+    assert len(post.calls) == 1 and len(isolated['notices']) == 1
+
+
 def test_rate_limit_does_not_stop():
     turn_on()
     offload.try_offload(user_text='u', model='haiku', timeout=5,
@@ -427,7 +443,7 @@ def test_vault_failures_fall_back(isolated):
 def test_unknown_model_never_reaches_the_api():
     turn_on()
     post = poster(Resp(200, ok_body()))
-    assert offload.try_offload(user_text='u', model='claude-opus-5', timeout=5, post=post) is None
+    assert offload.try_offload(user_text='u', model='claude-no-such-model', timeout=5, post=post) is None
     assert offload.try_offload(user_text='u', model='some-new-model', timeout=5, post=post) is None
     assert post.calls == []
 
@@ -465,6 +481,8 @@ def test_key_test_outcomes():
     assert offload.run_key_test(post=poster(Resp(401, err_body('x'))))['result'] == 'invalid_key'
     assert offload.run_key_test(post=poster(
         Resp(400, err_body('credit balance is too low'))))['result'] == 'credit_too_low'
+    assert offload.run_key_test(post=poster(
+        Resp(400, err_body(SPEND_LIMIT_MSG))))['result'] == 'spend_limit'
     budget.save_settings({})
     assert offload.run_key_test(post=poster(Resp(200, ok_body())))['result'] == 'no_key'
 
