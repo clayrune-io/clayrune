@@ -791,6 +791,9 @@ async function runR219WhenTimeOnly(browser) {
 // silently worked around.
 async function runR29UnscheduledDrag(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} }, { width: 1440, height: 1400 });
+  // This is the positive drop case. Held channels now refuse drops; their
+  // refusal is covered by desk-v1-calendar-interactions.mjs, using real gestures.
+  await page.evaluate(() => { window.DeskV1Fixtures.channels.find((c) => c.id === 'ch-li-page').health = 'ok'; });
   await navToCalendar(page);
   await page.waitForSelector('.desk-v1-calendar', { timeout: 8000 });
 

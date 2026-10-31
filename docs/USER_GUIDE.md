@@ -1351,6 +1351,10 @@ the first nonblank text or valid media creates a **New post** draft. Use **Save 
 subsequent text edits and check the **Saved** message. A refused write keeps
 your text available for retry.
 
+**Name** appears at the top of the composer once the draft exists. Click its
+name (or press Enter on it), type a name, then press Enter or leave the field
+to save. Escape cancels. The calendar and post cards use that same name.
+
 **Post to** starts with this campaign's accounts selected. Tick or untick an
 account to change this post's destinations. After text creates the draft,
 ticks save immediately; they never add accounts to the campaign's allowed set.
@@ -1373,6 +1377,27 @@ cannot be rescheduled. **Send to Review** saves the text and destinations,
 then opens the existing Review screen. Approval and publishing still require
 their existing human actions. Approved copy must return to review before
 editing; archived pieces must be restored first.
+
+In the campaign **When** calendar, hover a chip or Unscheduled card to see
+its name, first 140 characters, media thumbnail, channels, time and state.
+On a phone, tap its **ⓘ** button for the same preview.
+
+**Unscheduled** shows one card per post, with badges for its existing destinations.
+Drag it onto a channel/day row to set that destination's time. A compatible
+campaign account that the post does not yet target is added as a destination;
+accounts outside that post's campaign are never added. Held accounts and content
+that fails the existing YouTube requirements appear gray during the drag, show
+a reason on hover, and refuse the drop. Other platform media-duration checks are
+not available here. Tap a card (or use Enter) for a channel and date/time picker.
+A card remains in the tray while any of its destinations is still unscheduled.
+
+Click a dated chip (or press Enter/Space on it) to open its **When details**.
+Edit the date/time and choose **Set time**, choose **Edit post** for the composer,
+or **Open review** when that version needs review. **Unschedule**, or dragging
+its chip back into the Unscheduled tray, clears only its time. The post stays
+in the campaign; **Undo** restores that time. A previously approved scheduled
+version is not sent while its time is empty. Giving it a new time after clearing
+asks to send it back for approval; only Undo restores the original time directly.
 
 **Media:** drop or paste pictures/videos anywhere on the composer, including
 the Write box, or choose **Add media**. The picker starts on **Upload** and

@@ -418,9 +418,8 @@
   // date, via the SAME `_reschedule` command every other drop already uses
   // (Undo/toast/announce included), just with no "moving FROM a day" side
   // to gate on approval. ────────────────────────────────────────────────────
-  // R2-19: a version is PLACED once Where has put it on one of the campaign's
-  // accounts (`plan.accounts`) and it is still live. When only ever times
-  // placed versions — it never creates one and never changes its account.
+  // Placement still bounds suggestions. Human tray drops may add a destination
+  // inside plan.accounts through ComposerChannels.sync (Dave, 2026-10-31).
   function _isPlaced(v, camp) {
     return !!(v.channelId && camp && camp.plan && (camp.plan.accounts || []).includes(v.channelId)
       && v.state !== 'archived' && v.state !== 'skipped');
@@ -435,27 +434,11 @@
     }
     return items;
   }
-  function _unscheduledItems(st, campaign) {
-    return _placedVersions(st, campaign).filter((it) => !_versionWhen(it.version));
-  }
   function _unscheduledHTML(st, campaign) {
-    const items = _unscheduledItems(st, campaign);
-    if (!items.length) return '';
-    return `
-      <div class="desk-v1-cal-unscheduled">
-        <div class="desk-v1-cal-unscheduled-label">Unscheduled</div>
-        <div class="desk-v1-cal-unscheduled-tray">
-          ${items.map((it) => `
-            <button type="button" class="desk-v1-cal-unscheduled-card" data-unsched-version="${esc(it.version.id)}" title="${esc(it.family.title)}">
-              ${esc(it.family.title)}
-            </button>`).join('')}
-        </div>
-      </div>`;
+    return window.DeskV1CalendarTray.html(_familiesInScope(st, campaign));
   }
 
-  // ── module state — one calendar mounted at a time in R0 (route-driven);
-  // preserved across a re-render of the SAME campaign (drag/undo/nav calls
-  // `_render()` in place) but reset when navigating to a different one. ────
+  // One calendar mount; keep its range through writes and Undo.
   let _state = null;
   let _mountEl = null;
   let _dragState = null;
@@ -575,14 +558,14 @@
     const videoGlyph = item.family.kind === 'video'
       ? '<span class="desk-v1-cal-chip-video" aria-hidden="true">▶</span> ' : '';
     return `
-      <button type="button" class="desk-v1-cal-chip${dashed}" data-chip-version="${esc(item.version.id)}"
+      <div class="desk-v1-cal-entry" data-cal-preview-version="${esc(item.version.id)}"><button type="button" class="desk-v1-cal-chip${dashed}" data-chip-version="${esc(item.version.id)}"
           data-state="${esc(state)}" title="${esc(item.family.title)}">
         <span class="desk-v1-cal-chip-line1">
           <span class="desk-v1-cal-chip-time">${esc(_fmtTime(item.when))}</span>
           ${stateHTML}
         </span>
         <span class="desk-v1-cal-chip-title">${videoGlyph}${esc(item.family.title)}</span>
-      </button>`;
+      </button>${window.DeskV1CalendarPreview.button(item.family.title)}</div>`;
   }
 
   function _rowHeaderHTML(channel) {
@@ -708,12 +691,12 @@
           const state = _effectiveState(it, it.channel);
           const videoGlyph = it.family.kind === 'video' ? '▶ ' : '';
           return `
-          <button type="button" class="desk-v1-cal-agenda-item" data-chip-version="${esc(it.version.id)}">
+          <div class="desk-v1-cal-entry" data-cal-preview-version="${esc(it.version.id)}"><button type="button" class="desk-v1-cal-agenda-item" data-chip-version="${esc(it.version.id)}">
             <span class="desk-v1-cal-agenda-time">${esc(_fmtTime(it.when))}</span>
             <span class="desk-v1-cal-agenda-channel">${esc(it.channel.label || '')}</span>
             ${window.DeskV1Kit ? window.DeskV1Kit.stateLabelHTML(state) : ''}
             <span class="desk-v1-cal-agenda-title">${videoGlyph}${esc(it.family.title)}</span>
-          </button>`;
+          </button>${window.DeskV1CalendarPreview.button(it.family.title)}</div>`;
         }).join('')}
       </div>`;
     }).filter(Boolean).join('');
@@ -764,11 +747,9 @@
     const todayKey = _dayKey(new Date());
     const project = _project(campaign.projectId);
 
-    // R2-19: When only times versions Where has placed. Nothing placed in
-    // scope = nothing to time, so the grid (and its slots band) gives way to an
-    // empty state that points back to Where; the cadence/term fields stay (they
-    // are When's own bounds) and so does the scope toolbar.
-    if (!_placedVersions(st, campaign).length) {
+    // Existing pieces without destinations can now be placed by a tray drop.
+    // Only a scope with neither placed versions nor available posts is empty.
+    if (!_placedVersions(st, campaign).length && !window.DeskV1CalendarTray.items(_familiesInScope(st, campaign)).length) {
       el.innerHTML = `
       <div class="desk-v1-calendar">
         ${_suggestedWhenBannerHTML(campaign)}
@@ -798,7 +779,7 @@
         ${st.view === 'month' ? _monthGridHTML(campaign, days, rows, cells, todayKey) : _gridHTML(st, campaign, days, rows, cells, todayKey)}
         ${_agendaHTML(days, rows, cells, todayKey)}
         ${_unscheduledHTML(st, campaign)}
-        <div class="desk-v1-cal-footnote">Calendar is a view of Content, not a separate place. Dragging a chip reschedules it (approval covers content, not time, within your rules). Click a chip to open its review.</div>
+        <div class="desk-v1-cal-footnote">Calendar is a view of Content, not a separate place. Dragging a chip reschedules it (approval covers content, not time, within your rules). Click a chip for its time, details and editing controls.</div>
       </div>`;
 
     _bindFields(el, campaign);
@@ -824,10 +805,11 @@
   function _bind(el, campaign, days, rows, cells, project) {
     _bindToolbar(el, campaign);
 
-    el.querySelectorAll('[data-chip-version],[data-chip-version]').forEach((chip) => {
+    el.querySelectorAll('[data-chip-version]').forEach((chip) => {
       chip.onclick = (e) => {
         if (chip.classList.contains('desk-v1-cal-drag-suppress-click')) { chip.classList.remove('desk-v1-cal-drag-suppress-click'); return; }
-        window.deskV1Nav('review', { campaignId: campaign.id, versionId: chip.dataset.chipVersion });
+        const found = _findFamilyVersion(chip.dataset.chipVersion);
+        if (found) window.DeskV1CalendarDetail.open(chip, found.family, found.version, () => _render(campaign));
       };
       chip.onkeydown = (e) => {
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _openRescheduleKeyboard(chip, campaign); }
@@ -840,42 +822,13 @@
     _bindSwipe(el, campaign);
   }
 
-  // ── keyboard reschedule path (§10 parity: every drag also has a click/
-  // keyboard path). Enter on a focused chip opens a tiny inline popover with
-  // a native datetime-local input instead of a drag — same command, same
-  // approval-window gate, same Undo. ──────────────────────────────────────
+  // Enter or Space opens the same detail controls as a pointer click.
   function _openRescheduleKeyboard(chip, campaign) {
-    const versionId = chip.dataset.chipVersion;
-    const found = _findFamilyVersion(versionId);
-    if (!found) return;
-    const current = _versionWhen(found.version);
-    const iso = current ? new Date(current.getTime() - current.getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '';
-    const pop = document.createElement('div');
-    pop.className = 'desk-v1-cal-kbd-reschedule';
-    pop.innerHTML = `
-      <label>Move to
-        <input type="datetime-local" value="${esc(iso)}" data-kbd-when>
-      </label>
-      <button type="button" data-kbd-move>Move</button>
-      <button type="button" data-kbd-cancel>Cancel</button>`;
-    chip.parentElement.appendChild(pop);
-    const close = () => { pop.remove(); chip.focus(); };
-    pop.querySelector('[data-kbd-cancel]').onclick = close;
-    pop.querySelector('[data-kbd-move]').onclick = () => {
-      const val = pop.querySelector('[data-kbd-when]').value;
-      if (!val) return close();
-      const newWhen = new Date(val);
-      close();
-      _reschedule(found, newWhen, campaign);
-    };
+    const found = _findFamilyVersion(chip.dataset.chipVersion);
+    if (found) window.DeskV1CalendarDetail.open(chip, found.family, found.version, () => _render(campaign));
   }
 
-  // ── reschedule command — the approval-window gate (see _approvalDayKey
-  // above), then a commandBus command so it gets the same optimistic update
-  // + Undo toast + announcement every other Desk v1 drop already gets. ────
-  // A version handed to a platform can no longer be moved (the server answers
-  // 409, `mc.desk_pieces.SENT_STATES`); live mode says so up front rather than
-  // drawing it moved and rolling back. Demo keeps its fixtures movable.
+  // A platform-owned version cannot be rescheduled (M18 also refuses it).
   const _SENT_STATES = ['sending', 'submitted', 'verified_published', 'you_reported', 'unknown_outcome', 'failed'];
   // Returns false only when the change was REFUSED (the caller says so); a user
   // who cancels the approval prompt chose that, so it is not a failure. Accepted
@@ -892,7 +845,8 @@
     const priorState = version.state;
     const priorApproved = version.approved;
     const approvalKey = _approvalDayKey(version);
-    const movingOutsideWindow = approvalKey && approvalKey !== _dayKey(newWhen);
+    // A cleared schedule no longer has an approved day to compare against.
+    const movingOutsideWindow = version.state === 'scheduled' && (!approvalKey || approvalKey !== _dayKey(newWhen));
 
     if (movingOutsideWindow) {
       const proceed = window.confirm('Moving this needs approval again — continue?');
@@ -929,6 +883,7 @@
         } else if (version.publishedAt) version.publishedAt = priorIso;
         else if (version.publishAt) version.publishAt = priorIso;
         else if (priorSchedule !== undefined) window.DeskV1Store.state().calendarSchedule[version.id] = priorSchedule;
+        else if (window.DeskV1Store.state().calendarSchedule) delete window.DeskV1Store.state().calendarSchedule[version.id];
         version.state = priorState;
       },
       repaint,
@@ -959,7 +914,7 @@
   // "drag a chip to another day or time" reading where day is the axis a
   // grid drag naturally expresses). ────────────────────────────────────────
   function _bindDrag(el, campaign) {
-    el.querySelectorAll('.desk-v1-cal-chip').forEach((chip) => {
+    el.querySelectorAll('[data-chip-version]').forEach((chip) => {
       chip.addEventListener('pointerdown', (e) => {
         const versionId = chip.dataset.chipVersion;
         const found = _findFamilyVersion(versionId);
@@ -980,6 +935,8 @@
           onMove: (st, x, y) => {
             el.querySelectorAll('.desk-v1-cal-cell.pd-drop-hover').forEach((c) => { c.classList.remove('pd-drop-hover'); const p = c.querySelector('.desk-v1-cal-cell-preview'); if (p) p.textContent = ''; });
             const target = document.elementFromPoint(x, y);
+            const tray = target?.closest('[data-cal-unschedule-tray]');
+            el.querySelector('[data-cal-unschedule-tray]')?.classList.toggle('pd-drop-hover', !!tray);
             const cell = target && target.closest && target.closest('.desk-v1-cal-cell');
             if (!cell) return;
             cell.classList.add('pd-drop-hover');
@@ -992,11 +949,15 @@
           },
           onDrop: (st, x, y) => {
             const target = document.elementFromPoint(x, y);
+            const tray = target?.closest('[data-cal-unschedule-tray]');
+            el.querySelector('[data-cal-unschedule-tray]')?.classList.toggle('pd-drop-hover', !!tray);
             const cell = target && target.closest && target.closest('.desk-v1-cal-cell');
+            if (tray) return 'unschedule';
             return cell ? cell.dataset.dayKey : null;
           },
           afterDrop: (st, dayKey) => {
             if (!dayKey) return;
+            if (dayKey === 'unschedule') { window.DeskV1CalendarUnschedule.clear(found.version.id, () => _render(campaign)); return; }
             const when = _versionWhen(found.version) || new Date();
             const [y, m, d] = dayKey.split('-').map((n) => parseInt(n, 10));
             const newWhen = new Date(when);
@@ -1005,6 +966,7 @@
             _reschedule(found, newWhen, campaign);
           },
           onTeardown: () => {
+            el.querySelector('[data-cal-unschedule-tray]')?.classList.remove('pd-drop-hover');
             el.querySelectorAll('.desk-v1-cal-cell.pd-drop-hover').forEach((c) => { c.classList.remove('pd-drop-hover'); const p = c.querySelector('.desk-v1-cal-cell-preview'); if (p) p.textContent = ''; });
           },
         });
@@ -1078,60 +1040,10 @@
     });
   }
 
-  // ── R2-9: the Unscheduled tray's own drag-to-schedule. Drop target is
-  // scoped to the piece's OWN channel row (`data-channel-id` match) — a
-  // grid drop only ever changes `data-day-key` for the channel it's already
-  // in (same invariant `_bindDrag`'s reschedule already keeps), so a piece
-  // with no date yet can't be dropped onto a channel it doesn't belong to.
-  // Reuses `_reschedule` wholesale (Undo/toast/announce, approval gate —
-  // moot here since a never-scheduled version has no `_approvalDayKey`). ───
+  // The family tray owns destination choices and its pointer/keyboard paths.
   function _bindUnscheduledDrag(el, campaign) {
-    el.querySelectorAll('.desk-v1-cal-unscheduled-card').forEach((card) => {
-      card.addEventListener('pointerdown', (e) => {
-        const versionId = card.dataset.unschedVersion;
-        const found = _findFamilyVersion(versionId);
-        if (!found) return;
-        const channelId = found.version.channelId;
-        const targetSel = `.desk-v1-cal-cell[data-channel-id="${channelId}"]`;
-        window.PointerDrag.begin(card, e, {
-          isDragActive: () => !!_dragState,
-          getDragState: () => _dragState,
-          setDragState: (s) => { _dragState = s; },
-          data: { versionId },
-          draggingClass: 'desk-v1-cal-unscheduled-dragging',
-          ghostClass: 'pd-ghost desk-v1-cal-chip-ghost',
-          ghostHTML: () => card.innerHTML,
-          ghostRotationDeg: -3,
-          ghostOffsetX: 18, ghostOffsetY: 18,
-          onMove: (st, x, y) => {
-            el.querySelectorAll('.desk-v1-cal-cell.pd-drop-hover').forEach((c) => { c.classList.remove('pd-drop-hover'); const p = c.querySelector('.desk-v1-cal-cell-preview'); if (p) p.textContent = ''; });
-            const target = document.elementFromPoint(x, y);
-            const cell = target && target.closest && target.closest(targetSel);
-            if (!cell) return;
-            cell.classList.add('pd-drop-hover');
-            const preview = cell.querySelector('.desk-v1-cal-cell-preview');
-            if (preview) {
-              const label = new Intl.DateTimeFormat(undefined, { timeZone: _userTz(), weekday: 'short', month: 'short', day: 'numeric' }).format(new Date(cell.dataset.dayKey + 'T00:00:00'));
-              preview.textContent = `Schedule ${label}`;
-            }
-          },
-          onDrop: (st, x, y) => {
-            const target = document.elementFromPoint(x, y);
-            const cell = target && target.closest && target.closest(targetSel);
-            return cell ? cell.dataset.dayKey : null;
-          },
-          afterDrop: (st, dayKey) => {
-            if (!dayKey) return;
-            const [y, m, d] = dayKey.split('-').map((n) => parseInt(n, 10));
-            const newWhen = new Date(y, m - 1, d, 12, 0, 0, 0); // fixed default time, same technique as _createOwnSlot
-            _reschedule(found, newWhen, campaign);
-          },
-          onTeardown: () => {
-            el.querySelectorAll('.desk-v1-cal-cell.pd-drop-hover').forEach((c) => { c.classList.remove('pd-drop-hover'); const p = c.querySelector('.desk-v1-cal-cell-preview'); if (p) p.textContent = ''; });
-          },
-        });
-      });
-    });
+    window.DeskV1CalendarTray.bind(el, () => _render(campaign));
+    window.DeskV1CalendarPreview.bind(el);
   }
 
   // Own swipe binding, same slop/ratio technique schedule-calendar.js uses
