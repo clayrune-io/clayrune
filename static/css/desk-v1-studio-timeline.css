@@ -1,7 +1,23 @@
-.desk-v1-sb-timeline { overflow-x: auto; min-height: 100px; }
-.desk-v1-sb-timeline .desk-v1-video-scene { flex-shrink: 0; min-width: 130px; position: relative; }
-.desk-v1-sb-timeline .desk-v1-video-scene-duration { display: block; padding: 2px 10px 6px; font-size: 12px; }
-.desk-v1-sb-timeline .desk-v1-video-scene-edge { cursor: ew-resize; touch-action: none; }
+.desk-v1-timebar-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.desk-v1-timebar-head .desk-v1-sb-timeline-title { margin: 0; }
+.desk-v1-timebar-zoom { display: flex; gap: 3px; flex-shrink: 0; }
+.desk-v1-timebar-zoom button { min-width: 32px; min-height: 32px; padding: 3px 8px; border: 1px solid var(--border2); border-radius: 5px; background: var(--surface2); color: var(--text); cursor: pointer; }
+.desk-v1-timebar-scroll { overflow-x: auto; max-width: 100%; border: 1px solid var(--border2); border-radius: 8px; background: var(--surface2); }
+.desk-v1-timebar-track { min-width: 100%; }
+.desk-v1-timebar-ruler { height: 29px; position: relative; overflow: hidden; border-bottom: 1px solid var(--border2); font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text-dim); }
+.desk-v1-timebar-tick { position: absolute; top: 0; height: 100%; padding: 2px 4px; border-left: 1px solid var(--border2); box-sizing: border-box; white-space: nowrap; }
+.desk-v1-sb-timeline { overflow: visible; min-height: 104px; border: 0; border-radius: 0; }
+.desk-v1-sb-timeline .desk-v1-video-scene { flex: 0 0 auto; min-width: 0; box-sizing: border-box; border-right: 0; box-shadow: inset -1px 0 var(--border2); padding: 6px 0; position: relative; overflow: hidden; cursor: grab; }
+.desk-v1-sb-timeline .desk-v1-video-scene:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.desk-v1-sb-timeline .desk-v1-video-scene-thumb { margin: 0 17px 0 8px; min-width: 0; overflow: hidden; }
+.desk-v1-sb-timeline .desk-v1-video-scene-label { display: block; padding: 0 17px 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desk-v1-sb-timeline .desk-v1-video-scene-duration { display: block; padding: 0 17px 0 8px; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; }
+.desk-v1-timebar-drag { position: absolute; top: 6px; left: 7px; z-index: 1; background: var(--surface2); border-radius: 3px; padding: 0 2px; font-weight: bold; pointer-events: none; }
+.desk-v1-sb-timeline .desk-v1-video-scene-edge { width: 12px; max-width: 100%; cursor: ew-resize; touch-action: none; background: var(--surface3); border-left: 1px solid var(--border2); display: grid; place-items: center; }
+.desk-v1-sb-timeline .desk-v1-video-scene-edge::after { content: '⋮'; font-weight: bold; color: var(--text-dim); }
+.desk-v1-sb-timeline .desk-v1-video-scene-edge:hover,
+.desk-v1-sb-timeline .desk-v1-video-scene-edge:focus-visible { background: var(--accent-dim); }
 .desk-v1-sb-timeline .desk-v1-video-scene-edge:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.desk-v1-timebar-badge { position: fixed; z-index: 10020; padding: 5px 10px; border-radius: 5px; background: var(--text); color: var(--surface); font-size: 13px; font-variant-numeric: tabular-nums; pointer-events: none; }
 .desk-v1-timeline-empty { padding: 24px 12px; color: var(--text-dim); }
 .desk-v1-timeline-hint { font-size: 12px; color: var(--text-dim); margin-left: 8px; }

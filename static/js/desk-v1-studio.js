@@ -415,6 +415,7 @@
     if (mine.el.isConnected) _repaintSb();
     window.DeskV1Store.storyboard.load(_sbOwner(), ctx.detail).then(() => {
       mine.loading = false;
+      mine.timelineView = {}; // first Fit uses the loaded board, not its temporary samples
       if (_sb === mine && mine.el.isConnected) _repaintSb();
     }).catch((e) => {
       mine.loading = false;
@@ -573,6 +574,7 @@
     if (!ctx) return;
     window.DeskV1StudioTimeline.wire(_sb.el, {
       scenes: () => _realScenes(ctx.detail), move: _moveScene, remove: _deleteScene,
+      view: _sb.timelineView,
       select: id => _selectScene(id, true), detail: ctx.detail, paint: _paintScenes,
       command: spec => { _registerItem(ctx.fam); return _sceneCmd(ctx, spec); },
       newId: () => 'sc-' + _uid(),
@@ -1018,7 +1020,7 @@
   }
 
   function _mountStoryboard(el, params, standalone) {
-    _sb = { el, campaignId: params.campaignId, familyId: params.familyId, editing: null, selected: null, standalone: !!standalone };
+    _sb = { el, campaignId: params.campaignId, familyId: params.familyId, editing: null, selected: null, standalone: !!standalone, timelineView: {} };
     el.innerHTML = _sbHTML();
     _wireSb(el);
   }

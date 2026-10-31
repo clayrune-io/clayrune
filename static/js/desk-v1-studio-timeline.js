@@ -4,17 +4,16 @@
   const MATERIAL = 'application/x-clayrune-material';
   function html(detail) {
     const scenes = detail.scenes.filter(s => !s.placeholder);
-    const total = scenes.reduce((n, s) => n + (s.durationSec || 0), 0);
-    return `<div class="desk-v1-sb-timeline-title">Timeline · ${total}s</div>
-      <div class="desk-v1-video-scenestrip desk-v1-sb-timeline" data-sb-timeline aria-label="Scene timeline. Drag to reorder; arrow keys move a scene.">
-        ${window.DeskV1VideoStrip.html(scenes, { trim: true, durations: true }) || '<span class="desk-v1-timeline-empty">Drop pictures here to add scenes</span>'}
-      </div>
+    return `${window.DeskV1StudioTimebar.html(`<div class="desk-v1-video-scenestrip desk-v1-sb-timeline" data-sb-timeline aria-label="Scene timeline. Drag to reorder; arrow keys move a scene.">
+        ${window.DeskV1VideoStrip.html(scenes, { trim: true, durations: true, rightOnly: true, pixelsPerSecond: 1 }) || '<span class="desk-v1-timeline-empty">Drop pictures here to add scenes</span>'}
+      </div>`)}
       <button type="button" class="desk-v1-sb-editbtn" data-timeline-material>Pick from library</button>
-      <span class="desk-v1-timeline-hint">Drop pictures or drag scenes here. Drag scene edges to change duration.</span>`;
+      <span class="desk-v1-timeline-hint">Drag ⋮⋮ to reorder. Drag the right grip to change duration. Drop pictures to add scenes.</span>`;
   }
   function wire(root, api) {
     const strip = root.querySelector('[data-sb-timeline]');
     if (!strip) return;
+    const timebar = window.DeskV1StudioTimebar.wire(root, api.scenes(), api.view);
     const trim = (id, duration) => {
       const scene = api.scenes().find(s => s.id === id);
       if (!scene || scene.durationSec === duration) return;
@@ -36,6 +35,7 @@
       trashSel: '[data-sb-trash]', onTrash: api.remove, onSelect: api.select,
       activeBodyClass: 'desk-v1-sb-drag-active', ghostClass: 'pd-ghost desk-v1-video-scene-ghost',
       scenes: api.scenes, onTrim: trim, maxDuration: 3600,
+      pixelsPerSecond: timebar.scale, onTrimPreview: timebar.preview,
     });
     strip.addEventListener('keydown', e => {
       const tile = e.target.closest('.desk-v1-video-scene');

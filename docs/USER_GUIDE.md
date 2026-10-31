@@ -1322,10 +1322,21 @@ Studio's draft has no campaign; its optional Product and title controls stay
 available. Back returns to Studio or Posts according to where you opened it.
 
 The video storyboard has a horizontal **Timeline** above the scene list, both
-in a campaign and in standalone Studio. Each tile shows its duration. Drag a
-tile or a scene's list handle onto another tile to reorder; focused tiles use
-Left/Right or Up/Down, and list handles keep Up/Down. Drag a tile's edge to
-change its duration, or focus the edge and use an arrow key (minimum one second).
+in a campaign and in standalone Studio. The ruler shows minutes and seconds;
+**Timeline · m:ss total** names the full length. On open it fits the video to
+the available width. **−**, **+** and **Fit** control zoom. Edits and Undo keep
+the current time scale, so longer scenes extend the bar and it scrolls sideways.
+Each tile shows its label and duration; very short tiles clip the text to keep
+the ruler accurate. Hover for the full label and duration, or focus the tile
+to hear its accessible name.
+
+Drag a tile's dots or a scene's list handle onto another tile to reorder;
+focused tiles use Left/Right or Up/Down, and list handles keep Up/Down.
+Drag only the tile's **right grip** to change its duration (1–3600 seconds),
+or focus that grip and use an arrow key to change it by one second. The grip
+highlights on hover and a floating m:ss badge shows the duration while dragging.
+Changing one scene moves later scenes without resizing them. Escape cancels
+an active drag.
 Drop pictures from your computer or the library chooser onto the timeline to
 add scenes; dropping over a tile inserts before it. **Pick from library** also
 adds a picture without dragging. **Undo** reverses these scene changes.
