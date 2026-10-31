@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-10-30] - Make the Desk map Resume smoke explain expired plans
+
+- The map smoke now asserts successful Resume and expired-end refusal at selectable 1440/390 widths on its own ephemeral loopback server. The original selector timeout came from an expired fixture; C6 already supplied a future date on the current base. Product Pause/Resume behavior is unchanged.
+
 ## [2026-10-30] - Add YouTube campaign accounts with assisted video upload
 
 - Connect saves a named YouTube channel account and browser profile with assisted capability. It can be selected in campaign Channels and the composer; existing read-only accounts require an explicit passcode-gated change.
