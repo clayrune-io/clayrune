@@ -77,7 +77,7 @@ async function fulfillOrAbort(route) {
 }
 
 async function newBootedPage(browser, tone, viewport) {
-  const ctx = await browser.newContext({ viewport: viewport || { width: 1440, height: 950 } });
+  const ctx = await browser.newContext({ viewport: viewport || { width: Number(process.env.SMOKE_WIDTH || 1440), height: 950 } });
   const page = await ctx.newPage();
   await page.addInitScript((ls) => {
     try { for (const k of Object.keys(ls)) localStorage.setItem(k, ls[k]); } catch (e) {}
@@ -130,7 +130,11 @@ async function runToneRenderChecks(browser, tone) {
   else fail(`[${tone.name}] pending total wrong: ${JSON.stringify(pendingTotal)}`);
 
   const widths = await page.$$eval('.desk-v1-video-scene', (els) => els.map((e) => e.getBoundingClientRect().width));
-  if (widths.length === 5 && widths[1] > widths[0] && widths[2] > widths[3]) {
+  const phone = page.viewportSize().width <= 960;
+  const basis = await page.$$eval('.desk-v1-video-scene', els => els.map(e => parseFloat(e.style.flexBasis)));
+  if (phone && widths.length === 5 && widths.every(w => w >= 76) && basis[1] > basis[0] && basis[2] > basis[3]) {
+    ok(`[${tone.name}] phone Director keeps proportional bases and its existing 76px touch minimum`);
+  } else if (!phone && widths.length === 5 && widths[1] > widths[0] && widths[2] > widths[3]) {
     ok(`[${tone.name}] scene strip: 5 tiles, widths proportional to duration (Installer 14s > Download 6s, Restore-demo 12s > Restore 5s)`);
   } else {
     fail(`[${tone.name}] scene strip widths not proportional: ${JSON.stringify(widths)}`);

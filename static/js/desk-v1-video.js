@@ -400,9 +400,11 @@
   // and the Studio timeline, via DeskV1VideoStrip below). Both use the scene's
   // capture in the
   // thumb slot when the scene carries one (the director's scenes do not).
-  function _sceneTileHTML(s, i, pct, edges, durations) {
-    return `<div class="desk-v1-video-scene${s.edited ? ' desk-v1-video-scene-edited' : ''}" data-scene-id="${esc(s.id)}" style="flex-basis:${pct}%" tabindex="0">
-          ${edges ? `<span class="desk-v1-video-scene-edge desk-v1-video-scene-edge-l" data-trim-edge="l"${durations ? '' : ` data-scene-id="${esc(s.id)}"`}></span>` : ''}
+  function _sceneTileHTML(s, i, pct, edges, durations, opts = {}) {
+    const basis = opts.pixelsPerSecond ? `${s.durationSec * opts.pixelsPerSecond}px` : `${pct}%`;
+    return `<div class="desk-v1-video-scene${s.edited ? ' desk-v1-video-scene-edited' : ''}" data-scene-id="${esc(s.id)}" style="flex-basis:${basis}" tabindex="0">
+          ${edges && !opts.rightOnly ? `<span class="desk-v1-video-scene-edge desk-v1-video-scene-edge-l" data-trim-edge="l"${durations ? '' : ` data-scene-id="${esc(s.id)}"`}></span>` : ''}
+          ${opts.rightOnly ? '<span class="desk-v1-timebar-drag" aria-hidden="true">⋮⋮</span>' : ''}
           <div class="desk-v1-video-scene-thumb" aria-hidden="true">${s.thumb ? `<img src="${esc(s.thumb)}" alt="" draggable="false">` : ''}</div>
           <span class="desk-v1-video-scene-label">${i + 1} &middot; ${esc(s.label)}${s.edited ? ' <span class="desk-v1-video-scene-dot">&#8226;</span>' : ''}</span>
           ${durations ? `<span class="desk-v1-video-scene-duration">${esc(s.durationSec)}s</span>` : ''}
@@ -725,6 +727,10 @@
     if (!scene) return;
     const startDuration = scene.durationSec;
     const edge = handle.dataset.trimEdge;
+    // Studio supplies its held view scale; the Director keeps its original trim.
+    const scale = extra && extra.pixelsPerSecond && extra.pixelsPerSecond();
+    const tile = handle.closest('.desk-v1-video-scene');
+    const originalBasis = tile && tile.style.flexBasis;
     window.PointerDrag.begin(handle, e, {
       isDragActive: () => !!_dragSt,
       getDragState: () => _dragSt,
@@ -733,23 +739,19 @@
       onMove: (st, x, y) => {
         const dx = x - st.startX;
         const dir = edge === 'l' ? -1 : 1;
-        const deltaSec = (dx * dir) / TRIM_PX_PER_SEC;
+        const deltaSec = (dx * dir) / (scale || TRIM_PX_PER_SEC);
         scene._liveDuration = Math.min(extra && extra.maxDuration || Infinity, Math.max(1, Math.round(startDuration + deltaSec)));
-        // Live width feedback only — the committed re-render (on drop) is
-        // what actually recomputes every tile's flex-basis from durations;
-        // this just previews the ONE tile moving during the drag itself.
-        const tile = handle.closest('.desk-v1-video-scene');
         if (tile) {
           const total = detail.scenes.reduce((sum, s) => sum + (s.id === sceneId ? scene._liveDuration : s.durationSec), 0);
-          tile.style.flexBasis = (total ? (scene._liveDuration / total * 100) : 100) + '%';
+          tile.style.flexBasis = scale ? `${scene._liveDuration * scale}px` : (total ? (scene._liveDuration / total * 100) : 100) + '%';
         }
+        if (extra && extra.onTrimPreview) extra.onTrimPreview(sceneId, scene._liveDuration, { x, y });
       },
       onDrop: () => scene._liveDuration || startDuration,
       onTeardown: () => {
         delete scene._liveDuration;
-        const tile = handle.closest('.desk-v1-video-scene');
-        const total = detail.scenes.reduce((sum, s) => sum + s.durationSec, 0);
-        if (tile) tile.style.flexBasis = (total ? startDuration / total * 100 : 100) + '%';
+        if (tile) tile.style.flexBasis = originalBasis;
+        if (extra && extra.onTrimPreview) extra.onTrimPreview(sceneId, startDuration, null);
       },
       afterDrop: (st, finalDuration) => extra && extra.onTrim
         ? extra.onTrim(sceneId, finalDuration) : _commitTrim(detail, scene, startDuration, finalDuration),
@@ -826,7 +828,7 @@
   window.DeskV1VideoStrip = {
     html(scenes, opts) {
       const total = scenes.reduce((sum, s) => sum + (s.durationSec || 0), 0);
-      return scenes.map((s, i) => _sceneTileHTML(s, i, total ? (s.durationSec / total * 100) : (100 / Math.max(1, scenes.length)), !!(opts && opts.trim), !!(opts && opts.durations))).join('');
+      return scenes.map((s, i) => _sceneTileHTML(s, i, total ? (s.durationSec / total * 100) : (100 / Math.max(1, scenes.length)), !!(opts && opts.trim), !!(opts && opts.durations), opts)).join('');
     },
     // `extra` adds the Studio's bin (see _beginReorder) and `onSelect(sceneId)`, called
     // on a plain click. The touchmove guard keeps the page from scrolling under a

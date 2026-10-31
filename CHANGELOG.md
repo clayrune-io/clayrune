@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-31] - Give Studio a fixed-scale time ruler
+
+- Studio's video timeline uses pixels per second, fitted once on open and held through edits and Undo. A shared scrolling ruler shows m:ss ticks; minus, plus and Fit control zoom.
+- Only the right grip changes duration (1–3600 seconds). Later scenes shift without changing width, and a floating duration badge follows the trim. Tile drag dots, grip highlighting, keyboard controls and full-label/duration tooltips expose the gestures without distorting short scenes.
+- The campaign Director retains its existing strip and trim conversion through scoped options. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-31] - Keep native followup context stable at the route boundary
 
 - Non-Claude followup and interrupt routes reuse their setup stash until the project fingerprint changes. Dispatch primes the fingerprint; project/global persona edits, including nested character packs, invalidate it.

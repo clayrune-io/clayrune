@@ -49,7 +49,7 @@ const CSS_DIR = resolve(REPO_ROOT, 'static', 'css');
 const ASSETS_DIR = resolve(REPO_ROOT, 'assets');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
 const ORIGIN = 'http://mc.smoke.test';
-const SHOT_DIR = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens');
+const SHOT_DIR = resolve(REPO_ROOT, '_scratch', 'desk-studio');
 mkdirSync(SHOT_DIR, { recursive: true });
 
 const MIME = { '.webp': 'image/webp', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml' };
@@ -107,7 +107,7 @@ async function fulfillOrAbort(route) {
 }
 
 async function newBootedPage(browser, tone, viewport) {
-  const ctx = await browser.newContext({ viewport: viewport || { width: 1440, height: 950 } });
+  const ctx = await browser.newContext({ viewport: viewport || { width: Number(process.env.SMOKE_WIDTH || 1440), height: 950 } });
   const page = await ctx.newPage();
   await page.addInitScript((ls) => {
     try { for (const k of Object.keys(ls)) localStorage.setItem(k, ls[k]); } catch (e) {}
@@ -261,10 +261,11 @@ async function runStandalone(browser, tone) {
 async function dragTo(page, fromSel, toSel) {
   await page.locator(fromSel).scrollIntoViewIfNeeded();
   const h = await page.locator(fromSel).boundingBox();
-  const t = await page.locator(toSel).boundingBox();
   await page.mouse.move(h.x + h.width / 2, h.y + h.height / 2);
   await page.mouse.down();
   await page.mouse.move(h.x + h.width / 2 + 10, h.y + h.height / 2 - 10, { steps: 4 });
+  await page.locator(toSel).scrollIntoViewIfNeeded();
+  const t = await page.locator(toSel).boundingBox();
   await page.mouse.move(t.x + t.width / 2, t.y + t.height / 2, { steps: 10 });
   await page.waitForTimeout(40);
   await page.mouse.up();
@@ -391,7 +392,7 @@ async function runStudioReview(browser, tone) {
   await editSceneTitle(page, 3, 'Third');
   const tiles = await page.$$eval('[data-sb-timeline] .desk-v1-video-scene', (els) => els.map((e) => ({ id: e.dataset.sceneId, w: e.getBoundingClientRect().width })));
   const durs = await page.$$eval('.desk-v1-sb-scene:not([data-scene-placeholder]) .desk-v1-sb-dur', (els) => els.map((e) => e.textContent));
-  check(tiles.length === 3 && (await page.$$('[data-sb-timeline] [data-trim-edge]')).length === 6,
+  check(tiles.length === 3 && (await page.$$('[data-sb-timeline] [data-trim-edge="r"]')).length === 3 && (await page.$$('[data-sb-timeline] [data-trim-edge="l"]')).length === 0,
     `${tag} the timeline has one tile per real scene (${tiles.length}), with trim handles`, `${tag} timeline wrong: ${JSON.stringify(tiles)}`);
   const secs = durs.map((d) => { const [m, sec] = d.split(':').map(Number); return m * 60 + sec; });
   const wSum = tiles.reduce((a, x) => a + x.w, 0);
@@ -399,6 +400,9 @@ async function runStudioReview(browser, tone) {
   check(tiles.every((t, i) => Math.abs(t.w / wSum - secs[i] / sSum) < 0.03),
     `${tag} tile widths follow scene durations (${durs.join(' / ')})`, `${tag} widths not proportional: ${JSON.stringify(tiles)} vs ${durs}`);
   if (shot) { await clearToasts(page); await page.locator('[data-sb-timeline]').scrollIntoViewIfNeeded(); await page.waitForTimeout(150); await page.screenshot({ path: resolve(SHOT_DIR, 'studio_review_5_timeline_1440.png') }); }
+  // New scenes extend the held time scale. Fit brings every reorder target
+  // into view rather than assuming the strip always redistributes to 100%.
+  await page.click('[data-timebar-zoom="fit"]');
   const listBefore = (await sceneIds(page)).slice(0, 3);
   await clearToasts(page);
   await dragTo(page, `[data-sb-timeline] [data-scene-id="${listBefore[2]}"]`, `[data-sb-timeline] [data-scene-id="${listBefore[0]}"]`);
@@ -516,15 +520,7 @@ async function runStoryboard(browser, tone) {
 
   // scene 3 above 2: by drag
   const before = await sceneLabels(page);
-  const h = await page.locator('.desk-v1-sb-scene:nth-child(3) [data-scene-handle]').boundingBox();
-  const t = await page.locator('.desk-v1-sb-scene:nth-child(2)').boundingBox();
-  await page.mouse.move(h.x + h.width / 2, h.y + h.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(h.x + h.width / 2 + 10, h.y + h.height / 2 - 10, { steps: 4 });
-  await page.mouse.move(t.x + t.width / 2, t.y + t.height / 2, { steps: 10 });
-  await page.waitForTimeout(40);
-  await page.mouse.up();
-  await page.waitForTimeout(80);
+  await dragTo(page, '.desk-v1-sb-scene:nth-child(3) [data-scene-handle]', '.desk-v1-sb-scene:nth-child(2)');
   const afterDrag = await sceneLabels(page);
   check(afterDrag[1] === before[2] && afterDrag[2] === before[1], `${tag} scene 3 moved above 2 by drag: ${afterDrag.join(' | ')}`, `${tag} drag did not reorder: ${before.join('|')} -> ${afterDrag.join('|')}`);
   const nums = await page.$$eval('[data-scene-num]', (els) => els.map((e) => e.textContent));

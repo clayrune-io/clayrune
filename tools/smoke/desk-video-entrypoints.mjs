@@ -10,7 +10,7 @@ const root = fileURLToPath(new URL('../..', import.meta.url));
 const files = loadStaticJsCss(root);
 const browser = await chromium.launch();
 try {
-  const page = await browser.newPage({ viewport: { width: 1440, height: 950 } });
+  const page = await browser.newPage({ viewport: { width: Number(process.env.SMOKE_WIDTH || 1440), height: 950 } });
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
   await page.route('**/*', route => {
