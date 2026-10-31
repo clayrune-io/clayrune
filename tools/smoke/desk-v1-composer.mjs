@@ -113,10 +113,15 @@ try {
     await page.fill('[data-composer-text]', 'A'.repeat(281));
     assert.match(await page.locator('[data-composer-count]').innerText(), /281\/280.*over limit/);
     await page.click('[data-composer-save]'); await saved(page);
+    // The button itself acknowledges the click, then returns to its label.
+    assert.equal(await page.textContent('[data-composer-save]'), 'Saved ✓');
+    assert.equal(await page.getAttribute('[data-composer-save]', 'data-state'), 'saved');
+    await page.waitForFunction(() => document.querySelector('[data-composer-save]').textContent === 'Save draft', null, { timeout: 4000 });
     await page.fill('[data-composer-text]', 'A small release, one thoughtful update at a time.');
     s.control.fail = (path, body) => path === `/api/desk/pieces/${id}` && !!body.body;
     await page.click('[data-composer-save]');
     await page.waitForFunction(() => document.querySelector('[data-composer-status]').textContent.includes('injected refusal'));
+    assert.equal(await page.textContent('[data-composer-save]'), 'Not saved');
     assert.equal(await page.inputValue('[data-composer-text]'), 'A small release, one thoughtful update at a time.');
     assert.equal(fam.body.length, 281, 'failed text write leaves saved copy intact');
     await page.click('[data-composer-save]'); await saved(page);

@@ -15,6 +15,10 @@
 .desk-v1-composer-hint, .desk-v1-composer [role="status"] { font-size: 12px; line-height: 1.6; margin: 12px 0 0; opacity: .8; overflow-wrap: anywhere; }
 .desk-v1-composer [data-failed] { color: var(--danger, #b13a26); opacity: 1; }
 .desk-v1-composer button:disabled { opacity: .5; cursor: default; }
+.desk-v1-composer [data-composer-save] { min-width: 96px; transition: background-color .2s, border-color .2s, color .2s; }
+.desk-v1-composer [data-composer-save][data-state="saving"] { cursor: progress; }
+.desk-v1-composer [data-composer-save][data-state="saved"] { border-color: var(--green, #3d8b4f); color: var(--green-text, #2f6f3e); background: var(--green-dim, #e6f2e8); }
+.desk-v1-composer [data-composer-save][data-state="failed"] { border-color: var(--danger, #b13a26); color: var(--danger, #b13a26); }
 .desk-v1-composer [data-composer-schedule]:not([hidden]) { border: 1px solid var(--border, #e2d9ce); border-radius: 10px; padding: 16px; margin-bottom: 20px; }
 .desk-v1-composer-time { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
 .desk-v1-composer-time input { min-width: 0; max-width: 100%; font: inherit; padding: 8px; }

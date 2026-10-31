@@ -38,7 +38,14 @@ import './desk-v1-composer-preview.js';
     if (!root) return;
     root.querySelector('[data-composer-status]').textContent = d.status;
     root.querySelector('[data-composer-status]').toggleAttribute('data-failed', d.failed);
-    root.querySelector('[data-composer-save]').disabled = d.busy || d.mediaBusy || !!d.fam?.archivedAt || !d.text.trim() && !d.fam;
+    const saveBtn = root.querySelector('[data-composer-save]');
+    saveBtn.disabled = d.busy || d.mediaBusy || !!d.fam?.archivedAt || !d.text.trim() && !d.fam;
+    // The button itself acknowledges a click: Saving… while busy, then a short
+    // Saved ✓ / Not saved. The status line below keeps the full message.
+    const ack = d.ackUntil > Date.now() ? d.ack : '';
+    const label = d.busy && !d.reviewing ? 'Saving…' : ack === 'saved' ? 'Saved ✓' : ack === 'failed' ? 'Not saved' : 'Save draft';
+    if (saveBtn.textContent !== label) saveBtn.textContent = label;
+    saveBtn.dataset.state = d.busy && !d.reviewing ? 'saving' : ack || '';
     root.querySelector('[data-composer-text]').readOnly = d.locked || !!d.reviewing;
     const reviewable = [...d.selected].some((id) => {
       const v = channels().versions(d.fam).find((v) => v.channelId === id);
@@ -91,7 +98,7 @@ import './desk-v1-composer-preview.js';
     await channels().sync(camp, d);
   }
 
-  async function save(camp, d, review) {
+  async function save(camp, d, review, clicked) {
     if (d.busy) return;
     if (review && window.DeskV1YouTubePost.selected(camp, d) && window.DeskV1YouTubePost.errors(d.text, d.fam?.assets).length) return;
     d.busy = true; d.reviewing = !!review; d.failed = false; d.status = 'Saving…'; update(d);
@@ -130,7 +137,12 @@ import './desk-v1-composer-preview.js';
     } catch (e) {
       d.failed = true; d.status = `Save incomplete: ${e.message || e}. Your text is kept here.`;
     } finally {
-      d.busy = false; d.reviewing = false; update(d);
+      d.busy = false; d.reviewing = false;
+      if (clicked) {
+        d.ack = d.failed ? 'failed' : 'saved'; d.ackUntil = Date.now() + 2000;
+        setTimeout(() => { if (d.ackUntil <= Date.now()) update(d); }, 2050);
+      }
+      update(d);
       const schedule = current(d)?.querySelector('[data-composer-schedule]');
       if (schedule && !schedule.hidden && d.fam) window.DeskV1ComposerWhen.render(schedule, d.fam);
     }
@@ -157,7 +169,7 @@ import './desk-v1-composer-preview.js';
       d.text = input.value; d.status = 'Unsaved changes'; d.failed = false; update(d);
       if (!d.fam && d.text.trim()) save(camp, d, false);
     };
-    el.querySelector('[data-composer-save]').onclick = () => save(camp, d, false);
+    el.querySelector('[data-composer-save]').onclick = () => save(camp, d, false, true);
     el.querySelector('[data-composer-review]').onclick = () => save(camp, d, true);
     el.querySelector('[data-composer-when]').onclick = () => {
       const host = el.querySelector('[data-composer-schedule]');
