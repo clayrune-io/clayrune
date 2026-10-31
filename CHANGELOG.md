@@ -1,5 +1,17 @@
 # Clayrune — Changelog
 
+## [2026-10-31] - Identify and schedule posts directly from When
+
+- Calendar chips and Unscheduled cards have hover/tap-info previews using the shared post renderer. The composer exposes the existing editable Name control after a draft exists.
+- Unscheduled shows one card per post with channel badges. Drops and keyboard controls schedule an existing destination or add a compatible destination inside the campaign account bound through the composer's write/Undo path. Held channels and incompatible YouTube content refuse drops with a reason.
+- Clicking a chip opens When details with date/time, Unschedule, Edit post, and Open review only for needs-review versions. Dragging a chip into Unscheduled clears its time; Undo restores it. Empty Review retains one back control. Branch candidate only; no merge, push or restart.
+
+## [2026-10-31] - Open uploaded videos as named clip storyboards
+
+- The video editor shows its piece or Studio draft title with in-place rename and Undo. Empty video-piece storyboards import attached clips once, in asset order, through the revision-guarded save.
+- Scenes accept pictures or browser-playable clips through upload, paste, timeline drop and the Material library. Muted clip thumbnails appear in the list and timebar; native duration and trim persist. Library references retain lexical and realpath escape checks.
+- Local clip rendering is deferred: clip scenes explicitly refuse rendering before vendor work, rather than being submitted as image prompts. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-31] - Give Studio a fixed-scale time ruler
 
 - Studio's video timeline uses pixels per second, fitted once on open and held through edits and Undo. A shared scrolling ruler shows m:ss ticks; minus, plus and Fit control zoom.

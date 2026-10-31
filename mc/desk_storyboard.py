@@ -18,9 +18,10 @@ a board stored before it existed reads as '', and a PUT that omits it keeps the
 stored one), and a Scene is `{id, label, line, duration_sec, picture: AssetRef|null, edited}`. ORDER
 IS THE ARRAY INDEX: there is no sort key, so an insert, a remove or a reorder is
 just a different list. `pending_edits` is stored (a reload must not lose the
-queued edits). An AssetRef is `{path, kind: 'image', title}` with `path` relative
-to `data/uploads` and under the material library; `src` (the /api/serve-image
-URL) is derived on every read, never stored.
+queued edits). An AssetRef is `{path, kind: 'image'|'video', title}` with `path`
+relative to `data/uploads` under the matching material library kind. The image
+or ranged video `src` is derived on every read, never stored. `assets_seeded`
+is sticky once true: deleting the imported scenes must not resurrect them.
 
 WRITES ARE A WHOLE-LIST PUT GUARDED BY `rev`. The caller sends the rev it last
 read; a different stored rev is a 409 carrying the current one, so two tabs (or a
@@ -28,7 +29,7 @@ tab and an agent) never silently overwrite each other. A write is a successful
 `rev + 1`. A PUT never creates a second copy of anything, and an Undo is simply
 another PUT of the earlier list.
 
-PICTURES live in `data/uploads/desk/library/image/Storyboards/` (written by the
+MEDIA live in `data/uploads/desk/library/<image|video>/Storyboards/` (written by the
 same `_write_library_file` M21/M22 use), so `/api/serve-image` already allows
 them. The stored path is re-checked against that library root on every PUT AND
 every read: a hand-edited store, `..`, an absolute path or a symlink out of the
@@ -48,6 +49,7 @@ from pathlib import Path
 
 from mc import desk as _desk
 from mc import desk_pieces as _pieces
+from mc import desk_storyboard_media as _media
 from mc.core import _log, now_iso
 
 PieceError = _pieces.PieceError
@@ -98,23 +100,7 @@ def _resolve_picture(rel) -> Path:
     """`rel` (relative to data/uploads) to an existing image file UNDER the
     material library's image root, or PieceError. The realpath collapses `..`
     and symlinks before the containment check."""
-    if not isinstance(rel, str) or not rel.strip():
-        raise PieceError('a picture needs a path under the material library')
-    base = _library_image_root()
-    try:
-        real = (_pieces._uploads_root() / rel).resolve()
-        base = base.resolve()
-    except (OSError, ValueError):
-        raise PieceError('that picture path is not valid')
-    try:
-        real.relative_to(base)
-    except ValueError:
-        raise PieceError('a scene picture must live in the material library (data/uploads/desk/library/image)')
-    if _pieces.asset_kind_for(real.name) != 'image':
-        raise PieceError('a scene picture must be an image (png, jpg, gif, webp)')
-    if not real.is_file():
-        raise PieceError('that picture does not exist in the material library', 404)
-    return real
+    return _media.resolve_asset(rel, 'image')
 
 
 def _picture_out(pic) -> dict | None:
@@ -125,13 +111,10 @@ def _picture_out(pic) -> dict | None:
     if not isinstance(pic, dict):
         return None
     try:
-        real = _resolve_picture(pic.get('path'))
+        return _media.asset_out(pic)
     except PieceError:
         _log(f'[desk] storyboard picture no longer resolves: {pic.get("path")!r}', flush=True)
         return None
-    rel = _pieces._rel_of(real)
-    return {'path': rel, 'kind': 'image', 'title': pic.get('title') or real.name,
-            'src': _pieces._src_for(rel, 'image')}
 
 
 def _board_out(board: dict | None, owner_kind: str, owner_id: str) -> dict:
@@ -148,6 +131,7 @@ def _board_out(board: dict | None, owner_kind: str, owner_id: str) -> dict:
         'pending_edits': [{'id': p['id'], 'label': p.get('label') or ''}
                           for p in board.get('pending_edits') or []],
         'updated_at': board.get('updated_at'),
+        **({'assets_seeded': True} if board.get('assets_seeded') else {}),
     }
 
 
@@ -193,11 +177,12 @@ def _clean_scene(raw, i: int, problems: list[str]):
             problems.append(f'{where}: picture must be null or {{path, title?}}')
         else:
             try:
-                real = _resolve_picture(pic.get('path'))
+                kind = pic.get('kind', 'image')
+                real = _media.resolve_asset(pic.get('path'), kind)
                 title = pic.get('title')
                 if title is not None and not isinstance(title, str):
                     raise PieceError('picture title must be text')
-                picture = {'path': _pieces._rel_of(real), 'kind': 'image',
+                picture = {'path': _pieces._rel_of(real), 'kind': kind,
                            'title': ((title or '').strip() or real.name)[:_pieces.MAX_TITLE]}
             except PieceError as e:
                 problems.append(f'{where}: {e}')
@@ -322,6 +307,8 @@ def put_storyboard(owner_kind: str, owner_id: str, body) -> dict:
                              [f'current_rev={current}'])
         new = {'rev': current + 1, 'scenes': scenes, 'pending_edits': pending, 'updated_at': now_iso(),
                'story': story if isinstance(story, str) else (board.get('story') or '')}
+        if board.get('assets_seeded') or body.get('assets_seeded') is True:
+            new['assets_seeded'] = True
         if board.get('thread'):
             new['thread'] = board['thread']   # the agent chat rides with the board (mc/desk_story_chat.py)
         if owner_kind == 'studio':
@@ -331,17 +318,10 @@ def put_storyboard(owner_kind: str, owner_id: str, body) -> dict:
         return _board_out(new, owner_kind, owner_id)
 
 
-def save_picture(owner_kind: str, owner_id: str, filename: str, stream) -> dict:
-    """Write an uploaded scene picture into the material library
-    (`image/Storyboards/`) and return its AssetRef `{path, kind, title, src}`.
-    IMAGES only: a video is refused here, before a byte is kept. The scene is not
-    changed: the caller PUTs the list with the new picture on it."""
+def save_picture(owner_kind: str, owner_id: str, filename: str, stream, content_type: str = '') -> dict:
+    """Save scene media to the library, returning `{path, kind, title, src}`.
+    The historical /pictures route accepts images and clips; attaching it to a
+    scene is still a separate revision-guarded PUT."""
     with _desk._store_lock:
         _check_owner(_desk._read_store(), owner_kind, owner_id, writable=True)
-    if _pieces.asset_kind_for(filename) != 'image':
-        raise PieceError('a scene picture must be an image (png, jpg, gif, webp)')
-    dest = _pieces._write_library_file(filename, stream, STORYBOARD_FOLDER)[0]
-    real = dest.resolve()
-    rel = _pieces._rel_of(real)
-    return {'path': rel, 'kind': 'image', 'title': Path(filename).name[:_pieces.MAX_TITLE] or real.name,
-            'src': _pieces._src_for(rel, 'image')}
+    return _media.save_asset(filename, stream, content_type)

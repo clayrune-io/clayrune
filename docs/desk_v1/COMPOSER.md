@@ -7,10 +7,11 @@ Decided 2026-10-30 (Ron chose the mockup). Evidence: `FIELD_SCAN_COMPOSER_UX.md`
 
 ## What the screen is
 
-One page, opened straight from the Post tile (no add-piece modal, no Name field,
+One page, opened straight from the Post tile (no add-piece modal,
 no "Write new / Reuse" fork):
 
 - **Top bar:** breadcrumb (Desk > campaign > New post), Save draft, When, Send to Review.
+- **Name:** editable shared piece name, available once first content creates the draft.
 - **Post to:** account avatars, preselected from the campaign's accounts.
   Click to tick or untick. "Customize per channel" gives one channel its own text.
 - **Write:** one text box, per-channel length counter (X 280).
@@ -560,3 +561,15 @@ IDs, Next/Back and Launch's account-fix link. Visually inspected captures:
 remain unstaged. Home-plan writing remains fenced; the journal retains the plan
 and detailed handoff. Required dependency-junction cleanup is pending before
 the separate C6 commit. No open product decision.
+
+## 2026-10-31 amendment: calendar + composer Name
+
+Dave authorized When tray drops to add a destination within the post campaign's
+existing `plan.accounts` bound, using `DeskV1ComposerChannels.sync`, then the
+shared calendar reschedule command. This amends the earlier composer-only
+placement rule; no campaign account or human approval gate is expanded.
+
+The composer now mounts `DeskV1PieceTitle.html/bind` after the family exists,
+including after first-content creation. Calendar preview, family tray, detail
+controls and time clearing are separate window-bridged modules. Full branch
+handoff and verification: `WHEN_CALENDAR_FIXES.md`.

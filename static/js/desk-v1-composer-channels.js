@@ -34,6 +34,7 @@
           label: 'Added a post destination',
           apply: () => { fam.versions.push(ver); },
           unapply: () => { fam.versions = fam.versions.filter((v) => v.id !== ver.id); },
+          repaint: d.repaint,
           request: () => store.api('POST', base, { id: ver.id, account_id: ch.id }),
           undoRequest: () => window.deskV1QueuePiece(fam.id, () => store.api('PATCH', base + '/' + encodeURIComponent(ver.id), { state: 'archived' })),
         });

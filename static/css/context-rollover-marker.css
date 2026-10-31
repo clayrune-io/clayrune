@@ -30,7 +30,12 @@ body.chat-flow .agent-output .agent-line-rollover {
 body.chat-flow .agent-output .agent-line-rollover:has(.ro-pill[aria-expanded="true"]) {
   margin-bottom: 0 !important;
 }
-/* Back-to-back markers would each tuck 4px into the other: keep them 2px apart. */
+/* Back-to-back markers would each tuck 4px into the other: keep them 2px apart.
+   [data-ro-chain] is set by context-rollover-marker.js when the previous RENDERED
+   sibling is a marker (blank / hidden lines in between do not count); `+` stays
+   as the no-JS fallback. */
+.agent-output .agent-line-rollover[data-ro-chain],
+body.chat-flow .agent-output .agent-line-rollover[data-ro-chain],
 .agent-output .agent-line-rollover + .agent-line-rollover,
 body.chat-flow .agent-output .agent-line-rollover + .agent-line-rollover {
   margin-top: calc(6px - var(--ro-gap) / 2) !important;

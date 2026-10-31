@@ -888,10 +888,14 @@ def _storyboard_call(fn, *args, status=200):
 
 
 def _storyboard_picture(owner_kind: str, owner_id: str):
+    # Scene clips use the same bounded writer as piece uploads (500 MB video),
+    # so the app's smaller default body cap must not reject them first.
+    request.max_content_length = max(_pieces.MAX_UPLOAD_BYTES.values()) + 1024 * 1024
     f = request.files.get('file')
     if f is None:
         return jsonify({'error': 'a file is required'}), 400
-    return _storyboard_call(_storyboard.save_picture, owner_kind, owner_id, f.filename or '', f.stream, status=201)
+    return _storyboard_call(_storyboard.save_picture, owner_kind, owner_id, f.filename or '', f.stream,
+                            f.mimetype or '', status=201)
 
 
 @bp.route('/api/desk/pieces/<piece_id>/storyboard', methods=['GET'])

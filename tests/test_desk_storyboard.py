@@ -10,8 +10,8 @@ Pinned:
     whole with a `problems` entry per fault (nothing is half-saved);
   * a PUT is guarded by `rev`: the stored rev wins, a stale or missing one is 409
     (carrying the current rev) / 400, and a good write is rev + 1;
-  * a scene picture must be an image under data/uploads/desk/library/image:
-    `..`, an absolute path, a symlink out, a video and a missing file are refused,
+  * a scene picture must be under data/uploads/desk/library/image:
+    `..`, an absolute path, a symlink out, a wrong-kind file and a missing file are refused,
     and an uploaded picture lands in the library's Storyboards folder, with a
     /api/serve-image `src`, and a refused upload leaves no file behind;
   * deleting a piece (or its campaign) takes its storyboard with it.
@@ -352,7 +352,6 @@ def test_picture_upload_refusals_leave_no_file_behind(env):
     def up(url, data, name):
         return client.post(url, data={'file': (io.BytesIO(data), name)}, content_type='multipart/form-data')
 
-    assert up(base, b'0' * 16, 'clip.mp4').status_code == 400           # a video is not a scene picture
     assert up(base, b'0' * 16, 'notes.txt').status_code == 400
     assert up(base, b'', 'empty.png').status_code == 400
     assert up('/api/desk/pieces/nope/storyboard/pictures', PNG, 'a.png').status_code == 404

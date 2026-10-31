@@ -1321,6 +1321,24 @@ cards, and Home's video links all open the same Studio storyboard editor.
 Studio's draft has no campaign; its optional Product and title controls stay
 available. Back returns to Studio or Posts according to where you opened it.
 
+The editor heading shows the video's own name. Click the name to rename it;
+Enter or leaving the field saves, Escape cancels, and **Undo** restores the
+previous name. Standalone Studio drafts use the same name control.
+
+When a video piece has uploaded clips and its storyboard is empty, opening it
+imports those clips as scenes in asset order. This is saved once; deleting the
+imported scenes does not bring them back on the next open. **Add picture or
+clip**, paste, and the library picker can attach a clip to a scene. Clips show
+muted first-frame thumbnails in the scene list and timeline. A new clip starts
+at its own duration; shorten it with the right grip. Unsupported clips produce
+a message before upload; an older unsupported upload remains visible for
+replacement. Browser decoding determines compatibility, without a filename
+extension list. The existing 3600-second scene limit still applies.
+
+Uploaded clip scenes are editable, but **local clip rendering is not available
+yet**. A render containing one is refused before engine pricing or submission;
+it is never sent to a paid generator. Mixed local/generated assembly is pending.
+
 The video storyboard has a horizontal **Timeline** above the scene list, both
 in a campaign and in standalone Studio. The ruler shows minutes and seconds;
 **Timeline · m:ss total** names the full length. On open it fits the video to
@@ -1337,7 +1355,7 @@ or focus that grip and use an arrow key to change it by one second. The grip
 highlights on hover and a floating m:ss badge shows the duration while dragging.
 Changing one scene moves later scenes without resizing them. Escape cancels
 an active drag.
-Drop pictures from your computer or the library chooser onto the timeline to
+Drop pictures or playable clips from your computer or the library chooser onto the timeline to
 add scenes; dropping over a tile inserts before it. **Pick from library** also
 adds a picture without dragging. **Undo** reverses these scene changes.
 
@@ -1350,6 +1368,10 @@ or drag it onto the campaign's list to open the post composer. A post card's
 the first nonblank text or valid media creates a **New post** draft. Use **Save draft** for
 subsequent text edits and check the **Saved** message. A refused write keeps
 your text available for retry.
+
+**Name** appears at the top of the composer once the draft exists. Click its
+name (or press Enter on it), type a name, then press Enter or leave the field
+to save. Escape cancels. The calendar and post cards use that same name.
 
 **Post to** starts with this campaign's accounts selected. Tick or untick an
 account to change this post's destinations. After text creates the draft,
@@ -1373,6 +1395,27 @@ cannot be rescheduled. **Send to Review** saves the text and destinations,
 then opens the existing Review screen. Approval and publishing still require
 their existing human actions. Approved copy must return to review before
 editing; archived pieces must be restored first.
+
+In the campaign **When** calendar, hover a chip or Unscheduled card to see
+its name, first 140 characters, media thumbnail, channels, time and state.
+On a phone, tap its **ⓘ** button for the same preview.
+
+**Unscheduled** shows one card per post, with badges for its existing destinations.
+Drag it onto a channel/day row to set that destination's time. A compatible
+campaign account that the post does not yet target is added as a destination;
+accounts outside that post's campaign are never added. Held accounts and content
+that fails the existing YouTube requirements appear gray during the drag, show
+a reason on hover, and refuse the drop. Other platform media-duration checks are
+not available here. Tap a card (or use Enter) for a channel and date/time picker.
+A card remains in the tray while any of its destinations is still unscheduled.
+
+Click a dated chip (or press Enter/Space on it) to open its **When details**.
+Edit the date/time and choose **Set time**, choose **Edit post** for the composer,
+or **Open review** when that version needs review. **Unschedule**, or dragging
+its chip back into the Unscheduled tray, clears only its time. The post stays
+in the campaign; **Undo** restores that time. A previously approved scheduled
+version is not sent while its time is empty. Giving it a new time after clearing
+asks to send it back for approval; only Undo restores the original time directly.
 
 **Media:** drop or paste pictures/videos anywhere on the composer, including
 the Write box, or choose **Add media**. The picker starts on **Upload** and

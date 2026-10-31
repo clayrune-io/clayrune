@@ -34,9 +34,22 @@ import './desk-v1-composer-preview.js';
     return d;
   }
   function current(d) { return mounted && mounted.d === d && mounted.el.isConnected && mounted.el.querySelector('[data-composer]'); }
+  function nameField(root, d) {
+    const host = root.querySelector('[data-composer-name]');
+    if (!host || !d.fam) return;
+    if (host.dataset.familyId === d.fam.id) return;
+    const paint = () => {
+      host.innerHTML = '<span class="desk-v1-composer-hint">Name</span>' + window.DeskV1PieceTitle.html(d.fam);
+      window.DeskV1PieceTitle.bind(host, d.fam, paint);
+      root.querySelector('.desk-v1-composer-breadcrumb strong').textContent = d.fam.title;
+    };
+    host.dataset.familyId = d.fam.id;
+    paint();
+  }
   function update(d) {
     const root = current(d);
     if (!root) return;
+    nameField(root, d);
     root.querySelector('[data-composer-status]').textContent = d.status;
     root.querySelector('.desk-v1-composer-breadcrumb strong').textContent = d.fam?.title || UNTITLED;
     root.querySelector('[data-composer-status]').toggleAttribute('data-failed', d.failed);
@@ -164,7 +177,7 @@ import './desk-v1-composer-preview.js';
       <div class="desk-v1-composer-top"><div class="desk-v1-composer-breadcrumb">Desk <span>›</span> ${esc(camp.plan.title || 'Campaign')} <span>›</span> <strong>${esc(d.fam?.title || UNTITLED)}</strong></div>
         <div class="desk-v1-composer-actions"><button type="button" class="btn-secondary" data-composer-save>Save draft</button><button type="button" class="btn-secondary" data-composer-when aria-expanded="false">When</button><button type="button" class="btn-add" data-composer-review>Send to Review</button></div></div>
       <div data-composer-schedule hidden></div>
-      <div class="desk-v1-composer-sheet"><h2>Post to</h2><div data-composer-channels>${channels().html(camp, d)}</div>
+      <div class="desk-v1-composer-sheet"><div data-composer-name></div><h2>Post to</h2><div data-composer-channels>${channels().html(camp, d)}</div>
       <label for="desk-v1-composer-text">Write</label><textarea id="desk-v1-composer-text" data-composer-text maxlength="100000" rows="12" placeholder="What would you like to share?" aria-describedby="desk-v1-composer-count" ${locked ? 'readonly' : ''}>${esc(d.text)}</textarea>
       ${locked ? '<p class="desk-v1-composer-hint">Approved posts must return to review before editing. Sent posts and archived pieces cannot be edited here.</p>' : ''}
       <div id="desk-v1-composer-count" data-composer-count class="desk-v1-composer-hint"></div></div>
