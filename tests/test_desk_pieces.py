@@ -550,14 +550,14 @@ def test_video_chooser_hints_match_server_extensions():
 
 def test_post_name_persists_in_workspace_and_article_picker(env):
     client, _, _ = env
-    p = _piece(client, 'article', title='New article')
+    p = _piece(client, 'article', title='Draft article')
     url = f"/api/desk/pieces/{p['id']}"
-    for title in ('Launch notes', 'New article'):  # Rename and its Undo use the same route.
+    for title in ('Launch notes', 'Draft article'):  # Rename and its Undo use the same route.
         assert client.patch(url, json={'title': title}).status_code == 200
         assert client.get('/api/desk/workspace').get_json()['pieces'][0]['title'] == title
         assert client.get('/api/desk/materials').get_json()['articles'][0]['title'] == title
     assert client.patch(url, json={'title': 'x' * 201}).status_code == 400
-    assert client.get('/api/desk/pieces').get_json()[0]['title'] == 'New article'
+    assert client.get('/api/desk/pieces').get_json()[0]['title'] == 'Draft article'
 
 
 # -- Studio saves into the library, attached to nothing (MC-1024) ------------------

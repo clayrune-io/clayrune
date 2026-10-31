@@ -318,7 +318,7 @@ async function run(browser) {
   await page.waitForSelector('[data-storyboard]', { timeout: 6000 });
   const sbCrumb = await text(page, '.desk-v1-crumb-title');
   const strip = await text(page, '[data-returning-to]');
-  sbCrumb === 'New video · Storyboard' && /Returning to ›/.test(strip) && /Posts · New video/.test(strip)
+  sbCrumb === 'Video1 · Storyboard' && /Returning to ›/.test(strip) && /Posts · Video1/.test(strip)
     ? ok(`Create new -> storyboard: "${sbCrumb}", strip "${strip}"`)
     : fail(`storyboard header wrong: ${JSON.stringify([sbCrumb, strip])}`);
   await page.evaluate(() => document.querySelectorAll('#toast-container .toast').forEach((t) => t.remove()));
@@ -326,7 +326,7 @@ async function run(browser) {
   await page.waitForSelector('[data-sb-rendering]', { timeout: 4000 });
   await page.click('.desk-v1-back');
   await page.waitForSelector('[data-what-row]', { timeout: 6000 });
-  const vrow = page.locator('[data-what-row]', { hasText: 'New video' }).first();
+  const vrow = page.locator('[data-what-row]', { hasText: 'Video1' }).first();
   const vtext = ((await vrow.textContent()) || '').replace(/\s+/g, ' ');
   const vnow = await vrow.locator('[role="progressbar"]').getAttribute('aria-valuenow').catch(() => null);
   /⟳ Rendering 40%/.test(vtext) && vnow === '40'

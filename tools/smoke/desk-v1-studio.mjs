@@ -509,9 +509,9 @@ async function runStoryboard(browser, tone) {
   check(scenes.length >= 1, `${tag} storyboard opens with ${scenes.length} scene(s) pre-filled`, `${tag} no scenes`);
   const crumb = await text(page, '.desk-v1-crumb-title');
   const back = await text(page, '.desk-v1-back');
-  check(crumb === 'New video · Storyboard' && /^‹\s*Back to Posts$/.test(back), `${tag} header reads "${back}" · "${crumb}"`, `${tag} header wrong: ${JSON.stringify([back, crumb])}`);
+  check(crumb === 'Video1 · Storyboard' && /^‹\s*Back to Posts$/.test(back), `${tag} header reads "${back}" · "${crumb}"`, `${tag} header wrong: ${JSON.stringify([back, crumb])}`);
   const strip = await text(page, '[data-returning-to]');
-  check(/Returning to ›/.test(strip) && /Windows beta testers/.test(strip) && /Posts · New video/.test(strip),
+  check(/Returning to ›/.test(strip) && /Windows beta testers/.test(strip) && /Posts · Video1/.test(strip),
     `${tag} strip names campaign + piece: "${strip}"`, `${tag} Returning-to strip wrong: ${JSON.stringify(strip)}`);
   const firstLine = await text(page, '.desk-v1-sb-scene:first-child .desk-v1-sb-line');
   check(firstLine.length > 0, `${tag} scene 1 has a line ("${firstLine}")`, `${tag} scene 1 line empty`);
@@ -561,7 +561,7 @@ async function runStoryboard(browser, tone) {
   check(/Rendering 40%/.test(await text(page, '[data-sb-rendering]')), `${tag} Render shows ⟳ Rendering 40% on the storyboard`, `${tag} no rendering note`);
   await page.click('.desk-v1-back');
   await page.waitForSelector('[data-what-row]', { timeout: 6000 });
-  const row = page.locator('[data-what-row]', { hasText: 'New video' }).first();
+  const row = page.locator('[data-what-row]', { hasText: 'Video1' }).first();
   const pb = row.locator('[role="progressbar"]');
   const now = await pb.getAttribute('aria-valuenow').catch(() => null);
   const rowText = ((await row.textContent()) || '').replace(/\s+/g, ' ');
@@ -614,7 +614,7 @@ async function runWriter(browser, tone) {
 
   await page.click('[data-writer-save]');
   await page.waitForSelector('[data-what-row]', { timeout: 6000 });
-  const row = page.locator('[data-what-row]', { hasText: 'New article' }).first();
+  const row = page.locator('[data-what-row]', { hasText: 'Article1' }).first();
   const rowText = ((await row.textContent()) || '').replace(/\s+/g, ' ');
   check(/in review/.test(rowText), `${tag} Save to Posts returns with the piece "in review"`, `${tag} row not in review: ${rowText}`);
   check((await page.$$('[data-writer]')).length === 0, `${tag} the writer is gone after Save`, `${tag} writer still mounted`);

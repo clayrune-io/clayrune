@@ -12,6 +12,7 @@ import './desk-v1-composer-preview.js';
   const base = (id) => '/api/desk/pieces/' + encodeURIComponent(id);
   let mounted = null;
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
+  const UNTITLED = 'Untitled post'; // before the first save: the server has not named it yet
 
   function open(camp, fam) {
     window.deskV1Nav('composer', { campaignId: camp.id, projectId: camp.projectId, familyId: fam?.id || 'fam-post-' + uid() });
@@ -84,12 +85,15 @@ import './desk-v1-composer-preview.js';
     if (!d.fam) {
       if (!d.text.trim() && !d.mediaPending) return;
       const text = d.text;
-      const fam = { id: d.id, campaignId: camp.id, kind: 'post', title: 'New post', body: text, assets: [], versions: [] };
+      // The server names an unnamed post (Post1, Post2, ...) and its answer is merged
+      // below; demo mode has no server, so it applies the same rule locally.
+      const fam = { id: d.id, campaignId: camp.id, kind: 'post', title: '', body: text, assets: [], versions: [] };
+      if (!store().live()) fam.title = fam.defaultTitle = window.DeskV1PieceNames.next(store().state().families, camp.id, 'post');
       const result = check(await store().write({
         label: 'Created a post draft',
         apply: () => { store().state().families.push(fam); },
         unapply: () => { const a = store().state().families; const i = a.findIndex((f) => f.id === fam.id); if (i >= 0) a.splice(i, 1); },
-        request: () => store().api('POST', '/api/desk/pieces', { id: fam.id, campaign_id: camp.id, kind: 'post', title: fam.title, body: text }),
+        request: () => store().api('POST', '/api/desk/pieces', { id: fam.id, campaign_id: camp.id, kind: 'post', body: text }),
         undoRequest: () => window.deskV1QueuePiece(fam.id, () => store().api('DELETE', base(fam.id))),
       }));
       if (result) Object.assign(fam, result);
@@ -169,7 +173,7 @@ import './desk-v1-composer-preview.js';
     const locked = d.fam?.archivedAt || (d.fam?.versions || []).some((v) => ['approved', 'scheduled'].includes(v.state) || channels().sent(v));
     d.locked = !!locked;
     el.innerHTML = `<section class="desk-v1-composer" data-composer data-composer-family="${esc(d.id)}">
-      <div class="desk-v1-composer-top"><div class="desk-v1-composer-breadcrumb">Desk <span>›</span> ${esc(camp.plan.title || 'Campaign')} <span>›</span> <strong>${esc(d.fam?.title || 'New post')}</strong></div>
+      <div class="desk-v1-composer-top"><div class="desk-v1-composer-breadcrumb">Desk <span>›</span> ${esc(camp.plan.title || 'Campaign')} <span>›</span> <strong>${esc(d.fam?.title || UNTITLED)}</strong></div>
         <div class="desk-v1-composer-actions"><button type="button" class="btn-secondary" data-composer-save>Save draft</button><button type="button" class="btn-secondary" data-composer-when aria-expanded="false">When</button><button type="button" class="btn-add" data-composer-review>Send to Review</button></div></div>
       <div data-composer-schedule hidden></div>
       <div class="desk-v1-composer-sheet"><div data-composer-name></div><h2>Post to</h2><div data-composer-channels>${channels().html(camp, d)}</div>

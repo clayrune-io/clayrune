@@ -131,15 +131,20 @@
   function _isMounted() { return !!(_cur && _cur.el && _cur.el.isConnected && (!_cur.el.dataset.panel || _cur.el.dataset.panel === 'what')); }
 
   // ── commands ─────────────────────────────────────────────────────────────
-  function _newTitle(kind) { return `New ${String(kind || 'piece').toLowerCase()}`; }
+  // An unnamed piece is named Video1, Post2, ... by the SERVER (mc/desk_piece_names.py).
+  // Live, the create-card starts blank ("Naming…") and takes the server's name from
+  // the POST response; demo mode has no server, so it applies the same rule locally.
+  function _serialTitle(camp, kind) {
+    return window.DeskV1PieceNames.next(_fx().families, camp.id, kind);
+  }
 
   function _addCreate(camp, type) {
     if (type.kind === 'post') return window.DeskV1Composer.open(camp);
     const st = _state(camp.id);
     const fam = {
-      id: 'fam-new-' + _uid(), campaignId: camp.id, kind: type.kind, title: _newTitle(type.kind),
-      assets: [], versions: [],
+      id: 'fam-new-' + _uid(), campaignId: camp.id, kind: type.kind, title: '', assets: [], versions: [],
     };
+    if (!_isLive()) fam.title = fam.defaultTitle = _serialTitle(camp, type.kind);
     const card = { id: 'create-' + _uid(), familyId: fam.id, typeId: type.id, source: null, existingPick: null };
     DeskV1Store.write({
       label: `Added ${/^[aeiou]/i.test(type.label) ? 'an' : 'a'} ${type.label.toLowerCase()} piece`,
@@ -149,10 +154,24 @@
         const j = st.creates.indexOf(card); if (j >= 0) st.creates.splice(j, 1);
       },
       repaint: () => _repaint(),
-      request: () => _queue(fam.id, () => _api('POST', '/api/desk/pieces',
-        { id: fam.id, campaign_id: camp.id, kind: fam.kind, title: fam.title })),
+      request: () => _queue(fam.id, async () => {
+        const saved = await _api('POST', '/api/desk/pieces', { id: fam.id, campaign_id: camp.id, kind: fam.kind });
+        _takeServerName(card, fam, saved);
+        return saved;
+      }),
       undoRequest: () => _queue(fam.id, () => _api('DELETE', _pieceUrl(fam.id))),
     });
+  }
+
+  // The server's serial name for a piece created unnamed. A title typed while the
+  // POST was in flight stays (its PATCH is queued behind this create).
+  function _takeServerName(card, fam, saved) {
+    if (!saved) return;
+    fam.defaultTitle = saved.defaultTitle || null;
+    if (fam.title) return;
+    fam.title = saved.title || '';
+    const input = document.querySelector(`[data-what-create="${card.id}"] [data-what-title]`);
+    if (input && !input.value) input.value = fam.title;
   }
 
   function _removeCreate(camp, card) {
@@ -183,7 +202,8 @@
   // always was (no Undo toast per keystroke-commit); live also PATCHes it.
   function _renameCreate(fam, input) {
     const prev = fam.title;
-    const next = input.value.trim() || _newTitle(fam.kind);
+    // Clearing the box restores the piece's serial name (Video1), not a placeholder.
+    const next = input.value.trim() || fam.defaultTitle || prev;
     input.value = next;
     if (!_isLive()) { fam.title = next; return; }
     if (next === prev) return;
@@ -438,7 +458,7 @@
     return `<div class="desk-v1-what-create" data-what-create="${esc(card.id)}" data-family-id="${esc(fam.id)}" data-kind="${esc(kind)}" data-source="${esc(card.source || '')}">
       <div class="desk-v1-what-create-head">
         <label class="desk-v1-what-kind" for="what-name-${esc(card.id)}">Name</label>
-        <input id="what-name-${esc(card.id)}" maxlength="200" type="text" class="desk-v1-what-create-title" data-what-title value="${esc(fam.title)}" aria-label="Title of the new ${esc(kind)}">
+        <input id="what-name-${esc(card.id)}" maxlength="200" type="text" class="desk-v1-what-create-title" data-what-title value="${esc(fam.title)}" placeholder="Naming…" aria-label="Title of the new ${esc(kind)}">
         ${type.preview ? '<span class="desk-v1-where-preview" data-preview>Preview · not connected</span>' : ''}
       </div>
       ${bodyHTML}
