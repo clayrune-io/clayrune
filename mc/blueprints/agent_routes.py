@@ -17383,6 +17383,10 @@ def _respawn_window_open(session, now):
 
 
 def _guardian_check_session(sid, session, now):
+    from mc.qwen_retry_wait import KEY as _retry_wait_key, check_session
+    if session.get(_retry_wait_key) and check_session(
+            session, now, get_manager(session['project_id']).lock, _kill_proc_background):
+        return
     status = session['status']
     proc = session.get('proc')
     mode = session.get('mode', 'A')

@@ -504,8 +504,7 @@ _LEADING_INJECTED_RE = re.compile(
 
 def strip_injected_preamble(text: str) -> str:
     """Remove MC-injected agent-facing content from a user-message string."""
-    from mc.resume_context import strip_resume_context
-    out = _INJECTED_PREAMBLE_RE.sub('', strip_resume_context(text or '')).strip()
+    out = _INJECTED_PREAMBLE_RE.sub('', text or '').strip()
     for _ in range(12):  # each pass peels one leading block; bounded, not a loop risk
         nxt = _LEADING_INJECTED_RE.sub('', out, count=1)
         if nxt == out:
@@ -5459,6 +5458,9 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
     if env_extra:
         env.update(env_extra)
 
+    from mc.retry_budgets import apply_env
+    from mc import state
+    apply_env(runtime.name, (session_dict or {}).get('trigger_type'), env, state.CONFIG)
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE if prompt_via_stdin else subprocess.DEVNULL,
@@ -6372,6 +6374,9 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 line = line[len(_CODEX_STDIN_BANNER):]
                 if not line:
                     continue
+            from mc.qwen_retry_wait import observe_line
+            if observe_line(session, line, _time.time()):
+                continue
             ev = runtime.parse_event(line, handle.mc_session_id)
             if ev is None:
                 # None means "this runtime declined to surface it". For a line
@@ -7304,6 +7309,8 @@ class QwenRuntime(AgentRuntime):
                         continue
                     role = 'user' if provenance == 'real_user' else 'assistant'
                     if role == 'user':
+                        from mc.resume_context import strip_resume_context
+                        text = strip_resume_context(text)
                         text = strip_injected_preamble(text)
                         if not text or is_nonuser_message(text):
                             continue
@@ -7649,6 +7656,9 @@ class QwenRuntime(AgentRuntime):
         _inject_guardrail_env('qwen', env)
         _inject_qwen_defaults_env(env)
         _pin_qwen_windows_shell(env)
+        from mc.retry_budgets import apply_env
+        from mc import state
+        apply_env('qwen', session.get('trigger_type'), env, state.CONFIG)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,

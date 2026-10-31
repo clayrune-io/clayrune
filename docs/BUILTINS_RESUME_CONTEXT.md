@@ -8,6 +8,11 @@ Clayrune instructions through the same user-prompt channel those runtimes
 already use for context injection. It does not change vendor instruction
 hierarchy or erase old messages from the transcript.
 
+The envelope boundary is derived from context only: unchanged instructions
+keep a stable prefix across new messages. Quoted headings and ordinary Markdown
+separators in persona/task text do not become display boundaries. Saved Codex
+and Qwen messages peel that envelope exactly once before legacy display cleanup.
+
 The routes already refresh the session's `_system_prompt` with
 `_fresh_context_for`, preserving the selected character. The bug was that the
 three runtimes omitted that refreshed value when a native resume ID existed.

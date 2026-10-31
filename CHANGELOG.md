@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-31] - Bound supported unattended retry waits (BUILTINS-1)
+
+- Added one validated retry-budget block and Settings support labels for all eight engines: defaults 30-minute retry wait, 120-minute usage-limit wait and 5-minute recheck cadence. Human passcode gating is retained.
+- Claude maps all three values to native watchdog environment variables. Qwen caps heartbeat-confirmed capacity waiting only, with usage classification/cadence explicitly unsupported; other engines receive no execution deadline. The capability audit preserves unverified findings. Branch candidate only.
+
 ## [2026-10-31] - Deliver current instructions on native resume (BUILTINS-2)
 
 - Codex, Gemini and Qwen cold and warm resumes send current persona/rules while keeping the native conversation ID. Saved-message display strips the reference envelope.

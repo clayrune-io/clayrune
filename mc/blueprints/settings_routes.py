@@ -52,6 +52,7 @@ from flask import Blueprint, jsonify, request
 
 from mc import provider_preferences
 from mc import state
+from mc import retry_budgets, retry_capabilities
 from mc.characters import clean_avatar
 from mc.atomic_json import write_json_atomic
 from mc.core import _log
@@ -302,6 +303,7 @@ _CONFIG_EDITABLE_KEYS = {
     'engine_pace_enabled', 'engine_pace_margin_points',
     'engine_pace_ceiling_percent', 'engine_pace_alternates',
     'claude_resume_fresh_prompt',
+    'unattended_retry',
 }
 
 # Respawn-trigger ("Tier-1") settings: baked into the spawn (CLI flags or the
@@ -336,8 +338,10 @@ _RESPAWN_TRIGGER_KEYS = {
 
 @bp.route('/api/config')
 def get_config():
-    """Return all editable config keys."""
-    return jsonify({k: state.CONFIG.get(k) for k in _CONFIG_EDITABLE_KEYS})
+    """Return editable config plus read-only retry capability metadata."""
+    return jsonify({**{k: state.CONFIG.get(k) for k in _CONFIG_EDITABLE_KEYS},
+                    retry_budgets.CONFIG_KEY: retry_budgets.durations(state.CONFIG),
+                    'unattended_retry_capabilities': retry_capabilities.settings_rows()})
 
 @bp.route('/api/config', methods=['PUT'])
 @provider_preferences.serialized_write
@@ -446,6 +450,11 @@ def update_config():
                 return jsonify({'error': f'unknown provider(s): {", ".join(sorted(set(bad)))} — '
                                          f'available: {", ".join(sorted(known))}'}), 400
         data['engine_fallback_order'] = cleaned
+    if retry_budgets.CONFIG_KEY in data:
+        try:
+            data[retry_budgets.CONFIG_KEY] = retry_budgets.validate_block(data[retry_budgets.CONFIG_KEY])
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
     updated = {}
     for k, v in data.items():
         if k in _CONFIG_EDITABLE_KEYS:

@@ -90,6 +90,16 @@ def test_saved_user_message_keeps_real_text_and_newlines():
     assert strip_resume_context('ordinary user message') == 'ordinary user message'
 
 
+def test_quoted_boundaries_in_persona_and_task_are_not_message_boundaries():
+    context = "Persona quotes === THE USER'S MESSAGE === in its examples."
+    task = "Explain === THE USER'S MESSAGE ===\n\n---\n\nand keep this text."
+    assert strip_resume_context(resume_prompt(context, task)) == task
+
+
+def test_unchanged_context_keeps_the_same_prefix_for_new_messages():
+    assert resume_prompt('CURRENT RULES', 'one')[:-3] == resume_prompt('CURRENT RULES', 'two')[:-3]
+
+
 @pytest.mark.parametrize('flag', ['-r', '--resume', '-c', '--continue', '--resume=thread'])
 def test_snapshot_policy_opt_in_only_for_resume(flag):
     cmd = ['claude', flag, 'thread', '--settings', 'fence.json']
