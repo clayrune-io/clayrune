@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-31] - Avoid repeated context on native followups (BUILTINS-2)
+
+- Codex, Gemini and Qwen fingerprint delivered context and send bare messages on unchanged native followups. Rule/persona changes and missing fingerprints after restart trigger one context refresh; failed stdin delivery does not advance the fingerprint.
+- Stabilized Gemini's composed tool protocol and preserved Markdown separators in Codex's bare-message labels. Incognito and no-native-ID fallback remain supported. Branch candidate only.
+
 ## [2026-10-31] - Bound supported unattended retry waits (BUILTINS-1)
 
 - Added one validated retry-budget block and Settings support labels for all eight engines: defaults 30-minute retry wait, 120-minute usage-limit wait and 5-minute recheck cadence. Human passcode gating is retained.

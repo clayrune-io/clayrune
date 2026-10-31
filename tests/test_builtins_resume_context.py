@@ -6,7 +6,10 @@ import pytest
 
 from mc import agent_runtime as ar, claude_resume_snapshot as snapshot
 from mc import launch_marker, state
-from mc.resume_context import resume_prompt, strip_resume_context
+from mc.resume_context import (
+    context_sha, followup_prompt, resume_prompt, strip_resume_context,
+    write_context_prompt,
+)
 
 
 class Stdin(io.StringIO):
@@ -40,9 +43,6 @@ def spawns(monkeypatch):
     monkeypatch.setattr(ar, '_inject_guardrail_env', lambda *args: None)
     monkeypatch.setattr(ar, '_inject_gemini_env', lambda env, *args: env)
     monkeypatch.setattr(ar.QwenRuntime, '_settings_auth_env', lambda self: {})
-    # Gemini has a separate stdin helper; capture the same pipe boundary.
-    monkeypatch.setattr(ar.GeminiRuntime, '_write_prompt_async',
-                        staticmethod(lambda proc, prompt, sid: proc.stdin.write(prompt)))
     return captured
 
 
@@ -77,9 +77,139 @@ def test_changed_persona_and_rules_reach_native_resume(engine, cold, spawns, mon
         assert 'native-thread' in cmd  # keep native continuity, never freshen
 
 
+@pytest.mark.parametrize('engine', ['codex', 'qwen', 'gemini'])
+@pytest.mark.parametrize('resume_id', ['', 'native-thread'], ids=['fresh', 'cold-resume'])
+def test_dispatch_records_context_and_unchanged_followups_are_bare(
+        engine, resume_id, spawns, monkeypatch):
+    runtime = ar.get_runtime(engine)
+    monkeypatch.setattr(runtime, 'resolve_binary', lambda: engine)
+    # Include text Gemini strips so the fingerprint must use composed context.
+    context = 'PERSONA_ALPHA RULES_ALPHA\nCurrent task: stale'
+    handle = runtime.dispatch(project_path='.', project_id='p', task='first task',
+                              system_prompt=context, resume_id=resume_id,
+                              mc_session_id='test')
+    session = handle.session_dict
+    assert session['_ctx_delivered_sha'] == context_sha(session['_system_prompt'])
+    session['provider_session_id'] = 'native-thread'
+    for message in ('second task', 'third task'):
+        # Same route refresh as a real followup, before provider composition.
+        session['_system_prompt'] = context
+        runtime.write_followup(handle, message)
+        assert spawns[-1][1].stdin.getvalue() == message
+        assert 'native-thread' in spawns[-1][0]
+
+
+@pytest.mark.parametrize('engine', ['codex', 'qwen', 'gemini'])
+def test_rules_change_is_sent_once_then_followups_are_bare(engine, spawns, monkeypatch):
+    runtime = ar.get_runtime(engine)
+    monkeypatch.setattr(runtime, 'resolve_binary', lambda: engine)
+    handle = runtime.dispatch(project_path='.', task='first task',
+                              system_prompt='PERSONA_ALPHA RULES_ALPHA')
+    session = handle.session_dict
+    session['provider_session_id'] = 'native-thread'
+    original_sha = session['_ctx_delivered_sha']
+    for message in ('unchanged', 'changed', 'unchanged again'):
+        context = ('PERSONA_ALPHA RULES_ALPHA' if message == 'unchanged'
+                   else 'PERSONA_ALPHA RULES_BRAVO')
+        session['_system_prompt'] = context
+        runtime.write_followup(handle, message)
+        prompt = spawns[-1][1].stdin.getvalue()
+        if message == 'changed':
+            assert prompt == resume_prompt(runtime.with_mc_tool_protocol(context), message)
+            assert session['_ctx_delivered_sha'] != original_sha
+        else:
+            assert prompt == message
+
+
+@pytest.mark.parametrize('engine', ['codex', 'qwen', 'gemini'])
+def test_restart_without_fingerprint_sends_context_once(engine, spawns, monkeypatch):
+    runtime = ar.get_runtime(engine)
+    monkeypatch.setattr(runtime, 'resolve_binary', lambda: engine)
+    session = {'_system_prompt': 'CURRENT RULES', 'provider_session_id': 'native-thread',
+               'log_lines': [], 'proc': None}
+    handle = ar.SessionHandle(mc_session_id='test', provider=engine, mode='A',
+                              project_path='.', project_id='p', session_dict=session)
+    assert '_ctx_delivered_sha' not in session
+    runtime.write_followup(handle, 'after restart')
+    context = runtime.with_mc_tool_protocol('CURRENT RULES')
+    assert spawns[-1][1].stdin.getvalue() == resume_prompt(context, 'after restart')
+    assert session['_ctx_delivered_sha'] == context_sha(context)
+    runtime.write_followup(handle, 'next task')
+    assert spawns[-1][1].stdin.getvalue() == 'next task'
+
+
+@pytest.mark.parametrize('engine', ['codex', 'qwen', 'gemini'])
+def test_incognito_keeps_only_existing_tool_protocol(engine, spawns, monkeypatch):
+    runtime = ar.get_runtime(engine)
+    monkeypatch.setattr(runtime, 'resolve_binary', lambda: engine)
+    handle = runtime.dispatch(project_path='.', task='first task', incognito=True)
+    session = handle.session_dict
+    assert session['_ctx_delivered_sha'] == context_sha(ar.MC_TOOL_PROTOCOL_PROMPT)
+    session['provider_session_id'] = 'native-thread'
+    session['_system_prompt'] = ''  # incognito context refreshed by routes
+    runtime.write_followup(handle, 'private task')
+    assert spawns[-1][1].stdin.getvalue() == 'private task'
+
+
+@pytest.mark.parametrize('engine', ['codex', 'qwen', 'gemini'])
+def test_missing_native_id_still_sends_context(engine, spawns, monkeypatch):
+    runtime = ar.get_runtime(engine)
+    monkeypatch.setattr(runtime, 'resolve_binary', lambda: engine)
+    handle = runtime.dispatch(project_path='.', task='first task', system_prompt='RULES')
+    runtime.write_followup(handle, 'next task')
+    assert 'RULES' in spawns[-1][1].stdin.getvalue()
+    assert '--resume' not in spawns[-1][0]
+
+
+@pytest.mark.parametrize('engine', ['codex', 'qwen', 'gemini'])
+def test_failed_context_delivery_is_retried(engine, spawns, monkeypatch):
+    runtime = ar.get_runtime(engine)
+    monkeypatch.setattr(runtime, 'resolve_binary', lambda: engine)
+    original_popen = ar.subprocess.Popen
+
+    class BrokenStdin:
+        def write(self, prompt):
+            pass
+
+        def close(self):
+            raise BrokenPipeError('flush failed')
+
+    def broken_popen(*args, **kwargs):
+        proc = original_popen(*args, **kwargs)
+        proc.stdin = BrokenStdin()
+        return proc
+
+    monkeypatch.setattr(ar.subprocess, 'Popen', broken_popen)
+    handle = runtime.dispatch(project_path='.', task='first task', system_prompt='RULES')
+    session = handle.session_dict
+    assert '_ctx_delivered_sha' not in session
+    assert any('prompt delivery failed: BrokenPipeError' in line
+               for line in session['log_lines'])
+    monkeypatch.setattr(ar.subprocess, 'Popen', original_popen)
+    session['provider_session_id'] = 'native-thread'
+    runtime.write_followup(handle, 'retry context')
+    assert 'CURRENT CLAYRUNE CONTEXT' in spawns[-1][1].stdin.getvalue()
+    assert session['_ctx_delivered_sha'] == context_sha(session['_system_prompt'])
+    runtime.write_followup(handle, 'next task')
+    assert spawns[-1][1].stdin.getvalue() == 'next task'
+
+
 def test_empty_context_does_not_recover_older_instructions():
     assert resume_prompt('', 'next task') == 'next task'
     assert resume_prompt('  ', 'next task') == 'next task'
+    session = {'_ctx_delivered_sha': context_sha('OLD RULES')}
+    for context in ('', '  '):
+        prompt = followup_prompt(session, context, 'next task')
+        assert prompt == 'next task'
+        write_context_prompt(Stdin(), prompt, session, context)
+        assert session['_ctx_delivered_sha'] == context_sha('OLD RULES')
+
+
+def test_bare_or_old_prompt_does_not_record_changed_context():
+    session = {'_ctx_delivered_sha': context_sha('OLD RULES')}
+    for prompt in ('bare task', resume_prompt('OLD RULES', 'retry task')):
+        write_context_prompt(Stdin(), prompt, session, 'NEW RULES')
+        assert session['_ctx_delivered_sha'] == context_sha('OLD RULES')
 
 
 def test_saved_user_message_keeps_real_text_and_newlines():
@@ -88,6 +218,9 @@ def test_saved_user_message_keeps_real_text_and_newlines():
     assert ar._strip_codex_system_prefix(prompt.replace('\n', '\r\n')) == (
         'task\r\n\r\n---\r\n\r\nmore task')
     assert strip_resume_context('ordinary user message') == 'ordinary user message'
+    assert ar._strip_codex_system_prefix('task\n\n---\n\nmore task') == (
+        'task\n\n---\n\nmore task')
+    assert ar._strip_codex_system_prefix('--- SYSTEM ---\nold context\n\n---\n\ntask') == 'task'
 
 
 def test_quoted_boundaries_in_persona_and_task_are_not_message_boundaries():
