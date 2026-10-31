@@ -1,5 +1,25 @@
 # Clayrune — Changelog
 
+## [2026-10-31] - Keep native followup context stable at the route boundary
+
+- Non-Claude followup and interrupt routes reuse their setup stash until the project fingerprint changes. Dispatch primes the fingerprint; project/global persona edits, including nested character packs, invalidate it.
+- Task-scoped memory now travels through the existing per-turn message delivery path. Retrieval telemetry no longer invalidates setup; the fingerprint retains the full Markdown corpus and final context delivery still hashes every section. Branch candidate only.
+
+## [2026-10-31] - Avoid repeated context on native followups (BUILTINS-2)
+
+- Codex, Gemini and Qwen fingerprint delivered context and send bare messages on unchanged native followups. Rule/persona changes and missing fingerprints after restart trigger one context refresh; failed stdin delivery does not advance the fingerprint.
+- Stabilized Gemini's composed tool protocol and preserved Markdown separators in Codex's bare-message labels. Incognito and no-native-ID fallback remain supported. Branch candidate only.
+
+## [2026-10-31] - Bound supported unattended retry waits (BUILTINS-1)
+
+- Added one validated retry-budget block and Settings support labels for all eight engines: defaults 30-minute retry wait, 120-minute usage-limit wait and 5-minute recheck cadence. Human passcode gating is retained.
+- Claude maps all three values to native watchdog environment variables. Qwen caps heartbeat-confirmed capacity waiting only, with usage classification/cadence explicitly unsupported; other engines receive no execution deadline. The capability audit preserves unverified findings. Branch candidate only.
+
+## [2026-10-31] - Deliver current instructions on native resume (BUILTINS-2)
+
+- Codex, Gemini and Qwen cold and warm resumes send current persona/rules while keeping the native conversation ID. Saved-message display strips the reference envelope.
+- Added opt-in `claude_resume_fresh_prompt` (default off) at the shared Claude launch boundary to pass `--system-prompt-snapshot off` on resume. The unattended fence gate remains in force. Cache-cost measurement is documented and unrun; branch candidate only.
+
 ## [2026-10-30] - Make the Desk map Resume smoke explain expired plans
 
 - The map smoke now asserts successful Resume and expired-end refusal at selectable 1440/390 widths on its own ephemeral loopback server. The original selector timeout came from an expired fixture; C6 already supplied a future date on the current base. Product Pause/Resume behavior is unchanged.

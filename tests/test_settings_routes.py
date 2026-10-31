@@ -148,8 +148,8 @@ def test_get_config_returns_editable_keys(ctx):
     resp = ctx.client.get('/api/config')
     assert resp.status_code == 200
     body = resp.get_json()
-    # Every key returned must be an editable key; log_level is always present.
-    assert set(body.keys()) == set(ctx.sr._CONFIG_EDITABLE_KEYS)
+    # Capability metadata is read-only; all other keys are editable.
+    assert set(body.keys()) == set(ctx.sr._CONFIG_EDITABLE_KEYS) | {'unattended_retry_capabilities'}
     assert 'log_level' in body
 
 

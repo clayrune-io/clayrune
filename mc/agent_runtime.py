@@ -703,6 +703,16 @@ def _strip_codex_system_prefix(text: str) -> str:
     keeping only the real user message that was appended after it — see
     `_CODEX_DISPATCH_SEP_RE` above. A no-op when the separator isn't present.
     """
+    from mc.resume_context import strip_resume_context
+    clean = strip_resume_context(text)
+    if clean != text:
+        return clean
+    # Bare native followups may contain Markdown separators of their own.
+    if not any(marker in text for marker in (
+            'You are running inside Mission Control, which gives you one ability your CLI',
+            '--- SYSTEM ---',
+            '--- AGENT_RULES.md ---')):
+        return text
     matches = list(_CODEX_DISPATCH_SEP_RE.finditer(text))
     if matches:
         return text[matches[-1].end():].strip()
@@ -4733,18 +4743,11 @@ class GeminiRuntime(AgentRuntime):
         # what gets stashed as `_system_prompt`, so per-turn respawns (and thus
         # followups) keep both the trimmed context and the protocol.
         slim_prompt = self.with_mc_tool_protocol(
-            self._slim_system_prompt(system_prompt))
+            self._slim_system_prompt(system_prompt.replace(MC_TOOL_PROTOCOL_PROMPT, '')))
         task_text = self.with_attachment_hint(task)
         if resume_id:
-            # Cold resume (W4, MC-947): `resume_id` here is gemini's OWN
-            # session id, supplied by a caller reviving a dead conversation
-            # after a restart (`_revive_non_claude_from_agent_log`), now that
-            # gemini is in `_COLD_RESUMABLE_PROVIDERS`. `--resume` carries the
-            # full prior turn server-side (mirrors `write_followup`'s own
-            # resumed branch) — re-pasting the whole system prompt here would
-            # both waste tokens and duplicate context the resumed session
-            # already has.
-            full_prompt = f"{MC_TOOL_PROTOCOL_PROMPT}\n\n---\n\n{task_text}"
+            from mc.resume_context import resume_prompt
+            full_prompt = resume_prompt(slim_prompt, task_text)
         else:
             # Label the boundary explicitly. Everything above is reference
             # setup; the part below is the ONLY thing to act on. Without this
@@ -4776,8 +4779,6 @@ class GeminiRuntime(AgentRuntime):
             creationflags=_POPEN_FLAGS,
             startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
-        self._write_prompt_async(proc, full_prompt, mc_sid)
-
         if session_dict is None:
             session_dict = {}
         session_dict.update({
@@ -4806,6 +4807,8 @@ class GeminiRuntime(AgentRuntime):
             # this fix closes only for the FIRST turn.
             '_mcp_config_json': mcp_config_json,
         })
+        self._write_prompt_async(proc, full_prompt, mc_sid,
+                                 session=session_dict, context=slim_prompt)
 
         handle = SessionHandle(
             mc_session_id=mc_sid,
@@ -4897,15 +4900,11 @@ class GeminiRuntime(AgentRuntime):
         return None
 
     def _write_prompt_async(self, proc: subprocess.Popen, prompt: str,
-                            mc_sid: str) -> None:
-        def _send() -> None:
-            try:
-                if proc.stdin:
-                    proc.stdin.write(prompt)
-                    proc.stdin.close()
-            except Exception:
-                pass
-        threading.Thread(target=_send, daemon=True,
+                            mc_sid: str, *, session: Dict[str, Any],
+                            context: str) -> None:
+        from mc.resume_context import write_context_prompt
+        threading.Thread(target=write_context_prompt,
+                         args=(proc.stdin, prompt, session, context), daemon=True,
                          name=f'gemini-stdin-{mc_sid[:8]}').start()
 
     def _read_stream(self, proc: subprocess.Popen, handle: SessionHandle) -> None:
@@ -5206,11 +5205,8 @@ class GeminiRuntime(AgentRuntime):
         # `latest` re-opens whatever gemini session is newest in the project
         # dir, which after prior runs is a stale, unrelated conversation that
         # then gets continued by mistake (the "phantom task" bug). Resuming
-        # carries the whole conversation server-side, so the followup sends
-        # only the new message — not the 16 KB context blob the old respawn
-        # path re-pasted every turn (the token burn — Gemini has no prompt
-        # cache). The ~1 KB MC Tool Protocol is re-sent so the agent never
-        # loses the ability to ask questions deep into a conversation.
+        # carries conversation history. Re-send current persona/rules only
+        # when changed or not yet recorded as delivered to this session.
         # Generic `provider_session_id` (W4, MC-947) — not a gemini-private
         # key — so the same id this dispatch/revive path writes and reads
         # elsewhere (`_runtime_note_init`, `_revive_non_claude_from_agent_log`)
@@ -5229,20 +5225,25 @@ class GeminiRuntime(AgentRuntime):
         # so this has to be re-stated on every followup or turn 2+ silently
         # falls back to the deny-all sentinel in `build_command`.
         _mcp_json = session.get('_mcp_config_json') or ''
+        # Remove the exact appended protocol before slimming (which strips
+        # its trailing newline), then append it once in canonical form.
+        context = self.with_mc_tool_protocol(
+            self._slim_system_prompt((session.get('_system_prompt') or '').replace(
+                MC_TOOL_PROTOCOL_PROMPT, '')))
         if gemini_sid:
             cmd = self.build_command(model=_model, resume_id=gemini_sid,
                                      mcp_config_json=_mcp_json,
                                      extra_include_dirs=_include_dirs)
-            full_prompt = (f"{MC_TOOL_PROTOCOL_PROMPT}\n\n---\n\n"
-                           f"{self.with_attachment_hint(message)}")
+            from mc.resume_context import followup_prompt
+            full_prompt = followup_prompt(session, context,
+                                          self.with_attachment_hint(message))
         else:
             # No id captured (session predates this fix, or init never landed)
             # — re-paste context rather than risk `latest` resuming the wrong
             # session. Costs tokens for this one turn but is always correct.
             cmd = self.build_command(model=_model, mcp_config_json=_mcp_json,
                                      extra_include_dirs=_include_dirs)
-            session['_system_prompt'] = self.with_mc_tool_protocol(
-                self._slim_system_prompt(session.get('_system_prompt') or ''))
+            session['_system_prompt'] = context
             full_prompt = _compose_respawn_prompt(
                 session, self.with_attachment_hint(message))
 
@@ -5259,7 +5260,8 @@ class GeminiRuntime(AgentRuntime):
             creationflags=_POPEN_FLAGS,
             startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
-        self._write_prompt_async(proc, full_prompt, handle.mc_session_id)
+        self._write_prompt_async(proc, full_prompt, handle.mc_session_id,
+                                 session=session, context=context)
         session['proc'] = proc
         session['status'] = 'running'
         session['process_alive'] = True
@@ -5462,6 +5464,11 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
     if env_extra:
         env.update(env_extra)
 
+    from mc.retry_budgets import apply_env
+    from mc import state
+    apply_env(runtime.name, (session_dict or {}).get('trigger_type'), env, state.CONFIG)
+    if session_dict is None:
+        session_dict = {}
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE if prompt_via_stdin else subprocess.DEVNULL,
@@ -5478,6 +5485,10 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
 
     if prompt_via_stdin:
         def _send() -> None:
+            if runtime.name in ('codex', 'qwen'):
+                from mc.resume_context import write_context_prompt
+                write_context_prompt(proc.stdin, full_prompt, session_dict, system_prompt)
+                return
             try:
                 if proc.stdin:
                     proc.stdin.write(full_prompt)
@@ -5487,8 +5498,6 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
         threading.Thread(target=_send, daemon=True,
                          name=f'{runtime.name}-stdin-{mc_session_id[:8]}').start()
 
-    if session_dict is None:
-        session_dict = {}
     session_dict.update({
         'proc': proc,
         'status': 'running',
@@ -6375,6 +6384,9 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 line = line[len(_CODEX_STDIN_BANNER):]
                 if not line:
                     continue
+            from mc.qwen_retry_wait import observe_line
+            if observe_line(session, line, _time.time()):
+                continue
             ev = runtime.parse_event(line, handle.mc_session_id)
             if ev is None:
                 # None means "this runtime declined to surface it". For a line
@@ -7307,6 +7319,8 @@ class QwenRuntime(AgentRuntime):
                         continue
                     role = 'user' if provenance == 'real_user' else 'assistant'
                     if role == 'user':
+                        from mc.resume_context import strip_resume_context
+                        text = strip_resume_context(text)
                         text = strip_injected_preamble(text)
                         if not text or is_nonuser_message(text):
                             continue
@@ -7583,7 +7597,10 @@ class QwenRuntime(AgentRuntime):
         # use this fence, but nothing explains its shape without this.
         system_prompt = self.with_mc_tool_protocol(system_prompt)
         full_prompt = task
-        if system_prompt and not resume_id:
+        if resume_id:
+            from mc.resume_context import resume_prompt
+            full_prompt = resume_prompt(system_prompt, task)
+        elif system_prompt:
             full_prompt = f"{system_prompt}\n\n---\n\n{task}"
 
         env = dict(env_extra or {})
@@ -7631,8 +7648,10 @@ class QwenRuntime(AgentRuntime):
         # the tail-replay respawn only when no id was ever captured (dispatch
         # errored before its INIT event fired).
         resume_id = session.get('provider_session_id') or ''
+        context = session.get('_system_prompt') or ''
         if resume_id:
-            full_prompt = message
+            from mc.resume_context import followup_prompt
+            full_prompt = followup_prompt(session, context, message)
         else:
             full_prompt = _compose_respawn_prompt(session, message)
         mc_sid = handle.mc_session_id
@@ -7648,6 +7667,9 @@ class QwenRuntime(AgentRuntime):
         _inject_guardrail_env('qwen', env)
         _inject_qwen_defaults_env(env)
         _pin_qwen_windows_shell(env)
+        from mc.retry_budgets import apply_env
+        from mc import state
+        apply_env('qwen', session.get('trigger_type'), env, state.CONFIG)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -7660,12 +7682,8 @@ class QwenRuntime(AgentRuntime):
         )
 
         def _send() -> None:
-            try:
-                if proc.stdin:
-                    proc.stdin.write(full_prompt)
-                    proc.stdin.close()
-            except Exception:
-                pass
+            from mc.resume_context import write_context_prompt
+            write_context_prompt(proc.stdin, full_prompt, session, context)
         threading.Thread(target=_send, daemon=True,
                          name=f'qwen-stdin-{mc_sid[:8]}').start()
         session['proc'] = proc
@@ -9478,7 +9496,10 @@ class CodexRuntime(AgentRuntime):
         # rebuilt `_system_prompt` from a bare context in between.
         system_prompt = self.with_mc_tool_protocol(system_prompt)
         full_prompt = task
-        if system_prompt and not resume_id:
+        if resume_id:
+            from mc.resume_context import resume_prompt
+            full_prompt = resume_prompt(system_prompt, task)
+        elif system_prompt:
             # AGENTS.md hierarchy is primary; prepend to task as a quick override.
             full_prompt = f"{system_prompt}\n\n---\n\n{task}"
 
@@ -9557,17 +9578,17 @@ class CodexRuntime(AgentRuntime):
         # thread id captured off this session's own `thread.started` event
         # (dispatch, or an earlier followup — see `_mode_a_reader`'s INIT
         # branch); once it exists, `codex exec resume <id>` continues that
-        # SAME thread with its full history already on disk, so the only
-        # thing this turn needs to send is the new message — no tail, no
-        # system-prompt re-injection (the resumed process already has both,
-        # exactly like Claude's `-r` doesn't need `--append-system-prompt`
-        # replayed either). Falls back to the old tail-replay respawn only
+        # SAME thread with its full history already on disk. Send the new
+        # message alone unless current instructions changed or their delivery
+        # was not recorded; native history already carries prior messages.
+        # Falls back to the old tail-replay respawn only
         # when no thread id was ever captured (e.g. dispatch's INIT event
         # never fired because the CLI errored before emitting it) — that
         # session genuinely has nothing to resume.
         resume_id = session.get('provider_session_id') or ''
         if resume_id:
-            full_prompt = message
+            from mc.resume_context import followup_prompt
+            full_prompt = followup_prompt(session, session.get('_system_prompt') or '', message)
         else:
             full_prompt = _compose_respawn_prompt(session, message)
         mc_sid = handle.mc_session_id
@@ -9611,13 +9632,11 @@ class CodexRuntime(AgentRuntime):
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
 
+        context = session.get('_system_prompt') or ''
+
         def _send() -> None:
-            try:
-                if proc.stdin:
-                    proc.stdin.write(full_prompt)
-                    proc.stdin.close()
-            except Exception:
-                pass
+            from mc.resume_context import write_context_prompt
+            write_context_prompt(proc.stdin, full_prompt, session, context)
         threading.Thread(target=_send, daemon=True,
                          name=f'codex-stdin-{mc_sid[:8]}').start()
         session['proc'] = proc

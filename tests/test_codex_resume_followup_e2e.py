@@ -142,7 +142,8 @@ def fake_codex(tmp_path, monkeypatch):
     return rt, project_path, codex_home
 
 
-def test_resumed_followup_lands_in_one_rollout_with_two_real_turns(fake_codex):
+@pytest.mark.parametrize('followup', ['fix it', 'fix it\n\n---\n\nkeep the separator'])
+def test_resumed_followup_lands_in_one_rollout_with_two_real_turns(fake_codex, followup):
     """The regression test for the rail-forking bug.
 
     Fails on the pre-fix `write_followup` (it never threads `resume_id`
@@ -166,7 +167,7 @@ def test_resumed_followup_lands_in_one_rollout_with_two_real_turns(fake_codex):
         f"session={session}")
     first_thread_id = session['provider_session_id']
 
-    rt.write_followup(handle, 'fix it')
+    rt.write_followup(handle, followup)
     _wait_until_idle(session)
 
     # ── Item 1: one conversation, not two ──────────────────────────────
@@ -185,7 +186,7 @@ def test_resumed_followup_lands_in_one_rollout_with_two_real_turns(fake_codex):
     #    blob as the task — see _strip_codex_system_prefix) ──────────────
     assert row['first_user'] == 'diagnose the failing build', row
     assert 'PERSONA AND MEMORY BLOCK' not in row['first_user'], row
-    assert row['last_user'] == 'fix it', row
+    assert row['last_user'] == followup, row
 
     # Exactly one rollout file exists — confirms no second thread/file was
     # ever created, not just that list_sessions() de-duplicated one away.

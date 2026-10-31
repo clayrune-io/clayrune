@@ -31,6 +31,31 @@ Suggested agent names are checked against global agents and agents in every
 registered project. If a name becomes taken before you save, the form asks you
 to choose a different **Goes by** name; your draft stays open.
 
+Codex, Gemini and Qwen conversations receive the current selected persona and
+project rules when resumed, while keeping their native conversation history.
+Unchanged followups send only your new message. Persona or rule changes are
+sent once; a session without a recorded delivery fingerprint after restart
+also receives current context once.
+Topic-specific memory travels alongside each new message without rebuilding
+the setup on every turn. The same behavior applies when you interrupt a turn.
+Claude can optionally render a fresh system prompt on resume through
+`claude_resume_fresh_prompt`; this is off by default pending cache-cost
+measurement. It requires Claude Code 2.1.267 or later.
+
+**Settings > Providers > Unattended retry waits** controls retry waiting for
+scheduled, workflow, dispatched and hivemind runs. Defaults are 30 minutes of
+retry wait, 120 minutes of usage-limit wait and a 5-minute recheck interval.
+Use positive whole minutes; recheck supports 1–180. Saving requires your
+dashboard passcode. Productive work gets no execution deadline.
+
+Claude uses native limits on the next launch. Qwen caps only observed capacity
+waiting in a spawned turn; waits before its first heartbeat or short sleeps can
+be unmeasured. Qwen cannot distinguish usage-limit waits or change recheck
+cadence, so its label is **PARTIAL**. The other engines are labelled
+**UNSUPPORTED**, with unverified native capabilities identified explicitly.
+Unsupported engines keep their own retry behavior and existing hang recovery.
+The same screen has the default-off fresh-Claude-prompt-on-resume toggle.
+
 ### Starter experts on the Floor
 
 A fresh install includes nine agent types. Hire Claydo from the Floor's Bench

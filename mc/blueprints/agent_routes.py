@@ -121,6 +121,7 @@ import mc.skill_scoping as _skill_scoping  # per-agent skill scoping
 import mc.agent_worktree as _agent_worktree  # per-agent worktree isolation (b264200a)
 import mc.agent_worktree_followup as _agent_worktree_followup  # MC-1081: follow-up into a removed worktree
 import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§9.6)
+from mc import native_followup_context as _native_followup_context
 import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends §9.6's split)
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
 import mc.midturn_rollover as _midturn  # mid-turn context rollover bookkeeping
@@ -1003,10 +1004,16 @@ def _context_fingerprint(project):
             h.update(f'{p}|{st.st_mtime_ns}|{st.st_size}|'.encode('utf-8', 'replace'))
         except OSError:
             h.update(f'{p}|-|'.encode('utf-8', 'replace'))
-    def listing(d):
+    def listing(d, recursive=False, markdown_only=False):
         try:
             for n in sorted(os.listdir(d)):
+                if markdown_only and not Path(n).match('*.md'):
+                    continue
                 stamp(os.path.join(d, n))
+            if recursive:
+                # Character resolution also finds nested community-pack files.
+                for path in sorted(Path(d).rglob('*.md')):
+                    stamp(str(path))
         except OSError:
             h.update(f'{d}|-|'.encode('utf-8', 'replace'))
 
@@ -1018,15 +1025,16 @@ def _context_fingerprint(project):
             # The index and the working state, which every prompt carries.
             stamp(str(mp))
             stamp(str(Path(mp).parent / 'continuity.md'))
-            # Positions are a whole class of prompt content; the dir stamp
-            # catches one being added, edited or forgotten.
-            listing(str(Path(mp).parent))
+            # All note/position/archive inputs, matching _mem_corpus's *.md
+            # scan. Retrieval's JSON/SQLite telemetry is output, not setup;
+            # stamping it would invalidate the stash on every memory search.
+            listing(str(Path(mp).parent), markdown_only=True)
     except Exception:
         pass
     if pp:
         stamp(os.path.join(pp, 'AGENT_RULES.md'))
         listing(os.path.join(pp, '.claude', 'skills'))
-        listing(os.path.join(pp, '.claude', 'agents'))
+        listing(os.path.join(pp, '.claude', 'agents'), recursive=True)
     # The wired path, not a derived one: SHARED_RULES.md is read verbatim into
     # every agent's prompt on every project, so guessing its location here would
     # silently stop noticing edits to the single most widely-injected file.
@@ -1038,7 +1046,7 @@ def _context_fingerprint(project):
         import mc.skills as _sk
         from mc import characters as _ch
         listing(str(_sk.GLOBAL_SKILLS_DIR))
-        listing(str(_ch.GLOBAL_AGENTS_DIR))
+        listing(str(_ch.GLOBAL_AGENTS_DIR), recursive=True)
     except Exception:
         pass
     # Config values that reach the prompt directly.
@@ -10452,6 +10460,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
     # all, persona included — it answered as the bare CLI.
     system_prompt = ''
     try:
+        _prompt_fp = _native_followup_context.project_fingerprint(p, _context_fingerprint, _log)
         # Context/skills must follow THIS conversation's resolved provider,
         # not the raw project seed (which can be empty or explicitly overridden).
         context_project = dict(p, provider=provider_name)
@@ -10462,6 +10471,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                                              character_skills=(character_meta or {}).get('skills') or [],
                                              source=source, job_shape=_job_shape,
                                              provider=provider_name, model=model)
+        _native_followup_context.record_build(p, session, task, _prompt_fp)
     except Exception as e:
         _log(f"[runtime-dispatch] context build failed: {e}")
 
@@ -13334,16 +13344,11 @@ def agent_followup(project_id):
             # "dispatching", we're now "running". Leaving it set would prevent
             # the Mode A SSE from closing on the NEXT terminal status.
             existing.pop('_dispatching_followup', None)
-            # Refresh the stashed system context so MEMORY / AGENT_RULES edits
-            # made mid-conversation ride along on the next per-turn respawn.
-            # The runtime re-injects existing['_system_prompt'] every followup
-            # (see _compose_respawn_prompt in agent_runtime.py).
-            if not existing.get('incognito'):
-                try:
-                    existing['_system_prompt'] = _fresh_context_for(
-                        p, existing, task=message)
-                except Exception as e:
-                    _log(f"[followup] context refresh failed: {e}")
+            # Keep setup stable across task-dependent context renders, as on
+            # Claude resumes; actual project/persona edits invalidate it.
+            _native_followup_context.refresh_stash(
+                p, existing, message, fingerprint=_context_fingerprint,
+                rebuild=_fresh_context_for, log=_log)
             try:
                 # Same tree the dispatch turn ran in (vendor-parity gap 1):
                 # `existing['_agent_cwd']` is the worktree `_dispatch_via_runtime`
@@ -13368,8 +13373,9 @@ def agent_followup(project_id):
                 )
                 message = _mode_a_token_rollover(
                     _followup_cwd, project_id, session_id, existing, session_provider, message)
+                _turn_message = _native_followup_context.message_for_turn(p, existing, message)
                 runtime.write_followup(handle, _bridge_images_for_blind_model(
-                    message, existing, provider=session_provider,
+                    _turn_message, existing, provider=session_provider,
                     model=existing.get('agent_model') or '', project_path=_followup_cwd))
             except Exception as e:
                 existing['log_lines'].append(f"[{session_provider} followup error: {e}]")
@@ -14288,13 +14294,9 @@ def agent_interrupt(project_id, *, _internal=None):
                 session['log_lines'].append(f"\n> {user_label}: {message}\n")
             _start_new_turn(session)
             session.pop('pending_followups', None)
-            # Refresh stashed context (see the followup path for rationale).
-            if not session.get('incognito'):
-                try:
-                    session['_system_prompt'] = _fresh_context_for(
-                        p, session, task=message)
-                except Exception as e:
-                    _log(f"[interrupt] context refresh failed: {e}")
+            _native_followup_context.refresh_stash(
+                p, session, message, fingerprint=_context_fingerprint,
+                rebuild=_fresh_context_for, log=_log)
             try:
                 # Same tree the dispatch turn ran in — see the followup path's
                 # identical `_followup_cwd` for why `pp` alone is wrong here.
@@ -14316,8 +14318,9 @@ def agent_interrupt(project_id, *, _internal=None):
                 )
                 message = _mode_a_token_rollover(
                     _followup_cwd, project_id, session_id, session, session_provider, message)
+                _turn_message = _native_followup_context.message_for_turn(p, session, message)
                 runtime.write_followup(handle, _bridge_images_for_blind_model(
-                    message, session, provider=session_provider,
+                    _turn_message, session, provider=session_provider,
                     model=session.get('agent_model') or '', project_path=_followup_cwd))
             except Exception as e:
                 session['log_lines'].append(f"[{session_provider} interrupt error: {e}]")
@@ -17383,6 +17386,10 @@ def _respawn_window_open(session, now):
 
 
 def _guardian_check_session(sid, session, now):
+    from mc.qwen_retry_wait import KEY as _retry_wait_key, check_session
+    if session.get(_retry_wait_key) and check_session(
+            session, now, get_manager(session['project_id']).lock, _kill_proc_background):
+        return
     status = session['status']
     proc = session.get('proc')
     mode = session.get('mode', 'A')
