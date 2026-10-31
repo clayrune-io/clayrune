@@ -33,9 +33,9 @@ try {
    window.calls=[];window.openBrowserPane=(...args)=>calls.push(args);
    window.humanProofFetch=async(url,opts)=>{window.saved={url,body:JSON.parse(opts.body)};return {ok:true,body:{ok:true,kind:info.service.makes_account?'account':undefined,connection_id:'svc-example',browser_profile:saved.body.draft.browser_profile,profile_state:'new',name:saved.body.draft.name,url:saved.body.draft.url}};};
    const ctx={live:true,channels:()=>[],api:async(method,url)=>url==='/api/browser/profiles'?{profiles:[{name:'main'}]}:{},repaint:()=>{const r=document.querySelector('#root');r.innerHTML=DeskV1ConnectWizard.html(ctx);DeskV1ConnectWizard.bind(r,ctx);}};
-   DeskV1ConnectWizard.resume(info,{service:info.service.id || info.host,type:'signin',variant:'browser-profile'},'setup');ctx.repaint();
+   DeskV1ConnectWizard.resume(info,{service:info.service.id || info.host,type:'signin',variant:info.picker.find(t=>t.id==='signin').variants[0].id},'setup');ctx.repaint();
   },types[service]);
-  assert.equal(await page.inputValue('[data-bp-profile]'),types[service].picker.flatMap(t=>t.variants).find(v=>v.id==='browser-profile').setup.default_profile);
+  assert.equal(await page.inputValue('[data-bp-profile]'),types[service].picker.flatMap(t=>t.variants).find(v=>v.id==='browser-profile')?.setup.default_profile || 'main');
   const profile=service==='example.com' && width===390?'a.'+'b'.repeat(62):'main';
   await page.fill('[data-bp-profile]',profile);
   await page.selectOption('[data-signin-method]', 'google');

@@ -1,5 +1,6 @@
 import './desk-v1-composer-duplicate.js';
 import './desk-v1-composer-media.js';
+import './desk-v1-youtube-post.js';
 // C1: text, bounded destinations, draft persistence and Review handoff. Media
 // and preview have their own later slices. No publish/approval route is used.
 import './desk-v1-composer-preview.js';
@@ -54,6 +55,7 @@ import './desk-v1-composer-preview.js';
       return ch?.platform === 'x' ? `X ${n}/280${n > 280 ? ' · over limit' : ''}` : `${ch?.label || ch?.identity || id}: ${n}`;
     }).join(' · ');
     root.querySelector('[data-composer-count]').toggleAttribute('data-failed', n > 280 && channels().accounts(mounted.camp).some((c) => c.platform === 'x' && d.selected.has(c.id)));
+    if (window.DeskV1YouTubePost.update(root, mounted.camp, d).length) root.querySelector('[data-composer-review]').disabled = true;
   }
   function check(result) { if (!result.ok) throw new Error(result.error); return result.result; }
 
@@ -91,6 +93,7 @@ import './desk-v1-composer-preview.js';
 
   async function save(camp, d, review) {
     if (d.busy) return;
+    if (review && window.DeskV1YouTubePost.selected(camp, d) && window.DeskV1YouTubePost.errors(d.text, d.fam?.assets).length) return;
     d.busy = true; d.reviewing = !!review; d.failed = false; d.status = 'Saving…'; update(d);
     try {
       await window.deskV1QueuePiece(d.id, async () => {

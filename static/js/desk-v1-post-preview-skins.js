@@ -31,7 +31,7 @@
       ${h.icons(['heart', 'message', 'send', 'bookmark'])}
       <div class="desk-v1-pv-text"><strong>${h.esc(m.name)}</strong> ${h.text(m.large ? 0 : 3)}</div>`,
 
-    youtube: (m, h) => `${h.media({ limit: 1, ratio: '16 / 9', required: 'No video attached yet.', plain: true })}
+    youtube: (m, h) => `${h.media({ limit: 1, kind: 'video', ratio: '16 / 9', required: 'YouTube needs exactly one video attachment.', plain: true })}
       <div class="desk-v1-pv-yt-title">${h.esc(m.title)}</div>
       <div class="desk-v1-pv-yt-chan">${h.mark()}<span>${h.esc(m.name || m.word)}</span></div>
       <div class="desk-v1-pv-text">${h.text(m.large ? 0 : 3)}</div>`,

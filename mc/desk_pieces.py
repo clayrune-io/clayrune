@@ -651,6 +651,11 @@ def _approval_refusals(store: dict, piece: dict, ver: dict) -> list[str]:
         problems.append('the account this version is for is not in the workspace')
     else:
         pub = desk_accounts.publish_state(acc)
+        if acc.get('capability') == 'assisted':
+            from mc.desk_assisted_post import ROUTES
+            validator = getattr(ROUTES.get(acc.get('platform')), 'validation_errors', None)
+            if validator:
+                problems.extend(validator(_effective_body(piece, ver), piece.get('assets') or []))
         if not pub['ready']:
             problems.append(f"{acc.get('label') or acc.get('identity') or acc['id']} cannot publish: {pub['reason']}")
         elif acc.get('capability') not in ('manual', 'assisted') and (piece.get('kind') == 'video' or piece.get('assets')):

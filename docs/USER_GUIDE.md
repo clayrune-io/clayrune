@@ -1518,7 +1518,38 @@ To remove a connection, open its tile and choose **Remove**, then confirm in the
 
 Your saved login stays in the Vault, and saved browser profiles remain available. Removing software also removes its server registration and managed install folder, unless another connection still uses that folder. Removing a generation engine ends its Desk connection only; Desk generation refuses to use it until you reconnect. Choose **Add service**, enter the same service and connection method, then follow Setup and Review to **Save** using the saved login. This requires your passcode and does not replace the saved credential.
 
-Every service also offers **Sign in on the website**, including YouTube and unknown web addresses. Generic browser connections save the service name, address and browser profile. They grant no execution access: Read and Post remain off. Saving a browser profile does not prove that it is signed in.
+Every service also offers website sign-in, including YouTube and unknown web addresses. Generic browser connections save the service name, address and browser profile. They grant no execution access: Read and Post remain off. Saving a browser profile does not prove that it is signed in.
+
+**YouTube campaign channel:** in Connections, connect YouTube using website sign-in,
+enter the channel identity and a named browser profile, and sign in to the correct
+YouTube channel in that profile. Save with your dashboard passcode. The account
+appears as **YouTube · identity** with **Assisted posting** and is available in
+campaign **Channels** and the post composer. The public-data YouTube MCP server
+uses an API key; it is separate from this channel account and cannot upload videos.
+An existing read-only YouTube account stays read-only until you explicitly choose
+**Allow assisted posting** in Details and enter your passcode.
+
+For a YouTube version, attach **exactly one video**. Images and text-only posts
+cannot be uploaded. In **Write**, the first line is the video title (up to 100
+characters); the remaining lines are its description (up to 5000). Surrounding
+whitespace is removed; copy is never truncated. Neither field accepts `<` or `>`.
+The composer shows these requirements, previews that title and description, and
+holds **Send to Review** until they are met. Approval also checks the requirements.
+
+After approval, open the browser pane in the account's saved profile and choose
+**Fill in on YouTube**. The passcode prompt explains that attaching the approved
+file starts an upload and may save a private draft immediately. Clayrune opens
+Studio's Create → Upload videos, attaches the single approved video, fills the
+title and description, and **stops on Details**. Finish audience, checks and
+visibility yourself, then physically press **Publish/Save**. Clayrune never presses
+either button, chooses visibility or publishes through the scheduler. Studio's
+final button may not be visible yet on Details; continue the remaining steps by
+hand. If a selector fails, the pane remains at that step for manual completion.
+The Studio selectors have not yet been verified against a signed-in live account.
+
+Limits and Studio flow: [YouTube's upload guide](https://support.google.com/youtube/answer/57407?co=GENIE.Platform%3DDesktop&hl=en).
+Direct API upload is a later phase, requiring a Google OAuth client and a fresh
+check of Google's project requirements; the installed public-data MCP is unchanged.
 
 Browser setup uses your configured shared default profile, normally **main**. Existing dotted profile names up to 64 characters are accepted; `..` is not allowed. A damaged saved profile reference or unavailable status lookup shows an unavailable status while the rest of the Connections list stays usable.
 

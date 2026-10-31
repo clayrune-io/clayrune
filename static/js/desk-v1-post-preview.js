@@ -16,7 +16,8 @@
 //
 // Input: a mouse hover (after a short delay) or keyboard focus shows the popup; a touch
 // long-press is the drag gesture (PointerDrag), so touch taps the eye button instead.
-// Window-bridged module, no `import` (ground rule 1).
+// Public API stays on window; the YouTube text mapping is a shared leaf module.
+import './desk-v1-youtube-post.js';
 (function () {
   const SEL = '[data-where-message], [data-where-version]';
   const HOVER_MS = 350;
@@ -71,9 +72,10 @@
         : '<span class="desk-v1-pv-none">No copy written yet.</span>'),
       icons: (names, labelled) => `<div class="desk-v1-pv-actions${labelled ? ' is-labelled' : ''}" aria-hidden="true">${names.map((n) => `<span>${svg(n)}</span>`).join('')}</div>`,
       media: (o) => {
-        const items = m.media.slice(0, o.limit || 1);
+        const available = o.kind ? m.media.filter((a) => a.kind === o.kind) : m.media;
+        const items = available.slice(0, o.limit || 1);
         if (!items.length) return o.required ? `<div class="desk-v1-pv-nomedia" style="aspect-ratio:${o.ratio || '16 / 9'}">${esc(o.required)}</div>` : '';
-        const more = m.media.length - items.length;
+        const more = available.length - items.length;
         const one = (a) => (a.kind === 'video' && a.play
           ? `<video src="${esc(a.play)}" preload="metadata" muted playsinline ${large ? 'controls' : ''}></video>${large ? '' : '<span class="desk-v1-pv-play" aria-hidden="true">▶</span>'}`
           : `<img src="${esc(a.src || '')}" alt="${esc(a.title)}">`);
@@ -83,6 +85,10 @@
   }
 
   function cardHTML(m, large, cutLine) {
+    if (m.platform === 'youtube') {
+      const fields = window.DeskV1YouTubePost.fields(m.body);
+      m = { ...m, title: fields.title, body: fields.description };
+    }
     return `<article class="desk-v1-pv-card${large ? ' is-large' : ''}" data-pv-platform="${esc(m.platform || 'plain')}">${window.DeskV1PostPreviewSkins.render({ ...m, large }, helpers(m, large, cutLine))}</article>`;
   }
 
