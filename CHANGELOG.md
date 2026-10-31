@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-31] - Deliver current instructions on native resume (BUILTINS-2)
+
+- Codex, Gemini and Qwen cold and warm resumes send current persona/rules while keeping the native conversation ID. Saved-message display strips the reference envelope.
+- Added opt-in `claude_resume_fresh_prompt` (default off) at the shared Claude launch boundary to pass `--system-prompt-snapshot off` on resume. The unattended fence gate remains in force. Cache-cost measurement is documented and unrun; branch candidate only.
+
 ## [2026-10-30] - Make the Desk map Resume smoke explain expired plans
 
 - The map smoke now asserts successful Resume and expired-end refusal at selectable 1440/390 widths on its own ephemeral loopback server. The original selector timeout came from an expired fixture; C6 already supplied a future date on the current base. Product Pause/Resume behavior is unchanged.

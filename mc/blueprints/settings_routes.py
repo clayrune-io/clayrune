@@ -301,6 +301,7 @@ _CONFIG_EDITABLE_KEYS = {
     # alternate character mappings are human-owned install data.
     'engine_pace_enabled', 'engine_pace_margin_points',
     'engine_pace_ceiling_percent', 'engine_pace_alternates',
+    'claude_resume_fresh_prompt',
 }
 
 # Respawn-trigger ("Tier-1") settings: baked into the spawn (CLI flags or the
@@ -326,6 +327,7 @@ _RESPAWN_TRIGGER_KEYS = {
     # --include-partial-messages is a launch flag, so a live session only starts
     # (or stops) emitting stream_event after a respawn.
     'activity_states_enabled',
+    'claude_resume_fresh_prompt',
     # System-prompt directive — rides in the context the sticky respawn rebuilds.
     'brief_replies_always_enabled',
     # Same: the emoji permission line rides in the context the respawn rebuilds.

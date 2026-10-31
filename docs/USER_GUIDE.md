@@ -31,6 +31,12 @@ Suggested agent names are checked against global agents and agents in every
 registered project. If a name becomes taken before you save, the form asks you
 to choose a different **Goes by** name; your draft stays open.
 
+Codex, Gemini and Qwen conversations receive the current selected persona and
+project rules when resumed, while keeping their native conversation history.
+Claude can optionally render a fresh system prompt on resume through
+`claude_resume_fresh_prompt`; this is off by default pending cache-cost
+measurement. It requires Claude Code 2.1.267 or later.
+
 ### Starter experts on the Floor
 
 A fresh install includes nine agent types. Hire Claydo from the Floor's Bench

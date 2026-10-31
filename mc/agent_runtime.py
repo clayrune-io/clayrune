@@ -504,7 +504,8 @@ _LEADING_INJECTED_RE = re.compile(
 
 def strip_injected_preamble(text: str) -> str:
     """Remove MC-injected agent-facing content from a user-message string."""
-    out = _INJECTED_PREAMBLE_RE.sub('', text or '').strip()
+    from mc.resume_context import strip_resume_context
+    out = _INJECTED_PREAMBLE_RE.sub('', strip_resume_context(text or '')).strip()
     for _ in range(12):  # each pass peels one leading block; bounded, not a loop risk
         nxt = _LEADING_INJECTED_RE.sub('', out, count=1)
         if nxt == out:
@@ -703,6 +704,10 @@ def _strip_codex_system_prefix(text: str) -> str:
     keeping only the real user message that was appended after it — see
     `_CODEX_DISPATCH_SEP_RE` above. A no-op when the separator isn't present.
     """
+    from mc.resume_context import strip_resume_context
+    clean = strip_resume_context(text)
+    if clean != text:
+        return clean
     matches = list(_CODEX_DISPATCH_SEP_RE.finditer(text))
     if matches:
         return text[matches[-1].end():].strip()
@@ -4736,15 +4741,8 @@ class GeminiRuntime(AgentRuntime):
             self._slim_system_prompt(system_prompt))
         task_text = self.with_attachment_hint(task)
         if resume_id:
-            # Cold resume (W4, MC-947): `resume_id` here is gemini's OWN
-            # session id, supplied by a caller reviving a dead conversation
-            # after a restart (`_revive_non_claude_from_agent_log`), now that
-            # gemini is in `_COLD_RESUMABLE_PROVIDERS`. `--resume` carries the
-            # full prior turn server-side (mirrors `write_followup`'s own
-            # resumed branch) — re-pasting the whole system prompt here would
-            # both waste tokens and duplicate context the resumed session
-            # already has.
-            full_prompt = f"{MC_TOOL_PROTOCOL_PROMPT}\n\n---\n\n{task_text}"
+            from mc.resume_context import resume_prompt
+            full_prompt = resume_prompt(slim_prompt, task_text)
         else:
             # Label the boundary explicitly. Everything above is reference
             # setup; the part below is the ONLY thing to act on. Without this
@@ -5206,11 +5204,8 @@ class GeminiRuntime(AgentRuntime):
         # `latest` re-opens whatever gemini session is newest in the project
         # dir, which after prior runs is a stale, unrelated conversation that
         # then gets continued by mistake (the "phantom task" bug). Resuming
-        # carries the whole conversation server-side, so the followup sends
-        # only the new message — not the 16 KB context blob the old respawn
-        # path re-pasted every turn (the token burn — Gemini has no prompt
-        # cache). The ~1 KB MC Tool Protocol is re-sent so the agent never
-        # loses the ability to ask questions deep into a conversation.
+        # carries conversation history. Current persona/rules still need to
+        # be sent: the saved history may contain an older Clayrune context.
         # Generic `provider_session_id` (W4, MC-947) — not a gemini-private
         # key — so the same id this dispatch/revive path writes and reads
         # elsewhere (`_runtime_note_init`, `_revive_non_claude_from_agent_log`)
@@ -5233,8 +5228,10 @@ class GeminiRuntime(AgentRuntime):
             cmd = self.build_command(model=_model, resume_id=gemini_sid,
                                      mcp_config_json=_mcp_json,
                                      extra_include_dirs=_include_dirs)
-            full_prompt = (f"{MC_TOOL_PROTOCOL_PROMPT}\n\n---\n\n"
-                           f"{self.with_attachment_hint(message)}")
+            from mc.resume_context import resume_prompt
+            full_prompt = resume_prompt(self.with_mc_tool_protocol(
+                self._slim_system_prompt(session.get('_system_prompt') or '')),
+                self.with_attachment_hint(message))
         else:
             # No id captured (session predates this fix, or init never landed)
             # — re-paste context rather than risk `latest` resuming the wrong
@@ -7583,7 +7580,10 @@ class QwenRuntime(AgentRuntime):
         # use this fence, but nothing explains its shape without this.
         system_prompt = self.with_mc_tool_protocol(system_prompt)
         full_prompt = task
-        if system_prompt and not resume_id:
+        if resume_id:
+            from mc.resume_context import resume_prompt
+            full_prompt = resume_prompt(system_prompt, task)
+        elif system_prompt:
             full_prompt = f"{system_prompt}\n\n---\n\n{task}"
 
         env = dict(env_extra or {})
@@ -7632,7 +7632,8 @@ class QwenRuntime(AgentRuntime):
         # errored before its INIT event fired).
         resume_id = session.get('provider_session_id') or ''
         if resume_id:
-            full_prompt = message
+            from mc.resume_context import resume_prompt
+            full_prompt = resume_prompt(session.get('_system_prompt') or '', message)
         else:
             full_prompt = _compose_respawn_prompt(session, message)
         mc_sid = handle.mc_session_id
@@ -9478,7 +9479,10 @@ class CodexRuntime(AgentRuntime):
         # rebuilt `_system_prompt` from a bare context in between.
         system_prompt = self.with_mc_tool_protocol(system_prompt)
         full_prompt = task
-        if system_prompt and not resume_id:
+        if resume_id:
+            from mc.resume_context import resume_prompt
+            full_prompt = resume_prompt(system_prompt, task)
+        elif system_prompt:
             # AGENTS.md hierarchy is primary; prepend to task as a quick override.
             full_prompt = f"{system_prompt}\n\n---\n\n{task}"
 
@@ -9558,16 +9562,16 @@ class CodexRuntime(AgentRuntime):
         # (dispatch, or an earlier followup — see `_mode_a_reader`'s INIT
         # branch); once it exists, `codex exec resume <id>` continues that
         # SAME thread with its full history already on disk, so the only
-        # thing this turn needs to send is the new message — no tail, no
-        # system-prompt re-injection (the resumed process already has both,
-        # exactly like Claude's `-r` doesn't need `--append-system-prompt`
-        # replayed either). Falls back to the old tail-replay respawn only
+        # turn sends current instructions plus the new message, without a
+        # prior-turn excerpt: native history already carries prior messages.
+        # Falls back to the old tail-replay respawn only
         # when no thread id was ever captured (e.g. dispatch's INIT event
         # never fired because the CLI errored before emitting it) — that
         # session genuinely has nothing to resume.
         resume_id = session.get('provider_session_id') or ''
         if resume_id:
-            full_prompt = message
+            from mc.resume_context import resume_prompt
+            full_prompt = resume_prompt(session.get('_system_prompt') or '', message)
         else:
             full_prompt = _compose_respawn_prompt(session, message)
         mc_sid = handle.mc_session_id

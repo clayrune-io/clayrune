@@ -27,6 +27,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from mc.provider_env_scope import scope_claude_env
+from mc import claude_resume_snapshot, state
 
 # Read by steward/fence.py `_should_arm_for_unattended_trigger` (the hook runs in
 # the Claude child's environment, so this is the one channel that needs no server).
@@ -86,6 +87,7 @@ def launch_cmd(cmd: List[str], trigger_type: Optional[str],
     on a CLI that supports `onFailure` the `--settings` file is swapped for one
     whose fence entry blocks when the hook cannot run. `cwd` is the child's
     working directory (pass the Popen `cwd=`). See mc/fence_fail_closed.py."""
+    cmd = claude_resume_snapshot.launch_args(cmd, state.CONFIG)
     if (trigger_type or '') not in UNATTENDED_TRIGGER_TYPES or not _fence_enabled():
         return cmd
     from mc import fence_fail_closed
