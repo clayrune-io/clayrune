@@ -38,6 +38,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from mc import desk as _desk
+from mc import desk_piece_names as _names
 from mc.core import _log, now_iso
 from mc.desk_media_formats import MEDIA_FORMAT_ERROR, VIDEO_EXTS
 
@@ -258,6 +259,7 @@ def v1_piece(piece: dict) -> dict:
     out = {
         'id': piece['id'], 'campaignId': piece.get('campaign_id'), 'projectId': piece.get('project_id'),
         'kind': piece.get('kind'), 'title': piece.get('title') or '',
+        'defaultTitle': piece.get('default_title') or None,
         'body': piece.get('body') or '', 'wordCount': piece.get('word_count'),
         'source': piece.get('source'), 'createdAt': piece.get('created_at'),
         'updatedAt': piece.get('updated_at'),
@@ -373,7 +375,7 @@ def create_piece(campaign_id: str, kind: str, title: str = '', *, piece_id: str 
         raise PieceError(f'kind must be one of {", ".join(PIECE_KINDS)}')
     if piece_id is not None and not (isinstance(piece_id, str) and _CLIENT_ID.match(piece_id)):
         raise PieceError('piece id must be 1-80 letters, digits, - or _')
-    title = _clean_text(title, MAX_TITLE, 'title') or f'New {kind}'
+    title = _clean_text(title, MAX_TITLE, 'title')
     body = _clean_text(body, MAX_BODY, 'body')
     word_count = _clean_word_count(word_count)
     source = _clean_source(source)
@@ -385,6 +387,11 @@ def create_piece(campaign_id: str, kind: str, title: str = '', *, piece_id: str 
         if piece_id is not None and piece_id in pieces:
             raise PieceError('a piece with that id already exists', 409)
         now = now_iso()
+        # An unnamed piece gets Video1, Video2, ... (the server owns the name; see
+        # mc/desk_piece_names.py). The old client placeholder `New <kind>` counts as unnamed.
+        serial = None
+        if _names.is_placeholder(title, kind):
+            serial = title = _names.next_serial(pieces, campaign_id, kind)
         piece = {
             'id': piece_id or _desk._new_id('piece'), 'campaign_id': campaign_id,
             'project_id': camp.get('project_id'), 'kind': kind, 'title': title,
@@ -392,6 +399,8 @@ def create_piece(campaign_id: str, kind: str, title: str = '', *, piece_id: str 
             'assets': [], 'claims': claims, 'versions': [], 'draft_status': None,
             'created_at': now, 'updated_at': now,
         }
+        if serial:
+            piece['default_title'] = serial
         pieces[piece['id']] = piece
         _desk._write_store(store)
         return v1_piece(piece)

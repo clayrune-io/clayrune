@@ -50,7 +50,8 @@ async function boot(browser, width, live = true) {
       if (control.delay) await new Promise((r) => setTimeout(r, control.delay));
       if (control.fail && control.fail(path, body)) { control.fail = null; return json({ error: 'injected refusal' }, 409); }
       if (path === '/api/desk/pieces' && method === 'POST') {
-        const f = { id: body.id, campaignId: body.campaign_id, kind: body.kind, title: body.title, body: body.body, assets: [], versions: [] };
+        const f = { id: body.id, campaignId: body.campaign_id, kind: body.kind, title: body.title || 'Post' + (1 + fx.families.filter((p) => p.campaignId === body.campaign_id && p.kind === body.kind).length), body: body.body, assets: [], versions: [] };
+        assert(!('title' in body), 'the client never sends a placeholder title: the server names the post');
         assert(!fx.families.some((p) => p.id === f.id), 'create id is unique');
         fx.families.push(f); return json(f);
       }

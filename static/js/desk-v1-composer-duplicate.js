@@ -18,7 +18,7 @@
       body: v.body || '', format: v.format, approved: null, claimsState: {},
       ...(v.claims ? { claims: v.claims.map((c) => ({ ...copy(c), text: c.original || c.text, verdict: c.source ? 'ok' : 'blocked' })) } : {}) }));
     return { id, campaignId: campaign.id, projectId: campaign.projectId, kind: 'post',
-      title: (source.title || 'New post').slice(0, 193) + ' (copy)', body: source.body || '',
+      title: (source.title || 'Untitled post').slice(0, 193) + ' (copy)', body: source.body || '',
       assets: (source.assets || []).map((a) => ({ ...copy(a), id: 'asset-' + uid() })),
       versions, draft: { status: 'drafting' } };
   }

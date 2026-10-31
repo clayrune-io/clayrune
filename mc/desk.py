@@ -280,6 +280,8 @@ def _migrate_store(data: dict) -> dict:
     for cid, camp in list(campaigns.items()):
         campaigns[cid] = _migrate_campaign_record(camp)
     data['ledger'] = [_migrate_ledger_row(dict(row)) for row in (data.get('ledger') or [])]
+    from mc import desk_piece_names  # lazy: desk_pieces imports this module
+    desk_piece_names.backfill(data)
     playbook = data.setdefault('playbook', {})
     playbook.setdefault('findings', {})
     playbook.setdefault('rejections', [])

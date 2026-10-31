@@ -37,7 +37,7 @@ import './desk-v1-post-preview.js';
       const accounts = window.DeskV1ComposerChannels.accounts(camp).filter((c) => draft.selected.has(c.id));
       if (!accounts.some((c) => c.id === active)) active = accounts[0]?.id || null;
       const ch = accounts.find((c) => c.id === active);
-      const fam = { ...(draft.fam || {}), body: draft.text, title: draft.fam?.title || 'New post' };
+      const fam = { ...(draft.fam || {}), body: draft.text, title: draft.fam?.title || 'Untitled post' };
       const key = JSON.stringify([accounts, active, fam.body, fam.title, fam.assets]);
       if (key !== signature) {
         signature = key;

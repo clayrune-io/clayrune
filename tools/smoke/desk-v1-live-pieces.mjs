@@ -113,7 +113,10 @@ async function newPage(browser, { live, srv }) {
       });
     }
     if (path === '/api/desk/pieces' && method === 'POST') {
-      const p = { id: body.id, campaignId: body.campaign_id, kind: body.kind, title: body.title, assets: [], versions: [] };
+      // Like the server: an unnamed piece is named <Kind><n> (mc/desk_piece_names.py).
+      const serial = body.title ? null : body.kind[0].toUpperCase() + body.kind.slice(1)
+        + (1 + srv.pieces.filter((x) => x.campaignId === body.campaign_id && x.kind === body.kind).length);
+      const p = { id: body.id, campaignId: body.campaign_id, kind: body.kind, title: body.title || serial, defaultTitle: serial, assets: [], versions: [] };
       srv.pieces.push(p);
       return J(p, 201);
     }
@@ -202,11 +205,17 @@ async function createRenameRemove(browser) {
   const id1 = await addPiece(page, 'image');
   await page.waitForFunction(() => document.querySelectorAll('[data-what-create]').length === 1);
   const post = calls(srv, 'POST', /^\/api\/desk\/pieces$/);
-  (post.length === 1 && post[0].body.id === id1 && post[0].body.campaign_id === 'camp-1' && post[0].body.kind === 'image' && post[0].body.title === 'New image')
-    ? ok(`a tray click POSTs M14 with the client's id, campaign, kind and title (${id1})`) : fail('create POST: ' + JSON.stringify(post.map((r) => r.body)));
+  (post.length === 1 && post[0].body.id === id1 && post[0].body.campaign_id === 'camp-1' && post[0].body.kind === 'image' && !('title' in post[0].body))
+    ? ok(`a tray click POSTs M14 with the client's id, campaign and kind, and NO title: the server names it (${id1})`) : fail('create POST: ' + JSON.stringify(post.map((r) => r.body)));
+
+  // The card shows the name the server returned, not a client placeholder.
+  const input = page.locator(`[data-what-create][data-family-id="${id1}"] [data-what-title]`);
+  await settle(page, (i) => /^Image\d+$/.test((window.DeskV1Store.state().families.find((f) => f.id === i) || {}).title), id1);
+  const serial = srv.pieces.find((p) => p.id === id1).title;
+  (await input.inputValue()) === serial && (await famOf(page, id1)).defaultTitle === serial
+    ? ok(`the create-card takes the serial name the server returned (${serial})`) : fail('card title: ' + (await input.inputValue()));
 
   // Rename through the card's title field.
-  const input = page.locator(`[data-what-create][data-family-id="${id1}"] [data-what-title]`);
   await input.fill('Launch thread');
   // The title is optimistic; seeing it locally does not prove the queued M15
   // request has reached the server. Wait for that response before inspecting it.
@@ -218,6 +227,20 @@ async function createRenameRemove(browser) {
   const patch = calls(srv, 'PATCH', new RegExp(`^/api/desk/pieces/${id1}$`));
   (patch.length === 1 && patch[0].body.title === 'Launch thread' && srv.pieces.find((p) => p.id === id1).title === 'Launch thread')
     ? ok('a title edit PATCHes M15 {title} and the server holds it') : fail('rename PATCH: ' + JSON.stringify(patch.map((r) => r.body)));
+
+  // Clearing the box restores the serial name, never a "New image" placeholder.
+  const renamedBack = page.waitForResponse(r => r.request().method() === 'PATCH' && new URL(r.url()).pathname === `/api/desk/pieces/${id1}`);
+  await input.fill('');
+  await input.press('Tab');
+  await renamedBack;
+  await settle(page, ([i, t]) => (window.DeskV1Store.state().families.find((f) => f.id === i) || {}).title === t, [id1, serial]);
+  const patch2 = calls(srv, 'PATCH', new RegExp(`^/api/desk/pieces/${id1}$`));
+  (patch2.length === 2 && patch2[1].body.title === serial && (await input.inputValue()) === serial)
+    ? ok(`clearing the title restores the serial name (PATCH ${serial})`) : fail('clear-title PATCH: ' + JSON.stringify(patch2.map((r) => r.body)));
+  await input.fill('Launch thread');
+  const renamed2 = page.waitForResponse(r => r.request().method() === 'PATCH' && new URL(r.url()).pathname === `/api/desk/pieces/${id1}`);
+  await input.press('Tab');
+  await renamed2;
 
   // A refused discard rolls the dialog back and reports the reason.
   srv.next[`DELETE /api/desk/pieces/${id1}`] = 'this piece has a version that is sending or already sent';
