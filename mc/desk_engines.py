@@ -1941,6 +1941,8 @@ def _plan_render(d: dict, *, unattended: bool, _board: dict | None = None) -> di
     scenes = board['scenes']
     if not scenes:
         raise Refused('no_scenes', 'this storyboard has no scenes to render: add one first', 409)
+    if any((sc.get('picture') or {}).get('kind') == 'video' for sc in scenes):
+        raise Refused('local_clips_pending', 'Uploaded clip scenes can be edited here. Local clip rendering is not available yet; nothing was sent to an engine.', 409)
 
     engine_id, model_id = str(d.get('engine_id') or '').strip(), str(d.get('model_id') or '').strip()
     eng = ENGINES.get(engine_id)

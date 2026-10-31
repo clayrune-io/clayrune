@@ -405,7 +405,7 @@
     return `<div class="desk-v1-video-scene${s.edited ? ' desk-v1-video-scene-edited' : ''}" data-scene-id="${esc(s.id)}" style="flex-basis:${basis}" tabindex="0">
           ${edges && !opts.rightOnly ? `<span class="desk-v1-video-scene-edge desk-v1-video-scene-edge-l" data-trim-edge="l"${durations ? '' : ` data-scene-id="${esc(s.id)}"`}></span>` : ''}
           ${opts.rightOnly ? '<span class="desk-v1-timebar-drag" aria-hidden="true">⋮⋮</span>' : ''}
-          <div class="desk-v1-video-scene-thumb" aria-hidden="true">${s.thumb ? `<img src="${esc(s.thumb)}" alt="" draggable="false">` : ''}</div>
+          <div class="desk-v1-video-scene-thumb" aria-hidden="true">${window.DeskV1StudioClips ? window.DeskV1StudioClips.thumb(s) : (s.thumb ? `<img src="${esc(s.thumb)}" alt="" draggable="false">` : '')}</div>
           <span class="desk-v1-video-scene-label">${i + 1} &middot; ${esc(s.label)}${s.edited ? ' <span class="desk-v1-video-scene-dot">&#8226;</span>' : ''}</span>
           ${durations ? `<span class="desk-v1-video-scene-duration">${esc(s.durationSec)}s</span>` : ''}
           ${edges ? `<span class="desk-v1-video-scene-edge desk-v1-video-scene-edge-r" data-trim-edge="r"${durations ? '' : ` data-scene-id="${esc(s.id)}"`}></span>` : ''}
@@ -740,7 +740,8 @@
         const dx = x - st.startX;
         const dir = edge === 'l' ? -1 : 1;
         const deltaSec = (dx * dir) / (scale || TRIM_PX_PER_SEC);
-        scene._liveDuration = Math.min(extra && extra.maxDuration || Infinity, Math.max(1, Math.round(startDuration + deltaSec)));
+        const max = typeof extra?.maxDuration === 'function' ? extra.maxDuration(scene) : extra?.maxDuration || Infinity;
+        scene._liveDuration = Math.min(max, Math.max(1, Math.round(startDuration + deltaSec)));
         if (tile) {
           const total = detail.scenes.reduce((sum, s) => sum + (s.id === sceneId ? scene._liveDuration : s.durationSec), 0);
           tile.style.flexBasis = scale ? `${scene._liveDuration * scale}px` : (total ? (scene._liveDuration / total * 100) : 100) + '%';

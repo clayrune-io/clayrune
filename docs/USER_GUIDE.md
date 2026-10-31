@@ -1321,6 +1321,24 @@ cards, and Home's video links all open the same Studio storyboard editor.
 Studio's draft has no campaign; its optional Product and title controls stay
 available. Back returns to Studio or Posts according to where you opened it.
 
+The editor heading shows the video's own name. Click the name to rename it;
+Enter or leaving the field saves, Escape cancels, and **Undo** restores the
+previous name. Standalone Studio drafts use the same name control.
+
+When a video piece has uploaded clips and its storyboard is empty, opening it
+imports those clips as scenes in asset order. This is saved once; deleting the
+imported scenes does not bring them back on the next open. **Add picture or
+clip**, paste, and the library picker can attach a clip to a scene. Clips show
+muted first-frame thumbnails in the scene list and timeline. A new clip starts
+at its own duration; shorten it with the right grip. Unsupported clips produce
+a message before upload; an older unsupported upload remains visible for
+replacement. Browser decoding determines compatibility, without a filename
+extension list. The existing 3600-second scene limit still applies.
+
+Uploaded clip scenes are editable, but **local clip rendering is not available
+yet**. A render containing one is refused before engine pricing or submission;
+it is never sent to a paid generator. Mixed local/generated assembly is pending.
+
 The video storyboard has a horizontal **Timeline** above the scene list, both
 in a campaign and in standalone Studio. The ruler shows minutes and seconds;
 **Timeline · m:ss total** names the full length. On open it fits the video to
@@ -1337,7 +1355,7 @@ or focus that grip and use an arrow key to change it by one second. The grip
 highlights on hover and a floating m:ss badge shows the duration while dragging.
 Changing one scene moves later scenes without resizing them. Escape cancels
 an active drag.
-Drop pictures from your computer or the library chooser onto the timeline to
+Drop pictures or playable clips from your computer or the library chooser onto the timeline to
 add scenes; dropping over a tile inserts before it. **Pick from library** also
 adds a picture without dragging. **Undo** reverses these scene changes.
 

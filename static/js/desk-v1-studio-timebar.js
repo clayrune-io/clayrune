@@ -1,7 +1,11 @@
 // Studio view state only: never stored with the storyboard or changed by edits.
 // Ruler and tiles share one scroll coordinate system, without tile minimums.
 (function () {
-  const format = seconds => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+  const format = seconds => {
+    const rounded = Math.round(seconds * 100) / 100;
+    const [whole, fraction] = String(Math.round((rounded % 60) * 100) / 100).split('.');
+    return `${Math.floor(rounded / 60)}:${whole.padStart(2, '0')}${fraction ? '.' + fraction : ''}`;
+  };
   function html(tiles) {
     return `<div class="desk-v1-timebar-head">
       <div class="desk-v1-sb-timeline-title" data-timebar-title></div>

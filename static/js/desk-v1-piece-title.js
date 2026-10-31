@@ -21,18 +21,18 @@
       <span id="desk-v1-piece-name-status" class="desk-v1-piece-name-status" data-piece-name-status role="status" aria-live="polite">${esc(d ? d.status : '')}</span></div>`;
   }
 
-  function bind(el, fam, repaint) {
+  function bind(el, fam, repaint, options = {}) {
     el.dataset.pieceNameId = fam.id;
     const start = el.querySelector('[data-piece-title-edit]');
     const input = el.querySelector('[data-piece-name-input]');
     const status = el.querySelector('[data-piece-name-status]');
     if (!start && !input) return;
-    const current = () => (window.DeskV1Store.state().families || []).find((f) => f.id === fam.id) || fam;
+    const current = options.current || (() => (window.DeskV1Store.state().families || []).find((f) => f.id === fam.id) || fam);
     const refresh = () => {
-      const mounted = document.getElementById('desk-v1-piece-header');
+      const mounted = options.mounted ? options.mounted() : document.getElementById('desk-v1-piece-header');
       const target = el.isConnected ? el : mounted?.dataset.pieceNameId === fam.id ? mounted : null;
       if (!target) return;
-      if (target === el) repaint();
+      if (target === el || options.mounted) repaint();
       else window.deskV1FillPieceHeader(target, { familyId: fam.id });
       // The shell and Posy stay mounted while the piece header repaints.
       const crumb = target.closest('.desk-v1-shell')?.querySelector('.desk-v1-crumb-title');
@@ -65,11 +65,11 @@
       Object.assign(d, { text: next, status: 'Saving…', saving: true, focus: false });
       input.disabled = true;
       status.textContent = 'Saving…';
-      const patch = (title) => () => window.deskV1QueuePiece(fam.id, () =>
+      const patch = (title) => () => options.request ? options.request(title) : window.deskV1QueuePiece(fam.id, () =>
         window.DeskV1Store.api('PATCH', `/api/desk/pieces/${encodeURIComponent(fam.id)}`, { title }));
       const result = await window.DeskV1Store.write({
         label: `Renamed “${prev}”`,
-        apply: () => { current().title = next; },
+        apply: () => { current().title = next; if (options.changed) options.changed(); },
         unapply: () => { current().title = prev; },
         request: patch(next), undoRequest: patch(prev), repaint: refresh,
       });

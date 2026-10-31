@@ -117,8 +117,10 @@ def asset_kind_for(filename: str) -> str | None:
     # agree, including formats outside the explicit native-chooser hints.
     import mimetypes
     mime, _ = mimetypes.guess_type(filename or '')
-    if mime and mime.startswith('video/'):
-        return 'video'
+    # SVG is never media here: /api/serve-file serves data/uploads inline
+    # (it sits under a registered project), so an .svg would run script.
+    if mime and mime.split('/', 1)[0] in ('image', 'video') and mime != 'image/svg+xml':
+        return mime.split('/', 1)[0]
     return None
 
 
@@ -152,7 +154,8 @@ def _src_for(rel: str, kind: str) -> str | None:
     root = UPLOADS_ROOT
     if root is None or kind != 'image':
         return None
-    return '/api/serve-image?path=' + quote(str(Path(root).resolve() / rel), safe='')
+    endpoint = '/api/serve-image?path=' if Path(rel).suffix.lower() in IMAGE_EXTS else '/api/serve-file?inline=1&path='
+    return endpoint + quote(str(Path(root).resolve() / rel), safe='')
 
 
 def _play_for(rel: str, kind: str) -> str | None:
@@ -804,17 +807,25 @@ def remove_asset(piece_id: str, asset_id: str) -> dict:
         return v1_piece(piece)
 
 
-def _write_library_file(filename: str, stream, folder_name: str) -> tuple[Path, str]:
+def _write_library_file(filename: str, stream, folder_name: str, *, media_kind: str | None = None) -> tuple[Path, str]:
     """Write `stream` into the material library under `<kind>/<folder_name>/`
     and return `(dest, kind)`. Validates the type and the size while writing,
     and removes the partial file on any failure, so a refused write leaves
     nothing behind."""
-    kind = asset_kind_for(filename)
-    if kind is None:
+    kind = media_kind if media_kind is not None else asset_kind_for(filename)
+    if kind not in ('image', 'video'):
         raise PieceError(MEDIA_FORMAT_ERROR)
     stem, ext = os.path.splitext(Path(filename).name)
+    if media_kind is not None and asset_kind_for(filename) != kind:
+        # A browser-decoded upload may have no useful filename type. Keep it
+        # extensionless rather than attach a false container/codec suffix.
+        ext = ''
     safe = _SAFE_NAME.sub('_', stem).strip(' ._')[:60] or 'upload'
     folder = _uploads_root().joinpath(*LIBRARY_ROOT, kind, folder_name)
+    try:
+        folder.resolve().relative_to(_uploads_root().joinpath(*LIBRARY_ROOT, kind))
+    except ValueError:
+        raise PieceError('the material library folder points outside its root')
     folder.mkdir(parents=True, exist_ok=True)
     dest = folder / f'{safe}-{uuid.uuid4().hex[:8]}{ext.lower()}'
     cap = MAX_UPLOAD_BYTES[kind]
@@ -875,9 +886,13 @@ def save_to_library(filename: str, stream, *, title=None) -> dict:
 # -- materials (plan M22) ----------------------------------------------------------
 
 def _library_items(kind: str, folder: Path, rel_root: Path) -> list[dict]:
+    import mimetypes
     items = []
     try:
-        files = [f for f in folder.iterdir() if f.is_file() and asset_kind_for(f.name) == kind]
+        files = [f for f in folder.iterdir() if f.is_file() and (
+            asset_kind_for(f.name) == kind or
+            # extensionless browser-decoded uploads (save_asset), not OS junk
+            (not f.suffix and not f.name.startswith('.')))]
     except OSError as e:
         _log(f'[desk] material folder unreadable {folder.name}: {e}', flush=True)
         return items

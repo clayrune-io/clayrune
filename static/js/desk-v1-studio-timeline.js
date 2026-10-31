@@ -5,10 +5,10 @@
   function html(detail) {
     const scenes = detail.scenes.filter(s => !s.placeholder);
     return `${window.DeskV1StudioTimebar.html(`<div class="desk-v1-video-scenestrip desk-v1-sb-timeline" data-sb-timeline aria-label="Scene timeline. Drag to reorder; arrow keys move a scene.">
-        ${window.DeskV1VideoStrip.html(scenes, { trim: true, durations: true, rightOnly: true, pixelsPerSecond: 1 }) || '<span class="desk-v1-timeline-empty">Drop pictures here to add scenes</span>'}
+        ${window.DeskV1VideoStrip.html(scenes, { trim: true, durations: true, rightOnly: true, pixelsPerSecond: 1 }) || '<span class="desk-v1-timeline-empty">Drop pictures or clips here to add scenes</span>'}
       </div>`)}
       <button type="button" class="desk-v1-sb-editbtn" data-timeline-material>Pick from library</button>
-      <span class="desk-v1-timeline-hint">Drag ⋮⋮ to reorder. Drag the right grip to change duration. Drop pictures to add scenes.</span>`;
+      <span class="desk-v1-timeline-hint">Drag ⋮⋮ to reorder. Drag the right grip to change duration. Drop pictures or clips to add scenes.</span>`;
   }
   function wire(root, api) {
     const strip = root.querySelector('[data-sb-timeline]');
@@ -17,14 +17,17 @@
     const trim = (id, duration) => {
       const scene = api.scenes().find(s => s.id === id);
       if (!scene || scene.durationSec === duration) return;
+      duration = Math.min(duration, window.DeskV1StudioClips.maxDuration(scene));
       const prev = scene.durationSec;
       return api.command({ label: `Changed scene duration to ${duration}s`,
         do: () => { scene.durationSec = duration; api.paint(); },
         undo: () => { scene.durationSec = prev; api.paint(); } });
     };
-    const material = (it, beforeId) => {
-      const scene = { id: api.newId(), label: it.title || 'New scene', line: '', durationSec: 3,
-        picture: { path: it.path, title: it.title, kind: 'image' }, thumb: it.src || '', source: '' };
+    const material = async (it, beforeId) => {
+      const media = it.kind === 'video' ? await window.DeskV1StudioClips.fromLibrary(it)
+        : { ref: { path: it.path, title: it.title, kind: 'image', src: it.src }, durationSec: 3 };
+      const scene = { id: api.newId(), label: it.title || 'New scene', line: '', durationSec: media.durationSec,
+        picture: { ...media.ref, clipDuration: media.ref.kind === 'video' ? media.durationSec : undefined }, thumb: it.src || '', source: '' };
       const i = api.detail.scenes.findIndex(s => s.id === beforeId);
       const index = i < 0 ? api.detail.scenes.length : i;
       return api.command({ label: 'Added scene from the Material library',
@@ -34,7 +37,7 @@
     window.DeskV1VideoStrip.wire(strip, api.move, {
       trashSel: '[data-sb-trash]', onTrash: api.remove, onSelect: api.select,
       activeBodyClass: 'desk-v1-sb-drag-active', ghostClass: 'pd-ghost desk-v1-video-scene-ghost',
-      scenes: api.scenes, onTrim: trim, maxDuration: 3600,
+      scenes: api.scenes, onTrim: trim, maxDuration: window.DeskV1StudioClips.maxDuration,
       pixelsPerSecond: timebar.scale, onTrimPreview: timebar.preview,
     });
     strip.addEventListener('keydown', e => {
@@ -57,7 +60,8 @@
       root.querySelector(`[data-sb-timeline] .desk-v1-video-scene[data-scene-id="${CSS.escape(scene.id)}"]`)?.focus({ preventScroll: true });
     });
     const add = root.querySelector('[data-timeline-material]');
-    if (add) add.onclick = () => window.DeskV1LibraryPicker.open({ kinds: ['image'], returnFocus: add, onPick: it => material(it) });
+    if (add) add.onclick = () => window.DeskV1LibraryPicker.open({ kinds: ['image', 'video'], returnFocus: add,
+      onPick: it => material(it).catch(e => window.DeskV1Kit.toast(e.message || String(e))) });
     strip.addEventListener('dragover', e => { e.preventDefault(); strip.classList.add('pd-drop-hover'); });
     strip.addEventListener('dragleave', e => { if (!strip.contains(e.relatedTarget)) strip.classList.remove('pd-drop-hover'); });
     strip.addEventListener('drop', async e => {
@@ -67,13 +71,12 @@
       try {
         const files = Array.from(e.dataTransfer.files || []);
         if (files.length) {
-          if (files.some(f => !/^image\//.test(f.type))) throw new Error('Scene material must be a PNG, JPG, GIF or WebP picture.');
           await api.files(files, beforeId); return;
         }
         const raw = e.dataTransfer.getData(MATERIAL);
         if (!raw) throw new Error('Drop a picture from your computer or the Material library.');
         const item = JSON.parse(raw);
-        if (item.kind !== 'image' || !item.path) throw new Error('Scene material must be a library picture.');
+        if (!['image', 'video'].includes(item.kind) || !item.path) throw new Error('Scene material must be a library picture or clip.');
         await material(item, beforeId);
       } catch (err) { window.DeskV1Kit.toast(`Could not add scene material: ${err.message || err}`); }
     });
@@ -81,10 +84,10 @@
   // Native drag from the shared library chooser; hide the overlay while keeping
   // its source node alive until dragend (removing it cancels Chromium's drag).
   function materialDrag(node, item, overlay, close) {
-    if (item.kind !== 'image') return;
+    if (!['image', 'video'].includes(item.kind)) return;
     node.draggable = true;
     node.addEventListener('dragstart', e => {
-      e.dataTransfer.setData(MATERIAL, JSON.stringify({ kind: item.kind, path: item.path, title: item.title, src: item.src }));
+      e.dataTransfer.setData(MATERIAL, JSON.stringify({ kind: item.kind, path: item.path, title: item.title, src: item.src, play: item.play }));
       e.dataTransfer.effectAllowed = 'copy';
       setTimeout(() => { if (overlay.isConnected) { overlay.style.opacity = '0'; overlay.style.pointerEvents = 'none'; } }, 0);
     });

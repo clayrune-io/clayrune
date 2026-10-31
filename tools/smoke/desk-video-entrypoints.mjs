@@ -52,12 +52,13 @@ try {
   assert.equal(await page.locator('[data-sb-standalone]').count(), 1);
   assert.equal(await page.evaluate(() => window.__opens.at(-1)), 'openStudio');
   // Register the standalone draft, then reopen it from Recent.
-  await page.fill('[data-sc-title]', 'Standalone draft'); await page.press('[data-sc-title]', 'Tab');
+  await page.click('[data-piece-title-edit]');
+  await page.fill('[data-piece-name-input]', 'Standalone draft'); await page.press('[data-piece-name-input]', 'Enter');
   const itemId = await page.locator('[data-storyboard]').getAttribute('data-family-id');
   await page.click('.desk-v1-back');
   await page.click(`[data-studio-recent-row="${itemId}"]`);
   await editor('Studio Recent draft', true);
-  assert.equal(await page.inputValue('[data-sc-title]'), 'Standalone draft');
+  assert.equal(await page.textContent('[data-piece-title-edit]'), 'Standalone draft');
   await page.evaluate(() => window.deskV1Nav('studio-create', { kind: 'video' }));
   await editor('legacy standalone video deep link', true);
   await page.evaluate(() => window.deskV1Nav('campaign', { campaignId: 'camp-1', panel: 'what' }));

@@ -232,7 +232,7 @@
   }
   function _sceneOut(s) {
     return { id: s.id, label: s.label, line: s.line || '', duration_sec: s.durationSec, edited: !!s.edited,
-      picture: s.picture ? { path: s.picture.path, title: s.picture.title } : null };
+      picture: s.picture ? { path: s.picture.path, title: s.picture.title, kind: s.picture.kind || 'image' } : null };
   }
   // Replace what `detail` holds with the server's board (and remember its rev).
   function _sbAdopt(owner, detail, board) {
