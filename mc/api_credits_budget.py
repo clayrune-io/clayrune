@@ -33,7 +33,10 @@ ENTRIES_PER_CYCLE_CAP = 5000
 # ── price table ──────────────────────────────────────────────────────────────
 # USD per million tokens. Source: docs/API_CREDITS_BUILD_SPEC.md "Appendix:
 # price table", copied 2026-10-30 from the bundled claude-api skill
-# (shared/models.md, model-migration.md, prompt-caching.md, build 2.1.312).
+# (shared/models.md, model-migration.md, prompt-caching.md, build 2.1.312),
+# then checked 2026-10-30 against platform.claude.com/docs/en/about-claude/
+# pricing: Sonnet 5.5 cache read corrected to $0.10 (0.05x input), Opus 5
+# added ($0.50 cache read is now stated).
 # Only explicitly stated figures are listed. A model or field absent here is
 # "price unknown" and that call falls back to the subscription path; a price is
 # never guessed. Cache write is the 5-minute-TTL rate (1.25x input); phase 1
@@ -51,7 +54,7 @@ PRICE_TABLE: Dict[str, List[Dict[str, Any]]] = {
     'claude-opus-5-5': [{'up_to_prompt_tokens': None, 'input': 4.00, 'output': 20.00,
                          'cache_read': 0.20, 'cache_write': 5.00}],
     'claude-sonnet-5-5': [{'up_to_prompt_tokens': None, 'input': 2.00, 'output': 10.00,
-                           'cache_read': 0.20, 'cache_write': 2.50}],
+                           'cache_read': 0.10, 'cache_write': 2.50}],
     'claude-sonnet-5': [{'up_to_prompt_tokens': None, 'input': 2.00, 'output': 10.00,
                          'cache_read': 0.20, 'cache_write': 2.50}],
     'claude-haiku-5-5': [
@@ -60,8 +63,8 @@ PRICE_TABLE: Dict[str, List[Dict[str, Any]]] = {
         {'up_to_prompt_tokens': None, 'input': 0.50, 'output': 2.50,
          'cache_read': 0.05, 'cache_write': 0.625},
     ],
-    # claude-opus-5 is deliberately absent: $5 / $25 is stated but its
-    # cache-read price is not, so it is "unknown" and falls back.
+    'claude-opus-5': [{'up_to_prompt_tokens': None, 'input': 5.00, 'output': 25.00,
+                       'cache_read': 0.50, 'cache_write': 6.25}],
 }
 _RATE_FIELDS = ('input', 'output', 'cache_read', 'cache_write')
 
@@ -379,7 +382,7 @@ def spent_this_cycle(settings: Optional[Dict[str, Any]] = None) -> float:
 # ── halt state (credit-low / bad key) ────────────────────────────────────────
 
 def halt(reason: str, kind: str, settings: Optional[Dict[str, Any]] = None) -> None:
-    """Flip to stopped after a credit-low or 401. Sticky until the cycle changes,
+    """Flip to stopped after a credit-low, spend-limit or 401. Sticky until the cycle changes,
     the user saves settings, or a key test succeeds. One notice per cycle."""
     s = settings or load_settings()
     start, _ = cycle_bounds(_now(), s['reset_day'])

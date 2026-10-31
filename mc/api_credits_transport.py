@@ -24,6 +24,7 @@ DEFAULT_MAX_TOKENS = 8192
 
 # error_kind values
 CREDIT_LOW = 'credit_low'        # "Your credit balance is too low ..."
+SPEND_LIMIT = 'spend_limit'      # 400 "You have reached your specified API usage limits ..."
 AUTH = 'auth'                    # 401 / 403: key rejected
 RATE_LIMIT = 'rate_limit'        # 429
 SERVER = 'server'                # 5xx / 529 overloaded
@@ -35,7 +36,7 @@ TRUNCATED = 'truncated'          # stop_reason max_tokens: output is cut short
 
 # Kinds that mean "this key/org cannot be billed right now": the caller flips the
 # budget state to stopped instead of retrying on every call.
-HALTING_KINDS = frozenset({CREDIT_LOW, AUTH})
+HALTING_KINDS = frozenset({CREDIT_LOW, SPEND_LIMIT, AUTH})
 
 _KEY_SHAPE = re.compile(r'sk-ant-[A-Za-z0-9_\-]{6,}')
 
@@ -74,6 +75,11 @@ def _classify_http(status: int, message: str) -> str:
     low = message.lower()
     if 'credit balance' in low and 'too low' in low:
         return CREDIT_LOW
+    # The org's own monthly spend limit (Console > Limits). Arrives as a 400, so
+    # without this it read as BAD_REQUEST and every later call retried it.
+    if status != 429 and ('usage limit' in low or 'spend limit' in low
+                          or 'spending limit' in low):
+        return SPEND_LIMIT
     if status in (401, 403):
         return AUTH
     if status == 429:

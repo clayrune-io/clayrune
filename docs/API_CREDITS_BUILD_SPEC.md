@@ -31,8 +31,9 @@ user-set budget and stop point, and a way to measure the cost first.
 4. **Any failure falls back to the subscription path for that same call** (no
    key, vault locked, HTTP error, timeout, "credit balance too low", budget at
    stop point). A caller never sees a failure the old path would not have had.
-   "Credit balance too low" or a 401 also flips state to `stopped` with a
-   reason, and fires ONE notice per cycle (existing notification path, no
+   "Credit balance too low", the org's Console spend limit ("You have reached
+   your specified API usage limits", a 400) or a 401 also flips state to
+   `stopped` with a reason, and fires ONE notice per cycle (existing notification path, no
    email).
 5. Phase 1 covers oneshots only. Per-schedule "bill to API credits" is
    phase 2. Hiding the "Reset 5-hour session" button is out of scope.

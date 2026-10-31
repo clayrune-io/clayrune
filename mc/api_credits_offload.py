@@ -139,6 +139,8 @@ def try_offload(*, user_text: str, model: str, timeout: float,
 def _error_text(res: 'transport.TransportResult') -> str:
     if res.error_kind == transport.CREDIT_LOW:
         return 'Credit balance too low'
+    if res.error_kind == transport.SPEND_LIMIT:
+        return 'API spend limit reached: ' + (res.error_message or 'usage limit')
     if res.error_kind == transport.AUTH:
         return 'API key rejected (401)'
     return res.error_message or res.error_kind
@@ -163,7 +165,7 @@ def note_subscription_call(*, user_text: str, output_text: str, model: str) -> N
 
 def run_key_test(*, post: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
     """One human-clicked call: haiku, max_tokens 1. Returns {result, message} with
-    result in ok | credit_too_low | invalid_key | error | no_key. The tiny spend
+    result in ok | credit_too_low | spend_limit | invalid_key | error | no_key. The tiny spend
     is recorded; a pass clears a sticky stop."""
     s = budget.load_settings()
     if not s['secret_name']:
@@ -188,6 +190,11 @@ def run_key_test(*, post: Optional[Callable[..., Any]] = None) -> Dict[str, Any]
                 'message': 'The key is valid but its organization has no credit '
                            '("credit balance is too low"). Link your organization at '
                            'claude.ai Settings > Billing > API credits.'}
+    if res.error_kind == transport.SPEND_LIMIT:
+        return {'result': 'spend_limit',
+                'message': 'The key is valid but its organization has reached the '
+                           'spend limit set in the Anthropic Console (' +
+                           (res.error_message or 'usage limit') + ').'}
     if res.error_kind == transport.AUTH:
         return {'result': 'invalid_key', 'message': 'Anthropic rejected this key (401/403).'}
     return {'result': 'error', 'message': res.error_message or res.error_kind}
