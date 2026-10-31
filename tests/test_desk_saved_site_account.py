@@ -89,7 +89,7 @@ def test_failed_atomic_write_leaves_no_partial_attachment(env,monkeypatch):
     assert desk.STORE_PATH.read_bytes()==before
 
 
-@pytest.mark.parametrize('platform',['youtube','tiktok'])
+@pytest.mark.parametrize('platform',['tiktok'])
 def test_other_pane_sites_keep_their_existing_capability_contract(env,platform):
     with desk._store_lock:
         store=desk._read_store()
@@ -98,6 +98,17 @@ def test_other_pane_sites_keep_their_existing_capability_contract(env,platform):
     out=sites.attach('old-instagram',{'identity':'example'})
     rec=desk._read_store()['accounts'][out['account_id']]
     assert rec['platform']==platform and rec['capability']=='none'
+    assert 'read_via' not in rec and 'connections' not in rec
+
+
+def test_youtube_pane_attachment_has_assisted_capability(env):
+    with desk._store_lock:
+        store=desk._read_store()
+        store['services']['old-instagram']['link']='https://www.youtube.com'
+        desk._write_store(store)
+    out=sites.attach('old-instagram',{'identity':'example'})
+    rec=desk._read_store()['accounts'][out['account_id']]
+    assert rec['platform']=='youtube' and rec['capability']=='assisted'
     assert 'read_via' not in rec and 'connections' not in rec
 
 

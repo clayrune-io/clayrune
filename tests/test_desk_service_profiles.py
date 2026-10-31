@@ -51,9 +51,17 @@ def test_every_v1_row_maps_and_the_screens_see_the_old_records_unchanged():
     view = registry.v1_projection()
     assert view['blocked_domains'] == V1_GOLD['blocked_domains']
     assert view['common_options'] == V1_GOLD['common_options']
-    assert view['services'][:len(V1_GOLD['services'])] == V1_GOLD['services']       # same ids, hosts, aliases, titles, evidence text, `open`
+    v1_rows = view['services'][:len(V1_GOLD['services'])]
+    assert [s for s in v1_rows if s['id'] != 'youtube'] == [s for s in V1_GOLD['services'] if s['id'] != 'youtube']
+    # Revision 3 of profiles/youtube.json adds Studio and removes the info-only OAuth option.
+    assert next(s for s in v1_rows if s['id'] == 'youtube') == {
+        'id': 'youtube', 'label': 'YouTube', 'aliases': ['YouTube', 'You Tube'],
+        'url': 'https://www.youtube.com',
+        'hosts': ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be', 'studio.youtube.com'],
+        'options': [],
+    }
     assert [s['id'] for s in view['services'][len(V1_GOLD['services']):]] == POST_V1_IDS
-    assert sum(len(s['options']) for s in V1_GOLD['services']) == 10
+    assert sum(len(s['options']) for s in v1_rows) == 9
 
 
 def test_a_v1_file_converts_in_memory_to_the_same_screens_data():

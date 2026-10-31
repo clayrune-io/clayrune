@@ -14,7 +14,7 @@
  *                      a fallback passcode-gated POST /api/desk/connect/commit that carries that account and {flow_id, claim}.
  *   4. Both routes     an account with a Browser and an API route shows one Sign in per row.
  *   5. No mechanism    an account with no profile and no API route gets no button; a platform with no reviewed sign-in page
- *                      (YouTube) is learned on the first press (never on paint), opens nothing and shows a note instead.
+ *                      (Notion) is learned on the first press (never on paint), opens nothing and shows a note instead.
  *
  * RUN   cd tools/smoke && node desk-v1-account-signin.mjs
  */
@@ -47,7 +47,7 @@ import json, sys
 sys.path.insert(0, ${JSON.stringify(REPO_ROOT)})
 from mc.desk_connect import registry, resolve, type_view
 out = {}
-for plat in ('x', 'linkedin', 'youtube'):
+for plat in ('x', 'linkedin', 'youtube', 'notion'):
     got = resolve.resolve('https://' + plat + '.com', own_hosts=('mc.smoke.test',))
     svc = got.pop('service') or registry.lookup(got['host'])
     out['https://' + plat + '.com'] = {**got, **type_view.project_service(svc['id'] if svc else None)}
@@ -65,7 +65,9 @@ const ACCOUNTS = () => [
   // X with BOTH routes: its own API sign-in (not signed in) and a saved browser profile.
   account('acct-x', 'x', 'RanLevi15', { credentials: { oauth_profile: 'x_oauth_acct_x' }, browser_profile: 'x_ron', browser_setup: setup('x-browser', 'x_ron', 'x.com') }),
   // A platform with a saved browser profile but no reviewed browser sign-in page.
-  account('acct-yt', 'youtube', 'RonChannel', { capability: 'none', browser_profile: 'yt_ron', browser_setup: { account_kind: 'account', route_id: 'browser-profile', service: 'youtube', refs: { browser_profile: 'yt_ron', login: 'youtube.com' } } }),
+  account('acct-notion', 'notion', 'Notes', { capability: 'none', browser_profile: 'notion_notes', browser_setup: { account_kind: 'account', route_id: 'browser-profile', service: 'notion', refs: { browser_profile: 'notion_notes', login: 'notion.com' } } }),
+  // YouTube now has an assisted channel and a reviewed browser sign-in page.
+  account('acct-yt', 'youtube', 'RonChannel', { capability: 'assisted', browser_profile: 'yt_ron', browser_setup: setup('youtube-browser', 'yt_ron', 'youtube.com') }),
   // No profile and no API route at all (a hand-posted account).
   account('acct-bare', 'x', 'Bare', { capability: 'manual', publish: { ready: true, reason: null, secret: null, unattended_ok: null } }),
 ];
@@ -124,7 +126,7 @@ async function newPage(browser, srv, width, height) {
     if (path === '/api/desk/connect/status') return J({ higgsfield: { state: 'not_connected' }, x: { state: 'not_connected', app: { client_id: true }, scopes: ['tweet.read'] }, gemini: { saved: false }, openai: { saved: false } });
     if (/^\/api\/desk\/connect\/permissions\//.test(path)) return J({ policy: { state: 'legacy', scopes: [] } });
     if (/^\/api\/desk\/engagement\/coverage\//.test(path)) {
-      return J({ coverage: [{ platform: 'linkedin', via: 'pane', state: 'not_connected', reason: 'no saved browser profile' }, {platform:'x',via:'pane',state:'not_connected',reason:'the last read hit sign-in'}, {platform:'youtube',via:'pane',state:'not_connected',reason:'the last read hit sign-in'}] });
+      return J({ coverage: [{ platform: 'linkedin', via: 'pane', state: 'not_connected', reason: 'no saved browser profile' }, {platform:'x',via:'pane',state:'not_connected',reason:'the last read hit sign-in'}, {platform:'notion',via:'pane',state:'not_connected',reason:'the last read hit sign-in'}, {platform:'youtube',via:'pane',state:'not_connected',reason:'the last read hit sign-in'}] });
     }
     if (path === '/api/desk/connect/x/start-held' && method === 'POST') {
       if (!body || body.passcode !== PASSCODE) return J({ error: 'bad_passcode' }, 403);
@@ -351,17 +353,24 @@ async function run(browser, width, height) {
     const srv = makeServer();
     const { ctx, page, pageErrors } = await newPage(browser, srv, width, height);
     srv.log.length = 0;
-    await selectTile(page, 'acct-yt');
-    await page.waitForSelector('[data-conn-account="acct-yt"] [data-as-signin="browser"]', { timeout: 4000 });
+    await selectTile(page, 'acct-notion');
+    await page.waitForSelector('[data-conn-account="acct-notion"] [data-as-signin="browser"]', { timeout: 4000 });
     check(only(srv, /connect\/types/).length === 0, 'opening a card looks nothing up: the sign-in page is read only when Sign in is pressed', 'a types request went out on paint');
-    await page.click('[data-conn-account="acct-yt"] [data-as-signin="browser"]');
-    await page.waitForSelector('[data-conn-account="acct-yt"] [data-as-none]', { timeout: 4000 });
-    check((await buttons(page, 'acct-yt', '[data-as-signin]')).length === 0 && (await panes(page)).length === 0, 'a platform with no reviewed sign-in page (YouTube) opens nothing and its button gives way to a note', 'YouTube kept a Sign in or opened a pane');
-    check((await buttons(page, 'acct-yt', '[data-cs-reopen]')).length === 1, 'it still has Edit settings', 'no Edit settings on YouTube');
+    await page.click('[data-conn-account="acct-notion"] [data-as-signin="browser"]');
+    await page.waitForSelector('[data-conn-account="acct-notion"] [data-as-none]', { timeout: 4000 });
+    check((await buttons(page, 'acct-notion', '[data-as-signin]')).length === 0 && (await panes(page)).length === 0, 'a platform with no reviewed sign-in page (Notion) opens nothing and its button gives way to a note', 'Notion kept a Sign in or opened a pane');
+    check((await buttons(page, 'acct-notion', '[data-cs-reopen]')).length === 1, 'it still has Edit settings', 'no Edit settings on Notion');
     await selectTile(page, 'acct-bare');
     const bare = [(await buttons(page, 'acct-bare', '[data-as-signin]')).length, (await buttons(page, 'acct-bare', '[data-cs-reopen]')).length];
     check(bare.join() === '0,1', 'an account with no route has no Sign in and one Edit settings', 'the bare account has the wrong buttons (sign-in, edit): ' + bare.join());
     check((await panes(page)).length === 0, 'no pane was opened by looking at them', 'a pane opened on its own');
+    await selectTile(page, 'acct-yt');
+    const ytSignin = page.locator('[data-conn-account="acct-yt"] [data-as-signin="browser"]');
+    check(await ytSignin.isVisible() && (await ytSignin.textContent()).trim() === 'Sign in', 'YouTube shows its browser Sign in button');
+    await ytSignin.click();
+    await page.waitForFunction(() => window.__panes.length === 1);
+    const ytPane = (await panes(page))[0];
+    check(ytPane[0] === 'https://www.youtube.com/' && ytPane[3] === 'yt_ron', 'YouTube opens its reviewed sign-in page with its own profile', JSON.stringify(ytPane));
     check(realErrors(pageErrors).length === 0, 'no uncaught page errors', JSON.stringify(realErrors(pageErrors)));
     await ctx.close();
   }
@@ -445,11 +454,11 @@ async function run(browser, width, height) {
       await selectTile(page, 'acct-bare');
       const ready = await head(page, 'acct-bare');
       check(ready.tag === 'SPAN' && ready.text === 'Ready', 'Ready is plain text, not a button', JSON.stringify(ready));
-      await selectTile(page, 'acct-yt');
-      await page.click('[data-conn-account="acct-yt"] [data-as-signin="browser"]');
-      await page.waitForSelector('[data-conn-account="acct-yt"] [data-as-none]');
-      const yt = await head(page, 'acct-yt'), ytRow = await word(page, 'acct-yt', 'browser');
-      check(yt.tag === 'SPAN' && ytRow.tag === 'SPAN', 'a platform with no sign-in page: the word gives way to text, like the button', JSON.stringify([yt, ytRow]));
+      await selectTile(page, 'acct-notion');
+      await page.click('[data-conn-account="acct-notion"] [data-as-signin="browser"]');
+      await page.waitForSelector('[data-conn-account="acct-notion"] [data-as-none]');
+      const notion = await head(page, 'acct-notion'), notionRow = await word(page, 'acct-notion', 'browser');
+      check(notion.tag === 'SPAN' && notionRow.tag === 'SPAN', 'a platform with no sign-in page: the word gives way to text, like the button', JSON.stringify([notion, notionRow]));
       await ctx.close();
     }
     {
