@@ -168,6 +168,9 @@ function paste(page, { names = [], text = '', type = 'image/png', onSel = '' }) 
 }
 
 async function mouseDrag(page, fromSel, toSel) {
+  // Fixed-scale timelines can scroll a source tile outside the viewport when
+  // the target is revealed. Fit first so both reorder targets are hittable.
+  await page.click('[data-timebar-zoom="fit"]');
   await page.$eval(toSel, (e) => e.scrollIntoView({ block: 'nearest' }));
   const a = await (await page.$(fromSel)).boundingBox();
   const b = await (await page.$(toSel)).boundingBox();
@@ -339,6 +342,7 @@ async function phone(browser) {
   await page.waitForTimeout(250);
   const idM = await idOf(page, 'Middle');
   await clearToasts(page);
+  await page.click('[data-timebar-zoom="fit"]');
   await page.$eval(tileSel(idM), (e) => e.scrollIntoView({ block: 'center' }));
   const tile = await (await page.$(tileSel(idM))).boundingBox();
   const bin = await (await page.$('[data-sb-trash]')).boundingBox();
