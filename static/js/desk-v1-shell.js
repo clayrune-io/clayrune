@@ -517,6 +517,7 @@
         <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
           <button class="desk-v1-undo-btn" id="desk-v1-undo" type="button" data-desk-undo disabled aria-label="Undo" title="Nothing to undo"><span aria-hidden="true">&#8630;</span><span class="desk-v1-undo-text">Undo</span></button>
           <button class="modal-minimize" onclick="minimizeModal('${MODAL_ID}')" title="Minimize">&#x2015;</button>
+          <button class="modal-maximize" onclick="toggleModalMaximize('${MODAL_ID}')" title="Maximize" aria-label="Maximize">${(typeof window._maxBtnInner === 'function') ? window._maxBtnInner(false) : '&#9633;'}</button>
           <button class="modal-close" onclick="closeModalById('${MODAL_ID}')" title="Close">&#10005;</button>
         </div>
       </div>
