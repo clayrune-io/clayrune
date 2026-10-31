@@ -36,6 +36,8 @@ project rules when resumed, while keeping their native conversation history.
 Unchanged followups send only your new message. Persona or rule changes are
 sent once; a session without a recorded delivery fingerprint after restart
 also receives current context once.
+Topic-specific memory travels alongside each new message without rebuilding
+the setup on every turn. The same behavior applies when you interrupt a turn.
 Claude can optionally render a fresh system prompt on resume through
 `claude_resume_fresh_prompt`; this is off by default pending cache-cost
 measurement. It requires Claude Code 2.1.267 or later.

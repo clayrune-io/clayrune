@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-10-31] - Keep native followup context stable at the route boundary
+
+- Non-Claude followup and interrupt routes reuse their setup stash until the project fingerprint changes. Dispatch primes the fingerprint; project/global persona edits, including nested character packs, invalidate it.
+- Task-scoped memory now travels through the existing per-turn message delivery path. Retrieval telemetry no longer invalidates setup; the fingerprint retains the full Markdown corpus and final context delivery still hashes every section. Branch candidate only.
+
 ## [2026-10-31] - Avoid repeated context on native followups (BUILTINS-2)
 
 - Codex, Gemini and Qwen fingerprint delivered context and send bare messages on unchanged native followups. Rule/persona changes and missing fingerprints after restart trigger one context refresh; failed stdin delivery does not advance the fingerprint.

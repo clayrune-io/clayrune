@@ -29,9 +29,33 @@ changes. It does not infer delivery from an older vendor transcript. Gemini
 removes its exact appended protocol before slimming and appends it once again,
 so repeatedly composing unchanged context produces the same fingerprint.
 
-The routes already refresh the session's `_system_prompt` with
-`_fresh_context_for`, preserving the selected character. The bug was that the
-three runtimes omitted that refreshed value when a native resume ID existed.
+Both non-Claude followup and interrupt routes now gate `_fresh_context_for`
+on the full `_context_fingerprint(project)` versus `_system_prompt_fp`, matching
+Claude's resume staleness rule. Dispatch records the build fingerprint;
+a missing stash/fingerprint or changed project inputs rebuilds and re-stamps
+it. Fingerprint errors reuse an existing stash, and failed rebuilds retain the
+old fingerprint so a later turn retries. The original runtime-only fix was
+insufficient: unconditional route rebuilds included task-ranked sections and
+recent activity, changing the context string on each turn even without edits.
+
+The project fingerprint includes the entire Markdown memory corpus, rules,
+skill/agent listings and its existing config/development-harness inputs.
+Character files in both global and project scopes are stat-fingerprinted,
+including nested packs supported by character lookup. The memory directory
+scan matches the corpus reader's `*.md` inputs: JSON/SQLite retrieval telemetry
+is output and does not invalidate the stash. In particular, each search writes
+`delivery_stats.json`; treating it as setup would defeat the gate again.
+No rendered-context section is removed from the final delivery SHA.
+
+`mc/native_followup_context.py` owns the gate and per-message assembly.
+Task-scoped memory now reaches non-Claude followups and interrupts through
+`mc/memory_turn.py::refresh_for_turn`, prepended to the message rather than
+changing the setup stash. Successful context builds seed the existing memory
+delivery ledger; later matching notes are suppressed, while standing positions
+retain their per-turn delivery policy. Incognito skips retrieval. Recent
+activity/conversation/exploration/sibling sections remain snapshots until the
+stash is legitimately rebuilt, as with Claude's cached setup.
+
 `mc/resume_context.py` owns the envelope, fingerprint policy, delivery stamping
 and display stripping. Empty context stays empty; incognito retains only the
 existing tool protocol. Without a native thread ID, fallback still replays
@@ -87,10 +111,28 @@ fake-Codex subprocess/rollout end-to-end coverage verifies one conversation
 with real message labels. Delivery is verified; model obedience and cache cost
 are unmeasured. No merge, push or server restart is part of this branch work.
 
-Review followup verification (2026-10-31): resume/rollout subset **44 passed**,
-rc=0; adding spawn-site and guardrail integration checks gives **107 passed**,
-rc=0 (overlapping selection). The same expanded 18-file selection used previously
-**655 passed, 1 skipped, 1 xfailed**, rc=0. Pyright on resume_context,
-claude_resume_snapshot, retry_budgets, retry_capabilities, qwen_retry_wait,
-agent_runtime and launch_marker: **0 errors**, rc=0. No frontend changes were
-needed for this correction.
+`tests/test_native_followup_context_routes.py` additionally drives real Flask
+followup and interrupt routes, `_fresh_context_for`/`_build_agent_context`, the
+project fingerprint, retrieval and all three native runtime writers. Different
+messages and changing recent activity leave setup stable. Rules and persona
+body edits send one envelope, then bare messages. It covers initial dispatch
+priming, topic changes delivering new memory through the message, incognito,
+fingerprint errors and rebuild retries. Provider subprocess writes use captured
+fake pipes; context construction, fingerprints and retrieval remain real.
+Unrelated route side effects are stubbed, and the route does not receive a
+constant test `_system_prompt`.
+
+Second-review verification (2026-10-31): real-route/freshness subset **64
+passed**, rc=0; the previous 18-file selection **655 passed, 1 skipped,
+1 xfailed**, rc=0; supplementary memory/dispatch checks **199 passed**, rc=0.
+The final combined 31-file selection **854 passed, 1 skipped, 1 xfailed**,
+rc=0. This includes the original resume/rollout tests; the first review's
+runtime-only tests did not establish route-level stability.
+
+Pyright on native_followup_context, resume_context, claude_resume_snapshot,
+retry_budgets, retry_capabilities, qwen_retry_wait, agent_runtime and
+launch_marker: **0 errors**, rc=0. Including agent_routes reports **15 errors,
+rc=1**; a `de8f1510` snapshot independently reports the same 15 diagnostics
+with identical rules, messages and source statements. No new route diagnostics
+were introduced, and that unrelated typing debt remains. No frontend changes
+were needed for this correction.

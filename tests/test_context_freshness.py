@@ -62,11 +62,44 @@ def test_editing_the_rules_moves_it(env):
     assert ar._context_fingerprint(project) != before
 
 
+@pytest.mark.parametrize('scope', ['project', 'global'])
+@pytest.mark.parametrize('nested', [False, True], ids=['top-level', 'nested-pack'])
+def test_character_body_edits_move_the_fingerprint(env, monkeypatch, scope, nested):
+    from mc import characters
+    ar, project, tmp = env
+    root = (Path(project['project_path']) / '.claude' / 'agents'
+            if scope == 'project' else tmp / 'global-agents')
+    if scope == 'global':
+        monkeypatch.setattr(characters, 'GLOBAL_AGENTS_DIR', root)
+    directory = root / 'pack' / 'nested' if nested else root
+    directory.mkdir(parents=True)
+    path = directory / 'sol.md'
+    path.write_text('---\nname: sol\n---\nPERSONA_ALPHA', encoding='utf8')
+    before = ar._context_fingerprint(project)
+    path.write_text('---\nname: sol\n---\nPERSONA_BRAVO revised voice', encoding='utf8')
+    assert ar._context_fingerprint(project) != before
+    assert 'PERSONA_BRAVO' in characters.read_character(
+        scope, 'sol', project_path=project['project_path'])['body']
+
+
 def test_a_new_memory_note_moves_it(env):
     ar, project, tmp = env
     before = ar._context_fingerprint(project)
     (tmp / 'mem' / 'position_something.md').write_text('---\nname: x\n---\n',
                                                        encoding='utf-8')
+    assert ar._context_fingerprint(project) != before
+
+
+def test_memory_delivery_telemetry_does_not_invalidate_context_sources(env):
+    """Every search writes counters; the builder reads the full *.md corpus."""
+    ar, project, tmp = env
+    before = ar._context_fingerprint(project)
+    counters = tmp / 'mem' / 'delivery_stats.json'
+    counters.write_text('{"tasks": 1}', encoding='utf8')
+    assert ar._context_fingerprint(project) == before
+    counters.write_text('{"tasks": 999}', encoding='utf8')
+    assert ar._context_fingerprint(project) == before
+    (tmp / 'mem' / 'position_new.md').write_text('new constraint', encoding='utf8')
     assert ar._context_fingerprint(project) != before
 
 
