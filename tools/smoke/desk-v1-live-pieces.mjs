@@ -285,7 +285,7 @@ async function assets(browser) {
   await page.click(`[data-what-row][data-family-id="${id}"] [data-add-media]`);
   await page.waitForSelector('.desk-v1-addto-menu button', { timeout: 8000 });
   const labels = await page.$$eval('.desk-v1-addto-menu button', (els) => els.map((e) => e.textContent));
-  (labels.length === 4 && labels[0] === 'From this computer…' && labels[1] === 'Launch shots / a.png' && labels[3] === 'From your projects…') ? ok(`＋ Add media lists computer upload, library files and the project chooser: ${JSON.stringify(labels)}`) : fail('add-media menu: ' + JSON.stringify(labels));
+  (labels.length === 4 && labels[0] === 'From this computer…' && labels[1] === 'From your projects…' && labels[2] === 'Launch shots / a.png') ? ok(`＋ Add media lists computer upload and the project chooser first, then library files: ${JSON.stringify(labels)}`) : fail('add-media menu: ' + JSON.stringify(labels));
   await page.getByRole('menuitem', { name: 'Launch shots / b.png', exact: true }).click();
   await settle(page, (i) => ((window.DeskV1Store.state().families.find((f) => f.id === i) || {}).assets || []).length === 2, id);
   const lib = calls(srv, 'POST', new RegExp(`^/api/desk/pieces/${id}/assets$`));

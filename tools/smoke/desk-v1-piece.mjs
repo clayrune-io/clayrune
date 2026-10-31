@@ -166,7 +166,7 @@ async function runSectionsAndIdentity(browser) {
   await page.evaluate(() => { window.DeskV1Store.state().families.find((f) => f.id === 'fam-30-testers').kind = 'image'; window.deskV1PieceRepaint(); });
   await page.click('[data-piece-media] [data-add-media]');
   await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
-  await page.locator('.desk-v1-addto-menu button').first().click();
+  await page.locator('.desk-v1-addto-menu button').nth(2).click(); // first library folder, after the two source rows
   await page.waitForFunction(() => document.querySelectorAll('[data-piece-media] .desk-v1-what-thumb').length === 3, null, { timeout: 2000 }).catch(() => {});
   const after = await page.$$eval('[data-piece-media] .desk-v1-what-thumb', (els) => els.length);
   if (after === 3) ok('＋ Add media: a third asset lands on the piece');

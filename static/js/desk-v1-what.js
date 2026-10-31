@@ -675,6 +675,18 @@
     });
   }
 
+  // The two source rows always head the ＋ Add media menu (Ron 2026-10-31),
+  // above however many library files follow.
+  const _MEDIA_SOURCES = [
+    { id: '__computer', label: 'From this computer…' },
+    { id: '__projects', label: 'From your projects…' },
+  ];
+  function _pickMediaSource(id, fam, onDone) {
+    if (id === '__computer') { window.DeskV1LocalUpload.open(fam, (asset, file) => _addMedia(fam, asset, onDone, file)); return true; }
+    if (id === '__projects') { window.DeskV1LibraryPicker.open({ kinds: [fam.kind === 'video' ? 'video' : 'image'], onPick: (it) => _addMedia(fam, { id: 'asset-' + _uid(), kind: it.kind, title: it.title, path: it.path, src: it.src }, onDone) }); return true; }
+    return false;
+  }
+
   // ── `＋ Add media`: pick a Material library folder (rows and the piece page) ─
   // `onDone` repaints whichever surface opened it.
   function openAddMedia(triggerEl, fam, onDone) {
@@ -685,10 +697,9 @@
     const lib = _fx().materialLibrary || {};
     const isVideo = fam.kind === 'video';
     const folders = (isVideo ? lib.video : lib.image) || [];
-    const items = folders.map((m) => ({ id: m.id, label: `${m.title} (${m.files})` }));
-    items.push({ id: '__computer', label: 'From this computer…' });
+    const items = _MEDIA_SOURCES.concat(folders.map((m) => ({ id: m.id, label: `${m.title} (${m.files})` })));
     DeskV1Kit.addToMenu(triggerEl, items, (id) => {
-      if (id === '__computer') { window.DeskV1LocalUpload.open(fam, (asset, file) => _addMedia(fam, asset, onDone, file)); return; }
+      if (_pickMediaSource(id, fam, onDone)) return;
       const m = folders.find((x) => x.id === id);
       if (!m) return;
       const asset = { id: 'asset-' + _uid(), kind: isVideo ? 'video' : 'image', title: m.title, src: m.thumb };
@@ -715,9 +726,8 @@
     const lib = _fx().materialLibrary || {};
     const files = (_mats.error ? [] : ((fam.kind === 'video' ? lib.video : lib.image) || []))
       .flatMap((m) => (m.items || []).map((it) => ({ it, folder: m.title })));
-    DeskV1Kit.addToMenu(triggerEl, [{ id: '__computer', label: 'From this computer…' }].concat(files.map(({ it, folder }) => ({ id: it.path, label: `${folder} / ${it.title}` })), [{ id: '__projects', label: 'From your projects…' }]), (path) => {
-      if (path === '__computer') { window.DeskV1LocalUpload.open(fam, (asset, file) => _addMedia(fam, asset, onDone, file)); return; }
-      if (path === '__projects') { window.DeskV1LibraryPicker.open({ kinds: [fam.kind === 'video' ? 'video' : 'image'], onPick: (it) => _addMedia(fam, { id: 'asset-' + _uid(), kind: it.kind, title: it.title, path: it.path, src: it.src }, onDone) }); return; }
+    DeskV1Kit.addToMenu(triggerEl, _MEDIA_SOURCES.concat(files.map(({ it, folder }) => ({ id: it.path, label: `${folder} / ${it.title}` }))), (path) => {
+      if (_pickMediaSource(path, fam, onDone)) return;
       const hit = files.find((x) => x.it.path === path);
       if (!hit) return;
       _addMedia(fam, { id: 'asset-' + _uid(), kind: hit.it.kind, title: hit.it.title, path: hit.it.path, src: hit.it.src }, onDone);
