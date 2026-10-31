@@ -81,6 +81,16 @@ part of Clayrune.
    documented for Codex (`mc/guardrail_hooks.py:363-370`, where no config
    fixes it). On Claude Code a one-line setting does.
 
+   **CORRECTION (Dave, 2026-10-31): finding 4 is wrong.** Already shipped
+   2026-10-09 (`8bae6685`, `97c8e297`, on master): `mc/fence_fail_closed.py`
+   gives every UNATTENDED Claude launch a pre-spawn fence self-test and a
+   per-launch `--settings` copy with `onFailure: "block"` (CLI >= 2.1.295),
+   wired through `mc/launch_marker.launch_cmd` at every spawn site in
+   `mc/blueprints/agent_routes.py`. Measured on a real 2.1.295:
+   `docs/FENCE_FAIL_CLOSED_MEASUREMENT.md`. The base generator in
+   `steward/core.py` omits the key on purpose (attended launches are left
+   untouched). Recommendation 1 below is withdrawn.
+
 5. **All four rows of the README's "Bare Claude Code vs Clayrune" table are now
    contradicted by Anthropic's docs** (`README.md:141-144`). "One repo, one
    terminal": agent view and the Desktop sessions sidebar run many sessions.
