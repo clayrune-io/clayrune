@@ -106,10 +106,11 @@ tables, and existing lineage readers; no live reviewer/model call is made.
 
 Validation in this branch: 92 new tests passed (rc=0); final focused suite
 483 passed, 13 skipped (rc=0); basic pyright returned 0 errors (rc=0). The
-13 skips are the existing POSIX-shell gate checks on Windows. Full-suite
-results are pending and will be recorded before handoff. The original branch
-review gate and lineage files are unchanged; existing gate tests are included
-in the focused run.
+13 skips are the existing POSIX-shell gate checks on Windows. An initial
+full-suite process ended without an exit code and is excluded from validation.
+A new complete run is owned directly by Clayrune's durable job facility;
+its result remains pending. The original branch review gate and lineage files
+are unchanged; existing gate tests are included in the focused run.
 
 Rollback: revert the HR-3 source/tests/docs commit. Retain any runtime review
 records and provisional candidate branches. Missing evidence remains a hold;
