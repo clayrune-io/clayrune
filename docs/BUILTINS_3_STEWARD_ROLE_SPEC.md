@@ -2,8 +2,13 @@
 
 Date: 2026-10-31
 
-Status: proposed specification; product selections in section 12 await the
-dispatching owner. No implementation or live migration is included.
+Status: specification; the dispatching owner selected option A for section 12
+in the SR-1 dispatch. No live migration is included.
+
+SR-1 follow-up: the dispatching owner selected Q1 A and Q2 A. The branch-only
+[binding implementation contract](BUILTINS_3_SR1_BINDING.md) records schema,
+human write boundaries, recovery and the deliberate SR-2/SR-3 execution block.
+The remaining tickets and live migration are not implemented by SR-1.
 
 Parent: [Built-ins platform plan](BUILTINS_PLATFORM_PLAN_2026-10-31.md), item 3.
 Implement and verify this item before building item 4.
@@ -80,9 +85,8 @@ criteria. The live pilot snapshot belongs in the gitignored task journal.
 
 ## 3. Proposed data model
 
-The following is the recommended design for Q1-Q3, not an approved product
-selection. Implementers must obtain the dispatching owner's recorded choices
-before building the affected tickets.
+The following design uses the section 12 selections recorded in the dispatch.
+SR-1 implements Q1/Q2 only; lifecycle and migration belong to later tickets.
 
 ### 3.1 Schedule owns execution; project owns the charter
 
@@ -571,11 +575,13 @@ This document alone completes only the specification deliverable. It does
 not mark the role implemented, migrate a schedule, enable a cycle or authorize
 a merge, restart, push or email.
 
-## 12. Open product questions for the dispatching owner
+## 12. Product selections for the dispatching owner
 
-These are selections, not implementation discretion. Record the owner's
-answer and rationale in the task journal before dispatching dependent work.
-None was decided by this specification author.
+These are selections, not implementation discretion. The dispatching owner
+selected option A for every question in the SR-1 dispatch on 2026-10-31.
+Q1/Q2 govern SR-1; Q3-Q5 govern later tickets. The options and original
+recommendations below remain as the decision record; no selection was made
+by the specification author or the SR-1 builder.
 
 | ID | Options and consequence | Recommendation |
 |---|---|---|

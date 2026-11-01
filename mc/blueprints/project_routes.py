@@ -55,6 +55,7 @@ from mc import state
 from mc.delegation_delivery import DeliveryStore
 from mc.atomic_json import write_json_atomic
 from mc.project_safety_settings import refuse_agent_safety_write
+from mc import steward_role_writes as _role_writes
 from mc.project_routing_guard import require_human_routing_write
 from mc.core import _atomic_write_text, _log, file_type, now_iso, path_is_within, record_backlog_status_change, time_ago
 from mc.state import (
@@ -702,6 +703,7 @@ def _refuse_project_path_in_install_dir(candidate_path: str, previous_path):
 
 @bp.route('/api/project/<project_id>', methods=['POST'])
 @provider_preferences.serialized_write
+@_role_writes.project_write
 def update_project(project_id):
     data = request.get_json()
     if not data:
@@ -1023,6 +1025,7 @@ def generate_project_summary(project_id):
 
 
 @bp.route('/api/project/<project_id>', methods=['DELETE'])
+@_role_writes.project_delete
 def delete_project(project_id):
     filepath = DATA_DIR / f'{project_id}.json'
     if not filepath.exists():
@@ -1317,6 +1320,7 @@ def add_backlog_item(project_id):
 
 
 @bp.route('/api/project/<project_id>/backlog/<item_id>', methods=['PATCH'])
+@_role_writes.charter_write
 def update_backlog_item(project_id, item_id):
     data = request.get_json()
     if not data:
@@ -1534,6 +1538,7 @@ def delete_backlog_link(project_id, item_id):
 
 
 @bp.route('/api/project/<project_id>/backlog/<item_id>', methods=['DELETE'])
+@_role_writes.charter_write
 def delete_backlog_item(project_id, item_id):
     p = load_project(project_id)
     if p is None:

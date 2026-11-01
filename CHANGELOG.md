@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-31] - Protect steward role bindings (BUILTINS-3 SR-1)
+
+- Added versioned schedule-to-charter bindings with a pinned hired character, canonical journal confinement, a project pointer and one active steward assignment per project.
+- Role writes and attached charter text/status/deletion require human proof. Only the attributed owning schedule session may suspend its own wake; project and legacy controls cannot bypass the binding or remove its guards.
+- Preserved role assignments across stale timer/Run Now saves and exposed recovery errors for interrupted pointer writes. Role execution remains explicitly blocked pending SR-2/SR-3. Branch candidate only; no editor, migration, merge, push or restart.
+
 ## [2026-10-31] - Identify and schedule posts directly from When
 
 - Calendar chips and Unscheduled cards have hover/tap-info previews using the shared post renderer. The composer exposes the existing editable Name control after a draft exists.
