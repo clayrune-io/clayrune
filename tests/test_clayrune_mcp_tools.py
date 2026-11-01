@@ -22,6 +22,7 @@ ME = 'aaaaaaaaaaaa'
 OTHER = 'bbbbbbbbbbbb'
 
 IDENTITY_PATH = '/api/clayrune-mcp/identity'
+FENCE_PATH = '/api/clayrune-mcp/fence-check'
 
 
 class FakeResp:
@@ -47,6 +48,8 @@ class FakeServer:
         self.identity_reply = identity_reply or (200, {'ok': True, 'session_id': ME,
                                                        'project_id': PID, 'label': 'Tester'})
         self.routes = {}     # (method, path-suffix) -> (status, payload) | Exception
+        # Fence-check answer: manual / clear by default. Tests override it.
+        self.fence_reply = (200, {'ok': True, 'armed': False, 'blocked': False, 'reason': ''})
 
     def __call__(self, req, timeout=None):
         u = urlparse(req.full_url)
@@ -54,6 +57,8 @@ class FakeServer:
         self.requests.append((req.get_method(), u.path, parse_qs(u.query), body))
         if u.path == IDENTITY_PATH:
             status, payload = self.identity_reply
+        elif u.path == FENCE_PATH:
+            status, payload = self.fence_reply
         else:
             hit = next((v for (m, suf), v in self.routes.items()
                         if m == req.get_method() and u.path.endswith(suf)), (200, {'ok': True}))
@@ -66,7 +71,7 @@ class FakeServer:
         return FakeResp(status, payload)
 
     def action_requests(self):
-        return [r for r in self.requests if r[1] != IDENTITY_PATH]
+        return [r for r in self.requests if r[1] not in (IDENTITY_PATH, FENCE_PATH)]
 
 
 def _host(server):

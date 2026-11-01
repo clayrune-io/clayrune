@@ -137,6 +137,7 @@ from mc.delegation_transcript_reconcile import TranscriptReconciler
 from mc.blueprints.delegation_report_routes import register_routes as _register_report_routes
 import mc.desk_connect.custom_package_manifest as _custom_package_manifest  # MC-1054: detect-only file drift of approved npm MCPs
 import mc.agent_jobs as _agent_jobs  # MC-958 follow-up: engine-agnostic background command jobs
+import mc.clayrune_mcp.fence_parity as _fence_parity  # BUILTINS-7a: job route obeys the unattended fence
 import mc.session_mcp_config as _session_mcp_config  # BUILTINS-7a: first-party `clayrune` MCP server
 import mc.caller_attribution as _caller_attribution  # backlog 40260b57: who is really calling dispatch
 import mc.dispatch_lineage as _dispatch_lineage  # MC-1082: attributed caller recorded as the spawner
@@ -1832,6 +1833,7 @@ def agent_job_start(project_id, session_id, *, job_data=None, completion_hook=No
                 'until jobs can be sandboxed the same way. Run the command '
                 'directly in this turn instead.'}), 403
         default_cwd = _session_cwd(sess, pp)
+        fence_armed = job_data is None and _fence_parity.armed(sess, state.CONFIG)
 
     data = job_data if job_data is not None else (request.get_json() or {})
     command = (data.get('command') or '').strip()
@@ -1841,6 +1843,15 @@ def agent_job_start(project_id, session_id, *, job_data=None, completion_hook=No
     cwd = (data.get('cwd') or '').strip() or default_cwd
     if not cwd or not Path(cwd).is_dir():
         return jsonify({'error': 'cwd is not a directory'}), 400
+
+    if fence_armed:
+        # An unattended session's own shell is fenced; this route is a shell it
+        # reaches without a Bash hook (MCP tool, or a curl body the fence only
+        # read as text). Same classifier, same verdict, for every caller.
+        blocked, reason = _fence_parity.check_command(command, cwd, pp)
+        if blocked:
+            return jsonify({'error': f'blocked by the unattended fence: {reason}',
+                            'fence_blocked': True}), 403
 
     cap = state.CONFIG.get('background_wait_max_minutes',
                            _agent_jobs.DEFAULT_TIMEOUT_MINUTES)

@@ -10,7 +10,11 @@ adds delivery behaviour:
   * `clayrune_send_message` reports exactly what /agent/send answered
     (`queued`, `route`, HTTP status) and does not call that "delivered";
   * `clayrune_start_job` is the existing /agent/<sid>/job route, so its
-    timeout cap, incognito refusal and Codex-sandbox 403 stay authoritative.
+    timeout cap, incognito refusal, Codex-sandbox 403 and (for unattended
+    sessions) its fence check stay authoritative;
+  * `clayrune_send_message` / `clayrune_dispatch_agent` first ask the server
+    whether the unattended fence would block that text sent the curl way
+    (`/api/clayrune-mcp/fence-check`; see `fence_parity.py`) and refuse if so.
 
 Identity: the project is fixed at launch (`Gateway.project_id`). The calling
 SESSION is never an argument. Mutating / owner-scoped tools ask the server
@@ -145,6 +149,24 @@ class Gateway:
                             {'outcome': 'not_sent'})
         return Caller(sid, str(data.get('label') or sid[:8]))
 
+    def require_fence_clear(self, action: str, text: str, target: str = '') -> None:
+        """Refuse unless the server says the unattended fence would let this text
+        through the curl way. Fails closed: an unanswered or malformed check is
+        a refusal, never a pass."""
+        body: Dict[str, Any] = {'project_id': self.project_id, 'action': action, 'text': text}
+        if target:
+            body['target_session_id'] = target
+        reply = self.request('POST', '/api/clayrune-mcp/fence-check', body=body,
+                             timeout=IDENTITY_TIMEOUT_S)
+        data = reply.data if isinstance(reply.data, dict) else {}
+        if reply.status != 200 or data.get('ok') is not True or 'blocked' not in data:
+            raise ToolError('refused: the unattended-fence check could not be completed '
+                            f'(HTTP {reply.status}); nothing was sent.', {'outcome': 'not_sent'})
+        if data.get('blocked'):
+            raise ToolError('refused by the unattended fence: ' + str(data.get('reason') or 'blocked')
+                            + '. The same text sent with curl would be blocked too; nothing was sent.',
+                            {'outcome': 'not_sent', 'fence_blocked': True})
+
 
 # ── argument validation ──────────────────────────────────────────────────────
 
@@ -252,6 +274,7 @@ def _send_message(gw: Gateway, args: Dict[str, Any]) -> Dict[str, Any]:
     target = args['target_session_id']
     if target == me.session_id:
         raise ToolError('refused: a session cannot message itself')
+    gw.require_fence_clear('send_message', args['message'], target)
     body: Dict[str, Any] = {'session_id': target, 'message': args['message']}
     if args.get('request_reply', True):
         body['notify_session'] = me.session_id
@@ -268,6 +291,7 @@ def _send_message(gw: Gateway, args: Dict[str, Any]) -> Dict[str, Any]:
 
 def _dispatch_agent(gw: Gateway, args: Dict[str, Any]) -> Dict[str, Any]:
     me = gw.caller()
+    gw.require_fence_clear('dispatch_agent', args['task'])
     body: Dict[str, Any] = {'task': args['task'], 'notify_session': me.session_id}
     for key in ('character', 'provider', 'model', 'effort'):
         if args.get(key):
