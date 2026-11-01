@@ -285,6 +285,10 @@ def _load_config():
         # the cache-warmed context stays lean.
         'exploration_readback_enabled': True,
         'exploration_read_floor_topk': 2,
+        # First-party `clayrune` MCP server (BUILTINS-7a): typed cross-session
+        # messaging tools for any MCP-capable session. Added to the per-launch
+        # selection only where the user has not chosen an explicit MCP list.
+        'clayrune_mcp_enabled': True,
         # Cross-agent coordination layer — Phase 0 (awareness-only). Surfaces
         # OTHER live agents' current tasks + recently-landed commits into a
         # session's read-floor so concurrent siblings on one project stop
@@ -2347,6 +2351,8 @@ from mc.blueprints import desk_capture_routes as _bp_desk_capture  # noqa: E402
 app.register_blueprint(_bp_desk_capture.bp)
 from mc.blueprints import merge_review_routes as _bp_merge_review  # noqa: E402
 app.register_blueprint(_bp_merge_review.bp)
+from mc.blueprints import clayrune_mcp_routes as _bp_clayrune_mcp  # noqa: E402
+app.register_blueprint(_bp_clayrune_mcp.bp)
 from mc.blueprints import preserved_worktrees_routes as _bp_preserved_worktrees  # noqa: E402
 app.register_blueprint(_bp_preserved_worktrees.bp)
 

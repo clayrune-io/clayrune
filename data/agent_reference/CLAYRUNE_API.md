@@ -363,6 +363,29 @@ mutation.
 | POST | `/api/mcp/url/install` | Install from URL. |
 | DELETE | `/api/mcp/url/staged` | Drop a staged install. |
 
+### Built-in `clayrune` MCP server (cross-session messaging)
+
+A first-party stdio server (`mc/clayrune_mcp/`) added to a session's MCP set at
+launch (Claude, Gemini, Qwen; config `clayrune_mcp_enabled`, default on). Tools
+appear as `clayrune_*`. The project is fixed at launch; **your session is never
+an argument** — the server derives it from process ancestry
+(`POST /api/clayrune-mcp/identity`) and the tools refuse unless it matches. Args
+named `session_id`, `project_id`, `notify_session`, `agent` are rejected.
+A project with an explicit `enabled_mcp_servers` list gets it only if the list
+names `clayrune` (an empty list stays empty). No tool retries; a timeout says
+"outcome unknown".
+
+| Tool | Forwards to | Notes |
+|---|---|---|
+| `clayrune_list_agents` | `GET …/coord/roster` | Live sessions; `you` = your sid. |
+| `clayrune_send_message` | `POST …/agent/send` | `{target_session_id, message, request_reply=true}`; callback bound to you. Reports `queued`/`route`; not proof it was read. |
+| `clayrune_dispatch_agent` | `POST …/agent/dispatch` | `{task, character?, provider?, model?, effort?}`; you are woken with the result. |
+| `clayrune_coord_events` | `GET …/coord/events` | `{limit<=100}`; no reconcile. |
+| `clayrune_coord_publish` | `POST …/coord/publish` | `{type: intention or completion, summary, targets?, commit_sha?}`; awareness only. |
+| `clayrune_delivery_status` | `GET …/agent/delegation/status[-list]` | `{event_id}` or `{limit, offset}`; read-only. |
+| `clayrune_start_job` | `POST …/agent/<you>/job` | `{command, cwd?, timeout_minutes?, shell?}`; existing timeout cap, incognito 400, Codex-sandbox 403 apply. |
+| `clayrune_job_status` | `GET …/agent/<you>/job/<job_id>` | Your own jobs only. |
+
 ## GitHub sync (per-project)
 
 | Verb | Path | Purpose |
