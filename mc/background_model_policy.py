@@ -12,9 +12,16 @@ def automatic_model(provider: str, *, default: str = '') -> str:
     """
     if provider == 'claude' and default:
         return default
-    runtime = agent_runtime.get_runtime(provider)
-    latest = getattr(runtime, 'latest_for', None)
-    if not getattr(runtime, 'MODEL_SELECTION', True) or not callable(latest):
+    try:
+        runtime = agent_runtime.get_runtime(provider)
+        latest = getattr(runtime, 'latest_for', None)
+        if not getattr(runtime, 'MODEL_SELECTION', True) or not callable(latest):
+            return ''
+        model = latest('fast')
+    except Exception as exc:
+        # An unresolvable runtime must not break a background write
+        # (Scribe/condense); '' lets the provider pick its native model.
+        from mc.core import _log
+        _log(f'[providers] automatic background model failed for {provider}: {exc}')
         return ''
-    model = latest('fast')
     return model if isinstance(model, str) else ''
