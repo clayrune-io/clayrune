@@ -543,3 +543,17 @@ headless native workflow invocation supported by the installed CLI. If that
 cannot be demonstrated, Dave receives the exact unsupported boundary; the
 native-workflow portion remains incomplete. Ordinary multi-engine execution
 must not be presented as proof of the requested native capability.
+
+## 8. Decisions (Dave, 2026-10-31, DECIDED WITHOUT RON)
+
+Ron may overrule any of these; each is reversible before its ticket lands.
+
+| ID | Pick | Why | Reversal cost |
+|---|---|---|---|
+| Q1 | **A** — global refs only, no explicit engine fields on roster rows | One assignment authority; roster is the engine source | Additive schema change later |
+| Q2 | **A** — resolve character per attempt, fail visibly if missing, pin for the attempt | Roster edits reach new attempts; running ones stay stable; never fall back to the default persona | Add a run snapshot later if replay drift bites |
+| Q3 | **A** — keep provisional commit, mark held, stop later merges, Dave arranges fix + re-review | Preserves the exact review target; no automatic edits | Swap the hold handler for a reset |
+| Q4 | **A** — only explicit versioned roster runs get reviewer + integration outcome | No surprise reviewer spend or status change on legacy runs | Flip default once roster runs are proven |
+| Q5 | **A** — role skill + pure validator, no server-side classifier | Testable, no hidden interception or extra model calls | Add a classifier later as a separate module |
+| Q6 | **A** — independent work to hivemind; dependent follow-up held for Dave after integration | Base-pinning is its own feature | Build B as a new ticket |
+| Q7 | **A** with numbers: reviewer deadline **45 min** per review; **0** automatic replacement reviews after an uncertain launch (Dave re-launches by hand); native workflows opt-in, shared child cap **4 per run** | Bounds spend; no multiplicative fan-out (see feedback on burn rate) | Config values, change in one place |
