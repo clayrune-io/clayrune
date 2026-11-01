@@ -3,6 +3,11 @@
 Investigation only, 2026-10-31. Source baseline: `f857e759b98610ffa75081470bcaaef291dbef13`.
 No product changes, model dispatches, messages, jobs, merges, pushes, restarts or emails were performed.
 
+Follow-up: BUILTINS-7a added the first-party server at base `1123dc56`.
+[BUILTINS-7b launch wiring](BUILTINS_7B_MCP_LAUNCH.md) records the four additional
+vendor bridges, exact-selection checks, test evidence and live-validation gaps.
+The investigation below remains the historical baseline.
+
 ## Verdict
 
 **Clayrune has provider-aware HTTP coordination and delivery, but it does not expose those facilities as dedicated MCP tools to its engines.** Claude's native `ListAgents` / `SendMessage` are a separate harness facility, not MCP wrappers over Clayrune's outbox/inbox. Non-Claude sessions with permitted shell/network tools can call the HTTP API. That is not equivalent to discovering a typed messaging tool.

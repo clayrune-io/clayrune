@@ -661,6 +661,27 @@ the address and retry. **Record this screen** has not gained video recording.
 
 ---
 
+## MCP server selection
+
+Open a project's menu and choose **MCP servers** to manage its tool servers.
+Codex, OpenCode, Goose and Kiro launches now receive the project's resolved
+selection, including the built-in `clayrune` server for cross-session tools.
+An explicit selection is honoured exactly: an empty selection loads none, and
+`clayrune` loads only when selected. Without a selection, Clayrune supplies the
+global/project servers and the built-in server. The selection persists through
+follow-up turns. Aider is outside this MCP integration.
+
+Existing vendor settings and sign-ins are retained. If a CLI cannot validate the
+launch configuration or preserve the chosen set, the launch reports an error.
+Codex and Goose reject selected SSE transports; Kiro rejects a selected server's
+unsupported working-directory setting. The `clayrune_mcp_enabled` configuration
+switch can disable the built-in server. These four bridges load no MCP servers
+for incognito sessions or bundled frozen builds.
+
+The unattended launch restrictions still apply: adding MCP tools does not
+enable an engine whose steward fence has not been verified. Live tool calls
+through the four new bridges remain pending integration verification.
+
 ## Skills
 
 Skills are Anthropic-format reusable instructions (a `SKILL.md` plus

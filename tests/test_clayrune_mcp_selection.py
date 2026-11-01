@@ -138,7 +138,7 @@ def test_claude_kill_switch_removes_it_from_catalog_and_flags(routes, monkeypatc
 
 # ── wiring: Gemini / Qwen ────────────────────────────────────────────────────
 
-@pytest.mark.parametrize('provider', ['gemini', 'qwen'])
+@pytest.mark.parametrize('provider', ['gemini', 'qwen', 'codex', 'opencode', 'goose', 'kiro'])
 def test_gemini_qwen_untrimmed_set_includes_it_alongside_user_servers(routes, monkeypatch, provider):
     ar, state = routes
     from mc import mcp as mcp_mod
@@ -151,7 +151,7 @@ def test_gemini_qwen_untrimmed_set_includes_it_alongside_user_servers(routes, mo
     assert servers['mine'] == {'command': 'x'}
 
 
-@pytest.mark.parametrize('provider', ['gemini', 'qwen'])
+@pytest.mark.parametrize('provider', ['gemini', 'qwen', 'codex', 'opencode', 'goose', 'kiro'])
 def test_gemini_qwen_empty_and_excluding_selections_are_honoured(routes, monkeypatch, provider):
     ar, state = routes
     monkeypatch.setitem(state.CONFIG, 'clayrune_mcp_enabled', True)
@@ -163,7 +163,7 @@ def test_gemini_qwen_empty_and_excluding_selections_are_honoured(routes, monkeyp
     assert set(named['mcpServers']) == {'clayrune'}
 
 
-@pytest.mark.parametrize('provider', ['gemini', 'qwen'])
+@pytest.mark.parametrize('provider', ['gemini', 'qwen', 'codex', 'opencode', 'goose', 'kiro'])
 def test_gemini_qwen_kill_switch(routes, monkeypatch, provider):
     ar, state = routes
     from mc import mcp as mcp_mod
@@ -173,7 +173,7 @@ def test_gemini_qwen_kill_switch(routes, monkeypatch, provider):
     assert json.loads(ar._runtime_mcp_config_json(dict(PROJECT), provider)) == {'mcpServers': {}}
 
 
-def test_other_runtimes_are_unchanged(routes, monkeypatch):
+def test_aider_is_out_of_scope(routes, monkeypatch):
     ar, state = routes
     monkeypatch.setitem(state.CONFIG, 'clayrune_mcp_enabled', True)
-    assert ar._runtime_mcp_config_json(dict(PROJECT), 'codex') == ''
+    assert ar._runtime_mcp_config_json(dict(PROJECT), 'aider') == ''

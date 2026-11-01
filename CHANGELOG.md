@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-31] - Carry selected MCP servers into four vendor launches (BUILTINS-7b)
+
+- Codex, OpenCode, Goose and Kiro consume the resolved MCP selection on dispatch and follow-up; Codex model-refusal retries retain it too. Explicit empty selections, the built-in server switch and incognito/frozen exclusions are preserved.
+- Separate vendor modules generate launch-owned profiles, inline config, recipes or named agents without overwriting existing vendor files. Native config checks reject unintended inheritance or unsupported definitions. Existing unattended fence refusals remain authoritative.
+- Branch candidate only. Translation/runtime tests and read-only Codex configuration probes are covered; live model tool calls and installed OpenCode/Goose/Kiro validation remain unverified. No merge, push or restart.
+
 ## [2026-10-31] - Protect steward role bindings (BUILTINS-3 SR-1)
 
 - Added versioned schedule-to-charter bindings with a pinned hired character, canonical journal confinement, a project pointer and one active steward assignment per project.
