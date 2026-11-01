@@ -779,9 +779,14 @@ def _runtime_mcp_config_json(project, provider_name):
     (`mcp.collect_effective_servers_for_project`), and an opted-in set is
     converted to that shape too: both are gemini-cli-shaped consumers and
     read a bare `url` as SSE (createTransport), so Claude's
-    `{"type":"http","url"}` would connect with the wrong transport. Other
-    runtimes: unchanged."""
+    `{"type":"http","url"}` would connect with the wrong transport.
+    Codex/OpenCode/Goose/Kiro receive canonical server definitions through
+    session_mcp_launch; each translates them at its own launch boundary.
+    Aider remains unchanged."""
     resolved = _resolve_project_mcp_config(project)
+    from mc import session_mcp_launch
+    if provider_name in session_mcp_launch.VENDORS:
+        return session_mcp_launch.resolve(project or {}, resolved, state.CONFIG)
     if provider_name not in ('qwen', 'gemini'):
         return resolved or ''
     try:

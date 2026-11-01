@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-31] - Carry selected MCP servers into four vendor launches (BUILTINS-7b)
+
+- Codex, OpenCode, Goose and Kiro consume the resolved MCP selection on dispatch and follow-up; Codex model-refusal retries retain it too. Explicit empty selections, the built-in server switch and incognito/frozen exclusions are preserved.
+- Separate vendor modules generate launch-owned profiles, inline config, recipes or named agents without overwriting existing vendor files. Native config checks reject unintended inheritance or unsupported definitions. Existing unattended fence refusals remain authoritative.
+- Branch candidate only. Translation/runtime tests and read-only Codex configuration probes are covered; live model tool calls and installed OpenCode/Goose/Kiro validation remain unverified. No merge, push or restart.
+
 ## [2026-10-31] - Refuse unattended engines whose steward fence cannot load (BUILTINS-5)
 
 - Gemini and Qwen inject an armed fence adapter through per-launch settings and verify native settings loading, hook registration and allow/refuse behavior before dispatch and follow-up. Guard-load failures are visible session errors; follow-up/interrupt callers receive HTTP 409 rather than success.

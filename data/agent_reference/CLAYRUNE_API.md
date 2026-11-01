@@ -366,7 +366,8 @@ mutation.
 ### Built-in `clayrune` MCP server (cross-session messaging)
 
 A first-party stdio server (`mc/clayrune_mcp/`) added to a session's MCP set at
-launch (Claude, Gemini, Qwen; config `clayrune_mcp_enabled`, default on). Tools
+launch (Claude, Gemini, Qwen, Codex, OpenCode, Goose, Kiro;
+config `clayrune_mcp_enabled`, default on). Tools
 appear as `clayrune_*`. The project is fixed at launch; **your session is never
 an argument** — the server derives it from process ancestry
 (`POST /api/clayrune-mcp/identity`) and the tools refuse unless it matches. Args
@@ -374,6 +375,12 @@ named `session_id`, `project_id`, `notify_session`, `agent` are rejected.
 A project with an explicit `enabled_mcp_servers` list gets it only if the list
 names `clayrune` (an empty list stays empty). No tool retries; a timeout says
 "outcome unknown".
+
+Codex/OpenCode/Goose/Kiro carry the resolved selection into follow-ups and
+Codex model-refusal retries using per-launch profiles/config/recipes/agents.
+Their selection and validator contracts, native transport refusals, and pending
+live verification are in `docs/BUILTINS_7B_MCP_LAUNCH.md`. Existing unattended
+fence refusals remain in force; MCP wiring does not authorize an engine launch.
 
 | Tool | Forwards to | Notes |
 |---|---|---|

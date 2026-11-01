@@ -9457,7 +9457,10 @@ class CodexRuntime(AgentRuntime):
                  unattended_sandbox_enabled: bool = True,
                  fence_unattended_enabled: bool = True,
                  effort: str = '',
+                 mcp_config_json: str = '',
                  **_extra) -> SessionHandle:
+        if session_dict is None:
+            session_dict = {}
         if not self.resolve_binary() and not self._npx_fallback:
             raise CLINotInstalledError("codex CLI not installed — run: npm install -g @openai/codex")
 
@@ -9535,6 +9538,10 @@ class CodexRuntime(AgentRuntime):
             session_dict['_codex_last_prompt'] = full_prompt
             session_dict['_codex_last_resume'] = resume_id or ''
 
+        from mc import session_mcp_launch
+        cmd, env_extra = session_mcp_launch.prepare(
+            self.name, cmd, session=session_dict, cwd=project_path,
+            config_json=mcp_config_json, env_extra=env_extra, incognito=incognito)
         return _mode_a_dispatch(
             self, cmd, full_prompt, project_path, project_id, task,
             mc_sid, session_dict, incognito, env_extra, callbacks,
@@ -9635,12 +9642,16 @@ class CodexRuntime(AgentRuntime):
         mc_sid = handle.mc_session_id
         session['_codex_last_prompt'] = full_prompt
         session['_codex_last_resume'] = resume_id
+        from mc import session_mcp_launch
+        cmd, env = session_mcp_launch.prepare(
+            self.name, cmd, session=session, cwd=handle.project_path)
+        vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            cwd=handle.project_path,
+            cwd=handle.project_path, env=env,
             text=True, encoding='utf-8', errors='replace',
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
@@ -10179,7 +10190,10 @@ class OpenCodeRuntime(AgentRuntime):
                  session_dict: Optional[Dict[str, Any]] = None,
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
+                 mcp_config_json: str = '',
                  **_extra) -> SessionHandle:
+        if session_dict is None:
+            session_dict = {}
         vendor_fence.check_launch(self.name, session_dict)
         if not self.resolve_binary():
             raise CLINotInstalledError(
@@ -10193,6 +10207,10 @@ class OpenCodeRuntime(AgentRuntime):
         # message is given (resolveRunInput falls back to piped stdin) — no
         # argv path needed, matching gemini/codex's fix for MC-931.
         cmd = self.build_command(model=model, resume_id=resume_id or '')
+        from mc import session_mcp_launch
+        cmd, env_extra = session_mcp_launch.prepare(
+            self.name, cmd, session=session_dict, cwd=project_path,
+            config_json=mcp_config_json, env_extra=env_extra, incognito=incognito)
         return _mode_a_dispatch(
             self, cmd, full_prompt, project_path, project_id, task,
             mc_sid, session_dict, incognito, env_extra, callbacks,
@@ -10215,10 +10233,14 @@ class OpenCodeRuntime(AgentRuntime):
         # see _compose_respawn_prompt) goes over stdin, not argv — same
         # reasoning as dispatch().
         cmd = self.build_command(model=self.session_model(handle))
+        from mc import session_mcp_launch
+        cmd, env = session_mcp_launch.prepare(
+            self.name, cmd, session=session, cwd=handle.project_path, prompt=full_prompt)
+        vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
         mc_sid = handle.mc_session_id
         proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, cwd=handle.project_path,
+            stderr=subprocess.STDOUT, cwd=handle.project_path, env=env,
             text=True, encoding='utf-8', errors='replace',
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
@@ -10532,7 +10554,10 @@ class GooseRuntime(AgentRuntime):
                  session_dict: Optional[Dict[str, Any]] = None,
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
+                 mcp_config_json: str = '',
                  **_extra) -> SessionHandle:
+        if session_dict is None:
+            session_dict = {}
         vendor_fence.check_launch(self.name, session_dict)
         if not self.resolve_binary():
             raise CLINotInstalledError(
@@ -10540,19 +10565,23 @@ class GooseRuntime(AgentRuntime):
                 "curl -fsSL https://github.com/aaif-goose/goose/releases/"
                 "download/stable/download_cli.sh | CONFIGURE=false bash")
         mc_sid = mc_session_id or uuid.uuid4().hex[:12]
-        cmd = self.build_command(model=model, system_prompt=system_prompt)
-        # goose's `run` has no bare positional prompt arg at all — instructions
-        # come from -t/--text, --recipe, or -i/--instructions (which docs
-        # `-i -` for stdin). Use the stdin form so the task text never sits on
-        # argv. `--system` has no such alternative (see the guard below): it
-        # is the one part of goose's invocation that a large persona payload
-        # can still blow past Windows' command-line limit on.
-        cmd.extend(['--instructions', '-'])
+        cmd = self.build_command(model=model)
+        # Selected MCP launches use a private recipe for both context and task.
+        # Legacy direct callers without a selection retain the stdin form.
+        from mc import session_mcp_launch
+        cmd, env_extra = session_mcp_launch.prepare(
+            self.name, cmd, session=session_dict, cwd=project_path,
+            config_json=mcp_config_json, env_extra=env_extra, incognito=incognito,
+            prompt=task, system_prompt=system_prompt)
+        if '--recipe' not in cmd:
+            cmd.extend(['--instructions', '-'])
+            if system_prompt:
+                cmd.extend(['--system', system_prompt])
         _guard_win_argv_length(cmd, "Goose's --system system prompt")
         return _mode_a_dispatch(
             self, cmd, task, project_path, project_id, task,
             mc_sid, session_dict, incognito, env_extra, callbacks,
-            register_process, prompt_via_stdin=True,
+            register_process, prompt_via_stdin='--recipe' not in cmd,
             system_prompt=system_prompt,
         )
 
@@ -10565,17 +10594,19 @@ class GooseRuntime(AgentRuntime):
             _kill_pid(old_proc.pid)
         full_prompt = _compose_respawn_prompt(session, message,
                                               tail_lines=20, tail_chars=3000)
-        # Mode A respawns the CLI per turn — --model must be re-stated
-        # or the chat reverts to the CLI default after turn 1. full_prompt
-        # re-embeds the dispatch-time system context every turn (see
-        # _compose_respawn_prompt) so it goes over stdin via `-i -`, same as
-        # dispatch() — no --system here, so no argv-length guard needed.
+        # Restate model and the selected MCP set on every respawn. The composed
+        # context goes into the recipe, or stdin for legacy direct callers.
         cmd = self.build_command(model=self.session_model(handle))
-        cmd.extend(['--instructions', '-'])
+        from mc import session_mcp_launch
+        cmd, env = session_mcp_launch.prepare(
+            self.name, cmd, session=session, cwd=handle.project_path, prompt=full_prompt)
+        vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
+        if '--recipe' not in cmd:
+            cmd.extend(['--instructions', '-'])
         mc_sid = handle.mc_session_id
         proc = subprocess.Popen(
-            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, cwd=handle.project_path,
+            cmd, stdin=subprocess.DEVNULL if '--recipe' in cmd else subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, cwd=handle.project_path, env=env,
             text=True, encoding='utf-8', errors='replace',
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
@@ -11174,7 +11205,10 @@ class KiroRuntime(AgentRuntime):
                  session_dict: Optional[Dict[str, Any]] = None,
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
+                 mcp_config_json: str = '',
                  **_extra) -> SessionHandle:
+        if session_dict is None:
+            session_dict = {}
         vendor_fence.check_launch(self.name, session_dict)
         if not self.resolve_binary():
             raise CLINotInstalledError(
@@ -11185,6 +11219,10 @@ class KiroRuntime(AgentRuntime):
         full_prompt = task
         if system_prompt:
             full_prompt = f"{system_prompt}\n\n---\n\n{task}"
+        from mc import session_mcp_launch
+        cmd, env_extra = session_mcp_launch.prepare(
+            self.name, cmd, session=session_dict, cwd=project_path,
+            config_json=mcp_config_json, env_extra=env_extra, incognito=incognito)
         cmd.append(full_prompt)
         # kiro-cli's headless prompt is positional-only — no --prompt-file,
         # no stdin form (piped stdin is documented as extra *context*, not a
@@ -11207,15 +11245,20 @@ class KiroRuntime(AgentRuntime):
             _kill_pid(old_proc.pid)
         full_prompt = _compose_respawn_prompt(session, message,
                                               tail_lines=20, tail_chars=3000)
-        cmd = self.build_command() + [full_prompt]
+        cmd = self.build_command()
         # Every followup re-embeds the full dispatch-time system context
         # (see _compose_respawn_prompt) with no stdin/file escape for kiro —
         # same guard as dispatch().
+        from mc import session_mcp_launch
+        cmd, env = session_mcp_launch.prepare(
+            self.name, cmd, session=session, cwd=handle.project_path, prompt=full_prompt)
+        vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
+        cmd.append(full_prompt)
         _guard_win_argv_length(cmd, "Kiro's prompt (persona + task)")
         mc_sid = handle.mc_session_id
         proc = subprocess.Popen(
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, cwd=handle.project_path,
+            stderr=subprocess.STDOUT, cwd=handle.project_path, env=env,
             text=True, encoding='utf-8', errors='replace',
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
