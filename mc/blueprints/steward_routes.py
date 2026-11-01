@@ -14,6 +14,7 @@ from typing import Any, Callable, Optional
 from flask import Blueprint, jsonify, request
 
 from mc import state
+from mc import steward_role_writes as _role_writes
 from mc.core import _log, now_iso
 from mc.project_safety_settings import STEWARD_ENABLE_SAFETY_KEYS, refuse_agent_safety_write
 import steward
@@ -85,6 +86,9 @@ def steward_status(project_id):
         return jsonify({'error': 'not found'}), 404
     charter = _core.find_charter(p)
     schedules = _sched._load_schedules()
+    role_status = _role_writes.status(p, schedules)
+    if role_status is not None:
+        return jsonify(role_status)
     sched = _find_steward_schedule(project_id, schedules)
     return jsonify({
         'enabled': _core.steward_enabled(p),
@@ -97,9 +101,13 @@ def steward_status(project_id):
     })
 
 
+@_role_writes.serialized_write
 def _do_enable(project_id, objective, cadence) -> tuple[dict[str, Any], int]:
     """Shared enable bootstrap (used by the per-project AND standalone paths).
     Assumes the project record already exists. Returns (response_dict, status)."""
+    role_error = _role_writes.legacy_enable_error(project_id)
+    if role_error is not None:
+        return role_error
     p = load_project(project_id)
     if p is None:
         return {'error': 'not found'}, 404
@@ -176,6 +184,7 @@ def _do_enable(project_id, objective, cadence) -> tuple[dict[str, Any], int]:
 
 
 @bp.route('/api/project/<project_id>/steward/enable', methods=['POST'])
+@_role_writes.steward_control
 def steward_enable(project_id):
     """Turn a project into an autonomous steward. Idempotent."""
     refusal = refuse_agent_safety_write(STEWARD_ENABLE_SAFETY_KEYS)
@@ -267,6 +276,7 @@ def steward_standalone_enable(project_id=None):
 
 
 @bp.route('/api/project/<project_id>/steward/disable', methods=['POST'])
+@_role_writes.steward_control
 def steward_disable(project_id):
     """Kill switch. Stops future cycles, removes the fence (restores normal
     behavior). Leaves the charter + its notes intact as a record. Idempotent."""
