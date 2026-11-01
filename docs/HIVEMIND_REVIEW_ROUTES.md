@@ -88,5 +88,9 @@ pyright mc/blueprints/hivemind_review_routes.py
 python -m pytest
 ```
 
-Counts and exit codes are recorded in `docs/_journal/f2605ff9-builtins4.md`.
+Result on the committed code: route tests 43 passed; pyright 0 errors; full
+suite rc=1 with 18,786 passed, 28 skipped, 1 xfailed, 2 failed. One failure is
+`test_browser_cdp_pipe_live` (identical on base `5216e03f`), the other
+`test_secrets_exec_stream` passes alone (load flake). Detail in
+`docs/_journal/f2605ff9-builtins4.md`.
 Rollback: remove the `server.py` stanza; no data format changed.
