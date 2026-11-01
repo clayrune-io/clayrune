@@ -12502,6 +12502,8 @@ def agent_dispatch(project_id):
                                               cross_provider_handoff=cross_provider_handoff)
     except _engine_fallback.EngineFallbackBlocked as e:
         return jsonify(e.payload), 400
+    except _agent_runtime.vendor_fence.VendorFenceError as e:
+        return jsonify({'ok': False, 'error': str(e)}), 409
     except ValueError as e:
         code = 404 if 'not found' in str(e) else 400
         return jsonify({'error': str(e)}), code
@@ -12863,6 +12865,8 @@ def agent_send(project_id):
                 provider_override=(data.get('provider') or '').strip().lower())
         except _engine_fallback.EngineFallbackBlocked as e:
             return jsonify(e.payload), 400
+        except _agent_runtime.vendor_fence.VendorFenceError as e:
+            return jsonify({'ok': False, 'error': str(e)}), 409
         except ValueError as e:
             code = 404 if 'not found' in str(e) else 400
             return jsonify({'error': str(e)}), code
@@ -13381,6 +13385,8 @@ def agent_followup(project_id):
                 existing['log_lines'].append(f"[{session_provider} followup error: {e}]")
                 existing['status'] = 'error'
                 existing['last_status_change_time'] = _time.time()
+                if isinstance(e, _agent_runtime.vendor_fence.VendorFenceError):
+                    return jsonify({'ok': False, 'error': str(e), 'session_id': session_id}), 409
             _log_agent_activity(project_id, f"Agent follow-up (provider={session_provider}): {message[:100]}")
             return jsonify({'ok': True, 'session_id': session_id})
 
@@ -14326,6 +14332,8 @@ def agent_interrupt(project_id, *, _internal=None):
                 session['log_lines'].append(f"[{session_provider} interrupt error: {e}]")
                 session['status'] = 'error'
                 session['last_status_change_time'] = _time.time()
+                if isinstance(e, _agent_runtime.vendor_fence.VendorFenceError):
+                    return _ret({'ok': False, 'error': str(e), 'session_id': session_id}, 409)
             _log_agent_activity(project_id, f"Agent interrupt (provider={session_provider}): {message[:80]}")
             return _ret({'ok': True, 'session_id': session_id})
 

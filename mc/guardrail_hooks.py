@@ -46,7 +46,7 @@ import sys
 import os
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # {vendor: filename under ~/.clayrune/hooks/} — Codex is deliberately absent,
 # see the module docstring's "NO file here" section.
@@ -466,13 +466,20 @@ def codex_fence_self_test(*, fence_script: Optional[Path] = None,
 
 
 def run_fence_self_test(argv: Sequence[str], *, timeout: float,
-                        what: str = 'the hook shell') -> Tuple[bool, str]:
+                        what: str = 'the hook shell',
+                        env: Optional[Dict[str, str]] = None,
+                        cwd: Optional[str] = None) -> Tuple[bool, str]:
     """Run `argv` (a fence command ending in `--self-test`) and judge it.
 
-    Shared by the Codex pre-spawn check above and the unattended-Claude one
-    (mc/fence_fail_closed.py). Passes only on exit 2 carrying
+    Shared by Codex, Claude (mc/fence_fail_closed.py), and Gemini/Qwen's
+    native loader/runner preflight (mc/vendor_fence.py). Optional env/cwd
+    reproduce that launch's hook shell and project settings. Passes only on exit 2 carrying
     FENCE_SELF_TEST_TOKEN. Never raises. Returns (ok, detail)."""
-    kwargs = {}
+    kwargs: Dict[str, Any] = {}
+    if env is not None:
+        kwargs['env'] = env
+    if cwd is not None:
+        kwargs['cwd'] = cwd
     if os.name == 'nt':
         kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
     try:
