@@ -27,7 +27,7 @@ class Thread:
 
 
 @pytest.fixture
-def spawns(monkeypatch):
+def spawns(monkeypatch, codex_mcp_cli):
     captured = []
 
     def popen(cmd, **kwargs):
@@ -139,7 +139,7 @@ def test_restart_without_fingerprint_sends_context_once(engine, spawns, monkeypa
 
 
 @pytest.mark.parametrize('engine', ['codex', 'qwen', 'gemini'])
-def test_incognito_keeps_only_existing_tool_protocol(engine, spawns, monkeypatch):
+def test_incognito_keeps_only_existing_tool_protocol(engine, spawns, monkeypatch, codex_mcp_cli):
     runtime = ar.get_runtime(engine)
     monkeypatch.setattr(runtime, 'resolve_binary', lambda: engine)
     handle = runtime.dispatch(project_path='.', task='first task', incognito=True)
@@ -149,6 +149,10 @@ def test_incognito_keeps_only_existing_tool_protocol(engine, spawns, monkeypatch
     session['_system_prompt'] = ''  # incognito context refreshed by routes
     runtime.write_followup(handle, 'private task')
     assert spawns[-1][1].stdin.getvalue() == 'private task'
+    if engine == 'codex':
+        assert len(codex_mcp_cli) == 2  # dispatch and native resume both deny MCP
+        assert all(not any(spec['enabled'] for spec in servers.values())
+                   for servers in codex_mcp_cli)
 
 
 @pytest.mark.parametrize('engine', ['codex', 'qwen', 'gemini'])

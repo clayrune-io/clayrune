@@ -57,6 +57,10 @@ os.environ.pop("MC_RESTART_FROM_PID", None)
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Shared spawn/route fixtures are imported by several test modules. Their
+# opt-in MCP dependency must be visible to every importing module as well.
+from codex_mcp_fixture import codex_mcp_cli  # noqa: E402,F401
+
 # ── pytest's temp root is per-USER, not per-checkout (MC-965) ────────────────
 # `%TEMP%/pytest-of-<user>` is shared by every checkout and every worktree on
 # the box, so concurrent agent runs land in one numbered-dir space and one run

@@ -190,7 +190,7 @@ _FAKE_CODEX = textwrap.dedent(f"""
 
 
 @pytest.fixture()
-def codex_env(tmp_path, monkeypatch):
+def codex_env(tmp_path, monkeypatch, codex_mcp_cli):
     import server  # noqa: F401  (imports + wires the blueprints)
     from mc import workflows as wfm
     from mc.blueprints import agent_routes as ar
