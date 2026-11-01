@@ -3273,6 +3273,7 @@ def _claude_dispatch_hook(**kwargs):
         max_turns_override=kwargs.get('max_turns'),
         agent_cwd_override=supplied_cwd,
         isolated_override=bool((supplied or {}).get('_worktree_isolated')),
+        prepared_context=kwargs.get('prepared_context'),
     )
     session = agent_sessions.get(session_id, {})
     p = load_project(project_id) or {}

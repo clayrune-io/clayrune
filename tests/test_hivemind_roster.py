@@ -472,21 +472,28 @@ class TestLegacyUnchanged:
 
 
 class TestSpawnGuard:
-    """HR-1 stores the assignment; until HR-2 a roster row must not launch
-    through the legacy path (it would run with no persona)."""
+    """HR-2 replaces HR-1's temporary refusal with the roster launch adapter."""
 
-    def test_roster_row_refused_by_legacy_spawn(self, client, roster_chars):
+    def test_roster_row_uses_roster_adapter(self, client, roster_chars, monkeypatch):
+        calls = []
+        monkeypatch.setattr(client.hm._hm_worker, 'spawn_roster_worker',
+                            lambda *a: calls.append(a) or 'hm_roster')
         hm_id = client.post('/api/hivemind/create', json=_roster_payload()
                             ).get_json()['hivemind']['id']
         r = client.post(f'/api/hivemind/{hm_id}/workstreams/ws_001/spawn')
-        assert r.status_code == 500 and 'HR-2' in r.get_json()['error']
+        assert r.status_code == 200 and r.get_json()['session_id'] == 'hm_roster'
+        assert len(calls) == 1
         assert client.fake_rt.dispatch_calls == [] and client.claude_rt.dispatch_calls == []
-        assert client.hm._hm_load_workstream(hm_id, 'ws_001')['status'] == 'pending'
+        assert client.hm._hm_load_workstream(hm_id, 'ws_001')['status'] == 'active'
 
-    def test_auto_spawn_marks_roster_row_unsupported_not_launched(self, client, roster_chars):
+    def test_auto_spawn_uses_roster_adapter(self, client, roster_chars, monkeypatch):
+        calls = []
+        monkeypatch.setattr(client.hm._hm_worker, 'spawn_roster_worker',
+                            lambda *a: calls.append(a) or 'hm_roster')
         hm_id = client.post('/api/hivemind/create', json=_roster_payload()
                             ).get_json()['hivemind']['id']
         client.hm._hm_auto_spawn_workers(hm_id)
         ws = client.hm._hm_load_workstream(hm_id, 'ws_001')
-        assert ws['status'] == 'failed' and ws['failure_reason'] == 'unsupported_engine'
+        assert ws['status'] == 'active' and ws['current_agent_session_id'] == 'hm_roster'
+        assert len(calls) >= 1
         assert client.fake_rt.dispatch_calls == [] and client.claude_rt.dispatch_calls == []

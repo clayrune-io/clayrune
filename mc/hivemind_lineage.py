@@ -38,7 +38,7 @@ def record_worker(session: dict, project_generation: int) -> None:
     durable lineage. No callback is armed by recording a spawner.
     """
     creator = (session.get('_spawned_by') or '').strip()
-    if not creator or session.get('incognito'):
+    if (not creator and not session.get('character_ref')) or session.get('incognito'):
         return
     from mc.blueprints import agent_routes as ar
 
@@ -59,9 +59,19 @@ def record_worker(session: dict, project_generation: int) -> None:
         'dispatched_by_session_id': creator,
         'spawned_by_session_id': '',
     }
+    if session.get('character_ref'):
+        # Roster identity is durable before launch even for a human-created run
+        # with no attributed parent. Recovery must not re-read today's persona.
+        from mc.hivemind_worker import attempt_metadata
+        row.update(attempt_metadata(session))
 
     def insert(rows: list[dict]) -> None:
-        if not any(r.get('session_id') == row['session_id'] for r in rows):
+        existing = next((r for r in rows if r.get('session_id') == row['session_id']), None)
+        if existing is None:
             rows.insert(0, row)
+        elif session.get('character_ref'):
+            # Recovery reuses the owner; re-arm its pending status durably
+            # before dispatch while retaining its provider-native session id.
+            existing.update(row)
 
     ar._update_agent_log(session['project_id'], insert)
