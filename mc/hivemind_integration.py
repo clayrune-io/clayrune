@@ -203,31 +203,64 @@ def _merge_one(project, wt, ws, ws_branch, base_sha, st):
 def _merge_one_locked(project, wt, ws, ws_branch, base_sha, st, owner):
     """Merge one workstream. Returns None (merged), 'skip' (nothing to merge),
     or a failure dict {kind, detail, ...}."""
-    ws_id = ws.get('id')
+    merged, fail = merge_candidate(project, wt, ws, ws_branch, base_sha, owner)
+    if fail == 'skip':
+        st['skipped'].append({'ws_id': ws.get('id'), 'reason': 'no commits beyond the base'})
+        return 'skip'
+    if fail:
+        return fail
+    fail = smoke_candidate(wt, ws, merged)
+    if fail:
+        return fail
+    st['merged'].append(merged)
+    from mc.dev_harness_landing import clear_hold
+    clear_hold(project, ws_branch)
+    return None
+
+
+def merge_candidate(project, wt, ws, ws_branch, base_sha, owner):
+    """One merge under the caller's landing ownership; no smoke or cleanup.
+
+    HR-5 persists the returned exact observations before running smokes.
+    Legacy integration composes these same operations synchronously.
+    """
+    from mc.landing_serialization import assert_held
+    assert_held(owner)
     sess_wt = _awt.worktree_path(project, ws['worktree_session_id'])
     if sess_wt is not None and sess_wt.exists() and _awt.dirty_outside_runtime(project, sess_wt):
-        return {'kind': 'dirty',
+        return {}, {'kind': 'dirty',
                 'detail': 'uncommitted changes in the worker worktree; its work is not on the branch'}
     ok, _ = _git(wt, ['rev-parse', '--verify', f'{ws_branch}^{{commit}}'], 15)
     if not ok:
-        return {'kind': 'missing_branch', 'detail': f'branch {ws_branch} not found'}
+        return {}, {'kind': 'missing_branch', 'detail': f'branch {ws_branch} not found'}
     ok, n = _git(wt, ['rev-list', '--count', f'{base_sha}..{ws_branch}'], 30)
     if ok and n.strip() == '0':
-        st['skipped'].append({'ws_id': ws_id, 'reason': 'no commits beyond the base'})
-        return 'skip'
+        return {}, 'skip'
+    ok, n = _git(wt, ['rev-list', '--count', f'HEAD..{ws_branch}'], 30)
+    if ok and n.strip() == '0':
+        return {}, 'skip'
     ok, pre = _git(wt, ['rev-parse', 'HEAD'], 15)
     if not ok:
-        return {'kind': 'git', 'detail': f'rev-parse HEAD failed: {pre}'}
-    from mc.dev_harness_landing import prepare, clear_hold
+        return {}, {'kind': 'git', 'detail': f'rev-parse HEAD failed: {pre}'}
+    from mc.dev_harness_landing import prepare
     candidate = prepare(project, owner, ws_branch, repo=wt)
     with candidate.git_environment() as env:
         ok, msg = _git(wt, ['merge', '--no-edit', candidate.tip], 120, env=env)
     if not ok:
         conflicted = _git(wt, ['rev-parse', '-q', '--verify', 'MERGE_HEAD'], 15)[0]
         _git(wt, ['merge', '--abort'], 30)
-        return {'kind': 'conflict' if conflicted else 'merge_error', 'detail': msg[-600:]}
+        return {}, {'kind': 'conflict' if conflicted else 'merge_error', 'detail': msg[-600:]}
     ok, head = _git(wt, ['rev-parse', 'HEAD'], 15)
     candidate.verify_landed()
+    tree_ok, tree = _git(wt, ['rev-parse', 'HEAD^{tree}'], 15)
+    if not ok or not tree_ok:
+        raise RuntimeError('could not observe merged HEAD/tree')
+    return {'ws_id': ws.get('id'), 'branch': ws_branch, 'commit': head,
+            'pre_merge_sha': pre, 'incoming_tip': candidate.tip, 'merged_tree': tree}, None
+
+
+def smoke_candidate(wt, ws, merged):
+    """Run this candidate's checks, rolling back only its failed merge."""
     smokes = clean_smokes(ws.get('smokes'))
     results = []
     for name in smokes:
@@ -235,13 +268,12 @@ def _merge_one_locked(project, wt, ws, ws_branch, base_sha, st, owner):
         results.append({'name': name, 'ok': passed})
         if not passed:
             # Keep the integration branch smoke-green: roll this merge back.
-            _git(wt, ['reset', '--hard', pre], 60)
+            ok, detail_reset = _git(wt, ['reset', '--hard', merged['pre_merge_sha']], 60)
             return {'kind': 'smoke', 'smoke': name, 'detail': detail,
-                    'rolled_back_to': pre, 'smokes': results}
-    st['merged'].append({
-        'ws_id': ws_id, 'branch': ws_branch, 'commit': head if ok else '',
+                    'rolled_back_to': merged['pre_merge_sha'] if ok else '',
+                    'rollback_error': '' if ok else detail_reset, 'smokes': results}
+    merged.update({
         'smokes_run': bool(smokes), 'smokes': results,
         'note': '' if smokes else 'no smokes named; none run',
     })
-    clear_hold(project, ws_branch)
     return None

@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-01] - Require an exact review between roster merges (BUILTINS-4 HR-5)
+
+- Added a durable serial coordinator for explicit roster runs: merge one worker branch with existing native standards, run its smokes, then consume an independent exact-commit pass through the reviewer lifecycle guard before the next merge.
+- Retained provisional candidates, frozen review briefs and dependency links while review waits; rejection, drift, missing verdicts and lifecycle failures hold later merges. Failed smokes retain their rollback rule. Recovery reuses exact evidence without duplicate reviewers or stale-pass admission.
+- Legacy integration remains compatible; non-git analysis-only runs explicitly skip code review and dependent code is held for Dave. Branch candidate only: no merge, push, restart, live run or native workflow support claimed.
+
 ## [2026-11-01] - Pin durable post-merge review evidence (BUILTINS-4 HR-3)
 
 - Added a separate review-record store for exact integration candidates, designated reviewers, attributed structured verdicts and one-time pass consumption. Missing, corrupt or mismatched evidence holds integration.
