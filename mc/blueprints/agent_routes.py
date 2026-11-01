@@ -137,6 +137,7 @@ from mc.delegation_transcript_reconcile import TranscriptReconciler
 from mc.blueprints.delegation_report_routes import register_routes as _register_report_routes
 import mc.desk_connect.custom_package_manifest as _custom_package_manifest  # MC-1054: detect-only file drift of approved npm MCPs
 import mc.agent_jobs as _agent_jobs  # MC-958 follow-up: engine-agnostic background command jobs
+import mc.session_mcp_config as _session_mcp_config  # BUILTINS-7a: first-party `clayrune` MCP server
 import mc.caller_attribution as _caller_attribution  # backlog 40260b57: who is really calling dispatch
 import mc.dispatch_lineage as _dispatch_lineage  # MC-1082: attributed caller recorded as the spawner
 import mc.memory_push as _memory_push      # MC-944 mid-task memory push observer, report mode
@@ -709,6 +710,7 @@ def _mcp_server_catalog(project):
     except Exception:
         pass
     catalog.setdefault('engram', dict(_ENGRAM_MCP_SPEC))
+    _session_mcp_config.add_to_catalog(catalog, project, state.CONFIG)
     return catalog
 
 
@@ -786,6 +788,7 @@ def _runtime_mcp_config_json(project, provider_name):
         if resolved is None:
             servers = _mcp_mod.collect_effective_servers_for_project(
                 (project or {}).get('project_path') or None)
+            _session_mcp_config.add_to_effective_servers(servers, project, state.CONFIG)
         else:
             servers = {
                 name: _mcp_mod._to_gemini_config(_mcp_mod._infer_transport(cfg), cfg)
@@ -829,7 +832,8 @@ def _build_claude_flags(project=None, streaming=False, model_override=None,
         'claude', state.CONFIG, project, override=model_override)
     effort, _effort_source = engine_selection.resolve_effort(
         state.CONFIG, project, override=effort_override, provider='claude')
-    return _agent_runtime.get_runtime('claude').build_command(
+    resolved_mcp = _resolve_project_mcp_config(project)
+    flags = _agent_runtime.get_runtime('claude').build_command(
         model=model,
         max_turns=(max_turns_override if max_turns_override is not None
                    else state.CONFIG.get('agent_max_turns', 0)),
@@ -841,10 +845,12 @@ def _build_claude_flags(project=None, streaming=False, model_override=None,
             state.CONFIG.get('agent_remote_control', False)
         ),
         effort=effort,  # pyright: ignore[reportCallIssue]  # moved-verbatim typing debt (1.12)
-        mcp_config_json=_resolve_project_mcp_config(project) or '',  # pyright: ignore[reportCallIssue]  # moved-verbatim typing debt (1.12)
+        mcp_config_json=resolved_mcp or '',  # pyright: ignore[reportCallIssue]  # moved-verbatim typing debt (1.12)
         partial_messages=bool(state.CONFIG.get('activity_states_enabled', False)),  # pyright: ignore[reportCallIssue]
         skill_overrides=_skill_overrides_for(project, character_skills),  # pyright: ignore[reportCallIssue]
     )[1:]  # strip binary — _build_claude_flags() contract is flags-only
+    # Untrimmed project: add the first-party `clayrune` server without strict mode.
+    return _session_mcp_config.claude_additive_flags(project, resolved_mcp, state.CONFIG) + flags
 
 
 def _skill_overrides_for(project, character_skills):
