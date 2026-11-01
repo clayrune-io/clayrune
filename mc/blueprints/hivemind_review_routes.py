@@ -13,11 +13,12 @@ as for the other /api/hivemind routes. See docs/HIVEMIND_REVIEW_ROUTES.md.
 """
 from __future__ import annotations
 
+import importlib
 import json
 import re
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from flask import Blueprint, jsonify, request
 
@@ -31,10 +32,16 @@ bp = Blueprint('hivemind_review_routes', __name__)
 HIVEMIND_DIR: Path = None  # type: ignore[assignment]
 load_project: Callable[[str], Any] = None  # type: ignore[assignment]
 _assert_project_generation: Callable[..., Any] = None  # type: ignore[assignment]
-# Optional lifecycle seam (HR-4a). Called as verdict_guard(candidate) and must
-# return a context manager that raises ReviewRefused to hold the verdict.
-_verdict_guard: Callable[[hr.Candidate], AbstractContextManager] | None = None
+# Lifecycle seam (HR-4a), REQUIRED: a missing guard would admit verdicts from
+# cancelled or timed-out reviewers. _verdict_guard(candidate) returns a context
+# manager that raises ReviewRefused to hold a verdict; _reviewer_status(candidate)
+# returns HR-4a's status dict (state, hold_reason, result, can_record, ...).
+_verdict_guard: Callable[[hr.Candidate], AbstractContextManager] = None  # type: ignore[assignment]
+_reviewer_status: Callable[[hr.Candidate], dict] = None  # type: ignore[assignment]
 
+# HR-4a keeps <key>.runtime.json beside each review record. It is not a review
+# record: skipped by exact name, while any other damaged *.json still counts.
+_RUNTIME_SIDECAR = re.compile(r'[0-9a-f]{64}\.runtime\.json')
 _ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}')
 _POST_KEYS = {'verdict', 'merged_sha', 'report_path', 'incoming_tip', 'project_generation'}
 # Identity-shaped keys get a specific refusal: the answer is never "ignored".
@@ -43,15 +50,44 @@ _IDENTITY_KEYS = {'reviewer', 'reviewer_session', 'reviewer_id', 'reviewer_chara
 
 
 def wire(*, hivemind_dir, load_project_fn, assert_project_generation_fn,
-         verdict_guard_fn=None):
+         verdict_guard_fn, reviewer_status_fn):
     """Late-bind server dependencies. Called once from server.py before the
-    blueprint is registered. `verdict_guard_fn` is HR-4a's lifecycle gate; None
-    leaves only the HR-3 record checks."""
-    global HIVEMIND_DIR, load_project, _assert_project_generation, _verdict_guard
+    blueprint is registered. Both lifecycle callables are required keywords;
+    production passes lifecycle_for(hivemind_routes)."""
+    global HIVEMIND_DIR, load_project, _assert_project_generation
+    global _verdict_guard, _reviewer_status
     HIVEMIND_DIR = Path(hivemind_dir)
     load_project = load_project_fn
     _assert_project_generation = assert_project_generation_fn
     _verdict_guard = verdict_guard_fn
+    _reviewer_status = reviewer_status_fn
+
+
+def _reviewer_module():
+    """HR-4a's runtime, imported lazily. Fails closed: if it is absent every
+    verdict is held and every state read shows a hold, never a pass."""
+    try:
+        module = importlib.import_module('mc.hivemind_reviewer')
+        if not all(callable(getattr(module, n, None)) for n in ('verdict_guard', 'reviewer_status')):
+            raise ImportError('mc.hivemind_reviewer lacks verdict_guard/reviewer_status')
+    except ImportError as exc:
+        _log(f'[hivemind-review] reviewer lifecycle unavailable: {exc}', flush=True)
+        raise ReviewRefused(409, 'reviewer lifecycle unavailable; integration held') from exc
+    return module
+
+
+def lifecycle_for(api):
+    """(verdict_guard_fn, reviewer_status_fn) bound to the hivemind_routes
+    module `api`, resolving mc.hivemind_reviewer at call time."""
+    @contextmanager
+    def guard(candidate: hr.Candidate) -> Iterator[None]:
+        with _reviewer_module().verdict_guard(api, candidate):
+            yield
+
+    def status(candidate: hr.Candidate) -> dict:
+        return _reviewer_module().reviewer_status(api, candidate)
+
+    return guard, status
 
 
 class _Reject(Exception):
@@ -99,6 +135,8 @@ def _scan(store: hr.ReviewStore, workstream_id: str, attempt: int):
         _log(f'[hivemind-review] cannot list review records: {exc}', flush=True)
         return matches, 1
     for path in paths:
+        if _RUNTIME_SIDECAR.fullmatch(path.name):
+            continue
         try:
             raw = json.loads(path.read_text(encoding='utf-8'))
             pins = dict(raw['candidate'])
@@ -152,12 +190,28 @@ def _resolve(hivemind_id: str, workstream_id: str, attempt: int, claimed: dict):
 
 
 def _public(candidate: hr.Candidate, record: dict, store: hr.ReviewStore) -> dict:
+    """Projection of one review. The lifecycle (HR-4a) is consulted on every
+    read: a cancelled, timed-out or held reviewer shows no result and a hold
+    reason, and an unavailable lifecycle is a hold, never green."""
+    evidence = store.hold_reason(candidate)
+    try:
+        life = _reviewer_status(candidate)
+        result = life.get('result')
+        hold = life.get('hold_reason') or ''
+        if life.get('state') != 'pass' and not hold and not life.get('can_record'):
+            hold = f"reviewer {life.get('state') or 'held'}"
+        lifecycle = {k: life.get(k) for k in ('state', 'can_record', 'deadline_at', 'stop_error')}
+    except ReviewRefused as exc:
+        result, hold, lifecycle = None, exc.message, None
+    except Exception as exc:
+        _log(f'[hivemind-review] lifecycle status failed: {exc}', flush=True)
+        result, hold, lifecycle = None, 'reviewer lifecycle unavailable; integration held', None
     return {'candidate_key': candidate.key, 'candidate': candidate.pins(),
             'reviewer_session': record['reviewer_session'],
             'reviewer_character': record['reviewer_character'],
-            'designated_at': record['designated_at'], 'result': record['result'],
-            'consumed_at': record['consumed_at'],
-            'hold_reason': store.hold_reason(candidate)}
+            'designated_at': record['designated_at'], 'result': result,
+            'consumed_at': record['consumed_at'], 'lifecycle': lifecycle,
+            'hold_reason': hold or evidence}
 
 
 def _claimed_from_query() -> dict:
@@ -212,9 +266,8 @@ def review_submit(hivemind_id, workstream_id, integration_attempt):
             hivemind_id, workstream_id, integration_attempt, claimed)
     except _Reject as exc:
         return _err(exc.status, exc.message)
-    guard = _verdict_guard(candidate) if _verdict_guard else nullcontext()
     try:
-        with guard:
+        with _verdict_guard(candidate):
             rec = store.record(candidate, request, verdict=body['verdict'],
                                report_path=body.get('report_path') or '')
     except ReviewRefused as exc:

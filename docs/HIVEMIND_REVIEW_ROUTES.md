@@ -39,24 +39,42 @@ conflicting replay is 409, including after `consume_pass`.
 ## Wiring
 
 `server.py` calls `hivemind_review_routes.wire(hivemind_dir=, load_project_fn=,
-assert_project_generation_fn=, verdict_guard_fn=None)` right after the hivemind
-blueprint. Generation is checked with the same validator the hivemind routes
-use (`agent_routes._assert_runtime_project_generation`) against the manifest's
-persisted `project_generation`.
+assert_project_generation_fn=, verdict_guard_fn=, reviewer_status_fn=)` right
+after the hivemind blueprint. Both lifecycle callables are **required**
+keywords (no default, no `nullcontext`): without them a cancelled or timed-out
+reviewer's late verdict would be accepted. Generation is checked with the same
+validator the hivemind routes use (`agent_routes._assert_runtime_project_generation`)
+against the manifest's persisted `project_generation`.
 
-**HR-4a seam.** `verdict_guard_fn(candidate)` returns a context manager that
-wraps `ReviewStore.record` and must raise `ReviewRefused(status, message)` to
-hold a verdict (deadline expired, cancelled, ownership/generation lost). It is
-`None` in this change because `mc/hivemind_reviewer.py` is not on master. When
-it lands, the integrating merge passes
-`verdict_guard_fn=lambda c: hivemind_reviewer.verdict_guard(_bp_hivemind, c)`.
+**HR-4a lifecycle.** `lifecycle_for(hivemind_routes)` returns
+`(verdict_guard_fn, reviewer_status_fn)` that call `mc.hivemind_reviewer.
+verdict_guard(api, candidate)` / `reviewer_status(api, candidate)`, importing
+the module **at call time**. If it is missing or lacks either function, the
+guard raises `ReviewRefused(409, 'reviewer lifecycle unavailable; integration
+held')` and the state read shows a hold: fail closed. On a branch without
+`mc/hivemind_reviewer.py` every POST is therefore refused; that is intended.
+The guard wraps `ReviewStore.record` only (never git or a wait) and must raise
+`ReviewRefused(status, message)` to hold a verdict.
+
+**Projection.** Every GET, and the POST response, calls `reviewer_status`.
+`result` is the lifecycle's `result` (HR-4a returns `None` once cancelled,
+timed out or held), `hold_reason` is the lifecycle's, falling back to
+`ReviewStore.hold_reason`, and `lifecycle` carries `state`, `can_record`,
+`deadline_at`, `stop_error`. If the status call raises, `result` is `None` and
+`hold_reason` is the refusal message (or a generic "lifecycle unavailable"):
+a lifecycle problem never renders green. An empty `hold_reason` with a
+non-null `result` is the only passing shape.
+
+**Record scan.** `reviews/<key>.runtime.json` (HR-4a's sidecar, name matched
+exactly as 64 hex + `.runtime.json`) is not a review record and is skipped. Any
+other file that fails validation still counts as untrusted and holds.
+
 `verdict_path(candidate)` returns the server-relative POST path so the launcher
 builds the reviewer's `verdict_url` from this module rather than inventing one.
 
 ## Not done here
 
-- Reviewer deadline (Q7-A, 45 min) is not enforced in the route; it is the
-  guard's job. Without a wired guard a late verdict is accepted by HR-3.
+- Reviewer deadline (Q7-A, 45 min) is enforced by HR-4a's guard, not here.
 - Q2-A (character resolved per attempt, fail visibly if missing) is the
   launcher's; the route reports the stored `reviewer_character` only.
 - No index: candidate lookup scans `reviews/*.json` (a handful per run).

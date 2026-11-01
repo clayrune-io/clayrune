@@ -2017,14 +2017,18 @@ _bp_hivemind.wire(
 )
 app.register_blueprint(_bp_hivemind.bp)
 
-# HR-4b reviewer verdict adapter (BUILTINS-4): HTTP only. verdict_guard_fn is
-# HR-4a's lifecycle gate and is wired when mc/hivemind_reviewer.py lands.
+# HR-4b reviewer verdict adapter (BUILTINS-4): HTTP only. The lifecycle gate and
+# status come from HR-4a's mc/hivemind_reviewer.py, resolved lazily per request
+# and failing closed (every verdict held) while that module is absent.
 from mc.blueprints import hivemind_review_routes as _bp_hivemind_review  # noqa: E402
 
+_hr_verdict_guard, _hr_reviewer_status = _bp_hivemind_review.lifecycle_for(_bp_hivemind)
 _bp_hivemind_review.wire(
     hivemind_dir=_DATA_ROOT / 'data' / 'hiveminds',
     load_project_fn=_bp_projects.load_project,
     assert_project_generation_fn=_bp_agent._assert_runtime_project_generation,
+    verdict_guard_fn=_hr_verdict_guard,
+    reviewer_status_fn=_hr_reviewer_status,
 )
 app.register_blueprint(_bp_hivemind_review.bp)
 

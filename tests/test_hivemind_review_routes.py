@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import sys
 from contextlib import contextmanager
+from types import SimpleNamespace
 from dataclasses import replace
 
 import pytest
@@ -39,8 +41,29 @@ def env(tmp_path, monkeypatch, candidate):
     def assert_generation(project_id, generation):
         checked.append((project_id, generation))
 
+    life = {'veto': None, 'raise': None}
+
+    @contextmanager
+    def lifecycle_guard(candidate):
+        if life['veto']:
+            raise ReviewRefused(409, f"reviewer {life['veto']}; integration held")
+        yield
+
+    def lifecycle_status(candidate):
+        if life['raise']:
+            raise life['raise']
+        rec = hr.ReviewStore(hm_dir / HM).find(candidate)
+        if life['veto']:
+            return {'state': life['veto'], 'hold_reason': f"reviewer {life['veto']}",
+                    'result': None, 'can_record': False, 'deadline_at': 1.0, 'stop_error': ''}
+        res = rec['result']
+        return {'state': res['verdict'] if res else 'pending',
+                'hold_reason': hr.ReviewStore(hm_dir / HM).hold_reason(candidate),
+                'result': res, 'can_record': True, 'deadline_at': 1.0, 'stop_error': ''}
+
     routes.wire(hivemind_dir=hm_dir, load_project_fn=projects.get,
-                assert_project_generation_fn=assert_generation)
+                assert_project_generation_fn=assert_generation,
+                verdict_guard_fn=lifecycle_guard, reviewer_status_fn=lifecycle_status)
     app = Flask(__name__)
     app.register_blueprint(routes.bp)
     caller = {'sid': 'reviewer', 'status': ca.ATTRIBUTED}
@@ -62,10 +85,11 @@ def env(tmp_path, monkeypatch, candidate):
     store.designate(candidate, reviewer_session='reviewer',
                     reviewer_character='global:code-reviewer')
     yield type('Env', (), dict(client=app.test_client(), store=store, caller=caller,
-                               hm_dir=hm_dir, checked=checked, projects=projects,
+                               hm_dir=hm_dir, checked=checked, life=life, projects=projects,
                                candidate=candidate))
     routes.wire(hivemind_dir=hm_dir, load_project_fn=lambda _: None,
-                assert_project_generation_fn=lambda *_: None)
+                assert_project_generation_fn=lambda *_: None,
+                verdict_guard_fn=None, reviewer_status_fn=None)
 
 
 def submit(env, body=None, url=URL, **fields):
@@ -265,3 +289,85 @@ def test_verdict_path_is_the_registered_post_route(env):
     path = routes.verdict_path(env.candidate)
     assert path == URL
     assert submit(env, url=path).status_code == 200
+
+
+def test_wire_requires_the_lifecycle_callables(tmp_path):
+    with pytest.raises(TypeError):
+        routes.wire(hivemind_dir=tmp_path, load_project_fn=lambda _: None,
+                    assert_project_generation_fn=lambda *_: None)
+
+
+@pytest.mark.parametrize('veto', ['cancelled', 'timed_out', 'held'])
+def test_lifecycle_veto_blocks_post_and_never_renders_a_result(env, veto):
+    assert submit(env).status_code == 200
+    env.life['veto'] = veto
+    review = env.client.get(URL).get_json()['review']
+    assert review['result'] is None and veto in review['hold_reason']
+    assert review['lifecycle']['state'] == veto and review['lifecycle']['can_record'] is False
+    resp = submit(env)
+    assert resp.status_code == 409 and veto in resp.get_json()['error']
+
+
+def test_post_response_is_green_when_lifecycle_agrees(env):
+    resp = env.client.post(URL, json={'verdict': 'pass', 'merged_sha': 'c' * 40})
+    assert resp.get_json()['review']['hold_reason'] == ''
+    assert resp.get_json()['review']['result']['verdict'] == 'pass'
+
+
+@pytest.mark.parametrize('failure', [RuntimeError('boom'), ReviewRefused(409, 'lifecycle disagrees')])
+def test_status_failure_is_a_hold_not_a_pass(env, failure):
+    assert submit(env).status_code == 200
+    env.life['raise'] = failure
+    review = env.client.get(URL).get_json()['review']
+    assert review['result'] is None and review['hold_reason'] and review['lifecycle'] is None
+    assert 'boom' not in json.dumps(review)
+
+
+def test_runtime_sidecar_is_not_a_review_record_but_damaged_records_still_hold(env):
+    sidecar = env.store.directory / (env.candidate.key + '.runtime.json')
+    sidecar.write_text('{"phase": "pending"}', encoding='utf-8')
+    assert env.client.get(URL).status_code == 200
+    # Counted as untrusted, it would turn this 404 into a 409 hold.
+    assert env.client.get(f'/api/hivemind/{HM}/review/ws_none/1').status_code == 404
+    assert submit(env).status_code == 200
+    # A damaged file that merely resembles a sidecar is still untrusted.
+    (env.store.directory / (env.candidate.key + '.runtime.json.bak.json')).write_text('{x', encoding='utf-8')
+    path = env.store.path(env.candidate)
+    record = json.loads(path.read_text(encoding='utf-8'))
+    record['designated_at'] = 'tampered'
+    path.write_text(json.dumps(record), encoding='utf-8')
+    assert env.client.get(URL).status_code == 409
+
+
+def test_lazy_lifecycle_fails_closed_without_the_runtime_module(env, monkeypatch):
+    guard, status = routes.lifecycle_for(SimpleNamespace(name='api'))
+    routes._verdict_guard, routes._reviewer_status = guard, status
+    monkeypatch.setitem(sys.modules, 'mc.hivemind_reviewer', None)
+    resp = submit(env)
+    assert resp.status_code == 409 and 'lifecycle unavailable' in resp.get_json()['error']
+    assert env.store.find(env.candidate)['result'] is None
+    review = env.client.get(URL).get_json()['review']
+    assert review['result'] is None and 'unavailable' in review['hold_reason']
+
+
+def test_lazy_lifecycle_delegates_to_the_runtime_with_the_api_module(env, monkeypatch):
+    api = SimpleNamespace(name='hivemind_routes')
+    calls = []
+
+    @contextmanager
+    def verdict_guard(got_api, candidate):
+        calls.append(('guard', got_api, candidate.key))
+        yield {}
+
+    def reviewer_status(got_api, candidate):
+        calls.append(('status', got_api, candidate.key))
+        return {'state': 'pass', 'hold_reason': '', 'result': env.store.find(candidate)['result'],
+                'can_record': True}
+
+    monkeypatch.setitem(sys.modules, 'mc.hivemind_reviewer', SimpleNamespace(
+        verdict_guard=verdict_guard, reviewer_status=reviewer_status))
+    routes._verdict_guard, routes._reviewer_status = routes.lifecycle_for(api)
+    assert submit(env).status_code == 200
+    kinds = [c[0] for c in calls]
+    assert kinds[0] == 'guard' and 'status' in kinds
+    assert all(c[1] is api and c[2] == env.candidate.key for c in calls)
