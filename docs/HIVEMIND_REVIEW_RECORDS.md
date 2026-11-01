@@ -106,11 +106,21 @@ tables, and existing lineage readers; no live reviewer/model call is made.
 
 Validation in this branch: 92 new tests passed (rc=0); final focused suite
 483 passed, 13 skipped (rc=0); basic pyright returned 0 errors (rc=0). The
-13 skips are the existing POSIX-shell gate checks on Windows. An initial
-full-suite process ended without an exit code and is excluded from validation.
-A new complete run is owned directly by Clayrune's durable job facility;
-its result remains pending. The original branch review gate and lineage files
+13 skips are the existing POSIX-shell gate checks on Windows. The completed
+full suite returned **18,794 passed, 54 skipped, 1 xfailed, 2 failed**, rc=1,
+in 2035.08 seconds. Both failures are in the dispatch's supplied known-flake
+list; there are **zero additional failures**. The expected failure is the
+existing human-owned fence-timeout patch check. No implementation changed
+after starting that run. The original branch review gate and lineage files
 are unchanged; existing gate tests are included in the focused run.
+
+An initial full-suite process ended without an exit code and is excluded
+from validation. The complete replacement run was owned directly by Clayrune's
+durable job facility. Its wrapper saved pytest's rc before failing to decode
+the Windows-encoded log as UTF-8. Counts and exact failure IDs were recovered
+from the original log bytes and checked against the saved pytest rc; the
+wrapper exception is separate from the two pytest failures. No replacement
+data, subset run or inferred full-suite result is used.
 
 Rollback: revert the HR-3 source/tests/docs commit. Retain any runtime review
 records and provisional candidate branches. Missing evidence remains a hold;
