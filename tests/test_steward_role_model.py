@@ -489,3 +489,51 @@ def test_human_charter_edit_is_validated_before_any_mutation(ctx, patch):
                                 json=patch | {'passcode': PROOF, 'priority': 'high'})
     assert response.status_code == 400
     assert snapshots(ctx) == before
+
+
+@pytest.mark.parametrize('kind,bound', [
+    ('project', False), ('project', True),
+    ('charter', False), ('charter', True),
+    ('delete', False), ('delete', True), ('legacy-control', False),
+])
+def test_validated_handlers_allow_manager_guarded_project_saves(ctx, kind, bound):
+    """A handler must not inherit role locks and invert manager -> project."""
+    from threading import RLock
+
+    if bound:
+        assert create(ctx).status_code == 201
+    manager_lock = RLock()
+
+    def save_from_manager():
+        # This is the order used by project create/delete and delivery paths.
+        with manager_lock:
+            if not w.WRITE_LOCK.acquire(timeout=1):
+                return False
+            try:
+                project_lock = pr._project_write_lock('p1')
+                if not project_lock.acquire(timeout=1):
+                    return False
+                try:
+                    project = pr.load_project('p1')
+                    project['description'] = 'manager save completed'
+                    pr.save_project('p1', project)
+                finally:
+                    project_lock.release()
+            finally:
+                w.WRITE_LOCK.release()
+        return True
+
+    def handler(*args, **kwargs):
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            saved = pool.submit(save_from_manager).result(timeout=5)
+        assert saved, 'role validation locks leaked into the handler'
+        return 'handler completed'
+
+    decorator = {'project': w.project_write, 'charter': w.charter_write,
+                 'delete': w.project_delete, 'legacy-control': w.steward_control}[kind]
+    path = '/api/project/p1/steward/disable' if kind == 'legacy-control' else '/api/project/p1'
+    with ctx.app.test_request_context(path, method='POST',
+                                     json={'passcode': PROOF}, headers=UI):
+        args = ('p1', 'charter') if kind == 'charter' else ('p1',)
+        assert decorator(handler)(*args) == 'handler completed'
+    assert pr.load_project('p1')['description'] == 'manager save completed'

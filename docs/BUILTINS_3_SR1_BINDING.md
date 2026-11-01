@@ -98,6 +98,24 @@ including deletion/detachment. The existing atomic JSON writers perform
 durable replacements. Corrupt schedule stores are logged and refused; they
 are never reset to an empty role store by a write adapter.
 
+### Lock order (MC-1139 rework)
+
+Role-owned schedule and role-control writes take `WRITE_LOCK` then the
+project write lock, and never take a session-manager lock. Validation
+adapters release their locks before calling existing handlers:
+`project_write` locks the project only for its validation read;
+`charter_write` reads protected schedules under `WRITE_LOCK`; project
+deletion and the legacy steward-control fallback also delegate unlocked.
+Role-control persistence stays locked because it performs the write itself.
+
+Existing create/recreate handlers retain manager-lock-before-project-lock
+order. The provider-preferences serializer and the delegation test's
+`__wrapped__` bypass are unchanged. Seven new concurrency cases verify that
+validated handlers allow manager-guarded project saves. Validation snapshots
+are not a transaction with subsequent legacy writes; no atomic
+attach-versus-legacy-write guarantee is claimed. SR-2/SR-3 must revalidate
+current authority at execution.
+
 Schedule and project records are two stores, not a transaction. The schedule
 is saved first. For a new binding without an existing pointer, a failed pointer
 save leaves it blocked and visible as a missing-pointer error; a second active
@@ -139,7 +157,7 @@ large routes receive hooks and shared schedule-field builder extraction only.
 There are no static changes or frontend smoke requirements. The user guide
 is deferred with the role controls to SR-5; no UI or migration ships here.
 
-Final local validation: the command below passed 557 checks (including 78 new
+Initial selected validation: the command below passed 557 checks (including 78 new
 role checks), exit code 0. Both new modules passed pyright basic with 0 errors,
 exit code 0. `git diff --check` passed, exit code 0. No live role/provider cycle,
 human UI, migration, multi-process restart overlap or deployment was exercised.
@@ -149,3 +167,37 @@ python -m pytest tests/test_steward_role_model.py tests/test_project_safety_sett
 pyright mc/steward_role_model.py mc/steward_role_writes.py
 git diff --check
 ```
+
+## MC-1139 rework verification
+
+The unchanged concurrent-create regression now passes. Its original failure
+was reproduced on `cf68f3de` before the fix (`BrokenBarrierError`, HTTP 500).
+The focused regression plus role suite passed 86 checks; the full run also
+passed that regression and all 85 role checks (including seven new cases).
+`pyright mc/steward_role_model.py mc/steward_role_writes.py` reported 0 errors,
+exit code 0. No delegation-privacy test or provider serializer was changed.
+
+The required full command completed with **18,207 passed, 51 skipped,
+1 expected xfail and 1 failed**, exit code **1**, in 2,221.70 seconds:
+
+```powershell
+python -m pytest -q -p no:cacheprovider tests
+```
+
+JUnit independently records 18,260 cases and no errors. The remaining failure
+is `tests/test_scribe_log_fallback.py::test_codex_transcript_path_lookup_failure_falls_back_cleanly`:
+the mocked `get_runtime` raises from `background_model_policy.automatic_model`
+after transcript-lookup failure was caught. A read-only Fable review reproduced
+it in isolation and verified that its relevant files are unchanged against
+baseline `5f6ec8a8`; it also found the failure recorded in the earlier continuity
+repair report. It is not attributed to the SR-1 rework. The full-green gate
+remains **unmet**; Dave owns the separate Scribe fallback decision. No Scribe
+source or tests were changed here, and no passing subset substitutes for the
+full result.
+
+An earlier quiet full attempt terminated at 60% without a traceback, Windows
+exit code 4294967295 (-1); its cause remains unconfirmed. The completed retry
+ran under the Clayrune job runner with output-only `PYTEST_ADDOPTS=-vvv` and
+JUnit reporting. No merge, push, restart, migration or live role execution was
+performed. Skips cover platform/tool availability and explicitly gated live
+checks; the expected xfail requires a separate human-owned fence patch.

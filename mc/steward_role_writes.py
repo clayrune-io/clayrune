@@ -18,6 +18,9 @@ from mc.blueprints.secrets_routes import _require_human_passcode
 from mc.core import _log, now_iso
 from mc.project_safety_settings import is_agent_caller, refuse_agent_safety_write
 
+# Only role-owned persistence holds WRITE_LOCK -> project lock across writes.
+# Validation adapters release both before calling a legacy handler: handlers
+# may take a session manager lock before save_project takes the project lock.
 WRITE_LOCK = RLock()
 EXECUTION_ERROR = 'steward role execution unavailable: SR-2/SR-3 guarded runner required'
 
@@ -211,15 +214,15 @@ def schedule_mutation(kind):
 def project_write(fn):
     """Cover whole-project/backlog replacement as well as the narrow item API."""
     @wraps(fn)
-    @serialized_write
     def wrapped(project_id, *args, **kwargs):
         from mc.blueprints import project_routes as pr
-        with pr._project_write_lock(project_id):
+        with WRITE_LOCK:
             data = request.get_json(silent=True) or {}
             refusal = refuse_agent_safety_write(data)
             if refusal is not None:
                 return refusal
-            p = pr.load_project(project_id)
+            with pr._project_write_lock(project_id):
+                p = pr.load_project(project_id)
             try:
                 rows = _schedules()
                 bound = [s for s in rows if s.get('project_id') == project_id and model.is_role(s)]
@@ -241,12 +244,12 @@ def project_write(fn):
                         raise model.RoleError('edit the assigned backlog charter, not steward_objective')
                     if bound and 'steward_cadence_minutes' in data:
                         raise model.RoleError('edit cadence on the assigned schedule')
-                return fn(project_id, *args, **kwargs)
             except (model.RoleError, TypeError, ValueError) as exc:
                 return _error(exc)
             except OSError as exc:
                 _log(f'[steward-role] project write validation failed: {exc}', flush=True)
                 return _error('steward role store unavailable', 500)
+        return fn(project_id, *args, **kwargs)
     return wrapped
 
 
@@ -286,10 +289,8 @@ def status(project, rows):
 
 def charter_write(fn):
     @wraps(fn)
-    @serialized_write
     def wrapped(project_id, item_id, *args, **kwargs):
-        from mc.blueprints import project_routes as pr
-        with pr._project_write_lock(project_id):
+        with WRITE_LOCK:
             try:
                 protected = model.protected_charters(project_id, _schedules())
                 data = request.get_json(silent=True) or {}
@@ -303,75 +304,80 @@ def charter_write(fn):
                         raise model.RoleError('charter status must be a string')
                 # Charter reopening would restore a stopped mandate. Keep its
                 # lifecycle human-only too; ordinary item state remains writable.
-                return fn(project_id, item_id, *args, **kwargs)
             except (model.RoleError, TypeError, ValueError) as exc:
                 return _error(exc)
             except OSError as exc:
                 _log(f'[steward-role] charter write validation failed: {exc}', flush=True)
                 return _error('steward role store unavailable', 500)
+        return fn(project_id, item_id, *args, **kwargs)
     return wrapped
 
 
 def project_delete(fn):
     @wraps(fn)
-    @serialized_write
     def wrapped(project_id, *args, **kwargs):
         from mc.blueprints import project_routes as pr
-        try:
-            p = pr.load_project(project_id) or {}
-            if (p.get('steward_assignment') is not None
-                    or any(r.get('project_id') == project_id and model.is_role(r) for r in _schedules())):
-                refusal = require_human(request.get_json(silent=True) or {})
-                if refusal is not None:
-                    return refusal
-            return fn(project_id, *args, **kwargs)
-        except OSError as exc:
-            _log(f'[steward-role] project delete validation failed: {exc}', flush=True)
-            return _error('steward role store unavailable', 500)
+        with WRITE_LOCK:
+            try:
+                p = pr.load_project(project_id) or {}
+                if (p.get('steward_assignment') is not None
+                        or any(r.get('project_id') == project_id and model.is_role(r) for r in _schedules())):
+                    refusal = require_human(request.get_json(silent=True) or {})
+                    if refusal is not None:
+                        return refusal
+            except OSError as exc:
+                _log(f'[steward-role] project delete validation failed: {exc}', flush=True)
+                return _error('steward role store unavailable', 500)
+        return fn(project_id, *args, **kwargs)
     return wrapped
 
 
 def steward_control(fn):
     @wraps(fn)
-    @serialized_write
     def wrapped(project_id, *args, **kwargs):
-        from mc.blueprints import steward_routes as st, scheduler_routes as sr
+        from mc.blueprints import steward_routes as st
         from mc.blueprints import project_routes as pr
-        with pr._project_write_lock(project_id):
+        with WRITE_LOCK, pr._project_write_lock(project_id):
             try:
                 rows = _schedules()
                 bound = [s for s in rows if s.get('project_id') == project_id and model.is_role(s)]
                 p = st.load_project(project_id)
-                if not bound and not (p or {}).get('steward_assignment'):
-                    return fn(project_id, *args, **kwargs)
-                data = request.get_json(silent=True) or {}
-                refusal = require_human(data)
-                if refusal is not None:
-                    return refusal
-                if not p:
-                    return _error('project not found', 404)
-                enable = request.path.endswith('/enable')
-                # Even an orphan pointer must not prevent a human kill switch.
-                row = model.assignment(p, rows) if enable else None
-                if enable:
-                    if not row:
-                        raise model.RoleError('select a steward_assignment schedule first')
-                    if set(data) - {'passcode'}:
-                        raise model.RoleError('edit role owner, charter and cadence on the schedule')
-                    row = _persist(dict(row, enabled=True), rows, row)
-                    p = st.load_project(project_id)
-                    if p is None:
-                        raise model.RoleError('role project disappeared during enable')
-                p['steward_mode'] = 'on' if enable else 'off'
-                p['last_updated'] = now_iso()
-                st.save_project(project_id, p)
-                # A role kill switch never removes shared guards or assignments.
-                return jsonify({'ok': True, 'enabled': enable,
-                                'schedule_id': (row or {}).get('id'),
-                                'execution_error': EXECUTION_ERROR})
+                if bound or (p or {}).get('steward_assignment'):
+                    return _control_role(project_id, p, rows)
             except (model.RoleError, TypeError, ValueError) as exc:
                 return _error(exc)
             except OSError as exc:
                 _log(f'[steward-role] steward control failed: {exc}', flush=True)
                 return _error('steward role store unavailable', 500)
+        return fn(project_id, *args, **kwargs)
     return wrapped
+
+
+def _control_role(project_id, p, rows):
+    """Mutate a role under the caller-held WRITE_LOCK and project lock."""
+    from mc.blueprints import steward_routes as st
+    data = request.get_json(silent=True) or {}
+    refusal = require_human(data)
+    if refusal is not None:
+        return refusal
+    if not p:
+        return _error('project not found', 404)
+    enable = request.path.endswith('/enable')
+    # Even an orphan pointer must not prevent a human kill switch.
+    row = model.assignment(p, rows) if enable else None
+    if enable:
+        if not row:
+            raise model.RoleError('select a steward_assignment schedule first')
+        if set(data) - {'passcode'}:
+            raise model.RoleError('edit role owner, charter and cadence on the schedule')
+        row = _persist(dict(row, enabled=True), rows, row)
+        p = st.load_project(project_id)
+        if p is None:
+            raise model.RoleError('role project disappeared during enable')
+    p['steward_mode'] = 'on' if enable else 'off'
+    p['last_updated'] = now_iso()
+    st.save_project(project_id, p)
+    # A role kill switch never removes shared guards or assignments.
+    return jsonify({'ok': True, 'enabled': enable,
+                    'schedule_id': (row or {}).get('id'),
+                    'execution_error': EXECUTION_ERROR})
