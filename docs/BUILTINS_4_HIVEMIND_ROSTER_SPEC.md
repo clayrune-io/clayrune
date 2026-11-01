@@ -451,6 +451,15 @@ is a separately authorized pilot step, not a test that edits home files.
 
 ### HR-7: Optional native Claude workflow adapter
 
+Status (adapter increment): **incomplete-pending-pilot**. The injected-driver
+contract and fake capability/lifecycle tests are present; no production driver,
+native invocation or runtime enablement is supplied. Read-only local CLI help
+inspection established no verified native workflow entry point for Mode A.
+It did not execute a workflow or prove that every possible invocation is
+unsupported. See [adapter contract](HIVEMIND_NATIVE_WORKFLOW.md); exact local
+inspection and verification results are in the ignored item journal. The real
+Claude pilot is separately authorized work, not part of this increment.
+
 Owner: `mc/hivemind_native_workflow.py`; tests
 `tests/test_hivemind_native_workflow.py`. Depends on HR-2 and Q7.
 

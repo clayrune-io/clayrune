@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-01] - Bound optional native child execution (BUILTINS-4 HR-7)
+
+- Added an injected-driver contract with explicit opt-in, a durable shared four-child run budget, pinned scope/lineage/guards and owned-child reconciliation. Missing capability remains unsupported; required native execution holds.
+- Tested committed nested output reaching the parent branch, restart/idempotency, failure/orphan holds and cancellation with fake drivers and temporary Git repositories. Existing review gates and zero automatic replacement reviews remain unchanged.
+- Internal branch candidate only, **incomplete-pending-pilot**: no production Claude driver, native invocation, runtime wiring, real workflow launch, merge, push or restart is claimed.
+
 ## [2026-11-01] - Require an exact review between roster merges (BUILTINS-4 HR-5)
 
 - Added a durable serial coordinator for explicit roster runs: merge one worker branch with existing native standards, run its smokes, then consume an independent exact-commit pass through the reviewer lifecycle guard before the next merge.
