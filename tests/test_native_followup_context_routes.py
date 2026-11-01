@@ -187,7 +187,7 @@ def test_per_message_memory_uses_real_retrieval_without_rebuilding_setup(route_e
     assert e.rebuilds == ['quartz calibration']
 
 
-def test_incognito_never_refreshes_stash_or_retrieves_memory(route_env, monkeypatch):
+def test_incognito_never_refreshes_stash_or_retrieves_memory(route_env, monkeypatch, codex_mcp_cli):
     e = route_env
     e.session['incognito'] = True
 
@@ -199,6 +199,10 @@ def test_incognito_never_refreshes_stash_or_retrieves_memory(route_env, monkeypa
     assert e.send('private alpha').endswith('private alpha')
     assert e.send('private beta') == 'private beta'
     assert not e.rebuilds
+    if e.engine == 'codex':
+        assert len(codex_mcp_cli) == 2
+        assert all(not any(spec['enabled'] for spec in servers.values())
+                   for servers in codex_mcp_cli)
 
 
 def test_fingerprint_error_reuses_stash_without_losing_message(route_env, monkeypatch):

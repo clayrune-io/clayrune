@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-01] - Isolate Codex MCP discovery in existing runtime tests (BUILTINS-7b)
+
+- Repaired nine post-merge test failures caused by model-only CLI stubs and an obsolete native-discovery expectation; the real MCP bridge and profile validation remain exercised.
+- Isolated the fixture catalog and Codex home, retained context/memory/workflow assertions, and added explicit zero-enabled-MCP assertions for incognito dispatch and resume. No production behavior changed.
+
 ## [2026-10-31] - Compose steward cycles from one role contract (BUILTINS-3 SR-2)
 
 - Added a separate cycle composer retaining the selected character, current charter, canonical journal, marker-first ordering, and current voice/rules/refresh text without depending on native skill discovery.
