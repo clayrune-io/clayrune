@@ -1099,6 +1099,10 @@ def _fresh_context_for(project, session, task=''):
     bare way had MEMORY and rules injected back into it, which is the one thing
     incognito exists to prevent.
     """
+    from mc.hivemind_worker import pinned_context
+    pinned = pinned_context(session)
+    if pinned is not None:
+        return pinned
     body, name, sk = '', '', []
     try:
         body, name, sk = _session_character_parts(project, session)
@@ -1137,6 +1141,10 @@ def _respawn_sysprompt_args(session, project, task=''):
     never. Best-effort throughout: a rebuild failure degrades to reusing the
     stash, and a missing stash to a context-less resume — never a blocked turn.
     """
+    from mc.hivemind_worker import pinned_context
+    pinned = pinned_context(session)
+    if pinned is not None:
+        return _sysprompt_file_args(pinned)
     context = (session or {}).get('_system_prompt') or ''
     fp = ''
     try:
@@ -7519,6 +7527,9 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
     entry = next((e for e in log if e.get('session_id') == session_id), None)
     if not entry:
         return None
+    if entry.get('character_ref'):
+        from mc.hivemind_worker import revive_roster_worker
+        return revive_roster_worker(entry, p, message)
     revive_project_generation = entry.get('project_generation', 1)
     _assert_runtime_project_generation(
         project_id, revive_project_generation, incognito=bool(entry.get('incognito')))
@@ -7940,6 +7951,9 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
         return None
     entries.sort(key=lambda e: e.get('ts', ''))
     entry = entries[-1]
+    if entry.get('character_ref'):
+        from mc.hivemind_worker import revive_roster_worker
+        return revive_roster_worker(entry, p, message)['session_id']
     if entry.get('claude_session_id'):
         return None  # the Claude -r path owns this one
     provider = (entry.get('provider') or '').lower()
@@ -9546,7 +9560,7 @@ def _log_agent_completion_body(session):
     _notify_spawner_unless_jobs_open(session, summary)
 
     # Extract token telemetry from the transcript before building the entry.
-    # Best-effort: failures silently produce empty telemetry.
+    # Best-effort: failures produce empty telemetry and an observable warning.
     _telemetry = {}
     if not is_housekeeping and not session.get('incognito'):
         try:
@@ -9554,8 +9568,8 @@ def _log_agent_completion_body(session):
             # run under, not just the current one -- see
             # `_session_cumulative_transcript_telemetry`'s docstring.
             _telemetry = _session_cumulative_transcript_telemetry(project_id, session)
-        except Exception:
-            pass
+        except Exception as e:
+            _log(f"[completion] transcript telemetry failed for {session.get('session_id', '')}: {e}", flush=True)
 
     entry = {
         'ts': now_iso(),
@@ -9663,6 +9677,9 @@ def _log_agent_completion_body(session):
     # replace it in place so trigger_type/trigger_id survive the rewrite. Otherwise
     # insert at the top as before. Move the row to position 0 on update so newest-
     # finalized stays at the top (matches the "log.insert(0, ...)" convention).
+    if session.get('character_ref'):
+        from mc.hivemind_worker import attempt_metadata
+        entry.update(attempt_metadata(session))
     if session.get('human_joined'):
         entry['human_joined'] = True   # display-only, see _mark_human_joined
     def complete(log):
@@ -11562,7 +11579,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              session_dict_override=None,
                              max_turns_override=None,
                              agent_cwd_override=None,
-                             isolated_override=False):
+                             isolated_override=False, prepared_context=None):
     """Core dispatch logic shared by HTTP endpoint and scheduler.
 
     Returns session_id on success, raises ValueError on error.
@@ -11678,7 +11695,13 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     _prior = _prior_character(project_id, resume_id, provider_override) if resume_id else None
     if _prior is not None and not character:
         character = _prior
-    if _prior == '' and not character:
+    if prepared_context is not None:
+        character_meta = dict(prepared_context.character)
+        character_body = ''  # Already composed into the prepared system prompt.
+        provider_override = prepared_context.assignment['provider']
+        model_override = prepared_context.assignment['model']
+        effort_override = prepared_context.assignment['effort']
+    elif _prior == '' and not character:
         # It ran with no persona. Keep it that way — don't hand it the project
         # default just because a resume passed through here.
         character_meta, character_body = None, ''
@@ -11719,6 +11742,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         provider_name, user_initiated=(trigger_type == 'manual'), project=p)
     _engine_fallback_record = None
     if _allowance_block:
+        if prepared_context is not None:
+            raise ValueError(_allowance_block)
         # MC-961: opt-in only (empty `engine_fallback_order` is a no-op, and
         # this never fires on any refusal but the allowance one checked
         # above). A native `-r` resume can't cross vendors, and converting one
@@ -11753,7 +11778,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # character's own engine pin belongs to the vendor that just got refused,
     # so it must not be re-applied on top of the fallback vendor.
     _char_model = _character_engine(character_meta, 'model')
-    if not resume_id and not model_override and _char_model and not _engine_fallback_record:
+    if (prepared_context is None and not resume_id and not model_override
+            and _char_model and not _engine_fallback_record):
         model_override = _char_model
     # Refuse an incoherent provider/model pair instead of handing a foreign
     # model id to a CLI that will reject it (e.g. a claude-code process
@@ -11773,6 +11799,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         # a hard block rather than a warning.
         _quota_block = _model_quota_blocked(provider_name, model_override)
         if _quota_block:
+            if prepared_context is not None:
+                raise ValueError(_quota_block)
             # MC-961: this model is unavailable right now, the second of the
             # two trigger shapes the fallback may act on (the first is the
             # vendor-level allowance check above). Same resume_id exception —
@@ -11835,7 +11863,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             _log(f"[dispatch] runtime '{provider_name}' failed, no fallback: {e}")
             raise
 
-    use_streaming = p.get('use_streaming_agent', state.CONFIG.get('use_streaming_agent', False))
+    use_streaming = (False if prepared_context is not None else
+                     p.get('use_streaming_agent', state.CONFIG.get('use_streaming_agent', False)))
 
     # Check session transcript size / context weight — auto-start fresh if
     # either trigger fires (docs/CONTEXT_ECONOMY_SPEC.md §2).
@@ -11964,7 +11993,14 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # respawn reads it back via `_fresh_context_for`/`_respawn_sysprompt_args`
     # instead of re-deriving it, so the shape can't drift mid-conversation.
     _job_shape = _context_profile.resolve_job_shape(source, '')
-    if resume_id and not model_override:
+    if prepared_context is not None:
+        routed_model, routed_source = model_override, 'character'
+        base_flags = _build_claude_flags(
+            p, streaming=False, model_override=model_override,
+            effort_override=_char_effort, max_turns_override=max_turns_override,
+            character_skills=_char_skills)
+        context = prepared_context.system_prompt
+    elif resume_id and not model_override:
         # An imported/older conversation may have no recorded model. Let the
         # native resume restore it, rather than choosing today's defaults.
         routed_model, routed_source = '', 'resume'
@@ -12024,7 +12060,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 effort_override=_char_effort,
                 max_turns_override=max_turns_override,
                 character_skills=_char_skills)
-    if system_prompt_suffix:
+    if system_prompt_suffix and prepared_context is None:
         # Provider-neutral callers such as Hivemind may supply an additional
         # feature context block. Keep the authoritative project context first,
         # and let the runtime adapter deliver the combined prompt according to

@@ -475,6 +475,14 @@ worker failure. An uncertain launch remains blocked for reconciliation rather
 than repeatedly spawning another worker; failed prerequisites prevent dependent
 work from running. These checks do not yet provide provider-neutral quota recovery.
 
+**Roster workers (API, branch implementation)**: explicitly versioned roster
+runs assign each workstream to a global character. Each attempt uses that
+character's engine, voice and declared skills with project/shared rules. A
+retry reads the current character; recovery of the same attempt retains its
+pinned identity. Code workers hold if isolation fails. The existing UI still
+uses engine-based workers, and post-merge roster review remains a later ticket;
+worker completion alone does not establish reviewed integration.
+
 **Stale heuristic**: if a hivemind is `active` but hasn't moved in over
 24 hours (e.g. server crashed, was killed), it's auto-marked **stale** with
 a grey badge and a `▶ Restart` control. Both client-side render and

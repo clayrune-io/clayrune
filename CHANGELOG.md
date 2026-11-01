@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-01] - Launch roster hivemind workers with pinned context (BUILTINS-4 HR-2)
+
+- Extracted worker context/spawn into a separate module; roster attempts receive their selected character, skills, rules, resolved engine and unattended workstream directive through the existing runtime seam.
+- Persisted attempt identity/context before launch and through completion/recovery; code workers hold on isolation failure, and Claude adopts the same session/worktree without another context build or engine substitution. Legacy workers retain their existing path.
+- Branch candidate only; reviewer records, reviewer launch and reviewed integration remain later tickets. No merge, push, restart or live model execution.
+
 ## [2026-11-01] - Isolate Codex MCP discovery in existing runtime tests (BUILTINS-7b)
 
 - Repaired nine post-merge test failures caused by model-only CLI stubs and an obsolete native-discovery expectation; the real MCP bridge and profile validation remain exercised.
