@@ -99,12 +99,28 @@ analysis-only, pause/stop/deletion, ambiguous intent, restart after consumption,
 cursor-write crash, exact review task evidence, lock release while waiting,
 startup delegation, damaged state and safe dependency-link handling.
 
-Frozen-source checkpoint: all **540 hivemind tests passed** in 105.75 seconds,
+Final frozen-source verification: all **540 hivemind tests passed** in 105.75 seconds,
 including **44 new HR-5 cases**. `pyright mc/hivemind_integration_cycle.py`
 reports **0 errors, 0 warnings**. `git diff --check` is clean.
 
-The required unfiltered full suite is still running at this checkpoint; no
-full-suite result is inferred. Source/tests are frozen in the worktree's
-`_scratch/hr5/source_freeze.json`; scoped and full logs/argv/return-code records
-are under `_scratch/hr5/{hivemind,full}/`. A final verification update replaces
-this pending paragraph once that run terminates.
+The unfiltered full suite (`python -m pytest -o addopts=-ra`) completed with
+**18,960 passed, 54 skipped, 1 xfailed, 3 warnings** in **2059.39 seconds
+(34m 19s), exit 0**. All 44 new cases also passed in the full-suite order.
+The known intermittent named-profile CDP case passed in this run. There were
+no test failures, exclusions, retries or unrelated source/test fixes.
+
+The warnings are two invalid-escape SyntaxWarnings in unchanged test files
+and a stream-reader fixture thread whose `_Proc` lacks `wait`, attributed by
+pytest to `test_context_rollover_trigger.py::TestContextTokensOverThreshold::test_zero_disables`.
+The latter ends at unchanged `agent_routes.py:6498`; it is recorded rather
+than repaired outside HR-5. The XFAIL is the existing human-owned fence
+timeout patch check; platform/optional/live-opt-in skips remain in the log.
+No approval gate was waived.
+
+Source/tests exactly match commit `9371281c` and the frozen SHA-256 map in
+`_scratch/hr5/source_freeze.json`; final hash comparison succeeded. Scoped
+and full logs/argv/return-code records are under `_scratch/hr5/{hivemind,full}/`.
+Managed job `256b4b4fe458407f8d5fa942d7e4828a` completed with exit 0; the full
+pytest child was registered as PID 25992. A durable review copy is retained
+in the main checkout's `_scratch/hr5-448169116987-final/`. No merge, push,
+server restart or live hivemind/native workflow run was performed.
