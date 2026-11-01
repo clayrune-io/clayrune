@@ -92,9 +92,9 @@ Commands from the candidate checkout:
 
 ```powershell
 python -m pytest tests/test_hivemind_review.py
-python _scratch/hr3_checks.py focused
+python -m pytest (Get-ChildItem tests/test_*.py | Where-Object { $_.Name -like 'test_hivemind*.py' -or $_.Name -like 'test_*review*.py' } | ForEach-Object FullName)
 pyright mc/hivemind_review.py
-python _scratch/hr3_checks.py full
+python -m pytest
 ```
 
 The scratch runner records the expanded command, complete output and exit
@@ -104,10 +104,12 @@ The focused command selects all `tests/test_hivemind*.py` and
 `tests/test_*review*.py` files. Tests use temporary directories, fake OS/runtime
 tables, and existing lineage readers; no live reviewer/model call is made.
 
-Validation in this branch: 92 new tests passed (rc=0); basic pyright returned
-0 errors (rc=0). Broader focused and full-suite results are pending and will be
-recorded before handoff. The original branch review gate and lineage files
-are unchanged; existing gate tests are included in the focused run.
+Validation in this branch: 92 new tests passed (rc=0); final focused suite
+483 passed, 13 skipped (rc=0); basic pyright returned 0 errors (rc=0). The
+13 skips are the existing POSIX-shell gate checks on Windows. Full-suite
+results are pending and will be recorded before handoff. The original branch
+review gate and lineage files are unchanged; existing gate tests are included
+in the focused run.
 
 Rollback: revert the HR-3 source/tests/docs commit. Retain any runtime review
 records and provisional candidate branches. Missing evidence remains a hold;
