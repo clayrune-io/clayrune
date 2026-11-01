@@ -202,14 +202,30 @@ pytest PID, and explicitly inherits `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8` into
 hook children. Clayrune's managed job facility owns long verification runs.
 No tests are excluded from the full command.
 
-Current final-module checks: **77 passed**, rc=0 (7.54s); basic pyright
-**0 errors**, rc=0; final all-hivemind **453 passed**, rc=0 (38.75s).
-The full-suite run is pending; its completion must replace this paragraph
-before final handoff. An earlier
-448-test hivemind run and a 453-test run passed before the final prompt claim
-correction and are not presented as verification of the final source. An early
-full run was deliberately stopped at 4% for that correction; it produced no
-suite verdict and is excluded from the final matrix.
+Final validation of source commit `39d24ae1`:
+
+| Check | Result | Exit code |
+|---|---|---|
+| New reviewer tests | 77 passed in 7.54s | 0 |
+| Every `tests/test_hivemind*.py` file | 453 passed in 38.75s | 0 |
+| Basic pyright on the new module | 0 errors, 0 warnings | 0 |
+| Complete pytest suite | 18,873 passed, 54 skipped, 1 xfailed in 2156.81s (35m 56s) | 0 |
+
+The full result is from managed job `20eeab463f5a467b86f814ebba36a078`;
+the final scoped result is from `55846548e9ae45ef8928e51ee129fca2`. The
+runner's saved child rc and the managed job rc both equal zero. Source/test
+SHA-256 values matched the pre-run freeze at completion. All 77 new tests
+also passed inside the complete suite; no source or test edits occurred during
+that final run. The skips are existing platform/optional-install/live-opt-in
+checks. The expected failure is the existing human-owned fence-timeout patch
+check; no gate was waived or altered.
+
+Earlier 448-test and 453-test scoped runs preceded final prompt-claim
+correction and are excluded from this final matrix. An early full run was
+deliberately stopped at 4% for that correction; it produced no suite verdict
+and is likewise excluded. Complete final logs and exact expanded commands
+remain in the scratch directories named above; the journal records the run
+and checkpoint history.
 
 No live engine/fence execution, actual 45-minute vendor process, server-restart
 reattachment, HTTP/UI integration or real multi-workstream pilot is claimed.
