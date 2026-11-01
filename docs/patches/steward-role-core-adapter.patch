@@ -1,0 +1,49 @@
+--- a/steward/core.py
++++ b/steward/core.py
+@@ -135,38 +135,15 @@
+
+
+ def build_cycle_task(project: dict, charter_item: Optional[dict],
+-                     refresh: str = '') -> str:
+-    """The `[Steward cycle]` prompt. The marker triggers the mc-steward skill;
+-    the scheduler prepends its own local-time header on continued runs.
+-
+-    `refresh` is what the steward has LEARNED since its last cycle (new skills,
+-    relevant memory, past explorations). It is rebuilt per fire and carried in
+-    the TASK TEXT — deliberately, not in the system prompt: `claude -r` restores
+-    a session's ORIGINAL system prompt and ignores `--append-system-prompt`
+-    (verified 2026-06-04, see the discovery memory), so anything injected there
+-    would silently never reach a resumed steward. The user turn is the only
+-    channel that survives a resume, which is why this lives here.
++                     refresh: str = '', *, cycle_snapshot=None) -> str:
++    """Compatibility seam; role conduct is composed outside human-owned core.
++
++    Refresh stays in task text so live append and cold revival receive it.
++    The optional resolved snapshot is supplied by the shared role dispatcher.
+     """
+-    objective = get_objective(project) or (
+-        str(charter_item.get('text', '')).replace(CHARTER_PREFIX, '') if charter_item else '')
+-    cid = (charter_item or {}).get('id', '')
+-    task = (
+-        "[Steward cycle] You are the autonomous STEWARD of this project — run ONE "
+-        "cycle now, following the mc-steward skill exactly.\n\n"
+-        f"Charter (your field of responsibility): {objective}\n"
+-        f"Charter backlog item id: {cid} (append your progress note here via "
+-        f"POST /api/project/<pid>/backlog/{cid}/note).\n\n"
+-        "Reminder of the cycle: orient (charter + backlog + your past notes) → "
+-        "pick the SINGLE highest-value next step → if reversible, do it; if "
+-        "irreversible/mutating, post a DECISION NEEDED note with the exact "
+-        "command and STOP that step → log what you did → message the human only "
+-        "if they must KNOW or DECIDE → ensure your next wake is scheduled. Never "
+-        "block the loop waiting; if stuck, post BLOCKED and end the cycle."
+-    )
+-    if refresh:
+-        task += "\n\n" + refresh
+-    return task
+-
++    from mc.steward_role_task import build_cycle_task as compose_cycle
++    return compose_cycle(project, charter_item, refresh,
++                         cycle_snapshot=cycle_snapshot)
+
+ # ── Notify seam (server-side lifecycle messages; the AGENT uses curl+Push) ─────
+ def steward_notify(project_id: str, kind: str, body: str, action: str = '') -> bool:

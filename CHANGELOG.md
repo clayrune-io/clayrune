@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-31] - Compose steward cycles from one role contract (BUILTINS-3 SR-2)
+
+- Added a separate cycle composer retaining the selected character, current charter, canonical journal, marker-first ordering, and current voice/rules/refresh text without depending on native skill discovery.
+- Prepared protected-file patches for the core adapter and canonical directive/builtin skill, replacing stale backlog-note/self-rearming guidance with journal/reply-first instructions; added the frozen resource entry and disposable-copy patch tests.
+- Branch candidate only; protected patches remain unapplied, so SR-2 integration is incomplete and role execution remains blocked. No scheduler/state rollout, migration, merge, push or restart.
+
 ## [2026-10-31] - Carry selected MCP servers into four vendor launches (BUILTINS-7b)
 
 - Codex, OpenCode, Goose and Kiro consume the resolved MCP selection on dispatch and follow-up; Codex model-refusal retries retain it too. Explicit empty selections, the built-in server switch and incognito/frozen exclusions are preserved.
