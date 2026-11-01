@@ -48,6 +48,7 @@ import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 import mc.agent_worktree as _agent_worktree
 import mc.hivemind_integration as _hm_integration
 import mc.hivemind_lineage as _hm_lineage
+import mc.hivemind_roster as _hm_roster
 import mc.project_sync as _sync
 from mc import engine_selection, obs, state
 from mc.atomic_json import write_json_atomic
@@ -585,6 +586,14 @@ def hivemind_create():
     if not p:
         return jsonify({'error': 'project not found'}), 404
 
+    # Roster content (BUILTINS-4 HR-1) is validated for the WHOLE request before
+    # anything is saved or a decomposer is dispatched. None = legacy request.
+    try:
+        roster_plan = _hm_roster.plan_create(
+            data, app_config=state.CONFIG, project=p)
+    except _hm_roster.RosterError as exc:
+        return jsonify({'error': str(exc)}), exc.status
+
     # Resolve the lifecycle generation only at creation. Dispatch/resume paths
     # validate this saved value exactly and never resolve a current generation
     # for an old or incomplete manifest.
@@ -632,6 +641,8 @@ def hivemind_create():
             'max_retries_per_workstream': data.get('max_retries', 2),
         },
     }
+    if roster_plan:
+        manifest['config'].update(roster_plan.config)
     _hm_save_manifest(hivemind_id, manifest)
 
     # Initialize empty synthesis
@@ -644,7 +655,7 @@ def hivemind_create():
     created_workstreams = []
     inline_ws = data.get('workstreams') or []
     if inline_ws:
-        for ws_in in inline_ws:
+        for _ws_idx, ws_in in enumerate(inline_ws):
             if not isinstance(ws_in, dict):
                 continue
             title = (ws_in.get('title') or '').strip()
@@ -670,6 +681,8 @@ def hivemind_create():
                 'current_agent_session_id': None,
                 'last_agent_session_id': None,
             }
+            if roster_plan:
+                ws.update(roster_plan.workstream_fields(_ws_idx))
             _hm_save_workstream(hivemind_id, ws_id, ws)
             created_workstreams.append(ws)
         if created_workstreams:
@@ -730,12 +743,20 @@ def hivemind_update(hivemind_id):
     if not manifest:
         return jsonify({'error': 'not found'}), 404
     data = request.get_json() or {}
+    config_patch = None
+    if 'config' in data and isinstance(data['config'], dict):
+        try:
+            config_patch = _hm_roster.clean_config_update(
+                manifest, data['config'], app_config=state.CONFIG,
+                project=load_project(manifest.get('project_id', '')) or None)
+        except _hm_roster.RosterError as exc:
+            return jsonify({'error': str(exc)}), exc.status
     # Update allowed fields
     for key in ('title', 'goal', 'status'):
         if key in data:
             manifest[key] = data[key]
-    if 'config' in data and isinstance(data['config'], dict):
-        manifest['config'].update(data['config'])
+    if config_patch is not None:
+        manifest['config'].update(config_patch)
     manifest['updated_at'] = now_iso()
     _hm_save_manifest(hivemind_id, manifest)
     return jsonify({'ok': True, 'manifest': manifest})
@@ -833,6 +854,13 @@ def hivemind_workstream_create(hivemind_id):
         return jsonify({'error': 'title required'}), 400
 
     ws_id = data.get('id', 'ws_' + str(uuid.uuid4())[:6])
+    try:
+        roster_fields = _hm_roster.check_workstream_create(
+            data, ws_id, manifest, app_config=state.CONFIG,
+            project=load_project(manifest.get('project_id', '')) or None,
+            ws_exists=lambda wid: _hm_load_workstream(hivemind_id, wid) is not None)
+    except _hm_roster.RosterError as exc:
+        return jsonify({'error': str(exc)}), exc.status
     ws = {
         'id': ws_id,
         'title': data['title'].strip(),
@@ -852,6 +880,7 @@ def hivemind_workstream_create(hivemind_id):
         'current_agent_session_id': None,
         'last_agent_session_id': None,
     }
+    ws.update(roster_fields)
     _hm_save_workstream(hivemind_id, ws_id, ws)
     manifest['updated_at'] = now_iso()
     _hm_save_manifest(hivemind_id, manifest)
@@ -873,17 +902,24 @@ def hivemind_workstream_update(hivemind_id, ws_id):
     if not ws:
         return jsonify({'error': 'workstream not found'}), 404
     data = request.get_json() or {}
+    manifest = _hm_load_manifest(hivemind_id)
+    try:
+        roster_changes = _hm_roster.check_workstream_update(
+            ws, data, manifest, app_config=state.CONFIG,
+            project=load_project((manifest or {}).get('project_id', '')) or None)
+    except _hm_roster.RosterError as exc:
+        return jsonify({'error': str(exc)}), exc.status
     for key in ('title', 'description', 'dependencies', 'priority',
                 'provider', 'model', 'effort', 'status'):
         if key in data:
             ws[key] = data[key]
+    ws.update(roster_changes)
     if 'smokes' in data:
         ws['smokes'] = _hm_integration.clean_smokes(data['smokes'])
     if data.get('status') == 'completed' and not ws.get('completed_at'):
         ws['completed_at'] = now_iso()
     _hm_save_workstream(hivemind_id, ws_id, ws)
 
-    manifest = _hm_load_manifest(hivemind_id)
     if manifest:
         manifest['updated_at'] = now_iso()
         _hm_save_manifest(hivemind_id, manifest)
@@ -1117,6 +1153,15 @@ def _hm_runtime_dispatch(*, provider_name, project_id, project_path, task,
 
 def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
     """Spawn a Hivemind worker through AgentRuntime for every provider."""
+    if _hm_roster.is_roster_workstream(ws):
+        # HR-1 only persists the assignment; the roster worker launch is HR-2.
+        # Launching it here would run the row with the manifest's worker engine
+        # and no persona. EngineSelectionError = "nothing was launched" to the
+        # auto-spawn path, which marks the row failed/unsupported_engine.
+        from mc.engine_selection import EngineSelectionError as _RosterNotLaunched
+        raise _RosterNotLaunched(
+            f"Workstream {ws_id} is a roster assignment ({ws.get('character')}); "
+            f"roster worker launch is not available yet (BUILTINS-4 HR-2)")
     project_id = p.get('id', '')
     worker_context = _hm_build_worker_context(hivemind_id, ws_id)
     from mc import engine_selection
