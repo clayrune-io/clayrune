@@ -189,6 +189,9 @@ def test_real_qwen_launch_boundaries_enable_persistent_retry_only_unattended(mon
     monkeypatch.setattr(ar, '_inject_guardrail_env', lambda *args: None)
     monkeypatch.setattr(ar, '_inject_qwen_defaults_env', lambda *args: None)
     monkeypatch.setattr(ar, '_pin_qwen_windows_shell', lambda *args: None)
+    # BUILTINS-5 fence probe needs a real Qwen CLI; this test is about retry env only.
+    monkeypatch.setattr(ar.vendor_fence, 'check_launch', lambda *args, **kwargs: None)
+    monkeypatch.setattr(ar.vendor_fence, 'prepare_env', lambda vendor, session, env, **kwargs: env)
     monkeypatch.delenv('QWEN_CODE_UNATTENDED_RETRY', raising=False)
     runtime = ar.QwenRuntime()
     monkeypatch.setattr(runtime, 'resolve_binary', lambda: 'qwen')
