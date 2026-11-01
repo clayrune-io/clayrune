@@ -2,6 +2,12 @@
 
 const hivemindDashboardWs = {};  // hivemindId -> selected workstream id (or null for overview)
 let _hmTabDebounce = {};    // projectId -> setTimeout timer ID
+// Review/roles view lives in hivemind-review.js (window.hmReview); each call
+// below degrades to the pre-HR-8a markup if that module is absent.
+const _hmr = () => window.hmReview || null;
+const _hmrStatusBadge = (status, roles, cls) => (_hmr()
+  ? _hmr().statusBadgeHTML(status, roles, cls)
+  : `<span class="hm-status-badge ${esc(cls || status)}">${esc(cls || status)}</span>`);
 
 function hivemindTabHTML(p) {
   const cached = hivemindCache[p.id];
@@ -32,11 +38,12 @@ function hivemindTabHTML(p) {
         : (hm.status === 'completed' || hm.status === 'stopped' || hm.status === 'stale')
         ? `<button onclick="event.stopPropagation();hivemindAction('${esc(hm.id)}','start')" title="Restart" style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:13px;padding:2px 4px">&#x25B6;</button>`
         : '';
-      return `<div class="hm-list-row" onclick="openHivemindDashboard('${esc(hm.id)}')" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;cursor:pointer;background:var(--surface);transition:background 0.15s" onmouseover="this.style.background='var(--surface-hover)'" onmouseout="this.style.background='var(--surface)'">
-        <span class="hm-status-badge ${esc(hm.status)}" style="font-size:11px;flex-shrink:0">${esc(hm.status)}</span>
+      return `<div class="hm-list-row" onclick="openHivemindDashboard('${esc(hm.id)}')" style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;cursor:pointer;background:var(--surface);transition:background 0.15s" onmouseover="this.style.background='var(--surface-hover)'" onmouseout="this.style.background='var(--surface)'">
+        <span style="flex-shrink:0">${_hmrStatusBadge(hm.status, hm._roles || hm.roles)}</span>
         <span style="flex:1;font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(hm.title || hm.goal || 'Untitled')}</span>
         <span style="font-size:11px;color:var(--text-faint);flex-shrink:0">${ws.length} ws &middot; ${completedWs} done &middot; ${totalFindings} findings</span>
         <span style="display:flex;gap:2px;flex-shrink:0" onclick="event.stopPropagation()">${controls}</span>
+        ${_hmr() ? _hmr().listChipHTML(hm) : ''}
       </div>`;
     }).join('');
   }
@@ -139,6 +146,7 @@ async function loadHiveminds(projectId) {
         hm._workstreams = data.workstreams || [];
         hm._recent_messages = data.recent_messages || [];
         hm._decisions = data.decisions || [];
+        hm._roles = data.roles || null;  // HR-8b full projection (roster runs only)
       } catch(e) { hm._workstreams = []; hm._recent_messages = []; }
     }
     hivemindCache[projectId] = { hiveminds, loaded: true };
@@ -269,7 +277,7 @@ function buildHivemindDashboardHTML(hivemindId, manifest, workstreams, fullData)
   return `<div class="modal-content" style="width:100%;height:100%;display:flex;flex-direction:column">
     <div class="modal-header" style="cursor:move;display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0">
       <h3 style="margin:0;font-size:14px;flex:1">${esc(manifest.title || 'Hivemind Dashboard')}</h3>
-      <span class="hm-status-badge ${esc(manifest.status)}">${esc(manifest.status)}</span>
+      ${_hmrStatusBadge(manifest.status, fullData && fullData.roles)}
       ${controlsHTML}
       <button onclick="closeModalById('__hivemind_${esc(hivemindId)}')" style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:16px;padding:4px 8px">&#x2715;</button>
     </div>
@@ -318,6 +326,7 @@ function buildHmOverviewHTML(hivemindId, manifest, workstreams, fullData) {
       <span>${decisions.length} decisions</span>
     </div>
 
+    ${_hmr() ? _hmr().overviewPanelHTML(fullData) : ''}
     <div style="font-size:13px;font-weight:500;margin-bottom:8px">Workstreams</div>
     <div class="hm-ws-list">
       ${workstreams.map(w => `
@@ -331,6 +340,7 @@ function buildHmOverviewHTML(hivemindId, manifest, workstreams, fullData) {
             ${w.provider ? _providerBadge(w.provider) : ''}
             ${w.model ? `<span>${esc(w.model)}</span>` : ''}
           </span>
+          ${_hmr() ? _hmr().wsChipsHTML(fullData.roles, w.id) : ''}
         </div>
       `).join('')}
     </div>
@@ -382,6 +392,7 @@ function buildHmOverviewHTML(hivemindId, manifest, workstreams, fullData) {
       <button onclick="viewSynthesis('${esc(hivemindId)}')">View Synthesis</button>
       <button class="secondary" onclick="triggerSynthesis('${esc(hivemindId)}')">Re-synthesize</button>
       <button class="secondary" onclick="openHmRunsModal('${esc(hivemindId)}','${esc(manifest.project_id || '')}','orchestrator','','Orchestrator')">Orchestrator Runs</button>
+      ${_hmr() ? _hmr().reviewerRunsButtonHTML(hivemindId, manifest, fullData.roles) : ''}
     </div>`;
 }
 
@@ -404,6 +415,7 @@ function buildWsDetailHTML(hivemindId, ws, fullData) {
       <button style="margin-left:auto;background:transparent;border:1px solid var(--border);color:var(--text-faint);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px"
         onclick="openHmRunsModal('${esc(hivemindId)}','${esc(projectId)}','worker','${esc(ws.id)}','${esc(ws.title || ws.id)}')">Runs</button>
     </div>
+    ${_hmr() && fullData.roles ? `<div style="margin-bottom:10px">${_hmr().wsChipsHTML(fullData.roles, ws.id)}</div>` : ''}
     <div style="font-size:13px;color:var(--text-faint);margin-bottom:12px;line-height:1.4">${esc(ws.description || '')}</div>
 
     <div class="hm-stats" style="margin-bottom:12px">
@@ -511,7 +523,11 @@ async function loadHmRunsPage(hivemindId, projectId, role, wsId, offset) {
     const runs = data.runs || [];
     const total = data.total || 0;
     const pageFnTemplate = `loadHmRunsPage('${esc(hivemindId)}','${esc(projectId)}','${esc(role)}','${esc(wsId || '')}',$OFFSET)`;
-    body.innerHTML = renderRunRows(runs, projectId)
+    const rowsHTML = _hmr() && data.role_counts
+      ? _hmr().runRowsHTML(runs, projectId, renderRunRows)
+      : renderRunRows(runs, projectId);
+    body.innerHTML = (_hmr() ? _hmr().runsHeaderHTML(data, hivemindId, projectId, role) : '')
+                   + rowsHTML
                    + renderRunsPagination(total, data.offset || 0, data.limit || limit, pageFnTemplate);
   } catch(e) {
     const body = document.getElementById(bodyId);

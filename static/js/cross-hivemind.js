@@ -98,6 +98,7 @@ async function loadAllHiveminds() {
         const data = await detail.json();
         hm._workstreams = data.workstreams || [];
         hm._recent_messages = data.recent_messages || [];
+        hm._roles = data.roles || null;  // HR-8b full projection (roster runs only)
       } catch(e) {
         hm._workstreams = [];
         hm._recent_messages = [];
@@ -221,7 +222,9 @@ function renderAllHiveminds() {
     const badgeTitle = eff === 'stale' ? `Marked stale because no activity for >${HM_STALE_HOURS}h. Underlying status: ${hm.status}` : '';
     return `<div class="hm-global-card" onclick="openHivemindDashboard('${esc(hm.id)}')">
       <div class="hm-global-card-head">
-        <span class="hm-status-badge ${esc(eff)}"${badgeTitle ? ` title="${esc(badgeTitle)}"` : ''}>${esc(eff)}</span>
+        ${window.hmReview && (hm._roles || hm.roles)
+          ? window.hmReview.statusBadgeHTML(hm.status, hm._roles || hm.roles, eff)
+          : `<span class="hm-status-badge ${esc(eff)}"${badgeTitle ? ` title="${esc(badgeTitle)}"` : ''}>${esc(eff)}</span>`}
         <span class="hm-global-card-shortid" title="Hivemind ID: ${esc(hm.id)}">#${esc(_hmShortId(hm.id))}</span>
         <div class="hm-global-card-title">${esc(hm.title || 'Untitled')}</div>
         <span class="hm-global-card-project" onclick="event.stopPropagation();_allHivemindFilter.project='${esc(hm.project_id)}';document.getElementById('ahm-project').value='${esc(hm.project_id)}';renderAllHiveminds()" title="Filter by project">${esc(projName)}</span>
@@ -229,6 +232,7 @@ function renderAllHiveminds() {
         <span class="hm-global-card-controls">${controls}</span>
       </div>
       ${hm.goal ? `<div class="hm-global-card-goal">${esc((hm.goal || '').substring(0, 240))}${hm.goal.length > 240 ? '…' : ''}</div>` : ''}
+      ${window.hmReview ? window.hmReview.listChipHTML(hm) : ''}
       ${_hmTreeMiniViz(ws)}
       <div class="hm-global-card-stats">
         <span><strong>${ws.length}</strong> workstreams</span>
