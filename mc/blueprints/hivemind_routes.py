@@ -48,6 +48,7 @@ import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 
 import mc.agent_worktree as _agent_worktree
 import mc.hivemind_integration as _hm_integration
+import mc.hivemind_integration_cycle as _hm_integration_cycle
 import mc.hivemind_lineage as _hm_lineage
 import mc.hivemind_roster as _hm_roster
 import mc.hivemind_worker as _hm_worker
@@ -225,10 +226,15 @@ def _hm_pin_worktree_base(hivemind_id, commit):
 def _hm_read_integration(hivemind_id):
     """Integration result (merged / failed / branch) or None."""
     try:
+        if _hm_roster.is_roster_manifest(_hm_load_manifest(hivemind_id) or {}):
+            return _hm_integration_cycle.read(sys.modules[__name__], hivemind_id)
         return json.loads((_hm_dir(hivemind_id) / 'integration.json')
                           .read_text(encoding='utf-8'))
-    except Exception:
+    except FileNotFoundError:
         return None
+    except Exception as exc:
+        _log(f'[hivemind] integration state read failed for {hivemind_id}: {exc}', flush=True)
+        return {'status': 'held', 'reason': 'integration state unreadable; reconciliation required'}
 
 
 def _hm_write_integration(hivemind_id, state_dict):
@@ -241,6 +247,9 @@ def _hm_integrate_thread(hivemind_id):
     orchestrator loop. Always leaves a terminal state behind."""
     try:
         manifest = _hm_load_manifest(hivemind_id) or {}
+        if _hm_roster.is_roster_manifest(manifest):
+            _hm_integration_cycle.start(sys.modules[__name__], hivemind_id)
+            return
         project = load_project(manifest.get('project_id', ''))
         if not project:
             _hm_write_integration(hivemind_id, {
@@ -270,6 +279,8 @@ def _hm_start_integration(hivemind_id):
     """Kick off integration once, when every workstream has completed. The
     'running' marker is written BEFORE the thread starts, so a second call
     (manifest re-completion, restart) sees it and does nothing."""
+    if _hm_roster.is_roster_manifest(_hm_load_manifest(hivemind_id) or {}):
+        return _hm_integration_cycle.start(sys.modules[__name__], hivemind_id)
     if _hm_read_integration(hivemind_id) is not None:
         return False
     _hm_write_integration(hivemind_id, {
@@ -543,6 +554,9 @@ def _hm_reconcile_stale_on_startup():
             # no thread left: say so rather than show 'running' forever. The
             # integration branch/worktree are left as they are for a human.
             _integ = _hm_read_integration(d.name)
+            if _integ and _integ.get('review_cycle_version') == 1:
+                _hm_integration_cycle.recover(sys.modules[__name__], d.name)
+                continue
             if _integ and _integ.get('status') == 'running':
                 _integ['status'] = 'interrupted'
                 _integ['reason'] = 'server restarted mid-integration'

@@ -313,6 +313,19 @@ questions about scope/priorities/constraints BEFORE creating.
 | POST | `/api/hivemind/<hivemind_id>/decisions/<did>/approve` | Approve a proposed decision. |
 | GET | `/api/hivemind/<hivemind_id>/runs` | Run history for this hivemind. |
 
+Versioned roster runs (`config.roster_version == 1`) use serial reviewed
+integration after worker completion (HR-5 branch implementation). The existing
+detail response's `integration` exposes `review_cycle_version`, `status`,
+`cursor`, `current` exact candidate/reviewer, accepted `merged`, `skipped`,
+`failed`, `unmerged` and hold `reason`. `awaiting_review` is provisional;
+`completed` means every actual merge has smoke and guarded exact-pass evidence.
+`held` stops later merges, preserving checkout and reports for Dave;
+`skipped` explicitly identifies non-git analysis-only runs. No new retry or
+candidate-nomination route was added. See `docs/HIVEMIND_INTEGRATION_REVIEW.md`
+for recovery/ownership and `docs/HIVEMIND_REVIEW_ROUTES.md` for verdict HTTP.
+Legacy runs retain their batch integration/status semantics; dedicated review
+UI and native workflow support remain separate work.
+
 ## Schedules (local — long-term, repeatable)
 
 For LONG-TERM jobs that must outlive any single session. For short-interval
