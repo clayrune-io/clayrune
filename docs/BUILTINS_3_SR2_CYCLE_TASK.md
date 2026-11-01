@@ -105,7 +105,52 @@ learning-safety suite passed 186 checks, rc=0. `pyright mc/steward_role_task.py`
 reported 0 errors, rc=0 using the installed standalone pyright 1.1.410. The
 venv has no `python -m pyright` module; that invocation returned rc=1.
 
-Full-suite result will be recorded below before handoff. Frozen macOS build and
-fresh-VM installer tests, live engines, real communication, scheduler delivery
-and protected-file integration remain unverified. There are no UI/static changes:
-USER_GUIDE, README, frontend smokes and global agent-rule changes are not needed.
+The full suite completed in 2,116.142 seconds with **18,521 passed, 9 failed,
+54 skipped and 1 expected xfail; rc=1**. JUnit independently records 18,585 cases,
+0 errors and all 40 SR-2 checks passing. This is a failing full run, not a green
+subset substituted for it. Command:
+
+```powershell
+python -m pytest -q -p no:cacheprovider tests --junitxml=_scratch/sr2_full_suite.xml
+```
+
+Full log, XML and captured pytest return code are `_scratch/sr2_full_suite.txt`,
+`_scratch/sr2_full_suite.xml` and `_scratch/sr2_full_suite.rc`. The foreground
+runner registered pytest PID 22620. After pytest exited, its final tail-print
+attempt raised a UTF-8 decoding error on a Windows-encoded log character; the
+pytest return code had already been saved and JUnit was intact. The result above
+comes from that JUnit plus the saved return code, not the tail-print exception.
+
+All nine failing node IDs were replayed on a detached disposable worktree of
+the exact dispatch base `9f0b67fefa053a1c7f181a40e177091008e05967`, using the same
+interpreter. **All nine fail there too, with identical failure messages; rc=1**.
+Evidence: `_scratch/sr2_baseline.txt`, `_scratch/sr2_baseline.xml` and
+`_scratch/sr2_baseline.rc`. This replay is a baseline diagnostic, not a second
+full-suite run. The affected runtime/native-MCP source and these existing tests
+are unchanged by SR-2. No unrelated MCP/test repairs were made.
+
+| Existing failing area | Cases | Observed failure |
+|---|---:|---|
+| `test_builtins_resume_context.py`, incognito Codex | 1 | Mock `SimpleNamespace` Popen lacks the context-manager protocol when native MCP config is probed. |
+| `test_native_followup_context_routes.py`, Codex followup/interrupt dispatch and incognito | 4 | Same Popen protocol error, either raised directly or recorded as a route/session error. |
+| `test_qwen_live_pass_2026_09_19.py::TestQwenMcp::test_other_providers_unchanged` | 1 | Expects empty Codex MCP configuration but receives resolved fixture servers. |
+| `test_workflow_step_reconcile.py`, three Codex workflow-wake checks | 3 | Dispatch refuses unresolved native Codex MCP names; test then accesses missing `session_id`. |
+
+The baseline replay used these exact node IDs:
+
+```text
+tests/test_builtins_resume_context.py::test_incognito_keeps_only_existing_tool_protocol[codex]
+tests/test_native_followup_context_routes.py::test_runtime_dispatch_primes_stash_for_first_route_followup[codex-followup]
+tests/test_native_followup_context_routes.py::test_runtime_dispatch_primes_stash_for_first_route_followup[codex-interrupt]
+tests/test_native_followup_context_routes.py::test_incognito_never_refreshes_stash_or_retrieves_memory[codex-followup]
+tests/test_native_followup_context_routes.py::test_incognito_never_refreshes_stash_or_retrieves_memory[codex-interrupt]
+tests/test_qwen_live_pass_2026_09_19.py::TestQwenMcp::test_other_providers_unchanged
+tests/test_workflow_step_reconcile.py::test_codex_step_advances_the_run_through_the_live_hook
+tests/test_workflow_step_reconcile.py::test_codex_step_advances_through_the_reconciler_when_the_hook_is_missed
+tests/test_workflow_step_reconcile.py::test_a_raise_before_the_wake_still_wakes_the_workflow
+```
+
+Frozen macOS build and fresh-VM installer tests, live engines, real communication,
+scheduler delivery and protected-file integration remain unverified. There are
+no UI/static changes: USER_GUIDE, README, frontend smokes and global agent-rule
+changes are not needed. The local candidate is not shipped or activated.
