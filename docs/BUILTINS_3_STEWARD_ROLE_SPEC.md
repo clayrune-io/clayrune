@@ -10,6 +10,11 @@ SR-1 follow-up: the dispatching owner selected Q1 A and Q2 A. The branch-only
 human write boundaries, recovery and the deliberate SR-2/SR-3 execution block.
 The remaining tickets and live migration are not implemented by SR-1.
 
+SR-2 branch handoff: [cycle composer and protected patches](BUILTINS_3_SR2_CYCLE_TASK.md).
+The composer and packaging entry are present in that candidate; the canonical
+directive/skill and tiny core adapter are unapplied human-integration patches.
+SR-2 is not integrated and the SR-1 execution block remains until later work.
+
 Parent: [Built-ins platform plan](BUILTINS_PLATFORM_PLAN_2026-10-31.md), item 3.
 Implement and verify this item before building item 4.
 
