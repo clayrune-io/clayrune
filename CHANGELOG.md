@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-01] - Validate explicit hivemind routing plans (BUILTINS-4 HR-6b)
+
+- Added a pure decomposition validator: zero to two independent workers retain ordinary routing; three or more produce one HR-1-compatible inline roster payload with the authorized concurrency, character references, ownership, reviewer and checks.
+- Invalid graphs, overlapping file ownership and unavailable characters fail visibly without dispatchable subsets. Dependent follow-ups remain explicit Q6 holds for Dave after reviewed integration; reviewers never count toward the worker threshold.
+- Internal branch candidate only; the later HR-6a skill can call the documented Python API. No model calls, natural-language classifier, HTTP adapter, live skill binding, merge, push or restart.
+
 ## [2026-11-01] - Require an exact review between roster merges (BUILTINS-4 HR-5)
 
 - Added a durable serial coordinator for explicit roster runs: merge one worker branch with existing native standards, run its smokes, then consume an independent exact-commit pass through the reviewer lifecycle guard before the next merge.

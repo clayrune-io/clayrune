@@ -449,6 +449,94 @@ configured concurrency one is respected; no duplicate standalone dispatches;
 mixed dependent plans disclose Q6 holds. Dave's operator-owned skill binding
 is a separately authorized pilot step, not a test that edits home files.
 
+#### HR-6b implemented call contract (validator only)
+
+`mc.hivemind_routing.plan_routing` is a Python API; it has no HTTP adapter,
+CLI, model calls, dispatches or persistence. HR-6a can call it from Python
+with an explicitly supplied character lookup/snapshot, keyed by global type
+file stem. The HR-1 schema remains authoritative at create/attempt time.
+Example (the references must exist in the caller's current roster):
+
+```python
+from mc.hivemind_routing import plan_routing
+
+decision = plan_routing({
+    "project_id": "project-id",
+    "goal": "Authorized deliverables",
+    "max_concurrent_workers": 1,
+    "reviewer_character": "global:code-reviewer",
+    "units": [{
+        "id": "ws_api",
+        "title": "API deliverable",
+        "character": "global:wren",
+        "owned_files": ["mc/example.py"],
+        "depends_on": [],
+        "checks": ["python -m pytest tests/test_example.py -q"],
+        "smokes": ["boot.mjs"],
+    }],
+}, app_config=config, project=project, read_character=character_records.get)
+```
+
+Required top-level fields are `project_id`, `goal`, `units` and an explicit
+positive-integer `max_concurrent_workers`. A valid `reviewer_character` is
+required for a hivemind result, and validated whenever supplied. Each unit
+requires `id`, `title`, `character`, nonempty `owned_files`, explicit
+`depends_on` and nonempty `checks`; `description` and `smokes` are optional.
+Unknown fields are refused (including engine overrides and misspelled
+dependencies). A unit's optional `role` can only be `worker`; the reviewer
+is declared separately and never contributes to the worker threshold.
+
+The JSON-safe result has `route`, `independent_count`, `independent_units`
+(IDs), `ordinary_units` (full briefs), `held_units` (full briefs plus
+`hold_reason`), `payload` and structured `errors` (`code`, `units`, `message`,
+with `index` for malformed units). The destinations are mutually exclusive:
+
+- `ordinary`: 0/1/2 root workers, available in `ordinary_units`; no payload.
+- `hivemind`: 3+ root workers, exactly one HR-1-compatible inline create body
+  in `payload`; `ordinary_units` is empty. POST that body once to the existing
+  `/api/hivemind/create`; do not dispatch its workstreams separately.
+- `invalid`: no payload or dispatchable units and independent count zero.
+  Errors invalidate the whole plan, rather than routing a valid-looking
+  subset. This includes missing dependencies, cycles, duplicate IDs,
+  ownership overlaps and unavailable characters/engines.
+
+Only units with no dependencies count as independent. Every dependent unit,
+including transitive dependents, stays in `held_units` under Q6=A for Dave
+after reviewed integration; it is never inserted into a common-base roster.
+The caller must retain those holds as remaining deliverables. This validator
+does not infer analysis-only handoff dependencies from prose or claim that a
+created roster completes a mixed ask. Semantic independence remains Dave's
+judgment. Capacity is preserved, including one, regardless of threshold.
+
+Ownership accepts concrete repository-relative file paths, normalizes slash
+and dot aliases, and compares case-insensitively for portability. Absolute,
+parent-traversing, wildcard and directory declarations are refused. Any
+overlap (even with a held unit) is reported; no symlink resolution or
+filesystem inspection is performed. Ownership and every acceptance check
+are serialized into each workstream's `description`, which the existing
+create route persists. Optional `smokes` must be bare `.mjs` suite names
+accepted by existing integration; invalid names are refused rather than
+silently dropped. General acceptance checks remain text for workers and
+reviewers; the validator does not execute them or add arbitrary shell checks
+to the smoke runner. An empty smoke list remains visibly empty.
+
+This contract supplies validation for the later HR-6a directive; it does not
+install a skill, bind Dave's character, intercept ordinary dispatches or
+authorize fan-out. No USER_GUIDE/UI change is part of HR-6b.
+
+HR-6b branch verification (2026-11-01, base `4e33366e`):
+
+| Command | Result |
+|---|---|
+| `python -m pytest tests/test_hivemind_routing.py -q` | rc=0; 104 passed, 0 failed/errors/skipped |
+| `python -m pytest tests -k hivemind -q` | rc=0; 696 passed, 0 failed/errors/skipped |
+| `pyright mc/hivemind_routing.py` | rc=0; 0 errors, 0 warnings |
+
+The controlled existing-create round trip verifies persisted ownership,
+checks, named smokes, reviewer identity and capacity one without any runtime
+dispatch. Live dispatch, skill binding and a real multi-engine pilot were
+not exercised. These results cover the pure validator, not HR-6a or rollout.
+
 ### HR-7: Optional native Claude workflow adapter
 
 Owner: `mc/hivemind_native_workflow.py`; tests
