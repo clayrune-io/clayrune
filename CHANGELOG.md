@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-01] - Pin durable post-merge review evidence (BUILTINS-4 HR-3)
+
+- Added a separate review-record store for exact integration candidates, designated reviewers, attributed structured verdicts and one-time pass consumption. Missing, corrupt or mismatched evidence holds integration.
+- Reused OS caller attribution and dispatch ancestry for every contributing worker; author/descendant/native-child review and conflicting replays refuse. Atomic writes and thread/process locking preserve prior records on failure.
+- Internal branch candidate only; existing agent-branch review gates are unchanged. Reviewer routes, runtime launch and reviewed integration remain HR-4/HR-5. No merge, push, restart or live reviewer execution.
+
 ## [2026-11-01] - Hold roster recovery without persona fallback (BUILTINS-4 HR-2 send-back)
 
 - Held roster workers now return the specific reason as HTTP 409 from send/followup; parent callbacks use the same pinned recovery adapter for every provider.
