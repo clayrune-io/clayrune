@@ -34,3 +34,6 @@ tests/fixtures/dev_harness/*.json text eol=lf
 *.pdf       binary
 *.zip       binary
 *.gz        binary
+
+# Patch files must stay LF on checkout: git apply rejects CRLF hunks ("corrupt patch").
+*.patch text eol=lf
