@@ -481,6 +481,73 @@ badge; runs role filters stay compatible and reviewer count is distinct.
 Smokes serve this branch's actual assets against controlled APIs; a test
 against the main server's old assets is not evidence for this branch.
 
+**HR-8b shipped shape (`mc/hivemind_run_roles.py`, tests
+`tests/test_hivemind_run_roles.py`; HR-8a consumes this).** Pure read-side
+projection of the manifest, workstream rows and `integration.json`; no git, no
+file reads, never raises, fails closed. Roster runs only (`config.roster_version
+== 1`); legacy responses gain no key. Wiring is three thin edits in
+`hivemind_routes.py`:
+
+- `GET /api/hivemind/<id>` adds `roles` (roster only), next to the unchanged
+  `integration`.
+- `GET /api/hivemind/list` adds `roles` = `{stage, accepted,
+  requested_characters, reviewer_character}` per roster row.
+- `GET /api/hivemind/<id>/runs` (roster only): `role=reviewer` added, `worker`
+  now excludes reviewers, response gains `role_counts`
+  `{orchestrator, worker, reviewer}` (pre-filter), and each row gains `run_role`,
+  `requested_character`, `effective_engine`. Legacy runs are unchanged.
+
+`roles.stage` is the single badge input: `workers_running | workers_complete |
+workers_failed | integrating | review_pending | held | accepted |
+analysis_only | no_changes | unverified`. `roles.accepted` is true ONLY for
+`accepted`: integration `completed`, cursor at end of queue, every code
+workstream merged with an exact passing review and candidate key, no workstream
+moved since integration pinned it. Anything else that claims `completed` is
+`unverified` with `unverified_reasons`. `workers_complete` (manifest
+`completed`, integration absent) is never green. `no_changes` = integration
+completed with zero actual merges (all branches no-op); also never green.
+
+```json
+{
+  "schema_version": 1, "stage": "review_pending", "accepted": false,
+  "manifest_status": "completed", "as_of": "<integration.updated_at>",
+  "reason": "", "unverified_reasons": [],
+  "workstreams": [{
+    "id": "ws_001", "title": "", "status": "completed", "dependencies": [],
+    "requested_character": "global:<type>", "assignment_attempt": 1,
+    "effective_engine": {"provider": "", "model": "", "effort": "", "session_id": ""},
+    "integration": {"outcome": "provisional", "stale": false,
+                    "candidate_key": "", "reason": ""}
+  }],
+  "reviewer": {"requested_character": "global:code-reviewer",
+               "session_ids": ["..."], "count": 1},
+  "reviews": [{
+    "ws_id": "ws_001", "state": "provisional", "phase": "reviewing",
+    "candidate_key": "", "reviewed_commit": "<merged sha>",
+    "pre_merge_sha": "", "incoming_branch": "", "incoming_tip": "",
+    "merged_tree": "",
+    "checks": {"named": [{"name": "x.mjs", "ok": true}], "ran": true, "note": ""},
+    "reviewer": {"session_id": "", "character": "",
+                 "engine": {"provider": "", "model": "", "effort": ""}},
+    "review_state": "pending", "verdict": "", "hold_reason": "",
+    "deadline_at": null, "report_path": "", "recorded_at": ""
+  }],
+  "hold": null,
+  "counts": {"workstreams": 1, "accepted": 0, "provisional": 1, "skipped": 0, "failed": 0}
+}
+```
+
+`integration.outcome`: `not_started | queued | in_progress | provisional |
+accepted | skipped | failed | held | unverified | not_applicable`
+(`not_applicable` = analysis-only, no branch). A merged-but-unaccepted commit
+(including `changes_requested`, per Q3=A) is `provisional`; a smoke-failed merge
+is `failed` (rolled back) and never appears in `reviews`. `hold` is `{kind,
+reason, ws_id, checks}` when integration is held; `kind` is one of `smoke_failed |
+merge_conflict | worker_dirty | missing_branch | standards | merge_error | git |
+changes_requested | review_timed_out | review_cancelled | review_held | other`.
+The projection reads the snapshot the integration driver persists (refreshed
+each ~5 s tick); it never calls the live reviewer status.
+
 ## 6. Integration checks and definition of done
 
 1. Dave resolves the required section 7 questions and records the selection

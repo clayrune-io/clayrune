@@ -51,6 +51,7 @@ import mc.hivemind_integration as _hm_integration
 import mc.hivemind_integration_cycle as _hm_integration_cycle
 import mc.hivemind_lineage as _hm_lineage
 import mc.hivemind_roster as _hm_roster
+import mc.hivemind_run_roles as _hm_run_roles
 import mc.hivemind_worker as _hm_worker
 import mc.project_sync as _sync
 from mc import engine_selection, obs, state
@@ -727,7 +728,11 @@ def hivemind_list():
         h['workstreams_completed'] = sum(1 for ws in workstreams if ws.get('status') == 'completed')
         h['workstreams_active'] = sum(1 for ws in workstreams if ws.get('status') == 'active')
         h['total_findings'] = sum(ws.get('findings_count', 0) for ws in workstreams)
-        h['integration_status'] = (_hm_read_integration(h['id']) or {}).get('status')
+        _integ = _hm_read_integration(h['id'])
+        h['integration_status'] = (_integ or {}).get('status')
+        _roles = _hm_run_roles.summarize(h, workstreams, _integ)
+        if _roles is not None:  # roster runs only; legacy rows keep their shape
+            h['roles'] = _roles
         h['updated_relative'] = time_ago(h.get('updated_at'))
     return jsonify(all_hm)
 
@@ -742,14 +747,19 @@ def hivemind_get(hivemind_id):
     recent_messages = _hm_read_bus_messages(hivemind_id, last_n=20)
     decisions = _hm_read_decisions(hivemind_id, last_n=10)
     open_questions = _hm_read_open_questions(hivemind_id)
-    return jsonify({
+    integration = _hm_read_integration(hivemind_id)
+    payload = {
         'manifest': manifest,
         'workstreams': workstreams,
         'recent_messages': recent_messages,
         'decisions': decisions,
         'open_questions': open_questions,
-        'integration': _hm_read_integration(hivemind_id),
-    })
+        'integration': integration,
+    }
+    roles = _hm_run_roles.project(manifest, workstreams, integration)
+    if roles is not None:  # roster runs only; legacy responses are unchanged
+        payload['roles'] = roles
+    return jsonify(payload)
 
 
 @bp.route('/api/hivemind/<hivemind_id>', methods=['PUT'])
@@ -1922,7 +1932,8 @@ def hivemind_runs(hivemind_id):
     """Return paginated agent_log entries for this hivemind.
 
     Query params:
-      role=orchestrator|worker  (default: both)
+      role=orchestrator|worker|reviewer  (default: all; reviewer is roster-only,
+                                and worker excludes reviewers on roster runs)
       ws_id=<workstream_id>     (default: any)
       limit=<n>                 page size (default 50, max 200)
       offset=<n>                rows to skip (default 0)
@@ -1951,7 +1962,11 @@ def hivemind_runs(hivemind_id):
         return jsonify({'runs': [], 'total': 0, 'offset': 0, 'limit': limit})
     log = _load_agent_log(pid)
     runs = [e for e in log if e.get('hivemind_id') == hivemind_id]
-    if role == 'orchestrator':
+    roster_run = _hm_run_roles.is_roster(manifest)
+    role_counts = _hm_run_roles.role_counts(runs) if roster_run else None
+    if roster_run:
+        runs = _hm_run_roles.filter_runs(runs, role)
+    elif role == 'orchestrator':
         runs = [e for e in runs if e.get('hivemind_role') == 'orchestrator']
     elif role == 'worker':
         runs = [e for e in runs if e.get('hivemind_role') != 'orchestrator']
@@ -1959,9 +1974,14 @@ def hivemind_runs(hivemind_id):
         runs = [e for e in runs if e.get('hivemind_ws_id') == ws_id]
     total = len(runs)
     page = runs[offset:offset + limit]
-    return jsonify({
-        'runs': _enrich_run_entries(page),
+    enriched = _enrich_run_entries(page)
+    body = {
+        'runs': enriched,
         'total': total,
         'offset': offset,
         'limit': limit,
-    })
+    }
+    if roster_run:  # reviewers are a distinct seat, never counted as workers
+        body['runs'] = [_hm_run_roles.annotate_run(e) for e in enriched]
+        body['role_counts'] = role_counts
+    return jsonify(body)
