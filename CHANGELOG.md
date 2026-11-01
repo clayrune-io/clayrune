@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-01] - Hold roster recovery without persona fallback (BUILTINS-4 HR-2 send-back)
+
+- Held roster workers now return the specific reason as HTTP 409 from send/followup; parent callbacks use the same pinned recovery adapter for every provider.
+- Stored one atomically written, SHA-256-verified prompt file per attempt under the hivemind run; pending/completion logs retain only its relative path and digest. Missing or changed files hold recovery.
+- Branch candidate only; no merge, push, restart, live model execution or changes to later roster tickets.
+
 ## [2026-11-01] - Launch roster hivemind workers with pinned context (BUILTINS-4 HR-2)
 
 - Extracted worker context/spawn into a separate module; roster attempts receive their selected character, skills, rules, resolved engine and unattended workstream directive through the existing runtime seam.

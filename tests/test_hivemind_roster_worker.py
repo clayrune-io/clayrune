@@ -121,7 +121,10 @@ def test_every_provider_gets_ordinary_context_and_pinned_identity(rig, provider)
     saved = hm._hm_load_workstream('roster1', 'ws1')
     assert saved['resolved_assignment']['session_id'] == sid
     assert saved['character_snapshot'] == session['character']
-    assert saved['worker_context'] == prompt
+    assert 'worker_context' not in saved
+    assert worker.read_pinned_prompt(saved | {'hivemind_id': 'roster1'}) == prompt
+    assert '_system_prompt' not in rig.rows[0]
+    assert worker.read_pinned_prompt(rig.rows[0]) == prompt
 
 
 def test_human_created_manifest_never_uses_notification_or_body_parent(rig):
@@ -151,7 +154,8 @@ def test_runtime_completion_persists_pins_and_closes_the_pending_log_row(rig, mo
 
 
 @pytest.mark.parametrize('failure', ['log', 'save', 'generation', 'missing_generation',
-                                   'runtime', 'character', 'context', 'isolation', 'base'])
+                                   'runtime', 'character', 'context', 'isolation', 'base',
+                                   'prompt_write', 'prompt_sync'])
 def test_prelaunch_failure_starts_nothing(rig, monkeypatch, agents_dir, failure):
     def refuse(*a, **k):
         raise RuntimeError('injected refusal')
@@ -171,6 +175,10 @@ def test_prelaunch_failure_starts_nothing(rig, monkeypatch, agents_dir, failure)
         monkeypatch.setattr(ar, '_build_agent_context', refuse)
     elif failure == 'isolation':
         monkeypatch.setattr(worker._sync, 'is_git_repo', lambda p: True)
+    elif failure == 'prompt_write':
+        monkeypatch.setattr(worker.os, 'replace', refuse)
+    elif failure == 'prompt_sync':
+        monkeypatch.setattr(worker.os, 'fsync', refuse)
     else:
         monkeypatch.setattr(ar, '_maybe_isolate_worktree', lambda p, sid, **kw: (p['project_path'], True))
         monkeypatch.setattr(worker._sync, 'git_run', lambda *a, **k: (False, 'git failed'))
@@ -178,6 +186,10 @@ def test_prelaunch_failure_starts_nothing(rig, monkeypatch, agents_dir, failure)
     with pytest.raises((ValueError, RuntimeError, KeyError)):
         hm._hm_spawn_worker_session(rig.manifest, rig.ws, rig.project, 'roster1', 'ws1')
     assert not any(rt.calls for rt in rig.runtimes.values())
+    if failure.startswith('prompt_'):
+        assert not state.agent_sessions and not rig.rows
+        assert not list(hm._hm_dir('roster1').rglob('*.tmp'))
+        assert not list(hm._hm_dir('roster1').rglob('*.prompt.txt'))
 
 
 def test_active_attempt_and_uncertain_restart_cannot_spawn_a_second_worker(rig):
@@ -228,7 +240,9 @@ def test_respawn_uses_pinned_context_even_after_fingerprint_or_roster_change(rig
     monkeypatch.setattr(ar, '_sysprompt_file_args', lambda text: (text, None))
     assert ar._respawn_sysprompt_args(session, rig.project, 'ordinary followup')[0] == session['_system_prompt']
     session.pop('_system_prompt')
-    with pytest.raises(RuntimeError, match='missing its pinned context'):
+    assert ar._fresh_context_for(rig.project, session) == rig.runtimes['codex'].calls[0]['system_prompt']
+    (hm._hm_dir('roster1') / session['pinned_prompt_path']).unlink()
+    with pytest.raises(worker.RosterRecoveryHeld, match='context file unavailable'):
         ar._fresh_context_for(rig.project, session)
 
 
@@ -249,8 +263,11 @@ def test_cold_recovery_uses_pinned_attempt_after_roster_deletion(rig, agents_dir
     assert hm._hm_load_workstream('roster1', 'ws1')['assignment_attempt'] == 1
 
 
-@pytest.mark.parametrize('damage', ['pending', 'generation', 'attempt', 'context', 'owner'])
-def test_cold_recovery_refuses_unknown_or_replaced_attempt(rig, damage):
+HOLD_REASONS = ['pending', 'generation', 'attempt', 'context', 'owner', 'missing_file',
+                'sha_mismatch', 'path_escape']
+
+
+def held_entry(rig, damage):
     sid = launch(rig)
     state.agent_sessions.pop(sid)
     entry = dict(rig.rows[0], status='completed', project_generation=7)
@@ -261,14 +278,130 @@ def test_cold_recovery_refuses_unknown_or_replaced_attempt(rig, damage):
     elif damage == 'attempt':
         entry['assignment_attempt'] = 9
     elif damage == 'context':
-        entry.pop('_system_prompt')
-    else:
+        entry.pop('pinned_prompt_path')
+    elif damage == 'owner':
         ws = hm._hm_load_workstream('roster1', 'ws1')
         ws['current_agent_session_id'] = 'replacement'
         hm._hm_save_workstream('roster1', 'ws1', ws)
-    with pytest.raises(RuntimeError):
+    elif damage == 'missing_file':
+        (hm._hm_dir('roster1') / entry['pinned_prompt_path']).unlink()
+    elif damage == 'sha_mismatch':
+        (hm._hm_dir('roster1') / entry['pinned_prompt_path']).write_text('TAMPERED', encoding='utf-8')
+    elif damage == 'path_escape':
+        entry['pinned_prompt_path'] = '../outside.txt'
+    rig.rows[0].update(entry)
+    if damage == 'context':
+        rig.rows[0].pop('pinned_prompt_path')
+    return sid, entry
+
+
+@pytest.mark.parametrize('damage', HOLD_REASONS)
+def test_cold_recovery_refuses_unknown_or_replaced_attempt(rig, damage):
+    sid, entry = held_entry(rig, damage)
+    with pytest.raises(worker.RosterRecoveryHeld):
         worker.revive_roster_worker(entry, rig.project, 'Continue')
     assert len(rig.runtimes['codex'].calls) == 1
+    assert sid not in state.agent_sessions
+
+
+@pytest.fixture
+def route_rig(rig, monkeypatch):
+    monkeypatch.setattr(ar, 'load_project', lambda pid: rig.project)
+    monkeypatch.setattr(ar, 'get_manager', hm.get_manager)
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: rig.rows)
+    monkeypatch.setattr(ar, '_mark_human_joined', lambda *a: None)
+    monkeypatch.setattr(ar, '_observe_habit_cue', lambda *a: None)
+    monkeypatch.setattr(ar, '_assert_runtime_project_generation', lambda *a, **kw: 7)
+    monkeypatch.setattr(ar, '_dispatch_agent_internal', lambda *a, **kw: pytest.fail('ordinary dispatch'))
+    monkeypatch.setattr(ar, '_find_transcript_file', lambda *a: pytest.fail('transcript fallback'))
+    monkeypatch.setitem(state.CONFIG, 'agent_revive_from_log', True)
+    return rig
+
+
+@pytest.mark.parametrize('endpoint', ['send', 'followup'])
+@pytest.mark.parametrize('damage', HOLD_REASONS)
+def test_route_recovery_hold_is_409_and_starts_nothing(route_rig, endpoint, damage):
+    rig = route_rig
+    sid, entry = held_entry(rig, damage)
+    rig.runtimes['codex'].calls.clear()
+    before = dict(state.agent_sessions)
+    with pytest.raises(worker.RosterRecoveryHeld) as hold:
+        worker.revive_roster_worker(entry, rig.project, 'Continue')
+    response = rig.client.post(f'/api/project/thm/agent/{endpoint}',
+                               json={'session_id': sid, 'message': 'Continue'})
+    assert response.status_code == 409, response.get_json()
+    assert response.get_json() == {'ok': False, 'error': str(hold.value)}
+    assert not any(rt.calls for rt in rig.runtimes.values())
+    assert state.agent_sessions == before
+
+
+@pytest.mark.parametrize('endpoint', ['send', 'followup'])
+def test_second_revive_callsite_also_returns_409(route_rig, monkeypatch, endpoint):
+    rig = route_rig
+    sid, _ = held_entry(rig, 'context')
+    monkeypatch.setitem(state.CONFIG, 'agent_revive_from_log', False)
+    rig.runtimes['codex'].calls.clear()
+    response = rig.client.post(f'/api/project/thm/agent/{endpoint}',
+                               json={'session_id': sid, 'message': 'Continue'})
+    assert response.status_code == 409, response.get_json()
+    assert 'pinned context reference' in response.get_json()['error']
+    assert not state.agent_sessions and not any(rt.calls for rt in rig.runtimes.values())
+
+
+@pytest.mark.parametrize('endpoint', ['send', 'followup'])
+@pytest.mark.parametrize('provider', ['claude', 'codex'])
+def test_route_successful_roster_recovery_uses_original_adapter(route_rig, endpoint, provider):
+    rig = route_rig
+    sid = launch(rig, provider)
+    original = state.agent_sessions.pop(sid)
+    rig.rows[0].update(status='completed', provider_session_id='native-id')
+    response = rig.client.post(f'/api/project/thm/agent/{endpoint}',
+                               json={'session_id': sid, 'message': 'Continue'})
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json()['session_id'] == sid
+    assert response.get_json()['revived'] is True
+    assert list(state.agent_sessions) == [sid]
+    assert len(rig.runtimes[provider].calls) == 2
+    assert rig.runtimes[provider].calls[-1]['system_prompt'] == original['_system_prompt']
+
+
+@pytest.mark.parametrize('provider', ['claude', 'codex'])
+def test_parent_callback_roster_recovery_cannot_degrade(route_rig, provider):
+    rig = route_rig
+    sid = launch(rig, provider)
+    original = state.agent_sessions.pop(sid)
+    rig.rows[0].update(status='completed', provider_session_id='native-id')
+    path = hm._hm_dir('roster1') / original['pinned_prompt_path']
+    prompt = path.read_bytes()
+    path.unlink()
+    rig.runtimes[provider].calls.clear()
+    with pytest.raises(ar.DeliveryBlocked, match='context file unavailable'):
+        ar._revive_parent_for_delegation('thm', sid, 'Child completed', rig.project)
+    assert not state.agent_sessions and not any(rt.calls for rt in rig.runtimes.values())
+    path.write_bytes(prompt)
+    result = ar._revive_parent_for_delegation('thm', sid, 'Child completed', rig.project)
+    assert result['revived'] is True and result['parent_session_id'] == sid
+    assert rig.runtimes[provider].calls[-1]['system_prompt'] == original['_system_prompt']
+
+
+def test_log_row_size_with_49kb_project_context(route_rig, monkeypatch):
+    rig = route_rig
+    monkeypatch.setattr(ar, '_build_agent_context', lambda *a, **kw: 'PROJECT CONTEXT\n' + 'p' * 49_000)
+    sid = launch(rig)
+    session = state.agent_sessions[sid]
+    for status in ('in_progress', 'completed'):
+        if status == 'completed':
+            session.update(status=status, process_alive=False)
+            rig.runtimes['codex'].calls[-1]['callbacks']['on_process_exit'](None, session)
+        row, = rig.rows
+        assert row['status'] == status and '_system_prompt' not in row
+        assert worker.read_pinned_prompt(row) == session['_system_prompt']
+        before = {k: v for k, v in row.items() if not k.startswith('pinned_prompt_')}
+        before['_system_prompt'] = session['_system_prompt']
+        size = lambda value: len(json.dumps(value, ensure_ascii=False).encode('utf-8'))
+        old, new = size(before), size(row)
+        assert old - new > 48_000
+        print(f'ROW_BYTES {status}: before={old} after={new} saved={old-new}')
 
 
 def test_manual_and_automatic_entry_points_use_roster_adapter(rig):

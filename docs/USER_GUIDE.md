@@ -482,6 +482,9 @@ retry reads the current character; recovery of the same attempt retains its
 pinned identity. Code workers hold if isolation fails. The existing UI still
 uses engine-based workers, and post-merge roster review remains a later ticket;
 worker completion alone does not establish reviewed integration.
+If recovery is held, sending a message returns a conflict with the reason and
+does not start a replacement character. Recovery also holds when the attempt's
+saved prompt file is missing or fails its integrity check.
 
 **Stale heuristic**: if a hivemind is `active` but hasn't moved in over
 24 hours (e.g. server crashed, was killed), it's auto-marked **stale** with

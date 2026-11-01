@@ -54,6 +54,7 @@ from mc import empty_turn as _empty_turn
 from mc import mid_turn_send as _mid_turn_send  # MC-1086: steer / queue / interrupt routing
 from mc import triggered_turns as _triggered_turns  # seed-line label for non-human turns
 from mc import engine_selection
+from mc.hivemind_worker import RosterRecoveryHeld, revive_roster_worker
 from mc import provider_preferences as _provider_preferences
 from mc import provider_env_scope as _provider_env_scope  # saved keys stay with their provider
 from mc import launch_marker as _launch_marker  # per-launch unattended marker (fence fail-open, MC-1040)
@@ -8055,6 +8056,15 @@ def _revive_parent_for_delegation(project_id, session_id, message, p):
         raise DeliveryBlocked(f'parent durable status {status or "unknown"} is not revivable')
     if entry.get('incognito'):
         raise DeliveryBlocked('private parent cannot receive delegated completion')
+    if entry.get('character_ref'):
+        try:
+            revived = revive_roster_worker(entry, p, message)
+        except RosterRecoveryHeld as exc:
+            raise DeliveryBlocked(str(exc)) from exc
+        return {'revived': True, 'parent_session_id': session_id,
+                'provider': revived['provider'], 'model': revived['model'],
+                'effort': revived['effort'],
+                'native_id': entry.get('claude_session_id') or entry.get('provider_session_id') or ''}
     provider = (entry.get('provider') or 'claude').strip().lower()
     native_id = (entry.get('claude_session_id') or '').strip() if provider == 'claude' else (entry.get('provider_session_id') or '').strip()
     if provider == 'claude':
@@ -12866,6 +12876,8 @@ def agent_send(project_id):
                 revived = _revive_from_agent_log(
                     project_id, session_id, message, p,
                     carry_notify=bool(_explicit_notify_session))
+            except RosterRecoveryHeld as e:
+                return jsonify({'ok': False, 'error': str(e)}), 409
             except Exception as e:
                 revived = None
                 _log_agent_activity(project_id, f"Revive error in /send: {e}")
@@ -12887,6 +12899,8 @@ def agent_send(project_id):
                 fresh_sid = _revive_non_claude_from_agent_log(
                     project_id, session_id, message, p,
                     carry_notify=bool(_explicit_notify_session))
+            except RosterRecoveryHeld as e:
+                return jsonify({'ok': False, 'error': str(e)}), 409
             except Exception as e:
                 fresh_sid = None
                 _log_agent_activity(project_id, f"Non-claude revive error in /send: {e}")
@@ -13341,9 +13355,12 @@ def agent_followup(project_id):
         # same rule as `/agent/send` (see `carry_notify` on
         # `_revive_from_agent_log`). Only an explicit `notify_session` in the
         # request re-arms the dispatch callback across the revive.
-        revived = _revive_from_agent_log(
-            project_id, session_id, message, p,
-            carry_notify=bool(_explicit_notify_session))
+        try:
+            revived = _revive_from_agent_log(
+                project_id, session_id, message, p,
+                carry_notify=bool(_explicit_notify_session))
+        except RosterRecoveryHeld as e:
+            return jsonify({'ok': False, 'error': str(e)}), 409
         if revived:
             if _explicit_notify_session:
                 revived['_notify_session'] = _explicit_notify_session
@@ -13353,9 +13370,12 @@ def agent_followup(project_id):
         # with, so start fresh instead of 404ing. This is what makes the
         # read-only reconstruct's "sending a message starts a brand-new
         # session" line (MC-929) true rather than a lie.
-        fresh_sid = _revive_non_claude_from_agent_log(
-            project_id, session_id, message, p,
-            carry_notify=bool(_explicit_notify_session))
+        try:
+            fresh_sid = _revive_non_claude_from_agent_log(
+                project_id, session_id, message, p,
+                carry_notify=bool(_explicit_notify_session))
+        except RosterRecoveryHeld as e:
+            return jsonify({'ok': False, 'error': str(e)}), 409
         if fresh_sid:
             if _explicit_notify_session:
                 _fresh_sess = agent_sessions.get(fresh_sid)

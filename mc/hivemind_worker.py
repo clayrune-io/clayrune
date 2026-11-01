@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+import hashlib
+import os
+import tempfile
 import time as _time
 import threading
 from pathlib import Path
@@ -19,6 +22,54 @@ from mc import characters, engine_selection, hivemind_roster as roster
 from mc import hivemind_lineage as _hm_lineage
 from mc import project_sync as _sync, state
 from mc.core import TimestampedLines, now_iso
+
+
+class RosterRecoveryHeld(RuntimeError):
+    """A roster attempt cannot safely resume; callers must never fall back."""
+
+
+def pin_prompt(api: Any, hm_id: str, session_id: str, context: str) -> dict[str, str]:
+    """Persist one prompt per attempt before recording ownership or launching."""
+    relative = f'workstreams/worker-{session_id}.prompt.txt'
+    target = api._hm_dir(hm_id) / relative
+    payload = context.encode('utf-8')
+    fd, temporary = tempfile.mkstemp(dir=target.parent, suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return {'pinned_prompt_path': relative,
+            'pinned_prompt_sha256': hashlib.sha256(payload).hexdigest()}
+
+
+def read_pinned_prompt(session: dict) -> str:
+    """Read only a confined, digest-verified prompt; inline log copies are ignored."""
+    from mc.blueprints import hivemind_routes as api
+
+    relative = session.get('pinned_prompt_path')
+    digest = session.get('pinned_prompt_sha256')
+    hm_id = session.get('hivemind_id')
+    if not (isinstance(relative, str) and relative and isinstance(digest, str)
+            and len(digest) == 64 and isinstance(hm_id, str) and hm_id):
+        raise RosterRecoveryHeld('Roster attempt is missing its pinned context reference; recovery held')
+    try:
+        root = Path(api._hm_dir(hm_id)).resolve()
+        path = (root / relative).resolve()
+        if Path(relative).is_absolute() or not path.is_relative_to(root):
+            raise RosterRecoveryHeld('Roster pinned context path escapes its run directory; recovery held')
+        payload = path.read_bytes()
+        if hashlib.sha256(payload).hexdigest() != digest:
+            raise RosterRecoveryHeld('Roster pinned context sha256 mismatch; recovery held')
+        context = payload.decode('utf-8')
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise RosterRecoveryHeld(f'Roster pinned context file unavailable; recovery held: {exc}') from exc
+    if not context:
+        raise RosterRecoveryHeld('Roster pinned context file is empty; recovery held')
+    return context
 
 
 @dataclass(frozen=True)
@@ -64,9 +115,9 @@ def pinned_context(session: dict | None) -> str | None:
     if not (session or {}).get('character_ref'):
         return None
     context = (session or {}).get('_system_prompt')
-    if not isinstance(context, str) or not context:
-        raise RuntimeError('Roster attempt is missing its pinned context; recovery held')
-    return context
+    if isinstance(context, str) and context:
+        return context
+    return read_pinned_prompt(session or {})
 
 
 def attempt_metadata(session: dict) -> dict[str, Any]:
@@ -75,7 +126,7 @@ def attempt_metadata(session: dict) -> dict[str, Any]:
         return {}
     return {key: session[key] for key in (
         'character', 'character_ref', 'assignment_attempt', 'resolved_assignment',
-        'model', 'effort', 'requested_effort', '_system_prompt',
+        'model', 'effort', 'requested_effort', 'pinned_prompt_path', 'pinned_prompt_sha256',
         '_agent_cwd', '_worktree_isolated', 'source', 'job_shape')}
 
 
@@ -89,6 +140,16 @@ def runtime_callbacks(provider: str) -> dict:
 
 
 def revive_roster_worker(entry: dict, project: dict, message: str) -> dict:
+    """Surface any roster recovery failure without allowing persona fallback."""
+    try:
+        return _revive_roster_worker(entry, project, message)
+    except RosterRecoveryHeld:
+        raise
+    except Exception as exc:
+        raise RosterRecoveryHeld(f'Roster recovery failed; no fallback attempted: {exc}') from exc
+
+
+def _revive_roster_worker(entry: dict, project: dict, message: str) -> dict:
     """Recover a reconciled attempt through its original runtime/cwd contract.
 
     An in-progress/unknown process remains held after restart. A terminal log
@@ -103,36 +164,34 @@ def revive_roster_worker(entry: dict, project: dict, message: str) -> dict:
         lock = _launch_locks.setdefault((str(api._hm_dir(hm_id)), ws_id), threading.Lock())
     with lock:
         if entry.get('status') not in ('completed', 'error', 'stopped'):
-            raise RuntimeError('Roster worker process requires reconciliation before recovery')
+            raise RosterRecoveryHeld('Roster worker process requires reconciliation before recovery')
         live = state.agent_sessions.get(sid)
         if live and (live.get('status') == 'running' or live.get('process_alive')):
-            raise RuntimeError('Roster worker already has a live process')
+            raise RosterRecoveryHeld('Roster worker already has a live process')
         manifest = api._hm_load_manifest(hm_id)
         ws = api._hm_load_workstream(hm_id, ws_id)
         if not manifest or not ws:
-            raise RuntimeError('Roster recovery is missing its manifest/workstream')
+            raise RosterRecoveryHeld('Roster recovery is missing its manifest/workstream')
         if (manifest.get('project_id') != project['id']
                 or manifest.get('project_generation') != entry.get('project_generation')
                 or ws.get('assignment_attempt') != entry.get('assignment_attempt')
                 or ws.get('resolved_assignment') != entry.get('resolved_assignment')
                 or ws.get('current_agent_session_id') not in (None, '', sid)):
-            raise RuntimeError('Roster attempt was replaced or its generation changed; recovery held')
-        context = pinned_context(entry)
-        if context is None:
-            raise RuntimeError('Roster recovery has no pinned context')
+            raise RosterRecoveryHeld('Roster attempt was replaced or its generation changed; recovery held')
+        context = read_pinned_prompt(entry)
         character = deepcopy(entry['character'])
         assignment = dict(entry['resolved_assignment'])
         if assignment.get('session_id') != sid or assignment.get('character_ref') != entry['character_ref']:
-            raise RuntimeError('Roster recovery has inconsistent identity pins')
+            raise RosterRecoveryHeld('Roster recovery has inconsistent identity pins')
         cwd = entry['_agent_cwd']
         if not Path(cwd).is_dir():
-            raise RuntimeError('Roster worker cwd is missing; recovery held')
+            raise RosterRecoveryHeld('Roster worker cwd is missing; recovery held')
         if entry['_worktree_isolated']:
             ok, branch = _sync.git_run(cwd, ['symbolic-ref', '--short', 'HEAD'], timeout=15)
             if not ok or branch.strip() != ws.get('worktree_branch'):
-                raise RuntimeError('Roster worker branch changed; recovery held')
+                raise RosterRecoveryHeld('Roster worker branch changed; recovery held')
         elif is_code_project(project['project_path']):
-            raise RuntimeError('Roster code recovery requires its isolated worktree')
+            raise RosterRecoveryHeld('Roster code recovery requires its isolated worktree')
         metadata = {
             **attempt_metadata(entry), 'hivemind_id': hm_id, 'hivemind_ws_id': ws_id,
             'trigger_type': 'hivemind_worker', 'trigger_id': ws_id, 'housekeeping': True,
@@ -140,7 +199,7 @@ def revive_roster_worker(entry: dict, project: dict, message: str) -> dict:
             **_hm_lineage.worker_metadata(manifest),
         }
         session = {
-            **metadata, 'session_id': sid, 'project_id': project['id'],
+            **metadata, '_system_prompt': context, 'session_id': sid, 'project_id': project['id'],
             'task': f'You run unattended as the same Hivemind worker.\n{message}',
             'provider': assignment['provider'], 'model': assignment['model'],
             'effort': assignment['effort'], 'mode': 'A', 'status': 'running',
@@ -254,8 +313,10 @@ def spawn_roster_worker(api: Any, manifest: dict, ws: dict, project: dict,
             'Hivemind owns integration.')
 
     roster.stamp_attempt(ws, assignment)
+    prompt_reference = pin_prompt(api, hivemind_id, session_id, context)
     ws['character_snapshot'] = deepcopy(snapshot)
-    ws['worker_context'] = context
+    ws.pop('worker_context', None)
+    ws.update(prompt_reference)
     ws['current_agent_session_id'] = session_id
     ws['status'] = 'active'
     api._hm_save_workstream(hivemind_id, ws_id, ws)
@@ -267,6 +328,7 @@ def spawn_roster_worker(api: Any, manifest: dict, ws: dict, project: dict,
         'character': deepcopy(snapshot), 'character_ref': canon,
         'assignment_attempt': ws['assignment_attempt'],
         'resolved_assignment': dict(assignment),
+        **prompt_reference,
         **_hm_lineage.worker_metadata(manifest),
     }
     session = {
