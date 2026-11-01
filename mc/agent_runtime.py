@@ -40,7 +40,8 @@ from typing import (
     Any, Callable, cast, Dict, Iterable, Iterator, List, Literal, Mapping, Optional, Tuple,
 )
 
-from mc.core import TimestampedLines
+from mc import vendor_fence
+from mc.core import TimestampedLines, _log
 from mc import doc_write_cache_store as _doc_cache_store
 from mc.unix_path import nvm_bin_dirs as _nvm_bin_dirs
 
@@ -4733,6 +4734,7 @@ class GeminiRuntime(AgentRuntime):
                  mcp_config_json: str = '',
                  extra_include_dirs: Optional[List[str]] = None,
                  **_extra) -> SessionHandle:
+        vendor_fence.check_launch(self.name, session_dict)
         bin_path = self.resolve_binary()
         if not bin_path:
             raise CLINotInstalledError("gemini CLI not installed — run: npm install -g @google/gemini-cli")
@@ -4766,6 +4768,7 @@ class GeminiRuntime(AgentRuntime):
             env.update(env_extra)
         _inject_gemini_env(env, mcp_config_json)
 
+        vendor_fence.prepare_env(self.name, session_dict, env, binary=bin_path, cwd=project_path)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -4826,8 +4829,8 @@ class GeminiRuntime(AgentRuntime):
             try:
                 register_process(proc, 'Agent (gemini Mode A)', 'agent',
                                  mc_sid, project_id, task[:80])
-            except Exception:
-                pass
+            except Exception as exc:
+                _log(f'[runtime:gemini] process registration failed: {exc}', flush=True)
 
         t = threading.Thread(target=self._read_stream, args=(proc, handle),
                              daemon=True, name=f'gemini-reader-{mc_sid[:8]}')
@@ -5187,6 +5190,7 @@ class GeminiRuntime(AgentRuntime):
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
+        vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
@@ -5247,6 +5251,9 @@ class GeminiRuntime(AgentRuntime):
             full_prompt = _compose_respawn_prompt(
                 session, self.with_attachment_hint(message))
 
+        env = vendor_fence.prepare_env(
+            self.name, session, _inject_gemini_env(os.environ.copy(), _mcp_json),
+            binary=bin_path, cwd=handle.project_path)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -5256,7 +5263,7 @@ class GeminiRuntime(AgentRuntime):
             text=True,
             encoding='utf-8',
             errors='replace',
-            env=_inject_gemini_env(os.environ.copy(), _mcp_json),
+            env=env,
             creationflags=_POPEN_FLAGS,
             startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
@@ -5469,6 +5476,8 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
     apply_env(runtime.name, (session_dict or {}).get('trigger_type'), env, state.CONFIG)
     if session_dict is None:
         session_dict = {}
+    vendor_fence.prepare_env(
+        runtime.name, session_dict, env, binary=Path(cmd[0]), cwd=project_path)
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE if prompt_via_stdin else subprocess.DEVNULL,
@@ -5493,8 +5502,8 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
                 if proc.stdin:
                     proc.stdin.write(full_prompt)
                     proc.stdin.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                _log(f'[runtime:{runtime.name}] stdin delivery failed: {exc}', flush=True)
         threading.Thread(target=_send, daemon=True,
                          name=f'{runtime.name}-stdin-{mc_session_id[:8]}').start()
 
@@ -5532,8 +5541,8 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
         try:
             register_process(proc, f'Agent ({runtime.name} Mode A)', 'agent',
                              mc_session_id, project_id, task[:80])
-        except Exception:
-            pass
+        except Exception as exc:
+            _log(f'[runtime:{runtime.name}] process registration failed: {exc}', flush=True)
 
     t = threading.Thread(target=_mode_a_reader,
                          args=(proc, handle, runtime),
@@ -7576,6 +7585,7 @@ class QwenRuntime(AgentRuntime):
                  mcp_config_json: str = '',
                  extra_include_dirs: Optional[List[str]] = None,
                  **_extra) -> SessionHandle:
+        vendor_fence.check_launch(self.name, session_dict)
         if not self.resolve_binary():
             raise RuntimeError("qwen CLI not installed — run: npm install -g @qwen-code/qwen-code")
 
@@ -7632,6 +7642,7 @@ class QwenRuntime(AgentRuntime):
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
+        vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
@@ -7670,6 +7681,8 @@ class QwenRuntime(AgentRuntime):
         from mc.retry_budgets import apply_env
         from mc import state
         apply_env('qwen', session.get('trigger_type'), env, state.CONFIG)
+        vendor_fence.prepare_env(
+            self.name, session, env, binary=self.resolve_binary(), cwd=handle.project_path)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -10167,6 +10180,7 @@ class OpenCodeRuntime(AgentRuntime):
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
                  **_extra) -> SessionHandle:
+        vendor_fence.check_launch(self.name, session_dict)
         if not self.resolve_binary():
             raise CLINotInstalledError(
                 "opencode not installed — "
@@ -10188,6 +10202,7 @@ class OpenCodeRuntime(AgentRuntime):
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
+        vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
@@ -10213,8 +10228,8 @@ class OpenCodeRuntime(AgentRuntime):
                 if proc.stdin:
                     proc.stdin.write(full_prompt)
                     proc.stdin.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                _log(f'[runtime:opencode] stdin delivery failed: {exc}', flush=True)
         threading.Thread(target=_send, daemon=True,
                          name=f'opencode-stdin-{mc_sid[:8]}').start()
 
@@ -10518,6 +10533,7 @@ class GooseRuntime(AgentRuntime):
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
                  **_extra) -> SessionHandle:
+        vendor_fence.check_launch(self.name, session_dict)
         if not self.resolve_binary():
             raise CLINotInstalledError(
                 "goose not installed — run: "
@@ -10542,6 +10558,7 @@ class GooseRuntime(AgentRuntime):
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
+        vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
@@ -10568,8 +10585,8 @@ class GooseRuntime(AgentRuntime):
                 if proc.stdin:
                     proc.stdin.write(full_prompt)
                     proc.stdin.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                _log(f'[runtime:goose] stdin delivery failed: {exc}', flush=True)
         threading.Thread(target=_send, daemon=True,
                          name=f'goose-stdin-{mc_sid[:8]}').start()
 
@@ -10813,6 +10830,7 @@ class AiderRuntime(AgentRuntime):
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
                  **_extra) -> SessionHandle:
+        vendor_fence.check_launch(self.name, session_dict)
         if not self.resolve_binary():
             raise CLINotInstalledError("aider not installed — run: pip install aider-chat")
         mc_sid = mc_session_id or uuid.uuid4().hex[:12]
@@ -10843,6 +10861,7 @@ class AiderRuntime(AgentRuntime):
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
+        vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
@@ -11156,6 +11175,7 @@ class KiroRuntime(AgentRuntime):
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
                  **_extra) -> SessionHandle:
+        vendor_fence.check_launch(self.name, session_dict)
         if not self.resolve_binary():
             raise CLINotInstalledError(
                 "kiro-cli not installed — run: "
@@ -11180,6 +11200,7 @@ class KiroRuntime(AgentRuntime):
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
+        vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:

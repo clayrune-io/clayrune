@@ -864,6 +864,18 @@ lock and sticky application of settings are under **System > Runtime and
 availability**; the Codex unattended sandbox stays human-gated in **System >
 Security**. Live activity presentation is under **Appearance > Interface**.
 
+With unattended fencing enabled, schedules, workflows, agent dispatches and
+hivemind runs require a working steward fence. Gemini and Qwen check that their
+CLI actually loads and runs the guard before each launch or follow-up. If it
+cannot, the session shows the reason and the request fails; Clayrune does not
+switch engines to work around a fence refusal. Gemini versions that reject
+user-owned per-launch system settings also fail this check.
+
+Aider has no supported pre-execution hook, so unattended Aider is refused while
+fencing is enabled. OpenCode, Goose and Kiro are likewise refused until their
+guard adapters are verified. Attended chats remain available. Installing one
+of these CLIs does not by itself establish that its guard works.
+
 ### Keep machine awake
 
 Turn on **Settings > System > Runtime and availability > Keep machine awake**

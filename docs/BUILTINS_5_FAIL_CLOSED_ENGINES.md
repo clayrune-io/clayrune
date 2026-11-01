@@ -1,38 +1,110 @@
 # BUILTINS-5: fail-closed engine coverage
 
-2026-10-31. Backlog `51344245`. Sol_Tobin. **Investigation stopped at the
-task's explicit product-decision gate; this is not an implementation report.**
-No runtime, hook configuration, global CLI configuration or human-owned fence
-file was changed. No merge, push or server restart is authorized for this task.
+2026-10-31. Backlog `51344245`. Sol_Tobin. **Branch implementation after
+Dave's Aider decision. No merge, push or server restart.** The initial
+decision-gated audit is preserved in commit a0d23078.
 
-## Scope and current coverage
+## Final engine status
 
-The runtime registry at the end of `mc/agent_runtime.py` registers exactly
-eight engines. Unattended means the existing
-`mc.launch_marker.UNATTENDED_TRIGGER_TYPES`: `schedule`, `workflow`,
-`dispatch`, `hivemind_orchestrator`, `hivemind_worker`. Preserve the existing
-`fence_unattended_enabled` switch and attended-launch behavior.
-
-The process guard (`mc/process_guard.py`) and steward fence
-(`steward/fence.py`) are different policies. Finding the former in a launch
-does not establish that the latter runs. A successful pre-spawn self-test
-alone also cannot establish in-engine enforcement.
-
-| Engine | Hook mechanism | Fail-closed method / current status | Verified how |
+| Engine | Hook mechanism | Fail-closed method | Verified how / result |
 |---|---|---|---|
-| Claude | Per-launch `--settings`, `PreToolUse` | Already implemented: pre-spawn self-test; `onFailure: block` on CLI >= 2.1.295. Not redone. | Read `mc/fence_fail_closed.py`, `mc/launch_marker.py`, and installer fence injection. Existing measurement: `docs/FENCE_FAIL_CLOSED_MEASUREMENT.md`. |
-| Codex | Inline `hooks.PreToolUse` override and hook-trust bypass | Already implemented: armed wrapper plus `codex_fence_self_test`, delegating to `run_fence_self_test`. Timeout remains a documented fail-open limitation. Not redone. | Read `mc/guardrail_hooks.py` and `CodexRuntime.dispatch`/follow-up command construction. |
-| Gemini | `BeforeTool` through per-launch `GEMINI_CLI_SYSTEM_SETTINGS_PATH`; session settings can merge MCP configuration | Current installer adds process guard only, no steward fence. Needs fence injection/arming and shared pre-spawn test before dispatch and follow-up. Native failure-policy knob not assessed before stop. | Read `tools/guards/install_hooks.py` (`VENDOR_CONFIGS`, `EXTRA_HOOK_SHAPES`), `_inject_gemini_env` and `GeminiRuntime.dispatch`. Prior native-hook proof: `docs/GUARDRAIL_PARITY_EVIDENCE.md`. |
-| Qwen | `PreToolUse` through per-launch `QWEN_CODE_SYSTEM_SETTINGS_PATH`; no `--bare` | Current installer adds process guard only, no steward fence. Needs fence injection/arming and shared pre-spawn test before dispatch and follow-up. Native failure-policy knob not assessed before stop. | Read installer shapes, `QwenRuntime.dispatch`/`write_followup` and `_inject_guardrail_env`. Prior native-hook proof: `docs/GUARDRAIL_PARITY_EVIDENCE.md`. |
-| OpenCode | Native plugin `tool.execute.before` (V1; V2 has a different plugin API) | No Clayrune fence injection. A plugin adapter is possible; installed-version support, per-launch loading and failure semantics remain unverified. Do not classify this as hookless. | Read runtime command/dispatch/follow-up; upstream plugin docs list the event. No real OpenCode launch performed. |
-| Goose | Native plugin `PreToolUse` command hooks | No Clayrune fence injection. Needs adapter, failure-policy assessment and per-launch loading verification. Do not classify this as hookless. | Read runtime dispatch/follow-up and upstream hook reference. Native failure policy has not been exercised through a real CLI here. |
-| Aider | No documented pre-execution command hook in the reviewed CLI/configuration and edit/shell execution paths | **Decision required.** No in-engine fence mechanism established. Pre-spawn testing cannot protect subsequent edits or shell calls. No blanket unattended refusal added. | Read `AiderRuntime.build_command` (`--yes`), dispatch/follow-up, upstream options and `Coder.apply_updates`, `handle_shell_commands`, `Commands.cmd_run`. Lint/test callbacks are after edits. Upstream hook-system request remains open in the reviewed page. No real Aider launch performed. |
-| Kiro | Native `PreToolUse`, inline profile hooks or standalone `.kiro/hooks/*.json` | No Clayrune fence injection. Upstream documents blocking on nonzero exit; per-launch injection, timeout and load-failure behavior need verification. Do not classify this as hookless. | Read runtime headless command (`--trust-all-tools`) and official hook actions/migration references. No real Kiro launch performed. |
+| Claude | Per-launch `PreToolUse` settings | Existing shared self-test plus `onFailure: block` on CLI >= 2.1.295; unchanged | Existing regression suites; implementation not redone. |
+| Codex | Inline `PreToolUse` override | Existing armed wrapper and shared self-test; unchanged | Existing regression suites; implementation not redone. |
+| Gemini | Per-launch `GEMINI_CLI_SYSTEM_SETTINGS_PATH`, `BeforeTool` | New armed payload adapter plus shared native loader/runner preflight before dispatch and every follow-up. Failed loading refuses the launch. | **Installed 0.66.0 on Windows is refused:** its loader ignores user-owned system settings under its administrator-ownership/ACL requirement. Actual loader/registry proof and refusal test; no permissions or trust checks bypassed. Adapter's allowed launch path is covered at mocked process/native-preflight boundaries, not certified on another real installation. |
+| Qwen | Per-launch `QWEN_CODE_SYSTEM_SETTINGS_PATH`, `PreToolUse` | New armed adapter plus shared native loader/runner preflight before dispatch and every follow-up; unexpected adapter failures become exit 2 | **Installed 0.26.4 passes:** native settings loader registers the injected hook; native runner and aggregator preserve real fence self-test denial, reversible-command allow and `git push` refusal. Safe-mode suppression is separately verified to refuse startup. |
+| OpenCode | Native plugin API exists | Visible unattended refusal while fencing is enabled; no verified Clayrune adapter | Runtime resolver found no installed CLI. Refuse/pass tests at dispatch and follow-up plus HTTP error tests. Installing the CLI alone does not certify an adapter. |
+| Goose | Native plugin `PreToolUse` exists | Visible unattended refusal while fencing is enabled; no verified Clayrune adapter | Runtime resolver found no installed CLI. Same boundary/HTTP tests; no live native integration claimed. |
+| Aider | No supported pre-execution hook established | Visible unattended refusal while fencing is enabled, per Dave's decision | Refusal precedes binary resolution; exact reason names the missing hook. Attended/fence-disabled pass tests at dispatch and follow-up plus HTTP errors. |
+| Kiro | Native `PreToolUse` exists | Visible unattended refusal while fencing is enabled; no verified Clayrune adapter | Runtime resolver found no installed CLI. Same boundary/HTTP tests; no live native integration claimed. |
 
-Current runtime code establishes the injection gaps; upstream documentation
-establishes available native extension mechanisms, not a successful Clayrune
-integration. Older parity documents cover four engines and are not evidence
-of eight-engine fence coverage.
+Attended launches remain available. All six remaining engines use the existing
+`UNATTENDED_TRIGGER_TYPES` set and the live `fence_unattended_enabled` switch.
+No refusal falls back to another engine. Session state becomes `error`, the
+reason appears in `log_lines`, and dispatch/send/follow-up/interrupt return an
+HTTP 409 error for `VendorFenceError` rather than success. Existing dispatch
+failure persistence remains responsible for run history.
+
+The Aider reason is:
+
+> Aider has no pre-execution hook, so the steward fence cannot run; unattended Aider is refused while fencing is enabled
+
+Dave selected this restriction after the initial audit. The unfenced exception
+was rejected as a Ron-only gate change; an Aider interception layer is outside
+this ticket. Gemini's rejected file is also a failed guard-load check, not an
+exception allowing it to run unfenced.
+
+## Implementation and verification contract
+
+- `mc/vendor_fence.py` owns launch policy and content-addressed settings copies.
+  It copies only Clayrune-owned hook/MCP settings, retains other entries, removes
+  duplicate Clayrune fence entries, and never copies global user configuration.
+  Malformed/missing referenced settings, write failure, missing Node/package,
+  unknown CLI exports, disabled hooks or failed preflight refuse startup.
+- `mc/vendor_fence_hook.py` translates native shell/file/read/search tool names
+  to the existing fence vocabulary, preserves cwd and call identity, and always
+  calls the human-owned fence with `--armed`. PowerShell hooks carry the native
+  shell hint. Parse/translation/load failures emit a reason and exit 2.
+  `read_many_files` is explicitly denied until every target can be translated;
+  individual `read_file` calls remain usable. No changes to `steward/fence.py`.
+- `mc/vendor_fence_probe.py` finds the launched package's active import graph,
+  imports its native settings loader/registry/runner, and checks real fence
+  self-test denial, allow and refusal without a model turn or tool execution.
+  Qwen standalone's entry-selection prefix is evaluated only through selection;
+  selecting a different managed npm build refuses rather than testing a stale
+  bundled copy. Discovery is repeated on each spawn, so a changed CLI does not
+  reuse stale module paths. Internal vendor APIs can change; unknown shapes
+  are a visible refusal, not a compatibility fallback.
+- `mc/guardrail_hooks.run_fence_self_test` remains the **only** Python runner.
+  It now accepts optional child env/cwd; Claude/Codex defaults are unchanged.
+  The Node proof returns exit 2 plus the actual fence token only after every
+  native check passes. Hook invocations have fail-closed shell tails; native
+  timeout/crash behavior outside those tails remains a CLI limitation.
+- `mc/hook_entry.py` registers the adapter for frozen builds. No extra resource
+  files are required: the small Node probe is emitted from its Python module.
+  Source and frozen argv/entry contracts are tested; no packaged-app build or
+  live server run was performed. Runtime/route monolith edits are boundary
+  calls and existing-error-path wiring; the new concern lives in three modules.
+
+The startup proof is not a sandbox or a guarantee against a hook timing out
+after launch. Gemini/Qwen expose no verified hook-level equivalent to Claude's
+`onFailure: block` in the reviewed installed implementations. Runtime hook
+timeouts can still fail open; the 30-second hook budget is separate from the
+10-second startup check. These limits also exist in the prior Codex approach.
+
+## Final validation
+
+Portable regression command (six requested suites, new tests and related route,
+frozen-entry/context/fallback coverage):
+
+```text
+python -m pytest -q -o addopts='' --tb=short tests/test_fence_fail_closed_unattended.py tests/test_codex_steward_fence.py tests/test_guardrail_injection.py tests/test_guardrail_hooks_boot.py tests/test_install_hooks.py tests/test_launch_marker.py tests/test_vendor_fence.py tests/test_vendor_fence_probe.py tests/test_vendor_fence_routes.py tests/test_frozen_hook_entry.py tests/test_native_followup_context_routes.py tests/test_agent_routes.py tests/test_engine_fallback.py
+```
+
+**rc=0: 500 passed, 1 xfailed in 35.89 seconds.** The existing expected failure
+is `test_project_fence_entry_timeout_is_seconds_not_ms`, awaiting the human-owned
+timeout patch; this ticket does not change it.
+
+Installed proof (PowerShell, opt-in; no model turns):
+
+```powershell
+$env:CLAYRUNE_TEST_INSTALLED_FENCES='1'
+python -m pytest -q -o addopts='' --tb=short tests/test_vendor_fence_installed.py
+```
+
+**rc=0: 3 passed** (Qwen load/deny/allow, Qwen safe-mode refusal, Gemini
+ownership-rejection refusal). The opt-in tests deliberately pin measured
+installation behavior; they are skipped unless explicitly enabled.
+
+```text
+pyright mc/vendor_fence.py mc/vendor_fence_hook.py mc/vendor_fence_probe.py mc/agent_runtime.py mc/guardrail_hooks.py mc/hook_entry.py
+```
+
+**rc=0: 0 errors.** Including `mc/blueprints/agent_routes.py` returns rc=1
+with **15 existing errors**. Compared its HEAD source with the edited source
+using rule/message diagnostic multisets: before 15, after 15, **0 new**.
+The guide/changelog document refusal behavior. README and agent instructions
+need no changes: installation steps and agent authority are unchanged. No new
+dependencies.
 
 ## Primary sources reviewed
 
@@ -47,37 +119,3 @@ of eight-engine fence coverage.
   (`apply_updates`, `handle_shell_commands`) and
   <https://github.com/Aider-AI/aider/blob/main/aider/commands.py> (`cmd_run`).
 - Aider hook-system request: <https://github.com/Aider-AI/aider/issues/5712>.
-
-## Decision for Dave (not selected)
-
-1. **Recommended: refuse unattended Aider launches while the fence is enabled.**
-   Small, explicit product restriction; attended Aider stays available. Apply
-   the same guard on dispatch and every respawn/follow-up, via existing spawn
-   failure paths. Requires Dave's decision under this task's STOP AND ASK rule.
-2. Keep unattended Aider available with a documented fence exception. Lowest
-   implementation cost, but BUILTINS-5 cannot claim every-engine enforcement.
-3. Build an Aider interception adapter or confinement layer first. Largest
-   scope; must cover both direct file edits and subprocess paths, and prove
-   enforcement. A shell-only wrapper or a startup self-test is insufficient.
-
-After Dave decides, resume implementation for supported hooks in a separate
-module, reuse `mc.guardrail_hooks.run_fence_self_test`, and test refuse/pass
-at actual dispatch and follow-up boundaries for every covered engine. Do not
-modify `steward/fence.py`. No per-engine refusal/pass tests were added during
-this decision-gated investigation; there is no new runtime behavior to test.
-
-## Validation
-
-Existing related fence/guardrail regression command, **rc=0**:
-
-```text
-python -m pytest -q tests/test_fence_fail_closed_unattended.py tests/test_codex_steward_fence.py tests/test_guardrail_injection.py tests/test_guardrail_hooks_boot.py tests/test_install_hooks.py tests/test_launch_marker.py
-```
-
-One existing expected failure:
-`test_project_fence_entry_timeout_is_seconds_not_ms`, pending the human-owned
-`steward/core.py` timeout patch (`docs/patches/fence-timeout-seconds.patch`).
-Pyright is not applicable: no `mc/` module was edited.
-No model turns, authenticated CLI runs, or live provider enforcement probes
-were performed. No user-visible change: changelog, user guide, README and
-agent instructions need no edits for this investigation.

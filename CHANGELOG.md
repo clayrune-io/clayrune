@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-10-31] - Refuse unattended engines whose steward fence cannot load (BUILTINS-5)
+
+- Gemini and Qwen inject an armed fence adapter through per-launch settings and verify native settings loading, hook registration and allow/refuse behavior before dispatch and follow-up. Guard-load failures are visible session errors; follow-up/interrupt callers receive HTTP 409 rather than success.
+- Aider is refused unattended while fencing is enabled because it has no pre-execution hook. OpenCode, Goose and Kiro are refused until their adapters are verified. Attended use remains available, with no engine substitution on refusal.
+- Installed Qwen 0.26.4 passed the native proof. Gemini 0.66.0 on Windows rejects user-owned system settings and is explicitly refused. No native ownership gate was weakened. Branch candidate only; no merge, push or restart.
+
 ## [2026-10-31] - Identify and schedule posts directly from When
 
 - Calendar chips and Unscheduled cards have hover/tap-info previews using the shared post renderer. The composer exposes the existing editable Name control after a draft exists.

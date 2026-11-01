@@ -69,6 +69,9 @@ def run_hook(argv: Sequence[str]) -> int:
         return _run_fence(args[1:])
     if name == PROCESS_GUARD:
         return _run_process_guard()
+    if name == 'vendor-fence':
+        from mc import vendor_fence_hook
+        return vendor_fence_hook.main(args[1:])
     if sys.stderr is not None:
         sys.stderr.write(f'Clayrune: unknown hook {name!r}; blocking fail-closed.\n')
     return 2
