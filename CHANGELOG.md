@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-01] - Play and export the Studio timeline locally
+
+- Replaced the separate Preview opener and pricing hint with an always-visible black 16:9 stage and centered Play/Replay overlay. Pause, seek and time remain below; empty boards show a disabled Play and “Add a scene to preview.” Keyboard focus follows Play/Pause, and timeline edits still reset preview.
+- Added **Export** beside preview controls: a local background job joins the current real scenes and trimmed lengths into a 720p/30 fps H.264/AAC MP4, preserving clip audio and adding silence otherwise. Still images hold; missing-media scenes use black, with Windows titles when the explicit font works and a disclosed black fallback otherwise.
+- Reused the ffmpeg add-on approval request (approve, then retry), existing video/Generated material folder and current Home/project explorer guards. Progress, errors and download/open links survive editor navigation while the server stays running. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-01] - Show exactly where Studio material will be inserted (MC-1145)
 
 - Library material and computer-file drags now highlight the destination gap on campaign and standalone Studio timelines, including before the first scene and after the last. Dropping uses the marked position.

@@ -1,10 +1,15 @@
 /* Local storyboard playback, scoped separately from the scene editor. */
 .desk-v1-sb-preview { margin-bottom: 14px; min-width: 0; }
-.desk-v1-sb-preview-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--text-faint); font-size: 12px; }
 .desk-v1-sb-preview [hidden] { display: none; }
-.desk-v1-sb-preview-stage { display: grid; place-items: center; aspect-ratio: 16 / 9; width: 100%; max-height: 360px; overflow: hidden; margin-top: 10px; border: 1px solid var(--border2); border-radius: 10px; background: var(--surface2); }
-.desk-v1-sb-preview-stage video, .desk-v1-sb-preview-stage img { width: 100%; height: 100%; min-height: 0; object-fit: contain; background: #171513; }
-.desk-v1-sb-preview-card { padding: 20px; text-align: center; overflow-wrap: anywhere; max-height: 100%; overflow: auto; box-sizing: border-box; color: var(--text); }
+.desk-v1-sb-preview:not([data-preview-started]) .desk-v1-sb-preview-stage :is(video, img, [data-preview-card]) { visibility: hidden; }
+.desk-v1-sb-preview-stage { position: relative; display: grid; place-items: center; aspect-ratio: 16 / 9; width: 100%; overflow: hidden; margin-top: 10px; border: 1px solid var(--border2); border-radius: 10px; background: #000; }
+.desk-v1-sb-preview-stage video, .desk-v1-sb-preview-stage img { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; object-fit: contain; background: #000; }
+.desk-v1-sb-preview-card { position: absolute; inset: 0; display: grid; align-content: center; padding: 20px; text-align: center; overflow-wrap: anywhere; overflow: auto; box-sizing: border-box; color: #eee; }
+.desk-v1-sb-preview-overlay { z-index: 1; min-width: 76px; min-height: 76px; border-radius: 50%; border: 1px solid #ffffff80; color: white; background: #151515e8; font-size: 16px; cursor: pointer; }
+.desk-v1-sb-preview-overlay::before { content: '\25b6'; display: block; font-size: 28px; line-height: 1.3; }
+.desk-v1-sb-preview-overlay:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+.desk-v1-sb-preview-overlay:disabled { opacity: .35; cursor: default; }
+.desk-v1-sb-preview-empty { position: absolute; top: calc(50% + 48px); color: #aaa; font-size: 12px; }
 .desk-v1-sb-preview-card strong { font-size: clamp(16px, 2vw, 24px); }
 .desk-v1-sb-preview-card p { margin: 10px 0 0; font-size: 14px; white-space: pre-wrap; }
 .desk-v1-sb-preview-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
@@ -14,5 +19,4 @@
 [data-sb-timeline] .desk-v1-video-scene.desk-v1-preview-current { outline: 3px solid var(--accent); outline-offset: -3px; background: var(--accent-dim); }
 @media (max-width: 600px) {
   .desk-v1-sb-preview-controls button { min-height: 40px; }
-  .desk-v1-sb-preview-controls [data-preview-close] { margin-left: auto; }
 }
