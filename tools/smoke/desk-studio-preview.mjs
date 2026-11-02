@@ -86,7 +86,13 @@ try {
       await page.waitForSelector('[data-preview-play]:not([disabled])');
       // The editor's existing paid-render panel estimates on mount. Preview
       // must add zero requests of its own, measured after that panel settles.
-      await page.waitForTimeout(150);
+      // Wait for quiet (no new paid-panel request for 400ms), not a fixed
+      // 150ms: on a loaded box the mount estimate landed after the window
+      // and was miscounted as a preview call (2026-11-02 flake, 2 !== 1).
+      for (let seen = -1, quiet = 0; quiet < 400; ) {
+        await page.waitForTimeout(100);
+        if (forbidden.length === seen) quiet += 100; else { seen = forbidden.length; quiet = 0; }
+      }
       const baseline = writes.length;
       const paidBaseline = forbidden.length;
       assert.equal(await page.locator('[data-preview-player]').isVisible(), true);
