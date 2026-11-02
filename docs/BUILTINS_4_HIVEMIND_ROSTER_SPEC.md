@@ -524,6 +524,15 @@ This contract supplies validation for the later HR-6a directive; it does not
 install a skill, bind Dave's character, intercept ordinary dispatches or
 authorize fan-out. No USER_GUIDE/UI change is part of HR-6b.
 
+#### HR-6a implemented directive (2026-11-01)
+
+`data/skills/builtin/mc-hivemind-routing/SKILL.md` documents the call
+contract above for a coordinating agent and ships through `install_builtins`.
+`tests/test_hivemind_routing_skill.py` installs it into a temporary skills
+dir (never the real home) and pins the documented fields, enums, result keys
+and error codes to `mc.hivemind_routing`. Binding it to a specific character
+remains the separately authorized pilot step.
+
 HR-6b branch verification (2026-11-01, base `4e33366e`):
 
 | Command | Result |
