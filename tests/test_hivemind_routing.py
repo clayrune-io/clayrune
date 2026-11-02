@@ -196,6 +196,11 @@ def test_ownership_must_be_concrete_relative_files(records, path):
 def test_invalid_unit_fields_are_never_silently_ignored(records, patch):
     data = decomposition()
     data['units'][0].update(patch)
+    if patch.get('character') == 'global:missing':
+        result = route(data, records)
+        assert result['route'] == 'hivemind'
+        assert any('global:missing' in w for w in result['warnings'])
+        return
     assert_invalid(route(data, records), 'invalid_unit')
 
 
@@ -235,8 +240,10 @@ def test_bad_plan_shape_or_capacity(records, patch):
 
 @pytest.mark.parametrize('count', [0, 2, 3])
 def test_bad_reviewer_is_reported_even_below_threshold(records, count):
-    assert_invalid(route(decomposition(count, reviewer_character='global:missing'), records),
-                   'invalid_reviewer')
+    result = route(decomposition(count, reviewer_character='global:missing'), records)
+    assert result['route'] == ('hivemind' if count >= 3 else 'ordinary')
+    assert any('global:missing' in w for w in result['warnings'])
+    assert_invalid(route(decomposition(count, reviewer_character='global:../missing'), records), 'invalid_reviewer')
 
 
 def test_reviewer_optional_for_ordinary_required_for_roster(records):

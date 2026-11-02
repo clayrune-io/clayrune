@@ -21,7 +21,7 @@ from mc import agent_worktree as _agent_worktree
 from mc import characters, engine_selection, hivemind_roster as roster
 from mc import hivemind_lineage as _hm_lineage
 from mc import project_sync as _sync, state
-from mc.core import TimestampedLines, now_iso
+from mc.core import TimestampedLines, now_iso, _log
 
 
 class RosterRecoveryHeld(RuntimeError):
@@ -181,7 +181,8 @@ def _revive_roster_worker(entry: dict, project: dict, message: str) -> dict:
         context = read_pinned_prompt(entry)
         character = deepcopy(entry['character'])
         assignment = dict(entry['resolved_assignment'])
-        if assignment.get('session_id') != sid or assignment.get('character_ref') != entry['character_ref']:
+        if (assignment.get('session_id') != sid
+                or assignment.get('requested_character', assignment.get('character_ref')) != entry['character_ref']):
             raise RosterRecoveryHeld('Roster recovery has inconsistent identity pins')
         cwd = entry['_agent_cwd']
         if not Path(cwd).is_dir():
@@ -256,13 +257,19 @@ def spawn_roster_worker(api: Any, manifest: dict, ws: dict, project: dict,
     session_id = f'hm_{uuid.uuid4().hex[:8]}'
     # One read supplies both engine and body: a roster edit between two reads
     # must never give a worker one character's engine and another persona.
-    canon, record = roster.lookup_character(
-        ws.get('character'),
-        lambda name: characters.read_character('global', name, include_body=True))
-    snapshot = deepcopy(record)
+    canon = roster.parse_character_ref(ws.get('character'))
+    snapshot: dict[str, Any] = {}
+    cfg = manifest.get('config') or {}
+    previous = ws.get('resolved_assignment') or {}
     assignment = roster.resolve_assignment(
-        canon, state.CONFIG, project, session_id=session_id,
-        read_character=lambda name: snapshot)
+        canon, roster.assignment_config(state.CONFIG, cfg), project, session_id=session_id,
+        read_character=lambda name: characters.read_character('global', name, include_body=True),
+        character_snapshot=snapshot, **roster.planner_fields(ws),
+        worker_provider=cfg.get('worker_provider') or '',
+        previously_defined=bool(ws.get('character_known') or
+                                (previous.get('character_ref') == canon and
+                                 previous.get('substituted') is not True)))
+    snapshot = deepcopy(snapshot)
     # Resolve runtime/generation before context, disk ownership or worktrees.
     generation = manifest.get('project_generation')
     if type(generation) is not int or generation < 1:
@@ -320,6 +327,7 @@ def spawn_roster_worker(api: Any, manifest: dict, ws: dict, project: dict,
     ws['current_agent_session_id'] = session_id
     ws['status'] = 'active'
     api._hm_save_workstream(hivemind_id, ws_id, ws)
+    record_substitution(api, hivemind_id, assignment, role='worker', ws_id=ws_id)
     metadata = {
         'hivemind_id': hivemind_id, 'hivemind_ws_id': ws_id,
         'trigger_type': 'hivemind_worker', 'trigger_id': ws_id,
@@ -355,6 +363,24 @@ def spawn_roster_worker(api: Any, manifest: dict, ws: dict, project: dict,
         metadata=metadata, prepared_context=PreparedContext(snapshot, assignment, context),
         callbacks=runtime_callbacks(assignment['provider']),
         max_turns=int(max_turns) if max_turns and int(max_turns) > 0 else None)
+
+
+def record_substitution(api: Any, hm_id: str, assignment: dict, *, role: str,
+                        ws_id: str = '') -> None:
+    """Persist disclosure before launch; never dispatch with an unlogged swap."""
+    if not assignment.get('substituted'):
+        return
+    ran_as = assignment.get('character_ref') or 'generic worker'
+    content = f"requested {assignment['requested_character']} -> ran as {ran_as}"
+    event = {
+        'id': 'sub_' + uuid.uuid4().hex[:12], 'timestamp': now_iso(),
+        'type': 'character_substitution', 'from': ws_id or role, 'to': 'all',
+        'content': content, 'role': role, 'ws_id': ws_id,
+        'resolved_assignment': dict(assignment),
+    }
+    api._hm_append_bus_message(hm_id, event)
+    _log(f'[hivemind] {hm_id}: {content}', flush=True)
+    api._hm_push_sse(hm_id, {**event, 'hivemind_id': hm_id})
 
 
 def build_worker_context(api: Any, hivemind_id: str, ws_id: str, *, universal: bool = True) -> str:

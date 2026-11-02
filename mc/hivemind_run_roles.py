@@ -115,6 +115,15 @@ def _engine(assignment: Any) -> dict | None:
     return out
 
 
+def _substitution(assignment: Any) -> dict:
+    a = _dict(assignment)
+    return {'requested_character': _text(a.get('requested_character') or a.get('character_ref')),
+            'resolved_character': _text(a.get('character_ref')),
+            'substituted': a.get('substituted') is True,
+            'substitution_step': _text(a.get('substitution_step')),
+            'substitution_reason': _text(a.get('substitution_reason'))}
+
+
 def _checks(merge: Mapping[str, Any]) -> dict | None:
     """Named checks of a merged candidate; None until its smokes have run."""
     if 'smokes' not in merge:
@@ -138,6 +147,8 @@ def _review_item(ws_id: str, state: str, phase: str, pins: Mapping[str, Any],
     if r.get('reviewer_session'):
         reviewer = {'session_id': _text(r.get('reviewer_session')),
                     'character': _text(r.get('reviewer_character')),
+                    **_substitution({'character_ref': r.get('reviewer_character'),
+                                     **_dict(r.get('resolved_assignment'))}),
                     'engine': {k: (engine or {}).get(k, '') for k in _ENGINE_KEYS}}
     deadline = r.get('deadline_at')
     return {
@@ -294,7 +305,10 @@ def _project(manifest: Mapping[str, Any], workstreams: list, integration: Any) -
         ws_rows.append({
             'id': ws_id, 'title': _text(w.get('title')), 'status': _text(w.get('status')),
             'dependencies': [_text(d) for d in _list(w.get('dependencies'))],
-            'requested_character': _text(w.get('character')),
+            'requested_character': _text(_dict(w.get('resolved_assignment')).get('requested_character')
+                                         or w.get('character')),
+            **{k: v for k, v in _substitution(w.get('resolved_assignment')).items()
+               if k != 'requested_character'},
             'assignment_attempt': w.get('assignment_attempt') if type(w.get('assignment_attempt')) is int else 0,
             'effective_engine': _engine(w.get('resolved_assignment')),
             'integration': {'outcome': outcome, 'stale': stale,
@@ -353,8 +367,13 @@ def summarize(manifest: Mapping[str, Any] | None, workstreams: list | None,
     if full is None:
         return None
     chars = sorted({w['requested_character'] for w in full['workstreams'] if w['requested_character']})
+    substitutions = [{k: w[k] for k in ('requested_character', 'resolved_character',
+                                       'substituted', 'substitution_step', 'substitution_reason')}
+                     for w in full['workstreams'] + [r['reviewer'] for r in full['reviews'] if r['reviewer']]
+                     if w['substituted']]
     return {'stage': full['stage'], 'accepted': full['accepted'],
             'requested_characters': chars,
+            **({'substitutions': substitutions} if substitutions else {}),
             'reviewer_character': full['reviewer']['requested_character']}
 
 
@@ -385,4 +404,6 @@ def annotate_run(entry: Mapping[str, Any]) -> dict:
     row['run_role'] = run_role(entry)
     row['requested_character'] = _text(entry.get('character_ref'))
     row['effective_engine'] = _engine(entry.get('resolved_assignment'))
+    row.update(_substitution(entry.get('resolved_assignment')))
+    row['requested_character'] = row['requested_character'] or _text(entry.get('character_ref'))
     return row

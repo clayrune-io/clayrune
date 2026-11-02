@@ -133,6 +133,8 @@ def test_review_pending_projects_provisional_not_accepted():
     assert r['incoming_tip'] == SHA['b'] and r['incoming_branch'] == 'clayrune/agent/hm_w1'
     assert r['checks'] == {'named': [{'name': 'a.mjs', 'ok': True}], 'ran': True, 'note': ''}
     assert r['reviewer'] == {'session_id': 'rv_1', 'character': 'global:code-reviewer',
+                             'requested_character': 'global:code-reviewer', 'resolved_character': 'global:code-reviewer',
+                             'substituted': False, 'substitution_step': '', 'substitution_reason': '',
                              'engine': {'provider': 'claude', 'model': 'opus', 'effort': 'high'}}
     assert r['review_state'] == 'pending' and r['verdict'] == ''
     assert r['hold_reason'] == 'awaiting designated reviewer verdict'
@@ -361,7 +363,8 @@ def test_documented_top_level_shape():
     assert set(p) == {'schema_version', 'stage', 'accepted', 'manifest_status', 'as_of', 'reason',
                       'unverified_reasons', 'workstreams', 'reviewer', 'reviews', 'hold', 'counts'}
     assert set(p['workstreams'][0]) == {'id', 'title', 'status', 'dependencies', 'requested_character',
-                                        'assignment_attempt', 'effective_engine', 'integration'}
+                                        'assignment_attempt', 'effective_engine', 'integration',
+                                        'resolved_character', 'substituted', 'substitution_step', 'substitution_reason'}
     assert set(p['workstreams'][0]['integration']) == {'outcome', 'stale', 'candidate_key', 'reason'}
     st = integ([ws(1)], status='completed', cursor=1, merged=[merged(1, 'k1')])
     assert set(rr.project(manifest(), [ws(1)], st)['reviews'][0]) == {
@@ -393,6 +396,29 @@ def test_annotate_run_adds_identity_without_touching_the_row():
     bare = rr.annotate_run({'session_id': 'x', 'hivemind_role': 'reviewer'})
     assert bare['run_role'] == 'reviewer' and bare['effective_engine'] is None
     assert bare['requested_character'] == ''
+
+
+@pytest.mark.parametrize('actual,step', [('global:standin', 'role_fallback'), ('', 'tier_fallback')])
+def test_substitutions_reach_detail_summary_reviews_and_runs(actual, step):
+    assignment = {'character_ref': actual, 'requested_character': 'global:missing',
+                  'substituted': True, 'substitution_step': step,
+                  'substitution_reason': 'missing_at_attempt',
+                  'provider': 'codex', 'model': 'm', 'effort': '', 'session_id': 's'}
+    row = ws(1, character='global:missing')
+    row['resolved_assignment'] = assignment
+    merge = merged(1)
+    merge['review']['resolved_assignment'] = assignment
+    st = integ([row], status='completed', cursor=1, merged=[merge])
+    full = rr.project(manifest(), [row], st)
+    for projected in (full['workstreams'][0], full['reviews'][0]['reviewer'],
+                      rr.annotate_run({'character_ref': 'global:missing', 'resolved_assignment': assignment}),
+                      *rr.summarize(manifest(), [row], st)['substitutions']):
+        for key in ('requested_character', 'substituted', 'substitution_step', 'substitution_reason'):
+            assert projected[key] == assignment[key]
+        assert projected['resolved_character'] == actual
+    # An edit for the next attempt must not relabel what this attempt requested.
+    row['character'] = 'global:future-request'
+    assert rr.project(manifest(), [row], st)['workstreams'][0]['requested_character'] == 'global:missing'
 
 
 # ── route glue over real files ─────────────────────────────────────────────

@@ -99,6 +99,8 @@ def _load_config():
         # never sees the picker keeps behaving exactly as before. Set by the
         # onboarding provider-choice step or Settings -> Default provider.
         'default_provider': '',
+        'hivemind_role_fallbacks': {},
+        'hivemind_complexity_tiers': {},
         # Set true once first-run SETUP (Welcome -> Agent connections ->
         # Essentials) has been completed or skipped. Gates the first-run flow;
         # the guided tour is gated separately by localStorage `walkthrough_done`.
