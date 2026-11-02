@@ -22,6 +22,7 @@ from mc import characters, engine_selection, state
 from mc import steward_role_model as model, steward_role_task as composer
 from mc.steward_role_state import RoleStateStore
 from mc import steward_role_comms as comms
+from mc import steward_role_children as child_work
 from mc.core import _log, now_iso
 
 
@@ -93,6 +94,8 @@ class Prepared:
     assignment: dict
     system_prompt: str
     steward_role: bool = True
+    predecessor_session_id: str = ''
+    successor: bool = False
 
 
 class Services(Protocol):
@@ -231,7 +234,8 @@ def prepare_and_fire(schedule_id: str, services: Services, store: RoleStateStore
         _notify(project, row, 'started', f'{event}; predecessor={prior_id}', store)
         if not store.set_claim_state(pid, schedule_id, claim_id, 'delivery_unknown'):
             raise RoleBusy('role claim changed before delivery')
-        prepared = Prepared(meta, asdict(selection), refresh)
+        prepared = Prepared(meta, asdict(selection), refresh,
+                            predecessor_session_id=prior_id, successor=event == 'successor')
         sid, outcome = services.deliver(project, row, task, prepared,
                                         previous if same_thread else None)
         if not sid or outcome not in ('dispatched', 'appended', 'revived'):
@@ -253,7 +257,31 @@ class SchedulerServices:
     """Thin integration over existing character/context/guard/delivery services."""
     def __init__(self, scheduler: Any, lifecycle: Callable[..., str]):
         self.scheduler = scheduler
-        self.lifecycle = lifecycle
+        self._channel_lifecycle = lifecycle
+
+    def _children(self, project_id: str, predecessor: str) -> child_work.ChildWork:
+        from mc.blueprints import agent_routes as ar
+        return child_work.inspect(project_id, predecessor,
+            sessions=list(state.agent_sessions.values()),
+            agent_log=self.scheduler._load_agent_log(project_id),
+            delivery_path=ar._delivery_path)
+
+    def lifecycle(self, project: dict, row: dict, event: str, detail: dict) -> str:
+        handoff = ''
+        predecessor = detail.get('predecessor_session_id')
+        if predecessor and event in ('continue', 'successor'):
+            with self.scheduler.get_manager(project['id']).lock:
+                snapshot = self._children(project['id'], predecessor)
+                if event == 'successor':
+                    child_work.require_drained(snapshot)
+                handoff = snapshot.handoff(predecessor) + '\n'
+                detail['child_work'] = {
+                    'receiving_session_id': predecessor, 'children': list(snapshot.children),
+                    'unfinished': list(snapshot.unfinished), 'pending_events': list(snapshot.pending_events)}
+        text = self._channel_lifecycle(project, row, event, detail)
+        if not isinstance(text, str):
+            raise model.RoleError('role channel lifecycle returned invalid handoff text')
+        return handoff + text
 
     def load(self, schedule_id: str) -> tuple[dict, dict, list]:
         from mc import steward_role_writes as writes
@@ -376,6 +404,13 @@ class SchedulerServices:
                 previous: dict | None) -> tuple[str, str]:
         pid = project['id']
         with self.scheduler.get_manager(pid).lock:
+            if prepared.successor:
+                predecessor = prepared.predecessor_session_id
+                if not predecessor or not _closed(self.observe(pid, predecessor)):
+                    raise RoleBusy('predecessor became busy before successor handoff')
+                child_work.require_drained(self._children(pid, predecessor))
+                if self.active(pid):
+                    raise RoleBusy('a role cycle became active before successor handoff')
             if previous:
                 sid = previous['session_id']
                 live = state.agent_sessions.get(sid)

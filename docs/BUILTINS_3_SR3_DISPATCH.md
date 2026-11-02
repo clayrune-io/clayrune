@@ -65,8 +65,8 @@ Codex/Qwen/Gemini; a captured Claude auto-fresh revival covers handoff order.
 These tests launch no CLI or model.
 
 A changed selection or explicit noncontinuation uses a fresh successor with
-no provider-native resume ID. The lifecycle seam must approve channel and
-child-work handoff before launch; SR-3 durably journals the approved transition.
+no provider-native resume ID. SR-3 checks child continuity before launch and durably journals the transition;
+the channel lifecycle seam must still approve communications readiness.
 It receives the predecessor selection hash/current selection and then the
 accepted session ID. Full selection records live in the journal. The
 predecessor remains in SR-4 state, journal/handoff text and fire response;
@@ -131,32 +131,80 @@ block before handoff. Only status/decision enums (always
 `grants_authority=False`) enter handoff metadata/journals, never reply bodies.
 No backlog notes, raw mailbox reads or email sends are added here.
 
-**Remaining API gap:** SR-4 provides state, journaling and decision routing,
-but no combined channel-readiness/child-callback approval function. The existing
-integration callback remains explicitly required:
+## Child-work handoff follow-up
+
+SR-4's callback confirmed that child continuity belongs to SR-3. New
+`mc/steward_role_children.py` now provides a strict read-only projection of
+current/durable children and callback receipts. It uses the already configured
+agent-delivery database in SQLite `mode=ro` with `query_only=ON`; it neither
+creates a missing database nor runs the UI projection's best-effort empty
+fallback. Database/read/schema failures hold the transition.
+
+It scopes sessions, log entries and events to the project and predecessor
+receiving chain, including known transitive children. It reads identifiers
+and states, never completion payloads or task/summary text. A source/outbox
+record without a terminal inbox receipt remains pending. Only `processed`,
+`confirmed_in_transcript` and `handled` are settled receipts; `submitted`,
+unknown states and older-turn receipts do not prove current-turn delivery.
+Running/waiting children or missing turn/receipt evidence remain unfinished.
+A child row with no session ID also holds; it is not silently dropped.
+
+`SchedulerServices.lifecycle` adds this operational state to continuation
+handoff text and to durable journal transition metadata. An unchanged thread
+can collect outstanding work without a new
+cycle being held just because a non-waiting child exists. A successor must
+have a drained snapshot; there is no callback retargeting or duplicated
+child launch. `Prepared` carries predecessor/successor identity, and
+`SchedulerServices.deliver` repeats the drain and predecessor-idle checks
+under the existing project manager lock immediately before selecting its
+fresh launch path. New child work arriving during context preparation holds
+the successor with its uncertain claim intact.
+
+The role-specific mutex prevents competing role fires; this change does not
+reserve or disable ordinary chat APIs or replace the delivery system's own
+receiver guards. A live rollout must still exercise callback arrival around
+successor selection. No live provider/child-retention claim is made here.
+
+**Remaining interface decision for Dave: channel readiness.** SR-4 provides
+state, journaling, decision routing and default mail/digest runners. The
+existing `question_channel.channel_for(project)` selects `email` or `off`,
+but there is no no-send readiness/status API. The existing `_creds` and
+mailer `_load_config` return credential values; those are not acceptable
+agent-facing readiness contracts. SR-4's default runners are fixed to the
+application tool paths, not a project-scoped tool registration. No credential
+file/value was read or script invoked to work around this missing contract.
+
+The current production gate remains:
 
 ```python
 scheduler_routes.steward_role_lifecycle(project, schedule, event, detail) -> str
-# events: first_fire, continue, successor, accepted
-# returns task handoff text; raises if channel/child delivery is not ready
+# first_fire / continue / successor / accepted
+# channel readiness approval and optional handoff text; raises on a blocker
 ```
 
-The callback now owns channel readiness and child-work approval, not state
-persistence. SR-3 checks pending replies and writes the journal itself. A
-successor must hold until old callbacks drain or a durable receiving-session
-handoff is demonstrated. The callback receives `prior_selection_hash` (the
-SR-4 schema stores hashes), current/requested selections, predecessor/current
-session IDs and reply classifications; prior full selections can be read from
-the append-only journal. No live process identity or callback target is mutated.
-The callback is absent on this branch, so production delivery still refuses
-with `SR-4 role lifecycle adapter unavailable; delivery blocked`. No guessed
-channel configuration or child-retargeting policy was introduced.
+SR-3 now owns the child check/text and SR-4 journal calls; this missing callback
+only needs channel readiness. `fire` still refuses its absence explicitly.
+No dummy always-ready implementation is installed.
+
+Two choices, not selected by the builder:
+
+- **A (recommended):** add a no-send, metadata-only readiness probe to the
+  existing pilot mail tooling; keep unconfigured other projects visibly held.
+  Cost: a probe contract and command tests, without new project settings.
+- **B:** add project-scoped approved sender/digest tool registration and
+  readiness metadata. Cost: configuration/schema and registration tests in
+  addition to the runtime adapter; wider than the current SR-3 scope.
+
+Both preserve existing routing, mail pause/send verification, reply laundering
+and human gates. Dave selects the interface before the missing callback is
+implemented; no product option or credential-access rule was inferred here.
 
 Required before enabling a role:
 
 1. Human integration of both SR-2 patches (core adapter and directive).
-2. Integration of the channel/child-handoff callback with a usable configured
-   channel and demonstrated callback drain/retention policy.
+2. Dave-selected channel readiness interface and its production callback.
+   Child drain checks are implemented; controlled callback-race verification
+   remains part of live acceptance.
 3. A controlled cycle on each enabled installed guard-capable provider;
    adapter mocks alone are not rollout evidence.
 
@@ -179,13 +227,14 @@ append/revival/fresh seams and role-only runtime persistence.
 From `tests/`:
 
 ```text
-python ../_scratch/run_sr3_regression.py -q -o addopts='' --tb=short test_steward_role_dispatch.py test_steward_role_state.py test_steward_role_comms.py test_steward_role_task.py test_steward_role_model.py test_steward_core.py test_steward_refresh.py test_steward_routes.py test_scheduler_character.py test_scheduler_routes.py test_scheduler_slot_claim.py test_distiller_safety.py test_fence_steward_marker.py test_codex_steward_fence.py test_vendor_fence.py test_vendor_fence_probe.py test_vendor_fence_routes.py test_fence_fail_closed_unattended.py test_guardrail_hooks_boot.py test_guardrail_injection.py test_read_floor_injection.py test_memory_link_graph.py test_memory_v2_step7.py test_memory_v2_step8.py test_context_profile_by_job_shape.py test_context_profile_by_model_tier.py test_native_followup_context_routes.py test_distiller_promote_unattended_gate.py test_distiller_durable_yes.py test_builtins_resume_context.py test_revive_notify_carry.py test_agent_send_non_claude_revive.py test_context_freshness.py test_agent_routes.py test_engine_fallback.py
+python ../_scratch/run_sr3_regression.py -q -o addopts='' --tb=short test_steward_role_children.py test_steward_role_dispatch.py test_steward_role_state.py test_steward_role_comms.py test_delegation_delivery.py test_delegation_waiting.py test_delegation_settlement.py test_delegation_privacy.py test_delegation_lifecycle.py test_steward_role_task.py test_steward_role_model.py test_steward_core.py test_steward_refresh.py test_steward_routes.py test_scheduler_character.py test_scheduler_routes.py test_scheduler_slot_claim.py test_distiller_safety.py test_fence_steward_marker.py test_codex_steward_fence.py test_vendor_fence.py test_vendor_fence_probe.py test_vendor_fence_routes.py test_fence_fail_closed_unattended.py test_guardrail_hooks_boot.py test_guardrail_injection.py test_read_floor_injection.py test_memory_link_graph.py test_memory_v2_step7.py test_memory_v2_step8.py test_context_profile_by_job_shape.py test_context_profile_by_model_tier.py test_native_followup_context_routes.py test_distiller_promote_unattended_gate.py test_distiller_durable_yes.py test_builtins_resume_context.py test_revive_notify_carry.py test_agent_send_non_claude_revive.py test_context_freshness.py test_agent_routes.py test_engine_fallback.py
 ```
 
-Post-merge baseline: **119 passed in 5.02s, rc=0**. Integration focused run:
-**134 passed in 6.62s, rc=0**, including 71 dispatch cases and 63 SR-4 cases.
-**Full regression: 1063 passed, 1 existing xfailed in 55.86s, rc=0.** The
-expected failure is the existing human-owned fence timeout contract. The registered
+**Current full regression: 1204 passed, 1 existing xfailed in 58.60s,
+rc=0.** The expected failure is the existing human-owned fence timeout
+contract. Historical `7ffbc80d` validation (its original test list): post-merge
+119 passed; focused 134 passed; full 1063 passed, 1 existing xfail, all rc=0.
+The registered
 foreground runner invokes `pytest.main` with the exact arguments above from
 `tests/`, guarded by `if __name__ == "__main__"` for Windows multiprocessing.
 To run without process registration, replace the runner prefix with
@@ -195,11 +244,11 @@ gitignored local artifact. All model/mail/IMAP dependencies are mocked.
 From the worktree root:
 
 ```text
-pyright mc/steward_role_dispatch.py mc/blueprints/scheduler_routes.py mc/resume_context.py
+pyright mc/steward_role_children.py mc/steward_role_dispatch.py mc/blueprints/scheduler_routes.py mc/resume_context.py
 git diff --check
 ```
 
-**Both rc=0; pyright 0 errors.** The modified agent-routes monolith remains at
+**Both rc=0; pyright 0 errors (including the new child module).** The modified agent-routes monolith remains at
 15 existing pyright errors (rc=1); comparing HEAD and edited diagnostic
 rule/message multisets finds zero new diagnostics.
 
@@ -244,3 +293,21 @@ race: the temporary process-registration wrapper lacked a Windows entry
 guard. That run has no validation verdict. The corrected guarded wrapper ran
 the full, unchanged test argument list to the passing result above. The
 interrupted runner and its observed worker PIDs were gone before the retry.
+
+## Child follow-up validation
+
+Focused command (from `tests/`):
+
+```text
+python -m pytest -q -o addopts='' --tb=short test_steward_role_children.py test_steward_role_dispatch.py test_steward_role_state.py test_steward_role_comms.py
+```
+
+**159 passed in 8.06s, rc=0** (25 child-continuity cases). New child module
+and dispatch/scheduler/resume helpers: **pyright 0 errors, rc=0**.
+**Expanded full suite: 1204 passed, 1 existing xfailed in 58.60s, rc=0.**
+The historical 1063-case result covers 7ffbc80d, before this follow-up.
+
+Follow-up changed paths: `mc/steward_role_children.py`,
+`tests/test_steward_role_children.py`, `mc/steward_role_dispatch.py`,
+`docs/BUILTINS_3_SR3_DISPATCH.md`, `docs/BUILTINS_3_STEWARD_ROLE_SPEC.md`,
+`docs/USER_GUIDE.md`, `CHANGELOG.md`. SR-4 state/comms remain unchanged.

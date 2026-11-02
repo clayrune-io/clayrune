@@ -545,7 +545,9 @@ timer fires and **Run Now**. They require an enabled assignment and project
 steward mode. Missing cycle resources, lifecycle integration or a demonstrated
 engine guard block delivery with a concrete error; the Runs panel records the
 reason. An active or uncertain prior cycle is held instead of starting a
-duplicate. Role execution remains unavailable until the remaining steward
+duplicate. Unchanged role threads keep child callback receivers. An owner or
+engine change waits for child callbacks to drain; unavailable delivery evidence
+blocks the switch. Role execution remains unavailable until the remaining steward
 integration is installed and verified; ordinary schedules keep their current
 behavior.
 

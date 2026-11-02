@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-02] - Hold role successors until child callbacks drain (BUILTINS-3 SR-3)
+
+- Added strict read-only child/delivery inspection with current-turn receipt checks, project scope and restart evidence. Unchanged threads retain their receivers and can collect child work; successors hold for active, waiting or unreceived child work and unknown database state.
+- Included operational handoff text and a second drain check before successor delivery. Existing callback targets, delivery records and SR-4 state/comms are preserved.
+- Local candidate only. Channel readiness needs the dispatching owner's interface selection; protected SR-2 patches remain unapplied. No live activation, master merge, push or restart.
+
 ## [2026-11-02] - Back steward dispatch with shared assignment state (BUILTINS-3 SR-3/SR-4)
 
 - Replaced the independent SR-3 checkpoint store with SR-4 claims, sessions, snapshot hashes and acknowledged-delivery watermark. Kept project-wide exclusion; old checkpoints, uncertain delivery and unresolved prior assignments hold for review.
