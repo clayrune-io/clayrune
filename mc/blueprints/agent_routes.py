@@ -8020,11 +8020,32 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
     return session_id
 
 
-def _revive_parent_for_delegation(project_id, session_id, message, p):
+def _callback_echoes_to_sender(parent_notify, sender_sid):
+    """True when finishing the turn that delivers `sender_sid`'s callback would
+    notify `sender_sid` straight back (backlog 95592335).
+
+    Two sessions that are each other's spawner (Dave dispatched Sol_Tobin, and
+    Sol_Tobin's follow-up named Dave as its `notify_session`) wake each other
+    for ever: every callback-delivered turn ends, fires its own completion
+    callback at the session that just reported, and that one does the same. A
+    turn the callback itself started carries no new work for the sender; the
+    sender hears this session's real answers through an explicit follow-up
+    (which re-arms through `_rearm_notify_for_new_turn`, untouched)."""
+    sender = (sender_sid or '').strip()
+    return bool(sender) and sender == (parent_notify or '').strip()
+
+
+def _revive_parent_for_delegation(project_id, session_id, message, p, from_session_id=''):
     """Revive a missing parent only from exact saved native identity.
 
     Claude uses the existing transcript-aware revival primitive; Codex/Qwen use
     their provider runtime's native resume path. Neither branch fresh-dispatches.
+
+    `from_session_id` is the child whose callback this revive delivers. When it
+    is also the parent's own callback target the revive does not carry
+    `_notify_session` (see `_callback_echoes_to_sender`): a revive builds a
+    fresh session dict, so carrying it arms a completion callback for a turn
+    that only reacts to the sender's report.
     """
     try:
         entries = [e for e in _load_agent_log(project_id)
@@ -8089,14 +8110,22 @@ def _revive_parent_for_delegation(project_id, session_id, message, p):
     scope = (ch.get('scope') or 'global').strip().lower()
     name = (ch.get('name') or '').strip()
     character = f'{scope}:{name}' if scope in ('global', 'project') and name else ''
+    parent_notify = (entry.get('spawned_by_session_id') or '').strip()
+    carry_notify = not _callback_echoes_to_sender(parent_notify, from_session_id)
+    if not carry_notify:
+        _log(f"[notify-spawner] revive of {session_id} for a callback from "
+             f"{from_session_id}: not carrying _notify_session, it would echo "
+             f"the callback back to the sender", flush=True)
     try:
         if provider == 'claude':
-            # carry_notify defaults True: this revive is delivering a
-            # dispatch's OWN completion callback to a dead parent, not a
-            # human continuing a chat, so it must keep the parent's own
-            # `_notify_session` intact (MC-970's carry_notify=False rule is
-            # for /agent/send and agent_followup only).
-            revived = _revive_from_agent_log(project_id, session_id, message, p)
+            # carry_notify is True unless the sender is the parent's own
+            # callback target: this revive is delivering a dispatch's OWN
+            # completion callback to a dead parent, not a human continuing a
+            # chat, so it must keep the parent's own `_notify_session` intact
+            # (MC-970's carry_notify=False rule is for /agent/send and
+            # agent_followup only) -- except for the A<->B echo above.
+            revived = _revive_from_agent_log(project_id, session_id, message, p,
+                                             carry_notify=carry_notify)
             if not revived:
                 raise DeliveryBlocked('Claude parent could not be safely revived')
         else:
@@ -8111,7 +8140,7 @@ def _revive_parent_for_delegation(project_id, session_id, message, p):
                                      source=entry.get('source') or '',
                                      trigger_type=entry.get('trigger_type') or 'manual',
                                      trigger_id=entry.get('trigger_id') or '',
-                                     notify_session=entry.get('spawned_by_session_id') or '',
+                                     notify_session=(entry.get('spawned_by_session_id') or '') if carry_notify else '',
                                      spawned_by=_durable_spawner_of_record(entry),
                                      notify_workflow=({'run_id': entry['trigger_id'].split(':', 1)[0],
                                                        'step': entry['trigger_id'].split(':', 1)[1]}
@@ -9067,10 +9096,15 @@ def _process_inbox(row):
         if _delivery_shutdown_requested.is_set():
             raise DeliveryDeferred('delivery shutdown admission is closed')
         parent = agent_sessions.get(row['parent_session_id'])
+        # The child this callback comes from (backlog 95592335): a callback-
+        # delivered turn must not report back to that same child.
+        from_child = (payload.get('child_session_id')
+                      or row['event_id'].rsplit(':turn:', 1)[0])
         if parent is None:
             return _revive_parent_for_delegation(
                 row['project_id'], row['parent_session_id'], payload['message'],
-                (load_project(row['project_id']) if callable(load_project) else None) or {})
+                (load_project(row['project_id']) if callable(load_project) else None) or {},
+                from_session_id=from_child)
         if parent.get('project_id') != row['project_id'] or parent.get('incognito'):
             raise DeliveryBlocked('parent identity/privacy state changed; explicit recovery required')
         if parent.get('status') == 'running':
@@ -9088,6 +9122,12 @@ def _process_inbox(row):
         if _delegation_app is None:
             raise DeliveryBlocked('delegation request context is unavailable; explicit recovery required')
         needs_write_ack = parent.get('mode') == 'B'
+        if _callback_echoes_to_sender(parent.get('_notify_session'), from_child):
+            # Live parent whose spawner is the sender: spend the spawner latch
+            # for this turn so its end sends nothing back. The latch is not
+            # cleared by a callback delivery (no `notify_session` in the
+            # followup), so this only matters if it was re-armed and unspent.
+            parent['_notify_session_sent'] = True
         _delivery_store.record_handoff(row, parent)
         with _delegation_app.test_request_context(
                 json={'message': payload['message'],
