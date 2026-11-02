@@ -16,9 +16,10 @@ directive/skill and tiny core adapter are unapplied human-integration patches.
 SR-2 is not integrated and the SR-1 execution block remains until later work.
 
 SR-3 branch handoff: [guarded dispatch contract](BUILTINS_3_SR3_DISPATCH.md).
-Role timer/Run Now preparation, dispatch claims and filtering seams are present
-in that candidate; protected SR-2 resources and the SR-4 lifecycle/child-handoff
-integration remain explicit delivery blockers. No live migration is included.
+Role timer/Run Now preparation and filtering seams are present; the branch
+now uses merged SR-4 assignment claims, watermark, journal and notifier APIs.
+Protected SR-2 resources and the missing channel/child-handoff callback remain
+explicit delivery blockers. No live migration is included.
 
 Parent: [Built-ins platform plan](BUILTINS_PLATFORM_PLAN_2026-10-31.md), item 3.
 Implement and verify this item before building item 4.

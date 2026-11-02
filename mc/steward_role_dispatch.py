@@ -1,7 +1,7 @@
 """Shared, fail-closed steward-role fire/continue adapter (BUILTINS-3 SR-3).
 
-The store interface deliberately contains dispatch metadata only. SR-4 owns
-journals, decisions and child handoffs; no mail or backlog-note writes live here.
+SR-4 owns all assignment state and journal writes. This adapter owns only
+project exclusion and delivery orchestration; no second checkpoint store exists.
 """
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 import inspect
+import hashlib
 import json
 import os
 import threading
@@ -19,7 +20,8 @@ from typing import Any, Callable, Iterator, Protocol, cast
 
 from mc import characters, engine_selection, state
 from mc import steward_role_model as model, steward_role_task as composer
-from mc.atomic_json import read_text_with_retry, write_json_atomic
+from mc.steward_role_state import RoleStateStore
+from mc import steward_role_comms as comms
 from mc.core import _log, now_iso
 
 
@@ -27,93 +29,52 @@ class RoleBusy(model.RoleError):
     """Active or ambiguous ownership; never queue or steal a lease by age."""
 
 
-class DispatchStore(Protocol):
-    def transaction(self, project_id: str) -> Any: ...
-    def read(self, project_id: str) -> dict: ...
-    def write(self, project_id: str, record: dict) -> None: ...
+@contextmanager
+def project_exclusion(store: RoleStateStore, project_id: str) -> Iterator[None]:
+    """Cross-process exclusion, without duplicating SR-4's assignment state.
 
-
-class FileDispatchStore:
-    """Project-wide cross-process exclusion and crash-safe dispatch checkpoints.
-
-    A crashed mutex is intentionally retained for operator reconciliation. A
-    failed delivery retains delivery_unknown even when no session was returned.
-    No timeout or PID-liveness guess grants another dispatch.
+    The filesystem mutex supplements SR-4's per-assignment in-process RLock.
+    A crashed mutex remains held for review; no age or PID heuristic steals it.
     """
-    def __init__(self, root: Path):
-        self.root = root.resolve()
-
-    def _path(self, project_id: str) -> Path:
-        return self.root / (model.identifier(project_id, 'project_id') + '.json')
-
-    @contextmanager
-    def transaction(self, project_id: str) -> Iterator[None]:
-        path = self._path(project_id).with_suffix('.claim')
-        self.root.mkdir(parents=True, exist_ok=True)
-        try:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError as exc:
-            raise RoleBusy('role claim is active or recovery is ambiguous; review required') from exc
-        try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-                stream.write(json.dumps({'pid': os.getpid(), 'at': now_iso()}))
-                stream.flush()
-                os.fsync(stream.fileno())
-            yield
-        finally:
-            path.unlink()  # only the claim created by this invocation
-
-    def read(self, project_id: str) -> dict:
-        path = self._path(project_id)
-        try:
-            record = json.loads(read_text_with_retry(path))
-        except FileNotFoundError:
-            return {}
-        return _checkpoint(record, project_id)
-
-    def write(self, project_id: str, record: dict) -> None:
-        payload = _checkpoint(dict(record, version=1, project_id=project_id), project_id)
-        write_json_atomic(self._path(project_id), payload, indent=2)
-
-
-def _checkpoint(record: Any, project_id: str) -> dict:
-    """A partially lost claim must never be interpreted as a first fire."""
-    required = {'version', 'project_id', 'schedule_id', 'last_attempt_at', 'cycle_claim'}
-    optional = {'session_id', 'predecessor_session_id', 'selection', 'last_refresh_at', 'completed_at'}
+    pid = model.identifier(project_id, 'project_id')
+    legacy = store.data_root / 'steward' / 'dispatch'
+    if any((legacy / (pid + suffix)).exists() for suffix in ('.json', '.claim')):
+        raise RoleBusy('legacy SR-3 checkpoint exists; reconcile before SR-4 delivery')
+    path = store.data_root / 'steward' / 'dispatch-locks' / (pid + '.claim')
+    path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        if (not isinstance(record, dict) or not required <= set(record)
-                or set(record) - required - optional or type(record['version']) is not int
-                or record['version'] != 1 or record['project_id'] != project_id):
-            raise ValueError('checkpoint fields/version/project mismatch')
-        model.identifier(record['schedule_id'], 'schedule_id')
-        for field in ('schedule_id', 'session_id', 'predecessor_session_id'):
-            if record.get(field):
-                model.identifier(record[field], field)
-        for field in ('last_attempt_at', 'last_refresh_at', 'completed_at'):
-            if field in record:
-                if datetime.fromisoformat(record[field].replace('Z', '+00:00')).tzinfo is None:
-                    raise ValueError(f'{field} has no timezone')
-        claim = record['cycle_claim']
-        model.identifier(claim['id'], 'claim_id')
-        accepted = claim['status'] == 'accepted'
-        keys = {'id', 'status', 'session_id', 'accepted_at'} if accepted else {'id', 'status'}
-        if set(claim) != keys or claim['status'] not in ('accepted', 'delivery_unknown'):
-            raise ValueError('invalid delivery claim')
-        if accepted and (not {'session_id', 'selection', 'last_refresh_at'} <= set(record)
-                         or claim['session_id'] != record['session_id']
-                         or claim['accepted_at'] != record['last_refresh_at']):
-            raise ValueError('accepted delivery evidence is incomplete')
-        if accepted:
-            model.identifier(record['session_id'], 'session_id')
-        if 'selection' in record:
-            selection = record['selection']
-            if (not isinstance(selection, dict)
-                    or set(selection) != {'character', 'provider', 'model', 'effort'}
-                    or not all(isinstance(v, str) for v in selection.values())):
-                raise ValueError('invalid execution selection')
-    except (KeyError, TypeError, ValueError, AttributeError) as exc:
-        raise model.RoleError(f'invalid role dispatch checkpoint; review required: {exc}') from exc
-    return record
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise RoleBusy('role claim is active or recovery is ambiguous; review required') from exc
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            stream.write(json.dumps({'pid': os.getpid(), 'at': now_iso()}))
+            stream.flush()
+            os.fsync(stream.fileno())
+        yield
+    finally:
+        path.unlink()  # only the mutex created by this invocation
+
+
+def _hash(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def _notify(project: dict, row: dict, event: str, detail: str,
+            store: RoleStateStore) -> None:
+    result = comms.record_lifecycle(project, row, event, detail, store=store)
+    if not result['ok']:
+        raise model.RoleError('SR-4 lifecycle persistence failed: ' + result['error'])
+
+
+def _handoff(services: Services, project: dict, row: dict, event: str,
+             detail: dict, store: RoleStateStore) -> str:
+    text = services.lifecycle(project, row, event, detail)
+    # These four delivery events are journal events, not notifier vocabulary.
+    # append_journal raises; a failed journal is never treated as ready to run.
+    comms.append_journal(project, row['steward_role']['journal_path'], event,
+                         json.dumps(detail, sort_keys=True), schedule_id=row['id'])
+    return text
 
 
 @dataclass(frozen=True)
@@ -156,7 +117,7 @@ def _closed(observation: dict | None) -> bool:
                     'waiting_for_plan_approval', '_stdin_write_uncertain')))
 
 
-def prepare_and_fire(schedule_id: str, services: Services, store: DispatchStore) -> dict:
+def prepare_and_fire(schedule_id: str, services: Services, store: RoleStateStore) -> dict:
     """The only role preparation path: timer, Run Now and restart recovery.
 
     Return acceptance separately from completion. Advancing the watermark
@@ -164,7 +125,7 @@ def prepare_and_fire(schedule_id: str, services: Services, store: DispatchStore)
     """
     project, row, _ = services.load(schedule_id)
     pid = model.identifier(project.get('id'), 'project_id')
-    with store.transaction(pid):
+    with project_exclusion(store, pid), store.lock(pid, schedule_id):
         project, row, rows = services.load(schedule_id)  # re-read after exclusion
         if project.get('id') != pid:
             raise model.RoleError('role project changed while claiming cycle')
@@ -176,36 +137,42 @@ def prepare_and_fire(schedule_id: str, services: Services, store: DispatchStore)
         assigned = model.assignment(project, rows)
         if not assigned or assigned.get('id') != schedule_id:
             raise model.RoleError('project assignment does not reference this role')
-        record = store.read(pid)
+        # A rebind cannot bypass an unresolved claim on the old assignment.
+        for path in store.path(pid, schedule_id).parent.glob('*.json'):
+            if path.stem != schedule_id and store.read(pid, path.stem)['claim']:
+                raise RoleBusy('another assignment has an unresolved role claim; review required')
+        record = store.read(pid, schedule_id)
         if services.active(pid):
             raise RoleBusy('a steward role cycle is still active in this project')
-        prior_id = record.get('session_id', '')
+        prior_id = record['current_session_id']
         previous = services.observe(pid, prior_id) if prior_id else None
-        claim = record.get('cycle_claim')
+        claim = record['claim']
         if claim:
-            if claim.get('status') != 'accepted' or not _closed(previous):
+            if claim.get('state') != 'accepted' or not _closed(previous):
                 raise RoleBusy('prior role cycle is active or delivery is unknown; review required')
-            record['completed_at'] = now_iso()
+            if not prior_id or not record['refresh_watermark'] or not record['snapshot_hashes'].get('selection'):
+                raise model.RoleError('accepted role state lacks delivery evidence; review required')
         selection, meta, body = services.resolve(project, row)
-        unchanged = record.get('selection') == asdict(selection)
+        if prior_id and not record['snapshot_hashes'].get('selection'):
+            raise model.RoleError('role state lacks execution snapshot hash; review required')
+        unchanged = record['snapshot_hashes'].get('selection') == _hash(asdict(selection))
         if prior_id and not _closed(previous):
             raise RoleBusy('previous role session has no confirmed completed cycle')
-        same_assignment = record.get('schedule_id') == schedule_id
-        same_thread = bool(prior_id and unchanged and same_assignment
+        same_thread = bool(prior_id and unchanged
                            and row.get('continue_session', True))
         if same_thread and previous and (previous.get('trigger_type') != 'schedule'
-                or previous.get('trigger_id') != record.get('schedule_id')):
-            raise model.RoleError('prior role session provenance does not match its checkpoint')
+                or previous.get('trigger_id') != schedule_id):
+            raise model.RoleError('prior role session provenance does not match its execution snapshot')
         if same_thread and previous:
             observed_provider = previous.get('provider', 'claude')
             if observed_provider != selection.provider:
-                raise model.RoleError('prior role engine differs from its checkpoint')
+                raise model.RoleError('prior role engine differs from its execution snapshot')
             for field in ('pinned_model', 'agent_model', 'model'):
                 if field in previous and previous[field] != selection.model:
-                    raise model.RoleError('prior role model differs from its checkpoint')
+                    raise model.RoleError('prior role model differs from its execution snapshot')
             if ('requested_effort' in previous
                     and (previous['requested_effort'] or '') != selection.effort):
-                raise model.RoleError('prior role effort differs from its checkpoint')
+                raise model.RoleError('prior role effort differs from its execution snapshot')
         services.guard(project, selection, previous if same_thread else None)
         # Protected core integration is a real dependency, not a stale fallback.
         from steward import core
@@ -213,12 +180,19 @@ def prepare_and_fire(schedule_id: str, services: Services, store: DispatchStore)
             raise model.RoleError('SR-2 core adapter patch is unapplied; role delivery blocked')
         composer.load_directive()  # fail before a claim if the resource is absent
         event = 'continue' if same_thread else ('successor' if prior_id else 'first_fire')
-        handoff = services.lifecycle(project, row, event, {
+        replies = comms.check_pending_replies(pid, schedule_id, store=store,
+                                              digest_reader=comms.default_digest_reader)
+        if any(reply.status == 'error' for reply in replies):
+            raise model.RoleError('pending role reply check failed; channel review required')
+        handoff = _handoff(services, project, row, event, {
             'predecessor_session_id': prior_id, 'selection': asdict(selection),
-            'prior_selection': record.get('selection'),
+            'prior_selection_hash': record['snapshot_hashes'].get('selection'),
             'requested_selection': meta.get('_role_requested_selection', asdict(selection)),
             'engine_fallback': meta.get('_role_engine_fallback'),
-        })
+            'pending_replies': [{'id': r.decision_id, 'status': r.status,
+                                 'decision': r.reply_decision, 'grants_authority': False}
+                                for r in replies],
+        }, store)
         if meta.get('_role_engine_fallback'):
             handoff += '\nConfigured engine fallback: ' + json.dumps({
                 'requested': meta['_role_requested_selection'], 'effective': asdict(selection),
@@ -232,7 +206,7 @@ def prepare_and_fire(schedule_id: str, services: Services, store: DispatchStore)
         build: Any = core.build_cycle_task  # signature checked above; patch may be absent
         task = build(project, None, cycle_snapshot=snapshot)
         refresh = services.refresh(project, task, meta, body, selection,
-                                   record.get('last_refresh_at', '') if same_assignment else '')
+                                   record['refresh_watermark'] or '')
         task = build(project, None, refresh, cycle_snapshot=snapshot)
         from mc import distiller
         from steward import fence
@@ -243,27 +217,35 @@ def prepare_and_fire(schedule_id: str, services: Services, store: DispatchStore)
         current_project, current_row, _ = services.load(schedule_id)
         if current_project != project or current_row != row:
             raise model.RoleError('role configuration changed during preparation; retry next wake')
-        accepted_at = now_iso()
-        record.update(schedule_id=schedule_id, last_attempt_at=accepted_at,
-                      cycle_claim={'id': uuid.uuid4().hex, 'status': 'delivery_unknown'})
-        store.write(pid, record)  # commit the uncertain boundary BEFORE calling delivery
+        if claim:
+            _notify(project, row, 'completed', f'Confirmed closed session {prior_id}', store)
+            if not store.release_claim(pid, schedule_id, claim['id']):
+                raise RoleBusy('prior role claim changed during completion')
+        claim_id = uuid.uuid4().hex
+        won, _ = store.acquire_claim(pid, schedule_id, claim_id, 'schedule')
+        if not won:
+            raise RoleBusy('role claim is active or recovery is ambiguous; review required')
+        store.record_attempt(pid, schedule_id, snapshot_hashes={
+            'selection': _hash(asdict(selection)), 'context': _hash(refresh),
+            'task': _hash(task), 'character': _hash(body)})
+        _notify(project, row, 'started', f'{event}; predecessor={prior_id}', store)
+        if not store.set_claim_state(pid, schedule_id, claim_id, 'delivery_unknown'):
+            raise RoleBusy('role claim changed before delivery')
         prepared = Prepared(meta, asdict(selection), refresh)
         sid, outcome = services.deliver(project, row, task, prepared,
                                         previous if same_thread else None)
         if not sid or outcome not in ('dispatched', 'appended', 'revived'):
             raise model.RoleError('role delivery was not acknowledged; recovery held')
-        record.update(session_id=sid, selection=asdict(selection),
-                      predecessor_session_id=prior_id if not same_thread else
-                      record.get('predecessor_session_id', ''),
-                      last_refresh_at=accepted_at,
-                      cycle_claim={'id': record['cycle_claim']['id'], 'status': 'accepted',
-                                   'session_id': sid, 'accepted_at': accepted_at})
-        store.write(pid, record)
-        services.lifecycle(project, row, 'accepted', {
+        store.record_session(pid, schedule_id, sid)
+        # SR-4 is the ONLY watermark mover. A crash between session recording
+        # and this atomic ack leaves delivery_unknown and cannot be retried.
+        if not store.accept_delivery(pid, schedule_id, claim_id, datetime.now(timezone.utc)):
+            raise RoleBusy('role claim changed before delivery acceptance')
+        _handoff(services, project, row, 'accepted', {
             'session_id': sid, 'predecessor_session_id': prior_id,
-            'selection': asdict(selection), 'outcome': outcome})
+            'selection': asdict(selection), 'outcome': outcome}, store)
         return {'ok': True, 'session_id': sid, 'continued': outcome,
-                'predecessor_session_id': record.get('predecessor_session_id', ''),
+                'predecessor_session_id': store.read(pid, schedule_id)['prior_session_id'],
                 'origin': 'unattended', 'trigger_type': 'schedule', 'trigger_id': schedule_id}
 
 
@@ -404,7 +386,7 @@ class SchedulerServices:
                     if proc is None or proc.poll() is not None:
                         raise model.RoleError('role process exited before append; recovery held')
                     # No fire-and-forget acknowledgment and no watchdog killing
-                    # an inherited process. The caller owns the unknown checkpoint.
+                    # an inherited process. The caller owns the unknown claim.
                     live.update(status='running', task=task, trigger_type='schedule',
                                 trigger_id=row['id'], last_status_change_time=time.time())
                     _append_ack(live, task)
@@ -436,12 +418,12 @@ class SchedulerServices:
 def fire(scheduler: Any, schedule_id: str) -> dict:
     """Production entry point. Missing SR-4 integration is a visible blocker."""
     try:
-        # SR-4 registers this narrow lifecycle seam after integrating its state,
-        # journal and child-delivery policy. No guessed mail/channel fallback.
+        # State/journals are wired here. Integration must still provide channel
+        # readiness and child-delivery approval; never guess either policy.
         lifecycle = getattr(scheduler, 'steward_role_lifecycle', None)
         if not callable(lifecycle):
             raise model.RoleError('SR-4 role lifecycle adapter unavailable; delivery blocked')
-        store = FileDispatchStore(scheduler.SCHEDULES_PATH.parent / 'steward' / 'dispatch')
+        store = RoleStateStore(scheduler.SCHEDULES_PATH.parent)
         return prepare_and_fire(schedule_id, SchedulerServices(
             scheduler, cast(Callable[..., str], lifecycle)), store)
     except Exception as exc:
@@ -522,6 +504,7 @@ def scheduler_fire(scheduler: Any, schedule_id: str, *, timer: bool = False) -> 
         result = fire(scheduler, schedule_id)
     except Exception as exc:
         result = {'ok': False, 'busy': isinstance(exc, RoleBusy), 'error': str(exc)}
+    notify_row = None
     with writes.WRITE_LOCK:
         rows = writes._schedules()
         row = next((r for r in rows if r.get('id') == schedule_id), None)
@@ -534,6 +517,7 @@ def scheduler_fire(scheduler: Any, schedule_id: str, *, timer: bool = False) -> 
                 row.update(last_error=result['error'], last_error_at=now_iso())
                 schedule_skip_log.record(scheduler.SCHEDULES_PATH, schedule_id,
                                          result['error'], 'steward_role')
+                notify_row = dict(row)
             if timer:
                 if row.get('schedule_type') == 'once':
                     row.update(enabled=False, next_run=None)
@@ -543,7 +527,33 @@ def scheduler_fire(scheduler: Any, schedule_id: str, *, timer: bool = False) -> 
                 else:
                     row['next_run'] = scheduler._compute_next_run(row)
             scheduler._save_schedules(rows)
+    # Preparation takes the SR-4 assignment lock before the schedule write lock.
+    # Never invert that order while reporting a simultaneous busy wake.
+    if notify_row is not None:
+        _failure_notification(scheduler, notify_row, result)
     return result
+
+
+def _failure_notification(scheduler: Any, row: dict, result: dict) -> None:
+    """Best effort notifier; never replace the original delivery refusal."""
+    try:
+        project = scheduler.load_project(row['project_id'])
+        if not project:
+            raise model.RoleError('role project unavailable for failure notification')
+        reason = result['error'].lower()
+        event = ('skipped_busy' if result.get('busy') else
+                 'skipped_disabled' if 'disabled' in reason else
+                 'blocked_guard' if 'guard' in reason or 'fence' in reason else
+                 'blocked_charter' if 'charter' in reason else
+                 'blocked_channel' if 'channel' in reason or 'lifecycle adapter' in reason else
+                 'dispatch_failed')
+        notified = comms.record_lifecycle(project, row, event, result['error'],
+                                         store=RoleStateStore(scheduler.SCHEDULES_PATH.parent))
+        if not notified['ok']:
+            raise model.RoleError(notified['error'])
+    except Exception as exc:
+        _log(f"[steward-role] {row.get('id')}: failure notification failed: {exc}")
+        result['lifecycle_error'] = str(exc)
 
 
 def execution_error(scheduler: Any) -> str:

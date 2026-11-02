@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-02] - Back steward dispatch with shared assignment state (BUILTINS-3 SR-3/SR-4)
+
+- Replaced the independent SR-3 checkpoint store with SR-4 claims, sessions, snapshot hashes and acknowledged-delivery watermark. Kept project-wide exclusion; old checkpoints, uncertain delivery and unresolved prior assignments hold for review.
+- Wired SR-4 journals, lifecycle notifications and pending-reply checks, with persistence errors visible and reply classifications granting no authority. Failure notification runs outside the schedule lock.
+- Local integration candidate only. Protected SR-2 patches and the channel/child-handoff callback still block delivery; no live activation, master merge, push, restart or provider verification.
+
 ## [2026-11-02] - Prepare steward role cycles through one guarded path (BUILTINS-3 SR-3)
 
 - Routed role timer fires and Run Now through a shared adapter with current character/charter/rules, explicit unattended retrieval, guard checks and visible dependency errors. Ordinary schedules retain their existing paths.

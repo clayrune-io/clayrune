@@ -4,7 +4,7 @@
 
 `mc/steward_role_dispatch.py` owns the role-only fire path. Scheduler timer
 fires and Run Now call `scheduler_fire`; the next fire after restart uses the
-same `prepare_and_fire` path and durable checkpoint. Ordinary task/workflow
+same `prepare_and_fire` path and SR-4 assignment state. Ordinary task/workflow
 schedules retain their existing delivery branches. No protected core/fence
 file, builtin directive or live assignment was changed.
 
@@ -33,7 +33,7 @@ adapter in both integration states.
 The task starts with the literal steward marker, checked against both the
 Distiller and fence constants. Fresh dispatch records `trigger_type=schedule`
 and the schedule ID. Run Now is also unattended. Continuations must match the
-checkpoint's schedule provenance; missing/foreign provenance does not become
+assignment's schedule provenance; missing/foreign provenance does not become
 a manual run.
 
 `SchedulerServices.refresh` calls the existing persona-aware context builder
@@ -65,10 +65,12 @@ Codex/Qwen/Gemini; a captured Claude auto-fresh revival covers handoff order.
 These tests launch no CLI or model.
 
 A changed selection or explicit noncontinuation uses a fresh successor with
-no provider-native resume ID. The lifecycle seam must record/approve journal
-and child-work handoff before launch. It receives predecessor/current
-selections and then the accepted session ID. The predecessor remains in the
-checkpoint, journal/handoff text and fire response; the adapter does not
+no provider-native resume ID. The lifecycle seam must approve channel and
+child-work handoff before launch; SR-3 durably journals the approved transition.
+It receives the predecessor selection hash/current selection and then the
+accepted session ID. Full selection records live in the journal. The
+predecessor remains in SR-4 state, journal/handoff text and fire response;
+the adapter does not
 retarget callbacks or mutate a live process's identity.
 
 Guard readiness is checked on every fire, including append and revival:
@@ -87,59 +89,74 @@ is retained. No model, login, browser, tunnel or mail process was launched.
 
 ## Dispatch persistence and SR-4 seam
 
-The injectable `DispatchStore` contract is deliberately narrow:
+Local master `a34961dc` (SR-4 `2a602387`) is merged into this branch.
+`RoleStateStore(application_data_root)` is the only assignment state store,
+keyed by `(project_id, schedule_id)`. SR-3's `DispatchStore`, `FileDispatchStore`
+and checkpoint schema are removed. No changes were made to SR-4 modules.
 
-```python
-transaction(project_id)  # cross-process project exclusion
-read(project_id) -> dict
-write(project_id, record) -> None
-```
+The adapter calls `acquire_claim`, `record_attempt`, `set_claim_state`,
+`record_session`, `accept_delivery` and `release_claim`. Selection, context,
+character and task hashes use SR-4's `snapshot_hashes`; full selections are
+journal records, not a parallel JSON store. `accept_delivery` is the only
+watermark mover. Session recording precedes acceptance: failure in either
+leaves `delivery_unknown` and the previous watermark intact. A failed
+preparation after acquisition leaves `preparing`; it is also held for review.
 
-`FileDispatchStore` stores only execution checkpoints at
-`<application-data-root>/steward/dispatch/<project>.json`, outside the project
-record directory and gitignored by `data/steward/`. It uses an exclusive
-project `.claim` file and fsync-before-replace checkpoints. It is separate
-from SR-4's decision/session state, not a second mail/decision implementation.
-The checkpoint contains assignment ID, current/prior session IDs, engine
-selection, refresh/attempt/completion times and the dispatch claim.
+`project_exclusion` supplements SR-4's assignment RLock with an exclusive
+`<application-data-root>/steward/dispatch-locks/<project>.claim` file. This is
+only a mutex, not an assignment state copy. A crash mutex, preparing claim
+or unknown delivery is never stolen by age/PID disappearance. Legacy SR-3
+`steward/dispatch/<project>.json` or `.claim` files block rather than being
+silently ignored or automatically migrated. An unresolved claim on a different
+assignment also blocks a rebind. Runtime files stay outside project records.
 
-The write-ahead `delivery_unknown` boundary precedes any delivery side
-effect. Only acknowledged delivery records `accepted` and advances the
-refresh watermark. The next fire may reconcile an accepted claim only from
-a positively closed session: idle/done/completed, with no question, approval,
-child wait or uncertain stdin flag. Missing/in-progress/interrupted/error
-observations hold. A different assignment starts with an empty refresh
-watermark. A crash mutex or unknown delivery is never stolen based on age or
-PID disappearance; operator reconciliation must establish the outcome before
-removing the exact claim. No automatic recovery command is provided here.
+An accepted claim is reconciled only after observing a positively closed
+session: idle/done/completed, with no question, approval, child wait or
+uncertain stdin flag. Missing/in-progress/interrupted/error observations hold.
+The completion notifier must persist successfully before releasing that exact
+claim. A new assignment starts with its own empty watermark. No automatic
+operator reconciliation command is included.
 
-SR-4 owns journals, decisions and child handoff. Its integration seam is:
+SR-4's `record_lifecycle(..., store=)` handles `started`, `completed` and
+scheduler failure/skip notifications. Its returned `ok` is checked. Failure
+notifications preserve the original refusal and add a visible `lifecycle_error`
+when persistence also fails. They run after releasing the schedule write lock
+to avoid reversing preparation's assignment-lock/write-lock ordering.
+
+SR-4's `append_journal` handles delivery events `first_fire`, `continue`,
+`successor`, `accepted`; those are deliberately not passed to the notifier's
+fixed event enum. Pre-delivery journal failure blocks launch. At cycle start,
+`check_pending_replies` uses the existing laundering runner; reader errors
+block before handoff. Only status/decision enums (always
+`grants_authority=False`) enter handoff metadata/journals, never reply bodies.
+No backlog notes, raw mailbox reads or email sends are added here.
+
+**Remaining API gap:** SR-4 provides state, journaling and decision routing,
+but no combined channel-readiness/child-callback approval function. The existing
+integration callback remains explicitly required:
 
 ```python
 scheduler_routes.steward_role_lifecycle(project, schedule, event, detail) -> str
 # events: first_fire, continue, successor, accepted
-# returns text to include after the steward marker; raises on a blocker
+# returns task handoff text; raises if channel/child delivery is not ready
 ```
 
-Before-delivery calls must durably journal the attempt, inspect pending
-replies through the configured laundering path and validate the applicable
-communication channel. A successor must hold if prior callbacks cannot drain
-or safely retain their receiving session. The accepted event records the new
-session/predecessor link. No implementation may infer human permission from
-a reply classification. The adapter does not call any backlog-note API.
-
-**Integration remains held:** SR-4's committed `RoleStateStore` and comms
-functions do not yet provide this combined lifecycle/child-handoff callback.
-No callback is silently installed by SR-3. Its absence is an explicit fire
-blocker. The dispatch interface can later be backed by SR-4 while retaining
-project-wide cross-process exclusion; SR-4's per-assignment RLock alone does
-not replace that exclusion. Do not mirror claims into two independent stores.
+The callback now owns channel readiness and child-work approval, not state
+persistence. SR-3 checks pending replies and writes the journal itself. A
+successor must hold until old callbacks drain or a durable receiving-session
+handoff is demonstrated. The callback receives `prior_selection_hash` (the
+SR-4 schema stores hashes), current/requested selections, predecessor/current
+session IDs and reply classifications; prior full selections can be read from
+the append-only journal. No live process identity or callback target is mutated.
+The callback is absent on this branch, so production delivery still refuses
+with `SR-4 role lifecycle adapter unavailable; delivery blocked`. No guessed
+channel configuration or child-retargeting policy was introduced.
 
 Required before enabling a role:
 
 1. Human integration of both SR-2 patches (core adapter and directive).
-2. Integration of the SR-4 lifecycle callback and a configured channel/child
-   handoff policy, with shared state reconciliation verified.
+2. Integration of the channel/child-handoff callback with a usable configured
+   channel and demonstrated callback drain/retention policy.
 3. A controlled cycle on each enabled installed guard-capable provider;
    adapter mocks alone are not rollout evidence.
 
@@ -155,20 +172,25 @@ All pytest commands are run from the worktree's `tests/` directory so its
 live-tunnel and operator-home isolation fixtures load. The dedicated suite
 covers dependency absence/presence, current charter/voice, filter forwarding,
 engine precedence/fallback, four successor triggers, held children, concurrent
-timer/Run Now, restart/unknown claims, stdin acknowledgment, production
+timer/Run Now, SR-4 persistence failures, pending replies, journal/notifier
+failures, legacy/rebound claims, lock ordering, stdin acknowledgment, production
 append/revival/fresh seams and role-only runtime persistence.
 
 From `tests/`:
 
 ```text
-python -m pytest -q -o addopts='' --tb=short test_steward_role_dispatch.py test_steward_role_task.py test_steward_role_model.py test_steward_core.py test_steward_refresh.py test_steward_routes.py test_scheduler_character.py test_scheduler_routes.py test_scheduler_slot_claim.py test_distiller_safety.py test_fence_steward_marker.py test_codex_steward_fence.py test_vendor_fence.py test_vendor_fence_probe.py test_vendor_fence_routes.py test_fence_fail_closed_unattended.py test_guardrail_hooks_boot.py test_guardrail_injection.py test_read_floor_injection.py test_memory_link_graph.py test_memory_v2_step7.py test_memory_v2_step8.py test_context_profile_by_job_shape.py test_context_profile_by_model_tier.py test_native_followup_context_routes.py test_distiller_promote_unattended_gate.py test_distiller_durable_yes.py test_builtins_resume_context.py test_revive_notify_carry.py test_agent_send_non_claude_revive.py test_context_freshness.py test_agent_routes.py test_engine_fallback.py
+python ../_scratch/run_sr3_regression.py -q -o addopts='' --tb=short test_steward_role_dispatch.py test_steward_role_state.py test_steward_role_comms.py test_steward_role_task.py test_steward_role_model.py test_steward_core.py test_steward_refresh.py test_steward_routes.py test_scheduler_character.py test_scheduler_routes.py test_scheduler_slot_claim.py test_distiller_safety.py test_fence_steward_marker.py test_codex_steward_fence.py test_vendor_fence.py test_vendor_fence_probe.py test_vendor_fence_routes.py test_fence_fail_closed_unattended.py test_guardrail_hooks_boot.py test_guardrail_injection.py test_read_floor_injection.py test_memory_link_graph.py test_memory_v2_step7.py test_memory_v2_step8.py test_context_profile_by_job_shape.py test_context_profile_by_model_tier.py test_native_followup_context_routes.py test_distiller_promote_unattended_gate.py test_distiller_durable_yes.py test_builtins_resume_context.py test_revive_notify_carry.py test_agent_send_non_claude_revive.py test_context_freshness.py test_agent_routes.py test_engine_fallback.py
 ```
 
-**rc=0: 985 passed, 1 xfailed in 45.68 seconds.** The expected failure remains
-the existing human-owned project fence timeout contract. No provider parity
-or live activation is inferred from this run. The dedicated dispatch file
-contributes 56 cases, including partial checkpoint corruption and a legacy
-in-flight cycle whose timestamp precedes its marker.
+Post-merge baseline: **119 passed in 5.02s, rc=0**. Integration focused run:
+**134 passed in 6.62s, rc=0**, including 71 dispatch cases and 63 SR-4 cases.
+**Full regression: 1063 passed, 1 existing xfailed in 55.86s, rc=0.** The
+expected failure is the existing human-owned fence timeout contract. The registered
+foreground runner invokes `pytest.main` with the exact arguments above from
+`tests/`, guarded by `if __name__ == "__main__"` for Windows multiprocessing.
+To run without process registration, replace the runner prefix with
+`python -m pytest`, retaining every argument and test file. The helper is a
+gitignored local artifact. All model/mail/IMAP dependencies are mocked.
 
 From the worktree root:
 
@@ -181,11 +203,14 @@ git diff --check
 15 existing pyright errors (rc=1); comparing HEAD and edited diagnostic
 rule/message multisets finds zero new diagnostics.
 
-Changelog, guide and this contract are updated. README/agent rules need no
-change: no install steps or agent authority changed. No static/UI assets
+Changelog and this contract are updated. The original candidate updated the
+guide; this follow-up changes internal persistence, and its existing guide
+text remains accurate. README/agent rules need no change: no install steps
+or agent authority changed. No static/UI assets
 changed, so frontend boot/Playwright checks are not applicable. Protected
-core/directive edits, SR-4 state/comms files, live migration, merge, push and
-server restart remain untouched.
+core/directive edits, SR-4 state/comms files, live migration, merge to master,
+push and server restart remain untouched. Local master was merged INTO this
+branch as requested.
 
 Changed paths:
 
@@ -202,3 +227,20 @@ mc/resume_context.py
 tests/test_steward_role_dispatch.py
 tests/test_steward_role_model.py
 ```
+
+## SR-4 follow-up scope
+
+Changed in this follow-up: `.gitignore` (deduplicate runtime exclusion),
+`CHANGELOG.md`, `docs/BUILTINS_3_SR3_DISPATCH.md`,
+`docs/BUILTINS_3_STEWARD_ROLE_SPEC.md`, `mc/steward_role_dispatch.py`,
+`tests/test_steward_role_dispatch.py`. The changed-path list above includes
+the original SR-3 commit as well. No new product choice was made.
+
+The unattended fence refused the required home-directory plan write; the
+plan and progress are preserved in the gitignored item journal instead.
+
+The initial full-suite attempt was interrupted at the multiprocessing slot
+race: the temporary process-registration wrapper lacked a Windows entry
+guard. That run has no validation verdict. The corrected guarded wrapper ran
+the full, unchanged test argument list to the passing result above. The
+interrupted runner and its observed worker PIDs were gone before the retry.

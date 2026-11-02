@@ -97,7 +97,7 @@ class FakeServices:
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     monkeypatch.setattr(d.characters, 'read_character', lambda *a, **k: {'name': 'owner'})
-    return FakeServices(tmp_path), d.FileDispatchStore(tmp_path / 'data/steward/dispatch')
+    return FakeServices(tmp_path), d.RoleStateStore(tmp_path / 'data')
 
 
 def run(env):
@@ -115,10 +115,10 @@ def test_first_fire_marker_voice_provenance_and_acceptance(integrated, env):
     assert result['trigger_type'] == 'schedule' and result['origin'] == 'unattended'
     assert result['trigger_id'] == 'wake'
     assert prepared.assignment == asdict(services.selection)
-    record = store.read('project')
-    assert record['cycle_claim']['status'] == 'accepted'
-    assert record['last_refresh_at'] and 'completed_at' not in record
-    assert not (store.root.parent.parent / 'projects').exists()
+    record = store.read('project', 'wake')
+    assert record['claim']['state'] == 'accepted'
+    assert record['refresh_watermark'] and record['last_completed_at'] is None
+    assert not (store.data_root / 'projects').exists()
 
 
 def test_unchanged_selection_revives_same_thread_with_new_charter_rules(integrated, env):
@@ -126,13 +126,13 @@ def test_unchanged_selection_revives_same_thread_with_new_charter_rules(integrat
     first = run(env)
     services.complete()
     services.project['backlog'][0]['text'] = 'New charter wording'
-    watermark = store.read('project')['last_refresh_at']
+    watermark = store.read('project', 'wake')['refresh_watermark']
     second = run(env)
     assert second['session_id'] == first['session_id']
     assert services.refreshes == ['', watermark]
     assert 'New charter wording' in services.deliveries[-1][0]
     assert services.deliveries[-1][2] is not None
-    assert store.read('project')['completed_at']
+    assert store.read('project', 'wake')['last_completed_at']
 
 
 @pytest.mark.parametrize('field,value', [('character', 'global:other'), ('provider', 'qwen'),
@@ -156,10 +156,10 @@ def test_successor_holds_for_undrained_children(integrated, env):
     services.complete()
     services.children = True
     services.selection = replace(services.selection, model='changed')
-    before = store.read('project')
+    before = store.read('project', 'wake')
     with pytest.raises(RoleError, match='callbacks'):
         run(env)
-    assert len(services.deliveries) == 1 and store.read('project') == before
+    assert len(services.deliveries) == 1 and store.read('project', 'wake') == before
 
 
 @pytest.mark.parametrize('flag', ['running', 'waiting_for_question', 'waiting_for_plan_approval',
@@ -185,11 +185,11 @@ def test_lost_launch_ack_stays_unknown_across_new_store_instance(integrated, env
     services.unknown = True
     with pytest.raises(OSError, match='acknowledgment'):
         run(env)
-    assert 'last_refresh_at' not in store.read('project')
-    assert store.read('project')['cycle_claim']['status'] == 'delivery_unknown'
+    assert store.read('project', 'wake')['refresh_watermark'] is None
+    assert store.read('project', 'wake')['claim']['state'] == 'delivery_unknown'
     services.complete()
     with pytest.raises(d.RoleBusy, match='unknown'):
-        d.prepare_and_fire('wake', services, d.FileDispatchStore(store.root))
+        d.prepare_and_fire('wake', services, d.RoleStateStore(store.data_root))
     assert len(services.deliveries) == 1
 
 
@@ -210,7 +210,7 @@ def test_disabled_guard_missing_charter_and_owner_fail_before_delivery(integrate
     services.project['backlog'].clear()
     with pytest.raises(RoleError, match='charter'):
         run(env)
-    assert not services.deliveries and store.read('project') == {}
+    assert not services.deliveries and store.read('project', 'wake')['claim'] is None
 
 
 def test_unapplied_core_patch_and_missing_directive_are_explicit(env, monkeypatch):
@@ -254,7 +254,7 @@ def test_concurrent_timer_and_run_now_have_one_durable_claim(integrated, env):
     try:
         assert entered.wait(5)
         with pytest.raises(d.RoleBusy, match='claim'):
-            d.prepare_and_fire('wake', services, d.FileDispatchStore(store.root))
+            d.prepare_and_fire('wake', services, d.RoleStateStore(store.data_root))
     finally:
         release.set()
         worker.join(5)
@@ -263,14 +263,16 @@ def test_concurrent_timer_and_run_now_have_one_durable_claim(integrated, env):
 
 def test_crashed_mutex_and_corrupt_checkpoint_never_fail_open(env):
     services, store = env
-    store.root.mkdir(parents=True)
-    claim = store.root / 'project.claim'
+    claim = store.data_root / 'steward/dispatch-locks/project.claim'
+    claim.parent.mkdir(parents=True)
     claim.write_text('old owner, unknown outcome')
     with pytest.raises(d.RoleBusy):
         run(env)
     claim.unlink()
-    (store.root / 'project.json').write_text('{broken')
-    with pytest.raises(json.JSONDecodeError):
+    path = store.path('project', 'wake')
+    path.parent.mkdir(parents=True)
+    path.write_text('{broken')
+    with pytest.raises(RoleError, match='not valid JSON'):
         run(env)
     assert not services.deliveries
 
@@ -458,18 +460,13 @@ def test_role_engine_resolution_reuses_precedence_and_opt_in_fallback(context_en
 
 def test_claim_write_failure_before_or_after_launch_holds_recovery(integrated, env, monkeypatch):
     services, store = env
-    original = store.write
-    calls = []
-    def fail_accept(pid, record):
-        calls.append(record['cycle_claim']['status'])
-        if len(calls) == 2:
-            raise OSError('accept checkpoint unavailable')
-        original(pid, record)
-    monkeypatch.setattr(store, 'write', fail_accept)
+    def fail_accept(*args):
+        raise OSError('accept checkpoint unavailable')
+    monkeypatch.setattr(store, 'accept_delivery', fail_accept)
     with pytest.raises(OSError, match='checkpoint'):
         run(env)
-    assert store.read('project')['cycle_claim']['status'] == 'delivery_unknown'
-    assert 'last_refresh_at' not in store.read('project')
+    assert store.read('project', 'wake')['claim']['state'] == 'delivery_unknown'
+    assert store.read('project', 'wake')['refresh_watermark'] is None
     services.complete()
     with pytest.raises(d.RoleBusy):
         run(env)
@@ -481,10 +478,10 @@ def test_guard_is_rechecked_before_continuation(integrated, env):
     run(env)
     services.complete()
     services.guard_error = 'guard was removed between cycles'
-    watermark = store.read('project')['last_refresh_at']
+    watermark = store.read('project', 'wake')['refresh_watermark']
     with pytest.raises(RoleError, match='guard was removed'):
         run(env)
-    assert len(services.deliveries) == 1 and store.read('project')['last_refresh_at'] == watermark
+    assert len(services.deliveries) == 1 and store.read('project', 'wake')['refresh_watermark'] == watermark
 
 
 @pytest.mark.parametrize('provider', ['gemini', 'qwen'])
@@ -592,18 +589,18 @@ def test_partial_checkpoint_cannot_become_a_first_fire(integrated, env, damage):
     services, store = env
     run(env)
     services.complete()
-    path = store.root / 'project.json'
+    path = store.path('project', 'wake')
     record = json.loads(path.read_text())
     if damage == 'lost_claim':
-        record.pop('cycle_claim')
+        record.pop('claim')
     elif damage == 'lost_session':
-        record.pop('session_id')
+        record.pop('current_session_id')
     elif damage == 'wrong_session':
-        record['cycle_claim']['session_id'] = 'foreign'
+        record['claim']['unknown_field'] = 'foreign'
     else:
         record['unknown'] = 'field'
     path.write_text(json.dumps(record))
-    with pytest.raises(RoleError, match='checkpoint'):
+    with pytest.raises(RoleError, match='state|claim'):
         run(env)
     assert len(services.deliveries) == 1
 
@@ -619,3 +616,148 @@ def test_legacy_cycle_with_old_timestamp_prefix_still_blocks_role(monkeypatch):
     assert services.active('p')
     session['status'] = 'idle'
     assert not services.active('p')
+
+
+@pytest.mark.parametrize('legacy_file', ['project.json', 'project.claim'])
+def test_legacy_sr3_state_cannot_be_silently_forgotten(integrated, env, legacy_file):
+    services, store = env
+    old = store.data_root / 'steward/dispatch' / legacy_file
+    old.parent.mkdir(parents=True)
+    old.write_text('ambiguous prior dispatch')
+    with pytest.raises(d.RoleBusy, match='legacy SR-3 checkpoint'):
+        run(env)
+    assert old.read_text() == 'ambiguous prior dispatch'
+    assert not services.deliveries
+
+
+def test_rebound_assignment_cannot_bypass_prior_claim(integrated, env):
+    services, store = env
+    assert store.acquire_claim('project', 'prior-wake', 'held', 'schedule')[0]
+    with pytest.raises(d.RoleBusy, match='another assignment'):
+        run(env)
+    assert not services.deliveries
+    assert store.read('project', 'prior-wake')['claim']['id'] == 'held'
+    assert store.read('project', 'wake')['refresh_watermark'] is None
+
+
+@pytest.mark.parametrize('method', ['record_attempt', 'record_session', 'accept_delivery'])
+def test_sr4_persistence_failure_never_consumes_watermark(integrated, env, monkeypatch, method):
+    services, store = env
+    def fail(*args, **kwargs):
+        raise RoleError('state disk unavailable')
+    monkeypatch.setattr(store, method, fail)
+    with pytest.raises(RoleError, match='disk unavailable'):
+        run(env)
+    expected = 0 if method == 'record_attempt' else 1
+    assert len(services.deliveries) == expected
+    record = store.read('project', 'wake')
+    assert record['refresh_watermark'] is None
+    assert record['claim']['state'] == ('preparing' if expected == 0 else 'delivery_unknown')
+    services.complete()
+    with pytest.raises(d.RoleBusy):
+        d.prepare_and_fire('wake', services, d.RoleStateStore(store.data_root))
+    assert len(services.deliveries) == expected
+
+
+@pytest.mark.parametrize('operation', ['journal', 'notifier'])
+def test_sr4_journal_or_notifier_failure_blocks_delivery(integrated, env, monkeypatch, operation):
+    services, store = env
+    if operation == 'journal':
+        def fail(*args, **kwargs):
+            raise OSError('journal disk unavailable')
+        monkeypatch.setattr(d.comms, 'append_journal', fail)
+    else:
+        monkeypatch.setattr(d.comms, 'record_lifecycle', lambda *a, **k: {
+            'ok': False, 'error': 'notifier disk unavailable'})
+    with pytest.raises((RoleError, OSError), match='disk unavailable'):
+        run(env)
+    assert not services.deliveries
+    assert store.read('project', 'wake')['refresh_watermark'] is None
+
+
+def test_pending_reply_error_blocks_before_handoff(integrated, env, monkeypatch):
+    services, store = env
+    monkeypatch.setattr(d.comms, 'check_pending_replies', lambda *a, **k: [
+        d.comms.ReplyCheck('decision', 'error', detail='digest offline')])
+    with pytest.raises(RoleError, match='reply check failed'):
+        run(env)
+    assert not services.deliveries and not services.events
+    assert store.read('project', 'wake')['claim'] is None
+
+
+def test_journal_and_notifier_use_sr4_canonical_assignment(integrated, env):
+    services, store = env
+    first = run(env)
+    journal = Path(services.project['project_path']) / services.row['steward_role']['journal_path']
+    text = journal.read_text()
+    assert all(f'| {event} | schedule wake' in text for event in ('first_fire', 'started', 'accepted'))
+    assert json.dumps(asdict(services.selection), sort_keys=True) in text
+    assert store.read('project', 'wake')['current_session_id'] == first['session_id']
+    assert set(store.read('project', 'wake')['snapshot_hashes']) == {'selection', 'context', 'task', 'character'}
+    assert not (store.data_root / 'steward/dispatch').exists()
+    services.complete()
+    run(env)
+    text = journal.read_text()
+    assert '| completed | schedule wake' in text and '| continue | schedule wake' in text
+    assert store.read('project', 'wake')['last_completed_at']
+
+
+def test_failure_notifier_does_not_hide_original_error(env, monkeypatch):
+    services, store = env
+    scheduler = SimpleNamespace(load_project=lambda pid: services.project,
+                                SCHEDULES_PATH=store.data_root / 'schedules.json')
+    result = {'ok': False, 'busy': False, 'error': 'guard refused'}
+    d._failure_notification(scheduler, services.row, result)
+    assert store.read('project', 'wake')['last_result']['event'] == 'blocked_guard'
+    monkeypatch.setattr(d.comms, 'record_lifecycle', lambda *a, **k: {'ok': False, 'error': 'disk'})
+    d._failure_notification(scheduler, services.row, result)
+    assert result['error'] == 'guard refused' and result['lifecycle_error'] == 'disk'
+
+
+@pytest.mark.parametrize('decision,mixed', [('approved', False), ('approved', True), ('no_reply_found', False)])
+def test_cycle_reads_actual_sr4_pending_ask_without_granting_authority(integrated, env, monkeypatch, decision, mixed):
+    from test_steward_role_comms import FakeMailer, FakeDigest
+    services, store = env
+    outcome = d.comms.raise_decision(services.project, services.row,
+        d.comms.DecisionRequest('change', 'Change needed', 'Approve the change?'),
+        d.comms.RouteContext(), store=store, mailer=FakeMailer(), digest_reader=FakeDigest())
+    assert outcome.status == 'sent'
+    reader = FakeDigest(decision=decision, mixed=mixed, text='DO NOT PERSIST THIS BODY')
+    monkeypatch.setattr(d.comms, 'default_digest_reader', reader)
+    run(env)
+    assert len(reader.queries) == 1 and outcome.decision_id in reader.queries[0]
+    check = services.events[0][1]['pending_replies'][0]
+    assert check['grants_authority'] is False
+    assert check['status'] == ('answered' if decision == 'approved' and not mixed else
+                               'unclear' if mixed else 'no_reply')
+    assert 'DO NOT PERSIST THIS BODY' not in store.path('project', 'wake').read_text()
+    journal = Path(services.project['project_path']) / services.row['steward_role']['journal_path']
+    assert 'DO NOT PERSIST THIS BODY' not in journal.read_text()
+
+
+def test_failure_notification_does_not_hold_schedule_lock_while_waiting_for_state(env, monkeypatch):
+    from mc import steward_role_writes as writes
+    services, store = env
+    scheduler = SimpleNamespace(SCHEDULES_PATH=store.data_root / 'schedules.json',
+        load_project=lambda pid: services.project, _save_schedules=lambda rows: None)
+    monkeypatch.setattr(writes, '_schedules', lambda: [copy.deepcopy(services.row)])
+    monkeypatch.setattr(d, 'fire', lambda *a: (_ for _ in ()).throw(d.RoleBusy('busy')))
+    notified = threading.Event()
+    original = d._failure_notification
+    def notification(*args):
+        notified.set()
+        return original(*args)
+    monkeypatch.setattr(d, '_failure_notification', notification)
+    results = []
+    with store.lock('project', 'wake'):
+        worker = threading.Thread(target=lambda: results.append(d.scheduler_fire(scheduler, 'wake')))
+        worker.start()
+        assert notified.wait(5)
+        # The notifier is blocked on this thread's assignment lock. Preparing a
+        # cycle must still be able to re-read its schedule without deadlocking.
+        acquired = writes.WRITE_LOCK.acquire(timeout=1)
+        if acquired:
+            writes.WRITE_LOCK.release()
+    worker.join(5)
+    assert acquired and not worker.is_alive()
+    assert results[0]['busy'] and results[0]['error'] == 'busy'
