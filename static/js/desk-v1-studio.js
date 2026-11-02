@@ -505,6 +505,7 @@
       <div class="desk-v1-sb-layout">
         <div class="desk-v1-sb-main">
           ${_isLive() && !_sb.loadError ? window.DeskV1Story.html(!_sb.loading) : ''}
+          ${window.DeskV1StudioPreview.html()}
           <div class="desk-v1-sb-timeline-wrap" data-sb-timeline-wrap>${window.DeskV1StudioTimeline.html(detail)}</div>
           <div class="desk-v1-sb-listrow">
             <ol class="desk-v1-sb-scenes" data-scenes aria-label="Scenes">${detail.scenes.map((s) => _sceneHTML(s, detail.scenes, _sb.editing === s.id)).join('')}</ol>
@@ -560,6 +561,7 @@
     }
     const wrap = _sb.el.querySelector('[data-sb-timeline-wrap]');
     if (wrap) { wrap.innerHTML = window.DeskV1StudioTimeline.html(ctx.detail); _wireTimeline(); }
+    window.DeskV1StudioPreview.refresh(_sb.el);
     window.DeskV1StudioClips.wire(_sb.el);
     const note = _sb.el.querySelector('[data-sb-notice]');
     if (note) note.innerHTML = _noScenesHTML(ctx.detail);
@@ -1033,6 +1035,7 @@
     _wireScenes(el.querySelector('[data-scenes]'));
     window.DeskV1Story.mount(el.querySelector('[data-sb-story-panel]'), _storyBridge());
     _wireTimeline();
+    window.DeskV1StudioPreview.mount(el, { scenes: () => _realScenes(_sbCtx().detail), beforeOpen: _saveOpenEditor });
     if (_sb.standalone) _hookSbUndo(el);
     _markSelected();
     _wireAgentBox(el.querySelector('[data-sb-agent]'), ctx);
