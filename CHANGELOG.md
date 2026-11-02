@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-01] - Show exactly where Studio material will be inserted (MC-1145)
+
+- Library material and computer-file drags now highlight the destination gap on campaign and standalone Studio timelines, including before the first scene and after the last. Dropping uses the marked position.
+- Added keyboard-accessible **+** controls at every boundary, opening the existing picture/clip library picker at that position. Controls keep 44px targets on narrow screens without changing scene widths or ruler timing; crowded controls stack below the strip.
+- Insertions keep the existing save/Undo and Preview refresh. Detached timelines ignore queued scroll events after a repaint. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-01] - Preview the arranged Studio scenes for free
 
 - Added an in-app **Preview** player to standalone and campaign video storyboards: play/pause, elapsed/total time, scrubbing and the current scene highlighted on the timeline.

@@ -1,0 +1,22 @@
+/* A separate boundary lane keeps + targets clear of trim/reorder gestures. */
+.desk-v1-sb-timeline { position: relative; overflow: visible; }
+.desk-v1-insert-lane { position: relative; min-height: 46px; border-top: 1px solid var(--border2); }
+.desk-v1-insert-gap {
+  position: absolute; box-sizing: border-box; width: 44px; height: 44px; padding: 0;
+  display: grid; place-items: center; border: 0; border-radius: 6px;
+  color: var(--text-dim); background: transparent; font: inherit; font-size: 24px; cursor: pointer;
+}
+.desk-v1-insert-gap::before { content: ''; position: absolute; top: 0; height: 5px; border-left: 1px solid var(--border2); }
+.desk-v1-insert-gap:hover, .desk-v1-insert-gap:focus-visible, .desk-v1-insert-active {
+  color: var(--accent); background: var(--accent-dim);
+}
+.desk-v1-insert-gap:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.desk-v1-insert-marker {
+  position: absolute; z-index: 3; top: 0; bottom: 0; width: 3px; transform: translateX(-50%);
+  background: var(--accent); pointer-events: none;
+}
+.desk-v1-insert-marker::before, .desk-v1-insert-marker::after {
+  content: ''; position: absolute; left: -4px; width: 11px; height: 5px; border-radius: 2px; background: var(--accent);
+}
+.desk-v1-insert-marker::before { top: 0; }
+.desk-v1-insert-marker::after { bottom: 0; }

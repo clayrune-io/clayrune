@@ -1435,9 +1435,16 @@ or focus that grip and use an arrow key to change it by one second. The grip
 highlights on hover and a floating m:ss badge shows the duration while dragging.
 Changing one scene moves later scenes without resizing them. Escape cancels
 an active drag.
-Drop pictures or playable clips from your computer or the library chooser onto the timeline to
-add scenes; dropping over a tile inserts before it. **Pick from library** also
-adds a picture without dragging. **Undo** reverses these scene changes.
+Drop pictures or playable clips from your computer or the library chooser onto
+the timeline to add scenes. While dragging, an accent line marks the destination
+gap, including before the first scene or after the last. Moving across either
+half of a tile chooses its nearest gap; dropping inserts at the marked position.
+Each gap also has a **+** below the timeline. Click it, or Tab to it and press
+Enter or Space, to **Pick from library** and insert a picture or clip there.
+On narrow timelines, crowded **+** controls stack to keep their touch targets
+separate; their accessible names say which scene they insert before. The separate
+**Pick from library** button appends a scene. **Undo** reverses these changes,
+and an open Preview resets to the updated order and timing.
 
 The video editor stays focused on scenes and rendering. **Review** appears
 when a version is waiting; the former **Copy, media & versions** link is gone.

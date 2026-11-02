@@ -62,24 +62,7 @@
     const add = root.querySelector('[data-timeline-material]');
     if (add) add.onclick = () => window.DeskV1LibraryPicker.open({ kinds: ['image', 'video'], returnFocus: add,
       onPick: it => material(it).catch(e => window.DeskV1Kit.toast(e.message || String(e))) });
-    strip.addEventListener('dragover', e => { e.preventDefault(); strip.classList.add('pd-drop-hover'); });
-    strip.addEventListener('dragleave', e => { if (!strip.contains(e.relatedTarget)) strip.classList.remove('pd-drop-hover'); });
-    strip.addEventListener('drop', async e => {
-      e.preventDefault(); strip.classList.remove('pd-drop-hover');
-      const tile = e.target.closest('.desk-v1-video-scene');
-      const beforeId = tile && tile.dataset.sceneId;
-      try {
-        const files = Array.from(e.dataTransfer.files || []);
-        if (files.length) {
-          await api.files(files, beforeId); return;
-        }
-        const raw = e.dataTransfer.getData(MATERIAL);
-        if (!raw) throw new Error('Drop a picture from your computer or the Material library.');
-        const item = JSON.parse(raw);
-        if (!['image', 'video'].includes(item.kind) || !item.path) throw new Error('Scene material must be a library picture or clip.');
-        await material(item, beforeId);
-      } catch (err) { window.DeskV1Kit.toast(`Could not add scene material: ${err.message || err}`); }
-    });
+    window.DeskV1StudioInsert.wire(root, api, material);
   }
   // Native drag from the shared library chooser; hide the overlay while keeping
   // its source node alive until dragend (removing it cancels Chromium's drag).

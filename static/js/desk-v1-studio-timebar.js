@@ -70,7 +70,12 @@
     scroll.scrollLeft = view.scrollLeft || 0;
     paint();
     let preview = [];
-    scroll.addEventListener('scroll', () => { view.scrollLeft = scroll.scrollLeft; paint(...preview); });
+    scroll.addEventListener('scroll', () => {
+      // Focus/Undo can replace this timeline before its queued scroll fires.
+      // An old listener must not paint the new tiles with its old scene list.
+      if (!scroll.isConnected) return;
+      view.scrollLeft = scroll.scrollLeft; paint(...preview);
+    });
     root.querySelectorAll('[data-timebar-zoom]').forEach(button => {
       button.onclick = () => {
         const start = scroll.scrollLeft / view.scale;
