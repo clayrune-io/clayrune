@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-02] - Drag the Studio time ruler to stretch or squeeze
+
+- Drag the time ruler right to widen the time units or left to narrow them; the time you grab stays under the pointer. Like the zoom buttons, this switches to manual zoom until **Fit**.
+- While a scene edge is being trimmed, automatic fitting now waits until you let go, so the edge stays under the pointer.
+
 ## [2026-11-02] - Keep the Studio timeline fitted until you zoom
 
 - The timeline automatically fits the whole video as scene lengths change, including replacing a short picture with a longer clip. **−** and **+** keep your chosen scale through edits and Undo; **Fit** restores automatic fitting.

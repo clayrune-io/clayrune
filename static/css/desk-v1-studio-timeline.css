@@ -5,6 +5,8 @@
 .desk-v1-timebar-scroll { overflow-x: auto; max-width: 100%; border: 1px solid var(--border2); border-radius: 8px; background: var(--surface2); }
 .desk-v1-timebar-track { min-width: 100%; }
 .desk-v1-timebar-ruler { height: 29px; position: relative; overflow: hidden; border-bottom: 1px solid var(--border2); font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text-dim); }
+.desk-v1-timebar-ruler { cursor: col-resize; touch-action: pan-y; user-select: none; }
+.desk-v1-timebar-ruler:hover .desk-v1-timebar-tick, .desk-v1-timebar-ruler.is-scaling .desk-v1-timebar-tick { border-left-color: var(--accent); }
 .desk-v1-timebar-tick { position: absolute; top: 0; height: 100%; padding: 2px 4px; border-left: 1px solid var(--border2); box-sizing: border-box; white-space: nowrap; }
 .desk-v1-sb-timeline { overflow: visible; min-height: 104px; border: 0; border-radius: 0; }
 .desk-v1-sb-timeline .desk-v1-video-scene { flex: 0 0 auto; min-width: 0; box-sizing: border-box; border-right: 0; box-shadow: inset -1px 0 var(--border2); padding: 6px 0; position: relative; overflow: hidden; cursor: grab; }

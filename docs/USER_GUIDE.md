@@ -1420,6 +1420,7 @@ the available width and keeps fitting as scenes are added, replaced or trimmed.
 **−** and **+** choose a manual zoom that edits and Undo preserve; longer scenes
 then extend the bar and it scrolls sideways. Hold **Ctrl** (or **Cmd** on Mac)
 and use the mouse wheel over the timeline to zoom around the pointer's time.
+You can also drag the time ruler: right widens the time units, left narrows them.
 **Fit** shows the whole video again and restores automatic fitting. Plain wheel
 and Shift-wheel keep their usual scrolling behavior.
 Each tile shows its label and duration; very short tiles clip the text to keep

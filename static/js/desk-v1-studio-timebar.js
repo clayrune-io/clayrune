@@ -16,7 +16,7 @@
       </div></div>
       <div class="desk-v1-timebar-scroll" data-timebar-scroll tabindex="0" aria-label="Scrollable timeline">
         <div class="desk-v1-timebar-track" data-timebar-track>
-          <div class="desk-v1-timebar-ruler" data-timebar-ruler aria-label="Time ruler"></div>
+          <div class="desk-v1-timebar-ruler" data-timebar-ruler aria-label="Time ruler" title="Drag left or right to squeeze or stretch the time scale"></div>
           ${tiles}
         </div>
       </div><output class="desk-v1-timebar-badge" data-timebar-badge hidden></output>`;
@@ -31,7 +31,9 @@
     if (!view.scale) view.scale = fit();
     function paint(sceneId, duration, pointer) {
       const length = total() + (sceneId ? duration - scenes.find(s => s.id === sceneId).durationSec : 0);
-      if (!view.manual) view.scale = fit(length);
+      // Hold the scale while a trim is live so the edge stays under the pointer;
+      // the refit happens when the trim ends.
+      if (!view.manual && !sceneId) view.scale = fit(length);
       const contentWidth = length * view.scale;
       const width = Math.max(scroll.clientWidth, contentWidth);
       track.style.width = `${width}px`;
@@ -103,6 +105,37 @@
       view.scrollLeft = scroll.scrollLeft;
       paint(...preview);
     }, { passive: false });
+    // Ruler drag: the time grabbed follows the pointer while the left edge of
+    // the view stays put, so dragging right stretches and left squeezes.
+    ruler.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const left = () => scroll.getBoundingClientRect().left + scroll.clientLeft;
+      const startX = Math.max(8, e.clientX - left());
+      const startScale = view.scale;
+      const startTime = scroll.scrollLeft / startScale;
+      ruler.setPointerCapture?.(e.pointerId);
+      ruler.classList.add('is-scaling');
+      const move = ev => {
+        const x = Math.max(8, ev.clientX - left());
+        view.manual = true;
+        view.scale = Math.min(1000, Math.max(0.001, startScale * x / startX));
+        paint(...preview);
+        scroll.scrollLeft = startTime * view.scale;
+        view.scrollLeft = scroll.scrollLeft;
+        paint(...preview);
+      };
+      const end = () => {
+        ruler.classList.remove('is-scaling');
+        ruler.removeEventListener('pointermove', move);
+        ruler.removeEventListener('pointerup', end);
+        ruler.removeEventListener('pointercancel', end);
+      };
+      ruler.addEventListener('pointermove', move);
+      ruler.addEventListener('pointerup', end);
+      ruler.addEventListener('pointercancel', end);
+    });
     return {
       scale: () => view.scale,
       preview: (id, duration, pointer) => { preview = pointer ? [id, duration, pointer] : []; paint(...preview); },

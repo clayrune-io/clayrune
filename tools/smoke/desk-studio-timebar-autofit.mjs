@@ -121,7 +121,32 @@ try {
         });
       });
       assert.deepEqual(await page.evaluate(() => window.timebarWheelDefaults), [false, false]);
-      console.log(`PASS ${width} ${standalone ? 'standalone' : 'campaign'}: 3s → 36s autofit/ruler, manual edit+Undo, Fit resets, Ctrl/Meta-wheel anchored zoom, plain/Shift scrolling retained`);
+
+      // Ruler drag: right stretches, left squeezes; the grabbed time stays under the pointer.
+      const ruler = page.locator('[data-timebar-ruler]');
+      await ruler.scrollIntoViewIfNeeded();
+      const rb = await ruler.boundingBox();
+      const dragRuler = async (fromFrac, toFrac) => {
+        const y = rb.y + rb.height / 2, x0 = rb.x + rb.width * fromFrac, x1 = rb.x + rb.width * toFrac;
+        const timeAt = clientX => scroll.evaluate((el, cx) => (el.scrollLeft + cx - el.getBoundingClientRect().left - el.clientLeft) / Number(el.dataset.pxPerSecond), clientX);
+        const before = { scale: await scale(), time: await timeAt(x0) };
+        await page.mouse.move(x0, y);
+        await page.mouse.down();
+        await page.mouse.move(x1, y, { steps: 6 });
+        await page.mouse.up();
+        const after = { scale: await scale(), time: await timeAt(x1) };
+        assert(Math.abs(after.time - before.time) * after.scale < 1.5, `ruler drag keeps grabbed time under pointer: ${JSON.stringify({ before, after })}`);
+        return after.scale / before.scale;
+      };
+      assert(await dragRuler(.25, .5) > 1.9, 'dragging the ruler right stretches the scale');
+      const stretched = await scale();
+      await trim('ArrowRight');
+      assert.equal(await scale(), stretched, 'ruler stretch stays manual through edits');
+      assert(await dragRuler(.5, .25) < .6, 'dragging the ruler left squeezes the scale');
+      await page.click('#desk-v1-undo');
+      await page.click('[data-timebar-zoom="fit"]');
+      await fitted();
+      console.log(`PASS ${width} ${standalone ? 'standalone' : 'campaign'}: 3s → 36s autofit/ruler, manual edit+Undo, Fit resets, Ctrl/Meta-wheel anchored zoom, plain/Shift scrolling retained, ruler drag stretch/squeeze`);
     }
     assert.deepEqual(errors, []);
     await page.close();
