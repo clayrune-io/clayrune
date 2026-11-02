@@ -2269,6 +2269,9 @@ _bp_desk.wire(
 )
 app.register_blueprint(_bp_desk.bp)
 
+from mc.blueprints import desk_export_routes as _bp_desk_export  # noqa: E402
+app.register_blueprint(_bp_desk_export.bp)
+
 from mc import desk_project_media as _desk_project_media  # noqa: E402
 _desk_project_media.wire(load_projects_fn=_bp_projects.load_projects,
                         media_dir=Path(_DATA_ROOT) / 'data' / 'media', uploads_root=UPLOADS_DIR)

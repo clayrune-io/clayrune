@@ -1,60 +1,46 @@
 # Studio storyboard preview
 
-The standalone and campaign video editor can play its current scene arrangement
-locally. This is a branch candidate, not a deployed finished-video renderer.
-
-`static/js/desk-v1-studio-preview.js` owns the Preview button, player, snapshot,
-clock, media and lifecycle. Its CSS lives in
-`static/css/desk-v1-studio-preview.css`; `static/index.html` loads both. Studio
-adds three bridge lines: markup, mount (current real scenes plus save-open-editor
-callback), and refresh when scenes are repainted. No server or dependency changes.
+Standalone and campaign video editors show a black 16:9 preview stage above the
+timeline. The centered **Play** button is enabled when real scenes exist. There
+is no separate opener, pricing hint, or Close preview control. This is a branch
+candidate; it has not been merged or deployed.
 
 ## Playback contract
 
-- Opening reads `videoDetail[familyId].scenes` through the bridge. Array order
-  is timeline order. `placeholder` scenes never enter the snapshot.
-- Scene length is `durationSec`, including fractional picture durations.
-  The current timebar only trims the right edge and writes this field; there is
-  no clip-start/in-point field. Clips therefore begin at source zero. Media uses
-  `picture.src` or `picture.play`; no picture means a title/instructions card.
-- Play/pause and the range input control the same clock. Media buffering holds
-  the clock; an older scene longer than its source holds the final frame for
-  the remainder. The active timeline tile has `aria-current` and a scoped outline.
-- Reopening takes a new snapshot. Scene edits pause/reset the open player.
-  Closing, Escape, remount and navigation pause/release media and cancel RAF.
-  A DOM-removal observer also cleans up a detached editor without a global
-  navigation hook. Load failures show a message and the scene card; rejected
-  clip playback pauses with a retry explanation.
-- The preview module makes no API call. Opening first commits any pending scene
-  editor text through Studio's existing save path; playback itself never saves.
-  The existing render panel still independently
-  loads history/estimates on editor mount. Preview neither triggers nor changes
-  that panel, costs, human gates, or the refusal of uploaded clips in paid renders.
-- This shows the existing scenes, not generated output, transitions, or an export.
-  Compatibility is the current browser's image/video decoding support.
+- `static/js/desk-v1-studio-preview.js` owns the stage, scene snapshot, clock,
+  media and lifecycle; its CSS is `static/css/desk-v1-studio-preview.css`.
+  Studio supplies markup, mount and refresh after timeline/scene repaint.
+- Snapshot order is `videoDetail[familyId].scenes` array order, excluding
+  `placeholder` scenes. Length is `durationSec`, including fractional lengths.
+  Clips begin at zero because the editor only trims the right edge. Pictures
+  hold for their scene length; missing media shows scene title/instructions.
+- Idle/reset shows black. Play hides the overlay and exposes Pause below;
+  pause/end brings back Play/Replay. Native buttons support Tab and Space/Enter,
+  with focus transferred between Play and Pause. Seek and elapsed/total time
+  remain below. Seeking displays the selected scene.
+- Empty boards keep the black stage, disable Play and seek, and display
+  ?Add a scene to preview? inside it. Examples never enable playback.
+- Buffering holds the clock. Legacy scenes longer than their clip hold the last
+  frame. Active tiles receive `aria-current` and follow horizontal timeline
+  scrolling. Edits pause/reset playback and refresh replaced tiles.
+- Play commits pending editor text through the existing save path. Playback
+  makes no API calls. Media failures show a message and scene card; rejected
+  playback pauses with a retry explanation. Navigation/remount releases sources,
+  pauses audio and cancels animation frames via a removal observer.
+- The independent [local MP4 export](STUDIO_EXPORT.md) sits beside seek/time.
+  The existing paid Render panel retains its own estimates and approval gates;
+  neither Preview nor Export calls it.
 
 ## Verification
 
-Run from `tools/smoke` with the existing main-checkout dependencies linked into
-the worktree (remove that junction before committing; do not install again):
+`tools/smoke/desk-studio-preview.mjs` serves the real worktree HTML/JS/CSS with a
+revision-guarded fake Desk API, byte-ranged MP4 and PNG. At 1440 and 390 it checks
+campaign/standalone playback, native decoding, trimmed lengths, scene order,
+picture hold time, keyboard activation/focus, pause/seek/replay, highlight,
+persisted reorder/retime, refresh, empty/example boards, loading/failed media,
+cleanup and viewport bounds. Preview adds no paid or save calls.
 
-```powershell
-node desk-studio-preview.mjs
-node desk-studio-timeline.mjs
-node desk-studio-uploaded-clips.mjs
-node desk-v1-live-storyboard.mjs
-node boot-smoke.mjs
-```
-
-The preview smoke serves this worktree's real HTML/JS/CSS, a revision-guarded
-fake Desk API, real MP4 bytes with byte-range responses and a decoded PNG. At
-1440 and 390 it covers campaign and standalone saved boards, native clip decoding,
-trimmed playback, image/card scene order, picture hold time, pause, seek, elapsed
-total, active timeline tile, persisted reorder/retime and reopen, empty board,
-example exclusion, navigation cleanup, viewport bounds, and zero additional paid
-or save requests during preview. It writes screenshots to
-`_scratch/desk-studio-preview/{campaign,studio}-{1440,390}.png`.
-
-No live data, paid engine, named browser profile, authentication, merge, push or
-server restart is needed or performed by these checks. Native phone WebView and
-every user codec remain unverified by the headless Chromium runs.
+Screenshots of idle and playing states are written under
+`_scratch/desk-studio-export/preview-{idle,playing}-{campaign,studio}-{1440,390}.png`.
+The export document records the complete verification set. Native phone WebView
+and arbitrary user codecs remain outside the Chromium checks.

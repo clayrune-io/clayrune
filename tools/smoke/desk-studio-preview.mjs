@@ -44,6 +44,7 @@ try {
       if (path === '/api/desk/storyboard/chat') return json({ thread: [] });
       if (path === '/api/desk/materials') return json({ library: { image: [], video: [] }, recent: [], articles: [] });
       if (path === '/api/desk/studio/storyboards') return json({ storyboards: [] });
+      if (path === '/api/desk/exports') return json({ job: null });
       if (path === '/api/local-auth/status') return json({ configured: true });
       const board = path.match(/^\/api\/desk\/(pieces|studio)\/([^/]+)\/storyboard$/);
       if (board) {
@@ -82,17 +83,24 @@ try {
         window.deskV1Nav(standalone ? 'studio-create' : 'storyboard', standalone ? { kind: 'video', itemId: id } : { campaignId: 'camp-1', familyId: id });
       }, { standalone, id });
       await page.waitForSelector('[data-sb-timeline] [data-scene-id="clip"]');
-      await page.waitForSelector('[data-preview-open]:not([disabled])');
+      await page.waitForSelector('[data-preview-play]:not([disabled])');
       // The editor's existing paid-render panel estimates on mount. Preview
       // must add zero requests of its own, measured after that panel settles.
       await page.waitForTimeout(150);
       const baseline = writes.length;
       const paidBaseline = forbidden.length;
-      await page.click('[data-preview-open]');
       assert.equal(await page.locator('[data-preview-player]').isVisible(), true);
+      assert.equal(await page.locator('[data-preview-open]').count(), 0);
+      assert.equal(await page.locator('[data-preview-close]').count(), 0);
+      assert.equal(await page.locator('[data-preview-play]').isVisible(), true);
+      assert.equal(await page.locator('[data-preview-stage]').evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(0, 0, 0)');
+      assert(!/free/i.test(await page.locator('[data-sb-preview]').innerText()));
+      mkdirSync(resolve(root, '_scratch/desk-studio-export'), { recursive: true });
+      await page.locator('[data-sb-preview]').scrollIntoViewIfNeeded();
+      await page.screenshot({ path: resolve(root, `_scratch/desk-studio-export/preview-idle-${standalone ? 'studio' : 'campaign'}-${width}.png`) });
       const current = () => page.locator('[data-sb-preview]').getAttribute('data-preview-scene');
       assert.equal(await current(), 'clip');
-      assert.equal(await page.locator('[data-preview-video]').isVisible(), true);
+      assert.equal(await page.locator('[data-preview-video]').isVisible(), false, 'idle stage stays black');
       await page.waitForFunction(() => document.querySelector('[data-preview-video]').readyState >= 2);
       assert(Math.abs(await page.locator('[data-preview-video]').evaluate(video => video.duration) - 2.4) < 0.02, 'real clip decoded');
       assert.equal(Number(await page.locator('[data-preview-seek]').getAttribute('max')), 3.2);
@@ -104,9 +112,21 @@ try {
         observer.observe(host, { attributes: true, attributeFilter: ['data-preview-scene'] });
         window.previewVisitObserver = observer;
       }, standalone);
+      await page.locator('[data-preview-seek]').focus();
+      await page.keyboard.press('Shift+Tab');
+      assert.equal(await page.locator('[data-preview-play]').evaluate(el => el === document.activeElement), true, 'Play is in the Tab order');
+      await page.keyboard.press('Space');
+      await page.waitForFunction(() => !document.querySelector('[data-preview-video]').paused);
+      assert.equal(await page.locator('[data-preview-pause]').evaluate(el => el === document.activeElement), true);
+      await page.keyboard.press('Enter');
+      assert.equal(await page.locator('[data-preview-play]').isVisible(), true, 'Space starts and Enter pauses');
+      assert.equal(await page.locator('[data-preview-play]').evaluate(el => el === document.activeElement), true);
       await page.click('[data-preview-play]');
       await page.waitForFunction(() => document.querySelector('[data-preview-video]').currentTime > 0.15);
-      await page.click('[data-preview-play]');
+      assert.equal(await page.locator('[data-preview-video]').isVisible(), true);
+      assert.equal(await page.locator('[data-preview-play]').isVisible(), false);
+      await page.screenshot({ path: resolve(root, `_scratch/desk-studio-export/preview-playing-${standalone ? 'studio' : 'campaign'}-${width}.png`) });
+      await page.click('[data-preview-pause]');
       const stopped = await page.locator('[data-preview-seek]').inputValue();
       await page.waitForTimeout(180);
       assert.equal(await page.locator('[data-preview-seek]').inputValue(), stopped, 'pause holds position');
@@ -134,20 +154,16 @@ try {
       assert.equal(await current(), 'clip');
       await scrub(1.3); assert.equal(await current(), 'picture');
       assert.equal(await page.locator('[data-preview-play]').innerText(), 'Play', 'scrubbing back from the end leaves Play');
-      await page.click('[data-preview-close]');
-      assert.equal(await page.locator('[data-preview-player]').isVisible(), false);
-      assert.equal(await page.locator('[data-sb-timeline] [aria-current]').count(), 0);
-      // Real edit controls persist order/length; reopening reads the current board.
+      // Real edit controls persist order/length and refresh the visible stage.
       await page.locator('[data-sb-timeline] [data-scene-id="clip"]').focus();
       await page.keyboard.press('ArrowRight');
       await page.waitForFunction(() => document.querySelector('[data-sb-timeline] .desk-v1-video-scene').dataset.sceneId === 'picture');
-      await page.waitForFunction(() => !document.querySelector('[data-preview-open]').disabled);
-      await page.click('[data-preview-open]'); assert.equal(await current(), 'picture');
+      await page.waitForFunction(() => !document.querySelector('[data-preview-play]').disabled);
+      assert.equal(await current(), 'picture');
       await page.locator('[data-sb-timeline] [data-scene-id="picture"] [data-trim-edge="r"]').focus();
       await page.keyboard.press('ArrowRight');
       await page.waitForFunction(() => Number(document.querySelector('[data-preview-seek]').max) > 4);
       assert.equal(await page.locator('[data-preview-play]').innerText(), 'Play', 'editing pauses/reset preview');
-      await page.click('[data-preview-close]'); await page.click('[data-preview-open]');
       assert.equal(Number(await page.locator('[data-preview-seek]').getAttribute('max')), 4.2);
       assert.equal(await current(), 'picture');
       await scrub(3.4);
@@ -176,27 +192,24 @@ try {
     boards.set('pieces:fam-install-video', { rev: 0, scenes: [], pending_edits: [] });
     await page.evaluate(() => window.deskV1Nav('storyboard', { campaignId: 'camp-1', familyId: 'fam-install-video' }));
     await page.waitForSelector('[data-sb-no-scenes]');
-    assert.equal(await page.locator('[data-preview-open]').isDisabled(), true);
-    assert.match(await page.locator('[data-preview-hint]').innerText(), /Add a scene/);
+    assert.equal(await page.locator('[data-preview-play]').isDisabled(), true);
+    assert.equal(await page.locator('[data-preview-player]').isVisible(), true);
+    assert.match(await page.locator('[data-preview-empty]').innerText(), /Add a scene/);
     // Existing media errors stay visible and still permit local card playback.
     boards.set('pieces:fam-install-video', { rev: 0, pending_edits: [], scenes: [{ id: 'broken', label: 'Missing picture', line: 'Keep this scene visible.', duration_sec: 1,
       picture: { kind: 'image', path: 'desk/library/image/missing.png', src: `${origin}/smoke/missing` } }] });
     await page.evaluate(() => window.deskV1Nav('storyboard', { campaignId: 'camp-1', familyId: 'fam-install-video' }));
     await page.waitForSelector('[data-sb-timeline] [data-scene-id="broken"]');
-    await page.click('[data-preview-open]');
     await page.waitForFunction(() => document.querySelector('[data-preview-status]').textContent.includes('could not load'));
-    assert.equal(await page.locator('[data-preview-card]').isVisible(), true);
     await page.click('[data-preview-play]');
+    assert.equal(await page.locator('[data-preview-card]').isVisible(), true);
     assert.match(await page.locator('[data-preview-status]').innerText(), /could not load/);
     await page.waitForFunction(() => document.querySelector('[data-preview-play]').textContent === 'Replay');
-    await page.keyboard.press('Escape');
-    assert.equal(await page.locator('[data-preview-player]').isVisible(), false);
-    assert.equal(await page.locator('[data-storyboard]').isVisible(), true, 'Escape closes the preview while keeping the editor open');
+    assert.equal(await page.locator('[data-preview-player]').isVisible(), true);
     boards.set('pieces:fam-install-video', { rev: 0, pending_edits: [], scenes: [{ id: 'delayed', label: 'Loading picture', duration_sec: 1,
       picture: { kind: 'image', path: 'desk/library/image/delayed.png', src: `${origin}/smoke/delayed-picture` } }] });
     await page.evaluate(() => window.deskV1Nav('storyboard', { campaignId: 'camp-1', familyId: 'fam-install-video' }));
     await page.waitForSelector('[data-sb-timeline] [data-scene-id="delayed"]');
-    await page.click('[data-preview-open]');
     await page.click('[data-preview-play]');
     await page.waitForTimeout(120);
     assert.equal(Number(await page.locator('[data-preview-seek]').inputValue()), 0, 'loading a picture does not consume its hold time');
@@ -221,7 +234,6 @@ try {
     await demo.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
     await demo.evaluate(() => { window.sidebarNav('social'); window.deskV1Nav('studio-create', { kind: 'video' }); });
     await demo.waitForSelector('[data-sc-body] [data-storyboard]');
-    await demo.click('[data-preview-open]');
     assert.equal(Number(await demo.locator('[data-preview-seek]').getAttribute('max')), await demo.evaluate(() => {
       const id = document.querySelector('[data-storyboard]').dataset.familyId;
       return window.DeskV1Store.state().videoDetail[id].scenes.filter(s => !s.placeholder).reduce((sum, s) => sum + s.durationSec, 0);
@@ -230,10 +242,10 @@ try {
       const id = document.querySelector('[data-storyboard]').dataset.familyId;
       window.DeskV1Store.state().videoDetail[id].scenes.forEach(s => { s.placeholder = true; });
     });
-    await demo.click('[data-preview-close]'); await demo.click('[data-preview-open]');
-    assert.equal(await demo.locator('[data-preview-open]').isDisabled(), true);
-    assert.equal(await demo.locator('[data-preview-player]').isVisible(), false);
-    console.log(`PASS ${width}: empty board disabled with reason; example scenes excluded; missing picture card playback; Escape; loading picture holds clock`);
+    await demo.evaluate(() => window.DeskV1StudioPreview.refresh(document.querySelector('[data-storyboard]').parentElement));
+    assert.equal(await demo.locator('[data-preview-play]').isDisabled(), true);
+    assert.equal(await demo.locator('[data-preview-player]').isVisible(), true);
+    console.log(`PASS ${width}: empty black stage with reason; example scenes excluded; missing picture card playback; loading picture holds clock`);
     await demo.close();
   }
 } finally { await browser.close(); }

@@ -1413,20 +1413,37 @@ Each tile shows its label and duration; very short tiles clip the text to keep
 the ruler accurate. Hover for the full label and duration, or focus the tile
 to hear its accessible name.
 
-Press **Preview** above the timeline to view the arranged scenes for free,
-then **Play** or **Pause**. Drag the position slider to scrub; the clock shows
+The black preview screen above the timeline is always visible. Press its
+centered **Play** button; **Pause** appears below while playing, and Play or
+Replay returns on pause/end. Tab reaches the buttons; Space or Enter activates
+them. Drag the position slider to scrub; the clock shows
 elapsed time and the total length, and the current timeline tile is highlighted.
 Clips start at the beginning and play for the length set by the right trim grip;
 pictures hold for their scene duration. A scene without a picture displays its
 title and instructions. Example scenes are skipped. With no real scenes,
-Preview is disabled and explains that you need to add one.
+Play is disabled and the black screen says **Add a scene to preview**.
 
-Reopening Preview reads the latest scene order and durations. Editing scenes
-pauses and resets the open preview. **Close preview** or Escape closes it;
-leaving the editor also stops playback. A picture or clip the browser cannot
+Editing scenes pauses and resets preview to the latest order and durations;
+leaving the editor stops playback. A picture or clip the browser cannot
 open shows an explanation and the scene card. This is local scene playback,
-without a paid engine, passcode or finished-video export. The existing Render
+without a paid engine or passcode. The existing Render
 panel remains separate and may show its own estimate when the editor opens.
+
+Press **Export** beside the preview controls to save the current timeline as a
+local MP4. Examples are skipped; pictures hold for their duration, clips use
+their trimmed length, and scenes without media become black segments. Windows
+adds scene titles when its font is available; the result tells you whether
+titles were added or plain black was used. Clip sound is kept and missing audio
+becomes silence. Output is 1280×720 at 30 fps, with black padding to preserve the
+source shape. Fractional lengths can round slightly in the finished MP4.
+
+Export needs the ffmpeg add-on. If approval is missing, its approval card is
+requested: approve it in **Settings → Add-ons**, then click **Export** again.
+Export shows progress and offers **Download MP4** and **Open MP4** when ready.
+It runs on this machine with no paid engine; output remains in the material
+library's **video / Generated** folder. You can leave the editor and return to
+the current job. One export runs at a time. A server restart loses job status;
+retry Export if asked (finished files remain in Generated).
 
 Drag a tile's dots or a scene's list handle onto another tile to reorder;
 focused tiles use Left/Right or Up/Down, and list handles keep Up/Down.

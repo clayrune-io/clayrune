@@ -1,22 +1,22 @@
-// Free, local storyboard playback. Nothing here saves, prices or renders a video.
+// Local storyboard playback, with an always-visible stage and independent export.
 (function () {
   const mounted = new WeakMap();
   const format = seconds => window.DeskV1StudioTimebar.format(seconds);
   function html() {
     return `<section class="desk-v1-sb-preview" data-sb-preview aria-label="Storyboard preview">
-      <div class="desk-v1-sb-preview-head"><button type="button" class="desk-v1-sb-editbtn" data-preview-open aria-expanded="false">Preview</button>
-        <span data-preview-hint>Add a scene to preview.</span></div>
-      <div data-preview-player hidden>
+      <div data-preview-player>
         <div class="desk-v1-sb-preview-stage" data-preview-stage>
           <video data-preview-video playsinline preload="auto" hidden></video>
           <img data-preview-image alt="" hidden>
           <div class="desk-v1-sb-preview-card" data-preview-card><strong data-preview-title></strong><p data-preview-line></p></div>
+          <button type="button" class="desk-v1-sb-preview-overlay" data-preview-play aria-label="Play preview">Play</button>
+          <span class="desk-v1-sb-preview-empty" data-preview-empty>Add a scene to preview</span>
         </div>
         <div class="desk-v1-sb-preview-controls">
-          <button type="button" class="desk-v1-sb-editbtn" data-preview-play>Play</button>
+          <button type="button" class="desk-v1-sb-editbtn" data-preview-pause hidden>Pause</button>
           <input type="range" data-preview-seek min="0" max="0" value="0" step="0.01" aria-label="Preview position">
           <output data-preview-time aria-live="off">0:00 / 0:00</output>
-          <button type="button" class="desk-v1-sb-editbtn" data-preview-close>Close preview</button>
+          ${window.DeskV1StudioExport.html()}
         </div>
         <p class="desk-v1-sb-preview-status" data-preview-status role="status"></p>
       </div>
@@ -27,7 +27,7 @@
     const host = root.querySelector('[data-sb-preview]');
     if (!host) return;
     const find = name => host.querySelector(`[data-preview-${name}]`);
-    const open = find('open'), player = find('player'), play = find('play'), seek = find('seek');
+    const play = find('play'), pauseButton = find('pause'), seek = find('seek');
     const video = find('video'), image = find('image'), card = find('card'), status = find('status');
     let entries = [], total = 0, elapsed = 0, active = -1, running = false, frame = 0, last = 0, failed = false;
     let generation = 0, destroyed = false;
@@ -49,6 +49,9 @@
       running = false;
       cancelAnimationFrame(frame);
       video.pause();
+      const hadFocus = document.activeElement === pauseButton;
+      play.hidden = false; pauseButton.hidden = true;
+      if (hadFocus) play.focus({ preventScroll: true });
       play.textContent = elapsed >= total && total ? 'Replay' : 'Play';
       play.setAttribute('aria-label', play.textContent + ' preview');
     }
@@ -130,10 +133,14 @@
       frame = requestAnimationFrame(tick);
     }
     function start() {
+      if (api.beforeOpen && api.beforeOpen() === false) return;
       if (!entries.length) return;
       if (elapsed >= total) { elapsed = 0; draw(true); }
       running = true;
-      play.textContent = 'Pause'; play.setAttribute('aria-label', 'Pause preview');
+      host.dataset.previewStarted = 'true';
+      const hadFocus = document.activeElement === play;
+      play.hidden = true; pauseButton.hidden = false;
+      if (hadFocus) pauseButton.focus({ preventScroll: true });
       if (!failed) status.textContent = '';
       startClip();
       last = performance.now();
@@ -142,25 +149,27 @@
     function refresh() {
       pause(); release();
       total = 0; elapsed = 0; active = -1;
+      delete host.dataset.previewStarted;
       entries = api.scenes().filter(scene => !scene.placeholder).map(scene => {
         const duration = Number(scene.durationSec);
         const start = total;
         total += Number.isFinite(duration) && duration > 0 ? duration : 3;
         return { start, end: total, scene: { ...scene, picture: scene.picture && { ...scene.picture } } };
       });
-      open.disabled = !entries.length;
-      const reason = entries.length ? 'Play your scenes for free.' : 'Add a scene to preview. Example scenes are skipped.';
-      open.title = reason; find('hint').textContent = reason;
+      play.disabled = seek.disabled = !entries.length;
+      find('empty').hidden = !!entries.length;
       seek.max = String(total); seek.value = '0';
       pause();
       status.textContent = '';
       highlight(null);
-      if (!entries.length) close();
-      else if (!player.hidden) draw(true);
+      if (!entries.length) {
+        video.hidden = image.hidden = card.hidden = true;
+        delete host.dataset.previewScene;
+        find('time').textContent = '0:00 / 0:00';
+      } else draw(true);
     }
     function close() {
       pause(); release(); active = -1;
-      player.hidden = true; open.setAttribute('aria-expanded', 'false');
       delete host.dataset.previewScene;
       highlight(null);
     }
@@ -170,27 +179,15 @@
     }
     const observer = new MutationObserver(() => { if (!host.isConnected) destroy(); });
     observer.observe(document.body, { childList: true, subtree: true });
-    open.onclick = () => {
-      if (api.beforeOpen && api.beforeOpen() === false) return;
-      refresh();
-      if (!entries.length) return;
-      player.hidden = false; open.setAttribute('aria-expanded', 'true');
-      draw(true); play.focus({ preventScroll: true });
-    };
     play.onclick = () => { if (running) pause(); else start(); };
+    pauseButton.onclick = pause;
     seek.oninput = () => {
+      host.dataset.previewStarted = 'true';
       elapsed = Math.min(total, Math.max(0, Number(seek.value)));
       draw(true);
       last = performance.now();
       if (!running || elapsed >= total) pause();
     };
-    find('close').onclick = () => { close(); open.focus({ preventScroll: true }); };
-    host.addEventListener('keydown', event => {
-      if (event.key === 'Escape' && !player.hidden) {
-        event.preventDefault(); event.stopPropagation();
-        close(); open.focus({ preventScroll: true });
-      }
-    });
     mounted.set(root, { refresh, destroy });
     refresh();
   }

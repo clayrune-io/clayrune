@@ -89,12 +89,10 @@ try {
       await page.waitForFunction(n => document.querySelectorAll('[data-sb-timeline] .desk-v1-video-scene').length === n, original.length + 1);
       assert.match(await tiles.nth(1).innerText(), /Inserted clip/);
       assert.match(await tiles.nth(1).innerText(), /0:02\.4/);
-      await page.click('[data-preview-open]');
       await page.locator('[data-preview-seek]').fill('0');
       assert.equal(await page.locator('[data-sb-timeline] [aria-current="true"]').count(), 1);
       await undo();
       assert.equal(await page.locator('[data-sb-timeline] [aria-current="true"]').count(), 1, 'Preview refresh re-highlights replaced tiles');
-      await page.click('[data-preview-close]');
 
       // A real Chromium library drag hides the chooser, shows the gap line,
       // and commits at that same boundary (synthetic events below cover OS).

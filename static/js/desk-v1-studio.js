@@ -562,6 +562,7 @@
     const wrap = _sb.el.querySelector('[data-sb-timeline-wrap]');
     if (wrap) { wrap.innerHTML = window.DeskV1StudioTimeline.html(ctx.detail); _wireTimeline(); }
     window.DeskV1StudioPreview.refresh(_sb.el);
+    window.DeskV1StudioExport.refresh(_sb.el);
     window.DeskV1StudioClips.wire(_sb.el);
     const note = _sb.el.querySelector('[data-sb-notice]');
     if (note) note.innerHTML = _noScenesHTML(ctx.detail);
@@ -1036,6 +1037,7 @@
     window.DeskV1Story.mount(el.querySelector('[data-sb-story-panel]'), _storyBridge());
     _wireTimeline();
     window.DeskV1StudioPreview.mount(el, { scenes: () => _realScenes(_sbCtx().detail), beforeOpen: _saveOpenEditor });
+    window.DeskV1StudioExport.mount(el, { owner: _sbOwner, scenes: () => _realScenes(_sbCtx().detail), beforeExport: _saveOpenEditor });
     if (_sb.standalone) _hookSbUndo(el);
     _markSelected();
     _wireAgentBox(el.querySelector('[data-sb-agent]'), ctx);
