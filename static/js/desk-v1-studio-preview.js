@@ -1,7 +1,14 @@
 // Local storyboard playback, with an always-visible stage and independent export.
 (function () {
   const mounted = new WeakMap();
-  const format = seconds => window.DeskV1StudioTimebar.format(seconds);
+  // Playback clock: always m:ss.t (tenths, floored) so the text keeps one
+  // shape and width every frame. The timebar's format() trims zeros, which
+  // made the clock flip between 0:03.4, 0:03.45 and 0:04 while playing.
+  const format = seconds => {
+    const tenths = Math.floor(Math.max(0, Number(seconds) || 0) * 10 + 1e-6);
+    const minutes = Math.floor(tenths / 600);
+    return `${minutes}:${((tenths - minutes * 600) / 10).toFixed(1).padStart(4, '0')}`;
+  };
   function html() {
     return `<section class="desk-v1-sb-preview" data-sb-preview aria-label="Storyboard preview">
       <div data-preview-player>
@@ -15,7 +22,7 @@
         <div class="desk-v1-sb-preview-controls">
           <button type="button" class="desk-v1-sb-editbtn" data-preview-pause hidden>Pause</button>
           <input type="range" data-preview-seek min="0" max="0" value="0" step="0.01" aria-label="Preview position">
-          <output data-preview-time aria-live="off">0:00 / 0:00</output>
+          <output data-preview-time aria-live="off">0:00.0 / 0:00.0</output>
           ${window.DeskV1StudioExport.html()}
         </div>
         <p class="desk-v1-sb-preview-status" data-preview-status role="status"></p>
@@ -165,7 +172,7 @@
       if (!entries.length) {
         video.hidden = image.hidden = card.hidden = true;
         delete host.dataset.previewScene;
-        find('time').textContent = '0:00 / 0:00';
+        find('time').textContent = '0:00.0 / 0:00.0';
       } else draw(true);
     }
     function close() {

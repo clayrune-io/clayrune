@@ -131,6 +131,16 @@ try {
       await page.waitForFunction(() => document.querySelector('[data-preview-video]').currentTime > 0.15);
       assert.equal(await page.locator('[data-preview-video]').isVisible(), true);
       assert.equal(await page.locator('[data-preview-play]').isVisible(), false);
+      // The clock keeps one shape every frame (Ron 2026-11-02: it flipped
+      // between 0:03.4, 0:03.45 and 0:04 while playing).
+      const clocks = await page.evaluate(() => new Promise(done => {
+        const seen = [], out = document.querySelector('[data-preview-time]');
+        const sample = n => { seen.push(out.textContent); n ? requestAnimationFrame(() => sample(n - 1)) : done(seen); };
+        sample(30);
+      }));
+      const shape = /^\d+:\d\d\.\d \/ \d+:\d\d\.\d$/;
+      assert(clocks.every(text => shape.test(text)), `clock keeps m:ss.t every frame: ${[...new Set(clocks)].join(' | ')}`);
+      assert(new Set(clocks.map(text => text.length)).size === 1, 'clock width never changes while playing');
       await page.screenshot({ path: resolve(root, `_scratch/desk-studio-export/preview-playing-${standalone ? 'studio' : 'campaign'}-${width}.png`) });
       await page.click('[data-preview-pause]');
       const stopped = await page.locator('[data-preview-seek]').inputValue();

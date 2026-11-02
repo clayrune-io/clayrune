@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-02] - Steady the Studio preview clock
+
+- The time under the preview now always reads m:ss.t (tenths, rounded down), e.g. `0:03.4 / 0:12.0`. It used the timeline's zero-trimming format, so it jumped between `0:03.4`, `0:03.45` and `0:04` from frame to frame while playing. Timeline labels are unchanged. `desk-studio-preview.mjs` now samples 30 playback frames and fails if the clock's shape or width changes.
+
 ## [2026-11-02] - Give the Studio timeline the full editor width
 
 - Moved the timeline, ruler, zoom and insert controls below the story/preview and conversation columns. The conversation fills the upper region and scrolls its messages; phones keep one column.
