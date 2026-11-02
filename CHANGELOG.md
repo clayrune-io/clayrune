@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-01] - Ship the hivemind routing directive (BUILTINS-4 HR-6a)
+
+- New built-in skill `mc-hivemind-routing`: a coordinating agent writes an explicit decomposition, validates it with `plan_routing`, then acts on the route once (ordinary units dispatched individually, a hivemind payload POSTed once and never duplicated, invalid plans fixed rather than partly dispatched). Held dependent units stay with the coordinator.
+- Ships through the existing checksum-preserved built-in installer on next server start. A test pins every documented plan/unit field, enum, result key and error code to the validator so the text cannot drift.
+- Not bound to any character and not bundled in the macOS app (the snippet needs a source checkout, like the other non-steward built-ins).
+
 ## [2026-11-01] - Disclose fallback for missing hivemind characters (BUILTINS-4 HR-9)
 
 - Well-formed unknown worker/reviewer references now return warnings and resolve per attempt through an install-defined work-type mapping, then a generic worker tracking a complexity tier on the run's worker provider. Role mappings ship empty.
