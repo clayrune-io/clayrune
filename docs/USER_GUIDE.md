@@ -1416,8 +1416,12 @@ The video storyboard has a horizontal **Timeline** spanning the full editor
 width below the story, preview and conversation, above the scene list, both
 in a campaign and in standalone Studio. The ruler shows minutes and seconds;
 **Timeline · m:ss total** names the full length. On open it fits the video to
-the available width. **−**, **+** and **Fit** control zoom. Edits and Undo keep
-the current time scale, so longer scenes extend the bar and it scrolls sideways.
+the available width and keeps fitting as scenes are added, replaced or trimmed.
+**−** and **+** choose a manual zoom that edits and Undo preserve; longer scenes
+then extend the bar and it scrolls sideways. Hold **Ctrl** (or **Cmd** on Mac)
+and use the mouse wheel over the timeline to zoom around the pointer's time.
+**Fit** shows the whole video again and restores automatic fitting. Plain wheel
+and Shift-wheel keep their usual scrolling behavior.
 Each tile shows its label and duration; very short tiles clip the text to keep
 the ruler accurate. Hover for the full label and duration, or focus the tile
 to hear its accessible name.
