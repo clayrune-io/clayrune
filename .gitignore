@@ -409,3 +409,5 @@ docs/MARKETING_ASSETS_SPEC.md
 
 # G1 memory note-gate decision log (MC-964), runtime per-install data
 data/memory_gate_log/
+# Steward role dispatch checkpoints and claims are operator runtime state.
+data/steward/

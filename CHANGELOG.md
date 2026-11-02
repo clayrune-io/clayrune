@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-02] - Prepare steward role cycles through one guarded path (BUILTINS-3 SR-3)
+
+- Routed role timer fires and Run Now through a shared adapter with current character/charter/rules, explicit unattended retrieval, guard checks and visible dependency errors. Ordinary schedules retain their existing paths.
+- Added durable project-wide claims and held unknown deliveries; unchanged selections continue their thread, while owner/engine changes require a recorded successor and child handoff.
+- Local branch candidate only. SR-2 protected patches and SR-4 lifecycle integration still block role delivery; no merge, push, restart, live activation or provider parity claim.
+
 ## [2026-11-01] - Play and export the Studio timeline locally
 
 - Replaced the separate Preview opener and pricing hint with an always-visible black 16:9 stage and centered Play/Replay overlay. Pause, seek and time remain below; empty boards show a disabled Play and “Add a scene to preview.” Keyboard focus follows Play/Pause, and timeline edits still reset preview.
