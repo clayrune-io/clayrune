@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-02] - Give the Studio timeline the full editor width
+
+- Moved the timeline, ruler, zoom and insert controls below the story/preview and conversation columns. The conversation fills the upper region and scrolls its messages; phones keep one column.
+- Added **Expand** on The story: a large modal holds the same mounted editor, character counter, save state and **Make storyboard from story** controls. **Close** or Escape returns the text to the card.
+- Added a draggable bottom edge on the story card, with Up/Down keyboard resizing. Preview follows the resized card without overlap. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-01] - Play and export the Studio timeline locally
 
 - Replaced the separate Preview opener and pricing hint with an always-visible black 16:9 stage and centered Play/Replay overlay. Pause, seek and time remain below; empty boards show a disabled Play and “Add a scene to preview.” Keyboard focus follows Play/Pause, and timeline edits still reset preview.

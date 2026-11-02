@@ -97,7 +97,6 @@ try {
       // A real Chromium library drag hides the chooser, shows the gap line,
       // and commits at that same boundary (synthetic events below cover OS).
       await tiles.nth(1).scrollIntoViewIfNeeded();
-      const target = await tiles.nth(1).boundingBox();
       await page.click('[data-timeline-material]');
       const pick = page.getByRole('button', { name: 'Use Inserted picture from Insert tests' });
       await pick.waitFor();
@@ -105,6 +104,9 @@ try {
       await page.mouse.move(source.x + 15, source.y + 15); await page.mouse.down();
       await page.mouse.move(source.x + 35, source.y + 35, { steps: 5 });
       await page.waitForTimeout(50);
+      // Opening the picker can scroll its button into view on a phone. Read
+      // the visible tile after that scroll, rather than dropping at its old Y.
+      const target = await tiles.nth(1).boundingBox();
       await page.mouse.move(target.x + 2, target.y + 20, { steps: 15 });
       assert.equal(await page.locator('[data-insert-marker]').isVisible(), true);
       assert.equal(await page.locator('[data-insert-marker]').getAttribute('data-index'), '1');

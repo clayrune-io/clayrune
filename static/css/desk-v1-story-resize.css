@@ -1,0 +1,20 @@
+.desk-v1-sb-main > .desk-v1-story {
+  position: relative; box-sizing: border-box; height: 260px; min-height: 220px;
+  flex: 0 0 auto; padding-bottom: 18px;
+}
+.desk-v1-story-head { flex-wrap: wrap; flex: 0 0 auto; }
+.desk-v1-story-count { margin-left: auto; }
+.desk-v1-story-input[data-sb-story] { flex: 1 1 64px; min-height: 64px; height: auto; resize: none; }
+.desk-v1-story-actions, .desk-v1-story-choice, .desk-v1-story-status { flex: 0 0 auto; }
+/* Blur starts a save before the clicked button receives click. Reserve the
+   save label's space so wrapping cannot shrink the textarea and move Make. */
+.desk-v1-story-save { min-width: 5em; min-height: 1.45em; }
+.desk-v1-story-save:empty { display: block; visibility: hidden; }
+.desk-v1-story-resize { position: absolute; bottom: 0; left: 0; right: 0; height: 12px; cursor: ns-resize; touch-action: none; }
+.desk-v1-story-resize::after { content: ''; position: absolute; width: 40px; height: 3px; border-radius: 2px; background: var(--border2); top: 5px; left: calc(50% - 20px); }
+.desk-v1-story-resize:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+@media (max-width: 960px) {
+  .desk-v1-sb-main > .desk-v1-story { height: 300px; padding-bottom: 26px; }
+  .desk-v1-story-resize { height: 22px; }
+  .desk-v1-story-resize::after { top: 10px; }
+}

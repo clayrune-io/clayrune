@@ -506,7 +506,11 @@
         <div class="desk-v1-sb-main">
           ${_isLive() && !_sb.loadError ? window.DeskV1Story.html(!_sb.loading) : ''}
           ${window.DeskV1StudioPreview.html()}
-          <div class="desk-v1-sb-timeline-wrap" data-sb-timeline-wrap>${window.DeskV1StudioTimeline.html(detail)}</div>
+        </div>
+        <aside class="desk-v1-sb-agent" data-sb-agent>${_agentBoxHTML(ctx)}</aside>
+      </div>
+      <div class="desk-v1-sb-timeline-wrap" data-sb-timeline-wrap>${window.DeskV1StudioTimeline.html(detail)}</div>
+      <div class="desk-v1-sb-editor">
           <div class="desk-v1-sb-listrow">
             <ol class="desk-v1-sb-scenes" data-scenes aria-label="Scenes">${detail.scenes.map((s) => _sceneHTML(s, detail.scenes, _sb.editing === s.id)).join('')}</ol>
             ${_sb.standalone ? `<div class="desk-v1-sb-bincol">
@@ -516,8 +520,6 @@
           </div>
           ${_isLive() && !_sb.loadError ? '<div class="desk-v1-sb-addrow"><button type="button" class="desk-v1-addscene" data-scene-add>Add scene</button></div>' : ''}
           ${_isLive() && !_sb.loadError ? '<div data-sb-engine></div>' : ''}
-        </div>
-        <aside class="desk-v1-sb-agent" data-sb-agent>${_agentBoxHTML(ctx)}</aside>
       </div>
     </div>`;
   }

@@ -433,7 +433,7 @@ async function runStudioReview(browser, tone) {
       const img = document.querySelector('[data-sb-timeline] .desk-v1-video-scene-thumb img');
       const ib = img ? img.getBoundingClientRect() : null;
       return {
-        main: r('.desk-v1-sb-main'), tl: r('[data-sb-timeline-wrap]'), first: r('.desk-v1-sb-scene'), lastScene: r('.desk-v1-sb-scene:last-child'),
+        main: r('.desk-v1-sb-editor'), tl: r('[data-sb-timeline-wrap]'), first: r('.desk-v1-sb-scene'), lastScene: r('.desk-v1-sb-scene:last-child'),
         bin: r('[data-sb-trash]'), agent: r('[data-sb-agent]'),
         oldZone: !!document.querySelector('.desk-v1-sb-trashzone'),
         binText: bin ? bin.textContent.trim() : '',
@@ -454,7 +454,7 @@ async function runStudioReview(browser, tone) {
       for (let e = document.querySelector('[data-sb-trash]').parentElement; e; e = e.parentElement) if (e.scrollHeight > e.clientHeight) e.scrollTop = e.scrollHeight;
       const bn = document.querySelector('[data-sb-trash]').getBoundingClientRect();
       const ls = document.querySelector('.desk-v1-sb-scene:last-child').getBoundingClientRect();
-      const mn = document.querySelector('.desk-v1-sb-main').getBoundingClientRect();
+      const mn = document.querySelector('.desk-v1-sb-editor').getBoundingClientRect();
       return { binX: bn.x, binY: bn.y, binB: bn.bottom, lastR: ls.right, lastB: ls.bottom, mainB: mn.bottom };
     });
     check((end.binX >= end.lastR - 1 || end.binY >= end.lastB - 1) && end.binB >= end.lastB - 1 && end.binB <= end.mainB + 1, `${vtag} scrolled to the end, the bin sits in the column's lower-right corner, clear of the last scene`, `${vtag} bin not below the last scene at the end: ${JSON.stringify(end)}`);

@@ -1390,6 +1390,14 @@ The editor heading shows the video's own name. Click the name to rename it;
 Enter or leaving the field saves, Escape cancels, and **Undo** restores the
 previous name. Standalone Studio drafts use the same name control.
 
+Write or paste the video in **The story**. **Expand** opens a large editor with
+the same text, **20,000** character counter and **Make storyboard from story**
+button. **Close** or Escape returns to the card with the text intact. Drag the
+card's bottom edge to change its height; focus the edge and use Up/Down for
+keyboard resizing (Shift changes the height in larger steps). Preview stays
+below the story. On desktop the conversation fills the space beside both;
+long conversations scroll inside it. On phones these panels stack in one column.
+
 When a video piece has uploaded clips and its storyboard is empty, opening it
 imports those clips as scenes in asset order. This is saved once; deleting the
 imported scenes does not bring them back on the next open. **Add picture or
@@ -1404,7 +1412,8 @@ Uploaded clip scenes are editable, but **local clip rendering is not available
 yet**. A render containing one is refused before engine pricing or submission;
 it is never sent to a paid generator. Mixed local/generated assembly is pending.
 
-The video storyboard has a horizontal **Timeline** above the scene list, both
+The video storyboard has a horizontal **Timeline** spanning the full editor
+width below the story, preview and conversation, above the scene list, both
 in a campaign and in standalone Studio. The ruler shows minutes and seconds;
 **Timeline · m:ss total** names the full length. On open it fits the video to
 the available width. **−**, **+** and **Fit** control zoom. Edits and Undo keep

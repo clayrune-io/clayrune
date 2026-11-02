@@ -265,6 +265,8 @@
       choice.querySelector('[data-story-cancel]').onclick = hideChoice;
       choice.querySelector('[data-story-replace]').focus({ preventScroll: true });
     };
+    if (window.DeskV1StoryExpand) window.DeskV1StoryExpand.attach(host);
+    if (window.DeskV1StoryResize) window.DeskV1StoryResize.attach(host);
   }
 
   // ── The ask box ────────────────────────────────────────────────────────────
