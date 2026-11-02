@@ -645,6 +645,54 @@ changes_requested | review_timed_out | review_cancelled | review_held | other`.
 The projection reads the snapshot the integration driver persists (refreshed
 each ~5 s tick); it never calls the live reviewer status.
 
+### HR-9: Fallback assignment when a character is missing (Ron, 2026-11-01)
+
+Ron's ruling, 2026-11-01: a hivemind run must never fail because an agent
+type was never defined or was deleted since planning. The run assigns a
+stand-in by the orchestrator's criteria. It amends Q2 (the run continues
+instead of failing) and §3.1's "unknown references return a clear client
+error" (an unknown, well-formed reference is accepted with a warning).
+Malformed references (not `global:<name>` syntax) are still refused, because
+they are input errors and not missing agents.
+
+Owners: new `mc/hivemind_fallback.py` (pure policy, no I/O beyond the
+character lookup it is given); call sites in `mc/hivemind_roster.py`
+(`resolve_assignment`, `validate_character`) and `mc/hivemind_routing.py`;
+the HR-8a review UI shows the substitution; tests
+`tests/test_hivemind_fallback.py`.
+
+- **Planner fields.** Each unit/workstream may carry `work_type`
+  (`code | review | research | ui | analysis | other`, default `other`) and
+  `complexity` (`simple | standard | hard`, default `standard`). The
+  orchestrator or Dave sets them when planning. They are optional, so
+  existing callers keep working.
+- **Resolution order per attempt:** (1) the named character, if it exists
+  now; (2) the character the config maps to that work type
+  (`hivemind_role_fallbacks`, e.g. `{"code": "global:builder"}`), if it
+  exists; (3) a generic worker with no persona, whose engine tracks a tier
+  by complexity (`simple → tier:fast`, `standard → tier:balanced`,
+  `hard → tier:best`, overridable as `hivemind_complexity_tiers`) on the
+  run's worker provider. Step 3 always resolves, so the run never fails for
+  a missing agent.
+- **Generic by default.** `hivemind_role_fallbacks` ships empty: a
+  stranger's install has none of our agent types, so step 3 must stand
+  alone. Operator mappings live in that install's own config, never in the
+  repo.
+- **Never silent** (SUBSTITUTION IS A LIE). `resolved_assignment` gains
+  `requested_character`, `substituted` (bool), `substitution_step`
+  (`role_fallback | tier_fallback`) and `substitution_reason`
+  (`missing_at_attempt | never_defined`). The run log records an event and
+  the HR-8a review panel shows "requested X → ran as Y". Create/validate
+  returns `warnings[]` naming each unknown reference.
+- **Reviewer too.** A missing `reviewer_character` falls back the same way
+  with `work_type=review`. The HR-6b rule (3+ workers need a reviewer) is
+  met by a reviewer that is only a reference. HR-6b must stop refusing a
+  well-formed but unknown ref.
+- **Out of scope:** an engine that is unusable (quota, auth, wrong provider)
+  is still a visible refusal and is not swapped for another provider. The
+  orchestrator's own model is still `orchestrator_model`; tier:best is the
+  recommended value but is not forced.
+
 ## 6. Integration checks and definition of done
 
 1. Dave resolves the required section 7 questions and records the selection
@@ -715,7 +763,7 @@ Ron may overrule any of these; each is reversible before its ticket lands.
 | ID | Pick | Why | Reversal cost |
 |---|---|---|---|
 | Q1 | **A** — global refs only, no explicit engine fields on roster rows | One assignment authority; roster is the engine source | Additive schema change later |
-| Q2 | **A** — resolve character per attempt, fail visibly if missing, pin for the attempt | Roster edits reach new attempts; running ones stay stable; never fall back to the default persona | Add a run snapshot later if replay drift bites |
+| Q2 | **A, amended by Ron 2026-11-01** — resolve character per attempt and pin it for the attempt; a missing or never-defined character **no longer fails the run**: it falls back by the unit's work type and complexity (HR-9), and the substitution is recorded and shown, never silent | Ron: a run must not die because an agent type was deleted or never existed; the orchestrator's criteria pick the stand-in | Restore the RosterError raise in `mc/hivemind_fallback.py`'s caller |
 | Q3 | **A** — keep provisional commit, mark held, stop later merges, Dave arranges fix + re-review | Preserves the exact review target; no automatic edits | Swap the hold handler for a reset |
 | Q4 | **A** — only explicit versioned roster runs get reviewer + integration outcome | No surprise reviewer spend or status change on legacy runs | Flip default once roster runs are proven |
 | Q5 | **A** — role skill + pure validator, no server-side classifier | Testable, no hidden interception or extra model calls | Add a classifier later as a separate module |
