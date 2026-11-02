@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-02] - Keep the Studio timeline fitted until you zoom
+
+- The timeline automatically fits the whole video as scene lengths change, including replacing a short picture with a longer clip. **−** and **+** keep your chosen scale through edits and Undo; **Fit** restores automatic fitting.
+- Added Ctrl/Cmd + mouse-wheel zoom anchored at the pointer, plus tooltips for Zoom out, Zoom in and Fit whole video. Plain and Shift-wheel scrolling are unchanged. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-02] - Steady the Studio preview clock
 
 - The time under the preview now always reads m:ss.t (tenths, rounded down), e.g. `0:03.4 / 0:12.0`. It used the timeline's zero-trimming format, so it jumped between `0:03.4`, `0:03.45` and `0:04` from frame to frame while playing. Timeline labels are unchanged. `desk-studio-preview.mjs` now samples 30 playback frames and fails if the clock's shape or width changes.

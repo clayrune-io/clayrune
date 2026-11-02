@@ -60,6 +60,9 @@ try {
       assert(ticks.length >= 2, 'ruler has time labels');
       for (const tick of ticks) { near(tick.left, tick.time * await scale(), 'ruler tick aligned'); assert.equal(tick.label, format(tick.time)); }
       const id = await tile.getAttribute('data-scene-id');
+      // Explicit zoom holds the clock for the fixed-scale trim checks below.
+      await page.click('[data-timebar-zoom="in"]');
+      await page.click('[data-timebar-zoom="out"]');
       const order = () => page.locator('[data-sb-timeline] .desk-v1-video-scene').evaluateAll(els => els.map(e => e.dataset.sceneId));
       let before = await order();
       if (before.length > 1) {
@@ -135,7 +138,7 @@ try {
         const tinyScale = await scale();
         for (const t of await geometry()) near(t.width, seconds(t.duration) * tinyScale, 'long board keeps ruler honest');
         await page.click('#desk-v1-undo');
-        near(await scale(), tinyScale, 'Undo never refits');
+        assert(await scale() > tinyScale, 'Undo refits after Fit restores automatic mode');
         await page.click('[data-timebar-zoom="fit"]');
       }
       // One-second scenes keep true width (full text is in title/accessible name).

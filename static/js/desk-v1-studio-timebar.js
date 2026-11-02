@@ -10,9 +10,9 @@
     return `<div class="desk-v1-timebar-head">
       <div class="desk-v1-sb-timeline-title" data-timebar-title></div>
       <div class="desk-v1-timebar-zoom" role="group" aria-label="Timeline zoom">
-        <button type="button" data-timebar-zoom="out" aria-label="Zoom timeline out">−</button>
-        <button type="button" data-timebar-zoom="in" aria-label="Zoom timeline in">+</button>
-        <button type="button" data-timebar-zoom="fit">Fit</button>
+        <button type="button" data-timebar-zoom="out" title="Zoom out" aria-label="Zoom timeline out">−</button>
+        <button type="button" data-timebar-zoom="in" title="Zoom in" aria-label="Zoom timeline in">+</button>
+        <button type="button" data-timebar-zoom="fit" title="Fit whole video" aria-label="Fit whole video">Fit</button>
       </div></div>
       <div class="desk-v1-timebar-scroll" data-timebar-scroll tabindex="0" aria-label="Scrollable timeline">
         <div class="desk-v1-timebar-track" data-timebar-track>
@@ -27,10 +27,11 @@
     const ruler = root.querySelector('[data-timebar-ruler]');
     const badge = root.querySelector('[data-timebar-badge]');
     const total = () => scenes.reduce((n, s) => n + (s.durationSec || 0), 0);
-    const fit = () => Math.max(0.001, scroll.clientWidth / Math.max(1, total()));
+    const fit = (length = total()) => Math.max(0.001, scroll.clientWidth / Math.max(1, length));
     if (!view.scale) view.scale = fit();
     function paint(sceneId, duration, pointer) {
       const length = total() + (sceneId ? duration - scenes.find(s => s.id === sceneId).durationSec : 0);
+      if (!view.manual) view.scale = fit(length);
       const contentWidth = length * view.scale;
       const width = Math.max(scroll.clientWidth, contentWidth);
       track.style.width = `${width}px`;
@@ -80,6 +81,7 @@
       button.onclick = () => {
         const start = scroll.scrollLeft / view.scale;
         const mode = button.dataset.timebarZoom;
+        view.manual = mode !== 'fit';
         view.scale = mode === 'fit' ? fit() : Math.min(1000, Math.max(0.001, view.scale * (mode === 'in' ? 1.5 : 1 / 1.5)));
         paint();
         scroll.scrollLeft = mode === 'fit' ? 0 : start * view.scale;
@@ -87,6 +89,20 @@
         paint();
       };
     });
+    scroll.addEventListener('wheel', e => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      const delta = (e.deltaY || e.deltaX) * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? scroll.clientWidth : 1);
+      if (!delta) return;
+      e.preventDefault();
+      const x = Math.max(0, Math.min(scroll.clientWidth, e.clientX - scroll.getBoundingClientRect().left - scroll.clientLeft));
+      const time = (scroll.scrollLeft + x) / view.scale;
+      view.manual = true;
+      view.scale = Math.min(1000, Math.max(0.001, view.scale * Math.exp(-delta * 0.002)));
+      paint(...preview);
+      scroll.scrollLeft = time * view.scale - x;
+      view.scrollLeft = scroll.scrollLeft;
+      paint(...preview);
+    }, { passive: false });
     return {
       scale: () => view.scale,
       preview: (id, duration, pointer) => { preview = pointer ? [id, duration, pointer] : []; paint(...preview); },
