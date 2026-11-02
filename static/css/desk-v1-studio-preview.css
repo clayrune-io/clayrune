@@ -1,0 +1,18 @@
+/* Local storyboard playback, scoped separately from the scene editor. */
+.desk-v1-sb-preview { margin-bottom: 14px; min-width: 0; }
+.desk-v1-sb-preview-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--text-faint); font-size: 12px; }
+.desk-v1-sb-preview [hidden] { display: none; }
+.desk-v1-sb-preview-stage { display: grid; place-items: center; aspect-ratio: 16 / 9; width: 100%; max-height: 360px; overflow: hidden; margin-top: 10px; border: 1px solid var(--border2); border-radius: 10px; background: var(--surface2); }
+.desk-v1-sb-preview-stage video, .desk-v1-sb-preview-stage img { width: 100%; height: 100%; min-height: 0; object-fit: contain; background: #171513; }
+.desk-v1-sb-preview-card { padding: 20px; text-align: center; overflow-wrap: anywhere; max-height: 100%; overflow: auto; box-sizing: border-box; color: var(--text); }
+.desk-v1-sb-preview-card strong { font-size: clamp(16px, 2vw, 24px); }
+.desk-v1-sb-preview-card p { margin: 10px 0 0; font-size: 14px; white-space: pre-wrap; }
+.desk-v1-sb-preview-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.desk-v1-sb-preview-controls input { flex: 1 1 100px; min-width: 70px; accent-color: var(--accent); }
+.desk-v1-sb-preview-controls output { white-space: nowrap; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-dim); }
+.desk-v1-sb-preview-status { margin: 6px 0 0; font-size: 12px; color: var(--text-dim); }
+[data-sb-timeline] .desk-v1-video-scene.desk-v1-preview-current { outline: 3px solid var(--accent); outline-offset: -3px; background: var(--accent-dim); }
+@media (max-width: 600px) {
+  .desk-v1-sb-preview-controls button { min-height: 40px; }
+  .desk-v1-sb-preview-controls [data-preview-close] { margin-left: auto; }
+}

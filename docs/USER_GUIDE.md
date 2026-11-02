@@ -1413,6 +1413,21 @@ Each tile shows its label and duration; very short tiles clip the text to keep
 the ruler accurate. Hover for the full label and duration, or focus the tile
 to hear its accessible name.
 
+Press **Preview** above the timeline to view the arranged scenes for free,
+then **Play** or **Pause**. Drag the position slider to scrub; the clock shows
+elapsed time and the total length, and the current timeline tile is highlighted.
+Clips start at the beginning and play for the length set by the right trim grip;
+pictures hold for their scene duration. A scene without a picture displays its
+title and instructions. Example scenes are skipped. With no real scenes,
+Preview is disabled and explains that you need to add one.
+
+Reopening Preview reads the latest scene order and durations. Editing scenes
+pauses and resets the open preview. **Close preview** or Escape closes it;
+leaving the editor also stops playback. A picture or clip the browser cannot
+open shows an explanation and the scene card. This is local scene playback,
+without a paid engine, passcode or finished-video export. The existing Render
+panel remains separate and may show its own estimate when the editor opens.
+
 Drag a tile's dots or a scene's list handle onto another tile to reorder;
 focused tiles use Left/Right or Up/Down, and list handles keep Up/Down.
 Drag only the tile's **right grip** to change its duration (1–3600 seconds),

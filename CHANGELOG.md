@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-01] - Preview the arranged Studio scenes for free
+
+- Added an in-app **Preview** player to standalone and campaign video storyboards: play/pause, elapsed/total time, scrubbing and the current scene highlighted on the timeline.
+- Plays uploaded clips for their trimmed duration, holds pictures for their scene length, and shows the scene title/instructions when no picture is attached. Example scenes are skipped; empty boards explain why Preview is disabled. Reopening reads the current order and timing, edits pause/reset playback, and leaving the editor releases media.
+- Client-side only; preview adds no engine, render, estimate or passcode request. The paid finished-video render remains separate. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-01] - Ship the hivemind routing directive (BUILTINS-4 HR-6a)
 
 - New built-in skill `mc-hivemind-routing`: a coordinating agent writes an explicit decomposition, validates it with `plan_routing`, then acts on the route once (ordinary units dispatched individually, a hivemind payload POSTed once and never duplicated, invalid plans fixed rather than partly dispatched). Held dependent units stay with the coordinator.
