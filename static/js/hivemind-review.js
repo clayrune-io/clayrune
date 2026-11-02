@@ -321,8 +321,11 @@ function wsChipsHTML(roles, wsId) {
 function runsHeaderHTML(data, hivemindId, projectId, role) {
   const c = obj(data && data.role_counts);
   if (!data || !data.role_counts) return '';
+  // Escape outside the onclick string: the inline-handler scope check reads any
+  // module helper named inside onclick="..." as a runtime reference.
+  const hid = E(hivemindId), pid = E(projectId);
   const btn = (key, label) => '<button type="button" class="hmr-role-btn' + (key === role ? ' active' : '') + '" data-hmr-role="' + key + '"'
-    + (key === role ? ' aria-current="true" disabled' : ' onclick="openHmRunsModal(\'' + E(hivemindId) + '\',\'' + E(projectId) + '\',\'' + key + '\',\'\',\'' + label + '\')"')
+    + (key === role ? ' aria-current="true" disabled' : ' onclick="openHmRunsModal(\'' + hid + '\',\'' + pid + '\',\'' + key + '\',\'\',\'' + label + '\')"')
     + '><b>' + E(c[key] == null ? 0 : c[key]) + '</b> ' + label + '</button>';
   return '<div class="hmr-roles" data-hmr-role-counts="1">' + btn('orchestrator', 'Orchestrator') + btn('worker', 'Worker') + btn('reviewer', 'Reviewer') + '</div>';
 }
@@ -343,7 +346,8 @@ function runRowsHTML(runs, projectId, renderRows) {
 function reviewerRunsButtonHTML(hivemindId, manifest, roles) {
   if (!roles) return '';
   const n = obj(obj(roles).reviewer).count;
-  return '<button class="secondary" data-hmr-reviewer-runs="1" onclick="openHmRunsModal(\'' + E(hivemindId) + '\',\'' + E(obj(manifest).project_id || '')
+  const hid = E(hivemindId), pid = E(obj(manifest).project_id || '');
+  return '<button class="secondary" data-hmr-reviewer-runs="1" onclick="openHmRunsModal(\'' + hid + '\',\'' + pid
     + '\',\'reviewer\',\'\',\'Reviewer\')">Reviewer Runs (' + E(n == null ? 0 : n) + ')</button>';
 }
 
