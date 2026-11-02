@@ -53,7 +53,7 @@ from mc import hivemind_roster as roster
 from mc.hivemind_integration import clean_smokes
 
 _UNIT_KEYS = {'id', 'title', 'description', 'character', 'owned_files',
-              'depends_on', 'checks', 'smokes', 'role'}
+              'depends_on', 'checks', 'smokes', 'role', 'work_type', 'complexity'}
 _PLAN_KEYS = {'project_id', 'goal', 'units', 'reviewer_character',
               'max_concurrent_workers'}
 
@@ -89,7 +89,7 @@ def _file(value: str) -> str:
 
 def _unit(raw: Any, *, app_config: Mapping[str, Any],
           project: Mapping[str, Any] | None,
-          read_character: roster.ReadCharacter) -> dict[str, Any]:
+          read_character: roster.ReadCharacter, warnings: list[str]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError('unit must be an object')
     unknown = raw.keys() - _UNIT_KEYS
@@ -115,7 +115,8 @@ def _unit(raw: Any, *, app_config: Mapping[str, Any],
         'description': description.strip(),
         'character': roster.validate_character(
             raw.get('character'), app_config=app_config, project=project,
-            read_character=read_character),
+            read_character=read_character, warnings=warnings, **roster.planner_fields(raw)),
+        **{k: v for k, v in roster.planner_fields(raw).items() if k in raw},
         'owned_files': files,
         'depends_on': _strings(raw.get('depends_on'), 'depends_on'),
         'checks': _strings(raw.get('checks'), 'checks', nonempty=True),
@@ -159,6 +160,7 @@ def _workstream(unit: Mapping[str, Any]) -> dict[str, Any]:
     brief += 'Owned files: ' + json.dumps(unit['owned_files'], ensure_ascii=False)
     brief += '\nAcceptance checks: ' + json.dumps(unit['checks'], ensure_ascii=False)
     return {'id': unit['id'], 'title': unit['title'], 'character': unit['character'],
+            **roster.planner_fields(unit),
             'description': brief, 'dependencies': [], 'smokes': list(unit['smokes'])}
 
 
@@ -176,7 +178,7 @@ def plan_routing(data: Any, *, app_config: Mapping[str, Any],
     """
     result: dict[str, Any] = {
         'route': 'invalid', 'independent_count': 0, 'independent_units': [],
-        'ordinary_units': [], 'held_units': [], 'payload': None, 'errors': [],
+        'ordinary_units': [], 'held_units': [], 'payload': None, 'errors': [], 'warnings': [],
     }
     errors: list[dict[str, Any]] = result['errors']
     try:
@@ -202,7 +204,7 @@ def plan_routing(data: Any, *, app_config: Mapping[str, Any],
     for index, raw in enumerate(raw_units):
         try:
             unit = _unit(raw, app_config=app_config, project=project,
-                         read_character=read_character)
+                         read_character=read_character, warnings=result['warnings'])
             if unit['id'] in seen:
                 errors.append({'code': 'duplicate_id', 'units': [unit['id']],
                                'message': f"duplicate unit id {unit['id']!r}"})
@@ -216,7 +218,8 @@ def plan_routing(data: Any, *, app_config: Mapping[str, Any],
         try:
             reviewer = roster.validate_character(
                 data['reviewer_character'], app_config=app_config,
-                project=project, read_character=read_character)
+                project=project, read_character=read_character,
+                warnings=result['warnings'], work_type='review')
         except roster.RosterError as exc:
             errors.append({'code': 'invalid_reviewer', 'units': [], 'message': str(exc)})
     if errors:

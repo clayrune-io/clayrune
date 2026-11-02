@@ -221,12 +221,17 @@ def test_duplicate_and_restart_never_launch_replacement(review_rig, agents_dir):
         submit(rig)
 
 
-def test_deleted_reviewer_holds_new_attempt_without_default_persona(review_rig, agents_dir):
+def test_deleted_reviewer_falls_back_without_default_persona(review_rig, agents_dir):
     rig = review_rig
     (agents_dir / 'worker-codex.md').unlink()
-    with pytest.raises(ReviewRefused, match='not found'):
-        launch(rig)
-    assert not any(rt.calls for rt in rig.runtimes.values())
+    rig.manifest['config'].update(worker_provider='codex', reviewer_character_known=True)
+    result = launch(rig)
+    assignment = result['resolved_assignment']
+    assert assignment['substituted'] and assignment['substitution_reason'] == 'missing_at_attempt'
+    assert assignment['requested_character'] == 'global:worker-codex'
+    assert 'PERSONA-' not in rig.runtimes['codex'].calls[0]['system_prompt']
+    assert hm._hm_read_bus_messages('roster1')[0]['role'] == 'reviewer'
+    assert submit(rig)['result']['verdict'] == 'pass'
 
 
 @pytest.mark.parametrize('damage', ['generation', 'manifest', 'project', 'paused', 'legacy', 'head', 'tree', 'dirty', 'runtime', 'context', 'quota', 'allowance'])

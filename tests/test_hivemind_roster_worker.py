@@ -183,6 +183,15 @@ def test_prelaunch_failure_starts_nothing(rig, monkeypatch, agents_dir, failure)
         monkeypatch.setattr(ar, '_maybe_isolate_worktree', lambda p, sid, **kw: (p['project_path'], True))
         monkeypatch.setattr(worker._sync, 'git_run', lambda *a, **k: (False, 'git failed'))
     # Save before installing the failing writer, then enter the actual adapter.
+    if failure == 'character':
+        rig.manifest['config']['worker_provider'] = 'codex'
+        sid = hm._hm_spawn_worker_session(rig.manifest, rig.ws, rig.project, 'roster1', 'ws1')
+        assignment = state.agent_sessions[sid]['resolved_assignment']
+        assert assignment['substituted'] and assignment['requested_character'] == 'global:worker-codex'
+        assert assignment['substitution_step'] == 'tier_fallback'
+        assert 'PERSONA-' not in rig.runtimes['codex'].calls[0]['system_prompt']
+        assert hm._hm_read_bus_messages('roster1')[0]['type'] == 'character_substitution'
+        return
     with pytest.raises((ValueError, RuntimeError, KeyError)):
         hm._hm_spawn_worker_session(rig.manifest, rig.ws, rig.project, 'roster1', 'ws1')
     assert not any(rt.calls for rt in rig.runtimes.values())
@@ -261,6 +270,43 @@ def test_cold_recovery_uses_pinned_attempt_after_roster_deletion(rig, agents_dir
     assert call['resume_id'] == 'native-id'
     assert call['project_path'] == session['_agent_cwd']
     assert hm._hm_load_workstream('roster1', 'ws1')['assignment_attempt'] == 1
+
+
+@pytest.mark.parametrize('mapped', [False, True])
+def test_fallback_attempt_recovers_same_snapshot_and_engine_without_second_event(rig, agents_dir, mapped):
+    (agents_dir / 'worker-codex.md').unlink()
+    rig.manifest['config']['worker_provider'] = 'codex'
+    if mapped:
+        rig.manifest['config']['hivemind_role_fallbacks'] = {'other': 'global:worker-gemini'}
+    sid = launch(rig)
+    session = state.agent_sessions.pop(sid)
+    entry = dict(rig.rows[0], status='completed', provider_session_id='native-id')
+    # Current roster and fallback settings cannot rewrite a pinned attempt.
+    rig.manifest['config']['hivemind_role_fallbacks'] = {'other': 'global:worker-claude'}
+    hm._hm_save_manifest('roster1', rig.manifest)
+    revived = worker.revive_roster_worker(entry, rig.project, 'Continue')
+    assert revived['character'] == session['character']
+    assert revived['resolved_assignment'] == session['resolved_assignment']
+    assert revived['resolved_assignment']['character_ref'] == ('global:worker-gemini' if mapped else '')
+    assert len(hm._hm_read_bus_messages('roster1')) == 1
+
+
+def test_deletion_after_pre_hr9_worker_pin_is_missing_at_attempt(rig, agents_dir):
+    rig.ws['resolved_assignment'] = {'character_ref': rig.ws['character']}
+    (agents_dir / 'worker-codex.md').unlink()
+    rig.manifest['config']['worker_provider'] = 'codex'
+    sid = launch(rig)
+    assert state.agent_sessions[sid]['resolved_assignment']['substitution_reason'] == 'missing_at_attempt'
+
+
+def test_substitution_log_failure_never_dispatches(rig, agents_dir, monkeypatch):
+    (agents_dir / 'worker-codex.md').unlink()
+    def refuse(*args):
+        raise OSError('run bus unavailable')
+    monkeypatch.setattr(hm, '_hm_append_bus_message', refuse)
+    with pytest.raises(OSError, match='run bus unavailable'):
+        launch(rig)
+    assert not any(rt.calls for rt in rig.runtimes.values())
 
 
 HOLD_REASONS = ['pending', 'generation', 'attempt', 'context', 'owner', 'missing_file',

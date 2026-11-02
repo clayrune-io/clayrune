@@ -106,6 +106,7 @@ def _save_settings(settings):
 # ── Global config endpoints ────────────────────────────────────────────────
 
 _CONFIG_EDITABLE_KEYS = {
+    'hivemind_role_fallbacks', 'hivemind_complexity_tiers',
     'user_name', 'agent_name', 'agent_avatar', 'agent_model', 'agent_effort',
     'provider_defaults',
     'agent_max_turns',
@@ -366,6 +367,12 @@ def update_config():
     refusal = _require_human_passcode(data)
     if refusal is not None:
         return refusal
+    if 'hivemind_role_fallbacks' in data or 'hivemind_complexity_tiers' in data:
+        from mc import hivemind_fallback, hivemind_roster
+        try:
+            hivemind_fallback.validate_config({**state.CONFIG, **data}, hivemind_roster.parse_character_ref)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
     if 'desk_suppression_impressions' in data:
         from mc.desk_outcomes import validate_threshold
         try:

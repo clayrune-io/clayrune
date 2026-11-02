@@ -482,6 +482,13 @@ retry reads the current character; recovery of the same attempt retains its
 pinned identity. Code workers hold if isolation fails. The existing UI still
 uses engine-based workers. Worker completion alone does not establish reviewed
 integration.
+If a roster character is missing, a new attempt uses the configured stand-in
+for its work type or a generic worker on the run's worker provider. The generic
+worker tracks Fast, Balanced or Best for simple, standard or hard work. The
+review panel and run history show **requested X → ran as Y** and the effective
+engine; missing reviewer characters use the same fallback with the review role.
+Create/update warnings name unknown references. Malformed references and
+unusable engines still refuse. Same-attempt recovery retains its original pins.
 If recovery is held, sending a message returns a conflict with the reason and
 does not start a replacement character. Recovery also holds when the attempt's
 saved prompt file is missing or fails its integrity check.

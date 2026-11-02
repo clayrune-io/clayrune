@@ -68,6 +68,12 @@ An in-progress/unknown launch, missing context/tree, changed generation or
 replacement attempt holds for reconciliation. A new attempt resolves the
 current roster again, as Q2 requires.
 
+HR-9 amends missing-character handling for fresh attempts: configured role
+fallback, then a generic worker tracking the complexity tier on the run's worker
+provider. Actual persona/engine and requested identity are pinned separately,
+and every substitution is persisted and projected to the review UI. Same-attempt
+recovery still uses the original prompt and engine. See `HIVEMIND_FALLBACK.md`.
+
 Cold recovery always reads the referenced file, confines its resolved path to
 the run directory and verifies the digest before dispatch. Missing references,
 unreadable files, path escape and digest mismatch refuse recovery even if an

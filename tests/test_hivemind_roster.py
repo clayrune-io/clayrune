@@ -51,6 +51,11 @@ class TestParse:
         assert roster.parse_character_ref('  Global : code-reviewer ') == 'global:code-reviewer'
 
     def test_unknown_character_refused(self, agents_dir):
+        warnings = []
+        assert roster.validate_character('global:nobody', app_config=APP_CFG, warnings=warnings) == 'global:nobody'
+        assert len(warnings) == 1 and 'global:nobody' in warnings[0]
+        assert roster.resolve_assignment('global:nobody', APP_CFG)['substituted'] is True
+        # The raw lookup remains strict; only assignment/validation use policy.
         with pytest.raises(roster.RosterError, match='not found'):
             roster.lookup_character('global:nobody')
 
@@ -126,12 +131,13 @@ class TestResolveAssignment:
         with pytest.raises(engine_selection.EngineSelectionError, match='Unknown provider'):
             roster.resolve_assignment('global:ghost', APP_CFG)
 
-    def test_deleted_character_fails_visibly_no_fallback(self, agents_dir):
+    def test_deleted_character_falls_back_with_disclosure(self, agents_dir):
         _char('temp', provider='gemini')
         assert roster.resolve_assignment('global:temp', APP_CFG)['provider'] == 'gemini'
         characters.delete_character('global', 'temp')
-        with pytest.raises(roster.RosterError, match='not found'):
-            roster.resolve_assignment('global:temp', APP_CFG)
+        a = roster.resolve_assignment('global:temp', APP_CFG, previously_defined=True)
+        assert a['substituted'] and a['requested_character'] == 'global:temp'
+        assert a['substitution_reason'] == 'missing_at_attempt'
 
     def test_changed_character_reaches_the_next_attempt_only(self, agents_dir):
         _char('drift', provider='gemini')
@@ -241,7 +247,7 @@ class TestCreateAtomicity:
     def test_invalid_second_item_writes_and_launches_nothing(self, client, roster_chars):
         before = list(client.hm_dir.iterdir())
         payload = _roster_payload()
-        payload['workstreams'][1]['character'] = 'global:ghost'
+        payload['workstreams'][1]['character'] = 'global:../ghost'
         r = client.post('/api/hivemind/create', json=payload)
         assert r.status_code == 400
         assert 'workstreams[1]' in r.get_json()['error']
@@ -274,6 +280,10 @@ class TestCreateAtomicity:
         payload = _roster_payload()
         mut(payload)
         r = client.post('/api/hivemind/create', json=payload)
+        if payload.get('reviewer_character') == 'global:ghost':
+            assert r.status_code == 200
+            assert 'global:ghost' in r.get_json()['warnings'][0]
+            return
         assert r.status_code == 400, r.get_data(as_text=True)
         assert frag in r.get_json()['error']
         assert list(client.hm_dir.iterdir()) == []
@@ -305,6 +315,11 @@ class TestWorkstreamRoutes:
         hm_id = self._hm(client)
         before = _ws_files(client)
         r = client.post(f'/api/hivemind/{hm_id}/workstreams/create', json=body)
+        if body.get('character') == 'global:ghost':
+            assert r.status_code == 200
+            assert 'global:ghost' in r.get_json()['warnings'][0]
+            assert r.get_json()['workstream']['character_known'] is False
+            return
         assert r.status_code == status, r.get_data(as_text=True)
         assert frag in r.get_json()['error']
         assert _ws_files(client) == before
@@ -321,6 +336,11 @@ class TestWorkstreamRoutes:
         hm_id = self._hm(client)
         r = client.put(f'/api/hivemind/{hm_id}/workstreams/ws_001',
                        json={'title': 'SHOULD NOT LAND', **body})
+        if body.get('character') == 'global:ghost':
+            assert r.status_code == 200
+            assert 'global:ghost' in r.get_json()['warnings'][0]
+            assert r.get_json()['workstream']['character'] == 'global:ghost'
+            return
         assert r.status_code == 400
         assert frag in r.get_json()['error']
         ws = client.get(f'/api/hivemind/{hm_id}/workstreams').get_json()[0]
@@ -367,12 +387,16 @@ class TestManifestPut:
                        json={'config': {'reviewer_character': ' global:alpha '}})
         assert r.status_code == 200
         assert r.get_json()['manifest']['config']['reviewer_character'] == 'global:alpha'
-        for bad in ('global:ghost', 'dave', '', None, 7):
+        accepted = client.put(f'/api/hivemind/{hm_id}',
+                              json={'config': {'reviewer_character': 'global:ghost'}})
+        assert accepted.status_code == 200
+        assert 'global:ghost' in accepted.get_json()['warnings'][0]
+        for bad in ('dave', '', None, 7):
             r = client.put(f'/api/hivemind/{hm_id}',
                            json={'title': 'NOPE', 'config': {'reviewer_character': bad}})
             assert r.status_code == 400, bad
         m = client.get(f'/api/hivemind/{hm_id}').get_json()['manifest']
-        assert m['config']['reviewer_character'] == 'global:alpha' and m['title'] != 'NOPE'
+        assert m['config']['reviewer_character'] == 'global:ghost' and m['title'] != 'NOPE'
 
     def test_roster_version_is_immutable(self, client, roster_chars):
         hm_id = client.post('/api/hivemind/create', json=_roster_payload()

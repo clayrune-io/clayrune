@@ -35,6 +35,13 @@ Launch and verdict admission refuse paused, stopped, archived or stale runs,
 missing manifests and invalid/deleted project generations. Owned cancellation
 remains available after a run stops so its original process can be cleaned up.
 
+HR-9 applies role/tier fallback to a missing reviewer with `work_type=review`.
+The requested reference remains the ownership pin; the resolved assignment and
+persona snapshot record the actual stand-in, including a generic reviewer.
+Substitution is persisted on the run bus before dispatch and shown by the review
+projection. Independence, exact candidate pins and visible engine/allowance
+refusals remain in force. See `HIVEMIND_FALLBACK.md`.
+
 `review_cwd` must exist and its actual Git HEAD and tree must equal the exact
 candidate `merged_sha` and `merged_tree`. Tracked modifications or an unreadable
 checkout hold launch. HR-5 must reobserve drift under landing ownership before

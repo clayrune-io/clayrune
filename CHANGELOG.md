@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-01] - Disclose fallback for missing hivemind characters (BUILTINS-4 HR-9)
+
+- Well-formed unknown worker/reviewer references now return warnings and resolve per attempt through an install-defined work-type mapping, then a generic worker tracking a complexity tier on the run's worker provider. Role mappings ship empty.
+- Persisted requested/actual identity, substitution step/reason and run events; review panels, list rows and run history show “requested X → ran as Y”. Malformed references and unusable engines still refuse, and same-attempt recovery keeps its pins.
+- Branch candidate only: no merge, push, restart, live configuration changes or live-run verification.
+
 ## [2026-11-01] - Bound optional native child execution (BUILTINS-4 HR-7)
 
 - Added an injected-driver contract with explicit opt-in, a durable shared four-child run budget, pinned scope/lineage/guards and owned-child reconciliation. Missing capability remains unsupported; required native execution holds.

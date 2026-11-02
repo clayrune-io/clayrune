@@ -711,7 +711,8 @@ def hivemind_create():
     if not inline_ws:
         _hm_dispatch_orchestrator(hivemind_id, 'decompose')
 
-    return jsonify({'ok': True, 'hivemind': manifest, 'workstreams': created_workstreams})
+    return jsonify({'ok': True, 'hivemind': manifest, 'workstreams': created_workstreams,
+                    **({'warnings': roster_plan.warnings} if roster_plan else {})})
 
 
 @bp.route('/api/hivemind/list')
@@ -770,10 +771,11 @@ def hivemind_update(hivemind_id):
         return jsonify({'error': 'not found'}), 404
     data = request.get_json() or {}
     config_patch = None
+    warnings = []
     if 'config' in data and isinstance(data['config'], dict):
         try:
             config_patch = _hm_roster.clean_config_update(
-                manifest, data['config'], app_config=state.CONFIG,
+                manifest, data['config'], app_config=state.CONFIG, warnings=warnings,
                 project=load_project(manifest.get('project_id', '')) or None)
         except _hm_roster.RosterError as exc:
             return jsonify({'error': str(exc)}), exc.status
@@ -785,7 +787,7 @@ def hivemind_update(hivemind_id):
         manifest['config'].update(config_patch)
     manifest['updated_at'] = now_iso()
     _hm_save_manifest(hivemind_id, manifest)
-    return jsonify({'ok': True, 'manifest': manifest})
+    return jsonify({'ok': True, 'manifest': manifest, 'warnings': warnings})
 
 
 @bp.route('/api/hivemind/<hivemind_id>/start', methods=['POST'])
@@ -881,8 +883,9 @@ def hivemind_workstream_create(hivemind_id):
 
     ws_id = data.get('id', 'ws_' + str(uuid.uuid4())[:6])
     try:
+        warnings = []
         roster_fields = _hm_roster.check_workstream_create(
-            data, ws_id, manifest, app_config=state.CONFIG,
+            data, ws_id, manifest, app_config=state.CONFIG, warnings=warnings,
             project=load_project(manifest.get('project_id', '')) or None,
             ws_exists=lambda wid: _hm_load_workstream(hivemind_id, wid) is not None)
     except _hm_roster.RosterError as exc:
@@ -918,7 +921,7 @@ def hivemind_workstream_create(hivemind_id):
         'status': 'pending',
         'workstream': ws,
     })
-    return jsonify({'ok': True, 'workstream': ws})
+    return jsonify({'ok': True, 'workstream': ws, 'warnings': warnings})
 
 
 @bp.route('/api/hivemind/<hivemind_id>/workstreams/<ws_id>', methods=['PUT'])
@@ -929,9 +932,10 @@ def hivemind_workstream_update(hivemind_id, ws_id):
         return jsonify({'error': 'workstream not found'}), 404
     data = request.get_json() or {}
     manifest = _hm_load_manifest(hivemind_id)
+    warnings = []
     try:
         roster_changes = _hm_roster.check_workstream_update(
-            ws, data, manifest, app_config=state.CONFIG,
+            ws, data, manifest, app_config=state.CONFIG, warnings=warnings,
             project=load_project((manifest or {}).get('project_id', '')) or None)
     except _hm_roster.RosterError as exc:
         return jsonify({'error': str(exc)}), exc.status
@@ -957,7 +961,7 @@ def hivemind_workstream_update(hivemind_id, ws_id):
         'status': ws['status'],
         'workstream': ws,
     })
-    return jsonify({'ok': True, 'workstream': ws})
+    return jsonify({'ok': True, 'workstream': ws, 'warnings': warnings})
 
 
 @bp.route('/api/hivemind/<hivemind_id>/workstreams/<ws_id>/status', methods=['POST'])

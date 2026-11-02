@@ -67,6 +67,21 @@ function roles(stage, over = {}) {
 function withOutcomes(r, outcomes) { r.workstreams.forEach((w, i) => { w.integration.outcome = outcomes[i] || w.integration.outcome; }); return r; }
 
 const CASES = {
+  hm_sub: { title: 'Disclosed substitutions', status: 'active', roster: true,
+    roles: (() => {
+      const r = roles('review_pending');
+      Object.assign(r.workstreams[0], { requested_character: 'global:missing-worker',
+        resolved_character: 'global:standin', substituted: true,
+        substitution_step: 'role_fallback', substitution_reason: 'missing_at_attempt' });
+      const rv = review('ws_001');
+      Object.assign(rv.reviewer, { requested_character: 'global:missing-reviewer',
+        resolved_character: '', substituted: true,
+        substitution_step: 'tier_fallback', substitution_reason: 'never_defined' });
+      r.reviews = [rv];
+      return r;
+    })(),
+    expect: { text: ['requested global:missing-worker → ran as global:standin',
+      'requested global:missing-reviewer → ran as generic worker'], green: 0 } },
   hm_wc: { title: 'Workers complete', status: 'completed', roster: true,
     roles: roles('workers_complete', { reviewer: { requested_character: 'global:code-reviewer', session_ids: [], count: 0 } }),
     expect: { text: ['Workers done · review pending', 'global:builder', 'codex · gpt-6 · high', 'global:ui-fixer', 'claude · claude-opus-5-5 · medium', 'No merged commit has been reviewed'], green: 0 } },
@@ -117,7 +132,8 @@ function detail(id) {
 function listRow(id) {
   const c = CASES[id];
   const row = { ...manifest(id, c), workstream_count: 3, workstreams_completed: 3, workstreams_active: 0, total_findings: 0, integration_status: null };
-  if (c.roles) row.roles = { stage: c.roles.stage, accepted: c.roles.accepted, requested_characters: ['global:builder', 'global:ui-fixer'], reviewer_character: 'global:code-reviewer' };
+  if (c.roles) row.roles = { stage: c.roles.stage, accepted: c.roles.accepted, requested_characters: ['global:builder', 'global:ui-fixer'], reviewer_character: 'global:code-reviewer',
+    substitutions: c.roles.workstreams.concat(c.roles.reviews.map((r) => r.reviewer)).filter((x) => x.substituted) };
   return row;
 }
 const RUNS = {
@@ -273,6 +289,9 @@ async function runViewport(browser, label, mobile) {
     check(byTitle['Workers complete']?.text.includes('Workers done · review pending') && /workers done/i.test(byTitle['Workers complete']?.text || ''), 'list: workers-complete card says workers done / review pending');
     check(byTitle['Workers complete']?.text.includes('global:builder') && byTitle['Workers complete']?.text.includes('codex · gpt-6 · high'), 'list: card shows requested character + effective engine');
     check(byTitle['Review pending']?.text.includes('Reviewer global:code-reviewer'), 'list: card names the reviewer character');
+    check(byTitle['Disclosed substitutions']?.text.includes('requested global:missing-worker → ran as global:standin')
+      && byTitle['Disclosed substitutions']?.text.includes('requested global:missing-reviewer → ran as generic worker'),
+      'list: both worker and reviewer substitutions are disclosed');
     check(byTitle['Legacy run']?.text.includes('Legacy run · no reviewer'), 'list: legacy card is explicit');
     check(byTitle['Roster without roles']?.text.includes('Review state unavailable'), 'list: roster card without roles is explicit');
     const listOverflow = await page.evaluate(() => { const l = document.getElementById('ahm-list'); return [l.scrollWidth, l.clientWidth, document.documentElement.scrollWidth, window.innerWidth]; });

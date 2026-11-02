@@ -95,6 +95,8 @@ def _ensure_data_dirs():
             'projects_base': str(Path.home()),
             'agent_model': '',
             'agent_max_turns': 0,
+            'hivemind_role_fallbacks': {},
+            'hivemind_complexity_tiers': {},
             'agent_permission_mode': '',
             'desktop_mode': True,
             'user_name': '',

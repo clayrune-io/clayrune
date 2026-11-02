@@ -143,6 +143,15 @@ function engineChip(e) {
     : '<span class="hmr-engine hmr-engine-none" title="No engine has been resolved yet">engine not resolved</span>';
 }
 
+function characterHTML(x) {
+  x = obj(x);
+  if (x.substituted === true) {
+    return '<span class="hmr-char hmr-tone-warn" title="' + E([x.substitution_step, x.substitution_reason].filter(Boolean).join(' · ')) + '">requested '
+      + E(x.requested_character) + ' → ran as ' + E(x.resolved_character || 'generic worker') + '</span>';
+  }
+  return '<span class="hmr-char" title="Requested character">' + E(x.requested_character || x.character || 'no character') + '</span>';
+}
+
 // Compact "who runs what" line for list rows.
 function rosterLineHTML(hm) {
   const s = obj(hm._roles || hm.roles);
@@ -153,6 +162,8 @@ function rosterLineHTML(hm) {
   const parts = [];
   if (uniq.length) parts.push('<span class="hmr-line-part"><b>Workers</b> ' + uniq.map(E).join(', ') + '</span>');
   if (reviewer) parts.push('<span class="hmr-line-part"><b>Reviewer</b> ' + E(reviewer) + '</span>');
+  arr(s.substitutions).concat(arr(s.workstreams), arr(s.reviews).map((r) => obj(r).reviewer)).map(obj).filter((x) => x.substituted === true)
+    .forEach((x) => parts.push('<span class="hmr-line-part">' + characterHTML(x) + '</span>'));
   const engines = [...new Set(arr(s.workstreams).map((w) => engineText(obj(w).effective_engine)).filter(Boolean))];
   if (engines.length) parts.push('<span class="hmr-line-part"><b>Engines</b> ' + engines.map(E).join(', ') + '</span>');
   return parts.length ? '<div class="hmr-line">' + parts.join('') + '</div>' : '';
@@ -190,7 +201,7 @@ function wsRow(w, roles) {
   return '<div class="hmr-ws" data-hmr-ws="' + E(w.id) + '">'
     + '<div class="hmr-ws-head"><span class="hmr-ws-title">' + E(w.title || w.id) + '</span>'
     + outcomeBadge(w, roles) + '</div>'
-    + '<div class="hmr-ws-meta"><span class="hmr-char" title="Requested character">' + E(w.requested_character || 'no character') + '</span>'
+    + '<div class="hmr-ws-meta">' + characterHTML(w)
     + engineChip(w.effective_engine)
     + (w.assignment_attempt > 1 ? '<span class="hmr-attempt">attempt ' + E(w.assignment_attempt) + '</span>' : '') + '</div>'
     + (stale ? '<div class="hmr-note hmr-tone-warn">This workstream moved after integration pinned it; the review below no longer covers its current state.</div>' : '')
@@ -217,7 +228,7 @@ function reviewCard(rv, wsById, stage) {
   if (checks.note) checksHTML += '<div class="hmr-muted">' + E(checks.note) + '</div>';
   const who = obj(rv.reviewer);
   const reviewerHTML = who.session_id || who.character
-    ? E(who.character || 'reviewer') + (engineText(who.engine) ? ' · ' + E(engineText(who.engine)) : '')
+    ? characterHTML(who) + (engineText(who.engine) ? ' · ' + E(engineText(who.engine)) : '')
       + (who.session_id ? ' <span class="hmr-sid" title="' + E(who.session_id) + '">' + E(shortId(who.session_id)) + '</span>' : '')
     : '<span class="hmr-muted">No reviewer has started this review.</span>';
   const commit = str(rv.reviewed_commit);
@@ -301,7 +312,7 @@ function overviewPanelHTML(data) {
 function wsChipsHTML(roles, wsId) {
   const w = arr(obj(roles).workstreams).map(obj).find((x) => x.id === wsId);
   if (!w) return '';
-  return '<span class="hmr-ws-chips"><span class="hmr-char" title="Requested character">' + E(w.requested_character || 'no character') + '</span>'
+  return '<span class="hmr-ws-chips">' + characterHTML(w)
     + engineChip(w.effective_engine)
     + outcomeBadge(w, roles) + '</span>';
 }
@@ -324,7 +335,7 @@ function runRowsHTML(runs, projectId, renderRows) {
     const eng = engineText(x.effective_engine);
     return '<div class="hmr-run" data-hmr-run-role="' + E(x.run_role) + '">' + renderRows([r], projectId)
       + '<div class="hmr-run-meta"><span class="hmr-run-role hmr-run-role-' + E(x.run_role) + '">' + E(x.run_role) + '</span>'
-      + '<span class="hmr-char">' + E(x.requested_character || 'no character') + '</span>'
+      + characterHTML(x)
       + (eng ? '<span class="hmr-engine">' + E(eng) + '</span>' : '<span class="hmr-engine hmr-engine-none">engine not resolved</span>') + '</div></div>';
   }).join('');
 }

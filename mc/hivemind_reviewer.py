@@ -95,7 +95,7 @@ def _read(api: Any, candidate: Candidate) -> dict:
                 or record['reviewer_session'] in candidate.contributing_sessions
                 or record['reviewer_character'] != roster.parse_character_ref(record['reviewer_character'])
                 or record['assignment']['session_id'] != record['reviewer_session']
-                or record['assignment']['character_ref'] != record['reviewer_character']
+                or record['assignment'].get('requested_character', record['assignment'].get('character_ref')) != record['reviewer_character']
                 or not all(isinstance(record['assignment'][k], str) for k in ('provider', 'model', 'effort'))
                 or type(record['started_at']) not in (int, float)
                 or not math.isfinite(record['started_at'])
@@ -380,12 +380,16 @@ def launch_reviewer(api: Any, manifest: dict, project: dict, candidate: Candidat
             raise ReviewRefused(409, 'reviewer session identity already exists')
         parent = _independent(sid, current, candidate)
         try:
-            canon, snapshot = roster.lookup_character(
-                current['config'].get(roster.CONFIG_REVIEWER_KEY),
-                lambda name: characters.read_character('global', name, include_body=True))
+            cfg = current['config']
+            canon = roster.parse_character_ref(cfg.get(roster.CONFIG_REVIEWER_KEY))
+            snapshot: dict[str, Any] = {}
+            assignment = roster.resolve_assignment(
+                canon, roster.assignment_config(state.CONFIG, cfg), project, session_id=sid,
+                read_character=lambda name: characters.read_character('global', name, include_body=True),
+                character_snapshot=snapshot, work_type='review',
+                worker_provider=cfg.get('worker_provider') or '',
+                previously_defined=bool(cfg.get('reviewer_character_known')))
             snapshot = deepcopy(snapshot)
-            assignment = roster.resolve_assignment(canon, state.CONFIG, project, session_id=sid,
-                                                   read_character=lambda name: snapshot)
             runtime = agent_runtime.get_runtime(assignment['provider'])
             if runtime is None:
                 raise ValueError('configured reviewer runtime unavailable')
@@ -423,6 +427,8 @@ def launch_reviewer(api: Any, manifest: dict, project: dict, candidate: Candidat
                   'reason': '', 'started_at': started, 'deadline_at': started + REVIEW_DEADLINE_SECONDS,
                   'process_pid': None, **reference}
         _save(api, candidate, record)
+        worker.record_substitution(api, candidate.hivemind_id, assignment,
+                                   role='reviewer', ws_id=candidate.workstream_id)
         metadata = {'hivemind_id': candidate.hivemind_id, 'hivemind_role': 'reviewer',
                     'trigger_type': 'hivemind_reviewer', 'trigger_id': candidate.key,
                     'project_generation': candidate.project_generation, '_spawned_by': parent,
