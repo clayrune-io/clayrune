@@ -58,7 +58,7 @@
     const rows = st.turns.map((t) => _turnHTML(t, name));
     if (st.pending) {
       rows.push(`<div class="desk-v1-chat-turn desk-v1-chat-user" data-chat-turn="user" data-chat-pending><div class="desk-v1-chat-meta">You${st.pending.scope && st.pending.scope.label ? ` · ${esc(st.pending.scope.label)}` : ''}</div><div class="desk-v1-chat-text">${esc(st.pending.text)}</div></div>`);
-      rows.push(`<div class="desk-v1-chat-turn desk-v1-chat-agent desk-v1-chat-thinking" data-chat-thinking><div class="desk-v1-chat-meta">${esc(name)}</div><div class="desk-v1-chat-text">Thinking…</div></div>`);
+      rows.push(`<div class="desk-v1-chat-turn desk-v1-chat-agent desk-v1-chat-thinking" data-chat-thinking><div class="desk-v1-chat-meta">${esc(name)}</div><div class="desk-v1-chat-text">Thinking… Research calls can take up to 8 minutes.</div></div>`);
     }
     host.innerHTML = rows.length ? rows.join('') : `<p class="desk-v1-chat-empty" data-chat-empty>${esc(_EMPTY)}</p>`;
     host.scrollTop = host.scrollHeight;
@@ -74,7 +74,7 @@
         <textarea class="agent-task-input desk-v1-posy-input" id="${INPUT_ID}" data-sb-ask rows="2" aria-label="Message ${name}" placeholder="Ask ${name} about the campaign, or brainstorm with them…"></textarea>
         <button type="button" class="btn-dispatch" data-posy-send="${INPUT_ID}">Send</button>
       </div>
-      ${window.DeskV1ProductMaterials.readsHTML(window.DeskV1Store.state().projects.find((p) => p.id === opts.campaign.projectId))}
+      ${window.DeskV1ProductMaterials.readsHTML(window.DeskV1Store.state().projects.find((p) => p.id === opts.campaign.projectId), opts.agentRef)}
     </div>`;
   }
 

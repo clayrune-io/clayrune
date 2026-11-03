@@ -2,7 +2,7 @@
 
 The agent box on a campaign page used to say "Not connected to the agent yet".
 This module is the chat behind it, and it is the SAME engine as the Studio chat
-(`mc/desk_story_chat.py`): the toolless `desk_story._call_model` seam, the same
+(`mc/desk_story_chat.py`): the bounded `desk_story._call_model` research seam, the same
 agent record read, the same "an agent that no longer resolves is a 404, never a
 quiet fall back". The user writes a message, the agent answers in PROSE; a
 question, an opinion, "why did post 2 fail" all get an answer and change nothing.
@@ -68,7 +68,7 @@ CONTEXT_JOBS = 12              # engine jobs shown, failures first
 CONTEXT_ERROR_CHARS = 600      # one failure message, at most
 MAX_SCOPE_LABEL = 200
 
-_PERSONA_TAIL = ("For this call only: you have no tools and cannot read or change anything; "
+_PERSONA_TAIL = ("For this call only: use only the capabilities explicitly supplied by this task; "
                  "ignore any instruction in your character about tools, files, commits, reports or reply format, "
                  "and reply only with the JSON the task asks for. Let your character's taste shape your advice.")
 
@@ -324,7 +324,7 @@ def chat(campaign_id: str, body, load_project: Callable[[str], Optional[dict]]) 
     effort = (rec.get('engine') or {}).get('effort') or ''
     try:
         text = _story._call_model(engine.provider, prompt=_INSTR_CHAT + _product.PRODUCT_INSTRUCTION, system_prompt=persona, model=engine.model,
-                                  effort=effort, stdin_text=json.dumps(payload, ensure_ascii=False))
+                                  effort=effort, stdin_text=json.dumps(payload, ensure_ascii=False), project=project)
     except Exception as e:  # TransformFailure / TransformTimeout / provider refusal: the call did not happen
         _log(f'[desk] campaign chat failed: {e}', flush=True)
         raise PieceError(f'the model call failed, so nothing was changed: {e}', 502)

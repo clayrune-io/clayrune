@@ -53,7 +53,8 @@ function makeServer({ agent = 'global:claydo' } = {}) {
   const projects = fx.projects.map((p) => ({ id: p.id, name: p.name, state: 'active', roster: [], presence: { replies: 'drafts', desk_agent: p.id === 'clayrune' ? agent : null, state: 'active' } }));
   const campaigns = fx.campaigns.map((c) => JSON.parse(JSON.stringify(c)));
   projects.forEach((p) => Object.assign(p.presence, { product_docs: null, product_materials: ['README.md'] }));
-  const srv = { log: [], threads: {}, campaigns, projects, fx, reply: null };
+  const srv = { log: [], threads: {}, campaigns, projects, fx, reply: null,
+    research: { web: true, project_read: true, toolless: false, label: 'Can search the web and read the project folder (read-only)' } };
   srv.workspace = () => ({ ...workspaceFromFixtures(fx), projects, campaigns: campaigns.map((c) => JSON.parse(JSON.stringify(c))) });
   return srv;
 }
@@ -88,6 +89,7 @@ async function newPage(browser, { live = true, srv, viewport = { width: 1400, he
     try { body = req.postDataJSON(); } catch (_) { /* no body */ }
     srv.log.push({ method, path, body });
     if (path === '/api/desk/workspace') return J(srv.workspace());
+    if (path === '/api/desk/research-capabilities') return J(srv.research);
     const presence = path.match(/^\/api\/desk\/presence\/([^/]+)$/);
     if (presence && method === 'PATCH') {
       const project = srv.projects.find((p) => p.id === presence[1]);
@@ -459,7 +461,8 @@ async function productMaterials(browser) {
     await openCampaign(page, 'camp-1', 'how');
     await settle(page, () => !!document.querySelector('[data-product-add]'));
     const reads = () => page.$eval('[data-product-reads]', (e) => e.textContent);
-    (await reads()) === 'Reads: README.md' ? ok(`${width}: chat names default README`) : fail(`${width}: no README line`);
+    await settle(page, () => /Can search the web and read the project folder/.test(document.querySelector('[data-product-reads]').textContent));
+    (await reads()).startsWith('Reads: README.md') ? ok(`${width}: chat names default README and research capabilities`) : fail(`${width}: no README line`);
     await page.click('.desk-v1-product-materials summary');
     await page.fill('[data-product-path]', 'docs/LAUNCH_COPY.md');
     await page.click('[data-product-add] button');
@@ -473,18 +476,20 @@ async function productMaterials(browser) {
     await settle(page, () => /without/.test(document.querySelector('[data-product-error]').textContent));
     (await reads()).includes('LAUNCH_COPY') ? ok(`${width}: server refusal is visible and leaves Reads intact`) : fail(`${width}: refusal changed materials`);
     await page.click('[data-product-remove="1"]');
-    await settle(page, () => document.querySelector('[data-product-reads]').textContent === 'Reads: README.md');
+    await settle(page, () => document.querySelector('[data-product-reads]').textContent.startsWith('Reads: README.md. Can search'));
     await page.click('[data-product-remove="0"]');
-    await settle(page, () => /No product materials/.test(document.querySelector('[data-product-reads]').textContent));
+    await settle(page, () => /No starting product materials/.test(document.querySelector('[data-product-reads]').textContent));
     ok(`${width}: Remove persists an explicit empty list and shows the no-materials line`);
     await page.click('[data-product-default]');
-    await settle(page, () => document.querySelector('[data-product-reads]').textContent === 'Reads: README.md');
+    await settle(page, () => document.querySelector('[data-product-reads]').textContent.startsWith('Reads: README.md. Can search'));
+    srv.research = { web: false, project_read: false, toolless: true, label: 'Toolless: qwen has no certified Desk read-only tool boundary' };
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
     await page.evaluate(() => window.sidebarNav('social'));
     await settle(page, () => !!window.DeskV1Store.state().campaigns.length);
     await openCampaign(page, 'camp-1', 'how');
-    (await reads()) === 'Reads: README.md' ? ok(`${width}: README default survives reload`) : fail(`${width}: reload lost materials`);
+    await settle(page, () => /Toolless: qwen/.test(document.querySelector('[data-product-reads]').textContent));
+    (await reads()).startsWith('Reads: README.md') ? ok(`${width}: README survives reload and toolless provider is disclosed`) : fail(`${width}: reload lost materials`);
     const overflow = await page.$eval('.desk-v1-how', (e) => e.scrollWidth > e.clientWidth + 1);
     !overflow ? ok(`${width}: materials control fits the Brief column`) : fail(`${width}: materials overflow`);
     await page.evaluate(() => window.deskV1Nav('project', { projectId: 'clayrune' }));

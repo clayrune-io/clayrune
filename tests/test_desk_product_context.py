@@ -196,6 +196,7 @@ def test_all_four_payloads_carry_product_as_data_only(env, monkeypatch, kind, ha
                                                     'tabs': [{'id': 'draft', 'label': 'Draft', 'body': 'Text'}]})
         desk_article_chat.chat('artd-one', {'message': 'hello', 'tab_id': 'draft', 'body': 'Text'}, load)
     payload = json.loads(calls[0]['stdin_text'])
+    assert calls[0]['project'] is (p if has_project else None)
     if has_project:
         assert payload['product']['materials'][0]['text'] == material
         assert payload['product']['description'] == p['description']

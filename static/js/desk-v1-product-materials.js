@@ -1,16 +1,32 @@
-// Project documents used by every toolless Desk planner/writer call.
+// Starting product excerpts and the selected Desk agent's research capabilities.
 (function () {
   const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const files = (p) => (p && p.presence && p.presence.product_materials) || [];
-  function readsHTML(project) {
+  let sequence = 0;
+  const readLabel = (paths) => paths.length ? 'Reads: ' + paths.join(', ') : 'No starting product materials';
+  function readsHTML(project, agentRef) {
     const paths = files(project);
-    return `<div class="desk-v1-product-reads" data-product-reads data-product-project="${esc(project && project.id)}">${esc(paths.length ? 'Reads: ' + paths.join(', ') : 'No product materials: the agent only knows what you tell it')}</div>`;
+    const id = 'desk-research-' + (++sequence);
+    if (project && window.DeskV1Store.live()) requestAnimationFrame(async () => {
+      const line = document.getElementById(id);
+      if (!line) return;
+      try {
+        const caps = await window.DeskV1Store.api('GET', `/api/desk/research-capabilities?project_id=${encodeURIComponent(project.id)}&agent=${encodeURIComponent(agentRef || '')}`);
+        if (!caps || typeof caps.label !== 'string') throw new Error('no capability information returned');
+        if (!line.isConnected) return;
+        line.dataset.researchLabel = caps.label;
+        line.textContent = readLabel(files(project)) + '. ' + caps.label;
+      } catch (e) {
+        if (line.isConnected) line.textContent = readLabel(paths) + '. Research capabilities unavailable: ' + (e.message || String(e));
+      }
+    });
+    return `<div id="${id}" class="desk-v1-product-reads" data-product-reads data-product-project="${esc(project && project.id)}">${esc(readLabel(paths))}${project && window.DeskV1Store.live() ? '. Checking research capabilities…' : ''}</div>`;
   }
   function refresh(project) {
     document.querySelectorAll('[data-product-reads]').forEach((line) => {
       if (line.dataset.productProject !== project.id) return;
       const paths = files(project);
-      line.textContent = paths.length ? 'Reads: ' + paths.join(', ') : 'No product materials: the agent only knows what you tell it';
+      line.textContent = readLabel(paths) + (line.dataset.researchLabel ? '. ' + line.dataset.researchLabel : '');
     });
   }
   function mount(host, project) {

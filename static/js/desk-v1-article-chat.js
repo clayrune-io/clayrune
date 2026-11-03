@@ -27,7 +27,7 @@
         <div class="desk-v1-chat-text">${esc(t.text)}</div>${proposal}
         ${t.proposal_error ? `<div class="desk-v1-chat-chip" data-kind="error">No proposal: ${esc(t.proposal_error)}</div>` : ''}</div>`;
     });
-    if (st.pending) rows.push(`<div class="desk-v1-chat-turn desk-v1-chat-user" data-chat-pending><div class="desk-v1-chat-meta">You</div><div class="desk-v1-chat-text">${esc(st.pending)}</div></div><div class="desk-v1-chat-turn desk-v1-chat-agent" data-chat-thinking>Thinking…</div>`);
+    if (st.pending) rows.push(`<div class="desk-v1-chat-turn desk-v1-chat-user" data-chat-pending><div class="desk-v1-chat-meta">You</div><div class="desk-v1-chat-text">${esc(st.pending)}</div></div><div class="desk-v1-chat-turn desk-v1-chat-agent" data-chat-thinking>Thinking… Research calls can take up to 8 minutes.</div>`);
     const output = box.querySelector('[data-chat-thread]');
     output.innerHTML = rows.join('') || '<p class="desk-v1-chat-empty">Discuss this draft, ask for a rewrite, or start with an outline. Proposed text waits for you to accept it.</p>';
     output.scrollTop = output.scrollHeight;

@@ -145,6 +145,14 @@ def test_put_config_sets_user_timezone_and_persists(ctx):
     assert saved['user_timezone'] == 'America/New_York'
 
 
+@pytest.mark.parametrize('enabled', [False, True])
+def test_put_config_toggles_desk_research_and_persists(ctx, enabled):
+    response = ctx.client.put('/api/config', json={'desk_research_enabled': enabled})
+    assert response.status_code == 200
+    assert ctx.state.CONFIG['desk_research_enabled'] is enabled
+    assert json.loads(ctx.config_path.read_text(encoding='utf-8'))['desk_research_enabled'] is enabled
+
+
 # ── wiring the flag actually reaches the two frontend files it must ───────────
 
 def test_settings_drill_has_a_desk_v1_toggle_row():

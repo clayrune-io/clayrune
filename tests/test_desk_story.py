@@ -224,7 +224,7 @@ def test_a_picked_agents_persona_and_engine_are_used(env, monkeypatch):
     assert (r.get_json()['provider'], r.get_json()['model']) == ('codex', 'gpt-x')
     call = calls[0]
     assert call['provider'] == 'codex' and call['model'] == 'gpt-x' and call['effort'] == 'low'
-    assert 'You think in wide shots.' in call['system_prompt'] and 'no tools' in call['system_prompt']
+    assert 'You think in wide shots.' in call['system_prompt'] and 'capabilities explicitly supplied' in call['system_prompt']
     assert seen['character'] is rec
 
 
