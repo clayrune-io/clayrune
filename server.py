@@ -632,6 +632,7 @@ def _load_config():
         # alone shows nothing.
         'desk_v1_live': True,
         'desk_research_enabled': True,
+        'desk_dispatch_enabled': True,
         # Desk v1 renders schedule/publish times in this IANA zone (e.g.
         # 'America/New_York'). '' = fall back to the host's local timezone —
         # the same behaviour every other time surface in the app has today.

@@ -52,11 +52,13 @@ def _check_ignored(root: Path, rel: Path) -> None:
         raise ValueError('gitignored path or ignore policy unavailable')
 
 
-def decide(root: Path | None, event: dict) -> dict:
+def decide(root: Path | None, event: dict, dispatch: bool = False) -> dict:
     name, args = event.get('tool_name'), event.get('tool_input') or {}
     updated = dict(args)
     try:
-        if name in ('WebSearch', 'WebFetch'):
+        if name == 'mcp__desk__dispatch_agent' and dispatch:
+            pass  # The server owns the live turn, target, kill switch and budget.
+        elif name in ('WebSearch', 'WebFetch'):
             if name == 'WebFetch' and not str(args.get('url', '')).startswith(('https://', 'http://')):
                 raise ValueError('only HTTP(S) web pages may be fetched')
         elif name in ('Read', 'Grep', 'Glob') and root is not None:
@@ -85,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = sys.argv[1:] if argv is None else argv
         root = Path(args[0]) if args and args[0] else None
-        print(json.dumps(decide(root, json.load(sys.stdin))))
+        print(json.dumps(decide(root, json.load(sys.stdin), '--dispatch' in args[1:])))
         return 0
     except Exception as exc:
         print(f'Desk read guard failed: {type(exc).__name__}', file=sys.stderr)

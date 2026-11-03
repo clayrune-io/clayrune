@@ -8,6 +8,9 @@ human acceptance flows are retained.
 
 `mc/desk_research.py` owns execution and capability disclosure;
 `mc/desk_read_guard.py` owns file admission. `mc/agent_runtime.py` is unchanged.
+Typed campaign chat can additionally receive one bounded dispatch tool through
+this same runner; see `docs/DESK_DISPATCH.md`. Every other composition path
+retains the research-only boundary below.
 
 ## Current provider matrix
 
@@ -35,8 +38,10 @@ run with their regular coding tools.
 
 ## Admission and isolation
 
-- The model sees only the five named built-ins. No Bash/PowerShell, Write/Edit,
-  notebook edits, subagents, installed skills or MCP tools are offered.
+- Research offers only the five named built-ins. No Bash/PowerShell, Write/Edit,
+  notebook edits, built-in subagents or installed skills are offered. Eligible
+  typed campaign chat can additionally receive the one strict `desk` MCP dispatch
+  tool; all other calls retain an empty MCP config.
 - The process runs in the existing neutral transform directory, with the
   transform environment disabling automatic project instructions and memory.
   Project contents and web pages remain untrusted data behind the task's output

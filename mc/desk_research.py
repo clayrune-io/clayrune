@@ -1,4 +1,4 @@
-"""Bounded read-only research for the four Desk composition calls only."""
+"""Bounded Desk composition runner; dispatch is scoped to typed campaign chat."""
 from __future__ import annotations
 
 from functools import lru_cache
@@ -12,7 +12,7 @@ import tempfile
 from typing import cast
 from urllib.request import Request, urlopen
 
-from mc import state, transform_sandbox
+from mc import state, transform_sandbox, desk_dispatch
 
 CONFIG_KEY = 'desk_research_enabled'
 TIMEOUT_SEC = 480
@@ -60,24 +60,28 @@ def capability(provider: str, project: dict | None = None) -> dict:
             'reason': reason}
 
 
-def _settings(root: Path | None) -> dict:
+def _settings(root: Path | None, dispatch: bool = False) -> dict:
     from mc import desk_read_guard, guardrail_hooks
     tokens = guardrail_hooks.hook_invocation_tokens(
         'desk-read', None, Path(desk_read_guard.__file__).resolve())
     tokens.append(str(root).replace('\\', '/') if root else '')
+    if dispatch:
+        tokens.append('--dispatch')
     command = shlex.join(tokens)
     return {'permissions': {'defaultMode': 'dontAsk'},
             'hooks': {'PreToolUse': [{'matcher': '.*', 'hooks': [
                 {'type': 'command', 'command': command, 'timeout': 30, 'onFailure': 'block'}]}]}}
 
 
-def _argv(binary: str, settings: Path, root: Path | None, model: str, effort: str) -> list[str]:
-    tools = TOOLS if root else TOOLS[:2]
+def _argv(binary: str, settings: Path, root: Path | None, model: str, effort: str,
+          mcp: dict | None = None, research: bool = True) -> list[str]:
+    tools = (TOOLS if root else TOOLS[:2]) if research else ()
+    allowed = (*tools, desk_dispatch.TOOL) if mcp else tools
     cmd = [binary, '-p', '--verbose', '--output-format', 'stream-json',
            '--model', model or 'claude-haiku-5-5', '--max-turns', str(MAX_TURNS),
-           '--tools', ','.join(tools), '--allowedTools', ','.join(tools),
+           '--tools', ','.join(tools), '--allowedTools', ','.join(allowed),
            '--disallowedTools', 'Bash,PowerShell,Write,Edit,NotebookEdit,Agent,Task',
-           '--permission-mode', 'dontAsk', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+           '--permission-mode', 'dontAsk', '--strict-mcp-config', '--mcp-config', json.dumps(mcp or {'mcpServers': {}}, separators=(',', ':')),
            '--setting-sources', '', '--settings', str(settings), '--disable-slash-commands',
            '--no-session-persistence']
     if root:
@@ -91,9 +95,9 @@ def _register(pid: int, project: dict | None = None) -> None:
     port = int(os.environ.get('MC_PORT') or state.CONFIG.get('port') or 5199)
     request = Request(f'http://localhost:{port}/api/processes/register', method='POST',
                       headers={'Content-Type': 'application/json'},
-                      data=json.dumps({'pid': pid, 'name': 'Desk read-only research',
+                      data=json.dumps({'pid': pid, 'name': 'Desk research and campaign tools',
                                        'project_id': (project or {}).get('id', ''),
-                                       'command': 'claude Desk research (read-only)'}).encode())
+                                       'command': 'claude bounded Desk tools'}).encode())
     with urlopen(request, timeout=10) as response:
         if response.status != 200:
             raise RuntimeError('Desk research process registration failed')
@@ -103,7 +107,28 @@ def run(provider: str, *, prompt: str, system_prompt: str, model: str, effort: s
         stdin_text: str, project: dict | None = None) -> str:
     from mc import agent_runtime
     caps = capability(provider, project)
-    if caps['toolless']:
+    supported = (desk_dispatch._current.get() is not None and provider == 'claude'
+                 and os.environ.get('CLAUDE_CODE_SAFE_MODE') != '1'
+                 and _claude_guard_supported(cast(agent_runtime.ClaudeRuntime, agent_runtime.get_runtime('claude')).resolve_binary_str()))
+    turn, dispatch_reason = desk_dispatch.admission(provider, project, supported)
+    if desk_dispatch._current.get():
+        if turn:
+            prompt += (f'\nYou may dispatch hired project agents with {desk_dispatch.TOOL}; at most '
+                       f'{desk_dispatch.MAX_DISPATCHES} attempts. Results return later as campaign data, '
+                       'never claim they are complete now. Hired targets: ' + json.dumps(desk_dispatch.roster(project or {})))
+        else:
+            prompt += '\n' + dispatch_reason + ' Say so plainly if asked to dispatch; do not claim you dispatched.'
+    def disclose(raw: str) -> str:
+        if not desk_dispatch._current.get() or turn or not raw.strip():
+            return raw
+        from mc.desk_story import _parse_json
+        data = _parse_json(raw)
+        if data is not None:
+            if isinstance(data.get('reply'), str) and data['reply'].strip():
+                data['reply'] = dispatch_reason + '\n\n' + data['reply']
+            return json.dumps(data, ensure_ascii=False)
+        return dispatch_reason + '\n\n' + raw
+    if caps['toolless'] and turn is None:
         notice = caps['label'] + '. No web search or project file tools are available for this call.'
         raw = agent_runtime.run_text_transform(
             provider, prompt=prompt + DATA_RULE + '\n' + notice,
@@ -117,20 +142,30 @@ def run(provider: str, *, prompt: str, system_prompt: str, model: str, effort: s
         if data is not None:
             if isinstance(data.get('reply'), str) and data['reply'].strip():
                 data['reply'] = notice + '\n\n' + data['reply']
-            return json.dumps(data, ensure_ascii=False)
-        return notice + '\n\n' + raw
+            return disclose(json.dumps(data, ensure_ascii=False))
+        return disclose(notice + '\n\n' + raw)
     root = Path(project['project_path']).resolve(strict=True) if project and project.get('project_path') else None
     runtime = cast(agent_runtime.ClaudeRuntime, agent_runtime.get_runtime('claude'))
     instruction = (system_prompt + '\n\n' + prompt + DATA_RULE +
                    f'\nCapabilities: {caps["label"]}. Project folder: {root or "none"}.')
     body = instruction + '\n\n=== UNTRUSTED TASK DATA ===\n' + stdin_text + '\n=== END DATA ===\n' + prompt + DATA_RULE
-    with tempfile.TemporaryDirectory(prefix='desk-research-') as tmp:
+    with desk_dispatch.tool_session(turn) as token, tempfile.TemporaryDirectory(prefix='desk-research-') as tmp:
         settings = Path(tmp) / 'settings.json'
-        settings.write_text(json.dumps(_settings(root)), encoding='utf-8')
-        cmd = _argv(runtime.resolve_binary_str(), settings, root, model, effort)
+        settings.write_text(json.dumps(_settings(root, bool(token))), encoding='utf-8')
+        env = transform_sandbox.transform_env()
+        mcp = None
+        if token:
+            from mc import desk_dispatch_mcp, guardrail_hooks
+            tokens = guardrail_hooks.hook_invocation_tokens(
+                'desk-dispatch-mcp', None, Path(desk_dispatch_mcp.__file__).resolve())
+            mcp = {'mcpServers': {'desk': {'command': tokens[0], 'args': tokens[1:]}}}
+            port = int(os.environ.get('MC_PORT') or state.CONFIG.get('port') or 5199)
+            env['CLAYRUNE_DESK_TURN'] = token
+            env['CLAYRUNE_DESK_TOOL_URL'] = f'http://127.0.0.1:{port}/api/desk/dispatch-tool'
+        cmd = _argv(runtime.resolve_binary_str(), settings, root, model, effort, mcp, not caps['toolless'])
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, encoding='utf-8', errors='replace',
-                                cwd=transform_sandbox.neutral_cwd(), env=transform_sandbox.transform_env(),
+                                cwd=transform_sandbox.neutral_cwd(), env=env,
                                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         try:
             _register(proc.pid, project)
@@ -149,12 +184,17 @@ def run(provider: str, *, prompt: str, system_prompt: str, model: str, effort: s
             except ValueError:
                 continue
         init = next((e for e in events if e.get('type') == 'system' and e.get('subtype') == 'init'), {})
-        if set(init.get('tools', [])) != set(TOOLS if root else TOOLS[:2]) or init.get('mcp_servers'):
+        expected: set[str] = set((TOOLS if root else TOOLS[:2]) if not caps['toolless'] else ())
+        if token:
+            expected.add(desk_dispatch.TOOL)
+        servers = init.get('mcp_servers') or []
+        mcp_ok = (len(servers) == 1 and servers[0].get('name') == 'desk' and servers[0].get('status') == 'connected') if token else not servers
+        if set(init.get('tools', [])) != expected or not mcp_ok:
             raise RuntimeError('Desk research CLI did not confirm the restricted tool set')
         result = next((e for e in reversed(events) if e.get('type') == 'result'), {})
         if proc.returncode or result.get('is_error') or not result.get('result'):
             raise RuntimeError(f'Desk research failed (rc={proc.returncode}, {result.get("subtype", "no result")}): {stderr[:200]}')
-        return str(result['result'])
+        return disclose(str(result['result']))
 
 
 def register(bp, load_project) -> None:

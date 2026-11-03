@@ -75,6 +75,9 @@ def run_hook(argv: Sequence[str]) -> int:
     if name == 'desk-read':
         from mc import desk_read_guard
         return desk_read_guard.main(args[1:])
+    if name == 'desk-dispatch-mcp':
+        from mc import desk_dispatch_mcp
+        return desk_dispatch_mcp.main(args[1:])
     if sys.stderr is not None:
         sys.stderr.write(f'Clayrune: unknown hook {name!r}; blocking fail-closed.\n')
     return 2

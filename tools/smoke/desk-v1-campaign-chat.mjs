@@ -209,7 +209,7 @@ async function conversation(browser) {
   release(); srv.gate = null;
   await settle(page, () => /back in the box/.test(document.querySelector('[data-camp-chat-status]').textContent));
   const st5 = await status(page);
-  (/no longer exists/.test(st5) && /Nothing was changed/.test(st5)) ? ok("a failed send shows the server's reason and says nothing changed") : fail('status: ' + st5);
+  (/no longer exists/.test(st5) && /Check dispatched sessions/.test(st5)) ? ok("a failed send shows the server's reason and the dispatch retry caution") : fail('status: ' + st5);
   (await page.$eval('#desk-v1-camp-posy-input', (e) => e.value)) === 'will this fail?' ? ok('the text is back in the box') : fail('typed text lost');
   (await turns(page)).length === before ? ok('no turn was added') : fail('a turn was added by a failed send');
 
@@ -500,6 +500,56 @@ async function productMaterials(browser) {
   }
 }
 
+async function dispatchCards(browser) {
+  for (const width of [1440, 390]) {
+    const srv = makeServer();
+    const { ctx, page, pageErrors } = await newPage(browser, { srv, viewport: { width, height: 950 } });
+    await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
+    await openCampaign(page, 'camp-1');
+    let release;
+    srv.gate = new Promise((r) => { release = r; });
+    srv.reply = () => ({ reply: 'Dave is reviewing the campaign.' });
+    await page.fill('#desk-v1-camp-posy-input', 'Ask Dave to review this campaign');
+    await page.press('#desk-v1-camp-posy-input', 'Enter');
+    await settle(page, () => !!document.querySelector('[data-chat-thinking]'));
+    srv.threads['camp-1'] = [{ id: 'dispatch-child', role: 'dispatch', agent: 'Claydo',
+      text: '<script>unsafe</script> Review the campaign', at: '2026-11-03T10:00:00Z',
+      dispatch: { session_id: 'child-123', project_id: 'clayrune', agent: 'global:dave', status: 'dispatched' } }];
+    await settle(page, () => !!document.querySelector('[data-dispatch-card="child-123"]'));
+    const href = await page.$eval('[data-dispatch-card] a', (a) => a.getAttribute('href'));
+    href === '?project=clayrune&session=child-123' ? ok(`${width}: pending dispatch has a child-session deep link`) : fail(`${width}: bad dispatch link ${href}`);
+    (await page.locator('[data-dispatch-card] script').count()) === 0 ? ok(`${width}: dispatched task is escaped`) : fail(`${width}: unsafe dispatch text`);
+    release(); srv.gate = null;
+    await settle(page, () => !document.querySelector('[data-chat-thinking]'));
+    srv.threads['camp-1'].push({ id: 'result-child', role: 'dispatch_result', agent: 'Dave', text: 'Review complete: clarify the audience.',
+      dispatch: { session_id: 'child-123', project_id: 'clayrune', status: 'completed' } });
+    await settle(page, () => document.querySelectorAll('[data-dispatch-card="child-123"]').length === 2);
+    ok(`${width}: child result arrives without another campaign POST`);
+    posts(srv, 'camp-1').length === 1 || fail(`${width}: result triggered a model turn`);
+    const overflow = await page.$eval('[data-camp-chat]', (e) => e.scrollWidth > e.clientWidth + 1);
+    !overflow ? ok(`${width}: dispatch cards fit the chat column`) : fail(`${width}: dispatch card overflow`);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
+    await page.evaluate(() => window.sidebarNav('social'));
+    await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
+    await openCampaign(page, 'camp-1');
+    await settle(page, () => document.querySelectorAll('[data-dispatch-card="child-123"]').length === 2);
+    ok(`${width}: saved dispatch and result survive reload`);
+    srv.reply = () => ({ status: 502, error: 'model failed after launch' });
+    srv.threads['camp-1'].push({ id: 'dispatch-fast-failure', role: 'dispatch', agent: 'Claydo', text: 'Retained after model failure',
+      dispatch: { session_id: 'child-fast-failure', project_id: 'clayrune', agent: 'global:dave', status: 'dispatched' } });
+    await page.fill('#desk-v1-camp-posy-input', 'Start a second review');
+    await page.press('#desk-v1-camp-posy-input', 'Enter');
+    await settle(page, () => !!document.querySelector('[data-dispatch-card="child-fast-failure"]') && !document.querySelector('[data-chat-thinking]'));
+    ok(`${width}: a fast model failure still reveals its saved child card`);
+    (await page.inputValue('#desk-v1-camp-posy-input')) === 'Start a second review' || fail(`${width}: failed dispatch draft lost`);
+    const settings = STATIC['/static/js/settings-ownership.js'];
+    /desk_dispatch_enabled/.test(settings || '') || fail('Settings dispatch switch missing');
+    realErrors(pageErrors).forEach((e) => fail(`${width}: page error: ${e}`));
+    await ctx.close();
+  }
+}
+
 const browser = await chromium.launch();
 try {
   console.log('live ON: sent draft lifecycle (controlled late events)'); await sentDrafts(browser);
@@ -510,6 +560,7 @@ try {
   console.log('live ON: no agent'); await noAgent(browser);
   console.log('live ON: text size + pop-out'); await chrome(browser);
   console.log('live ON: product materials'); await productMaterials(browser);
+  console.log('live ON: dispatch cards'); await dispatchCards(browser);
   console.log('live OFF: demo'); await demo(browser);
   }
 } catch (e) { fail('harness error: ' + (e && e.stack || e)); }
