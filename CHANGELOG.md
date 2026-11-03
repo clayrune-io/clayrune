@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-03] - Give Desk agents bounded web and project research
+
+- Campaign chat, storyboard generation/chat and article chat can use Claude WebSearch, WebFetch, Read, Grep and Glob. Shell, writes, other tools and MCP servers are excluded; each file read checks the project boundary, link target, secret-shaped names and Git ignores. Starting product excerpts remain and now also refuse ignored files.
+- **Reads:** discloses the selected agent's research capability. Other providers retain certified toolless execution with a visible notice or an explicit refusal; engine/model selections are preserved. **Settings → Providers → Advanced → Desk research** is the default-on kill switch.
+- Tool calls have 16 turns and an eight-minute deadline; existing pending indicators explain the wait. Claude requires fail-closed hooks (CLI 2.1.295+); frozen builds use the existing internal hook entry. Provider matrix and verification: `docs/DESK_RESEARCH.md`. Branch candidate only; no merge, push, restart or live configuration change.
+
 ## [2026-11-02] - Ground Desk agents in the project's product materials
 
 - Campaign conversations, storyboard generation/chat and article chat now receive the project's description and bounded document excerpts as data. They stay toolless and are told to ground product claims in those materials and acknowledge gaps.

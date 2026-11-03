@@ -1398,15 +1398,28 @@ campaign's **Brief**, chooses the documents its agents read about the product.
 Enter a path relative to the project's folder, such as `docs/LAUNCH_COPY.md`,
 and choose **Add**; **Remove** drops a file. These settings are shared by all
 campaigns for that project. With no custom list, agents read `README.md` when
-available; removing every file disables document context, and **Use README
+available; removing every file disables starting excerpts, and **Use README
 default** restores it. Up to six `.md`, `.markdown`, `.txt` or `.rst` files are
-allowed, inside the project folder only; secret-shaped filenames are refused.
+allowed, inside the project folder only; secret-shaped and gitignored paths are refused.
 The campaign conversation's muted **Reads:** line names files successfully
 loaded, and the control explains skipped files. Each call receives fresh
 excerpts (up to 8 KiB per file, 24 KiB total) plus the project description,
-including storyboard and article calls with a selected project. Agents have no
-file tools: they are told to use these materials for product claims and say
-when the excerpts do not cover something.
+including storyboard and article calls with a selected project.
+
+With **Settings → Providers → Advanced → Desk research** on (the default),
+supported Claude agents can also search/fetch web pages and read their project's
+folder. This covers campaign chat, storyboard generation/chat and article chat.
+The **Reads:** line also shows the selected campaign agent's research capabilities.
+Other providers remain toolless with an explicit notice, or show a refusal if
+their adapter cannot enforce even a toolless call. No provider is silently changed.
+Turning the setting off retains the starting excerpts and disables research tools.
+
+Research cannot run shell commands or change files. Reads stay inside the selected
+project, including link targets, and refuse environment files, key files,
+credential/secret/token paths, Git metadata and gitignored files. Search file
+contents one file at a time; recursive content searches are refused. Files and
+pages are treated as data; current competitor claims must cite URLs. Research
+calls can take up to eight minutes; the chat's pending state stays visible.
 
 Home shows **[name] plans & writes** for the project default, or for the shared
 agent when all its live campaigns have chosen the same one. When those

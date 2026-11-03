@@ -72,6 +72,9 @@ def run_hook(argv: Sequence[str]) -> int:
     if name == 'vendor-fence':
         from mc import vendor_fence_hook
         return vendor_fence_hook.main(args[1:])
+    if name == 'desk-read':
+        from mc import desk_read_guard
+        return desk_read_guard.main(args[1:])
     if sys.stderr is not None:
         sys.stderr.write(f'Clayrune: unknown hook {name!r}; blocking fail-closed.\n')
     return 2

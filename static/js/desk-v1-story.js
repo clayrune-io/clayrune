@@ -231,7 +231,7 @@
       _busy = true;
       makeBtn.disabled = true;
       host.setAttribute('aria-busy', 'true');
-      setStatus(`Asking ${bridge.agentName()} to write the scenes…`, 'info');
+      setStatus(`Asking ${bridge.agentName()} to write the scenes… Research calls can take up to 8 minutes.`, 'info');
       try {
         await save();
         const res = await _generate(bridge, { mode: 'board' });

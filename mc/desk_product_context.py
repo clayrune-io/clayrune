@@ -1,4 +1,4 @@
-"""Bounded project materials for the Desk's toolless calls. Contents stay DATA."""
+"""Bounded starting materials for the Desk's calls. Contents stay DATA."""
 from __future__ import annotations
 
 import codecs
@@ -18,7 +18,7 @@ PRODUCT_INSTRUCTION = (' The optional "product" describes what the project makes
 def _safe_parts(path: Path) -> None:
     for part in path.parts:
         name = part.lower()
-        if (name == '.env' or name.startswith('.env.') or name.startswith('id_rsa')
+        if (name.startswith('.env') or name.startswith('id_rsa')
                 or name.endswith(('.key', '.pem'))
                 or any(word in name for word in ('credential', 'secret', 'token'))):
             raise ValueError('secret-shaped names are not product materials')
@@ -40,6 +40,9 @@ def _material_path(root: Path, rel: str) -> Path:
     _safe_parts(resolved.relative_to(root))
     if resolved.suffix.lower() not in TEXT_TYPES:
         raise ValueError('link target must be a text document')
+    from mc.desk_read_guard import _not_ignored
+    _not_ignored(root, path)
+    _not_ignored(root, resolved.relative_to(root))
     return resolved
 
 

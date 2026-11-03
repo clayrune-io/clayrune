@@ -67,7 +67,7 @@
     const rows = st.turns.map((t) => _turnHTML(t, name));
     if (st.pending) {
       rows.push(`<div class="desk-v1-chat-turn desk-v1-chat-user" data-chat-turn="user" data-chat-pending><div class="desk-v1-chat-meta">You${st.pending.scene ? ` · scene ${esc(st.pending.scene)}` : ''}</div><div class="desk-v1-chat-text">${esc(st.pending.text)}</div></div>`);
-      rows.push(`<div class="desk-v1-chat-turn desk-v1-chat-agent desk-v1-chat-thinking" data-chat-thinking><div class="desk-v1-chat-meta">${esc(name)}</div><div class="desk-v1-chat-text">Thinking…</div></div>`);
+      rows.push(`<div class="desk-v1-chat-turn desk-v1-chat-agent desk-v1-chat-thinking" data-chat-thinking><div class="desk-v1-chat-meta">${esc(name)}</div><div class="desk-v1-chat-text">Thinking… Research calls can take up to 8 minutes.</div></div>`);
     }
     host.innerHTML = rows.length ? rows.join('') : `<p class="desk-v1-chat-empty" data-chat-empty>${esc(_EMPTY)}</p>`;
     host.scrollTop = host.scrollHeight;
