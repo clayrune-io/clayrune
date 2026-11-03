@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-11-02] - Steward role editor and pilot migration tool (BUILTINS-3 SR-5)
+
+- **Automation → Steward roles**: cards for each role (state, charter, cadence, owner, journal) with Start / Stop / Edit. Install-level blockers (cycle composer patch, decision-channel adapter, unattended guard) are listed one by one and Start stays disabled while any stands.
+- **Add Schedule → Run as a steward role**: pick a charter backlog item, confirm the journal file, Preview (writes nothing). Saving and Start/Stop are human-only (passcode); a new role is always saved disabled. Unticking on an existing role detaches it after a confirm.
+- New read-only routes `/api/steward-role/{assignments,options,preview}` (`mc/blueprints/steward_role_routes.py`); no new write route.
+- `tools/steward_role_migrate.py`: `candidates` / `migrate` / `rollback` over HTTP. Dry run by default, `--apply` needs the dry run's `--expect-revision`, snapshot written first, role left disabled, rollback restores the original job. Never runs on deploy.
+- Tests: `tests/test_steward_role_routes.py` (38), `tests/test_steward_role_migrate.py` (33), `tools/smoke/steward-role-editor.mjs` (desktop + 390px). Branch only; no merge, push or restart.
+
 ## [2026-11-02] - Clickable composer breadcrumb
 
 - In the post composer, **Desk** and the campaign name at the top are now links. Desk goes to Home, the campaign name to its campaign page. If you came from that campaign, Back then reads the same as pressing Back. Unsaved text is kept.

@@ -167,7 +167,8 @@ async function refreshScheduleList() {
     const allSchedules = await res.json();
     // Steward-managed schedules are surfaced as steward cards above, not as raw
     // rows here — hide them so the list stays user-authored schedules only.
-    const schedules = allSchedules.filter(s => !s.steward);
+    // Steward roles get their own cards (steward-role-editor.js) for the same reason.
+    const schedules = allSchedules.filter(s => !s.steward && !('steward_role' in s));
     if (!schedules.length) {
       container.innerHTML = '<div class="schedule-empty">No scheduled tasks yet. Click "+ Add Schedule" to create one.</div>';
       return;
@@ -418,10 +419,13 @@ function showScheduleForm(existing) {
       <span id="sched-agent-face" class="sched-agent-face"></span>
       <select id="sched-agent"><option value="">Loading…</option></select>
     </div>
+    <div id="sched-role-area"></div>
     <label>Description <span class="memory-hint" style="margin:0;font-weight:normal">(for you &mdash; not sent to the agent)</span></label>
     <textarea id="sched-description" rows="2" placeholder="Why this schedule exists, what &ldquo;done&rdquo; looks like, etc.">${esc(selDescription)}</textarea>
+    <div id="sched-task-block">
     <label>Task <span class="memory-hint" style="margin:0;font-weight:normal">(the prompt sent on every run)</span></label>
     <textarea id="sched-task" rows="2" placeholder="What should the agent do?">${esc(selTask)}</textarea>
+    </div>
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal">
       <input type="checkbox" id="sched-continue" ${selContinue ? 'checked' : ''} style="margin:0;width:auto">
       <span style="font-weight:600">Continue previous session</span>
@@ -463,6 +467,8 @@ function showScheduleForm(existing) {
   renderSchedTypeFields(selType, { time: selTime, days: selDays, interval_minutes: selInterval, run_at: selRunAt, cron_expr: selCron, delete_after_run: selDeleteAfter });
   reloadSchedCharacters(selCharacter);
   _schedSyncCondition();
+  // Steward role section (steward-role-editor.js); a no-op until it loads.
+  if (window.StewardRoleEditor) window.StewardRoleEditor.mount(existing);
   // The form sits below the Stewards section and the whole schedule list, so on
   // anything smaller than a desktop it opens off-screen and reads as "nothing
   // happened" — true for Edit from the calendar too, not just the new
@@ -641,7 +647,8 @@ function renderSchedTypeFields(type, vals) {
 async function saveSchedule() {
   const pid = document.getElementById('sched-project')?.value;
   const task = document.getElementById('sched-task')?.value?.trim();
-  if (!pid || !task) { alert('Project and task are required'); return; }
+  const roleEd = window.StewardRoleEditor;
+  if (!pid || (!task && !(roleEd && roleEd.active()))) { alert('Project and task are required'); return; }
 
   const activeType = document.querySelector('.sched-type-btn.active')?.textContent?.toLowerCase() || 'daily';
   const description = (document.getElementById('sched-description')?.value || '').trim();
@@ -672,6 +679,18 @@ async function saveSchedule() {
     const expr = document.getElementById('sched-cron')?.value?.trim();
     if (!expr || expr.split(/\s+/).length !== 5) { alert('Cron expression must have exactly 5 fields'); return; }
     body.cron_expr = expr;
+  }
+
+  // A steward role (or detaching one) is a human-only write: the role editor
+  // adds the role fields and sends it through the passcode prompt.
+  if (roleEd && roleEd.handles()) {
+    await roleEd.save(body, schedulerEditId, { done: async () => {
+      hideScheduleForm();
+      await refreshScheduleList();
+      refreshScheduleBanner();
+      if (window.renderStewardRoles) window.renderStewardRoles();
+    } });
+    return;
   }
 
   try {

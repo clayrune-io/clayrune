@@ -551,6 +551,29 @@ blocks the switch. Role execution remains unavailable until the remaining stewar
 integration is installed and verified; ordinary schedules keep their current
 behavior.
 
+**Steward roles in the Automation window.** A **Steward roles** section sits
+under the Stewards list. Each card shows the role's state (Disabled, Active,
+Active but unable to run, Stopped, or Role error), its charter title, cadence,
+owner and journal file. When this install cannot run roles yet, an amber box
+names each missing piece on its own line (for example the cycle composer patch
+or the decision-channel adapter) and **Start** stays disabled; nothing is hidden
+or smoothed over. A role is created in **Add Schedule**: tick **Run as a steward
+role**, pick the backlog item that is its charter, confirm the journal file and
+use **Preview** to see what would be checked, with nothing saved. Saving asks
+for your dashboard passcode and always saves the role **disabled**; **Start** is
+its own passcode step. Unticking the box on an existing role **detaches** it:
+the charter, journal and history stay and the schedule becomes an ordinary task
+(disabled until you enable it). Stewards created the older way still show in
+the Stewards list; a project that has a role opens that role's schedule on Edit.
+
+*Moving the pilot onto a role.* `python tools/steward_role_migrate.py` has three
+commands: `candidates`, `migrate` and `rollback`. `migrate` is a dry run unless
+you add `--apply`, and `--apply` needs the `--expect-revision` value the dry run
+printed (it refuses if anything changed since). It asks for your passcode at a
+hidden prompt, writes a recovery snapshot first, waits for any running cycle to
+finish, and leaves the role disabled. `rollback --snapshot <file>` restores the
+original job. Nothing runs on deploy; starting the role is your click.
+
 **Why the Runs panel matters**: scheduled runs in Mode B (long-running
 sessions) often go idle without exiting. Clayrune writes a placeholder
 agent_log entry at dispatch time so the run appears in the Runs panel

@@ -7116,6 +7116,34 @@
   .steward-badge.blocked { color: var(--text-muted); }
   .schedule-card.steward-attn { border-left: 3px solid var(--red); }
 
+  /* ── STEWARD ROLE EDITOR (static/js/steward-role-editor.js) ─── */
+  .srole-area { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .srole-head { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 10px; }
+  .srole-state[data-state="active"] { color: var(--accent); border-color: var(--accent); }
+  .srole-state[data-state="blocked"], .srole-state[data-state="stopped"] { color: var(--amber-text); border-color: var(--amber); }
+  .srole-state[data-state="error"] { color: var(--red-text); border-color: var(--red); }
+  .srole-blockers { margin: 0 0 10px; padding: 8px 12px; border: 1px solid var(--amber); background: var(--amber-dim);
+    border-radius: 8px; font-size: 12px; color: var(--text); }
+  .srole-blockers-title { font-weight: 700; color: var(--amber-text); margin-bottom: 4px; }
+  .srole-blockers ul { margin: 0; padding-left: 18px; }
+  .srole-toggle { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; cursor: pointer; font-weight: normal; margin-top: 10px; }
+  .srole-error { margin: 8px 0; padding: 8px 12px; border: 1px solid var(--red); border-radius: 8px; font-size: 12px;
+    color: var(--red-text); background: color-mix(in srgb, var(--red) 10%, transparent); overflow-wrap: anywhere; }
+  .srole-note { margin: 8px 0; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; color: var(--text-muted); }
+  .srole-charter { margin: 6px 0 0; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px;
+    color: var(--text-muted); overflow-wrap: anywhere; }
+  .srole-preview { margin-top: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; }
+  .srole-checks { list-style: none; margin: 0 0 6px; padding: 0; }
+  .srole-checks li { padding: 2px 0; overflow-wrap: anywhere; }
+  .srole-checks li[data-ok="false"] { color: var(--red-text); }
+  .srole-charter-full pre { margin: 4px 0 8px; max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+    font-size: 11px; padding: 6px 8px; background: var(--surface2); border-radius: 6px; }
+  .srole-verdict { font-weight: 600; }
+  .srole-verdict[data-runnable="false"] { color: var(--amber-text); }
+  @media (max-width: 960px) {
+    .srole-area .schedule-card-actions { flex-wrap: wrap; }
+  }
+
   /* ── PLAN HISTORY CARDS ─────────────────────────────────────── */
   .plan-history-card {
     padding: 12px 14px; border: 1px solid var(--border); border-left: 3px solid var(--accent);

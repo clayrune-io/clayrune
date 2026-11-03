@@ -10,6 +10,8 @@ let stewardFormOpen = false;
 async function renderStewards() {
   const list = document.getElementById('steward-list');
   if (!list) return;
+  // Steward role cards live beside these (steward-role-editor.js).
+  if (window.renderStewardRoles) window.renderStewardRoles();
   list.innerHTML = '<div class="schedule-empty">Loading stewards…</div>';
   let health;
   try {
@@ -180,6 +182,10 @@ async function editSteward(pid) {
   try {
     st = await fetch(`${API_BASE}/api/project/${encodeURIComponent(pid)}/steward`).then(r => r.json());
   } catch (e) { if (window.showToast) showToast('Could not load steward config.', 4000); return; }
+  // A project with a steward role is edited on its assigned schedule: the
+  // objective and cadence here are a read-only view of it and the server
+  // refuses to write them.
+  if (st.charter_item_id && st.schedule_id && window.editSchedule) { window.editSchedule(st.schedule_id); return; }
   stewardEditPid = pid;
   stewardFormOpen = true;
   const label = (typeof allProjects !== 'undefined' ? allProjects : []).find(p => p.id === pid);
@@ -244,6 +250,7 @@ async function createSteward() {
 }
 
 async function stewardDisable(pid) {
+  if (window.StewardRoleEditor && window.StewardRoleEditor.hasRole(pid)) return window.StewardRoleEditor.stop(pid);
   if (!confirm('Stop this steward? It stops running and the project is un-fenced. The charter record is kept.')) return;
   try {
     await fetch(`${API_BASE}/api/project/${encodeURIComponent(pid)}/steward/disable`, { method: 'POST' });
