@@ -251,6 +251,12 @@ strip is hidden.
 
 ## Agent dispatch
 
+**Blocked commands:** consecutive permission or hook denials in an agent chat
+appear as a small **1 command blocked** / **N commands blocked** chip. It starts
+closed in live chats and restored history. Click, tap, or focus it and press
+Enter/Space to show each tool name and its command, file path, or URL. This
+disclosure only shows what was blocked; it does not grant permission or retry it.
+
 A dispatched child's chat shows **Dispatched by** above the thread when Clayrune has a recorded dispatcher. This includes completed chats reopened from the conversation rail. If the parent is no longer loaded, the notice identifies its session; an old chat with no recorded lineage has no banner.
 
 Hivemind workers also show the session that created the hivemind when Clayrune could identify it. Manual spawns and retries keep that original creator. Older hiveminds and those opened directly by a person have no recorded creating session.

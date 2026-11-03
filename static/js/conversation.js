@@ -1537,6 +1537,14 @@ function agentPanelHTML(p) {
           explBriefChars = 0;
           continue;
         }
+        const deniedRun = window.deniedChipRun?.(buf, _i);
+        if (deniedRun) {
+          flushTable();
+          result += planBlock + deniedRun.html;
+          planBlock = ''; planRawLines = [];
+          _i = deniedRun.end;
+          continue;
+        }
         // Agent-read request card (MC-1059, static/js/agent-read-card.js): a single terminal
         // line like the exploration marker above; the card asks the server for its words.
         const _arcId = typeof window.agentReadMarkerId === 'function' ? window.agentReadMarkerId(line) : null;
@@ -5020,6 +5028,11 @@ function appendAgentLine(sessionId, text, dateHint) {
     for (const line of text.split('\n')) {
       appendAgentLine(sessionId, line, dateHint);
     }
+    return;
+  }
+
+  if (window.handleDeniedLine?.(text, el)) {
+    if (wasPinned) _scheduleAgentPinScroll(sessionId, el, freshMount);
     return;
   }
 
