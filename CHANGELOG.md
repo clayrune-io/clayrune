@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-03] - Retire campaign-chat drafts after successful sends
+
+- Pending turns and retired textareas no longer write the campaign draft. A successful response clears the draft before reply callbacks; the live composer takes that state even when a late event carried trailing whitespace. Failed requests still return to the box.
+- Added a keyboard/late-event regression matrix covering Enter, Send, inline and large views, suggestions, full remounts, failed requests and new drafts. Controlled late input reproduced the return on the original code; ordinary typing did not reproduce the reported production trigger. Evidence and limits: `docs/desk_v1/CAMPAIGN_CHAT_DRAFTS.md`. Branch candidate only.
+
 ## [2026-11-02] - Ground Desk agents in the project's product materials
 
 - Campaign conversations, storyboard generation/chat and article chat now receive the project's description and bounded document excerpts as data. They stay toolless and are told to ground product claims in those materials and acknowledge gaps.
