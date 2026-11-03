@@ -5478,6 +5478,7 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
         session_dict = {}
     vendor_fence.prepare_env(
         runtime.name, session_dict, env, binary=Path(cmd[0]), cwd=project_path)
+    cmd = vendor_fence.prepare_command(runtime.name, session_dict, cmd, project_path, env)
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE if prompt_via_stdin else subprocess.DEVNULL,
@@ -10925,9 +10926,12 @@ class AiderRuntime(AgentRuntime):
         msg_tmp.close()
         cmd.extend(['--message-file', msg_tmp.name])
         mc_sid = handle.mc_session_id
+        env = os.environ.copy()
+        vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
+        cmd = vendor_fence.prepare_command(self.name, session, cmd, handle.project_path, env)
         proc = subprocess.Popen(
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, cwd=handle.project_path,
+            stderr=subprocess.STDOUT, cwd=handle.project_path, env=env,
             text=True, encoding='utf-8', errors='replace',
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )

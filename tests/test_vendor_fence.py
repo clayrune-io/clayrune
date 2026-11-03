@@ -17,6 +17,49 @@ ENGINES = ('gemini', 'qwen', 'opencode', 'goose', 'aider', 'kiro')
 TRIGGERS = tuple(sorted(vf.lm.UNATTENDED_TRIGGER_TYPES))
 
 
+@pytest.mark.parametrize('trigger', TRIGGERS)
+def test_aider_opt_in_wraps_both_dispatch_and_followup(boundary, monkeypatch, trigger):
+    from mc import aider_launch
+    runtime, calls = boundary
+    monkeypatch.setitem(state.CONFIG, aider_launch.FLAG, True)
+    prepared = []
+
+    def prepare(cmd, cwd, env):
+        prepared.append((cmd, cwd, env))
+        return ['restricted-aider-runner'] + cmd[1:]
+
+    monkeypatch.setattr(aider_launch, 'prepare', prepare)
+    rt = runtime('aider')
+    session = {'trigger_type': trigger, 'log_lines': [], 'agent_model': 'test'}
+    handle = rt.dispatch(project_path='/project', task='hello', session_dict=session)
+    rt.write_followup(handle, 'again')
+    assert len(prepared) == len(calls) == 2
+    assert all(args[0][0] == 'restricted-aider-runner' for args, _ in calls)
+    monkeypatch.setitem(state.CONFIG, aider_launch.FLAG, False)
+    with pytest.raises(vf.VendorFenceError):
+        rt.write_followup(handle, 'must refuse')
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize('followup', [False, True])
+def test_aider_opt_in_drift_refuses_without_provider_spawn(boundary, monkeypatch, followup):
+    from mc import aider_launch
+    runtime, calls = boundary
+    monkeypatch.setitem(state.CONFIG, aider_launch.FLAG, True)
+    monkeypatch.setattr(aider_launch, 'prepare',
+                        lambda *a: (_ for _ in ()).throw(RuntimeError('Aider source drift')))
+    rt = runtime('aider')
+    session = {'trigger_type': 'schedule', 'log_lines': [], 'agent_model': 'test'}
+    with pytest.raises(vf.VendorFenceError, match='source drift'):
+        if followup:
+            rt.write_followup(ar.SessionHandle(
+                mc_session_id='test', provider='aider', mode='A',
+                project_path='/project', project_id='project', session_dict=session), 'again')
+        else:
+            rt.dispatch(project_path='/project', task='hello', session_dict=session)
+    assert not calls and session['status'] == 'error'
+
+
 @pytest.fixture
 def boundary(monkeypatch, tmp_path):
     calls = []

@@ -2,7 +2,11 @@
 
 2026-11-02. Backlog `10796682`. Sol_Tobin. Base `7e5c2246`.
 
-**Stopped at a design decision; no production bridge implemented.** The
+Historical part-1 audit. Part 2 implements Dave's selected restricted adapter
+behind a default-OFF flag; see [the restricted adapter contract and proof](BUILTINS_5B_RESTRICTED_AIDER.md).
+The negative tests below remain unchanged as controls.
+
+**Part-1 result: stopped at a design decision; no production bridge implemented.** The
 unattended-Aider refusal remains unchanged. There is **no enablement flag** to
 flip. No merge, push, server restart, human-owned fence edit, or live config
 change is part of this work.

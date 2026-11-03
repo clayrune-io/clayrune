@@ -958,10 +958,16 @@ cannot, the session shows the reason and the request fails; Clayrune does not
 switch engines to work around a fence refusal. Gemini versions that reject
 user-owned per-launch system settings also fail this check.
 
-Aider has no supported pre-execution hook, so unattended Aider is refused while
-fencing is enabled. OpenCode, Goose and Kiro are likewise refused until their
-guard adapters are verified. Attended chats remain available. Installing one
-of these CLIs does not by itself establish that its guard works.
+Aider is refused by default while unattended fencing is enabled. An experimental
+restricted adapter can be enabled by a human through the passcode-protected
+configuration key `aider_restricted_adapter_enabled` (default `false`; no UI
+toggle). It requires the audited Aider 0.86.2 source and dependencies, permits
+whole-file and SEARCH/REPLACE edits, and fences `/run`, suggested shell and git
+subprocesses. Voice, web, save, `/git`, other commands, patch/udiff, GUI and
+installers are refused. Source/version drift refuses launch; packaged builds
+do not support this experimental source runner. OpenCode, Goose and Kiro
+remain refused until their guard adapters are verified. Attended chats remain
+available. Installing a CLI alone does not establish that its guard works.
 
 ### Keep machine awake
 

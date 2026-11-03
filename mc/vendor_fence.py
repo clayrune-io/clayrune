@@ -57,7 +57,25 @@ def _refuse(vendor: str, session: Optional[Dict[str, Any]], reason: str) -> None
 def check_launch(vendor: str, session: Optional[Dict[str, Any]]) -> None:
     """Check before binary resolution or any follow-up side effects."""
     if _unattended(session) and vendor in UNVERIFIED:
+        if vendor == 'aider':
+            from mc.aider_launch import enabled
+            if enabled():
+                return
         _refuse(vendor, session, UNVERIFIED[vendor])
+
+
+def prepare_command(vendor: str, session: Optional[Dict[str, Any]],
+                    cmd: List[str], cwd: str, env: Dict[str, str]) -> List[str]:
+    """Replace only guarded Aider's entrypoint; refusal uses the shared error path."""
+    if vendor != 'aider' or not _unattended(session):
+        return cmd
+    check_launch(vendor, session)
+    try:
+        from mc.aider_launch import prepare
+        return prepare(cmd, cwd, env)
+    except Exception as exc:
+        _refuse(vendor, session, str(exc))
+        return cmd  # unreachable
 
 
 def _shell(vendor: str, env: Dict[str, str]) -> str:
