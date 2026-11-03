@@ -97,3 +97,27 @@ def decide(character: Mapping, usage: Mapping, now: datetime,
         return alternate, (f'{provider} weekly usage {utilization:g}% is ahead of '
                            f'{elapsed:.1f}% elapsed by more than {margin:g} points')
     return original, None
+
+
+def compare_alternate(original_utilization: float, alternate_exhausted: bool,
+                      alternate_reading, config: Mapping) -> tuple[bool, str]:
+    """Decide whether a chosen alternate's vendor is a safe place to reroute to.
+
+    Returns (keep_original, note). `alternate_reading` is weekly_reading() for
+    the alternate's vendor: (utilization, elapsed %) or None. Keep the original
+    when the alternate's vendor has an exhaustion record, is over the ceiling,
+    or is at least as used as the original. A missing/invalid alternate reading
+    reroutes (the pre-existing behaviour) and says so in the note.
+    """
+    if alternate_exhausted:
+        return True, 'alternate vendor has an exhaustion record'
+    if alternate_reading is None:
+        return False, 'alternate weekly usage missing, invalid or reset; rerouting unchecked'
+    alt = alternate_reading[0]
+    ceiling = _percent(config.get('engine_pace_ceiling_percent', 85))
+    if ceiling is not None and alt > ceiling:
+        return True, f'alternate weekly usage {alt:g}% exceeds the {ceiling:g}% ceiling'
+    if alt >= original_utilization:
+        return True, (f'alternate weekly usage {alt:g}% is not lower than '
+                      f'original {original_utilization:g}%')
+    return False, f'alternate weekly usage {alt:g}% is lower than original {original_utilization:g}%'
