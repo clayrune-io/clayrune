@@ -4969,7 +4969,7 @@ def _roster_block(project, port, session_id=''):
 
 def _build_agent_context(project, incognito=False, task='', character_body='',
                          character_name='', session_id='', character_skills=None,
-                         source='', provider='', model='', job_shape=''):
+                         source='', provider='', model='', job_shape='', consumer_unattended=None):
     """Build system prompt context for the agent.
 
     `job_shape` ('conversation' | 'task', backlog 8ead5755) is the caller's
@@ -5372,13 +5372,16 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # curation of the PROJECT's memory, not this task's job — and the block
     # itself already self-disables for unattended trigger types, which a
     # dispatched worker's session effectively is.
+    _explicit_unattended = consumer_unattended is True
+    consumer_unattended = bool(consumer_unattended or _distiller.is_unattended_task(task))
     if not incognito and not _task_shape and state.CONFIG.get('memory_mint_triggers_enabled', False):
         try:
             from mc.memory import unresolved_mint_block as _render_mint
             _mint_trigger_type = ((agent_sessions.get(session_id) or {}).get('trigger_type', '')
                                    if session_id else '')
             _mint_block = _render_mint(
-                project, task=task, trigger_type=_mint_trigger_type, incognito=incognito)
+                project, task=task, trigger_type='schedule' if _explicit_unattended else _mint_trigger_type,
+                incognito=incognito)
             if _mint_block:
                 parts.append(_mint_block)
         except Exception as e:
@@ -5398,8 +5401,8 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             _ledger_trigger_type = ((agent_sessions.get(session_id) or {}).get('trigger_type', '')
                                      if session_id else '')
             _ledger_block = _render_ledger(
-                project, task=task, trigger_type=_ledger_trigger_type,
-                consumer_unattended=_distiller.is_unattended_task(task))
+                project, task=task, trigger_type='schedule' if _explicit_unattended else _ledger_trigger_type,
+                consumer_unattended=consumer_unattended)
             if _ledger_block:
                 parts.append(_ledger_block)
         except Exception as e:
@@ -5416,7 +5419,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
                 int(state.CONFIG.get('read_floor_topk', 6) or 6),
                 expand=int(state.CONFIG.get('read_floor_link_expand', 2) or 0),
                 record='read_floor',  # phase-4 delivery telemetry
-                consumer_unattended=_distiller.is_unattended_task(task))
+                consumer_unattended=consumer_unattended)
         except Exception as e:
             # Was a bare `pass`. The read floor is the ONLY retrieval channel that
             # actually runs — agents open a memory file in 5% of sessions — so a
@@ -5479,8 +5482,9 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             expl = _distiller.exploration_read_floor(
                 project['id'], task,
                 int(state.CONFIG.get('exploration_read_floor_topk', 2) or 2),
-                consumer_unattended=_distiller.is_unattended_task(task))
-        except Exception:
+                consumer_unattended=consumer_unattended)
+        except Exception as e:
+            _log(f"[read-floor] {project.get('id')}: exploration search failed: {e}")
             expl = []
         if expl:
             el = "\n".join(
@@ -5557,8 +5561,8 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
                 csid = e.get('claude_session_id', '')
                 if csid and csid not in log_by_csid:
                     log_by_csid[csid] = e.get('status', '')
-        except Exception:
-            pass
+        except Exception as e:
+            _log(f"[context] {project.get('id')}: conversation status log read failed: {e}")
         sess_lines = []
         for c in convos:
             sid = c['session_id']
@@ -7490,7 +7494,7 @@ def _transcript_buffer_lines_and_ts(project_path, claude_sid, user_label, max_me
         _log(f"[transcript-render] failed: {e}")
         return [], []
 
-def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=True):
+def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=True, role_context=None):
     """Revive a finalized/purged session by spawning a fresh process with -r <claude_session_id>.
 
     Looks up the most recent agent_log entry whose session_id matches; if it has a
@@ -7655,6 +7659,9 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             reason=_af_reason, detail=_af_detail)
         _log_agent_activity(project_id, _activity_line)
         revival_msg = f"{_handoff_text}\n\n{message}"
+        if role_context is not None:
+            from mc.steward_role_dispatch import marker_first
+            revival_msg = marker_first(revival_msg)
     else:
         resume_flags = ['-r', claude_sid]
     if context is None:
@@ -7801,12 +7808,16 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         # facts aren't treated as new and resent on a later live follow-up.
         _memory_turn.seed_delivered(p, session, message)
         stdin_msg = json.dumps({"type": "user", "message": {"role": "user", "content": revival_msg}}) + '\n'
-        with session['stdin_lock']:
-            try:
-                proc.stdin.write(stdin_msg)  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
-                proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
-            except Exception as e:
-                session['log_lines'].append(f'[stdin write error on revive: {e}]')
+        if role_context is not None:
+            from mc.steward_role_dispatch import _append_ack
+            _append_ack(session, revival_msg)
+        else:
+            with session['stdin_lock']:
+                try:
+                    proc.stdin.write(stdin_msg)  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
+                    proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
+                except Exception as e:
+                    session['log_lines'].append(f'[stdin write error on revive: {e}]')
         _log(f"[revive] {project_id}: Mode B revived session {session_id} via -r {claude_sid[:12]}")
         return session
 
@@ -7924,7 +7935,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
 _COLD_RESUMABLE_PROVIDERS = {'codex', 'qwen', 'gemini'}
 
 
-def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, carry_notify=True):
+def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, carry_notify=True, role_context=None):
     """Continue (or, for a provider with no cold resume, restart) a dead
     non-Claude conversation (MC-929; cold-resume support added 2026-09-16,
     extended to gemini W4/MC-947 2026-09-18).
@@ -8013,7 +8024,9 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
                                  source=entry.get('source') or '',
                                  notify_session=_revive_notify_session,
                                  notify_workflow=_revive_notify_workflow,
-                                 spawned_by=_revive_spawned_by)
+                                 spawned_by=_revive_spawned_by,
+                                 **({'prepared_context': role_context, 'preserve_model': True}
+                                    if role_context is not None else {}))
     except Exception as e:
         _log(f"[revive-non-claude] {project_id}: dispatch failed: {e}")
         return None
@@ -10340,7 +10353,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                           project_generation=1,
                           lifecycle_bridge_factory=None,
                           agent_cwd='', isolated=False, planned_session_id='',
-                          engine_fallback=None):
+                          engine_fallback=None, role_context=None):
     """Dispatch a session through the AgentRuntime abstraction (non-claude).
 
     `agent_cwd`/`isolated`/`planned_session_id` (vendor-parity gap 1,
@@ -10560,9 +10573,15 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                                              character_skills=(character_meta or {}).get('skills') or [],
                                              source=source, job_shape=_job_shape,
                                              provider=provider_name, model=model)
+        if role_context is not None:
+            from mc.steward_role_dispatch import begin_native_delivery
+            system_prompt = role_context.system_prompt
+            begin_native_delivery(session)
         _native_followup_context.record_build(p, session, task, _prompt_fp)
     except Exception as e:
         _log(f"[runtime-dispatch] context build failed: {e}")
+        if role_context is not None:
+            raise
 
     # MC-935: the claude path logs its argv (`[dispatch] cmd: ...`) before
     # spawning; nothing on this path — the ONE dispatch entry point shared by
@@ -11878,6 +11897,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         _rt_planned_sid = (reuse_session_id
                            if (reuse_session_id and reuse_session_id not in agent_sessions)
                            else uuid.uuid4().hex[:12])
+        if getattr(prepared_context, 'steward_role', False) and reuse_session_id:
+            _rt_planned_sid = reuse_session_id
         _rt_resume_tree = _resume_cwd_for(pp, resume_id, provider_name) if resume_id else None
         if agent_cwd_override:
             _rt_agent_cwd, _rt_isolated = agent_cwd_override, bool(isolated_override)
@@ -11906,6 +11927,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                          isolated=_rt_isolated,
                                          planned_session_id=_rt_planned_sid,
                                          engine_fallback=_engine_fallback_record,
+                                         **({'role_context': prepared_context}
+                                            if getattr(prepared_context, 'steward_role', False) else {}),
                                          lifecycle_bridge_factory=(
                                              _runtime_lifecycle_service.bridge_factory
                                              if _runtime_lifecycle_service is not None else None))

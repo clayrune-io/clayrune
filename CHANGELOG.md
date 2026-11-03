@@ -23,6 +23,23 @@
 - Moved the timeline, ruler, zoom and insert controls below the story/preview and conversation columns. The conversation fills the upper region and scrolls its messages; phones keep one column.
 - Added **Expand** on The story: a large modal holds the same mounted editor, character counter, save state and **Make storyboard from story** controls. **Close** or Escape returns the text to the card.
 - Added a draggable bottom edge on the story card, with Up/Down keyboard resizing. Preview follows the resized card without overlap. Branch candidate only; no merge, push or restart.
+## [2026-11-02] - Hold role successors until child callbacks drain (BUILTINS-3 SR-3)
+
+- Added strict read-only child/delivery inspection with current-turn receipt checks, project scope and restart evidence. Unchanged threads retain their receivers and can collect child work; successors hold for active, waiting or unreceived child work and unknown database state.
+- Included operational handoff text and a second drain check before successor delivery. Existing callback targets, delivery records and SR-4 state/comms are preserved.
+- Local candidate only. Channel readiness needs the dispatching owner's interface selection; protected SR-2 patches remain unapplied. No live activation, master merge, push or restart.
+
+## [2026-11-02] - Back steward dispatch with shared assignment state (BUILTINS-3 SR-3/SR-4)
+
+- Replaced the independent SR-3 checkpoint store with SR-4 claims, sessions, snapshot hashes and acknowledged-delivery watermark. Kept project-wide exclusion; old checkpoints, uncertain delivery and unresolved prior assignments hold for review.
+- Wired SR-4 journals, lifecycle notifications and pending-reply checks, with persistence errors visible and reply classifications granting no authority. Failure notification runs outside the schedule lock.
+- Local integration candidate only. Protected SR-2 patches and the channel/child-handoff callback still block delivery; no live activation, master merge, push, restart or provider verification.
+
+## [2026-11-02] - Prepare steward role cycles through one guarded path (BUILTINS-3 SR-3)
+
+- Routed role timer fires and Run Now through a shared adapter with current character/charter/rules, explicit unattended retrieval, guard checks and visible dependency errors. Ordinary schedules retain their existing paths.
+- Added durable project-wide claims and held unknown deliveries; unchanged selections continue their thread, while owner/engine changes require a recorded successor and child handoff.
+- Local branch candidate only. SR-2 protected patches and SR-4 lifecycle integration still block role delivery; no merge, push, restart, live activation or provider parity claim.
 
 ## [2026-11-01] - Play and export the Studio timeline locally
 

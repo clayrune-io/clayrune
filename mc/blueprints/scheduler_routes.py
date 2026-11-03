@@ -39,6 +39,7 @@ from pathlib import Path
 import hashlib
 import json
 import os
+import sys
 import threading
 import time as _time
 import uuid
@@ -70,6 +71,7 @@ from mc import engine_pace_dispatch as _engine_pace_dispatch  # usage reader for
 from mc import schedule_conditions as _schedule_conditions    # "spend leftover weekly allowance"
 from mc import schedule_skip_log as _skip_log                 # skipped ticks, shown in Runs
 from mc import steward_role_model as _role_model, steward_role_writes as _role_writes
+from mc import steward_role_dispatch as _role_dispatch
 from mc.blueprints.push_mobile import _notify_push  # MC-961: same pointer, the notify/inbox surface
 from steward import core as _steward_core  # cycle-task builder + skills delta
 # NOTE: `steward.core` is a leaf (no Flask, no blueprint imports), so this does
@@ -615,8 +617,7 @@ def _scheduler_loop():
             to_delete = []  # ids of once+delete_after_run schedules to drop post-fire
             for sched in schedules:
                 if _role_model.is_role(sched):
-                    # Binding-only SR-1 must never fall through to raw-task or
-                    # legacy steward execution before the guarded role runner.
+                    _role_dispatch.timer_tick(sys.modules[__name__], sched, now, paused)
                     continue
                 if not sched.get('enabled', True):
                     continue
@@ -1194,7 +1195,7 @@ def get_schedules():
     by_id = {p['id']: p for p in projects}
     for s in schedules:
         if _role_model.is_role(s):
-            s['execution_error'] = _role_writes.EXECUTION_ERROR
+            s['execution_error'] = s.get('last_error') or _role_dispatch.execution_error(sys.modules[__name__])
         s['project_id'] = s.get('project_id', '')
         s['project_name'] = projects_map.get(s['project_id'], s['project_id'])
         # Who runs it, resolved for display. Read-only enrichment, never
@@ -1576,7 +1577,8 @@ def schedule_run_now(schedule_id):
     if not sched:
         return jsonify({'error': 'schedule not found'}), 404
     if _role_model.is_role(sched):
-        return jsonify({'error': _role_writes.EXECUTION_ERROR}), 409
+        result = _role_dispatch.scheduler_fire(sys.modules[__name__], schedule_id)
+        return jsonify(result), (200 if result['ok'] else 409)
     workflow_id = sched.get('workflow_id', '')
     if workflow_id:
         # Same branch the cadence fire takes (MC-871 Q4) — "Run Now" is an

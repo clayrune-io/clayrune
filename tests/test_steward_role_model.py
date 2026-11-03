@@ -298,11 +298,11 @@ def test_disable_retains_guard_and_binding_enable_does_not_seed_legacy(ctx):
     assert ctx.client.post('/api/project/p1/steward/enable').status_code == 403
 
 
-def test_run_now_is_blocked_pending_guarded_runner(ctx):
+def test_run_now_is_blocked_pending_role_lifecycle(ctx):
     row = create(ctx).json
     response = ctx.client.post('/api/schedule/' + row['id'] + '/run-now')
     assert response.status_code == 409
-    assert response.json['error'] == w.EXECUTION_ERROR
+    assert response.json['error'] == 'SR-4 role lifecycle adapter unavailable; delivery blocked'
 
 
 def test_stale_timer_snapshot_cannot_restore_reassigned_or_deleted_binding(ctx):
@@ -464,7 +464,8 @@ def test_timer_cannot_dispatch_role_even_with_poisoned_cached_task(ctx, monkeypa
     monkeypatch.setattr(sr._wf, 'resume_due_waits', lambda: None)
     sr._scheduler_loop()
     assert rows()[0]['last_run'] is None
-    assert ctx.client.get('/api/schedules').json[0]['execution_error'] == w.EXECUTION_ERROR
+    assert ctx.client.get('/api/schedules').json[0]['execution_error'] == (
+        'SR-4 role lifecycle adapter unavailable; delivery blocked')
 
 
 def test_project_owner_is_resolved_only_in_its_project(ctx):

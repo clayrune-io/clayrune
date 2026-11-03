@@ -32,6 +32,10 @@ def write_context_prompt(stream: Optional[IO[Any]], prompt: str,
     Bare followups and retries of a different prompt must not advance the
     fingerprint. Failed writes remain eligible for context delivery next turn.
     """
+    if '_steward_role_ack' in session:
+        from mc.steward_role_dispatch import write_native_delivery
+        write_native_delivery(stream, prompt, session, context)
+        return
     try:
         if stream is None:
             raise BrokenPipeError('prompt stdin unavailable')
@@ -70,6 +74,8 @@ def resume_prompt(context: str, message: str) -> str:
 
 def strip_resume_context(text: str) -> str:
     """Remove our reference envelope when displaying a saved user message."""
+    if text.startswith('[Steward cycle]\n\n' + CONTEXT_HEADER):
+        text = text[len('[Steward cycle]\n\n'):]
     if text.startswith(CONTEXT_HEADER):
         _, _, rest = text.partition('\n')
         metadata, _, body = rest.partition('\n')

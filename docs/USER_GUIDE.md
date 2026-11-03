@@ -540,6 +540,17 @@ Each schedule card has these actions:
   without disturbing the regular cadence. Updates `last_run` for visual
   feedback; doesn't touch `next_run`.
 
+Schedules bound to a **Steward role** use the same guarded preparation for
+timer fires and **Run Now**. They require an enabled assignment and project
+steward mode. Missing cycle resources, lifecycle integration or a demonstrated
+engine guard block delivery with a concrete error; the Runs panel records the
+reason. An active or uncertain prior cycle is held instead of starting a
+duplicate. Unchanged role threads keep child callback receivers. An owner or
+engine change waits for child callbacks to drain; unavailable delivery evidence
+blocks the switch. Role execution remains unavailable until the remaining steward
+integration is installed and verified; ordinary schedules keep their current
+behavior.
+
 **Why the Runs panel matters**: scheduled runs in Mode B (long-running
 sessions) often go idle without exiting. Clayrune writes a placeholder
 agent_log entry at dispatch time so the run appears in the Runs panel
