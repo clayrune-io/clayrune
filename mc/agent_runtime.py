@@ -8330,16 +8330,24 @@ class CodexRuntime(AgentRuntime):
         self._npx_fallback = False
         return None
 
-    def probe_allowance(self) -> Optional[bool]:
-        """Codex's app-server answers `account/rateLimits/read` from the
-        account backend with no turn and no tokens (mc/allowance_probe.py)."""
+    def read_rate_limits(self) -> Optional[dict]:
+        """Parsed `account/rateLimits/read` snapshot from Codex's app-server
+        (no turn, no tokens; mc/allowance_probe.py), or None when the binary
+        is missing or the server did not answer."""
         from mc import allowance_probe
         if not self.resolve_binary():
             return None  # never probe through the per-call npx download
         kw = ({'creationflags': _POPEN_FLAGS, 'startupinfo': _STARTUPINFO}
               if sys.platform == 'win32' else {})
-        return allowance_probe.codex_ordinary_usage_allowed(
+        return allowance_probe.codex_rate_limits_snapshot(
             self._cmd_prefix(), popen_kwargs=kw)
+
+    def probe_allowance(self) -> Optional[bool]:
+        """Codex's app-server answers `account/rateLimits/read` from the
+        account backend with no turn and no tokens (mc/allowance_probe.py)."""
+        from mc import allowance_probe
+        return allowance_probe.ordinary_usage_allowed_from(
+            self.read_rate_limits())
 
     def _cmd_prefix(self) -> List[str]:
         """Return [codex] if binary found, [npx, --yes, @openai/codex] otherwise."""

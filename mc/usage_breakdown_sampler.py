@@ -103,6 +103,11 @@ def sample_codex(store: UsageBreakdownStore, *, detail: Optional[dict]) -> int:
     """
     if not isinstance(detail, dict):
         return 0
+    # A live app-server read (source='probe') carries no rollout event time and
+    # would add a row per poll with a fresh timestamp; calibration stays on the
+    # rollout stream it has always used.
+    if detail.get('source') == 'probe':
+        return 0
     observed_at = detail.get('event_at') or detail.get('sampled_at')
     if not observed_at:
         return 0
