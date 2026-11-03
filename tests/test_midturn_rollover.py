@@ -1114,3 +1114,105 @@ def test_a_really_dead_process_after_the_roll_still_goes_to_error(env, monkeypat
     ar._guardian_check_session('worker-1', session, time.time() + 10)
 
     assert session['status'] == 'error'
+
+
+# ── Non-Claude interrupt vs. the guardian (follow-up to the above) ───────────
+# agent_interrupt's non-Claude branch kills the old proc and spawns the new one
+# inside runtime.write_followup, all under get_manager(project_id).lock. That
+# is why it needs no `_respawn_in_flight` window: the guardian's State 1 /
+# State 7 re-check `session.get('proc') is not proc` UNDER that lock, so a tick
+# that read the killed old proc blocks until write_followup has swapped in the
+# new one and then backs off. (The Claude branch releases the lock before the
+# new proc exists -- hence its window.) These pin that the lock is what holds.
+
+class _FakeRuntime:
+    """write_followup = what every Mode A runtime does: kill the old proc, then
+    (slowly) assign a new one and set status running -- all inline."""
+
+    def __init__(self, session, new_proc, on_old_dead=None, swap=True):
+        self.session, self.new_proc = session, new_proc
+        self.on_old_dead, self.swap = on_old_dead, swap
+
+    def write_followup(self, handle, message, attachments=None):
+        self.session['proc'].dead = True      # old proc killed on purpose
+        if self.on_old_dead:
+            self.on_old_dead()
+        if self.swap:
+            self.session['proc'] = self.new_proc
+            self.session['status'] = 'running'
+            self.session['last_status_change_time'] = time.time()
+            self.session['process_alive'] = True
+
+
+class _KillableProc(_Proc):
+    dead = False
+
+    def poll(self):
+        return 1 if self.dead else None
+
+
+def _wire_non_claude_interrupt(env, monkeypatch, session, runtime):
+    ar = env['ar']
+    env['sessions']['worker-1'] = session
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtime)
+    monkeypatch.setattr(ar._native_followup_context, 'refresh_stash', lambda *a, **k: None)
+    monkeypatch.setattr(ar._native_followup_context, 'message_for_turn',
+                        lambda p, s, m: m)
+    monkeypatch.setattr(ar, '_mode_a_token_rollover', lambda *a: a[-1])
+    monkeypatch.setattr(ar, '_bridge_images_for_blind_model', lambda m, *a, **k: m)
+    monkeypatch.setattr(ar, '_pid_is_alive', lambda pid: False)
+
+
+# The tick runs 3s ahead: 10s quiet = 13s reaches the guardian's State 1 (>2s);
+# 60s quiet = 63s reaches State 7 (>15s) first. Each re-checks `proc` under the lock.
+@pytest.mark.parametrize('quiet_for', [10, 60], ids=['state1', 'state7'])
+@pytest.mark.parametrize('provider', ['gemini', 'codex', 'qwen'])
+def test_guardian_tick_during_non_claude_interrupt_leaves_session_running(
+        env, monkeypatch, provider, quiet_for):
+    ar = env['ar']
+    old = _KillableProc(pid=1)
+    session = _session(old, provider=provider, mode='A', claude_session_id='',
+                       last_status_change_time=time.time() - quiet_for)
+    guardian = []
+
+    def _tick_from_another_thread():
+        # The guardian is its own thread. It has read the killed old proc as
+        # `proc` and reaches the lock while write_followup still holds it.
+        t = threading.Thread(target=lambda: ar._guardian_check_session(
+            'worker-1', session, time.time() + 3), name='guardian-tick')
+        guardian.append(t)
+        t.start()
+        time.sleep(0.3)     # long enough to read the dead proc and block on the lock
+
+    rt = _FakeRuntime(session, _KillableProc(pid=2), on_old_dead=_tick_from_another_thread)
+    _wire_non_claude_interrupt(env, monkeypatch, session, rt)
+
+    payload, status = ar.agent_interrupt('p1', _internal={
+        'session_id': 'worker-1', 'message': 'new instruction'})
+    for t in guardian:
+        t.join(5)
+
+    assert (status, payload['ok']) == (200, True)
+    assert guardian and not guardian[0].is_alive()
+    assert session['proc'] is rt.new_proc
+    assert session['status'] == 'running' and _floor_lists(session)
+    assert not [l for l in session['log_lines'] if 'found dead' in str(l)]
+
+
+def test_non_claude_process_that_really_dies_after_interrupt_still_goes_to_error(
+        env, monkeypatch):
+    ar = env['ar']
+    old = _KillableProc(pid=1)
+    session = _session(old, provider='gemini', mode='A', claude_session_id='',
+                       last_status_change_time=time.time() - 60)
+    new = _KillableProc(pid=2)
+    rt = _FakeRuntime(session, new)
+    _wire_non_claude_interrupt(env, monkeypatch, session, rt)
+    ar.agent_interrupt('p1', _internal={'session_id': 'worker-1', 'message': 'go'})
+    assert session['status'] == 'running' and session['proc'] is new
+
+    new.dead = True     # the NEW process dies on its own, later
+    ar._guardian_check_session('worker-1', session, time.time() + 10)
+
+    assert session['status'] == 'error'
+    assert [l for l in session['log_lines'] if 'found dead' in str(l)]
