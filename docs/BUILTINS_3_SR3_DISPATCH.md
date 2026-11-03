@@ -165,16 +165,8 @@ reserve or disable ordinary chat APIs or replace the delivery system's own
 receiver guards. A live rollout must still exercise callback arrival around
 successor selection. No live provider/child-retention claim is made here.
 
-**Remaining interface decision for Dave: channel readiness.** SR-4 provides
-state, journaling, decision routing and default mail/digest runners. The
-existing `question_channel.channel_for(project)` selects `email` or `off`,
-but there is no no-send readiness/status API. The existing `_creds` and
-mailer `_load_config` return credential values; those are not acceptable
-agent-facing readiness contracts. SR-4's default runners are fixed to the
-application tool paths, not a project-scoped tool registration. No credential
-file/value was read or script invoked to work around this missing contract.
-
-The current production gate remains:
+**Channel readiness: Option A implemented (Dave's decision).** The thin
+scheduler callback delegates to new `mc/steward_role_channel.py`:
 
 ```python
 scheduler_routes.steward_role_lifecycle(project, schedule, event, detail) -> str
@@ -182,29 +174,38 @@ scheduler_routes.steward_role_lifecycle(project, schedule, event, detail) -> str
 # channel readiness approval and optional handoff text; raises on a blocker
 ```
 
-SR-3 now owns the child check/text and SR-4 journal calls; this missing callback
-only needs channel readiness. `fire` still refuses its absence explicitly.
-No dummy always-ready implementation is installed.
+The probe accepts only `first_fire`, `continue`, `successor`, `accepted` and
+requires the existing `question_channel.channel_for(project)` to select email.
+The project's mailer/digest paths must resolve to SR-4's actual runner paths;
+unconfigured other projects cannot borrow the pilot sender. It checks both
+scripts and the digest's existing server, IMAP quoting and laundering files
+with filesystem metadata. Missing tools, unsupported/off routing, unavailable
+filesystem metadata and the existing `~/.clayrune/mail_paused` switch hold
+with concrete channel errors. No project settings or tool registry are added.
 
-Two choices, not selected by the builder:
+Credential-source evidence is either the presence of the regular file
+`~/.clayrune/night-mail.json` or both environment variable **names**
+`NIGHT_MAIL_USER` and `NIGHT_MAIL_APP_PASSWORD`. These paths match the tools'
+`Path.home()` contract, not the application's `CLAYRUNE_HOME` override.
+Environment names are enumerated without value lookup; the credential file
+is never opened or parsed. No tool is imported/executed, no mail sent, no
+IMAP connection opened and no model invoked. Exceptions never echo arbitrary
+filesystem text. The callback does not consume or mutate schedule/detail.
 
-- **A (recommended):** add a no-send, metadata-only readiness probe to the
-  existing pilot mail tooling; keep unconfigured other projects visibly held.
-  Cost: a probe contract and command tests, without new project settings.
-- **B:** add project-scoped approved sender/digest tool registration and
-  readiness metadata. Cost: configuration/schema and registration tests in
-  addition to the runtime adapter; wider than the current SR-3 scope.
-
-Both preserve existing routing, mail pause/send verification, reply laundering
-and human gates. Dave selects the interface before the missing callback is
-implemented; no product option or credential-access rule was inferred here.
+Approval attests only configuration metadata; empty environment values,
+malformed credential contents, authentication, network, model availability
+and actual delivery remain **unverified**. The handoff states that limit.
+Existing mail pause/send verification, reply laundering, child continuity,
+SR-4 journal/state and human gates remain in their original services.
+`SchedulerServices.lifecycle` still supplies the child snapshot and drain gate;
+this callback adds no duplicate child logic.
 
 Required before enabling a role:
 
 1. Human integration of both SR-2 patches (core adapter and directive).
-2. Dave-selected channel readiness interface and its production callback.
-   Child drain checks are implemented; controlled callback-race verification
-   remains part of live acceptance.
+2. Channel configuration metadata must pass the implemented Option A callback.
+   Controlled callback-race and actual channel verification remain part of
+   live acceptance.
 3. A controlled cycle on each enabled installed guard-capable provider;
    adapter mocks alone are not rollout evidence.
 
@@ -311,3 +312,57 @@ Follow-up changed paths: `mc/steward_role_children.py`,
 `tests/test_steward_role_children.py`, `mc/steward_role_dispatch.py`,
 `docs/BUILTINS_3_SR3_DISPATCH.md`, `docs/BUILTINS_3_STEWARD_ROLE_SPEC.md`,
 `docs/USER_GUIDE.md`, `CHANGELOG.md`. SR-4 state/comms remain unchanged.
+
+## Option A readiness follow-up validation
+
+2026-11-02, based on merged SR-3 `ff6cf38e`. The metadata callback is now
+present; no protected patches or live rollout are included. The new file
+`tests/test_steward_role_channel.py` contains 38 cases, including all four
+lifecycle events, both credential-source metadata forms, wrong/missing tools,
+foreign projects, off/unsupported routing, pause, sanitized metadata errors,
+and guards against credential/tool reads, environment value access, tool
+execution, mail, IMAP and laundering. Real SR-3 preparation reaches accepted
+state with metadata and holds before delivery without it. The production
+`fire` seam retains the existing child gate. `execution_error` discovers the
+callback while retaining SR-2 dependency checks.
+
+The two old model-suite assertions assumed the adapter did not exist. Run Now
+now explicitly removes the callback to exercise the missing-adapter guard;
+the timer poisoned-task test expects the actual disabled-role refusal.
+
+From this worktree's `tests/` directory, the requested patterns were expanded
+to all 23 matching files, without exclusions:
+
+```powershell
+$cases = Get-ChildItem -Name test_steward_role_*.py, test_scheduler_*.py, test_delegation_*.py, test_distiller_safety.py | Sort-Object -Unique
+python -m pytest -q -o addopts='' --tb=short @cases
+```
+
+Actual execution used the equivalent foreground registered helper
+`python ../_scratch/run_channel_regression.py`, whose Windows main guard
+passes the expanded list directly to `pytest.main`.
+**652 passed, 1 existing skipped in 29.94s, rc=0.** This is the readiness
+follow-up's requested suite; the 1204-case result above is historical child
+follow-up validation, not a claim that list was rerun here.
+
+From the worktree root:
+
+```text
+pyright mc/steward_role_channel.py mc/blueprints/scheduler_routes.py
+git diff --check
+```
+
+**0 errors, 0 warnings, rc=0; diff check rc=0.** No new dependency. The
+scheduler monolith adds only an import and callback wrapper; all new policy
+lives in the new module. No state/comms, child-drain or protected file edits.
+USER_GUIDE/README/rules need no change: this is internal readiness wiring
+with no new UI, installation steps or authority. No static changes, so browser
+smokes are inapplicable. Credential validity, actual mail/digest operation,
+provider execution and callback races remain live acceptance work for Dave.
+
+Changed paths in this follow-up: `mc/steward_role_channel.py`,
+`mc/blueprints/scheduler_routes.py`, `tests/test_steward_role_channel.py`,
+`tests/test_steward_role_model.py`, this contract,
+`docs/BUILTINS_3_STEWARD_ROLE_SPEC.md`, `CHANGELOG.md`. The item journal is
+appended in the main checkout (gitignored), avoiding a stranded worktree log.
+No merge, push, restart or role activation was performed.
