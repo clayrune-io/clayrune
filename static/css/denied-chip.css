@@ -1,0 +1,31 @@
+/* Quiet transcript disclosure; native summary supplies tap/keyboard behavior. */
+.denied-chip {
+  align-self: flex-start;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  margin: 4px 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.denied-chip > summary {
+  width: fit-content;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface3);
+  cursor: pointer;
+}
+.denied-chip > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.denied-chip > ul {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  list-style: none;
+  border-left: 2px solid var(--border);
+}
+.denied-chip li + li { margin-top: 8px; }
+.denied-chip-tool { display: block; font-weight: 600; overflow-wrap: anywhere; }
+.denied-chip code { display: block; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-03] - Collapse blocked commands in agent chat
+
+- Consecutive permission/hook denial lines appear as one small, closed **1 command blocked** / **N commands blocked** chip in live and restored chats. Tap or click to inspect tool names and command text; keyboard activation works too.
+- Commands remain literal text, including HTML-shaped strings, and long commands wrap on mobile. The server log and permission behavior are unchanged.
+
 ## [2026-11-03] - Verify continuity before reporting carried work as live (MC-1146)
 
 - Continuity names the chat's origin: user-started, resumed or auto-fresh rollover, with the first project session after server start/restart identified explicitly. Old activity text cannot decide the origin.
