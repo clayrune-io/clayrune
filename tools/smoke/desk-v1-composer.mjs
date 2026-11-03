@@ -201,6 +201,28 @@ try {
   await s.page.click('[data-composer-save]'); await saved(s.page);
   assert.equal(partial.versions.length, 2, 'retry creates only the missing destination');
   console.log('PASS partial destination failure retries without duplicating successful destinations');
+  // Breadcrumb: Desk and the campaign are links; the post title is the current page.
+  s.control.fail = null;
+  const crumbText = (page) => page.evaluate(() => document.querySelector('#desk-v1-crumb')?.innerText);
+  await what(s.page);
+  const campaignCrumb = await crumbText(s.page);
+  await open(s.page);
+  assert.equal(await s.page.locator('.desk-v1-composer-breadcrumb [aria-current="page"]').count(), 1);
+  await s.page.click('[data-composer-crumb="campaign"]');
+  await s.page.waitForSelector('[data-what-type="post"]');
+  assert.equal(await s.page.locator('[data-composer]').count(), 0, 'campaign crumb leaves the composer');
+  assert.equal(await crumbText(s.page), campaignCrumb, 'campaign crumb pops to the same campaign entry, Back reads as before');
+  await open(s.page);
+  await s.page.click('[data-composer-crumb="home"]');
+  await s.page.waitForFunction(() => !document.querySelector('[data-composer]') && !window.deskV1CanGoBack());
+  // Deep link (no campaign entry on the stack): the campaign crumb pushes the campaign page.
+  await s.page.evaluate(() => window.deskV1Nav('composer', { campaignId: 'camp-1', familyId: 'fam-post-crumb' }));
+  await s.page.waitForSelector('[data-composer]');
+  await s.page.click('[data-composer-crumb="campaign"]');
+  await s.page.waitForSelector('[data-what-type="post"], .desk-v1-campaign, [data-campaign-id]');
+  assert.equal(await s.page.locator('[data-composer]').count(), 0);
+  assert.deepEqual(s.errors, []);
+  console.log('PASS breadcrumb: campaign pops to the campaign page, Desk returns Home, deep link pushes the campaign');
   await s.ctx.close();
   const demo = await boot(browser, 390, false);
   await open(demo.page); await demo.page.fill('[data-composer-text]', 'Demo text only'); await saved(demo.page);

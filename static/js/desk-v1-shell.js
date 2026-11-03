@@ -281,6 +281,25 @@
     deskV1Render();
   }
 
+  // A page's own in-body breadcrumb (the composer's `Desk › campaign › post`)
+  // jumps to an ancestor: pop back to the nearest stack entry that matches,
+  // so Back afterwards reads the same as if the user had pressed Back; if no
+  // such entry is on the stack (a deep link), push it like a plain nav.
+  function deskV1JumpTo(route, params) {
+    params = params || {};
+    const keys = Object.keys(params).filter((k) => k !== 'projectId');
+    for (let i = _stack.length - 1; i >= 0; i--) {
+      const e = _stack[i];
+      if (e.route === route && keys.every((k) => e.params[k] === params[k])) {
+        _stack.length = i + 1;
+        deskV1Render();
+        return;
+      }
+    }
+    if (route === 'home') { _stack = [{ route: 'home', params: {} }]; deskV1Render(); return; }
+    deskV1Nav(route, params);
+  }
+
   function deskV1Render() {
     if (!_stack.length) _stack.push({ route: 'home', params: {} });
     const entry = _stack[_stack.length - 1];
@@ -556,5 +575,6 @@
   window.deskV1Render = deskV1Render;
   window.deskV1PatchParams = deskV1PatchParams;
   window.deskV1PopTo = deskV1PopTo;
+  window.deskV1JumpTo = deskV1JumpTo;
   window.deskV1GotoCampaignPanel = deskV1GotoCampaignPanel;
 })();

@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-02] - Clickable composer breadcrumb
+
+- In the post composer, **Desk** and the campaign name at the top are now links. Desk goes to Home, the campaign name to its campaign page. If you came from that campaign, Back then reads the same as pressing Back. Unsaved text is kept.
+
 ## [2026-11-02] - Drag the Studio time ruler to stretch or squeeze
 
 - Drag the time ruler right to widen the time units or left to narrow them; the time you grab stays under the pointer. Like the zoom buttons, this switches to manual zoom until **Fit**.

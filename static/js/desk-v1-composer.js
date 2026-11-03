@@ -173,7 +173,7 @@ import './desk-v1-composer-preview.js';
     const locked = d.fam?.archivedAt || (d.fam?.versions || []).some((v) => ['approved', 'scheduled'].includes(v.state) || channels().sent(v));
     d.locked = !!locked;
     el.innerHTML = `<section class="desk-v1-composer" data-composer data-composer-family="${esc(d.id)}">
-      <div class="desk-v1-composer-top"><div class="desk-v1-composer-breadcrumb">Desk <span>›</span> ${esc(camp.plan.title || 'Campaign')} <span>›</span> <strong>${esc(d.fam?.title || UNTITLED)}</strong></div>
+      <div class="desk-v1-composer-top"><nav class="desk-v1-composer-breadcrumb" aria-label="Breadcrumb"><button type="button" data-composer-crumb="home">Desk</button> <span aria-hidden="true">›</span> <button type="button" data-composer-crumb="campaign">${esc(camp.plan.title || 'Campaign')}</button> <span aria-hidden="true">›</span> <strong aria-current="page">${esc(d.fam?.title || UNTITLED)}</strong></nav>
         <div class="desk-v1-composer-actions"><button type="button" class="btn-secondary" data-composer-save>Save draft</button><button type="button" class="btn-secondary" data-composer-when aria-expanded="false">When</button><button type="button" class="btn-add" data-composer-review>Send to Review</button></div></div>
       <div data-composer-schedule hidden></div>
       <div class="desk-v1-composer-sheet"><div data-composer-name></div><h2>Post to</h2><div data-composer-channels>${channels().html(camp, d)}</div>
@@ -185,6 +185,13 @@ import './desk-v1-composer-preview.js';
     input.oninput = () => {
       d.text = input.value; d.status = 'Unsaved changes'; d.failed = false; update(d);
       if (!d.fam && d.text.trim()) save(camp, d, false);
+    };
+    // Drafts live in `drafts`, so leaving by a crumb keeps unsaved text, same as Back.
+    el.querySelector('.desk-v1-composer-breadcrumb').onclick = (e) => {
+      const b = e.target.closest('[data-composer-crumb]');
+      if (!b) return;
+      if (b.dataset.composerCrumb === 'home') window.deskV1JumpTo('home');
+      else window.deskV1JumpTo('campaign', { campaignId: camp.id, projectId: camp.projectId });
     };
     el.querySelector('[data-composer-save]').onclick = () => save(camp, d, false, true);
     el.querySelector('[data-composer-review]').onclick = () => save(camp, d, true);

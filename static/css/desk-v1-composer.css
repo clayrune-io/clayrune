@@ -2,6 +2,8 @@
 .desk-v1-composer-top { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; justify-content: space-between; margin-bottom: 28px; }
 .desk-v1-composer-breadcrumb { font-size: 13px; overflow-wrap: anywhere; }
 .desk-v1-composer-breadcrumb span { margin: 0 7px; opacity: .5; }
+.desk-v1-composer-breadcrumb button { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px; overflow-wrap: anywhere; text-align: start; }
+.desk-v1-composer-breadcrumb button:hover, .desk-v1-composer-breadcrumb button:focus-visible { color: var(--accent, #c4663c); text-decoration-color: currentColor; }
 .desk-v1-composer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .desk-v1-composer-sheet { background: var(--bg-card, #fffdf8); border: 1px solid var(--border, #e2d9ce); border-radius: 14px; padding: 26px; }
 .desk-v1-composer-sheet h2 { margin: 0 0 12px; font-size: 14px; }

@@ -1487,6 +1487,10 @@ the first nonblank text or valid media creates a **New post** draft. Use **Save 
 subsequent text edits and check the **Saved** message. A refused write keeps
 your text available for retry.
 
+The line at the top of the composer (**Desk › campaign › post**) is clickable:
+**Desk** goes to Home and the campaign name goes to that campaign's page. Text
+you have not saved yet stays in the composer, the same as pressing **Back**.
+
 **Name** appears at the top of the composer once the draft exists. Click its
 name (or press Enter on it), type a name, then press Enter or leave the field
 to save. Escape cancels. The calendar and post cards use that same name.
