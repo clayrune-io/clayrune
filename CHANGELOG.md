@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-02] - Ground Desk agents in the project's product materials
+
+- Campaign conversations, storyboard generation/chat and article chat now receive the project's description and bounded document excerpts as data. They stay toolless and are told to ground product claims in those materials and acknowledge gaps.
+- **Product materials** beside the planner controls adds/removes up to six project-relative text files. Unset uses `README.md`; an empty list disables documents, and **Use README default** restores the default. The campaign conversation shows **Reads:** with the files actually loaded.
+- Paths outside the project (including symlink escapes), non-text types and secret-shaped names are refused. Missing/unreadable files carry a note; excerpts are limited to 8 KiB per file and 24 KiB total. Branch candidate only; no live materials configuration, merge, push or restart.
+
 ## [2026-11-02] - Restrict opt-in unattended Aider to the audited coding surface (BUILTINS-5b)
 
 - Added a default-OFF, human-config-gated adapter for source-pinned Aider 0.86.2. Dispatch and follow-up verify the source and guard before using the restricted runner; flag-off and drift retain visible refusal.

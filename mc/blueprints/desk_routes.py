@@ -157,7 +157,9 @@ def _valid_agent_ref(project: dict, ref: str) -> bool:
 
 @bp.route('/api/desk/presence/<project_id>', methods=['GET'])
 def get_presence(project_id):
-    return jsonify(_desk.get_presence(project_id) or {'project_id': project_id, 'desk_agent': None})
+    from mc.desk_product_context import presence_materials
+    return jsonify(presence_materials(load_project(project_id) if load_project else None,
+                                     _desk.get_presence(project_id) or _desk._empty_presence(project_id)))
 
 
 @bp.route('/api/desk/presence/<project_id>', methods=['PATCH'])
@@ -168,11 +170,17 @@ def patch_presence(project_id):
     if not project:
         return jsonify({'error': 'project not found'}), 404
     d = request.get_json(silent=True) or {}
-    # Only `desk_agent` and `state` are writable here. `upsert_presence` would
+    # Only planner, product docs and state are writable here. `upsert_presence` would
     # take any key, including `budget`, whose earmark bounds are enforced
     # elsewhere — this route must not become a way around them.
-    if set(d) - {'desk_agent', 'state'}:
-        return jsonify({'error': 'only desk_agent and state may be set here'}), 400
+    if not isinstance(d, dict) or set(d) - {'desk_agent', 'state', 'product_docs'}:
+        return jsonify({'error': 'only desk_agent, state and product_docs may be set here'}), 400
+    from mc.desk_product_context import presence_materials, validate_product_docs
+    if 'product_docs' in d:
+        try:
+            d['product_docs'] = validate_product_docs(d['product_docs'], project)
+        except (ValueError, TypeError) as e:
+            return jsonify({'error': str(e)}), 400
     if 'state' in d and d['state'] not in _desk.PROJECT_STATES:
         return jsonify({'error': f"state must be one of {list(_desk.PROJECT_STATES)}"}), 400
     if d.get('desk_agent') is not None:
@@ -181,14 +189,15 @@ def patch_presence(project_id):
             return jsonify({'error': f'unknown agent {ref!r} — pick one from '
                                       f'/api/characters?project_id={project_id}'}), 400
     if 'state' not in d:
-        return jsonify(_desk.upsert_presence(project_id, d))
+        return jsonify(presence_materials(project, _desk.upsert_presence(project_id, d, project=project)))
     # Pausing/resuming a project cascades to its campaigns in the same write
     # (R1-W S1), so the state never lands without them. `desk_agent`, if sent
     # too, is merged first so one request is one outcome.
-    if 'desk_agent' in d:
-        _desk.upsert_presence(project_id, {'desk_agent': d['desk_agent']})
+    fields = {k: v for k, v in d.items() if k != 'state'}
+    if fields:
+        _desk.upsert_presence(project_id, fields, project=project)
     result = _desk.set_project_state(project_id, d['state'])
-    return jsonify(dict(result['presence'], cascade={
+    return jsonify(dict(presence_materials(project, result['presence']), cascade={
         'campaigns': result['campaigns'], 'changed': result['changed'],
         'held': result['held']}))
 

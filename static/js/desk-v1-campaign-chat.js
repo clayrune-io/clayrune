@@ -74,6 +74,7 @@
         <textarea class="agent-task-input desk-v1-posy-input" id="${INPUT_ID}" data-sb-ask rows="2" aria-label="Message ${name}" placeholder="Ask ${name} about the campaign, or brainstorm with them…"></textarea>
         <button type="button" class="btn-dispatch" data-posy-send="${INPUT_ID}">Send</button>
       </div>
+      ${window.DeskV1ProductMaterials.readsHTML(window.DeskV1Store.state().projects.find((p) => p.id === opts.campaign.projectId))}
     </div>`;
   }
 

@@ -1393,6 +1393,21 @@ open the project from Home and use the agent button in its header or
 same picker. Choosing a default leaves existing campaign choices in place;
 **Undo** reverses the default change.
 
+**Product materials**, beneath the planner controls on the project page or a
+campaign's **Brief**, chooses the documents its agents read about the product.
+Enter a path relative to the project's folder, such as `docs/LAUNCH_COPY.md`,
+and choose **Add**; **Remove** drops a file. These settings are shared by all
+campaigns for that project. With no custom list, agents read `README.md` when
+available; removing every file disables document context, and **Use README
+default** restores it. Up to six `.md`, `.markdown`, `.txt` or `.rst` files are
+allowed, inside the project folder only; secret-shaped filenames are refused.
+The campaign conversation's muted **Reads:** line names files successfully
+loaded, and the control explains skipped files. Each call receives fresh
+excerpts (up to 8 KiB per file, 24 KiB total) plus the project description,
+including storyboard and article calls with a selected project. Agents have no
+file tools: they are told to use these materials for product claims and say
+when the excerpts do not cover something.
+
 Home shows **[name] plans & writes** for the project default, or for the shared
 agent when all its live campaigns have chosen the same one. When those
 campaigns use different agents, it says **Each campaign has its own agent**.

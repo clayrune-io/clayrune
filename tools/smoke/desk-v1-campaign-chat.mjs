@@ -49,7 +49,8 @@ function makeServer({ agent = 'global:claydo' } = {}) {
   const fx = loadFixtures();
   const projects = fx.projects.map((p) => ({ id: p.id, name: p.name, state: 'active', roster: [], presence: { replies: 'drafts', desk_agent: p.id === 'clayrune' ? agent : null, state: 'active' } }));
   const campaigns = fx.campaigns.map((c) => JSON.parse(JSON.stringify(c)));
-  const srv = { log: [], threads: {}, campaigns, fx, reply: null };
+  projects.forEach((p) => Object.assign(p.presence, { product_docs: null, product_materials: ['README.md'] }));
+  const srv = { log: [], threads: {}, campaigns, projects, fx, reply: null };
   srv.workspace = () => ({ ...workspaceFromFixtures(fx), projects, campaigns: campaigns.map((c) => JSON.parse(JSON.stringify(c))) });
   return srv;
 }
@@ -84,6 +85,14 @@ async function newPage(browser, { live = true, srv, viewport = { width: 1400, he
     try { body = req.postDataJSON(); } catch (_) { /* no body */ }
     srv.log.push({ method, path, body });
     if (path === '/api/desk/workspace') return J(srv.workspace());
+    const presence = path.match(/^\/api\/desk\/presence\/([^/]+)$/);
+    if (presence && method === 'PATCH') {
+      const project = srv.projects.find((p) => p.id === presence[1]);
+      if (!project) return J({ error: 'project not found' }, 404);
+      if (body.product_docs && body.product_docs.some((p) => p.includes('..'))) return J({ error: 'use a path relative to the project folder, without ..' }, 400);
+      Object.assign(project.presence, body, { product_materials: body.product_docs == null ? ['README.md'] : body.product_docs, product_materials_note: null });
+      return J(project.presence);
+    }
     const m = path.match(/^\/api\/desk\/campaigns\/([^/]+)\/chat$/);
     if (m) {
       const id = m[1];
@@ -338,6 +347,49 @@ async function demo(browser) {
   await ctx.close();
 }
 
+async function productMaterials(browser) {
+  for (const width of [1440, 390]) {
+    const srv = makeServer();
+    const { ctx, page, pageErrors } = await newPage(browser, { srv, viewport: { width, height: 950 } });
+    await openCampaign(page, 'camp-1', 'how');
+    await settle(page, () => !!document.querySelector('[data-product-add]'));
+    const reads = () => page.$eval('[data-product-reads]', (e) => e.textContent);
+    (await reads()) === 'Reads: README.md' ? ok(`${width}: chat names default README`) : fail(`${width}: no README line`);
+    await page.click('.desk-v1-product-materials summary');
+    await page.fill('[data-product-path]', 'docs/LAUNCH_COPY.md');
+    await page.click('[data-product-add] button');
+    await settle(page, () => /LAUNCH_COPY/.test(document.querySelector('[data-product-reads]').textContent));
+    const patch = srv.log.filter((r) => r.method === 'PATCH' && /presence/.test(r.path)).at(-1);
+    JSON.stringify(patch.body.product_docs) === JSON.stringify(['README.md', 'docs/LAUNCH_COPY.md'])
+      ? ok(`${width}: Add saves project-relative files through presence PATCH and refreshes Reads`) : fail(`${width}: wrong materials payload`);
+    if (process.env.SMOKE_SCREENSHOT_DIR) await page.screenshot({ path: resolve(process.env.SMOKE_SCREENSHOT_DIR, `product-materials-${width}.png`) });
+    await page.fill('[data-product-path]', '../outside.md');
+    await page.click('[data-product-add] button');
+    await settle(page, () => /without/.test(document.querySelector('[data-product-error]').textContent));
+    (await reads()).includes('LAUNCH_COPY') ? ok(`${width}: server refusal is visible and leaves Reads intact`) : fail(`${width}: refusal changed materials`);
+    await page.click('[data-product-remove="1"]');
+    await settle(page, () => document.querySelector('[data-product-reads]').textContent === 'Reads: README.md');
+    await page.click('[data-product-remove="0"]');
+    await settle(page, () => /No product materials/.test(document.querySelector('[data-product-reads]').textContent));
+    ok(`${width}: Remove persists an explicit empty list and shows the no-materials line`);
+    await page.click('[data-product-default]');
+    await settle(page, () => document.querySelector('[data-product-reads]').textContent === 'Reads: README.md');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
+    await page.evaluate(() => window.sidebarNav('social'));
+    await settle(page, () => !!window.DeskV1Store.state().campaigns.length);
+    await openCampaign(page, 'camp-1', 'how');
+    (await reads()) === 'Reads: README.md' ? ok(`${width}: README default survives reload`) : fail(`${width}: reload lost materials`);
+    const overflow = await page.$eval('.desk-v1-how', (e) => e.scrollWidth > e.clientWidth + 1);
+    !overflow ? ok(`${width}: materials control fits the Brief column`) : fail(`${width}: materials overflow`);
+    await page.evaluate(() => window.deskV1Nav('project', { projectId: 'clayrune' }));
+    await settle(page, () => !!document.querySelector('.desk-v1-project [data-product-add]'));
+    ok(`${width}: project planner exposes the shared Product materials control too`);
+    realErrors(pageErrors).forEach((e) => fail(`${width}: page error: ${e}`));
+    await ctx.close();
+  }
+}
+
 const browser = await chromium.launch();
 try {
   console.log('live ON: conversation'); const prior = await conversation(browser);
@@ -345,6 +397,7 @@ try {
   console.log('live ON: Suggest button'); await suggestButton(browser);
   console.log('live ON: no agent'); await noAgent(browser);
   console.log('live ON: text size + pop-out'); await chrome(browser);
+  console.log('live ON: product materials'); await productMaterials(browser);
   console.log('live OFF: demo'); await demo(browser);
 } catch (e) { fail('harness error: ' + (e && e.stack || e)); }
 await browser.close();

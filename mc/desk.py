@@ -353,6 +353,7 @@ def _empty_presence(project_id: str) -> dict:
         'ceilings': {},
         'replies': 'drafts',
         'desk_agent': None,
+        'product_docs': None,
         'budget': dict(_DEFAULT_PRESENCE_BUDGET),
         'measurement': [],
         'updated_at': None,
@@ -365,7 +366,7 @@ def get_presence(project_id: str) -> dict | None:
     return store['presences'].get(project_id)
 
 
-def upsert_presence(project_id: str, patch: dict) -> dict:
+def upsert_presence(project_id: str, patch: dict, *, project: dict | None = None) -> dict:
     """Merge `patch` onto the project's presence record, creating it if new.
 
     Accepts an old-shaped `production` key defensively (a caller PUTting a
@@ -373,6 +374,9 @@ def upsert_presence(project_id: str, patch: dict) -> dict:
     before the merge so it never lands in the store under its old name.
     """
     patch = dict(patch or {})
+    if 'product_docs' in patch:
+        from mc.desk_product_context import validate_product_docs
+        patch['product_docs'] = validate_product_docs(patch['product_docs'], project)
     if 'production' in patch and 'budget' not in patch:
         patch['budget'] = patch.pop('production')
     with _store_lock:
@@ -2269,6 +2273,7 @@ def v1_workspace(projects: Iterable[dict]) -> dict:
     family shape (`mc.desk_pieces.v1_piece`), oldest first."""
     with _store_lock:
         store = _read_store()
+    from mc.desk_product_context import presence_materials
     presences = store['presences']
     rows = []
     for p in projects:
@@ -2282,11 +2287,12 @@ def v1_workspace(projects: Iterable[dict]) -> dict:
             'state': pres.get('state') or 'active',
             'roster': [r.get('character') for r in (p.get('roster') or [])
                        if isinstance(r, dict) and r.get('character') and not r.get('removed_at')],
-            'presence': {
+            'presence': presence_materials(p, {
                 'replies': pres.get('replies') or 'drafts',
                 'desk_agent': pres.get('desk_agent'),
                 'state': pres.get('state') or 'active',
-            },
+                'product_docs': pres.get('product_docs'),
+            }),
         })
     camps = sorted(store['campaigns'].values(), key=lambda r: r.get('created_at') or '', reverse=True)
     return {
