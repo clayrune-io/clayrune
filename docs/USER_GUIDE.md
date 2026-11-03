@@ -1384,6 +1384,17 @@ saved settings carried the old off default. After that switch, your choice is
 kept: turn **Settings > Appearance > Experimental > Desk v1** off to return to the
 legacy Desk. Legacy Desk views remain read-only while Desk v1 is on.
 
+### Conversation large view
+
+Desk conversations have **A−** / **A+** text-size buttons and a **large-view**
+button above their messages. In the large view, drag the empty part of that
+strip to move the window, or drag its edges and corners with a mouse to resize it. Movement
+supports a mouse or a single touch on screens wider than 960px; the strip stays
+within reach at the screen edges. Buttons keep their normal actions.
+Choose **Close** or press Escape to return to the page. Opening the large view
+again restores its default position and size. On screens 960px wide or less,
+the large view stays inset from the screen edges and does not move.
+
 ### Project and campaign planners
 
 Each campaign can choose its own agent on **Brief**. A project's default
