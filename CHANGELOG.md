@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-02] - Restrict opt-in unattended Aider to the audited coding surface (BUILTINS-5b)
+
+- Added a default-OFF, human-config-gated adapter for source-pinned Aider 0.86.2. Dispatch and follow-up verify the source and guard before using the restricted runner; flag-off and drift retain visible refusal.
+- Whole-file and SEARCH/REPLACE edits, preparation writes, `/run`, suggested shell and git subprocesses use the steward fence. Voice, web, save, `/git`, other commands, patch/udiff, browser/GUI and installer paths refuse before execution.
+- Real-Aider tests turn the five prior bypasses into positive refusal checks and retain allowed edit/shell controls. Source-only experimental path; no provider, POSIX or packaged-app certification. Branch candidate only; no merge, push, restart or live enablement.
+
 ## [2026-11-02] - Steward role editor and pilot migration tool (BUILTINS-3 SR-5)
 
 - **Automation → Steward roles**: cards for each role (state, charter, cadence, owner, journal) with Start / Stop / Edit. Install-level blockers (cycle composer patch, decision-channel adapter, unattended guard) are listed one by one and Start stays disabled while any stands.

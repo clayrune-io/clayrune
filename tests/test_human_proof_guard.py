@@ -443,22 +443,27 @@ def config_client(monkeypatch):
     return server.app.test_client()
 
 
-def test_config_put_no_passcode_refused(config_client, monkeypatch):
+@pytest.mark.parametrize('key', ['scheduler_paused', 'aider_restricted_adapter_enabled'])
+def test_config_put_no_passcode_refused(config_client, monkeypatch, key):
     _set_passcode(monkeypatch)
-    resp = config_client.put('/api/config', json={'scheduler_paused': True}, headers=UI_HEADERS)
+    resp = config_client.put('/api/config', json={key: True}, headers=UI_HEADERS)
     _assert_refused(resp, 'bad_passcode')
 
 
-def test_config_put_wrong_passcode_refused(config_client, monkeypatch):
+@pytest.mark.parametrize('key', ['scheduler_paused', 'aider_restricted_adapter_enabled'])
+def test_config_put_wrong_passcode_refused(config_client, monkeypatch, key):
     _set_passcode(monkeypatch)
-    resp = config_client.put('/api/config', json={'scheduler_paused': True, 'passcode': WRONG}, headers=UI_HEADERS)
+    resp = config_client.put('/api/config', json={key: True, 'passcode': WRONG}, headers=UI_HEADERS)
     _assert_refused(resp, 'bad_passcode')
 
 
-def test_config_put_correct_passcode_succeeds(config_client, monkeypatch):
+@pytest.mark.parametrize('key', ['scheduler_paused', 'aider_restricted_adapter_enabled'])
+def test_config_put_correct_passcode_succeeds(config_client, monkeypatch, key):
     _set_passcode(monkeypatch)
-    resp = config_client.put('/api/config', json={'scheduler_paused': True, 'passcode': PASSCODE}, headers=UI_HEADERS)
+    resp = config_client.put('/api/config', json={key: True, 'passcode': PASSCODE}, headers=UI_HEADERS)
     assert resp.status_code == 200, resp.get_data(as_text=True)
+    from mc import state
+    assert state.CONFIG[key] is True
 
 
 # ── distiller promote (1): mc/blueprints/distiller_routes.py ──────────────

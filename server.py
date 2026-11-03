@@ -324,6 +324,8 @@ def _load_config():
         # _CONFIG_EDITABLE_KEYS, so PUT /api/config already refuses an
         # unattended caller for it (F5) — only a human can turn it back off.
         'fence_unattended_enabled': True,
+        # Restricted, source-pinned Aider. Human opt-in only; no full-CLI fallback.
+        'aider_restricted_adapter_enabled': False,
         # UNATTENDED_AGENT_PERMISSIONS_AUDIT §4 risk #1: Codex has no fence
         # equivalent (steward/fence.py is a Claude Code PreToolUse hook), so
         # every Codex session ever ran with

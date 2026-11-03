@@ -14,7 +14,7 @@ decision-gated audit is preserved in commit a0d23078.
 | Qwen | Per-launch `QWEN_CODE_SYSTEM_SETTINGS_PATH`, `PreToolUse` | New armed adapter plus shared native loader/runner preflight before dispatch and every follow-up; unexpected adapter failures become exit 2 | **Installed 0.26.4 passes:** native settings loader registers the injected hook; native runner and aggregator preserve real fence self-test denial, reversible-command allow and `git push` refusal. Safe-mode suppression is separately verified to refuse startup. |
 | OpenCode | Native plugin API exists | Visible unattended refusal while fencing is enabled; no verified Clayrune adapter | Runtime resolver found no installed CLI. Refuse/pass tests at dispatch and follow-up plus HTTP error tests. Installing the CLI alone does not certify an adapter. |
 | Goose | Native plugin `PreToolUse` exists | Visible unattended refusal while fencing is enabled; no verified Clayrune adapter | Runtime resolver found no installed CLI. Same boundary/HTTP tests; no live native integration claimed. |
-| Aider | No supported pre-execution hook established | Visible unattended refusal while fencing is enabled, per Dave's decision | Refusal precedes binary resolution; exact reason names the missing hook. Attended/fence-disabled pass tests at dispatch and follow-up plus HTTP errors. |
+| Aider | Restricted source-pinned adapter; default OFF | Existing unattended refusal unless a human opts into the restricted 0.86.2 runner | Real-Aider bypass and edit controls, per-spawn source/preflight checks, dispatch/follow-up and flag-off tests. [Part-2 contract and limits](BUILTINS_5B_RESTRICTED_AIDER.md). Attended/fence-disabled behavior is unchanged. |
 | Kiro | Native `PreToolUse` exists | Visible unattended refusal while fencing is enabled; no verified Clayrune adapter | Runtime resolver found no installed CLI. Same boundary/HTTP tests; no live native integration claimed. |
 
 Attended launches remain available. All six remaining engines use the existing
@@ -35,8 +35,11 @@ exception allowing it to run unfenced.
 
 BUILTINS-5b follow-up (`10796682`, 2026-11-02): the installed-Aider audit
 reproduced gaps in a central writer/shell adapter and Python open auditing.
-No production bridge or enabling flag was added; the restriction above remains.
-See [the boundary decision and native proof](BUILTINS_5B_AIDER_INTERCEPTION_AUDIT.md).
+Part 1 added no production bridge or enabling flag; see
+[the boundary decision and native proof](BUILTINS_5B_AIDER_INTERCEPTION_AUDIT.md).
+Part 2 implements Dave's restricted allowlist behind the default-OFF
+`aider_restricted_adapter_enabled` flag. No live enablement is part of that
+branch candidate. See [the adapter contract](BUILTINS_5B_RESTRICTED_AIDER.md).
 
 ## Implementation and verification contract
 
