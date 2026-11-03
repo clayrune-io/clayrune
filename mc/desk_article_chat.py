@@ -14,6 +14,7 @@ from typing import Callable, Optional
 from mc import desk as _desk
 from mc import desk_studio_articles as _arts
 from mc import desk_story as _story
+from mc import desk_product_context as _product
 from mc.desk_pieces import MAX_BODY
 from mc.core import _log, now_iso
 
@@ -84,8 +85,11 @@ def chat(article_id: str, body, load_project: Callable[[str], Optional[dict]]) -
                'latest_proposal': ({k: latest[k] for k in ('tab_id', 'body', 'status')} if latest else None),
                'conversation': [{'from': t['role'], 'text': t['text'][:1500]}
                                 for t in thread[-CONTEXT_TURNS:]]}
+    product = _product.product_context(project)
+    if product is not None:
+        payload['product'] = product
     try:
-        raw = _story._call_model(engine.provider, prompt=_INSTRUCTION, system_prompt=persona,
+        raw = _story._call_model(engine.provider, prompt=_INSTRUCTION + _product.PRODUCT_INSTRUCTION, system_prompt=persona,
                                  model=engine.model, effort=((rec or {}).get('engine') or {}).get('effort') or '',
                                  stdin_text=json.dumps(payload, ensure_ascii=False))
     except Exception as e:

@@ -51,6 +51,7 @@ from mc import desk_accounts as _accounts
 from mc import desk_engines as _engines
 from mc import desk_pieces as _pieces
 from mc import desk_story as _story
+from mc import desk_product_context as _product
 from mc.core import _log, now_iso
 
 PieceError = _pieces.PieceError
@@ -314,12 +315,15 @@ def chat(campaign_id: str, body, load_project: Callable[[str], Optional[dict]]) 
     pieces = _pieces.list_pieces(campaign_id=campaign_id)
     scope = _scope(body.get('scope'), {p['id'] for p in pieces})
     payload = _context(camp, project, pieces, thread, message, scope)
+    product = _product.product_context(project)
+    if product is not None:
+        payload['product'] = product
     who = rec.get('agent_name') or rec.get('display_name') or rec['name']
     persona = f'You are {who}. Your character:\n{rec["body"].strip()}\n\n{_PERSONA_TAIL}'
     engine = _story._resolve_engine(project, rec)
     effort = (rec.get('engine') or {}).get('effort') or ''
     try:
-        text = _story._call_model(engine.provider, prompt=_INSTR_CHAT, system_prompt=persona, model=engine.model,
+        text = _story._call_model(engine.provider, prompt=_INSTR_CHAT + _product.PRODUCT_INSTRUCTION, system_prompt=persona, model=engine.model,
                                   effort=effort, stdin_text=json.dumps(payload, ensure_ascii=False))
     except Exception as e:  # TransformFailure / TransformTimeout / provider refusal: the call did not happen
         _log(f'[desk] campaign chat failed: {e}', flush=True)

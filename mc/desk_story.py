@@ -44,6 +44,7 @@ from typing import Callable, Optional
 
 from mc import characters as _chars
 from mc import desk_storyboard as _sb
+from mc import desk_product_context as _product
 from mc.core import _log
 
 PieceError = _sb.PieceError
@@ -222,6 +223,9 @@ def generate(body, load_project: Callable[[str], Optional[dict]]) -> dict:
             system = _INSTR_BOARD
     pid = body.get('project_id')
     project = load_project(pid) if isinstance(pid, str) and pid else None
+    product = _product.product_context(project)
+    if product is not None:
+        payload['product'] = product
     rec = _agent(body.get('agent'), project)
     persona = ''
     if rec:
@@ -230,7 +234,7 @@ def generate(body, load_project: Callable[[str], Optional[dict]]) -> dict:
     engine = _resolve_engine(project, rec)
     effort = ((rec or {}).get('engine') or {}).get('effort') or ''
     try:
-        text = _call_model(engine.provider, prompt=system, system_prompt=persona, model=engine.model,
+        text = _call_model(engine.provider, prompt=system + _product.PRODUCT_INSTRUCTION, system_prompt=persona, model=engine.model,
                            effort=effort, stdin_text=json.dumps(payload, ensure_ascii=False))
     except Exception as e:  # TransformFailure / TransformTimeout / provider refusal: all "the call did not happen"
         _log(f'[desk] storyboard generate ({mode}) failed: {e}', flush=True)

@@ -101,6 +101,7 @@
               <div class="desk-v1-rules-group-title">Agent</div>
               <button type="button" class="desk-v1-agentpick-btn" data-how-agent data-value="" aria-haspopup="listbox" aria-expanded="false" aria-label="Agent" disabled></button>
               <div class="desk-v1-rules-hint" data-how-agent-hint></div>
+              <div data-product-materials-host></div>
             </div>
           </div>
           <div class="desk-v1-how-card">
@@ -135,6 +136,7 @@
     }
     _bind(el, camp, project);
     _paintAgent(el, camp, project);
+    window.DeskV1ProductMaterials.mount(el.querySelector('[data-product-materials-host]'), project);
     window.DeskV1Reapproval.fillSlots(el, camp);
   }
 
