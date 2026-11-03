@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-03] - Move the Desk conversation's large view
+
+- Drag the empty area of the A− / A+ / close strip to move a popped-out Desk conversation with a mouse or a single touch on screens wider than 960px. The strip has a grab cursor and stays reachable at the screen edges; buttons keep their own actions.
+- Resizing still works after moving. Close and reopen restores the default position and size; mobile retains its inset full-screen view. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-02] - Ground Desk agents in the project's product materials
 
 - Campaign conversations, storyboard generation/chat and article chat now receive the project's description and bounded document excerpts as data. They stay toolless and are told to ground product claims in those materials and acknowledge gaps.

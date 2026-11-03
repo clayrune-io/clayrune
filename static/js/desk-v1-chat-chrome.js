@@ -80,6 +80,7 @@
     _open = { el, back, downIn: false };
     document.addEventListener('keydown', _onKey, true);
     document.addEventListener('mousedown', _onDown, true);
+    document.addEventListener('touchstart', _onDown, true);
     document.addEventListener('click', _onClick, true);
     const thread = el.querySelector('[data-chat-thread]');
     if (thread) thread.scrollTop = thread.scrollHeight;
@@ -89,9 +90,11 @@
   function close() {
     if (!_open) return;
     const { el, back } = _open;
+    window.DeskV1ChatMove.cancel(el);
     _open = null;
     document.removeEventListener('keydown', _onKey, true);
     document.removeEventListener('mousedown', _onDown, true);
+    document.removeEventListener('touchstart', _onDown, true);
     document.removeEventListener('click', _onClick, true);
     _unsize(el);
     if (el.hasAttribute('popover')) { try { el.hidePopover(); } catch (_) { /* already hidden */ } el.removeAttribute('popover'); }
@@ -130,11 +133,12 @@
   function attach(el) {
     if (!el) return;
     // The chat was repainted (a new element) while an old one was popped out: the old one is gone.
-    if (_open && !_open.el.isConnected) { _open = null; document.removeEventListener('keydown', _onKey, true); document.removeEventListener('mousedown', _onDown, true); document.removeEventListener('click', _onClick, true); }
+    if (_open && !_open.el.isConnected) close();
     const bar = el.querySelector('[data-chat-chrome]');
     if (!bar || bar.dataset.wired) return;
     bar.dataset.wired = '1';
     if (typeof window.makeResizable === 'function') window.makeResizable(el);
+    window.DeskV1ChatMove.attach(el, bar);
     _apply(scale());
     bar.querySelector('[data-chat-text-less]').addEventListener('click', () => _set(scale() - STEP));
     bar.querySelector('[data-chat-text-more]').addEventListener('click', () => _set(scale() + STEP));

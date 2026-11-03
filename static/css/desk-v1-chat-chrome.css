@@ -31,6 +31,13 @@
 .desk-v1-chat.is-popped .desk-v1-chat-thread:empty { display: block; }
 .desk-v1-chat.is-popped .desk-v1-sb-agent-ask { flex: 0 0 auto; }
 @media (max-width: 960px) { .desk-v1-chat.is-popped { inset: 8px; padding: 12px; } }
+@media (min-width: 961px) {
+  .desk-v1-chat.is-popped [data-chat-chrome] {
+    min-height: 40px; flex-shrink: 0; padding-left: 64px;
+    cursor: grab; user-select: none; touch-action: none;
+  }
+  .desk-v1-chat.is-popped [data-chat-chrome].is-moving { cursor: grabbing; }
+}
 
 /* The shared window resizer's 8 handles (makeResizable, static/js/interactions.js): only the large view is a window.
    They sit just INSIDE the border here (the stock ones straddle it and this box clips overflow). */
