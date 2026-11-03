@@ -5329,13 +5329,16 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             # name this prompt just announced. None = a dispatched global
             # helper: it keeps no bucket, so it reads as an outsider.
             _cont_sess = agent_sessions.get(session_id) if session_id else None
+            from mc.session_provenance import origin_line
+            _cont_origin = origin_line(project['id'], session_id, source, _cont_sess)
             _cont_owner = agent_name
             if _cont_sess and _cont_sess.get('character'):
                 _cont_owner = _cont_session_owner(_cont_sess)
             if _cont_owner is None:
-                _cont = _render_cont(project, owner=agent_name, reader_owns=False)
+                _cont = _render_cont(project, owner=agent_name, reader_owns=False,
+                                     origin=_cont_origin)
             else:
-                _cont = _render_cont(project, owner=_cont_owner)
+                _cont = _render_cont(project, owner=_cont_owner, origin=_cont_origin)
             if _cont:
                 parts.append(_cont)
         except Exception as e:
@@ -5527,8 +5530,8 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # the lean-profile failure mode above, just triggered by shape instead.
     log = project.get('activity_log', [])[:3]
     if log and _full_context and not _task_shape:
-        lines = [f"  - {e.get('ts','')}: {e.get('msg','')}" for e in log]
-        parts.append("Recent activity:\n" + "\n".join(lines))
+        from mc.session_provenance import recent_activity
+        parts.append(recent_activity(log, session_id))
 
     # Recent conversations — read directly from .jsonl transcripts so interrupted
     # sessions (never reached completion log) are still discoverable. Display the
@@ -7645,7 +7648,11 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
     # own resolution used, so the outcome matches without the extra plumbing.
     _revive_job_shape = _context_profile.resolve_job_shape(
         _revive_source, entry.get('job_shape', ''))
+    from mc.session_provenance import note_resume
+    note_resume(project_id, session_id, claude_sid)
     if _af_reason:
+        from mc.session_provenance import note_rollover
+        note_rollover(project_id, session_id, claude_sid)
         context = _build_agent_context(p, incognito=_revive_incognito, task=message or '',
                                        character_body=_revive_char_body,
                                        character_name=_revive_char_name,
@@ -11447,6 +11454,8 @@ def _auto_fresh_handoff(pp, provider, claude_sid, project_id, session_id,
 
     Returns (handoff_text, log_line, activity_line).
     """
+    from mc.session_provenance import note_rollover
+    note_rollover(project_id, session_id, claude_sid)
     _source_sid = claude_sid
     try:
         handoff_text, _meta = _build_handoff_context(
@@ -12058,6 +12067,12 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                     else _fresh_sid)
     _sp_path = None
     _router_fallback_reason = ''
+    if _af_log_line:
+        from mc.session_provenance import note_rollover
+        note_rollover(project_id, _planned_sid, original_resume)
+    elif resume_id:
+        from mc.session_provenance import note_resume
+        note_resume(project_id, _planned_sid, resume_id)
     # A character's pinned model is an explicit choice by whoever authored the
     # type ("Fable writes PRDs"), so it outranks the complexity classifier for
     # the same reason the composer's Model picker does — but NOT the picker
