@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from typing import Callable
 
-from mc import engine_pace, engine_selection
+from mc import allowance_state, engine_pace, engine_selection
 from mc.core import _log
 
 
@@ -46,7 +46,8 @@ def prepare(project_id: str, character: str, *, resume_id: str,
             return character, {}
         usage = provider_usage(provider)
         now = datetime.now(timezone.utc)
-        if engine_pace.weekly_reading(effective, usage, now) is None:
+        reading = engine_pace.weekly_reading(effective, usage, now)
+        if reading is None:
             _log(f'[engine_pace] {provider} weekly usage missing, invalid or reset; keeping {engine_pace.character_ref(meta)}')
             return character, {}
         selected, reason = engine_pace.decide(effective, usage, now, config)
@@ -56,6 +57,24 @@ def prepare(project_id: str, character: str, *, resume_id: str,
         if not alternate:
             _log(f'[engine_pace] alternate {selected!r} unavailable; keeping {engine_pace.character_ref(meta)}')
             return character, {}
+        alt_provider, _ = engine_selection.resolve_provider(
+            config, project, character=alternate.get('engine'), legacy_default='claude')
+        if alt_provider != provider:
+            alt_effective = dict(alternate, engine=dict(alternate.get('engine') or {},
+                                                        provider=alt_provider))
+            alt_reading = engine_pace.weekly_reading(
+                alt_effective, provider_usage(alt_provider), now)
+            keep, note = engine_pace.compare_alternate(
+                reading[0], allowance_state.is_exhausted(alt_provider), alt_reading, config)
+            if keep:
+                alt_text = f'{alt_reading[0]:g}%' if alt_reading else 'n/a'
+                _log(f'[engine_pace] keeping {engine_pace.character_ref(meta)} over {selected}: '
+                     f'{note} (original {provider} {reading[0]:g}%, '
+                     f'alternate {alt_provider} {alt_text})')
+                return character, {}
+            if alt_reading is None:
+                _log(f'[engine_pace] {note}: {alt_provider} -> rerouting {engine_pace.character_ref(meta)} '
+                     f'to {selected}')
         return selected, {'rerouted_from': engine_pace.character_ref(meta),
                           'reroute_reason': reason}
     except Exception as e:
