@@ -9108,6 +9108,9 @@ def _process_inbox(row):
         # point remains an honest in-flight outcome.
         if _delivery_shutdown_requested.is_set():
             raise DeliveryDeferred('delivery shutdown admission is closed')
+        from mc import desk_dispatch
+        if desk_dispatch.deliver(row, payload):
+            return {'desk_campaign': True}
         parent = agent_sessions.get(row['parent_session_id'])
         # The child this callback comes from (backlog 95592335): a callback-
         # delivered turn must not report back to that same child.

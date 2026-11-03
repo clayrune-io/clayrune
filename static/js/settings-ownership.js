@@ -47,6 +47,9 @@ function providerRuntime(cfg, {toggle, textInput, engineFallbackHTML}) { return 
     <div class="settings-row"><div><div class="settings-label">Desk research</div>
       <div class="settings-hint">Let supported Desk agents search the web and read non-private project files. No shell or file changes. Other providers stay toolless and disclose it.</div></div>
       ${toggle('desk_research_enabled', cfg.desk_research_enabled !== false)}</div>
+    <div class="settings-row"><div><div class="settings-label">Desk agent dispatch</div>
+      <div class="settings-hint">Let supported campaign-chat agents start up to two agents hired on that project's Floor per message. Child results return to the campaign. Outside replies and scheduled work cannot dispatch.</div></div>
+      ${toggle('desk_dispatch_enabled', cfg.desk_dispatch_enabled !== false)}</div>
     <div class="settings-label">Engine fallback</div>${engineFallbackHTML}
     <div class="settings-row"><div><div class="settings-label">Claude task routing</div><div class="settings-hint">Auto-selects a Claude tier per task. Explicit chat and agent-type model choices take priority.</div></div>${toggle('auto_model_enabled', cfg.auto_model_enabled)}</div>
     <details><summary>CLI integration</summary>

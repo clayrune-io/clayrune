@@ -10,6 +10,12 @@
 - Pending turns and retired textareas no longer write the campaign draft. A successful response clears the draft before reply callbacks; the live composer takes that state even when a late event carried trailing whitespace. Failed requests still return to the box.
 - Added a keyboard/late-event regression matrix covering Enter, Send, inline and large views, suggestions, full remounts, failed requests and new drafts. Controlled late input reproduced the return on the original code; ordinary typing did not reproduce the reported production trigger. Evidence and limits: `docs/desk_v1/CAMPAIGN_CHAT_DRAFTS.md`.
 
+## [2026-11-03] - Dispatch hired agents from campaign chat
+
+- Supported campaign planners can dispatch up to two agents hired on their campaign project's Floor per typed message. Unknown/removed targets, other Desk paths and attributed agent calls are refused; launch attempts are capped, including failures.
+- Each dispatch saves a card with a child-session link. Existing durable notify plumbing returns results and questions to the campaign as data without another planner turn; failures after launch retain cards and explain the retry risk.
+- **Settings → Providers → Advanced → Desk agent dispatch** is default on, beside the independent research switch. The existing bounded runner adds one ephemeral dispatch tool only for eligible turns; shell/write tools remain excluded from the planner. Contract and verification: `docs/DESK_DISPATCH.md`. Branch build; no merge, push, restart or live config change.
+
 ## [2026-11-03] - Give Desk agents bounded web and project research
 
 - Campaign chat, storyboard generation/chat and article chat can use Claude WebSearch, WebFetch, Read, Grep and Glob. Shell, writes, other tools and MCP servers are excluded; each file read checks the project boundary, link target, secret-shaped names and Git ignores. Starting product excerpts remain and now also refuse ignored files.

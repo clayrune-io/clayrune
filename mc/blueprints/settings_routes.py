@@ -286,6 +286,7 @@ _CONFIG_EDITABLE_KEYS = {
     # Desk v1 R1-W (MC-1021 S0): the v1 store reads live data only when on.
     'desk_v1_live',
     'desk_research_enabled',
+    'desk_dispatch_enabled',
     'desk_suppression_impressions',
     # MC-964 steps 7 + 8 (Settings > Agent > Retrieval). Both read live off
     # state.CONFIG per turn (mc/memory.py _mint_enabled / negation ledger),

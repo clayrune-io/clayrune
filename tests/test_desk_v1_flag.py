@@ -146,11 +146,12 @@ def test_put_config_sets_user_timezone_and_persists(ctx):
 
 
 @pytest.mark.parametrize('enabled', [False, True])
-def test_put_config_toggles_desk_research_and_persists(ctx, enabled):
-    response = ctx.client.put('/api/config', json={'desk_research_enabled': enabled})
+@pytest.mark.parametrize('key', ['desk_research_enabled', 'desk_dispatch_enabled'])
+def test_put_config_toggles_desk_research_and_persists(ctx, enabled, key):
+    response = ctx.client.put('/api/config', json={key: enabled})
     assert response.status_code == 200
-    assert ctx.state.CONFIG['desk_research_enabled'] is enabled
-    assert json.loads(ctx.config_path.read_text(encoding='utf-8'))['desk_research_enabled'] is enabled
+    assert ctx.state.CONFIG[key] is enabled
+    assert json.loads(ctx.config_path.read_text(encoding='utf-8'))[key] is enabled
 
 
 # ── wiring the flag actually reaches the two frontend files it must ───────────
