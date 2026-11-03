@@ -28,6 +28,7 @@ from flask import Blueprint, jsonify, request
 import mc.agent_runtime as _agent_runtime
 from mc import allowance_state as _allowance_state
 from mc import codex_live_usage as _codex_live_usage
+from mc import provider_allowance as _provider_allowance
 from mc import cli_update, mac_update, obs, process_sweep, state
 from mc.blueprints.terminal_routes import launch_pty_session
 from mc.blueprints.workflow_routes import _is_agent_caller
@@ -1329,27 +1330,11 @@ def system_usage_get():
     # it is never a key here; see `_fetch_codex_weekly_usage` for Codex's
     # on-disk source). Claude's number is the same `usage_limits.seven_day`
     # the Usage-tab bars already draw, just re-keyed by provider name.
-    provider_weekly_usage: dict = {}
-    _claude_seven_day = (usage_limits or {}).get('seven_day')
-    if _claude_seven_day and _claude_seven_day.get('utilization') is not None:
-        provider_weekly_usage['claude'] = {
-            'utilization': _claude_seven_day.get('utilization'),
-            'resets_at': _claude_seven_day.get('resets_at'),
-        }
-    _codex_weekly = _fetch_codex_weekly_usage()
-    if _codex_weekly and _codex_weekly.get('utilization') is not None:
-        # A fresh dict, not the cached object itself — the exhaustion overlay
-        # below mutates this entry, and mutating the cache's own dict would
-        # leak 'exhausted' onto every read for the rest of its 60s TTL, even
-        # after the vendor block clears.
-        provider_weekly_usage['codex'] = dict(_codex_weekly)
-    # A vendor mid-exhaustion should read as full/red even if its last-sampled
-    # weekly % predates the block — but only for a provider that already has a
-    # real bar; exhaustion alone is not a substitute for a missing weekly %.
-    for _vendor, _entry in _allowance_state.all_states().items():
-        if _vendor in provider_weekly_usage:
-            provider_weekly_usage[_vendor]['exhausted'] = True
-            provider_weekly_usage[_vendor]['exhausted_display'] = _allowance_state.resets_clause(_entry)
+    # One assembly shared with /api/engine/preferences (mc/provider_allowance.py),
+    # so the two cannot drift. See it for the real-numbers-only and
+    # fresh-dict-per-read rules this block used to carry inline.
+    provider_weekly_usage = _provider_allowance.build_weekly_usage(
+        usage_limits, _fetch_codex_weekly_usage())
 
     # MC-989 Part A: Codex detail for the Usage tab (weekly + 5h + plan_type +
     # credits + sampled_at) — the bottom strip only ever wanted the one

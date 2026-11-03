@@ -50,6 +50,7 @@ _get_mem_write_lock or writes MEMORY.md.
 
 import concurrent.futures
 import contextlib
+from mc import codex_run_error as _codex_run_error  # MC-1147: rollout error as the failure summary
 from mc import empty_turn as _empty_turn
 from mc import mid_turn_send as _mid_turn_send  # MC-1086: steer / queue / interrupt routing
 from mc import triggered_turns as _triggered_turns  # seed-line label for non-human turns
@@ -4182,6 +4183,8 @@ Base: http://localhost:{port}  ·  project_id: {pid}
 - Find a doc (incl. gitignored docs + _journal, invisible from a worktree):
   GET /api/project/{pid}/docs/search?q=<question>&limit=5
 - Schedules: GET /api/schedules · POST /api/schedules {{"project_id":"{pid}","task":"...",...}}
+- Engine headroom (choose an engine from this, not from a past failed run):
+  GET /api/engine/preferences -> providers[].allowance
 
 This is NOT the full API. Guessing an endpoint name instead of checking is
 the failure this card replaces — before you curl-probe or guess, Read
@@ -9597,7 +9600,11 @@ def _log_agent_completion_body(session):
     # reconstructing the FULL reply across every trailing delta chunk a
     # Mode-A provider (Gemini/Qwen/Codex/...) logged as separate array
     # entries — see `_collect_trailing_reply_text` (MC-947).
-    summary = _agent_runtime._collect_trailing_reply_text(lines)
+    # A Codex run that failed with a rollout error (usage limit, ...) says so
+    # in the summary instead of whatever partial text preceded the failure
+    # (MC-1147).
+    summary = (_codex_run_error.summary_override(session)
+               or _agent_runtime._collect_trailing_reply_text(lines))
     if not summary:
         # No real assistant text survived the turn. Say so explicitly rather
         # than substituting the last thing in log_lines — for exactly this
