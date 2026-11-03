@@ -14358,6 +14358,21 @@ def agent_stop(project_id):
     return jsonify({'ok': True})
 
 
+def _finish_interrupt_respawn(session):
+    """The interrupt/midturn respawn's new proc is now session['proc']. Caller
+    holds the project lock. Drops the interrupt gate and the MC-1002 handoff
+    window, and puts a stale 'error' back to 'running': the guardian can have
+    flagged the old proc dead before the window existed (or after its 300s
+    bound), and nothing else restores it while the new proc is alive."""
+    session.pop('_interrupting', None)
+    session.pop('_mt_roll_requested', None)
+    session.pop('_respawn_in_flight', None)
+    if session.get('status') == 'error':
+        session['status'] = 'running'
+        session['last_status_change_time'] = _time.time()
+    session['process_alive'] = True
+
+
 @bp.route('/api/project/<project_id>/agent/interrupt', methods=['POST'])
 def agent_interrupt(project_id, *, _internal=None):
     """Atomic stop + immediate resume with a new prompt.
@@ -14516,6 +14531,13 @@ def agent_interrupt(project_id, *, _internal=None):
             else:
                 session['_interrupting'] = _prior_interrupting
             raise
+        # MC-1002: the old proc is killed on purpose below and the new one is
+        # assigned to session['proc'] on another thread, after a handoff build
+        # that can outrun the guardian's 2s State 1 threshold. Without this
+        # window the guardian flags the dead old proc 'error' (2026-11-03,
+        # Quill 21bfe649c77f: Floor dropped a live session). Cleared by
+        # _finish_interrupt_respawn on success and by every exit in _do_respawn.
+        session['_respawn_in_flight'] = _time.time()
         # Stop the current process
         # Shown in the chat as a system-style line when the user interrupts a
         # running turn with a new message. Friendlier than "Agent interrupted
@@ -14579,6 +14601,7 @@ def agent_interrupt(project_id, *, _internal=None):
                     session['last_status_change_time'] = _time.time()
                     session.pop('_interrupting', None)
                     session.pop('_mt_roll_requested', None)
+                    session.pop('_respawn_in_flight', None)
                     return
             # Check transcript size
             resume_flags = []
@@ -14660,8 +14683,7 @@ def agent_interrupt(project_id, *, _internal=None):
                     session['stdin_lock'] = threading.Lock()
                     # New proc is now the authoritative one — clear the
                     # interrupt gate so its reader's writes are accepted.
-                    session.pop('_interrupting', None)
-                    session.pop('_mt_roll_requested', None)
+                    _finish_interrupt_respawn(session)
                     # Same reset as the model-switch respawn above: this
                     # process (manual interrupt, auto-fresh, or a mid-turn
                     # roll) just got a fresh system-prompt build, so the next
@@ -14732,8 +14754,7 @@ def agent_interrupt(project_id, *, _internal=None):
                 with get_manager(project_id).lock:
                     session['proc'] = proc
                     # New proc is now authoritative — clear the interrupt gate.
-                    session.pop('_interrupting', None)
-                    session.pop('_mt_roll_requested', None)
+                    _finish_interrupt_respawn(session)
 
                 threading.Thread(target=_read_agent_stream,
                                  args=(proc, session), daemon=True).start()
@@ -14757,6 +14778,7 @@ def agent_interrupt(project_id, *, _internal=None):
             # stays permanently gated and no future reader can update status.
             session.pop('_interrupting', None)
             session.pop('_mt_roll_requested', None)
+            session.pop('_respawn_in_flight', None)  # MC-1002 — handoff window over (failed)
             # Popen may have raised before sysprompt cleanup was wired — sweep.
             if _sp_path:
                 try:
