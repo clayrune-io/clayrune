@@ -3,7 +3,12 @@
 ## [2026-11-03] - Move the Desk conversation's large view
 
 - Drag the empty area of the A− / A+ / close strip to move a popped-out Desk conversation with a mouse or a single touch on screens wider than 960px. The strip has a grab cursor and stays reachable at the screen edges; buttons keep their own actions.
-- Resizing still works after moving. Close and reopen restores the default position and size; mobile retains its inset full-screen view. Branch candidate only; no merge, push or restart.
+- Resizing still works after moving. Close and reopen restores the default position and size; mobile retains its inset full-screen view.
+
+## [2026-11-03] - Retire campaign-chat drafts after successful sends
+
+- Pending turns and retired textareas no longer write the campaign draft. A successful response clears the draft before reply callbacks; the live composer takes that state even when a late event carried trailing whitespace. Failed requests still return to the box.
+- Added a keyboard/late-event regression matrix covering Enter, Send, inline and large views, suggestions, full remounts, failed requests and new drafts. Controlled late input reproduced the return on the original code; ordinary typing did not reproduce the reported production trigger. Evidence and limits: `docs/desk_v1/CAMPAIGN_CHAT_DRAFTS.md`.
 
 ## [2026-11-02] - Ground Desk agents in the project's product materials
 

@@ -23,8 +23,11 @@
  *                  box, and the size survives a reload; pop-out lifts the SAME chat element, a send
  *                  from it lands in the docked thread, Esc closes it; at 1440 and 390 no sideways scroll.
  *  10. Demo     -> flag OFF keeps the old box and makes 0 /api/desk/* requests.
+ *  11. Drafts   -> keyboard and injected late-input matrix: whitespace, Send/Enter,
+ *                  inline/large, suggestions, full remount, failure and a new draft.
  *
  * RUN   cd tools/smoke && node desk-v1-campaign-chat.mjs
+ *       node desk-v1-campaign-chat.mjs --drafts-only
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -228,6 +231,108 @@ async function reload(browser, prior) {
   await ctx.close();
 }
 
+// Successful sends retire the draft across a reply repaint. The late input is
+// deliberately injected: ordinary keyboard typing has not reproduced Ron's
+// original trigger. Keep this distinction visible in the smoke output.
+async function sentDrafts(browser) {
+  const srv = makeServer();
+  srv.campaigns.push({ ...JSON.parse(JSON.stringify(srv.campaigns.find((c) => c.id === 'camp-1'))), id: 'camp-other', title: 'Other campaign' });
+  const { ctx, page, pageErrors } = await newPage(browser, { srv });
+  await openCampaign(page, 'camp-1');
+  const input = '#desk-v1-camp-posy-input';
+  const repaint = () => page.evaluate(() => window.deskV1Render());
+  let count = 0;
+  for (const late of [false, true]) for (const suggested of [false, true]) {
+    for (const large of [false, true]) for (const method of ['Enter', 'Send']) for (const suffix of [' ', '\n']) {
+      await repaint();
+      if (large) await page.click('[data-chat-pop]');
+      let release; srv.gate = new Promise((r) => { release = r; });
+      srv.reply = () => ({ reply: 'Draft regression answer.', ...(suggested ? {
+        suggested: { summary: 'Saved one suggestion.' },
+        campaign: { how: { suggested: { what: [{ title: 'One idea' }] } }, when: { slots: [] } },
+      } : {}) });
+      const raw = `Draft check ${++count}${suffix}`;
+      await page.fill(input, '');
+      await page.locator(input).pressSequentially(raw.trimEnd());
+      await page.press(input, suffix === '\n' ? 'Shift+Enter' : 'Space');
+      const typed = await page.inputValue(input);
+      if (typed !== raw) throw new Error('Probe did not type the intended whitespace: ' + JSON.stringify(typed));
+      if (method === 'Enter') await page.press(input, 'Enter');
+      else await page.click('[data-posy-send="desk-v1-camp-posy-input"]');
+      await settle(page, () => !!document.querySelector('[data-chat-thinking]'));
+      await page.evaluate(() => { window.__sentInput = document.querySelector('#desk-v1-camp-posy-input'); });
+      if (late) await page.$eval(input, (e, text) => {
+        e.value = text;
+        e.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+      }, raw);
+      release(); srv.gate = null;
+      await settle(page, () => !document.querySelector('[data-chat-thinking]') && !document.querySelector('#desk-v1-camp-posy-input').disabled);
+      const after = await page.inputValue(input);
+      await repaint();
+      const repainted = await page.inputValue(input);
+      const label = `${late ? 'injected late input' : 'keyboard only'}, ${suggested ? 'suggestion repaint' : 'plain reply'}, ${large ? 'large' : 'inline'}, ${method}, ${JSON.stringify(suffix)}`;
+      after === '' && repainted === '' ? ok(`sent draft stays empty: ${label}`)
+        : fail(`sent draft returned: ${label}: ${JSON.stringify({ after, repainted })}`);
+    }
+  }
+
+  // A listener on a retired textarea must not poison the campaign's draft.
+  if (!(await page.evaluate(() => !window.__sentInput.isConnected))) throw new Error('Remount probe did not retire the textarea');
+  await page.evaluate(() => {
+    const old = window.__sentInput;
+    old.value = 'Draft check 32\n'; old.dispatchEvent(new Event('input'));
+  });
+  await repaint();
+  (await page.inputValue(input)) === '' ? ok('retired textarea input cannot revive a sent draft') : fail('retired textarea revived the draft');
+  await page.fill(input, 'A new unsent question');
+  await repaint();
+  (await page.inputValue(input)) === 'A new unsent question' ? ok('a new unsent draft survives repaint') : fail('new draft lost');
+
+  // Pending remount + late event + failed POST must restore the actual request,
+  // rather than the stale event (even when that event carries different text).
+  let release; srv.gate = new Promise((r) => { release = r; });
+  srv.reply = () => ({ status: 503, error: 'Controlled unavailable response' });
+  await page.press(input, 'Enter');
+  await settle(page, () => !!document.querySelector('[data-chat-thinking]'));
+  await repaint();
+  await page.$eval(input, (e) => { e.value = 'stale event'; e.dispatchEvent(new Event('input')); });
+  release(); srv.gate = null;
+  await settle(page, () => /back in the box/.test(document.querySelector('[data-camp-chat-status]').textContent));
+  const failed = await page.inputValue(input);
+  await repaint();
+  failed === 'A new unsent question' && (await page.inputValue(input)) === failed
+    ? ok('failed send restores the request across pending and later repaints') : fail('failed request lost: ' + JSON.stringify(failed));
+
+  // A reply to this campaign cannot clear or restore text in another campaign.
+  await page.evaluate(() => {
+    const api = window.DeskV1Store.api;
+    window.__turnFinished = false;
+    window.DeskV1Store.api = (...args) => api(...args).then((r) => {
+      // send() resumes in the next microtask; this timer witnesses completion.
+      if (args[0] === 'POST') setTimeout(() => { window.__turnFinished = true; }, 0);
+      return r;
+    });
+  });
+  srv.gate = new Promise((r) => { release = r; });
+  srv.reply = () => ({ reply: 'Completed while another campaign is open.' });
+  await page.press(input, 'Enter');
+  await settle(page, () => !!document.querySelector('[data-chat-thinking]'));
+  await openCampaign(page, 'camp-other');
+  await page.fill(input, 'Keep this other campaign draft');
+  release(); srv.gate = null;
+  await settle(page, () => window.__turnFinished);
+  (await page.inputValue(input)) === 'Keep this other campaign draft'
+    ? ok('completion leaves the other campaign live input alone') : fail('completion overwrote another campaign input');
+  await openCampaign(page, 'camp-1');
+  await settle(page, () => !document.querySelector('[data-chat-thinking]') && !document.querySelector('#desk-v1-camp-posy-input').disabled);
+  (await page.inputValue(input)) === '' ? ok('success while away leaves the sending campaign draft empty') : fail('sending campaign draft returned');
+  await openCampaign(page, 'camp-other');
+  (await page.inputValue(input)) === 'Keep this other campaign draft'
+    ? ok('another campaign keeps its own unsent draft') : fail('reply changed another campaign draft');
+  realErrors(pageErrors).forEach((e) => fail('draft page error: ' + e));
+  await ctx.close();
+}
+
 async function suggestButton(browser) {
   const srv = makeServer();
   const { ctx, page } = await newPage(browser, { srv });
@@ -392,6 +497,8 @@ async function productMaterials(browser) {
 
 const browser = await chromium.launch();
 try {
+  console.log('live ON: sent draft lifecycle (controlled late events)'); await sentDrafts(browser);
+  if (!process.argv.includes('--drafts-only')) {
   console.log('live ON: conversation'); const prior = await conversation(browser);
   console.log('live ON: reload'); await reload(browser, prior);
   console.log('live ON: Suggest button'); await suggestButton(browser);
@@ -399,7 +506,10 @@ try {
   console.log('live ON: text size + pop-out'); await chrome(browser);
   console.log('live ON: product materials'); await productMaterials(browser);
   console.log('live OFF: demo'); await demo(browser);
+  }
 } catch (e) { fail('harness error: ' + (e && e.stack || e)); }
 await browser.close();
 if (bad) { console.error(`\n❌ FAIL — ${bad} case(s)`); process.exit(1); }
-console.log('\n✅ PASS — the campaign agent box is a saved conversation with the campaign\'s agent: turns, suggestions chip from the server, scope, refused sends, reload, Suggest, no-agent, demo.');
+console.log(process.argv.includes('--drafts-only')
+  ? '\n✅ PASS — sent drafts stay empty; failed requests and new drafts survive repaints.'
+  : '\n✅ PASS — campaign conversation: draft lifecycle, turns, suggestions, scope, refused sends, reload, Suggest, no-agent, chrome and demo.');

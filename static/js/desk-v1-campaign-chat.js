@@ -113,7 +113,12 @@
     if (noAgent) ask.placeholder = 'Pick an agent for this campaign first.';
     ask.value = st.draft;
     const fit = () => { ask.style.height = 'auto'; if (ask.scrollHeight > 0) ask.style.height = Math.min(ask.scrollHeight + 2, 190) + 'px'; };
-    ask.addEventListener('input', () => { st.draft = ask.value; fit(); });
+    ask.addEventListener('input', () => {
+      // Only the current, editable composer owns the draft. Late input from a
+      // pending turn or a textarea retired by a repaint cannot revive it.
+      if (st.pending || !ask.isConnected || !_active || _active.box !== box) return;
+      st.draft = ask.value; fit();
+    });
     requestAnimationFrame(fit);
     const scopeBtn = box.querySelector('[data-scope-trigger]');
     if (scopeBtn && typeof opts.onScopeClick === 'function') scopeBtn.onclick = () => opts.onScopeClick(scopeBtn);
@@ -146,10 +151,14 @@
       ask.disabled = true; sendBtn.disabled = true;
       _paint(box, opts);
       say(`Asking ${opts.agentName}…`, 'info');
-      const live = () => (_active && _active.box.isConnected ? _active : null);
-      let sent = true;   // false once the send failed: then the text is MEANT to come back
+      const live = () => (_active && _active.box.isConnected && _active.opts.campaign.id === camp.id ? _active : null);
       try {
         const res = await window.DeskV1Store.api('POST', `/api/desk/campaigns/${encodeURIComponent(camp.id)}/chat`, body);
+        // Retire the draft BEFORE onSuggested can mount another composer.
+        // The request was trimmed; clearing the draft is independent of any
+        // whitespace or late input left in either textarea.
+        st.draft = '';
+        ask.value = '';
         st.pending = null;
         st.turns.push(...res.turns);
         st.loaded = true;
@@ -166,10 +175,9 @@
         if (target) { target.textContent = line; target.dataset.kind = last.suggest_error ? 'error' : 'ok'; }
       } catch (err) {
         st.pending = null;
-        if (!st.draft) st.draft = text;   // a repaint of the box shows it too
+        st.draft = text;   // a repaint of the box shows the failed request too
         const target = live() ? live().box.querySelector('[data-camp-chat-status]') : null;
         if (target) { target.textContent = `Nothing was changed: ${err && err.message ? err.message : err}. Your message is back in the box.`; target.dataset.kind = 'error'; }
-        sent = false;
       } finally {
         // the box may have been repainted (a new element) while the agent was answering
         if (live()) {
@@ -178,10 +186,9 @@
           const b = live().box.querySelector('[data-posy-send]');
           if (f && live().opts.agentRef) {
             f.disabled = false; if (b) b.disabled = false;
-            // The box was disabled for the whole turn, so nothing new can have been typed: sent text
-            // sitting in it now is the sent message coming back (a late composition commit), not a new draft.
-            if (sent && f.value === text) { f.value = ''; st.draft = ''; f.style.height = 'auto'; }
-            if (!f.value && st.draft) { f.value = st.draft; f.dispatchEvent(new Event('input')); }
+            // State owns the result: empty on success, the request on failure.
+            f.value = st.draft;
+            f.dispatchEvent(new Event('input'));
             f.focus({ preventScroll: true });
           }
         }
