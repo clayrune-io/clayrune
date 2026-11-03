@@ -3043,6 +3043,9 @@ _bp_steward.wire(
     log_fn=lambda m: _log(m, flush=True),
 )
 app.register_blueprint(_bp_steward.bp)
+# Steward role editor support (BUILTINS-3 SR-5): read-only overview + preview.
+from mc.blueprints import steward_role_routes as _bp_steward_role  # noqa: E402
+app.register_blueprint(_bp_steward_role.bp)
 
 
 # ── Local (LAN) passcode gate ── extracted to mc/blueprints/local_auth.py (1.1) ──
