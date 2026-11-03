@@ -10931,8 +10931,14 @@ def _prior_character(project_id, resume_id, provider=''):
         for e in _load_agent_log(project_id):
             if provider and (e.get('provider') or 'claude') != provider:
                 continue
+            # `claude_session_ids` is the rollover lineage: a context rollover
+            # moves `claude_session_id` to the newest csid, so a transcript the
+            # conversations list opens from earlier in the chain (the one Ron
+            # resumes) only appears in that list. Without it the lookup missed,
+            # fell to the project default, and Dave's chat came back as Vector.
             if (e.get('claude_session_id') != resume_id
-                    and e.get('provider_session_id') != resume_id):
+                    and e.get('provider_session_id') != resume_id
+                    and resume_id not in (e.get('claude_session_ids') or [])):
                 continue
             seen = True
             ch = e.get('character') or {}
