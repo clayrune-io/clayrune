@@ -1007,3 +1007,110 @@ def test_mc1089_assistant_text_helper_logs_errors_without_raising(env, monkeypat
     assert len(logged) == 1
     assert 'note_assistant_text failed:' in logged[0]
     assert session['_mt_unanswered_msgs'] == [None]
+
+
+# ── Guardian vs. the roll's handoff (2026-11-03, Quill 21bfe649c77f) ─────────
+# agent_interrupt kills the old proc on purpose, then builds the handoff and
+# assigns the new proc on another thread. The guardian's State 1 read the
+# killed proc as dead, flipped the live session to 'error', and the Floor
+# (which lists only running/idle) dropped it. Nothing put it back.
+
+class _DeadProc(_Proc):
+    def poll(self):
+        return 1
+
+
+def _tick_guardian_mid_handoff(env, monkeypatch, session, *, force_error=False):
+    """Run a guardian tick from inside the respawn thread, while the old (dead)
+    proc is still session['proc'] -- the exact window the incident hit."""
+    ar = env['ar']
+    ticks = []
+    monkeypatch.setattr(ar, '_pid_is_alive', lambda pid: False)
+
+    def _ctx(*a, **k):
+        if session.get('proc') is not env['new_proc']:
+            if force_error:
+                # What the pre-fix guardian did; also stands for a window that
+                # expired (_RESPAWN_WINDOW_MAX_S) before the new proc landed.
+                session['status'] = 'error'
+            else:
+                ar._guardian_check_session('worker-1', session, time.time() + 10)
+            ticks.append(session['status'])
+        return 'FRESH CONTEXT'
+
+    monkeypatch.setattr(ar, '_fresh_context_for', _ctx)
+    return ticks
+
+
+def _floor_lists(session):
+    return session.get('status') in ('running', 'idle')  # floor_routes.py:437
+
+
+def test_guardian_tick_mid_handoff_leaves_a_rolling_session_running(env, monkeypatch):
+    ar = env['ar']
+    old = _DeadProc(pid=1)
+    session = _session(old, _mt_main_tokens=250_000)
+    env['sessions']['worker-1'] = session
+    ticks = _tick_guardian_mid_handoff(env, monkeypatch, session)
+
+    ar._maybe_midturn_roll(session, old)
+    env['join_respawns']()
+
+    assert ticks == ['running'], 'guardian ticked mid-handoff and must have left it running'
+    assert session['proc'] is env['new_proc']
+    assert session['status'] == 'running' and _floor_lists(session)
+    assert not [l for l in session['log_lines'] if 'found dead' in l]
+    for k in ('_respawn_in_flight', '_interrupting', '_mt_roll_requested'):
+        assert k not in session
+
+
+def test_successful_respawn_reasserts_running_over_a_stale_error(env, monkeypatch):
+    ar = env['ar']
+    old = _DeadProc(pid=1)
+    session = _session(old, _mt_main_tokens=250_000)
+    env['sessions']['worker-1'] = session
+    ticks = _tick_guardian_mid_handoff(env, monkeypatch, session, force_error=True)
+
+    ar._maybe_midturn_roll(session, old)
+    env['join_respawns']()
+
+    assert ticks == ['error']
+    assert session['proc'] is env['new_proc']
+    assert session['status'] == 'running' and _floor_lists(session)
+    assert session['process_alive'] is True
+
+
+def test_failed_respawn_closes_the_handoff_window_and_ends_in_error(env, monkeypatch):
+    ar = env['ar']
+    old = _DeadProc(pid=1)
+    session = _session(old, _mt_main_tokens=250_000)
+    env['sessions']['worker-1'] = session
+
+    def _popen(cmd, **kwargs):
+        if cmd and cmd[0] == 'git':
+            return _REAL_POPEN(cmd, **kwargs)
+        raise OSError('cannot spawn')
+
+    monkeypatch.setattr(ar.subprocess, 'Popen', _popen)
+    ar._maybe_midturn_roll(session, old)
+    env['join_respawns']()
+
+    assert session['status'] == 'error'
+    for k in ('_respawn_in_flight', '_interrupting'):
+        assert k not in session
+
+
+def test_a_really_dead_process_after_the_roll_still_goes_to_error(env, monkeypatch):
+    ar = env['ar']
+    old = _DeadProc(pid=1)
+    session = _session(old, _mt_main_tokens=250_000)
+    env['sessions']['worker-1'] = session
+    ar._maybe_midturn_roll(session, old)
+    env['join_respawns']()
+    assert session['status'] == 'running' and session['proc'] is env['new_proc']
+
+    monkeypatch.setattr(ar, '_pid_is_alive', lambda pid: False)
+    monkeypatch.setattr(env['new_proc'], 'poll', lambda: 1, raising=False)
+    ar._guardian_check_session('worker-1', session, time.time() + 10)
+
+    assert session['status'] == 'error'
