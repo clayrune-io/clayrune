@@ -259,9 +259,8 @@ Path('dist/ready.js').write_text("module.exports = require('../node_modules/fixt
     assert activation.problem(op)==''
     monkeypatch.setattr(custom_npm_gate,'ancestor_problem',lambda *a:None)
     monkeypatch.setattr(custom_npm_node_paths,'problem',lambda *a:None)
-    monkeypatch.setattr(activation.os,'chdir',lambda *a:None)
     launched=[]
-    def execute(command,argv,env):
+    def execute(command,argv,env,cwd=None):
         done=subprocess.run(argv,cwd=directory,env=env,capture_output=True,check=True)
         launched.append(done.stdout)
     monkeypatch.setattr(activation,'_launch',execute)
@@ -291,7 +290,7 @@ def test_windows_launch_keeps_paths_with_spaces_whole(monkeypatch):
     called={}
     monkeypatch.setattr(activation.os,'name','nt')
     monkeypatch.setattr(activation.os,'execvpe',lambda *a:pytest.fail('os.exec splits quoted paths on Windows'))
-    def call(argv,env=None):
+    def call(argv,env=None,cwd=None):
         called['argv']=argv
         return 7
     monkeypatch.setattr(activation.subprocess,'call',call)
