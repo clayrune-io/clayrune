@@ -33,6 +33,11 @@ was rejected as a Ron-only gate change; an Aider interception layer is outside
 this ticket. Gemini's rejected file is also a failed guard-load check, not an
 exception allowing it to run unfenced.
 
+BUILTINS-5b follow-up (`10796682`, 2026-11-02): the installed-Aider audit
+reproduced gaps in a central writer/shell adapter and Python open auditing.
+No production bridge or enabling flag was added; the restriction above remains.
+See [the boundary decision and native proof](BUILTINS_5B_AIDER_INTERCEPTION_AUDIT.md).
+
 ## Implementation and verification contract
 
 - `mc/vendor_fence.py` owns launch policy and content-addressed settings copies.
