@@ -611,3 +611,20 @@ def _desk_publish_username_cache_empty():
         return
     desk_publish._username_cache.clear()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _codex_live_usage_never_spawns(monkeypatch):
+    """The usage bar asks the real `codex app-server` when its rollout sample
+    is stale (mc/codex_live_usage.py). Fixture rollouts here are dated in the
+    past, so without this every usage test would spawn the operator's codex.
+    Tests of the live path set their own `_read_snapshot`."""
+    try:
+        from mc import codex_live_usage
+    except Exception:
+        yield
+        return
+    codex_live_usage.reset_for_tests()
+    monkeypatch.setattr(codex_live_usage, "_read_snapshot", lambda: None)
+    yield
+    codex_live_usage.reset_for_tests()

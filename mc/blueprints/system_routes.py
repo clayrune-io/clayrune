@@ -27,6 +27,7 @@ from flask import Blueprint, jsonify, request
 
 import mc.agent_runtime as _agent_runtime
 from mc import allowance_state as _allowance_state
+from mc import codex_live_usage as _codex_live_usage
 from mc import cli_update, mac_update, obs, process_sweep, state
 from mc.blueprints.terminal_routes import launch_pty_session
 from mc.blueprints.workflow_routes import _is_agent_caller
@@ -835,6 +836,45 @@ _codex_usage_cache: dict = {'ts': 0.0, 'data': None}
 _CODEX_TAIL_BYTES = 300_000
 
 
+def _codex_iso_epoch(ts) -> Optional[float]:
+    """Epoch seconds of a rollout record's ISO-8601 `timestamp`, None if absent
+    or unparseable."""
+    if not isinstance(ts, str) or not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace('Z', '+00:00')).timestamp()
+    except ValueError:
+        return None
+
+
+def _codex_window(win, now: float) -> Optional[dict]:
+    """{utilization, resets_at} for one rate-limit window dict (rollout or
+    probe shape), or None when `resets_at` is missing/unparseable/elapsed —
+    the window it describes has already reset, so its % would be an invented
+    "now" (see `_fetch_codex_weekly_usage`)."""
+    if not isinstance(win, dict):
+        return None
+    resets_at_raw = win.get('resets_at')
+    try:
+        resets_epoch = float(resets_at_raw) if resets_at_raw is not None else None
+    except (TypeError, ValueError):
+        resets_epoch = None
+    if resets_epoch is None or resets_epoch <= now:
+        return None
+    return {
+        'utilization': win.get('used_percent'),
+        'resets_at': datetime.fromtimestamp(resets_epoch, tz=timezone.utc).isoformat(),
+    }
+
+
+def _codex_probe_wins(probe: Optional[dict], rollout_event_epoch: Optional[float]) -> bool:
+    """Newest sample wins: a live app-server read supersedes the rollout
+    sample unless the rollout recorded a newer event than the read."""
+    if not probe:
+        return False
+    return rollout_event_epoch is None or probe['probed_at'] >= rollout_event_epoch
+
+
 def _fetch_codex_weekly_usage() -> Optional[dict]:
     """Return {'utilization': 0-100, 'resets_at': ISO8601, 'sampled_at':
     ISO8601} for Codex's weekly rate-limit window, or None if no rollout file
@@ -858,6 +898,7 @@ def _fetch_codex_weekly_usage() -> Optional[dict]:
     if cached is not None and (now - _codex_usage_cache.get('ts', 0.0)) < _CODEX_USAGE_TTL:
         return dict(cached) if cached else cached
     result = None
+    rollout_event_epoch = None  # newest rollout sample's event time
     try:
         files = _agent_runtime._codex_rollout_files()
         if files:
@@ -881,6 +922,8 @@ def _fetch_codex_weekly_usage() -> Optional[dict]:
                 rl = info.get('rate_limits') if isinstance(info, dict) else None
                 if not isinstance(rl, dict):
                     continue
+                if rollout_event_epoch is None:
+                    rollout_event_epoch = _codex_iso_epoch(rec.get('timestamp')) or mtime
                 for slot in ('primary', 'secondary'):
                     win = rl.get(slot)
                     if isinstance(win, dict) and win.get('window_minutes') == _CODEX_WEEKLY_WINDOW_MINUTES:
@@ -896,12 +939,31 @@ def _fetch_codex_weekly_usage() -> Optional[dict]:
                                 'utilization': win.get('used_percent'),
                                 'resets_at': datetime.fromtimestamp(resets_epoch, tz=timezone.utc).isoformat(),
                                 'sampled_at': datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                                'source': 'rollout',
                             }
                         # else: resets_at missing, unparseable, or already
                         # elapsed — stale reading, left as `result = None`
                         # (see docstring).
                         break
                 if result is not None:
+                    break
+        # Rollouts only change when a Codex run happens, so a reset/top-up
+        # done in the Codex app never lands there. When the rollout sample is
+        # stale, the live app-server read supersedes it (newest wins); a
+        # failed read leaves the rollout result above untouched.
+        probe = _codex_live_usage.probe_if_stale(rollout_event_epoch, now)
+        if _codex_probe_wins(probe, rollout_event_epoch):
+            assert probe is not None
+            result = None
+            for slot in ('primary', 'secondary'):
+                win = probe['rate_limits'].get(slot)
+                if isinstance(win, dict) and win.get('window_minutes') == _CODEX_WEEKLY_WINDOW_MINUTES:
+                    live = _codex_window(win, now)
+                    if live is not None:
+                        result = dict(live)
+                        result['sampled_at'] = datetime.fromtimestamp(
+                            probe['probed_at'], tz=timezone.utc).isoformat()
+                        result['source'] = 'probe'
                     break
     except Exception as e:
         _log(f"[system_usage] codex weekly usage read failed: {e}", flush=True)
@@ -942,6 +1004,34 @@ def _fetch_codex_usage_detail() -> Optional[dict]:
     if cached is not None and (now - _codex_detail_cache.get('ts', 0.0)) < _CODEX_DETAIL_TTL:
         return dict(cached) if cached else cached
     result = None
+    rollout_event_epoch = None  # newest rollout sample's event time
+
+    def _detail_from(rl: dict, *, sampled_at: str, event_at, source: str) -> Optional[dict]:
+        weekly = five_hour = None
+        for slot in ('primary', 'secondary'):
+            win = rl.get(slot)
+            wmin = win.get('window_minutes') if isinstance(win, dict) else None
+            if wmin == _CODEX_WEEKLY_WINDOW_MINUTES:
+                weekly = _codex_window(win, now)
+            elif wmin == _CODEX_FIVE_HOUR_WINDOW_MINUTES:
+                five_hour = _codex_window(win, now)
+
+        plan_type = rl.get('plan_type')
+        credits = rl.get('credits') if isinstance(rl.get('credits'), dict) else None
+        if not (weekly or five_hour or plan_type or credits):
+            return None
+        return {
+            'weekly': weekly,
+            'five_hour': five_hour,
+            'plan_type': plan_type,
+            'credits': credits,
+            'sampled_at': sampled_at,
+            'event_at': event_at,
+            # Where the numbers came from: 'rollout' (the CLI's last turn) or
+            # 'probe' (live app-server read).
+            'source': source,
+        }
+
     try:
         files = _agent_runtime._codex_rollout_files()
         if files:
@@ -966,48 +1056,29 @@ def _fetch_codex_usage_detail() -> Optional[dict]:
                 if not isinstance(rl, dict):
                     continue
 
-                def _window(win) -> Optional[dict]:
-                    if not isinstance(win, dict):
-                        return None
-                    resets_at_raw = win.get('resets_at')
-                    try:
-                        resets_epoch = float(resets_at_raw) if resets_at_raw is not None else None
-                    except (TypeError, ValueError):
-                        resets_epoch = None
-                    if resets_epoch is None or resets_epoch <= now:
-                        return None
-                    return {
-                        'utilization': win.get('used_percent'),
-                        'resets_at': datetime.fromtimestamp(resets_epoch, tz=timezone.utc).isoformat(),
-                    }
-
-                weekly = five_hour = None
-                for slot in ('primary', 'secondary'):
-                    win = rl.get(slot)
-                    wmin = win.get('window_minutes') if isinstance(win, dict) else None
-                    if wmin == _CODEX_WEEKLY_WINDOW_MINUTES:
-                        weekly = _window(win)
-                    elif wmin == _CODEX_FIVE_HOUR_WINDOW_MINUTES:
-                        five_hour = _window(win)
-
-                plan_type = rl.get('plan_type')
-                credits = rl.get('credits') if isinstance(rl.get('credits'), dict) else None
-                if weekly or five_hour or plan_type or credits:
-                    result = {
-                        'weekly': weekly,
-                        'five_hour': five_hour,
-                        'plan_type': plan_type,
-                        'credits': credits,
-                        'sampled_at': datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
-                        # The record's own `timestamp` field (real event time),
-                        # distinct from `sampled_at` (rollout file mtime, which
-                        # can lag or repeat across polls). USAGE_BREAKDOWN_SPEC.md's
-                        # sampler needs the true event identity to dedupe repeat
-                        # reads of an unchanged source; None when the line has no
-                        # timestamp (never invented from mtime).
-                        'event_at': rec.get('timestamp') if isinstance(rec, dict) else None,
-                    }
+                rollout_event_epoch = _codex_iso_epoch(rec.get('timestamp')) or mtime
+                result = _detail_from(
+                    rl,
+                    sampled_at=datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                    # The record's own `timestamp` field (real event time),
+                    # distinct from `sampled_at` (rollout file mtime, which
+                    # can lag or repeat across polls). USAGE_BREAKDOWN_SPEC.md's
+                    # sampler needs the true event identity to dedupe repeat
+                    # reads of an unchanged source; None when the line has no
+                    # timestamp (never invented from mtime).
+                    event_at=rec.get('timestamp') if isinstance(rec, dict) else None,
+                    source='rollout')
                 break  # latest token_count record found — stop scanning
+        # See `_fetch_codex_weekly_usage`: a stale rollout sample is
+        # superseded by a live app-server read (newest wins); a failed read
+        # leaves the rollout result untouched.
+        probe = _codex_live_usage.probe_if_stale(rollout_event_epoch, now)
+        if _codex_probe_wins(probe, rollout_event_epoch):
+            assert probe is not None
+            result = _detail_from(
+                probe['rate_limits'],
+                sampled_at=datetime.fromtimestamp(probe['probed_at'], tz=timezone.utc).isoformat(),
+                event_at=None, source='probe')
     except Exception as e:
         _log(f"[system_usage] codex usage detail read failed: {e}", flush=True)
         result = None
@@ -1141,8 +1212,10 @@ def usage_breakdown_sample_once() -> dict:
     try:
         detail = _fetch_codex_usage_detail()
         codex_n = _sampler.sample_codex(store, detail=detail)
+        # A live app-server read (source='probe') has no rollout event time to
+        # pair a session checkpoint with; sample_codex skips it too.
         codex_observed_at = (detail.get('event_at') or detail.get('sampled_at')) \
-            if isinstance(detail, dict) else None
+            if isinstance(detail, dict) and detail.get('source') != 'probe' else None
         _usage_breakdown_tick_running_sessions(provider='codex', observed_at=codex_observed_at)
     except Exception as e:
         _log(f"[usage-breakdown] codex allowance sample failed: {e}", flush=True)
@@ -1311,14 +1384,15 @@ def system_usage_get():
 @bp.route('/api/system/usage/refresh', methods=['POST'])
 def system_usage_refresh():
     """Bust the OAuth + Codex usage caches, then return the same payload as
-    GET /api/system/usage (MC-989). Codex's own number only changes when a
-    Codex turn actually runs — this can't force a fresh sample, it just lets
-    a sample that already landed since the last 60s window show immediately
-    instead of waiting out the TTL.
+    GET /api/system/usage (MC-989). The rollout-file Codex number only
+    changes when a Codex turn runs, so this also forces one live app-server
+    read (`mc/codex_live_usage.py`) — that is how a reset or top-up done in
+    the Codex app reaches the bar without waiting for the next run.
     """
     _oauth_usage_cache['ts'] = 0.0
     _codex_usage_cache['ts'] = 0.0
     _codex_detail_cache['ts'] = 0.0
+    _codex_live_usage.request_fresh()
     return system_usage_get()
 
 

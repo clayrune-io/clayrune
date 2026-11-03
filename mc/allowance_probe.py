@@ -51,18 +51,106 @@ def _tree_kill(proc: subprocess.Popen) -> None:
         _log(f"[allowance] probe teardown failed: {e}", flush=True)
 
 
-def codex_ordinary_usage_allowed(cmd_prefix: List[str],
-                                 timeout_s: float = _PROBE_TIMEOUT_S,
-                                 popen_kwargs: Optional[dict] = None
-                                 ) -> Optional[bool]:
-    """Ask the Codex app-server whether ordinary usage is allowed.
+def _parse_window(win) -> Optional[dict]:
+    """One app-server rate-limit window (`usedPercent`, `windowDurationMins`,
+    `resetsAt`) in the rollout file's snake_case shape (`used_percent`,
+    `window_minutes`, `resets_at`), so callers reading either source share one
+    window parser. None when the slot is absent."""
+    if not isinstance(win, dict):
+        return None
+
+    def _pick(*keys):
+        for k in keys:
+            if win.get(k) is not None:
+                return win.get(k)
+        return None
+
+    return {
+        'used_percent': _pick('usedPercent', 'used_percent'),
+        'window_minutes': _pick('windowDurationMins', 'window_minutes'),
+        'resets_at': _pick('resetsAt', 'resets_at'),
+    }
+
+
+def parse_rate_limits_result(result) -> Optional[dict]:
+    """Parse an `account/rateLimits/read` `result` into
+
+        {'ordinary_usage_allowed': bool|None,
+         'rate_limits': {'primary': win|None, 'secondary': win|None,
+                         'credits': {has_credits, unlimited, balance}|None,
+                         'plan_type': str|None,
+                         'rate_limit_reached_type': str|None}}
+
+    `rate_limits` mirrors the `rate_limits` block of a rollout `token_count`
+    line (snake_case, same window keys) so the usage bar reads both sources
+    with the same code. None when `result` is not a dict."""
+    if not isinstance(result, dict):
+        return None
+    allowed = result.get('ordinaryUsageAllowed')
+    raw = result.get('rateLimits')
+    raw = raw if isinstance(raw, dict) else {}
+    credits = raw.get('credits')
+    if isinstance(credits, dict):
+        credits = {
+            'has_credits': credits.get('hasCredits', credits.get('has_credits')),
+            'unlimited': credits.get('unlimited'),
+            'balance': credits.get('balance'),
+        }
+    else:
+        credits = None
+    return {
+        'ordinary_usage_allowed': allowed if isinstance(allowed, bool) else None,
+        'rate_limits': {
+            'primary': _parse_window(raw.get('primary')),
+            'secondary': _parse_window(raw.get('secondary')),
+            'credits': credits,
+            'plan_type': raw.get('planType', raw.get('plan_type')),
+            'rate_limit_reached_type': raw.get(
+                'rateLimitReachedType', raw.get('rate_limit_reached_type')),
+        },
+    }
+
+
+def ordinary_usage_allowed_from(snapshot: Optional[dict]) -> Optional[bool]:
+    """Derive the allowance verdict from a `parse_rate_limits_result` snapshot.
 
     True  = the backend says usage is allowed and no rate limit is reached.
     False = the backend says it is reached / not allowed.
     None  = unanswered, or the fields were absent. The schema says an absent
             `ordinaryUsageAllowed` must not be read as recovery, and a False
             can coexist with purchased credits, so callers must treat only
-            True as evidence. Never raises.
+            True as evidence.
+    """
+    if not isinstance(snapshot, dict):
+        return None
+    allowed = snapshot.get('ordinary_usage_allowed')
+    reached = (snapshot.get('rate_limits') or {}).get('rate_limit_reached_type')
+    if allowed is True and not reached:
+        return True
+    if allowed is False or reached:
+        return False
+    return None
+
+
+def codex_ordinary_usage_allowed(cmd_prefix: List[str],
+                                 timeout_s: float = _PROBE_TIMEOUT_S,
+                                 popen_kwargs: Optional[dict] = None
+                                 ) -> Optional[bool]:
+    """Ask the Codex app-server whether ordinary usage is allowed (see
+    `ordinary_usage_allowed_from` for the True/False/None contract).
+    Never raises."""
+    return ordinary_usage_allowed_from(
+        codex_rate_limits_snapshot(cmd_prefix, timeout_s, popen_kwargs))
+
+
+def codex_rate_limits_snapshot(cmd_prefix: List[str],
+                               timeout_s: float = _PROBE_TIMEOUT_S,
+                               popen_kwargs: Optional[dict] = None
+                               ) -> Optional[dict]:
+    """Ask the Codex app-server for `account/rateLimits/read` and return the
+    parsed snapshot (see `parse_rate_limits_result`), or None if it did not
+    answer within `timeout_s`. Never raises. The single JSON-RPC handshake
+    behind every token-free Codex read (allowance verdict, usage bar).
     """
     proc = None
     try:
@@ -113,18 +201,7 @@ def codex_ordinary_usage_allowed(cmd_prefix: List[str],
                 _send({'id': 2, 'method': 'account/rateLimits/read'})
                 sent_read = True
             elif msg.get('id') == 2:
-                result = msg.get('result')
-                if not isinstance(result, dict):
-                    return None
-                allowed = result.get('ordinaryUsageAllowed')
-                snapshot = result.get('rateLimits') or {}
-                reached = (snapshot.get('rateLimitReachedType')
-                           if isinstance(snapshot, dict) else None)
-                if allowed is True and not reached:
-                    return True
-                if allowed is False or reached:
-                    return False
-                return None
+                return parse_rate_limits_result(msg.get('result'))
     except Exception as e:
         _log(f"[allowance] codex probe failed: {e}", flush=True)
         return None
