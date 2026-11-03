@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-02] - Check steward pilot channel readiness without reading secrets (BUILTINS-3 SR-3)
+
+- Added the scheduler lifecycle callback with a separate metadata-only probe for the existing pilot mail/digest tools, email routing, mail pause and credential-source presence. Missing tooling/configuration holds with a concrete channel error; other projects cannot borrow the pilot sender.
+- Credential files remain unopened and environment values unread. No mail, IMAP or model call is made by readiness; authentication and delivery remain unverified. Existing child-drain and communication guards remain in their services.
+- Local branch candidate only; protected SR-2 patches remain unapplied. No live activation, merge, push or restart.
+
 ## [2026-11-02] - Clickable composer breadcrumb
 
 - In the post composer, **Desk** and the campaign name at the top are now links. Desk goes to Home, the campaign name to its campaign page. If you came from that campaign, Back then reads the same as pressing Back. Unsaved text is kept.

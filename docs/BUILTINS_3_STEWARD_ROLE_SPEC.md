@@ -18,9 +18,12 @@ SR-2 is not integrated and the SR-1 execution block remains until later work.
 SR-3 branch handoff: [guarded dispatch contract](BUILTINS_3_SR3_DISPATCH.md).
 Role timer/Run Now preparation and filtering seams are present; the branch
 now uses merged SR-4 assignment claims, watermark, journal and notifier APIs.
-Child drain/continuation handoff checks are now present. Protected SR-2
-resources and the missing channel readiness contract/callback remain explicit
-delivery blockers; the channel interface choice is with the dispatching owner.
+Child drain/continuation handoff checks are now present. Dave selected Option A:
+the channel callback checks the existing pilot tools and credential-source
+metadata without reading credentials or invoking mail/IMAP/models. Other
+projects remain held unless their tool paths match the pilot runners.
+Protected SR-2 resources remain explicit delivery blockers; metadata readiness
+does not prove authentication or delivery.
 No live migration is included.
 
 Parent: [Built-ins platform plan](BUILTINS_PLATFORM_PLAN_2026-10-31.md), item 3.

@@ -72,6 +72,7 @@ from mc import schedule_conditions as _schedule_conditions    # "spend leftover 
 from mc import schedule_skip_log as _skip_log                 # skipped ticks, shown in Runs
 from mc import steward_role_model as _role_model, steward_role_writes as _role_writes
 from mc import steward_role_dispatch as _role_dispatch
+from mc import steward_role_channel as _role_channel
 from mc.blueprints.push_mobile import _notify_push  # MC-961: same pointer, the notify/inbox surface
 from steward import core as _steward_core  # cycle-task builder + skills delta
 # NOTE: `steward.core` is a leaf (no Flask, no blueprint imports), so this does
@@ -126,6 +127,11 @@ def wire(*, schedules_path, load_project_fn, load_projects_fn,
     _revive_from_agent_log = revive_from_agent_log_fn
     _revive_non_claude_from_agent_log = revive_non_claude_from_agent_log_fn
     _record_usage_breakdown_turn_started = record_usage_breakdown_turn_started_fn
+
+
+def steward_role_lifecycle(project: dict, schedule: dict, event: str, detail: dict) -> str:
+    """SR-3 channel gate; child drain and journaling remain in their services."""
+    return _role_channel.require_ready(project, schedule, event, detail)
 
 
 def _load_schedules():
