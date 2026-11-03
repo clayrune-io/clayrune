@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-03] - Verify continuity before reporting carried work as live (MC-1146)
+
+- Continuity names the chat's origin: user-started, resumed or auto-fresh rollover, with the first project session after server start/restart identified explicitly. Old activity text cannot decide the origin.
+- Named agent sessions and local branches are checked before presenting carried threads as in flight. Dead sessions render `LOST IN RESTART`; missing branches or failed checks remain explicit. Saved continuity is preserved.
+- Recent activity identifies its session when recorded; legacy entries are labelled as project history with unknown ownership. Contract and verification: `docs/CONTINUITY_SESSION_PROVENANCE.md`. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-03] - Move the Desk conversation's large view
 
 - Drag the empty area of the A− / A+ / close strip to move a popped-out Desk conversation with a mouse or a single touch on screens wider than 960px. The strip has a grab cursor and stays reachable at the screen edges; buttons keep their own actions.

@@ -1954,7 +1954,7 @@ def _cont_heading(owner, updated):
     return f'### {owner or _CONT_SHARED_LABEL} — {updated}'
 
 
-def render_continuity(project, owner=None, reader_owns=True):
+def render_continuity(project, owner=None, reader_owns=True, origin=''):
     """The continuity block for the system prompt, or '' when there is nothing.
 
     Injected DIRECTLY rather than retrieved: "what am I part-way through" is
@@ -1973,6 +1973,7 @@ def render_continuity(project, owner=None, reader_owns=True):
     except Exception as e:
         _log(f'[continuity] render failed: {e}')
         return ''
+    from mc.continuity_liveness import render_thread
     by_owner = rec.get('by_owner') or {}
     key = _cont_owner_key(owner)
     lines = []
@@ -1981,7 +1982,7 @@ def render_continuity(project, owner=None, reader_owns=True):
         lines.append(f"  Where things stand: {rec['understanding']}")
     for t in rec['threads']:
         age = _cont_threads.age_label(rec['thread_confirmed'].get(t, ''), now)
-        lines.append(f"  • IN FLIGHT — {t} ({age})")
+        lines.append('  • ' + render_thread(project, t, age))
     for c in rec['commitments']:
         lines.append(f"  • YOU SAID YOU WOULD — {c}")
 
@@ -1993,7 +1994,8 @@ def render_continuity(project, owner=None, reader_owns=True):
             for t in by_owner[k]['threads']:
                 age = _cont_threads.age_label(
                     by_owner[k]['thread_confirmed'].get(t, ''), now)
-                others.append(f"  • {k or _CONT_SHARED_LABEL} — {t} ({age})")
+                others.append(f"  • {k or _CONT_SHARED_LABEL} — "
+                              + render_thread(project, t, age, prefix=''))
             if len(others) >= _CONT_MAX_OTHER_LINES:
                 break
         others = others[:_CONT_MAX_OTHER_LINES]
@@ -2002,20 +2004,20 @@ def render_continuity(project, owner=None, reader_owns=True):
         stamp = (rec.get('shared_updated') or '')[:10] or 'undated'
         shared_line = (f"  Project-wide (unowned), {stamp}: "
                        f"{rec['shared_understanding']}")
-    if not lines and not others and not shared_line:
+    if not lines and not others and not shared_line and not origin:
         return ''
     out = ''
-    if lines:
+    if lines or origin:
         out = ("--- CONTINUITY (what you were part-way through, and what you "
                "promised; if you finish or drop one, say so) ---\n"
-               + "\n".join(lines))
+               + "\n".join(([origin] if origin else []) + lines))
     if shared_line:
         out += (("\n" if out else "")
                 + "--- PROJECT-WIDE NOTE (no agent owns it; not your status, "
                   "and it may be stale) ---\n" + shared_line)
     if others:
         out += (("\n" if out else "")
-                + "--- ANOTHER AGENT ON THIS PROJECT IS PART-WAY THROUGH (not "
+                + "--- ANOTHER AGENT ON THIS PROJECT — RECORDED WORK (may be stale; not "
                   "yours — do not adopt or report these as your own work, "
                   "and coordinate before you touch the same files) ---\n"
                 + "\n".join(others))
