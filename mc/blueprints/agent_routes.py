@@ -127,6 +127,7 @@ import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends
 import mc.turn_clock as _turn_clock          # per-turn "Now ... since your last reply" stamp + gap briefing
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
 import mc.midturn_rollover as _midturn  # mid-turn context rollover bookkeeping
+import mc.long_job_guidance as _long_job_guidance  # MC-1149: long jobs -> /job route, every engine
 import mc.resume_target as _resume_target  # unresumable `-r` ids: heal, don't loop
 from mc import habit_report as _habit_report  # MC-964 Step E report mode (human messages at send time)
 from mc import log_lines_trim as _log_lines_trim  # log_lines cap that keeps user lines
@@ -5288,21 +5289,15 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # one process per turn and exit at turn end (no run_in_background tool),
     # so a shell `&` job is orphaned with nothing to wake the session -- tell
     # the agent the real options instead of letting it discover the silent
-    # failure by trying to background a command itself. Needs a session_id to
-    # address, and incognito sessions can't take a job endpoint response.
-    if not _runtime_caps.background_jobs and session_id and not incognito:
-        parts.append(
-            "You have no background-job facility of your own -- your process "
-            "exits when this turn ends, so backgrounding a command with `&` "
-            "orphans it and nothing wakes you when it finishes. For a long "
-            "command, either run it in the foreground within your tool's own "
-            "timeout, or hand it to Clayrune: POST "
-            f"http://localhost:{port}/api/project/{pid}/agent/{session_id}/job "
-            '{"command":"...","timeout_minutes":optional,"shell":optional} — '
-            "runs on bash by default (any OS; \"powershell\"/\"cmd\"/\"sh\" also "
-            "accepted) — Clayrune runs it and delivers a follow-up turn into "
-            "this session with the exit code, duration and output tail when "
-            "it finishes.")
+    # failure by trying to background a command itself. MC-1149: EVERY
+    # engine, Claude included, is told that a job expected to outlive ~5 min
+    # goes to the server-owned job route, because a mid-turn rollover
+    # tree-kills the CLI and every run_in_background job under it. Text in
+    # mc/long_job_guidance.py. Needs a session_id to address, and incognito
+    # sessions can't take a job endpoint response.
+    if session_id and not incognito:
+        parts.append(_long_job_guidance.long_job_note(
+            port, pid, session_id, background_jobs=bool(_runtime_caps.background_jobs)))
 
     # Pointer card, not the full 19.9 KB reference — see
     # `_CLAYRUNE_API_POINTER_CARD` for the measured numbers. The full text
@@ -6159,6 +6154,7 @@ def _read_agent_stream(proc, session):
                             _tresult_text = _extract_tool_result_text(_block)
                             _observe_memory_push_result(session, _tname, _tresult_text)
                             _midturn.note_tool_result_text(session, _tname, _tresult_text)
+                            _midturn.note_bg_job_result(session, _tuid, _tname, _tresult_text)
                         if _midturn.note_tool_results(session, msg['message'].get('content')):
                             _maybe_midturn_roll(session, my_proc)
                 elif msg_type == 'result':
@@ -6445,6 +6441,7 @@ def _read_agent_stream_b(proc, session):
                             _tresult_text = _extract_tool_result_text(_block)
                             _observe_memory_push_result(session, _tname, _tresult_text)
                             _midturn.note_tool_result_text(session, _tname, _tresult_text)
+                            _midturn.note_bg_job_result(session, _tuid, _tname, _tresult_text)
                         if _midturn.note_tool_results(session, msg['message'].get('content')):
                             _maybe_midturn_roll(session, my_proc)
                 elif msg_type == 'result':

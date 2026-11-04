@@ -362,6 +362,39 @@ def test_journal_path_and_tool_result_heads_carried_across_roll(env):
     assert 'second line' not in prompt, 'only the first line of a result is carried'
 
 
+def test_background_job_output_file_and_fate_carried_across_roll(env, tmp_path):
+    """MC-1149 phase 1: a run_in_background job's tool_result names its output
+    file; the roll's state block must carry that path and say whether the
+    job's process survived the tree kill, instead of the blanket "relaunch
+    any that are still needed" that duplicated survivors (the fake CLI pid
+    here has no descendants, so the honest answer is 'unknown')."""
+    out = tmp_path / 'tasks' / 'bg1.output'
+    out.parent.mkdir()
+    out.write_text('41% ...', encoding='utf-8')
+    bg_block = {'type': 'tool_use', 'id': 'bg1', 'name': 'Bash',
+                'input': {'command': 'python -m pytest -q', 'run_in_background': True}}
+
+    def lines():
+        yield json.dumps({'type': 'assistant', 'session_id': CSID, 'message': {
+            'id': 'm1', 'content': [bg_block],
+            'usage': {'input_tokens': 100_000, 'cache_read_input_tokens': 0,
+                      'cache_creation_input_tokens': 0, 'output_tokens': 10}}}) + '\n'
+        yield _tool_result_text('bg1', f'Command running in background with ID: bg1. '
+                                       f'Output is being written to: {out}. You will '
+                                       f'be notified when it completes.')
+        yield _assistant('tool2', 250_000, 'm2')
+        yield _tool_result('tool2')
+
+    _run_reader(env, lines)
+    assert _wait(lambda: env['new_proc'].stdin.written), 'fresh session got no prompt'
+    prompt = json.loads(env['new_proc'].stdin.written[0])['message']['content']
+
+    assert 'relaunch any that are still needed' not in prompt
+    assert str(out) in prompt and '7 bytes' in prompt
+    assert 'process: unknown' in prompt
+    assert '/api/project/p1/agent/worker-1/job' in prompt
+
+
 def test_tool_result_heads_capped_oldest_dropped_first(env):
     """The rolling carry buffer is capped at TOOL_RESULT_CARRY_CAP_BYTES so a
     roll never inflates the fresh session's floor without bound (plan §7.3);
