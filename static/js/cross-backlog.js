@@ -30,6 +30,7 @@ async function _hydrateAllBacklogs() {
           if (!res.ok) return;
           p.backlog = await res.json();
           p._backlogFull = true;
+          p._backlogSeq = p.backlog_seq;  // staleness baseline for _preserveOpenBacklogs
         } catch (e) {}
       }));
       if (openModals.has('__all_backlog')) renderAllBacklog();  // progressive fill

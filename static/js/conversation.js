@@ -6025,7 +6025,9 @@ async function refreshProjectBacklog(projectId) {
     if (p) {
       p.backlog = backlog;
       p._backlogFull = true;  // full bodies loaded — preserve across list re-fetches
+      p._backlogSeq = p.backlog_seq;  // staleness baseline for _preserveOpenBacklogs
       refreshModalById(projectId);
+      if (openModals.has('__all_backlog') && typeof renderAllBacklog === 'function') renderAllBacklog();
     }
   } catch(e) {}
 }
