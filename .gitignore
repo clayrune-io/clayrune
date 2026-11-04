@@ -101,6 +101,9 @@ data/desk_purpose_verification.json
 data/desk_purpose_verification.json.corrupt
 # Vendor schema diagnostics: runtime state, never product source.
 data/desk/
+# MC-1151 agent-listings checklists (mc/desk_agent_store.py): per-campaign
+# runtime records, sibling of DATA_DIR, never bundled.
+data/desk_agent/
 data/dev_harness/
 data/agent_labels.json
 data/remote_enrollment_liveness.json
