@@ -4179,7 +4179,7 @@ Base: http://localhost:{port}  ·  project_id: {pid}
 - Terminal pop-out: POST /api/terminal/launch {{"project_id":"{pid}","command":"..."}}
 - Process registration (MANDATORY for every spawned long-running process):
   POST /api/processes/register {{"pid":NUM,"name":"...","project_id":"{pid}","command":"..."}}
-- Agent dispatch: POST /api/project/{pid}/agent/dispatch {{"task":"..."}}
+- Agent dispatch: POST /api/project/{pid}/agent/dispatch {{"task":"..."}}  (you are woken when the child finishes)
 - Browser pane: POST /api/browser/launch {{"project_id":"{pid}","url":"..."}}
   · POST /api/browser/read {{"session_id":...}}
 - Find a doc (incl. gitignored docs + _journal, invisible from a worktree):
@@ -12706,9 +12706,11 @@ def agent_dispatch(project_id):
         request, trigger_type, source, agent_sessions, tracked_processes)
     # MC-1082: lineage is the OS-attributed caller, not whatever the body named
     # as notify_session (mc/dispatch_lineage.py). None -> notify_session, as before.
-    spawned_by = _dispatch_lineage.spawner_of_record(
-        _dispatch_lineage.attributed_caller_session(request, agent_sessions, tracked_processes),
-        notify_session)
+    attributed_caller = _dispatch_lineage.attributed_caller_session(
+        request, agent_sessions, tracked_processes)
+    spawned_by = _dispatch_lineage.spawner_of_record(attributed_caller, notify_session)
+    # MC-1155: omit notify_session and the attributed caller is woken anyway.
+    notify_session = _dispatch_lineage.callback_target(attributed_caller, notify_session)
     character, pace_record = _engine_pace_dispatch.prepare(
         project_id, character, resume_id=resume_id,
         provider_override=provider_override, model_override=model_override,

@@ -56,3 +56,19 @@ def spawner_of_record(attributed_caller: str, notify_session: str) -> str | None
         _log(f'[dispatch-lineage] notify_session {named[:12]!r} differs from the '
              f'attributed caller {caller[:12]!r}; lineage records the caller')
     return caller
+
+
+def callback_target(attributed_caller: str, notify_session: str) -> str:
+    """The session to wake when the dispatched child finishes (`_notify_session`).
+
+    MC-1155: the callback used to come only from the body's `notify_session`, so
+    a caller following the documented `{"task": ...}` shape dispatched an orphan
+    that never reported back (6 Dave dispatches on 2026-11-04). An explicit
+    `notify_session` still wins, as the callback target only (lineage is
+    `spawner_of_record`, unchanged). With none, an OS-attributed caller is the
+    default: whoever dispatched wants the result. No attributed caller (UI, a
+    human's curl, scheduler) -> '' , callback-less as before."""
+    named = (notify_session or '').strip()
+    if named:
+        return named
+    return (attributed_caller or '').strip()
