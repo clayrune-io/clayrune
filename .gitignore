@@ -318,6 +318,11 @@ _jscheck_tmp.js
 # Per-run runtime state (terminal pop-out / agent child PIDs)
 data/mc_child_pids.json
 
+# Agent supervisor shim session dirs (MC-1150): machine paths + a per-shim
+# loopback token, so operator-specific by CLAUDE.md's rule. Sibling of
+# data/projects/, never inside it.
+data/agent_shims/
+
 # Distiller proposal queue — generated at session end, reviewed in the Skills
 # panel, promoted by hand. Regenerated; never source. (Same posture as
 # data/maintenance_reports/.)
