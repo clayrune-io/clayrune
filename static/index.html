@@ -1418,17 +1418,41 @@ window.fetchFailFast = fetchFailFast;   // shared by the polling modules (system
 // Scoped to what is actually on screen — a project whose modal has since closed
 // drops its items on the next poll rather than pinning every backlog in memory
 // for the life of the tab.
+//
+// Preserving is only right while the cached array still matches the server. An
+// item added through the API (an agent, another tab) changes the counters
+// /api/projects ships, so a cached array whose own total/open/done counts, or
+// whose `backlog_seq` as of load, differ from the fresh record is stale: keep
+// showing it (no flash to empty) and refetch that project in the background.
+// Text-only edits leave every counter unchanged and are NOT caught by this.
 // Mutates `fresh` in place; returns it.
+const _backlogRefetching = new Set();
+function _backlogCacheStale(items, loadedSeq, fresh) {
+  if (!Array.isArray(items)) return false;
+  if ((fresh.backlog_seq || 0) !== (loadedSeq || 0)) return true;
+  const closed = items.filter(i => BACKLOG_CLOSED.includes(i.status)).length;
+  return items.length !== (fresh.backlog_total_count || 0)
+      || closed !== (fresh.backlog_done_count || 0)
+      || (items.length - closed) !== (fresh.backlog_open_count || 0);
+}
 function _preserveOpenBacklogs(fresh) {
   const openIds = new Set([...openModals.keys()].filter(id => !id.startsWith('__')));
   const allBacklogOpen = openModals.has('__all_backlog');
   if (!openIds.size && !allBacklogOpen) return fresh;
   const prevFull = {};
   for (const p of allProjects) {
-    if (p._backlogFull && (allBacklogOpen || openIds.has(p.id))) prevFull[p.id] = p.backlog;
+    if (p._backlogFull && (allBacklogOpen || openIds.has(p.id))) prevFull[p.id] = p;
   }
   for (const p of fresh) {
-    if (prevFull[p.id]) { p.backlog = prevFull[p.id]; p._backlogFull = true; }
+    const prev = prevFull[p.id];
+    if (!prev) continue;
+    p.backlog = prev.backlog; p._backlogFull = true; p._backlogSeq = prev._backlogSeq;
+    if (_backlogCacheStale(prev.backlog, prev._backlogSeq, p) && !_backlogRefetching.has(p.id)
+        && typeof refreshProjectBacklog === 'function') {
+      _backlogRefetching.add(p.id);
+      Promise.resolve(refreshProjectBacklog(p.id)).catch(() => {})
+        .finally(() => _backlogRefetching.delete(p.id));
+    }
   }
   return fresh;
 }
