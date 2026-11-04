@@ -152,6 +152,10 @@ _CONFIG_EDITABLE_KEYS = {
     # Per-turn conduct-rule tail (mc/behavior_tail.py). Read live at the next
     # context build / stdin write — no respawn needed (like read_floor_topk).
     'behavior_tail_enabled', 'behavior_tail_compact_enabled',
+    # Per-turn clock stamp + gap briefing (mc/turn_clock.py). Read live at the
+    # next stdin write / follow-up — no respawn needed.
+    'turn_clock_enabled', 'turn_clock_gap_briefing_enabled',
+    'turn_clock_gap_threshold_minutes',
     # Artifact coverage advisory (mc/artifact_coverage.py). Read live at turn
     # end — no respawn needed.
     'artifact_coverage_enabled',

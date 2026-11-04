@@ -418,6 +418,16 @@ def _load_config():
         # over; every call after that gets the ~250B `_TAIL_COMPACT`
         # reminder instead. False restores full text on every turn.
         'behavior_tail_compact_enabled': True,
+        # Per-turn clock (mc/turn_clock.py, Ron 2026-11-03: agents were not
+        # time-aware). Every message sent into an agent session gets one
+        # leading `[Now <date> <time> <tz> · <elapsed> since your last reply]`
+        # line; when the gap exceeds the threshold a short `Since your last
+        # reply:` block (commits / backlog status changes / finished sibling
+        # sessions, capped at 10 lines, no LLM call) follows it. Default ON;
+        # all three read live, no respawn.
+        'turn_clock_enabled': True,
+        'turn_clock_gap_briefing_enabled': True,
+        'turn_clock_gap_threshold_minutes': 30,
         # Artifact coverage (mc/artifact_coverage.py) — at turn end, compare
         # the literal artifacts the user's message named (URL query params,
         # file paths, backticked tokens, ids) against the ACTUAL tool inputs

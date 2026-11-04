@@ -56,6 +56,7 @@ import tempfile
 from datetime import timedelta
 from mc import allowance_state as _allowance_state
 from mc import empty_turn as _empty_turn
+from mc import turn_clock as _turn_clock  # elapsed-since-last-reply stamp (mc/turn_clock.py)
 from mc import transform_sandbox as _transform_sandbox
 from mc import api_credits_offload as _api_credits_offload
 from mc.execution_policy import (
@@ -497,6 +498,7 @@ _LEADING_INJECTED_RE = re.compile(
     r'--- (?:STANDING POSITIONS|RELEVANT MEMORY|REPLY SHAPE)\b[^\n]*---[ \t]*(?:\n(?!\s*\n)[^\n]*)*'
     r'|=== Prior conversation, started on [^\n]*handed off here ===[\s\S]*'
     + re.escape(HANDOFF_FOOTER) +
+    r'|\[Now \d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]\n]*\](?:\nSince your last reply:(?:\n- [^\n]*)*)?'  # mc/turn_clock.py header
     r'|=== Still waiting on \d+ dispatched session[^\n]*===(?:\n- [^\n]*)*'
     r'|=== Mid-task rollover state ===[\s\S]*?=== End of mid-task rollover state ==='
     r'|Your context was rolled over mid-task because it reached the token limit\.[^\n]*'
@@ -5133,6 +5135,11 @@ class GeminiRuntime(AgentRuntime):
             try:
                 _flush_run()  # a run cut off by EOF / a stream error still lands
                 turn_text = ''.join(turn_text_parts)
+                # Stamp only when THIS reader produced text and still owns the
+                # session: a reader that exits empty (crash, no output) or has
+                # been superseded by a respawn must not reset the clock.
+                if turn_text.strip() and session.get('proc') is proc:
+                    _turn_clock.note_reply(session)
                 mc_res = self.apply_mc_tool_blocks(session, turn_text)
                 if _mc_suppressing and not mc_res['blocks_found']:
                     # A ```mc: fence appeared but no complete, valid block was
@@ -6597,6 +6604,11 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
             # form exists only so Gemini's own reader (which lives on the
             # runtime) can call `self.`; this shared reader is already in the
             # same module as the real implementation.
+            # Stamp only when THIS reader produced text and still owns the
+            # session (a codex retry_without_model swap hands ownership to the
+            # retry's reader; an empty/crashed turn is not a reply).
+            if turn_text.strip() and session.get('proc') is proc:
+                _turn_clock.note_reply(session)
             mc_res = apply_mc_tool_blocks(session, turn_text)
             if _mc_suppressing and not mc_res['blocks_found']:
                 # A ```mc: fence appeared but no complete, valid block was

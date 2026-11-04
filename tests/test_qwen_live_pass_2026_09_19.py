@@ -389,6 +389,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
     monkeypatch.setattr(ar._memory_turn, 'refresh_for_turn', lambda *a, **k: {'block': ''})
     monkeypatch.setattr(ar._behavior_tail, 'render', lambda *a, **k: '')
+    monkeypatch.setattr(ar, '_clock_wrap', lambda project, session, content, message=None: content)  # exact-bytes tests; stamp covered in test_turn_clock.py
     monkeypatch.setattr(ar, '_fresh_context_for', lambda *a, **k: 'FRESH CONTEXT')
     monkeypatch.setitem(mc_state.CONFIG, 'context_rollover_tokens', 200_000)
     activity = []
