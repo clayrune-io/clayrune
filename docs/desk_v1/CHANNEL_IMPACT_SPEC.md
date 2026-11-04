@@ -1,6 +1,6 @@
 # Desk channel impact — MC-1152
 
-Status: **decision pending; not cleared for implementation**. Specification only.
+Status: **D1 decided (A); cleared for P1 implementation**. Specification only.
 Author: Marlow, 2026-11-04. Backlog item `e4796e7b`.
 
 ## 1. Problem and user
@@ -49,8 +49,10 @@ would invent attribution.
 | **B — hold the comparison view** | Build UTM and GitHub collection first; keep the channel-impact view dark until the site-analytics phase passes attribution tests. | Delays visible benefit and adds an analytics connection prerequisite. GitHub collection can still preserve history meanwhile. |
 
 Neither option changes the decided source order. Neither permits estimated
-channel conversions. **No option is selected here. Dave must record D1 before
-builders implement the release behavior.** The remaining sections specify the
+channel conversions. **DECIDED (Dave, 2026-11-04): A.** Users see per-channel post
+metrics now; GitHub outcomes appear as repository context, and channel conversion
+cells read `Not attributable by this source` until a site-analytics adapter proves
+attribution. Rationale and reversal: `docs/_journal/e4796e7b-desk-channel-impact.md`. The remaining sections specify the
 shared contract; references to the contextual view are conditional on A.
 
 ## 3. Current implementation constraints
