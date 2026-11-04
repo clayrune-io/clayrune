@@ -1,0 +1,1 @@
+2026-11-03T17:00:08.742449Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.example.com/.well-known/oauth-protected-resource/mcp/trading\"" })

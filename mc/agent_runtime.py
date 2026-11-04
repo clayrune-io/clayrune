@@ -55,6 +55,7 @@ import hashlib
 import tempfile
 from datetime import timedelta
 from mc import allowance_state as _allowance_state
+from mc import codex_run_error as _codex_run_error
 from mc import empty_turn as _empty_turn
 from mc import turn_clock as _turn_clock  # elapsed-since-last-reply stamp (mc/turn_clock.py)
 from mc import transform_sandbox as _transform_sandbox
@@ -855,6 +856,11 @@ def _last_real_error_line(log_tail: str) -> Optional[str]:
             continue
         if _SEED_LINE_RE.match(stripped):
             continue
+        # Codex's MCP startup chatter (rmcp AuthRequired / Transport channel
+        # closed) is a warning about one tool, never why the run exited
+        # (MC-1147), raw or already labelled `[codex warn]`.
+        if _codex_run_error.is_mcp_startup_warning(stripped):
+            continue
         # A line with no letter or digit (a lone `]`, `}`, `)`) is the tail of
         # a multi-line message, never a cause. Live 2026-09-19: a Qwen 404
         # whose text was an HTML page wrapped in `[API Error: ... ]` left a
@@ -923,6 +929,12 @@ def _collect_trailing_reply_text(lines: Optional[List[str]]) -> str:
                 break
             continue
         if _SEED_LINE_RE.match(stripped):
+            if collected:
+                break
+            continue
+        # A tracing log line (stderr merged into stdout) is never reply text
+        # (MC-1147): treated as a boundary, like the seed line.
+        if _codex_run_error.is_tracing_line(stripped):
             if collected:
                 break
             continue
@@ -6333,6 +6345,10 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
     raw_eof = cbs.get('on_raw_eof')
     raw_sequence = 0
     capture_failed = False
+    # MC-1147: when this run began, so the rollout error read at exit can be
+    # told apart from an earlier turn's. Also clears the previous turn's.
+    turn_started_at = (_codex_run_error.begin_turn(session)
+                       if runtime.name == 'codex' else 0.0)
 
     # MC Tool Protocol (mc:question / mc:todo — see with_mc_tool_protocol):
     # every Mode-A provider's system prompt tells it to use this fence
@@ -6642,6 +6658,15 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                             set_error=True)
                 session['last_status_change_time'] = _time.time()
                 if not mc_res['paused'] and rc != 0:
+                    if runtime.name == 'codex':
+                        # `codex exec --json` may never deliver the failure
+                        # as a stream event; the rollout's task_complete.error
+                        # is the authoritative copy (MC-1147).
+                        _codex_run_error.capture(
+                            session,
+                            _codex_run_error.locate_rollout(
+                                runtime.transcript_path, handle.project_path, session),
+                            turn_started_at)
                     session['log_lines'].append(
                         f"[{runtime.name} exited with code {rc}]")
                     try:
@@ -8526,6 +8551,14 @@ class CodexRuntime(AgentRuntime):
             if not isinstance(msg, dict):
                 raise ValueError('not a dict')
         except (json.JSONDecodeError, ValueError):
+            if _codex_run_error.is_mcp_startup_warning(line):
+                # An MCP server needing sign-in: the run goes on without it.
+                return AgentEvent(
+                    type=EventType.WARN, provider='codex',
+                    session_id=None, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(),
+                    payload={'text': line, 'severity': 'warn'},
+                )
             return AgentEvent(
                 type=EventType.ASSISTANT_TEXT, provider='codex',
                 session_id=None, mc_session_id=mc_session_id,

@@ -429,7 +429,7 @@ fence refusals remain in force; MCP wiring does not authorize an engine launch.
 |---|---|---|
 | GET | `/api/config` | Read live MC config (flags, ports, scribe state). |
 | PUT | `/api/config` | Patch config (partial JSON merge). |
-| GET | `/api/engine/preferences?project_id=<optional>` | Read-only provider catalogs, supported effort/tier/model-selection metadata, global defaults, optional project overrides, effective engine provenance and `automatic_background_model` (CR lightweight request ID; empty means native fallback with unknown cost). Never launches a provider or migrates data. |
+| GET | `/api/engine/preferences?project_id=<optional>` | Read-only provider catalogs, supported effort/tier/model-selection metadata, global defaults, optional project overrides, effective engine provenance and `automatic_background_model` (CR lightweight request ID; empty means native fallback with unknown cost). Never launches a provider or migrates data. Each provider also carries `allowance`: `{used_percent, resets_at, sampled_at, source, exhausted_record}` (live weekly usage, the same numbers as `/api/system/usage` `provider_weekly_usage`; `used_percent` and `source` are `null` when the provider has no real reading, never 0; `exhausted_record` is Clayrune's own record of a run that hit the limit, `null` when none; the Codex reading can trigger the same cached, token-free live usage read `/api/system/usage` does). **Read this before deciding which engine to send work to; do not infer headroom from a past failed run.** |
 | POST | `/api/engine/preview` | Resolve `{project_id?, provider?, model?, effort?, character?: {provider?,model?,effort?}}` through the same engine resolver used by execution. Read-only, no provider call. Missing model/effort inherits; explicit empty selects native. |
 | GET | `/api/usage` | API usage / token-cost telemetry. |
 
@@ -450,7 +450,7 @@ global and project engine defaults are edited in Providers.
 |---|---|---|
 | GET | `/api/system/heartbeat` | Liveness ping. |
 | GET | `/api/system/status` | Status snapshot (uptime, restart info). |
-| GET | `/api/system/usage` | Resource usage (mem, CPU). |
+| GET | `/api/system/usage` | Resource usage (mem, CPU), token history, and `provider_weekly_usage` (`claude`/`codex` weekly `utilization` + `resets_at`, plus `exhausted` when a run hit the limit). The per-provider `allowance` on `/api/engine/preferences` is the same data. |
 | POST | `/api/system/status/refresh` | Force a status refresh. |
 | GET | `/api/system/update/status` | Installed vs latest commit + dates. |
 | GET | `/api/system/update/cached` | Cached update status (no fetch). |

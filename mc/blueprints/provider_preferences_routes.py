@@ -8,7 +8,7 @@ import re
 
 from flask import Blueprint, jsonify, request
 
-from mc import agent_runtime, engine_selection, provider_preferences, state
+from mc import agent_runtime, engine_selection, provider_allowance, provider_preferences, state
 from mc.background_model_policy import automatic_model
 
 bp = Blueprint('provider_preferences', __name__)
@@ -60,7 +60,11 @@ def preference_preview(config, project=None):
 @bp.route('/api/engine/preferences')
 def get_preferences():
     try:
-        return jsonify(preference_preview(state.CONFIG, _project(request.args.get('project_id', ''))))
+        view = preference_preview(state.CONFIG, _project(request.args.get('project_id', '')))
+        # Per-provider weekly usage + Clayrune's exhaustion record (MC-1147),
+        # from the same assembly as /api/system/usage `provider_weekly_usage`.
+        provider_allowance.attach_to_providers(view['providers'])
+        return jsonify(view)
     except FileNotFoundError as exc:
         return jsonify({'error': str(exc)}), 404
     except (ValueError, TypeError) as exc:
