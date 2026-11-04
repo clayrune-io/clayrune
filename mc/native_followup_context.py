@@ -44,7 +44,11 @@ def refresh_stash(project: dict[str, Any], session: dict[str, Any], task: str,
 
 
 def message_for_turn(project: dict[str, Any], session: dict[str, Any], message: str) -> str:
-    """Attach fresh memory to the message without changing the setup stash."""
+    """Attach fresh memory to the message without changing the setup stash.
+
+    Native (non-Claude) follow-ups: the clock header is added by the caller
+    (`agent_routes._clock_wrap`), not here -- this module has no access to the
+    live session registry the gap briefing reads."""
     if session.get('incognito'):
         return message
     refresh = memory_turn.refresh_for_turn(project, session, message)

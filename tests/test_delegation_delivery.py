@@ -294,6 +294,7 @@ def test_real_mode_b_followup_ack_waits_for_stdin_write(monkeypatch, tmp_path, w
     monkeypatch.setattr(ar, '_memory_turn', SimpleNamespace(refresh_for_turn=lambda *args: {'block': ''}))
     monkeypatch.setattr(ar, '_behavior_tail', SimpleNamespace(render=lambda session=None: ''))
     monkeypatch.setattr(ar, '_apply_mobile_brief', lambda message, data: message)
+    monkeypatch.setattr(ar, '_clock_wrap', lambda project, session, content, message=None: content)  # exact-bytes test; stamp covered in test_turn_clock.py
     monkeypatch.setattr(ar, '_rearm_notify_for_new_turn', lambda _: None)
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *args: None)
 
@@ -349,6 +350,7 @@ def test_real_process_inbox_acknowledges_only_after_mode_b_write(monkeypatch, tm
     monkeypatch.setattr(ar, '_memory_turn', SimpleNamespace(refresh_for_turn=lambda *args: {'block': ''}))
     monkeypatch.setattr(ar, '_behavior_tail', SimpleNamespace(render=lambda session=None: ''))
     monkeypatch.setattr(ar, '_apply_mobile_brief', lambda message, data: message)
+    monkeypatch.setattr(ar, '_clock_wrap', lambda project, session, content, message=None: content)  # exact-bytes test; stamp covered in test_turn_clock.py
     monkeypatch.setattr(ar, '_rearm_notify_for_new_turn', lambda _: None)
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *args: None)
 

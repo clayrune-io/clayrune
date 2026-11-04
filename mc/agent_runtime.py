@@ -56,6 +56,7 @@ import tempfile
 from datetime import timedelta
 from mc import allowance_state as _allowance_state
 from mc import empty_turn as _empty_turn
+from mc import turn_clock as _turn_clock  # elapsed-since-last-reply stamp (mc/turn_clock.py)
 from mc import transform_sandbox as _transform_sandbox
 from mc import api_credits_offload as _api_credits_offload
 from mc.execution_policy import (
@@ -5133,6 +5134,7 @@ class GeminiRuntime(AgentRuntime):
             try:
                 _flush_run()  # a run cut off by EOF / a stream error still lands
                 turn_text = ''.join(turn_text_parts)
+                _turn_clock.note_reply(session)  # turn finished: the agent just spoke
                 mc_res = self.apply_mc_tool_blocks(session, turn_text)
                 if _mc_suppressing and not mc_res['blocks_found']:
                     # A ```mc: fence appeared but no complete, valid block was
@@ -6597,6 +6599,7 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
             # form exists only so Gemini's own reader (which lives on the
             # runtime) can call `self.`; this shared reader is already in the
             # same module as the real implementation.
+            _turn_clock.note_reply(session)  # turn finished: the agent just spoke
             mc_res = apply_mc_tool_blocks(session, turn_text)
             if _mc_suppressing and not mc_res['blocks_found']:
                 # A ```mc: fence appeared but no complete, valid block was

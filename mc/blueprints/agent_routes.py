@@ -124,6 +124,7 @@ import mc.agent_worktree_followup as _agent_worktree_followup  # MC-1081: follow
 import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§9.6)
 from mc import native_followup_context as _native_followup_context
 import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends §9.6's split)
+import mc.turn_clock as _turn_clock          # per-turn "Now ... since your last reply" stamp + gap briefing
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
 import mc.midturn_rollover as _midturn  # mid-turn context rollover bookkeeping
 import mc.resume_target as _resume_target  # unresumable `-r` ids: heal, don't loop
@@ -6013,6 +6014,7 @@ def _read_agent_stream(proc, session):
                     _note_activity_state(session, msg)
                     continue
                 if msg_type == 'assistant' and isinstance(msg.get('message'), dict):
+                    _turn_clock.note_reply(session)   # elapsed-since-last-reply clock (mc/turn_clock.py)
                     _note_call_context_tokens(session, msg['message'], msg.get('parent_tool_use_id'))
                     # First assistant output proves a `-r` resume loaded OK (not a
                     # fragile resume that dies instantly), so a LATER process death
@@ -6306,6 +6308,7 @@ def _read_agent_stream_b(proc, session):
                     _note_activity_state(session, msg)
                     continue
                 if msg_type == 'assistant' and isinstance(msg.get('message'), dict):
+                    _turn_clock.note_reply(session)   # elapsed-since-last-reply clock (mc/turn_clock.py)
                     if not msg.get('parent_tool_use_id'):
                         _note_self_started_turn(session)
                     _note_call_context_tokens(session, msg['message'], msg.get('parent_tool_use_id'))
@@ -7814,6 +7817,10 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         # seed the conversation's delivered-set with the SAME text so those
         # facts aren't treated as new and resent on a later live follow-up.
         _memory_turn.seed_delivered(p, session, message)
+        # Elapsed since the agent last spoke, recovered from the restored
+        # transcript -- the revive is exactly the "9 hours later" case.
+        _turn_clock.seed_from_history(session, history_lines, history_ts)
+        revival_msg = _clock_wrap(p, session, revival_msg, message)
         stdin_msg = json.dumps({"type": "user", "message": {"role": "user", "content": revival_msg}}) + '\n'
         if role_context is not None:
             from mc.steward_role_dispatch import _append_ack
@@ -10292,6 +10299,36 @@ _SLASH_COMMAND_RE = _re_auth.compile(r'^/[A-Za-z][\w-]*(:[\w-]+)?(\s|$)')
 def _looks_like_slash_command(message: str) -> bool:
     """True when `message` begins with a CLI slash command (ignoring leading WS)."""
     return bool(_SLASH_COMMAND_RE.match(message.lstrip()))
+
+
+def _clock_header(project, session, message) -> str:
+    """The `[Now ... since your last reply]` header (+ gap briefing) for an
+    outgoing message, '' when off or `message` is a slash command (the CLI
+    only parses `/cmd` as the first bytes of a turn -- same carve-out as
+    `_apply_mobile_brief`). Never raises. See mc/turn_clock.py."""
+    try:
+        if isinstance(message, str) and (
+                _looks_like_slash_command(message)
+                # `[Steward cycle]` must stay the first bytes: the steward
+                # gates (distiller / memory / role dispatch) match it by
+                # prefix. Its task body already carries `Wake (local time)`.
+                or message.lstrip().startswith(_ATTEND_ONCE_STEWARD_MARKER)):
+            return ''
+        pp = (project or {}).get('project_path', '')
+        return _turn_clock.render(
+            project, session,
+            sessions=list(agent_sessions.values()),
+            cwd=_session_cwd(session, pp) if isinstance(session, dict) else pp)
+    except Exception as e:
+        _log(f'[turn-clock] header failed: {e}')
+        return ''
+
+
+def _clock_wrap(project, session, content, message=None) -> str:
+    """`content` with the clock header in front. `message` is the user's
+    original text (slash-command check); defaults to `content`."""
+    header = _clock_header(project, session, content if message is None else message)
+    return f'{header}\n\n{content}' if header else content
 
 
 def _apply_mobile_brief(message: str, request_data: dict) -> str:
@@ -13404,6 +13441,9 @@ def agent_followup(project_id):
             refresh = _memory_turn.refresh_for_turn(project, sess, msg)
             out = (refresh['block'] + '\n\n' + content
                    if refresh['block'] else content)
+            # Leading clock line (+ gap briefing). Built here, at write time,
+            # so elapsed is measured when the model will actually read it.
+            out = _clock_wrap(project, sess, out, msg)
             return json.dumps({
                 "type": "user",
                 "message": {"role": "user", "content": out}
@@ -13543,6 +13583,7 @@ def agent_followup(project_id):
                 message = _mode_a_token_rollover(
                     _followup_cwd, project_id, session_id, existing, session_provider, message)
                 _turn_message = _native_followup_context.message_for_turn(p, existing, message)
+                _turn_message = _clock_wrap(p, existing, _turn_message, message)
                 runtime.write_followup(handle, _bridge_images_for_blind_model(
                     _turn_message, existing, provider=session_provider,
                     model=existing.get('agent_model') or '', project_path=_followup_cwd))
@@ -14019,6 +14060,7 @@ def agent_followup(project_id):
                 # Send message to stdin. Mobile-brief directive applied here so
                 # rb['message'] keeps the original for telemetry / log_lines.
                 claude_content = _apply_mobile_brief(rb['message'], rb.get('request_data') or {})
+                claude_content = _clock_wrap(p, rb['existing'], claude_content, rb['message'])
                 stdin_msg = json.dumps({
                     "type": "user",
                     "message": {"role": "user", "content": claude_content}
@@ -14092,6 +14134,7 @@ def agent_followup(project_id):
             # Mobile-brief applied here so log_lines + telemetry use the
             # unaugmented message; only the claude -p arg gets the directive.
             claude_followup_msg = _apply_mobile_brief(followup_msg, data)
+            claude_followup_msg = _clock_wrap(p, existing, claude_followup_msg, message)
             # Honor a per-chat model pin (Mode A rebuilds the command each turn).
             _pin = _continuation_model(existing, p)
             cmd = [_resolve_claude(), *resume_flags, '-p', claude_followup_msg,
@@ -14505,6 +14548,7 @@ def agent_interrupt(project_id, *, _internal=None):
                 message = _mode_a_token_rollover(
                     _followup_cwd, project_id, session_id, session, session_provider, message)
                 _turn_message = _native_followup_context.message_for_turn(p, session, message)
+                _turn_message = _clock_wrap(p, session, _turn_message, message)
                 runtime.write_followup(handle, _bridge_images_for_blind_model(
                     _turn_message, session, provider=session_provider,
                     model=session.get('agent_model') or '', project_path=_followup_cwd))
@@ -14715,6 +14759,8 @@ def agent_interrupt(project_id, *, _internal=None):
                 # Mobile-brief applied only to the claude-bound payload —
                 # log_lines + telemetry above keep the unaugmented message.
                 claude_content = _apply_mobile_brief(respawn_msg, data)
+                if not is_midturn:   # a mid-turn roll is Clayrune's own handoff, not a message
+                    claude_content = _clock_wrap(p, session, claude_content, message)
                 stdin_msg = json.dumps({
                     "type": "user",
                     "message": {"role": "user", "content": claude_content}
@@ -14728,6 +14774,8 @@ def agent_interrupt(project_id, *, _internal=None):
             else:
                 # Mode A
                 claude_respawn_msg = _apply_mobile_brief(respawn_msg, data)
+                if not is_midturn:
+                    claude_respawn_msg = _clock_wrap(p, session, claude_respawn_msg, message)
                 # A mid-task roll's prompt is the handoff + state block: task
                 # verbatim + 2 x 4 KB of git output + the transcript turns,
                 # well past cmd.exe's 8191-char cap (WinError 206 -> the old

@@ -70,6 +70,7 @@ def route_env(tmp_path, monkeypatch, spawns, engine, endpoint):
         'coordination_enabled': False, 'read_floor_topk': 6, 'read_floor_link_expand': 0,
         'context_profile_overrides': {'*': 'full'}, 'delivery_telemetry_enabled': True,
         'vendor_context_sync_enabled': False,
+        'turn_clock_enabled': False,   # these tests pin the exact bytes sent; test_turn_clock.py covers the stamp
     }.items():
         monkeypatch.setitem(state.CONFIG, key, value)
 
@@ -235,3 +236,15 @@ def test_failed_stale_rebuild_preserves_fingerprint_and_retries(route_env, monke
     monkeypatch.setattr(e.routes, '_fresh_context_for', rebuild)
     assert 'RULES_BRAVO' in e.send('gamma request')
     assert e.send('delta request') == 'delta request'
+
+
+def test_native_followup_carries_the_clock_stamp(route_env):
+    """The non-Claude follow-up site: stamp leads, original message intact."""
+    from mc import state
+    e = route_env
+    e.send('alpha request')
+    e.session['_last_reply_at'] = 1.0           # long ago
+    state.CONFIG['turn_clock_enabled'] = True   # fixture's setitem restores the original on teardown
+    sent = e.send('beta request')
+    assert sent.startswith('[Now ') and 'since your last reply' in sent
+    assert sent.endswith('\n\nbeta request')
