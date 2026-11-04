@@ -36,6 +36,7 @@
     // route below — desk-v1-piece.js fills the slots via deskV1FillPiece*
     // hooks, it never owns the skeleton itself.
     piece:         { parent: 'campaign', label: _pieceLabel,   render: () => _renderPieceSkeleton },
+    composer:      { parent: 'campaign', label: 'Post', render: () => window.deskV1RenderComposer },
     // The one place anything external is connected (MC-977 2026-10-01); the
     // Presence screen it replaces on the project page is retired.
     connections:   { parent: 'home',    label: 'Connections',  render: () => window.deskV1RenderConnections },
@@ -53,7 +54,7 @@
     video:         { parent: 'campaign', label: _videoLabel,   render: () => window.deskV1RenderVideo },
     // R2-8 (§8, frames 11, 13): Studio is its own Desk route (Home's header
     // `🎬 Studio`); the storyboard is What's Create-new page, so its Back
-    // reads `‹ Back to What` (see _backLabel) and its title `New video ·
+    // reads `‹ Back to Posts` (see _backLabel) and its title `New video ·
     // Storyboard`. Both render from desk-v1-studio.js.
     studio:        { parent: 'home',     label: 'Studio',       render: () => window.deskV1RenderStudio },
     // Every video piece opens here (desk-v1-video-open.js), so the title is the
@@ -72,7 +73,7 @@
   //
   // R2-3 (IA revision 2 §4.1, §7): the tab strip becomes the ①-⑥ map, so the
   // three old panel names retire onto the stop that now absorbs them —
-  // `results` -> ① goal (`desk-v1-results.js`), `content` -> ③ what (T2a's
+  // `results` -> ① goal (`desk-v1-results.js`), `content` -> ④ what (T2a's
   // own content list, unchanged), `calendar` -> ⑤ when. `when` now renders
   // `desk-v1-calendar.js` directly as its own panel (§4.1's "Absorbs" column)
   // rather than the old content-tab's List/Calendar toggle, so the toggle-once
@@ -126,6 +127,7 @@
   }
 
   function _storyboardLabel(params) {
+    if (params && params.standalone) return window.deskV1StudioCreateLabel(params);
     const families = window.DeskV1Store.state().families || [];
     const f = families.find(x => x.id === (params || {}).familyId);
     return `${f && f.title ? f.title : 'New video'} · Storyboard`;
@@ -145,6 +147,12 @@
 
   function deskV1Nav(route, params) {
     params = params || {};
+    // Old links use studio-create. Canonicalize video drafts before pushing,
+    // so Back never traverses an extra editor and every caller uses VideoOpen.
+    if (route === 'studio-create' && window.DeskV1VideoOpen &&
+        (params.kind === 'video' || window.DeskV1Studio?.isVideoDraft(params))) {
+      window.DeskV1VideoOpen.openStudio(params); return;
+    }
     if (route === 'conversations') route = 'engagement';
     if (Object.prototype.hasOwnProperty.call(PANEL_ALIASES, route)) {
       _gotoCampaignPanel(PANEL_ALIASES[route], params);
@@ -217,12 +225,12 @@
     }, (projectId) => { deskV1Nav('project', { projectId }); }, { noAppendNew: true });
   }
 
-  // R2-7 (§4.3): a piece is a drill-in under the campaign's ③ What stop, so its
-  // Back reads `‹ <campaign> · What` — the stop it returns to, taken from the
+  // R2-7 (§4.3): a piece is a drill-in under the campaign's ④ Posts stop, so its
+  // Back reads `‹ <campaign> · Posts` — the stop it returns to, taken from the
   // parent campaign entry's own panel. Every other route keeps the plain parent
   // title.
   function _backLabel(entry, parentEntry) {
-    if (entry.route === 'storyboard' && parentEntry.route === 'campaign') return 'Back to What';
+    if (entry.route === 'storyboard' && parentEntry.route === 'campaign') return 'Back to Posts';
     const label = _routeLabel(parentEntry);
     if (entry.route === 'piece' && parentEntry.route === 'campaign') {
       const words = (window.DeskV1Kit && window.DeskV1Kit.MAP_STOP_WORDS) || {};
@@ -271,6 +279,25 @@
   function deskV1PopTo(route) {
     while (_stack.length > 1 && _stack[_stack.length - 1].route !== route) _stack.pop();
     deskV1Render();
+  }
+
+  // A page's own in-body breadcrumb (the composer's `Desk › campaign › post`)
+  // jumps to an ancestor: pop back to the nearest stack entry that matches,
+  // so Back afterwards reads the same as if the user had pressed Back; if no
+  // such entry is on the stack (a deep link), push it like a plain nav.
+  function deskV1JumpTo(route, params) {
+    params = params || {};
+    const keys = Object.keys(params).filter((k) => k !== 'projectId');
+    for (let i = _stack.length - 1; i >= 0; i--) {
+      const e = _stack[i];
+      if (e.route === route && keys.every((k) => e.params[k] === params[k])) {
+        _stack.length = i + 1;
+        deskV1Render();
+        return;
+      }
+    }
+    if (route === 'home') { _stack = [{ route: 'home', params: {} }]; deskV1Render(); return; }
+    deskV1Nav(route, params);
   }
 
   function deskV1Render() {
@@ -329,7 +356,7 @@
   // it lives below the tab body rather than inside the tab strip header.
   function _renderCampaignSkeleton(el, params) {
     // §2/R2-3: "route stays campaign with params.panel" — a fresh/full mount
-    // (Home -> campaign, or a different campaign) lands on ③ what (T2a's
+    // (Home -> campaign, or a different campaign) lands on ④ what (T2a's
     // content list, the same default the old tab strip always opened on),
     // unless the caller asked for another panel (an aliased deep link). A
     // Draft campaign is the one exception (§3 table: "Draft · at <stop> ...
@@ -393,8 +420,8 @@
     // guard something that actually tracks the active stop.
     tabbodyEl.dataset.panel = panel;
     // R2-3 (§4.1 Absorbs column): ① reads `desk-v1-results.js`, ② how reads
-    // `desk-v1-how.js`, ④ Where reads `desk-v1-where.js` and ⑤ When reads
-    // `desk-v1-calendar.js` directly, each a standalone panel — ③ what / ⑥ launch
+    // `desk-v1-how.js`, ③ Channels reads `desk-v1-where.js` and ⑤ When reads
+    // `desk-v1-calendar.js` directly, each a standalone panel — ④ what / ⑥ launch
     // are desk-v1-campaign.js's own job, so both fall through to the generic hook.
     if (panel === 'goal' && typeof window.deskV1RenderResults === 'function') {
       window.deskV1RenderResults(tabbodyEl, params);
@@ -418,7 +445,7 @@
   // the frame, caller fills slots" contract as `_renderCampaignSkeleton` above
   // (T2's own precedent, §4 table: "reused for the project page and the piece
   // page"). R2-7 retired the four facets: the piece is one drill-in page under
-  // ③ What, a single scroll with Copy · Media · Versions, so there is no facet
+  // ④ Posts, a single scroll with Copy · Media · Versions, so there is no facet
   // strip or in-place facet switch any more — header, body and the Posy
   // rightcol are all filled once per mount.
   function _renderPieceSkeleton(el, params) {
@@ -509,6 +536,7 @@
         <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
           <button class="desk-v1-undo-btn" id="desk-v1-undo" type="button" data-desk-undo disabled aria-label="Undo" title="Nothing to undo"><span aria-hidden="true">&#8630;</span><span class="desk-v1-undo-text">Undo</span></button>
           <button class="modal-minimize" onclick="minimizeModal('${MODAL_ID}')" title="Minimize">&#x2015;</button>
+          <button class="modal-maximize" onclick="toggleModalMaximize('${MODAL_ID}')" title="Maximize" aria-label="Maximize">${(typeof window._maxBtnInner === 'function') ? window._maxBtnInner(false) : '&#9633;'}</button>
           <button class="modal-close" onclick="closeModalById('${MODAL_ID}')" title="Close">&#10005;</button>
         </div>
       </div>
@@ -547,5 +575,6 @@
   window.deskV1Render = deskV1Render;
   window.deskV1PatchParams = deskV1PatchParams;
   window.deskV1PopTo = deskV1PopTo;
+  window.deskV1JumpTo = deskV1JumpTo;
   window.deskV1GotoCampaignPanel = deskV1GotoCampaignPanel;
 })();

@@ -1,7 +1,7 @@
 // Desk v1 — the Where screen's SOURCES tiles and the mark on a column header
 // (Ron 2026-10-16: "logos and appearance must be redone with proper logos,
 // organized, no text running out of frames"). Split out of desk-v1-where.js (one
-// unit, one file): that module owns the board and its drags, this one owns how a
+// unit, one file): that module owns the campaign accounts and overview, this one owns how a
 // connected account LOOKS.
 //
 // Every tile is the same four-row card — mark + name, status chip, reason, action —
@@ -12,7 +12,7 @@
 // SVGs in static/desk-icons/); the account name stays beside it (UX-02).
 //
 // Window-bridged module, no `import` (ground rule 1). Pure string builders: the
-// caller (desk-v1-where.js) wires the drags and clicks onto the nodes it gets.
+// caller (desk-v1-where.js) wires the clicks onto the nodes it gets.
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -73,7 +73,7 @@
     </div>`;
   }
 
-  // A connected account the campaign can use (draggable, Enter adds its column).
+  // A connected account the campaign can use (click or Enter adds its column).
   function sourceHTML(ch, plat, used) {
     return _tile(ch, plat, {
       cls: used ? ' is-used' : '',

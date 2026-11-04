@@ -47,3 +47,16 @@ def test_restoring_automatic_only_removes_internal_task_overrides(monkeypatch):
     assert preferences.background_model(config, 'codex', 'scribe_model') == 'small'
     assert config['provider_defaults']['codex'] == {'model': 'chat-pin', 'effort': 'high'}
     assert config['provider_defaults']['claude'] == {'model': 'opus'}
+
+
+def test_unresolvable_runtime_falls_back_to_native(monkeypatch):
+    """A runtime lookup that raises must yield the native '' fallback,
+    never propagate into Scribe/condense (test_scribe_log_fallback)."""
+    from mc import background_model_policy as bmp
+
+    def _boom(name):
+        raise RuntimeError('unknown provider')
+
+    monkeypatch.setattr(bmp.agent_runtime, 'get_runtime', _boom)
+    assert bmp.automatic_model('codex', default='haiku') == ''
+    assert bmp.automatic_model('claude', default='haiku') == 'haiku'

@@ -2,9 +2,11 @@
 
 MC-960 / d813ea78. Implements sections 2 and 4 of the
 [approved M5 contract](DEV_HARNESS_M5_CONTRACT.md), with section 9's split and
-warning-only coverage amendment. This branch supplies the approval boundary;
-A2b execution, applicability and landing enforcement remain unimplemented.
-`merge_enforcement_available` remains false. No native command is invoked by
+warning-only coverage amendment. A2a supplies the approval boundary; the A2b
+branch candidate adds approved execution and landing composition described in
+[the implementation handoff](DEV_HARNESS_M5_PLAN_CONTRACT.md#9-a2b-implementation-candidate).
+Availability requires an intact approved native Enforce snapshot with a required
+check and delivered landing integration. No native command is invoked by
 plan inspection, approval, reading or evidence composition.
 
 ## Owners and state
@@ -21,7 +23,8 @@ plan inspection, approval, reading or evidence composition.
 - `mc/dev_harness_activation_evidence.py`: composes evidence from stored trusted
   runner receipts and M2's verified installed guidance; has no command executor
   or HTTP upload. Enforce revalidates its inputs and receipts.
-- `mc/blueprints/dev_harness_run_routes.py`: only POST `/native-plan` in A2a.
+- `mc/blueprints/dev_harness_run_routes.py`: POST `/native-plan` remains
+  nonexecuting; A2b adds approved Preview/run jobs and safe run reads.
   The existing harness blueprint nests this leaf; no new server.py concern.
 - `data/dev_harness_catalogue/checks/<recipe>.fixtures.json`: 16 separate
   compatibility manifests pin recipe, adapter code and the positive/finding/
@@ -82,13 +85,13 @@ disabled, downgraded or changed in scope/config/caps/tool/argv/mapping, and all
 prior required IDs on leaving Enforce. Full-practice omissions still need their
 own acknowledgement. Acknowledgements waive neither evidence nor coverage.
 
-## Receipt seam for A2b
+## Receipt seam used by A2b
 
 A2a evidence tests write **synthetic** M3/M4 receipts to temporary trusted state.
 They prove composition and approval checks; they are not project execution or
 real native compatibility evidence. No A2a route can produce these receipts.
 
-A2b must supply current `runner_receipt` records accepted by M3 `read_receipt`,
+A2b `run_approved` supplies current `runner_receipt` records accepted by M3 `read_receipt`,
 with the approved `native_plan_digest`, M5 `checker_digest`, exact frozen
 Preview `source`, M3 `steps_digest` and M4 per-step identities/results. A2a
 rejects integration receipts as activation measurements: their B/H/M/T source
@@ -112,6 +115,9 @@ per-check results and separate Unsupported full-practice coverage, with
 `authorizes_merge=false`. Enforce consumes it in the next atomic snapshot.
 
 ## Verification and limits
+
+The counts below describe the original A2a unit. A2b validation, runtime owners
+and remaining M6 limits are recorded in the linked implementation handoff.
 
 Focused tests cover plan/schema/path/pin/fixture integrity, legacy snapshot
 reads, exact approval and loss acknowledgements, synthetic native-only Enforce,

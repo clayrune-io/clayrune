@@ -52,6 +52,7 @@ from flask import Blueprint, jsonify, request
 
 from mc import provider_preferences
 from mc import state
+from mc import retry_budgets, retry_capabilities
 from mc.characters import clean_avatar
 from mc.atomic_json import write_json_atomic
 from mc.core import _log
@@ -105,6 +106,7 @@ def _save_settings(settings):
 # ── Global config endpoints ────────────────────────────────────────────────
 
 _CONFIG_EDITABLE_KEYS = {
+    'hivemind_role_fallbacks', 'hivemind_complexity_tiers',
     'user_name', 'agent_name', 'agent_avatar', 'agent_model', 'agent_effort',
     'provider_defaults',
     'agent_max_turns',
@@ -150,6 +152,10 @@ _CONFIG_EDITABLE_KEYS = {
     # Per-turn conduct-rule tail (mc/behavior_tail.py). Read live at the next
     # context build / stdin write — no respawn needed (like read_floor_topk).
     'behavior_tail_enabled', 'behavior_tail_compact_enabled',
+    # Per-turn clock stamp + gap briefing (mc/turn_clock.py). Read live at the
+    # next stdin write / follow-up — no respawn needed.
+    'turn_clock_enabled', 'turn_clock_gap_briefing_enabled',
+    'turn_clock_gap_threshold_minutes',
     # Artifact coverage advisory (mc/artifact_coverage.py). Read live at turn
     # end — no respawn needed.
     'artifact_coverage_enabled',
@@ -219,6 +225,8 @@ _CONFIG_EDITABLE_KEYS = {
     # every other key here: an agent session cannot switch its own backstop
     # off.
     'fence_unattended_enabled',
+    # Default OFF. PUT remains passcode- and unattended-caller-gated.
+    'aider_restricted_adapter_enabled',
     # Codex unattended sandbox (UNATTENDED_AGENT_PERMISSIONS_AUDIT §4 risk #1).
     # Read at dispatch/followup time by mc/blueprints/agent_routes.py
     # (_dispatch_via_runtime) — no respawn or restart needed. Same
@@ -281,6 +289,8 @@ _CONFIG_EDITABLE_KEYS = {
     'desk_v1', 'user_timezone',
     # Desk v1 R1-W (MC-1021 S0): the v1 store reads live data only when on.
     'desk_v1_live',
+    'desk_research_enabled',
+    'desk_dispatch_enabled',
     'desk_suppression_impressions',
     # MC-964 steps 7 + 8 (Settings > Agent > Retrieval). Both read live off
     # state.CONFIG per turn (mc/memory.py _mint_enabled / negation ledger),
@@ -301,6 +311,8 @@ _CONFIG_EDITABLE_KEYS = {
     # alternate character mappings are human-owned install data.
     'engine_pace_enabled', 'engine_pace_margin_points',
     'engine_pace_ceiling_percent', 'engine_pace_alternates',
+    'claude_resume_fresh_prompt',
+    'unattended_retry',
 }
 
 # Respawn-trigger ("Tier-1") settings: baked into the spawn (CLI flags or the
@@ -326,6 +338,7 @@ _RESPAWN_TRIGGER_KEYS = {
     # --include-partial-messages is a launch flag, so a live session only starts
     # (or stops) emitting stream_event after a respawn.
     'activity_states_enabled',
+    'claude_resume_fresh_prompt',
     # System-prompt directive — rides in the context the sticky respawn rebuilds.
     'brief_replies_always_enabled',
     # Same: the emoji permission line rides in the context the respawn rebuilds.
@@ -334,8 +347,10 @@ _RESPAWN_TRIGGER_KEYS = {
 
 @bp.route('/api/config')
 def get_config():
-    """Return all editable config keys."""
-    return jsonify({k: state.CONFIG.get(k) for k in _CONFIG_EDITABLE_KEYS})
+    """Return editable config plus read-only retry capability metadata."""
+    return jsonify({**{k: state.CONFIG.get(k) for k in _CONFIG_EDITABLE_KEYS},
+                    retry_budgets.CONFIG_KEY: retry_budgets.durations(state.CONFIG),
+                    'unattended_retry_capabilities': retry_capabilities.settings_rows()})
 
 @bp.route('/api/config', methods=['PUT'])
 @provider_preferences.serialized_write
@@ -360,6 +375,12 @@ def update_config():
     refusal = _require_human_passcode(data)
     if refusal is not None:
         return refusal
+    if 'hivemind_role_fallbacks' in data or 'hivemind_complexity_tiers' in data:
+        from mc import hivemind_fallback, hivemind_roster
+        try:
+            hivemind_fallback.validate_config({**state.CONFIG, **data}, hivemind_roster.parse_character_ref)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
     if 'desk_suppression_impressions' in data:
         from mc.desk_outcomes import validate_threshold
         try:
@@ -444,6 +465,11 @@ def update_config():
                 return jsonify({'error': f'unknown provider(s): {", ".join(sorted(set(bad)))} — '
                                          f'available: {", ".join(sorted(known))}'}), 400
         data['engine_fallback_order'] = cleaned
+    if retry_budgets.CONFIG_KEY in data:
+        try:
+            data[retry_budgets.CONFIG_KEY] = retry_budgets.validate_block(data[retry_budgets.CONFIG_KEY])
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
     updated = {}
     for k, v in data.items():
         if k in _CONFIG_EDITABLE_KEYS:

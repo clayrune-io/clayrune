@@ -433,6 +433,7 @@ class TestGeminiRuntimeSmoke:
         class FakeProc:
             pid = 99999
             stdout = MagicMock()
+            stdin = MagicMock()
             def __init__(self): pass
 
         def fake_popen(cmd, **kwargs):
@@ -500,6 +501,9 @@ class TestGeminiRuntimeSmoke:
             'provider_session_id': 'sess-uuid-abc123',
             '_system_prompt': 'HEAVY STASHED CONTEXT ' * 500,
         }
+        from mc.resume_context import context_sha
+        session_dict['_ctx_delivered_sha'] = context_sha(rt.with_mc_tool_protocol(
+            rt._slim_system_prompt(session_dict['_system_prompt'])))
         handle = ar.SessionHandle(
             mc_session_id='fu_001', provider='gemini', mode='A',
             project_path=str(tmp_path), project_id='test_proj',
@@ -508,7 +512,7 @@ class TestGeminiRuntimeSmoke:
         with patch('subprocess.Popen', side_effect=self._fake_popen_capture(popen_calls)), \
              patch.object(threading.Thread, 'start', lambda self: None), \
              patch.object(rt, '_write_prompt_async',
-                          side_effect=lambda proc, prompt, sid: sent_prompts.append(prompt)):
+                          side_effect=lambda proc, prompt, sid, **kw: sent_prompts.append(prompt)):
             rt.write_followup(handle, 'Just the new question?')
 
         cmd = popen_calls[0]
@@ -539,7 +543,7 @@ class TestGeminiRuntimeSmoke:
         with patch('subprocess.Popen', side_effect=self._fake_popen_capture(popen_calls)), \
              patch.object(threading.Thread, 'start', lambda self: None), \
              patch.object(rt, '_write_prompt_async',
-                          side_effect=lambda proc, prompt, sid: sent_prompts.append(prompt)):
+                          side_effect=lambda proc, prompt, sid, **kw: sent_prompts.append(prompt)):
             rt.write_followup(handle, 'new message')
 
         assert 'latest' not in popen_calls[0], "must never fall back to --resume latest"

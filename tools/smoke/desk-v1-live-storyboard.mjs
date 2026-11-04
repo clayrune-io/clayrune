@@ -237,8 +237,9 @@ async function studio(browser) {
     ? ok('Delete PUTs the list without the scene') : fail('after delete: ' + JSON.stringify(srv.boards[itemKey].scenes.map((s) => s.label)));
 
   // Title (Studio items keep one; Recent lists it).
-  await page.fill('[data-sc-title]', 'Launch teaser');
-  await page.press('[data-sc-title]', 'Tab');
+  await page.click('[data-piece-title-edit]');
+  await page.fill('[data-piece-name-input]', 'Launch teaser');
+  await page.press('[data-piece-name-input]', 'Enter');
   await page.waitForTimeout(300);
   srv.boards[itemKey].title === 'Launch teaser' ? ok('the title is saved with the storyboard') : fail('title: ' + srv.boards[itemKey].title);
 
@@ -253,7 +254,7 @@ async function studio(browser) {
   await page2.page.waitForSelector('[data-studio-create] [data-storyboard] .desk-v1-sb-scene', { timeout: 8000 });
   await page2.page.waitForFunction(() => document.querySelectorAll('[data-storyboard] .desk-v1-sb-scene').length === 2, null, { timeout: 8000 });
   const rows2 = await sceneRows(page2.page);
-  (JSON.stringify(rows2) === '["Opening","Middle"]' && (await thumbOf(page2.page, 'Opening')) === SRC_PIC('desk/library/image/Storyboards/hero.png') && (await page2.page.inputValue('[data-sc-title]')) === 'Launch teaser')
+  (JSON.stringify(rows2) === '["Opening","Middle"]' && (await thumbOf(page2.page, 'Opening')) === SRC_PIC('desk/library/image/Storyboards/hero.png') && (await page2.page.textContent('[data-piece-title-edit]')) === 'Launch teaser')
     ? ok('after a reload the same scenes, order, picture and title are shown') : fail('reloaded: ' + JSON.stringify({ rows2, thumb: await thumbOf(page2.page, 'Opening') }));
 
   // 5. 409: the board moves on behind this page's back, then it saves.

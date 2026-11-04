@@ -34,7 +34,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from mc import state
+from mc import bg_job_liveness as _bg_live
 from mc.core import _log, TimestampedLines
+from mc.long_job_guidance import job_route_url as _job_url
 from mc.rollover_threshold import threshold_for
 
 RECENT_TOOLS_KEEP = 10
@@ -144,7 +146,9 @@ def note_tool_use(session, block):
     del recent[:-RECENT_TOOLS_KEEP]
     if isinstance(tool_input, dict) and tool_input.get('run_in_background'):
         jobs = session.setdefault('_mt_bg_jobs', [])
-        jobs.append({'tool': name, 'input': _preview(tool_input)})
+        # `tool_use_id` lets note_bg_job_result attach the output file and
+        # the job's processes once the tool_result arrives (MC-1149).
+        jobs.append({'tool': name, 'input': _preview(tool_input), 'tool_use_id': tid})
         del jobs[:-_BG_JOBS_KEEP]
     jp = _journal_path(tool_input)
     if jp:
@@ -173,6 +177,38 @@ def note_tool_result_text(session, tool_name, text):
     while total > TOOL_RESULT_CARRY_CAP_BYTES and len(entries) > 1:
         removed = entries.pop(0)
         total -= len(removed['tool']) + len(removed['head'])
+
+
+def note_bg_job_result(session, tool_use_id, tool_name, text):
+    """Attach a background job's output file, task id and processes to its
+    `_mt_bg_jobs` entry from the Bash tool_result that announced it
+    (MC-1149; shapes and the descendant scan: mc/bg_job_liveness.py). A
+    foreground call the CLI moved to the background after its timeout has no
+    `run_in_background` input, so it never got an entry from note_tool_use;
+    it dies at a roll the same way, so one is added here. Never raises."""
+    if not enabled():
+        return
+    try:
+        facts = _bg_live.parse_tool_result(text)
+        if not facts:
+            return
+        jobs = session.setdefault('_mt_bg_jobs', [])
+        job = next((j for j in jobs if tool_use_id and j.get('tool_use_id') == tool_use_id),
+                   None)
+        if job is None:
+            if not facts['moved_on_timeout']:
+                return
+            job = {'tool': tool_name or 'Bash', 'input': '(foreground call moved to the '
+                   'background; see the recent tool calls)', 'tool_use_id': tool_use_id}
+            jobs.append(job)
+            del jobs[:-_BG_JOBS_KEEP]
+        job.update({'output_file': facts['output_file'], 'task_id': facts['task_id'],
+                    'moved_on_timeout': facts['moved_on_timeout'],
+                    'started': time.time()})
+        job['holders'] = _bg_live.holder_pids(
+            facts['output_file'], getattr(session.get('proc'), 'pid', None))
+    except Exception as e:
+        _log(f"[midturn-rollover] note_bg_job_result failed: {e}")
 
 
 def note_tool_results(session, content):
@@ -366,6 +402,18 @@ def _git(cwd, *args):
     return '\n'.join(lines) or '(clean)'
 
 
+def _job_route_url(session):
+    """This session's server-owned job route, for the state block's relaunch
+    advice. Port resolution matches mc/desk_dispatch.py."""
+    import os
+    try:
+        port = int(os.environ.get('MC_PORT') or state.CONFIG.get('port') or 5199)
+    except (TypeError, ValueError):
+        port = 5199
+    return _job_url(port, session.get('project_id', '') or '<project>',
+                    session.get('session_id', '') or '<session>')
+
+
 def build_roll_state_block(session, cwd):
     """Stamp the messages carried by an actual roll, then render its state.
     Kept separate from pure rendering used by inspection/tests. The interrupt
@@ -396,14 +444,12 @@ def build_state_block(session, cwd):
     recent = session.get('_mt_recent_tools') or []
     calls = '\n'.join(f"- {c['name']}: {c['input']}" if c['input'] else f"- {c['name']}"
                       for c in recent) or '(none recorded)'
-    jobs = session.get('_mt_bg_jobs') or []
-    if jobs:
-        job_lines = '\n'.join(f"- {j['tool']}: {j['input']}" for j in jobs)
-        job_text = (f"{job_lines}\n(Started with run_in_background under the "
-                    f"old process; the roll ends that process tree, so relaunch "
-                    f"any that are still needed.)")
-    else:
-        job_text = '(none)'
+    # MC-1149: per job, the output file and whether its processes survived
+    # the tree kill the roll just did -- "relaunch any that are still needed"
+    # produced duplicates of survivors and lost the output of the dead.
+    job_text = _bg_live.render_jobs(
+        session.get('_mt_bg_jobs') or [], now=time.time(),
+        job_url=_job_route_url(session))
     journal_paths = session.get('_mt_journal_paths') or []
     journal_text = ('\n'.join(f"- {jp}" for jp in journal_paths)
                      or '(none written under docs/_journal/ this session)')

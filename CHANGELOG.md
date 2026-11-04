@@ -1,9 +1,324 @@
 # Clayrune — Changelog
 
-## [2026-10-30] - Format operator email as HTML with a plain-text fallback
+## [2026-11-04] - Format operator email as HTML with a plain-text fallback
 
 - Shared operator mail now includes a styled HTML alternative, so workflow **Send email** reports show headings, lists and bordered zebra tables instead of raw Markdown. The original plain-text part is retained; all input is escaped and styles are inline.
 - Added a stdlib-only renderer, `--plain-only`, observable renderer/import fallback and SMTP-free MIME/CLI regressions, including the 12-column stock-report table. No server restart is needed after merge because the mailer runs per send. Branch candidate only; no merge or restart.
+## [2026-11-03] - Collapse blocked commands in agent chat
+
+- Consecutive permission/hook denial lines appear as one small, closed **1 command blocked** / **N commands blocked** chip in live and restored chats. Tap or click to inspect tool names and command text; keyboard activation works too.
+- Commands remain literal text, including HTML-shaped strings, and long commands wrap on mobile. The server log and permission behavior are unchanged.
+
+## [2026-11-03] - Verify continuity before reporting carried work as live (MC-1146)
+
+- Continuity names the chat's origin: user-started, resumed or auto-fresh rollover, with the first project session after server start/restart identified explicitly. Old activity text cannot decide the origin.
+- Named agent sessions and local branches are checked before presenting carried threads as in flight. Dead sessions render `LOST IN RESTART`; missing branches or failed checks remain explicit. Saved continuity is preserved.
+- Recent activity identifies its session when recorded; legacy entries are labelled as project history with unknown ownership. Contract and verification: `docs/CONTINUITY_SESSION_PROVENANCE.md`. Branch candidate only; no merge, push or restart.
+
+## [2026-11-03] - Move the Desk conversation's large view
+
+- Drag the empty area of the A− / A+ / close strip to move a popped-out Desk conversation with a mouse or a single touch on screens wider than 960px. The strip has a grab cursor and stays reachable at the screen edges; buttons keep their own actions.
+- Resizing still works after moving. Close and reopen restores the default position and size; mobile retains its inset full-screen view.
+
+## [2026-11-03] - Retire campaign-chat drafts after successful sends
+
+- Pending turns and retired textareas no longer write the campaign draft. A successful response clears the draft before reply callbacks; the live composer takes that state even when a late event carried trailing whitespace. Failed requests still return to the box.
+- Added a keyboard/late-event regression matrix covering Enter, Send, inline and large views, suggestions, full remounts, failed requests and new drafts. Controlled late input reproduced the return on the original code; ordinary typing did not reproduce the reported production trigger. Evidence and limits: `docs/desk_v1/CAMPAIGN_CHAT_DRAFTS.md`.
+
+## [2026-11-03] - Dispatch hired agents from campaign chat
+
+- Supported campaign planners can dispatch up to two agents hired on their campaign project's Floor per typed message. Unknown/removed targets, other Desk paths and attributed agent calls are refused; launch attempts are capped, including failures.
+- Each dispatch saves a card with a child-session link. Existing durable notify plumbing returns results and questions to the campaign as data without another planner turn; failures after launch retain cards and explain the retry risk.
+- **Settings → Providers → Advanced → Desk agent dispatch** is default on, beside the independent research switch. The existing bounded runner adds one ephemeral dispatch tool only for eligible turns; shell/write tools remain excluded from the planner. Contract and verification: `docs/DESK_DISPATCH.md`. Branch build; no merge, push, restart or live config change.
+
+## [2026-11-03] - Give Desk agents bounded web and project research
+
+- Campaign chat, storyboard generation/chat and article chat can use Claude WebSearch, WebFetch, Read, Grep and Glob. Shell, writes, other tools and MCP servers are excluded; each file read checks the project boundary, link target, secret-shaped names and Git ignores. Starting product excerpts remain and now also refuse ignored files.
+- **Reads:** discloses the selected agent's research capability. Other providers retain certified toolless execution with a visible notice or an explicit refusal; engine/model selections are preserved. **Settings → Providers → Advanced → Desk research** is the default-on kill switch.
+- Tool calls have 16 turns and an eight-minute deadline; existing pending indicators explain the wait. Claude requires fail-closed hooks (CLI 2.1.295+); frozen builds use the existing internal hook entry. Provider matrix and verification: `docs/DESK_RESEARCH.md`.
+
+## [2026-11-02] - Ground Desk agents in the project's product materials
+
+- Campaign conversations, storyboard generation/chat and article chat now receive the project's description and bounded document excerpts as data. They stay toolless and are told to ground product claims in those materials and acknowledge gaps.
+- **Product materials** beside the planner controls adds/removes up to six project-relative text files. Unset uses `README.md`; an empty list disables documents, and **Use README default** restores the default. The campaign conversation shows **Reads:** with the files actually loaded.
+- Paths outside the project (including symlink escapes), non-text types and secret-shaped names are refused. Missing/unreadable files carry a note; excerpts are limited to 8 KiB per file and 24 KiB total. Branch candidate only; no live materials configuration, merge, push or restart.
+
+## [2026-11-02] - Restrict opt-in unattended Aider to the audited coding surface (BUILTINS-5b)
+
+- Added a default-OFF, human-config-gated adapter for source-pinned Aider 0.86.2. Dispatch and follow-up verify the source and guard before using the restricted runner; flag-off and drift retain visible refusal.
+- Whole-file and SEARCH/REPLACE edits, preparation writes, `/run`, suggested shell and git subprocesses use the steward fence. Voice, web, save, `/git`, other commands, patch/udiff, browser/GUI and installer paths refuse before execution.
+- Real-Aider tests turn the five prior bypasses into positive refusal checks and retain allowed edit/shell controls. Source-only experimental path; no provider, POSIX or packaged-app certification. Branch candidate only; no merge, push, restart or live enablement.
+
+## [2026-11-02] - Steward role editor and pilot migration tool (BUILTINS-3 SR-5)
+
+- **Automation → Steward roles**: cards for each role (state, charter, cadence, owner, journal) with Start / Stop / Edit. Install-level blockers (cycle composer patch, decision-channel adapter, unattended guard) are listed one by one and Start stays disabled while any stands.
+- **Add Schedule → Run as a steward role**: pick a charter backlog item, confirm the journal file, Preview (writes nothing). Saving and Start/Stop are human-only (passcode); a new role is always saved disabled. Unticking on an existing role detaches it after a confirm.
+- New read-only routes `/api/steward-role/{assignments,options,preview}` (`mc/blueprints/steward_role_routes.py`); no new write route.
+- `tools/steward_role_migrate.py`: `candidates` / `migrate` / `rollback` over HTTP. Dry run by default, `--apply` needs the dry run's `--expect-revision`, snapshot written first, role left disabled, rollback restores the original job. Never runs on deploy.
+- Tests: `tests/test_steward_role_routes.py` (38), `tests/test_steward_role_migrate.py` (33), `tools/smoke/steward-role-editor.mjs` (desktop + 390px). Branch only; no merge, push or restart.
+
+## [2026-11-02] - Check steward pilot channel readiness without reading secrets (BUILTINS-3 SR-3)
+
+- Added the scheduler lifecycle callback with a separate metadata-only probe for the existing pilot mail/digest tools, email routing, mail pause and credential-source presence. Missing tooling/configuration holds with a concrete channel error; other projects cannot borrow the pilot sender.
+- Credential files remain unopened and environment values unread. No mail, IMAP or model call is made by readiness; authentication and delivery remain unverified. Existing child-drain and communication guards remain in their services.
+- Local branch candidate only; protected SR-2 patches remain unapplied. No live activation, merge, push or restart.
+
+## [2026-11-02] - Clickable composer breadcrumb
+
+- In the post composer, **Desk** and the campaign name at the top are now links. Desk goes to Home, the campaign name to its campaign page. If you came from that campaign, Back then reads the same as pressing Back. Unsaved text is kept.
+
+## [2026-11-02] - Drag the Studio time ruler to stretch or squeeze
+
+- Drag the time ruler right to widen the time units or left to narrow them; the time you grab stays under the pointer. Like the zoom buttons, this switches to manual zoom until **Fit**.
+- While a scene edge is being trimmed, automatic fitting now waits until you let go, so the edge stays under the pointer.
+
+## [2026-11-02] - Keep the Studio timeline fitted until you zoom
+
+- The timeline automatically fits the whole video as scene lengths change, including replacing a short picture with a longer clip. **−** and **+** keep your chosen scale through edits and Undo; **Fit** restores automatic fitting.
+- Added Ctrl/Cmd + mouse-wheel zoom anchored at the pointer, plus tooltips for Zoom out, Zoom in and Fit whole video. Plain and Shift-wheel scrolling are unchanged. Branch candidate only; no merge, push or restart.
+
+## [2026-11-02] - Steady the Studio preview clock
+
+- The time under the preview now always reads m:ss.t (tenths, rounded down), e.g. `0:03.4 / 0:12.0`. It used the timeline's zero-trimming format, so it jumped between `0:03.4`, `0:03.45` and `0:04` from frame to frame while playing. Timeline labels are unchanged. `desk-studio-preview.mjs` now samples 30 playback frames and fails if the clock's shape or width changes.
+
+## [2026-11-02] - Give the Studio timeline the full editor width
+
+- Moved the timeline, ruler, zoom and insert controls below the story/preview and conversation columns. The conversation fills the upper region and scrolls its messages; phones keep one column.
+- Added **Expand** on The story: a large modal holds the same mounted editor, character counter, save state and **Make storyboard from story** controls. **Close** or Escape returns the text to the card.
+- Added a draggable bottom edge on the story card, with Up/Down keyboard resizing. Preview follows the resized card without overlap. Branch candidate only; no merge, push or restart.
+## [2026-11-02] - Hold role successors until child callbacks drain (BUILTINS-3 SR-3)
+
+- Added strict read-only child/delivery inspection with current-turn receipt checks, project scope and restart evidence. Unchanged threads retain their receivers and can collect child work; successors hold for active, waiting or unreceived child work and unknown database state.
+- Included operational handoff text and a second drain check before successor delivery. Existing callback targets, delivery records and SR-4 state/comms are preserved.
+- Local candidate only. Channel readiness needs the dispatching owner's interface selection; protected SR-2 patches remain unapplied. No live activation, master merge, push or restart.
+
+## [2026-11-02] - Back steward dispatch with shared assignment state (BUILTINS-3 SR-3/SR-4)
+
+- Replaced the independent SR-3 checkpoint store with SR-4 claims, sessions, snapshot hashes and acknowledged-delivery watermark. Kept project-wide exclusion; old checkpoints, uncertain delivery and unresolved prior assignments hold for review.
+- Wired SR-4 journals, lifecycle notifications and pending-reply checks, with persistence errors visible and reply classifications granting no authority. Failure notification runs outside the schedule lock.
+- Local integration candidate only. Protected SR-2 patches and the channel/child-handoff callback still block delivery; no live activation, master merge, push, restart or provider verification.
+
+## [2026-11-02] - Prepare steward role cycles through one guarded path (BUILTINS-3 SR-3)
+
+- Routed role timer fires and Run Now through a shared adapter with current character/charter/rules, explicit unattended retrieval, guard checks and visible dependency errors. Ordinary schedules retain their existing paths.
+- Added durable project-wide claims and held unknown deliveries; unchanged selections continue their thread, while owner/engine changes require a recorded successor and child handoff.
+- Local branch candidate only. SR-2 protected patches and SR-4 lifecycle integration still block role delivery; no merge, push, restart, live activation or provider parity claim.
+
+## [2026-11-01] - Play and export the Studio timeline locally
+
+- Replaced the separate Preview opener and pricing hint with an always-visible black 16:9 stage and centered Play/Replay overlay. Pause, seek and time remain below; empty boards show a disabled Play and “Add a scene to preview.” Keyboard focus follows Play/Pause, and timeline edits still reset preview.
+- Added **Export** beside preview controls: a local background job joins the current real scenes and trimmed lengths into a 720p/30 fps H.264/AAC MP4, preserving clip audio and adding silence otherwise. Still images hold; missing-media scenes use black, with Windows titles when the explicit font works and a disclosed black fallback otherwise.
+- Reused the ffmpeg add-on approval request (approve, then retry), existing video/Generated material folder and current Home/project explorer guards. Progress, errors and download/open links survive editor navigation while the server stays running. Branch candidate only; no merge, push or restart.
+
+## [2026-11-01] - Show exactly where Studio material will be inserted (MC-1145)
+
+- Library material and computer-file drags now highlight the destination gap on campaign and standalone Studio timelines, including before the first scene and after the last. Dropping uses the marked position.
+- Added keyboard-accessible **+** controls at every boundary, opening the existing picture/clip library picker at that position. Controls keep 44px targets on narrow screens without changing scene widths or ruler timing; crowded controls stack below the strip.
+- Insertions keep the existing save/Undo and Preview refresh. Detached timelines ignore queued scroll events after a repaint. Branch candidate only; no merge, push or restart.
+
+## [2026-11-01] - Preview the arranged Studio scenes for free
+
+- Added an in-app **Preview** player to standalone and campaign video storyboards: play/pause, elapsed/total time, scrubbing and the current scene highlighted on the timeline.
+- Plays uploaded clips for their trimmed duration, holds pictures for their scene length, and shows the scene title/instructions when no picture is attached. Example scenes are skipped; empty boards explain why Preview is disabled. Reopening reads the current order and timing, edits pause/reset playback, and leaving the editor releases media.
+- Client-side only; preview adds no engine, render, estimate or passcode request. The paid finished-video render remains separate. Branch candidate only; no merge, push or restart.
+
+## [2026-11-01] - Ship the hivemind routing directive (BUILTINS-4 HR-6a)
+
+- New built-in skill `mc-hivemind-routing`: a coordinating agent writes an explicit decomposition, validates it with `plan_routing`, then acts on the route once (ordinary units dispatched individually, a hivemind payload POSTed once and never duplicated, invalid plans fixed rather than partly dispatched). Held dependent units stay with the coordinator.
+- Ships through the existing checksum-preserved built-in installer on next server start. A test pins every documented plan/unit field, enum, result key and error code to the validator so the text cannot drift.
+- Not bound to any character and not bundled in the macOS app (the snippet needs a source checkout, like the other non-steward built-ins).
+
+## [2026-11-01] - Disclose fallback for missing hivemind characters (BUILTINS-4 HR-9)
+
+- Well-formed unknown worker/reviewer references now return warnings and resolve per attempt through an install-defined work-type mapping, then a generic worker tracking a complexity tier on the run's worker provider. Role mappings ship empty.
+- Persisted requested/actual identity, substitution step/reason and run events; review panels, list rows and run history show “requested X → ran as Y”. Malformed references and unusable engines still refuse, and same-attempt recovery keeps its pins.
+- Branch candidate only: no merge, push, restart, live configuration changes or live-run verification.
+
+## [2026-11-01] - Bound optional native child execution (BUILTINS-4 HR-7)
+
+- Added an injected-driver contract with explicit opt-in, a durable shared four-child run budget, pinned scope/lineage/guards and owned-child reconciliation. Missing capability remains unsupported; required native execution holds.
+- Tested committed nested output reaching the parent branch, restart/idempotency, failure/orphan holds and cancellation with fake drivers and temporary Git repositories. Existing review gates and zero automatic replacement reviews remain unchanged.
+- Internal branch candidate only, **incomplete-pending-pilot**: no production Claude driver, native invocation, runtime wiring, real workflow launch, merge, push or restart is claimed.
+
+## [2026-11-01] - Validate explicit hivemind routing plans (BUILTINS-4 HR-6b)
+
+- Added a pure decomposition validator: zero to two independent workers retain ordinary routing; three or more produce one HR-1-compatible inline roster payload with the authorized concurrency, character references, ownership, reviewer and checks.
+- Invalid graphs, overlapping file ownership and unavailable characters fail visibly without dispatchable subsets. Dependent follow-ups remain explicit Q6 holds for Dave after reviewed integration; reviewers never count toward the worker threshold.
+- Internal branch candidate only; the later HR-6a skill can call the documented Python API. No model calls, natural-language classifier, HTTP adapter, live skill binding, merge, push or restart.
+
+## [2026-11-01] - Require an exact review between roster merges (BUILTINS-4 HR-5)
+
+- Added a durable serial coordinator for explicit roster runs: merge one worker branch with existing native standards, run its smokes, then consume an independent exact-commit pass through the reviewer lifecycle guard before the next merge.
+- Retained provisional candidates, frozen review briefs and dependency links while review waits; rejection, drift, missing verdicts and lifecycle failures hold later merges. Failed smokes retain their rollback rule. Recovery reuses exact evidence without duplicate reviewers or stale-pass admission.
+- Legacy integration remains compatible; non-git analysis-only runs explicitly skip code review and dependent code is held for Dave. Branch candidate only: no merge, push, restart, live run or native workflow support claimed.
+
+## [2026-11-01] - Pin durable post-merge review evidence (BUILTINS-4 HR-3)
+
+- Added a separate review-record store for exact integration candidates, designated reviewers, attributed structured verdicts and one-time pass consumption. Missing, corrupt or mismatched evidence holds integration.
+- Reused OS caller attribution and dispatch ancestry for every contributing worker; author/descendant/native-child review and conflicting replays refuse. Atomic writes and thread/process locking preserve prior records on failure.
+- Internal branch candidate only; existing agent-branch review gates are unchanged. Reviewer routes, runtime launch and reviewed integration remain HR-4/HR-5. No merge, push, restart or live reviewer execution.
+
+## [2026-11-01] - Hold roster recovery without persona fallback (BUILTINS-4 HR-2 send-back)
+
+- Held roster workers now return the specific reason as HTTP 409 from send/followup; parent callbacks use the same pinned recovery adapter for every provider.
+- Stored one atomically written, SHA-256-verified prompt file per attempt under the hivemind run; pending/completion logs retain only its relative path and digest. Missing or changed files hold recovery.
+- Branch candidate only; no merge, push, restart, live model execution or changes to later roster tickets.
+
+## [2026-11-01] - Launch roster hivemind workers with pinned context (BUILTINS-4 HR-2)
+
+- Extracted worker context/spawn into a separate module; roster attempts receive their selected character, skills, rules, resolved engine and unattended workstream directive through the existing runtime seam.
+- Persisted attempt identity/context before launch and through completion/recovery; code workers hold on isolation failure, and Claude adopts the same session/worktree without another context build or engine substitution. Legacy workers retain their existing path.
+- Branch candidate only; reviewer records, reviewer launch and reviewed integration remain later tickets. No merge, push, restart or live model execution.
+
+## [2026-11-01] - Isolate Codex MCP discovery in existing runtime tests (BUILTINS-7b)
+
+- Repaired nine post-merge test failures caused by model-only CLI stubs and an obsolete native-discovery expectation; the real MCP bridge and profile validation remain exercised.
+- Isolated the fixture catalog and Codex home, retained context/memory/workflow assertions, and added explicit zero-enabled-MCP assertions for incognito dispatch and resume. No production behavior changed.
+
+## [2026-10-31] - Compose steward cycles from one role contract (BUILTINS-3 SR-2)
+
+- Added a separate cycle composer retaining the selected character, current charter, canonical journal, marker-first ordering, and current voice/rules/refresh text without depending on native skill discovery.
+- Prepared protected-file patches for the core adapter and canonical directive/builtin skill, replacing stale backlog-note/self-rearming guidance with journal/reply-first instructions; added the frozen resource entry and disposable-copy patch tests.
+- Branch candidate only; protected patches remain unapplied, so SR-2 integration is incomplete and role execution remains blocked. No scheduler/state rollout, migration, merge, push or restart.
+
+## [2026-10-31] - Carry selected MCP servers into four vendor launches (BUILTINS-7b)
+
+- Codex, OpenCode, Goose and Kiro consume the resolved MCP selection on dispatch and follow-up; Codex model-refusal retries retain it too. Explicit empty selections, the built-in server switch and incognito/frozen exclusions are preserved.
+- Separate vendor modules generate launch-owned profiles, inline config, recipes or named agents without overwriting existing vendor files. Native config checks reject unintended inheritance or unsupported definitions. Existing unattended fence refusals remain authoritative.
+- Branch candidate only. Translation/runtime tests and read-only Codex configuration probes are covered; live model tool calls and installed OpenCode/Goose/Kiro validation remain unverified. No merge, push or restart.
+
+## [2026-10-31] - Protect steward role bindings (BUILTINS-3 SR-1)
+
+- Added versioned schedule-to-charter bindings with a pinned hired character, canonical journal confinement, a project pointer and one active steward assignment per project.
+- Role writes and attached charter text/status/deletion require human proof. Only the attributed owning schedule session may suspend its own wake; project and legacy controls cannot bypass the binding or remove its guards.
+- Fixed role validation holding locks across existing project, charter, deletion and legacy steward handlers, preserving the manager-before-project lock order and the concurrent project-create regression.
+- Preserved role assignments across stale timer/Run Now saves and exposed recovery errors for interrupted pointer writes. Role execution remains explicitly blocked pending SR-2/SR-3. Branch candidate only; no editor, migration, merge, push or restart.
+
+## [2026-10-31] - Refuse unattended engines whose steward fence cannot load (BUILTINS-5)
+
+- Gemini and Qwen inject an armed fence adapter through per-launch settings and verify native settings loading, hook registration and allow/refuse behavior before dispatch and follow-up. Guard-load failures are visible session errors; follow-up/interrupt callers receive HTTP 409 rather than success.
+- Aider is refused unattended while fencing is enabled because it has no pre-execution hook. OpenCode, Goose and Kiro are refused until their adapters are verified. Attended use remains available, with no engine substitution on refusal.
+- Installed Qwen 0.26.4 passed the native proof. Gemini 0.66.0 on Windows rejects user-owned system settings and is explicitly refused. No native ownership gate was weakened. Branch candidate only; no merge, push or restart.
+
+## [2026-10-31] - Identify and schedule posts directly from When
+
+- Calendar chips and Unscheduled cards have hover/tap-info previews using the shared post renderer. The composer exposes the existing editable Name control after a draft exists.
+- Unscheduled shows one card per post with channel badges. Drops and keyboard controls schedule an existing destination or add a compatible destination inside the campaign account bound through the composer's write/Undo path. Held channels and incompatible YouTube content refuse drops with a reason.
+- Clicking a chip opens When details with date/time, Unschedule, Edit post, and Open review only for needs-review versions. Dragging a chip into Unscheduled clears its time; Undo restores it. Empty Review retains one back control. Branch candidate only; no merge, push or restart.
+
+## [2026-10-31] - Open uploaded videos as named clip storyboards
+
+- The video editor shows its piece or Studio draft title with in-place rename and Undo. Empty video-piece storyboards import attached clips once, in asset order, through the revision-guarded save.
+- Scenes accept pictures or browser-playable clips through upload, paste, timeline drop and the Material library. Muted clip thumbnails appear in the list and timebar; native duration and trim persist. Library references retain lexical and realpath escape checks.
+- Local clip rendering is deferred: clip scenes explicitly refuse rendering before vendor work, rather than being submitted as image prompts. Branch candidate only; no merge, push or restart.
+
+## [2026-10-31] - Give Studio a fixed-scale time ruler
+
+- Studio's video timeline uses pixels per second, fitted once on open and held through edits and Undo. A shared scrolling ruler shows m:ss ticks; minus, plus and Fit control zoom.
+- Only the right grip changes duration (1–3600 seconds). Later scenes shift without changing width, and a floating duration badge follows the trim. Tile drag dots, grip highlighting, keyboard controls and full-label/duration tooltips expose the gestures without distorting short scenes.
+- The campaign Director retains its existing strip and trim conversion through scoped options. Branch candidate only; no merge, push or restart.
+
+## [2026-10-31] - Keep native followup context stable at the route boundary
+
+- Non-Claude followup and interrupt routes reuse their setup stash until the project fingerprint changes. Dispatch primes the fingerprint; project/global persona edits, including nested character packs, invalidate it.
+- Task-scoped memory now travels through the existing per-turn message delivery path. Retrieval telemetry no longer invalidates setup; the fingerprint retains the full Markdown corpus and final context delivery still hashes every section. Branch candidate only.
+
+## [2026-10-31] - Avoid repeated context on native followups (BUILTINS-2)
+
+- Codex, Gemini and Qwen fingerprint delivered context and send bare messages on unchanged native followups. Rule/persona changes and missing fingerprints after restart trigger one context refresh; failed stdin delivery does not advance the fingerprint.
+- Stabilized Gemini's composed tool protocol and preserved Markdown separators in Codex's bare-message labels. Incognito and no-native-ID fallback remain supported. Branch candidate only.
+
+## [2026-10-31] - Bound supported unattended retry waits (BUILTINS-1)
+
+- Added one validated retry-budget block and Settings support labels for all eight engines: defaults 30-minute retry wait, 120-minute usage-limit wait and 5-minute recheck cadence. Human passcode gating is retained.
+- Claude maps all three values to native watchdog environment variables. Qwen caps heartbeat-confirmed capacity waiting only, with usage classification/cadence explicitly unsupported; other engines receive no execution deadline. The capability audit preserves unverified findings. Branch candidate only.
+
+## [2026-10-31] - Deliver current instructions on native resume (BUILTINS-2)
+
+- Codex, Gemini and Qwen cold and warm resumes send current persona/rules while keeping the native conversation ID. Saved-message display strips the reference envelope.
+- Added opt-in `claude_resume_fresh_prompt` (default off) at the shared Claude launch boundary to pass `--system-prompt-snapshot off` on resume. The unattended fence gate remains in force. Cache-cost measurement is documented and unrun; branch candidate only.
+
+## [2026-10-30] - Make the Desk map Resume smoke explain expired plans
+
+- The map smoke now asserts successful Resume and expired-end refusal at selectable 1440/390 widths on its own ephemeral loopback server. The original selector timeout came from an expired fixture; C6 already supplied a future date on the current base. Product Pause/Resume behavior is unchanged.
+
+## [2026-10-30] - Add YouTube campaign accounts with assisted video upload
+
+- Connect saves a named YouTube channel account and browser profile with assisted capability. It can be selected in campaign Channels and the composer; existing read-only accounts require an explicit passcode-gated change.
+- YouTube requires exactly one video. The first text line supplies the title (100 characters); remaining lines supply the description (5000). Composer and approval validation reject missing/wrong media and over-limit text without truncating it; preview uses the same text mapping.
+- Assisted upload opens Studio, attaches the approved video, replaces the title and description, and stops on Details. The human finishes audience/visibility and presses Publish/Save. Studio may save a private draft on attachment. Signed-in Studio selectors remain unverified live. Local branch candidate; no merge, push or restart.
+
+## [2026-10-30] - Put campaign channels before posts
+
+- Campaign stops now read Brief, Goal, Channels, Posts, When, Launch. Channels sets the campaign account bound and shows its post overview; Posts lists campaign pieces and opens post composers. Existing route IDs and saved cursors remain compatible.
+- Launch's missing-account link names Channels. Editor return buttons, composer guidance, suggestions and When's empty-state link follow the new names and order. Approval and publishing gates are unchanged. Branch candidate only; no merge, push or restart.
+
+## [2026-10-30] - Keep campaign placement overview read-only
+
+- Where shows each campaign account's live post count and existing assignments, with hover/tap previews. Individual assignment drags, placement menus and remove buttons are retired; post destinations are selected in the composer.
+- Account selection remains available by click or keyboard. Campaign account bounds, widening approval, narrowing, pending-version archival, Undo, voices and Connections handoffs retain their existing contracts. Branch candidate only; no merge, push or restart.
+
+## [2026-10-30] - Preview campaign posts while writing
+
+- Added a live composer side panel with one tab per selected account, reusing Where's platform cards and media renderer. Unsaved typing updates the preview; clipped copy shows an approximate See more cut, and X shows its 280-character warning.
+- On narrow screens, Show preview opens a full-width panel below the editor. Account changes keep preview tabs in sync. Branch candidate only; no merge, push or restart.
+
+## [2026-10-30] - Duplicate saved posts into fresh composer drafts
+
+- Post-card **Duplicate** copies saved text and media into the same campaign and opens the new draft in the composer. **Duplicate to campaign…** offers other campaigns, labelled with their projects. Copies retain only source destinations inside the target campaign's account bound; empty intersections stay unassigned.
+- Copies have independent attachment/version IDs and no inherited schedule, approval, outcome or claim verdict. The backend saves the whole copy together and refuses unavailable media without creating a partial draft. Undo removes only the copy; demo copies stay local. Branch candidate only; no merge to master, push or restart.
+
+## [2026-10-30] - Add post media in the composer
+
+- Post composers accept multi-file uploads, file drops and clipboard pictures/videos. One Add media picker opens on Upload, with a Library tab showing image/video thumbnails newest first across folders. Valid media can create the first draft without text; every upload stays in Library/Uploads when its attachment is undone or removed.
+- Removed the Post card's empty-preview/strip Add media controls and the legacy Post detail picker. Image/video pickers remain. Media writes reuse the piece queue, attachment routes, viewer and Undo; refusals remain visible and retryable, and approved/sent/archived composer media stays read-only. Branch candidate only; no merge, push or restart.
+
+## [2026-10-30] - Start campaign posts in one composer
+
+- Post tiles and post-card Open actions enter a text composer directly. Opening it creates no empty piece; the first nonblank text creates the draft. Campaign accounts start selected, and ticks write per-piece versions without widening the campaign account bound.
+- Save draft keeps text, When uses the calendar's existing schedule command and approval checks, and Send to Review hands selected editable versions to the existing Review screen. Failed saves retain typing for retry. Media, live preview and campaign-stop changes remain separate slices. Branch candidate only; no merge, push or restart.
+
+## [2026-10-30] - Open every new video in the same Studio editor
+
+- Studio tiles, standalone draft links, campaign creation, video cards and Home links use DeskV1VideoOpen and the storyboard route's VideoEditor renderer. The legacy standalone creation URL is normalized before pushing the navigation stack; no second editor entry is added.
+- Standalone drafts keep their Studio owner, title, optional Product selection and Recent reopening; campaign videos keep their existing piece owner and Back to What. Removed Home's fallback into the retired video director. Branch candidate only; no merge, push or restart.
+
+## [2026-10-30] - Report preview and incomplete media-upload failures
+
+- Browser-preview creation now falls inside the upload error handler. An M21 reply without the requested saved asset is refused with a toast and local rollback, instead of retaining a blob whose URL is then revoked.
+- Real-MP4 regression covers the piece-page computer chooser, saved video metadata, server refusal, missing-asset response, preview failure and cleanup. The originally reported no-op on a video piece was not reproduced; these fault-injected failure paths are not claimed as its cause. Branch candidate only; no merge, push or restart.
+
+## [2026-10-30] - Let Windows video choosers show common video formats
+
+- Shared explicit video extensions and MIME hints across piece-page and create-card uploads. Client validation accepts video MIME types or known extensions; the server accepts the same common formats plus host-registered video types, and lists them consistently in the library.
+- Kept the 500 MB video / 25 MB image caps and included them in validation messages; material uploads use the video body cap, as piece uploads already did. Browser codec support still determines preview playback. Branch candidate only; no merge, push or restart.
+
+## [2026-10-30] - Keep the video editor focused on making video
+
+- Removed the Copy, media & versions detour and post-channel summary from the editor. Kept Review for a waiting version. Branch candidate only; no merge, push or restart.
+- Verification found a separate gap: New post's Add media currently filters the Material library to images. Making rendered videos selectable there needs a product decision; no piece/version redesign is included here.
+
+## [2026-10-30] - Show the Studio timeline on campaign videos
+
+- Campaign and standalone storyboards share a timeline module using the existing video strip's drag and edge-trim gestures. Tiles show duration; arrow keys reorder or adjust duration, and dropping pictures or library material inserts scenes through the existing saved storyboard commands and Undo.
+- Kept the scene-list and Add scene selectors. Branch candidate only; no merge, push or restart.
+
+## [2026-10-30] - Avoid nesting native candidates inside Hivemind checkouts
+
+- Approved native checks create their disposable candidate beside the registered project's workers, avoiding Git's `$GIT_DIR too big` refusal from nested Hivemind paths on Windows. Frozen source validation still binds the integration checkout and exact candidate tree.
+- Regression cases verify the candidate location across platforms and preserve a standards hold, worker and original checkout when candidate creation fails. Local branch correction only; no merge, push or restart.
+
+## [2026-10-30] - Keep runtime files outside native landing identity (DH-M5 A2b review)
+
+- Off, unconfigured and planless Preview landings skip harness source hashing, so large untracked runtime files cannot create a standards hold.
+- Private integration checks bind HEAD, index and tracked working bytes; runtime writes no longer invalidate candidate, pending-hook or registered-main evidence. Tracked dirt still refuses, Git protects colliding untracked files, and ordinary/manual candidate freezing plus full Preview/measurement manifests retain their boundaries.
+- Dave's integration-only amendment is recorded in `docs/DEV_HARNESS_M5_CONTRACT.md` section 9.1. Branch candidate only; no merge, push, restart or live change.
+
+## [2026-10-30] - Run approved native checks before local landing (DH-M5 A2b)
+
+- Added explicit group applicability, trusted frozen Preview/candidate receipts, measured-native evidence composition and safe Preview/run/read jobs through the existing session-job owner. Requests are single-use; early completion cannot recreate them. Draft plans and uploaded/headless reports cannot approve or authorize a merge.
+- Managed, hivemind and manual merge paths share repository-wide serialization; exact child-hook leases avoid deadlock, final ref/tree checks preserve work, and required native holds survive teardown/GC. Existing human approval and independent review gates remain.
+- Native Enforce availability requires a valid approved plan with a required named check. Full catalogue practice coverage stays Unsupported; coverage remains warning-only. Branch candidate only; no merge, push, restart, live activation/settings change or deployment. M6 panel, installed-tool, packaging and dogfood acceptance remain separate.
 
 ## [2026-10-30] - A reworded continuity thread keeps its age
 

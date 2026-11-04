@@ -17,7 +17,7 @@
   // through the rightcol Posy box — the `onSend` handler below (in
   // `deskV1FillCampaignRightColumn`) matches on this exact string to run
   // `_runSuggestTask` instead of the generic instruction handler.
-  const _HOW_SUGGEST_TEXT = 'Suggest What / When / Where';
+  const _HOW_SUGGEST_TEXT = 'Suggest Posts / When / Channels';
 
   // ── data resolution (same _fx() convention as desk-v1-review.js/-home.js) ─
   function _fx() { return window.DeskV1Store.state(); }
@@ -287,15 +287,30 @@
   // Undo restores every removed item at its ORIGINAL array index (captured
   // before removal), not just appended at the end, so array order — and any
   // other code that assumes it — survives an undo unchanged.
+  //
+  // Live (Ron 2026-10-30, 'FL3 V2'): this used to splice the local arrays
+  // only, through the bare commandBus, and never called the server, so the
+  // next workspace load put the "deleted" draft back. It is now one
+  // DeskV1Store.write: DELETE after any create still in flight, a refusal
+  // rolls the campaign back with the server's reason, and Undo POSTs
+  // .../restore, which puts back the campaign AND its pieces exactly as the
+  // server trashed them (mc/desk_campaign_trash.py). A 404 is not a refusal:
+  // the server holds no such campaign, so the local row was already a ghost.
   function _deleteCampaignCascade(camp, onDone) {
     const campaigns = _campaigns();
     const families = _families();
     const conversations = _conversations();
+    const S = window.DeskV1Store;
+    const id = encodeURIComponent(camp.id);
     let campIdx, famRemoved, convRemoved;
-    DeskV1Kit.commandBus.run({
+    return S.write({
       label: `Deleted “${camp.plan.title || 'Untitled draft'}”`,
       destructive: true,
-      do: () => {
+      request: () => window.deskV1AfterCampaignSaved(camp.id)
+        .then(() => S.api('DELETE', '/api/desk/campaigns/' + id))
+        .catch((e) => { if (e && e.status === 404) return { ok: true, missing: true }; throw e; }),
+      undoRequest: () => S.api('POST', '/api/desk/campaigns/' + id + '/restore?shape=v1'),
+      apply: () => {
         campIdx = campaigns.indexOf(camp);
         famRemoved = [];
         for (let i = families.length - 1; i >= 0; i--) {
@@ -308,7 +323,8 @@
         if (campIdx >= 0) campaigns.splice(campIdx, 1);
         if (onDone) onDone('deleted');
       },
-      undo: () => {
+      unapply: () => {
+        if (campaigns.includes(camp)) return;
         campaigns.splice(Math.min(campIdx, campaigns.length), 0, camp);
         famRemoved.forEach(({ item, idx }) => families.splice(idx, 0, item));
         convRemoved.forEach(({ item, idx }) => conversations.splice(idx, 0, item));
@@ -985,7 +1001,7 @@
   }
 
   // ────────────────────────────────────────────────────────────────────────
-  // ③ What (R2-7). The list, the CONTENT TYPES tray and the source-first
+  // ④ Posts (R2-7). The list, the CONTENT TYPES tray and the source-first
   // create-cards live in desk-v1-what.js (`deskV1FillWhat`); this file keeps
   // the pieces of the old Content tab that What still leans on — the piece ⋯
   // menu and its commands, the Suggest banner, and the Posy selection — and
@@ -1010,7 +1026,7 @@
     const st = _ensureState(params.campaignId);
     st.el = el;
     if (!camp) { el.innerHTML = '<div class="desk-v1-stub-inline">Campaign not found.</div>'; return; }
-    if (typeof window.deskV1FillWhat !== 'function') { el.innerHTML = '<div class="desk-v1-stub-inline">What is not loaded.</div>'; return; }
+    if (typeof window.deskV1FillWhat !== 'function') { el.innerHTML = '<div class="desk-v1-stub-inline">Posts is not loaded.</div>'; return; }
     window.deskV1FillWhat(el, params, camp);
   }
 
@@ -1029,7 +1045,7 @@
     acceptSuggested: (camp) => _acceptSuggestedWhat(camp),
   };
 
-  // R2-6: the ② How stop's "Suggest What / When / Where" task writes
+  // R2-6: the ② How stop's "Suggest Posts / When / Channels" task writes
   // `camp.how.suggested.what` — an array of draft piece proposals, none of
   // them real content yet. This banner is the ONLY place that offer is
   // visible on the Content tab; "Accept all" is the one action R2-6 builds
@@ -1057,7 +1073,7 @@
   // desk-v1-how.js driving the rightcol Posy box's real Send). Writes
   // DRAFT suggestions only (§4.2 item 3: "never commitments") — ③'s own
   // `_suggestedWhatBannerHTML`/`_acceptSuggestedWhat` above turn `what`
-  // into real pieces; ⑤ When and ④ Where read `how.suggested.when`/`.where` directly
+  // into real pieces; ⑤ When and ③ Channels read `how.suggested.when`/`.where` directly
   // (desk-v1-calendar.js, desk-v1-shell.js's 'where' branch) since neither
   // has a dedicated accept flow yet (R2-9/R2-10). Only refreshes the
   // Content tab body if it's the one currently mounted AND currently the
@@ -1134,6 +1150,7 @@
   // own facet actions. Replaces the old kind-branched review/video/toast
   // dispatch (the toast's "later ticket" is this one).
   function _runPrimaryAction(fam, camp) {
+    if (fam.kind === 'post') return window.DeskV1Composer.open(camp, fam);
     // A video piece opens the Studio video editor, never the generic piece page.
     if (window.DeskV1VideoOpen && window.DeskV1VideoOpen.isVideo(fam)) { window.DeskV1VideoOpen.open(fam, camp); return; }
     const action = _primaryAction(fam);
@@ -1190,6 +1207,7 @@
     menu.querySelector('[data-menu-skip]').onclick = () => { close(); _skipFamily(fam); };
     menu.querySelector('[data-menu-archive]').onclick = () => { close(); _archiveFamily(fam); };
     window.DeskV1PieceLifecycle.menu(menu, close, fam);
+    window.DeskV1ComposerDuplicate.menu(menu, close, fam, camp, triggerEl);
     // The lifecycle adds Delete after the first placement: measure again so the
     // taller menu flips above or scrolls instead of ending under the phone tab bar.
     DeskV1Kit.placePopover(menu, triggerEl);

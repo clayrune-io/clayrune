@@ -360,35 +360,16 @@ async function whereLive(browser) {
   const cp = calls(srv, 'PATCH', /^\/api\/desk\/campaigns\/camp-1$/);
   check(cp.length === 1 && cp[0].body.plan && cp[0].body.plan.accounts.includes(offId), `adding ${offId} PATCHes the campaign plan with it in plan.accounts`, 'column add: ' + JSON.stringify({ offId, log: srv.log.map((r) => r.method + ' ' + r.path + r.search) }));
 
-  // A message onto an account: M17.
-  const famId = await page.evaluate(() => document.querySelector('[data-where-message]').dataset.familyId);
+  // C5: individual assignment controls are retired. Account removal below
+  // still archives pending versions through the same approval-safe path.
+  const famId = await page.evaluate(() => window.DeskV1Store.state().families.find(f => f.campaignId === 'camp-1' && f.versions.some(v => v.channelId === 'ch-blog')).id);
+  const newV = await page.evaluate(id => window.DeskV1Store.state().families.find(f => f.id === id).versions.find(v => v.channelId === 'ch-blog'), famId);
+  const other = 'ch-blog';
   srv.log.length = 0;
-  await page.focus(`[data-where-message][data-family-id="${famId}"]`);
-  await page.keyboard.press('Enter');
-  await page.waitForSelector('.desk-v1-addto-menu', { timeout: 3000 });
-  await page.locator('.desk-v1-addto-menu button').first().click();
-  await page.waitForTimeout(250);
-  const vp = calls(srv, 'POST', new RegExp(`^/api/desk/pieces/${famId}/versions$`));
-  check(vp.length === 1 && typeof vp[0].body.id === 'string' && typeof vp[0].body.account_id === 'string' && !('state' in vp[0].body),
-    'a message dropped on an account POSTs M17 {id, account_id}', 'version POST: ' + JSON.stringify(vp.map((r) => r.body)));
-  const newV = vp[0].body;
-  check((await stateOf(page, famId, newV.id)).channelId === newV.account_id, 'the board keeps the version on that account', 'version not kept');
-
-  // Move: M18 account_id.
-  const other = await page.evaluate((cur) => {
-    const cols = [...document.querySelectorAll('[data-where-remove]')].map((e) => e.dataset.channelId);
-    return cols.find((c) => c !== cur);
-  }, newV.account_id);
-  srv.log.length = 0;
-  await page.focus(`[data-where-version][data-version-id="${newV.id}"]`);
-  await page.keyboard.press('Enter');
-  await page.waitForSelector('.desk-v1-addto-menu', { timeout: 3000 });
-  const label = (await srv.accounts.find((a) => a.id === other).identity);
-  await page.locator('.desk-v1-addto-menu button', { hasText: label }).first().click();
-  await page.waitForTimeout(250);
-  const mp = calls(srv, 'PATCH', new RegExp(`^/api/desk/pieces/${famId}/versions/${newV.id}$`));
-  check(mp.length >= 1 && mp.some((r) => r.body.account_id === other) && mp.every((r) => !['approved', 'scheduled'].includes(r.body.state)),
-    'moving a version PATCHes M18 {account_id}, never an approved/scheduled state', 'move PATCH: ' + JSON.stringify(mp.map((r) => r.body)));
+  await page.locator(`[data-where-message][data-family-id="${famId}"]`).click({ position: { x: 20, y: 8 } });
+  await page.locator(`[data-where-version][data-version-id="${newV.id}"]`).dispatchEvent('keydown', { key: 'Enter' });
+  check(await page.locator('.desk-v1-addto-menu, [data-where-remove-version]').count() === 0 && calls(srv, 'POST', /\/versions$/).length === 0 && calls(srv, 'PATCH', /\/versions\//).length === 0,
+    'Where exposes no individual assignment writes or menus', 'Where still edits assignments');
 
   // Remove a column that has a pending version: plan PATCH then the version archived.
   srv.log.length = 0;

@@ -1,6 +1,7 @@
 import './engine-preferences.js';
 import './settings-ownership.js';
 import './floor-preferences.js';
+import './unattended-retry-settings.js';
 
 // ── Settings categories + drill-down (WhatsApp-style) ────────────────────────
 // The settings modal is a master list of categories; tapping one drills into a
@@ -435,6 +436,7 @@ async function _renderSettings() {
       <div class="settings-cat-label">Providers</div>
     ${_renderProviderSettings(cfg)}
     ${SettingsOwnership.providerRuntime(cfg, {toggle, textInput, engineFallbackHTML})}
+    ${UnattendedRetrySettings.render(cfg, {toggle})}
       </div>
 
       <div class="settings-detail-pane settings-hidden" data-cat="memory">

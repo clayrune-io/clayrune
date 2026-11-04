@@ -39,6 +39,7 @@ from pathlib import Path
 import hashlib
 import json
 import os
+import sys
 import threading
 import time as _time
 import uuid
@@ -69,6 +70,9 @@ from mc import engine_fallback as _engine_fallback  # MC-961: blocked-run pointe
 from mc import engine_pace_dispatch as _engine_pace_dispatch  # usage reader for run conditions
 from mc import schedule_conditions as _schedule_conditions    # "spend leftover weekly allowance"
 from mc import schedule_skip_log as _skip_log                 # skipped ticks, shown in Runs
+from mc import steward_role_model as _role_model, steward_role_writes as _role_writes
+from mc import steward_role_dispatch as _role_dispatch
+from mc import steward_role_channel as _role_channel
 from mc.blueprints.push_mobile import _notify_push  # MC-961: same pointer, the notify/inbox surface
 from steward import core as _steward_core  # cycle-task builder + skills delta
 # NOTE: `steward.core` is a leaf (no Flask, no blueprint imports), so this does
@@ -123,6 +127,11 @@ def wire(*, schedules_path, load_project_fn, load_projects_fn,
     _revive_from_agent_log = revive_from_agent_log_fn
     _revive_non_claude_from_agent_log = revive_non_claude_from_agent_log_fn
     _record_usage_breakdown_turn_started = record_usage_breakdown_turn_started_fn
+
+
+def steward_role_lifecycle(project: dict, schedule: dict, event: str, detail: dict) -> str:
+    """SR-3 channel gate; child drain and journaling remain in their services."""
+    return _role_channel.require_ready(project, schedule, event, detail)
 
 
 def _load_schedules():
@@ -613,6 +622,9 @@ def _scheduler_loop():
             changed = False
             to_delete = []  # ids of once+delete_after_run schedules to drop post-fire
             for sched in schedules:
+                if _role_model.is_role(sched):
+                    _role_dispatch.timer_tick(sys.modules[__name__], sched, now, paused)
+                    continue
                 if not sched.get('enabled', True):
                     continue
                 next_run = sched.get('next_run', '')
@@ -840,7 +852,7 @@ def _scheduler_loop():
             if to_delete:
                 schedules = [s for s in schedules if s.get('id') not in to_delete]
             if changed:
-                _save_schedules(schedules)
+                _role_writes.save_runtime_schedules(schedules)
         except Exception as e:
             _log(f"[scheduler] Error: {e}")
 
@@ -1188,6 +1200,8 @@ def get_schedules():
     projects_map = {p['id']: p.get('name', p['id']) for p in projects}
     by_id = {p['id']: p for p in projects}
     for s in schedules:
+        if _role_model.is_role(s):
+            s['execution_error'] = s.get('last_error') or _role_dispatch.execution_error(sys.modules[__name__])
         s['project_id'] = s.get('project_id', '')
         s['project_name'] = projects_map.get(s['project_id'], s['project_id'])
         # Who runs it, resolved for display. Read-only enrichment, never
@@ -1346,18 +1360,12 @@ def _run_at_error(run_at):
     return None
 
 
-def create_schedule_from_spec(data: dict):
-    """THE schedule-create path. Returns (sched, None) or (None, (resp, code)).
+def _build_schedule_from_spec(data: dict):
+    """Build and validate shared schedule fields without persisting anything.
 
-    Extracted from create_schedule() so a second caller can create a schedule
-    without a second job engine — the automation-suggestion accept endpoint
-    (MC-915) hands its stored spec straight to this function. The body below is
-    the original handler verbatim; create_schedule() is now a thin request
-    wrapper around it.
-
-    Anything that creates a schedule MUST come through here. A parallel writer
-    would validate differently, compute next_run differently, and drift — which
-    is how 'weekly' stayed silently broken once already.
+    All creators use create_schedule_from_spec, which adds role authority,
+    merged binding validation and persistence. Role edits reuse this builder
+    so cadence, condition and engine validation have one implementation.
     """
     pid = (data.get('project_id') or '').strip()
     task = (data.get('task') or '').strip()
@@ -1366,12 +1374,11 @@ def create_schedule_from_spec(data: dict):
     rerr = _run_at_error(data.get('run_at'))
     if rerr:
         return None, (jsonify({'error': rerr}), 400)
-    # MC-871 Q4: a schedule invokes EITHER a raw task OR a workflow, never
-    # both and never neither -- a row that could mean two things is a row
-    # that fires as whichever branch happened to be checked first.
-    if bool(task) == bool(workflow_id):
+    # Exactly one authoritative target, including the new role charter.
+    role_target = 'steward_role' in data
+    if sum((bool(task), bool(workflow_id), role_target)) != 1:
         return None, (jsonify({
-            'error': 'exactly one of task or workflow_id is required'}), 400)
+            'error': 'exactly one of task, workflow_id or steward_role is required'}), 400)
     if task and not pid:
         return None, (jsonify({'error': 'project_id and task required'}), 400)
     if workflow_id and not _wf.get_workflow(workflow_id):
@@ -1390,7 +1397,7 @@ def create_schedule_from_spec(data: dict):
     # skip the (project-scoped) persona lookup rather than validate a field
     # that a workflow-targeted row has no business setting.
     character = ''
-    if not workflow_id:
+    if not workflow_id and not role_target:
         character, cerr = _validated_schedule_character(data.get('character'), pid)
         if cerr:
             return None, cerr
@@ -1444,12 +1451,24 @@ def create_schedule_from_spec(data: dict):
         'next_run': None,
         'created_at': now_iso(),
     }
+    if role_target:
+        sched['steward_role'] = data['steward_role']
+        sched['character'] = data.get('character', '')
+        sched['enabled'] = data.get('enabled', True)
     sched['next_run'] = _compute_next_run(sched)
-
-    schedules = _load_schedules()
-    schedules.append(sched)
-    _save_schedules(schedules)
     return sched, None
+
+
+@_role_writes.serialized_write
+def create_schedule_from_spec(data: dict):
+    """Shared create path, including human-only role assignment validation."""
+    if 'steward_role' in data:
+        return _role_writes.create(data, _build_schedule_from_spec)
+    sched, err = _build_schedule_from_spec(data)
+    if err:
+        return None, err
+
+    return _role_writes.append_ordinary(sched)
 
 
 @bp.route('/api/schedules', methods=['POST'])
@@ -1461,6 +1480,7 @@ def create_schedule():
 
 
 @bp.route('/api/schedules/<schedule_id>', methods=['PUT'])
+@_role_writes.schedule_mutation('update')
 def update_schedule(schedule_id):
     data = request.get_json() or {}
     schedules = _load_schedules()
@@ -1539,6 +1559,7 @@ def update_schedule(schedule_id):
 
 
 @bp.route('/api/schedules/<schedule_id>', methods=['DELETE'])
+@_role_writes.schedule_mutation('delete')
 def delete_schedule(schedule_id):
     schedules = _load_schedules()
     before = len(schedules)
@@ -1561,6 +1582,9 @@ def schedule_run_now(schedule_id):
     sched = next((s for s in schedules if s.get('id') == schedule_id), None)
     if not sched:
         return jsonify({'error': 'schedule not found'}), 404
+    if _role_model.is_role(sched):
+        result = _role_dispatch.scheduler_fire(sys.modules[__name__], schedule_id)
+        return jsonify(result), (200 if result['ok'] else 409)
     workflow_id = sched.get('workflow_id', '')
     if workflow_id:
         # Same branch the cadence fire takes (MC-871 Q4) — "Run Now" is an
@@ -1577,7 +1601,7 @@ def schedule_run_now(schedule_id):
         sched['last_run'] = now_iso()
         sched.pop('last_error', None)
         sched.pop('last_error_at', None)
-        _save_schedules(schedules)
+        _role_writes.save_runtime_schedules(schedules)
         return jsonify({'ok': True, 'run': run})
     pid = sched.get('project_id', '')
     task = sched.get('task', '')
@@ -1601,7 +1625,7 @@ def schedule_run_now(schedule_id):
                     sched['last_run'] = now_iso()
                     sched.pop('last_error', None)
                     sched.pop('last_error_at', None)
-                    _save_schedules(schedules)
+                    _role_writes.save_runtime_schedules(schedules)
                     return jsonify({'ok': True, 'session_id': prev_sid,
                                     'continued': outcome})
     resume_id, resume_provider = '', ''
@@ -1632,7 +1656,7 @@ def schedule_run_now(schedule_id):
     sched['last_run'] = now_iso()
     sched.pop('last_error', None)
     sched.pop('last_error_at', None)
-    _save_schedules(schedules)
+    _role_writes.save_runtime_schedules(schedules)
     return jsonify({'ok': True, 'session_id': sid, 'resumed': bool(resume_id)})
 
 

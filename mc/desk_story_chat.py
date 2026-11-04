@@ -23,7 +23,7 @@ WHAT THE AGENT SEES: the story, every scene (a scene's instruction is shortened 
 fit a total budget, and marked `line_cut`; the selected scene is always whole), and
 the last `CONTEXT_TURNS` turns of the thread, each cut to `CONTEXT_TURN_CHARS`. All
 of it rides as stdin DATA behind the instruction, never joined into it. The call is
-the same toolless `desk_story._call_model` seam, with the same agent resolution (an
+the same bounded `desk_story._call_model` research seam, with the same agent resolution (an
 agent that no longer resolves is a 404, never a quiet fall back).
 
 A CHANGE is validated by the store's own scene check (`desk_story._validated`)
@@ -45,6 +45,7 @@ from typing import Callable, Optional
 
 from mc import desk as _desk
 from mc import desk_story as _story
+from mc import desk_product_context as _product
 from mc import desk_storyboard as _sb
 from mc.core import _log, now_iso
 from mc.desk_storyboard import MAX_LINE
@@ -301,6 +302,9 @@ def chat(body, load_project: Callable[[str], Optional[dict]]) -> dict:
         store = _desk._read_store()
         thread = [t for t in (_board(store, kind, oid, key).get('thread') or []) if isinstance(t, dict)]
     payload, cut = _context(story, scenes, focus, thread, message)
+    product = _product.product_context(project)
+    if product is not None:
+        payload['product'] = product
     persona = ''
     who = None
     if rec:
@@ -309,8 +313,8 @@ def chat(body, load_project: Callable[[str], Optional[dict]]) -> dict:
     engine = _story._resolve_engine(project, rec)
     effort = ((rec or {}).get('engine') or {}).get('effort') or ''
     try:
-        text = _story._call_model(engine.provider, prompt=_INSTR_CHAT, system_prompt=persona, model=engine.model,
-                                  effort=effort, stdin_text=json.dumps(payload, ensure_ascii=False))
+        text = _story._call_model(engine.provider, prompt=_INSTR_CHAT + _product.PRODUCT_INSTRUCTION, system_prompt=persona, model=engine.model,
+                                  effort=effort, stdin_text=json.dumps(payload, ensure_ascii=False), project=project)
     except Exception as e:  # TransformFailure / TransformTimeout / provider refusal: the call did not happen
         _log(f'[desk] storyboard chat failed: {e}', flush=True)
         raise PieceError(f'the model call failed, so nothing was changed: {e}', 502)

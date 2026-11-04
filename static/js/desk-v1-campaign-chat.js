@@ -12,7 +12,7 @@
 // opts: { campaign, agentRef, agentName, selection:{scope,id,label}, onScopeClick,
 //         onSuggested() }
 //
-// A turn is the agent's PROSE. This version changes nothing by itself: when the
+// A turn is the agent's PROSE, plus saved dispatch receipts/results when used. When the
 // agent proposes pieces, times or a placement the SERVER saves them as suggestions
 // (the existing M10 store) and the answer says so; the chip under the reply and the
 // status line are written from that answer, never by this file. The box empties on send and a
@@ -40,6 +40,7 @@
 
   // ── Markup ─────────────────────────────────────────────────────────────────
   function _turnHTML(t, agentName) {
+    if (t.dispatch && window.DeskV1Dispatch) return window.DeskV1Dispatch.card(t);
     const tag = t.scope && t.scope.label ? ` · ${esc(t.scope.label)}` : '';
     if (t.role === 'user') {
       return `<div class="desk-v1-chat-turn desk-v1-chat-user" data-chat-turn="user"><div class="desk-v1-chat-meta">You${tag}</div><div class="desk-v1-chat-text">${esc(t.text)}</div></div>`;
@@ -57,8 +58,10 @@
     const name = opts.agentName;
     const rows = st.turns.map((t) => _turnHTML(t, name));
     if (st.pending) {
-      rows.push(`<div class="desk-v1-chat-turn desk-v1-chat-user" data-chat-turn="user" data-chat-pending><div class="desk-v1-chat-meta">You${st.pending.scope && st.pending.scope.label ? ` · ${esc(st.pending.scope.label)}` : ''}</div><div class="desk-v1-chat-text">${esc(st.pending.text)}</div></div>`);
-      rows.push(`<div class="desk-v1-chat-turn desk-v1-chat-agent desk-v1-chat-thinking" data-chat-thinking><div class="desk-v1-chat-meta">${esc(name)}</div><div class="desk-v1-chat-text">Thinking…</div></div>`);
+      if (!st.turns.some((t) => t.role === 'user' && t.text === st.pending.text && !st.pending.priorIds.has(t.id))) {
+        rows.push(`<div class="desk-v1-chat-turn desk-v1-chat-user" data-chat-turn="user" data-chat-pending><div class="desk-v1-chat-meta">You${st.pending.scope && st.pending.scope.label ? ` · ${esc(st.pending.scope.label)}` : ''}</div><div class="desk-v1-chat-text">${esc(st.pending.text)}</div></div>`);
+      }
+      rows.push(`<div class="desk-v1-chat-turn desk-v1-chat-agent desk-v1-chat-thinking" data-chat-thinking><div class="desk-v1-chat-meta">${esc(name)}</div><div class="desk-v1-chat-text">Thinking… Research calls can take up to 8 minutes.</div></div>`);
     }
     host.innerHTML = rows.length ? rows.join('') : `<p class="desk-v1-chat-empty" data-chat-empty>${esc(_EMPTY)}</p>`;
     host.scrollTop = host.scrollHeight;
@@ -74,6 +77,7 @@
         <textarea class="agent-task-input desk-v1-posy-input" id="${INPUT_ID}" data-sb-ask rows="2" aria-label="Message ${name}" placeholder="Ask ${name} about the campaign, or brainstorm with them…"></textarea>
         <button type="button" class="btn-dispatch" data-posy-send="${INPUT_ID}">Send</button>
       </div>
+      ${window.DeskV1ProductMaterials.readsHTML(window.DeskV1Store.state().projects.find((p) => p.id === opts.campaign.projectId), opts.agentRef)}
     </div>`;
   }
 
@@ -112,11 +116,17 @@
     if (noAgent) ask.placeholder = 'Pick an agent for this campaign first.';
     ask.value = st.draft;
     const fit = () => { ask.style.height = 'auto'; if (ask.scrollHeight > 0) ask.style.height = Math.min(ask.scrollHeight + 2, 190) + 'px'; };
-    ask.addEventListener('input', () => { st.draft = ask.value; fit(); });
+    ask.addEventListener('input', () => {
+      // Only the current, editable composer owns the draft. Late input from a
+      // pending turn or a textarea retired by a repaint cannot revive it.
+      if (st.pending || !ask.isConnected || !_active || _active.box !== box) return;
+      st.draft = ask.value; fit();
+    });
     requestAnimationFrame(fit);
     const scopeBtn = box.querySelector('[data-scope-trigger]');
     if (scopeBtn && typeof opts.onScopeClick === 'function') scopeBtn.onclick = () => opts.onScopeClick(scopeBtn);
     _paint(box, opts);
+    if (window.DeskV1Dispatch) window.DeskV1Dispatch.watch(box, camp.id, st, () => _paint(box, opts));
 
     if (!st.loaded && !st.loading) {
       st.loading = true;
@@ -136,7 +146,7 @@
       if (scope) body.scope = scope;
       // The box empties the moment the message is sent: the pending "You" turn shows it.
       // A failed send puts it back, with the reason (below), so nothing typed is lost.
-      st.pending = { text, scope };
+      st.pending = { text, scope, priorIds: new Set(st.turns.map((t) => t.id)) };
       // Blur FIRST: an input method or dictation still composing in the box commits its text on blur,
       // and that commit would otherwise land after the clear below and put the sent message back.
       if (document.activeElement === ask) ask.blur();
@@ -145,12 +155,20 @@
       ask.disabled = true; sendBtn.disabled = true;
       _paint(box, opts);
       say(`Asking ${opts.agentName}…`, 'info');
-      const live = () => (_active && _active.box.isConnected ? _active : null);
-      let sent = true;   // false once the send failed: then the text is MEANT to come back
+      const live = () => (_active && _active.box.isConnected && _active.opts.campaign.id === camp.id ? _active : null);
       try {
         const res = await window.DeskV1Store.api('POST', `/api/desk/campaigns/${encodeURIComponent(camp.id)}/chat`, body);
+        // Retire the draft BEFORE onSuggested can mount another composer.
+        // The request was trimmed; clearing the draft is independent of any
+        // whitespace or late input left in either textarea.
+        st.draft = '';
+        ask.value = '';
         st.pending = null;
-        st.turns.push(...res.turns);
+        if (res.thread) st.turns = res.thread;
+        else {
+          const known = new Set(st.turns.map((t) => t.id));
+          st.turns.push(...res.turns.filter((t) => !known.has(t.id)));
+        }
         st.loaded = true;
         const last = res.turns[res.turns.length - 1];
         if (res.campaign) {
@@ -161,14 +179,22 @@
         const target = live() ? live().box.querySelector('[data-camp-chat-status]') : null;
         const line = last.suggested ? last.suggested.summary
           : last.suggest_error ? `${res.agent.name} answered. Not saved as suggestions: ${last.suggest_error}`
-            : `${res.agent && res.agent.name ? res.agent.name : 'The agent'} answered. Nothing was changed.`;
+            : res.thread ? `${res.agent.name} dispatched agents. Their results return here.`
+              : `${res.agent && res.agent.name ? res.agent.name : 'The agent'} answered. Nothing was changed.`;
         if (target) { target.textContent = line; target.dataset.kind = last.suggest_error ? 'error' : 'ok'; }
       } catch (err) {
         st.pending = null;
-        if (!st.draft) st.draft = text;   // a repaint of the box shows it too
+        st.draft = text;   // a repaint of the box shows the failed request too
         const target = live() ? live().box.querySelector('[data-camp-chat-status]') : null;
-        if (target) { target.textContent = `Nothing was changed: ${err && err.message ? err.message : err}. Your message is back in the box.`; target.dataset.kind = 'error'; }
-        sent = false;
+        if (target) { target.textContent = `The turn failed: ${err && err.message ? err.message : err}. Your message is back in the box. Check dispatched sessions before retrying.`; target.dataset.kind = 'error'; }
+        // A fast model failure can follow a successful launch before the first
+        // pending poll. Fetch its saved card even though the planner stopped.
+        if (window.DeskV1Dispatch) {
+          try { await window.DeskV1Dispatch.refresh(camp.id, st); }
+          catch (refreshError) {
+            if (target) target.textContent += ` Saved dispatches could not be read: ${refreshError && refreshError.message ? refreshError.message : refreshError}.`;
+          }
+        }
       } finally {
         // the box may have been repainted (a new element) while the agent was answering
         if (live()) {
@@ -177,10 +203,9 @@
           const b = live().box.querySelector('[data-posy-send]');
           if (f && live().opts.agentRef) {
             f.disabled = false; if (b) b.disabled = false;
-            // The box was disabled for the whole turn, so nothing new can have been typed: sent text
-            // sitting in it now is the sent message coming back (a late composition commit), not a new draft.
-            if (sent && f.value === text) { f.value = ''; st.draft = ''; f.style.height = 'auto'; }
-            if (!f.value && st.draft) { f.value = st.draft; f.dispatchEvent(new Event('input')); }
+            // State owns the result: empty on success, the request on failure.
+            f.value = st.draft;
+            f.dispatchEvent(new Event('input'));
             f.focus({ preventScroll: true });
           }
         }

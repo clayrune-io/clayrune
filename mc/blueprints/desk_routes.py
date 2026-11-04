@@ -48,6 +48,7 @@ from mc import desk_harvest as _harvest
 from mc import desk_pieces as _pieces
 from mc import desk_publish as _publish
 from mc import desk_retro as _retro
+from mc import desk_research as _research
 from mc import desk_story as _story
 from mc import desk_story_chat as _story_chat
 from mc import desk_campaign_chat as _campaign_chat
@@ -56,11 +57,15 @@ from mc import desk_tick as _tick
 from mc import desk_voice_seed as _seed
 from mc.blueprints.secrets_routes import _require_human_passcode
 from mc.blueprints import desk_post_delete_routes
+from mc.blueprints import desk_campaign_restore_routes
+from mc.blueprints import desk_piece_duplicate_routes
 from mc.core import _log
 from mc.unattended import is_unattended_caller
 
 bp = Blueprint('desk_routes', __name__)
 bp.register_blueprint(desk_post_delete_routes.bp)
+bp.register_blueprint(desk_campaign_restore_routes.bp)
+bp.register_blueprint(desk_piece_duplicate_routes.bp)
 
 # -- wired by server.py (see wire()) ------------------------------------------
 load_projects: Callable[[], list] = None  # type: ignore[assignment]
@@ -153,7 +158,9 @@ def _valid_agent_ref(project: dict, ref: str) -> bool:
 
 @bp.route('/api/desk/presence/<project_id>', methods=['GET'])
 def get_presence(project_id):
-    return jsonify(_desk.get_presence(project_id) or {'project_id': project_id, 'desk_agent': None})
+    from mc.desk_product_context import presence_materials
+    return jsonify(presence_materials(load_project(project_id) if load_project else None,
+                                     _desk.get_presence(project_id) or _desk._empty_presence(project_id)))
 
 
 @bp.route('/api/desk/presence/<project_id>', methods=['PATCH'])
@@ -164,11 +171,17 @@ def patch_presence(project_id):
     if not project:
         return jsonify({'error': 'project not found'}), 404
     d = request.get_json(silent=True) or {}
-    # Only `desk_agent` and `state` are writable here. `upsert_presence` would
+    # Only planner, product docs and state are writable here. `upsert_presence` would
     # take any key, including `budget`, whose earmark bounds are enforced
     # elsewhere — this route must not become a way around them.
-    if set(d) - {'desk_agent', 'state'}:
-        return jsonify({'error': 'only desk_agent and state may be set here'}), 400
+    if not isinstance(d, dict) or set(d) - {'desk_agent', 'state', 'product_docs'}:
+        return jsonify({'error': 'only desk_agent, state and product_docs may be set here'}), 400
+    from mc.desk_product_context import presence_materials, validate_product_docs
+    if 'product_docs' in d:
+        try:
+            d['product_docs'] = validate_product_docs(d['product_docs'], project)
+        except (ValueError, TypeError) as e:
+            return jsonify({'error': str(e)}), 400
     if 'state' in d and d['state'] not in _desk.PROJECT_STATES:
         return jsonify({'error': f"state must be one of {list(_desk.PROJECT_STATES)}"}), 400
     if d.get('desk_agent') is not None:
@@ -177,14 +190,15 @@ def patch_presence(project_id):
             return jsonify({'error': f'unknown agent {ref!r} — pick one from '
                                       f'/api/characters?project_id={project_id}'}), 400
     if 'state' not in d:
-        return jsonify(_desk.upsert_presence(project_id, d))
+        return jsonify(presence_materials(project, _desk.upsert_presence(project_id, d, project=project)))
     # Pausing/resuming a project cascades to its campaigns in the same write
     # (R1-W S1), so the state never lands without them. `desk_agent`, if sent
     # too, is merged first so one request is one outcome.
-    if 'desk_agent' in d:
-        _desk.upsert_presence(project_id, {'desk_agent': d['desk_agent']})
+    fields = {k: v for k, v in d.items() if k != 'state'}
+    if fields:
+        _desk.upsert_presence(project_id, fields, project=project)
     result = _desk.set_project_state(project_id, d['state'])
-    return jsonify(dict(result['presence'], cascade={
+    return jsonify(dict(presence_materials(project, result['presence']), cascade={
         'campaigns': result['campaigns'], 'changed': result['changed'],
         'held': result['held']}))
 
@@ -855,6 +869,7 @@ def materials():
 # and no piece. Multipart `file` (+ optional `title`); 201 with the library item.
 @bp.route('/api/desk/materials', methods=['POST'])
 def save_material():
+    request.max_content_length = max(_pieces.MAX_UPLOAD_BYTES.values()) + 1024 * 1024
     f = request.files.get('file')
     if f is None:
         return jsonify({'error': 'a file is required'}), 400
@@ -883,10 +898,14 @@ def _storyboard_call(fn, *args, status=200):
 
 
 def _storyboard_picture(owner_kind: str, owner_id: str):
+    # Scene clips use the same bounded writer as piece uploads (500 MB video),
+    # so the app's smaller default body cap must not reject them first.
+    request.max_content_length = max(_pieces.MAX_UPLOAD_BYTES.values()) + 1024 * 1024
     f = request.files.get('file')
     if f is None:
         return jsonify({'error': 'a file is required'}), 400
-    return _storyboard_call(_storyboard.save_picture, owner_kind, owner_id, f.filename or '', f.stream, status=201)
+    return _storyboard_call(_storyboard.save_picture, owner_kind, owner_id, f.filename or '', f.stream,
+                            f.mimetype or '', status=201)
 
 
 @bp.route('/api/desk/pieces/<piece_id>/storyboard', methods=['GET'])
@@ -928,6 +947,7 @@ def upload_studio_storyboard_picture(item_id):
 _story.register(bp, lambda pid: load_project(pid) if load_project else None)
 _story_chat.register(bp, lambda pid: load_project(pid) if load_project else None)
 _campaign_chat.register(bp, lambda pid: load_project(pid) if load_project else None)
+_research.register(bp, lambda pid: load_project(pid) if load_project else None)
 
 
 # ── Workspace accounts (R1-W S5; plan M2-M5, §2.C) ────────────────────────────

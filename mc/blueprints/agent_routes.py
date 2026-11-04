@@ -50,10 +50,12 @@ _get_mem_write_lock or writes MEMORY.md.
 
 import concurrent.futures
 import contextlib
+from mc import codex_run_error as _codex_run_error  # MC-1147: rollout error as the failure summary
 from mc import empty_turn as _empty_turn
 from mc import mid_turn_send as _mid_turn_send  # MC-1086: steer / queue / interrupt routing
 from mc import triggered_turns as _triggered_turns  # seed-line label for non-human turns
 from mc import engine_selection
+from mc.hivemind_worker import RosterRecoveryHeld, revive_roster_worker
 from mc import provider_preferences as _provider_preferences
 from mc import provider_env_scope as _provider_env_scope  # saved keys stay with their provider
 from mc import launch_marker as _launch_marker  # per-launch unattended marker (fence fail-open, MC-1040)
@@ -121,9 +123,12 @@ import mc.skill_scoping as _skill_scoping  # per-agent skill scoping
 import mc.agent_worktree as _agent_worktree  # per-agent worktree isolation (b264200a)
 import mc.agent_worktree_followup as _agent_worktree_followup  # MC-1081: follow-up into a removed worktree
 import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§9.6)
+from mc import native_followup_context as _native_followup_context
 import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends §9.6's split)
+import mc.turn_clock as _turn_clock          # per-turn "Now ... since your last reply" stamp + gap briefing
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
 import mc.midturn_rollover as _midturn  # mid-turn context rollover bookkeeping
+import mc.long_job_guidance as _long_job_guidance  # MC-1149: long jobs -> /job route, every engine
 import mc.resume_target as _resume_target  # unresumable `-r` ids: heal, don't loop
 from mc import habit_report as _habit_report  # MC-964 Step E report mode (human messages at send time)
 from mc import log_lines_trim as _log_lines_trim  # log_lines cap that keeps user lines
@@ -136,6 +141,8 @@ from mc.delegation_transcript_reconcile import TranscriptReconciler
 from mc.blueprints.delegation_report_routes import register_routes as _register_report_routes
 import mc.desk_connect.custom_package_manifest as _custom_package_manifest  # MC-1054: detect-only file drift of approved npm MCPs
 import mc.agent_jobs as _agent_jobs  # MC-958 follow-up: engine-agnostic background command jobs
+import mc.clayrune_mcp.fence_parity as _fence_parity  # BUILTINS-7a: job route obeys the unattended fence
+import mc.session_mcp_config as _session_mcp_config  # BUILTINS-7a: first-party `clayrune` MCP server
 import mc.caller_attribution as _caller_attribution  # backlog 40260b57: who is really calling dispatch
 import mc.dispatch_lineage as _dispatch_lineage  # MC-1082: attributed caller recorded as the spawner
 import mc.memory_push as _memory_push      # MC-944 mid-task memory push observer, report mode
@@ -708,6 +715,7 @@ def _mcp_server_catalog(project):
     except Exception:
         pass
     catalog.setdefault('engram', dict(_ENGRAM_MCP_SPEC))
+    _session_mcp_config.add_to_catalog(catalog, project, state.CONFIG)
     return catalog
 
 
@@ -775,9 +783,14 @@ def _runtime_mcp_config_json(project, provider_name):
     (`mcp.collect_effective_servers_for_project`), and an opted-in set is
     converted to that shape too: both are gemini-cli-shaped consumers and
     read a bare `url` as SSE (createTransport), so Claude's
-    `{"type":"http","url"}` would connect with the wrong transport. Other
-    runtimes: unchanged."""
+    `{"type":"http","url"}` would connect with the wrong transport.
+    Codex/OpenCode/Goose/Kiro receive canonical server definitions through
+    session_mcp_launch; each translates them at its own launch boundary.
+    Aider remains unchanged."""
     resolved = _resolve_project_mcp_config(project)
+    from mc import session_mcp_launch
+    if provider_name in session_mcp_launch.VENDORS:
+        return session_mcp_launch.resolve(project or {}, resolved, state.CONFIG)
     if provider_name not in ('qwen', 'gemini'):
         return resolved or ''
     try:
@@ -785,6 +798,7 @@ def _runtime_mcp_config_json(project, provider_name):
         if resolved is None:
             servers = _mcp_mod.collect_effective_servers_for_project(
                 (project or {}).get('project_path') or None)
+            _session_mcp_config.add_to_effective_servers(servers, project, state.CONFIG)
         else:
             servers = {
                 name: _mcp_mod._to_gemini_config(_mcp_mod._infer_transport(cfg), cfg)
@@ -828,7 +842,8 @@ def _build_claude_flags(project=None, streaming=False, model_override=None,
         'claude', state.CONFIG, project, override=model_override)
     effort, _effort_source = engine_selection.resolve_effort(
         state.CONFIG, project, override=effort_override, provider='claude')
-    return _agent_runtime.get_runtime('claude').build_command(
+    resolved_mcp = _resolve_project_mcp_config(project)
+    flags = _agent_runtime.get_runtime('claude').build_command(
         model=model,
         max_turns=(max_turns_override if max_turns_override is not None
                    else state.CONFIG.get('agent_max_turns', 0)),
@@ -840,10 +855,12 @@ def _build_claude_flags(project=None, streaming=False, model_override=None,
             state.CONFIG.get('agent_remote_control', False)
         ),
         effort=effort,  # pyright: ignore[reportCallIssue]  # moved-verbatim typing debt (1.12)
-        mcp_config_json=_resolve_project_mcp_config(project) or '',  # pyright: ignore[reportCallIssue]  # moved-verbatim typing debt (1.12)
+        mcp_config_json=resolved_mcp or '',  # pyright: ignore[reportCallIssue]  # moved-verbatim typing debt (1.12)
         partial_messages=bool(state.CONFIG.get('activity_states_enabled', False)),  # pyright: ignore[reportCallIssue]
         skill_overrides=_skill_overrides_for(project, character_skills),  # pyright: ignore[reportCallIssue]
     )[1:]  # strip binary — _build_claude_flags() contract is flags-only
+    # Untrimmed project: add the first-party `clayrune` server without strict mode.
+    return _session_mcp_config.claude_additive_flags(project, resolved_mcp, state.CONFIG) + flags
 
 
 def _skill_overrides_for(project, character_skills):
@@ -1003,10 +1020,16 @@ def _context_fingerprint(project):
             h.update(f'{p}|{st.st_mtime_ns}|{st.st_size}|'.encode('utf-8', 'replace'))
         except OSError:
             h.update(f'{p}|-|'.encode('utf-8', 'replace'))
-    def listing(d):
+    def listing(d, recursive=False, markdown_only=False):
         try:
             for n in sorted(os.listdir(d)):
+                if markdown_only and not Path(n).match('*.md'):
+                    continue
                 stamp(os.path.join(d, n))
+            if recursive:
+                # Character resolution also finds nested community-pack files.
+                for path in sorted(Path(d).rglob('*.md')):
+                    stamp(str(path))
         except OSError:
             h.update(f'{d}|-|'.encode('utf-8', 'replace'))
 
@@ -1018,15 +1041,16 @@ def _context_fingerprint(project):
             # The index and the working state, which every prompt carries.
             stamp(str(mp))
             stamp(str(Path(mp).parent / 'continuity.md'))
-            # Positions are a whole class of prompt content; the dir stamp
-            # catches one being added, edited or forgotten.
-            listing(str(Path(mp).parent))
+            # All note/position/archive inputs, matching _mem_corpus's *.md
+            # scan. Retrieval's JSON/SQLite telemetry is output, not setup;
+            # stamping it would invalidate the stash on every memory search.
+            listing(str(Path(mp).parent), markdown_only=True)
     except Exception:
         pass
     if pp:
         stamp(os.path.join(pp, 'AGENT_RULES.md'))
         listing(os.path.join(pp, '.claude', 'skills'))
-        listing(os.path.join(pp, '.claude', 'agents'))
+        listing(os.path.join(pp, '.claude', 'agents'), recursive=True)
     # The wired path, not a derived one: SHARED_RULES.md is read verbatim into
     # every agent's prompt on every project, so guessing its location here would
     # silently stop noticing edits to the single most widely-injected file.
@@ -1038,7 +1062,7 @@ def _context_fingerprint(project):
         import mc.skills as _sk
         from mc import characters as _ch
         listing(str(_sk.GLOBAL_SKILLS_DIR))
-        listing(str(_ch.GLOBAL_AGENTS_DIR))
+        listing(str(_ch.GLOBAL_AGENTS_DIR), recursive=True)
     except Exception:
         pass
     # Config values that reach the prompt directly.
@@ -1079,6 +1103,10 @@ def _fresh_context_for(project, session, task=''):
     bare way had MEMORY and rules injected back into it, which is the one thing
     incognito exists to prevent.
     """
+    from mc.hivemind_worker import pinned_context
+    pinned = pinned_context(session)
+    if pinned is not None:
+        return pinned
     body, name, sk = '', '', []
     try:
         body, name, sk = _session_character_parts(project, session)
@@ -1117,6 +1145,10 @@ def _respawn_sysprompt_args(session, project, task=''):
     never. Best-effort throughout: a rebuild failure degrades to reusing the
     stash, and a missing stash to a context-less resume — never a blocked turn.
     """
+    from mc.hivemind_worker import pinned_context
+    pinned = pinned_context(session)
+    if pinned is not None:
+        return _sysprompt_file_args(pinned)
     context = (session or {}).get('_system_prompt') or ''
     fp = ''
     try:
@@ -1625,10 +1657,10 @@ def _worktree_merge_back_on_end(session, _attempt=0):
             _log_agent_activity(
                 pid, f'Agent worktree needs manual merge ({status}): '
                      f'branch {_agent_worktree.branch_name(sid)} — {detail[:120]}')
-        elif status == 'awaiting_review':
+        elif status in ('awaiting_review', 'awaiting_standards'):
             # MC-1075 merge review gate: branch and worktree stay; nothing merged.
             _log_agent_activity(
-                pid, f'Agent branch awaiting review ({sid[:8]}): '
+                pid, f'Agent branch {status} ({sid[:8]}): '
                      f'branch {_agent_worktree.branch_name(sid)} — {detail[:160]}')
     except Exception as e:
         _log(f"[worktree] merge-back failed for {sid[:12]}: {e}")
@@ -1773,7 +1805,7 @@ def _job_on_complete(result):
 
 
 @bp.route('/api/project/<project_id>/agent/<session_id>/job', methods=['POST'])
-def agent_job_start(project_id, session_id, *, job_data=None):
+def agent_job_start(project_id, session_id, *, job_data=None, completion_hook=None):
     """MC-958 follow-up (backlog b49cf71f): run a command as a real OS
     subprocess Clayrune owns, for engines with no background-job facility of
     their own (Codex/Gemini/Qwen -- see the context note in
@@ -1818,6 +1850,7 @@ def agent_job_start(project_id, session_id, *, job_data=None):
                 'until jobs can be sandboxed the same way. Run the command '
                 'directly in this turn instead.'}), 403
         default_cwd = _session_cwd(sess, pp)
+        fence_armed = job_data is None and _fence_parity.armed(sess, state.CONFIG)
 
     data = job_data if job_data is not None else (request.get_json() or {})
     command = (data.get('command') or '').strip()
@@ -1827,6 +1860,15 @@ def agent_job_start(project_id, session_id, *, job_data=None):
     cwd = (data.get('cwd') or '').strip() or default_cwd
     if not cwd or not Path(cwd).is_dir():
         return jsonify({'error': 'cwd is not a directory'}), 400
+
+    if fence_armed:
+        # An unattended session's own shell is fenced; this route is a shell it
+        # reaches without a Bash hook (MCP tool, or a curl body the fence only
+        # read as text). Same classifier, same verdict, for every caller.
+        blocked, reason = _fence_parity.check_command(command, cwd, pp)
+        if blocked:
+            return jsonify({'error': f'blocked by the unattended fence: {reason}',
+                            'fence_blocked': True}), 403
 
     cap = state.CONFIG.get('background_wait_max_minutes',
                            _agent_jobs.DEFAULT_TIMEOUT_MINUTES)
@@ -1848,11 +1890,16 @@ def agent_job_start(project_id, session_id, *, job_data=None):
             timeout_minutes=timeout_minutes, log_dir=_job_log_dir(), shell=raw_shell,
             popen_flags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
             kill_fn=lambda proc: _kill_pid(proc.pid, tree=True),
-            on_complete=_job_on_complete)
+            on_complete=completion_hook or _job_on_complete)
     except _agent_jobs.ShellResolutionError as e:
         return jsonify({'error': str(e)}), 400
-    _register_process(job['proc'], f"job {job['job_id'][:8]}", 'agent_job',
-                      session_id, project_id, command)
+    try:
+        _register_process(job['proc'], f"job {job['job_id'][:8]}", 'agent_job',
+                          session_id, project_id, command)
+    except Exception:
+        _kill_pid(job['pid'], tree=True)
+        job['proc'].wait(timeout=10)
+        raise
     return jsonify({'job_id': job['job_id'], 'pid': job['pid'],
                     'shell': job['shell'], 'shell_note': job['shell_note']})
 
@@ -4138,6 +4185,8 @@ Base: http://localhost:{port}  ·  project_id: {pid}
 - Find a doc (incl. gitignored docs + _journal, invisible from a worktree):
   GET /api/project/{pid}/docs/search?q=<question>&limit=5
 - Schedules: GET /api/schedules · POST /api/schedules {{"project_id":"{pid}","task":"...",...}}
+- Engine headroom (choose an engine from this, not from a past failed run):
+  GET /api/engine/preferences -> providers[].allowance
 
 This is NOT the full API. Guessing an endpoint name instead of checking is
 the failure this card replaces — before you curl-probe or guess, Read
@@ -4925,7 +4974,7 @@ def _roster_block(project, port, session_id=''):
 
 def _build_agent_context(project, incognito=False, task='', character_body='',
                          character_name='', session_id='', character_skills=None,
-                         source='', provider='', model='', job_shape=''):
+                         source='', provider='', model='', job_shape='', consumer_unattended=None):
     """Build system prompt context for the agent.
 
     `job_shape` ('conversation' | 'task', backlog 8ead5755) is the caller's
@@ -5243,21 +5292,15 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # one process per turn and exit at turn end (no run_in_background tool),
     # so a shell `&` job is orphaned with nothing to wake the session -- tell
     # the agent the real options instead of letting it discover the silent
-    # failure by trying to background a command itself. Needs a session_id to
-    # address, and incognito sessions can't take a job endpoint response.
-    if not _runtime_caps.background_jobs and session_id and not incognito:
-        parts.append(
-            "You have no background-job facility of your own -- your process "
-            "exits when this turn ends, so backgrounding a command with `&` "
-            "orphans it and nothing wakes you when it finishes. For a long "
-            "command, either run it in the foreground within your tool's own "
-            "timeout, or hand it to Clayrune: POST "
-            f"http://localhost:{port}/api/project/{pid}/agent/{session_id}/job "
-            '{"command":"...","timeout_minutes":optional,"shell":optional} — '
-            "runs on bash by default (any OS; \"powershell\"/\"cmd\"/\"sh\" also "
-            "accepted) — Clayrune runs it and delivers a follow-up turn into "
-            "this session with the exit code, duration and output tail when "
-            "it finishes.")
+    # failure by trying to background a command itself. MC-1149: EVERY
+    # engine, Claude included, is told that a job expected to outlive ~5 min
+    # goes to the server-owned job route, because a mid-turn rollover
+    # tree-kills the CLI and every run_in_background job under it. Text in
+    # mc/long_job_guidance.py. Needs a session_id to address, and incognito
+    # sessions can't take a job endpoint response.
+    if session_id and not incognito:
+        parts.append(_long_job_guidance.long_job_note(
+            port, pid, session_id, background_jobs=bool(_runtime_caps.background_jobs)))
 
     # Pointer card, not the full 19.9 KB reference — see
     # `_CLAYRUNE_API_POINTER_CARD` for the measured numbers. The full text
@@ -5285,13 +5328,16 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             # name this prompt just announced. None = a dispatched global
             # helper: it keeps no bucket, so it reads as an outsider.
             _cont_sess = agent_sessions.get(session_id) if session_id else None
+            from mc.session_provenance import origin_line
+            _cont_origin = origin_line(project['id'], session_id, source, _cont_sess)
             _cont_owner = agent_name
             if _cont_sess and _cont_sess.get('character'):
                 _cont_owner = _cont_session_owner(_cont_sess)
             if _cont_owner is None:
-                _cont = _render_cont(project, owner=agent_name, reader_owns=False)
+                _cont = _render_cont(project, owner=agent_name, reader_owns=False,
+                                     origin=_cont_origin)
             else:
-                _cont = _render_cont(project, owner=_cont_owner)
+                _cont = _render_cont(project, owner=_cont_owner, origin=_cont_origin)
             if _cont:
                 parts.append(_cont)
         except Exception as e:
@@ -5328,13 +5374,16 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # curation of the PROJECT's memory, not this task's job — and the block
     # itself already self-disables for unattended trigger types, which a
     # dispatched worker's session effectively is.
+    _explicit_unattended = consumer_unattended is True
+    consumer_unattended = bool(consumer_unattended or _distiller.is_unattended_task(task))
     if not incognito and not _task_shape and state.CONFIG.get('memory_mint_triggers_enabled', False):
         try:
             from mc.memory import unresolved_mint_block as _render_mint
             _mint_trigger_type = ((agent_sessions.get(session_id) or {}).get('trigger_type', '')
                                    if session_id else '')
             _mint_block = _render_mint(
-                project, task=task, trigger_type=_mint_trigger_type, incognito=incognito)
+                project, task=task, trigger_type='schedule' if _explicit_unattended else _mint_trigger_type,
+                incognito=incognito)
             if _mint_block:
                 parts.append(_mint_block)
         except Exception as e:
@@ -5354,8 +5403,8 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             _ledger_trigger_type = ((agent_sessions.get(session_id) or {}).get('trigger_type', '')
                                      if session_id else '')
             _ledger_block = _render_ledger(
-                project, task=task, trigger_type=_ledger_trigger_type,
-                consumer_unattended=_distiller.is_unattended_task(task))
+                project, task=task, trigger_type='schedule' if _explicit_unattended else _ledger_trigger_type,
+                consumer_unattended=consumer_unattended)
             if _ledger_block:
                 parts.append(_ledger_block)
         except Exception as e:
@@ -5372,7 +5421,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
                 int(state.CONFIG.get('read_floor_topk', 6) or 6),
                 expand=int(state.CONFIG.get('read_floor_link_expand', 2) or 0),
                 record='read_floor',  # phase-4 delivery telemetry
-                consumer_unattended=_distiller.is_unattended_task(task))
+                consumer_unattended=consumer_unattended)
         except Exception as e:
             # Was a bare `pass`. The read floor is the ONLY retrieval channel that
             # actually runs — agents open a memory file in 5% of sessions — so a
@@ -5435,8 +5484,9 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             expl = _distiller.exploration_read_floor(
                 project['id'], task,
                 int(state.CONFIG.get('exploration_read_floor_topk', 2) or 2),
-                consumer_unattended=_distiller.is_unattended_task(task))
-        except Exception:
+                consumer_unattended=consumer_unattended)
+        except Exception as e:
+            _log(f"[read-floor] {project.get('id')}: exploration search failed: {e}")
             expl = []
         if expl:
             el = "\n".join(
@@ -5479,8 +5529,8 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # the lean-profile failure mode above, just triggered by shape instead.
     log = project.get('activity_log', [])[:3]
     if log and _full_context and not _task_shape:
-        lines = [f"  - {e.get('ts','')}: {e.get('msg','')}" for e in log]
-        parts.append("Recent activity:\n" + "\n".join(lines))
+        from mc.session_provenance import recent_activity
+        parts.append(recent_activity(log, session_id))
 
     # Recent conversations — read directly from .jsonl transcripts so interrupted
     # sessions (never reached completion log) are still discoverable. Display the
@@ -5513,8 +5563,8 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
                 csid = e.get('claude_session_id', '')
                 if csid and csid not in log_by_csid:
                     log_by_csid[csid] = e.get('status', '')
-        except Exception:
-            pass
+        except Exception as e:
+            _log(f"[context] {project.get('id')}: conversation status log read failed: {e}")
         sess_lines = []
         for c in convos:
             sid = c['session_id']
@@ -5962,6 +6012,7 @@ def _read_agent_stream(proc, session):
                     _note_activity_state(session, msg)
                     continue
                 if msg_type == 'assistant' and isinstance(msg.get('message'), dict):
+                    _turn_clock.note_reply(session)   # elapsed-since-last-reply clock (mc/turn_clock.py)
                     _note_call_context_tokens(session, msg['message'], msg.get('parent_tool_use_id'))
                     # First assistant output proves a `-r` resume loaded OK (not a
                     # fragile resume that dies instantly), so a LATER process death
@@ -6106,6 +6157,7 @@ def _read_agent_stream(proc, session):
                             _tresult_text = _extract_tool_result_text(_block)
                             _observe_memory_push_result(session, _tname, _tresult_text)
                             _midturn.note_tool_result_text(session, _tname, _tresult_text)
+                            _midturn.note_bg_job_result(session, _tuid, _tname, _tresult_text)
                         if _midturn.note_tool_results(session, msg['message'].get('content')):
                             _maybe_midturn_roll(session, my_proc)
                 elif msg_type == 'result':
@@ -6255,6 +6307,7 @@ def _read_agent_stream_b(proc, session):
                     _note_activity_state(session, msg)
                     continue
                 if msg_type == 'assistant' and isinstance(msg.get('message'), dict):
+                    _turn_clock.note_reply(session)   # elapsed-since-last-reply clock (mc/turn_clock.py)
                     if not msg.get('parent_tool_use_id'):
                         _note_self_started_turn(session)
                     _note_call_context_tokens(session, msg['message'], msg.get('parent_tool_use_id'))
@@ -6391,6 +6444,7 @@ def _read_agent_stream_b(proc, session):
                             _tresult_text = _extract_tool_result_text(_block)
                             _observe_memory_push_result(session, _tname, _tresult_text)
                             _midturn.note_tool_result_text(session, _tname, _tresult_text)
+                            _midturn.note_bg_job_result(session, _tuid, _tname, _tresult_text)
                         if _midturn.note_tool_results(session, msg['message'].get('content')):
                             _maybe_midturn_roll(session, my_proc)
                 elif msg_type == 'result':
@@ -6553,7 +6607,7 @@ def _auto_recover_failed_resume(session):
             _sysprompt_cleanup(_sp_path, proc)
             initial_msg = json.dumps({
                 "type": "user",
-                "message": {"role": "user", "content": fresh_task}
+                "message": {"role": "user", "content": _clock_wrap(p, session, fresh_task, task)}
             }) + '\n'
             proc.stdin.write(initial_msg)  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
             proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
@@ -6580,7 +6634,7 @@ def _auto_recover_failed_resume(session):
         else:
             # Mode A
             _sp_args, _sp_path = _sysprompt_file_args(context)
-            cmd = [_resolve_claude(), '-p', fresh_task, *_build_claude_flags(p,
+            cmd = [_resolve_claude(), '-p', _clock_wrap(p, session, fresh_task, task), *_build_claude_flags(p,
                    model_override=_continuation_model(session, p),
                    effort_override=_continuation_effort(session),
                    character_skills=_session_skills(p, session)),
@@ -7446,7 +7500,7 @@ def _transcript_buffer_lines_and_ts(project_path, claude_sid, user_label, max_me
         _log(f"[transcript-render] failed: {e}")
         return [], []
 
-def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=True):
+def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=True, role_context=None):
     """Revive a finalized/purged session by spawning a fresh process with -r <claude_session_id>.
 
     Looks up the most recent agent_log entry whose session_id matches; if it has a
@@ -7484,6 +7538,9 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
     entry = next((e for e in log if e.get('session_id') == session_id), None)
     if not entry:
         return None
+    if entry.get('character_ref'):
+        from mc.hivemind_worker import revive_roster_worker
+        return revive_roster_worker(entry, p, message)
     revive_project_generation = entry.get('project_generation', 1)
     _assert_runtime_project_generation(
         project_id, revive_project_generation, incognito=bool(entry.get('incognito')))
@@ -7594,7 +7651,11 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
     # own resolution used, so the outcome matches without the extra plumbing.
     _revive_job_shape = _context_profile.resolve_job_shape(
         _revive_source, entry.get('job_shape', ''))
+    from mc.session_provenance import note_resume
+    note_resume(project_id, session_id, claude_sid)
     if _af_reason:
+        from mc.session_provenance import note_rollover
+        note_rollover(project_id, session_id, claude_sid)
         context = _build_agent_context(p, incognito=_revive_incognito, task=message or '',
                                        character_body=_revive_char_body,
                                        character_name=_revive_char_name,
@@ -7608,6 +7669,9 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             reason=_af_reason, detail=_af_detail)
         _log_agent_activity(project_id, _activity_line)
         revival_msg = f"{_handoff_text}\n\n{message}"
+        if role_context is not None:
+            from mc.steward_role_dispatch import marker_first
+            revival_msg = marker_first(revival_msg)
     else:
         resume_flags = ['-r', claude_sid]
     if context is None:
@@ -7641,6 +7705,18 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
     # (revival time), unlike the restored history above them which carries
     # its own real per-line dates.
     seed_ts = history_ts + [now_iso(), now_iso()]
+
+    # Elapsed since the agent last spoke -- a revive is exactly the "9 hours
+    # later" case. Read from the restored transcript; when that was skipped
+    # (too large to resume) fall back to the durable agent_log rows. Done once
+    # here so Mode A (`-p revival_msg`) and Mode B (stdin) both carry it.
+    _clock_sess = {'session_id': session_id, 'project_id': project_id,
+                   '_agent_cwd': _revive_cwd}
+    _turn_clock.seed_from_history(_clock_sess, history_lines, history_ts)
+    if _turn_clock.last_reply_epoch(_clock_sess) is None:
+        _turn_clock.seed_from_log_entries(
+            _clock_sess, [e for e in log if e.get('session_id') == session_id])
+    revival_msg = _clock_wrap(p, _clock_sess, revival_msg, message)
 
     if use_streaming:
         cmd = [_resolve_claude(), *resume_flags,
@@ -7753,13 +7829,18 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         # seed the conversation's delivered-set with the SAME text so those
         # facts aren't treated as new and resent on a later live follow-up.
         _memory_turn.seed_delivered(p, session, message)
+        _turn_clock.copy_reply(_clock_sess, session)   # stamp computed above
         stdin_msg = json.dumps({"type": "user", "message": {"role": "user", "content": revival_msg}}) + '\n'
-        with session['stdin_lock']:
-            try:
-                proc.stdin.write(stdin_msg)  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
-                proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
-            except Exception as e:
-                session['log_lines'].append(f'[stdin write error on revive: {e}]')
+        if role_context is not None:
+            from mc.steward_role_dispatch import _append_ack
+            _append_ack(session, revival_msg)
+        else:
+            with session['stdin_lock']:
+                try:
+                    proc.stdin.write(stdin_msg)  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
+                    proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
+                except Exception as e:
+                    session['log_lines'].append(f'[stdin write error on revive: {e}]')
         _log(f"[revive] {project_id}: Mode B revived session {session_id} via -r {claude_sid[:12]}")
         return session
 
@@ -7841,6 +7922,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         agent_sessions[session_id] = session
         mgr.session_ids.add(session_id)
     _write_usage_breakdown_turn_start_checkpoint(session)   # see Mode B above
+    _turn_clock.copy_reply(_clock_sess, session)   # stamp computed above
     threading.Thread(target=_read_agent_stream, args=(proc, session), daemon=True).start()
     _log(f"[revive] {project_id}: Mode A revived session {session_id} via -r {claude_sid[:12]}")
     return session
@@ -7877,7 +7959,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
 _COLD_RESUMABLE_PROVIDERS = {'codex', 'qwen', 'gemini'}
 
 
-def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, carry_notify=True):
+def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, carry_notify=True, role_context=None):
     """Continue (or, for a provider with no cold resume, restart) a dead
     non-Claude conversation (MC-929; cold-resume support added 2026-09-16,
     extended to gemini W4/MC-947 2026-09-18).
@@ -7905,6 +7987,9 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
         return None
     entries.sort(key=lambda e: e.get('ts', ''))
     entry = entries[-1]
+    if entry.get('character_ref'):
+        from mc.hivemind_worker import revive_roster_worker
+        return revive_roster_worker(entry, p, message)['session_id']
     if entry.get('claude_session_id'):
         return None  # the Claude -r path owns this one
     provider = (entry.get('provider') or '').lower()
@@ -7963,18 +8048,41 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
                                  source=entry.get('source') or '',
                                  notify_session=_revive_notify_session,
                                  notify_workflow=_revive_notify_workflow,
-                                 spawned_by=_revive_spawned_by)
+                                 spawned_by=_revive_spawned_by,
+                                 **({'prepared_context': role_context, 'preserve_model': True}
+                                    if role_context is not None else {}))
     except Exception as e:
         _log(f"[revive-non-claude] {project_id}: dispatch failed: {e}")
         return None
     return session_id
 
 
-def _revive_parent_for_delegation(project_id, session_id, message, p):
+def _callback_echoes_to_sender(parent_notify, sender_sid):
+    """True when finishing the turn that delivers `sender_sid`'s callback would
+    notify `sender_sid` straight back (backlog 95592335).
+
+    Two sessions that are each other's spawner (Dave dispatched Sol_Tobin, and
+    Sol_Tobin's follow-up named Dave as its `notify_session`) wake each other
+    for ever: every callback-delivered turn ends, fires its own completion
+    callback at the session that just reported, and that one does the same. A
+    turn the callback itself started carries no new work for the sender; the
+    sender hears this session's real answers through an explicit follow-up
+    (which re-arms through `_rearm_notify_for_new_turn`, untouched)."""
+    sender = (sender_sid or '').strip()
+    return bool(sender) and sender == (parent_notify or '').strip()
+
+
+def _revive_parent_for_delegation(project_id, session_id, message, p, from_session_id=''):
     """Revive a missing parent only from exact saved native identity.
 
     Claude uses the existing transcript-aware revival primitive; Codex/Qwen use
     their provider runtime's native resume path. Neither branch fresh-dispatches.
+
+    `from_session_id` is the child whose callback this revive delivers. When it
+    is also the parent's own callback target the revive does not carry
+    `_notify_session` (see `_callback_echoes_to_sender`): a revive builds a
+    fresh session dict, so carrying it arms a completion callback for a turn
+    that only reacts to the sender's report.
     """
     try:
         entries = [e for e in _load_agent_log(project_id)
@@ -8006,6 +8114,15 @@ def _revive_parent_for_delegation(project_id, session_id, message, p):
         raise DeliveryBlocked(f'parent durable status {status or "unknown"} is not revivable')
     if entry.get('incognito'):
         raise DeliveryBlocked('private parent cannot receive delegated completion')
+    if entry.get('character_ref'):
+        try:
+            revived = revive_roster_worker(entry, p, message)
+        except RosterRecoveryHeld as exc:
+            raise DeliveryBlocked(str(exc)) from exc
+        return {'revived': True, 'parent_session_id': session_id,
+                'provider': revived['provider'], 'model': revived['model'],
+                'effort': revived['effort'],
+                'native_id': entry.get('claude_session_id') or entry.get('provider_session_id') or ''}
     provider = (entry.get('provider') or 'claude').strip().lower()
     native_id = (entry.get('claude_session_id') or '').strip() if provider == 'claude' else (entry.get('provider_session_id') or '').strip()
     if provider == 'claude':
@@ -8030,14 +8147,22 @@ def _revive_parent_for_delegation(project_id, session_id, message, p):
     scope = (ch.get('scope') or 'global').strip().lower()
     name = (ch.get('name') or '').strip()
     character = f'{scope}:{name}' if scope in ('global', 'project') and name else ''
+    parent_notify = (entry.get('spawned_by_session_id') or '').strip()
+    carry_notify = not _callback_echoes_to_sender(parent_notify, from_session_id)
+    if not carry_notify:
+        _log(f"[notify-spawner] revive of {session_id} for a callback from "
+             f"{from_session_id}: not carrying _notify_session, it would echo "
+             f"the callback back to the sender", flush=True)
     try:
         if provider == 'claude':
-            # carry_notify defaults True: this revive is delivering a
-            # dispatch's OWN completion callback to a dead parent, not a
-            # human continuing a chat, so it must keep the parent's own
-            # `_notify_session` intact (MC-970's carry_notify=False rule is
-            # for /agent/send and agent_followup only).
-            revived = _revive_from_agent_log(project_id, session_id, message, p)
+            # carry_notify is True unless the sender is the parent's own
+            # callback target: this revive is delivering a dispatch's OWN
+            # completion callback to a dead parent, not a human continuing a
+            # chat, so it must keep the parent's own `_notify_session` intact
+            # (MC-970's carry_notify=False rule is for /agent/send and
+            # agent_followup only) -- except for the A<->B echo above.
+            revived = _revive_from_agent_log(project_id, session_id, message, p,
+                                             carry_notify=carry_notify)
             if not revived:
                 raise DeliveryBlocked('Claude parent could not be safely revived')
         else:
@@ -8052,7 +8177,7 @@ def _revive_parent_for_delegation(project_id, session_id, message, p):
                                      source=entry.get('source') or '',
                                      trigger_type=entry.get('trigger_type') or 'manual',
                                      trigger_id=entry.get('trigger_id') or '',
-                                     notify_session=entry.get('spawned_by_session_id') or '',
+                                     notify_session=(entry.get('spawned_by_session_id') or '') if carry_notify else '',
                                      spawned_by=_durable_spawner_of_record(entry),
                                      notify_workflow=({'run_id': entry['trigger_id'].split(':', 1)[0],
                                                        'step': entry['trigger_id'].split(':', 1)[1]}
@@ -9007,11 +9132,19 @@ def _process_inbox(row):
         # point remains an honest in-flight outcome.
         if _delivery_shutdown_requested.is_set():
             raise DeliveryDeferred('delivery shutdown admission is closed')
+        from mc import desk_dispatch
+        if desk_dispatch.deliver(row, payload):
+            return {'desk_campaign': True}
         parent = agent_sessions.get(row['parent_session_id'])
+        # The child this callback comes from (backlog 95592335): a callback-
+        # delivered turn must not report back to that same child.
+        from_child = (payload.get('child_session_id')
+                      or row['event_id'].rsplit(':turn:', 1)[0])
         if parent is None:
             return _revive_parent_for_delegation(
                 row['project_id'], row['parent_session_id'], payload['message'],
-                (load_project(row['project_id']) if callable(load_project) else None) or {})
+                (load_project(row['project_id']) if callable(load_project) else None) or {},
+                from_session_id=from_child)
         if parent.get('project_id') != row['project_id'] or parent.get('incognito'):
             raise DeliveryBlocked('parent identity/privacy state changed; explicit recovery required')
         if parent.get('status') == 'running':
@@ -9029,6 +9162,12 @@ def _process_inbox(row):
         if _delegation_app is None:
             raise DeliveryBlocked('delegation request context is unavailable; explicit recovery required')
         needs_write_ack = parent.get('mode') == 'B'
+        if _callback_echoes_to_sender(parent.get('_notify_session'), from_child):
+            # Live parent whose spawner is the sender: spend the spawner latch
+            # for this turn so its end sends nothing back. The latch is not
+            # cleared by a callback delivery (no `notify_session` in the
+            # followup), so this only matters if it was re-armed and unspent.
+            parent['_notify_session_sent'] = True
         _delivery_store.record_handoff(row, parent)
         with _delegation_app.test_request_context(
                 json={'message': payload['message'],
@@ -9475,7 +9614,11 @@ def _log_agent_completion_body(session):
     # reconstructing the FULL reply across every trailing delta chunk a
     # Mode-A provider (Gemini/Qwen/Codex/...) logged as separate array
     # entries — see `_collect_trailing_reply_text` (MC-947).
-    summary = _agent_runtime._collect_trailing_reply_text(lines)
+    # A Codex run that failed with a rollout error (usage limit, ...) says so
+    # in the summary instead of whatever partial text preceded the failure
+    # (MC-1147).
+    summary = (_codex_run_error.summary_override(session)
+               or _agent_runtime._collect_trailing_reply_text(lines))
     if not summary:
         # No real assistant text survived the turn. Say so explicitly rather
         # than substituting the last thing in log_lines — for exactly this
@@ -9511,7 +9654,7 @@ def _log_agent_completion_body(session):
     _notify_spawner_unless_jobs_open(session, summary)
 
     # Extract token telemetry from the transcript before building the entry.
-    # Best-effort: failures silently produce empty telemetry.
+    # Best-effort: failures produce empty telemetry and an observable warning.
     _telemetry = {}
     if not is_housekeeping and not session.get('incognito'):
         try:
@@ -9519,8 +9662,8 @@ def _log_agent_completion_body(session):
             # run under, not just the current one -- see
             # `_session_cumulative_transcript_telemetry`'s docstring.
             _telemetry = _session_cumulative_transcript_telemetry(project_id, session)
-        except Exception:
-            pass
+        except Exception as e:
+            _log(f"[completion] transcript telemetry failed for {session.get('session_id', '')}: {e}", flush=True)
 
     entry = {
         'ts': now_iso(),
@@ -9628,6 +9771,9 @@ def _log_agent_completion_body(session):
     # replace it in place so trigger_type/trigger_id survive the rewrite. Otherwise
     # insert at the top as before. Move the row to position 0 on update so newest-
     # finalized stays at the top (matches the "log.insert(0, ...)" convention).
+    if session.get('character_ref'):
+        from mc.hivemind_worker import attempt_metadata
+        entry.update(attempt_metadata(session))
     if session.get('human_joined'):
         entry['human_joined'] = True   # display-only, see _mark_human_joined
     def complete(log):
@@ -9895,7 +10041,7 @@ def _auto_dispatch_followup(session, message):
     # Honor a per-chat model pin (Mode A respawns per turn — without this the
     # pinned conversation would drop back to the project/global model).
     _pin = _continuation_model(session, p)
-    cmd = [_resolve_claude(), *resume_flags, '-p', message,
+    cmd = [_resolve_claude(), *resume_flags, '-p', _clock_wrap(p, session, message),
            *_build_claude_flags(p, model_override=_pin,
                                 effort_override=_continuation_effort(session),
                                 character_skills=_session_skills(p, session)), *_sp_args]
@@ -10169,6 +10315,59 @@ def _looks_like_slash_command(message: str) -> bool:
     return bool(_SLASH_COMMAND_RE.match(message.lstrip()))
 
 
+def _clock_header(project, session, message) -> str:
+    """The `[Now ... since your last reply]` header (+ gap briefing) for an
+    outgoing message, '' when off or `message` is a slash command (the CLI
+    only parses `/cmd` as the first bytes of a turn -- same carve-out as
+    `_apply_mobile_brief`). Never raises. See mc/turn_clock.py."""
+    try:
+        if isinstance(message, str) and (
+                _looks_like_slash_command(message)
+                # `[Steward cycle]` must stay the first bytes: the steward
+                # gates (distiller / memory / role dispatch) match it by
+                # prefix. Its task body already carries `Wake (local time)`.
+                or message.lstrip().startswith(_ATTEND_ONCE_STEWARD_MARKER)):
+            return ''
+        pp = (project or {}).get('project_path', '')
+        return _turn_clock.render(
+            project, session,
+            sessions=list(agent_sessions.values()),
+            cwd=_session_cwd(session, pp) if isinstance(session, dict) else pp)
+    except Exception as e:
+        _log(f'[turn-clock] header failed: {e}')
+        return ''
+
+
+def _clock_wrap(project, session, content, message=None) -> str:
+    """`content` with the clock header in front. `message` is the user's
+    original text (slash-command check); defaults to `content`."""
+    if _turn_clock.has_header(content):
+        return content          # already stamped upstream: never stack two
+    header = _clock_header(project, session, content if message is None else message)
+    return f'{header}\n\n{content}' if header else content
+
+
+def _dispatch_clock_task(p, project_id, task, reuse_session_id='', cwd=''):
+    """`task` with the clock header, for the message that STARTS a process.
+
+    A brand-new session has no prior reply, so it gets the stamp only. A
+    dispatch that re-attaches to an existing conversation (`reuse_session_id`:
+    a non-Claude revive after a restart) seeds the last-reply time from that
+    conversation's durable agent_log rows, so the gap and briefing are real.
+    Runs OUTSIDE the project lock (the briefing shells out to git). Never raises."""
+    try:
+        probe = {'session_id': reuse_session_id or '', 'project_id': project_id,
+                 '_agent_cwd': cwd or (p or {}).get('project_path', '')}
+        if reuse_session_id:
+            _turn_clock.seed_from_log_entries(
+                probe, [e for e in _load_agent_log(project_id)
+                        if e.get('session_id') == reuse_session_id])
+        return _clock_wrap(p, probe, task)
+    except Exception as e:
+        _log(f'[turn-clock] dispatch stamp failed: {e}')
+        return task
+
+
 def _apply_mobile_brief(message: str, request_data: dict) -> str:
     """Return `message` augmented with a hidden brief-reply directive.
 
@@ -10238,8 +10437,13 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                           project_generation=1,
                           lifecycle_bridge_factory=None,
                           agent_cwd='', isolated=False, planned_session_id='',
-                          engine_fallback=None):
+                          engine_fallback=None, role_context=None,
+                          outgoing_task=None):
     """Dispatch a session through the AgentRuntime abstraction (non-claude).
+
+    `outgoing_task` is the text actually written to the CLI (`task` plus the
+    clock header, see `_dispatch_clock_task`); `task` stays the clean text
+    that context building, fingerprinting and the session record use.
 
     `agent_cwd`/`isolated`/`planned_session_id` (vendor-parity gap 1,
     docs/VENDOR_HARNESS_MATRIX.md): the worktree decision the claude path makes
@@ -10447,6 +10651,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
     # all, persona included — it answered as the bare CLI.
     system_prompt = ''
     try:
+        _prompt_fp = _native_followup_context.project_fingerprint(p, _context_fingerprint, _log)
         # Context/skills must follow THIS conversation's resolved provider,
         # not the raw project seed (which can be empty or explicitly overridden).
         context_project = dict(p, provider=provider_name)
@@ -10457,8 +10662,15 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                                              character_skills=(character_meta or {}).get('skills') or [],
                                              source=source, job_shape=_job_shape,
                                              provider=provider_name, model=model)
+        if role_context is not None:
+            from mc.steward_role_dispatch import begin_native_delivery
+            system_prompt = role_context.system_prompt
+            begin_native_delivery(session)
+        _native_followup_context.record_build(p, session, task, _prompt_fp)
     except Exception as e:
         _log(f"[runtime-dispatch] context build failed: {e}")
+        if role_context is not None:
+            raise
 
     # MC-935: the claude path logs its argv (`[dispatch] cmd: ...`) before
     # spawning; nothing on this path — the ONE dispatch entry point shared by
@@ -10559,7 +10771,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             callbacks.update(on_init=_bridge_init, on_process_exit=_bridge_exit)
 
     runtime_task = _bridge_images_for_blind_model(
-        task, session, provider=provider_name, model=model, project_path=_run_cwd)
+        task if outgoing_task is None else outgoing_task, session, provider=provider_name, model=model, project_path=_run_cwd)
 
     def _spawn_runtime():
         return runtime.dispatch(
@@ -10805,8 +11017,14 @@ def _prior_character(project_id, resume_id, provider=''):
         for e in _load_agent_log(project_id):
             if provider and (e.get('provider') or 'claude') != provider:
                 continue
+            # `claude_session_ids` is the rollover lineage: a context rollover
+            # moves `claude_session_id` to the newest csid, so a transcript the
+            # conversations list opens from earlier in the chain (the one Ron
+            # resumes) only appears in that list. Without it the lookup missed,
+            # fell to the project default, and Dave's chat came back as Vector.
             if (e.get('claude_session_id') != resume_id
-                    and e.get('provider_session_id') != resume_id):
+                    and e.get('provider_session_id') != resume_id
+                    and resume_id not in (e.get('claude_session_ids') or [])):
                 continue
             seen = True
             ch = e.get('character') or {}
@@ -11315,6 +11533,8 @@ def _auto_fresh_handoff(pp, provider, claude_sid, project_id, session_id,
 
     Returns (handoff_text, log_line, activity_line).
     """
+    from mc.session_provenance import note_rollover
+    note_rollover(project_id, session_id, claude_sid)
     _source_sid = claude_sid
     try:
         handoff_text, _meta = _build_handoff_context(
@@ -11525,7 +11745,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              session_dict_override=None,
                              max_turns_override=None,
                              agent_cwd_override=None,
-                             isolated_override=False):
+                             isolated_override=False, prepared_context=None):
     """Core dispatch logic shared by HTTP endpoint and scheduler.
 
     Returns session_id on success, raises ValueError on error.
@@ -11641,7 +11861,13 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     _prior = _prior_character(project_id, resume_id, provider_override) if resume_id else None
     if _prior is not None and not character:
         character = _prior
-    if _prior == '' and not character:
+    if prepared_context is not None:
+        character_meta = dict(prepared_context.character)
+        character_body = ''  # Already composed into the prepared system prompt.
+        provider_override = prepared_context.assignment['provider']
+        model_override = prepared_context.assignment['model']
+        effort_override = prepared_context.assignment['effort']
+    elif _prior == '' and not character:
         # It ran with no persona. Keep it that way — don't hand it the project
         # default just because a resume passed through here.
         character_meta, character_body = None, ''
@@ -11682,6 +11908,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         provider_name, user_initiated=(trigger_type == 'manual'), project=p)
     _engine_fallback_record = None
     if _allowance_block:
+        if prepared_context is not None:
+            raise ValueError(_allowance_block)
         # MC-961: opt-in only (empty `engine_fallback_order` is a no-op, and
         # this never fires on any refusal but the allowance one checked
         # above). A native `-r` resume can't cross vendors, and converting one
@@ -11716,7 +11944,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # character's own engine pin belongs to the vendor that just got refused,
     # so it must not be re-applied on top of the fallback vendor.
     _char_model = _character_engine(character_meta, 'model')
-    if not resume_id and not model_override and _char_model and not _engine_fallback_record:
+    if (prepared_context is None and not resume_id and not model_override
+            and _char_model and not _engine_fallback_record):
         model_override = _char_model
     # Refuse an incoherent provider/model pair instead of handing a foreign
     # model id to a CLI that will reject it (e.g. a claude-code process
@@ -11736,6 +11965,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         # a hard block rather than a warning.
         _quota_block = _model_quota_blocked(provider_name, model_override)
         if _quota_block:
+            if prepared_context is not None:
+                raise ValueError(_quota_block)
             # MC-961: this model is unavailable right now, the second of the
             # two trigger shapes the fallback may act on (the first is the
             # vendor-level allowance check above). Same resume_id exception —
@@ -11749,6 +11980,12 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             model_override = _fallback_model or ''
             display_task = (_engine_fallback.swap_chat_line(_engine_fallback_record) + ' '
                              + (display_task if display_task is not None else task))
+    # The message that starts the process carries the clock stamp (initial
+    # dispatch: stamp only; a re-attached conversation also gets its gap).
+    # Built here, outside the project lock -- the briefing shells out to git.
+    # Housekeeping jobs are not conversations and keep their exact bytes.
+    _clock_task = task if housekeeping else _dispatch_clock_task(
+        p, project_id, task, reuse_session_id)
     if provider_name != 'claude':
         # Per-agent worktree isolation for non-claude runtimes (vendor-parity
         # gap 1, docs/VENDOR_HARNESS_MATRIX.md): this branch returns before the
@@ -11763,6 +12000,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         _rt_planned_sid = (reuse_session_id
                            if (reuse_session_id and reuse_session_id not in agent_sessions)
                            else uuid.uuid4().hex[:12])
+        if getattr(prepared_context, 'steward_role', False) and reuse_session_id:
+            _rt_planned_sid = reuse_session_id
         _rt_resume_tree = _resume_cwd_for(pp, resume_id, provider_name) if resume_id else None
         if agent_cwd_override:
             _rt_agent_cwd, _rt_isolated = agent_cwd_override, bool(isolated_override)
@@ -11772,6 +12011,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             _rt_agent_cwd, _rt_isolated = _maybe_isolate_worktree(p, _rt_planned_sid, incognito)
         try:
             return _dispatch_via_runtime(p, task, provider_name=provider_name,
+                                         outgoing_task=_clock_task,
                                          incognito=incognito,
                                          trigger_type=trigger_type,
                                          trigger_id=trigger_id,
@@ -11791,6 +12031,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                          isolated=_rt_isolated,
                                          planned_session_id=_rt_planned_sid,
                                          engine_fallback=_engine_fallback_record,
+                                         **({'role_context': prepared_context}
+                                            if getattr(prepared_context, 'steward_role', False) else {}),
                                          lifecycle_bridge_factory=(
                                              _runtime_lifecycle_service.bridge_factory
                                              if _runtime_lifecycle_service is not None else None))
@@ -11798,7 +12040,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             _log(f"[dispatch] runtime '{provider_name}' failed, no fallback: {e}")
             raise
 
-    use_streaming = p.get('use_streaming_agent', state.CONFIG.get('use_streaming_agent', False))
+    use_streaming = (False if prepared_context is not None else
+                     p.get('use_streaming_agent', state.CONFIG.get('use_streaming_agent', False)))
 
     # Check session transcript size / context weight — auto-start fresh if
     # either trigger fires (docs/CONTEXT_ECONOMY_SPEC.md §2).
@@ -11910,6 +12153,12 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                     else _fresh_sid)
     _sp_path = None
     _router_fallback_reason = ''
+    if _af_log_line:
+        from mc.session_provenance import note_rollover
+        note_rollover(project_id, _planned_sid, original_resume)
+    elif resume_id:
+        from mc.session_provenance import note_resume
+        note_resume(project_id, _planned_sid, resume_id)
     # A character's pinned model is an explicit choice by whoever authored the
     # type ("Fable writes PRDs"), so it outranks the complexity classifier for
     # the same reason the composer's Model picker does — but NOT the picker
@@ -11927,7 +12176,14 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # respawn reads it back via `_fresh_context_for`/`_respawn_sysprompt_args`
     # instead of re-deriving it, so the shape can't drift mid-conversation.
     _job_shape = _context_profile.resolve_job_shape(source, '')
-    if resume_id and not model_override:
+    if prepared_context is not None:
+        routed_model, routed_source = model_override, 'character'
+        base_flags = _build_claude_flags(
+            p, streaming=False, model_override=model_override,
+            effort_override=_char_effort, max_turns_override=max_turns_override,
+            character_skills=_char_skills)
+        context = prepared_context.system_prompt
+    elif resume_id and not model_override:
         # An imported/older conversation may have no recorded model. Let the
         # native resume restore it, rather than choosing today's defaults.
         routed_model, routed_source = '', 'resume'
@@ -11987,7 +12243,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 effort_override=_char_effort,
                 max_turns_override=max_turns_override,
                 character_skills=_char_skills)
-    if system_prompt_suffix:
+    if system_prompt_suffix and prepared_context is None:
         # Provider-neutral callers such as Hivemind may supply an additional
         # feature context block. Keep the authoritative project context first,
         # and let the runtime adapter deliver the combined prompt according to
@@ -12130,7 +12386,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             # mobile sends/interrupts/followups to day_trading.
             _initial_msg = json.dumps({
                 "type": "user",
-                "message": {"role": "user", "content": task}
+                "message": {"role": "user", "content": _clock_task}
             }) + '\n'
 
             session = {
@@ -12256,10 +12512,10 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             # Mode A: spawn-per-turn (existing behavior). base_flags / _sp_args
             # were resolved above the lock (outside RC-2's danger zone).
             if resume_id:
-                cmd = [_resolve_claude(), '-r', resume_id, '-p', task, *base_flags,
+                cmd = [_resolve_claude(), '-r', resume_id, '-p', _clock_task, *base_flags,
                        *_sp_args]
             else:
-                cmd = [_resolve_claude(), '-p', task, *base_flags, *_sp_args]
+                cmd = [_resolve_claude(), '-p', _clock_task, *base_flags, *_sp_args]
 
             cmd = _launch_marker.launch_cmd(cmd, trigger_type, _agent_cwd)
             proc = subprocess.Popen(
@@ -12487,6 +12743,8 @@ def agent_dispatch(project_id):
                                               cross_provider_handoff=cross_provider_handoff)
     except _engine_fallback.EngineFallbackBlocked as e:
         return jsonify(e.payload), 400
+    except _agent_runtime.vendor_fence.VendorFenceError as e:
+        return jsonify({'ok': False, 'error': str(e)}), 409
     except ValueError as e:
         code = 404 if 'not found' in str(e) else 400
         return jsonify({'error': str(e)}), code
@@ -12730,7 +12988,8 @@ def agent_send(project_id):
     if decision == 'steer':
         ack = _mid_turn_send.steer_live(
             session,
-            content=_apply_mobile_brief(message, data),
+            content=_clock_wrap(p, session,
+                                _apply_mobile_brief(message, data), message),
             write=_bounded_stdin_write,
             owner=(_TURN_OWNER_KEY, _OWNER_HUMAN))
         _log_agent_activity(project_id, f"Agent steered mid-turn: {message[:100]}")
@@ -12791,6 +13050,8 @@ def agent_send(project_id):
                 revived = _revive_from_agent_log(
                     project_id, session_id, message, p,
                     carry_notify=bool(_explicit_notify_session))
+            except RosterRecoveryHeld as e:
+                return jsonify({'ok': False, 'error': str(e)}), 409
             except Exception as e:
                 revived = None
                 _log_agent_activity(project_id, f"Revive error in /send: {e}")
@@ -12812,6 +13073,8 @@ def agent_send(project_id):
                 fresh_sid = _revive_non_claude_from_agent_log(
                     project_id, session_id, message, p,
                     carry_notify=bool(_explicit_notify_session))
+            except RosterRecoveryHeld as e:
+                return jsonify({'ok': False, 'error': str(e)}), 409
             except Exception as e:
                 fresh_sid = None
                 _log_agent_activity(project_id, f"Non-claude revive error in /send: {e}")
@@ -12848,6 +13111,8 @@ def agent_send(project_id):
                 provider_override=(data.get('provider') or '').strip().lower())
         except _engine_fallback.EngineFallbackBlocked as e:
             return jsonify(e.payload), 400
+        except _agent_runtime.vendor_fence.VendorFenceError as e:
+            return jsonify({'ok': False, 'error': str(e)}), 409
         except ValueError as e:
             code = 404 if 'not found' in str(e) else 400
             return jsonify({'error': str(e)}), code
@@ -13226,6 +13491,9 @@ def agent_followup(project_id):
             refresh = _memory_turn.refresh_for_turn(project, sess, msg)
             out = (refresh['block'] + '\n\n' + content
                    if refresh['block'] else content)
+            # Leading clock line (+ gap briefing). Built here, at write time,
+            # so elapsed is measured when the model will actually read it.
+            out = _clock_wrap(project, sess, out, msg)
             return json.dumps({
                 "type": "user",
                 "message": {"role": "user", "content": out}
@@ -13264,9 +13532,12 @@ def agent_followup(project_id):
         # same rule as `/agent/send` (see `carry_notify` on
         # `_revive_from_agent_log`). Only an explicit `notify_session` in the
         # request re-arms the dispatch callback across the revive.
-        revived = _revive_from_agent_log(
-            project_id, session_id, message, p,
-            carry_notify=bool(_explicit_notify_session))
+        try:
+            revived = _revive_from_agent_log(
+                project_id, session_id, message, p,
+                carry_notify=bool(_explicit_notify_session))
+        except RosterRecoveryHeld as e:
+            return jsonify({'ok': False, 'error': str(e)}), 409
         if revived:
             if _explicit_notify_session:
                 revived['_notify_session'] = _explicit_notify_session
@@ -13276,9 +13547,12 @@ def agent_followup(project_id):
         # with, so start fresh instead of 404ing. This is what makes the
         # read-only reconstruct's "sending a message starts a brand-new
         # session" line (MC-929) true rather than a lie.
-        fresh_sid = _revive_non_claude_from_agent_log(
-            project_id, session_id, message, p,
-            carry_notify=bool(_explicit_notify_session))
+        try:
+            fresh_sid = _revive_non_claude_from_agent_log(
+                project_id, session_id, message, p,
+                carry_notify=bool(_explicit_notify_session))
+        except RosterRecoveryHeld as e:
+            return jsonify({'ok': False, 'error': str(e)}), 409
         if fresh_sid:
             if _explicit_notify_session:
                 _fresh_sess = agent_sessions.get(fresh_sid)
@@ -13329,16 +13603,11 @@ def agent_followup(project_id):
             # "dispatching", we're now "running". Leaving it set would prevent
             # the Mode A SSE from closing on the NEXT terminal status.
             existing.pop('_dispatching_followup', None)
-            # Refresh the stashed system context so MEMORY / AGENT_RULES edits
-            # made mid-conversation ride along on the next per-turn respawn.
-            # The runtime re-injects existing['_system_prompt'] every followup
-            # (see _compose_respawn_prompt in agent_runtime.py).
-            if not existing.get('incognito'):
-                try:
-                    existing['_system_prompt'] = _fresh_context_for(
-                        p, existing, task=message)
-                except Exception as e:
-                    _log(f"[followup] context refresh failed: {e}")
+            # Keep setup stable across task-dependent context renders, as on
+            # Claude resumes; actual project/persona edits invalidate it.
+            _native_followup_context.refresh_stash(
+                p, existing, message, fingerprint=_context_fingerprint,
+                rebuild=_fresh_context_for, log=_log)
             try:
                 # Same tree the dispatch turn ran in (vendor-parity gap 1):
                 # `existing['_agent_cwd']` is the worktree `_dispatch_via_runtime`
@@ -13363,13 +13632,17 @@ def agent_followup(project_id):
                 )
                 message = _mode_a_token_rollover(
                     _followup_cwd, project_id, session_id, existing, session_provider, message)
+                _turn_message = _native_followup_context.message_for_turn(p, existing, message)
+                _turn_message = _clock_wrap(p, existing, _turn_message, message)
                 runtime.write_followup(handle, _bridge_images_for_blind_model(
-                    message, existing, provider=session_provider,
+                    _turn_message, existing, provider=session_provider,
                     model=existing.get('agent_model') or '', project_path=_followup_cwd))
             except Exception as e:
                 existing['log_lines'].append(f"[{session_provider} followup error: {e}]")
                 existing['status'] = 'error'
                 existing['last_status_change_time'] = _time.time()
+                if isinstance(e, _agent_runtime.vendor_fence.VendorFenceError):
+                    return jsonify({'ok': False, 'error': str(e), 'session_id': session_id}), 409
             _log_agent_activity(project_id, f"Agent follow-up (provider={session_provider}): {message[:100]}")
             return jsonify({'ok': True, 'session_id': session_id})
 
@@ -13837,6 +14110,7 @@ def agent_followup(project_id):
                 # Send message to stdin. Mobile-brief directive applied here so
                 # rb['message'] keeps the original for telemetry / log_lines.
                 claude_content = _apply_mobile_brief(rb['message'], rb.get('request_data') or {})
+                claude_content = _clock_wrap(p, rb['existing'], claude_content, rb['message'])
                 stdin_msg = json.dumps({
                     "type": "user",
                     "message": {"role": "user", "content": claude_content}
@@ -13910,6 +14184,7 @@ def agent_followup(project_id):
             # Mobile-brief applied here so log_lines + telemetry use the
             # unaugmented message; only the claude -p arg gets the directive.
             claude_followup_msg = _apply_mobile_brief(followup_msg, data)
+            claude_followup_msg = _clock_wrap(p, existing, claude_followup_msg, message)
             # Honor a per-chat model pin (Mode A rebuilds the command each turn).
             _pin = _continuation_model(existing, p)
             cmd = [_resolve_claude(), *resume_flags, '-p', claude_followup_msg,
@@ -14191,6 +14466,21 @@ def agent_stop(project_id):
     return jsonify({'ok': True})
 
 
+def _finish_interrupt_respawn(session):
+    """The interrupt/midturn respawn's new proc is now session['proc']. Caller
+    holds the project lock. Drops the interrupt gate and the MC-1002 handoff
+    window, and puts a stale 'error' back to 'running': the guardian can have
+    flagged the old proc dead before the window existed (or after its 300s
+    bound), and nothing else restores it while the new proc is alive."""
+    session.pop('_interrupting', None)
+    session.pop('_mt_roll_requested', None)
+    session.pop('_respawn_in_flight', None)
+    if session.get('status') == 'error':
+        session['status'] = 'running'
+        session['last_status_change_time'] = _time.time()
+    session['process_alive'] = True
+
+
 @bp.route('/api/project/<project_id>/agent/interrupt', methods=['POST'])
 def agent_interrupt(project_id, *, _internal=None):
     """Atomic stop + immediate resume with a new prompt.
@@ -14283,13 +14573,9 @@ def agent_interrupt(project_id, *, _internal=None):
                 session['log_lines'].append(f"\n> {user_label}: {message}\n")
             _start_new_turn(session)
             session.pop('pending_followups', None)
-            # Refresh stashed context (see the followup path for rationale).
-            if not session.get('incognito'):
-                try:
-                    session['_system_prompt'] = _fresh_context_for(
-                        p, session, task=message)
-                except Exception as e:
-                    _log(f"[interrupt] context refresh failed: {e}")
+            _native_followup_context.refresh_stash(
+                p, session, message, fingerprint=_context_fingerprint,
+                rebuild=_fresh_context_for, log=_log)
             try:
                 # Same tree the dispatch turn ran in — see the followup path's
                 # identical `_followup_cwd` for why `pp` alone is wrong here.
@@ -14311,13 +14597,17 @@ def agent_interrupt(project_id, *, _internal=None):
                 )
                 message = _mode_a_token_rollover(
                     _followup_cwd, project_id, session_id, session, session_provider, message)
+                _turn_message = _native_followup_context.message_for_turn(p, session, message)
+                _turn_message = _clock_wrap(p, session, _turn_message, message)
                 runtime.write_followup(handle, _bridge_images_for_blind_model(
-                    message, session, provider=session_provider,
+                    _turn_message, session, provider=session_provider,
                     model=session.get('agent_model') or '', project_path=_followup_cwd))
             except Exception as e:
                 session['log_lines'].append(f"[{session_provider} interrupt error: {e}]")
                 session['status'] = 'error'
                 session['last_status_change_time'] = _time.time()
+                if isinstance(e, _agent_runtime.vendor_fence.VendorFenceError):
+                    return _ret({'ok': False, 'error': str(e), 'session_id': session_id}, 409)
             _log_agent_activity(project_id, f"Agent interrupt (provider={session_provider}): {message[:80]}")
             return _ret({'ok': True, 'session_id': session_id})
 
@@ -14350,6 +14640,13 @@ def agent_interrupt(project_id, *, _internal=None):
             else:
                 session['_interrupting'] = _prior_interrupting
             raise
+        # MC-1002: the old proc is killed on purpose below and the new one is
+        # assigned to session['proc'] on another thread, after a handoff build
+        # that can outrun the guardian's 2s State 1 threshold. Without this
+        # window the guardian flags the dead old proc 'error' (2026-11-03,
+        # Quill 21bfe649c77f: Floor dropped a live session). Cleared by
+        # _finish_interrupt_respawn on success and by every exit in _do_respawn.
+        session['_respawn_in_flight'] = _time.time()
         # Stop the current process
         # Shown in the chat as a system-style line when the user interrupts a
         # running turn with a new message. Friendlier than "Agent interrupted
@@ -14413,6 +14710,7 @@ def agent_interrupt(project_id, *, _internal=None):
                     session['last_status_change_time'] = _time.time()
                     session.pop('_interrupting', None)
                     session.pop('_mt_roll_requested', None)
+                    session.pop('_respawn_in_flight', None)
                     return
             # Check transcript size
             resume_flags = []
@@ -14494,8 +14792,7 @@ def agent_interrupt(project_id, *, _internal=None):
                     session['stdin_lock'] = threading.Lock()
                     # New proc is now the authoritative one — clear the
                     # interrupt gate so its reader's writes are accepted.
-                    session.pop('_interrupting', None)
-                    session.pop('_mt_roll_requested', None)
+                    _finish_interrupt_respawn(session)
                     # Same reset as the model-switch respawn above: this
                     # process (manual interrupt, auto-fresh, or a mid-turn
                     # roll) just got a fresh system-prompt build, so the next
@@ -14512,6 +14809,8 @@ def agent_interrupt(project_id, *, _internal=None):
                 # Mobile-brief applied only to the claude-bound payload —
                 # log_lines + telemetry above keep the unaugmented message.
                 claude_content = _apply_mobile_brief(respawn_msg, data)
+                if not is_midturn:   # a mid-turn roll is Clayrune's own handoff, not a message
+                    claude_content = _clock_wrap(p, session, claude_content, message)
                 stdin_msg = json.dumps({
                     "type": "user",
                     "message": {"role": "user", "content": claude_content}
@@ -14525,6 +14824,8 @@ def agent_interrupt(project_id, *, _internal=None):
             else:
                 # Mode A
                 claude_respawn_msg = _apply_mobile_brief(respawn_msg, data)
+                if not is_midturn:
+                    claude_respawn_msg = _clock_wrap(p, session, claude_respawn_msg, message)
                 # A mid-task roll's prompt is the handoff + state block: task
                 # verbatim + 2 x 4 KB of git output + the transcript turns,
                 # well past cmd.exe's 8191-char cap (WinError 206 -> the old
@@ -14566,8 +14867,7 @@ def agent_interrupt(project_id, *, _internal=None):
                 with get_manager(project_id).lock:
                     session['proc'] = proc
                     # New proc is now authoritative — clear the interrupt gate.
-                    session.pop('_interrupting', None)
-                    session.pop('_mt_roll_requested', None)
+                    _finish_interrupt_respawn(session)
 
                 threading.Thread(target=_read_agent_stream,
                                  args=(proc, session), daemon=True).start()
@@ -14591,6 +14891,7 @@ def agent_interrupt(project_id, *, _internal=None):
             # stays permanently gated and no future reader can update status.
             session.pop('_interrupting', None)
             session.pop('_mt_roll_requested', None)
+            session.pop('_respawn_in_flight', None)  # MC-1002 — handoff window over (failed)
             # Popen may have raised before sysprompt cleanup was wired — sweep.
             if _sp_path:
                 try:
@@ -17378,6 +17679,10 @@ def _respawn_window_open(session, now):
 
 
 def _guardian_check_session(sid, session, now):
+    from mc.qwen_retry_wait import KEY as _retry_wait_key, check_session
+    if session.get(_retry_wait_key) and check_session(
+            session, now, get_manager(session['project_id']).lock, _kill_proc_background):
+        return
     status = session['status']
     proc = session.get('proc')
     mode = session.get('mode', 'A')

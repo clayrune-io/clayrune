@@ -341,7 +341,7 @@ async function runNeedsYouDeepLinks(browser) {
   if (/^Install in two minutes · Storyboard$/.test(crumbAfterVideo.trim())) ok(`A12: "1 video to watch" deep-links to the Studio video editor, not 'review': crumb "${crumbAfterVideo.trim()}"`);
   else fail(`A12: video row landed on the wrong route: crumb ${JSON.stringify(crumbAfterVideo)}`);
   const backAfterVideo = (await page.textContent('#desk-v1-crumb .desk-v1-back').catch(() => '') || '').trim();
-  if (/Back to What$/.test(backAfterVideo)) ok(`A12: the video editor's Back reads "${backAfterVideo}"`);
+  if (/Back to Posts$/.test(backAfterVideo)) ok(`A12: the video editor's Back reads "${backAfterVideo}"`);
   else fail(`A12: the video editor's Back wrong: ${JSON.stringify(backAfterVideo)}`);
 
   // camp-3 is naturally reply-only (no held channel, no needs_review family)

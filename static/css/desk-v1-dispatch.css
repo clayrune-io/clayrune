@@ -1,0 +1,5 @@
+.desk-v1-dispatch-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 8px 0; font-size: calc(12px * var(--chat-k, 1)); overflow-wrap: anywhere; }
+.desk-v1-dispatch-card > div:first-child { font-weight: 600; }
+.desk-v1-dispatch-card span { font-weight: 400; color: var(--text-dim); margin-left: 6px; }
+.desk-v1-dispatch-card .desk-v1-chat-text { margin: 6px 0; white-space: pre-wrap; }
+.desk-v1-dispatch-card a { color: var(--accent); }

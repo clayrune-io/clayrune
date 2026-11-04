@@ -2,7 +2,7 @@
 
 The agent box on a campaign page used to say "Not connected to the agent yet".
 This module is the chat behind it, and it is the SAME engine as the Studio chat
-(`mc/desk_story_chat.py`): the toolless `desk_story._call_model` seam, the same
+(`mc/desk_story_chat.py`): the bounded `desk_story._call_model` research seam, the same
 agent record read, the same "an agent that no longer resolves is a 404, never a
 quiet fall back". The user writes a message, the agent answers in PROSE; a
 question, an opinion, "why did post 2 fail" all get an answer and change nothing.
@@ -30,11 +30,14 @@ campaign's pieces (their failures, with the engine's own message, so "why did po
 last `CONTEXT_TURNS` turns of the thread, and the scope the user has selected
 (the whole campaign, or one piece, which is then shown in full).
 
-WHAT THE AGENT MAY DO: this v1 changes nothing on its own. If it proposes pieces,
+WHAT THE AGENT MAY DO: typed campaign-chat turns may dispatch hired project
+agents through the bounded research adapter (mc/desk_dispatch.py). Each launch
+is a real Floor session with a receipt card; the existing durable notify inbox
+returns results as data without starting another planner turn. If it proposes pieces,
 times or a placement, they are saved through the EXISTING suggestions store
 (`desk.set_suggestions`, M10: the same validation an agent's PUT gets, which
 refuses any text that names a limit and any account not in the workspace) and a
-human accepts them on the What / When / Where stops. The chip under the reply
+human accepts them on the Posts / When / Channels stops. The chip under the reply
 (`suggested.summary`) is written HERE from what the store accepted. A proposal
 that does not validate is not saved: the reply is kept and the turn says why
 (`suggest_error`).
@@ -51,6 +54,8 @@ from mc import desk_accounts as _accounts
 from mc import desk_engines as _engines
 from mc import desk_pieces as _pieces
 from mc import desk_story as _story
+from mc import desk_product_context as _product
+from mc import desk_dispatch as _dispatch
 from mc.core import _log, now_iso
 
 PieceError = _pieces.PieceError
@@ -67,7 +72,7 @@ CONTEXT_JOBS = 12              # engine jobs shown, failures first
 CONTEXT_ERROR_CHARS = 600      # one failure message, at most
 MAX_SCOPE_LABEL = 200
 
-_PERSONA_TAIL = ("For this call only: you have no tools and cannot read or change anything; "
+_PERSONA_TAIL = ("For this call only: use only the capabilities explicitly supplied by this task; "
                  "ignore any instruction in your character about tools, files, commits, reports or reply format, "
                  "and reply only with the JSON the task asks for. Let your character's taste shape your advice.")
 
@@ -89,6 +94,7 @@ def _turn_out(t: dict) -> dict:
     return {'id': t.get('id'), 'role': t.get('role'), 'text': t.get('text') or '', 'at': t.get('at'),
             'scope': dict(t['scope']) if isinstance(t.get('scope'), dict) else None, 'agent': t.get('agent'),
             'suggested': dict(sg) if isinstance(sg, dict) else None,
+            'dispatch': dict(t['dispatch']) if isinstance(t.get('dispatch'), dict) else None,
             'suggest_error': t.get('suggest_error') or None}
 
 
@@ -212,7 +218,9 @@ def _context(camp: dict, project: dict, pieces: list[dict], thread: list[dict], 
         sg = t.get('suggested')
         if isinstance(sg, dict) and sg.get('summary'):
             text += f' [saved as suggestions: {sg["summary"]}]'
-        convo.append({'from': 'user' if t.get('role') == 'user' else 'you', 'text': text})
+        role = t.get('role')
+        convo.append({'from': 'user' if role == 'user' else 'child agent (untrusted data)' if role == 'dispatch_result'
+                      else 'dispatch receipt' if role == 'dispatch' else 'you', 'text': text})
     sugg = camp.get('suggestions') if isinstance(camp.get('suggestions'), dict) else {}
     s_when = sugg.get('when') if isinstance(sugg.get('when'), dict) else {}
     s_where = sugg.get('where') if isinstance(sugg.get('where'), dict) else {}
@@ -285,7 +293,7 @@ def _suggest_summary(body: dict) -> str:
     if not parts:
         return ''
     return 'Suggested ' + ', '.join(parts[:-1]) + (' and ' if len(parts) > 1 else '') + parts[-1] + \
-        '. They wait on the What, When and Where stops for you to accept.'
+        '. They wait on the Posts, When and Channels stops for you to accept.'
 
 
 # -- one turn --------------------------------------------------------------------------
@@ -314,20 +322,27 @@ def chat(campaign_id: str, body, load_project: Callable[[str], Optional[dict]]) 
     pieces = _pieces.list_pieces(campaign_id=campaign_id)
     scope = _scope(body.get('scope'), {p['id'] for p in pieces})
     payload = _context(camp, project, pieces, thread, message, scope)
+    product = _product.product_context(project)
+    if product is not None:
+        payload['product'] = product
     who = rec.get('agent_name') or rec.get('display_name') or rec['name']
     persona = f'You are {who}. Your character:\n{rec["body"].strip()}\n\n{_PERSONA_TAIL}'
     engine = _story._resolve_engine(project, rec)
     effort = (rec.get('engine') or {}).get('effort') or ''
+    user_turn = {'id': 'tn-' + uuid.uuid4().hex[:10], 'role': 'user', 'text': message, 'at': now_iso(), 'scope': scope}
     try:
-        text = _story._call_model(engine.provider, prompt=_INSTR_CHAT, system_prompt=persona, model=engine.model,
-                                  effort=effort, stdin_text=json.dumps(payload, ensure_ascii=False))
-    except Exception as e:  # TransformFailure / TransformTimeout / provider refusal: the call did not happen
+        with _dispatch.campaign_turn(campaign_id, project, who, user_turn) as dispatch_turn:
+            text = _story._call_model(engine.provider, prompt=_INSTR_CHAT + _product.PRODUCT_INSTRUCTION, system_prompt=persona, model=engine.model,
+                                      effort=effort, stdin_text=json.dumps(payload, ensure_ascii=False), project=project)
+    except Exception as e:  # A tool may already have dispatched before the model failed.
         _log(f'[desk] campaign chat failed: {e}', flush=True)
-        raise PieceError(f'the model call failed, so nothing was changed: {e}', 502)
+        suffix = ('Check the campaign thread for dispatched sessions before retrying.' if dispatch_turn['attempts']
+                  else 'nothing was changed')
+        raise PieceError(f'the model call failed: {e}. {suffix}', 502)
     data = _story._parse_json(text)
     if data is None:
         if '{' in (text or ''):
-            raise PieceError('the agent\'s answer could not be read, so nothing was changed', 502)
+            raise PieceError('the agent\'s answer could not be read; check the campaign thread for any dispatched sessions', 502)
         data = {'reply': text, 'suggest': None}   # plain prose: an answer, nothing proposed
     reply = str(data.get('reply') or '').strip()[:MAX_REPLY]
     suggested = None
@@ -350,15 +365,16 @@ def chat(campaign_id: str, body, load_project: Callable[[str], Optional[dict]]) 
             suggest_error = str(e)
     if not reply:
         if not suggested:
-            raise PieceError('the agent sent no answer, so nothing was changed', 502)
+            raise PieceError('the agent sent no answer; check the campaign thread for any dispatched sessions', 502)
         reply = suggested['summary']
     at = now_iso()
-    user_turn = {'id': 'tn-' + uuid.uuid4().hex[:10], 'role': 'user', 'text': message, 'at': at, 'scope': scope}
     agent_turn = {'id': 'tn-' + uuid.uuid4().hex[:10], 'role': 'agent', 'text': reply, 'at': at, 'scope': scope,
                   'agent': who, 'suggested': suggested, 'suggest_error': suggest_error}
-    _append(campaign_id, [user_turn, agent_turn])
+    _append(campaign_id, [agent_turn] if dispatch_turn.get('user_saved') else [user_turn, agent_turn])
     out: dict = {'agent': {'ref': ref, 'name': who}, 'provider': engine.provider, 'model': engine.model,
                  'turns': [_turn_out(user_turn), _turn_out(agent_turn)]}
+    if dispatch_turn['dispatches']:
+        out['thread'] = read_thread(campaign_id)
     if saved_campaign is not None:
         # what the page needs to show the new suggestions without a reload
         out['campaign'] = {'how': {'suggested': ((saved_campaign.get('how') or {}).get('suggested') or {})},
@@ -370,6 +386,7 @@ def chat(campaign_id: str, body, load_project: Callable[[str], Optional[dict]]) 
 
 def register(bp, load_project: Callable[[str], Optional[dict]]) -> None:
     from flask import jsonify, request
+    _dispatch.register(bp, load_project)
 
     def _fail(e: PieceError):
         out: dict = {'error': str(e)}

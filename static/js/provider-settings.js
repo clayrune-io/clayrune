@@ -13,7 +13,7 @@ function _renderProviderSettings(cfg) {
     signInWhenOk: true,   // Settings keeps re-sign-in / account switching
     keyEntry: true,       // API-key vendors get their key field in the row
     preferencesHTML: EnginePreferences.renderConnection(p.name),
-  })).join('');
+  }) + (p.name === 'claude' && window.ApiCredits ? window.ApiCredits.render() : '')).join('');
 
   // Section toolbar: batch install of the ticked not-installed rows (one
   // terminal, prerequisite handled once — F7) and a forced re-probe of every

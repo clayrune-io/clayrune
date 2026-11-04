@@ -8,13 +8,13 @@
  *   - Studio from Home's header: 3 New tiles, Recent lists the fixture render at
  *     `Rendering 40%`, Material library folders with file counts, Back `‹ Desk`.
  *   - What → Video → Create new opens the storyboard: >= 1 scene pre-filled,
- *     the header reads `‹ Back to What` / `New video · Storyboard`, the
+ *     the header reads `‹ Back to Posts` / `New video · Storyboard`, the
  *     `Returning to ›` strip names campaign + piece, scene 3 moves above 2 by
- *     drag AND by keyboard, Render → Back to What shows `⟳ Rendering` with
+ *     drag AND by keyboard, Render → Back to Posts shows `⟳ Rendering` with
  *     role=progressbar + aria-valuenow (all 3 tones).
  *   - What → Article → Write new opens the writer: one tab per destination
  *     version, provenance line, the `? Assumed` claim both inline and in the
- *     Claims & sources panel, Save to What returns with the piece `in review`.
+ *     Claims & sources panel, Save to Posts returns with the piece `in review`.
  *   - Standalone (MC-1024): the New video / New image tiles open creation with no
  *     campaign picker; a capture is saved to the Material library, listed in
  *     Recent and in a campaign's What library picker; a no-campaign Recent row
@@ -49,7 +49,7 @@ const CSS_DIR = resolve(REPO_ROOT, 'static', 'css');
 const ASSETS_DIR = resolve(REPO_ROOT, 'assets');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
 const ORIGIN = 'http://mc.smoke.test';
-const SHOT_DIR = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens');
+const SHOT_DIR = resolve(REPO_ROOT, '_scratch', 'desk-studio');
 mkdirSync(SHOT_DIR, { recursive: true });
 
 const MIME = { '.webp': 'image/webp', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml' };
@@ -107,7 +107,7 @@ async function fulfillOrAbort(route) {
 }
 
 async function newBootedPage(browser, tone, viewport) {
-  const ctx = await browser.newContext({ viewport: viewport || { width: 1440, height: 950 } });
+  const ctx = await browser.newContext({ viewport: viewport || { width: Number(process.env.SMOKE_WIDTH || 1440), height: 950 } });
   const page = await ctx.newPage();
   await page.addInitScript((ls) => {
     try { for (const k of Object.keys(ls)) localStorage.setItem(k, ls[k]); } catch (e) {}
@@ -261,10 +261,11 @@ async function runStandalone(browser, tone) {
 async function dragTo(page, fromSel, toSel) {
   await page.locator(fromSel).scrollIntoViewIfNeeded();
   const h = await page.locator(fromSel).boundingBox();
-  const t = await page.locator(toSel).boundingBox();
   await page.mouse.move(h.x + h.width / 2, h.y + h.height / 2);
   await page.mouse.down();
   await page.mouse.move(h.x + h.width / 2 + 10, h.y + h.height / 2 - 10, { steps: 4 });
+  await page.locator(toSel).scrollIntoViewIfNeeded();
+  const t = await page.locator(toSel).boundingBox();
   await page.mouse.move(t.x + t.width / 2, t.y + t.height / 2, { steps: 10 });
   await page.waitForTimeout(40);
   await page.mouse.up();
@@ -391,14 +392,17 @@ async function runStudioReview(browser, tone) {
   await editSceneTitle(page, 3, 'Third');
   const tiles = await page.$$eval('[data-sb-timeline] .desk-v1-video-scene', (els) => els.map((e) => ({ id: e.dataset.sceneId, w: e.getBoundingClientRect().width })));
   const durs = await page.$$eval('.desk-v1-sb-scene:not([data-scene-placeholder]) .desk-v1-sb-dur', (els) => els.map((e) => e.textContent));
-  check(tiles.length === 3 && (await page.$$('[data-sb-timeline] [data-trim-edge]')).length === 0,
-    `${tag} the timeline has one tile per real scene (${tiles.length}), no trim handles`, `${tag} timeline wrong: ${JSON.stringify(tiles)}`);
+  check(tiles.length === 3 && (await page.$$('[data-sb-timeline] [data-trim-edge="r"]')).length === 3 && (await page.$$('[data-sb-timeline] [data-trim-edge="l"]')).length === 0,
+    `${tag} the timeline has one tile per real scene (${tiles.length}), with trim handles`, `${tag} timeline wrong: ${JSON.stringify(tiles)}`);
   const secs = durs.map((d) => { const [m, sec] = d.split(':').map(Number); return m * 60 + sec; });
   const wSum = tiles.reduce((a, x) => a + x.w, 0);
   const sSum = secs.reduce((a, x) => a + x, 0);
   check(tiles.every((t, i) => Math.abs(t.w / wSum - secs[i] / sSum) < 0.03),
     `${tag} tile widths follow scene durations (${durs.join(' / ')})`, `${tag} widths not proportional: ${JSON.stringify(tiles)} vs ${durs}`);
   if (shot) { await clearToasts(page); await page.locator('[data-sb-timeline]').scrollIntoViewIfNeeded(); await page.waitForTimeout(150); await page.screenshot({ path: resolve(SHOT_DIR, 'studio_review_5_timeline_1440.png') }); }
+  // New scenes extend the held time scale. Fit brings every reorder target
+  // into view rather than assuming the strip always redistributes to 100%.
+  await page.click('[data-timebar-zoom="fit"]');
   const listBefore = (await sceneIds(page)).slice(0, 3);
   await clearToasts(page);
   await dragTo(page, `[data-sb-timeline] [data-scene-id="${listBefore[2]}"]`, `[data-sb-timeline] [data-scene-id="${listBefore[0]}"]`);
@@ -429,7 +433,7 @@ async function runStudioReview(browser, tone) {
       const img = document.querySelector('[data-sb-timeline] .desk-v1-video-scene-thumb img');
       const ib = img ? img.getBoundingClientRect() : null;
       return {
-        main: r('.desk-v1-sb-main'), tl: r('[data-sb-timeline-wrap]'), first: r('.desk-v1-sb-scene'), lastScene: r('.desk-v1-sb-scene:last-child'),
+        main: r('.desk-v1-sb-editor'), tl: r('[data-sb-timeline-wrap]'), first: r('.desk-v1-sb-scene'), lastScene: r('.desk-v1-sb-scene:last-child'),
         bin: r('[data-sb-trash]'), agent: r('[data-sb-agent]'),
         oldZone: !!document.querySelector('.desk-v1-sb-trashzone'),
         binText: bin ? bin.textContent.trim() : '',
@@ -450,7 +454,7 @@ async function runStudioReview(browser, tone) {
       for (let e = document.querySelector('[data-sb-trash]').parentElement; e; e = e.parentElement) if (e.scrollHeight > e.clientHeight) e.scrollTop = e.scrollHeight;
       const bn = document.querySelector('[data-sb-trash]').getBoundingClientRect();
       const ls = document.querySelector('.desk-v1-sb-scene:last-child').getBoundingClientRect();
-      const mn = document.querySelector('.desk-v1-sb-main').getBoundingClientRect();
+      const mn = document.querySelector('.desk-v1-sb-editor').getBoundingClientRect();
       return { binX: bn.x, binY: bn.y, binB: bn.bottom, lastR: ls.right, lastB: ls.bottom, mainB: mn.bottom };
     });
     check((end.binX >= end.lastR - 1 || end.binY >= end.lastB - 1) && end.binB >= end.lastB - 1 && end.binB <= end.mainB + 1, `${vtag} scrolled to the end, the bin sits in the column's lower-right corner, clear of the last scene`, `${vtag} bin not below the last scene at the end: ${JSON.stringify(end)}`);
@@ -505,9 +509,9 @@ async function runStoryboard(browser, tone) {
   check(scenes.length >= 1, `${tag} storyboard opens with ${scenes.length} scene(s) pre-filled`, `${tag} no scenes`);
   const crumb = await text(page, '.desk-v1-crumb-title');
   const back = await text(page, '.desk-v1-back');
-  check(crumb === 'New video · Storyboard' && /^‹\s*Back to What$/.test(back), `${tag} header reads "${back}" · "${crumb}"`, `${tag} header wrong: ${JSON.stringify([back, crumb])}`);
+  check(crumb === 'Video1 · Storyboard' && /^‹\s*Back to Posts$/.test(back), `${tag} header reads "${back}" · "${crumb}"`, `${tag} header wrong: ${JSON.stringify([back, crumb])}`);
   const strip = await text(page, '[data-returning-to]');
-  check(/Returning to ›/.test(strip) && /Windows beta testers/.test(strip) && /What · New video/.test(strip),
+  check(/Returning to ›/.test(strip) && /Windows beta testers/.test(strip) && /Posts · Video1/.test(strip),
     `${tag} strip names campaign + piece: "${strip}"`, `${tag} Returning-to strip wrong: ${JSON.stringify(strip)}`);
   const firstLine = await text(page, '.desk-v1-sb-scene:first-child .desk-v1-sb-line');
   check(firstLine.length > 0, `${tag} scene 1 has a line ("${firstLine}")`, `${tag} scene 1 line empty`);
@@ -516,15 +520,7 @@ async function runStoryboard(browser, tone) {
 
   // scene 3 above 2: by drag
   const before = await sceneLabels(page);
-  const h = await page.locator('.desk-v1-sb-scene:nth-child(3) [data-scene-handle]').boundingBox();
-  const t = await page.locator('.desk-v1-sb-scene:nth-child(2)').boundingBox();
-  await page.mouse.move(h.x + h.width / 2, h.y + h.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(h.x + h.width / 2 + 10, h.y + h.height / 2 - 10, { steps: 4 });
-  await page.mouse.move(t.x + t.width / 2, t.y + t.height / 2, { steps: 10 });
-  await page.waitForTimeout(40);
-  await page.mouse.up();
-  await page.waitForTimeout(80);
+  await dragTo(page, '.desk-v1-sb-scene:nth-child(3) [data-scene-handle]', '.desk-v1-sb-scene:nth-child(2)');
   const afterDrag = await sceneLabels(page);
   check(afterDrag[1] === before[2] && afterDrag[2] === before[1], `${tag} scene 3 moved above 2 by drag: ${afterDrag.join(' | ')}`, `${tag} drag did not reorder: ${before.join('|')} -> ${afterDrag.join('|')}`);
   const nums = await page.$$eval('[data-scene-num]', (els) => els.map((e) => e.textContent));
@@ -556,7 +552,7 @@ async function runStoryboard(browser, tone) {
     ok('storyboard screenshot saved: r2_8_storyboard_1440.png');
   }
 
-  // Render → Back to What. The scene edits leave an Undo toast over the top
+  // Render → Back to Posts. The scene edits leave an Undo toast over the top
   // right corner where Render sits (same as desk-v1-video.mjs's note), so clear
   // the stack first.
   await page.evaluate(() => document.querySelectorAll('#toast-container .toast').forEach((t) => t.remove()));
@@ -565,7 +561,7 @@ async function runStoryboard(browser, tone) {
   check(/Rendering 40%/.test(await text(page, '[data-sb-rendering]')), `${tag} Render shows ⟳ Rendering 40% on the storyboard`, `${tag} no rendering note`);
   await page.click('.desk-v1-back');
   await page.waitForSelector('[data-what-row]', { timeout: 6000 });
-  const row = page.locator('[data-what-row]', { hasText: 'New video' }).first();
+  const row = page.locator('[data-what-row]', { hasText: 'Video1' }).first();
   const pb = row.locator('[role="progressbar"]');
   const now = await pb.getAttribute('aria-valuenow').catch(() => null);
   const rowText = ((await row.textContent()) || '').replace(/\s+/g, ' ');
@@ -618,9 +614,9 @@ async function runWriter(browser, tone) {
 
   await page.click('[data-writer-save]');
   await page.waitForSelector('[data-what-row]', { timeout: 6000 });
-  const row = page.locator('[data-what-row]', { hasText: 'New article' }).first();
+  const row = page.locator('[data-what-row]', { hasText: 'Article1' }).first();
   const rowText = ((await row.textContent()) || '').replace(/\s+/g, ' ');
-  check(/in review/.test(rowText), `${tag} Save to What returns with the piece "in review"`, `${tag} row not in review: ${rowText}`);
+  check(/in review/.test(rowText), `${tag} Save to Posts returns with the piece "in review"`, `${tag} row not in review: ${rowText}`);
   check((await page.$$('[data-writer]')).length === 0, `${tag} the writer is gone after Save`, `${tag} writer still mounted`);
   reportUncaught(pageErrors, tag);
   await ctx.close();

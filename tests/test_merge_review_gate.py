@@ -491,8 +491,12 @@ def _hooked_repo(repo, tmp_path, **record_extra):
     point the gate's store at the data root the hooks' check script will read.
     Returns the hooks dir."""
     install = tmp_path / 'install'
-    for rel in ('mc/__init__.py', 'mc/project_sync.py', 'mc/atomic_json.py',
-                'mc/merge_review_gate.py', 'tools/merge-review-check.py',
+    # The whole mc package: the check script's --merge-head path imports
+    # mc.dev_harness_pending_merge, whose chain reaches mc.agent_worktree, so a
+    # hand-picked module list goes stale every time that chain grows.
+    shutil.copytree(REPO_ROOT / 'mc', install / 'mc',
+                    ignore=shutil.ignore_patterns('__pycache__'))
+    for rel in ('tools/merge-review-check.py',
                 'tools/install-merge-review-hook.sh', 'tools/git-hooks/pre-merge-commit',
                 'tools/git-hooks/commit-msg'):
         (install / rel).parent.mkdir(parents=True, exist_ok=True)

@@ -15,7 +15,7 @@
  *   4. Article  -> picking an existing article PATCHes title, word_count and source.
  *   5. Piece pg -> `＋ Add media` on the piece page is the same M21 call; the excerpt is
  *                  the piece's own `body`.
- *   6. Writer   -> Save to What moves the versions it changed through M18 (never
+ *   6. Writer   -> Save to Posts moves the versions it changed through M18 (never
  *                  `approved`) and the draft status through M15; Undo reverses both.
  *   7. Flag OFF -> every one of those makes 0 /api/desk/* requests.
  *
@@ -113,7 +113,10 @@ async function newPage(browser, { live, srv }) {
       });
     }
     if (path === '/api/desk/pieces' && method === 'POST') {
-      const p = { id: body.id, campaignId: body.campaign_id, kind: body.kind, title: body.title, assets: [], versions: [] };
+      // Like the server: an unnamed piece is named <Kind><n> (mc/desk_piece_names.py).
+      const serial = body.title ? null : body.kind[0].toUpperCase() + body.kind.slice(1)
+        + (1 + srv.pieces.filter((x) => x.campaignId === body.campaign_id && x.kind === body.kind).length);
+      const p = { id: body.id, campaignId: body.campaign_id, kind: body.kind, title: body.title || serial, defaultTitle: serial, assets: [], versions: [] };
       srv.pieces.push(p);
       return J(p, 201);
     }
@@ -199,20 +202,45 @@ async function createRenameRemove(browser) {
   await openWhat(page);
   srv.log.length = 0;
 
-  const id1 = await addPiece(page, 'post');
+  const id1 = await addPiece(page, 'image');
   await page.waitForFunction(() => document.querySelectorAll('[data-what-create]').length === 1);
   const post = calls(srv, 'POST', /^\/api\/desk\/pieces$/);
-  (post.length === 1 && post[0].body.id === id1 && post[0].body.campaign_id === 'camp-1' && post[0].body.kind === 'post' && post[0].body.title === 'New post')
-    ? ok(`a tray click POSTs M14 with the client's id, campaign, kind and title (${id1})`) : fail('create POST: ' + JSON.stringify(post.map((r) => r.body)));
+  (post.length === 1 && post[0].body.id === id1 && post[0].body.campaign_id === 'camp-1' && post[0].body.kind === 'image' && !('title' in post[0].body))
+    ? ok(`a tray click POSTs M14 with the client's id, campaign and kind, and NO title: the server names it (${id1})`) : fail('create POST: ' + JSON.stringify(post.map((r) => r.body)));
+
+  // The card shows the name the server returned, not a client placeholder.
+  const input = page.locator(`[data-what-create][data-family-id="${id1}"] [data-what-title]`);
+  await settle(page, (i) => /^Image\d+$/.test((window.DeskV1Store.state().families.find((f) => f.id === i) || {}).title), id1);
+  const serial = srv.pieces.find((p) => p.id === id1).title;
+  (await input.inputValue()) === serial && (await famOf(page, id1)).defaultTitle === serial
+    ? ok(`the create-card takes the serial name the server returned (${serial})`) : fail('card title: ' + (await input.inputValue()));
 
   // Rename through the card's title field.
-  const input = page.locator(`[data-what-create][data-family-id="${id1}"] [data-what-title]`);
   await input.fill('Launch thread');
+  // The title is optimistic; seeing it locally does not prove the queued M15
+  // request has reached the server. Wait for that response before inspecting it.
+  const renamed = page.waitForResponse(r => r.request().method() === 'PATCH'
+    && new URL(r.url()).pathname === `/api/desk/pieces/${id1}`);
   await input.press('Tab');
+  await renamed;
   await settle(page, (i) => (window.DeskV1Store.state().families.find((f) => f.id === i) || {}).title === 'Launch thread', id1);
   const patch = calls(srv, 'PATCH', new RegExp(`^/api/desk/pieces/${id1}$`));
   (patch.length === 1 && patch[0].body.title === 'Launch thread' && srv.pieces.find((p) => p.id === id1).title === 'Launch thread')
     ? ok('a title edit PATCHes M15 {title} and the server holds it') : fail('rename PATCH: ' + JSON.stringify(patch.map((r) => r.body)));
+
+  // Clearing the box restores the serial name, never a "New image" placeholder.
+  const renamedBack = page.waitForResponse(r => r.request().method() === 'PATCH' && new URL(r.url()).pathname === `/api/desk/pieces/${id1}`);
+  await input.fill('');
+  await input.press('Tab');
+  await renamedBack;
+  await settle(page, ([i, t]) => (window.DeskV1Store.state().families.find((f) => f.id === i) || {}).title === t, [id1, serial]);
+  const patch2 = calls(srv, 'PATCH', new RegExp(`^/api/desk/pieces/${id1}$`));
+  (patch2.length === 2 && patch2[1].body.title === serial && (await input.inputValue()) === serial)
+    ? ok(`clearing the title restores the serial name (PATCH ${serial})`) : fail('clear-title PATCH: ' + JSON.stringify(patch2.map((r) => r.body)));
+  await input.fill('Launch thread');
+  const renamed2 = page.waitForResponse(r => r.request().method() === 'PATCH' && new URL(r.url()).pathname === `/api/desk/pieces/${id1}`);
+  await input.press('Tab');
+  await renamed2;
 
   // A refused discard rolls the dialog back and reports the reason.
   srv.next[`DELETE /api/desk/pieces/${id1}`] = 'this piece has a version that is sending or already sent';
@@ -222,9 +250,9 @@ async function createRenameRemove(browser) {
     ? ok('refused discard restores the modal and the server reason') : fail('discard rollback failed');
   await page.keyboard.press('Escape');
 
-  // Several of one kind are allowed (Ron 2026-09-29): a second post is a second piece.
-  const id2 = await addPiece(page, 'post');
-  const postsOnServer = srv.pieces.filter((p) => p.campaignId === 'camp-1' && p.kind === 'post' && [id1, id2].includes(p.id));
+  // Several of one kind are allowed (Ron 2026-09-29): a second image is a second piece.
+  const id2 = await addPiece(page, 'image');
+  const postsOnServer = srv.pieces.filter((p) => p.campaignId === 'camp-1' && p.kind === 'image' && [id1, id2].includes(p.id));
   (id1 !== id2 && postsOnServer.length === 2)
     ? ok('two pieces of the same kind in one campaign are two server pieces') : fail('same-kind pieces: ' + JSON.stringify(postsOnServer.map((p) => p.id)));
 
@@ -280,7 +308,7 @@ async function assets(browser) {
   await page.click(`[data-what-row][data-family-id="${id}"] [data-add-media]`);
   await page.waitForSelector('.desk-v1-addto-menu button', { timeout: 8000 });
   const labels = await page.$$eval('.desk-v1-addto-menu button', (els) => els.map((e) => e.textContent));
-  (labels.length === 4 && labels[0] === 'From this computer…' && labels[1] === 'Launch shots / a.png' && labels[3] === 'From your projects…') ? ok(`＋ Add media lists computer upload, library files and the project chooser: ${JSON.stringify(labels)}`) : fail('add-media menu: ' + JSON.stringify(labels));
+  (labels.length === 4 && labels[0] === 'From this computer…' && labels[1] === 'From your projects…' && labels[2] === 'Launch shots / a.png') ? ok(`＋ Add media lists computer upload and the project chooser first, then library files: ${JSON.stringify(labels)}`) : fail('add-media menu: ' + JSON.stringify(labels));
   await page.getByRole('menuitem', { name: 'Launch shots / b.png', exact: true }).click();
   await settle(page, (i) => ((window.DeskV1Store.state().families.find((f) => f.id === i) || {}).assets || []).length === 2, id);
   const lib = calls(srv, 'POST', new RegExp(`^/api/desk/pieces/${id}/assets$`));
@@ -401,7 +429,7 @@ async function piecePage(browser) {
   await ctx.close();
 }
 
-// ── 6: writer Save to What -> in review ────────────────────────────────────
+// ── 6: writer Save to Posts -> in review ────────────────────────────────────
 // Where (slice S5) places versions; the helper stands in for it on both sides.
 async function writerPiece(page, srv) {
   const id = await addPiece(page, 'article');
@@ -426,7 +454,7 @@ async function writerSave(browser) {
   const vp = calls(srv, 'PATCH', new RegExp(`^/api/desk/pieces/${id}/versions/v-writer-x$`));
   const pp = calls(srv, 'PATCH', new RegExp(`^/api/desk/pieces/${id}$`));
   (vp.length === 1 && vp[0].body.state === 'needs_review' && Object.keys(vp[0].body).join() === 'state')
-    ? ok('Save to What moves the placed version through M18 as {state: needs_review} and sends no body') : fail('version PATCH: ' + JSON.stringify(vp.map((r) => r.body)));
+    ? ok('Save to Posts moves the placed version through M18 as {state: needs_review} and sends no body') : fail('version PATCH: ' + JSON.stringify(vp.map((r) => r.body)));
   (pp.length === 2 && typeof pp[0].body.body === 'string' && pp[1].body.draft_status === 'in_review')
     ? ok('and M15 persists the article body and draft status') : fail('piece PATCH: ' + JSON.stringify(pp.map((r) => r.body)));
   const sp = srv.pieces.find((p) => p.id === id);
@@ -471,7 +499,7 @@ async function demoCallsNothing(browser) {
   folders === 3 ? ok('demo mode shows the fixture\'s 3 material folders') : fail('demo folders: ' + folders);
   await page.setInputFiles(`[data-what-create][data-family-id="${id}"] [data-what-file]`, { name: 'shot.png', mimeType: 'image/png', buffer: Buffer.from('x') });
   await settle(page, (i) => ((window.DeskV1Store.state().families.find((f) => f.id === i) || {}).assets || []).length === 1, id);
-  const id2 = await addPiece(page, 'post');
+  const id2 = await addPiece(page, 'image');
   await page.fill(`[data-what-create][data-family-id="${id2}"] [data-what-title]`, 'Local only');
   await page.press(`[data-what-create][data-family-id="${id2}"] [data-what-title]`, 'Tab');
   await page.click(`[data-what-create][data-family-id="${id2}"] [data-what-remove]`);

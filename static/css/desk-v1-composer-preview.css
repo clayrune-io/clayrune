@@ -1,0 +1,17 @@
+.desk-v1-composer-layout { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+.desk-v1-composer-layout > * { min-width: 0; }
+.desk-v1-composer-preview { padding: 18px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface2); }
+.desk-v1-composer-preview h2 { margin: 0 0 14px; font-size: 14px; }
+[data-composer-preview-tabs] { display: flex; gap: 6px; overflow-x: auto; margin-bottom: 16px; padding: 2px; }
+[data-composer-preview-tab] { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-height: 44px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 22px; color: inherit; background: transparent; font: inherit; font-size: 12px; cursor: pointer; }
+[data-composer-preview-tab][aria-selected="true"] { border-color: var(--accent); background: var(--accent-dim); font-weight: 700; }
+[data-composer-preview-tab]:focus-visible { outline: 2px solid var(--accent); }
+.desk-v1-composer-preview [data-pv-cut]:not([hidden]) { display: block; border-top: 1px dashed #9da4a9; padding-top: 3px; color: #536471; font: 12px/1.5 -apple-system, "Segoe UI", sans-serif; }
+.desk-v1-composer-preview-length { font-size: 12px; margin: 10px 0 0; }
+.desk-v1-composer-preview-toggle { display: none; }
+@media (max-width: 960px) {
+  .desk-v1-composer-layout { display: block; }
+  .desk-v1-composer-preview-toggle { display: block; min-height: 44px; margin: 0 0 12px auto; }
+  .desk-v1-composer-preview { display: none; margin-top: 16px; padding: 12px; }
+  .desk-v1-composer-layout.is-preview-open .desk-v1-composer-preview { display: block; }
+}

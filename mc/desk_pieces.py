@@ -38,7 +38,9 @@ from pathlib import Path
 from urllib.parse import quote
 
 from mc import desk as _desk
+from mc import desk_piece_names as _names
 from mc.core import _log, now_iso
+from mc.desk_media_formats import MEDIA_FORMAT_ERROR, VIDEO_EXTS
 
 # Wired by server.py (desk_routes.wire(uploads_root=...)): `data/uploads`. None
 # means nothing can be attached or listed, never "anywhere".
@@ -65,7 +67,6 @@ APPROVED_STATES = ('approved', 'scheduled')
 
 ASSET_KINDS = ('image', 'video')
 IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.webp')
-VIDEO_EXTS = ('.mp4', '.mov', '.webm', '.m4v')
 # Per-file caps for an upload (bytes). A video is the big one; an image over
 # 25 MB is a mistake, not a screenshot.
 MAX_UPLOAD_BYTES = {'image': 25 * 1024 * 1024, 'video': 500 * 1024 * 1024}
@@ -112,6 +113,15 @@ def asset_kind_for(filename: str) -> str | None:
         return 'image'
     if ext in VIDEO_EXTS:
         return 'video'
+    # Also accept video formats registered with the host's MIME database.
+    # Keep this in the common classifier so upload, attach and library reads
+    # agree, including formats outside the explicit native-chooser hints.
+    import mimetypes
+    mime, _ = mimetypes.guess_type(filename or '')
+    # SVG is never media here: /api/serve-file serves data/uploads inline
+    # (it sits under a registered project), so an .svg would run script.
+    if mime and mime.split('/', 1)[0] in ('image', 'video') and mime != 'image/svg+xml':
+        return mime.split('/', 1)[0]
     return None
 
 
@@ -145,7 +155,8 @@ def _src_for(rel: str, kind: str) -> str | None:
     root = UPLOADS_ROOT
     if root is None or kind != 'image':
         return None
-    return '/api/serve-image?path=' + quote(str(Path(root).resolve() / rel), safe='')
+    endpoint = '/api/serve-image?path=' if Path(rel).suffix.lower() in IMAGE_EXTS else '/api/serve-file?inline=1&path='
+    return endpoint + quote(str(Path(root).resolve() / rel), safe='')
 
 
 def _play_for(rel: str, kind: str) -> str | None:
@@ -251,6 +262,7 @@ def v1_piece(piece: dict) -> dict:
     out = {
         'id': piece['id'], 'campaignId': piece.get('campaign_id'), 'projectId': piece.get('project_id'),
         'kind': piece.get('kind'), 'title': piece.get('title') or '',
+        'defaultTitle': piece.get('default_title') or None,
         'body': piece.get('body') or '', 'wordCount': piece.get('word_count'),
         'source': piece.get('source'), 'createdAt': piece.get('created_at'),
         'updatedAt': piece.get('updated_at'),
@@ -366,7 +378,7 @@ def create_piece(campaign_id: str, kind: str, title: str = '', *, piece_id: str 
         raise PieceError(f'kind must be one of {", ".join(PIECE_KINDS)}')
     if piece_id is not None and not (isinstance(piece_id, str) and _CLIENT_ID.match(piece_id)):
         raise PieceError('piece id must be 1-80 letters, digits, - or _')
-    title = _clean_text(title, MAX_TITLE, 'title') or f'New {kind}'
+    title = _clean_text(title, MAX_TITLE, 'title')
     body = _clean_text(body, MAX_BODY, 'body')
     word_count = _clean_word_count(word_count)
     source = _clean_source(source)
@@ -378,6 +390,11 @@ def create_piece(campaign_id: str, kind: str, title: str = '', *, piece_id: str 
         if piece_id is not None and piece_id in pieces:
             raise PieceError('a piece with that id already exists', 409)
         now = now_iso()
+        # An unnamed piece gets Video1, Video2, ... (the server owns the name; see
+        # mc/desk_piece_names.py). The old client placeholder `New <kind>` counts as unnamed.
+        serial = None
+        if _names.is_placeholder(title, kind):
+            serial = title = _names.next_serial(pieces, campaign_id, kind)
         piece = {
             'id': piece_id or _desk._new_id('piece'), 'campaign_id': campaign_id,
             'project_id': camp.get('project_id'), 'kind': kind, 'title': title,
@@ -385,6 +402,8 @@ def create_piece(campaign_id: str, kind: str, title: str = '', *, piece_id: str 
             'assets': [], 'claims': claims, 'versions': [], 'draft_status': None,
             'created_at': now, 'updated_at': now,
         }
+        if serial:
+            piece['default_title'] = serial
         pieces[piece['id']] = piece
         _desk._write_store(store)
         return v1_piece(piece)
@@ -644,6 +663,11 @@ def _approval_refusals(store: dict, piece: dict, ver: dict) -> list[str]:
         problems.append('the account this version is for is not in the workspace')
     else:
         pub = desk_accounts.publish_state(acc)
+        if acc.get('capability') == 'assisted':
+            from mc.desk_assisted_post import ROUTES
+            validator = getattr(ROUTES.get(acc.get('platform')), 'validation_errors', None)
+            if validator:
+                problems.extend(validator(_effective_body(piece, ver), piece.get('assets') or []))
         if not pub['ready']:
             problems.append(f"{acc.get('label') or acc.get('identity') or acc['id']} cannot publish: {pub['reason']}")
         elif acc.get('capability') not in ('manual', 'assisted') and (piece.get('kind') == 'video' or piece.get('assets')):
@@ -759,7 +783,7 @@ def add_asset(piece_id: str, *, path: str, title=None, asset_id: str | None = No
     real = _resolve_under_uploads(path)
     kind = asset_kind_for(real.name)
     if kind is None:
-        raise PieceError('only image (png, jpg, gif, webp) and video (mp4, mov, webm, m4v) files can be attached')
+        raise PieceError(MEDIA_FORMAT_ERROR)
     rel = _rel_of(real)
     with _desk._store_lock:
         store = _desk._read_store()
@@ -792,17 +816,25 @@ def remove_asset(piece_id: str, asset_id: str) -> dict:
         return v1_piece(piece)
 
 
-def _write_library_file(filename: str, stream, folder_name: str) -> tuple[Path, str]:
+def _write_library_file(filename: str, stream, folder_name: str, *, media_kind: str | None = None) -> tuple[Path, str]:
     """Write `stream` into the material library under `<kind>/<folder_name>/`
     and return `(dest, kind)`. Validates the type and the size while writing,
     and removes the partial file on any failure, so a refused write leaves
     nothing behind."""
-    kind = asset_kind_for(filename)
-    if kind is None:
-        raise PieceError('only image (png, jpg, gif, webp) and video (mp4, mov, webm, m4v) files can be uploaded')
+    kind = media_kind if media_kind is not None else asset_kind_for(filename)
+    if kind not in ('image', 'video'):
+        raise PieceError(MEDIA_FORMAT_ERROR)
     stem, ext = os.path.splitext(Path(filename).name)
+    if media_kind is not None and asset_kind_for(filename) != kind:
+        # A browser-decoded upload may have no useful filename type. Keep it
+        # extensionless rather than attach a false container/codec suffix.
+        ext = ''
     safe = _SAFE_NAME.sub('_', stem).strip(' ._')[:60] or 'upload'
     folder = _uploads_root().joinpath(*LIBRARY_ROOT, kind, folder_name)
+    try:
+        folder.resolve().relative_to(_uploads_root().joinpath(*LIBRARY_ROOT, kind))
+    except ValueError:
+        raise PieceError('the material library folder points outside its root')
     folder.mkdir(parents=True, exist_ok=True)
     dest = folder / f'{safe}-{uuid.uuid4().hex[:8]}{ext.lower()}'
     cap = MAX_UPLOAD_BYTES[kind]
@@ -834,7 +866,7 @@ def save_upload(piece_id: str, filename: str, stream, *, title=None, asset_id: s
     and removes the file if attaching then fails, so a refused upload leaves
     nothing behind."""
     if asset_kind_for(filename) is None:
-        raise PieceError('only image (png, jpg, gif, webp) and video (mp4, mov, webm, m4v) files can be uploaded')
+        raise PieceError(MEDIA_FORMAT_ERROR)
     with _desk._store_lock:
         _find(_desk._read_store(), piece_id)
     dest, _kind = _write_library_file(filename, stream, UPLOAD_FOLDER)
@@ -863,17 +895,21 @@ def save_to_library(filename: str, stream, *, title=None) -> dict:
 # -- materials (plan M22) ----------------------------------------------------------
 
 def _library_items(kind: str, folder: Path, rel_root: Path) -> list[dict]:
+    import mimetypes
     items = []
-    exts = IMAGE_EXTS if kind == 'image' else VIDEO_EXTS
     try:
-        files = [f for f in folder.iterdir() if f.is_file() and f.suffix.lower() in exts]
+        files = [f for f in folder.iterdir() if f.is_file() and (
+            asset_kind_for(f.name) == kind or
+            # extensionless browser-decoded uploads (save_asset), not OS junk
+            (not f.suffix and not f.name.startswith('.')))]
     except OSError as e:
         _log(f'[desk] material folder unreadable {folder.name}: {e}', flush=True)
         return items
     files.sort(key=lambda f: (-f.stat().st_mtime, f.name))
     for f in files:
         rel = f.resolve().relative_to(rel_root).as_posix()
-        item = {'id': rel, 'kind': kind, 'title': f.name, 'path': rel, 'src': _src_for(rel, kind)}
+        item = {'id': rel, 'kind': kind, 'title': f.name, 'path': rel, 'src': _src_for(rel, kind),
+                'mtime': f.stat().st_mtime}
         if kind == 'video':
             item['play'] = _play_for(rel, kind)
         items.append(item)

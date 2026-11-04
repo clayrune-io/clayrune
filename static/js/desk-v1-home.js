@@ -582,12 +582,14 @@
     const { needsyouKind, campaignId, projectId, versionId, conversationId } = ds;
     if (needsyouKind === 'piece') { deskV1HomeGotoReview(campaignId, versionId); return; }
     // A video row lands in the Studio video editor, under the campaign's What.
-    if (needsyouKind === 'video' && window.DeskV1VideoOpen && window.DeskV1VideoOpen.openFromDeepLink({ campaignId, projectId, versionId })) return;
+    if (needsyouKind === 'video') {
+      if (!window.DeskV1VideoOpen.openFromDeepLink({ campaignId, projectId, versionId })) window.DeskV1Kit.toast('This video no longer exists.');
+      return;
+    }
     // (G-4: no project push — Back returns to Home, where the user came from.)
     // 'retro' lands on ① Goal, where the Retro section and its findings live.
     deskV1Nav('campaign', needsyouKind === 'retro' ? { campaignId, projectId: projectId || null, panel: 'goal' } : { campaignId, projectId: projectId || null });
-    if (needsyouKind === 'video') deskV1Nav('video', { campaignId, versionId });
-    else if (needsyouKind === 'reply') deskV1Nav('conversations', { campaignId, conversationId });
+    if (needsyouKind === 'reply') deskV1Nav('conversations', { campaignId, conversationId });
     // 'held' / 'blocker': the campaign page itself is where that reason renders.
   }
 

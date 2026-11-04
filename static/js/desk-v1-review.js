@@ -248,7 +248,6 @@
         <div class="desk-v1-review-empty">
           <div class="desk-v1-review-empty-title">Nothing needs review</div>
           <div class="desk-v1-review-empty-body">Every piece in this campaign is scheduled, published, skipped or archived.</div>
-          <button type="button" class="desk-v1-stub-link" onclick="deskV1Back()">‹ Back to campaign</button>
         </div>`;
       _clearCrumbTools();
       return;

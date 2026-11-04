@@ -34,6 +34,7 @@ _start_hivemind_orchestrator, _hm_reconcile_stale_on_startup.
 """
 
 import json
+import sys
 import threading
 import uuid
 import time as _time
@@ -47,7 +48,11 @@ import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 
 import mc.agent_worktree as _agent_worktree
 import mc.hivemind_integration as _hm_integration
+import mc.hivemind_integration_cycle as _hm_integration_cycle
 import mc.hivemind_lineage as _hm_lineage
+import mc.hivemind_roster as _hm_roster
+import mc.hivemind_run_roles as _hm_run_roles
+import mc.hivemind_worker as _hm_worker
 import mc.project_sync as _sync
 from mc import engine_selection, obs, state
 from mc.atomic_json import write_json_atomic
@@ -222,10 +227,15 @@ def _hm_pin_worktree_base(hivemind_id, commit):
 def _hm_read_integration(hivemind_id):
     """Integration result (merged / failed / branch) or None."""
     try:
+        if _hm_roster.is_roster_manifest(_hm_load_manifest(hivemind_id) or {}):
+            return _hm_integration_cycle.read(sys.modules[__name__], hivemind_id)
         return json.loads((_hm_dir(hivemind_id) / 'integration.json')
                           .read_text(encoding='utf-8'))
-    except Exception:
+    except FileNotFoundError:
         return None
+    except Exception as exc:
+        _log(f'[hivemind] integration state read failed for {hivemind_id}: {exc}', flush=True)
+        return {'status': 'held', 'reason': 'integration state unreadable; reconciliation required'}
 
 
 def _hm_write_integration(hivemind_id, state_dict):
@@ -238,6 +248,9 @@ def _hm_integrate_thread(hivemind_id):
     orchestrator loop. Always leaves a terminal state behind."""
     try:
         manifest = _hm_load_manifest(hivemind_id) or {}
+        if _hm_roster.is_roster_manifest(manifest):
+            _hm_integration_cycle.start(sys.modules[__name__], hivemind_id)
+            return
         project = load_project(manifest.get('project_id', ''))
         if not project:
             _hm_write_integration(hivemind_id, {
@@ -267,6 +280,8 @@ def _hm_start_integration(hivemind_id):
     """Kick off integration once, when every workstream has completed. The
     'running' marker is written BEFORE the thread starts, so a second call
     (manifest re-completion, restart) sees it and does nothing."""
+    if _hm_roster.is_roster_manifest(_hm_load_manifest(hivemind_id) or {}):
+        return _hm_integration_cycle.start(sys.modules[__name__], hivemind_id)
     if _hm_read_integration(hivemind_id) is not None:
         return False
     _hm_write_integration(hivemind_id, {
@@ -540,6 +555,9 @@ def _hm_reconcile_stale_on_startup():
             # no thread left: say so rather than show 'running' forever. The
             # integration branch/worktree are left as they are for a human.
             _integ = _hm_read_integration(d.name)
+            if _integ and _integ.get('review_cycle_version') == 1:
+                _hm_integration_cycle.recover(sys.modules[__name__], d.name)
+                continue
             if _integ and _integ.get('status') == 'running':
                 _integ['status'] = 'interrupted'
                 _integ['reason'] = 'server restarted mid-integration'
@@ -584,6 +602,14 @@ def hivemind_create():
     p = load_project(project_id)
     if not p:
         return jsonify({'error': 'project not found'}), 404
+
+    # Roster content (BUILTINS-4 HR-1) is validated for the WHOLE request before
+    # anything is saved or a decomposer is dispatched. None = legacy request.
+    try:
+        roster_plan = _hm_roster.plan_create(
+            data, app_config=state.CONFIG, project=p)
+    except _hm_roster.RosterError as exc:
+        return jsonify({'error': str(exc)}), exc.status
 
     # Resolve the lifecycle generation only at creation. Dispatch/resume paths
     # validate this saved value exactly and never resolve a current generation
@@ -632,6 +658,8 @@ def hivemind_create():
             'max_retries_per_workstream': data.get('max_retries', 2),
         },
     }
+    if roster_plan:
+        manifest['config'].update(roster_plan.config)
     _hm_save_manifest(hivemind_id, manifest)
 
     # Initialize empty synthesis
@@ -644,7 +672,7 @@ def hivemind_create():
     created_workstreams = []
     inline_ws = data.get('workstreams') or []
     if inline_ws:
-        for ws_in in inline_ws:
+        for _ws_idx, ws_in in enumerate(inline_ws):
             if not isinstance(ws_in, dict):
                 continue
             title = (ws_in.get('title') or '').strip()
@@ -670,6 +698,8 @@ def hivemind_create():
                 'current_agent_session_id': None,
                 'last_agent_session_id': None,
             }
+            if roster_plan:
+                ws.update(roster_plan.workstream_fields(_ws_idx))
             _hm_save_workstream(hivemind_id, ws_id, ws)
             created_workstreams.append(ws)
         if created_workstreams:
@@ -681,7 +711,8 @@ def hivemind_create():
     if not inline_ws:
         _hm_dispatch_orchestrator(hivemind_id, 'decompose')
 
-    return jsonify({'ok': True, 'hivemind': manifest, 'workstreams': created_workstreams})
+    return jsonify({'ok': True, 'hivemind': manifest, 'workstreams': created_workstreams,
+                    **({'warnings': roster_plan.warnings} if roster_plan else {})})
 
 
 @bp.route('/api/hivemind/list')
@@ -698,7 +729,11 @@ def hivemind_list():
         h['workstreams_completed'] = sum(1 for ws in workstreams if ws.get('status') == 'completed')
         h['workstreams_active'] = sum(1 for ws in workstreams if ws.get('status') == 'active')
         h['total_findings'] = sum(ws.get('findings_count', 0) for ws in workstreams)
-        h['integration_status'] = (_hm_read_integration(h['id']) or {}).get('status')
+        _integ = _hm_read_integration(h['id'])
+        h['integration_status'] = (_integ or {}).get('status')
+        _roles = _hm_run_roles.summarize(h, workstreams, _integ)
+        if _roles is not None:  # roster runs only; legacy rows keep their shape
+            h['roles'] = _roles
         h['updated_relative'] = time_ago(h.get('updated_at'))
     return jsonify(all_hm)
 
@@ -713,14 +748,19 @@ def hivemind_get(hivemind_id):
     recent_messages = _hm_read_bus_messages(hivemind_id, last_n=20)
     decisions = _hm_read_decisions(hivemind_id, last_n=10)
     open_questions = _hm_read_open_questions(hivemind_id)
-    return jsonify({
+    integration = _hm_read_integration(hivemind_id)
+    payload = {
         'manifest': manifest,
         'workstreams': workstreams,
         'recent_messages': recent_messages,
         'decisions': decisions,
         'open_questions': open_questions,
-        'integration': _hm_read_integration(hivemind_id),
-    })
+        'integration': integration,
+    }
+    roles = _hm_run_roles.project(manifest, workstreams, integration)
+    if roles is not None:  # roster runs only; legacy responses are unchanged
+        payload['roles'] = roles
+    return jsonify(payload)
 
 
 @bp.route('/api/hivemind/<hivemind_id>', methods=['PUT'])
@@ -730,15 +770,24 @@ def hivemind_update(hivemind_id):
     if not manifest:
         return jsonify({'error': 'not found'}), 404
     data = request.get_json() or {}
+    config_patch = None
+    warnings = []
+    if 'config' in data and isinstance(data['config'], dict):
+        try:
+            config_patch = _hm_roster.clean_config_update(
+                manifest, data['config'], app_config=state.CONFIG, warnings=warnings,
+                project=load_project(manifest.get('project_id', '')) or None)
+        except _hm_roster.RosterError as exc:
+            return jsonify({'error': str(exc)}), exc.status
     # Update allowed fields
     for key in ('title', 'goal', 'status'):
         if key in data:
             manifest[key] = data[key]
-    if 'config' in data and isinstance(data['config'], dict):
-        manifest['config'].update(data['config'])
+    if config_patch is not None:
+        manifest['config'].update(config_patch)
     manifest['updated_at'] = now_iso()
     _hm_save_manifest(hivemind_id, manifest)
-    return jsonify({'ok': True, 'manifest': manifest})
+    return jsonify({'ok': True, 'manifest': manifest, 'warnings': warnings})
 
 
 @bp.route('/api/hivemind/<hivemind_id>/start', methods=['POST'])
@@ -833,6 +882,14 @@ def hivemind_workstream_create(hivemind_id):
         return jsonify({'error': 'title required'}), 400
 
     ws_id = data.get('id', 'ws_' + str(uuid.uuid4())[:6])
+    try:
+        warnings = []
+        roster_fields = _hm_roster.check_workstream_create(
+            data, ws_id, manifest, app_config=state.CONFIG, warnings=warnings,
+            project=load_project(manifest.get('project_id', '')) or None,
+            ws_exists=lambda wid: _hm_load_workstream(hivemind_id, wid) is not None)
+    except _hm_roster.RosterError as exc:
+        return jsonify({'error': str(exc)}), exc.status
     ws = {
         'id': ws_id,
         'title': data['title'].strip(),
@@ -852,6 +909,7 @@ def hivemind_workstream_create(hivemind_id):
         'current_agent_session_id': None,
         'last_agent_session_id': None,
     }
+    ws.update(roster_fields)
     _hm_save_workstream(hivemind_id, ws_id, ws)
     manifest['updated_at'] = now_iso()
     _hm_save_manifest(hivemind_id, manifest)
@@ -863,7 +921,7 @@ def hivemind_workstream_create(hivemind_id):
         'status': 'pending',
         'workstream': ws,
     })
-    return jsonify({'ok': True, 'workstream': ws})
+    return jsonify({'ok': True, 'workstream': ws, 'warnings': warnings})
 
 
 @bp.route('/api/hivemind/<hivemind_id>/workstreams/<ws_id>', methods=['PUT'])
@@ -873,17 +931,25 @@ def hivemind_workstream_update(hivemind_id, ws_id):
     if not ws:
         return jsonify({'error': 'workstream not found'}), 404
     data = request.get_json() or {}
+    manifest = _hm_load_manifest(hivemind_id)
+    warnings = []
+    try:
+        roster_changes = _hm_roster.check_workstream_update(
+            ws, data, manifest, app_config=state.CONFIG, warnings=warnings,
+            project=load_project((manifest or {}).get('project_id', '')) or None)
+    except _hm_roster.RosterError as exc:
+        return jsonify({'error': str(exc)}), exc.status
     for key in ('title', 'description', 'dependencies', 'priority',
                 'provider', 'model', 'effort', 'status'):
         if key in data:
             ws[key] = data[key]
+    ws.update(roster_changes)
     if 'smokes' in data:
         ws['smokes'] = _hm_integration.clean_smokes(data['smokes'])
     if data.get('status') == 'completed' and not ws.get('completed_at'):
         ws['completed_at'] = now_iso()
     _hm_save_workstream(hivemind_id, ws_id, ws)
 
-    manifest = _hm_load_manifest(hivemind_id)
     if manifest:
         manifest['updated_at'] = now_iso()
         _hm_save_manifest(hivemind_id, manifest)
@@ -895,7 +961,7 @@ def hivemind_workstream_update(hivemind_id, ws_id):
         'status': ws['status'],
         'workstream': ws,
     })
-    return jsonify({'ok': True, 'workstream': ws})
+    return jsonify({'ok': True, 'workstream': ws, 'warnings': warnings})
 
 
 @bp.route('/api/hivemind/<hivemind_id>/workstreams/<ws_id>/status', methods=['POST'])
@@ -945,116 +1011,14 @@ def _hm_write_handoff(hivemind_id, ws_id, content):
 
 
 def _hm_build_worker_context(hivemind_id, ws_id):
-    """Build the system prompt context for a hivemind worker agent."""
-    manifest = _hm_load_manifest(hivemind_id)
-    ws = _hm_load_workstream(hivemind_id, ws_id)
-    if not manifest or not ws:
-        return ''
-
-    port = PORT
-    parts = []
-
-    parts.append(
-        f"You are a specialist agent in a Hivemind analysis.\n"
-        f"Hivemind: {manifest.get('title', '')}\n"
-        f"Overall Goal: {manifest.get('goal', '')}"
-    )
-
-    parts.append(
-        f"YOUR WORKSTREAM: {ws.get('title', ws_id)}\n"
-        f"YOUR BRIEF: {ws.get('description', '')}"
-    )
-
-    # Handoff from previous worker (highest priority context)
-    handoff = _hm_read_handoff(hivemind_id, ws_id)
-    if handoff:
-        parts.append(f"HANDOFF FROM PREVIOUS WORKER:\n{handoff[:4000]}")
-
-    # Accumulated context
-    ctx = _hm_read_context(hivemind_id, ws_id)
-    if ctx:
-        parts.append(f"ACCUMULATED CONTEXT:\n{ctx[:4000]}")
-
-    # Recent findings from this workstream
-    findings = _hm_read_findings(hivemind_id, ws_id, last_n=20)
-    if findings:
-        findings_text = '\n'.join(
-            f"- [{f.get('timestamp', '')[:16]}] {f.get('title', '')}: {f.get('content', '')[:200]}"
-            for f in findings[-20:]
-        )
-        parts.append(f"RECENT FINDINGS FROM THIS WORKSTREAM:\n{findings_text}")
-
-    # Relevant bus messages from other workstreams
-    bus_msgs = _hm_read_bus_messages(hivemind_id, last_n=50, ws_filter=ws_id)
-    if bus_msgs:
-        bus_text = '\n'.join(
-            f"- [{m.get('timestamp', '')[:16]}] {m.get('from', '')} -> {m.get('to', '')}: "
-            f"{m.get('content', '')[:200]}"
-            for m in bus_msgs[-15:]
-        )
-        parts.append(f"RELEVANT MESSAGES FROM BUS:\n{bus_text}")
-
-    # Decisions that affect this workstream
-    decisions = _hm_read_decisions(hivemind_id, last_n=20)
-    relevant = [d for d in decisions if ws_id in d.get('impacts', []) or d.get('workstream') == ws_id]
-    if relevant:
-        dec_text = '\n'.join(
-            f"- {d.get('decision', '')}: {d.get('rationale', '')[:200]}"
-            for d in relevant[-10:]
-        )
-        parts.append(f"DECISIONS THAT AFFECT YOUR WORK:\n{dec_text}")
-
-    # Worker capabilities (API endpoints)
-    parts.append(
-        f"YOUR CAPABILITIES (use curl to call these):\n"
-        f'- Report a finding: curl -s -X POST http://localhost:{port}/api/hivemind/{hivemind_id}/bus/post '
-        f'-H "Content-Type: application/json" '
-        f"""-d '{{"from":"{ws_id}","type":"finding_report","title":"...","content":"...","confidence":"high|medium|low"}}'\n"""
-        f'- Ask a question: curl -s -X POST http://localhost:{port}/api/hivemind/{hivemind_id}/bus/post '
-        f'-H "Content-Type: application/json" '
-        f"""-d '{{"from":"{ws_id}","type":"question","to":"ws_xxx","content":"..."}}'\n"""
-        f'- Report a blocker: curl -s -X POST http://localhost:{port}/api/hivemind/{hivemind_id}/escalate '
-        f'-H "Content-Type: application/json" '
-        f"""-d '{{"from":"{ws_id}","content":"..."}}'\n"""
-        f'- Submit handoff (REQUIRED before marking complete): curl -s -X POST '
-        f'http://localhost:{port}/api/hivemind/{hivemind_id}/workstreams/{ws_id}/handoff '
-        f'-H "Content-Type: application/json" '
-        f"""-d '{{"what_was_done":"...","key_findings_summary":"...","next_worker_should":"..."}}'\n"""
-        f'- Mark complete: curl -s -X POST http://localhost:{port}/api/hivemind/{hivemind_id}/workstreams/{ws_id}/status '
-        f'-H "Content-Type: application/json" '
-        f"""-d '{{"status":"completed"}}'"""
-    )
-
-    parts.append(
-        "RULES:\n"
-        "1. Build on accumulated context — do NOT repeat analysis already completed\n"
-        "2. Report findings as you discover them (do not batch at the end)\n"
-        "3. Reference evidence and data for all findings\n"
-        "4. If you need information from another workstream, ask via the bus\n"
-        "5. If you encounter a decision point that affects other workstreams, escalate\n"
-        "6. Do NOT write to the project MEMORY.md — your findings go to the bus only\n"
-        "7. TWO-PHASE PROTOCOL:\n"
-        "   PHASE 1 — Do your analysis. Post findings to the bus as you discover them.\n"
-        "   PHASE 2 — When done, submit a handoff document via the handoff endpoint, "
-        "then mark your workstream complete. Do NOT skip Phase 2."
-    )
-
-    # Universal Clayrune awareness — same source of truth as regular agents.
-    # See _clayrune_universal_capabilities().
-    parts.extend(_clayrune_universal_capabilities(port=port))
-
-    # Pointer card, not the full 19.9 KB reference (same card regular agents
-    # get — see _CLAYRUNE_API_POINTER_CARD in agent_routes.py for the
-    # measured numbers behind dropping the full-file injection).
-    parts.append(_clayrune_api_pointer_card(port, manifest.get('project_id', '')))
-
-    return "\n\n".join(parts)
+    return _hm_worker.build_worker_context(sys.modules[__name__], hivemind_id, ws_id)
 
 
 def _hm_runtime_dispatch(*, provider_name, project_id, project_path, task,
                          system_prompt, model, effort, session_id,
                          session_dict, project_generation, metadata=None,
-                         callbacks=None, max_turns=None):
+                         callbacks=None, max_turns=None, prepared_context=None,
+                         resume_id=''):
     """Dispatch one Hivemind process through the provider-neutral runtime.
 
     The blueprint supplies only Hivemind context and durable session metadata.
@@ -1106,126 +1070,22 @@ def _hm_runtime_dispatch(*, provider_name, project_id, project_path, task,
             session_metadata=metadata or {},
             callbacks=callbacks or {},
             register_process=_register_process,
+            **({'prepared_context': prepared_context} if prepared_context is not None else {}),
+            **({'source': 'agent'} if prepared_context is not None else {}),
+            **({'resume_id': resume_id} if resume_id else {}),
         )
-    except Exception:
+    except Exception as exc:
         # Preserve the session entry so status, failure reason and any runtime
         # diagnostics remain visible to the caller; the runtime owns the exact
         # provider failure text and status transition.
+        _hm_worker.record_launch_failure(session_dict, exc)
         raise
     return session_id
 
 
 def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
-    """Spawn a Hivemind worker through AgentRuntime for every provider."""
-    project_id = p.get('id', '')
-    worker_context = _hm_build_worker_context(hivemind_id, ws_id)
-    from mc import engine_selection
-    _cfg = manifest.get('config', {}) or {}
-    _manifest_worker_provider = (_cfg.get('worker_provider') or '').strip().lower()
-    _ws_provider = (ws.get('provider') or '').strip().lower()
-    # The manifest's `worker_model` default (e.g. 'sonnet') was computed ONCE
-    # at hivemind-create time FOR THE MANIFEST-LEVEL worker_provider (which
-    # may itself be an inherited default, e.g. the project's own provider --
-    # see hivemind_create). A workstream that names its OWN, DIFFERENT
-    # provider must not inherit that string: it belongs to another vendor's
-    # model catalog entirely (2026-09-18, W5 live test -- found this blocking
-    # EVERY mixed-vendor workstream that didn't also set its own `model`,
-    # with a confusing "Model 'sonnet' belongs to provider 'aider'" refusal
-    # from `engine_selection.model_provider_mismatch`'s cross-catalog search).
-    # Only inherit the manifest's model default when this workstream is
-    # actually using the manifest's own default provider (or has none of its
-    # own) -- otherwise fall through to `model_override=None`, which resolves
-    # the DESTINATION provider's own native default via the safe inherit path
-    # in `engine_selection.resolve_model`.
-    _model_fallback = (
-        _cfg.get('worker_model') or ''
-        if not _ws_provider or _ws_provider == _manifest_worker_provider
-        else '')
-    engine = engine_selection.resolve_engine(
-        state.CONFIG, p, legacy_default='claude',
-        provider_override=(ws.get('provider') or _manifest_worker_provider or ''),
-        model_override=(ws.get('model') or _model_fallback or None))
-    model = engine.model
-    effort = (ws.get('effort') or
-              manifest.get('config', {}).get('worker_effort') or '')
-    task = (
-        f"You are a Hivemind worker for workstream: {ws.get('title', ws_id)}.\n"
-        f"Brief: {ws.get('description', '')}\n\n"
-        f"Begin your analysis. Follow the two-phase protocol described in your system prompt."
-    )
-    session_id = f'hm_{uuid.uuid4().hex[:8]}'
-    # Worktree isolation (e3c0824e): the SAME decision dispatched agents make
-    # (`_maybe_isolate_worktree` — git repo, isolation setting, per-project
-    # opt-out), minus the "first agent" gate: workers are parallel by
-    # construction and housekeeping sessions aren't counted by it. Any failure
-    # falls back to the shared tree, exactly as for a dispatched agent.
-    from mc.blueprints import agent_routes as _agent_routes
-    run_cwd, isolated = _agent_routes._maybe_isolate_worktree(
-        p, session_id, always=True, base_ref=_hm_worktree_base(hivemind_id) or 'HEAD')
-    if isolated:
-        _ok, _base = _sync.git_run(run_cwd, ['rev-parse', 'HEAD'], timeout=15)
-        if _ok:
-            _hm_pin_worktree_base(hivemind_id, _base)
-        ws['worktree_session_id'] = session_id
-        ws['worktree_branch'] = _agent_worktree.branch_name(session_id)
-        ws['base_commit'] = _base if _ok else ''
-        task += (
-            f"\n\nYou are working in an isolated git worktree on branch "
-            f"{ws['worktree_branch']}. Commit your changes there before you "
-            f"finish; do not merge, push, or switch branches. The hivemind "
-            f"integrates finished workstreams onto its own integration branch.")
-    provider_name = engine.provider
-    max_turns = (manifest.get('config', {}).get('worker_max_turns', 0) or
-                 state.CONFIG.get('agent_max_turns', 0))
-
-    pre_session = {
-        'status': 'running',
-        'task': task,
-        'log_lines': TimestampedLines(),
-        'started_at': now_iso(),
-        'session_id': session_id,
-        'project_id': project_id,
-        'mode': 'A',
-        'housekeeping': True,
-        'hivemind_id': hivemind_id,
-        'hivemind_ws_id': ws_id,
-        'trigger_type': 'hivemind_worker',
-        'trigger_id': ws_id,
-        'provider': provider_name,
-        'model': model,
-        'effort': effort,
-        'requested_effort': effort,
-        'process_alive': True,
-        'last_output_time': _time.time(),
-        'last_status_change_time': _time.time(),
-        'guardian_state': None,
-        'recovery_attempts': 0,
-        'last_recovery_time': 0,
-        'pending_recovery_message': None,
-        'circuit_breaker_tripped': False,
-        '_dispatch_time': _time.time(),
-        # Same keys `_dispatch_via_runtime` stamps on a dispatched agent, so
-        # respawns, LOC attribution and Floor display read a worker like any
-        # other isolated agent.
-        '_agent_cwd': run_cwd,
-        '_worktree_isolated': isolated,
-        **_hm_lineage.worker_metadata(manifest),
-    }
-    metadata = {
-        'hivemind_id': hivemind_id,
-        'hivemind_ws_id': ws_id,
-        'trigger_type': 'hivemind_worker',
-        'trigger_id': ws_id,
-        'housekeeping': True,
-        **_hm_lineage.worker_metadata(manifest),
-    }
-    return _hm_runtime_dispatch(
-        provider_name=provider_name, project_id=project_id, project_path=run_cwd,
-        task=task, system_prompt=worker_context, model=model, effort=effort,
-        session_id=session_id, session_dict=pre_session,
-        project_generation=manifest.get('project_generation'),
-        metadata=metadata,
-        max_turns=(int(max_turns) if max_turns and int(max_turns) > 0 else None))
+    return _hm_worker.spawn_worker(
+        sys.modules[__name__], manifest, ws, p, hivemind_id, ws_id)
 
 
 @bp.route('/api/hivemind/<hivemind_id>/workstreams/<ws_id>/spawn', methods=['POST'])
@@ -2076,7 +1936,8 @@ def hivemind_runs(hivemind_id):
     """Return paginated agent_log entries for this hivemind.
 
     Query params:
-      role=orchestrator|worker  (default: both)
+      role=orchestrator|worker|reviewer  (default: all; reviewer is roster-only,
+                                and worker excludes reviewers on roster runs)
       ws_id=<workstream_id>     (default: any)
       limit=<n>                 page size (default 50, max 200)
       offset=<n>                rows to skip (default 0)
@@ -2105,7 +1966,11 @@ def hivemind_runs(hivemind_id):
         return jsonify({'runs': [], 'total': 0, 'offset': 0, 'limit': limit})
     log = _load_agent_log(pid)
     runs = [e for e in log if e.get('hivemind_id') == hivemind_id]
-    if role == 'orchestrator':
+    roster_run = _hm_run_roles.is_roster(manifest)
+    role_counts = _hm_run_roles.role_counts(runs) if roster_run else None
+    if roster_run:
+        runs = _hm_run_roles.filter_runs(runs, role)
+    elif role == 'orchestrator':
         runs = [e for e in runs if e.get('hivemind_role') == 'orchestrator']
     elif role == 'worker':
         runs = [e for e in runs if e.get('hivemind_role') != 'orchestrator']
@@ -2113,9 +1978,14 @@ def hivemind_runs(hivemind_id):
         runs = [e for e in runs if e.get('hivemind_ws_id') == ws_id]
     total = len(runs)
     page = runs[offset:offset + limit]
-    return jsonify({
-        'runs': _enrich_run_entries(page),
+    enriched = _enrich_run_entries(page)
+    body = {
+        'runs': enriched,
         'total': total,
         'offset': offset,
         'limit': limit,
-    })
+    }
+    if roster_run:  # reviewers are a distinct seat, never counted as workers
+        body['runs'] = [_hm_run_roles.annotate_run(e) for e in enriched]
+        body['role_counts'] = role_counts
+    return jsonify(body)

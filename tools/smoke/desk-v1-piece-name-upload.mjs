@@ -55,6 +55,9 @@ try {
     assert.equal(await page.textContent('.desk-v1-crumb-title'), 'Autumn launch update');
     await page.click('#desk-v1-undo');
     await page.waitForFunction(() => document.querySelector('.desk-v1-piece-title').textContent === 'New post');
+    // C2 retires the generic Post media picker. Keep the generic upload and
+    // rename regression on an image piece; composer ingestion has its own smoke.
+    await page.evaluate(() => { window.DeskV1Store.state().families.find(f => f.id === 'fam-30-testers').kind = 'image'; window.deskV1PieceRepaint(); });
     await page.click('[data-piece-media] [data-add-media]');
     const demoChooser = page.waitForEvent('filechooser');
     await page.getByRole('menuitem', { name: 'From this computer…', exact: true }).click();
@@ -102,7 +105,7 @@ try {
         if (file.name === 'big.mp4') Object.defineProperty(file, 'size', { value: 501 * 1024 * 1024 });
         window.DeskV1LocalUpload.open(fam, () => { window.__localValidation++; });
         const el = document.querySelector('[data-piece-local-upload="validation"]');
-        if (el.accept !== 'video/*') throw new Error('video accept mismatch');
+        if (!el.accept.includes('.mp4') || !el.accept.includes('video/mp4')) throw new Error('video accept mismatch');
         Object.defineProperty(el, 'files', { value: [file] });
         el.dispatchEvent(new Event('change'));
       }
@@ -110,6 +113,15 @@ try {
       document.querySelector('[data-piece-local-upload="validation"]').dispatchEvent(new Event('cancel'));
     });
     assert.equal(await page.evaluate(() => window.__localValidation), 0);
+    await page.evaluate(() => {
+      const formats = window.DeskV1MediaFormats;
+      for (const ext of formats.videoExtensions) {
+        if (formats.error(new File(['clip'], 'video.' + ext, { type: '' }), 'video')) throw new Error('Rejected video extension ' + ext);
+        if (!formats.videoAccept.includes('.' + ext)) throw new Error('Missing chooser extension ' + ext);
+      }
+      if (formats.error(new File(['clip'], 'unknown.format', { type: 'video/x-host-player' }), 'video')) throw new Error('Rejected video MIME');
+      if (!formats.error(new File(['bad'], 'program.exe'), 'video').includes('500 MB')) throw new Error('Missing size in rejection');
+    });
     await page.click('#desk-v1-undo');
     await page.waitForFunction(() => window.__savedTitle === 'New post');
     await page.evaluate(() => { window.__refuse = true; });

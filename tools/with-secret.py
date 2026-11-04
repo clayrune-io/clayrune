@@ -70,6 +70,14 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+# Engines start this script as an MCP server in their own working folder. On
+# Windows a bare program name (node, git, npx...) is looked up in the current
+# directory before PATH, so a node.exe planted in that folder would beat the
+# real one. Switch that off for this process and the child before anything is
+# spawned; _resolve_program below also turns the name into an absolute path.
+if os.name == 'nt':
+    os.environ['NoDefaultCurrentDirectoryInExePath'] = '1'
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from mc import secrets_store as vault  # noqa: E402
@@ -160,6 +168,42 @@ def _environ_without(names: list[str]) -> dict:
     nt = os.name == 'nt'
     drop = {n.upper() for n in names} if nt else set(names)
     return {k: v for k, v in os.environ.items() if (k.upper() if nt else k) not in drop}
+
+
+def _resolve_program(name: str) -> str:
+    """A bare program name as an absolute path from an absolute PATH entry that
+    is not the current directory, mirroring what CreateProcess would pick
+    (Windows: the name as given if it has an extension, else name + '.exe').
+    A relative PATH entry such as '.' and the working folder itself are skipped,
+    so a program planted in the folder the engine started us in never wins.
+    A name with a path in it, or one not found, is returned unchanged (the
+    variable set at the top of this file still keeps the working folder out)."""
+    if not name or os.path.basename(name) != name:
+        return name
+    try:
+        here = Path.cwd().resolve()
+    except OSError:
+        here = None
+    if os.name == 'nt':
+        listed = [e.lower() for e in os.environ.get('PATHEXT', '.COM;.EXE;.BAT;.CMD').split(';') if e]
+        candidates = [name] if os.path.splitext(name)[1].lower() in listed else [name + '.exe']
+    else:
+        candidates = [name]
+    for entry in os.environ.get('PATH', '').split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if not entry or not os.path.isabs(entry):
+            continue
+        try:
+            folder = Path(entry).resolve()
+        except OSError:
+            continue
+        if here is not None and folder == here:
+            continue
+        for cand in candidates:
+            found = folder / cand
+            if found.is_file() and (os.name == 'nt' or os.access(found, os.X_OK)):
+                return str(found)
+    return name
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -257,6 +301,9 @@ def main(argv: list[str] | None = None) -> int:
     except vault.SecretsError as e:
         print(f"with-secret: {e}", file=sys.stderr)
         return 2
+
+    # Never start a bare name: see _resolve_program.
+    cmd = [_resolve_program(cmd[0]), *cmd[1:]]
 
     if args.raw:
         proc = subprocess.run(

@@ -204,7 +204,7 @@ def test_the_campaigns_own_pick_wins_over_the_projects_agent(env, monkeypatch):
     answer['text'] = _reply('hooks first')
     out = _say(client).get_json()
     assert out['agent'] == {'ref': 'global:marlow', 'name': 'Marlow'} and out['turns'][1]['agent'] == 'Marlow'
-    assert 'You are Marlow' in calls[0]['system_prompt'] and 'no tools' in calls[0]['system_prompt']
+    assert 'You are Marlow' in calls[0]['system_prompt'] and 'capabilities explicitly supplied' in calls[0]['system_prompt']
 
 
 # -- what the agent is sent --------------------------------------------------------------

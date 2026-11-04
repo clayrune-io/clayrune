@@ -259,12 +259,15 @@ class TestQwenMcp:
         out = json.loads(ar._runtime_mcp_config_json(p, 'qwen'))
         assert out == {'mcpServers': {'web': {'httpUrl': 'https://h/mcp'}}}
 
-    def test_other_providers_unchanged(self, ar):
-        # claude/codex read the project's MCP config natively — this resolver
-        # is only consulted for the gemini-cli-shaped providers (qwen and, as
-        # of vendor-parity gap 3, gemini itself). See TestGeminiMcp below.
+    def test_other_providers_unchanged(self, ar, monkeypatch):
+        # Claude still discovers natively. BUILTINS-7b gives Codex canonical
+        # definitions; Qwen's httpUrl conversion must not leak into them.
+        from mc import state
+        monkeypatch.setitem(state.CONFIG, 'clayrune_mcp_enabled', False)
         assert ar._runtime_mcp_config_json({'project_path': '/p'}, 'claude') == ''
-        assert ar._runtime_mcp_config_json({'project_path': '/p'}, 'codex') == ''
+        assert json.loads(ar._runtime_mcp_config_json({'project_path': '/p'}, 'codex')) == {
+            'mcpServers': {'clayrune_fixture': FIXTURE,
+                           'web': {'type': 'http', 'url': 'https://h/mcp'}}}
 
     def test_dispatch_site_uses_it(self, ar):
         src = inspect.getsource(ar._dispatch_via_runtime)
@@ -386,6 +389,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
     monkeypatch.setattr(ar._memory_turn, 'refresh_for_turn', lambda *a, **k: {'block': ''})
     monkeypatch.setattr(ar._behavior_tail, 'render', lambda *a, **k: '')
+    monkeypatch.setattr(ar, '_clock_wrap', lambda project, session, content, message=None: content)  # exact-bytes tests; stamp covered in test_turn_clock.py
     monkeypatch.setattr(ar, '_fresh_context_for', lambda *a, **k: 'FRESH CONTEXT')
     monkeypatch.setitem(mc_state.CONFIG, 'context_rollover_tokens', 200_000)
     activity = []

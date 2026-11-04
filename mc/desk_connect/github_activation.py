@@ -134,22 +134,57 @@ def start(scope: str, project_id: str | None, name: str, fingerprint: str) -> No
     if why:
         raise RuntimeError(why)
     from mc.desk_connect import custom_npm_gate, custom_npm_node_paths
-    if Path(op['command']).stem.lower()=='node':
-        issue=custom_npm_gate.ancestor_problem(op,Path(op['directory']).parent) or custom_npm_node_paths.problem(op,['--',op['command']])
+    # Resolve a bare program name to an absolute path BEFORE anything runs in the approved directory:
+    # on Windows a bare name is looked up in the current directory first, so a planted node.exe there wins.
+    command=resolve_command(op['command'],op['directory'])
+    if Path(command).stem.lower()=='node':
+        issue=custom_npm_gate.ancestor_problem(op,Path(op['directory']).parent) or custom_npm_node_paths.problem(op,['--',command])
         if issue:
             raise RuntimeError(issue['message'])
-    command=op['command'];argv=[command,*op['args']]
+    argv=[command,*op['args']]
     if op['credentials']:
         flags=npm.wrapper_flags(op)
         argv=[sys.executable,str(npm._base.wrapper_path()),*flags,command,*op['args']]
         command=sys.executable
-    os.chdir(op['directory'])
     env=custom_npm_node_paths.child_env(op['strip_env'])
-    _launch(command,argv,env)
+    _launch(command,argv,env,op['directory'])
 
-def _launch(command: str, argv: list, env: dict) -> None:
+def resolve_command(command: str, directory: str) -> str:
+    """A bare program name as an absolute path found on PATH only: never the current directory, never a
+    relative PATH entry, never a folder inside the approved `directory`. A name with a path in it is returned
+    unchanged. Raises RuntimeError when the program cannot be found."""
+    if os.path.basename(command)!=command:
+        return command
+    try:
+        base=Path(directory).resolve()
+    except OSError:
+        base=Path(directory)
+    exts=['']
+    if os.name=='nt':
+        listed=[e for e in os.environ.get('PATHEXT','.COM;.EXE;.BAT;.CMD').split(';') if e]
+        exts=[''] if command.lower().endswith(tuple(e.lower() for e in listed)) else []
+        exts+=listed
+    for entry in os.environ.get('PATH','').split(os.pathsep):
+        entry=entry.strip().strip('"')
+        if not entry or not os.path.isabs(entry):
+            continue
+        try:
+            folder=Path(entry).resolve()
+        except OSError:
+            continue
+        if folder==base or base in folder.parents:
+            continue
+        for ext in exts:
+            found=folder/(command+ext)
+            if found.is_file() and (os.name=='nt' or os.access(found,os.X_OK)):
+                return str(found)
+    raise RuntimeError(f'Clayrune could not find "{command}" on PATH (outside the repository folder), so it did not start the repository.')
+
+def _launch(command: str, argv: list, env: dict, cwd: str | None = None) -> None:
     # Windows os.exec* neither quotes arguments ('C:\Program Files\...' splits at the space)
     # nor replaces the process (the agent sees its server exit at once). Same split as custom_npm_gate.
     if os.name!='nt':
+        if cwd:
+            os.chdir(cwd)                                   # exec replaces this process, so no other thread sees the change
         os.execvpe(command,argv,env)
-    sys.exit(subprocess.call(argv,env=env))
+    sys.exit(subprocess.call(argv,env=env,cwd=cwd))

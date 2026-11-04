@@ -57,6 +57,10 @@ os.environ.pop("MC_RESTART_FROM_PID", None)
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Shared spawn/route fixtures are imported by several test modules. Their
+# opt-in MCP dependency must be visible to every importing module as well.
+from codex_mcp_fixture import codex_mcp_cli  # noqa: E402,F401
+
 # ── pytest's temp root is per-USER, not per-checkout (MC-965) ────────────────
 # `%TEMP%/pytest-of-<user>` is shared by every checkout and every worktree on
 # the box, so concurrent agent runs land in one numbered-dir space and one run
@@ -607,3 +611,20 @@ def _desk_publish_username_cache_empty():
         return
     desk_publish._username_cache.clear()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _codex_live_usage_never_spawns(monkeypatch):
+    """The usage bar asks the real `codex app-server` when its rollout sample
+    is stale (mc/codex_live_usage.py). Fixture rollouts here are dated in the
+    past, so without this every usage test would spawn the operator's codex.
+    Tests of the live path set their own `_read_snapshot`."""
+    try:
+        from mc import codex_live_usage
+    except Exception:
+        yield
+        return
+    codex_live_usage.reset_for_tests()
+    monkeypatch.setattr(codex_live_usage, "_read_snapshot", lambda: None)
+    yield
+    codex_live_usage.reset_for_tests()

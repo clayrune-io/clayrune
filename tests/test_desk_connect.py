@@ -152,7 +152,7 @@ def test_known_hosts_say_what_is_supported(env):
     assert {o['open'] for o in r['options'] if o.get('open')} == {'engine:higgsfield_mcp', 'engine:higgsfield'}
     r, rows = _rows(client, 'https://www.linkedin.com/company/clayrune')
     assert rows[('oauth', 'restricted')] and 'open' not in rows[('oauth', 'restricted')]
-    for url in ('https://www.youtube.com/@x', 'https://drive.google.com/drive', 'https://photos.google.com/'):
+    for url in ('https://drive.google.com/drive', 'https://photos.google.com/'):
         r, rows = _rows(client, url)
         assert r['service'] and [o for o in r['options'] if o['support'] == 'info_only' and o['method'] == 'oauth'], url
 

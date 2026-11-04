@@ -62,6 +62,7 @@ import uuid
 from mc.core import _atomic_write_text, _log, now_iso
 from mc import distiller as _distiller
 from mc import desk_campaign_hold as _hold
+from mc import desk_campaign_trash as _trash
 from mc.desk_pane_pages import PANE_ONLY_PLATFORMS
 from mc.desk_campaign_term import MAX_TERM_DAYS, prepare_campaign_patch
 
@@ -279,6 +280,8 @@ def _migrate_store(data: dict) -> dict:
     for cid, camp in list(campaigns.items()):
         campaigns[cid] = _migrate_campaign_record(camp)
     data['ledger'] = [_migrate_ledger_row(dict(row)) for row in (data.get('ledger') or [])]
+    from mc import desk_piece_names  # lazy: desk_pieces imports this module
+    desk_piece_names.backfill(data)
     playbook = data.setdefault('playbook', {})
     playbook.setdefault('findings', {})
     playbook.setdefault('rejections', [])
@@ -350,6 +353,7 @@ def _empty_presence(project_id: str) -> dict:
         'ceilings': {},
         'replies': 'drafts',
         'desk_agent': None,
+        'product_docs': None,
         'budget': dict(_DEFAULT_PRESENCE_BUDGET),
         'measurement': [],
         'updated_at': None,
@@ -362,7 +366,7 @@ def get_presence(project_id: str) -> dict | None:
     return store['presences'].get(project_id)
 
 
-def upsert_presence(project_id: str, patch: dict) -> dict:
+def upsert_presence(project_id: str, patch: dict, *, project: dict | None = None) -> dict:
     """Merge `patch` onto the project's presence record, creating it if new.
 
     Accepts an old-shaped `production` key defensively (a caller PUTting a
@@ -370,6 +374,9 @@ def upsert_presence(project_id: str, patch: dict) -> dict:
     before the merge so it never lands in the store under its old name.
     """
     patch = dict(patch or {})
+    if 'product_docs' in patch:
+        from mc.desk_product_context import validate_product_docs
+        patch['product_docs'] = validate_product_docs(patch['product_docs'], project)
     if 'production' in patch and 'budget' not in patch:
         patch['budget'] = patch.pop('production')
     with _store_lock:
@@ -1438,8 +1445,8 @@ def _clean_campaign_when(value, store: dict, campaign_id: str) -> dict:
                 if vid not in placed:
                     raise ValueError(f'slot {sid!r} is filled with a version this campaign does not have')
                 if filled.get('channelId') not in (None, placed[vid]):
-                    raise ValueError(f'slot {sid!r} names an account other than the one Where placed that '
-                                     'version on; When sets times, it does not move a message')
+                    raise ValueError(f'slot {sid!r} names an account other than the one assigned to that '
+                                     'version; When sets times, it does not move a message')
             clean['filled'] = dict(filled)
         out.append(clean)
     return {'slots': out}
@@ -1869,19 +1876,25 @@ def renew_campaign(campaign_id: str, *, by: str = 'human', today: str | None = N
 
 
 def delete_campaign(campaign_id: str) -> bool:
+    # A deleted campaign takes its pieces (and their storyboards) with it (R1-W
+    # S4): nothing else can reach them, and an orphan would still show up in
+    # M1's `pieces`. They go to the trash, not away, so the Desk's Undo can put
+    # them back (mc/desk_campaign_trash.py).
     with _store_lock:
         store = _read_store()
-        if campaign_id not in store['campaigns']:
+        if not _trash.stash(store, campaign_id):
             return False
-        del store['campaigns'][campaign_id]
-        # A deleted campaign takes its pieces with it (R1-W S4): nothing else can
-        # reach them, and an orphan would still show up in M1's `pieces`.
-        pieces = store.get('pieces') or {}
-        for pid in [k for k, p in pieces.items() if p.get('campaign_id') == campaign_id]:
-            pieces.pop(pid, None)
-            store.get('storyboards', {}).pop(f'piece:{pid}', None)   # mc/desk_storyboard.py
         _write_store(store)
         return True
+
+
+def restore_campaign(campaign_id: str) -> dict:
+    """Undo of `delete_campaign`. Raises desk_campaign_trash.RestoreError."""
+    with _store_lock:
+        store = _read_store()
+        camp = _trash.restore(store, campaign_id)
+        _write_store(store)
+        return camp
 
 
 # -- Goal: what a v1 client may write, and what the server derives (R1-W S3) ---
@@ -2260,6 +2273,7 @@ def v1_workspace(projects: Iterable[dict]) -> dict:
     family shape (`mc.desk_pieces.v1_piece`), oldest first."""
     with _store_lock:
         store = _read_store()
+    from mc.desk_product_context import presence_materials
     presences = store['presences']
     rows = []
     for p in projects:
@@ -2273,11 +2287,12 @@ def v1_workspace(projects: Iterable[dict]) -> dict:
             'state': pres.get('state') or 'active',
             'roster': [r.get('character') for r in (p.get('roster') or [])
                        if isinstance(r, dict) and r.get('character') and not r.get('removed_at')],
-            'presence': {
+            'presence': presence_materials(p, {
                 'replies': pres.get('replies') or 'drafts',
                 'desk_agent': pres.get('desk_agent'),
                 'state': pres.get('state') or 'active',
-            },
+                'product_docs': pres.get('product_docs'),
+            }),
         })
     camps = sorted(store['campaigns'].values(), key=lambda r: r.get('created_at') or '', reverse=True)
     return {

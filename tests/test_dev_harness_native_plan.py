@@ -80,6 +80,30 @@ def test_inspect_immutable_roundtrip_no_approval_or_command(inputs):
     assert store.read('one')['native_plan'] == value['plan']
 
 
+def test_activation_waits_for_landing_before_snapshot_cas(inputs):
+    import threading
+    from mc.landing_serialization import landing
+    proposal = inspect(inputs)
+    entered, finished, errors = threading.Event(), threading.Event(), []
+    def activate():
+        entered.set()
+        try:
+            approve(inputs, proposal)
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            finished.set()
+    with landing(Path(inputs[1]['project_path'])):
+        thread = threading.Thread(target=activate)
+        thread.start()
+        assert entered.wait(1)
+        assert not finished.wait(.1)
+        assert inputs[0].read('one') is None
+    thread.join(10)
+    assert finished.is_set() and not errors
+    assert inputs[0].read('one')['revision'] == 1
+
+
 @pytest.mark.parametrize('raw', ['{"x":1,"x":2}', '{"x":NaN}', '{"x":Infinity}', '{"x":1e999}', ' ' * (plans.MAX_PLAN_BYTES+1)],
                          ids=['duplicate', 'nan', 'infinity', 'overflow', 'size-limit'])
 def test_strict_json(raw):

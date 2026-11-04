@@ -1,7 +1,7 @@
 # DH-M5 contract: approved native checks and managed landing
 
 MC-960 / `d813ea78`, DH-M5 A1, 2026-10-29, Sol_Tobin.
-**Proposed contract for Dave's review; no runtime implementation or activation.**
+**A1 contract approved by Dave (section 9); A2b branch candidate noted in section 10.**
 This is section 10.1a's sibling addendum to [the specification](DEV_HARNESS_SPEC.md).
 Authority is Dave's `DECIDED WITHOUT RON: DH-M5 scope, option A, staged` journal
 entry. Dave reviews A1 before dispatching A2. The
@@ -503,3 +503,51 @@ any conflicting line above.
    could never activate Enforce. `pytest`/`vitest` remain eligible as the
    required P02 checks. Reopen in M6 once a full-scope coverage measurement
    is defined.
+
+### 9.1 Dave amendment (2026-10-30): integration inputs and inactive bypass
+
+Authority: Dave's **2026-10-30 DECIDED WITHOUT RON: A2b integration boundary
+(answer to Sol_Tobin's contract gate)** entry in the main checkout's
+`docs/_journal/d813ea78-dev-harness.md`. This amendment overrides conflicting
+integration-path manifest/cleanliness requirements in sections 5 and 8.
+
+1. **Inactive landing bypasses source freezing entirely.** Mode Off, no snapshot,
+   and planless Preview landings call no manifest or harness source-freeze
+   function. Existing review and serialization remain; Git retains its merge
+   refusal. Intact inactive state must not become a standards hold because of
+   runtime files or manifest limits.
+   Installed child hooks retain exact B/H/T leases using Git-only tree/index
+   metadata, without hashing source or waiting again on the parent's lock;
+   inactive pending pins are never accepted as native execution descriptors.
+2. **Private integration identity is HEAD, full index and tracked working bytes.**
+   Apply it to managed candidate prepare/revalidate, pending/source validation,
+   coordinator/registered-checkout checks and trusted execution. Nonignored
+   untracked runtime paths neither enter that identity nor invalidate it when
+   rewritten. Server-built integration requests and later reads use the same
+   private seam. Native checks still execute only the exact disposable T.
+3. **Keep the other boundaries.** Ordinary/manual `freeze_candidate` retains
+   its original all-untracked dirty refusal. Dirty Preview S and activation
+   measurement retain full untracked manifests and their size limits. Tracked
+   dirty target, incoming and registered main checkouts still refuse active
+   integration. Git's refusal to overwrite a colliding untracked path remains
+   authoritative; nothing removes, stages or ignores that user's file.
+4. **Required proof:** large/changing untracked files permit inactive and active
+   landing, including real native execution and child hooks; untracked collisions
+   and tracked dirt refuse and preserve work; source/index/ref drift still
+   invalidates evidence. Run the required regression and scoped Pyright before
+   committing branch-only. No merge, push, restart or live mutation authorized.
+
+Why: untracked runtime outputs are not part of a committed merge. Hashing them
+made every live install vulnerable to size-limit holds and continuous input
+drift, while requiring unrelated runtime-output relocation to enable the gate.
+
+## 10. A2b implementation status (branch candidate)
+
+The [handoff section 9](DEV_HARNESS_M5_PLAN_CONTRACT.md#9-a2b-implementation-candidate)
+records the A2b implementation, ownership, verification and remaining M6 limits.
+Applicability, pending-index execution, common-repository serialization/leases,
+trusted receipts/coordinator, existing-job dispatch and thin managed/manual
+landing composition are implemented on the builder branch. A2a remains the
+approval/evidence owner. This does not authorize a live activation, merge,
+push, restart, settings change or deployment. Full-practice Unsupported coverage
+and section 9's warning-only coverage rule remain unchanged.

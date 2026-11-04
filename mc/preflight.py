@@ -23,6 +23,7 @@ Keep this file dependency-free and written in syntax valid on ANY Python 3 — n
 f-strings, no ``X | Y``, no walrus. It must import cleanly on the very
 interpreters it exists to reject.
 """
+import os
 import sys
 
 # The single source of truth for the floor. Kept in sync with installer/
@@ -67,3 +68,14 @@ def enforce(min_version=MIN_PYTHON):
 
 
 enforce()
+
+
+def harden_windows_search():
+    """On Windows a bare program name (node, git, npm...) is looked up in the current directory before PATH,
+    so a node.exe planted in a repository we run from would beat the real one. This variable turns that
+    off for this process and every child. setdefault: a value the user set wins."""
+    if os.name == "nt":
+        os.environ.setdefault("NoDefaultCurrentDirectoryInExePath", "1")
+
+
+harden_windows_search()

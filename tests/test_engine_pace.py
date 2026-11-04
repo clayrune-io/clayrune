@@ -198,3 +198,81 @@ def test_adapter_uses_existing_weekly_sources(monkeypatch, provider):
                         lambda: {'seven_day': weekly})
     monkeypatch.setattr(system_routes, '_fetch_codex_weekly_usage', lambda: weekly)
     assert adapter.provider_usage(provider) == ({provider: weekly} if provider != 'gemini' else {})
+
+
+# --- alternate-vendor check (compare_alternate + adapter integration) ---
+
+def _alt_reading(percent):
+    return (percent, 50.0)
+
+
+@pytest.mark.parametrize('exhausted,alt,keep', [
+    (True, _alt_reading(10), True),    # exhaustion record wins over a low reading
+    (True, None, True),
+    (False, _alt_reading(90), True),   # alternate over ceiling (even if below original)
+    (False, _alt_reading(70), True),   # alternate higher than original
+    (False, _alt_reading(60), True),   # equal -> keep
+    (False, _alt_reading(30), False),  # alternate lower -> reroute
+    (False, None, False),              # missing/invalid -> reroute (old behaviour)
+])
+def test_compare_alternate(exhausted, alt, keep):
+    original = 60 if alt is None or alt[0] != 90 else 95
+    assert pace.compare_alternate(original, exhausted, alt, {})[0] is keep
+
+
+def alt_prep(monkeypatch, alt_usage, exhausted=False, alt_provider='codex'):
+    fresh = {'claude': {'utilization': 90, 'resets_at':
+                        (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()}}
+    def read(provider):
+        if provider == 'claude':
+            return fresh
+        return {provider: alt_usage} if alt_usage is not None else {}
+    monkeypatch.setattr(adapter, 'provider_usage', read)
+    monkeypatch.setattr(adapter.allowance_state, 'is_exhausted', lambda v: exhausted and v == alt_provider)
+    logs = []
+    monkeypatch.setattr(adapter, '_log', lambda message, **kw: logs.append(message))
+    alt_meta = {'scope': 'global', 'name': 'alternate', 'engine': {'provider': alt_provider}}
+    resolve = lambda pp, ref, **kw: ((dict(CHARACTER), 'p') if ref == 'global:builder'
+                                     else (alt_meta, 'p'))
+    result = adapter.prepare('p1', 'global:builder', resume_id='', provider_override='',
+                             model_override='', effort_override=None, config=CONFIG,
+                             load_project=lambda _: {'project_path': 'test'},
+                             resolve_character=resolve)
+    return result, logs
+
+
+def _codex(percent):
+    return {'utilization': percent, 'resets_at':
+            (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()}
+
+
+def test_alternate_exhausted_keeps_original(monkeypatch):
+    result, logs = alt_prep(monkeypatch, _codex(10), exhausted=True)
+    assert result == ('global:builder', {})
+    assert 'keeping' in logs[0] and 'exhaustion record' in logs[0]
+    assert '90%' in logs[0] and '10%' in logs[0]
+
+
+def test_alternate_higher_keeps_original(monkeypatch):
+    result, logs = alt_prep(monkeypatch, _codex(95))
+    assert result == ('global:builder', {})
+    assert '90%' in logs[0] and '95%' in logs[0]
+
+
+def test_alternate_lower_reroutes(monkeypatch):
+    result, logs = alt_prep(monkeypatch, _codex(20))
+    assert result[0] == 'global:alternate'
+    assert result[1]['rerouted_from'] == 'global:builder'
+    assert logs == []
+
+
+def test_alternate_usage_missing_reroutes_and_logs(monkeypatch):
+    result, logs = alt_prep(monkeypatch, None)
+    assert result[0] == 'global:alternate'
+    assert 'missing' in logs[0] and 'codex' in logs[0]
+
+
+def test_same_provider_skips_alternate_check(monkeypatch):
+    result, logs = alt_prep(monkeypatch, _codex(99), alt_provider='claude', exhausted=True)
+    assert result[0] == 'global:alternate'  # exhausted flag ignored: same vendor as original
+    assert logs == []

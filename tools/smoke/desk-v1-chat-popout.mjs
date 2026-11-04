@@ -18,7 +18,9 @@
  *                    minimum holds; the composer and Send stay inside; a drag that ends outside the
  *                    box does not close it; closing restores the docked layout (no inline size).
  *   5. Studio     -> the Studio thread's pop-out resizes too.
- *   6. Shots      -> 1440 wide into _scratch/desk_split/.
+ *   6. Move       -> chrome drag moves +120,+80; controls do not drag; clamp, resize after
+ *                    moving, backdrop release, close/reopen reset, touch and mobile guards.
+ *   7. Shots      -> 1440 wide into _scratch/desk_split/.
  *
  * RUN   cd tools/smoke && node desk-v1-chat-popout.mjs
  */
@@ -54,8 +56,8 @@ function makeServer() {
   return srv;
 }
 
-async function newPage(browser, srv, viewport) {
-  const ctx = await browser.newContext({ viewport });
+async function newPage(browser, srv, viewport, hasTouch = false) {
+  const ctx = await browser.newContext({ viewport, hasTouch });
   const page = await ctx.newPage();
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
@@ -208,6 +210,101 @@ async function dragHandle(page, sel, dir, dx, dy) {
   await page.mouse.up();
 }
 
+async function dragStrip(page, sel, dx, dy) {
+  const bar = await rect(page, `${sel} [data-chat-chrome]`);
+  const x = bar.l + 24, y = bar.t + bar.h / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + dx, y + dy, { steps: 8 });
+  await page.mouse.up();
+}
+
+async function moving(browser, srv, S) {
+  console.log(`\n[pop-out move: ${S.name}]`);
+  const { ctx, page, pageErrors } = await newPage(browser, srv, { width: 1440, height: 950 });
+  await S.open(page);
+  const sel = S.chat;
+  await dragStrip(page, sel, 120, 80);
+  check(!(await page.$eval(sel, (e) => e.style.left)), 'docked: chrome does not move the chat', 'docked chat moved');
+  await page.click(`${sel} [data-chat-pop]`);
+  const start = await rect(page, sel);
+  const chrome = await page.$eval(`${sel} [data-chat-chrome]`, (e) => ({ cursor: getComputedStyle(e).cursor, h: e.getBoundingClientRect().height }));
+  check(chrome.cursor === 'grab' && chrome.h >= 40, 'large view has a grab cursor and a 40px strip', 'chrome: ' + JSON.stringify(chrome));
+  await dragStrip(page, sel, 120, 80);
+  let r = await rect(page, sel);
+  check(near(r.l, start.l + 120) && near(r.t, start.t + 80) && near(r.w, start.w) && near(r.h, start.h), 'strip drag moves +120,+80 without changing size', `moved: ${JSON.stringify(r)} from ${JSON.stringify(start)}`);
+  check(await isPopped(page, sel), 'moving keeps the large view open', 'moving closed the large view');
+  const moved = r;
+  await dragHandle(page, sel, 'e', -120, 0);
+  r = await rect(page, sel);
+  check(near(r.w, moved.w - 120) && near(r.l, moved.l) && near(r.t, moved.t), 'resize still works after moving', 'resize after move: ' + JSON.stringify(r));
+  await dragStrip(page, sel, -40, -30);
+  const movedAgain = await rect(page, sel);
+  check(near(movedAgain.l, r.l - 40) && near(movedAgain.t, r.t - 30) && near(movedAgain.w, r.w), 'moving after resize preserves the resized width', 'move after resize: ' + JSON.stringify(movedAgain));
+  mkdirSync(SHOTS, { recursive: true });
+  await page.screenshot({ path: resolve(SHOTS, S.shot.replace('_resized', '_moved')) });
+
+  // Controls keep their own gestures, even when inside the grab strip.
+  await page.click(`${sel} [data-chat-text-more]`);
+  const control = await rect(page, `${sel} [data-chat-text-less]`);
+  await page.mouse.move(control.l + control.w / 2, control.t + control.h / 2);
+  await page.mouse.down();
+  await page.mouse.move(control.l - 120, control.t + 80, { steps: 5 });
+  await page.mouse.up();
+  r = await rect(page, sel);
+  check(near(r.l, movedAgain.l) && near(r.t, movedAgain.t), 'presses on chrome buttons do not move the view', 'button drag moved: ' + JSON.stringify(r));
+
+  await dragStrip(page, sel, -2000, -2000);
+  r = await rect(page, sel);
+  check(near(r.l, 0) && near(r.t, 0) && await isPopped(page, sel), 'upper-left clamp holds and an outside release leaves it open', 'upper-left clamp: ' + JSON.stringify(r));
+  await dragStrip(page, sel, 2000, 2000);
+  r = await rect(page, sel);
+  check(near(r.l, 1340) && near(r.t, 900) && await isPopped(page, sel), 'lower-right clamp leaves 100px by 50px on screen', 'lower-right clamp: ' + JSON.stringify(r));
+  // Explicitly deliver a release/click on the dimmed page after starting in the strip.
+  const strip = await rect(page, `${sel} [data-chat-chrome]`);
+  await page.mouse.move(strip.l + 20, strip.t + 20);
+  await page.mouse.down();
+  await page.mouse.move(800, 200, { steps: 6 });
+  await page.dispatchEvent('body', 'mouseup', { clientX: 10, clientY: 10 });
+  await page.dispatchEvent('body', 'click', { clientX: 10, clientY: 10 });
+  check(await isPopped(page, sel), 'a drag ending on the backdrop does not close the view', 'backdrop release closed the view');
+  await page.mouse.up();
+  await page.keyboard.press('Escape');
+  check(!(await page.$eval(sel, (e) => /width|height|left|top|position|margin/.test(e.getAttribute('style') || ''))), 'close clears movement and resize geometry', 'geometry remained after close');
+  await page.click(`${sel} [data-chat-pop]`);
+  const reopened = await rect(page, sel);
+  check(['l', 't', 'w', 'h'].every((k) => near(reopened[k], start[k])), 'reopening restores the default position and size', 'reopened: ' + JSON.stringify(reopened));
+  // Escape during a live drag must detach its document listeners too.
+  const bar = await rect(page, `${sel} [data-chat-chrome]`);
+  await page.mouse.move(bar.l + 24, bar.t + 20); await page.mouse.down();
+  await page.keyboard.press('Escape');
+  await page.mouse.move(100, 100); await page.mouse.up();
+  check(!(await page.$eval(sel, (e) => e.style.left || e.querySelector('.is-moving'))), 'closing during a drag cancels movement and its cursor', 'drag continued after close');
+  check(realErrors(pageErrors).length === 0, 'no page errors', 'page errors: ' + realErrors(pageErrors).join(' | '));
+  await ctx.close();
+}
+
+async function touchMoving(browser, srv, width) {
+  console.log(`\n[touch move: ${width}px]`);
+  const { ctx, page, pageErrors } = await newPage(browser, srv, { width, height: 950 }, true);
+  await openCampaign(page);
+  const sel = '[data-camp-chat]';
+  await page.click(`${sel} [data-chat-pop]`);
+  const start = await rect(page, sel);
+  const bar = await rect(page, `${sel} [data-chat-chrome]`);
+  const cdp = await ctx.newCDPSession(page);
+  const point = { x: bar.l + 24, y: bar.t + bar.h / 2 };
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: point.x + 120, y: point.y + 80 }] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  const r = await rect(page, sel);
+  const delta = width > 960 ? { x: 120, y: 80 } : { x: 0, y: 0 };
+  check(near(r.l, start.l + delta.x) && near(r.t, start.t + delta.y) && await isPopped(page, sel), width > 960 ? 'single touch moves the large view +120,+80' : 'mobile keeps its inset full-screen view without dragging', 'touch rect: ' + JSON.stringify(r));
+  check(!(await page.$eval(`${sel} [data-chat-chrome]`, (e) => e.classList.contains('is-moving'))), 'touch end clears the moving cursor', 'touch drag stayed active');
+  check(realErrors(pageErrors).length === 0, 'no page errors', 'page errors: ' + realErrors(pageErrors).join(' | '));
+  await ctx.close();
+}
+
 async function resizing(browser, srv, S) {
   console.log(`\n[pop-out resize: ${S.name}]`);
   const { ctx, page, pageErrors } = await newPage(browser, srv, { width: 1440, height: 950 });
@@ -317,6 +414,10 @@ try {
   await sending(browser, srv);
   await resizing(browser, srv, CAMP_CHAT);
   await resizing(browser, srv, STUDIO_CHAT);
+  await moving(browser, srv, CAMP_CHAT);
+  await moving(browser, srv, STUDIO_CHAT);
+  await touchMoving(browser, srv, 1440);
+  await touchMoving(browser, srv, 390);
 } finally {
   await browser.close();
 }

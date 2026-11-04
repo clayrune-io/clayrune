@@ -295,7 +295,7 @@ async function run(browser) {
     ? ok('Suggest task (parked on How): no Content-tab markup leaked into the How panel')
     : fail('Suggest task (parked on How): Content-tab markup clobbered the How panel');
 
-  // ── ③ What: "3 suggested" banner + Accept all -> 3 Planned pieces ───────
+  // ── ④ Posts: "3 suggested" banner + Accept all -> 3 unassigned pieces ──
   await gotoStop(page, 'what');
   await page.waitForSelector('.desk-v1-camp-suggested-banner', { timeout: 4000 });
   const bannerText = (await page.textContent('.desk-v1-camp-suggested-banner').catch(() => '') || '').trim();
@@ -335,13 +335,18 @@ async function run(browser) {
     const w = (await page.textContent(`[data-family-id="${id}"] [data-what-status]`).catch(() => '') || '').trim();
     stateWords.push(w);
   }
-  stateWords.every((w) => /◇\s*planned/.test(w))
-    ? ok(`Accept all: every new piece row reads "◇ planned": ${JSON.stringify(stateWords)}`)
-    : fail(`Accept all: a new piece row isn't "◇ planned": ${JSON.stringify(stateWords)}`);
-  const bannerGone = await page.$('.desk-v1-camp-suggested-banner');
-  !bannerGone
-    ? ok('Accept all: the "N suggested" banner clears once accepted')
-    : fail('Accept all: banner still showing after accept');
+  stateWords.every((w) => /no versions yet/.test(w))
+    ? ok(`Accept all: new pieces stay unassigned until composer selection: ${JSON.stringify(stateWords)}`)
+    : fail(`Accept all: an unassigned piece has an unexpected status: ${JSON.stringify(stateWords)}`);
+  const accepted = await page.evaluate(() => {
+    const camp = window.DeskV1Fixtures.campaigns.find(c => c.id === 'camp-1');
+    return { versions: window.DeskV1Fixtures.families.filter(f => f.id.startsWith('fam-suggest-')).flatMap(f => f.versions || []).length,
+      suggestions: camp.how.suggested.what.length,
+      banner: document.querySelector('.desk-v1-camp-suggested-banner')?.textContent || '' };
+  });
+  accepted.versions === 0 && accepted.suggestions === 3 && /3 suggested/.test(accepted.banner)
+    ? ok('Accept all: source proposals remain available and create no destination versions')
+    : fail(`Accept all: proposal/assignment state wrong: ${JSON.stringify(accepted)}`);
 
   // ── ④ When: cadence proposal ─────────────────────────────────────────────
   await gotoStop(page, 'when');

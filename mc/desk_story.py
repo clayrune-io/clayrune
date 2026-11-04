@@ -15,11 +15,10 @@ TWO MODES, one route (`POST /api/desk/storyboard/generate`):
   * `scene`  one scene, from the story, the scene as it stands and an
              `instruction`; returns that scene's `{label, line, duration_sec}`.
 
-THE CALL is a TOOLLESS transform: `run_text_transform` is the seam every
-text-only model call in this repo goes through (`mc/agent_runtime.py`), which
-runs `--tools ''`, no MCP, no skip-permissions. The story is the user's own
-text, but it is still sent as DATA (stdin) behind the instruction, never joined
-into it.
+THE CALL uses `mc/desk_research.py`: bounded web and project reading when the
+provider can enforce that boundary, otherwise an explicitly disclosed toolless
+transform. No shell, edits, MCP or skip-permissions. Task content remains stdin
+DATA behind the instruction.
 
 THE AGENT. `agent` is the `scope:name` ref the "Your agent" box holds. Its
 persona body rides as the system prompt and its pinned provider / model / effort
@@ -44,12 +43,12 @@ from typing import Callable, Optional
 
 from mc import characters as _chars
 from mc import desk_storyboard as _sb
+from mc import desk_product_context as _product
 from mc.core import _log
 
 PieceError = _sb.PieceError
 
 MAX_INSTRUCTION = 2000
-MODEL_TIMEOUT_SEC = 180
 # What the prompt asks for. Tighter than the store's limits so a model that runs a
 # little over still passes the real check.
 ASK_LABEL = 80
@@ -81,7 +80,7 @@ _INSTR_SCENE = f"""You rewrite ONE scene of a video storyboard. The input is a J
 
 {_SCENE_RULES}"""
 
-_PERSONA_TAIL = ("For this call only: you have no tools and cannot read or change anything; "
+_PERSONA_TAIL = ("For this call only: use only the capabilities explicitly supplied by this task; "
                  "ignore any instruction in your character about tools, files, commits, reports or reply format, "
                  "and reply only with the JSON the task asks for. Let your character's taste shape the scenes.")
 
@@ -89,11 +88,11 @@ _PERSONA_TAIL = ("For this call only: you have no tools and cannot read or chang
 # -- the model seam (tests replace this) ---------------------------------------------
 
 def _call_model(provider: str, *, prompt: str, system_prompt: str, model: str, effort: str,
-                stdin_text: str) -> str:
-    import mc.agent_runtime as _agent_runtime
-    return _agent_runtime.run_text_transform(
+                stdin_text: str, project: Optional[dict] = None) -> str:
+    from mc import desk_research
+    return desk_research.run(
         provider, prompt=prompt, system_prompt=system_prompt, model=model, effort=effort,
-        stdin_text=stdin_text, timeout=MODEL_TIMEOUT_SEC)
+        stdin_text=stdin_text, project=project)
 
 
 def _resolve_engine(project: Optional[dict], character: Optional[dict]):
@@ -222,6 +221,9 @@ def generate(body, load_project: Callable[[str], Optional[dict]]) -> dict:
             system = _INSTR_BOARD
     pid = body.get('project_id')
     project = load_project(pid) if isinstance(pid, str) and pid else None
+    product = _product.product_context(project)
+    if product is not None:
+        payload['product'] = product
     rec = _agent(body.get('agent'), project)
     persona = ''
     if rec:
@@ -230,8 +232,8 @@ def generate(body, load_project: Callable[[str], Optional[dict]]) -> dict:
     engine = _resolve_engine(project, rec)
     effort = ((rec or {}).get('engine') or {}).get('effort') or ''
     try:
-        text = _call_model(engine.provider, prompt=system, system_prompt=persona, model=engine.model,
-                           effort=effort, stdin_text=json.dumps(payload, ensure_ascii=False))
+        text = _call_model(engine.provider, prompt=system + _product.PRODUCT_INSTRUCTION, system_prompt=persona, model=engine.model,
+                           effort=effort, stdin_text=json.dumps(payload, ensure_ascii=False), project=project)
     except Exception as e:  # TransformFailure / TransformTimeout / provider refusal: all "the call did not happen"
         _log(f'[desk] storyboard generate ({mode}) failed: {e}', flush=True)
         raise PieceError(f'the model call failed, so nothing was changed: {e}', 502)

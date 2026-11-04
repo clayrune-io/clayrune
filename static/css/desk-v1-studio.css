@@ -86,7 +86,9 @@
 .desk-v1-sb-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .desk-v1-sb-title { margin: 0; font-size: 18px; font-weight: 700; color: var(--text); }
 .desk-v1-sb-rendering { font-size: 12.5px; color: var(--amber-text); background: var(--amber-dim); border-radius: 8px; padding: 8px 12px; }
-.desk-v1-sb-layout { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 14px; align-items: start; }
+.desk-v1-sb-layout { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 14px; align-items: stretch; margin-bottom: 14px; }
+.desk-v1-sb-editor, .desk-v1-sb-timeline-wrap { min-width: 0; }
+.desk-v1-sb-main > .desk-v1-sb-preview { margin-bottom: 0; }
 .desk-v1-sb-scenes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .desk-v1-sb-scene {
   display: flex; align-items: flex-start; gap: 12px; background: var(--surface); border: 1px solid var(--border2);

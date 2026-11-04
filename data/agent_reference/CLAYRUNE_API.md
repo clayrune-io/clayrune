@@ -313,6 +313,19 @@ questions about scope/priorities/constraints BEFORE creating.
 | POST | `/api/hivemind/<hivemind_id>/decisions/<did>/approve` | Approve a proposed decision. |
 | GET | `/api/hivemind/<hivemind_id>/runs` | Run history for this hivemind. |
 
+Versioned roster runs (`config.roster_version == 1`) use serial reviewed
+integration after worker completion (HR-5 branch implementation). The existing
+detail response's `integration` exposes `review_cycle_version`, `status`,
+`cursor`, `current` exact candidate/reviewer, accepted `merged`, `skipped`,
+`failed`, `unmerged` and hold `reason`. `awaiting_review` is provisional;
+`completed` means every actual merge has smoke and guarded exact-pass evidence.
+`held` stops later merges, preserving checkout and reports for Dave;
+`skipped` explicitly identifies non-git analysis-only runs. No new retry or
+candidate-nomination route was added. See `docs/HIVEMIND_INTEGRATION_REVIEW.md`
+for recovery/ownership and `docs/HIVEMIND_REVIEW_ROUTES.md` for verdict HTTP.
+Legacy runs retain their batch integration/status semantics; dedicated review
+UI and native workflow support remain separate work.
+
 ## Schedules (local — long-term, repeatable)
 
 For LONG-TERM jobs that must outlive any single session. For short-interval
@@ -363,6 +376,36 @@ mutation.
 | POST | `/api/mcp/url/install` | Install from URL. |
 | DELETE | `/api/mcp/url/staged` | Drop a staged install. |
 
+### Built-in `clayrune` MCP server (cross-session messaging)
+
+A first-party stdio server (`mc/clayrune_mcp/`) added to a session's MCP set at
+launch (Claude, Gemini, Qwen, Codex, OpenCode, Goose, Kiro;
+config `clayrune_mcp_enabled`, default on). Tools
+appear as `clayrune_*`. The project is fixed at launch; **your session is never
+an argument** — the server derives it from process ancestry
+(`POST /api/clayrune-mcp/identity`) and the tools refuse unless it matches. Args
+named `session_id`, `project_id`, `notify_session`, `agent` are rejected.
+A project with an explicit `enabled_mcp_servers` list gets it only if the list
+names `clayrune` (an empty list stays empty). No tool retries; a timeout says
+"outcome unknown".
+
+Codex/OpenCode/Goose/Kiro carry the resolved selection into follow-ups and
+Codex model-refusal retries using per-launch profiles/config/recipes/agents.
+Their selection and validator contracts, native transport refusals, and pending
+live verification are in `docs/BUILTINS_7B_MCP_LAUNCH.md`. Existing unattended
+fence refusals remain in force; MCP wiring does not authorize an engine launch.
+
+| Tool | Forwards to | Notes |
+|---|---|---|
+| `clayrune_list_agents` | `GET …/coord/roster` | Live sessions; `you` = your sid. |
+| `clayrune_send_message` | `POST …/agent/send` | `{target_session_id, message, request_reply=true}`; callback bound to you. Reports `queued`/`route`; not proof it was read. |
+| `clayrune_dispatch_agent` | `POST …/agent/dispatch` | `{task, character?, provider?, model?, effort?}`; you are woken with the result. |
+| `clayrune_coord_events` | `GET …/coord/events` | `{limit<=100}`; no reconcile. |
+| `clayrune_coord_publish` | `POST …/coord/publish` | `{type: intention or completion, summary, targets?, commit_sha?}`; awareness only. |
+| `clayrune_delivery_status` | `GET …/agent/delegation/status[-list]` | `{event_id}` or `{limit, offset}`; read-only. |
+| `clayrune_start_job` | `POST …/agent/<you>/job` | `{command, cwd?, timeout_minutes?, shell?}`; existing timeout cap, incognito 400, Codex-sandbox 403 apply. |
+| `clayrune_job_status` | `GET …/agent/<you>/job/<job_id>` | Your own jobs only. |
+
 ## GitHub sync (per-project)
 
 | Verb | Path | Purpose |
@@ -386,7 +429,7 @@ mutation.
 |---|---|---|
 | GET | `/api/config` | Read live MC config (flags, ports, scribe state). |
 | PUT | `/api/config` | Patch config (partial JSON merge). |
-| GET | `/api/engine/preferences?project_id=<optional>` | Read-only provider catalogs, supported effort/tier/model-selection metadata, global defaults, optional project overrides, effective engine provenance and `automatic_background_model` (CR lightweight request ID; empty means native fallback with unknown cost). Never launches a provider or migrates data. |
+| GET | `/api/engine/preferences?project_id=<optional>` | Read-only provider catalogs, supported effort/tier/model-selection metadata, global defaults, optional project overrides, effective engine provenance and `automatic_background_model` (CR lightweight request ID; empty means native fallback with unknown cost). Never launches a provider or migrates data. Each provider also carries `allowance`: `{used_percent, resets_at, sampled_at, source, exhausted_record}` (live weekly usage, the same numbers as `/api/system/usage` `provider_weekly_usage`; `used_percent` and `source` are `null` when the provider has no real reading, never 0; `exhausted_record` is Clayrune's own record of a run that hit the limit, `null` when none; the Codex reading can trigger the same cached, token-free live usage read `/api/system/usage` does). **Read this before deciding which engine to send work to; do not infer headroom from a past failed run.** |
 | POST | `/api/engine/preview` | Resolve `{project_id?, provider?, model?, effort?, character?: {provider?,model?,effort?}}` through the same engine resolver used by execution. Read-only, no provider call. Missing model/effort inherits; explicit empty selects native. |
 | GET | `/api/usage` | API usage / token-cost telemetry. |
 
@@ -407,7 +450,7 @@ global and project engine defaults are edited in Providers.
 |---|---|---|
 | GET | `/api/system/heartbeat` | Liveness ping. |
 | GET | `/api/system/status` | Status snapshot (uptime, restart info). |
-| GET | `/api/system/usage` | Resource usage (mem, CPU). |
+| GET | `/api/system/usage` | Resource usage (mem, CPU), token history, and `provider_weekly_usage` (`claude`/`codex` weekly `utilization` + `resets_at`, plus `exhausted` when a run hit the limit). The per-provider `allowance` on `/api/engine/preferences` is the same data. |
 | POST | `/api/system/status/refresh` | Force a status refresh. |
 | GET | `/api/system/update/status` | Installed vs latest commit + dates. |
 | GET | `/api/system/update/cached` | Cached update status (no fetch). |

@@ -352,7 +352,10 @@ live activation, installation, merge, push, restart or release.
 
 [A2a implementation and verification](DEV_HARNESS_NATIVE_APPROVAL.md) covers
 nonexecuting plan inspection, human approval and trusted evidence composition
-only. A2b execution, applicability and landing integration remain pending.
+only. The [A2b branch implementation and validation](DEV_HARNESS_M5_PLAN_CONTRACT.md#9-a2b-implementation-candidate)
+adds applicability, approved frozen execution, shared landing ownership/child
+leases, jobs/read routes and thin managed/manual landing integration. Full
+catalogue practice coverage, live activation and M6 acceptance are not claimed.
 
 ### 10.2 Later Phase 1 sequence
 

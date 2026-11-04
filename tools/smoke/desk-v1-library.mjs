@@ -297,8 +297,8 @@ async function live(browser, vp, name) {
   const folders = await chooserFolders(page);
   check(folders.some((f) => /^Storyboards/.test(f)) && folders.some((f) => /^Studio/.test(f)) && /^All folders/.test(folders[0]),
     `${tag} the chooser lists every image folder, Storyboards included: ${JSON.stringify(folders)}`, `${tag} folders: ${JSON.stringify(folders)}`);
-  check(!folders.some((f) => /^Clips/.test(f)), `${tag} a picture target does not offer videos`, `${tag} videos offered: ${JSON.stringify(folders)}`);
-  check((await page.$$('[data-lp-tile]')).length === 5, `${tag} All folders shows all 5 pictures`, `${tag} tiles ${(await page.$$('[data-lp-tile]')).length}`);
+  check(folders.some((f) => /^Clips/.test(f)), `${tag} a scene target offers video clips beside pictures`, `${tag} clips missing: ${JSON.stringify(folders)}`);
+  check((await page.$$('[data-lp-tile]')).length === 7, `${tag} All folders shows 5 pictures and 2 clips`, `${tag} tiles ${(await page.$$('[data-lp-tile]')).length}`);
   await page.fill('[data-lp-search]', 'logo');
   check((await page.$$('[data-lp-tile]')).length === 1, `${tag} search narrows to 1 picture`, `${tag} search tiles ${(await page.$$('[data-lp-tile]')).length}`);
   await page.fill('[data-lp-search]', 'zzz');

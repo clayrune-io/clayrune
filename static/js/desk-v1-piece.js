@@ -2,7 +2,7 @@
 // R2-7; first built as IA5). Window-bridged module, no `import` (ground rule 1).
 //
 // A piece is today's content family. R2-7 retired IA5's four facets: a piece is
-// ONE drill-in page under ③ What (`‹ <campaign> · What`), a single scroll with
+// ONE drill-in page under ④ Posts (`‹ <campaign> · Posts`), a single scroll with
 // three sections:
 //
 //   Copy      draft editor plus one row per destination version; `Review`
@@ -106,7 +106,7 @@
     const director = fam.kind === 'video'
       ? `<div class="desk-v1-piece-facetrow"><span>Video editor</span><button type="button" class="desk-v1-camp-card-primary" data-video-btn>Open video editor</button></div>`
       : '';
-    const addable = fam.kind === 'video' || fam.kind === 'image' || fam.kind === 'post';
+    const addable = fam.kind === 'video' || fam.kind === 'image';
     return `<div class="desk-v1-what-media desk-v1-piece-media" data-piece-media>${thumbs}${addable
       ? `<button type="button" class="desk-v1-what-addmedia" data-add-media="${esc(fam.id)}" aria-haspopup="menu">＋ Add media</button>` : ''}</div>` +
       (assets.length || addable ? '' : '<div class="desk-v1-piece-empty">No media on this piece.</div>') + render + director;

@@ -22,6 +22,7 @@ VALUES = {
     'steward_mode': 'on',
     'steward_objective': 'Changed objective',
     'steward_cadence_minutes': 5,
+    'steward_assignment': None,
 }
 BROWSER = {'Origin': 'http://localhost:5199'}
 
@@ -113,6 +114,11 @@ def test_human_browser_can_write_each_safety_key(client, monkeypatch, key, statu
     monkeypatch.setattr(ca, 'attribute_caller', lambda *args: ca.Attribution(status))
     r = c.post('/api/project/testproj', json={key: VALUES[key], 'name': 'Human edit'},
                headers=BROWSER)
+    if key == 'steward_assignment':
+        # New role bindings additionally need the shared retyped passcode;
+        # Origin/unavailable attribution alone cannot prove a human grant.
+        assert r.status_code == 403
+        return
     assert r.status_code == 200
     saved = json.loads(record.read_text(encoding='utf-8'))
     assert saved[key] == VALUES[key]

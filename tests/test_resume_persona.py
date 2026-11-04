@@ -146,6 +146,31 @@ class TestPriorCharacter:
         self._log(monkeypatch, [{'claude_session_id': 'abc', 'character': None}])
         assert agent_routes._prior_character('p1', 'abc') == ''
 
+    def test_it_finds_the_persona_by_a_rollover_lineage_csid(self, monkeypatch):
+        """Incident 2026-11-03: a rolled-over chat's row carries only its
+        NEWEST csid in `claude_session_id`; the transcript Ron opened from the
+        conversations list is an earlier link and lives only in
+        `claude_session_ids`. Matching just the scalar lost Dave -> Vector."""
+        self._log(monkeypatch, [{
+            'claude_session_id': 'newest',
+            'claude_session_ids': ['first', 'middle', 'newest'],
+            'character': DAVE}])
+        assert agent_routes._prior_character('p1', 'middle') == 'global:dave'
+        assert agent_routes._prior_character('p1', 'first') == 'global:dave'
+
+    def test_a_lineage_csid_with_no_persona_still_returns_empty(self, monkeypatch):
+        self._log(monkeypatch, [{
+            'claude_session_id': 'newest',
+            'claude_session_ids': ['first', 'newest'],
+            'character': None}])
+        assert agent_routes._prior_character('p1', 'first') == ''
+
+    def test_a_csid_outside_every_lineage_returns_none(self, monkeypatch):
+        self._log(monkeypatch, [{
+            'claude_session_id': 'newest',
+            'claude_session_ids': ['first', 'newest'], 'character': DAVE}])
+        assert agent_routes._prior_character('p1', 'stranger') is None
+
     def test_an_unknown_conversation_returns_none(self, monkeypatch):
         self._log(monkeypatch, [{'claude_session_id': 'other', 'character': DAVE}])
         assert agent_routes._prior_character('p1', 'abc') is None

@@ -270,8 +270,10 @@
 <link rel="stylesheet" href="/static/css/beacon.css">
 <link rel="stylesheet" href="/static/css/documents-search.css">
 <link rel="stylesheet" href="/static/css/report-waiting.css">
+<link rel="stylesheet" href="/static/css/desk-window-maximize.css">
 <link rel="stylesheet" href="/static/css/desk-v1-shell.css">
 <link rel="stylesheet" href="/static/css/desk-v1-kit.css">
+<link rel="stylesheet" href="/static/css/desk-v1-product-materials.css">
 <link rel="stylesheet" href="/static/css/desk-v1-home.css">
 <link rel="stylesheet" href="/static/css/desk-v1-campaign.css">
 <link rel="stylesheet" href="/static/css/desk-v1-review.css">
@@ -286,6 +288,11 @@
 <link rel="stylesheet" href="/static/css/desk-v1-what-add-modal.css">
 <link rel="stylesheet" href="/static/css/desk-v1-piece-media.css">
 <link rel="stylesheet" href="/static/css/desk-v1-studio.css">
+<link rel="stylesheet" href="/static/css/desk-v1-studio-clips.css">
+<link rel="stylesheet" href="/static/css/desk-v1-studio-timeline.css">
+<link rel="stylesheet" href="/static/css/desk-v1-studio-insert.css">
+<link rel="stylesheet" href="/static/css/desk-v1-studio-preview.css">
+<link rel="stylesheet" href="/static/css/desk-v1-studio-export.css">
 <link rel="stylesheet" href="/static/css/desk-v1-add-scene.css">
 <link rel="stylesheet" href="/static/css/desk-v1-video-open.css">
 <link rel="stylesheet" href="/static/css/desk-v1-studio-capture.css">
@@ -296,9 +303,12 @@
 <link rel="stylesheet" href="/static/css/desk-v1-file-explorer.css">
 <link rel="stylesheet" href="/static/css/desk-v1-project-media.css">
 <link rel="stylesheet" href="/static/css/desk-v1-story.css">
+<link rel="stylesheet" href="/static/css/desk-v1-story-expand.css">
+<link rel="stylesheet" href="/static/css/desk-v1-story-resize.css">
 <link rel="stylesheet" href="/static/css/desk-v1-chat-chrome.css">
 <link rel="stylesheet" href="/static/css/desk-v1-story-chat.css">
 <link rel="stylesheet" href="/static/css/desk-v1-campaign-chat.css">
+<link rel="stylesheet" href="/static/css/desk-v1-dispatch.css">
 <link rel="stylesheet" href="/static/css/desk-v1-split.css">
 <link rel="stylesheet" href="/static/css/desk-v1-mobile-b2.css">
 <link rel="stylesheet" href="/static/css/desk-v1-what-cards.css">
@@ -306,6 +316,7 @@
 <link rel="stylesheet" href="/static/css/desk-v1-connections-tiles.css">
 <link rel="stylesheet" href="/static/css/desk-v1-service-icons.css">
 <link rel="stylesheet" href="/static/css/desk-v1-where-tiles.css">
+<link rel="stylesheet" href="/static/css/desk-v1-post-preview.css">
 <link rel="stylesheet" href="/static/css/desk-v1-connect-flow.css">
 <link rel="stylesheet" href="/static/css/desk-v1-connect-discover.css">
 <link rel="stylesheet" href="/static/css/desk-v1-connect-adapter.css">
@@ -333,9 +344,11 @@
 <link rel="stylesheet" href="/static/css/desk-v1-connection-account.css">
 <link rel="stylesheet" href="/static/css/desk-v1-connect-unknown-step.css">
 <link rel="stylesheet" href="/static/css/agent-read-card.css">
+<link rel="stylesheet" href="/static/css/denied-chip.css">
 <link rel="stylesheet" href="/static/css/desk-v1-vault-gate.css">
 <link rel="stylesheet" href="/static/css/vault-unlock-popup.css">
 <link rel="stylesheet" href="/static/css/claude-import.css">
+<link rel="stylesheet" href="/static/css/hivemind-review.css">
 </head>
 <body>
 <script>
@@ -4183,6 +4196,7 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/team-card.js"></script>
 <script type="module" src="/static/js/exploration-card.js"></script>
 <script type="module" src="/static/js/agent-read-card.js"></script>
+<script type="module" src="/static/js/denied-chip.js"></script>
 <script type="module" src="/static/js/skills-panel.js"></script>
 <script type="module" src="/static/js/media.js"></script>
 <script type="module" src="/static/js/settings-drill.js"></script>
@@ -4213,6 +4227,7 @@ window.addEventListener('beforeunload', () => {
      With `desk_v1_live` off the store has nothing to show and says so. -->
 <script type="module" src="/static/js/desk-v1-store.js"></script>
 <script type="module" src="/static/js/desk-v1-kit.js"></script>
+<script type="module" src="/static/js/desk-v1-product-materials.js"></script>
 <script type="module" src="/static/js/desk-v1-shell.js"></script>
 <script type="module" src="/static/js/desk-v1-home.js"></script>
 <script type="module" src="/static/js/desk-v1-project.js"></script>
@@ -4279,6 +4294,7 @@ window.addEventListener('beforeunload', () => {
 <link rel="stylesheet" href="/static/css/desk-v1-piece-title.css">
 <link rel="stylesheet" href="/static/css/desk-v1-piece-layout.css">
 <script type="module" src="/static/js/desk-v1-piece-title.js"></script>
+<script type="module" src="/static/js/desk-v1-media-formats.js"></script>
 <script type="module" src="/static/js/desk-v1-local-upload.js"></script>
 <script type="module" src="/static/js/desk-v1-piece-media.js"></script>
 <link rel="stylesheet" href="/static/css/desk-v1-piece-versions-empty.css">
@@ -4286,24 +4302,37 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/desk-v1-piece.js"></script>
 <script type="module" src="/static/js/desk-v1-rules.js"></script>
 <script type="module" src="/static/js/desk-v1-review.js"></script>
+<link rel="stylesheet" href="/static/css/desk-v1-calendar-interactions.css">
+<script type="module" src="/static/js/desk-v1-calendar-preview.js"></script>
+<script type="module" src="/static/js/desk-v1-calendar-unschedule.js"></script>
+<script type="module" src="/static/js/desk-v1-calendar-detail.js"></script>
+<script type="module" src="/static/js/desk-v1-calendar-tray.js"></script>
 <script type="module" src="/static/js/desk-v1-calendar.js"></script>
 <script type="module" src="/static/js/desk-v1-how.js"></script>
 <link rel="stylesheet" href="/static/css/desk-v1-campaign-content.css">
 <script type="module" src="/static/js/desk-v1-suggestion-pieces.js"></script>
 <script type="module" src="/static/js/desk-v1-piece-lifecycle.js"></script>
-<script type="module" src="/static/js/desk-v1-where-removal.js"></script>
 <script type="module" src="/static/js/desk-v1-article-media.js"></script>
 <script type="module" src="/static/js/desk-v1-where-tiles.js"></script>
 <script type="module" src="/static/js/desk-v1-where-services.js"></script>
 <link rel="stylesheet" href="/static/css/desk-v1-where-highlight.css">
 <script type="module" src="/static/js/desk-v1-where-highlight.js"></script>
+<script type="module" src="/static/js/desk-v1-post-preview-skins.js"></script>
+<script type="module" src="/static/js/desk-v1-post-preview.js"></script>
 <script type="module" src="/static/js/desk-v1-where.js"></script>
 <script type="module" src="/static/js/desk-v1-what-cards.js"></script>
 <script type="module" src="/static/js/desk-v1-text-import.js"></script>
 <script type="module" src="/static/js/desk-v1-what-article-import.js"></script>
 <script type="module" src="/static/js/desk-v1-what-post-reuse.js"></script>
 <script type="module" src="/static/js/desk-v1-what-add-modal.js"></script>
+<script type="module" src="/static/js/desk-v1-piece-names.js"></script>
 <script type="module" src="/static/js/desk-v1-what.js"></script>
+<link rel="stylesheet" href="/static/css/desk-v1-composer.css">
+<link rel="stylesheet" href="/static/css/desk-v1-composer-preview.css">
+<link rel="stylesheet" href="/static/css/desk-v1-composer-media.css">
+<script type="module" src="/static/js/desk-v1-composer-channels.js"></script>
+<script type="module" src="/static/js/desk-v1-composer-when.js"></script>
+<script type="module" src="/static/js/desk-v1-composer.js"></script>
 <script type="module" src="/static/js/desk-v1-video.js"></script>
 <script type="module" src="/static/js/desk-v1-studio-delete.js"></script>
 <script type="module" src="/static/js/desk-v1-library-viewer.js"></script>
@@ -4316,11 +4345,22 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/desk-v1-studio-article.js"></script>
 <script type="module" src="/static/js/desk-v1-article-chat.js"></script>
 <script type="module" src="/static/js/desk-v1-story.js"></script>
+<script type="module" src="/static/js/desk-v1-story-expand.js"></script>
+<script type="module" src="/static/js/desk-v1-story-resize.js"></script>
+<script type="module" src="/static/js/desk-v1-chat-move.js"></script>
 <script type="module" src="/static/js/desk-v1-chat-chrome.js"></script>
 <script type="module" src="/static/js/desk-v1-split.js"></script>
 <script type="module" src="/static/js/desk-v1-story-chat.js"></script>
 <script type="module" src="/static/js/desk-v1-campaign-chat.js"></script>
+<script type="module" src="/static/js/desk-v1-dispatch.js"></script>
+<script type="module" src="/static/js/desk-v1-studio-timebar.js"></script>
+<script type="module" src="/static/js/desk-v1-studio-timeline.js"></script>
+<script type="module" src="/static/js/desk-v1-studio-insert.js"></script>
+<script type="module" src="/static/js/desk-v1-studio-preview.js"></script>
+<script type="module" src="/static/js/desk-v1-studio-export.js"></script>
 <script type="module" src="/static/js/desk-v1-studio.js"></script>
+<script type="module" src="/static/js/desk-v1-studio-clips.js"></script>
+<script type="module" src="/static/js/desk-v1-studio-title.js"></script>
 <script type="module" src="/static/js/desk-v1-video-open.js"></script>
 <script type="module" src="/static/js/desk-v1-studio-capture.js"></script>
 <script type="module" src="/static/js/desk-v1-conversations.js"></script>
@@ -4332,6 +4372,7 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/schedule-calendar.js"></script>
 <script type="module" src="/static/js/automation-suggestions.js"></script>
 <script type="module" src="/static/js/steward.js"></script>
+<script type="module" src="/static/js/steward-role-editor.js"></script>
 <script type="module" src="/static/js/mcp.js"></script>
 <script type="module" src="/static/js/backup-panel.js"></script>
 <script type="module" src="/static/js/secret-form.js"></script>
@@ -4340,6 +4381,7 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/update-power.js"></script>
 <script type="module" src="/static/js/provider-auth.js"></script>
 <script type="module" src="/static/js/schedule-banner.js"></script>
+<script type="module" src="/static/js/api-credits-settings.js"></script>
 <script type="module" src="/static/js/provider-settings.js"></script>
 <!-- Generic pointer-drag engine (MC-977 T0c) — must load before floor.js,
      the first caller. -->
@@ -4360,6 +4402,7 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/resume-preview.js"></script>
 <script type="module" src="/static/js/agent-log.js"></script>
 <script type="module" src="/static/js/documents-search.js"></script>
+<script type="module" src="/static/js/hivemind-review.js"></script>
 <script type="module" src="/static/js/hivemind.js"></script>
 <script type="module" src="/static/js/agent-console.js"></script>
 <script type="module" src="/static/js/modal-manager.js"></script>

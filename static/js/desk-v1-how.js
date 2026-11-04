@@ -17,7 +17,7 @@
 // via `DeskV1Kit.deskAgentRef({project, campaign})`: `how.agent` first, then
 // the project's `presence.desk_agent`.
 //
-// §4.2 item 2: "`Suggest What / When / Where` runs one agent task (IA4's
+// §4.2 item 2: "`Suggest Posts / When / Channels` runs one agent task (IA4's
 // plan task lifecycle, UX_PASS §5, unchanged: Working, Ready, Failed +
 // Retry, Needs answer)" on "the right-column agent box" — that box already
 // exists (desk-v1-campaign.js `deskV1FillCampaignRightColumn`, mounted by
@@ -33,7 +33,7 @@
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
-  const SUGGEST_TEXT = 'Suggest What / When / Where';
+  const SUGGEST_TEXT = 'Suggest Posts / When / Channels';
 
   function _fx() { return window.DeskV1Store.state(); }
   function _campaign(id) { return (_fx().campaigns || []).find((c) => c.id === id) || null; }
@@ -101,6 +101,7 @@
               <div class="desk-v1-rules-group-title">Agent</div>
               <button type="button" class="desk-v1-agentpick-btn" data-how-agent data-value="" aria-haspopup="listbox" aria-expanded="false" aria-label="Agent" disabled></button>
               <div class="desk-v1-rules-hint" data-how-agent-hint></div>
+              <div data-product-materials-host></div>
             </div>
           </div>
           <div class="desk-v1-how-card">
@@ -123,7 +124,7 @@
         <div class="desk-v1-how-suggest">
           ${project
             ? `<button type="button" class="desk-v1-how-suggest-btn" data-how-suggest>${esc(SUGGEST_TEXT)}</button>
-          <div class="desk-v1-rules-hint">Writes draft suggestions into What, When and Where — nothing is committed until you accept it there.</div>`
+          <div class="desk-v1-rules-hint">Writes draft suggestions into Posts, When and Channels — nothing is committed until you accept it there.</div>`
             : '' /* MC-977 S-2: the "No agent yet" note lives once, in the campaign thread head (desk-v1-campaign.js) */}
         </div>
       </div>`;
@@ -135,6 +136,7 @@
     }
     _bind(el, camp, project);
     _paintAgent(el, camp, project);
+    window.DeskV1ProductMaterials.mount(el.querySelector('[data-product-materials-host]'), project);
     window.DeskV1Reapproval.fillSlots(el, camp);
   }
 

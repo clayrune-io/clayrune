@@ -1,4 +1,4 @@
-// MC-1112: real isolated Flask store + actual pointer drags, reload, Undo and media.
+// MC-1112: real isolated Flask store + account selection, reload, Undo and media.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -28,20 +28,7 @@ async function shot(page, name, width) {
   const path = resolve(SHOTS, `${name}-${width}.png`);
   await page.screenshot({ path }); results.push({ screenshot: path });
 }
-async function drag(page, from, to) {
-  const src = page.locator(from).first(); const dst = page.locator(to).first();
-  await src.scrollIntoViewIfNeeded();
-  const a = await src.boundingBox(), b = await dst.boundingBox();
-  assert(a && b, 'drag endpoints exist');
-  await page.mouse.move(a.x + a.width / 2, a.y + Math.min(20, a.height / 2));
-  await page.mouse.down();
-  await page.mouse.move(a.x + a.width / 2 + 10, a.y + 15, { steps: 3 });
-  const viewport = page.viewportSize();
-  const targetY = Math.max(125, Math.min(b.y + b.height / 2, viewport.height - 130));
-  await page.mouse.move(b.x + Math.min(70, b.width / 2), targetY, { steps: 14 });
-  await page.mouse.up();
-  await page.waitForTimeout(350);
-}
+
 async function boot(page) {
   await page.goto(origin, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
@@ -72,43 +59,26 @@ try {
     assert.equal(await page.locator('[data-where-source]').count(), 2, 'all configured accounts visible including disconnected');
     assert.equal(await page.locator('[data-where-version]').count(), 0, 'suggestion channel did not prefill a tile');
     await shot(page, 'where-drop-hint', width);
-    await drag(page, '[data-where-source][data-channel-id="ch-blog"]', '[data-where-board]');
+    await page.locator('[data-where-source][data-channel-id="ch-blog"]').click();
     await page.waitForSelector('.desk-v1-where-col[data-channel-id="ch-blog"]');
     assert.equal(await page.locator('[data-where-version]').count(), 0, 'new tile starts empty');
     await shot(page, 'where-empty-tile', width);
-    await drag(page, '[data-where-source][data-channel-id="ch-off"]', '[data-where-board]');
+    await page.locator('[data-where-source][data-channel-id="ch-off"]').click();
     await page.waitForSelector('.desk-v1-where-col[data-channel-id="ch-off"]');
     await shot(page, 'where-unconnected-dropped', width);
     await page.locator('[data-where-remove][data-channel-id="ch-off"]').click();
     assert.equal(await page.locator('.desk-v1-where-col[data-channel-id="ch-off"]').count(), 0);
     assert.equal(await page.locator('[data-where-source][data-channel-id="ch-off"]').count(), 1);
     await shot(page, 'where-x-removed', width);
-    if (width === 1440) {
-      await drag(page, '[data-where-message][data-family-id^="suggest-"]', '.desk-v1-where-col[data-channel-id="ch-blog"]');
-      await page.waitForFunction(() => document.querySelectorAll('[data-where-version]').length === 1);
-      let saved = await state(page);
-      const accepted = Object.values(saved.pieces).find((p) => p.title === 'Nothing you want gets lost');
-      assert(accepted && accepted.versions.length === 1 && accepted.versions[0].account_id === 'ch-blog', 'drag persisted a real piece and version');
-      assert.equal(saved.campaigns['camp-test'].suggestions.what.length, 1, 'original suggestion preserved');
-      await boot(page); await where(page);
-      assert.equal(await page.locator('[data-where-version]').count(), 1, 'assignment survived reload');
-      await page.locator('[data-where-remove-version]').click();
-      await page.waitForFunction(() => document.querySelectorAll('[data-where-version]').length === 0);
-      await page.waitForFunction(() => (document.querySelector('#desk-v1-undo').title || '').includes('Removed'));
-      await page.click('#desk-v1-undo');
-      await page.waitForFunction(() => document.querySelectorAll('[data-where-version]').length === 1);
-      await page.waitForFunction(async () => Object.values((await (await fetch('/__state')).json()).pieces).some((p) => p.title === 'Nothing you want gets lost' && p.versions[0].state === 'drafting'));
-      assert.equal((await state(page)).pieces[accepted.id].versions[0].state, 'drafting');
-      // Refuse the actual version endpoint and exercise rollback + honest copy.
-      await page.locator('[data-where-remove-version]').click();
-      await page.waitForTimeout(150);
-      await page.route('**/api/desk/pieces/*/versions', (route) => route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: 'test refusal' }) }));
-      await drag(page, `[data-where-message][data-family-id="${accepted.id}"]`, '.desk-v1-where-col[data-channel-id="ch-blog"]');
-      await page.waitForFunction(() => document.body.innerText.includes('This change was not saved: test refusal'));
-      const toast = await page.locator('.toast').last().innerText(); assert(!toast.startsWith('Added'));
-      assert.equal(await page.locator('[data-where-version]').count(), 0, 'failed add rolled back');
-      await page.unroute('**/api/desk/pieces/*/versions');
-    }
+    // C5: individual assignment add/remove/Undo/refusal now belongs to composer smokes.
+    assert.equal(await page.locator('[data-where-remove-version]').count(), 0);
+    await boot(page); await where(page);
+    assert.equal(await page.locator('.desk-v1-where-col[data-channel-id="ch-blog"]').count(), 1, 'account bound survived reload');
+    await page.route('**/api/desk/campaigns/*', route => route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: 'test refusal' }) }));
+    await page.locator('[data-where-source][data-channel-id="ch-off"]').click();
+    await page.locator('#toast-container').getByText('This change was not saved: test refusal', { exact: false }).last().waitFor();
+    assert.equal(await page.locator('.desk-v1-where-col[data-channel-id="ch-off"]').count(), 0, 'refused account add rolls back');
+    await page.unroute('**/api/desk/campaigns/*');
     await what(page);
     const row = page.locator('[data-what-row][data-family-id="article-test"]');
     await row.locator('[data-more-btn]').click(); await page.click('[data-menu-archive]');
@@ -163,7 +133,7 @@ try {
     await where(page);
     await page.locator('[data-where-remove][data-channel-id="ch-blog"]').click();
     assert.equal(errors.length, 0, errors.join('\n'));
-    console.log(`PASS ${width}: connector drags/removal, persistence, archive/restore/delete Undo, inline media`);
+    console.log(`PASS ${width}: account selection/removal, persistence, archive/restore/delete Undo, inline media`);
     results.push({ width, errors, pass: true });
     await context.close();
   }

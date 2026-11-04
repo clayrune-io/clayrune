@@ -1,0 +1,13 @@
+.desk-v1-product-materials { font-size: 12px; margin-top: 8px; }
+.desk-v1-product-materials summary { cursor: pointer; color: var(--text-dim); }
+.desk-v1-product-materials p { margin: 8px 0; color: var(--text-dim); }
+.desk-v1-product-materials ul { list-style: none; padding: 0; margin: 8px 0; }
+.desk-v1-product-materials li { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.desk-v1-product-materials li span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.desk-v1-product-materials form { display: flex; align-items: end; gap: 6px; margin: 8px 0; }
+.desk-v1-product-materials label { flex: 1; min-width: 0; }
+.desk-v1-product-materials input { display: block; width: 100%; box-sizing: border-box; margin-top: 4px; }
+.desk-v1-product-materials input { background: var(--surface); border: 1px solid var(--border2); border-radius: 6px; color: var(--text); padding: 6px 8px; font: inherit; }
+.desk-v1-product-materials button { flex-shrink: 0; cursor: pointer; background: var(--surface3); border: 1px solid var(--border2); border-radius: 6px; color: var(--text); padding: 6px 8px; font: inherit; }
+.desk-v1-product-materials button:disabled { opacity: .55; cursor: default; }
+.desk-v1-product-reads { font-size: 11px; line-height: 1.4; color: var(--text-dim); overflow-wrap: anywhere; margin-top: 6px; }

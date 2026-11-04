@@ -8,24 +8,24 @@
   flex: 0 0 232px; min-width: 0; background: var(--surface); border: 1px solid var(--border2);
   border-radius: 10px; display: flex; flex-direction: column;
 }
-/* Sticky, so once the board scrolls sideways past 3 accounts the Messages column
-   stays in reach as the drag source for whichever column is in view. */
+/* Keep the campaign post list visible while browsing account columns. */
 .desk-v1-where-msgs { background: var(--surface2); position: sticky; left: 0; z-index: 2; }
 .desk-v1-where-msghead { padding: 10px 12px 8px; border-bottom: 1px solid var(--border); }
 .desk-v1-where-msgtitle { font-size: 13px; font-weight: 700; color: var(--text); }
 .desk-v1-where-msgsub { font-size: 11px; color: var(--text-faint); }
 .desk-v1-where-msglist, .desk-v1-where-colbody {
   display: flex; flex-direction: column; gap: 8px; padding: 10px;
-  /* A long column scrolls inside itself so the SOURCES tray below stays within
-     reach of the same drag (pointer-drag has no auto-scroll). */
+  /* Long account lists scroll locally, keeping account selection in reach. */
   max-height: clamp(160px, 32vh, 360px); overflow-y: auto;
 }
 .desk-v1-where-msgwrap, .desk-v1-where-vwrap { position: relative; }
 
 .desk-v1-where-msg, .desk-v1-where-vcard, .desk-v1-where-source {
   background: var(--surface3); border: 1px solid var(--border2); border-radius: 8px;
-  cursor: grab; touch-action: pan-y; user-select: none;
+  touch-action: pan-y;
 }
+.desk-v1-where-source { cursor: pointer; }
+.desk-v1-where-postcount { margin-top: 4px; font-size: 12px; font-weight: 700; color: var(--text-dim); }
 .desk-v1-where-msg { padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; }
 .desk-v1-where-msg:hover, .desk-v1-where-vcard:hover, .desk-v1-where-source:hover { border-color: var(--accent); }
 .desk-v1-where-msg:focus-visible, .desk-v1-where-vcard:focus-visible, .desk-v1-where-source:focus-visible,
@@ -37,8 +37,6 @@
   background: var(--accent-dim); border-radius: 999px; padding: 1px 8px;
 }
 
-.desk-v1-where-col.pd-drop-target { border: 1px dashed var(--border2); }
-.desk-v1-where-col.pd-drop-target.pd-drop-hover { border-color: var(--accent); background: var(--accent-dim); }
 .desk-v1-where-colhead { display: flex; align-items: center; gap: 10px; padding: 10px 10px 8px; }
 .desk-v1-where-colname { flex: 1; min-width: 0; }
 .desk-v1-where-voice { display: flex; flex-direction: column; gap: 3px; padding: 0 10px 8px; font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.02em; }
@@ -78,34 +76,13 @@
   font: inherit; padding: 0 0 0 6px;
 }
 .desk-v1-where-suggest { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.desk-v1-where-dragging { opacity: 0.45; }
-.desk-v1-where-drag-active { cursor: grabbing; }
 
 @media (max-width: 960px) {
-  /* The board scrolls sideways (frame 7b is desktop-only; no where-mobile
-     frame). Every card is already a 44px-tall target; the small controls get
-     a full tap size here. */
+  /* Account removal keeps a full touch target. */
   .desk-v1-where-colremove { width: 44px; height: 44px; font-size: 14px; }
 }
-/* MC-977 mobile batch 2 (884 decision): the stacked board + compact tiles are
-   for PHONE widths (<700px). From 700px (Fold inner screen, tablets) Where
-   keeps its desktop shape -- Messages column beside the account columns,
-   sideways scroll when more than fit, sticky Messages as the drag source --
-   because 832px holds Messages (232px) plus two columns, which is a board; the
-   stack there would waste 600px of width. */
+/* Stack full-width account columns on phones; wider screens keep the overview. */
 @media (max-width: 699px) {
-  /* MC-977 mobile WH-1: Messages and every channel column were each 78vw in ONE
-     sideways-scrolling row, with Messages sticky at left -- so Messages was 90-93%
-     of the board, a channel column showed 10-35px beside it, and at 50% scroll
-     only 22px of one column showed: you could never see a column and drop onto it
-     at once. On phone the board is a STACK instead: Messages on top (list capped
-     at ~24vh, so it is a bounded strip, not the whole screen), each channel
-     column full-width beneath it. Chosen over a 45/55 side-by-side split because
-     at 290-358px that leaves Messages 130-160px wide (the message cards wrap to
-     3-4 lines) and one column 150px wide -- unreadable -- while the stack gives
-     both full width, and the first column starts inside the same screen as
-     Messages so a drag can still land. Tap (the Add-to menu) is the path for any
-     column further down: pointer-drag has no auto-scroll. */
   .desk-v1-where-board { flex-direction: column; align-items: stretch; overflow-x: visible; gap: 10px; }
   .desk-v1-where-msgs, .desk-v1-where-col { flex: 0 0 auto; width: auto; position: static; }
   .desk-v1-where-msglist { max-height: clamp(140px, 24vh, 220px); }

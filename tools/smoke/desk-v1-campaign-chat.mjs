@@ -23,8 +23,11 @@
  *                  box, and the size survives a reload; pop-out lifts the SAME chat element, a send
  *                  from it lands in the docked thread, Esc closes it; at 1440 and 390 no sideways scroll.
  *  10. Demo     -> flag OFF keeps the old box and makes 0 /api/desk/* requests.
+ *  11. Drafts   -> keyboard and injected late-input matrix: whitespace, Send/Enter,
+ *                  inline/large, suggestions, full remount, failure and a new draft.
  *
  * RUN   cd tools/smoke && node desk-v1-campaign-chat.mjs
+ *       node desk-v1-campaign-chat.mjs --drafts-only
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -49,7 +52,9 @@ function makeServer({ agent = 'global:claydo' } = {}) {
   const fx = loadFixtures();
   const projects = fx.projects.map((p) => ({ id: p.id, name: p.name, state: 'active', roster: [], presence: { replies: 'drafts', desk_agent: p.id === 'clayrune' ? agent : null, state: 'active' } }));
   const campaigns = fx.campaigns.map((c) => JSON.parse(JSON.stringify(c)));
-  const srv = { log: [], threads: {}, campaigns, fx, reply: null };
+  projects.forEach((p) => Object.assign(p.presence, { product_docs: null, product_materials: ['README.md'] }));
+  const srv = { log: [], threads: {}, campaigns, projects, fx, reply: null,
+    research: { web: true, project_read: true, toolless: false, label: 'Can search the web and read the project folder (read-only)' } };
   srv.workspace = () => ({ ...workspaceFromFixtures(fx), projects, campaigns: campaigns.map((c) => JSON.parse(JSON.stringify(c))) });
   return srv;
 }
@@ -84,6 +89,15 @@ async function newPage(browser, { live = true, srv, viewport = { width: 1400, he
     try { body = req.postDataJSON(); } catch (_) { /* no body */ }
     srv.log.push({ method, path, body });
     if (path === '/api/desk/workspace') return J(srv.workspace());
+    if (path === '/api/desk/research-capabilities') return J(srv.research);
+    const presence = path.match(/^\/api\/desk\/presence\/([^/]+)$/);
+    if (presence && method === 'PATCH') {
+      const project = srv.projects.find((p) => p.id === presence[1]);
+      if (!project) return J({ error: 'project not found' }, 404);
+      if (body.product_docs && body.product_docs.some((p) => p.includes('..'))) return J({ error: 'use a path relative to the project folder, without ..' }, 400);
+      Object.assign(project.presence, body, { product_materials: body.product_docs == null ? ['README.md'] : body.product_docs, product_materials_note: null });
+      return J(project.presence);
+    }
     const m = path.match(/^\/api\/desk\/campaigns\/([^/]+)\/chat$/);
     if (m) {
       const id = m[1];
@@ -195,7 +209,7 @@ async function conversation(browser) {
   release(); srv.gate = null;
   await settle(page, () => /back in the box/.test(document.querySelector('[data-camp-chat-status]').textContent));
   const st5 = await status(page);
-  (/no longer exists/.test(st5) && /Nothing was changed/.test(st5)) ? ok("a failed send shows the server's reason and says nothing changed") : fail('status: ' + st5);
+  (/no longer exists/.test(st5) && /Check dispatched sessions/.test(st5)) ? ok("a failed send shows the server's reason and the dispatch retry caution") : fail('status: ' + st5);
   (await page.$eval('#desk-v1-camp-posy-input', (e) => e.value)) === 'will this fail?' ? ok('the text is back in the box') : fail('typed text lost');
   (await turns(page)).length === before ? ok('no turn was added') : fail('a turn was added by a failed send');
 
@@ -219,6 +233,108 @@ async function reload(browser, prior) {
   await ctx.close();
 }
 
+// Successful sends retire the draft across a reply repaint. The late input is
+// deliberately injected: ordinary keyboard typing has not reproduced Ron's
+// original trigger. Keep this distinction visible in the smoke output.
+async function sentDrafts(browser) {
+  const srv = makeServer();
+  srv.campaigns.push({ ...JSON.parse(JSON.stringify(srv.campaigns.find((c) => c.id === 'camp-1'))), id: 'camp-other', title: 'Other campaign' });
+  const { ctx, page, pageErrors } = await newPage(browser, { srv });
+  await openCampaign(page, 'camp-1');
+  const input = '#desk-v1-camp-posy-input';
+  const repaint = () => page.evaluate(() => window.deskV1Render());
+  let count = 0;
+  for (const late of [false, true]) for (const suggested of [false, true]) {
+    for (const large of [false, true]) for (const method of ['Enter', 'Send']) for (const suffix of [' ', '\n']) {
+      await repaint();
+      if (large) await page.click('[data-chat-pop]');
+      let release; srv.gate = new Promise((r) => { release = r; });
+      srv.reply = () => ({ reply: 'Draft regression answer.', ...(suggested ? {
+        suggested: { summary: 'Saved one suggestion.' },
+        campaign: { how: { suggested: { what: [{ title: 'One idea' }] } }, when: { slots: [] } },
+      } : {}) });
+      const raw = `Draft check ${++count}${suffix}`;
+      await page.fill(input, '');
+      await page.locator(input).pressSequentially(raw.trimEnd());
+      await page.press(input, suffix === '\n' ? 'Shift+Enter' : 'Space');
+      const typed = await page.inputValue(input);
+      if (typed !== raw) throw new Error('Probe did not type the intended whitespace: ' + JSON.stringify(typed));
+      if (method === 'Enter') await page.press(input, 'Enter');
+      else await page.click('[data-posy-send="desk-v1-camp-posy-input"]');
+      await settle(page, () => !!document.querySelector('[data-chat-thinking]'));
+      await page.evaluate(() => { window.__sentInput = document.querySelector('#desk-v1-camp-posy-input'); });
+      if (late) await page.$eval(input, (e, text) => {
+        e.value = text;
+        e.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+      }, raw);
+      release(); srv.gate = null;
+      await settle(page, () => !document.querySelector('[data-chat-thinking]') && !document.querySelector('#desk-v1-camp-posy-input').disabled);
+      const after = await page.inputValue(input);
+      await repaint();
+      const repainted = await page.inputValue(input);
+      const label = `${late ? 'injected late input' : 'keyboard only'}, ${suggested ? 'suggestion repaint' : 'plain reply'}, ${large ? 'large' : 'inline'}, ${method}, ${JSON.stringify(suffix)}`;
+      after === '' && repainted === '' ? ok(`sent draft stays empty: ${label}`)
+        : fail(`sent draft returned: ${label}: ${JSON.stringify({ after, repainted })}`);
+    }
+  }
+
+  // A listener on a retired textarea must not poison the campaign's draft.
+  if (!(await page.evaluate(() => !window.__sentInput.isConnected))) throw new Error('Remount probe did not retire the textarea');
+  await page.evaluate(() => {
+    const old = window.__sentInput;
+    old.value = 'Draft check 32\n'; old.dispatchEvent(new Event('input'));
+  });
+  await repaint();
+  (await page.inputValue(input)) === '' ? ok('retired textarea input cannot revive a sent draft') : fail('retired textarea revived the draft');
+  await page.fill(input, 'A new unsent question');
+  await repaint();
+  (await page.inputValue(input)) === 'A new unsent question' ? ok('a new unsent draft survives repaint') : fail('new draft lost');
+
+  // Pending remount + late event + failed POST must restore the actual request,
+  // rather than the stale event (even when that event carries different text).
+  let release; srv.gate = new Promise((r) => { release = r; });
+  srv.reply = () => ({ status: 503, error: 'Controlled unavailable response' });
+  await page.press(input, 'Enter');
+  await settle(page, () => !!document.querySelector('[data-chat-thinking]'));
+  await repaint();
+  await page.$eval(input, (e) => { e.value = 'stale event'; e.dispatchEvent(new Event('input')); });
+  release(); srv.gate = null;
+  await settle(page, () => /back in the box/.test(document.querySelector('[data-camp-chat-status]').textContent));
+  const failed = await page.inputValue(input);
+  await repaint();
+  failed === 'A new unsent question' && (await page.inputValue(input)) === failed
+    ? ok('failed send restores the request across pending and later repaints') : fail('failed request lost: ' + JSON.stringify(failed));
+
+  // A reply to this campaign cannot clear or restore text in another campaign.
+  await page.evaluate(() => {
+    const api = window.DeskV1Store.api;
+    window.__turnFinished = false;
+    window.DeskV1Store.api = (...args) => api(...args).then((r) => {
+      // send() resumes in the next microtask; this timer witnesses completion.
+      if (args[0] === 'POST') setTimeout(() => { window.__turnFinished = true; }, 0);
+      return r;
+    });
+  });
+  srv.gate = new Promise((r) => { release = r; });
+  srv.reply = () => ({ reply: 'Completed while another campaign is open.' });
+  await page.press(input, 'Enter');
+  await settle(page, () => !!document.querySelector('[data-chat-thinking]'));
+  await openCampaign(page, 'camp-other');
+  await page.fill(input, 'Keep this other campaign draft');
+  release(); srv.gate = null;
+  await settle(page, () => window.__turnFinished);
+  (await page.inputValue(input)) === 'Keep this other campaign draft'
+    ? ok('completion leaves the other campaign live input alone') : fail('completion overwrote another campaign input');
+  await openCampaign(page, 'camp-1');
+  await settle(page, () => !document.querySelector('[data-chat-thinking]') && !document.querySelector('#desk-v1-camp-posy-input').disabled);
+  (await page.inputValue(input)) === '' ? ok('success while away leaves the sending campaign draft empty') : fail('sending campaign draft returned');
+  await openCampaign(page, 'camp-other');
+  (await page.inputValue(input)) === 'Keep this other campaign draft'
+    ? ok('another campaign keeps its own unsent draft') : fail('reply changed another campaign draft');
+  realErrors(pageErrors).forEach((e) => fail('draft page error: ' + e));
+  await ctx.close();
+}
+
 async function suggestButton(browser) {
   const srv = makeServer();
   const { ctx, page } = await newPage(browser, { srv });
@@ -229,7 +345,7 @@ async function suggestButton(browser) {
   await page.click('[data-how-suggest]');
   await settle(page, () => document.querySelectorAll('[data-chat-turn="agent"]:not([data-chat-thinking])').length === 1);
   const p = posts(srv, 'camp-1');
-  (p.length === 1 && p[0].body.message === 'Suggest What / When / Where') ? ok('the Suggest button sends its line to the agent as a message') : fail('suggest POST: ' + JSON.stringify(p.map((r) => r.body)));
+  (p.length === 1 && p[0].body.message === 'Suggest Posts / When / Channels') ? ok('the Suggest button sends its line to the agent as a message') : fail('suggest POST: ' + JSON.stringify(p.map((r) => r.body)));
   (await page.evaluate(() => /not connected/i.test(document.body.innerText))) ? fail('"not connected" is on screen after Suggest') : ok('nothing says "not connected" after Suggest');
   await ctx.close();
 }
@@ -338,15 +454,118 @@ async function demo(browser) {
   await ctx.close();
 }
 
+async function productMaterials(browser) {
+  for (const width of [1440, 390]) {
+    const srv = makeServer();
+    const { ctx, page, pageErrors } = await newPage(browser, { srv, viewport: { width, height: 950 } });
+    await openCampaign(page, 'camp-1', 'how');
+    await settle(page, () => !!document.querySelector('[data-product-add]'));
+    const reads = () => page.$eval('[data-product-reads]', (e) => e.textContent);
+    await settle(page, () => /Can search the web and read the project folder/.test(document.querySelector('[data-product-reads]').textContent));
+    (await reads()).startsWith('Reads: README.md') ? ok(`${width}: chat names default README and research capabilities`) : fail(`${width}: no README line`);
+    await page.click('.desk-v1-product-materials summary');
+    await page.fill('[data-product-path]', 'docs/LAUNCH_COPY.md');
+    await page.click('[data-product-add] button');
+    await settle(page, () => /LAUNCH_COPY/.test(document.querySelector('[data-product-reads]').textContent));
+    const patch = srv.log.filter((r) => r.method === 'PATCH' && /presence/.test(r.path)).at(-1);
+    JSON.stringify(patch.body.product_docs) === JSON.stringify(['README.md', 'docs/LAUNCH_COPY.md'])
+      ? ok(`${width}: Add saves project-relative files through presence PATCH and refreshes Reads`) : fail(`${width}: wrong materials payload`);
+    if (process.env.SMOKE_SCREENSHOT_DIR) await page.screenshot({ path: resolve(process.env.SMOKE_SCREENSHOT_DIR, `product-materials-${width}.png`) });
+    await page.fill('[data-product-path]', '../outside.md');
+    await page.click('[data-product-add] button');
+    await settle(page, () => /without/.test(document.querySelector('[data-product-error]').textContent));
+    (await reads()).includes('LAUNCH_COPY') ? ok(`${width}: server refusal is visible and leaves Reads intact`) : fail(`${width}: refusal changed materials`);
+    await page.click('[data-product-remove="1"]');
+    await settle(page, () => document.querySelector('[data-product-reads]').textContent.startsWith('Reads: README.md. Can search'));
+    await page.click('[data-product-remove="0"]');
+    await settle(page, () => /No starting product materials/.test(document.querySelector('[data-product-reads]').textContent));
+    ok(`${width}: Remove persists an explicit empty list and shows the no-materials line`);
+    await page.click('[data-product-default]');
+    await settle(page, () => document.querySelector('[data-product-reads]').textContent.startsWith('Reads: README.md. Can search'));
+    srv.research = { web: false, project_read: false, toolless: true, label: 'Toolless: qwen has no certified Desk read-only tool boundary' };
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
+    await page.evaluate(() => window.sidebarNav('social'));
+    await settle(page, () => !!window.DeskV1Store.state().campaigns.length);
+    await openCampaign(page, 'camp-1', 'how');
+    await settle(page, () => /Toolless: qwen/.test(document.querySelector('[data-product-reads]').textContent));
+    (await reads()).startsWith('Reads: README.md') ? ok(`${width}: README survives reload and toolless provider is disclosed`) : fail(`${width}: reload lost materials`);
+    const overflow = await page.$eval('.desk-v1-how', (e) => e.scrollWidth > e.clientWidth + 1);
+    !overflow ? ok(`${width}: materials control fits the Brief column`) : fail(`${width}: materials overflow`);
+    await page.evaluate(() => window.deskV1Nav('project', { projectId: 'clayrune' }));
+    await settle(page, () => !!document.querySelector('.desk-v1-project [data-product-add]'));
+    ok(`${width}: project planner exposes the shared Product materials control too`);
+    realErrors(pageErrors).forEach((e) => fail(`${width}: page error: ${e}`));
+    await ctx.close();
+  }
+}
+
+async function dispatchCards(browser) {
+  for (const width of [1440, 390]) {
+    const srv = makeServer();
+    const { ctx, page, pageErrors } = await newPage(browser, { srv, viewport: { width, height: 950 } });
+    await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
+    await openCampaign(page, 'camp-1');
+    let release;
+    srv.gate = new Promise((r) => { release = r; });
+    srv.reply = () => ({ reply: 'Dave is reviewing the campaign.' });
+    await page.fill('#desk-v1-camp-posy-input', 'Ask Dave to review this campaign');
+    await page.press('#desk-v1-camp-posy-input', 'Enter');
+    await settle(page, () => !!document.querySelector('[data-chat-thinking]'));
+    srv.threads['camp-1'] = [{ id: 'dispatch-child', role: 'dispatch', agent: 'Claydo',
+      text: '<script>unsafe</script> Review the campaign', at: '2026-11-03T10:00:00Z',
+      dispatch: { session_id: 'child-123', project_id: 'clayrune', agent: 'global:dave', status: 'dispatched' } }];
+    await settle(page, () => !!document.querySelector('[data-dispatch-card="child-123"]'));
+    const href = await page.$eval('[data-dispatch-card] a', (a) => a.getAttribute('href'));
+    href === '?project=clayrune&session=child-123' ? ok(`${width}: pending dispatch has a child-session deep link`) : fail(`${width}: bad dispatch link ${href}`);
+    (await page.locator('[data-dispatch-card] script').count()) === 0 ? ok(`${width}: dispatched task is escaped`) : fail(`${width}: unsafe dispatch text`);
+    release(); srv.gate = null;
+    await settle(page, () => !document.querySelector('[data-chat-thinking]'));
+    srv.threads['camp-1'].push({ id: 'result-child', role: 'dispatch_result', agent: 'Dave', text: 'Review complete: clarify the audience.',
+      dispatch: { session_id: 'child-123', project_id: 'clayrune', status: 'completed' } });
+    await settle(page, () => document.querySelectorAll('[data-dispatch-card="child-123"]').length === 2);
+    ok(`${width}: child result arrives without another campaign POST`);
+    posts(srv, 'camp-1').length === 1 || fail(`${width}: result triggered a model turn`);
+    const overflow = await page.$eval('[data-camp-chat]', (e) => e.scrollWidth > e.clientWidth + 1);
+    !overflow ? ok(`${width}: dispatch cards fit the chat column`) : fail(`${width}: dispatch card overflow`);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
+    await page.evaluate(() => window.sidebarNav('social'));
+    await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);
+    await openCampaign(page, 'camp-1');
+    await settle(page, () => document.querySelectorAll('[data-dispatch-card="child-123"]').length === 2);
+    ok(`${width}: saved dispatch and result survive reload`);
+    srv.reply = () => ({ status: 502, error: 'model failed after launch' });
+    srv.threads['camp-1'].push({ id: 'dispatch-fast-failure', role: 'dispatch', agent: 'Claydo', text: 'Retained after model failure',
+      dispatch: { session_id: 'child-fast-failure', project_id: 'clayrune', agent: 'global:dave', status: 'dispatched' } });
+    await page.fill('#desk-v1-camp-posy-input', 'Start a second review');
+    await page.press('#desk-v1-camp-posy-input', 'Enter');
+    await settle(page, () => !!document.querySelector('[data-dispatch-card="child-fast-failure"]') && !document.querySelector('[data-chat-thinking]'));
+    ok(`${width}: a fast model failure still reveals its saved child card`);
+    (await page.inputValue('#desk-v1-camp-posy-input')) === 'Start a second review' || fail(`${width}: failed dispatch draft lost`);
+    const settings = STATIC['/static/js/settings-ownership.js'];
+    /desk_dispatch_enabled/.test(settings || '') || fail('Settings dispatch switch missing');
+    realErrors(pageErrors).forEach((e) => fail(`${width}: page error: ${e}`));
+    await ctx.close();
+  }
+}
+
 const browser = await chromium.launch();
 try {
+  console.log('live ON: sent draft lifecycle (controlled late events)'); await sentDrafts(browser);
+  if (!process.argv.includes('--drafts-only')) {
   console.log('live ON: conversation'); const prior = await conversation(browser);
   console.log('live ON: reload'); await reload(browser, prior);
   console.log('live ON: Suggest button'); await suggestButton(browser);
   console.log('live ON: no agent'); await noAgent(browser);
   console.log('live ON: text size + pop-out'); await chrome(browser);
+  console.log('live ON: product materials'); await productMaterials(browser);
+  console.log('live ON: dispatch cards'); await dispatchCards(browser);
   console.log('live OFF: demo'); await demo(browser);
+  }
 } catch (e) { fail('harness error: ' + (e && e.stack || e)); }
 await browser.close();
 if (bad) { console.error(`\n❌ FAIL — ${bad} case(s)`); process.exit(1); }
-console.log('\n✅ PASS — the campaign agent box is a saved conversation with the campaign\'s agent: turns, suggestions chip from the server, scope, refused sends, reload, Suggest, no-agent, demo.');
+console.log(process.argv.includes('--drafts-only')
+  ? '\n✅ PASS — sent drafts stay empty; failed requests and new drafts survive repaints.'
+  : '\n✅ PASS — campaign conversation: draft lifecycle, turns, suggestions, scope, refused sends, reload, Suggest, no-agent, chrome and demo.');

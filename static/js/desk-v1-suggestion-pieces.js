@@ -39,7 +39,7 @@
       if (list.some((f) => f !== fam && f.id === fam.id)) list.splice(list.indexOf(fam), 1);
     }
     window.deskV1RepaintWhat();
-    window.DeskV1Kit.toast('Saved the suggested pieces. Place them in Where.');
+    window.DeskV1Kit.toast('Saved the suggested pieces in Posts. Open a post in the composer to choose its accounts.');
   }
   window.DeskV1SuggestionPieces = { ensure, act, accept };
 })();

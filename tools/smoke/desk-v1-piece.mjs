@@ -6,7 +6,7 @@
  * Versions. This checks the sections, a multi-asset piece (2 thumbnails +
  * ＋ Add media, with Undo), header + Posy staying the SAME DOM node across
  * repaints, the publish time being the calendar's own value, Back reading
- * `‹ <campaign> · What`, What -> Review -> Back reading '‹ <piece title>',
+ * `‹ <campaign> · Posts`, What -> Review -> Back reading '‹ <piece title>',
  * and a video piece opening the Studio video editor (one editor), with the
  * piece's copy/media/versions one click away.
  *
@@ -105,6 +105,11 @@ async function navToPieceViaCard(page, familyId) {
   await navToCampaign(page);
   await page.waitForSelector(`[data-family-id="${familyId}"] [data-primary-action]`, { timeout: 8000 });
   await page.click(`[data-family-id="${familyId}"] [data-primary-action]`);
+  if (await page.evaluate((id) => window.DeskV1Store.state().families.find((f) => f.id === id)?.kind === 'post', familyId)) {
+    await page.waitForSelector('[data-composer]');
+    ok('post card opens the composer; generic piece checks use its retained direct link');
+    await page.evaluate((id) => window.deskV1Nav('piece', { campaignId: 'camp-1', familyId: id }), familyId);
+  }
   await page.waitForSelector('.desk-v1-piece', { timeout: 8000 });
 }
 
@@ -145,10 +150,10 @@ async function runSectionsAndIdentity(browser) {
   if (on === 'on 2 channels') ok(`piece header: "${on}" (same helper as What and Where)`);
   else fail(`piece header: expected "on 2 channels", got ${JSON.stringify(on)}`);
 
-  // Multi-asset piece (frame 5a): two thumbnails + `＋ Add media`.
+  // Post media entry is consolidated in the composer; direct-link Media still views it.
   const thumbs = await page.$$eval('[data-piece-media] .desk-v1-what-thumb', (els) => els.length);
   const hasAdd = await page.$('[data-piece-media] [data-add-media]');
-  if (thumbs === 2 && hasAdd) ok('multi-asset piece: 2 thumbnails + ＋ Add media on the Media section');
+  if (thumbs === 2 && !hasAdd) ok('multi-asset post: 2 thumbnails, media entry belongs to the composer');
   else fail(`multi-asset piece: thumbs=${thumbs}, add=${!!hasAdd}`);
 
   await page.evaluate(() => {
@@ -156,10 +161,12 @@ async function runSectionsAndIdentity(browser) {
     document.getElementById('desk-v1-piece-posy-input')._deskv1SmokeMarker = 'same-posy';
   });
 
-  // ＋ Add media picks a Material library folder, through the command bus (Undo).
+  // Exercise the remaining generic media picker on an image, preserving this
+  // suite's header/Posy identity contract without reviving the retired Post UI.
+  await page.evaluate(() => { window.DeskV1Store.state().families.find((f) => f.id === 'fam-30-testers').kind = 'image'; window.deskV1PieceRepaint(); });
   await page.click('[data-piece-media] [data-add-media]');
   await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
-  await page.locator('.desk-v1-addto-menu button').first().click();
+  await page.locator('.desk-v1-addto-menu button').nth(2).click(); // first library folder, after the two source rows
   await page.waitForFunction(() => document.querySelectorAll('[data-piece-media] .desk-v1-what-thumb').length === 3, null, { timeout: 2000 }).catch(() => {});
   const after = await page.$$eval('[data-piece-media] .desk-v1-what-thumb', (els) => els.length);
   if (after === 3) ok('＋ Add media: a third asset lands on the piece');
@@ -218,14 +225,14 @@ async function runVersionTime(browser) {
   await ctx.close();
 }
 
-// ── Back from a piece reads `‹ <campaign> · What`; What -> Review -> Back
+// ── Back from a piece reads `‹ <campaign> · Posts`; What -> Review -> Back
 // reads '‹ <piece title>' (review 12b is a piece child). ──────────────────
 async function runBackLabels(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser);
   await navToPieceViaCard(page, 'fam-restore-points');
   const campTitle = await page.evaluate(() => window.DeskV1Fixtures.campaigns.find((c) => c.id === 'camp-1').plan.title);
   const pieceBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
-  if (pieceBack.includes(campTitle) && /·\s*What$/.test(pieceBack)) ok(`piece: Back reads "${pieceBack}"`);
+  if (pieceBack.includes(campTitle) && /·\s*Posts$/.test(pieceBack)) ok(`piece: Back reads "${pieceBack}"`);
   else fail(`piece: Back wrong: ${JSON.stringify(pieceBack)} (campaign "${campTitle}")`);
 
   await page.click('[data-review-btn]');
@@ -259,7 +266,7 @@ async function runVideoOpensStudioEditor(browser) {
   if (await page.$('[data-storyboard] .desk-v1-sb-scene')) ok('video card -> editor shows the scenes');
   else fail('video card -> editor shows no scenes');
   const edBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
-  if (/Back to What$/.test(edBack)) ok(`video editor: Back reads "${edBack}"`);
+  if (/Back to Posts$/.test(edBack)) ok(`video editor: Back reads "${edBack}"`);
   else fail(`video editor: Back wrong: ${JSON.stringify(edBack)}`);
   const crumb = (await page.textContent('.desk-v1-crumb-title').catch(() => '') || '').trim();
   if (crumb === 'Install in two minutes · Storyboard') ok(`video editor: crumb names the piece ("${crumb}")`);
@@ -276,26 +283,10 @@ async function runVideoOpensStudioEditor(browser) {
   await page.waitForSelector('[data-storyboard]', { timeout: 8000 });
   ok('editor -> Review -> Back: returns to the editor');
 
-  // Copy, media and versions are one click away from the editor.
-  await page.waitForSelector('[data-vo-details]', { timeout: 8000 });
-  await page.click('[data-vo-details]');
-  await page.waitForSelector('.desk-v1-piece', { timeout: 8000 });
-  const sections = await page.$$eval('[data-piece-section]', (els) => els.map((e) => e.dataset.pieceSection));
-  if (['copy', 'media', 'versions'].every((s) => sections.includes(s))) ok('editor -> "Copy, media & versions": the piece page with Copy · Media · Versions');
-  else fail(`editor -> details: sections ${JSON.stringify(sections)}`);
-  const pieceBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
-  if (pieceBack.includes('Install in two minutes')) ok(`piece page: Back reads "${pieceBack}"`);
-  else fail(`piece page: Back wrong: ${JSON.stringify(pieceBack)}`);
-
-  // The piece page's button returns to the SAME editor (no second copy on the stack).
-  const btn = (await page.textContent('[data-video-btn]').catch(() => '') || '').trim();
-  if (btn === 'Open video editor') ok('piece page: the button reads "Open video editor"');
-  else fail(`piece page: button wrong: ${JSON.stringify(btn)}`);
-  await page.click('[data-video-btn]');
-  await page.waitForSelector('[data-storyboard]', { timeout: 8000 });
+  if (await page.$('[data-vo-details]')) fail('video editor still links to Copy, media & versions');
+  else ok('video editor has no Copy, media & versions escape hatch');
   await page.click('.desk-v1-back');
   await page.waitForSelector('[data-what]', { timeout: 8000 });
-  ok('piece page -> Open video editor -> Back: lands on the campaign What (editor was not pushed twice)');
 
   // A piece page reached some other way pushes the editor.
   await page.evaluate(() => window.deskV1Nav('piece', { campaignId: 'camp-1', familyId: 'fam-install-video' }));
@@ -312,7 +303,7 @@ async function runVideoOpensStudioEditor(browser) {
   await page.click('.desk-v1-back');
   await page.waitForSelector('[data-storyboard]', { timeout: 8000 });
   const dlBack = (await page.textContent('.desk-v1-back').catch(() => '') || '').trim();
-  if (/Back to What$/.test(dlBack)) ok(`Home review deep link (video): review -> Back -> editor -> Back reads "${dlBack}"`);
+  if (/Back to Posts$/.test(dlBack)) ok(`Home review deep link (video): review -> Back -> editor -> Back reads "${dlBack}"`);
   else fail(`Home review deep link (video): editor's Back wrong: ${JSON.stringify(dlBack)}`);
 
   reportUncaught(pageErrors, '[video-one-editor]');
@@ -335,7 +326,7 @@ try {
   if (browser) await browser.close();
 }
 
-console.log(bad
+console.log(exitCode
   ? `\n❌ FAIL — ${bad} Desk v1 piece check(s) regressed.`
-  : '\n✅ PASS — Desk v1 R2-7 piece page: card -> piece, Copy · Media · Versions, multi-asset + Add media, publish time via the calendar command, Back labels, video piece -> Studio video editor -> details -> editor all hold.');
+  : '\n✅ PASS — Desk v1 R2-7 piece page: card -> piece, Copy · Media · Versions, multi-asset + Add media, publish time via the calendar command, Back labels, video piece -> Studio video editor with Review and no details link all hold.');
 process.exit(exitCode);

@@ -83,7 +83,7 @@ Prefix: `/api/project/<project_id>/dev-harness`.
 | Method/path | Result |
 | --- | --- |
 | `GET /catalogue` | Versioned descriptors, profiles, catalogue digest and Python/JS/TS language identities. The languages are planned first-class coverage, not a claim that M1 executes their checks. |
-| `GET` | Project ID, configured/status/mode/revision, frozen active snapshot, optional resolved repository draft and draft error, language identities, and `merge_enforcement_available: false`. Unconfigured projects return `not_configured`, revision 0 and Preview without writing anything. |
+| `GET` | Project ID, configured/status/mode/revision, frozen active snapshot, optional resolved repository draft and draft error, language identities, and native merge availability. Availability requires a valid approved Enforce plan with a required named check and actual landing integration. Unconfigured projects return `not_configured`, revision 0 and Preview without writing anything. |
 | `POST /activate` | Human-only atomic activation/mode transition with optimistic revision check. See request below. |
 
 There are no exception, install, install-plan, preview-run or run-result routes
@@ -196,3 +196,14 @@ The unattended fence rejected creating the required global plan file under
 plan is recorded in the task journal instead; no protected global file was
 written. Engram tools were not exposed in this session; the journal preserves
 the implementation handoff without altering the auto-maintained memory index.
+
+## DH-M5 A2b native execution and landing
+
+The [A2b candidate](DEV_HARNESS_M5_PLAN_CONTRACT.md#9-a2b-implementation-candidate)
+adds approved execution/jobs and local landing integration. Human activation
+takes the common-repository landing lock before existing snapshot CAS, preventing
+approval changes midway through a managed landing. No caller/passcode/loss gate
+changes. Preview and Off observations add no native standards hold; corruption
+cannot be interpreted as either mode. Native-check outcomes, full-practice
+Unsupported coverage and independent review remain separate. This is branch
+implementation, not live activation, deployment or full-product enforcement.

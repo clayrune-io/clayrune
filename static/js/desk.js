@@ -854,10 +854,11 @@ async function openDesk() {
       <span style="font-size:16px;font-weight:700;color:var(--text)">The Desk</span>
       <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
         <button class="modal-minimize" onclick="minimizeModal('${DESK_MODAL_ID}')" title="Minimize">&#x2015;</button>
+        <button class="modal-maximize" onclick="toggleModalMaximize('${DESK_MODAL_ID}')" title="Maximize" aria-label="Maximize">${(typeof _maxBtnInner === 'function') ? _maxBtnInner(false) : '&#9633;'}</button>
         <button class="modal-close" onclick="closeModalById('${DESK_MODAL_ID}')" title="Close">&#10005;</button>
       </div>
     </div>
-    <div style="padding:0 24px 20px 28px">
+    <div class="desk-win-main" style="padding:0 24px 20px 28px">
       <div id="desk-legacy-ro-banner"></div>
       <div class="desk-tabs" id="desk-tabs"></div>
       <div id="desk-body" style="max-height:66vh;overflow-y:auto"></div>

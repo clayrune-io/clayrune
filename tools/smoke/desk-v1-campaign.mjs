@@ -154,7 +154,7 @@ async function runToneRenderChecks(browser, tone) {
   // moves into Engagement at R2-12), so its old badge assertion is retired
   // with the tab it lived on, not rewritten onto a stop that doesn't exist.
   const stopWords = await page.$$eval('.desk-v1-map-stop .desk-v1-map-stop-word', (els) => els.map((e) => e.textContent.trim()));
-  JSON.stringify(stopWords) === JSON.stringify(['Brief', 'Goal', 'What', 'Where', 'When', 'Launch'])
+  JSON.stringify(stopWords) === JSON.stringify(['Brief', 'Goal', 'Channels', 'Posts', 'When', 'Launch'])
     ? ok(`[${tone.name}] map stepper shows all 6 stops in order: ${JSON.stringify(stopWords)}`)
     : fail(`[${tone.name}] map stepper stops wrong: ${JSON.stringify(stopWords)}`);
   const whatState = await page.$eval('.desk-v1-map-stop[data-stop="what"]', (el) => el.dataset.state).catch(() => null);
@@ -191,8 +191,8 @@ async function runToneRenderChecks(browser, tone) {
     : fail(`[${tone.name}] rendering status missing: ${JSON.stringify(agentRow)}`);
   const multi = await page.$$eval('[data-family-id="fam-30-testers"] .desk-v1-what-thumb', (els) => els.length);
   const addMedia = await page.$('[data-family-id="fam-30-testers"] [data-add-media]');
-  multi === 2 && addMedia
-    ? ok(`[${tone.name}] a multi-asset piece shows its 2 thumbnails + ＋ Add media (frame 5a)`)
+  multi === 2 && !addMedia
+    ? ok(`[${tone.name}] a multi-asset post shows 2 thumbnails; Add media belongs to its composer`)
     : fail(`[${tone.name}] multi-asset row wrong: thumbs=${multi}, add=${!!addMedia}`);
   const filters = await page.$$eval('[data-what-filter]', (els) => els.map((e) => e.textContent.trim()));
   JSON.stringify(filters) === JSON.stringify(['All', 'Archived', 'Needs review', 'Scheduled', 'Blocked'])
@@ -291,12 +291,18 @@ async function runCardMenu(browser) {
   (dupToast === '' && /Duplicated/.test(dupUndo))
     ? ok(`Duplicate raises no toast; the header Undo names it: "${dupUndo}"`)
     : fail(`Duplicate should be quiet with a header Undo: toast=${JSON.stringify(dupToast)} undo=${JSON.stringify(dupUndo)}`);
-  const dupExists = await page.evaluate(() => window.DeskV1Fixtures.families.some((f) => f.id.startsWith('fam-30-testers-copy-')));
+  const dupExists = await page.evaluate(() => window.DeskV1Fixtures.families.some((f) => f.id.startsWith('fam-copy-')));
   dupExists ? ok('the duplicated family exists in fixtures (a new What row)') : fail('duplicated family not found in fixtures');
+  const dupComposer = await page.waitForSelector('[data-composer]', { timeout: 4000 }).then(() => true).catch(() => false);
+  dupComposer ? ok('Duplicate opens the copy in the composer (C4)') : fail('Duplicate did not open the composer');
   await page.click('#desk-v1-undo');
   await page.waitForTimeout(150);
-  const dupGone = await page.evaluate(() => !window.DeskV1Fixtures.families.some((f) => f.id.startsWith('fam-30-testers-copy-')));
+  const dupGone = await page.evaluate(() => !window.DeskV1Fixtures.families.some((f) => f.id.startsWith('fam-copy-')));
   dupGone ? ok('Undo removes the duplicate') : fail('Undo did not remove the duplicated family');
+  const backOnWhat = await page.waitForSelector('[data-what]', { timeout: 4000 }).then(() => true).catch(() => false);
+  backOnWhat && !(await page.$('[data-composer]'))
+    ? ok('Undo from the copy composer returns to ③ What')
+    : fail('Undo left the composer open on a deleted draft');
 
   // A5: Archive acts card-level, on every non-terminal version, through the
   // same commandBus (Undo restores each version's PRIOR state, not a blanket

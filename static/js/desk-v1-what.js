@@ -1,4 +1,4 @@
-// Desk v1 (MC-977) — R2-7: the ③ What stop of the campaign map
+// Desk v1 (MC-977) — R2-7: the ④ Posts stop of the campaign map
 // (docs/THE_DESK_V1_IA_REVISION_2.md §8 row R2-7, §11.4 item 5, §11.6 Q1;
 // frames 5a/5b/5c, 15, 15a, 16a, 16b). Window-bridged module, no `import`
 // (ground rule 1). `desk-v1-campaign.js`'s `deskV1FillCampaignTabBody` calls
@@ -131,14 +131,20 @@
   function _isMounted() { return !!(_cur && _cur.el && _cur.el.isConnected && (!_cur.el.dataset.panel || _cur.el.dataset.panel === 'what')); }
 
   // ── commands ─────────────────────────────────────────────────────────────
-  function _newTitle(kind) { return `New ${String(kind || 'piece').toLowerCase()}`; }
+  // An unnamed piece is named Video1, Post2, ... by the SERVER (mc/desk_piece_names.py).
+  // Live, the create-card starts blank ("Naming…") and takes the server's name from
+  // the POST response; demo mode has no server, so it applies the same rule locally.
+  function _serialTitle(camp, kind) {
+    return window.DeskV1PieceNames.next(_fx().families, camp.id, kind);
+  }
 
   function _addCreate(camp, type) {
+    if (type.kind === 'post') return window.DeskV1Composer.open(camp);
     const st = _state(camp.id);
     const fam = {
-      id: 'fam-new-' + _uid(), campaignId: camp.id, kind: type.kind, title: _newTitle(type.kind),
-      assets: [], versions: [],
+      id: 'fam-new-' + _uid(), campaignId: camp.id, kind: type.kind, title: '', assets: [], versions: [],
     };
+    if (!_isLive()) fam.title = fam.defaultTitle = _serialTitle(camp, type.kind);
     const card = { id: 'create-' + _uid(), familyId: fam.id, typeId: type.id, source: null, existingPick: null };
     DeskV1Store.write({
       label: `Added ${/^[aeiou]/i.test(type.label) ? 'an' : 'a'} ${type.label.toLowerCase()} piece`,
@@ -148,10 +154,24 @@
         const j = st.creates.indexOf(card); if (j >= 0) st.creates.splice(j, 1);
       },
       repaint: () => _repaint(),
-      request: () => _queue(fam.id, () => _api('POST', '/api/desk/pieces',
-        { id: fam.id, campaign_id: camp.id, kind: fam.kind, title: fam.title })),
+      request: () => _queue(fam.id, async () => {
+        const saved = await _api('POST', '/api/desk/pieces', { id: fam.id, campaign_id: camp.id, kind: fam.kind });
+        _takeServerName(card, fam, saved);
+        return saved;
+      }),
       undoRequest: () => _queue(fam.id, () => _api('DELETE', _pieceUrl(fam.id))),
     });
+  }
+
+  // The server's serial name for a piece created unnamed. A title typed while the
+  // POST was in flight stays (its PATCH is queued behind this create).
+  function _takeServerName(card, fam, saved) {
+    if (!saved) return;
+    fam.defaultTitle = saved.defaultTitle || null;
+    if (fam.title) return;
+    fam.title = saved.title || '';
+    const input = document.querySelector(`[data-what-create="${card.id}"] [data-what-title]`);
+    if (input && !input.value) input.value = fam.title;
   }
 
   function _removeCreate(camp, card) {
@@ -182,7 +202,8 @@
   // always was (no Undo toast per keystroke-commit); live also PATCHes it.
   function _renameCreate(fam, input) {
     const prev = fam.title;
-    const next = input.value.trim() || _newTitle(fam.kind);
+    // Clearing the box restores the piece's serial name (Video1), not a placeholder.
+    const next = input.value.trim() || fam.defaultTitle || prev;
     input.value = next;
     if (!_isLive()) { fam.title = next; return; }
     if (next === prev) return;
@@ -226,7 +247,8 @@
         throw new Error('this source has not produced a file that can be saved yet');
       }
       const saved = ((out && out.assets) || []).find((a) => a.id === asset.id);
-      if (saved) Object.assign(asset, { kind: saved.kind, title: saved.title, path: saved.path, src: saved.src, play: saved.play });
+      if (!saved || !saved.path) throw new Error('the upload response did not return the attached media file; reload the piece to check its saved media');
+      Object.assign(asset, { kind: saved.kind, title: saved.title, path: saved.path, src: saved.src, play: saved.play });
       if (upload) _mats.promise = null; // the file now sits in the library's Uploads folder
       if (repaint) repaint(); // the thumbnail is now the server's, not the local blob
       return out;
@@ -284,7 +306,7 @@
     const card = _state(camp.id).creates.find((c) => c.familyId === fam.id);
     if (card) _closeCreate(camp, card);
     window.DeskV1WhatAddModal.hide();
-    window.deskV1Nav('storyboard', { campaignId: camp.id, familyId: fam.id });
+    window.DeskV1VideoOpen.open(fam, camp);
   }
 
   // Studio's New video / image / article tile: queue an empty create-card on
@@ -389,7 +411,7 @@
       <div class="desk-v1-what-dropzone" data-what-dropzone tabindex="0" role="group" aria-label="Drop a file here">
         <div class="desk-v1-what-dropzone-text">Drop ${kind === 'video' ? 'a video' : 'an image'} here</div>
         <button type="button" class="btn-secondary" data-what-browse>Browse this computer</button>
-        <input type="file" class="desk-v1-what-file" data-what-file accept="${kind === 'video' ? 'video/*' : 'image/*'}" hidden>
+        <input type="file" class="desk-v1-what-file" data-what-file accept="${kind === 'video' ? window.DeskV1MediaFormats.videoAccept : 'image/*'}" hidden>
       </div>
       <div class="desk-v1-what-lib-title">Material library</div>
       <div class="desk-v1-what-lib" data-what-lib>${_libTilesHTML(kind)}</div>
@@ -436,7 +458,7 @@
     return `<div class="desk-v1-what-create" data-what-create="${esc(card.id)}" data-family-id="${esc(fam.id)}" data-kind="${esc(kind)}" data-source="${esc(card.source || '')}">
       <div class="desk-v1-what-create-head">
         <label class="desk-v1-what-kind" for="what-name-${esc(card.id)}">Name</label>
-        <input id="what-name-${esc(card.id)}" maxlength="200" type="text" class="desk-v1-what-create-title" data-what-title value="${esc(fam.title)}" aria-label="Title of the new ${esc(kind)}">
+        <input id="what-name-${esc(card.id)}" maxlength="200" type="text" class="desk-v1-what-create-title" data-what-title value="${esc(fam.title)}" placeholder="Naming…" aria-label="Title of the new ${esc(kind)}">
         ${type.preview ? '<span class="desk-v1-where-preview" data-preview>Preview · not connected</span>' : ''}
       </div>
       ${bodyHTML}
@@ -471,7 +493,7 @@
         const bodyBefore = fam.body || '';
         const bodyNext = fam.draft.tabs[st.writer.tab].body;
         DeskV1Store.write({
-          label: `Saved “${fam.title}” to What`,
+          label: `Saved “${fam.title}” to Posts`,
           apply: () => { fam.body = bodyNext; undoMark = window.DeskV1Studio.markInReview(fam); st.writer = null; _repaint(); },
           unapply: () => { fam.body = bodyBefore; if (undoMark) undoMark(); },
           repaint: () => _repaint(),
@@ -517,6 +539,8 @@
 
   // ── wiring ───────────────────────────────────────────────────────────────
   function _attachFromFile(camp, fam, card, file, kind) {
+    const error = window.DeskV1MediaFormats.error(file, kind);
+    if (error) { DeskV1Kit.toast(error); return; }
     const isImg = kind === 'image' || /^image\//.test(file.type || '');
     const src = isImg && typeof URL !== 'undefined' && URL.createObjectURL ? URL.createObjectURL(file) : null;
     _attachAsset(camp, fam, { id: 'asset-' + _uid(), kind: kind === 'video' ? 'video' : 'image', title: file.name || 'Upload', src }, card, file);
@@ -671,6 +695,18 @@
     });
   }
 
+  // The two source rows always head the ＋ Add media menu (Ron 2026-10-31),
+  // above however many library files follow.
+  const _MEDIA_SOURCES = [
+    { id: '__computer', label: 'From this computer…' },
+    { id: '__projects', label: 'From your projects…' },
+  ];
+  function _pickMediaSource(id, fam, onDone) {
+    if (id === '__computer') { window.DeskV1LocalUpload.open(fam, (asset, file) => _addMedia(fam, asset, onDone, file)); return true; }
+    if (id === '__projects') { window.DeskV1LibraryPicker.open({ kinds: [fam.kind === 'video' ? 'video' : 'image'], onPick: (it) => _addMedia(fam, { id: 'asset-' + _uid(), kind: it.kind, title: it.title, path: it.path, src: it.src }, onDone) }); return true; }
+    return false;
+  }
+
   // ── `＋ Add media`: pick a Material library folder (rows and the piece page) ─
   // `onDone` repaints whichever surface opened it.
   function openAddMedia(triggerEl, fam, onDone) {
@@ -681,10 +717,9 @@
     const lib = _fx().materialLibrary || {};
     const isVideo = fam.kind === 'video';
     const folders = (isVideo ? lib.video : lib.image) || [];
-    const items = folders.map((m) => ({ id: m.id, label: `${m.title} (${m.files})` }));
-    items.push({ id: '__computer', label: 'From this computer…' });
+    const items = _MEDIA_SOURCES.concat(folders.map((m) => ({ id: m.id, label: `${m.title} (${m.files})` })));
     DeskV1Kit.addToMenu(triggerEl, items, (id) => {
-      if (id === '__computer') { window.DeskV1LocalUpload.open(fam, (asset, file) => _addMedia(fam, asset, onDone, file)); return; }
+      if (_pickMediaSource(id, fam, onDone)) return;
       const m = folders.find((x) => x.id === id);
       if (!m) return;
       const asset = { id: 'asset-' + _uid(), kind: isVideo ? 'video' : 'image', title: m.title, src: m.thumb };
@@ -711,9 +746,8 @@
     const lib = _fx().materialLibrary || {};
     const files = (_mats.error ? [] : ((fam.kind === 'video' ? lib.video : lib.image) || []))
       .flatMap((m) => (m.items || []).map((it) => ({ it, folder: m.title })));
-    DeskV1Kit.addToMenu(triggerEl, [{ id: '__computer', label: 'From this computer…' }].concat(files.map(({ it, folder }) => ({ id: it.path, label: `${folder} / ${it.title}` })), [{ id: '__projects', label: 'From your projects…' }]), (path) => {
-      if (path === '__computer') { window.DeskV1LocalUpload.open(fam, (asset, file) => _addMedia(fam, asset, onDone, file)); return; }
-      if (path === '__projects') { window.DeskV1LibraryPicker.open({ kinds: [fam.kind === 'video' ? 'video' : 'image'], onPick: (it) => _addMedia(fam, { id: 'asset-' + _uid(), kind: it.kind, title: it.title, path: it.path, src: it.src }, onDone) }); return; }
+    DeskV1Kit.addToMenu(triggerEl, _MEDIA_SOURCES.concat(files.map(({ it, folder }) => ({ id: it.path, label: `${folder} / ${it.title}` }))), (path) => {
+      if (_pickMediaSource(path, fam, onDone)) return;
       const hit = files.find((x) => x.it.path === path);
       if (!hit) return;
       _addMedia(fam, { id: 'asset-' + _uid(), kind: hit.it.kind, title: hit.it.title, path: hit.it.path, src: hit.it.src }, onDone);

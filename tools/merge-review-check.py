@@ -8,17 +8,18 @@ asked from outside the server:
     python tools/merge-review-check.py clayrune/agent/<sid>
     python tools/merge-review-check.py --merge-head --respect-setting   # the hook
 
-Exit 0  the branch tip has a `pass` review on record (or, with
-        --respect-setting, the project has merge_requires_review off)
-Exit 1  no pass on record for the CURRENT tip -- do not merge
-Exit 2  could not decide (unknown project, unreadable repo): treated as a
-        block by the hook, never as a pass
+Exit 0  current-mode native observation and any required independent review
+Exit 1  required native finding or missing pass review of the exact tip
+Exit 2  unevaluable Enforce/review prerequisite or infrastructure contention
+        (Preview native gaps alone add no standards hold)
 
 Reads the same store the server writes (`<data root>/data/merge_reviews/`),
 by importing `mc.merge_review_gate`; it does not need the server running.
 
-Not a lock. `git merge --no-verify` skips the hook, and a fast-forward merge
-never runs `pre-merge-commit` at all -- see docs/MERGE_REVIEW_GATE.md.
+Standalone serialization ends with this preflight; its result cannot approve a
+later unlocked merge. Managed hooks validate an exact parent-held child lease.
+`git merge --no-verify` skips the hook, and fast-forwards never run
+`pre-merge-commit` -- see docs/MERGE_REVIEW_GATE.md.
 """
 from __future__ import annotations
 
@@ -199,9 +200,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     repo = Path(top)
     if a.merge_head:
+        from mc.dev_harness_pending_merge import merge_heads
+        try:
+            if not merge_heads(repo):
+                return 0  # Ordinary commits stay outside merge preflight.
+        except ValueError:
+            return 2
         commits = _merge_head_commits(repo)
-        if not commits:
-            return 0                   # not a merge of an agent branch: nothing to gate
     else:
         commits = []
 
@@ -212,26 +217,33 @@ def main(argv: list[str] | None = None) -> int:
         print(f'merge-review-check: no Clayrune project for {repo} under {data_root}; '
               f'pass --project/--data-root. Not treating this as a pass.', file=sys.stderr)
         return 2
-    if a.respect_setting and not gate.enabled(project):
-        return 0
     gate.STORE_DIR = data_root / 'data' / gate.STORE_DIRNAME
-    project = dict(project, project_path=str(repo))
-    if not a.merge_head:               # CLI mode: the branch's current tip
-        commits = [(gate.branch_tip(project, a.branch), [a.branch])]
 
-    status = 0
-    for sha, owners in commits:
-        held = (commit_hold_reason(project['id'], sha, owners) if sha
-                else gate.hold_reason(project['id'], owners[0], sha))
-        if held:
-            print(f'BLOCKED: {held}. Record a pass for this exact commit '
-                  f'(POST /api/project/{project["id"]}/agent/'
-                  f'{owners[0][len(gate.BRANCH_PREFIX):]}/review) before merging.',
-                  file=sys.stderr)
-            status = 1
-        else:
-            print(f'ok: {sha[:8]} ({", ".join(owners)}) has a pass review on record')
-    return status
+    def review(exact_h):
+        if a.respect_setting and not gate.enabled(project):
+            return 0
+        selected = (_merge_head_commits(repo) if a.merge_head else
+                    [(exact_h or gate.branch_tip(dict(project, project_path=str(repo)), a.branch), [a.branch])])
+        status = 0
+        for sha, owners in selected:
+            held = (commit_hold_reason(project['id'], sha, owners) if sha
+                    else gate.hold_reason(project['id'], owners[0], sha))
+            if held:
+                print(f'BLOCKED: {held}. Record a pass for this exact commit '
+                      f'(POST /api/project/{project["id"]}/agent/'
+                      f'{owners[0][len(gate.BRANCH_PREFIX):]}/review) before merging.', file=sys.stderr)
+                status = 1
+            else:
+                print(f'ok: {sha[:8]} ({", ".join(owners)}) has a pass review on record')
+        return status
+
+    from mc.dev_harness_manual import preflight
+    from mc.dev_harness_store import HarnessStore
+    from mc.dev_harness_dispatch import register_external_child
+    return preflight(store=HarnessStore(data_root / 'data'), project=project, repo=repo,
+                     branch=None if a.merge_head else a.branch, review=review,
+                     register=lambda proc, name: register_external_child(proc, name, project['id'], data_root),
+                     unregister=lambda pid: None)
 
 
 if __name__ == '__main__':

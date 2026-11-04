@@ -40,7 +40,8 @@ from typing import (
     Any, Callable, cast, Dict, Iterable, Iterator, List, Literal, Mapping, Optional, Tuple,
 )
 
-from mc.core import TimestampedLines
+from mc import vendor_fence
+from mc.core import TimestampedLines, _log
 from mc import doc_write_cache_store as _doc_cache_store
 from mc.unix_path import nvm_bin_dirs as _nvm_bin_dirs
 
@@ -54,8 +55,11 @@ import hashlib
 import tempfile
 from datetime import timedelta
 from mc import allowance_state as _allowance_state
+from mc import codex_run_error as _codex_run_error
 from mc import empty_turn as _empty_turn
+from mc import turn_clock as _turn_clock  # elapsed-since-last-reply stamp (mc/turn_clock.py)
 from mc import transform_sandbox as _transform_sandbox
+from mc import api_credits_offload as _api_credits_offload
 from mc.execution_policy import (
     Blocker, Capability, CapabilityClaim, Certification, ExecutionIdentity,
     Profile, Readiness, RequestedEngine, Support, authorize_execution,
@@ -495,6 +499,7 @@ _LEADING_INJECTED_RE = re.compile(
     r'--- (?:STANDING POSITIONS|RELEVANT MEMORY|REPLY SHAPE)\b[^\n]*---[ \t]*(?:\n(?!\s*\n)[^\n]*)*'
     r'|=== Prior conversation, started on [^\n]*handed off here ===[\s\S]*'
     + re.escape(HANDOFF_FOOTER) +
+    r'|\[Now \d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]\n]*\](?:\nSince your last reply:(?:\n- [^\n]*)*)?'  # mc/turn_clock.py header
     r'|=== Still waiting on \d+ dispatched session[^\n]*===(?:\n- [^\n]*)*'
     r'|=== Mid-task rollover state ===[\s\S]*?=== End of mid-task rollover state ==='
     r'|Your context was rolled over mid-task because it reached the token limit\.[^\n]*'
@@ -702,6 +707,16 @@ def _strip_codex_system_prefix(text: str) -> str:
     keeping only the real user message that was appended after it — see
     `_CODEX_DISPATCH_SEP_RE` above. A no-op when the separator isn't present.
     """
+    from mc.resume_context import strip_resume_context
+    clean = strip_resume_context(text)
+    if clean != text:
+        return clean
+    # Bare native followups may contain Markdown separators of their own.
+    if not any(marker in text for marker in (
+            'You are running inside Mission Control, which gives you one ability your CLI',
+            '--- SYSTEM ---',
+            '--- AGENT_RULES.md ---')):
+        return text
     matches = list(_CODEX_DISPATCH_SEP_RE.finditer(text))
     if matches:
         return text[matches[-1].end():].strip()
@@ -841,6 +856,11 @@ def _last_real_error_line(log_tail: str) -> Optional[str]:
             continue
         if _SEED_LINE_RE.match(stripped):
             continue
+        # Codex's MCP startup chatter (rmcp AuthRequired / Transport channel
+        # closed) is a warning about one tool, never why the run exited
+        # (MC-1147), raw or already labelled `[codex warn]`.
+        if _codex_run_error.is_mcp_startup_warning(stripped):
+            continue
         # A line with no letter or digit (a lone `]`, `}`, `)`) is the tail of
         # a multi-line message, never a cause. Live 2026-09-19: a Qwen 404
         # whose text was an HTML page wrapped in `[API Error: ... ]` left a
@@ -909,6 +929,12 @@ def _collect_trailing_reply_text(lines: Optional[List[str]]) -> str:
                 break
             continue
         if _SEED_LINE_RE.match(stripped):
+            if collected:
+                break
+            continue
+        # A tracing log line (stderr merged into stdout) is never reply text
+        # (MC-1147): treated as a boundary, like the seed line.
+        if _codex_run_error.is_tracing_line(stripped):
             if collected:
                 break
             continue
@@ -3215,6 +3241,13 @@ class ClaudeRuntime(AgentRuntime):
         else:
             stdin_payload = instruction
 
+        # API-credits offload (docs/API_CREDITS_BUILD_SPEC.md): None unless mode is
+        # `on`, the budget gate allows it and the Messages API call succeeded.
+        offloaded = _api_credits_offload.try_offload(user_text=stdin_payload, model=model,
+                                                     timeout=timeout)
+        if offloaded is not None:
+            self.last_error = ''
+            return offloaded
         cmd = self._oneshot_argv(model=model, max_turns=max_turns, effort=effort)
         self.last_error = ''
         try:
@@ -3242,7 +3275,10 @@ class ClaudeRuntime(AgentRuntime):
             tail = ((r.stderr or '') + (r.stdout or '')).strip().replace('\n', ' ')
             self.last_error = f'rc={r.returncode}: {tail[:300]}'
             return None
-        return OneshotResult(text=(r.stdout or '').strip())
+        result = OneshotResult(text=(r.stdout or '').strip())
+        _api_credits_offload.note_subscription_call(user_text=stdin_payload,
+                                                    output_text=result.text, model=model)
+        return result
 
     VISION_DESCRIBE_MODEL = 'claude-haiku-5-5'
     _IMAGE_MEDIA_TYPES = {'.png': 'image/png', '.jpg': 'image/jpeg',
@@ -4712,6 +4748,7 @@ class GeminiRuntime(AgentRuntime):
                  mcp_config_json: str = '',
                  extra_include_dirs: Optional[List[str]] = None,
                  **_extra) -> SessionHandle:
+        vendor_fence.check_launch(self.name, session_dict)
         bin_path = self.resolve_binary()
         if not bin_path:
             raise CLINotInstalledError("gemini CLI not installed — run: npm install -g @google/gemini-cli")
@@ -4722,18 +4759,11 @@ class GeminiRuntime(AgentRuntime):
         # what gets stashed as `_system_prompt`, so per-turn respawns (and thus
         # followups) keep both the trimmed context and the protocol.
         slim_prompt = self.with_mc_tool_protocol(
-            self._slim_system_prompt(system_prompt))
+            self._slim_system_prompt(system_prompt.replace(MC_TOOL_PROTOCOL_PROMPT, '')))
         task_text = self.with_attachment_hint(task)
         if resume_id:
-            # Cold resume (W4, MC-947): `resume_id` here is gemini's OWN
-            # session id, supplied by a caller reviving a dead conversation
-            # after a restart (`_revive_non_claude_from_agent_log`), now that
-            # gemini is in `_COLD_RESUMABLE_PROVIDERS`. `--resume` carries the
-            # full prior turn server-side (mirrors `write_followup`'s own
-            # resumed branch) — re-pasting the whole system prompt here would
-            # both waste tokens and duplicate context the resumed session
-            # already has.
-            full_prompt = f"{MC_TOOL_PROTOCOL_PROMPT}\n\n---\n\n{task_text}"
+            from mc.resume_context import resume_prompt
+            full_prompt = resume_prompt(slim_prompt, task_text)
         else:
             # Label the boundary explicitly. Everything above is reference
             # setup; the part below is the ONLY thing to act on. Without this
@@ -4752,6 +4782,7 @@ class GeminiRuntime(AgentRuntime):
             env.update(env_extra)
         _inject_gemini_env(env, mcp_config_json)
 
+        vendor_fence.prepare_env(self.name, session_dict, env, binary=bin_path, cwd=project_path)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -4765,8 +4796,6 @@ class GeminiRuntime(AgentRuntime):
             creationflags=_POPEN_FLAGS,
             startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
-        self._write_prompt_async(proc, full_prompt, mc_sid)
-
         if session_dict is None:
             session_dict = {}
         session_dict.update({
@@ -4795,6 +4824,8 @@ class GeminiRuntime(AgentRuntime):
             # this fix closes only for the FIRST turn.
             '_mcp_config_json': mcp_config_json,
         })
+        self._write_prompt_async(proc, full_prompt, mc_sid,
+                                 session=session_dict, context=slim_prompt)
 
         handle = SessionHandle(
             mc_session_id=mc_sid,
@@ -4812,8 +4843,8 @@ class GeminiRuntime(AgentRuntime):
             try:
                 register_process(proc, 'Agent (gemini Mode A)', 'agent',
                                  mc_sid, project_id, task[:80])
-            except Exception:
-                pass
+            except Exception as exc:
+                _log(f'[runtime:gemini] process registration failed: {exc}', flush=True)
 
         t = threading.Thread(target=self._read_stream, args=(proc, handle),
                              daemon=True, name=f'gemini-reader-{mc_sid[:8]}')
@@ -4886,15 +4917,11 @@ class GeminiRuntime(AgentRuntime):
         return None
 
     def _write_prompt_async(self, proc: subprocess.Popen, prompt: str,
-                            mc_sid: str) -> None:
-        def _send() -> None:
-            try:
-                if proc.stdin:
-                    proc.stdin.write(prompt)
-                    proc.stdin.close()
-            except Exception:
-                pass
-        threading.Thread(target=_send, daemon=True,
+                            mc_sid: str, *, session: Dict[str, Any],
+                            context: str) -> None:
+        from mc.resume_context import write_context_prompt
+        threading.Thread(target=write_context_prompt,
+                         args=(proc.stdin, prompt, session, context), daemon=True,
                          name=f'gemini-stdin-{mc_sid[:8]}').start()
 
     def _read_stream(self, proc: subprocess.Popen, handle: SessionHandle) -> None:
@@ -5120,6 +5147,11 @@ class GeminiRuntime(AgentRuntime):
             try:
                 _flush_run()  # a run cut off by EOF / a stream error still lands
                 turn_text = ''.join(turn_text_parts)
+                # Stamp only when THIS reader produced text and still owns the
+                # session: a reader that exits empty (crash, no output) or has
+                # been superseded by a respawn must not reset the clock.
+                if turn_text.strip() and session.get('proc') is proc:
+                    _turn_clock.note_reply(session)
                 mc_res = self.apply_mc_tool_blocks(session, turn_text)
                 if _mc_suppressing and not mc_res['blocks_found']:
                     # A ```mc: fence appeared but no complete, valid block was
@@ -5177,6 +5209,7 @@ class GeminiRuntime(AgentRuntime):
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
+        vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
@@ -5195,11 +5228,8 @@ class GeminiRuntime(AgentRuntime):
         # `latest` re-opens whatever gemini session is newest in the project
         # dir, which after prior runs is a stale, unrelated conversation that
         # then gets continued by mistake (the "phantom task" bug). Resuming
-        # carries the whole conversation server-side, so the followup sends
-        # only the new message — not the 16 KB context blob the old respawn
-        # path re-pasted every turn (the token burn — Gemini has no prompt
-        # cache). The ~1 KB MC Tool Protocol is re-sent so the agent never
-        # loses the ability to ask questions deep into a conversation.
+        # carries conversation history. Re-send current persona/rules only
+        # when changed or not yet recorded as delivered to this session.
         # Generic `provider_session_id` (W4, MC-947) — not a gemini-private
         # key — so the same id this dispatch/revive path writes and reads
         # elsewhere (`_runtime_note_init`, `_revive_non_claude_from_agent_log`)
@@ -5218,23 +5248,31 @@ class GeminiRuntime(AgentRuntime):
         # so this has to be re-stated on every followup or turn 2+ silently
         # falls back to the deny-all sentinel in `build_command`.
         _mcp_json = session.get('_mcp_config_json') or ''
+        # Remove the exact appended protocol before slimming (which strips
+        # its trailing newline), then append it once in canonical form.
+        context = self.with_mc_tool_protocol(
+            self._slim_system_prompt((session.get('_system_prompt') or '').replace(
+                MC_TOOL_PROTOCOL_PROMPT, '')))
         if gemini_sid:
             cmd = self.build_command(model=_model, resume_id=gemini_sid,
                                      mcp_config_json=_mcp_json,
                                      extra_include_dirs=_include_dirs)
-            full_prompt = (f"{MC_TOOL_PROTOCOL_PROMPT}\n\n---\n\n"
-                           f"{self.with_attachment_hint(message)}")
+            from mc.resume_context import followup_prompt
+            full_prompt = followup_prompt(session, context,
+                                          self.with_attachment_hint(message))
         else:
             # No id captured (session predates this fix, or init never landed)
             # — re-paste context rather than risk `latest` resuming the wrong
             # session. Costs tokens for this one turn but is always correct.
             cmd = self.build_command(model=_model, mcp_config_json=_mcp_json,
                                      extra_include_dirs=_include_dirs)
-            session['_system_prompt'] = self.with_mc_tool_protocol(
-                self._slim_system_prompt(session.get('_system_prompt') or ''))
+            session['_system_prompt'] = context
             full_prompt = _compose_respawn_prompt(
                 session, self.with_attachment_hint(message))
 
+        env = vendor_fence.prepare_env(
+            self.name, session, _inject_gemini_env(os.environ.copy(), _mcp_json),
+            binary=bin_path, cwd=handle.project_path)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -5244,11 +5282,12 @@ class GeminiRuntime(AgentRuntime):
             text=True,
             encoding='utf-8',
             errors='replace',
-            env=_inject_gemini_env(os.environ.copy(), _mcp_json),
+            env=env,
             creationflags=_POPEN_FLAGS,
             startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
-        self._write_prompt_async(proc, full_prompt, handle.mc_session_id)
+        self._write_prompt_async(proc, full_prompt, handle.mc_session_id,
+                                 session=session, context=context)
         session['proc'] = proc
         session['status'] = 'running'
         session['process_alive'] = True
@@ -5451,6 +5490,14 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
     if env_extra:
         env.update(env_extra)
 
+    from mc.retry_budgets import apply_env
+    from mc import state
+    apply_env(runtime.name, (session_dict or {}).get('trigger_type'), env, state.CONFIG)
+    if session_dict is None:
+        session_dict = {}
+    vendor_fence.prepare_env(
+        runtime.name, session_dict, env, binary=Path(cmd[0]), cwd=project_path)
+    cmd = vendor_fence.prepare_command(runtime.name, session_dict, cmd, project_path, env)
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE if prompt_via_stdin else subprocess.DEVNULL,
@@ -5467,17 +5514,19 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
 
     if prompt_via_stdin:
         def _send() -> None:
+            if runtime.name in ('codex', 'qwen'):
+                from mc.resume_context import write_context_prompt
+                write_context_prompt(proc.stdin, full_prompt, session_dict, system_prompt)
+                return
             try:
                 if proc.stdin:
                     proc.stdin.write(full_prompt)
                     proc.stdin.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                _log(f'[runtime:{runtime.name}] stdin delivery failed: {exc}', flush=True)
         threading.Thread(target=_send, daemon=True,
                          name=f'{runtime.name}-stdin-{mc_session_id[:8]}').start()
 
-    if session_dict is None:
-        session_dict = {}
     session_dict.update({
         'proc': proc,
         'status': 'running',
@@ -5512,8 +5561,8 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
         try:
             register_process(proc, f'Agent ({runtime.name} Mode A)', 'agent',
                              mc_session_id, project_id, task[:80])
-        except Exception:
-            pass
+        except Exception as exc:
+            _log(f'[runtime:{runtime.name}] process registration failed: {exc}', flush=True)
 
     t = threading.Thread(target=_mode_a_reader,
                          args=(proc, handle, runtime),
@@ -6296,6 +6345,10 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
     raw_eof = cbs.get('on_raw_eof')
     raw_sequence = 0
     capture_failed = False
+    # MC-1147: when this run began, so the rollout error read at exit can be
+    # told apart from an earlier turn's. Also clears the previous turn's.
+    turn_started_at = (_codex_run_error.begin_turn(session)
+                       if runtime.name == 'codex' else 0.0)
 
     # MC Tool Protocol (mc:question / mc:todo — see with_mc_tool_protocol):
     # every Mode-A provider's system prompt tells it to use this fence
@@ -6364,6 +6417,9 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 line = line[len(_CODEX_STDIN_BANNER):]
                 if not line:
                     continue
+            from mc.qwen_retry_wait import observe_line
+            if observe_line(session, line, _time.time()):
+                continue
             ev = runtime.parse_event(line, handle.mc_session_id)
             if ev is None:
                 # None means "this runtime declined to surface it". For a line
@@ -6564,6 +6620,11 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
             # form exists only so Gemini's own reader (which lives on the
             # runtime) can call `self.`; this shared reader is already in the
             # same module as the real implementation.
+            # Stamp only when THIS reader produced text and still owns the
+            # session (a codex retry_without_model swap hands ownership to the
+            # retry's reader; an empty/crashed turn is not a reply).
+            if turn_text.strip() and session.get('proc') is proc:
+                _turn_clock.note_reply(session)
             mc_res = apply_mc_tool_blocks(session, turn_text)
             if _mc_suppressing and not mc_res['blocks_found']:
                 # A ```mc: fence appeared but no complete, valid block was
@@ -6597,6 +6658,15 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                             set_error=True)
                 session['last_status_change_time'] = _time.time()
                 if not mc_res['paused'] and rc != 0:
+                    if runtime.name == 'codex':
+                        # `codex exec --json` may never deliver the failure
+                        # as a stream event; the rollout's task_complete.error
+                        # is the authoritative copy (MC-1147).
+                        _codex_run_error.capture(
+                            session,
+                            _codex_run_error.locate_rollout(
+                                runtime.transcript_path, handle.project_path, session),
+                            turn_started_at)
                     session['log_lines'].append(
                         f"[{runtime.name} exited with code {rc}]")
                     try:
@@ -7296,6 +7366,8 @@ class QwenRuntime(AgentRuntime):
                         continue
                     role = 'user' if provenance == 'real_user' else 'assistant'
                     if role == 'user':
+                        from mc.resume_context import strip_resume_context
+                        text = strip_resume_context(text)
                         text = strip_injected_preamble(text)
                         if not text or is_nonuser_message(text):
                             continue
@@ -7551,6 +7623,7 @@ class QwenRuntime(AgentRuntime):
                  mcp_config_json: str = '',
                  extra_include_dirs: Optional[List[str]] = None,
                  **_extra) -> SessionHandle:
+        vendor_fence.check_launch(self.name, session_dict)
         if not self.resolve_binary():
             raise RuntimeError("qwen CLI not installed — run: npm install -g @qwen-code/qwen-code")
 
@@ -7572,7 +7645,10 @@ class QwenRuntime(AgentRuntime):
         # use this fence, but nothing explains its shape without this.
         system_prompt = self.with_mc_tool_protocol(system_prompt)
         full_prompt = task
-        if system_prompt and not resume_id:
+        if resume_id:
+            from mc.resume_context import resume_prompt
+            full_prompt = resume_prompt(system_prompt, task)
+        elif system_prompt:
             full_prompt = f"{system_prompt}\n\n---\n\n{task}"
 
         env = dict(env_extra or {})
@@ -7604,6 +7680,7 @@ class QwenRuntime(AgentRuntime):
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
+        vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
@@ -7620,8 +7697,10 @@ class QwenRuntime(AgentRuntime):
         # the tail-replay respawn only when no id was ever captured (dispatch
         # errored before its INIT event fired).
         resume_id = session.get('provider_session_id') or ''
+        context = session.get('_system_prompt') or ''
         if resume_id:
-            full_prompt = message
+            from mc.resume_context import followup_prompt
+            full_prompt = followup_prompt(session, context, message)
         else:
             full_prompt = _compose_respawn_prompt(session, message)
         mc_sid = handle.mc_session_id
@@ -7637,6 +7716,11 @@ class QwenRuntime(AgentRuntime):
         _inject_guardrail_env('qwen', env)
         _inject_qwen_defaults_env(env)
         _pin_qwen_windows_shell(env)
+        from mc.retry_budgets import apply_env
+        from mc import state
+        apply_env('qwen', session.get('trigger_type'), env, state.CONFIG)
+        vendor_fence.prepare_env(
+            self.name, session, env, binary=self.resolve_binary(), cwd=handle.project_path)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -7649,12 +7733,8 @@ class QwenRuntime(AgentRuntime):
         )
 
         def _send() -> None:
-            try:
-                if proc.stdin:
-                    proc.stdin.write(full_prompt)
-                    proc.stdin.close()
-            except Exception:
-                pass
+            from mc.resume_context import write_context_prompt
+            write_context_prompt(proc.stdin, full_prompt, session, context)
         threading.Thread(target=_send, daemon=True,
                          name=f'qwen-stdin-{mc_sid[:8]}').start()
         session['proc'] = proc
@@ -8287,16 +8367,24 @@ class CodexRuntime(AgentRuntime):
         self._npx_fallback = False
         return None
 
-    def probe_allowance(self) -> Optional[bool]:
-        """Codex's app-server answers `account/rateLimits/read` from the
-        account backend with no turn and no tokens (mc/allowance_probe.py)."""
+    def read_rate_limits(self) -> Optional[dict]:
+        """Parsed `account/rateLimits/read` snapshot from Codex's app-server
+        (no turn, no tokens; mc/allowance_probe.py), or None when the binary
+        is missing or the server did not answer."""
         from mc import allowance_probe
         if not self.resolve_binary():
             return None  # never probe through the per-call npx download
         kw = ({'creationflags': _POPEN_FLAGS, 'startupinfo': _STARTUPINFO}
               if sys.platform == 'win32' else {})
-        return allowance_probe.codex_ordinary_usage_allowed(
+        return allowance_probe.codex_rate_limits_snapshot(
             self._cmd_prefix(), popen_kwargs=kw)
+
+    def probe_allowance(self) -> Optional[bool]:
+        """Codex's app-server answers `account/rateLimits/read` from the
+        account backend with no turn and no tokens (mc/allowance_probe.py)."""
+        from mc import allowance_probe
+        return allowance_probe.ordinary_usage_allowed_from(
+            self.read_rate_limits())
 
     def _cmd_prefix(self) -> List[str]:
         """Return [codex] if binary found, [npx, --yes, @openai/codex] otherwise."""
@@ -8463,6 +8551,14 @@ class CodexRuntime(AgentRuntime):
             if not isinstance(msg, dict):
                 raise ValueError('not a dict')
         except (json.JSONDecodeError, ValueError):
+            if _codex_run_error.is_mcp_startup_warning(line):
+                # An MCP server needing sign-in: the run goes on without it.
+                return AgentEvent(
+                    type=EventType.WARN, provider='codex',
+                    session_id=None, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(),
+                    payload={'text': line, 'severity': 'warn'},
+                )
             return AgentEvent(
                 type=EventType.ASSISTANT_TEXT, provider='codex',
                 session_id=None, mc_session_id=mc_session_id,
@@ -9415,7 +9511,10 @@ class CodexRuntime(AgentRuntime):
                  unattended_sandbox_enabled: bool = True,
                  fence_unattended_enabled: bool = True,
                  effort: str = '',
+                 mcp_config_json: str = '',
                  **_extra) -> SessionHandle:
+        if session_dict is None:
+            session_dict = {}
         if not self.resolve_binary() and not self._npx_fallback:
             raise CLINotInstalledError("codex CLI not installed — run: npm install -g @openai/codex")
 
@@ -9467,7 +9566,10 @@ class CodexRuntime(AgentRuntime):
         # rebuilt `_system_prompt` from a bare context in between.
         system_prompt = self.with_mc_tool_protocol(system_prompt)
         full_prompt = task
-        if system_prompt and not resume_id:
+        if resume_id:
+            from mc.resume_context import resume_prompt
+            full_prompt = resume_prompt(system_prompt, task)
+        elif system_prompt:
             # AGENTS.md hierarchy is primary; prepend to task as a quick override.
             full_prompt = f"{system_prompt}\n\n---\n\n{task}"
 
@@ -9490,6 +9592,10 @@ class CodexRuntime(AgentRuntime):
             session_dict['_codex_last_prompt'] = full_prompt
             session_dict['_codex_last_resume'] = resume_id or ''
 
+        from mc import session_mcp_launch
+        cmd, env_extra = session_mcp_launch.prepare(
+            self.name, cmd, session=session_dict, cwd=project_path,
+            config_json=mcp_config_json, env_extra=env_extra, incognito=incognito)
         return _mode_a_dispatch(
             self, cmd, full_prompt, project_path, project_id, task,
             mc_sid, session_dict, incognito, env_extra, callbacks,
@@ -9546,17 +9652,17 @@ class CodexRuntime(AgentRuntime):
         # thread id captured off this session's own `thread.started` event
         # (dispatch, or an earlier followup — see `_mode_a_reader`'s INIT
         # branch); once it exists, `codex exec resume <id>` continues that
-        # SAME thread with its full history already on disk, so the only
-        # thing this turn needs to send is the new message — no tail, no
-        # system-prompt re-injection (the resumed process already has both,
-        # exactly like Claude's `-r` doesn't need `--append-system-prompt`
-        # replayed either). Falls back to the old tail-replay respawn only
+        # SAME thread with its full history already on disk. Send the new
+        # message alone unless current instructions changed or their delivery
+        # was not recorded; native history already carries prior messages.
+        # Falls back to the old tail-replay respawn only
         # when no thread id was ever captured (e.g. dispatch's INIT event
         # never fired because the CLI errored before emitting it) — that
         # session genuinely has nothing to resume.
         resume_id = session.get('provider_session_id') or ''
         if resume_id:
-            full_prompt = message
+            from mc.resume_context import followup_prompt
+            full_prompt = followup_prompt(session, session.get('_system_prompt') or '', message)
         else:
             full_prompt = _compose_respawn_prompt(session, message)
         mc_sid = handle.mc_session_id
@@ -9590,23 +9696,25 @@ class CodexRuntime(AgentRuntime):
         mc_sid = handle.mc_session_id
         session['_codex_last_prompt'] = full_prompt
         session['_codex_last_resume'] = resume_id
+        from mc import session_mcp_launch
+        cmd, env = session_mcp_launch.prepare(
+            self.name, cmd, session=session, cwd=handle.project_path)
+        vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            cwd=handle.project_path,
+            cwd=handle.project_path, env=env,
             text=True, encoding='utf-8', errors='replace',
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
 
+        context = session.get('_system_prompt') or ''
+
         def _send() -> None:
-            try:
-                if proc.stdin:
-                    proc.stdin.write(full_prompt)
-                    proc.stdin.close()
-            except Exception:
-                pass
+            from mc.resume_context import write_context_prompt
+            write_context_prompt(proc.stdin, full_prompt, session, context)
         threading.Thread(target=_send, daemon=True,
                          name=f'codex-stdin-{mc_sid[:8]}').start()
         session['proc'] = proc
@@ -10136,7 +10244,11 @@ class OpenCodeRuntime(AgentRuntime):
                  session_dict: Optional[Dict[str, Any]] = None,
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
+                 mcp_config_json: str = '',
                  **_extra) -> SessionHandle:
+        if session_dict is None:
+            session_dict = {}
+        vendor_fence.check_launch(self.name, session_dict)
         if not self.resolve_binary():
             raise CLINotInstalledError(
                 "opencode not installed — "
@@ -10149,6 +10261,10 @@ class OpenCodeRuntime(AgentRuntime):
         # message is given (resolveRunInput falls back to piped stdin) — no
         # argv path needed, matching gemini/codex's fix for MC-931.
         cmd = self.build_command(model=model, resume_id=resume_id or '')
+        from mc import session_mcp_launch
+        cmd, env_extra = session_mcp_launch.prepare(
+            self.name, cmd, session=session_dict, cwd=project_path,
+            config_json=mcp_config_json, env_extra=env_extra, incognito=incognito)
         return _mode_a_dispatch(
             self, cmd, full_prompt, project_path, project_id, task,
             mc_sid, session_dict, incognito, env_extra, callbacks,
@@ -10158,6 +10274,7 @@ class OpenCodeRuntime(AgentRuntime):
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
+        vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
@@ -10170,10 +10287,14 @@ class OpenCodeRuntime(AgentRuntime):
         # see _compose_respawn_prompt) goes over stdin, not argv — same
         # reasoning as dispatch().
         cmd = self.build_command(model=self.session_model(handle))
+        from mc import session_mcp_launch
+        cmd, env = session_mcp_launch.prepare(
+            self.name, cmd, session=session, cwd=handle.project_path, prompt=full_prompt)
+        vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
         mc_sid = handle.mc_session_id
         proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, cwd=handle.project_path,
+            stderr=subprocess.STDOUT, cwd=handle.project_path, env=env,
             text=True, encoding='utf-8', errors='replace',
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
@@ -10183,8 +10304,8 @@ class OpenCodeRuntime(AgentRuntime):
                 if proc.stdin:
                     proc.stdin.write(full_prompt)
                     proc.stdin.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                _log(f'[runtime:opencode] stdin delivery failed: {exc}', flush=True)
         threading.Thread(target=_send, daemon=True,
                          name=f'opencode-stdin-{mc_sid[:8]}').start()
 
@@ -10487,48 +10608,59 @@ class GooseRuntime(AgentRuntime):
                  session_dict: Optional[Dict[str, Any]] = None,
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
+                 mcp_config_json: str = '',
                  **_extra) -> SessionHandle:
+        if session_dict is None:
+            session_dict = {}
+        vendor_fence.check_launch(self.name, session_dict)
         if not self.resolve_binary():
             raise CLINotInstalledError(
                 "goose not installed — run: "
                 "curl -fsSL https://github.com/aaif-goose/goose/releases/"
                 "download/stable/download_cli.sh | CONFIGURE=false bash")
         mc_sid = mc_session_id or uuid.uuid4().hex[:12]
-        cmd = self.build_command(model=model, system_prompt=system_prompt)
-        # goose's `run` has no bare positional prompt arg at all — instructions
-        # come from -t/--text, --recipe, or -i/--instructions (which docs
-        # `-i -` for stdin). Use the stdin form so the task text never sits on
-        # argv. `--system` has no such alternative (see the guard below): it
-        # is the one part of goose's invocation that a large persona payload
-        # can still blow past Windows' command-line limit on.
-        cmd.extend(['--instructions', '-'])
+        cmd = self.build_command(model=model)
+        # Selected MCP launches use a private recipe for both context and task.
+        # Legacy direct callers without a selection retain the stdin form.
+        from mc import session_mcp_launch
+        cmd, env_extra = session_mcp_launch.prepare(
+            self.name, cmd, session=session_dict, cwd=project_path,
+            config_json=mcp_config_json, env_extra=env_extra, incognito=incognito,
+            prompt=task, system_prompt=system_prompt)
+        if '--recipe' not in cmd:
+            cmd.extend(['--instructions', '-'])
+            if system_prompt:
+                cmd.extend(['--system', system_prompt])
         _guard_win_argv_length(cmd, "Goose's --system system prompt")
         return _mode_a_dispatch(
             self, cmd, task, project_path, project_id, task,
             mc_sid, session_dict, incognito, env_extra, callbacks,
-            register_process, prompt_via_stdin=True,
+            register_process, prompt_via_stdin='--recipe' not in cmd,
             system_prompt=system_prompt,
         )
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
+        vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
             _kill_pid(old_proc.pid)
         full_prompt = _compose_respawn_prompt(session, message,
                                               tail_lines=20, tail_chars=3000)
-        # Mode A respawns the CLI per turn — --model must be re-stated
-        # or the chat reverts to the CLI default after turn 1. full_prompt
-        # re-embeds the dispatch-time system context every turn (see
-        # _compose_respawn_prompt) so it goes over stdin via `-i -`, same as
-        # dispatch() — no --system here, so no argv-length guard needed.
+        # Restate model and the selected MCP set on every respawn. The composed
+        # context goes into the recipe, or stdin for legacy direct callers.
         cmd = self.build_command(model=self.session_model(handle))
-        cmd.extend(['--instructions', '-'])
+        from mc import session_mcp_launch
+        cmd, env = session_mcp_launch.prepare(
+            self.name, cmd, session=session, cwd=handle.project_path, prompt=full_prompt)
+        vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
+        if '--recipe' not in cmd:
+            cmd.extend(['--instructions', '-'])
         mc_sid = handle.mc_session_id
         proc = subprocess.Popen(
-            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, cwd=handle.project_path,
+            cmd, stdin=subprocess.DEVNULL if '--recipe' in cmd else subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, cwd=handle.project_path, env=env,
             text=True, encoding='utf-8', errors='replace',
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
@@ -10538,8 +10670,8 @@ class GooseRuntime(AgentRuntime):
                 if proc.stdin:
                     proc.stdin.write(full_prompt)
                     proc.stdin.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                _log(f'[runtime:goose] stdin delivery failed: {exc}', flush=True)
         threading.Thread(target=_send, daemon=True,
                          name=f'goose-stdin-{mc_sid[:8]}').start()
 
@@ -10783,6 +10915,7 @@ class AiderRuntime(AgentRuntime):
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
                  **_extra) -> SessionHandle:
+        vendor_fence.check_launch(self.name, session_dict)
         if not self.resolve_binary():
             raise CLINotInstalledError("aider not installed — run: pip install aider-chat")
         mc_sid = mc_session_id or uuid.uuid4().hex[:12]
@@ -10813,6 +10946,7 @@ class AiderRuntime(AgentRuntime):
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
+        vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
@@ -10845,9 +10979,12 @@ class AiderRuntime(AgentRuntime):
         msg_tmp.close()
         cmd.extend(['--message-file', msg_tmp.name])
         mc_sid = handle.mc_session_id
+        env = os.environ.copy()
+        vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
+        cmd = vendor_fence.prepare_command(self.name, session, cmd, handle.project_path, env)
         proc = subprocess.Popen(
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, cwd=handle.project_path,
+            stderr=subprocess.STDOUT, cwd=handle.project_path, env=env,
             text=True, encoding='utf-8', errors='replace',
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )
@@ -11125,7 +11262,11 @@ class KiroRuntime(AgentRuntime):
                  session_dict: Optional[Dict[str, Any]] = None,
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
+                 mcp_config_json: str = '',
                  **_extra) -> SessionHandle:
+        if session_dict is None:
+            session_dict = {}
+        vendor_fence.check_launch(self.name, session_dict)
         if not self.resolve_binary():
             raise CLINotInstalledError(
                 "kiro-cli not installed — run: "
@@ -11135,6 +11276,10 @@ class KiroRuntime(AgentRuntime):
         full_prompt = task
         if system_prompt:
             full_prompt = f"{system_prompt}\n\n---\n\n{task}"
+        from mc import session_mcp_launch
+        cmd, env_extra = session_mcp_launch.prepare(
+            self.name, cmd, session=session_dict, cwd=project_path,
+            config_json=mcp_config_json, env_extra=env_extra, incognito=incognito)
         cmd.append(full_prompt)
         # kiro-cli's headless prompt is positional-only — no --prompt-file,
         # no stdin form (piped stdin is documented as extra *context*, not a
@@ -11150,21 +11295,27 @@ class KiroRuntime(AgentRuntime):
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
+        vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
             _kill_pid(old_proc.pid)
         full_prompt = _compose_respawn_prompt(session, message,
                                               tail_lines=20, tail_chars=3000)
-        cmd = self.build_command() + [full_prompt]
+        cmd = self.build_command()
         # Every followup re-embeds the full dispatch-time system context
         # (see _compose_respawn_prompt) with no stdin/file escape for kiro —
         # same guard as dispatch().
+        from mc import session_mcp_launch
+        cmd, env = session_mcp_launch.prepare(
+            self.name, cmd, session=session, cwd=handle.project_path, prompt=full_prompt)
+        vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
+        cmd.append(full_prompt)
         _guard_win_argv_length(cmd, "Kiro's prompt (persona + task)")
         mc_sid = handle.mc_session_id
         proc = subprocess.Popen(
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, cwd=handle.project_path,
+            stderr=subprocess.STDOUT, cwd=handle.project_path, env=env,
             text=True, encoding='utf-8', errors='replace',
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
         )

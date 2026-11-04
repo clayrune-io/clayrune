@@ -155,3 +155,16 @@ def test_frozen_coverage_pipeline(repo, identity, mode, status):
         assert result['results'][0]['source_digest'] == result['source_manifest_digest']
         assert result['results'][0]['diff_cover_version'] == '10.2.0'
         assert not result['authorizes_merge']
+
+
+def test_pending_index_coverage_uses_actual_b_to_t(repo):
+    from mc.dev_harness_pending_merge import freeze_pending
+    step = coverage_step(repo)
+    git(repo, 'merge', '--no-commit', '--no-ff', 'incoming')
+    frozen = freeze_pending(repo)
+    result = runner.evaluate(project={'id':'fixture','project_path':str(repo)}, steps=[step],
+        _frozen=frozen, logs=repo/'.clayrune/logs')
+    assert result['status'] == 'pass', result
+    assert result['source']['kind'] == 'pending_merge'
+    assert result['source']['T'] == git(repo, 'write-tree')
+    assert result['results'][0]['changed_lines'] == 2

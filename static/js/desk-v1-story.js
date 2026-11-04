@@ -231,7 +231,7 @@
       _busy = true;
       makeBtn.disabled = true;
       host.setAttribute('aria-busy', 'true');
-      setStatus(`Asking ${bridge.agentName()} to write the scenes…`, 'info');
+      setStatus(`Asking ${bridge.agentName()} to write the scenes… Research calls can take up to 8 minutes.`, 'info');
       try {
         await save();
         const res = await _generate(bridge, { mode: 'board' });
@@ -265,6 +265,8 @@
       choice.querySelector('[data-story-cancel]').onclick = hideChoice;
       choice.querySelector('[data-story-replace]').focus({ preventScroll: true });
     };
+    if (window.DeskV1StoryExpand) window.DeskV1StoryExpand.attach(host);
+    if (window.DeskV1StoryResize) window.DeskV1StoryResize.attach(host);
   }
 
   // ── The ask box ────────────────────────────────────────────────────────────

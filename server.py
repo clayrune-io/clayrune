@@ -99,6 +99,8 @@ def _load_config():
         # never sees the picker keeps behaving exactly as before. Set by the
         # onboarding provider-choice step or Settings -> Default provider.
         'default_provider': '',
+        'hivemind_role_fallbacks': {},
+        'hivemind_complexity_tiers': {},
         # Set true once first-run SETUP (Welcome -> Agent connections ->
         # Essentials) has been completed or skipped. Gates the first-run flow;
         # the guided tour is gated separately by localStorage `walkthrough_done`.
@@ -285,6 +287,10 @@ def _load_config():
         # the cache-warmed context stays lean.
         'exploration_readback_enabled': True,
         'exploration_read_floor_topk': 2,
+        # First-party `clayrune` MCP server (BUILTINS-7a): typed cross-session
+        # messaging tools for any MCP-capable session. Added to the per-launch
+        # selection only where the user has not chosen an explicit MCP list.
+        'clayrune_mcp_enabled': True,
         # Cross-agent coordination layer — Phase 0 (awareness-only). Surfaces
         # OTHER live agents' current tasks + recently-landed commits into a
         # session's read-floor so concurrent siblings on one project stop
@@ -318,6 +324,8 @@ def _load_config():
         # _CONFIG_EDITABLE_KEYS, so PUT /api/config already refuses an
         # unattended caller for it (F5) — only a human can turn it back off.
         'fence_unattended_enabled': True,
+        # Restricted, source-pinned Aider. Human opt-in only; no full-CLI fallback.
+        'aider_restricted_adapter_enabled': False,
         # UNATTENDED_AGENT_PERMISSIONS_AUDIT §4 risk #1: Codex has no fence
         # equivalent (steward/fence.py is a Claude Code PreToolUse hook), so
         # every Codex session ever ran with
@@ -410,6 +418,16 @@ def _load_config():
         # over; every call after that gets the ~250B `_TAIL_COMPACT`
         # reminder instead. False restores full text on every turn.
         'behavior_tail_compact_enabled': True,
+        # Per-turn clock (mc/turn_clock.py, Ron 2026-11-03: agents were not
+        # time-aware). Every message sent into an agent session gets one
+        # leading `[Now <date> <time> <tz> · <elapsed> since your last reply]`
+        # line; when the gap exceeds the threshold a short `Since your last
+        # reply:` block (commits / backlog status changes / finished sibling
+        # sessions, capped at 10 lines, no LLM call) follows it. Default ON;
+        # all three read live, no respawn.
+        'turn_clock_enabled': True,
+        'turn_clock_gap_briefing_enabled': True,
+        'turn_clock_gap_threshold_minutes': 30,
         # Artifact coverage (mc/artifact_coverage.py) — at turn end, compare
         # the literal artifacts the user's message named (URL query params,
         # file paths, backticked tokens, ids) against the ACTUAL tool inputs
@@ -623,6 +641,8 @@ def _load_config():
         # S10 (every surface is wired). Needs `desk_v1` on as well; this flag
         # alone shows nothing.
         'desk_v1_live': True,
+        'desk_research_enabled': True,
+        'desk_dispatch_enabled': True,
         # Desk v1 renders schedule/publish times in this IANA zone (e.g.
         # 'America/New_York'). '' = fall back to the host's local timezone —
         # the same behaviour every other time surface in the app has today.
@@ -2013,6 +2033,21 @@ _bp_hivemind.wire(
 )
 app.register_blueprint(_bp_hivemind.bp)
 
+# HR-4b reviewer verdict adapter (BUILTINS-4): HTTP only. The lifecycle gate and
+# status come from HR-4a's mc/hivemind_reviewer.py, resolved lazily per request
+# and failing closed (every verdict held) while that module is absent.
+from mc.blueprints import hivemind_review_routes as _bp_hivemind_review  # noqa: E402
+
+_hr_verdict_guard, _hr_reviewer_status = _bp_hivemind_review.lifecycle_for(_bp_hivemind)
+_bp_hivemind_review.wire(
+    hivemind_dir=_DATA_ROOT / 'data' / 'hiveminds',
+    load_project_fn=_bp_projects.load_project,
+    assert_project_generation_fn=_bp_agent._assert_runtime_project_generation,
+    verdict_guard_fn=_hr_verdict_guard,
+    reviewer_status_fn=_hr_reviewer_status,
+)
+app.register_blueprint(_bp_hivemind_review.bp)
+
 # Inbound shims: the two startup call sites under __main__ keep their bare
 # names. atexit.register(_hivemind_orchestrator_stop.set) stays verbatim
 # further down (LIFO exit-hook ordering — the 1.8 lesson; the Event lives
@@ -2248,6 +2283,9 @@ _bp_desk.wire(
 )
 app.register_blueprint(_bp_desk.bp)
 
+from mc.blueprints import desk_export_routes as _bp_desk_export  # noqa: E402
+app.register_blueprint(_bp_desk_export.bp)
+
 from mc import desk_project_media as _desk_project_media  # noqa: E402
 _desk_project_media.wire(load_projects_fn=_bp_projects.load_projects,
                         media_dir=Path(_DATA_ROOT) / 'data' / 'media', uploads_root=UPLOADS_DIR)
@@ -2347,6 +2385,8 @@ from mc.blueprints import desk_capture_routes as _bp_desk_capture  # noqa: E402
 app.register_blueprint(_bp_desk_capture.bp)
 from mc.blueprints import merge_review_routes as _bp_merge_review  # noqa: E402
 app.register_blueprint(_bp_merge_review.bp)
+from mc.blueprints import clayrune_mcp_routes as _bp_clayrune_mcp  # noqa: E402
+app.register_blueprint(_bp_clayrune_mcp.bp)
 from mc.blueprints import preserved_worktrees_routes as _bp_preserved_worktrees  # noqa: E402
 app.register_blueprint(_bp_preserved_worktrees.bp)
 
@@ -3017,6 +3057,9 @@ _bp_steward.wire(
     log_fn=lambda m: _log(m, flush=True),
 )
 app.register_blueprint(_bp_steward.bp)
+# Steward role editor support (BUILTINS-3 SR-5): read-only overview + preview.
+from mc.blueprints import steward_role_routes as _bp_steward_role  # noqa: E402
+app.register_blueprint(_bp_steward_role.bp)
 
 
 # ── Local (LAN) passcode gate ── extracted to mc/blueprints/local_auth.py (1.1) ──
@@ -3069,6 +3112,9 @@ app.register_blueprint(_bp_system.bp)
 
 from mc.blueprints import cli_update_routes as _bp_cli_update  # noqa: E402
 app.register_blueprint(_bp_cli_update.bp)
+from mc.blueprints import api_credits_routes as _bp_api_credits  # noqa: E402
+_bp_api_credits.wire(_DATA_ROOT / 'data')
+app.register_blueprint(_bp_api_credits.bp)
 # Inbound shim: startup starts the update-check daemon (re-homes at 1.13).
 # The _capture_system_init shim re-homed at 1.12: the stream readers moved to
 # agent_routes, which cross-imports it directly; no server.py caller remains.
@@ -3264,6 +3310,7 @@ def _claude_dispatch_hook(**kwargs):
         max_turns_override=kwargs.get('max_turns'),
         agent_cwd_override=supplied_cwd,
         isolated_override=bool((supplied or {}).get('_worktree_isolated')),
+        prepared_context=kwargs.get('prepared_context'),
     )
     session = agent_sessions.get(session_id, {})
     p = load_project(project_id) or {}

@@ -93,6 +93,60 @@ document.addEventListener('click', (ev) => {
   if (key) { if (open) _open.add(key); else _open.delete(key); }
 });
 
+// Back-to-back markers must not draw on top of each other (each tucks into its
+// neighbours, so two in a row would overlap by 8px). A CSS adjacent-sibling
+// selector cannot see "back to back": blank log lines render as display:none
+// empty .agent-line siblings, stop-hook / agent-read markers as
+// .agent-line-hidden, and display:contents wrappers (.agent-interim-wrap) nest
+// lines one level down, all of which sit between two markers in the DOM. So the
+// previous RENDERED element is found here and the marker is flagged
+// data-ro-chain; the CSS keys the spacing off that flag.
+function _lastRendered(box) {
+  for (let c = box.lastElementChild; c; c = c.previousElementSibling) {
+    const d = getComputedStyle(c).display;
+    if (d === 'none') continue;
+    if (d === 'contents') { const r = _lastRendered(c); if (r) return r; continue; }
+    return c;
+  }
+  return null;
+}
+
+function _prevRendered(el) {
+  for (let n = el; n;) {
+    for (let s = n.previousElementSibling; s; s = s.previousElementSibling) {
+      const d = getComputedStyle(s).display;
+      if (d === 'none') continue;
+      if (d === 'contents') { const r = _lastRendered(s); if (r) return r; continue; }
+      return s;
+    }
+    const par = n.parentElement;
+    if (!par || getComputedStyle(par).display !== 'contents') return null;
+    n = par;
+  }
+  return null;
+}
+
+function _flagChain(marker) {
+  const prev = _prevRendered(marker);
+  if (prev && prev.classList.contains('agent-line-rollover')) marker.setAttribute('data-ro-chain', '');
+  else marker.removeAttribute('data-ro-chain');
+}
+
+// Every renderer (cold history, live append, console) rebuilds markers from
+// HTML strings, so observe the DOM instead of hooking each one. Only nodes that
+// ARE or CONTAIN a marker are looked at; the batch runs before paint.
+new MutationObserver((records) => {
+  const seen = new Set();
+  for (const rec of records) {
+    for (const node of rec.addedNodes) {
+      if (node.nodeType !== 1 || !node.isConnected) continue;
+      if (node.classList.contains('agent-line-rollover')) seen.add(node);
+      else if (node.firstElementChild) node.querySelectorAll('.agent-line-rollover').forEach((m) => seen.add(m));
+    }
+  }
+  seen.forEach(_flagChain);
+}).observe(document.documentElement, { childList: true, subtree: true });
+
 window.rolloverInfo = rolloverInfo;
 window.isRolloverLine = isRolloverLine;
 window.rolloverMarkerHTML = rolloverMarkerHTML;

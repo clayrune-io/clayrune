@@ -18,7 +18,12 @@
  *   4. click, Enter and Space expand/collapse the full sentence;
  *   5. refreshModal rebuild keeps the reader's open marker open;
  *   6. live path (appendAgentLine) produces the same marker;
- *   7. no horizontal overflow; screenshots land in _scratch/rollover_marker/.
+ *   7. no horizontal overflow; screenshots land in _scratch/rollover_marker/;
+ *   8. CHAINS (2026-10-31): 4+ consecutive markers of mixed kinds never overlap in
+ *      the 3-pane (1440), default and chat-flow layouts at 1440 AND 390, whether
+ *      blank (display:none) lines or a display:contents wrapper sit between them,
+ *      on the cold path and the live path; a lone marker keeps its ~4px footprint.
+ *      Screenshots land in _scratch/rollover_overlap/.
  *
  * RUN: node tools/smoke/context-rollover-marker.mjs
  */
@@ -36,6 +41,8 @@ const PID = 'smoke_rollover';
 const STATIC = loadStaticJsCss(REPO_ROOT);
 const SHOTS = resolve(REPO_ROOT, '_scratch', 'rollover_marker');
 mkdirSync(SHOTS, { recursive: true });
+const SHOTS_CHAIN = resolve(REPO_ROOT, '_scratch', 'rollover_overlap');
+mkdirSync(SHOTS_CHAIN, { recursive: true });
 
 const project = {
   id: PID, name: 'Rollover Smoke', status: 'active', domain: 'general', emoji: '\u{1f504}',
@@ -251,11 +258,127 @@ async function run(browser, label, viewport, sid) {
   await page.context().close();
 }
 
+// 8. Chains. The real DOM between two markers is NOT empty: a blank log line is a
+// display:none `.agent-line:empty` sibling (app.css), so `marker + marker` never
+// matched in a real chat and two negative margins left the pills 4px apart.
+const CHAIN_BUFFER = [
+  '> Ron: please keep going', 'Working on it now.', ROLLOVER, '', TOKENS, '', '', SIZE, RESUME_FAILED, '', NO_OUTPUT, RECOVER, '',
+  ROLLOVER, '', TOKENS, 'The agent resumed after all that.',
+  '[tool: Bash] git status', RECOVER, 'And a lone marker above this line.',
+];
+const CHAIN_TS = CHAIN_BUFFER.map((_, i) => new Date(2026, 9, 15, 10, 10 + i).toISOString());
+
+async function runChains(browser, label, viewport, style) {
+  const sid = `sess-chain-${label}-${style}`;
+  console.log(`\n── chains: ${label} (${viewport.width}px, ${style}) ──`);
+  const mobile = viewport.width <= 960;
+  const extraRoute = mobile ? (path, route) => {
+    if (path === `/api/project/${PID}/conversations`) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{
+        mc_session_id: sid, claude_session_id: 'csid-' + sid, provider: 'claude', live: false, status: 'completed',
+        label: 'chain thread', first_user: 'chain thread', last_user: 'chain thread',
+        ts: CHAIN_TS[0], ts_relative: '0m ago', turns: 1, waiting_for_question: false,
+        waiting_for_plan_approval: false, resumable: true }]) });
+    }
+    if (path === `/api/project/${PID}/session/${sid}/reconstruct`) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        task: 'chain thread', started_at: CHAIN_TS[0], claude_session_id: 'csid-' + sid,
+        log_lines: CHAIN_BUFFER, log_line_ts: CHAIN_TS }) });
+    }
+    return null;
+  } : null;
+  const { page, errors } = await newPage(browser, viewport, extraRoute);
+  const outSel = `.modal-window[data-modal-id="${PID}"] #agent-output-${sid}`;
+  if (mobile) {
+    await page.evaluate((pid) => openProjectModal(pid), PID);
+    const rowSel = `.modal-window[data-modal-id="${PID}"] .conv-row[data-mcsid="${sid}"]`;
+    await page.waitForSelector(rowSel, { timeout: 5000 });
+    await page.click(rowSel);
+  } else {
+    await page.evaluate(({ pid, sid, buf, ts }) => {
+      agentHistory.unshift({ projectId: pid, sessionId: sid, projectName: 'Rollover Smoke', task: 'a thread', status: 'completed', startedAt: ts[0] });
+      agentStatusCache[sid] = { status: 'completed', task: 'a thread', projectId: pid, startedAt: ts[0], claudeSessionId: 'csid-' + sid };
+      agentOutputBuffers[sid] = buf;
+      agentOutputTimestamps[sid] = ts;
+      openProjectModal(pid);
+    }, { pid: PID, sid, buf: CHAIN_BUFFER, ts: CHAIN_TS });
+  }
+  await page.waitForSelector(outSel, { timeout: 5000 });
+  await page.evaluate((st) => setChatStyle(st), style);
+
+  // What really sits between markers, the layout it is in, and the geometry.
+  const measure = () => page.evaluate((sel) => {
+    const out = document.querySelector(sel);
+    const kids = [...out.querySelectorAll('.agent-line-rollover')].filter((m) => m.getBoundingClientRect().height > 0);
+    const boxes = kids.map((m) => { const r = m.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, chain: m.hasAttribute('data-ro-chain') }; });
+    const pills = kids.map((m) => { const r = m.querySelector('.ro-pill').getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right }; });
+    const hiddenBetween = kids.slice(1).map((m, i) => {
+      let n = 0; for (let s = m.previousElementSibling; s && s !== kids[i]; s = s.previousElementSibling) n++;
+      return n;
+    });
+    return { boxes, pills, hiddenBetween, gap: getComputedStyle(out).rowGap, threePane: !!out.closest('.agent-3pane .agent-main'), flow: document.body.classList.contains('chat-flow') };
+  }, outSel);
+  const overlaps = (rects) => {
+    const bad = [];
+    for (let i = 0; i < rects.length; i++) for (let j = i + 1; j < rects.length; j++) {
+      const a = rects[i], b = rects[j];
+      if (a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5 && a.left < b.right && b.left < a.right) bad.push([i, j]);
+    }
+    return bad;
+  };
+  let m = await measure();
+  check(m.boxes.length === 9, `${m.boxes.length} visible markers in the chain buffer (layout: gap ${m.gap}, ${m.threePane ? '3-pane' : 'single-pane'}, ${m.flow ? 'chat-flow' : 'default'})`, `expected 9 visible markers, got ${m.boxes.length}`);
+  check(m.hiddenBetween.some((n) => n > 0), `invisible siblings really sit between markers (${m.hiddenBetween.join('/')} nodes) - the case a '+' selector cannot see`, `no invisible node between markers (${m.hiddenBetween.join('/')}); the case under test is not being exercised`);
+  check(m.boxes.filter((b) => b.chain).length === 7, '7 of 9 markers flagged as chained (an 8-marker run plus one lone marker)', `chain flags wrong: ${JSON.stringify(m.boxes.map((b) => b.chain))}`);
+  check(overlaps(m.boxes).length === 0, 'no two marker strips intersect', `marker strips overlap: ${JSON.stringify(overlaps(m.boxes))} ${JSON.stringify(m.boxes.map((b) => [Math.round(b.top), Math.round(b.bottom)]))}`);
+  check(overlaps(m.pills).length === 0, 'no two pills intersect', `pills overlap: ${JSON.stringify(overlaps(m.pills))}`);
+  await page.screenshot({ path: resolve(SHOTS_CHAIN, `after-${label}-${style}-cold.png`) });
+
+  // Live path: more markers arrive after blank lines, plus a display:contents wrapper
+  // (.agent-interim-wrap) that nests a blank line and a marker one level down.
+  await page.evaluate(({ sid, a, b }) => {
+    appendAgentLine(sid, a); appendAgentLine(sid, ''); appendAgentLine(sid, b); appendAgentLine(sid, '');
+    const out = document.querySelector('#agent-output-' + sid);
+    const wrap = document.createElement('div'); wrap.className = 'agent-interim-wrap';
+    wrap.innerHTML = '<div class="agent-line"></div><div class="agent-line agent-line-status agent-line-rollover">'
+      + window.rolloverMarkerHTML('[Context rolled over mid-task — continuing in a fresh session]') + '</div>';
+    out.appendChild(wrap);
+  }, { sid, a: '[Session context is 117k tokens — starting fresh]', b: '[Session transcript too large (61 MB) — starting fresh]' });
+  await page.waitForTimeout(60);
+  m = await measure();
+  check(m.boxes.length === 12, `live: ${m.boxes.length} visible markers after 2 appended + 1 inside a display:contents wrapper`, `live: expected 12 visible markers, got ${m.boxes.length}`);
+  check(overlaps(m.boxes).length === 0 && overlaps(m.pills).length === 0, 'live chain (blank lines + wrapper in between) does not overlap either',
+    `live overlap: ${JSON.stringify(overlaps(m.boxes))} ${JSON.stringify(m.boxes.map((b) => [Math.round(b.top), Math.round(b.bottom)]))}`);
+  check(m.boxes[m.boxes.length - 1].chain, 'the marker nested in the wrapper is chained to the marker before it', 'wrapper-nested marker not flagged');
+  await page.evaluate((sel) => { const o = document.querySelector(sel); o.scrollTop = o.scrollHeight; }, outSel);
+  await page.screenshot({ path: resolve(SHOTS_CHAIN, `after-${label}-${style}-live.png`) });
+
+  // A lone marker still tucks in: ~4px added to the thread.
+  const lone = await page.evaluate((sel) => {
+    const out = document.querySelector(sel);
+    const el = [...out.querySelectorAll(':scope > .agent-line-rollover')].find((x) => !x.hasAttribute('data-ro-chain')
+      && x.nextElementSibling && x.nextElementSibling.textContent.includes('lone marker'));
+    if (!el) return null;
+    const a = el.previousElementSibling, b = el.nextElementSibling;
+    const gap = () => b.getBoundingClientRect().top - a.getBoundingClientRect().bottom;
+    const withIt = gap(); el.style.display = 'none'; const without = gap(); el.style.display = '';
+    return Math.round(withIt - without);
+  }, outSel);
+  check(lone !== null && lone >= 0 && lone <= 6, `a lone marker still adds only ${lone}px to the thread`, `lone marker footprint wrong: ${lone}`);
+
+  realErrors(errors).length === 0 ? ok('no uncaught page errors') : realErrors(errors).forEach((e) => fail('page error: ' + e));
+  await page.context().close();
+}
+
 let browser;
 try {
   browser = await chromium.launch();
   await run(browser, 'desktop-1440', { width: 1440, height: 900 }, 'sess-ro-desktop');
   await run(browser, 'mobile-390', { width: 390, height: 844 }, 'sess-ro-mobile');
+  for (const style of ['flow', 'bubbles']) {
+    await runChains(browser, 'desktop-1440', { width: 1440, height: 900 }, style);
+    await runChains(browser, 'mobile-390', { width: 390, height: 844 }, style);
+  }
 } finally {
   if (browser) await browser.close();
 }

@@ -26,15 +26,16 @@ from urllib.parse import urlparse
 
 from mc import desk as _desk
 from mc import desk_assisted_instagram as _instagram
+from mc import desk_assisted_youtube as _youtube
 from mc import desk_pieces as _pieces
 from mc.core import _log
 
 # Words that publish. Compared casefolded against a whole label.
 FINAL_SUBMIT_LABELS = frozenset({'share', 'publish', 'tweet', 'send', 'submit', 'schedule',
-                                 'post now', 'schedule post'})
+                                 'post now', 'schedule post', 'save'})
 
 # network -> route module. A new network is a new module and a line here.
-ROUTES = {_instagram.NETWORK: _instagram}
+ROUTES = {_instagram.NETWORK: _instagram, _youtube.NETWORK: _youtube}
 
 _run_locks: dict[str, threading.Lock] = {}
 _run_locks_guard = threading.Lock()
@@ -60,6 +61,7 @@ class Driver(Protocol):
     def click_at(self, x: float, y: float) -> None: ...
     def attach(self, css: str, paths: list[str]) -> bool: ...
     def insert_text(self, css: str, text: str) -> bool: ...
+    def replace_text(self, css: str, text: str) -> bool: ...
     def present(self, css: str, label: str) -> bool: ...
     def close(self) -> None: ...
 
@@ -78,6 +80,8 @@ def validate_route(route) -> None:
     if not is_final_submit(route.FINAL_SUBMIT['label']):
         raise ValueError(f"{route.NETWORK}: FINAL_SUBMIT label {route.FINAL_SUBMIT['label']!r} "
                          'is not in FINAL_SUBMIT_LABELS')
+    if any(not is_final_submit(label) for label in route.FINAL_SUBMIT.get('aliases', ())):
+        raise ValueError(f'{route.NETWORK}: unknown final-submit alias')
     ops = {'navigate', 'click', 'wait', 'attach', 'caption'}
     for i, step in enumerate(route.STEPS):
         if step.get('op') not in ops:
@@ -124,7 +128,12 @@ def approved_post(piece_id: str, version_id: str) -> dict:
         raise AssistedError(f"there is no assisted route for {acc.get('platform')!r}", 'no_route')
     if not body:
         raise AssistedError('there is no text to post', 'no_text')
-    if len(body) > route.CAPTION_LIMIT:
+    validator = getattr(route, 'validation_errors', None)
+    if validator:
+        problems = validator(body, piece.get('assets') or [])
+        if problems:
+            raise AssistedError('; '.join(problems), 'invalid_post')
+    elif len(body) > route.CAPTION_LIMIT:
         raise AssistedError(f'{route.LABEL} takes at most {route.CAPTION_LIMIT} characters; this is {len(body)}',
                             'text_too_long')
     media = []
@@ -193,7 +202,9 @@ def run(post: dict, driver: Driver) -> dict:
                 if not driver.attach(step['css'], post['media']):
                     raise _StepFailed('the file field was not found')
             elif op == 'caption':
-                if not driver.insert_text(step['css'], post['body']):
+                fields = getattr(route, 'text_fields', lambda body: {'body': body})(post['body'])
+                write = driver.replace_text if step.get('replace') else driver.insert_text
+                if not write(step['css'], fields[step.get('field', 'body')]):
                     raise _StepFailed('the text box was not found')
         except _StepFailed as e:
             raise AssistedError(f'stopped at step {i + 1} ({op}): {e}. The pane is left where it is: '
@@ -203,8 +214,10 @@ def run(post: dict, driver: Driver) -> dict:
     final = route.FINAL_SUBMIT
     return {'ok': True, 'state': 'ready_for_human', 'network': route.NETWORK,
             'steps_done': done, 'media': len(post['media']),
-            'final_button_present': bool(driver.present(final['css'], final['label'])),
-            'message': f"The post is filled in. Check it in the pane, then press {final['label']} yourself."}
+            'final_button_present': any(driver.present(final['css'], label)
+                                        for label in (final['label'], *final.get('aliases', ()))),
+            'message': (f"The post is filled in. Check it in the pane and finish the remaining settings. "
+                        f"Press {'/'.join((final['label'], *final.get('aliases', ())))} yourself.")}
 
 
 def prepare(piece_id: str, version_id: str, *, driver_factory: Callable[[str], Driver] | None = None) -> dict:

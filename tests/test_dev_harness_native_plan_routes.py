@@ -63,10 +63,10 @@ def test_human_preview_exact_plan_and_native_enforce_route(client, ready, monkey
     assert ok.status_code == 200, ok.get_json()
     assert ok.get_json()['mode']=='enforce'
     assert c.post(URL+'/activate',json=data,headers=BROWSER).status_code == 409
-    # A2a intentionally has no executable coordinator or merge gate yet.
-    assert c.get(URL).get_json()['merge_enforcement_available'] is False
-    for route in ('preview','run','runs'):
-        assert c.post(URL+'/'+route,json={}).status_code == 404
+    assert c.get(URL).get_json()['merge_enforcement_available'] is True
+    for route in ('preview','run'):
+        assert c.post(URL+'/'+route,json={}).status_code == 400
+    assert c.post(URL+'/runs',json={}).status_code == 404
 
 
 def test_duplicate_activation_keys_rejected_after_agent_gate(client, inputs, monkeypatch):

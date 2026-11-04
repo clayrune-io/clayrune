@@ -118,10 +118,20 @@ def test_catalogue_and_engine_services_keep_their_provider_routes():
 
 
 def test_service_with_no_provider_stays_unavailable():
-    for sid, rid in (('youtube', 'youtube-oauth'), ('google_drive', 'google-drive-oauth')):
+    for sid, rid in (('google_drive', 'google-drive-oauth'),):
         out = type_view.project_service(sid)
         assert _types(out['picker']) == ['signin', 'mcp']
         assert _hidden(out)[rid]['explanation']['code'] == 'missing_adapter'
+
+
+def test_youtube_offers_named_browser_setup_without_an_api_upload_adapter():
+    out = type_view.project_service('youtube')
+    v = _variants(out)['youtube-browser']
+    assert out['service']['account_kinds'] == [{'id': 'account', 'label': 'YouTube channel'}]
+    assert v['setup']['via'] == 'browser_signin' and v['setup']['mode'] == 'full'
+    assert v['setup']['signin']['url'] == 'https://www.youtube.com/'
+    assert not v['runtime']['purposes'] and not v['runtime']['desk_executes']
+    assert 'youtube-oauth' not in _variants(out)
 
 
 # ── unknown addresses ────────────────────────────────────────────────────────

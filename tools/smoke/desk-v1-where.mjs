@@ -1,41 +1,7 @@
 #!/usr/bin/env node
-/**
- * Desk v1 (MC-977 IA revision 2, docs/THE_DESK_V1_IA_REVISION_2.md §8 R2-10
- * row) — the ⑤ Where board (frames 7a/7b, §11.6 Q1), static/js/desk-v1-where.js.
- *
- * Checks:
- *   - Render, all 3 tones: Messages column lists every piece of the campaign
- *     with an `on N channels` pill; one column per account the campaign uses
- *     (platform mark + handle + platform + ✕); version cards read
- *     `<kind> → <platform format>` and NO time (R2-19: times are When's); the rule line sits under the
- *     board; SOURCES lists one card per connected account (the 2 X accounts
- *     stay 2 cards with distinct handles), preview-only YouTube/Discord are hidden, and configured offline Reddit stays
- *     visible with `Not connected` + `Connect ›`.
- *   - The retired campaign Add tray's Channels shelf is gone.
- *   - Drag 1: a message onto @ron ADDS a version (message stays listed, pill
- *     +1, card `Article → X thread`); toast + Undo restores.
- *   - Drag 2: that card @ron -> Clayrune Page MOVES it (total unchanged).
- *   - Drag 3: a source dragged up adds its column. On an Active campaign that
- *     widens the bounds -> Launch reads `Awaiting approval`; ✕ on an
- *     approved account's column keeps approval; a configured read-only source
- *     (YouTube) drags and drops for planning.
- *   - Keyboard equivalents for all three drags (focus + Enter -> menu).
- *   - A new campaign's Where shows Messages + 0 account columns; `Connect ›`
- *     lands on the project's Presence page.
- *   - Phone (390 px): the board scrolls inside itself, the page does not;
- *     ✕ and Connect are ≥ 44 px tall.
- *
- * R2-7 shipped the 6-piece fixture (camp-1) these counts follow — frame 7b's:
- * Install 3, Agent 1, Home 2, Where board 1, Retro 2 (the restore-points
- * article), Post 2; @ron 5, Clayrune Page 4, Clayrune blog 2. The EXPECT block
- * below is the ONE place to re-point if the fixture moves. Pills read
- * `DeskV1Kit.pieceChannelsText`, the same helper What's rows use.
- *
- * Real headless boot (real index.html + real static/js|css, no network).
- *
- * RUN   cd tools/smoke && node desk-v1-where.mjs
- * Exit 0 = every case holds; 1 = a case regressed / harness error.
- */
+// C5: read-only placement overview; account selection, bounds, Undo and previews stay.
+// Retired positive message-add/version-move/source-drag assertions are replaced
+// by no-drag/no-menu invariants plus click/keyboard account-bound checks.
 import { readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -50,7 +16,7 @@ const CSS_DIR = resolve(REPO_ROOT, 'static', 'css');
 const ASSETS_DIR = resolve(REPO_ROOT, 'assets');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
 const ORIGIN = 'http://mc.smoke.test';
-const SHOT_DIR = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens');
+const SHOT_DIR = resolve(REPO_ROOT, '_scratch', process.env.COMPOSER_SHOTS || 'composer_c5');
 mkdirSync(SHOT_DIR, { recursive: true });
 
 const MIME = { '.webp': 'image/webp', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml' };
@@ -156,6 +122,7 @@ async function readBoard(page) {
       hasRemove: !!c.querySelector('[data-where-remove]'),
       preview: !!c.querySelector('[data-preview]'),
       empty: txt(c.querySelector('[data-where-colempty]')),
+      posts: Number(c.querySelector('[data-where-post-count]')?.dataset.wherePostCount),
       versions: [...c.querySelectorAll('[data-where-version]')].map((v) => ({
         versionId: v.dataset.versionId,
         familyId: v.dataset.familyId,
@@ -199,36 +166,6 @@ async function backToWhere(page) {
   await page.waitForSelector('.desk-v1-where[data-where]', { timeout: 4000 });
 }
 
-// Real pointer drag: mouse down on the source, cross the slop, release over
-// the target's centre. Both ends are scrolled into view first (the drag
-// engine has no auto-scroll), and the target is re-measured after the first
-// move because the ghost/hover classes can shift layout.
-async function drag(page, fromSel, toSel, opts) {
-  const from = page.locator(fromSel).first();
-  const to = page.locator(toSel).first();
-  await to.scrollIntoViewIfNeeded(); // the board scrolls sideways past 3 accounts; Messages is sticky
-  await from.scrollIntoViewIfNeeded();
-  const fb = await from.boundingBox();
-  if (!fb) throw new Error(`drag source not visible: ${fromSel}`);
-  await page.mouse.move(fb.x + fb.width / 2, fb.y + fb.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(fb.x + fb.width / 2 + 14, fb.y + fb.height / 2 + 14, { steps: 4 });
-  const tb = await to.boundingBox();
-  if (!tb) throw new Error(`drag target not visible: ${toSel}`);
-  // Aim at the part of the target the tab body actually shows: the body is its
-  // own scroll region, so a target scrolled half under its top edge is only
-  // hittable where it overlaps the body's box.
-  const body = await page.locator('#desk-v1-camp-tabbody').boundingBox();
-  const top = Math.max(tb.y, body ? body.y : tb.y);
-  const bottom = Math.min(tb.y + tb.height, body ? body.y + body.height : tb.y + tb.height);
-  const tx = tb.x + tb.width / 2;
-  const ty = top + Math.min((bottom - top) / 2, (opts && opts.maxY) || 120);
-  await page.mouse.move(tx, ty, { steps: 10 });
-  await page.waitForTimeout(40);
-  await page.mouse.up();
-  await page.waitForTimeout(120);
-}
-
 const col = (b, id) => b.columns.find((c) => c.channelId === id);
 const msg = (b, title) => b.messages.find((m) => m.title === title);
 
@@ -265,8 +202,9 @@ async function runRender(browser, tone) {
   check(allCards.length > 0 && timed.length === 0,
     `${tag} R2-19: none of the ${allCards.length} Where version cards carries a time`,
     `${tag} R2-19: Where cards still show a time: ${JSON.stringify(timed)}`);
-  check(/Dragging from Messages always ADDS a version/.test(b.rule) && /MOVES it/.test(b.rule),
-    `${tag} rule line under the board: "${b.rule}"`, `${tag} rule line wrong: ${JSON.stringify(b.rule)}`);
+  check(/edited in the composer/.test(b.rule), `${tag} composer owns assignments`, `${tag} stale placement guidance`);
+  check(b.columns.every(c => c.posts === new Set(c.versions.map(v => v.familyId)).size), `${tag} counts distinct live posts per account`, `${tag} incorrect post count`);
+
 
   check(JSON.stringify(b.sources.map((s) => s.channelId)) === JSON.stringify(EXPECT.sources),
     `${tag} SOURCES: one card per connected account (${b.sources.length})`, `${tag} sources wrong: ${JSON.stringify(b.sources.map((s) => s.channelId))}`);
@@ -278,7 +216,7 @@ async function runRender(browser, tone) {
   check(JSON.stringify(prev) === JSON.stringify([]),
     `${tag} preview-only services are absent from Sources`, `${tag} preview labels wrong: ${JSON.stringify(prev)}`);
   check(b.off.length === 1 && /not connected/i.test(b.off[0].text) && b.off[0].connect && b.off[0].draggable,
-    `${tag} the not-connected card reads "${b.off[0] && b.off[0].text}" and is draggable`, `${tag} off card wrong: ${JSON.stringify(b.off)}`);
+    `${tag} the not-connected card reads "${b.off[0] && b.off[0].text}" and is keyboard selectable`, `${tag} off card wrong: ${JSON.stringify(b.off)}`);
 
   // Ron 2026-10-16: equal-size tiles, a vendor mark on each, nothing running out of its card.
   const geo = await page.evaluate(() => {
@@ -305,71 +243,47 @@ async function runRender(browser, tone) {
 async function runDrags(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   await gotoWhere(page);
-  const total0 = await versionTotal(page, 'camp-1');
+  const snapshot = () => page.evaluate(() => JSON.stringify(window.DeskV1Fixtures.campaigns) + JSON.stringify(window.DeskV1Fixtures.families));
+  const before = await snapshot();
+  for (const sel of ['[data-where-message]', '[data-where-version]', '[data-where-source]']) {
+    const node = page.locator(sel).first();
+    await node.scrollIntoViewIfNeeded(); const r = await node.boundingBox();
+    await page.mouse.move(r.x + 20, r.y + 8); await page.mouse.down();
+    await page.mouse.move(r.x + 70, r.y + 30, { steps: 5 });
+    check(await page.locator('.pd-ghost, .pd-drop-target').count() === 0, `no drag starts from ${sel}`, `drag still active for ${sel}`);
+    await page.mouse.move(2, 2); await page.mouse.up();
+  }
+  check(await snapshot() === before, 'pointer drags change no assignments or account bounds', 'drag mutated state');
+  for (const sel of ['[data-where-message]', '[data-where-version]']) {
+    await page.locator(sel).first().click({ position: { x: 20, y: 8 } });
+    await page.locator(sel).first().dispatchEvent('keydown', { key: 'Enter' });
+  }
+  check(await page.locator('.desk-v1-addto-menu, [data-where-remove-version]').count() === 0 && await snapshot() === before,
+    'no individual assignment menus or removal controls', 'Where still edits assignments');
+  reportUncaught(pageErrors, '[read-only]'); await ctx.close();
+}
 
-  // Drag 1: message -> @ron ADDS a version; the message stays listed.
-  await drag(page, '[data-where-message][data-family-id="fam-restore-points"]', '.desk-v1-where-col[data-channel-id="ch-x-ron"]');
-  let b = await readBoard(page);
-  const ron = col(b, 'ch-x-ron');
-  const armInRon = ron.versions.find((v) => v.familyId === 'fam-restore-points');
-  check(!!armInRon && armInRon.format === 'Article → X thread',
-    `drag 1: Messages → @ron adds a card reading "${armInRon && armInRon.format}"`, `drag 1: no X-thread card on @ron: ${JSON.stringify(ron.versions)}`);
-  check(!!msg(b, RETRO) && msg(b, RETRO).pill === 'on 3 channels',
-    'drag 1: the message is still in Messages, pill now "on 3 channels"', `drag 1: message/pill wrong: ${JSON.stringify(msg(b, RETRO))}`);
-  check(ron.versions.length === EXPECT.columns['ch-x-ron'] + 1 && (await versionTotal(page, 'camp-1')) === total0 + 1,
-    `drag 1: @ron ${ron.versions.length} cards, campaign total ${total0} → ${total0 + 1}`, 'drag 1: counts wrong');
-  // Quiet Undo (Ron 2026-10-01): a drop raises no toast; the header Undo names the piece.
-  const undoTitle = (await page.getAttribute('#desk-v1-undo', 'title')) || '';
-  const toasts1 = await page.$$eval('.toast', (els) => els.length);
-  check(toasts1 === 0 && /Undo anything/.test(undoTitle), 'drag 1: no toast, and the header Undo names the piece', `drag 1: toasts=${toasts1} header Undo=${JSON.stringify(undoTitle)}`);
-
-  // Drag 2: that card @ron -> Clayrune Page MOVES it; total unchanged.
-  const cardSel = `[data-where-version][data-version-id="${armInRon.versionId}"]`;
-  await drag(page, cardSel, '.desk-v1-where-col[data-channel-id="ch-li-page"]');
-  b = await readBoard(page);
-  const moved = col(b, 'ch-li-page').versions.find((v) => v.versionId === armInRon.versionId);
-  check(!!moved && moved.format === 'Article → LinkedIn native article' && !col(b, 'ch-x-ron').versions.some((v) => v.versionId === armInRon.versionId),
-    `drag 2: @ron → Clayrune Page moves it ("${moved && moved.format}"), gone from @ron`, `drag 2: move wrong: ${JSON.stringify(moved)}`);
-  check((await versionTotal(page, 'camp-1')) === total0 + 1 && msg(b, RETRO).pill === 'on 3 channels',
-    'drag 2: total unchanged by a move; the pill still says "on 3 channels"', 'drag 2: a move changed the total');
-
-  // A published version cannot be moved.
-  const pubBefore = col(b, 'ch-x-ron').versions.filter((v) => v.title === 'Install in two minutes').length;
-  await drag(page, '[data-where-version][data-version-id="v-install-x"]', '.desk-v1-where-col[data-channel-id="ch-li-page"]');
-  b = await readBoard(page);
-  check(col(b, 'ch-x-ron').versions.some((v) => v.versionId === 'v-install-x') && pubBefore === 1,
-    'drag 2b: an already-published version stays put (refused with a toast)', 'drag 2b: a published version moved');
-
-  // Drag 3: source -> board on an ACTIVE campaign: new column + Awaiting approval.
-  const status0 = await launchStatus(page);
-  check(!/Awaiting approval/.test(status0), `drag 3: before the drag Launch reads "${status0}"`, `drag 3: already awaiting before any change: ${status0}`);
-  await backToWhere(page);
-  await drag(page, '[data-where-source][data-channel-id="ch-x-clayrune"]', '[data-where-messages]');
-  b = await readBoard(page);
-  const added = col(b, 'ch-x-clayrune');
-  check(!!added && added.versions.length === 0 && /Drag a message here to add its X version\./.test(added.empty),
-    `drag 3: @clayrune source → board adds an EMPTY column: "${added && added.empty}"`, `drag 3: column wrong: ${JSON.stringify(added)}`);
-  const status1 = await launchStatus(page);
-  check(/Awaiting approval/.test(status1), `drag 3: on an Active campaign Launch reads "${status1}"`, `drag 3: Launch not awaiting: ${JSON.stringify(status1)}`);
-  await backToWhere(page);
-  const aw = await page.$('[data-where-awaiting]');
-  check(!!aw, 'drag 3: the Where stop carries the same Awaiting-approval notice', 'drag 3: no awaiting notice on Where');
-
-  // A configured read-only account can still be placed for planning.
-  await page.evaluate(() => { const ch = window.DeskV1Fixtures.channels.find(c => c.id === 'ch-yt-clayrune'); ch.preview = false; ch.capability = 'none'; ch.userAdded = true; });
-  await backToWhere(page);
-  await drag(page, '[data-where-source][data-channel-id="ch-yt-clayrune"]', '[data-where-messages]');
-  await drag(page, '[data-where-message][data-family-id="fam-install-video"]', '.desk-v1-where-col[data-channel-id="ch-yt-clayrune"]');
-  b = await readBoard(page);
-  const yt = col(b, 'ch-yt-clayrune');
-  check(!!yt && !yt.preview && yt.versions.length === 1 && yt.versions[0].format === 'Video → YouTube upload',
-    `configured read-only account: column took a drop ("${yt && yt.versions[0] && yt.versions[0].format}")`, `configured read-only account wrong: ${JSON.stringify(yt)}`);
-
-  reportUncaught(pageErrors, '[drags]');
+async function runCounts(browser) {
+  const { ctx, page } = await newBootedPage(browser, { ls: {} });
+  await page.evaluate(() => {
+    const rows = window.DeskV1Fixtures.families.filter(f => f.campaignId === 'camp-1');
+    const fam = rows.find(f => f.versions.some(v => v.channelId === 'ch-x-ron'));
+    fam.versions.push({ id: 'duplicate-live', channelId: 'ch-x-ron', state: 'drafting' });
+    rows.push({ id: 'not-live', campaignId: 'camp-1', title: 'Inactive assignments', versions: [
+      { id: 'archived-version', channelId: 'ch-x-ron', state: 'archived' },
+      { id: 'skipped-version', channelId: 'ch-x-ron', state: 'skipped' },
+    ] });
+    rows.push({ id: 'archived-piece', campaignId: 'camp-1', title: 'Archived piece', archivedAt: '2026-10-30', versions: [
+      { id: 'archived-piece-version', channelId: 'ch-x-ron', state: 'drafting' },
+    ] });
+    window.DeskV1Fixtures.families.push(...rows.filter(f => ['not-live', 'archived-piece'].includes(f.id)));
+  });
+  await gotoWhere(page);
+  check((await readBoard(page)).columns.find(c => c.channelId === 'ch-x-ron').posts === EXPECT.columns['ch-x-ron'],
+    'post count ignores duplicate destinations, inactive versions and archived pieces', 'live post count inflated');
   await ctx.close();
 }
 
-// ── 3. ✕ narrows and keeps approval ───────────────────────────────────────
 async function runRemove(browser) {
   const { ctx, page, pageErrors } = await newBootedPage(browser, { ls: {} });
   await gotoWhere(page);
@@ -410,32 +324,10 @@ async function runKeyboard(browser) {
   const focused = await page.evaluate(() => document.activeElement && document.activeElement.dataset && document.activeElement.dataset.channelId);
   check(focused === 'ch-x-clayrune', 'keyboard: focus stays on that source card after the add', `keyboard: focus lost (${focused})`);
 
-  // Message: Enter opens a menu of the board's accounts; pick @clayrune.
-  await page.focus('[data-where-message][data-family-id="fam-30-testers"]');
-  await page.keyboard.press('Enter');
-  await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
-  const items = await page.$$eval('.desk-v1-addto-menu button', (els) => els.map((e) => e.textContent.trim()));
-  check(items.length === 4 && items.some((t) => /@clayrune/.test(t)), `keyboard: message menu lists the ${items.length} account columns`, `keyboard: message menu wrong: ${JSON.stringify(items)}`);
-  await page.locator('.desk-v1-addto-menu button', { hasText: '@clayrune' }).click();
-  await page.waitForTimeout(100);
-  b = await readBoard(page);
-  const fp = col(b, 'ch-x-clayrune').versions.find((v) => v.familyId === 'fam-30-testers');
-  check(!!fp && fp.format === 'Post → X post' && msg(b, POST).pill === 'on 3 channels',
-    `keyboard: message → account adds "${fp && fp.format}", message stays listed (on 3 channels)`, `keyboard: message add wrong: ${JSON.stringify(fp)}`);
-  const focusMsg = await page.evaluate(() => document.activeElement && document.activeElement.dataset && document.activeElement.dataset.familyId);
-  check(focusMsg === 'fam-30-testers', 'keyboard: focus returns to the message card', `keyboard: focus not restored (${focusMsg})`);
-
-  // Version: Enter opens "Move to…" (never the account it is already on).
-  await page.focus(`[data-where-version][data-version-id="${fp.versionId}"]`);
-  await page.keyboard.press('Enter');
-  await page.waitForSelector('.desk-v1-addto-menu', { timeout: 2000 });
-  const mv = await page.$$eval('.desk-v1-addto-menu button', (els) => els.map((e) => e.textContent.trim()));
-  check(mv.length === 3 && !mv.some((t) => /@clayrune/.test(t)), `keyboard: version menu offers the ${mv.length} OTHER accounts`, `keyboard: version menu wrong: ${JSON.stringify(mv)}`);
-  await page.locator('.desk-v1-addto-menu button', { hasText: '@ron' }).click();
-  await page.waitForTimeout(100);
-  b = await readBoard(page);
-  check(!!col(b, 'ch-x-ron').versions.find((v) => v.versionId === fp.versionId) && col(b, 'ch-x-clayrune').versions.length === 0,
-    'keyboard: version → @ron moves it (old column empty again)', 'keyboard: move wrong');
+  check(await page.locator('[data-where-post-count="0"]').count() === 1, 'new account starts with zero posts', 'new account prefilled');
+  check(!!await page.$('[data-where-awaiting]'), 'account expansion still awaits approval', 'widening lost approval gate');
+  const status = await launchStatus(page);
+  check(/Awaiting approval/.test(status), 'Launch refuses expanded bounds without approval', 'Launch accepted widening');
   reportUncaught(pageErrors, '[keyboard]');
   await ctx.close();
 }
@@ -457,10 +349,10 @@ async function runNewCampaign(browser) {
   await page.screenshot({ path: resolve(SHOT_DIR, 'r2_10_where_empty_1440.png') });
 
   // Source → board on a DRAFT adds the column without any approval state.
-  await drag(page, '[data-where-source][data-channel-id="ch-x-ron"]', '[data-where-messages]');
+  await page.click('[data-where-source][data-channel-id="ch-x-ron"]');
   const b2 = await readBoard(page);
   check(b2.columns.length === 1 && b2.columns[0].channelId === 'ch-x-ron' && !(await page.$('[data-where-awaiting]')),
-    'draft: a source dragged up adds a column and never shows Awaiting approval', `draft: ${JSON.stringify(b2.columns.map((c) => c.channelId))}`);
+    'draft: a source selected adds a column and never shows Awaiting approval', `draft: ${JSON.stringify(b2.columns.map((c) => c.channelId))}`);
 
   // Connect › → the Connections screen (the one place accounts are connected).
   await page.click('[data-where-connect]');
@@ -510,6 +402,7 @@ try {
   browser = await chromium.launch();
   for (const tone of TONES) await runRender(browser, tone);
   await runDrags(browser);
+  await runCounts(browser);
   await runRemove(browser);
   await runKeyboard(browser);
   await runNewCampaign(browser);

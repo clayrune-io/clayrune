@@ -28,6 +28,8 @@ ERROR_CODES = frozenset({
     'invalid_ref', 'invalid_object', 'dirty_integration_input', 'dirty_incoming_checkout',
     'ambiguous_merge_base', 'invalid_tree', 'worktree_create_failed',
     'candidate_tree_mismatch', 'worktree_cleanup_failed', 'binary_source_requires_adapter',
+    'inputs_changed', 'plan_inputs_changed', 'ambiguous_pending_parents', 'pending_conflicts',
+    'pending_worktree_differs', 'pending_resolution_unsupported',
 })
 
 
@@ -94,9 +96,10 @@ def changes(repo: Path, base: str, tip: str | None = None) -> list[dict[str, str
     return found
 
 
-def manifest(root: Path) -> dict[str, Any]:
+def manifest(root: Path, *, include_untracked: bool = True) -> dict[str, Any]:
     """Hash tracked working files, full index identity and nonignored new files.
 
+    M5's private integration seam excludes untracked paths; Preview keeps them.
     No source contents are persisted. Binary files remain explicitly labelled;
     they are never interpreted as text or silently dropped from the identity.
     """
@@ -113,7 +116,8 @@ def manifest(root: Path) -> dict[str, Any]:
             raise FreezeError('unmerged_or_submodule')
         index[_path(raw_name)] = {'mode': mode, 'oid': oid}
     if is_git:
-        untracked = [_path(p) for p in git_bytes(root, ['ls-files', '--others', '--exclude-standard', '-z']).split(b'\0') if p]
+        untracked = ([_path(p) for p in git_bytes(root, ['ls-files', '--others', '--exclude-standard', '-z']).split(b'\0') if p]
+                     if include_untracked else [])
     else:
         untracked = []
         observed_count = 0
@@ -235,7 +239,14 @@ def resolve_commit(repo: Path, ref: str) -> str:
 
 
 def freeze_candidate(repo: Path, target: str, incoming: str) -> dict[str, Any]:
-    if git_bytes(repo, ['status', '--porcelain', '-z', '--untracked-files=all']):
+    return _freeze_candidate(repo, target, incoming, include_untracked=True)
+
+
+def _freeze_candidate(repo: Path, target: str, incoming: str, *, include_untracked: bool) -> dict[str, Any]:
+    # Ordinary/manual callers retain the original full dirty refusal. Only the
+    # private M5 integration owner opts out of untracked runtime-state checks.
+    status = ['status', '--porcelain', '-z', '--untracked-files=' + ('all' if include_untracked else 'no')]
+    if git_bytes(repo, status):
         raise FreezeError('dirty_integration_input')
     b, h = resolve_commit(repo, target), resolve_commit(repo, incoming)
     # Incoming dirty work from another registered checkout must not be silently
@@ -248,18 +259,23 @@ def freeze_candidate(repo: Path, target: str, incoming: str) -> dict[str, Any]:
             except UnicodeError as exc:
                 raise FreezeError('undecodable_path') from exc
         elif field == b'HEAD ' + h.encode('ascii') and checkout is not None:
-            if git_bytes(checkout, ['status', '--porcelain', '-z', '--untracked-files=all']):
+            if git_bytes(checkout, status):
                 raise FreezeError('dirty_incoming_checkout')
     bases = git_bytes(repo, ['merge-base', '--all', b, h]).decode('ascii').split()
     if len(bases) != 1:
         raise FreezeError('ambiguous_merge_base')
-    # merge-tree writes objects only, never checks out or mutates the user's tree.
-    tree = git_bytes(repo, ['merge-tree', '--write-tree', b, h]).decode('ascii').splitlines()[0]
-    if not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', tree):
-        raise FreezeError('invalid_tree')
+    tree = merge_tree(repo, b, h)
     return {'kind': 'integration', 'B': b, 'H': h, 'M': bases[0], 'T': tree,
             'branch_changes': changes(repo, bases[0], h),
             'integration_changes': changes(repo, b, tree)}
+
+
+def merge_tree(repo: Path, base: str, incoming: str) -> str:
+    # Git objects only: no source manifest, status gate or working-tree write.
+    tree = git_bytes(repo, ['merge-tree', '--write-tree', base, incoming]).decode('ascii').splitlines()[0]
+    if not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', tree):
+        raise FreezeError('invalid_tree')
+    return tree
 
 
 @contextmanager

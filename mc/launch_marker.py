@@ -24,9 +24,11 @@ tests/test_launch_marker.py pins the two together.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from mc.provider_env_scope import scope_claude_env
+from mc import claude_resume_snapshot, state
+from mc import retry_budgets
 
 # Read by steward/fence.py `_should_arm_for_unattended_trigger` (the hook runs in
 # the Claude child's environment, so this is the one channel that needs no server).
@@ -65,7 +67,7 @@ def launch_env(trigger_type: Optional[str],
     non-claude provider (mc/provider_env_scope.py), so a Goose/Aider/Qwen key
     cannot move a Claude run off the subscription plan.
     """
-    env: Dict[str, Any] = scope_claude_env(dict(os.environ if base is None else base))
+    env = dict(scope_claude_env(dict(os.environ if base is None else base)))
     unattended = (trigger_type or '') in UNATTENDED_TRIGGER_TYPES
     if unattended and _fence_enabled():
         env[LAUNCH_MARKER_ENV] = '1'
@@ -73,7 +75,7 @@ def launch_env(trigger_type: Optional[str],
         env.pop(LAUNCH_MARKER_ENV, None)
     if unattended and not (env.get(RETRY_WATCHDOG_ENV) or '').strip():
         env[RETRY_WATCHDOG_ENV] = '1'
-    return env
+    return retry_budgets.apply_env('claude', trigger_type, env, state.CONFIG)
 
 
 def launch_cmd(cmd: List[str], trigger_type: Optional[str],
@@ -86,6 +88,7 @@ def launch_cmd(cmd: List[str], trigger_type: Optional[str],
     on a CLI that supports `onFailure` the `--settings` file is swapped for one
     whose fence entry blocks when the hook cannot run. `cwd` is the child's
     working directory (pass the Popen `cwd=`). See mc/fence_fail_closed.py."""
+    cmd = claude_resume_snapshot.launch_args(cmd, state.CONFIG)
     if (trigger_type or '') not in UNATTENDED_TRIGGER_TYPES or not _fence_enabled():
         return cmd
     from mc import fence_fail_closed

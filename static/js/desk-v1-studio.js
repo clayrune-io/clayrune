@@ -260,6 +260,7 @@
     if (window.DeskV1ProjectMedia) window.DeskV1ProjectMedia.mount(el.querySelector('[data-project-media]'), { summaries: _fx().projectMedia || [], state: _lib.projectView });
     el.querySelectorAll('[data-studio-new]').forEach((btn) => {
       btn.onclick = () => {
+        if (btn.dataset.studioNew === 'video') { window.DeskV1VideoOpen.openStudio(); return; }
         window.deskV1Nav('studio-create', { kind: btn.dataset.studioNew });
       };
     });
@@ -394,6 +395,7 @@
 
   function _sbOwner() { return { kind: _sb.standalone ? 'studio' : 'piece', id: _sb.familyId }; }
   function _sceneCmd(ctx, spec) {
+    if (_sb?.loading) return Promise.resolve({ ok: false, error: 'The storyboard is loading.' });
     // Whatever is typed in the open scene editor is saved before any other scene
     // change repaints the list; over the limit, the change waits and the editor stays.
     if (!_saveOpenEditor()) return Promise.resolve({ ok: false, error: 'the scene you are editing is over the instruction limit: shorten it first' });
@@ -412,8 +414,13 @@
     // cannot be overwritten by the read.
     mine.loading = true;
     if (mine.el.isConnected) _repaintSb();
-    window.DeskV1Store.storyboard.load(_sbOwner(), ctx.detail).then(() => {
+    const owner = _sbOwner();
+    window.DeskV1Store.storyboard.load(owner, ctx.detail).then(async (board) => {
+      if (_sb !== mine || !mine.el.isConnected) return;
+      if (mine.standalone && board.title) ctx.fam.title = board.title;
+      await window.DeskV1StudioClips.seed(owner, ctx.fam, ctx.detail, board, () => _sb === mine && mine.el.isConnected);
       mine.loading = false;
+      mine.timelineView = {}; // first Fit uses the loaded board, not its temporary samples
       if (_sb === mine && mine.el.isConnected) _repaintSb();
     }).catch((e) => {
       mine.loading = false;
@@ -440,7 +447,7 @@
       : '';
     return `<li class="desk-v1-sb-scene${ph ? ' desk-v1-sb-scene-example' : ''}${editing ? ' desk-v1-sb-scene-editing' : ''}${_sb && _sb.selected === s.id ? ' desk-v1-sb-selected' : ''}" data-scene-id="${esc(s.id)}" data-scene-label="${esc(s.label)}"${ph ? ' data-scene-placeholder' : ''}>
       <button type="button" class="desk-v1-sb-handle" data-scene-handle aria-label="Move ${ph ? 'example scene' : 'scene ' + n}: ${esc(s.label)}. Arrow Up or Arrow Down reorders" title="Drag, or press Arrow Up / Arrow Down">⠿</button>
-      <div class="desk-v1-sb-thumb">${s.thumb || !_isLive() ? `<img src="${esc(s.thumb || '')}" alt="${ph ? 'Example capture' : 'Capture for scene ' + n}">` : ''}<span class="desk-v1-sb-num" data-scene-num>${ph ? '·' : n}</span></div>
+      <div class="desk-v1-sb-thumb">${window.DeskV1StudioClips.thumb(s)}<span class="desk-v1-sb-num" data-scene-num>${ph ? '·' : n}</span></div>
       <div class="desk-v1-sb-body">
         ${title}
         <div class="desk-v1-sb-source">${esc(s.source || '')}</div>
@@ -448,7 +455,7 @@
       <div class="desk-v1-sb-meta">
         <span class="desk-v1-sb-dur">${esc(_mmss(s.durationSec || 0))}</span>
         <button type="button" class="desk-v1-sb-editbtn" data-scene-edit>${editing ? 'Done' : 'Edit'}</button>
-        ${_isLive() ? `<button type="button" class="desk-v1-sb-editbtn" data-scene-picture aria-label="${s.picture ? 'Replace' : 'Add'} the picture for ${ph ? 'example scene' : 'scene ' + n}: ${esc(s.label)}">${s.picture ? 'Replace picture' : 'Add picture'}</button>` : ''}
+        ${_isLive() ? `<button type="button" class="desk-v1-sb-editbtn" data-scene-picture aria-label="${s.picture ? 'Replace' : 'Add'} picture or clip for ${ph ? 'example scene' : 'scene ' + n}: ${esc(s.label)}">${s.picture ? 'Replace picture or clip' : 'Add picture or clip'}</button>` : ''}
         ${_isLive() && window.DeskV1LibraryPicker ? window.DeskV1LibraryPicker.buttonHTML('data-scene-library', 'desk-v1-sb-editbtn', `Pick from library: the picture for ${ph ? 'example scene' : 'scene ' + n}: ${s.label}`) : ''}
         ${_isLive() ? `<button type="button" class="desk-v1-sb-editbtn" data-scene-paste aria-label="Paste a picture from the clipboard into ${ph ? 'example scene' : 'scene ' + n}: ${esc(s.label)}" title="Paste a picture from the clipboard">Paste</button>` : ''}
         ${del}
@@ -456,23 +463,11 @@
     </li>`;
   }
 
-  // The Studio timeline bar (MC-1024 follow-up): the director's own scene strip
-  // (desk-v1-video.js, DeskV1VideoStrip) over the REAL scenes, widths in
-  // proportion to duration. The reorder drag is that strip's; its drop commits
-  // through the same _moveScene as the list, so the two stay in sync.
-  function _timelineHTML(detail) {
-    const real = _realScenes(detail);
-    if (!real.length || !window.DeskV1VideoStrip) return '';
-    const total = real.reduce((sum, s) => sum + (s.durationSec || 0), 0);
-    return `<div class="desk-v1-sb-timeline-title">Timeline · ${esc(_mmss(total))}</div>
-      <div class="desk-v1-video-scenestrip desk-v1-sb-timeline" data-sb-timeline aria-label="Timeline of real scenes. Drag a tile to reorder">${window.DeskV1VideoStrip.html(real)}</div>`;
-  }
-
   // The standalone Render button and the note above the list read the real
   // scenes, not the sample rows.
   function _noScenesHTML(detail) {
     if (_sb && _sb.loadError) return `<div class="desk-v1-camp-empty" data-sb-load-error>Could not load this storyboard: ${esc(_sb.loadError)}</div>`;
-    if (_isLive() && _sb && !detail.scenes.length) return `<div class="desk-v1-camp-empty" data-sb-no-scenes>No scenes yet. Add the first one below, then add its picture.</div>`;
+    if (_isLive() && _sb && !detail.scenes.length) return `<div class="desk-v1-camp-empty" data-sb-no-scenes>No scenes yet. Add the first one below, then add its picture or clip.</div>`;
     if (!(_sb && _sb.standalone) || _realScenes(detail).length) return '';
     const msg = detail.scenes.length
       ? 'No real scenes yet. The rows below are examples: edit one to make it a scene.'
@@ -485,7 +480,7 @@
     if (!(r && r.status === 'rendering')) return '';
     const tail = _sb && _sb.standalone
       ? 'preview only: the render engine is not wired yet, so this does not finish.'
-      : 'back on What the piece stays usable while it renders.';
+      : 'back on Posts the piece stays usable while it renders.';
     return `<div class="desk-v1-sb-rendering" data-sb-rendering>⟳ Rendering ${esc(r.progress != null ? r.progress : 0)}% — ${tail}</div>`;
   }
 
@@ -498,11 +493,11 @@
     const rendering = fam.render && fam.render.status === 'rendering';
     const strip = _sb.standalone
       ? `<div class="desk-v1-sb-returning" data-sb-standalone>Studio · <strong>not attached to a campaign</strong> <span>· use it in one from the Material library afterwards</span></div>`
-      : `<div class="desk-v1-sb-returning" data-returning-to>Returning to › <strong>${esc(_campTitle(camp))}</strong> <span>· What · ${esc(fam.title)}</span></div>`;
+      : `<div class="desk-v1-sb-returning" data-returning-to>Returning to › <strong>${esc(_campTitle(camp))}</strong> <span>· Posts · ${esc(fam.title)}</span></div>`;
     return `<div class="desk-v1-sb" data-storyboard data-family-id="${esc(fam.id)}">
       ${strip}
       <div class="desk-v1-sb-head">
-        <h2 class="desk-v1-sb-title">New video · storyboard</h2>
+        ${window.DeskV1StudioTitle.html(fam)}
         ${_isLive() ? '' : `<button type="button" class="btn-add" data-sb-render${rendering || (_sb.standalone && !_realScenes(detail).length) ? ' disabled' : ''}>Render</button>`}
       </div>
       <div data-sb-notice>${_noScenesHTML(detail)}</div>
@@ -510,7 +505,12 @@
       <div class="desk-v1-sb-layout">
         <div class="desk-v1-sb-main">
           ${_isLive() && !_sb.loadError ? window.DeskV1Story.html(!_sb.loading) : ''}
-          ${_sb.standalone ? `<div class="desk-v1-sb-timeline-wrap" data-sb-timeline-wrap>${_timelineHTML(detail)}</div>` : ''}
+          ${window.DeskV1StudioPreview.html()}
+        </div>
+        <aside class="desk-v1-sb-agent" data-sb-agent>${_agentBoxHTML(ctx)}</aside>
+      </div>
+      <div class="desk-v1-sb-timeline-wrap" data-sb-timeline-wrap>${window.DeskV1StudioTimeline.html(detail)}</div>
+      <div class="desk-v1-sb-editor">
           <div class="desk-v1-sb-listrow">
             <ol class="desk-v1-sb-scenes" data-scenes aria-label="Scenes">${detail.scenes.map((s) => _sceneHTML(s, detail.scenes, _sb.editing === s.id)).join('')}</ol>
             ${_sb.standalone ? `<div class="desk-v1-sb-bincol">
@@ -520,8 +520,6 @@
           </div>
           ${_isLive() && !_sb.loadError ? '<div class="desk-v1-sb-addrow"><button type="button" class="desk-v1-addscene" data-scene-add>Add scene</button></div>' : ''}
           ${_isLive() && !_sb.loadError ? '<div data-sb-engine></div>' : ''}
-        </div>
-        <aside class="desk-v1-sb-agent" data-sb-agent>${_agentBoxHTML(ctx)}</aside>
       </div>
     </div>`;
   }
@@ -563,14 +561,15 @@
       ol.innerHTML = ctx.detail.scenes.map((s) => _sceneHTML(s, ctx.detail.scenes, _sb.editing === s.id)).join('');
       _wireScenes(ol);
     }
-    if (_sb.standalone) {
-      const wrap = _sb.el.querySelector('[data-sb-timeline-wrap]');
-      if (wrap) { wrap.innerHTML = _timelineHTML(ctx.detail); _wireTimeline(); }
-      const note = _sb.el.querySelector('[data-sb-notice]');
-      if (note) note.innerHTML = _noScenesHTML(ctx.detail);
-      const render = _sb.el.querySelector('[data-sb-render]');
-      if (render) render.disabled = !_realScenes(ctx.detail).length || !!(ctx.fam.render && ctx.fam.render.status === 'rendering');
-    }
+    const wrap = _sb.el.querySelector('[data-sb-timeline-wrap]');
+    if (wrap) { wrap.innerHTML = window.DeskV1StudioTimeline.html(ctx.detail); _wireTimeline(); }
+    window.DeskV1StudioPreview.refresh(_sb.el);
+    window.DeskV1StudioExport.refresh(_sb.el);
+    window.DeskV1StudioClips.wire(_sb.el);
+    const note = _sb.el.querySelector('[data-sb-notice]');
+    if (note) note.innerHTML = _noScenesHTML(ctx.detail);
+    const render = _sb.el.querySelector('[data-sb-render]');
+    if (render) render.disabled = !_realScenes(ctx.detail).length || !!(ctx.fam.render && ctx.fam.render.status === 'rendering');
     _markSelected();
     window.DeskV1Story.grow(ol);
     if (focusSel) { const f = _sb.el.querySelector(focusSel); if (f) f.focus({ preventScroll: true }); }
@@ -582,15 +581,16 @@
   // The timeline's reorder is the director strip's drag, committing through the
   // same move the list uses.
   function _wireTimeline() {
-    const strip = _sb && _sb.el.querySelector('[data-sb-timeline]');
-    if (!strip || !window.DeskV1VideoStrip) return;
-    // A tile can also be dragged onto the bin: the same delete as the row's.
-    window.DeskV1VideoStrip.wire(strip, (fromId, toId) => _moveScene(fromId, toId), {
-      trashSel: '[data-sb-trash]',
-      onTrash: (sceneId) => _deleteScene(sceneId),
-      onSelect: (sceneId) => _selectScene(sceneId, true),
-      activeBodyClass: 'desk-v1-sb-drag-active',
-      ghostClass: 'pd-ghost desk-v1-video-scene-ghost',
+    const ctx = _sbCtx();
+    if (!ctx) return;
+    const mine = _sb;
+    window.DeskV1StudioTimeline.wire(_sb.el, {
+      scenes: () => _realScenes(ctx.detail), move: _moveScene, remove: _deleteScene,
+      view: _sb.timelineView,
+      select: id => _selectScene(id, true), detail: ctx.detail, paint: _paintScenes,
+      command: spec => { if (_sb !== mine || !mine.el.isConnected) return Promise.resolve({ ok: false }); _registerItem(ctx.fam); return _sceneCmd(ctx, spec); },
+      newId: () => 'sc-' + _uid(),
+      files: (files, beforeId) => _addPastedPictures(files, null, beforeId),
     });
   }
 
@@ -678,26 +678,27 @@
     const ctx = _sbCtx();
     const s = ctx && ctx.detail.scenes.find((x) => x.id === sceneId);
     if (!s || !file) return;
-    let ref;
-    try { ref = await window.DeskV1Store.storyboard.uploadPicture(_sbOwner(), file); } catch (e) {
-      DeskV1Kit.toast(`The picture was not added: ${e && e.message ? e.message : e}`);
+    const mine = _sb;
+    let media;
+    try { media = await window.DeskV1StudioClips.upload(_sbOwner(), file); } catch (e) {
+      DeskV1Kit.toast(`The picture or clip was not added: ${e && e.message ? e.message : e}`);
       return;
     }
-    _applyScenePicture(sceneId, ref);
+    if (_sb === mine && mine.el.isConnected) _applyScenePicture(sceneId, media.ref, media.ref.kind === 'video' ? media.durationSec : undefined);
   }
 
   // The scene change itself: `ref` is a library picture ({path, kind, title, src}),
   // freshly uploaded by Add picture or already there (Pick from library).
-  function _applyScenePicture(sceneId, ref) {
+  function _applyScenePicture(sceneId, ref, durationSec) {
     const ctx = _sbCtx();
     const s = ctx && ctx.detail.scenes.find((x) => x.id === sceneId);
     if (!s || !ref) return;
-    const prev = { picture: s.picture || null, thumb: s.thumb || '' };
+    const prev = { picture: s.picture || null, thumb: s.thumb || '', durationSec: s.durationSec };
     _registerItem(ctx.fam);
     _sceneCmd(ctx, {
-      label: `${prev.picture ? 'Replaced' : 'Added'} the picture for “${s.label}”`,
-      do: () => { s.picture = ref; s.thumb = ref.src || ''; _paintScenes(); },
-      undo: () => { s.picture = prev.picture; s.thumb = prev.thumb; _paintScenes(); },
+      label: `${prev.picture ? 'Replaced' : 'Added'} the ${ref.kind === 'video' ? 'clip' : 'picture'} for “${s.label}”`,
+      do: () => { s.picture = ref; s.thumb = ref.src || ''; if (durationSec !== undefined) s.durationSec = durationSec; _paintScenes(); },
+      undo: () => { Object.assign(s, prev); _paintScenes(); },
     });
   }
 
@@ -705,8 +706,13 @@
   // library (the storyboard keeps a library path, never a copy), so nothing is uploaded.
   function _pickScenePicture(sceneId, btn) {
     if (!window.DeskV1LibraryPicker) return;
-    window.DeskV1LibraryPicker.open({ kinds: ['image'], returnFocus: btn, onPick: (it) => {
-      _applyScenePicture(sceneId, { path: it.path, kind: 'image', title: it.title, src: it.src });
+    const mine = _sb;
+    window.DeskV1LibraryPicker.open({ kinds: ['image', 'video'], returnFocus: btn, onPick: async (it) => {
+      try {
+        const media = it.kind === 'video' ? await window.DeskV1StudioClips.fromLibrary(it) : { ref: { path: it.path, kind: 'image', title: it.title, src: it.src } };
+        if (_sb !== mine || !mine.el.isConnected) return;
+        _applyScenePicture(sceneId, media.ref, media.durationSec);
+      } catch (e) { DeskV1Kit.toast(e.message || String(e)); return; }
       DeskV1Kit.toast(it.provenance ? `Used “${it.title}”. A copy is saved in the library.` : `Used “${it.title}” from the library. The scene points at that file; nothing was copied.`);
     } });
   }
@@ -719,44 +725,49 @@
   const _PASTE_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
   function _pastedFile(file, i) {
     const ext = _PASTE_EXT[file.type];
-    if (!ext) return null;
+    if (!ext) return file;
     // A clipboard screenshot is always called "image.png"; a copied FILE keeps its own name.
     if (file.name && !/^image\.\w+$/i.test(file.name) && /\.(png|jpe?g|gif|webp)$/i.test(file.name)) return file;
     const stamp = new Date().toTimeString().slice(0, 8).replace(/:/g, '');
     return new File([file], `pasted-picture-${stamp}${i ? '-' + (i + 1) : ''}.${ext}`, { type: file.type });
   }
 
-  async function _addPastedPictures(files, targetId) {
+  async function _addPastedPictures(files, targetId, beforeId) {
     const mine = _sb;
     if (!mine || !_isLive() || !files.length) return;
+    const owner = _sbOwner();
     const refs = [];
     let refused = '';
     for (let i = 0; i < files.length; i++) {
       const f = _pastedFile(files[i], i);
       if (!f) { refused = 'only PNG, JPEG, GIF and WebP pictures can be added'; continue; }
-      try { refs.push(await window.DeskV1Store.storyboard.uploadPicture(_sbOwner(), f)); } catch (e) { refused = e && e.message ? e.message : String(e); }
+      try {
+        const media = await window.DeskV1StudioClips.upload(owner, f);
+        refs.push({ ...media.ref, clipDuration: media.ref.kind === 'video' ? media.durationSec : undefined });
+      } catch (e) { refused = e && e.message ? e.message : String(e); }
     }
     if (refused) DeskV1Kit.toast(`${refs.length ? 'Some pasted pictures were' : 'The pasted picture was'} not added: ${refused}`);
-    const ctx = _sb === mine ? _sbCtx() : null;
+    const ctx = _sb === mine && mine.el.isConnected ? _sbCtx() : null;
     if (!ctx || !refs.length) return;
     const { detail } = ctx;
     const target = (targetId && detail.scenes.find((x) => x.id === targetId && _isReal(x))) || null;
-    const prev = target ? { picture: target.picture || null, thumb: target.thumb || '' } : null;
+    const prev = target ? { picture: target.picture || null, thumb: target.thumb || '', durationSec: target.durationSec } : null;
     const added = (target ? refs.slice(1) : refs).map((ref) => ({
-      id: 'sc-' + _uid(), label: 'New scene', line: '', durationSec: 3, edited: false, picture: ref, thumb: ref.src || '', source: '',
+      id: 'sc-' + _uid(), label: ref.kind === 'video' ? ref.title : 'New scene', line: '', durationSec: ref.clipDuration || 3, edited: false, picture: ref, thumb: ref.src || '', source: '',
     }));
     _registerItem(ctx.fam);
     _sceneCmd(ctx, {
       label: refs.length > 1 ? `Pasted ${refs.length} pictures`
         : target ? `${prev.picture ? 'Replaced' : 'Added'} the picture for “${target.label}”` : 'Pasted a picture as a new scene',
       do: () => {
-        if (target) { target.picture = refs[0]; target.thumb = refs[0].src || ''; }
-        detail.scenes.splice(target ? detail.scenes.indexOf(target) + 1 : detail.scenes.length, 0, ...added);
+        if (target) { target.picture = refs[0]; target.thumb = refs[0].src || ''; if (refs[0].clipDuration) target.durationSec = refs[0].clipDuration; }
+        const before = detail.scenes.findIndex(s => s.id === beforeId);
+        detail.scenes.splice(target ? detail.scenes.indexOf(target) + 1 : before >= 0 ? before : detail.scenes.length, 0, ...added);
         _paintScenes();
       },
       undo: () => {
         added.forEach((a) => { const i = detail.scenes.indexOf(a); if (i >= 0) detail.scenes.splice(i, 1); });
-        if (target) { target.picture = prev.picture; target.thumb = prev.thumb; }
+        if (target) Object.assign(target, prev);
         _paintScenes();
       },
     });
@@ -771,8 +782,8 @@
     const files = [];
     try {
       for (const item of await navigator.clipboard.read()) {
-        const type = item.types.find((t) => /^image\//.test(t));
-        if (type) files.push(new File([await item.getType(type)], 'image.' + (_PASTE_EXT[type] || 'png'), { type }));
+        const type = item.types.find((t) => /^(image|video)\//.test(t));
+        if (type) files.push(new File([await item.getType(type)], 'pasted-media.' + (_PASTE_EXT[type] || type.split('/')[1].replace(/[^a-z0-9]/gi, '')), { type }));
       }
     } catch (e) {
       DeskV1Kit.toast(refusal);
@@ -790,7 +801,7 @@
     if (!_sb || !_sb.el.isConnected || !_isLive() || !_sb.el.getClientRects().length) return;
     const t = e.target;
     if (t && t.closest && t.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')) return;
-    const files = Array.from((e.clipboardData && e.clipboardData.files) || []).filter((f) => /^image\//.test(f.type));
+    const files = Array.from((e.clipboardData && e.clipboardData.files) || []).filter((f) => /^(image|video)\//.test(f.type));
     if (!files.length) return;
     e.preventDefault();
     _addPastedPictures(files, _sb.selected || null);
@@ -916,8 +927,9 @@
 
   function _sceneIdAt(x, y) {
     const hit = document.elementFromPoint(x, y);
-    const li = hit && hit.closest && hit.closest('.desk-v1-sb-scene[data-scene-id]');
-    return li && _sb.el.contains(li) ? li.dataset.sceneId : null;
+    const li = hit && hit.closest && hit.closest('.desk-v1-sb-scene[data-scene-id], [data-sb-timeline] .desk-v1-video-scene');
+    if (li && _sb.el.contains(li)) return li.dataset.sceneId;
+    return hit && hit.closest('[data-sb-timeline]') && _sb.el.contains(hit) ? (_realScenes(_sbCtx().detail).at(-1) || {}).id : null;
   }
   function _overTrash(x, y) {
     const hit = document.elementFromPoint(x, y);
@@ -979,7 +991,7 @@
       if (pic) pic.onclick = () => {
         const input = document.createElement('input');
         input.type = 'file';
-        input.accept = 'image/png,image/jpeg,image/gif,image/webp';
+        input.accept = 'image/*,video/*';
         input.setAttribute('data-scene-picture-input', '');
         input.onchange = () => { if (input.files && input.files[0]) _setScenePicture(id, input.files[0]); };
         input.click();
@@ -1013,6 +1025,8 @@
   function _wireSb(el) {
     const ctx = _sbCtx();
     if (!ctx) return;
+    window.DeskV1StudioTitle.bind(el, ctx, _sbOwner(), _repaintSb, () => _registerItem(ctx.fam));
+    window.DeskV1StudioClips.wire(el);
     // Live, Render is the engine panel's (estimate, passcode, a real job); the
     // fixture button above exists in demo only.
     const demoRender = el.querySelector('[data-sb-render]');
@@ -1020,19 +1034,27 @@
     const engineHost = el.querySelector('[data-sb-engine]');
     if (engineHost) window.DeskV1Engines.mountVideoRender(engineHost, { owner: _sbOwner(), projectId: ctx.camp.projectId || undefined, sceneRoot: el.querySelector('[data-scenes]') });
     const add = el.querySelector('[data-scene-add]');
-    if (add) add.onclick = _addScene;
+    if (add) { add.disabled = !!_sb.loading; add.onclick = _addScene; }
     _wireScenes(el.querySelector('[data-scenes]'));
     window.DeskV1Story.mount(el.querySelector('[data-sb-story-panel]'), _storyBridge());
-    if (_sb.standalone) { _wireTimeline(); _hookSbUndo(el); }
+    _wireTimeline();
+    window.DeskV1StudioPreview.mount(el, { scenes: () => _realScenes(_sbCtx().detail), beforeOpen: _saveOpenEditor });
+    window.DeskV1StudioExport.mount(el, { owner: _sbOwner, scenes: () => _realScenes(_sbCtx().detail), beforeExport: _saveOpenEditor });
+    if (_sb.standalone) _hookSbUndo(el);
     _markSelected();
     _wireAgentBox(el.querySelector('[data-sb-agent]'), ctx);
+    if (_sb.loading) el.querySelectorAll('button, input, textarea, select').forEach(control => { control.disabled = true; });
   }
 
-  function deskV1RenderStoryboard(el, params) {
-    params = params || {};
-    _sb = { el, campaignId: params.campaignId, familyId: params.familyId, editing: null, selected: null, standalone: false };
+  function _mountStoryboard(el, params, standalone) {
+    _sb = { el, campaignId: params.campaignId, familyId: params.familyId, editing: null, selected: null, standalone: !!standalone, timelineView: {} };
     el.innerHTML = _sbHTML();
     _wireSb(el);
+  }
+  function deskV1RenderStoryboard(el, params) {
+    params = params || {};
+    if (params.standalone) { deskV1RenderStudioCreate(el, params); return; }
+    _mountStoryboard(el, params);
     if (_isLive()) _loadBoard(_sb);
   }
 
@@ -1299,8 +1321,8 @@
           <div class="desk-v1-writer-body" data-writer-body contenteditable="true" role="textbox" aria-multiline="true" aria-label="${esc(tab.label)} draft">${_bodyHTML(tab.body)}</div>
         </div>
         <div class="desk-v1-writer-actions">
-          <button type="button" class="btn-add" data-writer-save>${esc(opts.saveLabel || 'Save to What')}</button>
-          <button type="button" class="btn-secondary" data-writer-back>${esc(opts.backLabel || 'Back to What')}</button>${opts.extraHTML || ''}
+          <button type="button" class="btn-add" data-writer-save>${esc(opts.saveLabel || 'Save to Posts')}</button>
+          <button type="button" class="btn-secondary" data-writer-back>${esc(opts.backLabel || 'Back to Posts')}</button>${opts.extraHTML || ''}
         </div>
       </div>
       <aside class="desk-v1-writer-claims" data-writer-claims aria-label="Claims and sources">${_claimsPanelHTML(tab.body)}</aside>
@@ -1322,7 +1344,7 @@
     if (window.DeskV1ArticleMedia) window.DeskV1ArticleMedia.wire(root, tab);
   }
 
-  // Save to What: the draft is handed to review. Placed versions still in
+  // Save to Posts: the draft is handed to review. Placed versions still in
   // drafting / planned become `needs_review`; a piece with none carries the
   // state on its draft. Returns the inverse; the inverse also carries what it
   // changed (`changed`: [{id, from}], `draftFrom`) for persistInReview.
@@ -1461,11 +1483,7 @@
     let inner;
     if (view === 'item') inner = _itemViewHTML(it);
     else if (view === 'storyboard') {
-      inner = `<h2 class="desk-v1-studio-title">New video</h2>
-        <div class="desk-v1-sc-product">
-          <label class="desk-v1-sc-label" for="sc-title">Title</label>
-          <input type="text" class="desk-v1-sb-edit-input" id="sc-title" data-sc-title value="${esc(it.title)}">
-        </div>${_productRowHTML()}<div data-sc-body></div>`;
+      inner = `${_productRowHTML()}<div data-sc-body></div>`;
     } else inner = `<h2 class="desk-v1-studio-title">New image</h2>${_productRowHTML()}${_imageSetupHTML()}`;
     _sc.el.innerHTML = `<div class="desk-v1-studio-create" data-studio-create data-kind="${esc(_sc.kind)}" data-view="${view}">${inner}</div>`;
     _wireCreate(view);
@@ -1481,30 +1499,12 @@
       _paintCreate();
     };
     if (view === 'storyboard') {
-      _sb = { el: el.querySelector('[data-sc-body]'), campaignId: null, familyId: _sc.item.id, editing: null, selected: null, standalone: true };
-      _sb.el.innerHTML = _sbHTML();
-      _wireSb(_sb.el);
+      _mountStoryboard(el.querySelector('[data-sc-body]'), { familyId: _sc.item.id }, true);
       const mine = _sb;
       _loadGlobalAgents().then(() => { if (_sb === mine) _paintAgentBox(); });
       // Live: an item Studio already made is read from the server once; a fresh
       // draft has nothing saved yet.
       if (_isLive() && _sc.needsLoad) { _sc.needsLoad = false; _loadBoard(mine); }
-      const title = el.querySelector('[data-sc-title]');
-      title.onchange = () => {
-        const fam = _sc.item;
-        const prevTitle = fam.title;
-        fam.title = title.value.trim() || 'New video';
-        title.value = fam.title;
-        _registerItem(fam);
-        if (_isLive() && fam.title !== prevTitle) {
-          window.DeskV1Store.storyboard.save(_sbOwner(), _sbCtx().detail, { title: fam.title }).catch((e) => {
-            fam.title = prevTitle;
-            title.value = prevTitle;
-            DeskV1Kit.toast(`The title was not saved: ${e && e.message ? e.message : e}`);
-          });
-        }
-        if (typeof window.deskV1PatchParams === 'function') window.deskV1PatchParams({ itemId: fam.id });
-      };
       return;
     }
     if (view === 'item') {
@@ -1622,6 +1622,7 @@
   window.deskV1StudioCreateLabel = studioCreateLabel;
   window.deskV1RenderStoryboard = deskV1RenderStoryboard;
   window.DeskV1Studio = {
+    isVideoDraft: params => { const it = params.itemId && _itemById(params.itemId); return it && it.kind === 'video' && it.status !== 'saved'; },
     captureAvailable, sourceBodyHTML, wireSourceBody,
     ensureStoryboard, ensureDraft, writerHTML, wireWriter, markInReview, persistInReview,
     campaignsToUse: _campaignsToUse, campaignTitle: _campTitle, campaign: _campaign, project: _project,

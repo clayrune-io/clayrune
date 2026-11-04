@@ -31,6 +31,31 @@ Suggested agent names are checked against global agents and agents in every
 registered project. If a name becomes taken before you save, the form asks you
 to choose a different **Goes by** name; your draft stays open.
 
+Codex, Gemini and Qwen conversations receive the current selected persona and
+project rules when resumed, while keeping their native conversation history.
+Unchanged followups send only your new message. Persona or rule changes are
+sent once; a session without a recorded delivery fingerprint after restart
+also receives current context once.
+Topic-specific memory travels alongside each new message without rebuilding
+the setup on every turn. The same behavior applies when you interrupt a turn.
+Claude can optionally render a fresh system prompt on resume through
+`claude_resume_fresh_prompt`; this is off by default pending cache-cost
+measurement. It requires Claude Code 2.1.267 or later.
+
+**Settings > Providers > Unattended retry waits** controls retry waiting for
+scheduled, workflow, dispatched and hivemind runs. Defaults are 30 minutes of
+retry wait, 120 minutes of usage-limit wait and a 5-minute recheck interval.
+Use positive whole minutes; recheck supports 1–180. Saving requires your
+dashboard passcode. Productive work gets no execution deadline.
+
+Claude uses native limits on the next launch. Qwen caps only observed capacity
+waiting in a spawned turn; waits before its first heartbeat or short sleeps can
+be unmeasured. Qwen cannot distinguish usage-limit waits or change recheck
+cadence, so its label is **PARTIAL**. The other engines are labelled
+**UNSUPPORTED**, with unverified native capabilities identified explicitly.
+Unsupported engines keep their own retry behavior and existing hang recovery.
+The same screen has the default-off fresh-Claude-prompt-on-resume toggle.
+
 ### Starter experts on the Floor
 
 A fresh install includes nine agent types. Hire Claydo from the Floor's Bench
@@ -225,6 +250,12 @@ strip is hidden.
 ---
 
 ## Agent dispatch
+
+**Blocked commands:** consecutive permission or hook denials in an agent chat
+appear as a small **1 command blocked** / **N commands blocked** chip. It starts
+closed in live chats and restored history. Click, tap, or focus it and press
+Enter/Space to show each tool name and its command, file path, or URL. This
+disclosure only shows what was blocked; it does not grant permission or retry it.
 
 A dispatched child's chat shows **Dispatched by** above the thread when Clayrune has a recorded dispatcher. This includes completed chats reopened from the conversation rail. If the parent is no longer loaded, the notice identifies its session; an old chat with no recorded lineage has no banner.
 
@@ -450,6 +481,38 @@ worker failure. An uncertain launch remains blocked for reconciliation rather
 than repeatedly spawning another worker; failed prerequisites prevent dependent
 work from running. These checks do not yet provide provider-neutral quota recovery.
 
+**Roster workers (API, branch implementation)**: explicitly versioned roster
+runs assign each workstream to a global character. Each attempt uses that
+character's engine, voice and declared skills with project/shared rules. A
+retry reads the current character; recovery of the same attempt retains its
+pinned identity. Code workers hold if isolation fails. The existing UI still
+uses engine-based workers. Worker completion alone does not establish reviewed
+integration.
+If a roster character is missing, a new attempt uses the configured stand-in
+for its work type or a generic worker on the run's worker provider. The generic
+worker tracks Fast, Balanced or Best for simple, standard or hard work. The
+review panel and run history show **requested X → ran as Y** and the effective
+engine; missing reviewer characters use the same fallback with the review role.
+Create/update warnings name unknown references. Malformed references and
+unusable engines still refuse. Same-attempt recovery retains its original pins.
+If recovery is held, sending a message returns a conflict with the reason and
+does not start a replacement character. Recovery also holds when the attempt's
+saved prompt file is missing or fails its integrity check.
+
+**Reviewed integration (API, branch implementation)**: versioned roster code
+runs merge one worker branch at a time on a separate integration branch, run
+its named smokes, then wait for an independent review of that exact commit.
+The API's `integration.status` distinguishes `awaiting_review`, `held`,
+`completed` and analysis-only `skipped`; worker completion alone is not an
+accepted integration. Rejection keeps the provisional commit and stops later
+merges. Failed smokes roll back that merge. Missing/late verdicts, changed
+candidate pins, pause/stop or a deleted project generation also hold progress.
+Restart recovery reuses exact review evidence and never automatically replaces
+an uncertain reviewer. Held work needs Dave's reconciliation. The integration
+checkout and review evidence are retained; master and remote refs stay untouched.
+Dedicated review UI and native workflow support remain separate tickets, and
+this branch has no live-pilot verification.
+
 **Stale heuristic**: if a hivemind is `active` but hasn't moved in over
 24 hours (e.g. server crashed, was killed), it's auto-marked **stale** with
 a grey badge and a `▶ Restart` control. Both client-side render and
@@ -482,6 +545,40 @@ Each schedule card has these actions:
 - **▶ Run Now** (far right, accent-colored) — fire the task immediately
   without disturbing the regular cadence. Updates `last_run` for visual
   feedback; doesn't touch `next_run`.
+
+Schedules bound to a **Steward role** use the same guarded preparation for
+timer fires and **Run Now**. They require an enabled assignment and project
+steward mode. Missing cycle resources, lifecycle integration or a demonstrated
+engine guard block delivery with a concrete error; the Runs panel records the
+reason. An active or uncertain prior cycle is held instead of starting a
+duplicate. Unchanged role threads keep child callback receivers. An owner or
+engine change waits for child callbacks to drain; unavailable delivery evidence
+blocks the switch. Role execution remains unavailable until the remaining steward
+integration is installed and verified; ordinary schedules keep their current
+behavior.
+
+**Steward roles in the Automation window.** A **Steward roles** section sits
+under the Stewards list. Each card shows the role's state (Disabled, Active,
+Active but unable to run, Stopped, or Role error), its charter title, cadence,
+owner and journal file. When this install cannot run roles yet, an amber box
+names each missing piece on its own line (for example the cycle composer patch
+or the decision-channel adapter) and **Start** stays disabled; nothing is hidden
+or smoothed over. A role is created in **Add Schedule**: tick **Run as a steward
+role**, pick the backlog item that is its charter, confirm the journal file and
+use **Preview** to see what would be checked, with nothing saved. Saving asks
+for your dashboard passcode and always saves the role **disabled**; **Start** is
+its own passcode step. Unticking the box on an existing role **detaches** it:
+the charter, journal and history stay and the schedule becomes an ordinary task
+(disabled until you enable it). Stewards created the older way still show in
+the Stewards list; a project that has a role opens that role's schedule on Edit.
+
+*Moving the pilot onto a role.* `python tools/steward_role_migrate.py` has three
+commands: `candidates`, `migrate` and `rollback`. `migrate` is a dry run unless
+you add `--apply`, and `--apply` needs the `--expect-revision` value the dry run
+printed (it refuses if anything changed since). It asks for your passcode at a
+hidden prompt, writes a recovery snapshot first, waits for any running cycle to
+finish, and leaves the role disabled. `rollback --snapshot <file>` restores the
+original job. Nothing runs on deploy; starting the role is your click.
 
 **Why the Runs panel matters**: scheduled runs in Mode B (long-running
 sessions) often go idle without exiting. Clayrune writes a placeholder
@@ -613,8 +710,9 @@ are also refreshed automatically about every five minutes.
 
 Selecting a project file saves a copy in **Material library → Projects /
 project name**, then uses that copy in your scene, article, image or campaign.
-**Add media →
-From your projects** offers the same chooser for an existing piece. Reusing an
+On image/video pieces, **Add media →
+From your projects** offers the same chooser. Posts use the composer's
+**Add media → Library** for files already copied to the library. Reusing an
 unchanged source reuses its library copy, and removing the original project
 file does not remove media from your campaign. Shared uploads appear when
 Clayrune knows which project they belong to; unassigned older uploads may need
@@ -645,6 +743,27 @@ from another private address. Errors keep the form open so you can correct
 the address and retry. **Record this screen** has not gained video recording.
 
 ---
+
+## MCP server selection
+
+Open a project's menu and choose **MCP servers** to manage its tool servers.
+Codex, OpenCode, Goose and Kiro launches now receive the project's resolved
+selection, including the built-in `clayrune` server for cross-session tools.
+An explicit selection is honoured exactly: an empty selection loads none, and
+`clayrune` loads only when selected. Without a selection, Clayrune supplies the
+global/project servers and the built-in server. The selection persists through
+follow-up turns. Aider is outside this MCP integration.
+
+Existing vendor settings and sign-ins are retained. If a CLI cannot validate the
+launch configuration or preserve the chosen set, the launch reports an error.
+Codex and Goose reject selected SSE transports; Kiro rejects a selected server's
+unsupported working-directory setting. The `clayrune_mcp_enabled` configuration
+switch can disable the built-in server. These four bridges load no MCP servers
+for incognito sessions or bundled frozen builds.
+
+The unattended launch restrictions still apply: adding MCP tools does not
+enable an engine whose steward fence has not been verified. Live tool calls
+through the four new bridges remain pending integration verification.
 
 ## Skills
 
@@ -848,6 +967,24 @@ safety. **Pause all scheduled runs** has one editor in Scheduler. Machine wake
 lock and sticky application of settings are under **System > Runtime and
 availability**; the Codex unattended sandbox stays human-gated in **System >
 Security**. Live activity presentation is under **Appearance > Interface**.
+
+With unattended fencing enabled, schedules, workflows, agent dispatches and
+hivemind runs require a working steward fence. Gemini and Qwen check that their
+CLI actually loads and runs the guard before each launch or follow-up. If it
+cannot, the session shows the reason and the request fails; Clayrune does not
+switch engines to work around a fence refusal. Gemini versions that reject
+user-owned per-launch system settings also fail this check.
+
+Aider is refused by default while unattended fencing is enabled. An experimental
+restricted adapter can be enabled by a human through the passcode-protected
+configuration key `aider_restricted_adapter_enabled` (default `false`; no UI
+toggle). It requires the audited Aider 0.86.2 source and dependencies, permits
+whole-file and SEARCH/REPLACE edits, and fences `/run`, suggested shell and git
+subprocesses. Voice, web, save, `/git`, other commands, patch/udiff, GUI and
+installers are refused. Source/version drift refuses launch; packaged builds
+do not support this experimental source runner. OpenCode, Goose and Kiro
+remain refused until their guard adapters are verified. Attended chats remain
+available. Installing a CLI alone does not establish that its guard works.
 
 ### Keep machine awake
 
@@ -1264,6 +1401,17 @@ saved settings carried the old off default. After that switch, your choice is
 kept: turn **Settings > Appearance > Experimental > Desk v1** off to return to the
 legacy Desk. Legacy Desk views remain read-only while Desk v1 is on.
 
+### Conversation large view
+
+Desk conversations have **A−** / **A+** text-size buttons and a **large-view**
+button above their messages. In the large view, drag the empty part of that
+strip to move the window, or drag its edges and corners with a mouse to resize it. Movement
+supports a mouse or a single touch on screens wider than 960px; the strip stays
+within reach at the screen edges. Buttons keep their normal actions.
+Choose **Close** or press Escape to return to the page. Opening the large view
+again restores its default position and size. On screens 960px wide or less,
+the large view stays inset from the screen edges and does not move.
+
 ### Project and campaign planners
 
 Each campaign can choose its own agent on **Brief**. A project's default
@@ -1272,6 +1420,50 @@ open the project from Home and use the agent button in its header or
 **Set this project's default planner ›** above its chat input. Both open the
 same picker. Choosing a default leaves existing campaign choices in place;
 **Undo** reverses the default change.
+
+**Product materials**, beneath the planner controls on the project page or a
+campaign's **Brief**, chooses the documents its agents read about the product.
+Enter a path relative to the project's folder, such as `docs/LAUNCH_COPY.md`,
+and choose **Add**; **Remove** drops a file. These settings are shared by all
+campaigns for that project. With no custom list, agents read `README.md` when
+available; removing every file disables starting excerpts, and **Use README
+default** restores it. Up to six `.md`, `.markdown`, `.txt` or `.rst` files are
+allowed, inside the project folder only; secret-shaped and gitignored paths are refused.
+The campaign conversation's muted **Reads:** line names files successfully
+loaded, and the control explains skipped files. Each call receives fresh
+excerpts (up to 8 KiB per file, 24 KiB total) plus the project description,
+including storyboard and article calls with a selected project.
+
+With **Settings → Providers → Advanced → Desk research** on (the default),
+supported Claude agents can also search/fetch web pages and read their project's
+folder. This covers campaign chat, storyboard generation/chat and article chat.
+The **Reads:** line also shows the selected campaign agent's research capabilities.
+Other providers remain toolless with an explicit notice, or show a refusal if
+their adapter cannot enforce even a toolless call. No provider is silently changed.
+Turning the setting off retains the starting excerpts and disables research tools.
+
+Research cannot run shell commands or change files. Reads stay inside the selected
+project, including link targets, and refuse environment files, key files,
+credential/secret/token paths, Git metadata and gitignored files. Search file
+contents one file at a time; recursive content searches are refused. Files and
+pages are treated as data; current competitor claims must cite URLs. Research
+calls can take up to eight minutes; the chat's pending state stays visible.
+
+With **Settings → Providers → Advanced → Desk agent dispatch** on (the default),
+a supported Claude campaign planner can start agents already hired on that
+campaign project's Floor. Ask in the campaign conversation; each message allows
+up to two launch attempts. Research and dispatch have separate switches. If the
+provider cannot enforce the dispatch boundary, or dispatch is off, the planner
+says so and receives no dispatch tool.
+
+A dispatch card names the agent and task and links to **Open child session**.
+Its result returns to the campaign, including after a reload, without another
+planner call. A child question shows **waiting_for_answer**; open its session to
+answer. Dispatch is available only on the campaign-chat turn answering a message
+you typed, never from outside replies, listening, scheduled work or content
+generation. Child agents use their normal tools and existing human approval
+gates. If a turn fails after starting a child, check its card and the Floor before
+retrying; an error does not undo an already-started agent.
 
 Home shows **[name] plans & writes** for the project default, or for the shared
 agent when all its live campaigns have chosen the same one. When those
@@ -1296,47 +1488,237 @@ approval again after its cause is fixed.
 
 ### Campaign posts, archive and placement
 
-In **What**, click a type under **Add a piece**, press Enter on it, or drag it
-onto the campaign's list. A centered popup names the type and keeps its **Name**
-field beside large source cards:
+The campaign stops are **Brief, Goal, Channels, Posts, When, Launch**. Choose
+the campaign account set in Channels before making posts; the composer defaults
+to that set. Posts lists the campaign pieces. When is the shared calendar.
+Launch names missing settings and links to their current stops.
+
+**Studio → New video**, a campaign's **Posts → Video → Create new**, video
+cards, and Home's video links all open the same Studio storyboard editor.
+Studio's draft has no campaign; its optional Product and title controls stay
+available. Back returns to Studio or Posts according to where you opened it.
+
+The editor heading shows the video's own name. Click the name to rename it;
+Enter or leaving the field saves, Escape cancels, and **Undo** restores the
+previous name. Standalone Studio drafts use the same name control.
+
+Write or paste the video in **The story**. **Expand** opens a large editor with
+the same text, **20,000** character counter and **Make storyboard from story**
+button. **Close** or Escape returns to the card with the text intact. Drag the
+card's bottom edge to change its height; focus the edge and use Up/Down for
+keyboard resizing (Shift changes the height in larger steps). Preview stays
+below the story. On desktop the conversation fills the space beside both;
+long conversations scroll inside it. On phones these panels stack in one column.
+
+When a video piece has uploaded clips and its storyboard is empty, opening it
+imports those clips as scenes in asset order. This is saved once; deleting the
+imported scenes does not bring them back on the next open. **Add picture or
+clip**, paste, and the library picker can attach a clip to a scene. Clips show
+muted first-frame thumbnails in the scene list and timeline. A new clip starts
+at its own duration; shorten it with the right grip. Unsupported clips produce
+a message before upload; an older unsupported upload remains visible for
+replacement. Browser decoding determines compatibility, without a filename
+extension list. The existing 3600-second scene limit still applies.
+
+Uploaded clip scenes are editable, but **local clip rendering is not available
+yet**. A render containing one is refused before engine pricing or submission;
+it is never sent to a paid generator. Mixed local/generated assembly is pending.
+
+The video storyboard has a horizontal **Timeline** spanning the full editor
+width below the story, preview and conversation, above the scene list, both
+in a campaign and in standalone Studio. The ruler shows minutes and seconds;
+**Timeline · m:ss total** names the full length. On open it fits the video to
+the available width and keeps fitting as scenes are added, replaced or trimmed.
+**−** and **+** choose a manual zoom that edits and Undo preserve; longer scenes
+then extend the bar and it scrolls sideways. Hold **Ctrl** (or **Cmd** on Mac)
+and use the mouse wheel over the timeline to zoom around the pointer's time.
+You can also drag the time ruler: right widens the time units, left narrows them.
+**Fit** shows the whole video again and restores automatic fitting. Plain wheel
+and Shift-wheel keep their usual scrolling behavior.
+Each tile shows its label and duration; very short tiles clip the text to keep
+the ruler accurate. Hover for the full label and duration, or focus the tile
+to hear its accessible name.
+
+The black preview screen above the timeline is always visible. Press its
+centered **Play** button; **Pause** appears below while playing, and Play or
+Replay returns on pause/end. Tab reaches the buttons; Space or Enter activates
+them. Drag the position slider to scrub; the clock shows
+elapsed time and the total length, and the current timeline tile is highlighted.
+Clips start at the beginning and play for the length set by the right trim grip;
+pictures hold for their scene duration. A scene without a picture displays its
+title and instructions. Example scenes are skipped. With no real scenes,
+Play is disabled and the black screen says **Add a scene to preview**.
+
+Editing scenes pauses and resets preview to the latest order and durations;
+leaving the editor stops playback. A picture or clip the browser cannot
+open shows an explanation and the scene card. This is local scene playback,
+without a paid engine or passcode. The existing Render
+panel remains separate and may show its own estimate when the editor opens.
+
+Press **Export** beside the preview controls to save the current timeline as a
+local MP4. Examples are skipped; pictures hold for their duration, clips use
+their trimmed length, and scenes without media become black segments. Windows
+adds scene titles when its font is available; the result tells you whether
+titles were added or plain black was used. Clip sound is kept and missing audio
+becomes silence. Output is 1280×720 at 30 fps, with black padding to preserve the
+source shape. Fractional lengths can round slightly in the finished MP4.
+
+Export needs the ffmpeg add-on. If approval is missing, its approval card is
+requested: approve it in **Settings → Add-ons**, then click **Export** again.
+Export shows progress and offers **Download MP4** and **Open MP4** when ready.
+It runs on this machine with no paid engine; output remains in the material
+library's **video / Generated** folder. You can leave the editor and return to
+the current job. One export runs at a time. A server restart loses job status;
+retry Export if asked (finished files remain in Generated).
+
+Drag a tile's dots or a scene's list handle onto another tile to reorder;
+focused tiles use Left/Right or Up/Down, and list handles keep Up/Down.
+Drag only the tile's **right grip** to change its duration (1–3600 seconds),
+or focus that grip and use an arrow key to change it by one second. The grip
+highlights on hover and a floating m:ss badge shows the duration while dragging.
+Changing one scene moves later scenes without resizing them. Escape cancels
+an active drag.
+Drop pictures or playable clips from your computer or the library chooser onto
+the timeline to add scenes. While dragging, an accent line marks the destination
+gap, including before the first scene or after the last. Moving across either
+half of a tile chooses its nearest gap; dropping inserts at the marked position.
+Each gap also has a **+** below the timeline. Click it, or Tab to it and press
+Enter or Space, to **Pick from library** and insert a picture or clip there.
+On narrow timelines, crowded **+** controls stack to keep their touch targets
+separate; their accessible names say which scene they insert before. The separate
+**Pick from library** button appends a scene. **Undo** reverses these changes,
+and an open Preview resets to the updated order and timing.
+
+The video editor stays focused on scenes and rendering. **Review** appears
+when a version is waiting; the former **Copy, media & versions** link is gone.
+
+In **Posts**, click **Post** under **Add a piece**, press Enter or Space on it,
+or drag it onto the campaign's list to open the post composer. A post card's
+**Open** action reopens it. Opening an empty composer creates no piece;
+the first nonblank text or valid media creates a **New post** draft. Use **Save draft** for
+subsequent text edits and check the **Saved** message. A refused write keeps
+your text available for retry.
+
+The line at the top of the composer (**Desk › campaign › post**) is clickable:
+**Desk** goes to Home and the campaign name goes to that campaign's page. Text
+you have not saved yet stays in the composer, the same as pressing **Back**.
+
+**Name** appears at the top of the composer once the draft exists. Click its
+name (or press Enter on it), type a name, then press Enter or leave the field
+to save. Escape cancels. The calendar and post cards use that same name.
+
+**Post to** starts with this campaign's accounts selected. Tick or untick an
+account to change this post's destinations. After text creates the draft,
+ticks save immediately; they never add accounts to the campaign's allowed set.
+If no accounts appear, choose them in **Channels**. The composer shows a character
+count per selected channel, including an X 280-character warning.
+
+**Preview** updates as you type, including text you have not saved yet. Choose
+an account tab to see the post in that platform's frame, with attached media.
+Only ticked accounts appear. Long copy shows a **See more** cut line; the
+feed layout and cut position are approximate. The X tab warns above 280
+characters using the same Unicode character count as the editor (platform
+URL weighting is not included). On a narrow screen, use **Show preview** or
+**Hide preview**; the panel sits below the editor and keeps its full width.
+
+**When** opens one date/time control per destination. Choose a date and time
+in this device's time zone and press **Set time**. The campaign's **When**
+calendar reads the same saved value. Moving an approved version to another
+day asks for confirmation and sends it back for approval. Sent versions
+cannot be rescheduled. **Send to Review** saves the text and destinations,
+then opens the existing Review screen. Approval and publishing still require
+their existing human actions. Approved copy must return to review before
+editing; archived pieces must be restored first.
+
+In the campaign **When** calendar, hover a chip or Unscheduled card to see
+its name, first 140 characters, media thumbnail, channels, time and state.
+On a phone, tap its **ⓘ** button for the same preview.
+
+**Unscheduled** shows one card per post, with badges for its existing destinations.
+Drag it onto a channel/day row to set that destination's time. A compatible
+campaign account that the post does not yet target is added as a destination;
+accounts outside that post's campaign are never added. Held accounts and content
+that fails the existing YouTube requirements appear gray during the drag, show
+a reason on hover, and refuse the drop. Other platform media-duration checks are
+not available here. Tap a card (or use Enter) for a channel and date/time picker.
+A card remains in the tray while any of its destinations is still unscheduled.
+
+Click a dated chip (or press Enter/Space on it) to open its **When details**.
+Edit the date/time and choose **Set time**, choose **Edit post** for the composer,
+or **Open review** when that version needs review. **Unschedule**, or dragging
+its chip back into the Unscheduled tray, clears only its time. The post stays
+in the campaign; **Undo** restores that time. A previously approved scheduled
+version is not sent while its time is empty. Giving it a new time after clearing
+asks to send it back for approval; only Undo restores the original time directly.
+
+**Media:** drop or paste pictures/videos anywhere on the composer, including
+the Write box, or choose **Add media**. The picker starts on **Upload** and
+accepts several files at once. On a phone it selects files from that phone.
+The **Library** tab shows image and video thumbnails together, newest first
+across folders, with a search by file or folder name. Every successful upload
+is also saved in **Material library → Uploads**. Library picks attach the
+existing file; they do not create another copy. You can start a post with
+media alone. Ordinary text paste stays in the text field.
+
+Click a thumbnail to view the picture or play the video. The **×** removes
+that attachment from this post; **Undo** restores it. Removing or undoing an
+attachment keeps the library file. Images accept PNG, JPG, GIF and WebP up to
+25 MB; videos accept common video extensions and video MIME types up to
+500 MB, with playback depending on this browser. Upload and Library errors
+show their reason. Choose the file again to retry a refused upload, or use
+**Retry** after a library read error. Approved, sent and archived posts keep
+their viewer but cannot change media in the composer. The Post card and old
+Post detail page no longer have separate Add media pickers.
+
+On a post card, open **⋯ → Duplicate** to copy its saved text and media into
+a new draft in the same campaign. **Duplicate to campaign…** lets you choose
+another campaign; the list includes project names. Both actions open the copy
+in the composer. Media files stay in the library, with independent attachments
+on the copy. Editing the copy does not change the source post.
+
+The copy keeps only source destinations allowed by the target campaign's
+accounts. If none overlap, choose destinations in the composer; an empty
+campaign account set must first be configured in **Channels**. Schedule, approval
+and publishing results are cleared, and the copy needs its own review and
+approval. Missing media refuses the whole copy. **Undo** removes the new draft.
+
+Other types under **Add a piece** open a centered popup with a **Name** field
+beside source cards:
 
 - **Video:** Record from the product, Upload, Online source, Create new in Studio.
 - **Article:** Browse existing, Write new, Import from file.
-- **Post:** Write new, Reuse an existing post.
 - **Image:** Upload, From library, Generate.
 
 **Escape**, the close button or the backdrop closes the popup and keeps the
-new draft in What. **Discard this draft** removes it. Tab stays inside the popup.
+new draft in Posts. **Discard this draft** removes it. Tab stays inside the popup.
 **Change source** returns to the source cards.
 
 Article **Import from file** accepts the same text, Markdown and HTML formats
 and limits as the post editor below. HTML becomes plain text. A successful
-import saves the article in What; errors leave the popup open for retry.
+import saves the article in Posts; errors leave the popup open for retry.
 
-Post **Reuse an existing post** lists posts from this campaign and the workspace
-post library. Selecting one copies its text and uploads independent copies of
-its media into the new piece. The original stays unchanged. Destination
-versions, schedules and approvals are not copied. **Undo** reverses the import
-or post copy without changing the original or deleting library files.
-
-On a post's piece page, click the title (for example **New post**) to rename
-it in place. Press Enter or click away to save, Esc to cancel; the title also
-opens from the keyboard (Tab to it, then Enter). Names may contain up to 200
-characters and appear in What, Where, the calendar and menus that list
-pieces. **Undo** restores the previous name. Naming a post does not change
-its copy.
+On an image or video piece page, click the title to rename it in place. Press
+Enter or click away to save, Esc to cancel; the title also opens from the
+keyboard (Tab to it, then Enter). Names may contain up to 200 characters.
+**Undo** restores the previous name.
 
 In **Media**, choose **Add media → From this computer…** to select an image
-for a post/image piece, or a video for a video piece. On a phone, this opens
-that phone's file chooser. Supported files are PNG, JPG, GIF, WebP and MP4,
-MOV, WebM, M4V. Uploads are saved in the Material library's **Uploads** folder
+for an image piece, or a video for a video piece. On a phone, this opens
+that phone's file chooser. Supported images are PNG, JPG, GIF and WebP (up to 25 MB). Videos may be
+up to 500 MB: MP4, M4V, MOV, WebM, MKV, AVI, WMV, MPEG, 3GP, OGV, FLV,
+TS and other common video formats. The chooser names both extensions and
+video MIME types so Windows can show MP4 files. Accepting a file does not
+install a browser decoder; playback depends on your browser. Uploads are saved in the Material library's **Uploads** folder
 and attached to the piece. **Undo** removes the attachment and keeps the
 library file. Upload errors show the reason; failed files are not attached.
-The computer chooser remains available if loading the library fails.
+The computer chooser remains available if loading the library fails. If the
+browser cannot prepare the preview, or the upload reply lacks the saved file,
+Clayrune shows an error. An incomplete reply asks you to reload the piece and
+check its saved media before retrying.
 
-Open a post's piece page to write its **Copy**. For a new post, type in
-**Start typing your post…** or choose **Import from file**. The same editor
-is available on image and video pieces and shows the full saved text.
+Image and video piece pages retain their **Copy** editor and **Import from file**
+control. Existing direct links to a post's generic piece page retain this editor;
+post cards use the composer above. The editor shows the full saved text.
 Imports accept `.txt`, `.md`, `.markdown`, `.html` and `.htm` files, up to
 4 MB; HTML becomes plain text. Importing fills the editor without saving.
 Choose **Save** or leave the text field to save, then check the **Saved**
@@ -1345,14 +1727,14 @@ page shows the server's reason and keeps your text so you can retry.
 
 Destination versions and their review controls remain below the editor.
 With no versions yet, the **Versions** section reads **No destinations yet**;
-choose **Put this on a channel ›** to open this piece's campaign in **Where**
-with the piece's card marked. If the piece has no campaign,
+choose **View campaign channels ›** to open this piece's campaign in **Channels**
+with the piece's card marked in the read-only overview. Open a post in the composer to select its destinations. If the piece has no campaign,
 **Choose a campaign ›** returns to Desk Home; add the piece in the
-campaign's **What** before creating a version. Articles continue to use
+campaign's **Posts** before creating a version. Articles continue to use
 **Edit article**. Restore an archived piece before editing it. In demo
 mode, **Saved in demo only** means the change stays in the demo data.
 
-In a campaign's **What**, use a post's three-dot menu for **Archive** or
+In a campaign's **Posts**, use a post's three-dot menu for **Archive** or
 **Delete post**. **Archived** finds whole archived posts, including empty
 ones; **Restore post** returns the post and each suspended version to its
 previous state. Published history stays intact. Restore an archived post
@@ -1371,15 +1753,20 @@ reports unsupported because its adapter has no scoped, refreshing sign-in
 for deletion; remove that post on LinkedIn. Drafts and unverified sends have
 no platform-delete action. Archiving only changes the Desk's view.
 
-In **Where**, drag a configured connector from **Sources** into the outlined
-drop area, or focus it and press Enter. Disconnected and read-only accounts
-can be placed for planning; this does not connect them or grant publishing
-permission. A new channel starts empty. Drag the messages you want into it.
-A suggestion becomes a saved piece on its first action, before a channel
-version is saved. Existing assignments remain in place. The channel's **X**
-removes it from this campaign, leaving its configured connection in Sources.
-A version's **X** removes that unsent assignment; published history remains.
-These removals have Undo.
+In **Channels**, select a configured account from **Sources** by clicking it or
+focusing it and pressing Enter or Space. This sets the campaign's allowed
+account set, used as the default in new post composers and as the approval
+bound. Adding an account beyond an approved plan requires approval again at
+Launch; removing one narrows the plan. Disconnected and read-only accounts
+can be selected for planning without connecting them or granting permission.
+
+The overview shows each campaign account's post count and its existing
+assignments. Hover a post or use its eye button to preview it. Set individual
+post destinations in the **composer**; the overview has no drag-to-place,
+assignment menu or individual assignment removal. The account's **X** removes
+it from this campaign and archives its pending versions; published history
+and the configured connection remain. **Undo** restores the account and its
+pending versions, returning approved versions to review when necessary.
 
 Sources lists only accounts configured in **Connections** and saved browser
 connections for campaign destinations. Services you have never configured and
@@ -1392,9 +1779,9 @@ An older saved Instagram browser sign-in can appear before it has been attached
 to an account. Its chip says **Needs account**. Choose **Link account ›** to
 open Permissions directly, select its account or enter the handle, and review
 the connection. Save uses the existing passcode gate. Until attached,
-the saved sign-in cannot be dragged into a campaign. This display grants no
-Read or Post permission. After Save, returning to Where shows the account as a
-draggable channel without reloading. **Retry**
+the saved sign-in cannot be selected as a campaign account. This display grants no
+Read or Post permission. After Save, returning to Channels shows the account as a
+selectable account without reloading. **Retry**
 retries a failed list load. Generation and storage services stay in Connections.
 
 In **Studio → New article**, start a draft to open its agent conversation beside
@@ -1444,7 +1831,38 @@ To remove a connection, open its tile and choose **Remove**, then confirm in the
 
 Your saved login stays in the Vault, and saved browser profiles remain available. Removing software also removes its server registration and managed install folder, unless another connection still uses that folder. Removing a generation engine ends its Desk connection only; Desk generation refuses to use it until you reconnect. Choose **Add service**, enter the same service and connection method, then follow Setup and Review to **Save** using the saved login. This requires your passcode and does not replace the saved credential.
 
-Every service also offers **Sign in on the website**, including YouTube and unknown web addresses. Generic browser connections save the service name, address and browser profile. They grant no execution access: Read and Post remain off. Saving a browser profile does not prove that it is signed in.
+Every service also offers website sign-in, including YouTube and unknown web addresses. Generic browser connections save the service name, address and browser profile. They grant no execution access: Read and Post remain off. Saving a browser profile does not prove that it is signed in.
+
+**YouTube campaign channel:** in Connections, connect YouTube using website sign-in,
+enter the channel identity and a named browser profile, and sign in to the correct
+YouTube channel in that profile. Save with your dashboard passcode. The account
+appears as **YouTube · identity** with **Assisted posting** and is available in
+campaign **Channels** and the post composer. The public-data YouTube MCP server
+uses an API key; it is separate from this channel account and cannot upload videos.
+An existing read-only YouTube account stays read-only until you explicitly choose
+**Allow assisted posting** in Details and enter your passcode.
+
+For a YouTube version, attach **exactly one video**. Images and text-only posts
+cannot be uploaded. In **Write**, the first line is the video title (up to 100
+characters); the remaining lines are its description (up to 5000). Surrounding
+whitespace is removed; copy is never truncated. Neither field accepts `<` or `>`.
+The composer shows these requirements, previews that title and description, and
+holds **Send to Review** until they are met. Approval also checks the requirements.
+
+After approval, open the browser pane in the account's saved profile and choose
+**Fill in on YouTube**. The passcode prompt explains that attaching the approved
+file starts an upload and may save a private draft immediately. Clayrune opens
+Studio's Create → Upload videos, attaches the single approved video, fills the
+title and description, and **stops on Details**. Finish audience, checks and
+visibility yourself, then physically press **Publish/Save**. Clayrune never presses
+either button, chooses visibility or publishes through the scheduler. Studio's
+final button may not be visible yet on Details; continue the remaining steps by
+hand. If a selector fails, the pane remains at that step for manual completion.
+The Studio selectors have not yet been verified against a signed-in live account.
+
+Limits and Studio flow: [YouTube's upload guide](https://support.google.com/youtube/answer/57407?co=GENIE.Platform%3DDesktop&hl=en).
+Direct API upload is a later phase, requiring a Google OAuth client and a fresh
+check of Google's project requirements; the installed public-data MCP is unchanged.
 
 Browser setup uses your configured shared default profile, normally **main**. Existing dotted profile names up to 64 characters are accepted; `..` is not allowed. A damaged saved profile reference or unavailable status lookup shows an unavailable status while the rest of the Connections list stays usable.
 
@@ -1462,7 +1880,7 @@ When editing an X account's app connection, **Save** keeps its working sign-in w
 
 Saved Connections use **Ready**, **Needs sign-in**, **Not checked yet**, **Not working**, or **Waiting on** the service. A saved profile or registered server alone does not mean Ready. Each social detail shows its status and next step, then **Permissions** with **Read** and **Post**, each **On** or **Off** with a reason when off. **Details** holds the connection method, profile, scope names, review restrictions and cost notes. Readiness never grants permission.
 
-An existing browser profile shows **Not checked yet** when its verification is missing or expired, including after a server restart or cookie changes. This does not mean you signed out. A missing profile or a check that found you signed out shows **Needs sign-in**. On a saved browser service with an automatic check, press **Not checked yet** on its tile or detail heading to check it. Its **Needs sign-in** word also checks first: success changes it to **Ready** without opening a pane; a signed-out result opens sign-in in its saved profile; a check that cannot run shows an error and opens nothing. Where's account channels use the same saved sign-in status. An unattached browser service instead shows **Needs account**, with **Link account ›** opening the account attachment step.
+An existing browser profile shows **Not checked yet** when its verification is missing or expired, including after a server restart or cookie changes. This does not mean you signed out. A missing profile or a check that found you signed out shows **Needs sign-in**. On a saved browser service with an automatic check, press **Not checked yet** on its tile or detail heading to check it. Its **Needs sign-in** word also checks first: success changes it to **Ready** without opening a pane; a signed-out result opens sign-in in its saved profile; a check that cannot run shows an error and opens nothing. The Channels stop uses the same saved sign-in status. An unattached browser service instead shows **Needs account**, with **Link account ›** opening the account attachment step.
 
 The standard actions are **Check now**, **Edit**, **Sign in** when needed, and **Remove**, in that order. Engines retain their per-job limit and **Save limit**. Checks only run when you press them. Browser checks use the selected profile; a passing check does not open a pane, while a signed-out result opens the existing recovery flow. During sign-in recovery the status says **Waiting for you to sign in**, including while **Checking…** rechecks run. A failed network check or an unsuccessful final check after the ten-minute recovery window shows **Not working**. A service without an automatic check can ask whether you are signed in; your confirmation remains **Not checked yet**, because it is not verification. A browser check grants no Read or Post permission.
 

@@ -1,0 +1,72 @@
+/* Hivemind review / roles view (BUILTINS-4 HR-8a) — static/js/hivemind-review.js.
+   Tone classes: only .hmr-tone-ok is green and the module emits it solely for
+   an accepted, non-stale, passing review. Every tone also carries a glyph and
+   a word, so nothing depends on colour alone. */
+.hmr-badge { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; line-height:1.4; max-width:100%; overflow-wrap:anywhere; }
+.hmr-glyph { flex-shrink:0; }
+.hmr-tone-ok { background:#22c55e20; color:#22c55e; }
+.hmr-tone-warn { background:#f59e0b20; color:#f59e0b; }
+.hmr-tone-bad { background:#ef444420; color:#ef4444; }
+.hmr-tone-info { background:#3b82f620; color:#3b82f6; }
+.hmr-tone-muted { background:var(--surface); color:var(--text-faint); border:1px solid var(--border); }
+.hm-status-badge.hmr-workers-done { background:#f59e0b20; color:#f59e0b; }
+
+.hmr-list-chip { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; margin:4px 0; }
+.hmr-line { display:flex; flex-wrap:wrap; gap:2px 12px; font-size:11px; color:var(--text-faint); min-width:0; }
+.hmr-line-part { overflow-wrap:anywhere; }
+.hmr-line-part b { color:var(--text); font-weight:600; margin-right:3px; }
+
+.hmr-panel { border:1px solid var(--border); border-radius:8px; background:var(--surface); padding:12px; margin:0 0 16px; min-width:0; }
+.hmr-panel-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:6px; }
+.hmr-asof { font-size:11px; color:var(--text-faint); }
+.hmr-line-text { font-size:13px; line-height:1.45; color:var(--text); overflow-wrap:anywhere; }
+.hmr-reason { font-size:12px; line-height:1.45; color:var(--text); background:#f59e0b14; border-left:3px solid #f59e0b; padding:6px 8px; margin:6px 0; border-radius:3px; overflow-wrap:anywhere; }
+.hmr-reasons { margin:6px 0; padding-left:18px; font-size:12px; color:var(--text-faint); }
+.hmr-stats { display:flex; flex-wrap:wrap; gap:4px 14px; margin:10px 0 6px; font-size:12px; color:var(--text-faint); }
+.hmr-stat b { color:var(--text); }
+.hmr-muted { font-size:12px; color:var(--text-faint); overflow-wrap:anywhere; }
+.hmr-h { margin:14px 0 6px; font-size:12px; font-weight:600; color:var(--text); }
+
+.hmr-hold { border:1px solid #ef444460; background:#ef44440d; border-radius:6px; padding:8px 10px; margin:8px 0; }
+.hmr-hold-head { margin-bottom:4px; }
+
+.hmr-ws, .hmr-review { border:1px solid var(--border); border-radius:6px; padding:8px 10px; margin:0 0 6px; background:var(--bg, transparent); min-width:0; }
+.hmr-ws-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px 10px; }
+.hmr-ws-title { font-size:13px; font-weight:600; color:var(--text); overflow-wrap:anywhere; min-width:0; }
+.hmr-ws-meta, .hmr-ws-chips { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; margin-top:4px; }
+.hmr-char, .hmr-engine, .hmr-attempt, .hmr-sid { font-size:11px; padding:1px 6px; border-radius:4px; border:1px solid var(--border); color:var(--text); overflow-wrap:anywhere; }
+.hmr-engine-none { color:var(--text-faint); font-style:italic; }
+.hmr-note { font-size:12px; margin-top:4px; padding:4px 6px; border-radius:3px; color:var(--text-faint); overflow-wrap:anywhere; }
+.hmr-note.hmr-tone-warn { color:#f59e0b; }
+
+.hmr-kv { margin:8px 0 0; display:grid; gap:6px; }
+.hmr-kv-row { display:grid; grid-template-columns:140px minmax(0,1fr); gap:8px; font-size:12px; }
+.hmr-kv-row dt { color:var(--text-faint); }
+.hmr-kv-row dd { margin:0; min-width:0; overflow-wrap:anywhere; color:var(--text); }
+.hmr-sha { font-size:11px; overflow-wrap:anywhere; word-break:break-all; }
+.hmr-checks { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px; }
+.hmr-check-ok { color:var(--text); }
+.hmr-check-ok span[aria-hidden] { color:#22c55e; }
+.hmr-check-fail { color:#ef4444; }
+
+.hmr-roles { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+.hmr-role-btn { background:transparent; border:1px solid var(--border); color:var(--text-faint); padding:3px 10px; border-radius:4px; font-size:12px; cursor:pointer; }
+.hmr-role-btn.active { border-color:var(--accent); color:var(--accent); cursor:default; }
+.hmr-role-btn b { color:var(--text); }
+.hmr-run-meta { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; padding:0 0 6px 4px; }
+.hmr-run-role { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--text-faint); }
+.hmr-run-role-reviewer { color:#a78bfa; }
+
+/* The dashboard has no phone layout of its own (200px sidebar + main), which
+   leaves ~190px for content at 390px. Stack it below 640px so the review
+   fields get the full width. */
+@media (max-width: 640px) {
+  .hm-dashboard { flex-direction:column; }
+  .hm-dash-sidebar { width:auto; border-right:none; border-bottom:1px solid var(--border); max-height:110px; flex-shrink:0; }
+  .hm-dash-main { min-height:0; padding:12px; }
+  .hmr-kv-row { grid-template-columns:minmax(0,1fr); gap:1px; }
+}
+
+/* Workstream rows in the overview list carry the chips on their own line. */
+.hm-ws-item:has(.hmr-ws-chips) { flex-wrap:wrap; }
+.hm-ws-item .hmr-ws-chips { flex-basis:100%; margin-top:0; }

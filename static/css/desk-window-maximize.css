@@ -1,0 +1,18 @@
+/* Desk window: Maximize / snap (Ron 2026-10-31). The Desk body carries an
+   inline max-height:66vh for the floating window; once the window is snapped
+   or maximized, the header stays put and the body fills what is left. */
+.modal-window.is-snapped[data-modal-id="__desk"] .modal-content {
+  display: flex;
+  flex-direction: column;
+}
+.modal-window.is-snapped[data-modal-id="__desk"] .desk-win-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.modal-window.is-snapped[data-modal-id="__desk"] #desk-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none !important;
+}

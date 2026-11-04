@@ -684,6 +684,7 @@
             <button type="button" class="desk-v1-project-agent-btn" data-project-agent>${_agentLabelHTML(p)}</button>
           </div>
         </div>
+        <div data-product-materials-host></div>
         <div class="desk-v1-project-nextpost-wrap" id="desk-v1-project-nextpost"></div>
         <div class="desk-v1-project-camps-head">
           <span>Campaigns</span>
@@ -705,6 +706,7 @@
       const ff = (_playbook().findings || []).find((x) => x.id === focusId && x.project_id === projectId);
       if (ff && ff.state === 'rejected') _rejectedOpen = true;
     }
+    window.DeskV1ProductMaterials.mount(el.querySelector('[data-product-materials-host]'), p);
     _renderNextPost(projectId);
     _renderCampaigns(projectId);
     _renderArchived(projectId);

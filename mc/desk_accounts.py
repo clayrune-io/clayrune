@@ -30,12 +30,12 @@ a connection that is not there:
              account's `organization_id` (not a secret: it is in the Company
              Page admin URL).
   manual     ready: the human publishes it (a blog); nothing to connect.
-  none       NOT ready, always: a read-only account (YouTube, Instagram, TikTok)
+  none       NOT ready, always: a read-only account
              the Desk reads through the browser pane and never publishes to.
              Approval and the tick both go through `publish_state`, so every
              publish path refuses it with this reason.
   assisted   ready, for a platform that has an assisted route
-             (`desk_assisted_post.ROUTES`; Instagram today). A version can be
+             (`desk_assisted_post.ROUTES`; Instagram and YouTube). A version can be
              approved for it, but nothing publishes it: the tick treats it like a
              manual account (a task, never `desk_publish`), and a person starts the
              fill-in on the network's own post screen and presses Share themselves.

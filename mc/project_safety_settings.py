@@ -22,6 +22,7 @@ PROJECT_SAFETY_KEYS = frozenset({
     'steward_mode',
     'steward_objective',
     'steward_cadence_minutes',
+    'steward_assignment',
 })
 
 
