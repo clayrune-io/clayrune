@@ -105,7 +105,8 @@ def test_reviewer_dispatched_by_the_owner_without_notify_session_is_refused(
     r = dispatch(task='review branch own1')
     assert r.status_code == 200, r.get_json()
     reviewer = r.get_json()['session_id']
-    assert env['sessions'][reviewer]['_notify_session'] == ''      # no notify_session sent
+    # no notify_session sent: MC-1155 defaults the callback to the caller
+    assert env['sessions'][reviewer]['_notify_session'] == 'own1'
     assert env['sessions'][reviewer]['_spawned_by'] == 'own1'
 
     _as_session(caller, reviewer)                                   # the reviewer now calls
