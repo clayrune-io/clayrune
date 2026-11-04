@@ -329,3 +329,26 @@ def test_steward_cycle_marker_stays_the_first_bytes(monkeypatch):
     sess = {'session_id': 's1', 'project_id': 'p', tc._REPLY_KEY: 1.0}
     msg = '[Steward cycle]\n\nWake (local time): now'
     assert ar._clock_wrap({'project_path': ''}, sess, msg) == msg
+
+
+def test_strip_injected_preamble_peels_clock_header_then_memory():
+    """The stamp (+ briefing) leads the memory block, so the transcript
+    stripper must peel it or every rebuilt user turn shows it."""
+    from mc.agent_runtime import strip_injected_preamble
+    mem = '--- RELEVANT MEMORY (auto) ---\n  • fact one\n\n'
+    stamp = '[Now 2026-11-04 07:10 PST · 9h 20m since your last reply]'
+    brief = 'Since your last reply:\n- commit abc fix\n- (+6 more, truncated)'
+    assert strip_injected_preamble(f'{stamp}\n\n{mem}hello there') == 'hello there'
+    assert strip_injected_preamble(f'{stamp}\n{brief}\n\n{mem}hello there') == 'hello there'
+    assert strip_injected_preamble(f'{stamp}\n{brief}\n\nhello there') == 'hello there'
+    assert strip_injected_preamble('hello there') == 'hello there'
+
+
+def test_strip_injected_preamble_on_real_render_output():
+    import time
+    from mc.agent_runtime import strip_injected_preamble
+    sess = {'session_id': 's1', 'project_id': 'p', tc._REPLY_KEY: time.time() - 9 * 3600}
+    header = tc.render({'id': 'p', 'project_path': ''}, sess)
+    assert header.startswith('[Now ')
+    mem = '--- RELEVANT MEMORY (auto) ---\n  • fact one\n\n'
+    assert strip_injected_preamble(f'{header}\n\n{mem}hello there') == 'hello there'
