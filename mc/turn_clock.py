@@ -39,6 +39,7 @@ FIRST bytes of a turn -- same carve-out as `_apply_mobile_brief`).
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -143,6 +144,43 @@ def seed_from_history(session, lines, ts) -> None:
                 return
     except Exception as e:
         _log(f'[turn-clock] seed_from_history failed: {e}')
+
+
+def seed_from_log_entries(session, entries) -> None:
+    """Recover the last-reply time from durable agent_log rows, for a session
+    that is being rebuilt with no transcript to read (a non-Claude revive, or
+    a Claude revive whose transcript was too large to resume). A completion
+    row's `ts` is written when the turn ended, so the newest row that is not
+    still `in_progress` is the best durable "last spoke" time. Never raises."""
+    try:
+        best = None
+        for e in entries or ():
+            if not isinstance(e, dict) or e.get('status') == 'in_progress':
+                continue
+            epoch = _parse_iso(e.get('ts'))
+            if epoch and (best is None or epoch > best):
+                best = epoch
+        if best:
+            session[_REPLY_KEY] = best
+    except Exception as e:
+        _log(f'[turn-clock] seed_from_log_entries failed: {e}')
+
+
+def copy_reply(src, dst) -> None:
+    """Carry the last-reply stamp from one session dict to another. Never raises."""
+    try:
+        if isinstance(src, dict) and isinstance(dst, dict) and _REPLY_KEY in src:
+            dst[_REPLY_KEY] = src[_REPLY_KEY]
+    except Exception:
+        pass
+
+
+_HEADER_RE = re.compile(r'\A\s*\[Now \d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]\n]*\]')
+
+
+def has_header(text) -> bool:
+    """True when `text` already leads with a stamp, so a second wrap is a no-op."""
+    return isinstance(text, str) and bool(_HEADER_RE.match(text))
 
 
 # ── formatting ──────────────────────────────────────────────────────────────

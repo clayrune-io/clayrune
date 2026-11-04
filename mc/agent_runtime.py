@@ -5135,7 +5135,11 @@ class GeminiRuntime(AgentRuntime):
             try:
                 _flush_run()  # a run cut off by EOF / a stream error still lands
                 turn_text = ''.join(turn_text_parts)
-                _turn_clock.note_reply(session)  # turn finished: the agent just spoke
+                # Stamp only when THIS reader produced text and still owns the
+                # session: a reader that exits empty (crash, no output) or has
+                # been superseded by a respawn must not reset the clock.
+                if turn_text.strip() and session.get('proc') is proc:
+                    _turn_clock.note_reply(session)
                 mc_res = self.apply_mc_tool_blocks(session, turn_text)
                 if _mc_suppressing and not mc_res['blocks_found']:
                     # A ```mc: fence appeared but no complete, valid block was
@@ -6600,7 +6604,11 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
             # form exists only so Gemini's own reader (which lives on the
             # runtime) can call `self.`; this shared reader is already in the
             # same module as the real implementation.
-            _turn_clock.note_reply(session)  # turn finished: the agent just spoke
+            # Stamp only when THIS reader produced text and still owns the
+            # session (a codex retry_without_model swap hands ownership to the
+            # retry's reader; an empty/crashed turn is not a reply).
+            if turn_text.strip() and session.get('proc') is proc:
+                _turn_clock.note_reply(session)
             mc_res = apply_mc_tool_blocks(session, turn_text)
             if _mc_suppressing and not mc_res['blocks_found']:
                 # A ```mc: fence appeared but no complete, valid block was

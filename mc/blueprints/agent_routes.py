@@ -6607,7 +6607,7 @@ def _auto_recover_failed_resume(session):
             _sysprompt_cleanup(_sp_path, proc)
             initial_msg = json.dumps({
                 "type": "user",
-                "message": {"role": "user", "content": fresh_task}
+                "message": {"role": "user", "content": _clock_wrap(p, session, fresh_task, task)}
             }) + '\n'
             proc.stdin.write(initial_msg)  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
             proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
@@ -6634,7 +6634,7 @@ def _auto_recover_failed_resume(session):
         else:
             # Mode A
             _sp_args, _sp_path = _sysprompt_file_args(context)
-            cmd = [_resolve_claude(), '-p', fresh_task, *_build_claude_flags(p,
+            cmd = [_resolve_claude(), '-p', _clock_wrap(p, session, fresh_task, task), *_build_claude_flags(p,
                    model_override=_continuation_model(session, p),
                    effort_override=_continuation_effort(session),
                    character_skills=_session_skills(p, session)),
@@ -7706,6 +7706,18 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
     # its own real per-line dates.
     seed_ts = history_ts + [now_iso(), now_iso()]
 
+    # Elapsed since the agent last spoke -- a revive is exactly the "9 hours
+    # later" case. Read from the restored transcript; when that was skipped
+    # (too large to resume) fall back to the durable agent_log rows. Done once
+    # here so Mode A (`-p revival_msg`) and Mode B (stdin) both carry it.
+    _clock_sess = {'session_id': session_id, 'project_id': project_id,
+                   '_agent_cwd': _revive_cwd}
+    _turn_clock.seed_from_history(_clock_sess, history_lines, history_ts)
+    if _turn_clock.last_reply_epoch(_clock_sess) is None:
+        _turn_clock.seed_from_log_entries(
+            _clock_sess, [e for e in log if e.get('session_id') == session_id])
+    revival_msg = _clock_wrap(p, _clock_sess, revival_msg, message)
+
     if use_streaming:
         cmd = [_resolve_claude(), *resume_flags,
                *_build_claude_flags(p, streaming=True, model_override=revive_model,
@@ -7817,10 +7829,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         # seed the conversation's delivered-set with the SAME text so those
         # facts aren't treated as new and resent on a later live follow-up.
         _memory_turn.seed_delivered(p, session, message)
-        # Elapsed since the agent last spoke, recovered from the restored
-        # transcript -- the revive is exactly the "9 hours later" case.
-        _turn_clock.seed_from_history(session, history_lines, history_ts)
-        revival_msg = _clock_wrap(p, session, revival_msg, message)
+        _turn_clock.copy_reply(_clock_sess, session)   # stamp computed above
         stdin_msg = json.dumps({"type": "user", "message": {"role": "user", "content": revival_msg}}) + '\n'
         if role_context is not None:
             from mc.steward_role_dispatch import _append_ack
@@ -7913,6 +7922,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         agent_sessions[session_id] = session
         mgr.session_ids.add(session_id)
     _write_usage_breakdown_turn_start_checkpoint(session)   # see Mode B above
+    _turn_clock.copy_reply(_clock_sess, session)   # stamp computed above
     threading.Thread(target=_read_agent_stream, args=(proc, session), daemon=True).start()
     _log(f"[revive] {project_id}: Mode A revived session {session_id} via -r {claude_sid[:12]}")
     return session
@@ -10027,7 +10037,7 @@ def _auto_dispatch_followup(session, message):
     # Honor a per-chat model pin (Mode A respawns per turn — without this the
     # pinned conversation would drop back to the project/global model).
     _pin = _continuation_model(session, p)
-    cmd = [_resolve_claude(), *resume_flags, '-p', message,
+    cmd = [_resolve_claude(), *resume_flags, '-p', _clock_wrap(p, session, message),
            *_build_claude_flags(p, model_override=_pin,
                                 effort_override=_continuation_effort(session),
                                 character_skills=_session_skills(p, session)), *_sp_args]
@@ -10327,8 +10337,31 @@ def _clock_header(project, session, message) -> str:
 def _clock_wrap(project, session, content, message=None) -> str:
     """`content` with the clock header in front. `message` is the user's
     original text (slash-command check); defaults to `content`."""
+    if _turn_clock.has_header(content):
+        return content          # already stamped upstream: never stack two
     header = _clock_header(project, session, content if message is None else message)
     return f'{header}\n\n{content}' if header else content
+
+
+def _dispatch_clock_task(p, project_id, task, reuse_session_id='', cwd=''):
+    """`task` with the clock header, for the message that STARTS a process.
+
+    A brand-new session has no prior reply, so it gets the stamp only. A
+    dispatch that re-attaches to an existing conversation (`reuse_session_id`:
+    a non-Claude revive after a restart) seeds the last-reply time from that
+    conversation's durable agent_log rows, so the gap and briefing are real.
+    Runs OUTSIDE the project lock (the briefing shells out to git). Never raises."""
+    try:
+        probe = {'session_id': reuse_session_id or '', 'project_id': project_id,
+                 '_agent_cwd': cwd or (p or {}).get('project_path', '')}
+        if reuse_session_id:
+            _turn_clock.seed_from_log_entries(
+                probe, [e for e in _load_agent_log(project_id)
+                        if e.get('session_id') == reuse_session_id])
+        return _clock_wrap(p, probe, task)
+    except Exception as e:
+        _log(f'[turn-clock] dispatch stamp failed: {e}')
+        return task
 
 
 def _apply_mobile_brief(message: str, request_data: dict) -> str:
@@ -10400,8 +10433,13 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                           project_generation=1,
                           lifecycle_bridge_factory=None,
                           agent_cwd='', isolated=False, planned_session_id='',
-                          engine_fallback=None, role_context=None):
+                          engine_fallback=None, role_context=None,
+                          outgoing_task=None):
     """Dispatch a session through the AgentRuntime abstraction (non-claude).
+
+    `outgoing_task` is the text actually written to the CLI (`task` plus the
+    clock header, see `_dispatch_clock_task`); `task` stays the clean text
+    that context building, fingerprinting and the session record use.
 
     `agent_cwd`/`isolated`/`planned_session_id` (vendor-parity gap 1,
     docs/VENDOR_HARNESS_MATRIX.md): the worktree decision the claude path makes
@@ -10729,7 +10767,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             callbacks.update(on_init=_bridge_init, on_process_exit=_bridge_exit)
 
     runtime_task = _bridge_images_for_blind_model(
-        task, session, provider=provider_name, model=model, project_path=_run_cwd)
+        task if outgoing_task is None else outgoing_task, session, provider=provider_name, model=model, project_path=_run_cwd)
 
     def _spawn_runtime():
         return runtime.dispatch(
@@ -11938,6 +11976,12 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             model_override = _fallback_model or ''
             display_task = (_engine_fallback.swap_chat_line(_engine_fallback_record) + ' '
                              + (display_task if display_task is not None else task))
+    # The message that starts the process carries the clock stamp (initial
+    # dispatch: stamp only; a re-attached conversation also gets its gap).
+    # Built here, outside the project lock -- the briefing shells out to git.
+    # Housekeeping jobs are not conversations and keep their exact bytes.
+    _clock_task = task if housekeeping else _dispatch_clock_task(
+        p, project_id, task, reuse_session_id)
     if provider_name != 'claude':
         # Per-agent worktree isolation for non-claude runtimes (vendor-parity
         # gap 1, docs/VENDOR_HARNESS_MATRIX.md): this branch returns before the
@@ -11963,6 +12007,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             _rt_agent_cwd, _rt_isolated = _maybe_isolate_worktree(p, _rt_planned_sid, incognito)
         try:
             return _dispatch_via_runtime(p, task, provider_name=provider_name,
+                                         outgoing_task=_clock_task,
                                          incognito=incognito,
                                          trigger_type=trigger_type,
                                          trigger_id=trigger_id,
@@ -12337,7 +12382,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             # mobile sends/interrupts/followups to day_trading.
             _initial_msg = json.dumps({
                 "type": "user",
-                "message": {"role": "user", "content": task}
+                "message": {"role": "user", "content": _clock_task}
             }) + '\n'
 
             session = {
@@ -12463,10 +12508,10 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             # Mode A: spawn-per-turn (existing behavior). base_flags / _sp_args
             # were resolved above the lock (outside RC-2's danger zone).
             if resume_id:
-                cmd = [_resolve_claude(), '-r', resume_id, '-p', task, *base_flags,
+                cmd = [_resolve_claude(), '-r', resume_id, '-p', _clock_task, *base_flags,
                        *_sp_args]
             else:
-                cmd = [_resolve_claude(), '-p', task, *base_flags, *_sp_args]
+                cmd = [_resolve_claude(), '-p', _clock_task, *base_flags, *_sp_args]
 
             cmd = _launch_marker.launch_cmd(cmd, trigger_type, _agent_cwd)
             proc = subprocess.Popen(
@@ -12939,7 +12984,8 @@ def agent_send(project_id):
     if decision == 'steer':
         ack = _mid_turn_send.steer_live(
             session,
-            content=_apply_mobile_brief(message, data),
+            content=_clock_wrap(p, session,
+                                _apply_mobile_brief(message, data), message),
             write=_bounded_stdin_write,
             owner=(_TURN_OWNER_KEY, _OWNER_HUMAN))
         _log_agent_activity(project_id, f"Agent steered mid-turn: {message[:100]}")

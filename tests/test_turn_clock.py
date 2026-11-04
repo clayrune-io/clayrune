@@ -299,12 +299,14 @@ def test_clock_wrap_skips_slash_commands_and_respects_setting(monkeypatch):
 
 def test_every_outgoing_site_is_wired():
     """Live stdin write, Mode B respawn, Mode A follow-up, interrupt B + A,
-    native follow-up + native interrupt, revive -- 8 `_clock_wrap` call sites -- plus both
+    native follow-up + native interrupt, revive -- plus (round 2) initial dispatch
+    helper, steer, queued Mode A follow-up, guardian recovery A+B, revive A/B:
+    13 `_clock_wrap` call sites -- plus both
     stream readers stamping replies."""
-    assert len(re.findall(r'_clock_wrap\(', ROUTES)) == 9, (
-        'expected the def + 8 call sites of _clock_wrap')
+    assert len(re.findall(r'_clock_wrap\(', ROUTES)) == 14, (
+        'expected the def + 13 call sites of _clock_wrap')
     assert ROUTES.count('_turn_clock.note_reply(session)') == 2
-    assert 'seed_from_history(session, history_lines, history_ts)' in ROUTES
+    assert 'seed_from_history(_clock_sess, history_lines, history_ts)' in ROUTES
 
 
 def test_stamp_is_the_first_thing_in_the_live_stdin_write():
