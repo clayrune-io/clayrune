@@ -208,7 +208,16 @@ def test_spec_and_files_never_hold_env_values(tracker, tmp_path, monkeypatch):
     for f in sdir.iterdir():
         if f.name == 'out.log':
             continue                                   # the CLI itself printed it there
-        assert secret not in f.read_text(errors='replace'), f'secret on disk in {f.name}'
+        try:
+            body = f.read_text(errors='replace')
+        except (FileNotFoundError, PermissionError):
+            # listed while the shim's atomic write was in flight: the `.<name>.tmp<pid>`
+            # was renamed over its target (or is mid-replace) between iterdir and open.
+            # The target file is checked on its own if it was listed; a vanished tmp
+            # held the same bytes the replaced target now holds.
+            assert f.name.startswith('.') and '.tmp' in f.name, f'{f.name} vanished'
+            continue
+        assert secret not in body, f'secret on disk in {f.name}'
 
 
 # ───────────────────── SEND seq idempotence / reconnect ─────────────────────
@@ -714,6 +723,15 @@ def _assign_job(job, pid):
     return bool(ok)
 
 
+def _read_json_retry(path):
+    """Parsed JSON, or None while the file is absent / mid-replace (Windows reader
+    race: PermissionError, FileNotFoundError, or a torn read)."""
+    try:
+        return json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+
+
 def _run_cell(root, variant, kill):
     """One cell of the matrix. Returns a dict; kills only the PIDs it started."""
     d = root / f'{variant}-{kill}'
@@ -747,8 +765,14 @@ def _run_cell(root, variant, kill):
         if not wait_for(lambda: (d / 'server.json').exists(), 60):
             res['result'] = 'server_timeout'
             return res
-        sj = json.loads((d / 'server.json').read_text())
+        # the stand-in writes server.json via temp + os.replace; on Windows a reader that
+        # opens it mid-replace gets PermissionError, so retry until it parses.
+        sj = wait_for(lambda: _read_json_retry(d / 'server.json'), 30)
         res['server'] = sj
+        # a WMI-created shim is no one's child: track it by pid the moment it is known,
+        # so a cell that fails before shim.json matches cannot leak it.
+        if sj and sj.get('wmi_pid'):
+            tr.add(sj['wmi_pid'], shim.proc_create_time(sj['wmi_pid']))
         res['server_log'] = (d / 'server.log').read_text() if (d / 'server.log').exists() else ''
         if not sj['ok']:
             res['result'] = 'refused' if sj['branch'] == C.BRANCH_WIN_REFUSED else 'spawn_failed'
@@ -788,6 +812,7 @@ def _run_cell(root, variant, kill):
         res['result'] = Y if (shim_ok and cli_ok) else N
         return res
     finally:
+        tr.add_manifest(d)                 # whatever shim.json names, matched or not
         tr.reap()
 
 
