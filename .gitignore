@@ -104,6 +104,9 @@ data/desk/
 # MC-1151 agent-listings checklists (mc/desk_agent_store.py): per-campaign
 # runtime records, sibling of DATA_DIR, never bundled.
 data/desk_agent/
+# MC-1152 channel-impact state (mc/desk_impact_store.py): per-project runtime
+# records and snapshots, sibling of DATA_DIR, never bundled.
+data/desk_impact/
 data/dev_harness/
 data/agent_labels.json
 data/remote_enrollment_liveness.json
