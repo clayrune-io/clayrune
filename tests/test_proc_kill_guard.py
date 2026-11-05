@@ -127,15 +127,32 @@ def test_windows_is_a_noop(monkeypatch):
     assert proc_kill.safe_killpg(4100) is False
 
 
+# mc/agent_shim.py is the one module that may not import mc (it runs under a
+# bare base interpreter, HARD RULE in its docstring), so it cannot use
+# mc.proc_kill. Its three raw killpg calls are pinned by count and each must
+# sit within a few lines of an os.getpgrp() comparison (the same bright line
+# proc_kill enforces). Adding a fourth, or an unguarded one, fails the test.
+_SHIM_KILLPG_ALLOWED = 3
+_SHIM_GUARD_WINDOW = 8
+
+
 def test_no_raw_killpg_outside_the_guard():
     offenders = []
+    shim_hits = []
     for path in list((PROJECT_ROOT / 'mc').rglob('*.py')) + [PROJECT_ROOT / 'server.py']:
         if path.name == 'proc_kill.py':
             continue
-        for n, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+        lines = path.read_text(encoding='utf-8').splitlines()
+        for n, line in enumerate(lines, 1):
             if re.search(r'os\.killpg\(', line) and not line.lstrip().startswith(('#', '"', "'")):
+                if path.name == 'agent_shim.py':
+                    window = lines[max(0, n - 1 - _SHIM_GUARD_WINDOW):n]
+                    if any('os.getpgrp()' in w for w in window):
+                        shim_hits.append(n)
+                        continue
                 offenders.append(f'{path.relative_to(PROJECT_ROOT)}:{n}')
     assert offenders == []
+    assert len(shim_hits) <= _SHIM_KILLPG_ALLOWED, f'agent_shim.py gained killpg sites: {shim_hits}'
 
 
 def test_agent_spawn_sites_use_a_new_session():

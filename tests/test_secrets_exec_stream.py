@@ -323,8 +323,11 @@ def test_a_dropped_connection_kills_the_child_and_unregisters_it(srv):
     conn.close()                                                # response holds the socket too)
     _wait(lambda: session.proc.poll() is not None, what='the child to die')
     _wait(lambda: session.proc.pid not in tracked_processes, what='unregistration')
-    ledger = json.loads(srv.ledger.read_text(encoding='utf-8'))
-    assert session.proc.pid not in [c['pid'] for c in ledger['children']]
+    # mc/secrets_exec_stream.py pops tracked_processes and THEN persists the
+    # ledger, so the pop being visible does not mean the file is rewritten yet.
+    _wait(lambda: session.proc.pid not in
+          [c['pid'] for c in json.loads(srv.ledger.read_text(encoding='utf-8'))['children']],
+          what='the ledger to drop the child')
 
 
 def test_the_end_route_kills_the_child(srv):
