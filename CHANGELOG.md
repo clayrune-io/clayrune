@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-05] - Show local times on user prompts
+
+- User prompt bubbles show a small local time from the message's own recorded timestamp; hover for the full local date and time. Just-sent bubbles use client time until the server echo arrives. Messages without a valid timestamp stay untagged, including legacy history with only a session start date.
+- Agent-facing clock headers and their attached gap briefings are stripped from displayed prompt text, including buffered replay. The stored messages remain unchanged. Verification and screenshots: `docs/PROMPT_TIME_TAGS.md`. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-05] - Run explicitly reported test commands with real child exits (MC-1148 P5, dark)
 
 - Added the installation-local stdlib launcher with exact argv or explicit shell execution, ordered manifests, child registration and parent/child script-unit runs. The enrolling launcher finalizes after actual child waits; reporter tokens cannot finalize, and telemetry failures preserve local exits.

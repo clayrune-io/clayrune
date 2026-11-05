@@ -757,7 +757,8 @@ function _repaintAgentOutput(sessionId) {
   const _replayAnchor = (agentStatusCache[sessionId] || {}).startedAt || false;
   buf.forEach((line, i) => {
     const hint = Array.isArray(_ts) ? (_ts[i] || false) : (i === 0 ? _replayAnchor : false);
-    appendAgentLine(sessionId, line, hint);
+    // The session anchor dates the divider only, never an undated prompt.
+    appendAgentLine(sessionId, line, hint, (_ts || [])[i] || false);
   });
   // An unanswered mc:question form is a DOM element, not a buffered log line, so
   // the clear above destroys it and the append loop cannot bring it back — the
@@ -1339,7 +1340,7 @@ const _BRIEF_DIRECTIVE_RE = /\[BINDING for this reply\b[\s\S]*?hidden from the u
 // (the phone directive has no internal ']', so [^\]]* is exact and safe).
 const _PHONE_DIRECTIVE_RE = /\[the user is messaging you from a phone\b[^\]]*\]\s*/gi;
 function stripSysPreamble(s) {
-  return (s || '')
+  return window.stripPromptClock(s || '')
     .replace(_SYS_PREAMBLE_RE, '')
     .replace(_BRIEF_DIRECTIVE_RE, '')
     .replace(_PHONE_DIRECTIVE_RE, '');
@@ -1429,6 +1430,7 @@ function escPromptWithImages(raw, ts) {
   for (let i = 0; i < _imgTokens.length; i++) {
     html = html.replace('@@CLImg' + i + '@@', _imgTokens[i]);
   }
+  html += window.promptTimeTagHTML(ts);
   // A turn Ron did not type collapses to a one-line row; a typed one is
   // returned unchanged (static/js/triggered-collapse.js).
   return window.wrapTriggeredPrompt ? window.wrapTriggeredPrompt(raw, html, ts) : html;

@@ -19,7 +19,7 @@
  * Every line after the replay streamed in normally, which is why only the
  * prompt went missing.
  *
- * Serves static/js + static/css from THIS checkout over the live page; every
+ * Serves index.html + static/js + static/css from THIS checkout against the live API; every
  * non-GET is aborted, so nothing touches real sessions.
  *
  * RUN: node codex-resume-render.mjs   (needs MC on localhost:5199, or MC_SMOKE_BASE)
@@ -67,6 +67,8 @@ async function runCase(label, viewport) {
     const req = route.request();
     const url = new URL(req.url());
     if (req.method() !== 'GET') return route.abort();
+    if (url.pathname === '/') return route.fulfill({ status: 200,
+      contentType: 'text/html; charset=utf-8', body: readFileSync(join(ROOT, 'static/index.html'), 'utf8') });
     if (url.hostname === 'localhost' && /^\/static\/(js|css)\//.test(url.pathname)) {
       const f = join(ROOT, url.pathname);
       if (existsSync(f)) {

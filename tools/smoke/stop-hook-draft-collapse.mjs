@@ -84,6 +84,8 @@ try {
     const req = route.request();
     const url = new URL(req.url());
     if (req.method() !== 'GET') return route.abort();
+    if (url.pathname === '/') return route.fulfill({ status: 200,
+      contentType: 'text/html; charset=utf-8', body: readFileSync(join(ROOT, 'static/index.html'), 'utf8') });
     if (url.hostname === 'localhost' && /^\/static\/(js|css)\//.test(url.pathname)) {
       const f = join(ROOT, url.pathname);
       if (existsSync(f)) {
