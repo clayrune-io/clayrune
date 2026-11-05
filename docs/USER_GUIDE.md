@@ -256,6 +256,13 @@ over the time for the full local date and time. A just-sent message uses your
 device's clock until the server echo arrives. Older messages without a valid
 recorded timestamp have no time tag.
 
+**Reply times:** agent text shows one muted local HH:MM time per uninterrupted
+run of narration, with the full local date and time on hover. It uses the first
+valid recorded line timestamp in that run and stays fixed as more lines arrive.
+A prompt, tool, card or day divider starts a new run. Two adjacent replies with
+nothing between them share one tag. Runs without a valid timestamp stay
+untagged; copying reply text excludes the time.
+
 **Blocked commands:** consecutive permission or hook denials in an agent chat
 appear as a small **1 command blocked** / **N commands blocked** chip. It starts
 closed in live chats and restored history. Click, tap, or focus it and press

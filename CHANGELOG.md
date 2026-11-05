@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-05] - Show local times on agent narration runs
+
+- Agent text shows one muted local HH:MM tag per uninterrupted narration run, using its first valid recorded line timestamp; hover shows the full local date and time. Streaming, restored history and rollover replay use the same rule. Adjacent replies without a prompt, tool, card or day divider between them share a tag; undated runs stay untagged.
+- Copying reply text excludes the time. Existing draft/plan collapse, search, cards, attachments and diagrams keep their behavior. Cold rendering flushes narration before each day divider to match live ordering. Verification: `docs/PROMPT_TIME_TAGS.md`. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-05] - Show local times on user prompts
 
 - User prompt bubbles show a small local time from the message's own recorded timestamp; hover for the full local date and time. Just-sent bubbles use client time until the server echo arrives. Messages without a valid timestamp stay untagged, including legacy history with only a session start date.

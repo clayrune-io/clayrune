@@ -4,6 +4,7 @@ import { openAttendUnlockDialog } from './attend-unlock-dialog.js';
 import { historySpawner } from './conversation-lineage.js';
 import { hideSkillAnnouncement } from './skill-announcement.js';
 import { deferChatRefresh } from './chat-selection.js';
+import { agentTimeAttrs, agentTimeTagsHTML, stampAgentNarration } from './agent-time-tag.js';
 
 // Tag agent-bound POST bodies with client="mobile" when the viewport is
 // phone-sized. The backend then decides — based on mobile_brief_replies_enabled
@@ -1458,6 +1459,7 @@ function agentPanelHTML(p) {
       }
       const _interimDim = isInterimDimProvider(activeSession && activeSession.provider);
       let tableLines = [];
+      let tableTime = false;
       let planBlock = '';   // accumulates non-tool lines for plan detection
       let planRawLines = []; // raw text for plan viewer
       let mermaidLines = null;  // null when not inside a ```mermaid block; array otherwise
@@ -1467,11 +1469,12 @@ function agentPanelHTML(p) {
       function flushTable() {
         if (tableLines.length === 0) return;
         if (isPipeTable(tableLines)) {
-          planBlock += `<div class="hl-table">${buildPipeTable(tableLines)}</div>`;
+          planBlock += `<div class="hl-table"${agentTimeAttrs(tableTime)}>${buildPipeTable(tableLines)}</div>`;
         } else {
-          planBlock += `<div class="hl-table-pre">${tableLines.map(l => formatTableLine(esc(l))).join('\n')}</div>`;
+          planBlock += `<div class="hl-table-pre"${agentTimeAttrs(tableTime)}>${tableLines.map(l => formatTableLine(esc(l))).join('\n')}</div>`;
         }
         tableLines = [];
+        tableTime = false;
       }
       for (let _i = 0; _i < buf.length; _i++) {
         const line = buf[_i];
@@ -1485,6 +1488,10 @@ function agentPanelHTML(p) {
           if (!isNaN(_lDate.getTime())) {
             const _lKey = _dateKeyLocal(_lDate);
             if (_lKey !== _lastDividerKey) {
+              // Flush before this run boundary, matching live DOM order.
+              flushTable();
+              result += planBlock;
+              planBlock = ''; planRawLines = [];
               _lastDividerKey = _lKey;
               result += `<div class="chat-date-divider" data-date="${esc(_lKey)}"><span class="chat-date-divider-pill">${esc(_formatDateDivider(_lDate))}</span></div>`;
             }
@@ -1603,9 +1610,11 @@ function agentPanelHTML(p) {
           continue;
         }
         if (isTableLine(line)) {
+          if (!tableTime && window.promptTimeTagHTML(bufTs[_i])) tableTime = bufTs[_i];
           tableLines.push(line);
           planRawLines.push(line);
         } else if (tableLines.length > 0 && line.trim() === '') {
+          if (!tableTime && window.promptTimeTagHTML(bufTs[_i])) tableTime = bufTs[_i];
           tableLines.push(line);
           planRawLines.push(line);
         } else {
@@ -1634,7 +1643,7 @@ function agentPanelHTML(p) {
                 data-source-label="${esc(_activeSessionPersonName(activeSession, p))}"
                 onclick="brainstormFromMessage('${esc(p.id)}', this)">&#128161;</button>`
             : '';
-          const div = `<div class="${cls}" dir="auto">${html}${_brainstormBtn}</div>`;
+          const div = `<div class="${cls}" dir="auto"${cls === 'agent-line' ? agentTimeAttrs(bufTs[_i]) : ''}>${html}${_brainstormBtn}</div>`;
           // Tool lines and user prompts reset plan-block accumulator
           if (cls.includes('agent-line-tool') || cls.includes('agent-line-prompt')) {
             // Codex preamble: narration that a tool line follows is interim,
@@ -1677,7 +1686,7 @@ function agentPanelHTML(p) {
       if (_rolloverRemaining > 0) {
         result = _rolloverButtonHTML(p.id, activeSessionId, _rolloverRemaining, _rolloverChain.length + 1) + result;
       }
-      return result;
+      return agentTimeTagsHTML(result);
     })();
 
     // MC-987: wrapped in a stable slot so updateStopButtonUI (index.html) can
@@ -5092,8 +5101,10 @@ function appendAgentLine(sessionId, text, dateHint, promptTs = dateHint) {
         block.className = 'hl-table-pre';
         block.innerHTML = block._rawLines.map(l => formatTableLine(esc(l))).join('\n');
       }
+      stampAgentNarration(block, promptTs);
     };
     if (!deferChatRefresh(el, block, paintTable)) paintTable();
+    stampAgentNarration(block, promptTs);
     if (wasPinned) _scheduleAgentPinScroll(sessionId, el, freshMount);
     return;
   }
@@ -5102,6 +5113,7 @@ function appendAgentLine(sessionId, text, dateHint, promptTs = dateHint) {
     const last = el.lastElementChild;
     if (last && (last.classList.contains('hl-table') || last.classList.contains('hl-table-pre'))) {
       last._rawLines.push(text);
+      stampAgentNarration(last, promptTs);
       if (wasPinned) _scheduleAgentPinScroll(sessionId, el, freshMount);
       return;
     }
@@ -5143,6 +5155,7 @@ function appendAgentLine(sessionId, text, dateHint, promptTs = dateHint) {
     div.innerHTML = formatAgentText(text);
   }
   el.appendChild(div);
+  if (cls === 'agent-line') stampAgentNarration(div, promptTs);
   if (cls.includes('agent-line-tool') && isInterimDimProvider((agentStatusCache[sessionId] || {}).provider)) {
     markInterimNarration(el, div);
   }

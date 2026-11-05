@@ -1,5 +1,97 @@
 # User prompt time tags
 
+## Agent reply time tags (2026-11-05, Option A)
+
+Branch candidate `clayrune/agent/3953878b77d0`, based on `5d755fac`.
+No merge, push, server restart or live configuration changes.
+
+Dave selected narration-run grouping after the prior investigation established
+that render buffers flatten real reply boundaries. A run is contiguous rendered
+agent narration (including tables), bounded by a user prompt, tool, card,
+date divider or session start. Two back-to-back replies with nothing between
+them deliberately share one tag. Diagrams and structured cards keep their own
+rendering and separate the surrounding narration. Attribution is transparent.
+
+The tag takes the first valid recorded line timestamp anywhere in the run.
+Null, absent, false and invalid timestamps never supply a time. Neither a
+session-start fallback nor a clock embedded in text can date an undated reply.
+The visible time is local 24-hour HH:MM, with the full local date/time on hover.
+It lives in the first nonempty narration element, so later streamed lines do
+not move it; when the first valid timestamp arrives later, the tag appears there.
+
+`static/js/agent-time-tag.js` owns timestamp metadata, cold HTML decoration and
+incremental DOM tagging. It imports the existing prompt formatter, shares its
+muted styling and keeps timestamps out of source buffers. The `<time>` has an
+accessible full-date label and CSS-generated visible text, so native copy,
+`textContent`, `innerText`, plan extraction and stop-hook draft comparisons
+exclude the time. There is no persistent session cache to outlive a rebuilt DOM.
+
+`conversation.js` contains only renderer integration: metadata on narration and
+table blocks, the cold-decoration call and incremental stamping. Cold rendering
+now flushes buffered narration before a new day divider, preserving live order
+and preventing a divider from dating the wrong run. Table body repaints restore
+the tag. Existing stop-hook, interim and hidden-plan wrappers retain their
+contents and are decorated recursively. No new backend contract or dependency.
+
+### Agent verification
+
+`node tools/smoke/agent-time-tag.mjs` serves this checkout's actual SPA with
+hermetic API fixtures and the real SSE handler, at 1440 and 390 pixels in
+America/Los_Angeles. It covers cold/replay equivalence; Codex/Qwen buffer
+contracts; first-valid, null/invalid and session-anchor cases; adjacent replies;
+date/tool/card boundaries; unchanged buffers; search highlighting; native
+select/copy/paste; stable streaming tags; rollover full-buffer loading; tagged
+draft expand/collapse; hidden plans; Mermaid source preservation; file/image/
+browser markers; table repaints; question-card DOM deduplication and boundaries;
+overflow and browser exceptions. Codex/Qwen coverage uses their shared frontend
+buffer contract, not new provider processes or an authenticated transcript read.
+The real `openConversation` reconstruction fetch is also exercised against a
+hermetic session-reconstruct response carrying the original per-line timestamps.
+There is no copy-message button in this base checkout; the smoke verifies native
+copy/paste of a complete tagged bubble and both text extraction properties.
+
+Screenshots, inspected at both widths:
+`_scratch/agent_time_tag/chat-1440.png`,
+`_scratch/agent_time_tag/chat-390.png`.
+
+| Command | Final rc |
+| --- | --- |
+| `node tools/smoke/agent-time-tag.mjs` | 0 |
+| `node tools/smoke/prompt-time-tag.mjs` | 0 |
+| `node tools/smoke/boot-smoke.mjs` | 0 |
+| `node tools/smoke/stop-hook-draft-collapse.mjs` | 0 |
+| `node tools/smoke/chat-fork-guard.mjs` | 0 |
+| `node tools/smoke/codex-resume-render.mjs` | 0 |
+| `node tools/smoke/chat-date-dividers.mjs` | 0 |
+| `node tools/smoke/codex-preamble-dim.mjs` | 0 |
+| `node tools/smoke/agent-stream-dedupe.mjs` | 0 |
+| `node tools/smoke/chat-rollover-load-earlier.mjs` | 0 |
+| `node tools/smoke/denied-chip.mjs` | 0 |
+| `node tools/smoke/chat-text-selection.mjs` | 0 (Chromium + WebKit) |
+
+`node --check` on the new module, conversation.js and the new smoke, plus
+`git diff --check`, return 0. The prompt smoke initially failed because its
+bounds assertion assumed every `<time>` belonged to a prompt; it now selects
+prompt tags explicitly and passes. The expanded agent smoke initially compared
+a growing table's entire text to its pre-append text; comparing time metadata
+while separately asserting the new row fixes that harness error.
+
+Changed files: `static/js/agent-time-tag.js`, `static/js/conversation.js`,
+`static/css/app.css`, `tools/smoke/agent-time-tag.mjs`,
+`tools/smoke/prompt-time-tag.mjs`, `docs/PROMPT_TIME_TAGS.md`,
+`docs/USER_GUIDE.md`, `CHANGELOG.md`.
+
+USER_GUIDE and CHANGELOG are updated. README, architecture and agent rules need
+no change for this display-only behavior. The existing shared clock style stays
+in app.css; all new grouping logic is in its own module. Revert this commit to
+remove the feature; no data migration is required. Dave owns integration and
+live acceptance after a hard reload. The unattended fence refused the requested
+global `~/.claude/plans/` write; the plan is recorded here: inspect existing
+renderers, implement shared run metadata, verify the rendering matrix, document,
+then commit only this branch. No permission or ownership gates changed.
+
+## Earlier user-prompt implementation
+
 Branch candidate based on `ded084e54b6c24d807adf09f1c45eff263deedd1`,
 `clayrune/agent/cc916b5c34f1`. No merge, push, server restart or live config change.
 
