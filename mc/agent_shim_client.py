@@ -435,9 +435,12 @@ class LogTail:
     unterminated bytes are then yielded as the last line. `offset` is the byte
     position just past the last line yielded: the checkpoint value.
 
-    Decoding matches the existing Popen sites: UTF-8, errors='replace'. A
-    multi-byte character split across reads is safe because lines are cut on
-    b'\\n' (never inside a UTF-8 sequence) before decoding."""
+    Decoding matches the existing Popen sites: UTF-8, errors='replace', and
+    universal newlines: "\n", "\r\n" and a lone "\r" each end a line, and the
+    yielded line ends "\n" whatever the CLI wrote (a Windows CLI writes
+    "\r\n"; Popen(text=True) hands the reader "\n"). A multi-byte character
+    split across reads is safe because lines are cut on b'\n' / b'\r' (never
+    inside a UTF-8 sequence) before decoding."""
 
     def __init__(self, path: Any, *, offset: int = 0,
                  finished: Callable[[], bool] = lambda: True, poll_s: float = 0.05):
@@ -454,13 +457,41 @@ class LogTail:
     def __iter__(self) -> Iterator[str]:
         return self
 
+    def _cut(self, final: bool) -> Optional[bytes]:
+        """One complete line (terminator included) off the front of the buffer,
+        or None. A "\r" that is the last byte is held back, since it may be the
+        first half of "\r\n", unless `final`."""
+        buf = self._buf
+        for i, b in enumerate(buf):
+            if b == 10:
+                end = i + 1
+            elif b == 13:
+                if i + 1 < len(buf):
+                    end = i + 2 if buf[i + 1] == 10 else i + 1
+                elif final:
+                    end = i + 1
+                else:
+                    return None
+            else:
+                continue
+            self._buf = buf[end:]
+            return buf[:end]
+        return None
+
+    def _line(self, raw: bytes) -> str:
+        self.offset += len(raw)
+        text = raw.decode('utf-8', 'replace')
+        if text.endswith('\r\n'):
+            return text[:-2] + '\n'
+        if text.endswith('\r'):
+            return text[:-1] + '\n'
+        return text
+
     def __next__(self) -> str:
         while True:
-            nl = self._buf.find(b'\n')
-            if nl >= 0:
-                raw, self._buf = self._buf[:nl + 1], self._buf[nl + 1:]
-                self.offset += len(raw)
-                return raw.decode('utf-8', 'replace')
+            raw = self._cut(final=False)
+            if raw is not None:
+                return self._line(raw)
             if self._closed:
                 raise StopIteration
             done = self._finished()                    # sample BEFORE the read: no lost tail
@@ -470,9 +501,10 @@ class LogTail:
                 continue
             if done:
                 if self._buf:
-                    raw, self._buf = self._buf, b''
-                    self.offset += len(raw)
-                    return raw.decode('utf-8', 'replace')
+                    raw = self._cut(final=True)
+                    if raw is None:
+                        raw, self._buf = self._buf, b''
+                    return self._line(raw)
                 raise StopIteration
             time.sleep(self._poll)
 
@@ -553,6 +585,8 @@ class ShimProc:
         self._cli_ct = self.manifest.get('cli_ct')
         self._shim_ct = self.manifest.get('shim_ct')
         self._client = client
+        self.args: Any = None                          # Popen.args: set by the factory
+        self.stderr = None                             # merged into stdout, as stderr=STDOUT does
         self.returncode: Optional[int] = None
         self.exit_inferred = False
         self.stdout = LogTail(self.dir / 'out.log', offset=start_offset,
@@ -684,13 +718,16 @@ def launch(root: Any, session_id: str, *, argv: List[str], cwd: Optional[str],
            prompt: Optional[bytes] = None, cfg: Optional[Mapping[str, Any]] = None,
            tick_s: float = 5.0, ready_timeout: float = 20.0,
            owner_pid: Optional[int] = None,
-           log: Optional[Callable[[str], None]] = None) -> LaunchResult:
+           log: Optional[Callable[[str], None]] = None,
+           start_offset: int = 0) -> LaunchResult:
     """Spec -> detached spawn -> wait for the manifest -> attach. `ok=False`
     means no CLI is running under a shim and the caller falls back to its
     ordinary spawn (the session stays non-adoptable, as today) -- unless
     `cli_running` is set, in which case a teardown failed and the caller must
     not fall back. A shim that started but could not be attached is torn down
-    before `ok=False` is returned, so the fallback never doubles the CLI."""
+    before `ok=False` is returned, so the fallback never doubles the CLI.
+    `start_offset` is where the returned proc's `.stdout` begins in out.log
+    (append-only across turns, so a later turn skips the earlier ones)."""
     sdir = session_dir(root, session_id)
     env_map = dict(env) if env is not None else dict(os.environ)
     spec = build_spec(argv=argv, cwd=cwd, mode=mode, session_id=session_id, engine=engine,
@@ -736,4 +773,4 @@ def launch(root: Any, session_id: str, *, argv: List[str], cwd: Optional[str],
                           f'started shim torn down={gone}')
             return LaunchResult(False, sp.branch, spec=spec, cli_running=not gone,
                                 error=f'connect: {e}' + ('' if gone else ' (teardown incomplete: CLI/shim still alive)'))
-    return LaunchResult(True, sp.branch, proc=ShimProc(sdir, client=client), spec=spec)
+    return LaunchResult(True, sp.branch, proc=ShimProc(sdir, client=client, start_offset=start_offset), spec=spec)
