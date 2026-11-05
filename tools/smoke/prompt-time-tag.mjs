@@ -178,7 +178,7 @@ try {
     await page.waitForTimeout(150);
     const bounds = await out.evaluate(el => ({
       width: el.clientWidth, scroll: el.scrollWidth,
-      tags: [...el.querySelectorAll('time')].every(t => {
+      tags: [...el.querySelectorAll('.agent-line-prompt time')].every(t => {
         const r = t.getBoundingClientRect(), b = t.closest('.agent-line-prompt').getBoundingClientRect();
         return r.left >= b.left && r.right <= b.right && r.width > 0;
       }),

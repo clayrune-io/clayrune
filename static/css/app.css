@@ -4571,7 +4571,8 @@
     max-width: 84%;
     white-space: pre-wrap;
   }
-  .agent-line-prompt .prompt-time-tag {
+  .agent-line-prompt .prompt-time-tag,
+  .agent-time-tag {
     display: block;
     margin-top: 3px;
     text-align: right;
@@ -4582,6 +4583,8 @@
     white-space: nowrap;
     opacity: 0.7;
   }
+  .agent-time-tag { user-select: none; -webkit-user-select: none; }
+  .agent-time-tag::after { content: attr(data-label); }
   /* MC-957 Entry B: hover-reveal "Brainstorm this" icon at the end of a user
      bubble's own text — inline rather than a separate overlay so it never
      shifts the bubble's flex layout or its :not(.agent-line-prompt) siblings. */
