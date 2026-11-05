@@ -175,20 +175,47 @@ def test_a_live_previous_shim_in_the_session_falls_back_to_popen(root, tracker, 
     a.kill()
 
 
-def test_a_failed_shim_launch_falls_back_to_popen_and_redelivers(root, monkeypatch):
+def test_a_failed_shim_launch_falls_back_to_popen_and_writes_the_captured_prompt(root, monkeypatch):
     _on(True)
     _Popen.calls = []
     monkeypatch.setattr(S.subprocess, 'Popen', _Popen)
     monkeypatch.setattr(C, 'launch', lambda *a, **k: C.LaunchResult(False, 'x', error='no breakaway'))
-    got = []
+    got, after_close = [], []
 
     def deliver(h):
         got.append(type(h.stdin).__name__)
         h.stdin.write('prompt')
         h.stdin.close()
+        after_close.append(True)                                    # only reached if close() returned
     p = S.spawn_engine_proc(['x'], session_id='fb1', engine='codex', deliver=deliver)
     assert isinstance(p, _Popen) and len(_Popen.calls) == 1
-    assert got[0] == '_CaptureStdin' and len(got) == 2              # captured once, then to the real pipe
+    assert _Popen.calls[0][1]['stdin'] == subprocess.PIPE
+    assert wait_for(lambda: after_close, timeout=5)
+    # Captured once and written to the fallback pipe; the delivery code is not run again.
+    assert got == ['_CaptureStdin']
+    p.stdin.buffer.write.assert_called_once_with(b'prompt')
+    p.stdin.close.assert_called_once()
+
+
+def test_a_fallback_pipe_that_rejects_the_prompt_fails_the_delivery(root, monkeypatch):
+    _on(True)
+
+    class _Broken(_Popen):
+        def __init__(self, cmd, **kw):
+            super().__init__(cmd, **kw)
+            self.stdin.buffer.write.side_effect = BrokenPipeError('gone')
+    monkeypatch.setattr(S.subprocess, 'Popen', _Broken)
+    monkeypatch.setattr(C, 'launch', lambda *a, **k: C.LaunchResult(False, 'x', error='no breakaway'))
+    seen = []
+
+    def deliver(h):
+        h.stdin.write('prompt')
+        try:
+            h.stdin.close()
+        except BrokenPipeError as e:
+            seen.append(e)
+    S.spawn_engine_proc(['x'], session_id='fb3', engine='codex', deliver=deliver)
+    assert wait_for(lambda: seen, timeout=5)
 
 
 def test_a_teardown_that_left_a_cli_possibly_running_refuses_to_start_another(root, monkeypatch):
@@ -212,6 +239,7 @@ def test_capture_stdin_behaves_like_a_text_mode_popen_pipe():
     cap = S._CaptureStdin()
     assert not cap.closed
     cap.write('a\nb é')
+    cap.settle(True)                                                # close() waits for the outcome
     cap.close()
     assert cap.closed and cap.done.is_set()
     assert cap.payload() == ('a' + os.linesep + 'b é').encode('utf-8')

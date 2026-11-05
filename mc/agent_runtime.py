@@ -71,7 +71,7 @@ from mc.guardrail_hooks import codex_fence_self_test as _codex_fence_self_test
 from mc.guardrail_hooks import hooks_dir as _guardrail_hooks_dir
 from mc import proc_kill as _proc_kill
 from mc.proc_kill import POPEN_NEW_SESSION
-from mc.agent_spawn import spawn_engine_proc  # MC-1150 P2: the one Mode A spawn factory
+from mc.agent_spawn import finish_delivery, spawn_engine_proc  # MC-1150 P2: the one Mode A spawn factory
 
 # Per-vendor env var each CLI resolves fresh per invocation for a per-launch
 # settings override — verified additive with the user's own config (not a
@@ -4789,7 +4789,10 @@ class GeminiRuntime(AgentRuntime):
         proc = spawn_engine_proc(
             cmd, session_id=mc_sid, engine=self.name, cwd=project_path, env=env,
             deliver=lambda p: self._write_prompt_async(
-                p, full_prompt, mc_sid, session=session_dict, context=slim_prompt))
+                p, full_prompt, mc_sid, session=session_dict, context=slim_prompt),
+            # A prompt-delivery failure is logged into session_dict['log_lines'];
+            # start it only after the update below has installed that list.
+            defer_delivery=True)
         session_dict.update({
             'proc': proc,
             'status': 'running',
@@ -4816,6 +4819,7 @@ class GeminiRuntime(AgentRuntime):
             # this fix closes only for the FIRST turn.
             '_mcp_config_json': mcp_config_json,
         })
+        finish_delivery(proc)
 
         handle = SessionHandle(
             mc_session_id=mc_sid,
