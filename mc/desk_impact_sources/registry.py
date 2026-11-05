@@ -1,15 +1,14 @@
 """Source registry (MC-1152 P1, DARK): data, not implementations.
 
-Maps a source id to its adapter. P1 ships it EMPTY: the GitHub adapter arrives
-in P3 and each analytics provider after that (spec section 12), each as its own
-module imported here. Until then no definition can be saved against a real
-source, which is the point of "dark".
+Maps a source id to its adapter. GitHub is metadata-only in P3: no connection
+resolver, route or scheduled collection is enabled.
 
 Importing this module performs no collection and no network call.
 """
 from __future__ import annotations
 
 from mc.desk_impact_sources.base import SourceAdapter
+from mc.desk_impact_sources.github import GitHubSource
 
 
 class UnknownSource(KeyError):
@@ -41,3 +40,4 @@ class AdapterRegistry:
 # The process-wide registry. P3 registers `github` here; P5 the analytics
 # providers. Each registration is one import line and one `register` call.
 REGISTRY = AdapterRegistry()
+REGISTRY.register(GitHubSource())

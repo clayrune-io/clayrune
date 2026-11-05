@@ -1,0 +1,13 @@
+tests/test_desk_impact_github.py
+tests/test_desk_impact_collect.py
+tests/test_desk_impact_compare.py
+tests/test_desk_impact_github_transport.py
+tests/test_desk_impact_schema_sources.py
+tests/test_desk_impact_store.py
+tests/test_desk_impact_binding.py
+tests/test_desk_engagement.py
+tests/test_desk_engagement_pane.py
+tests/test_desk_engagement_pane_digest.py
+tests/test_desk_engagement_targets.py
+tests/test_desk_engagement_permission_execution.py
+tests/test_desk_spend_guard.py

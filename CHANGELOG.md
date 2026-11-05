@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-05] - Preserve GitHub repository context without invented channel credit (MC-1152 P3, dark)
+
+- Added the GitHub impact adapter, bounded read-only vault transport, shared collection/cache and local comparison projection over the P1 store. Traffic/referrers keep native windows; stars require full pagination; asset counters require compatible baselines and preserve deletion/reset/downtime gaps.
+- Overlapping campaigns reference shared snapshots; channel conversions remain not attributable. Existing engagement reads, consent, paid budgets and manual Goals stay intact. Branch candidate only: no route, UI, scheduler, live read, connection activation, merge, push or restart. Evidence and exact checks: `docs/desk_v1/CHANNEL_IMPACT_P3.md`.
+
 ## [2026-11-04] - Keep Windows path guards correct during directory creation (MC-1158)
 
 - Resolved containment now compares ordinary and extended Windows drive/UNC paths in one namespace, preventing concurrent directory creation from incorrectly reporting an inside path as outside. Filesystem resolution and symlink checks remain; resolution errors return False with a warning.
