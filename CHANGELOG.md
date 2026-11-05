@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-05] - Observe enrolled job logs without blocking completion indefinitely (MC-1148 P2, dark)
+
+- Added opt-in bounded log capture with incremental UTF-8 decoding, source-reset diagnostics and coalesced output heartbeats. Existing jobs stay unenrolled; suppressed direct argv output remains suppressed. Raw output never enters test-run telemetry.
+- Completion waits up to 2 seconds for final capture, then delivers the unchanged job result; late capture continues to its real exit verdict. Internal contract and checks: `docs/TEST_RUN_CAPTURE.md`. No route, launcher, reporter, UI, merge, push or restart.
+
 ## [2026-11-05] - Preserve GitHub repository context without invented channel credit (MC-1152 P3, dark)
 
 - Added the GitHub impact adapter, bounded read-only vault transport, shared collection/cache and local comparison projection over the P1 store. Traffic/referrers keep native windows; stars require full pagination; asset counters require compatible baselines and preserve deletion/reset/downtime gaps.

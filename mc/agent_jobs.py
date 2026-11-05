@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from mc.core import _log
+from mc.test_run_capture import RunCapture, finish_capture, start_capture
 
 # Matches background_tasks.DEFAULT_WAIT_MAX_MINUTES -- the existing cap for
 # "how long may a spawner wait on a background job before Clayrune reports
@@ -164,6 +165,7 @@ def start_job(*, project_id: str, session_id: str, command: str, cwd: str,
               on_complete: Optional[Callable[[Dict[str, Any]], None]] = None,
               popen: Callable[..., subprocess.Popen] = subprocess.Popen,
               direct_argv: Optional[List[str]] = None,
+              capture: Optional[RunCapture] = None,
               ) -> Dict[str, Any]:
     """Start `command` as a subprocess, log its output, watch for exit.
 
@@ -181,6 +183,10 @@ def start_job(*, project_id: str, session_id: str, command: str, cwd: str,
     project_id, session_id, pid, command, cwd, shell, shell_note, exit_code,
     timed_out, duration_s, log_path, tail) so the callback never needs to
     reach back into this module's own state.
+
+    `capture` is an internal opt-in for an already enrolled test run. Its
+    worker observes the existing log; completion waits at most the capture
+    module's final-drain window. The callback/result stay job-owned.
     """
     # Internal runner integration only; the HTTP job route does not accept this
     # argument. No interpreter, argument rendering or child output enters logs.
@@ -224,6 +230,8 @@ def start_job(*, project_id: str, session_id: str, command: str, cwd: str,
     with _lock:
         _jobs[job_id] = job
 
+    observer = start_capture(capture, log_path, suppressed=direct_argv is not None)
+
     def _watch():
         timeout_s = max(0.0, float(timeout_minutes) * 60)
         timed_out = False
@@ -264,6 +272,7 @@ def start_job(*, project_id: str, session_id: str, command: str, cwd: str,
             'duration_s': finished - started, 'log_path': str(log_path),
             'tail': _tail(log_path),
         }
+        finish_capture(observer, exit_code=exit_code, timed_out=timed_out, observed_at=finished)
         if on_complete is not None:
             try:
                 on_complete(result)

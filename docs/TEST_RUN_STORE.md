@@ -136,7 +136,10 @@ Every access verifies replay; every accepted update rewrites one envelope.
 Replay is linear in retained events plus phase details. Whole-record I/O grows
 with history; batching/compaction and high-volume measurements remain an
 integration consideration before enabling capture for large suites. No
-throughput claim is established by the focused correctness tests.
+throughput claim is established by the focused correctness tests. Phase 2's
+`TEST_RUN_CAPTURE.md` bounds log reads and coalesces output heartbeats before
+using this API; the store format and per-event append behavior remain unchanged.
+Structured reporter ingestion/batch persistence is still a later concern.
 
 Authorization, producer receipts, timestamp provenance, owner attribution,
 reporter adaptation and process evidence verification belong to later phases.
