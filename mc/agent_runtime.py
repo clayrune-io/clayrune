@@ -71,6 +71,7 @@ from mc.guardrail_hooks import codex_fence_self_test as _codex_fence_self_test
 from mc.guardrail_hooks import hooks_dir as _guardrail_hooks_dir
 from mc import proc_kill as _proc_kill
 from mc.proc_kill import POPEN_NEW_SESSION
+from mc.agent_spawn import spawn_engine_proc  # MC-1150 P2: the one Mode A spawn factory
 
 # Per-vendor env var each CLI resolves fresh per invocation for a per-launch
 # settings override — verified additive with the user's own config (not a
@@ -4783,21 +4784,12 @@ class GeminiRuntime(AgentRuntime):
         _inject_gemini_env(env, mcp_config_json)
 
         vendor_fence.prepare_env(self.name, session_dict, env, binary=bin_path, cwd=project_path)
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            cwd=project_path,
-            text=True,
-            encoding='utf-8',
-            errors='replace',
-            env=env,
-            creationflags=_POPEN_FLAGS,
-            startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-        )
         if session_dict is None:
             session_dict = {}
+        proc = spawn_engine_proc(
+            cmd, session_id=mc_sid, engine=self.name, cwd=project_path, env=env,
+            deliver=lambda p: self._write_prompt_async(
+                p, full_prompt, mc_sid, session=session_dict, context=slim_prompt))
         session_dict.update({
             'proc': proc,
             'status': 'running',
@@ -4824,8 +4816,6 @@ class GeminiRuntime(AgentRuntime):
             # this fix closes only for the FIRST turn.
             '_mcp_config_json': mcp_config_json,
         })
-        self._write_prompt_async(proc, full_prompt, mc_sid,
-                                 session=session_dict, context=slim_prompt)
 
         handle = SessionHandle(
             mc_session_id=mc_sid,
@@ -5273,21 +5263,11 @@ class GeminiRuntime(AgentRuntime):
         env = vendor_fence.prepare_env(
             self.name, session, _inject_gemini_env(os.environ.copy(), _mcp_json),
             binary=bin_path, cwd=handle.project_path)
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            cwd=handle.project_path,
-            text=True,
-            encoding='utf-8',
-            errors='replace',
-            env=env,
-            creationflags=_POPEN_FLAGS,
-            startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-        )
-        self._write_prompt_async(proc, full_prompt, handle.mc_session_id,
-                                 session=session, context=context)
+        proc = spawn_engine_proc(
+            cmd, session_id=handle.mc_session_id, engine=self.name,
+            cwd=handle.project_path, env=env,
+            deliver=lambda p: self._write_prompt_async(
+                p, full_prompt, handle.mc_session_id, session=session, context=context))
         session['proc'] = proc
         session['status'] = 'running'
         session['process_alive'] = True
@@ -5498,34 +5478,24 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
     vendor_fence.prepare_env(
         runtime.name, session_dict, env, binary=Path(cmd[0]), cwd=project_path)
     cmd = vendor_fence.prepare_command(runtime.name, session_dict, cmd, project_path, env)
-    proc = subprocess.Popen(
-        cmd,
-        stdin=subprocess.PIPE if prompt_via_stdin else subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        cwd=project_path,
-        text=True,
-        encoding='utf-8',
-        errors='replace',
-        env=env,
-        creationflags=_POPEN_FLAGS,
-        startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-    )
-
-    if prompt_via_stdin:
+    def _deliver(p: Any) -> None:
         def _send() -> None:
             if runtime.name in ('codex', 'qwen'):
                 from mc.resume_context import write_context_prompt
-                write_context_prompt(proc.stdin, full_prompt, session_dict, system_prompt)
+                write_context_prompt(p.stdin, full_prompt, session_dict, system_prompt)
                 return
             try:
-                if proc.stdin:
-                    proc.stdin.write(full_prompt)
-                    proc.stdin.close()
+                if p.stdin:
+                    p.stdin.write(full_prompt)
+                    p.stdin.close()
             except Exception as exc:
                 _log(f'[runtime:{runtime.name}] stdin delivery failed: {exc}', flush=True)
         threading.Thread(target=_send, daemon=True,
                          name=f'{runtime.name}-stdin-{mc_session_id[:8]}').start()
+
+    proc = spawn_engine_proc(
+        cmd, session_id=mc_session_id, engine=runtime.name, cwd=project_path, env=env,
+        deliver=_deliver if prompt_via_stdin else None)
 
     session_dict.update({
         'proc': proc,
@@ -7721,22 +7691,14 @@ class QwenRuntime(AgentRuntime):
         apply_env('qwen', session.get('trigger_type'), env, state.CONFIG)
         vendor_fence.prepare_env(
             self.name, session, env, binary=self.resolve_binary(), cwd=handle.project_path)
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            cwd=handle.project_path,
-            text=True, encoding='utf-8', errors='replace',
-            env=env,
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-        )
-
-        def _send() -> None:
+        def _send(p: Any) -> None:
             from mc.resume_context import write_context_prompt
-            write_context_prompt(proc.stdin, full_prompt, session, context)
-        threading.Thread(target=_send, daemon=True,
-                         name=f'qwen-stdin-{mc_sid[:8]}').start()
+            write_context_prompt(p.stdin, full_prompt, session, context)
+        proc = spawn_engine_proc(
+            cmd, session_id=mc_sid, engine=self.name, cwd=handle.project_path, env=env,
+            deliver=lambda p: threading.Thread(
+                target=_send, args=(p,), daemon=True,
+                name=f'qwen-stdin-{mc_sid[:8]}').start())
         session['proc'] = proc
         session['status'] = 'running'
         session['process_alive'] = True
@@ -9700,23 +9662,16 @@ class CodexRuntime(AgentRuntime):
         cmd, env = session_mcp_launch.prepare(
             self.name, cmd, session=session, cwd=handle.project_path)
         vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            cwd=handle.project_path, env=env,
-            text=True, encoding='utf-8', errors='replace',
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-        )
-
         context = session.get('_system_prompt') or ''
 
-        def _send() -> None:
+        def _send(p: Any) -> None:
             from mc.resume_context import write_context_prompt
-            write_context_prompt(proc.stdin, full_prompt, session, context)
-        threading.Thread(target=_send, daemon=True,
-                         name=f'codex-stdin-{mc_sid[:8]}').start()
+            write_context_prompt(p.stdin, full_prompt, session, context)
+        proc = spawn_engine_proc(
+            cmd, session_id=mc_sid, engine=self.name, cwd=handle.project_path, env=env,
+            deliver=lambda p: threading.Thread(
+                target=_send, args=(p,), daemon=True,
+                name=f'codex-stdin-{mc_sid[:8]}').start())
         session['proc'] = proc
         session['status'] = 'running'
         session['process_alive'] = True
@@ -10292,22 +10247,18 @@ class OpenCodeRuntime(AgentRuntime):
             self.name, cmd, session=session, cwd=handle.project_path, prompt=full_prompt)
         vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
         mc_sid = handle.mc_session_id
-        proc = subprocess.Popen(
-            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, cwd=handle.project_path, env=env,
-            text=True, encoding='utf-8', errors='replace',
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-        )
-
-        def _send() -> None:
+        def _send(p: Any) -> None:
             try:
-                if proc.stdin:
-                    proc.stdin.write(full_prompt)
-                    proc.stdin.close()
+                if p.stdin:
+                    p.stdin.write(full_prompt)
+                    p.stdin.close()
             except Exception as exc:
                 _log(f'[runtime:opencode] stdin delivery failed: {exc}', flush=True)
-        threading.Thread(target=_send, daemon=True,
-                         name=f'opencode-stdin-{mc_sid[:8]}').start()
+        proc = spawn_engine_proc(
+            cmd, session_id=mc_sid, engine=self.name, cwd=handle.project_path, env=env,
+            deliver=lambda p: threading.Thread(
+                target=_send, args=(p,), daemon=True,
+                name=f'opencode-stdin-{mc_sid[:8]}').start())
 
         session['proc'] = proc
         session['status'] = 'running'
@@ -10658,22 +10609,18 @@ class GooseRuntime(AgentRuntime):
         if '--recipe' not in cmd:
             cmd.extend(['--instructions', '-'])
         mc_sid = handle.mc_session_id
-        proc = subprocess.Popen(
-            cmd, stdin=subprocess.DEVNULL if '--recipe' in cmd else subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, cwd=handle.project_path, env=env,
-            text=True, encoding='utf-8', errors='replace',
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-        )
-
-        def _send() -> None:
+        def _send(p: Any) -> None:
             try:
-                if proc.stdin:
-                    proc.stdin.write(full_prompt)
-                    proc.stdin.close()
+                if p.stdin:
+                    p.stdin.write(full_prompt)
+                    p.stdin.close()
             except Exception as exc:
                 _log(f'[runtime:goose] stdin delivery failed: {exc}', flush=True)
-        threading.Thread(target=_send, daemon=True,
-                         name=f'goose-stdin-{mc_sid[:8]}').start()
+        proc = spawn_engine_proc(
+            cmd, session_id=mc_sid, engine=self.name, cwd=handle.project_path, env=env,
+            deliver=None if '--recipe' in cmd else lambda p: threading.Thread(
+                target=_send, args=(p,), daemon=True,
+                name=f'goose-stdin-{mc_sid[:8]}').start())
 
         session['proc'] = proc
         session['status'] = 'running'
@@ -10982,12 +10929,8 @@ class AiderRuntime(AgentRuntime):
         env = os.environ.copy()
         vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
         cmd = vendor_fence.prepare_command(self.name, session, cmd, handle.project_path, env)
-        proc = subprocess.Popen(
-            cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, cwd=handle.project_path, env=env,
-            text=True, encoding='utf-8', errors='replace',
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-        )
+        proc = spawn_engine_proc(
+            cmd, session_id=mc_sid, engine=self.name, cwd=handle.project_path, env=env)
         session['proc'] = proc
         session['status'] = 'running'
         session['process_alive'] = True
@@ -11313,12 +11256,8 @@ class KiroRuntime(AgentRuntime):
         cmd.append(full_prompt)
         _guard_win_argv_length(cmd, "Kiro's prompt (persona + task)")
         mc_sid = handle.mc_session_id
-        proc = subprocess.Popen(
-            cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, cwd=handle.project_path, env=env,
-            text=True, encoding='utf-8', errors='replace',
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-        )
+        proc = spawn_engine_proc(
+            cmd, session_id=mc_sid, engine=self.name, cwd=handle.project_path, env=env)
         session['proc'] = proc
         session['status'] = 'running'
         session['process_alive'] = True

@@ -93,7 +93,11 @@ def _popen_sites(path):
 
         def visit_Call(self, n):
             f = n.func
-            if isinstance(f, ast.Attribute) and f.attr == 'Popen':
+            # MC-1150 P2: the Claude `-p` Mode A sites spawn through
+            # mc.agent_spawn.spawn_engine_proc (same env=/cwd= keywords, flag OFF
+            # = the same Popen), so that call is a spawn site exactly as Popen is.
+            if ((isinstance(f, ast.Attribute) and f.attr == 'Popen')
+                    or (isinstance(f, ast.Name) and f.id == 'spawn_engine_proc')):
                 env = next((k.value for k in n.keywords if k.arg == 'env'), None)
                 marked = (isinstance(env, ast.Call)
                           and isinstance(env.func, ast.Attribute)

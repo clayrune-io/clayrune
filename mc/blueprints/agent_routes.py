@@ -60,6 +60,7 @@ from mc import provider_preferences as _provider_preferences
 from mc import provider_env_scope as _provider_env_scope  # saved keys stay with their provider
 from mc import launch_marker as _launch_marker  # per-launch unattended marker (fence fail-open, MC-1040)
 from mc import proc_kill as _proc_kill
+from mc.agent_spawn import spawn_engine_proc  # MC-1150 P2: Mode A spawn factory (flag OFF = plain Popen)
 from mc.proc_kill import POPEN_NEW_SESSION
 from mc.runtime_attempt_owner import DispatchFacts
 from mc.unix_path import augment_unix_path
@@ -6640,14 +6641,9 @@ def _auto_recover_failed_resume(session):
                    character_skills=_session_skills(p, session)),
                    *_sp_args]
             cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), pp)
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, cwd=pp,
-                text=True, encoding='utf-8', errors='replace',
-                env=_launch_marker.launch_env(session.get('trigger_type')),
-                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-            )
+            proc = spawn_engine_proc(
+                cmd, session_id=session.get('session_id'), engine='claude', cwd=pp,
+                env=_launch_marker.launch_env(session.get('trigger_type')))
             _sysprompt_cleanup(_sp_path, proc)
             threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
             _register_process(proc, 'Agent (Mode A, fresh retry)', 'agent',
@@ -7852,14 +7848,9 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                                 character_skills=_revive_char_skills), *_sp_args]
     try:
         cmd = _launch_marker.launch_cmd(cmd, entry.get('trigger_type'), _revive_cwd)
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, cwd=_revive_cwd,
-            text=True, encoding='utf-8', errors='replace',
-            env=_launch_marker.launch_env(entry.get('trigger_type')),
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-        )
+        proc = spawn_engine_proc(
+            cmd, session_id=session_id, engine='claude', cwd=_revive_cwd,
+            env=_launch_marker.launch_env(entry.get('trigger_type')))
     except Exception as e:
         _log(f"[revive] {project_id}: spawn failed: {e}")
         if _sp_path:
@@ -10051,19 +10042,10 @@ def _auto_dispatch_followup(session, message):
 
     try:
         cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _session_cwd(session, pp))
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+        proc = spawn_engine_proc(
+            cmd, session_id=session.get('session_id'), engine='claude',
             cwd=_session_cwd(session, pp),
-            text=True,
-            encoding='utf-8',
-            errors='replace',
-            creationflags=_POPEN_FLAGS,
-            env=_launch_marker.launch_env(session.get('trigger_type')),
-            startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-        )
+            env=_launch_marker.launch_env(session.get('trigger_type')))
     except Exception as e:
         session['log_lines'].append(f'[follow-up failed: {e}]')
         if _sp_path:
@@ -12518,19 +12500,10 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 cmd = [_resolve_claude(), '-p', _clock_task, *base_flags, *_sp_args]
 
             cmd = _launch_marker.launch_cmd(cmd, trigger_type, _agent_cwd)
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+            proc = spawn_engine_proc(
+                cmd, session_id=session_id, engine='claude',
                 cwd=_agent_cwd,  # worktree when isolated, else pp
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                creationflags=_POPEN_FLAGS,
-                env=_launch_marker.launch_env(trigger_type),
-                startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-            )
+                env=_launch_marker.launch_env(trigger_type))
             _sysprompt_cleanup(_sp_path, proc)
 
             threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
@@ -14203,19 +14176,10 @@ def agent_followup(project_id):
                 _sp_args, _sp_path = _sysprompt_file_args(context)
             cmd.extend(_sp_args)
             cmd = _launch_marker.launch_cmd(cmd, existing.get('trigger_type'), _session_cwd(existing, pp))
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+            proc = spawn_engine_proc(
+                cmd, session_id=session_id, engine='claude',
                 cwd=_session_cwd(existing, pp),
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                creationflags=_POPEN_FLAGS,
-                env=_launch_marker.launch_env(existing.get('trigger_type')),
-                startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-            )
+                env=_launch_marker.launch_env(existing.get('trigger_type')))
             _sysprompt_cleanup(_sp_path, proc)
             threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
             old_proc = existing.get('proc')
