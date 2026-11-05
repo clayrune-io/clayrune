@@ -306,14 +306,27 @@ def path_is_within(candidate, base) -> bool:
     """True if `candidate` IS `base` or lives anywhere under it, comparing
     fully-resolved paths (so `..`, symlinks and case (Windows) can't dodge the
     check). Both accept str or Path. Returns False on any resolution error
-    (unreadable/malformed path) rather than raising — callers use this as a
-    safety gate, not a correctness assertion, so a path that can't even be
-    resolved is treated as "not inside", never as "block by default"."""
+    (unreadable/malformed path) rather than raising. This is a containment
+    predicate: callers blocking inside paths must account for that False-on-
+    error contract; it is not a universal fail-closed authorization check."""
     try:
         c = Path(candidate).resolve()
         b = Path(base).resolve()
-    except Exception:
+        if os.name == 'nt':
+            # During concurrent mkdir, Windows realpath can retain \\?\ on
+            # only one result (MC-1158). Compare in the extended namespace:
+            # adding its prefix to resolved DOS/UNC paths preserves special
+            # names; stripping it and resolving again can change their target.
+            paths = []
+            for path in (c, b):
+                value = str(path)
+                if len(path.drive) == 2 and path.drive[1] == ':':
+                    value = '\\\\?\\' + value
+                elif value.startswith('\\\\') and not value.startswith(('\\\\?\\', '\\\\.\\')):
+                    value = '\\\\?\\UNC\\' + value[2:]
+                paths.append(type(path)(value))
+            c, b = paths
+        return c.is_relative_to(b)
+    except Exception as e:
+        _log(f'[paths] containment resolution failed: {e}', level='warn')
         return False
-    if os.name == 'nt':
-        return str(c).lower() == str(b).lower() or str(c).lower().startswith(str(b).lower() + os.sep)
-    return c == b or str(c).startswith(str(b) + os.sep)

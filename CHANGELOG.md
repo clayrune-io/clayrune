@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-04] - Keep Windows path guards correct during directory creation (MC-1158)
+
+- Resolved containment now compares ordinary and extended Windows drive/UNC paths in one namespace, preventing concurrent directory creation from incorrectly reporting an inside path as outside. Filesystem resolution and symlink checks remain; resolution errors return False with a warning.
+- Added 44 containment/caller regressions and audited every caller. Evidence, existing error-policy limits and exact checks: `docs/PATH_CONTAINMENT_RACE.md`. Branch candidate only; no merge, push or restart. The MC-1151 store workaround remains unchanged.
+
 ## [2026-11-04] - Format operator email as HTML with a plain-text fallback
 
 - Shared operator mail now includes a styled HTML alternative, so workflow **Send email** reports show headings, lists and bordered zebra tables instead of raw Markdown. The original plain-text part is retained; all input is escaped and styles are inline.
