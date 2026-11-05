@@ -13,6 +13,7 @@ from typing import cast
 from urllib.request import Request, urlopen
 
 from mc import state, transform_sandbox, desk_dispatch
+from mc.atomic_json import write_json_atomic
 
 CONFIG_KEY = 'desk_research_enabled'
 TIMEOUT_SEC = 480
@@ -151,7 +152,7 @@ def run(provider: str, *, prompt: str, system_prompt: str, model: str, effort: s
     body = instruction + '\n\n=== UNTRUSTED TASK DATA ===\n' + stdin_text + '\n=== END DATA ===\n' + prompt + DATA_RULE
     with desk_dispatch.tool_session(turn) as token, tempfile.TemporaryDirectory(prefix='desk-research-') as tmp:
         settings = Path(tmp) / 'settings.json'
-        settings.write_text(json.dumps(_settings(root, bool(token))), encoding='utf-8')
+        write_json_atomic(settings, _settings(root, bool(token)))
         env = transform_sandbox.transform_env()
         mcp = None
         if token:
