@@ -66,4 +66,3 @@ export function stampAgentNarration(node, ts) {
   }
   stampRun(run);
 }
-
