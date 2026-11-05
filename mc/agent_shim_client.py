@@ -574,12 +574,18 @@ class ShimProc:
     what it means today; the shim is not in the CLI's tree."""
 
     def __init__(self, sdir: Any, *, client: Optional[ShimClient] = None,
-                 start_offset: int = 0, poll_s: float = 0.05):
+                 start_offset: int = 0, poll_s: float = 0.05,
+                 manifest: Optional[Mapping[str, Any]] = None):
         self.dir = Path(sdir)
-        st = inspect(self.dir)
-        if st is None:
-            raise ShimUnavailable('no shim manifest')
-        self.manifest = st.manifest
+        if manifest is not None:
+            # The manifest `wait_ready` matched to THIS launch. Rereading the
+            # directory could bind a previous shim's late rewrite instead.
+            self.manifest = dict(manifest)
+        else:
+            st = inspect(self.dir)
+            if st is None:
+                raise ShimUnavailable('no shim manifest')
+            self.manifest = st.manifest
         self.pid: int = int(self.manifest['cli_pid'])
         self.shim_pid: int = int(self.manifest['shim_pid'])
         self._cli_ct = self.manifest.get('cli_ct')
@@ -773,4 +779,5 @@ def launch(root: Any, session_id: str, *, argv: List[str], cwd: Optional[str],
                           f'started shim torn down={gone}')
             return LaunchResult(False, sp.branch, spec=spec, cli_running=not gone,
                                 error=f'connect: {e}' + ('' if gone else ' (teardown incomplete: CLI/shim still alive)'))
-    return LaunchResult(True, sp.branch, proc=ShimProc(sdir, client=client, start_offset=start_offset), spec=spec)
+    return LaunchResult(True, sp.branch, proc=ShimProc(sdir, client=client, start_offset=start_offset, manifest=m),
+                        spec=spec)

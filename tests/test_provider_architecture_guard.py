@@ -117,15 +117,26 @@ ALLOWLIST: tuple[AllowlistedException, ...] = (
     AllowlistedException("mc/blueprints/agent_routes.py", "_run_claude_auth_probe",
                          "inference-subprocess", 1, "agent-runtime owner",
                          "move Claude auth probing behind Runtime.auth_status"),
+    # MC-1150 P2: five of these launches (one per entry below that says
+    # spawn_engine_proc) now go through mc.agent_spawn.spawn_engine_proc. The factory
+    # is a spawn seam, not a provider-neutral API: each still builds a `claude -p`
+    # command here, so the scanner counts a spawn_engine_proc call like the Popen it
+    # replaced and the counts are what they were before P2.
     AllowlistedException("mc/blueprints/agent_routes.py", "_auto_recover_failed_resume",
-                         "inference-subprocess", 1, "agent-runtime owner",
+                         "inference-subprocess", 2, "agent-runtime owner",
                          "remove legacy Claude auto-recovery after generic resume is complete"),
     AllowlistedException("mc/blueprints/agent_routes.py", "_revive_from_agent_log",
-                         "inference-subprocess", 1, "agent-runtime owner",
+                         "inference-subprocess", 2, "agent-runtime owner",
                          "route cold revival through the durable provider-neutral lifecycle"),
-    AllowlistedException("mc/blueprints/agent_routes.py", "_dispatch_agent_internal",
+    AllowlistedException("mc/blueprints/agent_routes.py", "_auto_dispatch_followup",
                          "inference-subprocess", 1, "agent-runtime owner",
+                         "route follow-up turns through the provider runtime"),
+    AllowlistedException("mc/blueprints/agent_routes.py", "_dispatch_agent_internal",
+                         "inference-subprocess", 2, "agent-runtime owner",
                          "delete the legacy Claude dispatch path after runtime parity"),
+    AllowlistedException("mc/blueprints/agent_routes.py", "agent_followup._start_followup",
+                         "inference-subprocess", 1, "agent-runtime owner",
+                         "delete the legacy Claude follow-up path after runtime parity"),
     AllowlistedException("mc/blueprints/agent_routes.py", "agent_interrupt._do_respawn",
                          "inference-subprocess", 2, "agent-runtime owner",
                          "delete the legacy Claude interrupt respawn after runtime parity"),
@@ -171,6 +182,11 @@ class _Scanner(ast.NodeVisitor):
         self.tainted_names: set[str] = set()
         self.subprocess_modules = {'subprocess'}
         self.subprocess_functions: set[str] = set()
+        # MC-1150 P2: mc.agent_spawn.spawn_engine_proc is a Popen in every way
+        # this guard cares about -- names it was imported under, and modules
+        # it is reachable through.
+        self.spawn_functions: set[str] = set()
+        self.spawn_modules: set[str] = set()
         self.runtime_factories = {'get_runtime'}
         # Names bound to a concrete runtime: `rt = get_runtime('claude')`.
         self.runtime_names: set[str] = set()
@@ -196,6 +212,12 @@ class _Scanner(ast.NodeVisitor):
         if module == 'subprocess':
             self.subprocess_functions.update(alias.asname or alias.name for alias in node.names
                 if alias.name in {'Popen', 'run', 'call', 'check_output', 'check_call'})
+        if module in {'mc.agent_spawn', 'agent_spawn'}:
+            self.spawn_functions.update(alias.asname or alias.name for alias in node.names
+                                        if alias.name == 'spawn_engine_proc')
+        if module == 'mc':
+            self.spawn_modules.update(alias.asname or alias.name for alias in node.names
+                                      if alias.name == 'agent_spawn')
         if module in {"mc.agent_runtime", "agent_runtime"}:
             for alias in node.names:
                 if alias.name == 'get_runtime':
@@ -214,6 +236,8 @@ class _Scanner(ast.NodeVisitor):
         for alias in node.names:
             if alias.name == 'subprocess':
                 self.subprocess_modules.add(alias.asname or alias.name)
+            if alias.name in {'mc.agent_spawn', 'agent_spawn'}:
+                self.spawn_modules.add(alias.asname or alias.name)
             if alias.name in _RAW_VENDOR_MODULES:
                 self.findings.append(Finding(
                     self.path, node.lineno, self.function,
@@ -255,11 +279,15 @@ class _Scanner(ast.NodeVisitor):
                 and node.func.attr in {"Popen", "run", "call", "check_output", "check_call"})
         is_subprocess = is_subprocess or (isinstance(node.func, ast.Name)
                 and node.func.id in self.subprocess_functions)
-        if is_subprocess:
+        is_spawn = (isinstance(node.func, ast.Name) and node.func.id in self.spawn_functions) or (
+                isinstance(node.func, ast.Attribute) and node.func.attr == 'spawn_engine_proc'
+                and ast.unparse(node.func.value) in (self.spawn_modules | {'mc.agent_spawn'}))
+        if is_subprocess or is_spawn:
             provider_args = any(
                 (isinstance(arg, ast.Name) and arg.id in self.tainted_names)
                 or _text_has_provider(arg)
-                for arg in list(node.args) + [kw.value for kw in node.keywords if kw.arg == 'args']
+                for arg in list(node.args) + [kw.value for kw in node.keywords
+                                              if kw.arg in ('args', 'cmd')]
             )
             if provider_args:
                 self.findings.append(Finding(
@@ -360,6 +388,36 @@ def test_fenn_escape_shapes_are_detected(tmp_path: Path, source: str, kind: str)
     assert any(f.kind == kind for f in findings)
 
 
+@pytest.mark.parametrize('source', [
+    "from mc.agent_spawn import spawn_engine_proc\n"
+    "cmd = ['claude', '-p', 'x']\n"
+    "spawn_engine_proc(cmd, session_id='s', engine='claude')\n",
+    "from mc.agent_spawn import spawn_engine_proc as spawn\n"
+    "spawn(['codex', 'exec'], session_id='s', engine='codex')\n",
+    "from mc import agent_spawn\n"
+    "agent_spawn.spawn_engine_proc(cmd=['qwen'], session_id='s', engine='qwen')\n",
+    "import mc.agent_spawn as sp\n"
+    "sp.spawn_engine_proc(['gemini'], session_id='s', engine='gemini')\n",
+    "import mc.agent_spawn\n"
+    "mc.agent_spawn.spawn_engine_proc(['claude'], session_id='s', engine='claude')\n",
+])
+def test_spawn_engine_proc_is_a_provider_launch(tmp_path: Path, source: str) -> None:
+    path = tmp_path / 'mc' / 'blueprints' / 'feature.py'
+    path.parent.mkdir(parents=True)
+    path.write_text(source, encoding='utf-8')
+    findings = scan_modules((path,), root=tmp_path)
+    assert [f.kind for f in findings] == ['inference-subprocess']
+
+
+def test_spawn_engine_proc_with_a_neutral_command_is_not_flagged(tmp_path: Path) -> None:
+    path = tmp_path / 'mc' / 'blueprints' / 'feature.py'
+    path.parent.mkdir(parents=True)
+    path.write_text("from mc.agent_spawn import spawn_engine_proc\n"
+                    "spawn_engine_proc(['git', 'status'], session_id='s', engine='x')\n",
+                    encoding='utf-8')
+    assert scan_modules((path,), root=tmp_path) == ()
+
+
 def test_runtime_binding_does_not_leak_across_functions(tmp_path: Path) -> None:
     path = tmp_path / 'mc' / 'blueprints' / 'feature.py'
     path.parent.mkdir(parents=True)
@@ -370,6 +428,8 @@ def test_runtime_binding_does_not_leak_across_functions(tmp_path: Path) -> None:
         "    return runtime.write_followup(None, 'x')\n",
         encoding='utf-8')
     assert scan_modules((path,), root=tmp_path) == ()
+
+
 def test_concrete_runtime_and_raw_parser_imports_are_detected(tmp_path: Path) -> None:
     path = tmp_path / "mc" / "blueprints" / "new_feature.py"
     path.parent.mkdir(parents=True)
