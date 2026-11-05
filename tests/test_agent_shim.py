@@ -1029,7 +1029,7 @@ def test_failed_teardown_is_not_reported_as_nothing_started(tracker, tmp_path, m
         raise C.ShimUnavailable('handshake failed: injected')
 
     monkeypatch.setattr(C.ShimClient, 'connect', refuse)
-    monkeypatch.setattr(C, '_teardown_started', lambda m, timeout=5.0: False)
+    monkeypatch.setattr(C, '_teardown_started', lambda m, timeout=5.0, log=None: False)
     res = C.launch(tmp_path, 'h2', argv=child_argv(), cwd=None, mode='interactive', tick_s=0.1)
     tracker.add_manifest(C.session_dir(tmp_path, 'h2'))
     assert res.ok is False and res.cli_running is True and 'teardown incomplete' in res.error
@@ -1046,11 +1046,12 @@ def test_teardown_with_unavailable_liveness_lookup_is_not_reported_gone(tracker,
     real = shim.proc_create_time
     seen = {}
     orig_teardown = C._teardown_started
+    monkeypatch.setattr(C, '_TEARDOWN_RETRY_DEADLINE_S', 0.0)  # no background retry in this test
 
-    def teardown_with_lookup_down(m, timeout=5.0):
+    def teardown_with_lookup_down(m, timeout=5.0, log=None):
         seen['m'] = m
         monkeypatch.setattr(shim, 'proc_create_time', lambda pid: None)   # lookup unavailable
-        return orig_teardown(m, timeout=0.3)
+        return orig_teardown(m, timeout=0.3, log=log)
 
     monkeypatch.setattr(C, '_teardown_started', teardown_with_lookup_down)
     res = C.launch(tmp_path, 'h3', argv=child_argv(), cwd=None, mode='interactive', tick_s=0.1)
@@ -1059,6 +1060,97 @@ def test_teardown_with_unavailable_liveness_lookup_is_not_reported_gone(tracker,
     monkeypatch.setattr(shim, 'proc_create_time', real)
     assert alive_ct(m['cli_pid'], m['cli_ct']) and alive_ct(m['shim_pid'], m['shim_ct'])
     assert res.ok is False and res.cli_running is True and 'teardown incomplete' in res.error
+
+
+def test_teardown_retry_cleans_up_once_the_liveness_lookup_recovers(tracker, tmp_path, monkeypatch):
+    """Fenn round 3 (1): teardown that ends on 'unknown' skipped the kill (right)
+    but never retried, so after the lookup recovered both processes lived on.
+    The bounded retry must kill them once they read 'ours' -- and only then."""
+    def refuse(self):
+        raise C.ShimUnavailable('handshake failed: injected')
+
+    monkeypatch.setattr(C.ShimClient, 'connect', refuse)
+    monkeypatch.setattr(C, '_TEARDOWN_RETRY_INTERVAL_S', 0.1)
+    monkeypatch.setattr(C, '_TEARDOWN_RETRY_DEADLINE_S', 20.0)
+    real, seen, orig_teardown = shim.proc_create_time, {}, C._teardown_started
+
+    def teardown_with_lookup_down(m, timeout=5.0, log=None):
+        seen['m'] = m
+        monkeypatch.setattr(shim, 'proc_create_time', lambda pid: None)   # lookup unavailable
+        return orig_teardown(m, timeout=0.3, log=log)
+
+    monkeypatch.setattr(C, '_teardown_started', teardown_with_lookup_down)
+    res = C.launch(tmp_path, 'h4', argv=child_argv(), cwd=None, mode='interactive', tick_s=0.1)
+    m = seen['m']
+    tracker.add_manifest(C.session_dir(tmp_path, 'h4'))        # safety net only
+    assert res.cli_running is True and 'teardown incomplete' in res.error
+    time.sleep(0.5)                                            # several retry passes, lookup still down
+    assert alive_ct(m['cli_pid'], m['cli_ct']) and alive_ct(m['shim_pid'], m['shim_ct']),         'retry killed a process whose liveness was unknown'
+    monkeypatch.setattr(shim, 'proc_create_time', real)        # lookup recovers
+    assert wait_for(lambda: not alive_ct(m['cli_pid'], m['cli_ct'])
+                    and not alive_ct(m['shim_pid'], m['shim_ct']), 15), 'retry never cleaned up'
+
+
+def test_teardown_retry_logs_survivors_at_the_deadline(monkeypatch):
+    monkeypatch.setattr(shim, 'process_state', lambda pid, ct, tol=2.0: 'unknown')
+    kills, lines = [], []
+    monkeypatch.setattr(shim, 'kill_tree', lambda pid: kills.append(pid))
+    C._teardown_retry([(111, 1.0), (222, 2.0)], 0.05, 0.2, lines.append)
+    assert kills == [] and len(lines) == 1
+    assert 'pid=111 state=unknown' in lines[0] and 'pid=222 state=unknown' in lines[0]
+
+
+def test_pid_absent_posix_needs_esrch(monkeypatch):
+    """Fenn round 3 (2): hidepid=2 hides other users' live processes from /proc,
+    so a missing /proc entry must not read as absent; only ESRCH does."""
+    import builtins
+    monkeypatch.setattr(shim.sys, 'platform', 'linux')
+    real_open = builtins.open
+    state = {'stat': FileNotFoundError(2, 'hidden')}
+
+    def fake_open(path, *a, **k):
+        if str(path).startswith('/proc/'):
+            if isinstance(state['stat'], Exception):
+                raise state['stat']
+            import io
+            return io.StringIO(state['stat'])
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr(builtins, 'open', fake_open)
+
+    def kill_raises(exc):
+        def _k(pid, sig):
+            if exc is not None:
+                raise exc
+        return _k
+
+    monkeypatch.setattr(shim.os, 'kill', kill_raises(ProcessLookupError()))
+    assert shim._pid_absent(4242) is True                                   # ESRCH
+    monkeypatch.setattr(shim.os, 'kill', kill_raises(PermissionError()))
+    assert shim._pid_absent(4242) is False                                  # EPERM: exists
+    monkeypatch.setattr(shim.os, 'kill', kill_raises(None))
+    assert shim._pid_absent(4242) is False                                  # hidden /proc entry, signalable
+    state['stat'] = '4242 (x) S 1 2 3'
+    assert shim._pid_absent(4242) is False                                  # live, readable
+    state['stat'] = '4242 (x) Z 1 2 3'
+    assert shim._pid_absent(4242) is True                                   # zombie
+    monkeypatch.setattr(shim.sys, 'platform', 'darwin')
+    monkeypatch.setattr(shim.os, 'kill', kill_raises(ProcessLookupError()))
+    assert shim._pid_absent(4242) is True
+    monkeypatch.setattr(shim.os, 'kill', kill_raises(PermissionError()))
+    assert shim._pid_absent(4242) is False
+
+
+def test_shimproc_poll_does_not_infer_exit_from_a_failed_lookup(tmp_path, monkeypatch):
+    """Fenn round 3 (3): poll() read an unavailable liveness lookup as both
+    processes gone and reported rc=-1 for a running CLI."""
+    pr = C.ShimProc.__new__(C.ShimProc)
+    pr.dir, pr.manifest, pr.returncode, pr.exit_inferred = tmp_path, {}, None, False
+    pr.pid, pr.shim_pid, pr._cli_ct, pr._shim_ct = os.getpid(), os.getpid(), 1.0, 1.0
+    monkeypatch.setattr(shim, 'proc_create_time', lambda pid: None)      # lookup down, pids alive
+    assert pr.poll() is None and pr.exit_inferred is False
+    monkeypatch.setattr(shim, 'process_state', lambda pid, ct, tol=2.0: 'gone')
+    assert pr.poll() == -1 and pr.exit_inferred is True
 
 
 def test_process_state_is_three_valued():

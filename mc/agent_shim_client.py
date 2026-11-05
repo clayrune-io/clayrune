@@ -579,7 +579,10 @@ class ShimProc:
         # No exit.json. The CLI dying while the shim is alive is a few-ms race
         # (the shim is about to write it): keep waiting. Only when BOTH are
         # gone is the shim's own crash the cause; infer an unknown status.
-        if not self._cli_alive() and not self._shim_alive():
+        # "Gone" must be positively verified: a failed lookup ('unknown') is
+        # still running, not an exit.
+        if (_shim.process_state(self.pid, self._cli_ct) == 'gone'
+                and _shim.process_state(self.shim_pid, self._shim_ct) == 'gone'):
             self.returncode = -1
             self.exit_inferred = True
         return self.returncode
@@ -620,25 +623,59 @@ class LaunchResult:
     cli_running: bool = False
 
 
-def _teardown_started(m: Mapping[str, Any], timeout: float = 5.0) -> bool:
+# A teardown that ends with a process not positively 'gone' (typically a failed
+# liveness lookup) is retried in the background: the surviving shim's live owner
+# stops orphan expiry, so nothing else would ever reap it. Overridable in tests.
+_TEARDOWN_RETRY_INTERVAL_S = 0.5
+_TEARDOWN_RETRY_DEADLINE_S = 30.0
+
+
+def _shim_states(pairs: List[Any]) -> List[str]:
+    return [_shim.process_state(pid, ct) for pid, ct in pairs]
+
+
+def _teardown_retry(pairs: List[Any], interval: float, deadline: float,
+                    log: Callable[[str], None]) -> None:
+    """Bounded re-run of the teardown: each pass kills only what is positively
+    'ours' (never on 'unknown'), stops once every process is 'gone', and logs the
+    survivors if the deadline passes first."""
+    end = time.monotonic() + deadline
+    while time.monotonic() < end:
+        time.sleep(max(0.0, min(interval, end - time.monotonic())))
+        sts = _shim_states(pairs)
+        for (pid, _ct), st in zip(pairs, sts):
+            if st == 'ours':
+                _shim.kill_tree(int(pid))
+        if all(st == 'gone' for st in _shim_states(pairs)):
+            return
+    log('[agent-shim] teardown retry deadline passed; still alive: ' +
+        ', '.join(f'pid={pid} state={st}' for (pid, _ct), st in zip(pairs, _shim_states(pairs))
+                  if st != 'gone'))
+
+
+def _teardown_started(m: Mapping[str, Any], timeout: float = 5.0,
+                      log: Optional[Callable[[str], None]] = None) -> bool:
     """Kill the CLI tree and then the shim a failed launch left behind, each
     identity-checked against the manifest. True only when EACH is positively
     verified gone; a process whose liveness cannot be determined counts as
-    still running (the caller must then not start a second CLI)."""
+    still running (the caller must then not start a second CLI), and a bounded
+    background retry keeps trying to clean it up."""
     pairs = [(m.get('cli_pid'), m.get('cli_ct')), (m.get('shim_pid'), m.get('shim_ct'))]
 
-    def states() -> List[str]:
-        return [_shim.process_state(pid, ct) for pid, ct in pairs]
-
-    for (pid, ct), st in zip(pairs, states()):         # CLI first, then the shim
+    for (pid, ct), st in zip(pairs, _shim_states(pairs)):   # CLI first, then the shim
         if st == 'ours':
             _shim.kill_tree(int(pid))                  # type: ignore[arg-type]
     end = time.monotonic() + timeout
     while time.monotonic() < end:
-        if all(st == 'gone' for st in states()):
+        if all(st == 'gone' for st in _shim_states(pairs)):
             return True
         time.sleep(0.05)
-    return all(st == 'gone' for st in states())
+    if all(st == 'gone' for st in _shim_states(pairs)):
+        return True
+    threading.Thread(target=_teardown_retry,
+                     args=(pairs, _TEARDOWN_RETRY_INTERVAL_S, _TEARDOWN_RETRY_DEADLINE_S, log or _log),
+                     name='shim-teardown-retry', daemon=True).start()
+    return False
 
 
 def launch(root: Any, session_id: str, *, argv: List[str], cwd: Optional[str],
@@ -673,7 +710,7 @@ def launch(root: Any, session_id: str, *, argv: List[str], cwd: Optional[str],
             client.connect()
         except ShimError as e:
             client.close()
-            gone = _teardown_started(m)
+            gone = _teardown_started(m, log=log)
             (log or _log)(f'[agent-shim] attach failed session={session_id} error={e}; '
                           f'started shim torn down={gone}')
             return LaunchResult(False, sp.branch, spec=spec, cli_running=not gone,

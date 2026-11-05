@@ -177,15 +177,22 @@ def _pid_absent(pid: int) -> bool:
                 return bool(k.GetExitCodeProcess(h, ctypes.byref(code))) and code.value != 259
             finally:
                 k.CloseHandle(h)
+        # POSIX: only ESRCH is proof of absence. EPERM means the process exists
+        # (another user's, or hidden from /proc by hidepid=2), so a missing
+        # /proc entry is NOT evidence on its own.
+        try:
+            os.kill(int(pid), 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
         if sys.platform.startswith('linux'):
-            try:
+            try:                                        # signalable but a zombie = exited
                 with open(f'/proc/{int(pid)}/stat') as f:
                     return f.read().rsplit(')', 1)[1].split()[0] == 'Z'
-            except FileNotFoundError:
-                return True
-        r = subprocess.run(['ps', '-o', 'pid=', '-p', str(int(pid))],
-                           capture_output=True, text=True, timeout=5)
-        return r.returncode == 1 and not r.stdout.strip()
+            except OSError:
+                return False                            # unreadable stat: no extra signal
+        return False
     except Exception:
         return False
 
