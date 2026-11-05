@@ -132,7 +132,8 @@ def _ps_create_time(pid: int) -> Optional[float]:
     tolerance is 2 s). Unmeasured on a real Mac (design section 14)."""
     try:
         out = subprocess.run(['ps', '-o', 'lstart=', '-p', str(int(pid))],
-                             capture_output=True, text=True, timeout=5).stdout.strip()
+                             capture_output=True, text=True, encoding='utf-8', errors='replace',
+                             timeout=5).stdout.strip()
         if not out:
             return None
         return time.mktime(time.strptime(out, '%a %b %d %H:%M:%S %Y'))
@@ -255,7 +256,14 @@ def kill_tree(pid: int) -> None:
                            capture_output=True, creationflags=_CREATE_NO_WINDOW, timeout=30)
             return
         try:
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
+            pgid = os.getpgid(pid)
+            if pgid == os.getpgrp():
+                # Never signal the shim's own group (the mc.proc_kill bright
+                # line; this module may not import mc). The child leads its
+                # own session, so this only fires if that ever stops being so.
+                os.kill(pid, signal.SIGKILL)
+            else:
+                os.killpg(pgid, signal.SIGKILL)
         except (OSError, ProcessLookupError):
             os.kill(pid, signal.SIGKILL)
     except Exception:
