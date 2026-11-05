@@ -27,6 +27,17 @@ if len(sys.argv) > 1 and sys.argv[1] == '--clayrune-hook':
     from mc.hook_entry import run_hook
     sys.exit(run_hook(sys.argv[2:]))
 
+# Agent supervisor shim (MC-1150): a frozen build has no interpreter to run
+# mc/agent_shim.py with, so the shim and its trampoline are modes of this
+# binary, exactly like the hooks above:
+#     <app> --clayrune-shim tramp <session_dir>   (detach the shim, then exit)
+#     <app> --clayrune-shim run <session_dir>     (the shim itself)
+# Handled before anything else runs: no server, no window. See
+# mc/agent_shim_tramp.py.
+if len(sys.argv) > 1 and sys.argv[1] == '--clayrune-shim':
+    from mc.agent_shim_tramp import run_shim_entry
+    sys.exit(run_shim_entry(sys.argv[2:]))
+
 # Force pythonnet to use CoreCLR (.NET Core / .NET 5+) instead of .NET Framework.
 # MUST be set before ANY pythonnet/clr/webview import — pythonnet reads these at
 # import time. Without this, pythonnet defaults to .NET Framework 4.8, but the
