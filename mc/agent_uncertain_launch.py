@@ -106,7 +106,8 @@ def refuse_if_pending(sdir: Any, session_id: str) -> None:
     if resolve(sdir, session_id, marker.get('launch_id'), wait_s=0.0):
         return
     raise RuntimeError(f'an earlier agent shim launch for this session is unresolved '
-                       f'({marker.get("why")}); not starting a second one')
+                       f'({marker.get("why")}); not starting a second one. Once no shim or CLI '
+                       f'for this session is running, delete {marker_path(sdir)} to release it')
 
 
 def fail_launch(sdir: Any, session_id: str, launch_id: Any, error: Any) -> RuntimeError:
