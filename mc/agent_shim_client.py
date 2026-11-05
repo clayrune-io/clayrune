@@ -702,8 +702,28 @@ def launch(root: Any, session_id: str, *, argv: List[str], cwd: Optional[str],
         return LaunchResult(False, sp.branch, error=sp.error, spec=spec)
     m = wait_ready(sdir, spec['launch_id'], timeout=ready_timeout)
     if m is None:
-        err = (read_json(Path(sdir) / 'exit.json') or {}).get('error') or 'shim did not become ready'
-        return LaunchResult(False, sp.branch, error=str(err), spec=spec)
+        exit_info = read_json(Path(sdir) / 'exit.json') or {}
+        if exit_info.get('launch_id') == spec['launch_id']:
+            # The shim itself reported it could not start the CLI: nothing runs.
+            err = exit_info.get('error') or 'shim did not become ready'
+            return LaunchResult(False, sp.branch, error=str(err), spec=spec)
+        # Timeout, not a reported failure: a slow shim can still start its CLI
+        # after we give up, so "ok=False" must not read as "nothing started".
+        # Take the manifest if it landed late and run the same identity-checked
+        # teardown as a failed attach; with no manifest there is no pid to
+        # identify, so nothing can be confirmed gone.
+        late = read_json(Path(sdir) / 'shim.json')
+        if late and late.get('launch_id') == spec['launch_id']:
+            gone = _teardown_started(late, log=log)
+            (log or _log)(f'[agent-shim] ready timeout session={session_id}; '
+                          f'late-started shim torn down={gone}')
+            return LaunchResult(False, sp.branch, spec=spec, cli_running=not gone,
+                                error='shim did not become ready' +
+                                      ('' if gone else ' (teardown incomplete: CLI/shim still alive)'))
+        (log or _log)(f'[agent-shim] ready timeout session={session_id}; no manifest, '
+                      'cannot confirm the shim is not still starting')
+        return LaunchResult(False, sp.branch, spec=spec, cli_running=True,
+                            error='shim did not become ready (no manifest: a slow shim may still start its CLI)')
     client: Optional[ShimClient] = None
     if mode == _shim.MODE_INTERACTIVE:
         client = ShimClient(sdir, owner_pid=owner_pid)   # HELLO as the pid the spec names

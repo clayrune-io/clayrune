@@ -38,6 +38,7 @@ checked, so the shim exposes no remote-kill surface.
 """
 from __future__ import annotations
 
+import errno
 import hmac
 import json
 import os
@@ -290,6 +291,14 @@ def _win_kill_tree_if_ours(pid: int, create_time: float, tol: float) -> bool:
         k.CloseHandle(h)
 
 
+# pidfd_open failures that mean "this syscall cannot be used here", not "the
+# target is gone/denied": ENOSYS (kernel older than 5.3 under a Python that
+# exposes the wrapper) and EPERM (pidfd_open performs no permission check on
+# the target, so EPERM can only come from a seccomp/LSM filter on the syscall).
+# ESRCH and everything else still refuse.
+_PIDFD_UNUSABLE_ERRNOS = frozenset({errno.ENOSYS, errno.EPERM})
+
+
 def _posix_kill_tree_if_ours(pid: int, create_time: float, tol: float) -> bool:
     """POSIX half of kill_tree_if_ours. With pidfd_open (Linux 5.3+) the fd pins
     the process object: a signal sent through it can only reach the process it
@@ -300,11 +309,18 @@ def _posix_kill_tree_if_ours(pid: int, create_time: float, tol: float) -> bool:
     pidfd_open = getattr(os, 'pidfd_open', None)
     send = getattr(signal, 'pidfd_send_signal', None)
     sigkill = getattr(signal, 'SIGKILL', 9)       # POSIX-only attribute
+    fd = None
     if pidfd_open is not None and send is not None:
         try:
             fd = pidfd_open(int(pid))
-        except OSError:
-            return False                          # ESRCH/EPERM/ENOSYS: not provably ours
+        except OSError as e:
+            if e.errno not in _PIDFD_UNUSABLE_ERRNOS:
+                return False                      # ESRCH (gone), EINVAL, other: not provably ours
+            # The syscall itself is unusable here (Python exposes pidfd_open on a
+            # kernel that lacks it, or a filter blocks it) -- no evidence about the
+            # target. Fall through to the identity-checked fallback below, which
+            # restores what kill_tree's killpg path did before the identity check.
+    if fd is not None and send is not None:
         try:
             # pgid is read BEFORE the identity check: if the pid was reused
             # in between, the check (made after) reads the new process and

@@ -1210,6 +1210,100 @@ def test_kill_tree_if_ours_fallback_without_pidfd_rechecks_before_kill(tracker, 
     p.wait(timeout=10)
 
 
+def _pidfd_open_raising(monkeypatch, err):
+    """Linux POSIX path on any host: pidfd_open raises `err`, identity says 'ours'."""
+    import errno as _errno
+    from unittest.mock import MagicMock
+    monkeypatch.setattr(shim.sys, 'platform', 'linux')
+    monkeypatch.setattr(shim.signal, 'SIGKILL', 9, raising=False)
+    monkeypatch.setattr(shim.os, 'pidfd_open', MagicMock(side_effect=OSError(getattr(_errno, err), err)), raising=False)
+    monkeypatch.setattr(shim.signal, 'pidfd_send_signal', MagicMock(), raising=False)
+    identity = MagicMock(return_value='ours')
+    monkeypatch.setattr(shim, 'process_state', identity)
+    monkeypatch.setattr(shim.os, 'getpgid', MagicMock(return_value=12345), raising=False)
+    monkeypatch.setattr(shim.os, 'getpgrp', MagicMock(return_value=999), raising=False)
+    killpg, kill = MagicMock(), MagicMock()
+    monkeypatch.setattr(shim.os, 'killpg', killpg, raising=False)
+    monkeypatch.setattr(shim.os, 'kill', kill, raising=False)
+    return identity, killpg, kill
+
+
+@pytest.mark.parametrize('err', ['ENOSYS', 'EPERM'])
+def test_pidfd_open_unusable_syscall_falls_back_to_the_identity_checked_kill(monkeypatch, err):
+    """Fenn round 5 P2: Python exposed pidfd_open on a kernel without the syscall
+    (ENOSYS), the helper returned False, and teardown never killed anything."""
+    identity, killpg, kill = _pidfd_open_raising(monkeypatch, err)
+    assert shim.kill_tree_if_ours(12345, 100.0) is True
+    assert identity.call_count == 1 and killpg.call_count == 1 and kill.call_count == 0
+
+
+@pytest.mark.parametrize('err', ['ESRCH', 'EINVAL'])
+def test_pidfd_open_gone_or_invalid_still_refuses(monkeypatch, err):
+    identity, killpg, kill = _pidfd_open_raising(monkeypatch, err)
+    assert shim.kill_tree_if_ours(12345, 100.0) is False
+    assert identity.call_count == 0 and killpg.call_count == 0 and kill.call_count == 0
+
+
+def test_pidfd_unusable_fallback_still_refuses_a_foreign_process(monkeypatch):
+    identity, killpg, kill = _pidfd_open_raising(monkeypatch, 'ENOSYS')
+    identity.return_value = 'unknown'
+    assert shim.kill_tree_if_ours(12345, 100.0) is False
+    assert killpg.call_count == 0 and kill.call_count == 0
+
+
+def _timed_out_launch(monkeypatch, write):
+    """launch() whose wait_ready times out; `write(sdir, spec)` plants whatever
+    the shim left behind."""
+    monkeypatch.setattr(C, 'spawn_detached', lambda sdir, **kw: C.SpawnResult(True, C.BRANCH_POSIX))
+
+    def fake_wait_ready(sdir, launch_id, timeout=20.0, poll=0.05):
+        write(Path(sdir), C.read_json(Path(sdir) / 'spec.json'))
+        return None
+
+    monkeypatch.setattr(C, 'wait_ready', fake_wait_ready)
+
+
+def test_ready_timeout_with_no_manifest_is_not_reported_as_nothing_started(monkeypatch, tmp_path):
+    """c545bf76: a slow shim can start its CLI after the timeout; ok=False with
+    cli_running=False told the caller to start a second CLI."""
+    _timed_out_launch(monkeypatch, lambda d, spec: None)
+    res = C.launch(tmp_path, 't1', argv=child_argv(), cwd=None, mode='interactive')
+    assert res.ok is False and res.cli_running is True and 'no manifest' in res.error
+
+
+@pytest.mark.parametrize('gone, running', [(True, False), (False, True)])
+def test_ready_timeout_with_a_late_manifest_runs_the_identity_checked_teardown(monkeypatch, tmp_path, gone, running):
+    seen = []
+
+    def late_manifest(d, spec):
+        C.write_json_atomic(d / 'shim.json', {'schema': shim.SCHEMA, 'launch_id': spec['launch_id'],
+                                              'shim_pid': 4242, 'shim_ct': 1.0, 'cli_pid': 4243, 'cli_ct': 2.0})
+
+    _timed_out_launch(monkeypatch, late_manifest)
+    monkeypatch.setattr(C, '_teardown_started', lambda m, timeout=5.0, log=None: (seen.append(m), gone)[1])
+    res = C.launch(tmp_path, 't2', argv=child_argv(), cwd=None, mode='interactive')
+    assert [m['cli_pid'] for m in seen] == [4243]
+    assert res.ok is False and res.cli_running is running
+    assert ('teardown incomplete' in res.error) is running
+
+
+def test_ready_timeout_ignores_a_manifest_from_another_launch(monkeypatch, tmp_path):
+    seen = []
+    _timed_out_launch(monkeypatch, lambda d, spec: C.write_json_atomic(
+        d / 'shim.json', {'schema': shim.SCHEMA, 'launch_id': 'someone-else', 'shim_pid': 1, 'shim_ct': 1.0}))
+    monkeypatch.setattr(C, '_teardown_started', lambda m, timeout=5.0, log=None: (seen.append(m), True)[1])
+    res = C.launch(tmp_path, 't3', argv=child_argv(), cwd=None, mode='interactive')
+    assert seen == [] and res.ok is False and res.cli_running is True
+
+
+def test_a_shim_reported_spawn_failure_keeps_cli_running_false(monkeypatch, tmp_path):
+    """exit.json for THIS launch = the shim itself says it started no CLI."""
+    _timed_out_launch(monkeypatch, lambda d, spec: C.write_json_atomic(
+        d / 'exit.json', {'schema': shim.SCHEMA, 'launch_id': spec['launch_id'], 'rc': None, 'error': 'boom'}))
+    res = C.launch(tmp_path, 't4', argv=child_argv(), cwd=None, mode='interactive')
+    assert res.ok is False and res.cli_running is False and res.error == 'boom'
+
+
 def test_identity_tolerance_is_tight_per_platform():
     assert shim._tolerance_for('win32') == 0.01
     assert shim._tolerance_for('linux') == 0.05
