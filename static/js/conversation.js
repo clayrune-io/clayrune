@@ -5004,7 +5004,7 @@ function _maybeInsertDateDivider(container, dateHint) {
   container.appendChild(div);
 }
 
-function appendAgentLine(sessionId, text, dateHint) {
+function appendAgentLine(sessionId, text, dateHint, promptTs = dateHint) {
   const el = document.getElementById(`agent-output-${sessionId}`);
   if (!el) return;
   // The instant any real line streams in, the typing indicator is stale — drop
@@ -5026,7 +5026,7 @@ function appendAgentLine(sessionId, text, dateHint) {
   // But keep user prompts (> ) as a single block so styling covers all lines
   if (text.includes('\n') && !text.trimStart().startsWith('> ')) {
     for (const line of text.split('\n')) {
-      appendAgentLine(sessionId, line, dateHint);
+      appendAgentLine(sessionId, line, dateHint, promptTs);
     }
     return;
   }
@@ -5136,7 +5136,7 @@ function appendAgentLine(sessionId, text, dateHint) {
   // escaper so an attached image path renders as a thumbnail. Other special
   // lines (tool / error / status / queued) stay on plain textContent.
   if (cls.includes('agent-line-prompt')) {
-    div.innerHTML = escPromptWithImages(text, dateHint);
+    div.innerHTML = escPromptWithImages(text, promptTs);
   } else if (cls.includes('agent-line-tool') || cls.includes('agent-line-error') || cls.includes('agent-line-followup') || cls.includes('agent-line-queued')) {
     div.textContent = text;
   } else {
@@ -5305,6 +5305,7 @@ function approvePlan(projectId, sessionId) {
     const div = document.createElement('div');
     div.className = 'agent-line agent-line-prompt agent-echo';
     div.textContent = '> Plan approved, please continue.';
+    div.insertAdjacentHTML('beforeend', window.promptTimeTagHTML(new Date()));
     div.style.whiteSpace = 'pre-wrap';
     echoEl.appendChild(div);
     echoEl.scrollTop = echoEl.scrollHeight;
@@ -5635,6 +5636,7 @@ async function sendFollowup(projectId, sessionId, sendMode) {
     div.className = 'agent-line agent-line-prompt agent-echo'
       + (_isCmd ? ' agent-line-cmd' : '');
     div.textContent = `> ${message}`;
+    div.insertAdjacentHTML('beforeend', window.promptTimeTagHTML(new Date()));
     div.style.whiteSpace = 'pre-wrap';
     echoEl.appendChild(div);
     echoEl.scrollTop = echoEl.scrollHeight;

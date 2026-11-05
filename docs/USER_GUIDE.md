@@ -251,6 +251,11 @@ strip is hidden.
 
 ## Agent dispatch
 
+**Prompt times:** your messages show a small local time in the bubble. Hover
+over the time for the full local date and time. A just-sent message uses your
+device's clock until the server echo arrives. Older messages without a valid
+recorded timestamp have no time tag.
+
 **Blocked commands:** consecutive permission or hook denials in an agent chat
 appear as a small **1 command blocked** / **N commands blocked** chip. It starts
 closed in live chats and restored history. Click, tap, or focus it and press

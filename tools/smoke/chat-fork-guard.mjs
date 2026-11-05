@@ -11,8 +11,8 @@
  *      (status poll, reconcile, SSE reset replay), and logs the mismatch;
  *   2. a conversation with other live copies shows a notice linking to them.
  *
- * Serves static/js + static/css from THIS checkout over the live page, so a
- * worktree tests its own code. Every non-GET request is aborted, and the
+ * Serves index.html + static/js + static/css from THIS checkout against the
+ * live API, so newly wired modules load in worktrees too. Every non-GET request is aborted, and the
  * status route for a fake project is canned, so nothing touches real sessions.
  *
  * RUN: node chat-fork-guard.mjs      (needs MC on localhost:5199, or set MC_SMOKE_BASE)
@@ -50,6 +50,8 @@ try {
     if (url.pathname === `/api/project/${PID}/agent/status`)
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(status) });
     if (req.method() !== 'GET') return route.abort();
+    if (url.pathname === '/') return route.fulfill({ status: 200,
+      contentType: 'text/html; charset=utf-8', body: readFileSync(join(ROOT, 'static/index.html'), 'utf8') });
     if (url.hostname === 'localhost' && /^\/static\/(js|css)\//.test(url.pathname)) {
       const f = join(ROOT, url.pathname);
       if (existsSync(f)) {
