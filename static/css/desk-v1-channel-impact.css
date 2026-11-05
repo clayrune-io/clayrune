@@ -1,0 +1,48 @@
+/* Desk v1 — Channel impact (MC-1152 P4, dark). One unit, one file; load order is in static/index.html.
+   Everything is text: a state is a word, never only a colour. */
+.desk-v1-ci-mount { display: flex; flex-direction: column; container-type: inline-size; }
+.desk-v1-ci {
+  border: 1px solid var(--border2); border-radius: 10px; background: var(--surface);
+  padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; min-width: 0;
+}
+.desk-v1-ci-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.desk-v1-ci h3, .desk-v1-ci h4 { margin: 0; font-size: 13px; font-weight: 700; color: var(--text); }
+.desk-v1-ci-note { font-size: 12px; color: var(--text-dim); overflow-wrap: anywhere; }
+.desk-v1-ci-warn { font-size: 12.5px; color: var(--amber-text); font-weight: 600; overflow-wrap: anywhere; }
+.desk-v1-ci-status { font-size: 12.5px; color: var(--text-dim); min-height: 0; }
+.desk-v1-ci-status:empty { display: none; }
+.desk-v1-ci-missing { font-size: 12.5px; color: var(--text-dim); font-style: italic; overflow-wrap: anywhere; }
+.desk-v1-ci-num { font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.desk-v1-ci-unit { font-size: 12px; color: var(--text-dim); }
+.desk-v1-ci-name { font-weight: 700; color: var(--text); }
+.desk-v1-ci-badge {
+  display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 8px;
+  border: 1px solid var(--border2); color: var(--text-dim); background: var(--surface2);
+}
+.desk-v1-ci-scroll { overflow-x: auto; }
+.desk-v1-ci-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.desk-v1-ci-table th, .desk-v1-ci-table td {
+  text-align: left; vertical-align: top; padding: 8px 10px; border-top: 1px solid var(--border2);
+  color: var(--text); font-weight: 400;
+}
+.desk-v1-ci-table thead th { border-top: 0; font-size: 12px; font-weight: 600; color: var(--text-dim); white-space: nowrap; }
+.desk-v1-ci-table tbody th { font-weight: 400; }
+.desk-v1-ci-repo { border-top: 1px solid var(--border2); padding-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.desk-v1-ci-repolist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.desk-v1-ci button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.desk-v1-ci-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Narrow (the Goal column is 680px, so this is the common case on desktop too): each channel
+   becomes a card carrying the same labels and coverage, and no column can be clipped. */
+@container (max-width: 760px) {
+  .desk-v1-ci { padding: 12px; }
+  .desk-v1-ci-table, .desk-v1-ci-table tbody, .desk-v1-ci-table tr, .desk-v1-ci-table th, .desk-v1-ci-table td { display: block; width: 100%; box-sizing: border-box; }
+  .desk-v1-ci-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .desk-v1-ci-table tr { border: 1px solid var(--border2); border-radius: 8px; margin-bottom: 10px; padding: 4px 0; }
+  .desk-v1-ci-table th, .desk-v1-ci-table td { border-top: 0; padding: 4px 10px; }
+  .desk-v1-ci-table td::before, .desk-v1-ci-table tbody th::before {
+    content: attr(data-label); display: block; font-size: 11px; font-weight: 600; color: var(--text-dim);
+  }
+}
+/* Flag off (the default): the empty mount takes no space, not even the Goal column's gap. */
+.desk-v1-ci-mount:empty { display: none; }

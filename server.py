@@ -2290,6 +2290,10 @@ app.register_blueprint(_bp_desk_export.bp)
 # `desk_impact_links_enabled` is set (mc/blueprints/desk_impact_routes.py).
 from mc.blueprints import desk_impact_routes as _bp_desk_impact  # noqa: E402
 app.register_blueprint(_bp_desk_impact.bp)
+# Its Goal-screen comparison is a separate switch, `desk_impact_compare_enabled`
+# (mc/blueprints/desk_impact_compare_routes.py), also dark by default.
+from mc.blueprints import desk_impact_compare_routes as _bp_desk_impact_compare  # noqa: E402
+app.register_blueprint(_bp_desk_impact_compare.bp)
 
 from mc import desk_project_media as _desk_project_media  # noqa: E402
 _desk_project_media.wire(load_projects_fn=_bp_projects.load_projects,

@@ -332,9 +332,15 @@
           ${_editorHTML(goal)}
           ${camp.state === 'active' ? _effectivenessHTML(el, camp, goal) : ''}
         </div>
+        <div class="desk-v1-ci-mount" id="desk-v1-ci-mount"></div>
         <div class="desk-v1-retro-mount" id="desk-v1-retro-mount"></div>
       </div>`;
     _bindEditor(el, camp);
+    // MC-1152 P4 (dark): desk-v1-channel-impact.js draws into its own empty mount, and
+    // draws nothing at all unless the server flag is on.
+    if (typeof window.deskV1RenderChannelImpact === 'function') {
+      window.deskV1RenderChannelImpact(el.querySelector('#desk-v1-ci-mount'), camp);
+    }
     if (typeof window.deskV1RenderRetroSection === 'function') {
       window.deskV1RenderRetroSection(document.getElementById('desk-v1-retro-mount'), camp);
     }
