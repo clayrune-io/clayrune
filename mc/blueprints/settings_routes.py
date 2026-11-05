@@ -227,6 +227,8 @@ _CONFIG_EDITABLE_KEYS = {
     'fence_unattended_enabled',
     # Default OFF. PUT remains passcode- and unattended-caller-gated.
     'aider_restricted_adapter_enabled',
+    # MC-1148 dark API, read live; existing human/passcode gates apply.
+    'test_run_progress_enabled',
     # Codex unattended sandbox (UNATTENDED_AGENT_PERMISSIONS_AUDIT §4 risk #1).
     # Read at dispatch/followup time by mc/blueprints/agent_routes.py
     # (_dispatch_via_runtime) — no respawn or restart needed. Same
