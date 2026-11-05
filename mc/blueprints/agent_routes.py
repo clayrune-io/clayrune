@@ -5300,7 +5300,9 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # sessions can't take a job endpoint response.
     if session_id and not incognito:
         parts.append(_long_job_guidance.long_job_note(
-            port, pid, session_id, background_jobs=bool(_runtime_caps.background_jobs)))
+            port, pid, session_id, background_jobs=bool(_runtime_caps.background_jobs),
+            test_run_progress_enabled=state.CONFIG.get('test_run_progress_enabled') is True,
+            app_dir=_APP_DIR))
 
     # Pointer card, not the full 19.9 KB reference — see
     # `_CLAYRUNE_API_POINTER_CARD` for the measured numbers. The full text

@@ -21,6 +21,9 @@ take a job endpoint response) and passes the facts in.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 # Rough threshold above which a job is likelier than not to meet a rollover
 # or an interrupt before it ends. Worded as "~5 minutes" in the note; kept
 # here so tests and docs cite one number.
@@ -33,7 +36,8 @@ def job_route_url(port: int, project_id: str, session_id: str) -> str:
 
 
 def long_job_note(port: int, project_id: str, session_id: str,
-                  *, background_jobs: bool) -> str:
+                  *, background_jobs: bool, test_run_progress_enabled: bool = False,
+                  app_dir: Path | None = None) -> str:
     """The guidance paragraph for one session.
 
     `background_jobs` is the runtime's declared capability
@@ -51,7 +55,7 @@ def long_job_note(port: int, project_id: str, session_id: str,
              "this session with the exit code, duration and output tail when "
              "it finishes.")
     if background_jobs:
-        return (
+        note = (
             f"Long background commands (anything likely to run more than "
             f"~{LONG_JOB_MINUTES} minutes: a full pytest run, a smoke suite, a "
             "build): do NOT start them with run_in_background. A context "
@@ -60,11 +64,30 @@ def long_job_note(port: int, project_id: str, session_id: str,
             f"to Clayrune instead: {route} The job is not a child of your "
             "process, so it survives a rollover. Short background commands "
             "may still use run_in_background.")
-    return (
-        "You have no background-job facility of your own -- your process "
-        "exits when this turn ends, so backgrounding a command with `&` "
-        "orphans it and nothing wakes you when it finishes. For a long "
-        "command, either run it in the foreground within your tool's own "
-        f"timeout, or hand it to Clayrune: {route} Anything likely to run "
-        f"more than ~{LONG_JOB_MINUTES} minutes (a full pytest run, a smoke "
-        "suite, a build) goes to that route, never a shell `&`.")
+    else:
+        note = (
+            "You have no background-job facility of your own -- your process "
+            "exits when this turn ends, so backgrounding a command with `&` "
+            "orphans it and nothing wakes you when it finishes. For a long "
+            "command, either run it in the foreground within your tool's own "
+            f"timeout, or hand it to Clayrune: {route} Anything likely to run "
+            f"more than ~{LONG_JOB_MINUTES} minutes (a full pytest run, a smoke "
+            "suite, a build) goes to that route, never a shell `&`.")
+    if test_run_progress_enabled is True and app_dir is not None:
+        launcher = app_dir / 'tools' / 'test-run.py'
+        if launcher.is_file():
+            prefix = json.dumps(['python', str(launcher), '--project', project_id,
+                                 '--port', str(port), '--'])
+            note += (
+                '\nReported tests: use the project Python interpreter with launcher argv '
+                + prefix + ' followed by the exact original argv. Preserve cwd/env/test '
+                'selection. Use --manifest for explicit ordered suites, or --shell plus '
+                '--command for exact shell syntax; never guess npm script expansion. '
+                'Long tests still go through the job route with this launcher as its '
+                'command. Current units are scripts, not assertions; framework reporters '
+                'are unavailable. Capture gaps are printed; child exit codes are preserved. '
+                'Incognito/sandbox reporting is unsupported. No automatic rerun or '
+                'permission change. See the installation docs/TEST_RUN_LAUNCHER.md.')
+        else:
+            note += '\nReported test launcher unavailable in this installation; progress capture is incomplete.'
+    return note

@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-05] - Run explicitly reported test commands with real child exits (MC-1148 P5, dark)
+
+- Added the installation-local stdlib launcher with exact argv or explicit shell execution, ordered manifests, child registration and parent/child script-unit runs. The enrolling launcher finalizes after actual child waits; reporter tokens cannot finalize, and telemetry failures preserve local exits.
+- Reporting and agent guidance follow the existing default-off flag. Framework reporters, passive discovery, UI and bundled-asset validation remain later phases. Contract and checks: `docs/TEST_RUN_LAUNCHER.md`. Branch candidate only; no config change, merge, push or restart.
+
 ## [2026-11-05] - Observe enrolled job logs without blocking completion indefinitely (MC-1148 P2, dark)
 
 - Added opt-in bounded log capture with incremental UTF-8 decoding, source-reset diagnostics and coalesced output heartbeats. Existing jobs stay unenrolled; suppressed direct argv output remains suppressed. Raw output never enters test-run telemetry.

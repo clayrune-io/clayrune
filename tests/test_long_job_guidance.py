@@ -46,6 +46,32 @@ def test_route_url_is_one_function_shared_with_the_rollover_block():
         'http://localhost:5200/api/project/p/agent/s/job'
 
 
+@pytest.mark.parametrize('enabled', [False, None, 'true', 1])
+def test_reported_test_guidance_is_dark_unless_literal_true(enabled):
+    note = ljg.long_job_note(5200, 'p', 's', background_jobs=True,
+                             test_run_progress_enabled=enabled, app_dir=PROJECT_ROOT)
+    assert 'Reported tests:' not in note and 'test-run.py' not in note
+
+
+def test_enabled_guidance_uses_installation_path_exact_argv_and_job_route(tmp_path):
+    tools = tmp_path / 'tools'
+    tools.mkdir()
+    (tools / 'test-run.py').write_text('# fixture')
+    note = ljg.long_job_note(5201, 'other-project', 'other-session', background_jobs=False,
+                             test_run_progress_enabled=True, app_dir=tmp_path)
+    assert 'Reported tests:' in note and '--manifest' in note
+    assert 'scripts, not assertions' in note and 'Long tests still go through the job route' in note
+    import json
+    assert json.dumps(str(tools / 'test-run.py')) in note
+    assert 'other-project' in note and '5201' in note
+
+
+def test_enabled_but_missing_launcher_discloses_capture_gap(tmp_path):
+    note = ljg.long_job_note(5200, 'p', 's', background_jobs=True,
+                             test_run_progress_enabled=True, app_dir=tmp_path)
+    assert 'launcher unavailable' in note and 'Reported tests:' not in note
+
+
 # ── Integration: _build_agent_context injects it for Claude too ─────────────
 
 @pytest.fixture()
@@ -83,3 +109,17 @@ def test_no_session_id_or_incognito_means_no_route_to_address(env):
     ctx = env['ar']._build_agent_context(env['project'], task='hi', session_id='s',
                                          provider='claude', incognito=True)
     assert '/agent/s/job' not in ctx
+
+
+@pytest.mark.parametrize('provider', ['claude', 'codex', 'gemini', 'qwen'])
+def test_context_guidance_follows_live_flag_for_all_engines(env, monkeypatch, provider):
+    from mc import state
+    import json
+    monkeypatch.setattr(env['ar'], '_APP_DIR', PROJECT_ROOT)
+    monkeypatch.setitem(state.CONFIG, 'test_run_progress_enabled', True)
+    ctx = env['ar']._build_agent_context(env['project'], task='hi', session_id='s', provider=provider)
+    assert 'Reported tests:' in ctx
+    assert json.dumps(str(PROJECT_ROOT / 'tools' / 'test-run.py')) in ctx
+    monkeypatch.setitem(state.CONFIG, 'test_run_progress_enabled', False)
+    ctx = env['ar']._build_agent_context(env['project'], task='hi', session_id='s', provider=provider)
+    assert 'Reported tests:' not in ctx
