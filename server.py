@@ -326,6 +326,8 @@ def _load_config():
         'fence_unattended_enabled': True,
         # Restricted, source-pinned Aider. Human opt-in only; no full-CLI fallback.
         'aider_restricted_adapter_enabled': False,
+        # MC-1148 dark telemetry API; no ingest service until explicitly enabled.
+        'test_run_progress_enabled': False,
         # UNATTENDED_AGENT_PERMISSIONS_AUDIT §4 risk #1: Codex has no fence
         # equivalent (steward/fence.py is a Claude Code PreToolUse hook), so
         # every Codex session ever ran with
@@ -3208,6 +3210,15 @@ from mc.blueprints import browser_agent_read_routes as _bp_browser_agent_read  #
 app.register_blueprint(_bp_browser_agent_read.bp)
 from mc.blueprints import browser_agent_read_request_routes as _bp_browser_agent_read_req  # noqa: E402
 app.register_blueprint(_bp_browser_agent_read_req.bp)
+from mc.blueprints import test_run_routes as _bp_test_runs  # noqa: E402
+_bp_test_runs.wire(
+    data_root=DATA_DIR.parent,
+    load_project_fn=_bp_projects.load_project,
+    load_agent_log_fn=_bp_agent._load_agent_log,
+    session_cwd_fn=_bp_agent._session_cwd,
+    proc_identity_fn=_bp_agent._proc_identity,
+)
+app.register_blueprint(_bp_test_runs.bp)
 # Only the server process may sweep orphaned Chromium profile dirs: it is the
 # only one whose browser_sessions actually says what is live. Deliberately NOT
 # inside wire() — test harnesses call that too. See browser_routes.SWEEP_ENABLED.
