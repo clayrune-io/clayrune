@@ -130,7 +130,11 @@ def role_server(sdir, variant, self_exit):
     except OSError as e:                       # e.g. breakaway into a no-breakaway job
         out = {'ok': False, 'branch': variant, 'err': f'{type(e).__name__}: {e}'}
     out['pid'] = os.getpid()
-    (d / 'server.json').write_text(json.dumps(out))
+    # Atomic: the test polls for server.json and reads it at once; a plain
+    # write_text let it read an empty file (24 fixture setup errors, Fenn r6).
+    tmp = d / 'server.json.tmp'
+    tmp.write_text(json.dumps(out))
+    os.replace(tmp, d / 'server.json')
     for _ in range(200):
         if (d / 'shim.json').exists():
             break
