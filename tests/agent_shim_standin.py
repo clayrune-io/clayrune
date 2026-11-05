@@ -106,11 +106,22 @@ def _spawn_variant(variant, sdir, log):
     elif variant == 'double':                  # trampoline, but no breakaway
         subprocess.Popen([PY_BASE, tramp_py, sdir], creationflags=_CREATE_NO_WINDOW)
     elif variant == 'wmi':                     # parent = WMI service, outside any job
+        # Win32_Process.Create with no ProcessStartupInformation gives the child a
+        # VISIBLE console on the interactive desktop (an empty python.exe window per
+        # run). ShowWindow=0 is SW_HIDE.
         cmd = ' '.join(f'"{a}"' for a in [PY_BASE, shim_py, sdir])
-        ps = ("$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
-              f"-Arguments @{{CommandLine='{cmd}'}}; $r.ProcessId")
-        subprocess.run(['powershell', '-NoProfile', '-Command', ps], capture_output=True,
-                       creationflags=_CREATE_NO_WINDOW, timeout=60)
+        ps = ("$si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly "
+              "-Property @{ShowWindow=[uint16]0}; "
+              "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
+              f"-Arguments @{{CommandLine='{cmd}'; ProcessStartupInformation=$si}}; $r.ProcessId")
+        cp = subprocess.run(['powershell', '-NoProfile', '-Command', ps], capture_output=True,
+                            text=True, creationflags=_CREATE_NO_WINDOW, timeout=60)
+        # the WMI-created process is nobody's child, so tell the test its pid for teardown
+        try:
+            return {'ok': True, 'branch': variant, 'err': None,
+                    'wmi_pid': int(cp.stdout.strip().splitlines()[-1])}
+        except (ValueError, IndexError):
+            pass
     else:
         raise SystemExit(f'bad variant {variant}')
     return {'ok': True, 'branch': variant, 'err': None}
