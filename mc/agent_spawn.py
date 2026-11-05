@@ -50,7 +50,10 @@ Fallback
   stdin (the delivery code is not run a second time). A missing CLI binary
   raises the same FileNotFoundError it always did. The one case that does NOT
   fall back is a failed teardown (`cli_running`): a CLI may still be alive, and
-  starting a second one would double the agent, so that raises instead.
+  starting a second one would double the agent, so that raises instead -- after
+  mc/agent_uncertain_launch.py has terminated the uncertain shim and CLI by
+  identity-checked pid, or, if that cannot be confirmed, left a marker that
+  makes every later spawn for the session raise until it can be.
 """
 from __future__ import annotations
 
@@ -65,6 +68,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 from mc import agent_shim as _shim
 from mc import agent_shim_client as _client
+from mc import agent_uncertain_launch as _uncertain
 from mc.proc_kill import POPEN_NEW_SESSION
 
 _root_override: Optional[Path] = None
@@ -308,6 +312,7 @@ def spawn_engine_proc(cmd: Sequence[Any], *, session_id: Optional[str], engine: 
 
     base = Path(root) if root is not None else default_root()
     sdir = _client.session_dir(base, str(session_id))
+    _uncertain.refuse_if_pending(sdir, str(session_id))     # raises: no Popen fallback beside an uncertain CLI
     prior = _client.inspect(sdir)
     if prior is not None and not prior.exited and (prior.shim_alive or prior.cli_alive):
         # The previous turn of this session still runs under its shim; reusing
@@ -348,8 +353,7 @@ def spawn_engine_proc(cmd: Sequence[Any], *, session_id: Optional[str], engine: 
     if res.cli_running:
         if cap is not None:
             cap.settle(False, 'shim launch left the CLI in an unknown state')
-        raise RuntimeError(f'agent shim launch left a CLI possibly running ({res.error}); '
-                           'not starting a second one')
+        raise _uncertain.fail_launch(sdir, str(session_id), res.spec.get('launch_id'), res.error)
     _log(f'[agent-spawn] session={session_id} engine={engine}: shim launch failed '
          f'branch={res.branch} error={res.error}; spawning without a shim')
     if cap is None:

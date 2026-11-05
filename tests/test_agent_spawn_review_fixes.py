@@ -2,7 +2,8 @@
 
 Blockers 1 and 2 are on the flag-OFF path that every install runs; 3 and 5 are
 flag ON. Blocker 4 (an uncertain launch must stay owned) needs a design
-decision and is pinned by a strict xfail until Dave chooses.
+decision (Dave chose option C: terminate the uncertain shim and CLI, or
+refuse the session until they are confirmed gone).
 
 Every interleaving here is injected on purpose and labelled; no real CLI is
 launched and no process is signalled (the shim is driven in-process).
@@ -29,6 +30,7 @@ from mc import agent_runtime as ar  # noqa: E402
 from mc import agent_shim as H  # noqa: E402
 from mc import agent_shim_client as C  # noqa: E402
 from mc import agent_spawn as S  # noqa: E402
+from mc import agent_uncertain_launch as U  # noqa: E402
 from mc import steward_role_dispatch as SRD  # noqa: E402
 from mc.resume_context import write_context_prompt  # noqa: E402
 
@@ -255,20 +257,129 @@ def test_an_exception_from_deliver_propagates_as_an_inline_call_would(root, monk
         S.spawn_engine_proc(['fake'], session_id='ack5', engine='codex', root=root, cfg=ON, deliver=deliver)
 
 
-# ───────── 4. flag ON: an uncertain launch stays owned (OPEN: needs a decision) ──
-@pytest.mark.xfail(strict=True, reason='MC-1150 P2 blocker 4: pending-launch tracking is a design '
-                                       'choice for Dave; see the 2026-11-05 journal entry')
-def test_a_retry_after_an_uncertain_launch_does_not_start_a_second_cli(root, monkeypatch):
-    with patch.object(C, 'launch', return_value=C.LaunchResult(False, 'probe', cli_running=True)):
-        with pytest.raises(RuntimeError):
-            S.spawn_engine_proc(['fake'], session_id='late', engine='codex', root=root, cfg=ON)
-    live_late = C.ManifestStatus({}, shim_alive=True, cli_alive=True)      # the slow shim woke up
-    with patch.object(C, 'inspect', return_value=live_late), patch.object(S, '_popen') as plain:
-        try:
-            S.spawn_engine_proc(['fake'], session_id='late', engine='codex', root=root, cfg=ON)
-        except RuntimeError:
-            pass                                                           # refusing is acceptable
-    assert plain.call_count == 0
+# ───────── 4. flag ON: an uncertain launch is terminated, or the session refuses ──
+# (Dave's option C.) Every pid here is fake and `kill_tree_if_ours`/`process_state` are
+# replaced, so no real process is signalled.
+def _uncertain_launch(root, sid, *, manifest):
+    """A fake `C.launch` reporting an uncertain launch (readiness deadline missed). With
+    `manifest`, the slow shim's shim.json lands during the call, as a late shim's would."""
+    d = C.session_dir(root, sid)
+
+    def launch(*a, **k):
+        d.mkdir(parents=True, exist_ok=True)
+        if manifest:
+            C.write_json_atomic(d / 'shim.json', dict(schema=H.SCHEMA, launch_id='L1', cli_pid=7001,
+                                                      shim_pid=7002, cli_ct=1.0, shim_ct=2.0))
+        launch.calls += 1
+        return C.LaunchResult(False, 'probe', cli_running=True, error='shim did not become ready',
+                              spec={'launch_id': 'L1'})
+    launch.calls = 0
+    return d, launch
+
+
+class _Procs:
+    """Fake process table: pid -> alive. kill_tree_if_ours records the kill and removes it
+    unless `stubborn`."""
+    def __init__(self, alive, stubborn=()):
+        self.alive, self.stubborn, self.killed = set(alive), set(stubborn), []
+
+    def install(self, monkeypatch):
+        def kill(pid, ct, tol=0):
+            self.killed.append((pid, ct))
+            if pid not in self.stubborn:
+                self.alive.discard(pid)
+            return True
+        monkeypatch.setattr(H, 'kill_tree_if_ours', kill)
+        monkeypatch.setattr(H, 'process_state', lambda pid, ct, tol=0: 'ours' if pid in self.alive else 'gone')
+        monkeypatch.setattr(U, 'RESOLVE_WAIT_S', 0.2)
+        monkeypatch.setattr(U, 'KILL_CONFIRM_S', 0.2)
+        monkeypatch.setattr(C, '_TEARDOWN_RETRY_DEADLINE_S', 0.0)       # no background retry thread
+
+
+def _no_second_cli(monkeypatch):
+    monkeypatch.setattr(S, '_popen', lambda *a, **k: pytest.fail('started a CLI beside an uncertain one'))
+
+
+def test_an_uncertain_launch_is_terminated_by_pid_and_fails_the_launch(root, monkeypatch):
+    d, res = _uncertain_launch(root, 'unc1', manifest=True)
+    procs = _Procs({7001, 7002})
+    procs.install(monkeypatch)
+    _no_second_cli(monkeypatch)
+    monkeypatch.setattr(C, 'launch', res)
+    with pytest.raises(RuntimeError, match='terminated'):
+        S.spawn_engine_proc(['fake'], session_id='unc1', engine='codex', root=root, cfg=ON)
+    assert sorted(procs.killed) == [(7001, 1.0), (7002, 2.0)]       # CLI and shim, by identity
+    assert procs.alive == set() and not U.marker_path(d).exists()
+
+
+def test_a_retry_after_an_uncertain_launch_starts_a_fresh_cli_only_once_nothing_is_left(root, monkeypatch):
+    """The scenario of the first strict xfail: the slow shim wakes up after the give-up."""
+    d, res = _uncertain_launch(root, 'unc2', manifest=True)
+    procs = _Procs({7001, 7002})
+    procs.install(monkeypatch)
+    monkeypatch.setattr(C, 'launch', res)
+    with pytest.raises(RuntimeError):
+        S.spawn_engine_proc(['fake'], session_id='unc2', engine='codex', root=root, cfg=ON)
+    assert procs.alive == set()                                      # the late shim was not left running
+    launched: list = []
+    monkeypatch.setattr(C, 'launch', lambda *a, **k: launched.append(1) or C.LaunchResult(
+        True, 'probe', proc=SimpleNamespace(), spec={'launch_id': 'L2'}))
+    S.spawn_engine_proc(['fake'], session_id='unc2', engine='codex', root=root, cfg=ON)
+    assert launched == [1]
+
+
+def test_an_uncertain_launch_with_no_manifest_leaves_a_marker_that_refuses_the_session(root, monkeypatch):
+    d, res = _uncertain_launch(root, 'unc3', manifest=False)
+    _Procs(set()).install(monkeypatch)
+    monkeypatch.setattr(C, 'launch', res)
+    _no_second_cli(monkeypatch)
+    with pytest.raises(RuntimeError, match='not starting a second one'):
+        S.spawn_engine_proc(['fake'], session_id='unc3', engine='codex', root=root, cfg=ON)
+    assert U.pending(d)['launch_id'] == 'L1'
+    for _ in range(2):                                              # refused again, with no plain-Popen fallback
+        with pytest.raises(RuntimeError, match='unresolved'):
+            S.spawn_engine_proc(['fake'], session_id='unc3', engine='codex', root=root, cfg=ON)
+    assert res.calls == 1                                           # and no new shim launch either
+
+
+def test_a_process_that_will_not_die_leaves_a_marker_and_the_session_stays_refused(root, monkeypatch):
+    d, res = _uncertain_launch(root, 'unc4', manifest=True)
+    procs = _Procs({7001, 7002}, stubborn={7002})
+    procs.install(monkeypatch)
+    monkeypatch.setattr(C, 'launch', res)
+    _no_second_cli(monkeypatch)
+    with pytest.raises(RuntimeError, match='not starting a second one'):
+        S.spawn_engine_proc(['fake'], session_id='unc4', engine='codex', root=root, cfg=ON)
+    assert U.pending(d) is not None and 7002 in procs.alive
+    with pytest.raises(RuntimeError, match='unresolved'):
+        S.spawn_engine_proc(['fake'], session_id='unc4', engine='codex', root=root, cfg=ON)
+
+
+def test_the_marker_clears_once_the_pids_are_gone_and_the_session_spawns_again(root, monkeypatch):
+    d, res = _uncertain_launch(root, 'unc5', manifest=True)
+    procs = _Procs({7001, 7002}, stubborn={7001, 7002})
+    procs.install(monkeypatch)
+    monkeypatch.setattr(C, 'launch', res)
+    with pytest.raises(RuntimeError):
+        S.spawn_engine_proc(['fake'], session_id='unc5', engine='codex', root=root, cfg=ON)
+    assert U.pending(d) is not None
+    procs.alive.clear()                                              # the stubborn processes finally exit
+    launched: list = []
+    monkeypatch.setattr(C, 'launch', lambda *a, **k: launched.append(1) or C.LaunchResult(
+        True, 'probe', proc=SimpleNamespace(), spec={'launch_id': 'L2'}))
+    S.spawn_engine_proc(['fake'], session_id='unc5', engine='codex', root=root, cfg=ON)
+    assert launched == [1] and U.pending(d) is None
+
+
+def test_the_marker_is_ignored_when_the_flag_is_off(root, monkeypatch):
+    d = C.session_dir(root, 'unc6')
+    d.mkdir(parents=True, exist_ok=True)
+    U._write_marker(d, 'unc6', 'L1', 'test')
+    _on(False)
+    _Popen.calls = []
+    monkeypatch.setattr(S.subprocess, 'Popen', _Popen)
+    p = S.spawn_engine_proc(['fake'], session_id='unc6', engine='codex', root=root)
+    assert isinstance(p, _Popen)
 
 
 # ───────── 5. flag ON: a previous shim must be gone before its dir is reused ─────
