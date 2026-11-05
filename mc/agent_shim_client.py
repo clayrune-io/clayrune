@@ -622,21 +622,23 @@ class LaunchResult:
 
 def _teardown_started(m: Mapping[str, Any], timeout: float = 5.0) -> bool:
     """Kill the CLI tree and then the shim a failed launch left behind, each
-    identity-checked against the manifest. True once neither is alive."""
+    identity-checked against the manifest. True only when EACH is positively
+    verified gone; a process whose liveness cannot be determined counts as
+    still running (the caller must then not start a second CLI)."""
     pairs = [(m.get('cli_pid'), m.get('cli_ct')), (m.get('shim_pid'), m.get('shim_ct'))]
 
-    def any_alive() -> bool:
-        return any(pid and _shim.same_process(pid, ct) for pid, ct in pairs)
+    def states() -> List[str]:
+        return [_shim.process_state(pid, ct) for pid, ct in pairs]
 
-    for pid, ct in pairs:                              # CLI first, then the shim
-        if pid and _shim.same_process(pid, ct):
-            _shim.kill_tree(int(pid))
+    for (pid, ct), st in zip(pairs, states()):         # CLI first, then the shim
+        if st == 'ours':
+            _shim.kill_tree(int(pid))                  # type: ignore[arg-type]
     end = time.monotonic() + timeout
     while time.monotonic() < end:
-        if not any_alive():
+        if all(st == 'gone' for st in states()):
             return True
         time.sleep(0.05)
-    return not any_alive()
+    return all(st == 'gone' for st in states())
 
 
 def launch(root: Any, session_id: str, *, argv: List[str], cwd: Optional[str],

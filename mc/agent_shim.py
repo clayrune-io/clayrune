@@ -156,6 +156,58 @@ def same_process(pid: Optional[int], create_time: Optional[float], tol: float = 
     return live is not None and abs(live - float(create_time)) <= tol
 
 
+def _pid_absent(pid: int) -> bool:
+    """True only on POSITIVE evidence that no live process owns `pid` (not found,
+    exited, or a zombie). Any read failure or access-denied is False: unknown is
+    not absent. Never raises."""
+    try:
+        if sys.platform == 'win32':
+            import ctypes
+            from ctypes import wintypes
+            k = ctypes.WinDLL('kernel32', use_last_error=True)
+            k.OpenProcess.restype = wintypes.HANDLE
+            k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            k.CloseHandle.argtypes = [wintypes.HANDLE]
+            k.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            h = k.OpenProcess(0x1000, False, int(pid))
+            if not h:
+                return ctypes.get_last_error() == 87      # ERROR_INVALID_PARAMETER: no such pid
+            try:
+                code = wintypes.DWORD()
+                return bool(k.GetExitCodeProcess(h, ctypes.byref(code))) and code.value != 259
+            finally:
+                k.CloseHandle(h)
+        if sys.platform.startswith('linux'):
+            try:
+                with open(f'/proc/{int(pid)}/stat') as f:
+                    return f.read().rsplit(')', 1)[1].split()[0] == 'Z'
+            except FileNotFoundError:
+                return True
+        r = subprocess.run(['ps', '-o', 'pid=', '-p', str(int(pid))],
+                           capture_output=True, text=True, timeout=5)
+        return r.returncode == 1 and not r.stdout.strip()
+    except Exception:
+        return False
+
+
+def process_state(pid: Optional[int], create_time: Optional[float], tol: float = 2.0) -> str:
+    """Three-valued liveness of the process recorded as (pid, create_time):
+    'ours'    -- alive and started within `tol` of the recorded create_time;
+    'gone'    -- positively verified absent (or the pid now belongs to a process
+                 with a different start time, so the recorded one is gone);
+    'unknown' -- cannot tell (live lookup failed, or alive with no recorded
+                 identity to compare). Callers that must not assume a process
+                 is dead treat 'unknown' as alive."""
+    if not pid or pid <= 0:
+        return 'gone'
+    live = proc_create_time(pid)
+    if live is not None:
+        if create_time is None:
+            return 'unknown'
+        return 'ours' if abs(live - float(create_time)) <= tol else 'gone'
+    return 'gone' if _pid_absent(int(pid)) else 'unknown'
+
+
 def kill_tree(pid: int) -> None:
     """Kill a process tree. The shim only ever calls this on its OWN child."""
     try:

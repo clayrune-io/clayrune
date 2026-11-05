@@ -1035,6 +1035,51 @@ def test_failed_teardown_is_not_reported_as_nothing_started(tracker, tmp_path, m
     assert res.ok is False and res.cli_running is True and 'teardown incomplete' in res.error
 
 
+def test_teardown_with_unavailable_liveness_lookup_is_not_reported_gone(tracker, tmp_path, monkeypatch):
+    """Fenn round 2: a failed live identity lookup was counted as 'gone', so
+    launch() returned cli_running=False while the shim and CLI were still alive
+    and the caller took the fallback. Unknown liveness must read as running."""
+    def refuse(self):
+        raise C.ShimUnavailable('handshake failed: injected')
+
+    monkeypatch.setattr(C.ShimClient, 'connect', refuse)
+    real = shim.proc_create_time
+    seen = {}
+    orig_teardown = C._teardown_started
+
+    def teardown_with_lookup_down(m, timeout=5.0):
+        seen['m'] = m
+        monkeypatch.setattr(shim, 'proc_create_time', lambda pid: None)   # lookup unavailable
+        return orig_teardown(m, timeout=0.3)
+
+    monkeypatch.setattr(C, '_teardown_started', teardown_with_lookup_down)
+    res = C.launch(tmp_path, 'h3', argv=child_argv(), cwd=None, mode='interactive', tick_s=0.1)
+    m = seen['m']
+    tracker.add_manifest(C.session_dir(tmp_path, 'h3'))        # safety net: kills them after
+    monkeypatch.setattr(shim, 'proc_create_time', real)
+    assert alive_ct(m['cli_pid'], m['cli_ct']) and alive_ct(m['shim_pid'], m['shim_ct'])
+    assert res.ok is False and res.cli_running is True and 'teardown incomplete' in res.error
+
+
+def test_process_state_is_three_valued():
+    me = os.getpid()
+    ct = shim.proc_create_time(me)
+    assert shim.process_state(me, ct) == 'ours'
+    assert shim.process_state(me, ct + 3600) == 'gone'            # pid reused by another process
+    assert shim.process_state(me, None) == 'unknown'              # alive, no identity to compare
+    assert shim.process_state(None, None) == 'gone'
+    p = subprocess.Popen(child_argv())
+    p.kill()
+    p.wait()
+    assert shim.process_state(p.pid, ct) == 'gone'               # positively absent
+    orig = shim.proc_create_time
+    try:
+        shim.proc_create_time = lambda pid: None
+        assert shim.process_state(me, ct) == 'unknown'            # lookup down, process alive
+    finally:
+        shim.proc_create_time = orig
+
+
 def test_buffered_send_from_a_displaced_owner_is_refused(tmp_path):
     """Defect 3a: old owner's SEND passed the pre-read ownership check, a
     takeover landed, then the SEND reached the write. It must not consume the
