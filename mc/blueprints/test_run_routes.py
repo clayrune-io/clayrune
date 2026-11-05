@@ -1,4 +1,4 @@
-"""MC-1148 phase 4: default-off reads and attributed telemetry, never execution."""
+"""MC-1148 phases 4/4b: dark telemetry and launcher exit evidence, no execution."""
 from __future__ import annotations
 
 import atexit
@@ -13,6 +13,7 @@ from flask import Blueprint, abort, jsonify, request
 from mc import caller_attribution, state
 from mc.core import _log
 from mc.test_run_ingest import IngestRefused, OwnerBinding, TestRunIngest, MAX_BATCH_BYTES
+from mc.test_run_finalize import TestRunFinalize, FinalizeConflict, peer_process_identity
 from mc.test_run_store import StoreError, TestRunStore
 
 bp = Blueprint('test_run_routes', __name__)
@@ -25,6 +26,7 @@ _session_cwd: Callable[[dict[str, Any], str], str] = lambda s, p: s.get('_agent_
 _proc_identity: Callable[[int], Any] = lambda _: (None, None)
 _store: TestRunStore | None = None
 _ingest: TestRunIngest | None = None
+_finalize: TestRunFinalize | None = None
 _lock = threading.RLock()
 
 
@@ -41,8 +43,11 @@ def wire(*, data_root: Path, load_project_fn: Callable[[str], Any],
 
 
 def close() -> None:
-    global _ingest
+    global _ingest, _finalize
     with _lock:
+        if _finalize is not None:
+            _finalize.close()
+            _finalize = None
         if _ingest is not None:
             _ingest.close()
             _ingest = None
@@ -97,8 +102,11 @@ def resolve_owner(project_id: str, caller: Any) -> OwnerBinding | None:
     if tracked and (tracked.get('session_id') != caller.session_id
                     or tracked.get('project_id') != project_id):
         return None
-    _, created = _proc_identity(caller.pid)
-    identity = f'pid:{caller.pid}@{created}' if created is not None else None
+    identity = peer_process_identity(
+        caller, request.remote_addr or '', request.environ.get('REMOTE_PORT'),
+        request.environ.get('SERVER_PORT'), roots, _proc_identity)
+    if identity is None:
+        return None
     return OwnerBinding(
         project_id, caller.session_id,
         bool(session.get('incognito') or project.get('_is_incognito_project')),
@@ -123,6 +131,14 @@ def _service() -> TestRunIngest:
         if _ingest is None:
             _ingest = TestRunIngest(_storage(), resolve_owner=resolve_owner)
         return _ingest
+
+
+def _finalizer() -> TestRunFinalize:
+    global _finalize
+    with _lock:
+        if _finalize is None:
+            _finalize = TestRunFinalize(_service())
+        return _finalize
 
 
 def _session(project_id: str, session_id: str) -> None:
@@ -233,6 +249,11 @@ def _invalid(exc):
     return jsonify({'error': 'Invalid test-run request or telemetry'}), 400
 
 
+@bp.errorhandler(FinalizeConflict)
+def _conflict(exc):
+    return jsonify({'error': 'Conflicting test-run finalization'}), 409
+
+
 @bp.errorhandler(StoreError)
 @bp.errorhandler(OSError)
 def _unavailable(exc):
@@ -279,10 +300,18 @@ def events(project_id: str, run_id: str):
 def enroll(project_id: str):
     caller, _ = _scope(project_id, writing=True)
     data = _body()
-    # All body owner/cwd/process/source fields are ignored. Only this nested
-    # metadata object reaches the ingest allowlist; it cannot assign ownership.
-    run, receipt = _service().enroll(project_id, caller, data.get('metadata', {}))
-    return jsonify({'run': run, 'receipt': asdict(receipt)}), 201
+    # Body owner/cwd/process/source fields cannot assign ownership. The parent
+    # reference is validated separately against the resolved owner and state.
+    run, receipt, capability = _finalizer().enroll(
+        project_id, caller, data.get('metadata', {}), parent_run_id=data.get('parent_run_id'))
+    return jsonify({'run': run, 'receipt': asdict(receipt),
+                    'finalize_capability': asdict(capability)}), 201
+
+
+@bp.post('/api/project/<project_id>/test-runs/<run_id>/finalize')
+def finalize(project_id: str, run_id: str):
+    caller, _ = _scope(project_id, writing=True)
+    return jsonify(_finalizer().finalize(project_id, caller, run_id, _token(), _body()))
 
 
 @bp.post('/api/project/<project_id>/test-runs/<run_id>/producer')
