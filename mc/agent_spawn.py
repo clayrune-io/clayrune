@@ -266,10 +266,10 @@ def _settle(cap: _CaptureStdin, proc: Any, defer: bool, ok: bool, why: str = '')
 
 def _capture_prompt(deliver: Callable[[Any], None], session_id: str, engine: str) -> _CaptureStdin:
     """Run `deliver` against a capture stream and wait until it has closed it
-    (or `_CAPTURE_WAIT_S` passes). `deliver` normally just starts a thread, but a
-    synchronous one blocks in `close()` until the outcome is settled, so it runs
-    on its own thread. An exception it raises is re-raised here, as an inline
-    call would."""
+    (or `_CAPTURE_WAIT_S` passes), whichever thread ends up closing it. `deliver`
+    normally just starts a writer thread, but a synchronous one blocks in
+    `close()` until the outcome is settled, so it runs on its own thread. An
+    exception it raises is re-raised here, as an inline call would."""
     cap = _CaptureStdin()
     err: list = []
 
@@ -281,7 +281,10 @@ def _capture_prompt(deliver: Callable[[Any], None], session_id: str, engine: str
     runner = threading.Thread(target=run, daemon=True, name='agent-spawn-deliver')
     runner.start()
     end = time.monotonic() + _CAPTURE_WAIT_S
-    while not cap.done.is_set() and runner.is_alive() and time.monotonic() < end:
+    # Wait for the CLOSE, not for `runner`: `deliver` normally returns as soon as it has
+    # started a writer thread, so the runner dies long before the prompt is complete.
+    # Only a raised exception ends the wait early.
+    while not cap.done.is_set() and not err and time.monotonic() < end:
         cap.done.wait(0.02)
     if err:
         cap.settle(False, f'prompt delivery raised: {err[0]}')
@@ -307,12 +310,17 @@ def spawn_engine_proc(cmd: Sequence[Any], *, session_id: Optional[str], engine: 
     config = cfg if cfg is not None else _config()
     plain: dict = dict(cwd=cwd, env=env, creationflags=creationflags, startupinfo=startupinfo,
                        defer_delivery=defer_delivery)
-    if not (session_id and _client.enabled(config)):
+    if not session_id:
         return _popen(cmd, deliver=deliver, **plain)
 
     base = Path(root) if root is not None else default_root()
     sdir = _client.session_dir(base, str(session_id))
-    _uncertain.refuse_if_pending(sdir, str(session_id))     # raises: no Popen fallback beside an uncertain CLI
+    # Raises: no Popen fallback beside an uncertain CLI. Independent of the flag: turning the
+    # feature off must not let a retry run beside a shim/CLI an earlier flag-ON launch left
+    # unresolved. A session that never had one has no directory, so this is a single stat.
+    _uncertain.refuse_if_pending(sdir, str(session_id))
+    if not _client.enabled(config):
+        return _popen(cmd, deliver=deliver, **plain)
     prior = _client.inspect(sdir)
     if prior is not None and not prior.exited and (prior.shim_alive or prior.cli_alive):
         # The previous turn of this session still runs under its shim; reusing
@@ -360,18 +368,30 @@ def spawn_engine_proc(cmd: Sequence[Any], *, session_id: Optional[str], engine: 
         return _popen(cmd, deliver=None, **plain)
     # The prompt is already captured: write it to the plain Popen's pipe and let
     # that write decide the delivery code's outcome (it is not run a second time).
+    # The write runs on its own thread, as the pre-P2 delivery did: a CLI that fills
+    # stdout before it reads a large prompt would block it, and this caller has not
+    # started its reader yet. With `defer_delivery` the thread starts at finish_delivery.
     try:
         proc = _popen(cmd, deliver=None, pipe_stdin=True, **plain)
     except BaseException as e:
         cap.settle(False, f'spawn failed: {e}')
         raise
     pipe: Any = proc.stdin
-    try:
-        pipe.buffer.write(payload or b'')
-        pipe.flush()
-        pipe.close()
-    except Exception as e:
-        _settle(cap, proc, defer_delivery, False, f'{type(e).__name__}: {e}')
+
+    def feed() -> None:
+        try:
+            pipe.buffer.write(payload or b'')
+            pipe.flush()
+            pipe.close()
+        except Exception as e:
+            cap.settle(False, f'{type(e).__name__}: {e}')
+        else:
+            cap.settle(True)
+
+    def start_feed() -> None:
+        threading.Thread(target=feed, daemon=True, name='agent-spawn-fallback-feed').start()
+    if defer_delivery:
+        _hold_delivery(proc, start_feed)
     else:
-        _settle(cap, proc, defer_delivery, True)
+        start_feed()
     return proc

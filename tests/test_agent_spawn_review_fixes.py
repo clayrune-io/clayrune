@@ -371,15 +371,18 @@ def test_the_marker_clears_once_the_pids_are_gone_and_the_session_spawns_again(r
     assert launched == [1] and U.pending(d) is None
 
 
-def test_the_marker_is_ignored_when_the_flag_is_off(root, monkeypatch):
+def test_the_marker_still_refuses_the_session_when_the_flag_is_off(root, monkeypatch):
+    # Reversed 2026-11-05 (Fenn's re-review, Dave's call): this used to assert the marker
+    # was ignored with the flag off, which let a retry run beside an unresolved CLI.
     d = C.session_dir(root, 'unc6')
     d.mkdir(parents=True, exist_ok=True)
     U._write_marker(d, 'unc6', 'L1', 'test')
     _on(False)
     _Popen.calls = []
     monkeypatch.setattr(S.subprocess, 'Popen', _Popen)
-    p = S.spawn_engine_proc(['fake'], session_id='unc6', engine='codex', root=root)
-    assert isinstance(p, _Popen)
+    with pytest.raises(RuntimeError, match='unresolved'):
+        S.spawn_engine_proc(['fake'], session_id='unc6', engine='codex', root=root)
+    assert _Popen.calls == []
 
 
 # ───────── 5. flag ON: a previous shim must be gone before its dir is reused ─────
