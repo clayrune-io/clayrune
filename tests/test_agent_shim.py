@@ -1051,6 +1051,7 @@ def test_teardown_with_unavailable_liveness_lookup_is_not_reported_gone(tracker,
     def teardown_with_lookup_down(m, timeout=5.0, log=None):
         seen['m'] = m
         monkeypatch.setattr(shim, 'proc_create_time', lambda pid: None)   # lookup unavailable
+        monkeypatch.setattr(shim, '_win_create_time_from_handle', lambda k, h: None)   # ...incl. the held-handle reader
         return orig_teardown(m, timeout=0.3, log=log)
 
     monkeypatch.setattr(C, '_teardown_started', teardown_with_lookup_down)
@@ -1058,6 +1059,7 @@ def test_teardown_with_unavailable_liveness_lookup_is_not_reported_gone(tracker,
     m = seen['m']
     tracker.add_manifest(C.session_dir(tmp_path, 'h3'))        # safety net: kills them after
     monkeypatch.setattr(shim, 'proc_create_time', real)
+    monkeypatch.undo()
     assert alive_ct(m['cli_pid'], m['cli_ct']) and alive_ct(m['shim_pid'], m['shim_ct'])
     assert res.ok is False and res.cli_running is True and 'teardown incomplete' in res.error
 
@@ -1073,10 +1075,12 @@ def test_teardown_retry_cleans_up_once_the_liveness_lookup_recovers(tracker, tmp
     monkeypatch.setattr(C, '_TEARDOWN_RETRY_INTERVAL_S', 0.1)
     monkeypatch.setattr(C, '_TEARDOWN_RETRY_DEADLINE_S', 20.0)
     real, seen, orig_teardown = shim.proc_create_time, {}, C._teardown_started
+    real_h = shim._win_create_time_from_handle
 
     def teardown_with_lookup_down(m, timeout=5.0, log=None):
         seen['m'] = m
         monkeypatch.setattr(shim, 'proc_create_time', lambda pid: None)   # lookup unavailable
+        monkeypatch.setattr(shim, '_win_create_time_from_handle', lambda k, h: None)   # ...incl. the held-handle reader
         return orig_teardown(m, timeout=0.3, log=log)
 
     monkeypatch.setattr(C, '_teardown_started', teardown_with_lookup_down)
@@ -1087,17 +1091,158 @@ def test_teardown_retry_cleans_up_once_the_liveness_lookup_recovers(tracker, tmp
     time.sleep(0.5)                                            # several retry passes, lookup still down
     assert alive_ct(m['cli_pid'], m['cli_ct']) and alive_ct(m['shim_pid'], m['shim_ct']),         'retry killed a process whose liveness was unknown'
     monkeypatch.setattr(shim, 'proc_create_time', real)        # lookup recovers
+    monkeypatch.setattr(shim, '_win_create_time_from_handle', real_h)
     assert wait_for(lambda: not alive_ct(m['cli_pid'], m['cli_ct'])
                     and not alive_ct(m['shim_pid'], m['shim_ct']), 15), 'retry never cleaned up'
 
 
-def test_teardown_retry_logs_survivors_at_the_deadline(monkeypatch):
-    monkeypatch.setattr(shim, 'process_state', lambda pid, ct, tol=2.0: 'unknown')
-    kills, lines = [], []
-    monkeypatch.setattr(shim, 'kill_tree', lambda pid: kills.append(pid))
-    C._teardown_retry([(111, 1.0), (222, 2.0)], 0.05, 0.2, lines.append)
-    assert kills == [] and len(lines) == 1
-    assert 'pid=111 state=unknown' in lines[0] and 'pid=222 state=unknown' in lines[0]
+def test_teardown_retry_logs_survivors_at_the_deadline(tracker, monkeypatch):
+    """Two live children whose liveness lookup is down ('unknown'): the retry
+    must not signal them, and must log both at the deadline."""
+    a, b = sleeper(tracker), sleeper(tracker)
+    pairs = [(a.pid, shim.proc_create_time(a.pid)), (b.pid, shim.proc_create_time(b.pid))]
+    monkeypatch.setattr(shim, 'proc_create_time', lambda pid: None)       # lookup down
+    monkeypatch.setattr(shim, '_win_create_time_from_handle', lambda k, h: None)
+    lines = []
+    C._teardown_retry(pairs, 0.05, 0.2, lines.append)
+    monkeypatch.undo()
+    assert a.poll() is None and b.poll() is None, 'retry killed a process whose liveness was unknown'
+    assert len(lines) == 1
+    assert f'pid={a.pid} state=unknown' in lines[0] and f'pid={b.pid} state=unknown' in lines[0]
+    a.kill(); b.kill(); a.wait(); b.wait()
+
+
+def _pid_reused_once_dead(monkeypatch, first):
+    """Every live identity read taken AFTER `first` has exited looks like a
+    different process (a reused PID). Patches both readers: the stdlib one and
+    the Windows held-handle one."""
+    real_ct, real_h = shim.proc_create_time, shim._win_create_time_from_handle
+
+    def shifted(v):
+        return v + 3600 if (v is not None and first.poll() is not None) else v
+
+    monkeypatch.setattr(shim, 'proc_create_time', lambda pid: shifted(real_ct(pid)))
+    monkeypatch.setattr(shim, '_win_create_time_from_handle', lambda k, h: shifted(real_h(k, h)))
+
+
+def test_teardown_does_not_kill_a_shim_pid_reused_during_the_cli_kill(tracker, monkeypatch):
+    """Fenn round 4 P1-B: both identities were read once, before either kill; if
+    the shim exited and its PID was reused while the CLI kill was blocking, the
+    second kill hit the replacement. 'b' stands in for the replacement: live, but
+    once 'a' (the CLI) is dead its identity no longer matches the manifest."""
+    a, b = sleeper(tracker), sleeper(tracker)
+    m = {'cli_pid': a.pid, 'cli_ct': shim.proc_create_time(a.pid),
+         'shim_pid': b.pid, 'shim_ct': shim.proc_create_time(b.pid)}
+    _pid_reused_once_dead(monkeypatch, a)
+    C._teardown_started(m, timeout=1.0)
+    a_dead = wait_for(lambda: a.poll() is not None, 10)
+    monkeypatch.undo()
+    assert a_dead, 'the CLI (identity intact) was not killed'
+    assert b.poll() is None, 'teardown killed a process that had reused the shim pid'
+    b.kill(); b.wait()
+
+
+def test_teardown_retry_does_not_kill_a_pid_reused_during_the_pass(tracker, monkeypatch):
+    a, b = sleeper(tracker), sleeper(tracker)
+    pairs = [(a.pid, shim.proc_create_time(a.pid)), (b.pid, shim.proc_create_time(b.pid))]
+    _pid_reused_once_dead(monkeypatch, a)
+    C._teardown_retry(pairs, 0.05, 3.0, lambda s: None)
+    a_dead = wait_for(lambda: a.poll() is not None, 10)
+    monkeypatch.undo()
+    assert a_dead
+    assert b.poll() is None, 'retry killed a process that had reused the pid'
+    b.kill(); b.wait()
+
+
+def test_kill_tree_if_ours_refuses_wrong_missing_and_unknown_identity(tracker, monkeypatch):
+    p = sleeper(tracker)
+    ct = shim.proc_create_time(p.pid)
+    assert shim.kill_tree_if_ours(p.pid, ct + 3600) is False       # reused pid
+    assert shim.kill_tree_if_ours(p.pid, None) is False            # no recorded identity
+    assert shim.kill_tree_if_ours(None, ct) is False and shim.kill_tree_if_ours(0, ct) is False
+    monkeypatch.setattr(shim, 'proc_create_time', lambda pid: None)   # lookup down = unknown
+    monkeypatch.setattr(shim, '_win_create_time_from_handle', lambda k, h: None)
+    assert shim.kill_tree_if_ours(p.pid, ct) is False
+    monkeypatch.undo()
+    assert p.poll() is None
+    q = subprocess.Popen([PY_BASE, '-c', 'pass'])
+    q.wait()
+    assert shim.kill_tree_if_ours(q.pid, ct) is False              # gone
+    p.kill(); p.wait()
+
+
+def test_kill_tree_if_ours_kills_a_real_child_and_its_descendants(tracker):
+    """Windows: held handle + taskkill /T. POSIX: pidfd (or the re-checked
+    fallback) to the root, killpg for the group the child leads."""
+    code = ('import subprocess,sys,time;'
+            'g=subprocess.Popen([sys.executable,"-c","import time;time.sleep(120)"]);'
+            'print(g.pid,flush=True);time.sleep(120)')
+    kw = {'start_new_session': True} if POSIX else {}
+    p = subprocess.Popen([PY_BASE, '-c', code], stdout=subprocess.PIPE, text=True, **kw)
+    ct = shim.proc_create_time(p.pid)
+    tracker.add(p.pid, ct)
+    gpid = int(p.stdout.readline())
+    gct = shim.proc_create_time(gpid)
+    tracker.add(gpid, gct)
+    assert shim.kill_tree_if_ours(p.pid, ct) is True
+    p.wait(timeout=10)
+    assert wait_for(lambda: not alive_ct(gpid, gct), 10), 'descendant survived the tree kill'
+    p.stdout.close()
+
+
+@pytest.mark.skipif(not hasattr(os, 'pidfd_open'), reason='needs Linux 5.3+ pidfd')
+def test_kill_tree_if_ours_uses_pidfd_when_available(tracker, monkeypatch):
+    p = sleeper(tracker)
+    ct = shim.proc_create_time(p.pid)
+    sent, real = [], signal.pidfd_send_signal
+    monkeypatch.setattr(signal, 'pidfd_send_signal', lambda fd, sig: (sent.append(sig), real(fd, sig))[1])
+    assert shim.kill_tree_if_ours(p.pid, ct) is True and sent == [signal.SIGKILL]
+    p.wait(timeout=10)
+
+
+@pytest.mark.skipif(not POSIX, reason='POSIX fallback path')
+def test_kill_tree_if_ours_fallback_without_pidfd_rechecks_before_kill(tracker, monkeypatch):
+    monkeypatch.delattr(shim.os, 'pidfd_open', raising=False)
+    p = sleeper(tracker)
+    ct = shim.proc_create_time(p.pid)
+    assert shim.kill_tree_if_ours(p.pid, ct + 3600) is False and p.poll() is None
+    assert shim.kill_tree_if_ours(p.pid, ct) is True
+    p.wait(timeout=10)
+
+
+def test_identity_tolerance_is_tight_per_platform():
+    assert shim._tolerance_for('win32') == 0.01
+    assert shim._tolerance_for('linux') == 0.05
+    assert shim._tolerance_for('darwin') == 2.0
+    assert shim.IDENTITY_TOLERANCE_S == shim._tolerance_for(sys.platform)
+    import inspect
+    for fn in (shim.same_process, shim.process_state, shim.kill_tree_if_ours):
+        assert inspect.signature(fn).parameters['tol'].default == shim.IDENTITY_TOLERANCE_S
+
+
+def test_a_pid_reused_shortly_after_the_recorded_process_is_not_ours():
+    """Fenn round 4 P1-A: under the old flat 2 s tolerance a process that took the
+    PID 1.5 s after the recorded one passed as the same process (Windows/Linux)."""
+    me = os.getpid()
+    ct = shim.proc_create_time(me)
+    ours = shim.IDENTITY_TOLERANCE_S >= 1.5            # only the macOS fallback
+    assert shim.same_process(me, ct - 1.5) is ours
+    assert shim.process_state(me, ct - 1.5) == ('ours' if ours else 'gone')
+
+
+def test_recorded_identity_matches_live_identity_within_the_tolerance(tracker, tmp_path):
+    """The tight tolerance is only safe if the shim's stored create times come
+    from the same reader as the live check; otherwise our own process reads as
+    'gone'. Real shim, real CLI: the manifest values must match a fresh read."""
+    res = start(tracker, tmp_path, 'tol1', '--lines', '1000', '--interval', '0.05',
+                mode='interactive', owner_pid=os.getpid())
+    m = res.proc.manifest
+    for pid_k, ct_k in (('shim_pid', 'shim_ct'), ('cli_pid', 'cli_ct')):
+        live = shim.proc_create_time(m[pid_k])
+        assert live is not None and m[ct_k] is not None
+        assert abs(live - m[ct_k]) <= shim.IDENTITY_TOLERANCE_S, (pid_k, live - m[ct_k])
+        assert shim.process_state(m[pid_k], m[ct_k]) == 'ours'
+    res.proc.kill()
 
 
 def test_pid_absent_posix_needs_esrch(monkeypatch):

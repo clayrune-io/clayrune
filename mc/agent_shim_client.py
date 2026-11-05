@@ -638,14 +638,13 @@ def _teardown_retry(pairs: List[Any], interval: float, deadline: float,
                     log: Callable[[str], None]) -> None:
     """Bounded re-run of the teardown: each pass kills only what is positively
     'ours' (never on 'unknown'), stops once every process is 'gone', and logs the
-    survivors if the deadline passes first."""
+    survivors if the deadline passes first. The kill re-checks identity itself
+    (kill_tree_if_ours); no state read earlier in the pass is trusted."""
     end = time.monotonic() + deadline
     while time.monotonic() < end:
         time.sleep(max(0.0, min(interval, end - time.monotonic())))
-        sts = _shim_states(pairs)
-        for (pid, _ct), st in zip(pairs, sts):
-            if st == 'ours':
-                _shim.kill_tree(int(pid))
+        for pid, ct in pairs:
+            _shim.kill_tree_if_ours(pid, ct)
         if all(st == 'gone' for st in _shim_states(pairs)):
             return
     log('[agent-shim] teardown retry deadline passed; still alive: ' +
@@ -662,9 +661,11 @@ def _teardown_started(m: Mapping[str, Any], timeout: float = 5.0,
     background retry keeps trying to clean it up."""
     pairs = [(m.get('cli_pid'), m.get('cli_ct')), (m.get('shim_pid'), m.get('shim_ct'))]
 
-    for (pid, ct), st in zip(pairs, _shim_states(pairs)):   # CLI first, then the shim
-        if st == 'ours':
-            _shim.kill_tree(int(pid))                  # type: ignore[arg-type]
+    # CLI first, then the shim. Identity is checked inside each kill, right
+    # before it: the CLI kill can block, and the shim may exit (its pid be
+    # reused) meanwhile, so nothing is read ahead of time.
+    for pid, ct in pairs:
+        _shim.kill_tree_if_ours(pid, ct)
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         if all(st == 'gone' for st in _shim_states(pairs)):

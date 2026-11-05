@@ -91,17 +91,25 @@ def _win_create_time(pid: int) -> Optional[float]:
     if not h:
         return None
     try:
-        code = wintypes.DWORD()
-        if not k.GetExitCodeProcess(h, ctypes.byref(code)) or code.value != 259:
-            return None                           # 259 == STILL_ACTIVE
-        c, e, kt, ut = (wintypes.FILETIME() for _ in range(4))
-        if not k.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e),
-                                 ctypes.byref(kt), ctypes.byref(ut)):
-            return None
-        ft = (c.dwHighDateTime << 32) | c.dwLowDateTime
-        return (ft - 116444736000000000) / 1e7
+        return _win_create_time_from_handle(k, h)
     finally:
         k.CloseHandle(h)
+
+
+def _win_create_time_from_handle(k: Any, h: Any) -> Optional[float]:
+    """Creation time of the process behind an OPEN handle, or None if it has
+    exited. `k` is the private WinDLL from the caller, argtypes already set."""
+    import ctypes
+    from ctypes import wintypes
+    code = wintypes.DWORD()
+    if not k.GetExitCodeProcess(h, ctypes.byref(code)) or code.value != 259:
+        return None                               # 259 == STILL_ACTIVE
+    c, e, kt, ut = (wintypes.FILETIME() for _ in range(4))
+    if not k.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e),
+                             ctypes.byref(kt), ctypes.byref(ut)):
+        return None
+    ft = (c.dwHighDateTime << 32) | c.dwLowDateTime
+    return (ft - 116444736000000000) / 1e7
 
 
 def _linux_create_time(pid: int) -> Optional[float]:
@@ -146,7 +154,29 @@ def proc_create_time(pid: Optional[int]) -> Optional[float]:
         return None
 
 
-def same_process(pid: Optional[int], create_time: Optional[float], tol: float = 2.0) -> bool:
+def _tolerance_for(platform: str) -> float:
+    """How far a live creation time may differ from the one recorded earlier
+    and still be the same process. Stored and live values come from the SAME
+    reader (`proc_create_time`), so the tolerance only has to absorb that
+    reader's own jitter, and every second of slack is a second in which a
+    process that reused the PID passes as the old one.
+      Windows  0.01 s  FILETIME is exact; same call both times.
+      Linux    0.05 s  jiffies are 10 ms; btime is read from /proc/stat.
+      other    2.0 s   macOS `ps -o lstart` has 1 s resolution. REMAINING RISK:
+                       a process that reuses the PID within ~2 s of the
+                       recorded one reads as ours. Unmeasured on a real Mac."""
+    if platform == 'win32':
+        return 0.01
+    if platform.startswith('linux'):
+        return 0.05
+    return 2.0
+
+
+IDENTITY_TOLERANCE_S = _tolerance_for(sys.platform)
+
+
+def same_process(pid: Optional[int], create_time: Optional[float],
+                 tol: float = IDENTITY_TOLERANCE_S) -> bool:
     """The PID-reuse guard: True only if `pid` is alive AND started within
     `tol` seconds of the recorded `create_time`. A missing recorded identity is
     never a match (same posture as process_ledger._should_reap_entry)."""
@@ -197,7 +227,8 @@ def _pid_absent(pid: int) -> bool:
         return False
 
 
-def process_state(pid: Optional[int], create_time: Optional[float], tol: float = 2.0) -> str:
+def process_state(pid: Optional[int], create_time: Optional[float],
+                  tol: float = IDENTITY_TOLERANCE_S) -> str:
     """Three-valued liveness of the process recorded as (pid, create_time):
     'ours'    -- alive and started within `tol` of the recorded create_time;
     'gone'    -- positively verified absent (or the pid now belongs to a process
@@ -228,6 +259,106 @@ def kill_tree(pid: int) -> None:
             os.kill(pid, signal.SIGKILL)
     except Exception:
         pass
+
+
+def _win_kill_tree_if_ours(pid: int, create_time: float, tol: float) -> bool:
+    """Windows half of kill_tree_if_ours. The handle is opened first and held
+    across the kill: Windows will not reuse a PID while any handle to the
+    process object is open, so the identity read from THIS handle is the
+    identity taskkill acts on."""
+    import ctypes
+    from ctypes import wintypes
+    k = ctypes.WinDLL('kernel32', use_last_error=True)
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    k.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    ft_p = ctypes.POINTER(wintypes.FILETIME)
+    k.GetProcessTimes.argtypes = [wintypes.HANDLE, ft_p, ft_p, ft_p, ft_p]
+    # PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE
+    h = k.OpenProcess(0x1000 | 0x00100000, False, int(pid))
+    if not h:
+        return False                              # gone, or access denied: unknown
+    try:
+        live = _win_create_time_from_handle(k, h)
+        if live is None or abs(live - float(create_time)) > tol:
+            return False
+        r = subprocess.run(['taskkill', '/F', '/T', '/PID', str(int(pid))],
+                           capture_output=True, creationflags=_CREATE_NO_WINDOW, timeout=30)
+        return r.returncode == 0
+    finally:
+        k.CloseHandle(h)
+
+
+def _posix_kill_tree_if_ours(pid: int, create_time: float, tol: float) -> bool:
+    """POSIX half of kill_tree_if_ours. With pidfd_open (Linux 5.3+) the fd pins
+    the process object: a signal sent through it can only reach the process it
+    was opened on, so the identity check and the kill cannot straddle a PID
+    reuse. Without it, identity is re-read immediately before os.kill/killpg;
+    the window left is the few microseconds between that read and the signal
+    (REMAINING RISK on macOS and old Linux kernels, not closable from stdlib)."""
+    pidfd_open = getattr(os, 'pidfd_open', None)
+    send = getattr(signal, 'pidfd_send_signal', None)
+    sigkill = getattr(signal, 'SIGKILL', 9)       # POSIX-only attribute
+    if pidfd_open is not None and send is not None:
+        try:
+            fd = pidfd_open(int(pid))
+        except OSError:
+            return False                          # ESRCH/EPERM/ENOSYS: not provably ours
+        try:
+            # pgid is read BEFORE the identity check: if the pid was reused
+            # in between, the check (made after) reads the new process and
+            # fails; read after, it could be the new process's group.
+            try:
+                pgid = os.getpgid(int(pid))       # type: ignore[attr-defined]
+            except OSError:
+                pgid = None
+            if not same_process(pid, create_time, tol):
+                return False
+            send(fd, sigkill)
+            # A group whose id equals the pid is the one the child made for
+            # itself; no other process can take that id while the group has
+            # members, so this reaches only its descendants. Left open: a
+            # root with no descendants whose pid is recycled into a new group
+            # leader in the microseconds after the signal.
+            if pgid == int(pid) and pgid != os.getpgrp():   # type: ignore[attr-defined]
+                try:
+                    os.killpg(pgid, sigkill)      # type: ignore[attr-defined]
+                except OSError:
+                    pass
+            return True
+        except OSError:
+            return False
+        finally:
+            os.close(fd)
+    try:
+        pgid = os.getpgid(int(pid))               # type: ignore[attr-defined]
+        if process_state(pid, create_time, tol) != 'ours':
+            return False
+        if pgid == int(pid) and pgid != os.getpgrp():       # type: ignore[attr-defined]
+            os.killpg(pgid, sigkill)              # type: ignore[attr-defined]
+        else:
+            os.kill(int(pid), sigkill)
+        return True
+    except OSError:
+        return False
+
+
+def kill_tree_if_ours(pid: Optional[int], create_time: Optional[float],
+                      tol: float = IDENTITY_TOLERANCE_S) -> bool:
+    """Kill the tree rooted at `pid` ONLY IF it is still the process recorded as
+    (pid, create_time); identity is re-checked inside this call, immediately
+    before the signal, from live state. Nothing is read from a cache, so a PID
+    reused between an earlier look and this call is not killed. Never kills on
+    'unknown' (lookup failed) or 'gone'. True = a kill was delivered. Never raises."""
+    if not pid or pid <= 0 or create_time is None:
+        return False
+    try:
+        if sys.platform == 'win32':
+            return _win_kill_tree_if_ours(int(pid), float(create_time), tol)
+        return _posix_kill_tree_if_ours(int(pid), float(create_time), tol)
+    except Exception:
+        return False
 
 
 # ───────────────────────────── atomic JSON ──────────────────────────────────
