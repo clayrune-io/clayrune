@@ -23,6 +23,7 @@
 // .backlog-item/.social-item classes, same per-project scoping, one set of
 // behaviours to keep correct. The per-project Social tab stays as a filtered
 // view of the same queue.
+import './desk-impact-link-seam.js';
 
 const DESK_MODAL_ID = '__desk';
 const DESK_TABS = ['board', 'queue', 'calendar', 'ledger'];
@@ -1888,7 +1889,15 @@ function _deskInsertIntoBody(text) {
 // A tracked link always inserts the `?ref=desk-<item_id>` form the Ledger's
 // "to repo" count reads (UI brief §4) — appended automatically so it is never
 // left off by hand.
+// MC-1152 P2 (dark): with `desk_impact_links_enabled` on, Desk links are UTM links
+// and the `ref` tag is retired; a queue item has no campaign to build one from.
 async function deskQueueInsertLink(projectId, itemId) {
+  const impact = window.DeskImpactLinkSeam;
+  if (impact && await impact.enabled()) {
+    document.querySelectorAll('.desk-insert-menu').forEach(m => { m.style.display = 'none'; });
+    alert(impact.LEGACY_QUEUE_MESSAGE);
+    return;
+  }
   const url = (prompt('Destination URL (a tracking tag is appended automatically):') || '').trim();
   if (!url) return;
   const sep = url.includes('?') ? '&' : '?';
