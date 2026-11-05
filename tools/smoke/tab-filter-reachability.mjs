@@ -29,6 +29,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { loadStaticJsCss } from './_static.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -38,29 +39,11 @@ const INDEX_HTML = rd('static', 'index.html');
 const APP_CSS = rd('static', 'css', 'app.css');
 const BEACON_CSS = rd('static', 'css', 'beacon.css');
 
-// Same module list as boot-smoke.mjs / backlog-search-tab-isolation.mjs's
-// STATIC_MAP — every extracted /static/js/*.js must be fulfilled or the
-// hermetic harness aborts its request and the SPA boots without that
-// feature (here, without the modal/tab wiring under test).
-const JS_MODULES = [
-  'claydo.js', 'mobile-pairing.js', 'walkthrough.js', 'skills-panel.js', 'media.js',
-  'settings-drill.js', 'settings-sections.js', 'terminal.js', 'mermaid.js',
-  'search-chats.js', 'backlog-actions.js', 'cross-backlog.js', 'scheduler.js',
-  'schedule-calendar.js', 'automation-suggestions.js', 'mcp.js', 'secret-form.js', 'secrets-panel.js',
-  'system-status.js', 'update-power.js', 'provider-auth.js', 'schedule-banner.js',
-  'provider-settings.js', 'process-manager.js', 'cross-hivemind.js', 'feed.js',
-  'beacon.js', 'mobile.js', 'project-actions.js', 'composer-extras.js',
-  'slash-autocomplete.js', 'mention-autocomplete.js', 'appearance.js',
-  'project-forms.js', 'interactions.js', 'render-core.js', 'modal-manager.js',
-  'agent-console.js', 'floor.js', 'hivemind.js', 'agent-log.js', 'resume-preview.js',
-  'conversation.js', 'rich-text.js', 'team-card.js', 'cross-social.js', 'desk.js',
-  'workflow-builder.js', 'first-run.js',
-];
-const STATIC_MAP = { '/static/css/app.css': ['text/css; charset=utf-8', APP_CSS],
-  '/static/css/beacon.css': ['text/css; charset=utf-8', BEACON_CSS] };
-for (const name of JS_MODULES) {
-  STATIC_MAP[`/static/js/${name}`] = ['text/javascript; charset=utf-8', rd('static', 'js', name)];
-}
+// Serve every real static/js/**/*.js and static/css/**/*.css (recursive walk,
+// _static.mjs) instead of a hand-kept module list: a module added later — or
+// imported by an existing one — can no longer fall through to route.abort() and
+// boot the SPA without the code under test (ReferenceError agentPanelHTML).
+const STATIC_MAP = loadStaticJsCss(REPO_ROOT);
 
 const PROJECT_ID = 'smoke_tabfilter';
 
