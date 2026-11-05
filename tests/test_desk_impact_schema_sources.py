@@ -282,10 +282,11 @@ def test_source_error_is_not_a_zero_conversion():
 
 # -- registry ------------------------------------------------------------------------------------
 
-def test_registry_ships_empty_and_importing_it_collects_nothing():
-    assert REGISTRY.source_ids() == ()
+def test_registry_contains_dark_github_metadata_only():
+    assert REGISTRY.source_ids() == ('github',)
+    assert not REGISTRY.get('github').capabilities({}).attributes_channel
     with pytest.raises(UnknownSource):
-        REGISTRY.get('github')
+        REGISTRY.get('not_registered')
 
 
 def test_registry_registers_once():
