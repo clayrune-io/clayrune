@@ -909,3 +909,189 @@ def test_survival_matrix_posix(posix_matrix, variant, kill):
     assert r['result'] == POSIX_EXPECT[(variant, kill)], r
     if r['result'] == Y:
         assert r['log_grew'] and r['roundtrip'] is True, r
+
+
+# ───────────────── P1 fix round (Fenn review of 02593a43) ───────────────────
+class _StubConn:
+    """Just enough socket for Shim._reply / _claim_owner."""
+
+    def __init__(self):
+        self.replies = []
+
+    def sendall(self, b):
+        self.replies.append(b.decode().strip())
+
+    def shutdown(self, how):
+        pass
+
+
+class _StubRF:
+    def __init__(self, data, gate=None):
+        self._data, self._gate = data, gate
+
+    def read(self, n):
+        if self._gate is not None:
+            assert self._gate.wait(10)
+        return self._data[:n]
+
+
+class _StubStdin:
+    def __init__(self, gate=None):
+        self.writes, self._gate = [], gate
+        self.entered = threading.Event()
+
+    def write(self, data):
+        self.entered.set()
+        if self._gate is not None:
+            assert self._gate.wait(10)
+        self.writes.append(bytes(data))
+
+    def flush(self):
+        pass
+
+
+def _stub_shim(tmp_path, stdin):
+    from types import SimpleNamespace
+    sh = shim.Shim(str(tmp_path))
+    sh.cli = SimpleNamespace(pid=os.getpid(), stdin=stdin)
+    return sh
+
+
+def test_expiry_does_not_kill_a_pid_the_shim_already_reaped(tracker, tmp_path, monkeypatch):
+    """Defect 1: the wait thread has reaped the CLI but is stalled writing
+    exit.json, so `_exited` is still unset and the main loop reaches orphan_max.
+    The old code tree-killed the (by now reusable) pid anyway."""
+    sdir = C.session_dir(tmp_path, 'x1')
+    spec = C.build_spec(argv=child_argv('--lines', '3', '--interval', '0.1'), cwd=None,
+                        mode='oneshot', session_id='x1', owner_pid=0,
+                        timers={'grace_s': 999, 'exit_grace_s': 999, 'orphan_max_s': 0.8, 'tick_s': 0.05})
+    C.write_spec(sdir, spec)
+    stalled, release, kills = threading.Event(), threading.Event(), []
+    real_write = shim.write_json_atomic
+
+    def slow_write(path, obj):
+        if os.path.basename(path) == 'exit.json':
+            stalled.set()
+            assert release.wait(20)
+        return real_write(path, obj)
+
+    monkeypatch.setattr(shim, 'write_json_atomic', slow_write)
+    monkeypatch.setattr(shim, 'kill_tree', lambda pid: kills.append(pid))
+    sh = shim.Shim(str(sdir))
+    t = threading.Thread(target=sh.run, daemon=True)
+    t.start()
+    try:
+        assert stalled.wait(15), 'CLI never exited'          # reaped, exit.json write parked
+        assert wait_for(lambda: 'orphan_max reached' in (sdir / 'shim.log').read_text(), 10)
+        time.sleep(0.3)                                       # let the loop act on the expiry verdict
+        assert kills == [], f'expiry killed pid {kills} after the CLI was reaped'
+    finally:
+        release.set()
+        t.join(15)
+    assert (C.read_json(sdir / 'exit.json') or {}).get('reason') == 'exit'   # not mislabelled 'expired'
+
+
+def test_expiry_still_kills_a_live_cli(tracker, tmp_path, monkeypatch):
+    """The guard must not neuter expiry: a live, unreaped CLI is still killed."""
+    sh = shim.Shim(str(tmp_path))
+    p = subprocess.Popen([PY_BASE, '-c', 'import time; time.sleep(60)'])
+    tracker.add(p.pid, shim.proc_create_time(p.pid))
+    sh.cli, sh.cli_ct = p, shim.proc_create_time(p.pid)
+    kills = []
+    monkeypatch.setattr(shim, 'kill_tree', lambda pid: kills.append(pid))
+    assert sh._expire_cli() is True and kills == [p.pid] and sh._exit_reason == 'expired'
+    sh2 = shim.Shim(str(tmp_path))                            # identity mismatch: reused pid
+    sh2.cli, sh2.cli_ct = p, shim.proc_create_time(p.pid) + 3600
+    assert sh2._expire_cli() is False and kills == [p.pid]
+    p.kill()
+    p.wait()
+
+
+def test_failed_hello_after_launch_tears_down_the_started_cli(tracker, tmp_path, monkeypatch):
+    """Defect 2: launch() returned ok=False with the shim and CLI still running,
+    so the documented fallback started a second CLI."""
+    def refuse(self):
+        raise C.ShimUnavailable('handshake failed: injected')
+
+    monkeypatch.setattr(C.ShimClient, 'connect', refuse)
+    res = C.launch(tmp_path, 'h1', argv=child_argv(), cwd=None, mode='interactive', tick_s=0.1)
+    sdir = C.session_dir(tmp_path, 'h1')
+    m = C.read_json(sdir / 'shim.json')
+    tracker.add_manifest(sdir)                                 # safety net only
+    assert m and m['cli_pid'] and m['shim_pid']
+    assert res.ok is False and res.cli_running is False and 'injected' in res.error
+    assert not alive_ct(m['cli_pid'], m['cli_ct']), 'CLI left running after ok=False'
+    assert not alive_ct(m['shim_pid'], m['shim_ct']), 'shim left running after ok=False'
+
+
+def test_failed_teardown_is_not_reported_as_nothing_started(tracker, tmp_path, monkeypatch):
+    def refuse(self):
+        raise C.ShimUnavailable('handshake failed: injected')
+
+    monkeypatch.setattr(C.ShimClient, 'connect', refuse)
+    monkeypatch.setattr(C, '_teardown_started', lambda m, timeout=5.0: False)
+    res = C.launch(tmp_path, 'h2', argv=child_argv(), cwd=None, mode='interactive', tick_s=0.1)
+    tracker.add_manifest(C.session_dir(tmp_path, 'h2'))
+    assert res.ok is False and res.cli_running is True and 'teardown incomplete' in res.error
+
+
+def test_buffered_send_from_a_displaced_owner_is_refused(tmp_path):
+    """Defect 3a: old owner's SEND passed the pre-read ownership check, a
+    takeover landed, then the SEND reached the write. It must not consume the
+    seq; the new owner's payload for the same seq must be delivered."""
+    stdin = _StubStdin()
+    sh = _stub_shim(tmp_path, stdin)
+    old, new = _StubConn(), _StubConn()
+    sh.owner = shim._Owner(111, None, 'a', old)
+    gate, out = threading.Event(), {}
+    t = threading.Thread(target=lambda: out.setdefault(
+        'r', sh._do_send(old, _StubRF(b'OLD\n', gate), ['SEND', '1', '4'])))
+    t.start()
+    assert sh._claim_owner(222, 'b', new) is None             # takeover while the SEND is buffered
+    gate.set()
+    t.join(10)
+    assert out['r'] is False and old.replies == ['ERR not_owner']
+    assert stdin.writes == [] and sh.last_seq == 0
+    assert sh._do_send(new, _StubRF(b'NEW\n'), ['SEND', '1', '4']) is True
+    assert stdin.writes == [b'NEW\n'] and new.replies == ['ACK 1']
+
+
+def test_send_blocked_in_write_across_a_takeover_does_not_poison_the_seq(tmp_path):
+    """Defect 3b: the old owner's write is already in flight (full pipe) when
+    the takeover happens. The bytes go out, but last_seq must not advance, or
+    the new owner's next SEND reads as a duplicate and is dropped."""
+    gate = threading.Event()
+    stdin = _StubStdin(gate)
+    sh = _stub_shim(tmp_path, stdin)
+    old, new = _StubConn(), _StubConn()
+    sh.owner = shim._Owner(111, None, 'a', old)
+    t_old = threading.Thread(target=sh._do_send, args=(old, _StubRF(b'OLD\n'), ['SEND', '1', '4']))
+    t_old.start()
+    assert stdin.entered.wait(10)                              # past the recheck, parked in write
+    assert sh._claim_owner(222, 'b', new) is None
+    t_new = threading.Thread(target=sh._do_send, args=(new, _StubRF(b'NEW\n'), ['SEND', '1', '4']))
+    t_new.start()
+    gate.set()
+    t_old.join(10)
+    t_new.join(10)
+    assert stdin.writes == [b'OLD\n', b'NEW\n'], stdin.writes
+    assert sh.last_seq == 1 and new.replies == ['ACK 1'] and old.replies == ['ERR not_owner']
+
+
+def test_same_pid_reconnect_mid_write_keeps_the_seq(tmp_path):
+    """Guard for 3b: a SAME-owner reconnect (lost ACK) must still advance
+    last_seq, or the client's resend would write the payload twice."""
+    gate = threading.Event()
+    stdin = _StubStdin(gate)
+    sh = _stub_shim(tmp_path, stdin)
+    c1, c2 = _StubConn(), _StubConn()
+    sh.owner = shim._Owner(111, None, 'a', c1)
+    t = threading.Thread(target=sh._do_send, args=(c1, _StubRF(b'ONE\n'), ['SEND', '1', '4']))
+    t.start()
+    assert stdin.entered.wait(10)
+    assert sh._claim_owner(111, 'a2', c2) is None
+    gate.set()
+    t.join(10)
+    assert sh.last_seq == 1
+    assert sh._do_send(c2, _StubRF(b'ONE\n'), ['SEND', '1', '4']) is True
+    assert stdin.writes == [b'ONE\n'] and c2.replies == ['ACK 1']

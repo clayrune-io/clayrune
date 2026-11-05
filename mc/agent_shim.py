@@ -311,6 +311,8 @@ class Shim:
         self.owner: Optional[_Owner] = None
         self._lock = threading.RLock()                # owner + manifest state
         self._send_lock = threading.Lock()            # serialises stdin writes
+        self._cli_lock = threading.Lock()             # reap flag vs expiry kill (see _expire_cli)
+        self._cli_reaped = False
         self._stdin_closed = False
         self._exited = threading.Event()
         self._wake = threading.Event()
@@ -552,10 +554,21 @@ class Shim:
         if n < 0 or n > _MAX_SEND_BYTES:
             self._reply(conn, 'ERR protocol')
             return False
+        with self._lock:
+            o = self.owner
+            sender_pid = o.pid if (o is not None and o.conn is conn) else None
         data = rf.read(n)
         if len(data) != n:
             return False
         with self._send_lock:
+            # Re-check ownership HERE, under the lock that serialises the write.
+            # The check in _serve ran before the payload was read; a takeover in
+            # between would let a displaced owner's buffered SEND consume the
+            # next seq, and the new owner's payload would then be ACKed as a
+            # duplicate and dropped.
+            if sender_pid is None or not self._is_owner(conn):
+                self._reply(conn, 'ERR not_owner')
+                return False
             if seq <= self.last_seq:
                 self._reply(conn, f'ACK {seq}')        # resend after reconnect: already written
                 return True
@@ -572,7 +585,19 @@ class Shim:
                 self._stdin_closed = True
                 self._reply(conn, 'ERR stdin_closed')
                 return True
-            self.last_seq = seq
+            with self._lock:
+                cur = self.owner
+                still_ours = cur is not None and cur.pid == sender_pid
+                if still_ours:
+                    self.last_seq = seq
+            if not still_ours:
+                # The write blocked (full pipe) and a different owner took over
+                # meanwhile. The bytes are out, but this seq belongs to the old
+                # owner's numbering: advancing last_seq would make the new
+                # owner's next SEND read as a duplicate and be dropped.
+                self._slog(f'SEND {seq} written by displaced owner {sender_pid}; seq not advanced')
+                self._reply(conn, 'ERR not_owner')
+                return False
         self._reply(conn, f'ACK {seq}')
         return True
 
@@ -587,6 +612,8 @@ class Shim:
     def _wait_cli(self) -> None:
         assert self.cli is not None
         rc = self.cli.wait()
+        with self._cli_lock:
+            self._cli_reaped = True                    # from here the pid may be reused by anyone
         info: Dict[str, Any] = {
             'schema': SCHEMA, 'launch_id': self.spec.get('launch_id'), 'rc': rc,
             'signal': (-rc if (rc is not None and rc < 0 and sys.platform != 'win32') else None),
@@ -602,6 +629,25 @@ class Shim:
             # that will collect; if none is open, wait for a HELLO + close.
         self._slog(f'cli exited rc={rc} reason={self._exit_reason}')
         self._wake.set()
+
+    def _expire_cli(self) -> bool:
+        """Tree-kill the CLI at orphan_max, but only while the pid is still the
+        CLI we spawned. Once the wait thread has reaped it (POSIX) the pid is
+        free for reuse, and exit.json can take arbitrarily long to write, so
+        the main loop may still see `_exited` unset: killing then would take
+        out an unrelated process group. Held under `_cli_lock` so the reap
+        flag cannot flip between the check and the kill."""
+        cli = self.cli
+        with self._cli_lock:
+            if cli is None or self._cli_reaped:
+                self._slog('orphan_max reached: CLI already reaped; not killing')
+                return False
+            if self.cli_ct is not None and not same_process(cli.pid, self.cli_ct):
+                self._slog(f'orphan_max reached: pid {cli.pid} is no longer the CLI; not killing')
+                return False
+            self._exit_reason = 'expired'
+            kill_tree(cli.pid)
+            return True
 
     # ── main ──
     def run(self) -> int:
@@ -650,8 +696,7 @@ class Shim:
                 break
             if action == A_EXPIRE:
                 self._slog('orphan_max reached: killing CLI')
-                self._exit_reason = 'expired'
-                kill_tree(self.cli.pid)
+                self._expire_cli()
             elif action == A_CLOSE_STDIN:
                 self._slog('orphaned and idle: closing CLI stdin')
                 self._exit_reason = 'stdin_idle'

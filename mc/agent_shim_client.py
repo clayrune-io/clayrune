@@ -615,6 +615,28 @@ class LaunchResult:
     proc: Optional[ShimProc] = None
     error: Optional[str] = None
     spec: Dict[str, Any] = field(default_factory=dict)
+    # True ONLY when ok=False yet the shim or CLI is still alive (a failed
+    # teardown). The caller must NOT start a second CLI in that case.
+    cli_running: bool = False
+
+
+def _teardown_started(m: Mapping[str, Any], timeout: float = 5.0) -> bool:
+    """Kill the CLI tree and then the shim a failed launch left behind, each
+    identity-checked against the manifest. True once neither is alive."""
+    pairs = [(m.get('cli_pid'), m.get('cli_ct')), (m.get('shim_pid'), m.get('shim_ct'))]
+
+    def any_alive() -> bool:
+        return any(pid and _shim.same_process(pid, ct) for pid, ct in pairs)
+
+    for pid, ct in pairs:                              # CLI first, then the shim
+        if pid and _shim.same_process(pid, ct):
+            _shim.kill_tree(int(pid))
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if not any_alive():
+            return True
+        time.sleep(0.05)
+    return not any_alive()
 
 
 def launch(root: Any, session_id: str, *, argv: List[str], cwd: Optional[str],
@@ -625,7 +647,10 @@ def launch(root: Any, session_id: str, *, argv: List[str], cwd: Optional[str],
            log: Optional[Callable[[str], None]] = None) -> LaunchResult:
     """Spec -> detached spawn -> wait for the manifest -> attach. `ok=False`
     means no CLI is running under a shim and the caller falls back to its
-    ordinary spawn (the session stays non-adoptable, as today)."""
+    ordinary spawn (the session stays non-adoptable, as today) -- unless
+    `cli_running` is set, in which case a teardown failed and the caller must
+    not fall back. A shim that started but could not be attached is torn down
+    before `ok=False` is returned, so the fallback never doubles the CLI."""
     sdir = session_dir(root, session_id)
     env_map = dict(env) if env is not None else dict(os.environ)
     spec = build_spec(argv=argv, cwd=cwd, mode=mode, session_id=session_id, engine=engine,
@@ -645,5 +670,10 @@ def launch(root: Any, session_id: str, *, argv: List[str], cwd: Optional[str],
         try:
             client.connect()
         except ShimError as e:
-            return LaunchResult(False, sp.branch, error=f'connect: {e}', spec=spec)
+            client.close()
+            gone = _teardown_started(m)
+            (log or _log)(f'[agent-shim] attach failed session={session_id} error={e}; '
+                          f'started shim torn down={gone}')
+            return LaunchResult(False, sp.branch, spec=spec, cli_running=not gone,
+                                error=f'connect: {e}' + ('' if gone else ' (teardown incomplete: CLI/shim still alive)'))
     return LaunchResult(True, sp.branch, proc=ShimProc(sdir, client=client), spec=spec)
