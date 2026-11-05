@@ -137,7 +137,7 @@ def test_real_resolver_ignores_forged_body_owner_and_origin(env):
     assert run['owner_session_id'] == 's1'
     assert run['project_id'] == 'a'
     assert run['cwd'] == str(env.tmp / 'worktree')
-    assert run['process_identity'] == 'pid:1111@123.0'
+    assert run['process_identity'] == 'pid:4444@123.0'
     assert run['job_id'] is run['owner_turn_id'] is None
     assert run['source'] == 'wrapper'
     response = env.client.post(BASE + '/enroll', json={'owner_session_id': 's2'},

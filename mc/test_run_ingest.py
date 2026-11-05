@@ -151,7 +151,8 @@ class TestRunIngest:
             raise IngestRefused('Producer unavailable')
         return grant
 
-    def enroll(self, project_id: str, caller: Any, metadata: dict[str, Any]) -> tuple[
+    def enroll(self, project_id: str, caller: Any, metadata: dict[str, Any], *,
+               parent_run_id: str | None = None) -> tuple[
             dict[str, Any], ProducerReceipt]:
         """Only display/runner metadata is producer-controlled; labels are pre-redacted."""
         with self._lock:
@@ -163,10 +164,23 @@ class TestRunIngest:
                     'runner', 'unit', 'display_label', 'target_id'}):
                 raise ValueError('Invalid enrollment metadata')
             _encoded(metadata, runs.MAX_EVENT_BYTES)
-            snapshot = self.store.create(
-                project_id, observed_at=self._clock(), owner_session_id=owner.session_id,
-                owner_turn_id=owner.turn_id, cwd=owner.cwd, job_id=owner.job_id,
-                process_identity=owner.process_identity, source=owner.source, **metadata)
+            # Parent validation and child creation share the finalizer/store lock:
+            # a concurrent terminal transition cannot slip between them.
+            with runs._LOCK:
+                if parent_run_id is not None:
+                    if not isinstance(parent_run_id, str):
+                        raise ValueError('Invalid parent run')
+                    parent = self.store.get(project_id, parent_run_id)
+                    if (owner.session_id is None
+                            or parent['owner_session_id'] != owner.session_id
+                            or parent['project_id'] != project_id
+                            or parent['state'] in runs.TERMINAL_STATES):
+                        raise IngestRefused('Parent unavailable or terminal')
+                snapshot = self.store.create(
+                    project_id, observed_at=self._clock(), owner_session_id=owner.session_id,
+                    owner_turn_id=owner.turn_id, cwd=owner.cwd, job_id=owner.job_id,
+                    parent_run_id=parent_run_id,
+                    process_identity=owner.process_identity, source=owner.source, **metadata)
             return snapshot, self._issue(owner, snapshot['run_id'])
 
     def producer(self, project_id: str, caller: Any, run_id: str) -> ProducerReceipt:

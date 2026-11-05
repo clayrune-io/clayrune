@@ -90,7 +90,7 @@ def _validate_event(event: dict[str, Any], run_id: str) -> dict[str, Any]:
         'unit_report': {'unit_id', 'attempt', 'phase', 'outcome', 'final', 'revision'},
         'diagnostic': {'code', 'capture'},
         'heartbeat': {'output'},
-        'run_finished': {'state', 'exit_code', 'not_run'},
+        'run_finished': {'state', 'exit_code', 'not_run', 'evidence'},
     }[kind]
     if set(payload) - allowed:
         raise ValueError('Unknown payload field')
@@ -120,6 +120,18 @@ def _validate_event(event: dict[str, Any], run_id: str) -> dict[str, Any]:
     if kind == 'heartbeat' and 'output' in payload and type(payload['output']) is not bool:
         raise ValueError('Invalid output flag')
     if kind == 'run_finished':
+        if 'evidence' in payload:
+            evidence = payload['evidence']
+            if (event['producer_id'] != _PROCESS_PRODUCER
+                    or not isinstance(evidence, dict)
+                    or set(evidence) != {'source', 'process_identity', 'signal', 'termination'}
+                    or evidence['source'] != 'launcher_observed'
+                    or evidence['termination'] not in {'exited', 'signalled', 'cancelled', 'timeout'}):
+                raise ValueError('Invalid launcher evidence')
+            _text(evidence['process_identity'], 'process_identity')
+            signal = evidence['signal']
+            if signal is not None and (type(signal) is not int or not 1 <= signal <= 255):
+                raise ValueError('Invalid termination signal')
         if payload['state'] not in TERMINAL_STATES:
             raise ValueError('Invalid finish state')
         code = payload.get('exit_code')
@@ -249,6 +261,8 @@ def replay(enrollment: dict[str, Any], events: Iterable[dict[str, Any]]) -> dict
                     verdict = 'failed'
                 state.update(state=verdict, exit_code=code, finished_at=at,
                              not_run=payload.get('not_run'))
+                if 'evidence' in payload:
+                    state['process_evidence'] = copy.deepcopy(payload['evidence'])
                 if verdict == 'lost':
                     state['capture'] = 'lost'
             else:
@@ -371,9 +385,12 @@ class TestRunStore:
 
     def finish(self, project_id: str, run_id: str, *, state: str,
                observed_at: float, exit_code: int | None = None,
-               not_run: int | None = None) -> dict[str, Any]:
+               not_run: int | None = None,
+               evidence: dict[str, Any] | None = None) -> dict[str, Any]:
         """Trusted capture layer supplies observed exit/loss/timeout, never a reporter."""
         payload: dict[str, Any] = {'state': state, 'exit_code': exit_code}
+        if evidence is not None:
+            payload['evidence'] = evidence
         if not_run is not None:
             payload['not_run'] = not_run
         event = {

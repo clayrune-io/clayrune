@@ -1,7 +1,8 @@
-# Test-run HTTP boundary (MC-1148 Phase 4)
+# Test-run HTTP boundary (MC-1148 Phases 4/4b)
 
 `mc/blueprints/test_run_routes.py` is a dark backend: no launcher, reporter,
-runtime discovery, UI, process execution, cancellation or trusted finalization.
+runtime discovery, UI, process execution or cancellation. Phase 4b adds the
+launcher-only finalization contract in `TEST_RUN_FINALIZE.md`.
 `server.py` only wires the blueprint; `test_run_progress_enabled` defaults to
 **false** and is in the existing Settings allowlist. Only literal JSON boolean
 true enables it. Disabled endpoints return 404 before attribution, body parsing,
@@ -19,7 +20,7 @@ Prefix: `/api/project/<project_id>/test-runs`.
 | Method/suffix | Response |
 | --- | --- |
 | `GET` (prefix only) | `{runs:[snapshot,...]}`, newest first; `limit=1..100` (default 100), `offset>=0` (default 0). |
-| `GET /<run_id>` | One Phase-1 snapshot, unchanged. |
+| `GET /<run_id>` | One snapshot, including optional Phase-4b `process_evidence`. |
 | `GET /<run_id>/events` | `{events:[event,...],next_cursor,has_more,seq}`; `limit=1..100` (default 100), optional `cursor`. |
 
 All reads accept `?session=<stable MC session ID>`. A live session must match
@@ -47,7 +48,8 @@ carry `Cache-Control: no-store`, including reads. No tokens are persisted.
 
 | Method/suffix | Body / response |
 | --- | --- |
-| `POST /enroll` | `{metadata:{runner?,unit?,display_label?,target_id?}}` -> 201 `{run,receipt}`. |
+| `POST /enroll` | `{metadata:{runner?,unit?,display_label?,target_id?},parent_run_id?}` -> 201 `{run,receipt,finalize_capability}`. |
+| `POST /<run_id>/finalize` | Exact `{exit_code,signal,termination}` plus launcher capability -> terminal snapshot; conflicting retry 409. |
 | `POST /<run_id>/producer` | `{}` -> 201 `{receipt}` for a new producer generation. |
 | `POST /<run_id>/submit` | `{events:[wire_event,...]}` -> updated snapshot. |
 | `POST /<run_id>/spool` | `{}` -> 201 `{path}` for a new server-created spool. |
@@ -58,8 +60,9 @@ carry `Cache-Control: no-store`, including reads. No tokens are persisted.
 Receipt and wire-event schemas, expiry, batching, pinned descriptors and
 reporter-versus-process verdict rules are in `TEST_RUN_INGEST.md`. Top-level
 body ownership, session, project, cwd, job, process, source and policy fields
-are ignored; only the nested metadata allowlist reaches enrollment. Nested
-owner fields are invalid. Submit cannot supply canonical producer identity or
+are ignored; only the nested metadata allowlist and separately owner-validated
+parent reference reach enrollment. Nested owner fields are invalid. Submit
+cannot supply canonical producer identity or
 observer timestamps. Reporter finish does not establish process success.
 
 Bodies are bounded at 270336 bytes, including requests without Content-Length;
@@ -80,10 +83,11 @@ never becomes a project-only enrollment. HTTP project-service enrollment is
 not exposed; Phase 3's explicit in-process service-owner seam remains separate.
 
 Tracked jobs can identify their session between CLI turns. Enrollment records
-the existing session-cwd resolver's worktree and the managed root PID/creation
-time when available. This is the managed ancestor identity, not a claim to
-know a test child PID. No stable launch-turn ID or job ID is inferred from a
-request; those remain null for this wrapper enrollment API. Later trusted
+the existing session-cwd resolver's worktree and, since Phase 4b, the actual
+HTTP peer PID/creation time (required). Managed ancestry still identifies the
+owner; this is not a claim to know a test child PID. No stable launch-turn ID
+or job ID is inferred from a request; those remain null for this wrapper
+enrollment API. Later trusted
 capture integration may provide those identities. Missing live owner state
 refuses new telemetry; historical reads can still use persisted run history.
 
@@ -91,7 +95,8 @@ Incognito (including `_incognito`) and `_codex_unattended_sandbox` callers are
 refused before telemetry/file operations, matching the existing job API's
 restrictions under Q4. Policy is rechecked after enrollment, including spool
 poll. These routes have no command, shell, cwd selection, execution, kill,
-config write, arbitrary-file read or trusted-process-finish operation. Existing
+config write or arbitrary-file read. Only the separately scoped launcher's
+finalize operation accepts exit evidence; reporter submit never does. Existing
 human-only controls remain on their original routes with their original gates.
 The existing attribution module's detached-process/OS lookup limits remain;
 this API adds no claim of cryptographic caller authentication.
