@@ -169,6 +169,7 @@ class _Run:
     terminal: bool = False
     output_at: float | None = None
     marked: bool = False
+    anchored: bool = False
 
 
 class DetectionObserver:
@@ -254,7 +255,10 @@ class DetectionObserver:
                                      target_id=f'{provider}:{identity}', display_label='Test command')
             run = _Run(snap['run_id'])
             self.runs[key] = run
-        test_run_anchor.post(self.store, pid, run.run_id)
+        if not run.anchored:
+            # One attempt per run: post() reads and replays the record from disk.
+            run.anchored = True
+            test_run_anchor.post(self.store, pid, run.run_id)
         if run.terminal:
             return
         if not run.marked:
