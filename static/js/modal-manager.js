@@ -257,6 +257,7 @@ function openProjectModal(projectId, restoreState) {
   const z = nextModalZ++;
   win.style.zIndex = z;
   openModals.set(projectId, { projectId, element: win, minimized: false, zIndex: z });
+  window.ProjectTestRuns?.attach(projectId);
   mcPushModalHistory();
 
   // Apply persistent per-project prefs (size + zoom) before positioning
@@ -362,6 +363,7 @@ function closeModalById(modalId) {
   // Clean up terminal pop-out resources
   cleanupTerminalModal(modalId);
   if (entry._statusBarObserver) { entry._statusBarObserver.disconnect(); delete entry._statusBarObserver; }
+  window.ProjectTestRuns?.detach(modalId);
   entry.element.remove();
   const chip = document.getElementById('chip-' + CSS.escape(modalId));
   if (chip) chip.remove();
