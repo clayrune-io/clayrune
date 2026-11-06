@@ -965,6 +965,22 @@ preferences and creates a preference-only rollback snapshot outside the
 repository. Opening an editor changes nothing. Unsupported selections show an
 error instead of silently selecting another provider or model.
 
+### Testing on the Floor
+
+When live test-run progress is enabled, a figure can show testing even between
+agent turns. Known totals show completed/total tests or scripts, a progress bar
+and pass/fail/skip counts. Collecting, unknown totals, partial capture and
+multiple incompatible runs stay explicitly labelled; their observed per-run
+counts are not combined. Recalculated totals can move the percentage backwards.
+
+A question or plan approval stays first, with testing details beneath it.
+**Finalizing** means the tests reached their denominator and the process has
+not yet finished; it is not a passing verdict. The project room also summarizes
+active testing, including ownerless runs and runs whose owner is unavailable.
+**Testing unavailable** means that room's test data could not be read.
+Active badges disappear after process finalization; the Floor is not a test
+history view. With the feature disabled, the Floor has no added testing display.
+
 ### Floor defaults
 
 Open **The Floor > Floor defaults** to edit the global default agent's name and

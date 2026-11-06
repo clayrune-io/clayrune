@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-06] - Show active testing on the Floor (MC-1148 P12, dark)
+
+- Added figure progress and project room summaries from the existing flagged Floor projection. Known compatible totals show done/total, a bar and outcome counts; collecting, unknown, partial and mixed runs keep explicit wording. Questions stay primary, and finalizing never implies a passing process exit.
+- Renderer and styles live in companion files; absent projections add no testing DOM. Runner/run text is escaped, unavailable and ownerless work stays visible at room level, and existing polling/recovery is unchanged. Contract and smoke evidence: `docs/TEST_RUN_FLOOR.md`. Branch candidate only; no merge, push, restart or config write.
+
 ## [2026-11-06] - Project active test runs onto the Floor API (MC-1148 P11, dark)
 
 - Added a separate server projection for idle/ended owners, ownerless and unavailable-owner room activity, compatible measured totals and terminal cleanup. Agent activity stays unchanged; pending questions keep priority. Parent/child runs do not double-count work.

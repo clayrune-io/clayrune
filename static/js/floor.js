@@ -1,4 +1,5 @@
 import './floor-preferences.js';
+import { testRunFloorLine, testRunFloorHTML } from './test-run-floor.js';
 
 // ── The Floor ────────────────────────────────────────────────────────────────
 // MC-897 phase 1. docs/AGENT_FLOOR_DESIGN.md.
@@ -110,6 +111,8 @@ function _floorLine(f, helperActive) {
     return f.reason === 'plan' ? 'waiting on your plan approval'
                                : 'waiting on your answer';
   }
+  const testing = testRunFloorLine(f.test_runs);
+  if (testing) return testing;
   // Ron: a figure between turns with a live helper reads as "nothing is
   // happening on the project's floor". It IS between its own turns — that
   // part of `idle` is true — but the room is not quiet, so the second line
@@ -303,6 +306,7 @@ function _floorFigure(pid, f) {
       <div class="fl-engine">${esc(engine)}</div>
       ${f.allowance_exhausted ? `<div class="fl-allowance">${esc(f.allowance_exhausted)}</div>` : ''}
       <div class="fl-act">${esc(_floorLine(f, helperActive))}</div>
+      ${testRunFloorHTML(f.test_runs, { secondary: f.state === 'asking' })}
       ${f.report_waiting ? `<div class="fl-report">${esc(f.report_waiting)}</div>` : ''}
       <div class="fl-task">${esc(f.task || '')}</div>
       <div class="fl-cta">Open this chat &#8594;</div>
@@ -342,6 +346,7 @@ function _floorRoom(r) {
       <span class="fl-room-n">${r.figures.length} here</span>
       ${needs ? '<span class="fl-room-flag">needs you</span>' : ''}
     </div>
+    ${testRunFloorHTML(r.test_runs, { room: true })}
     <div class="fl-figs">${r.figures.map(f => _floorFigure(r.id, f)).join('')}</div>
   </div>`;
 }
