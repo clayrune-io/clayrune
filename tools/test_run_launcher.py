@@ -21,6 +21,7 @@ from typing import Any, BinaryIO
 
 from test_run_transport import LocalClient, Telemetry, TransportError
 from test_run_pytest import PytestProgress
+from test_run_node import NodeProgress, node_script
 
 MAX_MANIFEST_BYTES = 256 * 1024
 MAX_UNITS = 128
@@ -268,7 +269,8 @@ def run(args: argparse.Namespace, units: list[Unit], stop_on_failure: bool) -> i
                 final = result(130, 'cancelled')
                 break
             key = 'unit-' + str(index)
-            reporter = PytestProgress(spec, telemetry, key, warn)
+            reporter = (NodeProgress(spec, telemetry, key, warn) if node_script(spec.argv) is not None
+                        else PytestProgress(spec, telemetry, key, warn))
             telemetry.send('enroll', key, {'parent': 'parent', 'metadata': reporter.metadata('Command ' + str(index))})
             events(telemetry, 'parent', event('unit_started', unit_id=key, attempt=1))
             observed = reporter.execute(lambda prepared: execute(

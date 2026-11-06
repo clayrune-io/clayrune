@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-06] - Observe Node smoke scripts without inventing assertion counts (MC-1148 P7, dark)
+
+- Added a standalone Node lifecycle/checkpoint preload and separate launcher adapter for direct scripts. Script results follow actual child exits; ordered manifests retain fail-fast not-run remainder, separate from skips. Existing smoke helpers stay unchanged.
+- Packaged the new source assets in the macOS spec; added isolated external-project and copied-layout checks. Contract and delivery limits: `docs/TEST_RUN_NODE.md`. Branch candidate only; no UI, config change, merge, push or restart.
+
 ## [2026-11-06] - Measure serial pytest runs through a standalone reporter (MC-1148 P6, dark)
 
 - Added a stdlib-only pytest plugin and separate launcher adapter for direct pytest argv, with selected totals, phase outcomes, immediate failure names and actual-wait finalization. Parent manifests still count scripts; pytest children count tests. Unproved xdist/retry counts stay unknown and explicitly partial.

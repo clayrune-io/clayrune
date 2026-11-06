@@ -83,13 +83,15 @@ datas = [
     # operator-neutral Clayrune API doc. Leave it out and the frozen app's
     # agents curl-probe endpoints every session.
     (R('data', 'agent_reference'), 'data/agent_reference'),
-    # Standalone reporters run in the target project's Python, outside the
+    # Standalone reporters run in the target project's runtime, outside the
     # frozen import graph. Ship source assets at installation-derived paths.
     (R('data', 'test_reporters', 'clayrune_pytest_progress.py'), 'data/test_reporters'),
+    (R('data', 'test_reporters', 'smoke-progress.mjs'), 'data/test_reporters'),
     (R('tools', 'test-run.py'), 'tools'),
     (R('tools', 'test_run_launcher.py'), 'tools'),
     (R('tools', 'test_run_transport.py'), 'tools'),
     (R('tools', 'test_run_pytest.py'), 'tools'),
+    (R('tools', 'test_run_node.py'), 'tools'),
     # Built-in agent characters (Claydo) installed into ~/.claude/agents/ at
     # startup (character_routes._install_builtin_characters). Leave it out
     # and a fresh frozen install never gets the base agent.
