@@ -809,16 +809,33 @@ def _fresh(session_id: str, launch_id: Any, now: float, limit: float) -> bool:
     return got is not None and got[0] == launch_id and (now - got[1]) <= limit
 
 
+def _owns_open_job(sid: str) -> bool:
+    """True if `sid` owns a running Clayrune job (mc/agent_jobs.py). Fails closed:
+    if the job table cannot be read, the session is treated as owning one."""
+    try:
+        from mc import agent_jobs as _jobs
+        return _jobs.open_job_count(sid) > 0
+    except Exception as e:
+        _log(f'[agent-shim-adopt] open-job check failed for {sid[:12]}: {e}')
+        return True
+
+
 def is_adoptable_session(session: Mapping[str, Any], *, cfg: Optional[Mapping[str, Any]] = None,
                          now: Optional[float] = None) -> bool:
-    """Would this live, in-flight session survive a restart? (spec section 9)"""
+    """Would this live, in-flight session survive a restart? (spec section 9)
+
+    Never, while it owns an open Clayrune job (MC-1161): the job's process and
+    its completion callback live only in this server process (`agent_jobs._jobs`)
+    and are not carried through adoption, so such a session stays a blocker."""
     config = cfg if cfg is not None else _config()
     if not _client.enabled(config):
+        return False
+    sid = str(session.get('session_id') or '')
+    if sid and _owns_open_job(sid):
         return False
     proc = _shim_proc(session)
     if proc is None:
         return False
-    sid = str(session.get('session_id') or '')
     if not sid:
         return False
     try:
