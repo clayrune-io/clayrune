@@ -455,7 +455,7 @@ smokes after each merge. No phase edits `mc/agent_shim*.py` or
 | 4 | `mc/blueprints/test_run_routes.py` | Register blueprint in `server.py`; expose read API and reviewed telemetry-only ingestion. Test project/session mismatch, paging/reconnect, forged ownership and authority parity. |
 | 5 | `tools/test-run.py` | Portable foreground launcher and explicit composite manifest support; exact argv/shell/cwd/environment/exit propagation, stdout tee, registration and scoped telemetry. Wire guidance in `mc/long_job_guidance.py`; guidance alone does not close Q1. |
 | 6 | `data/test_reporters/clayrune_pytest_progress.py` | Standalone serial plugin with separate `tools/test_run_pytest.py` launcher adapter; installation-derived loading and packaged source assets. xdist/retry aggregation remains explicitly unmeasured. Branch implementation, contract and delivery limits: `TEST_RUN_PYTEST.md`; no target imports of `mc`. |
-| 7 | `data/test_reporters/smoke-progress.mjs` | Explicit script lifecycle/checkpoint emitter, loaded by the launcher's Node adapter. Q2 decides whether to instrument existing smoke helpers now. Test script failure, fail-fast not-run units, internal throw and wrong/missing manifest. |
+| 7 | `data/test_reporters/smoke-progress.mjs` | Standalone lifecycle/checkpoint preload with separate `tools/test_run_node.py` adapter. Dave chose Q2 A: script units only, no existing helper migration. Actual wait owns script pass/fail; explicit manifest retains order and not-run remainder. Branch contract/verification limits: `TEST_RUN_NODE.md`. |
 | 8 | `mc/test_run_detection.py` | Shared tool candidate observer. Tiny calls from Claude readers, shared Mode A raw callback composition and Gemini reader; scan all blocks. Dedupe wrapper/job/tool identities, handle old/new Codex envelopes and Qwen suppression. Never rewrite or rerun commands. |
 | 9 | `static/js/test-run-data.js` | Shared poll/cache/sequence reconciliation; tiny SSE hint bridge in `static/js/resume-preview.js`. Prove updates continue after idle/turn end and across mobile suspension, with no per-run SSE connections. |
 | 10 | `static/js/test-run-card.js` | Mount/live/cold hooks in `static/js/conversation.js` and `static/index.html`; ID anchors, accessible bar and failure list, companion stylesheet. Test repeated rebuild, inactive tab reopen, malicious names, unknown total and no duplicate cards. |
@@ -531,8 +531,11 @@ the checkpoint with the deliverable. No merge/push/deploy is part of this task.
 
 ## 9. OPEN QUESTIONS
 
-No option below has been selected. Dave owns the decisions. Costs are rough
-engineering-day estimates including focused verification, not measured timings.
+These are the original spike options. Dave subsequently selected A/A/A/B
+(launcher adoption, scripts first, shared polling, restricted capture deferred),
+recorded at the top of the MC-1148 journal. Phase 7 follows Q2 A without helper
+migration. Costs below are the original rough engineering-day estimates,
+including focused verification, not measured timings.
 
 1. **Coverage:** A) mandate launcher adoption (5-8 days); B) observe vendor streams (2-3 days, live gaps). Recommend A; universal coverage needs verified adoption.
 2. **Smoke units:** A) scripts first (1-2 days); B) named assertions immediately (4-7 days plus migrations). Recommend A; label script counts explicitly.

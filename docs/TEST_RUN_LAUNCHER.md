@@ -8,6 +8,10 @@ interpreter loading, actual fidelity and packaging verification limits. Passive
 detection, chat cards, Floor UI and adoption enforcement remain later phases.
 No config change, merge, push or restart is part of these branch candidates.
 
+Phase 7 adds a separate direct Node script adapter and standalone preload;
+see `TEST_RUN_NODE.md`. Its units are explicitly scripts, never assertions.
+The existing explicit manifest supplies order and fail-fast/continue policy.
+
 ## Invocation
 
 Use the target project's Python interpreter and the installation's absolute
