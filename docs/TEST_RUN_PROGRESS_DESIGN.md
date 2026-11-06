@@ -460,7 +460,7 @@ smokes after each merge. No phase edits `mc/agent_shim*.py` or
 | 9 | `static/js/test-run-data.js` | Shared poll/cache/sequence reconciliation; tiny SSE hint bridge in `static/js/resume-preview.js`. Prove updates continue after idle/turn end and across mobile suspension, with no per-run SSE connections. Branch contract and limits: `TEST_RUN_DATA.md`. |
 | 10 | `static/js/test-run-card.js` | Mount/live/cold hooks in `static/js/conversation.js` and `static/index.html`; ID anchors, accessible bar and failure list, companion stylesheet. Test repeated rebuild, inactive tab reopen, malicious names, unknown total and no duplicate cards. |
 | 11 | `mc/test_run_floor.py` | Pure server projections; minimal wiring in `mc/blueprints/floor_routes.py`. Idle/ended owners, asking precedence, compatible/incompatible totals, ownerless/unavailable rooms and terminal cleanup. Branch contract and verification limits: `TEST_RUN_FLOOR.md`; Floor rendering remains Phase 12. |
-| 12 | `static/js/test-run-floor.js` | Small rendering hooks in `static/js/floor.js`; testing line/badge and project room summary. Existing poll/error recovery remains intact. |
+| 12 | `static/js/test-run-floor.js` | Branch renderer with small hooks in `static/js/floor.js`, companion CSS and figure/room summaries. Asking priority, honest indeterminate states and existing poll/error recovery preserved. Contract and worktree smoke evidence: `TEST_RUN_FLOOR.md`, Phase 12 section. |
 | 13 | `static/js/project-test-runs.js` | Separate project panel wired into project modal navigation; ownerless/recent runs from the same API. Test two projects/two sessions with the same test names and a project with no live figures. |
 
 Optional native Node Test and Playwright Test reporters each get their own

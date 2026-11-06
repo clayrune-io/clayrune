@@ -1,0 +1,27 @@
+/* Secondary live work, in the Floor's existing clay palette. No success tint:
+   a completed denominator can still be waiting on the actual process exit. */
+.fl-test {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 10px;
+  margin-top: 5px;
+  padding-left: 8px;
+  border-left: 2px solid var(--accent, #c47c48);
+  color: var(--text-dim, var(--text-faint));
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.fl-test strong { font-weight: 600; }
+.fl-test progress {
+  width: 86px;
+  max-width: 100%;
+  height: 6px;
+  accent-color: var(--accent, #c47c48);
+}
+.fl-test-counts { display: flex; flex-wrap: wrap; gap: 2px 7px; }
+.fl-test-run { flex-basis: 100%; }
+.fl-test-alert { font-weight: 700; color: var(--danger, #b74235); }
+.fl-test-secondary { border-left-color: var(--border); }
+.fl-test-room { margin: 0 0 9px; }

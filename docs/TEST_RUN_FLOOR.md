@@ -1,8 +1,9 @@
 # MC-1148 Phase 11: Floor server projections
 
-Branch candidate based on `d91da1df`, dark behind the existing exact-true
-`test_run_progress_enabled` flag. No frontend rendering, configuration write,
-merge, push, restart or deployment is included. Phase 12 owns the Floor UI.
+Phase 11 server candidate based on `d91da1df`, dark behind the existing
+exact-true `test_run_progress_enabled` flag. Phase 12 rendering based on
+`7b8dc527` is described below. No configuration write, merge, push, restart or
+deployment is included in either candidate.
 
 ## Contract
 
@@ -107,7 +108,77 @@ pyright mc/test_run_floor.py tests/test_test_run_floor.py
 
 Zero errors, zero warnings and zero informations after all final code/test
 changes, rc=0 (non-failing newer-version notice only). Browser/static smokes,
-live adoption and packaged artifacts are not
-verified here: no frontend, launcher, reporter or packaging asset changed.
+live adoption and packaged artifacts were not verified in Phase 11:
+no frontend, launcher, reporter or packaging asset changed in that phase.
 `USER_GUIDE.md`, README and agent rules need no update for this dark server
 projection. No new dependencies or product permission gates.
+
+## Phase 12: Floor rendering
+
+`static/js/test-run-floor.js` owns pure text/HTML rendering of the existing
+projection. The Floor imports it and delegates its activity line after the
+existing asking check, appends figure details and adds a room summary. No
+data-layer import, second fetch, event listener or timer is introduced.
+`static/css/test-run-floor.css` is loaded by the page and owns all new styles.
+The Floor's poll and error-recovery code is unchanged.
+
+- Absent projections and successful zero-active summaries return empty HTML;
+  existing figures/rooms gain no testing elements when the flag is off.
+- Complete compatible safe-integer totals show done/total and a native
+  accessible progress bar. Percentage is floored from the supplied aggregate
+  numerator/denominator, never averaged or extrapolated from time. Zero total
+  displays `0/0` without a bar or percentage. Completed totals say finalizing,
+  never passed. Denominator recalculation is labelled and may move backwards.
+- Collecting, total unknown, multiple runs and partial capture keep explicit
+  wording. All six canonical outcome counts are shown when supplied. Without
+  aggregate counts, the first three runs show their own observed outcomes;
+  remaining runs, including the server's omitted runs, have an explicit count.
+  Incompatible units are never added in the client. IDs are escaped tooltips;
+  runner text is escaped. No test names or detailed failure text are available
+  in this projection, so none are fetched or invented.
+- Asking remains the primary activity and existing state pill. Test progress
+  appears underneath in a secondary treatment. This does not change model
+  activity, state colors, ownership or chat navigation.
+- Room summaries show ownerless/unavailable-owner counts. A failed room read
+  says testing unavailable even with no figures. Next-poll terminal or flag-off
+  cleanup removes the display without deleting history.
+- Dynamic text is escaped before entering HTML/attributes. Numeric values and
+  count fields require nonnegative safe integers; classes and unit labels are
+  fixed renderer vocabulary. There are no new dependencies or permission gates.
+
+### Phase 12 verification
+
+`node tools/smoke/test-run-floor.mjs` serves the real worktree page and static
+assets with fixture APIs, aborting all other requests. It makes no live store
+or configuration changes. Eighteen cases cover flag-off absence, known/unknown
+totals, collecting, mixed/compatible multiple runs, asking priority, unavailable
+rooms, ownerless/unavailable owners, malicious name/runner/run ID, partial
+capture, finalizing, zero total, recalculation, bounded detail, invalid fields,
+terminal cleanup and narrow cards. Result: **18 passed, rc=0**.
+
+Desktop and 390px fresh-open screenshots were inspected in
+`_scratch/test-run-floor/asking-{desktop,mobile}.png` (gitignored). The narrow
+card's new details have no horizontal overflow; this is a Chromium viewport
+check, not a physical-device WebView or real touch test.
+
+Existing `floor-poll-survives-error.mjs` and
+`floor-poll-survives-render-error.mjs`: **ALL PASS, rc=0** each. These scripts
+normally load the main checkout from port 5199. Scratch copies preserve all
+original assertions and API calls while intercepting `/` and `/static/**` with
+this worktree's HTML/JS/CSS. Their read-only Floor API remains live. The wrapper
+announces that distinction; no server restart or config mutation is needed.
+
+Full `node tools/smoke/boot-smoke.mjs`: **PASS, rc=0**, all seven boot scenarios
+plus dispatch, first-run migration, model picker, identity prefill, backlog,
+backlog links, memory panel, calendar, scheduler layout, question repaint,
+Floor and agent-face guards. This hermetic script loads worktree assets.
+All Node smoke processes are immediately registered via the foreground
+`_scratch/run_phase12_checks.py` wrapper, which waits and returns their actual
+exit status. Existing main-checkout smoke dependencies are junctioned into the
+worktree for checks and removed before commit; none are installed.
+
+Syntax/whitespace checks pass. The user guide documents the conditional UI.
+README, AGENTS/CLAUDE and rules need no change: this dark phase adds no install
+step, control, dependency or binding convention. Live enabled server adoption,
+P9 integration, actual frozen artifacts and physical-device checks remain
+unverified. No merge, push, restart or config write; Dave owns integration.
