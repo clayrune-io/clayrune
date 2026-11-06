@@ -1714,7 +1714,18 @@ def _get_active_restart_blockers():
                 'title': hm.get('title') or hm.get('goal', '')[:80],
                 'workers_running': len(workers),
             })
-    return {'active_sessions': active_sessions, 'active_hiveminds': active_hiveminds}
+    payload = {'active_sessions': active_sessions, 'active_hiveminds': active_hiveminds}
+    # MC-1150 P4: sessions that will survive the restart stop blocking it. The
+    # blocking lists keep their names (four callers read only those); the rest
+    # is additive. Flag off: the payload above is returned untouched.
+    try:
+        from mc import agent_shim_adopt as _adopt
+        if _adopt.enabled_now():
+            payload = _adopt.partition_blockers(
+                payload, agent_sessions, hivemind_workers=_adopt.running_hivemind_workers())
+    except Exception as e:
+        _log(f"[restart] survive-restart partition failed, treating all as blocking: {e}")
+    return payload
 
 
 def _append_restart_log(entry):
@@ -1735,15 +1746,39 @@ def _append_restart_log(entry):
         _log(f"[restart] failed to append log: {e}")
 
 
-def _stop_all_sessions_for_restart(grace_seconds=3.0):
+def _adoptable_sessions_to_spare():
+    """Session ids the restart leaves running (MC-1150 P4). Empty with the flag off."""
+    try:
+        from mc import agent_shim_adopt as _adopt
+        if not _adopt.enabled_now():
+            return set()
+        return {sid for sid, sess in list(agent_sessions.items()) if _adopt.should_spare(sess)}
+    except Exception as e:
+        _log(f"[restart] spare check failed, stopping every session: {e}")
+        return set()
+
+
+def _stop_all_sessions_for_restart(grace_seconds=3.0, spare_adoptable=False):
     """Best-effort graceful stop of every tracked session before re-exec.
 
     Iterates agent_sessions, sends graceful stop (Mode B closes stdin; both modes
     schedule a background kill of the proc tree). Then waits up to grace_seconds
     for processes to exit before letting the re-exec orphan/kill the rest.
+
+    `spare_adoptable` (MC-1150 P4): only a RESTART that has started a replacement
+    server may leave adoptable shim agents running, because only a replacement
+    can adopt them. Power off shares this helper and never passes it, so it stops
+    every session exactly as before.
     """
     procs = []
+    spared = _adoptable_sessions_to_spare() if spare_adoptable else set()
     for sid, sess in list(agent_sessions.items()):
+        if sid in spared:
+            # MC-1150 P4: left running under its shim; one last checkpoint instead
+            # of a stop, so the next boot adopts it where it stands.
+            from mc import agent_shim_adopt as _adopt
+            _adopt.write_checkpoint(sess, inflight=False)
+            continue
         try:
             mgr = get_manager_for_session(sid)
             if mgr is None:
@@ -1947,7 +1982,8 @@ def _perform_server_restart_async(audit_entry):
         # below. Whether or not it finishes, we proceed.
         stop_done = threading.Event()
         def _bounded_stop():
-            try: _stop_all_sessions_for_restart()
+            # MC-1150 P4: spare adoptable agents only if a replacement server started.
+            try: _stop_all_sessions_for_restart(spare_adoptable=spawned)
             except Exception as e:
                 try: _log(f"[restart] stop-all failed: {e}")
                 except Exception: pass

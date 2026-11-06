@@ -335,6 +335,8 @@ def spawn_engine_proc(cmd: Sequence[Any], *, session_id: Optional[str], engine: 
     _uncertain.refuse_if_pending(sdir, str(session_id))
     if not _client.enabled(config):
         return _popen(cmd, deliver=deliver, **plain)
+    from mc import agent_shim_adopt as _adopt          # MC-1150 P4: flag ON only
+    _adopt.ensure_checkpointer(config)
     if interactive:
         # Imported here so a default install (flag off) never loads it.
         from mc import agent_spawn_interactive as _interactive

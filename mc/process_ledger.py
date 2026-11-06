@@ -144,11 +144,16 @@ def _should_reap_entry(entry, live_image, live_ct):
     return True
 
 
-def _reap_prior_instance_strays():
+def _reap_prior_instance_strays(protected=()):
     """Startup: kill child process trees orphaned by a prior MC instance that
     exited (restart/crash) without tearing them down. Reads the prior instance's
     PID ledger, reaps anything still alive AND still the same process, then
-    clears the ledger. Best-effort; never blocks startup."""
+    clears the ledger. Best-effort; never blocks startup.
+
+    `protected` (MC-1150 P4): pids of shim-run agents this boot has just claimed
+    for adoption (mc/agent_shim_adopt.py). They are the one case where a ledgered
+    child of a dead MC is NOT an orphan. Empty with the flag off."""
+    protected = {int(p) for p in (protected or ())}
     try:
         if not _PID_LEDGER_PATH.exists():
             return
@@ -181,6 +186,9 @@ def _reap_prior_instance_strays():
         except Exception:
             continue
         if pid == me or pid == prior_mc or not _pid_is_alive(pid):
+            continue
+        if pid in protected:
+            _log(f"[reaper] pid {pid} is a claimed shim-run agent, not reaping")
             continue
         live_image, live_ct = _proc_identity(pid)
         if not _should_reap_entry(entry, live_image, live_ct):
