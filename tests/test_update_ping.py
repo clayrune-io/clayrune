@@ -1,0 +1,251 @@
+"""mc/update_ping.py + its routes. No test here opens a socket: every send goes
+through an injected post_fn, and a socket guard makes any stray connect fail loudly."""
+import json
+import socket
+
+import pytest
+from flask import Flask
+
+from mc import state, update_ping
+from mc.blueprints import update_ping_routes
+
+DAY = 24 * 3600
+
+
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError('a test tried to open a network connection')
+    monkeypatch.setattr(socket.socket, 'connect', boom)
+    monkeypatch.setattr(socket, 'create_connection', boom)
+    for k in update_ping.ENV_OFF_VARS:
+        monkeypatch.delenv(k, raising=False)
+
+
+@pytest.fixture
+def ping(tmp_path):
+    cfg = {'update_ping_enabled': True, 'update_ping_disclosed': True}
+    update_ping.wire(tmp_path / 'state.json', config_fn=lambda: cfg,
+                     version_fn=lambda: 'v2.3.0 build 180', ping_id_path=tmp_path / 'ping_id')
+    calls = []
+
+    def post(url, payload):
+        calls.append((url, payload))
+        return {'latest_version': 'v2.4.0'}
+    return type('P', (), {'cfg': cfg, 'calls': calls, 'post': staticmethod(post), 'dir': tmp_path})
+
+
+def _assert_silent(ping, **kw):
+    r = update_ping.maybe_ping(now=1_000_000, post_fn=ping.post, **kw)
+    assert r['sent'] is False, r
+    assert ping.calls == []
+    assert not (ping.dir / 'ping_id').exists(), 'id must not be created when nothing is sent'
+    return r
+
+
+def test_zero_requests_when_disabled(ping):
+    ping.cfg['update_ping_enabled'] = False
+    assert _assert_silent(ping)['reason'] == 'disabled'
+
+
+def test_zero_requests_before_disclosure(ping):
+    ping.cfg['update_ping_disclosed'] = False
+    assert _assert_silent(ping)['reason'] == 'not_disclosed'
+
+
+@pytest.mark.parametrize('var', ['DO_NOT_TRACK', 'CLAYRUNE_NO_PING'])
+@pytest.mark.parametrize('val', ['1', 'true', 'YES'])
+def test_zero_requests_with_env_off(ping, var, val):
+    assert _assert_silent(ping, environ={var: val})['reason'] == 'env_off'
+
+
+def test_env_off_beats_enabled_and_disclosed(ping):
+    assert ping.cfg['update_ping_enabled'] and ping.cfg['update_ping_disclosed']
+    _assert_silent(ping, environ={'DO_NOT_TRACK': '1'})
+
+
+def test_env_zero_does_not_disable(ping):
+    r = update_ping.maybe_ping(now=1_000_000, post_fn=ping.post, environ={'DO_NOT_TRACK': '0'})
+    assert r['sent'] is True
+
+
+@pytest.mark.parametrize('url', ['http://example.com/ping', 'ftp://x/y', 'javascript:1', '//x/y'])
+def test_zero_requests_for_non_https_url(ping, url):
+    ping.cfg['update_ping_url'] = url
+    assert _assert_silent(ping)['reason'] == 'bad_url'
+
+
+def test_loopback_http_is_allowed(ping):
+    ping.cfg['update_ping_url'] = 'http://127.0.0.1:8787/api/ping'
+    assert update_ping.maybe_ping(now=1_000_000, post_fn=ping.post)['sent'] is True
+
+
+def test_default_enabled_when_key_missing(ping):
+    del ping.cfg['update_ping_enabled']
+    assert update_ping.maybe_ping(now=1_000_000, post_fn=ping.post)['sent'] is True
+
+
+def test_non_true_enabled_values_are_off(ping):
+    for v in (False, None, 'true', 1, 0, ''):
+        ping.cfg['update_ping_enabled'] = v
+        assert update_ping.maybe_ping(now=1_000_000, post_fn=ping.post)['sent'] is False, v
+    assert ping.calls == []
+
+
+def test_payload_is_exactly_three_fields_and_no_hostname(ping, monkeypatch):
+    monkeypatch.setattr(socket, 'gethostname', lambda: 'rons-secret-laptop')
+    update_ping.maybe_ping(now=1_000_000, post_fn=ping.post)
+    (url, payload), = ping.calls
+    assert url == update_ping.DEFAULT_URL
+    assert set(payload) == {'install_id', 'version', 'os'}
+    assert payload['version'] == 'v2.3.0 build 180'
+    assert payload['os'] in ('windows', 'darwin', 'linux', 'other')
+    assert len(payload['install_id']) == 32 and int(payload['install_id'], 16) >= 0
+    assert 'secret' not in json.dumps(payload)
+
+
+def test_id_is_stable_and_not_the_project_sync_id(ping, monkeypatch):
+    from mc import project_sync
+    monkeypatch.setattr(project_sync, '_install_id_path', lambda: ping.dir / 'install_id')
+    update_ping.maybe_ping(now=1_000_000, post_fn=ping.post)
+    update_ping.maybe_ping(now=1_000_000 + DAY + 1, post_fn=ping.post)
+    ids = {c[1]['install_id'] for c in ping.calls}
+    assert len(ids) == 1
+    assert (ping.dir / 'ping_id').read_text() == ids.pop()
+    assert ping.calls[0][1]['install_id'] != project_sync.get_install_id()
+
+
+def test_at_most_once_per_24h_and_resumes_after(ping):
+    assert update_ping.maybe_ping(now=1_000_000, post_fn=ping.post)['sent'] is True
+    assert update_ping.maybe_ping(now=1_000_000 + DAY - 1, post_fn=ping.post)['reason'] == 'not_due'
+    assert len(ping.calls) == 1
+    assert update_ping.maybe_ping(now=1_000_000 + DAY, post_fn=ping.post)['sent'] is True
+    assert len(ping.calls) == 2
+
+
+def test_failed_attempt_still_consumes_the_day_and_never_raises(ping):
+    def bad(url, payload):
+        ping.calls.append(payload)
+        raise OSError('connection refused')
+    r = update_ping.maybe_ping(now=1_000_000, post_fn=bad)
+    assert r['sent'] is True and r['ok'] is False
+    assert update_ping.maybe_ping(now=1_000_000 + 3600, post_fn=bad)['reason'] == 'not_due'
+    assert len(ping.calls) == 1
+
+
+def test_state_survives_rewire(ping):
+    update_ping.maybe_ping(now=1_000_000, post_fn=ping.post)
+    update_ping.wire(ping.dir / 'state.json', config_fn=lambda: ping.cfg,
+                     version_fn=lambda: 'v2.3.0', ping_id_path=ping.dir / 'ping_id')
+    assert update_ping.maybe_ping(now=1_000_000 + 60, post_fn=ping.post)['reason'] == 'not_due'
+
+
+@pytest.mark.parametrize('reply,kept', [
+    ({'latest_version': 'v2.4.0'}, 'v2.4.0'),
+    ({'latest_version': '<script>alert(1)</script>'}, ''),
+    ({'latest_version': 'x' * 100}, ''),
+    ({'latest_version': 5}, ''),
+    ({}, ''),
+])
+def test_latest_version_is_validated(ping, reply, kept):
+    update_ping.maybe_ping(now=1_000_000, post_fn=lambda u, p: reply)
+    assert update_ping.status()['latest_version'] == kept
+
+
+def test_status_update_available_and_withheld_when_off(ping):
+    update_ping.maybe_ping(now=1_000_000, post_fn=ping.post)
+    s = update_ping.status()
+    assert (s['latest_version'], s['update_available']) == ('v2.4.0', True)
+    ping.cfg['update_ping_enabled'] = False
+    s = update_ping.status()
+    assert (s['latest_version'], s['update_available'], s['enabled']) == ('', False, False)
+
+
+@pytest.mark.parametrize('latest,cur,newer', [
+    ('v2.4.0', 'v2.3.0 build 180', True), ('v2.3.0', 'v2.3.0 build 180', False),
+    ('v2.10.0', 'v2.9.9', True), ('v1.0', 'v2.0', False),
+    ('v2.4.0', 'untagged (abc1234)', False), ('', 'v1', False),
+])
+def test_is_newer(latest, cur, newer):
+    assert update_ping.is_newer(latest, cur) is newer
+
+
+def test_status_reports_env_off(ping, monkeypatch):
+    update_ping.maybe_ping(now=1_000_000, post_fn=ping.post)
+    monkeypatch.setenv('DO_NOT_TRACK', '1')
+    s = update_ping.status()
+    assert s['env_disabled'] is True and s['latest_version'] == ''
+
+
+def test_real_transport_refuses_redirects():
+    import urllib.request
+    h = update_ping._NoRedirect()
+    req = urllib.request.Request('https://a.example/x')
+    assert h.redirect_request(req, None, 302, 'Found', {}, 'https://evil.example/') is None
+
+
+def test_server_defaults_on_but_undisclosed():
+    import server
+    assert server.CONFIG['update_ping_enabled'] is True
+    assert server.CONFIG['update_ping_disclosed'] is False
+    assert server.CONFIG['update_ping_url'] == update_ping.DEFAULT_URL
+    assert 'update_ping_enabled' in server._CONFIG_EDITABLE_KEYS
+    assert 'update_ping_disclosed' not in server._CONFIG_EDITABLE_KEYS
+    assert 'update_ping_url' not in server._CONFIG_EDITABLE_KEYS
+
+
+# ── routes ───────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    cfg_path = tmp_path / 'config.json'
+    cfg_path.write_text(json.dumps({'keep': 1}), encoding='utf-8')
+    live = {'update_ping_enabled': True, 'update_ping_disclosed': False}
+    monkeypatch.setattr(state, 'CONFIG', live)
+    update_ping.wire(tmp_path / 's.json', config_fn=lambda: state.CONFIG,
+                     version_fn=lambda: 'v2.3.0', ping_id_path=tmp_path / 'ping_id')
+    update_ping_routes.wire(config_path=cfg_path)
+    app = Flask(__name__)
+    app.register_blueprint(update_ping_routes.bp)
+    return app.test_client(), cfg_path, live
+
+
+def test_seen_sets_disclosed_only(client):
+    c, path, live = client
+    assert c.post('/api/update-ping/seen').status_code == 200
+    assert json.loads(path.read_text()) == {'keep': 1, 'update_ping_disclosed': True}
+    assert live['update_ping_enabled'] is True
+
+
+def test_choice_off_persists_and_blocks_ping(client):
+    c, path, live = client
+    r = c.post('/api/update-ping/choice', json={'enabled': False})
+    assert r.status_code == 200 and r.get_json()['enabled'] is False
+    assert json.loads(path.read_text())['update_ping_enabled'] is False
+    calls = []
+    update_ping.maybe_ping(now=1, post_fn=lambda u, p: calls.append(p) or {})
+    assert calls == []
+
+
+def test_choice_on_then_ping_is_allowed(client):
+    c, _, _ = client
+    c.post('/api/update-ping/choice', json={'enabled': True})
+    calls = []
+    update_ping.maybe_ping(now=1_000_000, post_fn=lambda u, p: calls.append(p) or {})
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('body', [{}, {'enabled': 'yes'}, {'enabled': 1}, {'enabled': None}])
+def test_choice_rejects_non_bool(client, body):
+    c, path, _ = client
+    assert c.post('/api/update-ping/choice', json=body).status_code == 400
+    assert json.loads(path.read_text()) == {'keep': 1}
+
+
+def test_unattended_caller_refused(client, monkeypatch):
+    c, path, live = client
+    monkeypatch.setattr(update_ping_routes, 'is_unattended_caller', lambda *a, **k: True)
+    assert c.post('/api/update-ping/choice', json={'enabled': False}).status_code == 403
+    assert c.post('/api/update-ping/seen').status_code == 403
+    assert json.loads(path.read_text()) == {'keep': 1}
+    assert live['update_ping_disclosed'] is False

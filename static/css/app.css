@@ -10782,3 +10782,14 @@ html.mc-popout .btn-popout:not(.btn-chat-search) { display: none !important; }
   color: var(--accent); border: 1px solid var(--accent); border-radius: 999px; padding: 1px 8px; }
 .lrn-card-sub { margin: 6px 0 4px; font-size: 13px; }
 .lrn-card-meta { font-size: 11px; color: var(--text-faint); margin-bottom: 12px; }
+
+/* Update-check ping: one-time disclosure notice (static/js/update-ping-notice.js) */
+.upn-card { position: fixed; right: 16px; bottom: 16px; z-index: 9000; width: min(380px, calc(100vw - 32px));
+  background: var(--surface2, var(--surface)); border: 1px solid var(--border2); border-radius: 10px;
+  padding: 14px 16px; box-shadow: 0 8px 28px rgba(0,0,0,0.35); color: var(--text); }
+.upn-title { font-weight: 600; margin-bottom: 6px; }
+.upn-body { font-size: 12.5px; line-height: 1.45; color: var(--text-dim); }
+.upn-faint { color: var(--text-faint); margin-top: 8px; }
+.upn-row { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
+.upn-label { font-size: 13px; }
+.upn-actions { display: flex; justify-content: flex-end; margin-top: 10px; }

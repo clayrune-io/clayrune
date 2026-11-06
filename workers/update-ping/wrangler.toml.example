@@ -1,0 +1,15 @@
+# Copy to wrangler.toml and fill in your own values. Never commit the copy.
+name = "clayrune-update-ping"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+
+[vars]
+LATEST_VERSION = "v0.0.0"      # bump this when you cut a release
+
+[[d1_databases]]
+binding = "DB"
+database_name = "clayrune-update-ping"
+database_id = "<your D1 database id>"
+
+# Route it to /api/ping on your own domain, e.g. via the dashboard or:
+# routes = [{ pattern = "<your-domain>/api/ping", zone_name = "<your-domain>" }]

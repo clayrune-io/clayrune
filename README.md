@@ -165,6 +165,21 @@ that.
 </details>
 
 <details>
+<summary><b>"Does it phone home?"</b></summary>
+
+Once a day Clayrune sends one small message to clayrune.io so installs can be
+counted and you can be told when an update is out. It contains a random install
+ID (not your hostname), your Clayrune version, and your operating system. Nothing
+else: no name, no projects, no files. The setting is on by default, but nothing is
+sent until you have been shown this once (a step in first-run setup, or a one-time
+notice after updating). Turn it off in Settings → System, or set `DO_NOT_TRACK=1`
+or `CLAYRUNE_NO_PING=1` in the environment, which overrides the setting. The
+sending code is [`mc/update_ping.py`](mc/update_ping.py); the receiving Worker is
+[`workers/update-ping`](workers/update-ping).
+
+</details>
+
+<details>
 <summary><b>Everything else in there</b></summary>
 
 Multi-provider agents (Claude Code first-class, plus Gemini, Codex, Aider,

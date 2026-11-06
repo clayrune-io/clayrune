@@ -190,6 +190,15 @@ def _load_config():
         # warning). Settings -> Providers toggles it; read live, no restart.
         'cli_auto_update_enabled': True,
 
+        # Daily update-check ping (mc/update_ping.py; Ron 2026-11-05). ON by
+        # default, but nothing is sent until the user has been SHOWN the
+        # disclosure (first-run step / one-time notice -> update_ping_disclosed).
+        # DO_NOT_TRACK=1 or CLAYRUNE_NO_PING=1 in the environment is a hard off.
+        # update_ping_url is config.json only, deliberately not Settings-editable.
+        'update_ping_enabled': True,
+        'update_ping_disclosed': False,
+        'update_ping_url': 'https://clayrune.io/api/ping',
+
         # Prevent automatic system sleep while Clayrune runs (mc/wake_lock.py).
         # The product runs agents on the user's own box; if it sleeps, the agent
         # stops. Off by default — opt-in per install.
@@ -3147,6 +3156,26 @@ from mc import allowance_state as _allowance_state  # noqa: E402
 
 _allowance_state.wire(_DATA_ROOT / 'data' / 'allowance_state.json')
 
+# ── Daily update-check ping (mc/update_ping.py) ─────────────────────────────
+# State beside data/, never in data/projects/. version_fn reads the build
+# identity without a git subprocess on the ping path being the only source:
+# frozen builds ship build_info.json, source checkouts use `git describe`.
+from mc import update_ping as _update_ping  # noqa: E402
+from mc.blueprints import update_ping_routes as _bp_update_ping  # noqa: E402
+
+
+def _update_ping_version() -> str:
+    info = _bp_system._load_bundled_build_info(_APP_DIR)
+    if info:
+        return str(info.get('release_tag') or info.get('commit') or '')
+    return _bp_system._git_version(_APP_DIR, 'HEAD').get('display', '')
+
+
+_update_ping.wire(_DATA_ROOT / 'data' / 'update_ping_state.json',
+                  config_fn=lambda: CONFIG, version_fn=_update_ping_version)
+_bp_update_ping.wire(config_path=CONFIG_PATH)
+app.register_blueprint(_bp_update_ping.bp)
+
 # ── Built-in agent-CLI update state (MC-1025) ───────────────────────────────
 # Same placement rule as allowance_state: beside data/, never in data/projects/.
 from mc import cli_update as _cli_update  # noqa: E402
@@ -3700,6 +3729,9 @@ def boot(check_port=True):
     # 'cli_auto_update_enabled' (default True), read inside the pass itself, so
     # flipping it takes effect on the next hourly tick without a restart.
     threading.Thread(target=_cli_update_loop, daemon=True, name='cli-update').start()
+    # Daily update-check ping (mc/update_ping.py). Every gate (env off, the
+    # Settings toggle, disclosure shown, 24h) is read inside maybe_ping itself.
+    _update_ping.start()
     # MC-997: leaked pane-Chromium sweep (mc/blueprints/browser_routes.py).
     # Off switch is config 'browser_pane_leak_sweep_enabled' (default True),
     # checked inside the sweep itself, not here — same "flip takes effect on
