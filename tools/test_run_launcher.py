@@ -20,6 +20,7 @@ import time
 from typing import Any, BinaryIO
 
 from test_run_transport import LocalClient, Telemetry, TransportError
+from test_run_pytest import PytestProgress
 
 MAX_MANIFEST_BYTES = 256 * 1024
 MAX_UNITS = 128
@@ -267,17 +268,13 @@ def run(args: argparse.Namespace, units: list[Unit], stop_on_failure: bool) -> i
                 final = result(130, 'cancelled')
                 break
             key = 'unit-' + str(index)
-            telemetry.send('enroll', key, {'parent': 'parent', 'metadata': {
-                'runner': 'command', 'unit': 'script', 'display_label': 'Command ' + str(index)}})
+            reporter = PytestProgress(spec, telemetry, key, warn)
+            telemetry.send('enroll', key, {'parent': 'parent', 'metadata': reporter.metadata('Command ' + str(index))})
             events(telemetry, 'parent', event('unit_started', unit_id=key, attempt=1))
-            events(telemetry, key, event('run_started', reporter_version='launcher-1'),
-                   event('collection', revision=1, selected_total=1),
-                   event('diagnostic', code='framework_reporter_unavailable', capture='partial'),
-                   event('unit_started', unit_id=key, attempt=1))
-            observed = execute(spec, client, args.project, cancelled, telemetry, key)
+            observed = reporter.execute(lambda prepared: execute(
+                prepared, client, args.project, cancelled, telemetry, key))
             report = event('unit_report', unit_id=key, attempt=1, phase='process',
                            outcome='pass' if observed['exit_code'] == 0 else 'fail', final=True, revision=1)
-            events(telemetry, key, report)
             telemetry.send('finalize', key, observed)
             events(telemetry, 'parent', report)
             completed += 1

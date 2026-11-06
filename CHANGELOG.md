@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-06] - Measure serial pytest runs through a standalone reporter (MC-1148 P6, dark)
+
+- Added a stdlib-only pytest plugin and separate launcher adapter for direct pytest argv, with selected totals, phase outcomes, immediate failure names and actual-wait finalization. Parent manifests still count scripts; pytest children count tests. Unproved xdist/retry counts stay unknown and explicitly partial.
+- Added reporter and launcher source assets to the macOS bundle specification; Windows/Linux source-clone paths include the tracked asset. Copied-layout verification is distinct from an actual packaged release or fresh VM install. Contract and checks: `docs/TEST_RUN_PYTEST.md`. Branch candidate only; no config change, UI, merge, push or restart.
+
 ## [2026-11-05] - Campaign chat: new-campaign regression smoke + sent-text re-entry probe
 
 - Ron saw his sent message back in a NEW campaign's box after Posy answered and he opened the large view. Not reproduced: on a campaign made through the real New-campaign path, with a slow reply, repaints, pop-out during the wait, an input-method composition, and the live page on the real campaign, the box stayed empty every time. The screenshot's "Reads: ... Can search the web" line only exists in code that already contains the 866a479b fix, so a stale tab is ruled out.

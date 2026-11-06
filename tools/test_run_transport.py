@@ -92,6 +92,16 @@ class Telemetry:
         if self.thread.is_alive():
             self.warn('telemetry_final_drain_timeout_progress_incomplete')
 
+    def enrolled(self, key: str, timeout: float) -> bool:
+        """Bounded barrier: reporters create sidecars only after authorization."""
+        ready = threading.Event()
+        self.send('barrier', key, {'ready': ready})
+        deadline = time.monotonic() + timeout
+        while not self.inactive.is_set() and time.monotonic() < deadline:
+            if ready.wait(min(0.05, max(0, deadline - time.monotonic()))):
+                return key in self.runs
+        return False
+
     def _submit(self, record: dict, events: list[dict]) -> None:
         if record['receipt'].get('expires_at', 0) <= time.time() + 30:
             response = self.client.request('POST', record['path'] + '/producer', {})
@@ -109,7 +119,9 @@ class Telemetry:
             self._submit(record, batch)
 
     def _handle(self, action: str, key: str, payload: dict) -> None:
-        if action == 'enroll':
+        if action == 'barrier':
+            payload['ready'].set()
+        elif action == 'enroll':
             parent = payload.pop('parent', None)
             if parent is not None:
                 if parent not in self.runs:

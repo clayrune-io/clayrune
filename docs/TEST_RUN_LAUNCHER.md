@@ -1,9 +1,12 @@
 # Reported test command (MC-1148 Phase 5)
 
-This is a branch candidate for the default-off test-run feature. It adds
-execution/capture for explicitly wrapped commands; reporters, passive detection,
-chat cards, Floor UI and adoption enforcement remain later phases. No config
-change, merge, push or restart is part of Phase 5.
+This is the Phase 5 contract for the default-off test-run feature. Phase 6
+adds a serial pytest adapter and source-asset packaging; its behavior overrides
+the original script-only/source-only limits below for recognized direct pytest
+commands. See `TEST_RUN_PYTEST.md` for the bounded enrollment wait, target
+interpreter loading, actual fidelity and packaging verification limits. Passive
+detection, chat cards, Floor UI and adoption enforcement remain later phases.
+No config change, merge, push or restart is part of these branch candidates.
 
 ## Invocation
 
