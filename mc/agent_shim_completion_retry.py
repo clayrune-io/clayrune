@@ -4,9 +4,13 @@ Boot replay (mc/agent_shim_completion.py) runs once. When it fails -- a transien
 `_write_run` error is enough -- the record stays on disk and every reconciler now
 leaves that workflow step alone (`workflows._completion_owed`), so without this
 the run would sit `running` until the next boot. Each tick this module runs the
-SAME replay again, for the owed sessions of running workflow steps only, with the
-same ack rules (the record is cleared only when `replay_pending` clears it), then
-advances the run the way boot's workflow adoption would.
+SAME replay again, for the owed sessions of running workflow runs -- on ANY step
+of the run, not just the one still `running`: a replay that recorded its step and
+then failed to clear the record leaves a `completed` step with the record still
+owed (Fenn, MC-1150 P4 fourth review). Same ack rules (the record is cleared only
+when `replay_pending` clears it; a step already recorded is acknowledged without
+being recorded again), then the run is advanced the way boot's workflow adoption
+would. `advanced` counts only advances that moved the run.
 
 Bounds: once per session per call (the tick is 30s); not before boot's workflow
 adoption has finished; not while another replay holds the lock; never for a
@@ -35,7 +39,7 @@ def retry_owed_workflow_steps(root: Optional[Any] = None, *,
         if not _wf.boot_adoption_done():
             return counts
         owed = {}
-        for run_id, _, sid in _wf.running_agent_steps():
+        for run_id, _, sid, _st in _wf.running_run_session_steps():
             live = state.agent_sessions.get(sid)
             if live is not None and _comp.pending_of(live) is not None:
                 continue                         # its own thread is mid-completion
@@ -50,8 +54,8 @@ def retry_owed_workflow_steps(root: Optional[Any] = None, *,
                  f'failed, record kept: {why}')
         for sid in rep.replayed:
             counts['replayed'] += 1
-            _wf.advance_idle_run(owed[sid])
-            counts['advanced'] += 1
+            if _wf.advance_idle_run(owed[sid]):
+                counts['advanced'] += 1
     except Exception as e:
         _log(f'[agent-shim-completion] retry tick failed: {type(e).__name__}: {e}')
     return counts

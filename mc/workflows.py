@@ -2105,11 +2105,54 @@ def running_agent_steps() -> list:
     return out
 
 
-def advance_idle_run(run_id: str) -> None:
+def running_run_session_steps() -> list:
+    """[(run_id, step_name, session_id, step_status)] for EVERY step that has a
+    recorded session, on every `running` run -- not only the step still `running`
+    (`running_agent_steps`). A completion replay that recorded its step and then
+    failed to acknowledge it leaves a `completed` step with a record still owed.
+    Read-only; unreadable run files are skipped."""
+    out = []
+    if WORKFLOW_RUNS_DIR is None or not WORKFLOW_RUNS_DIR.exists():
+        return out
+    for f in WORKFLOW_RUNS_DIR.glob('*.json'):
+        try:
+            run = _read_run(f.stem)
+            if run is None or run.get('status') != 'running':
+                continue
+            for name, st in (run.get('steps') or {}).items():
+                sid = (st or {}).get('session_id')
+                if sid:
+                    out.append((run['id'], name, sid, st.get('status')))
+        except Exception as e:
+            _log(f'[workflows] running_run_session_steps: {f.name} skipped: {e}')
+    return out
+
+
+def _run_signature(run_id: str):
+    run = _read_run(run_id)
+    if run is None:
+        return None
+    return (run.get('status'),
+            tuple(sorted((n, (st or {}).get('status')) for n, st in (run.get('steps') or {}).items())))
+
+
+def advance_idle_run(run_id: str) -> bool:
     """`_advance_run`, but a no-op unless nothing in the run is in flight, decided
     under the same lock the advance takes. For a caller that has just recorded a
-    step on a run whose frontier it does not own (a retried completion replay)."""
+    step on a run whose frontier it does not own (a retried completion replay).
+    Returns True only when the run's state actually moved (a step dispatched, the
+    run completed or ended); False for a no-op or when the run could not be read."""
+    before = _run_signature(run_id)
     _advance_run(run_id, only_if_idle=True)
+    after = _run_signature(run_id)
+    if after is None:
+        return False
+    if before is None:
+        # Unreadable before (a transient read error): no baseline to diff, so count
+        # it only if the run is now visibly past idle (in flight, or no longer running).
+        run = _read_run(run_id) or {}
+        return run.get('status') != 'running' or _any_in_flight(run)
+    return after != before
 
 
 def _completion_owed(session_id: str) -> bool:
