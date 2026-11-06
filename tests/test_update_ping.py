@@ -366,3 +366,104 @@ def test_update_ping_routes_wire_guard(tmp_path):
             update_ping_routes._persist({'x': 1})
     finally:
         update_ping_routes.CONFIG_PATH = saved
+
+
+# ── opt-out vs the gate-to-send transition (Fenn re-review, 2026-11-05) ─────
+
+def _choice_off_thread(events, app):
+    """POST /api/update-ping/choice {enabled:false} through the real route."""
+    def go():
+        r = app.test_client().post('/api/update-ping/choice', json={'enabled': False})
+        events.append(('off_response', r.status_code))
+    t = threading.Thread(target=go, daemon=True)
+    t.start()
+    return t
+
+
+@pytest.fixture
+def route_app(client, monkeypatch):
+    c, path, live = client
+    live['update_ping_disclosed'] = True
+    monkeypatch.setattr(update_ping_routes, 'is_unattended_caller', lambda: False)
+    app = Flask(__name__)
+    app.register_blueprint(update_ping_routes.bp)
+    return app, path, live
+
+
+def test_opt_out_during_id_file_step_sends_nothing(route_app, monkeypatch):
+    """Fenn's repro: the sender pauses in get_ping_id (after the early check, before the
+    final gate); OFF is saved through the real route and returns 200. No POST may follow."""
+    app, path, live = route_app
+    reached, release, events = threading.Event(), threading.Event(), []
+    real_id = update_ping.get_ping_id
+
+    def slow_id():
+        reached.set()
+        assert release.wait(10)
+        return real_id()
+    monkeypatch.setattr(update_ping, 'get_ping_id', slow_id)
+
+    def post(url, payload):
+        events.append(('post', live['update_ping_enabled']))
+        return {}
+    t, out = _run(lambda: update_ping.maybe_ping(now=1_000_000, post_fn=post, environ={}))
+    assert reached.wait(5)
+    off = _choice_off_thread(events, app)
+    off.join(5)
+    assert ('off_response', 200) in events          # OFF succeeded while the sender was paused
+    release.set()
+    t.join(10)
+    assert [e for e in events if e[0] == 'post'] == [], events
+    assert out['r'] == {'sent': False, 'reason': 'disabled'}
+
+
+def test_opt_out_after_the_final_gate_waits_for_the_post(route_app, monkeypatch):
+    """OFF fired the instant the final gate passes (before transport). The save may not
+    return success until the in-flight request is over, and no second request may start."""
+    app, path, live = route_app
+    events, off_holder = [], []
+    real_gate = update_ping.blocked_reason
+    armed = {'on': False}
+
+    def gate(cfg, environ=None):
+        r = real_gate(cfg, environ)
+        if armed['on'] and r is None and not off_holder:
+            off_holder.append(_choice_off_thread(events, app))
+            time.sleep(0.4)                           # lets an unserialized OFF finish first
+        return r
+    monkeypatch.setattr(update_ping, 'blocked_reason', gate)
+
+    def post(url, payload):
+        events.append(('post', live['update_ping_enabled']))
+        return {}
+    # the first pass through the gate is maybe_ping's own cheap one; arm it after that,
+    # and skip the early _recheck so the next gate IS the final one
+    monkeypatch.setattr(update_ping, '_recheck', lambda environ=None: armed.update(on=True))
+    r = update_ping.maybe_ping(now=1_000_000, post_fn=post, environ={})
+    off_holder[0].join(5)
+    assert r['sent'] is True
+    # the request was already past the point of no return; the save came strictly after it
+    assert events == [('post', True), ('off_response', 200)], events
+    assert live['update_ping_enabled'] is False
+    assert json.loads(path.read_text())['update_ping_enabled'] is False
+    # and from here on nothing new starts
+    assert update_ping.maybe_ping(now=1_000_000 + 2 * DAY, post_fn=post, environ={})['reason'] == 'disabled'
+    assert [e for e in events if e[0] == 'post'] == [('post', True)]
+
+
+def test_http_post_is_bounded_against_a_dripping_server(monkeypatch):
+    """The POST now runs under the config lock, so a slow-drip body must not hold it forever."""
+    class Drip:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self, n):
+            time.sleep(0.05)
+            return b'x'
+    class Opener:
+        def open(self, req, timeout=None): return Drip()
+    monkeypatch.setattr(update_ping.urllib.request, 'build_opener', lambda *a: Opener())
+    monkeypatch.setattr(update_ping, 'TIMEOUT_S', 0.3)
+    start = time.monotonic()
+    with pytest.raises(TimeoutError):
+        update_ping._http_post('https://example.invalid/ping', {})
+    assert time.monotonic() - start < 2

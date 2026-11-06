@@ -23,10 +23,17 @@ socket is opened; `tests/test_update_ping.py` proves zero requests for each):
     "at most once per 24h" holds even when the endpoint is down;
   * the endpoint URL is not https (loopback http is allowed for local testing).
 
-The gates are checked again, under the config writers' lock, immediately before
-the request (after the slow version lookup), so an opt-out saved while the
-sender was working is honoured and no new request starts after it returns.
-A request already on the wire cannot be recalled.
+The gates are checked again, under the config writers' lock, and the request
+is STARTED inside that same critical section (`_gate_and_send`). So an opt-out
+save (PUT /api/config, /api/update-ping/choice) either finishes first, and no
+request starts, or waits for the request already in flight: once a save has
+returned success, no NEW request starts. A request already on the wire cannot
+be recalled, and a save that arrives during it waits for it, at most about
+twice TIMEOUT_S (see `_http_post`) plus name resolution, which the socket
+timeout does not cover. The slow work (version lookup, id file) happens before
+the lock is taken, so that wait is the request and nothing else. If an opt-out
+lands during the id-file step, the random id may already have been created
+(nothing is sent).
 
 The endpoint is config ``update_ping_url`` (default below). It is deliberately
 not on the Settings-editable list: an agent session must not be able to point
@@ -204,8 +211,19 @@ def _http_post(url: str, payload: dict) -> dict:
         url, data=json.dumps(payload).encode('utf-8'), method='POST',
         headers={'Content-Type': 'application/json', 'User-Agent': 'Clayrune'})
     opener = urllib.request.build_opener(_NoRedirect)
+    # This runs while holding the config writers' lock (see _gate_and_send), so it
+    # must be bounded. urllib's timeout is per socket operation; a server that
+    # drips the body would hold the lock indefinitely, hence the deadline.
+    deadline = time.monotonic() + TIMEOUT_S
     with opener.open(req, timeout=TIMEOUT_S) as resp:
-        body = resp.read(MAX_RESPONSE_BYTES + 1)
+        body = b''
+        while len(body) <= MAX_RESPONSE_BYTES:
+            if time.monotonic() > deadline:
+                raise TimeoutError('response too slow')
+            chunk = resp.read(1024)
+            if not chunk:
+                break
+            body += chunk
     if len(body) > MAX_RESPONSE_BYTES:
         raise ValueError('response too large')
     data = json.loads(body.decode('utf-8')) if body.strip() else {}
@@ -213,18 +231,41 @@ def _http_post(url: str, payload: dict) -> dict:
 
 
 def _recheck(environ=None) -> Optional[str]:
-    """Final eligibility check, taken under the config writers' lock.
+    """Eligibility check under the config writers' lock. Returns the reason, or None.
 
-    The same lock covers every config write (PUT /api/config and the
-    /api/update-ping/* routes, which update the live dict inside it), so an
-    opt-out that has returned HTTP 200 is always visible here, and one still
-    in progress is waited for. Without this, the gates in `maybe_ping` ran once
-    before the slow version lookup and an OFF saved during it still got a POST.
-    Returns the blocking reason, or None if the ping may go.
+    Used as an early-out after the version lookup. It is NOT the guarantee:
+    the lock is released on return, so an opt-out can still land before the
+    request. `_gate_and_send` is the check that holds the lock through the send.
     """
     from mc import provider_preferences
     return provider_preferences.serialized_write(
         lambda: blocked_reason(_config_fn() or {}, environ))()
+
+
+def _gate_and_send(url: str, payload: dict, post_fn: Callable[[str, dict], dict],
+                   environ=None) -> tuple:
+    """Final gate AND transport in ONE critical section of the config writers' lock.
+
+    The lock is the one PUT /api/config and the /api/update-ping/* routes take for
+    the whole read/merge/write + live-dict update. Holding it from the gate through
+    the request means an opt-out save either completed before the gate (we see it,
+    nothing is sent) or blocks until the request returns (it was already past the
+    point of no return). Re-checking without holding the lock only narrows the
+    window; that is the defect this replaces. Returns (reason, reply); reply is
+    None when blocked. Transport exceptions propagate to the caller.
+
+    Lock order is always module `_lock` -> config write lock. Nothing that holds
+    the config write lock takes `_lock` (the routes call only `status()` and
+    `blocked_reason`, both lock-free), so there is no cycle.
+    """
+    from mc import provider_preferences
+
+    def _run():
+        reason = blocked_reason(_config_fn() or {}, environ)
+        if reason:
+            return reason, None
+        return None, post_fn(url, payload)
+    return provider_preferences.serialized_write(_run)()
 
 
 def maybe_ping(now: Optional[float] = None, post_fn: Optional[Callable[[str, dict], dict]] = None,
@@ -247,7 +288,13 @@ def maybe_ping(now: Optional[float] = None, post_fn: Optional[Callable[[str, dic
         _save()
         try:
             version = str(_version_fn() or '')[:64]      # slow: may run `git describe`
-            reason = _recheck(environ)                    # an opt-out may have landed meanwhile
+            reason = _recheck(environ)                    # early-out: skip the id file if already opted out
+            payload: dict = {}
+            reply: dict = {}
+            if not reason:
+                payload = build_payload(version)          # id file I/O, deliberately BEFORE the gate
+                reason, sent_reply = _gate_and_send(url, payload, post_fn or _http_post, environ)
+                reply = sent_reply or {}
             if reason:
                 # Nothing was sent, so this must not eat the day.
                 if prior_attempt is None:
@@ -256,8 +303,6 @@ def maybe_ping(now: Optional[float] = None, post_fn: Optional[Callable[[str, dic
                     _STATE['last_attempt_ts'] = prior_attempt
                 _save()
                 return {'sent': False, 'reason': reason}
-            payload = build_payload(version)
-            reply = (post_fn or _http_post)(url, payload)
         except Exception as e:
             _STATE['last_error'] = str(e)[:200]
             _save()
