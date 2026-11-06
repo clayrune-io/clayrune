@@ -1725,6 +1725,31 @@ def _get_active_restart_blockers():
                 payload, agent_sessions, hivemind_workers=_adopt.running_hivemind_workers())
     except Exception as e:
         _log(f"[restart] survive-restart partition failed, treating all as blocking: {e}")
+    # Open agent jobs (mc/agent_jobs.py, in-memory only) die with this process and
+    # drop the completion callback that wakes their parked, idle session. Appended
+    # AFTER the partition: shim adoption does not carry jobs, so a job row must
+    # never be moved to adoptable_sessions. Rows go in 'active_sessions' so every
+    # existing caller (status route, restart/update 409 + force) blocks on them.
+    try:
+        from mc import agent_jobs as _agent_jobs
+        now = _time.time()
+        for j in _agent_jobs.list_open_jobs():
+            pid = j.get('project_id') or ''
+            sid = j.get('session_id') or ''
+            age_min = int(max(0, now - (j.get('started_at') or now)) // 60)
+            cmd = (j.get('command') or '').strip().replace('\n', ' ')
+            cmd = (cmd[:60] + '…') if len(cmd) > 60 else cmd
+            payload['active_sessions'].append({
+                'session_id': sid,
+                'project_id': pid,
+                'project_name': project_names.get(pid, pid),
+                'status': 'job_running',
+                'task_preview': f"job {(j.get('job_id') or '')[:8]} running {age_min}m: {cmd}",
+                'started_at': j.get('started_at'),
+                'job_id': j.get('job_id'),
+            })
+    except Exception as e:
+        _log(f"[restart] open-job blocker scan failed: {e}")
     return payload
 
 
