@@ -31,6 +31,21 @@
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
   function _state(id) { return threads[id] || (threads[id] = { turns: [], loaded: false, loading: false, pending: null, draft: '' }); }
 
+  // DIAGNOSTIC ONLY, changes no behaviour (2026-11-05). Ron saw his sent message back in the box after
+  // a new campaign's reply and the pop-out; neither Playwright keystrokes nor the live page reproduce it
+  // (docs/desk_v1/CAMPAIGN_CHAT_DRAFTS.md), so the source is something outside this file (an input method,
+  // dictation, a browser extension that re-inserts text). When the box ends up holding exactly the text that
+  // was just sent, say HOW it got there: an input event (inputType, composing, trusted) or a bare value
+  // that only showed up when the box took focus. Read it with `window.__deskChatReentry` or the console.
+  function _noteReentry(st, ask, how, e) {
+    // Only a JUMP counts: the box was empty (draft '') and now holds the whole sent text. Typing the same words again passes through partial values.
+    if (!st.sentText || st.pending || st.draft !== '' || ask.value.trim() !== st.sentText) return;
+    const rec = { how, at: new Date().toISOString(), inputType: e && e.inputType || null, isTrusted: !!(e && e.isTrusted), isComposing: !!(e && e.isComposing), focused: document.activeElement === ask, popped: !!ask.closest('.is-popped') };
+    (window.__deskChatReentry = window.__deskChatReentry || []).push(rec);
+    if (window.__deskChatReentry.length > 20) window.__deskChatReentry.shift();
+    console.warn('[desk-chat] the sent message re-entered the box', rec);
+  }
+
   const _EMPTY = 'Ask me anything about this campaign: ideas for the next posts, why a piece failed, how to fix it. Select a card to talk about just that piece.';
 
   function _scopeOf(opts) {
@@ -116,12 +131,14 @@
     if (noAgent) ask.placeholder = 'Pick an agent for this campaign first.';
     ask.value = st.draft;
     const fit = () => { ask.style.height = 'auto'; if (ask.scrollHeight > 0) ask.style.height = Math.min(ask.scrollHeight + 2, 190) + 'px'; };
-    ask.addEventListener('input', () => {
+    ask.addEventListener('input', (e) => {
       // Only the current, editable composer owns the draft. Late input from a
       // pending turn or a textarea retired by a repaint cannot revive it.
       if (st.pending || !ask.isConnected || !_active || _active.box !== box) return;
+      _noteReentry(st, ask, 'input', e);
       st.draft = ask.value; fit();
     });
+    ask.addEventListener('focus', () => _noteReentry(st, ask, 'focus', null));
     requestAnimationFrame(fit);
     const scopeBtn = box.querySelector('[data-scope-trigger]');
     if (scopeBtn && typeof opts.onScopeClick === 'function') scopeBtn.onclick = () => opts.onScopeClick(scopeBtn);
@@ -147,6 +164,7 @@
       // The box empties the moment the message is sent: the pending "You" turn shows it.
       // A failed send puts it back, with the reason (below), so nothing typed is lost.
       st.pending = { text, scope, priorIds: new Set(st.turns.map((t) => t.id)) };
+      st.sentText = text;
       // Blur FIRST: an input method or dictation still composing in the box commits its text on blur,
       // and that commit would otherwise land after the clear below and put the sent message back.
       if (document.activeElement === ask) ask.blur();
@@ -184,6 +202,7 @@
         if (target) { target.textContent = line; target.dataset.kind = last.suggest_error ? 'error' : 'ok'; }
       } catch (err) {
         st.pending = null;
+        st.sentText = null;   // the request is back in the box on purpose
         st.draft = text;   // a repaint of the box shows the failed request too
         const target = live() ? live().box.querySelector('[data-camp-chat-status]') : null;
         if (target) { target.textContent = `The turn failed: ${err && err.message ? err.message : err}. Your message is back in the box. Check dispatched sessions before retrying.`; target.dataset.kind = 'error'; }

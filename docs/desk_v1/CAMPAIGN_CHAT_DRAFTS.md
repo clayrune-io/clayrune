@@ -79,3 +79,48 @@ separate pop-out smoke are untouched.
 This is a branch-only candidate: no merge, push, server restart or deployment.
 The source of the original late value is still unknown; the proven fix is to
 the controlled draft resurrection path, not a claim about that source.
+
+## Follow-up 2026-11-05: new campaign, sent text back after the pop-out (NOT reproduced)
+
+Report: new campaign, message to Posy, status "Posy answered. Nothing was changed.",
+pop-out clicked, the sent text is in the box (screenshot `data/uploads/agent_2f441368ff.png`,
+caret mid-text at character 136 of 251).
+
+**Ruled out, with evidence**
+
+- Stale tab: the screenshot shows "Reads: README.md, CHANGELOG.md. Can search the web and
+  read the project folder". That line came in with 102a9236, merged at 917cbd22, which
+  contains 866a479b. The tab was running the fixed code. The server also serves the fixed
+  file (`Retire the draft BEFORE` present, Last-Modified 2026-11-03).
+- Double send: the real thread for `camp-draft-1793926282468-8yo4` has one user turn
+  (00:52:45Z) and one Posy turn (00:52:59Z).
+- Plain new-campaign path: `tools/smoke/desk-v1-campaign-chat-new.mjs` creates the campaign through
+  `deskV1NewCampaignInProject` (draft id, POST/PATCH, workspace), types with real keystrokes, sends
+  inline and from the large view, and reads the box after the answer, after pop-out, after 1.5 s and
+  after a full re-render. Always empty.
+- Slow reply with a full Desk render, a pop-out, a render + pop-out, or a panel switch during the wait
+  (scratch probe): always empty.
+- Input-method composition open at Send (CDP `Input.imeSetComposition`): button Send commits on blur
+  before the clear and the box stays empty; Enter during composition inserts a newline and does not
+  send (by design, `isComposing`).
+- The live page at :5199 on the real campaign, only the chat POST stubbed: empty after answer, pop-out
+  and 1.5 s.
+- Nothing else in `static/js` writes this textarea: `desk-v1-how.js` Suggest sets its own fixed line;
+  `composer-extras.js` only syncs the mic/send slot; `refreshModalById` is the project modal, not the Desk.
+
+**What is left.** The only way code in this file leaves the box holding the sent text is an `input`
+event on the live, enabled composer whose value is the whole text (the guard from 866a479b cannot tell
+that from typing), or a value written with no event at all. Both need something outside the page:
+an input method or Windows voice typing re-committing on focus, or a browser extension that re-inserts
+text. The caret in the screenshot sits mid-text, which fits a value inserted by something other than
+this file, but that is a reading, not proof.
+
+**Probe added (changes no behaviour).** `_noteReentry` in `desk-v1-campaign-chat.js` records, when the box
+goes from empty to exactly the text just sent, how it arrived: `{how: 'input'|'focus', inputType,
+isTrusted, isComposing, focused, popped}` in `window.__deskChatReentry` and `console.warn`. Typing the
+same words again and a failed send (request restored on purpose) do not trigger it. After a hard reload,
+the next occurrence can be read in the console with `window.__deskChatReentry`.
+A guard that ignores such a whole-text jump would be a fix for a cause not yet seen; it is not shipped.
+
+Verification: `node tools/smoke/desk-v1-campaign-chat-new.mjs`, `desk-v1-campaign-chat.mjs`,
+`desk-v1-campaign.mjs`, `desk-v1-chat-popout.mjs`, `desk.mjs`, `boot-smoke.mjs` all exit 0.

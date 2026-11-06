@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-05] - Campaign chat: new-campaign regression smoke + sent-text re-entry probe
+
+- Ron saw his sent message back in a NEW campaign's box after Posy answered and he opened the large view. Not reproduced: on a campaign made through the real New-campaign path, with a slow reply, repaints, pop-out during the wait, an input-method composition, and the live page on the real campaign, the box stayed empty every time. The screenshot's "Reads: ... Can search the web" line only exists in code that already contains the 866a479b fix, so a stale tab is ruled out.
+- `desk-v1-campaign-chat.js` gains a diagnostic that changes no behaviour: if the box goes from empty to exactly the text just sent, it records how (input event with inputType/isTrusted/isComposing, or a bare value seen on focus) in `window.__deskChatReentry` and the console. New smoke `tools/smoke/desk-v1-campaign-chat-new.mjs`. Details: `docs/desk_v1/CAMPAIGN_CHAT_DRAFTS.md`. Branch only; no merge, push or restart.
+
 ## [2026-11-05] - Show local times on agent narration runs
 
 - Agent text shows one muted local HH:MM tag per uninterrupted narration run, using its first valid recorded line timestamp; hover shows the full local date and time. Streaming, restored history and rollover replay use the same rule. Adjacent replies without a prompt, tool, card or day divider between them share a tag; undated runs stay untagged.
