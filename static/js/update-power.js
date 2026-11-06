@@ -276,7 +276,8 @@ async function performInPlaceMacUpdate(btn, hint) {
   try {
     const b = await (await fetch(API_BASE + '/api/system/restart/status')).json();
     const n = (b.active_sessions || []).length + (b.active_hiveminds || []).length;
-    if (n) { force = true; note = `\n\n${n} running agent session${n === 1 ? '' : 's'} will be stopped.`; }
+    // active_sessions also carries open Clayrune job rows (status 'job_running', MC-1160).
+    if (n) { force = true; note = `\n\n${n} running session${n === 1 ? '' : 's'} or job${n === 1 ? '' : 's'} will be stopped.`; }
   } catch (_) { /* the server re-checks and answers 409 if it matters */ }
   if (!confirm('Download the latest Clayrune, verify it, and restart into it? Your data and config are preserved. '
     + 'If the new version does not start, the current one is restored.' + note)) return;
