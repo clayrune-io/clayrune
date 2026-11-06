@@ -1405,9 +1405,26 @@ def _fail_run(run: dict, message: str) -> None:
     _log(f"[workflows] run {run['id'][:12]} failed: {message}")
 
 
-def _advance_run(run_id: str) -> None:
+def updated_older_than(updated: Any, seconds: float, now: Optional[datetime] = None) -> bool:
+    """True only for a parseable, timezone-aware `updated` stamp older than
+    `seconds`. A missing, unparseable, non-string, naive or future stamp is
+    "fresh" (False): the caller then leaves the run alone."""
+    try:
+        t = datetime.fromisoformat(str(updated).replace('Z', '+00:00'))
+        return ((now or datetime.now(timezone.utc)) - t).total_seconds() > seconds
+    except (TypeError, ValueError):
+        return False
+
+
+def _advance_run(run_id: str, *, only_if_idle: bool = False,
+                 idle_for_s: Optional[float] = None) -> None:
     """Execute frontier nodes, one at a time, until the run blocks (an agent
     step was dispatched, or an approval gate is waiting) or ends.
+
+    `idle_for_s`: when set, a no-op unless the run's `updated` stamp -- read here,
+    under `_runs_lock` -- is older than that (see `updated_older_than`). A caller
+    that decided staleness from an earlier lock-free read cannot be trusted: a
+    step may have completed (re-stamping `updated`) between that read and this lock.
 
     Serialized per-process by `_runs_lock` -- workflows still run one agent
     step in flight at a time (R2-D4: the DAG expresses dependency, not
@@ -1418,6 +1435,10 @@ def _advance_run(run_id: str) -> None:
     with _runs_lock:
         run = _read_run(run_id)
         if run is None or run.get('status') != 'running':
+            return
+        if only_if_idle and _any_in_flight(run):
+            return
+        if idle_for_s is not None and not updated_older_than(run.get('updated'), idle_for_s):
             return
         workflow = _run_definition(run)
         if not workflow:
@@ -1599,49 +1620,75 @@ def _dispatch_step(run: dict, node: dict) -> bool:
 # ── Agent step completion (the handoff) ──────────────────────────────────────
 
 def on_agent_step_complete(run_id: str, step_name: str, project_id: str,
-                           session_id: str, status: str, summary: str) -> None:
+                           session_id: str, status: str, summary: str,
+                           *, advance: bool = True) -> str:
     """Called from `agent_routes._notify_workflow_step` when a workflow's
     agent step finishes (Mode A exit or Mode B turn boundary -- the same
     latch MC-946 already fires from, generalised; see that module). Also the
     entry point restart adoption replays through, with `status`/`summary`
     taken from the persisted agent_log instead of a live session.
+
+    Returns what became of the completion, so a caller that OWES it (the boot
+    replay of a crash-surviving shim completion, mc/agent_shim_completion.py)
+    acknowledges only once it is settled: 'recorded' (the step's transition is
+    on disk), 'terminal' (this call ended the run -- failed / interrupted --
+    also on disk), 'ignored' (nothing to apply: the run is gone, cancelled, already
+    past this step, or the completion came from a stale session; retrying could
+    never change that) or 'refused' (a SUCCESS for a run a reconciler already
+    interrupted: the result is lost, so a caller that owes it keeps its record
+    instead of acknowledging). An exception means NOT settled.
+
+    `advance=False` stops once the step is durably recorded and leaves
+    `_advance_run` to the caller. Boot replay uses it: starting the next step is
+    not the replay's job, and `adopt_on_startup`, which runs right after it,
+    re-derives the frontier of any run that has no step in flight.
     """
     with _runs_lock:
         run = _read_run(run_id)
         if run is None:
-            return
+            return 'ignored'
         st = (run.get('steps') or {}).get(step_name) or {}
         # Idempotency / restart-race guard: only apply if this exact step is
         # still actually the one running. A run that already advanced (this
         # callback firing twice, or racing restart adoption) is a no-op.
         if run.get('status') != 'running' or st.get('status') != 'running':
-            return
+            # A SUCCESS arriving at a run a machine path interrupted is a result
+            # that was lost, not a duplicate: 'refused' tells a replay to keep
+            # its record. Nothing human sets `interrupted` (an operator cancel
+            # is `cancelled`, which stays 'ignored' so cancellation still wins).
+            if (run.get('status') == 'interrupted' and status in STEP_SUCCESS_STATUSES
+                    and (not st.get('session_id') or not session_id
+                         or st.get('session_id') == session_id)):
+                _log(f"[workflows] run {run_id[:12]} step '{step_name}': success from "
+                     f"{(session_id or '')[:12]} refused, the run was already interrupted")
+                return 'refused'
+            return 'ignored'
         recorded_sid = st.get('session_id')
         if recorded_sid and session_id and recorded_sid != session_id:
             _log(f"[workflows] run {run_id[:12]} step '{step_name}': ignoring "
                  f"completion from stale session {session_id[:12]} (project "
                  f"{project_id}), expected {recorded_sid[:12]}")
-            return
+            return 'ignored'
         workflow = _run_definition(run)
         if not workflow:
             _fail_run(run, 'workflow definition no longer exists')
-            return
+            return 'terminal'
         try:
             nodes, _ = compile_workflow(workflow)
         except ValueError as e:
             _fail_run(run, f'workflow no longer compiles: {e}')
-            return
+            return 'terminal'
         node = nodes.get(step_name)
         if node is None:
             _fail_run(run, f"step '{step_name}' no longer exists in the definition")
-            return
+            return 'terminal'
 
         if status == 'error':
             run['steps'][step_name] = {
                 **st, 'status': 'failed', 'error': summary or 'agent ended in error',
             }
             _fail_run(run, f"step '{step_name}' agent ended in error")
-            return
+            return 'terminal'
         if status not in STEP_SUCCESS_STATUSES:
             # 'stopped' (someone hit Stop), 'interrupted' (boot reconcile's
             # "we don't know what happened") or anything unrecognised is NOT a
@@ -1658,7 +1705,7 @@ def on_agent_step_complete(run_id: str, step_name: str, project_id: str,
                             f"ended '{status or 'unknown'}' without completing")
             _write_run(run)
             _log(f"[workflows] run {run_id[:12]} marked interrupted: {run['error']}")
-            return
+            return 'terminal'
 
         outcomes = node.get('outcomes') or []
         result = _parse_wf_result(summary) if outcomes else None
@@ -1677,7 +1724,9 @@ def on_agent_step_complete(run_id: str, step_name: str, project_id: str,
         }
         _write_run(run)
 
-    _advance_run(run_id)
+    if advance:
+        _advance_run(run_id)
+    return 'recorded'
 
 
 # ── Approval gate decision ───────────────────────────────────────────────────
@@ -1963,7 +2012,34 @@ def _execute_action(run: dict, node: dict, workflow: Optional[dict] = None) -> t
 
 # ── Restart adoption (fail-closed, spec Q5 / R2-D4) ──────────────────────────
 
+def _step_adopted(step_state: dict) -> bool:
+    try:
+        from mc import agent_shim_adopt
+        return (step_state.get('session_id') or '') in agent_shim_adopt.adopted_session_ids()
+    except Exception:
+        return False
+
+
+_boot_adoption_done = False
+
+
+def boot_adoption_done() -> bool:
+    """True once `adopt_on_startup` has finished in this process. A periodic
+    retry of an owed completion (mc/agent_shim_completion_retry.py) waits for it:
+    advancing a run before boot adoption would hand adoption a step this process
+    just dispatched, which it would read as an unconfirmed pre-restart step."""
+    return _boot_adoption_done
+
+
 def adopt_on_startup() -> None:
+    global _boot_adoption_done
+    try:
+        _adopt_runs_on_startup()
+    finally:
+        _boot_adoption_done = True
+
+
+def _adopt_runs_on_startup() -> None:
     """Scan `data/workflow_runs/` for runs that were mid-step when the server
     went down. A `waiting` run is simply still waiting -- untouched. A run
     with status `running` has at most one node in `running` state (R2-D4:
@@ -1994,8 +2070,12 @@ def adopt_on_startup() -> None:
             continue
         # Boot: no session can be live yet, so only the durable agent_log
         # can confirm. Anything short of a confirmed end is interrupted.
+        # MC-1150 P4: a step whose agent was adopted from a surviving shim IS live.
+        adopted = _step_adopted(run['steps'][step_name])
         verdict, status, summary = _step_session_verdict(run['steps'][step_name],
-                                                         use_live=False)
+                                                         use_live=adopted)
+        if verdict == 'in_flight':
+            continue                    # its completion hook advances the run
         if verdict == 'ended':
             _replay_step_end(run, step_name, status, summary, 'completed while down')
         else:
@@ -2024,6 +2104,114 @@ def _running_step(run: dict) -> Optional[str]:
                  if st.get('status') == 'running'), None)
 
 
+def running_agent_steps() -> list:
+    """[(run_id, step_name, session_id)] for every `running` run's running step
+    that has a recorded session. Read-only; unreadable run files are skipped."""
+    out = []
+    if WORKFLOW_RUNS_DIR is None or not WORKFLOW_RUNS_DIR.exists():
+        return out
+    for f in WORKFLOW_RUNS_DIR.glob('*.json'):
+        try:
+            run = _read_run(f.stem)
+            if run is None or run.get('status') != 'running':
+                continue
+            name = _running_step(run)
+            sid = ((run.get('steps') or {}).get(name) or {}).get('session_id') if name else ''
+            if name and sid:
+                out.append((run['id'], name, sid))
+        except Exception as e:
+            _log(f'[workflows] running_agent_steps: {f.name} skipped: {e}')
+    return out
+
+
+def running_run_session_steps() -> list:
+    """[(run_id, step_name, session_id, step_status)] for EVERY step that has a
+    recorded session, on every `running` run -- not only the step still `running`
+    (`running_agent_steps`). A completion replay that recorded its step and then
+    failed to acknowledge it leaves a `completed` step with a record still owed.
+    Read-only; unreadable run files are skipped."""
+    out = []
+    if WORKFLOW_RUNS_DIR is None or not WORKFLOW_RUNS_DIR.exists():
+        return out
+    for f in WORKFLOW_RUNS_DIR.glob('*.json'):
+        try:
+            run = _read_run(f.stem)
+            if run is None or run.get('status') != 'running':
+                continue
+            for name, st in (run.get('steps') or {}).items():
+                sid = (st or {}).get('session_id')
+                if sid:
+                    out.append((run['id'], name, sid, st.get('status')))
+        except Exception as e:
+            _log(f'[workflows] running_run_session_steps: {f.name} skipped: {e}')
+    return out
+
+
+def running_run_updated() -> list:
+    """[(run_id, updated)] for every `running` run -- `updated` as stored (the
+    string `_write_run` stamps on every run write; None if absent). Read-only;
+    unreadable run files are skipped. For the owed-completion retry's idle-run
+    scan (mc/agent_shim_completion_retry.py), which decides staleness itself."""
+    out = []
+    if WORKFLOW_RUNS_DIR is None or not WORKFLOW_RUNS_DIR.exists():
+        return out
+    for f in WORKFLOW_RUNS_DIR.glob('*.json'):
+        try:
+            run = _read_run(f.stem)
+            if run is not None and run.get('status') == 'running':
+                out.append((run['id'], run.get('updated')))
+        except Exception as e:
+            _log(f'[workflows] running_run_updated: {f.name} skipped: {e}')
+    return out
+
+
+def _run_signature(run_id: str):
+    run = _read_run(run_id)
+    if run is None:
+        return None
+    return (run.get('status'),
+            tuple(sorted((n, (st or {}).get('status')) for n, st in (run.get('steps') or {}).items())))
+
+
+def advance_idle_run(run_id: str, *, idle_for_s: Optional[float] = None) -> bool:
+    """`_advance_run`, but a no-op unless nothing in the run is in flight, decided
+    under the same lock the advance takes -- and, with `idle_for_s`, unless the run
+    has also had no write for that long, decided under that lock too. For a caller that has just recorded a
+    step on a run whose frontier it does not own (a retried completion replay).
+    Returns True only when the run's state actually moved (a step dispatched, the
+    run completed or ended); False for a no-op or when the run could not be read."""
+    before = _run_signature(run_id)
+    _advance_run(run_id, only_if_idle=True, idle_for_s=idle_for_s)
+    after = _run_signature(run_id)
+    if after is None:
+        return False
+    if before is None:
+        # Unreadable before (a transient read error): no baseline to diff, so count
+        # it only if the run is now visibly past idle (in flight, or no longer running).
+        run = _read_run(run_id) or {}
+        return run.get('status') != 'running' or _any_in_flight(run)
+    return after != before
+
+
+def _completion_owed(session_id: str) -> bool:
+    """True while the step's child has a durable completion checkpoint nobody has
+    finished (mc/agent_shim_completion.py): a stamp on its shim checkpoint, or
+    one on the live session between `begin` and `ack`. That completion is the
+    child's real result; the agent-log row every reconciler reads is only the
+    dispatch-time/`interrupted` placeholder boot wrote over it, so ending the
+    step from the row loses a success. Includes a replay that FAILED and kept
+    its record for the next boot. Never raises."""
+    try:
+        from mc import agent_shim_completion as _comp
+        live = state.agent_sessions.get(session_id)
+        if live is not None and _comp.pending_of(live) is not None:
+            return True
+        return _comp.is_owed(session_id)
+    except Exception as e:
+        _log(f'[workflows] owed-completion check for {session_id[:12]} failed: {e}')
+        return False
+
+
 def _step_session_verdict(step_state: dict, *, use_live: bool) -> tuple:
     """('in_flight' | 'ended' | 'unconfirmed', status, summary) for one
     running agent step -- the ONE place both restart adoption and the periodic
@@ -2039,6 +2227,8 @@ def _step_session_verdict(step_state: dict, *, use_live: bool) -> tuple:
     pid = step_state.get('project_id') or ''
     if not sid or not pid:
         return 'unconfirmed', None, ''
+    if _completion_owed(sid):
+        return 'in_flight', None, ''    # its crash-surviving completion replays itself
     live = state.agent_sessions.get(sid) if use_live else None
     if live is not None and live.get('status') not in _STEP_END_STATUSES:
         return 'in_flight', live.get('status'), ''
@@ -2065,6 +2255,8 @@ def _step_session_verdict(step_state: dict, *, use_live: bool) -> tuple:
 
 def _replay_step_end(run: dict, step_name: str, status, summary: str, why: str) -> None:
     st = run['steps'][step_name]
+    if _completion_owed(st.get('session_id') or ''):
+        return                          # re-checked: it may have been stamped since the verdict
     _log(f"[workflows] run {run['id'][:12]} step '{step_name}': child "
          f"{(st.get('session_id') or '')[:12]} ended '{status}' ({why}), replaying "
          f"through on_agent_step_complete")
@@ -2085,6 +2277,8 @@ def _interrupt_unconfirmed(run_id: str, step_name: str, reason: str) -> bool:
         st = (run.get('steps') or {}).get(step_name) or {}
         if st.get('status') != 'running':
             return False
+        if _completion_owed(st.get('session_id') or ''):
+            return False                # an owed completion decides this step, not us
         sid = (st.get('session_id') or '')[:12]
         run['steps'][step_name] = {**st, 'stalled_at': now_iso()}
         run['status'] = 'interrupted'

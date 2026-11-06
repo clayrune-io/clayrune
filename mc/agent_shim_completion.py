@@ -1,0 +1,196 @@
+"""MC-1150 P4 review blocker 2: completion work that survives a crash.
+
+The reader takes a FORCED checkpoint past a turn's `result` line before the
+turn's side effects (the agent-log row, the spawner / workflow wake). That keeps
+a restart from running them twice, and it also meant a crash right after the
+checkpoint lost them: the checkpoint said "finished, offset past the end", so
+boot adoption declined the session, and nothing else knew the log row and the
+wake had never happened.
+
+This module is the record of what is owed:
+
+    begin(session, kind)   stamp `_pending_completion` {id, kind, ...} on the
+                           session, then force the checkpoint, so the stamp is
+                           on disk BEFORE the first side effect.
+    ack(session)           drop the stamp and checkpoint again, once the side
+                           effects are done. Until then the record stays on disk.
+    replay_pending()       boot: every checkpoint still carrying a stamp has its
+                           completion run again on the restored session, then
+                           the stamp is cleared. A run that fails or raises
+                           leaves the stamp for the next boot.
+
+Replay is at-least-once, so every step it re-runs is idempotent: the agent-log
+row carries `completion_key` (= the stamp's id) and is not written twice; the
+spawner wake is a durable outbox row keyed by the child's session + turn (an
+identical row already there counts as the wake); the workflow wake runs
+synchronously under replay and is a no-op for a step that already advanced. A
+runner returns True only when all of it is durable, so the record is never
+cleared on the strength of a thread that has merely been started. `agent_routes`
+owns those; this file owns the record.
+
+`kind` is 'exit' (the whole completion body, then the wake) or 'turn' (a Mode B
+turn boundary: only the wake).
+"""
+from __future__ import annotations
+
+import threading
+import time
+import uuid
+from pathlib import Path
+from typing import Any, Callable, Collection, Dict, List, Mapping, Optional
+
+from mc import agent_shim_adopt as _adopt
+from mc.atomic_json import write_json_atomic
+
+KEY = _adopt.PENDING_KEY
+KINDS = ('exit', 'turn')
+
+
+def _log(msg: str) -> None:
+    _adopt._log(msg)
+
+
+def pending_of(session: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    rec = session.get(KEY)
+    return rec if isinstance(rec, dict) and rec.get('id') else None
+
+
+def begin(session: Dict[str, Any], kind: str) -> Optional[str]:
+    """Stamp the session and force the checkpoint that carries the stamp. Returns
+    the stamp's id, or None when the session is not shim-run or the flag is off
+    (nothing is stamped then, so those sessions behave exactly as before P4)."""
+    if _adopt._shim_proc(session) is None or not _adopt.enabled_now():
+        return None
+    rec = {'id': uuid.uuid4().hex, 'kind': kind, 'status': session.get('status'),
+           'turn': int(session.get('_delegation_turn', 1) or 1), 'at': time.time()}
+    session[KEY] = rec
+    if not _adopt.force_checkpoint(session):
+        _log(f"[agent-shim-completion] pending record for {str(session.get('session_id'))[:12]} "
+             f"is not on disk (checkpoint skipped or failed); an older checkpoint stands")
+    return rec['id']
+
+
+def ack(session: Dict[str, Any], *, owed: bool = False) -> bool:
+    """The completion work is done: clear the stamp and checkpoint that fact.
+    `owed` keeps the stamp when something (the durable wake) did not commit."""
+    if pending_of(session) is None:
+        return False
+    if owed:
+        _log(f"[agent-shim-completion] {str(session.get('session_id'))[:12]} completion not "
+             f"acknowledged: a wake is still owed; the record stays for the next boot")
+        return False
+    session.pop(KEY, None)
+    return _adopt.force_checkpoint(session)
+
+
+def is_owed(session_id: str, root: Optional[Any] = None) -> bool:
+    """True while a completion for this session is still owed: its checkpoint on
+    disk carries a pending stamp (a boot replay that failed leaves it there).
+    Every other path that would end a workflow step from this session's agent-log
+    row (adoption, the scheduler's reconciler) must leave the step alone, or it
+    terminalizes the run on a stale `interrupted` row and the owed success is
+    refused for good (Fenn, MC-1150 P4 third review). Never raises; a missing or
+    unreadable checkpoint is not an owed completion (replay could not read it
+    either)."""
+    if not session_id:
+        return False
+    try:
+        from mc import agent_spawn
+        base = Path(root) if root is not None else agent_spawn.default_root()
+        ck = _adopt.read_checkpoint(base / str(session_id))
+        snap = ck.get('session') if isinstance(ck, dict) else None
+        return isinstance(snap, dict) and pending_of(snap) is not None
+    except Exception as e:
+        _log(f'[agent-shim-completion] owed check for {str(session_id)[:12]} failed: {e}')
+        return False
+
+
+# ─────────────────────────────────── replay ──────────────────────────────────
+class ReplayReport:
+    def __init__(self) -> None:
+        self.replayed: List[str] = []
+        self.retained: Dict[str, str] = {}
+
+    def __repr__(self) -> str:                                   # pragma: no cover
+        return f'ReplayReport(replayed={self.replayed}, retained={self.retained})'
+
+
+Runner = Callable[[Dict[str, Any]], bool]
+
+
+def default_runners() -> Dict[str, Runner]:
+    from mc.blueprints import agent_routes as ar
+    return {'exit': ar._replay_exit_completion, 'turn': ar._replay_turn_completion}
+
+
+# One replay at a time in this process: the boot phase and the scheduler-tick retry
+# (mc/agent_shim_completion_retry.py) must not run the same completion together.
+_REPLAY_LOCK = threading.Lock()
+
+
+def replay_pending(root: Optional[Any] = None, *,
+                   runners: Optional[Mapping[str, Runner]] = None,
+                   only: Optional[Collection[str]] = None,
+                   wait: bool = True) -> ReplayReport:
+    """Boot phase: run the completion of every checkpoint that still carries a
+    stamp, then clear it. Not gated on the flag: a stamp on disk is work owed
+    whatever the flag says now. `only` limits it to those session ids; `wait=False`
+    returns an empty report instead of waiting when another replay is running.
+    Never raises."""
+    rep = ReplayReport()
+    if not _REPLAY_LOCK.acquire(blocking=wait):
+        return rep
+    try:
+        return _replay_pending_locked(rep, root, runners, only)
+    finally:
+        _REPLAY_LOCK.release()
+
+
+def _replay_pending_locked(rep: ReplayReport, root: Optional[Any],
+                           runners: Optional[Mapping[str, Runner]],
+                           only: Optional[Collection[str]]) -> ReplayReport:
+    try:
+        from mc import agent_spawn
+        base = Path(root) if root is not None else agent_spawn.default_root()
+        if not base.is_dir():
+            return rep
+        dirs = sorted(p for p in base.iterdir()
+                      if p.is_dir() and (only is None or p.name in only))
+    except Exception as e:
+        _log(f'[agent-shim-completion] replay scan failed: {e}')
+        return rep
+    for d in dirs:
+        sid = d.name
+        try:
+            ck = _adopt.read_checkpoint(d)
+            if not ck or ck.get('schema') != _adopt.SCHEMA:
+                continue
+            snap = ck.get('session')
+            if not isinstance(snap, dict):
+                continue
+            rec = snap.get(KEY)
+            if not isinstance(rec, dict) or not rec.get('id'):
+                continue
+            kind = rec.get('kind')
+            if runners is None:
+                runners = default_runners()
+            run = runners.get(kind) if kind in KINDS else None
+            if run is None:
+                rep.retained[sid] = f'unknown completion kind {kind!r}'
+                continue
+            session = _adopt.restore_session(snap)
+            session['_completion_replay'] = True
+            if run(session) is not True:
+                rep.retained[sid] = 'completion work still owed'
+                _log(f'[agent-shim-completion] {sid[:12]} replay incomplete; kept for next boot')
+                continue
+            cleared = dict(ck)
+            cleared['session'] = {k: v for k, v in snap.items() if k != KEY}
+            cleared['written_epoch'] = time.time()
+            write_json_atomic(str(_adopt.checkpoint_path(d)), cleared)
+            rep.replayed.append(sid)
+            _log(f'[agent-shim-completion] {sid[:12]} {kind} completion replayed and acknowledged')
+        except Exception as e:
+            rep.retained[sid] = f'{type(e).__name__}: {e}'
+            _log(f'[agent-shim-completion] {sid[:12]} replay failed: {type(e).__name__}: {e}')
+    return rep

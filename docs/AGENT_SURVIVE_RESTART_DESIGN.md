@@ -408,6 +408,36 @@ server cannot start mid-stream with an empty session. Two ways to get state back
 
 The projection test (P4) asserts a round-trip of a real captured session dict.
 
+### 6.3.1 Completions owed across a crash, and what OFF means (P4)
+
+`mc/agent_shim_completion.py` stamps a `_pending_completion` record into the
+forced checkpoint before a completion's first side effect and clears it only
+once the work is done. Boot (`replay_pending`, after the delegation store is up,
+before `workflow run adoption`) runs the work of every stamped checkpoint again.
+A record is cleared only when each thing it owes has *durably* happened:
+
+- **Spawner wake.** `_notify_agent_spawner` is true for a newly committed outbox
+  event *and* for an identical one already there
+  (`DeliveryStore.enqueue_outcome` = `committed` / `duplicate`): either way the
+  wake exists. Refused (revoked, no identity), a conflicting identity (raises)
+  and a failed enqueue are not a wake; the record stays.
+- **Workflow step.** Under replay the callback runs synchronously
+  (`_notify_workflow_step(sync=True)` → `on_agent_step_complete(advance=False)`)
+  and `_notify_workflow_sent` is set only after it returns, i.e. after the step's
+  transition is on disk. It does not start the next step: `workflow run
+  adoption`, which follows, finds a run with no step in flight and advances it.
+  A thread would let the record clear before the step moved, and adoption would
+  then read the dispatch-time `interrupted` agent-log row and refuse the late
+  result.
+
+**Flag OFF (Ron/Dave decision, 2026-11-05).** `replay_pending` is *not* gated on
+`agent_survive_restart_enabled`. OFF stops new shim work (no shim-run spawns, no
+new pending records) and adoption; it does not drop completions the server
+already owed when the flag was turned off. Pausing replay would strand a result a
+parent or workflow is waiting for, with no recovery path until the flag came
+back. To get the strict alternative, gate the `replay pending completions` boot
+phase in `server.py` on the flag (one condition); records then wait on disk.
+
 ### 6.4 Lifetime without a server
 
 The shim's states:

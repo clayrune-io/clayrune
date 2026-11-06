@@ -307,15 +307,26 @@ class DeliveryStore(SettlementStore):
 
     def enqueue(self, event_id: str, project_id: str, parent_session_id: str,
                 payload: dict[str, Any]) -> bool:
+        """True only for a NEWLY committed event; False for everything else,
+        including an identical event that is already there. A caller that needs
+        to tell "already committed" from "refused" uses `enqueue_outcome`."""
+        return self.enqueue_outcome(event_id, project_id, parent_session_id, payload) == 'committed'
+
+    def enqueue_outcome(self, event_id: str, project_id: str, parent_session_id: str,
+                        payload: dict[str, Any]) -> str:
+        """'committed' (new row), 'duplicate' (the identical event is already in
+        the outbox -- the wake exists, whatever became of it since) or 'refused'
+        (missing identity, revoked, or the insert did not land). A conflicting
+        identity still raises ValueError, as `enqueue` always did."""
         if not event_id or not project_id or not parent_session_id:
-            return False
+            return 'refused'
         now = self.clock()
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')
             encoded = self._payload(project_id, parent_session_id, payload)
             if self._revoked(db, project_id, parent_session_id, event_id, encoded):
                 db.execute('ROLLBACK')
-                return False
+                return 'refused'
             old = db.execute("SELECT project_id,parent_session_id,payload FROM outbox WHERE event_id=?",
                              (event_id,)).fetchone()
             if old is not None:
@@ -323,13 +334,13 @@ class DeliveryStore(SettlementStore):
                     db.execute('ROLLBACK')
                     raise ValueError('conflicting completion event identity')
                 db.execute('COMMIT')
-                return False
+                return 'duplicate'
             cur = db.execute(
                 "INSERT OR IGNORE INTO outbox(event_id,project_id,parent_session_id,payload,created_at)"
                 " VALUES(?,?,?,?,?)",
                 (event_id, project_id, parent_session_id, encoded, now))
             db.execute('COMMIT')
-            return cur.rowcount == 1
+            return 'committed' if cur.rowcount == 1 else 'refused'
 
     def accept(self, event_id: str, project_id: str, parent_session_id: str,
                payload: dict[str, Any]) -> bool:
