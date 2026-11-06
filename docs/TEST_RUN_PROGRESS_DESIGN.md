@@ -461,7 +461,7 @@ smokes after each merge. No phase edits `mc/agent_shim*.py` or
 | 10 | `static/js/test-run-card.js` | Mount/live/cold hooks in `static/js/conversation.js` and `static/index.html`; ID anchors, accessible bar and failure list, companion stylesheet. Test repeated rebuild, inactive tab reopen, malicious names, unknown total and no duplicate cards. |
 | 11 | `mc/test_run_floor.py` | Pure server projections; minimal wiring in `mc/blueprints/floor_routes.py`. Idle/ended owners, asking precedence, compatible/incompatible totals, ownerless/unavailable rooms and terminal cleanup. Branch contract and verification limits: `TEST_RUN_FLOOR.md`; Floor rendering remains Phase 12. |
 | 12 | `static/js/test-run-floor.js` | Branch renderer with small hooks in `static/js/floor.js`, companion CSS and figure/room summaries. Asking priority, honest indeterminate states and existing poll/error recovery preserved. Contract and worktree smoke evidence: `TEST_RUN_FLOOR.md`, Phase 12 section. |
-| 13 | `static/js/project-test-runs.js` | Separate project panel wired into project modal navigation; ownerless/recent runs from the same API. Test two projects/two sessions with the same test names and a project with no live figures. |
+| 13 | `static/js/project-test-runs.js` | Separate project panel with lifecycle/navigation hooks only; ownerless/recent runs through Phase 9's shared reader, no new poller. Two projects/two owners each with identical names, ownerless/no-figure history, default-off parity and teardown verified. Branch contract/limits: `TEST_RUN_PROJECT_PANEL.md`. |
 
 Optional native Node Test and Playwright Test reporters each get their own
 module/build unit, rather than adding framework-specific bodies to the smoke

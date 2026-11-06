@@ -981,6 +981,22 @@ active testing, including ownerless runs and runs whose owner is unavailable.
 Active badges disappear after process finalization; the Floor is not a test
 history view. With the feature disabled, the Floor has no added testing display.
 
+### Project test-run history
+
+When live test-run progress is enabled, open a project's three-dot menu and
+choose **Test runs**. The entry appears after the first successful test-data
+read. **Active** and **Recent** show runs from all of that project's
+conversations, plus registered **Ownerless** work even if no agent is live.
+Each row shows its launch source, runner, completed tests or smoke scripts,
+observed outcomes and final verdict. Matching test names remain separate runs.
+
+Unknown totals and partial capture have no progress percentage. **Finalizing**
+does not mean passed; the process verdict and exit code appear when available.
+Recent failure names and any omitted-detail count remain visible. A stale-data
+notice means the last received results are still shown while updates retry;
+**Refresh** requests current results. Older history may be unavailable.
+With the feature disabled, this menu entry and panel are absent.
+
 ### Floor defaults
 
 Open **The Floor > Floor defaults** to edit the global default agent's name and

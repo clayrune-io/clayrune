@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-06] - Project test-run history without a live agent (MC-1148 P13, dark)
+
+- Added a separate project Test runs panel for active/recent conversation-owned and ownerless runs, using the existing shared reader. Source, unit, observed outcomes, failure details and process verdict stay distinct; identical names across projects or conversations never merge.
+- Navigation and scoped styles appear only after an enabled read; flag-off leaves existing project UI unchanged. Stale snapshots remain visible, modal rebuilds do not duplicate rows, and close releases the subscription. Contract and worktree verification: `docs/TEST_RUN_PROJECT_PANEL.md`. Branch candidate only; no merge, push, restart or config write.
+
 ## [2026-11-06] - Show active testing on the Floor (MC-1148 P12, dark)
 
 - Added figure progress and project room summaries from the existing flagged Floor projection. Known compatible totals show done/total, a bar and outcome counts; collecting, unknown, partial and mixed runs keep explicit wording. Questions stay primary, and finalizing never implies a passing process exit.

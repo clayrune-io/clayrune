@@ -590,6 +590,7 @@ function modalContentHTML(p) {
   // Migrate stale tab selections (memory/rules moved to three-dot menu;
   // hivemind moved to global sidebar Hivemind view)
   const validTabs = ['agent','backlog','social','agent-log','documents','activity','workflows'];
+  if (window.ProjectTestRuns?.available(p.id)) validTabs.push('test-runs');
   let activeTab = modalActiveTab[p.id] || 'agent';
   if (!validTabs.includes(activeTab)) { activeTab = 'agent'; modalActiveTab[p.id] = 'agent'; }
 
@@ -721,7 +722,7 @@ function modalContentHTML(p) {
             <button class="modal-menu-item${activeTab==='activity'?' active':''}" onclick="_mcMenuSwitchTab('${esc(p.id)}','activity')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-activity"/></svg></span> Activity
             </button>
-            <button class="modal-menu-item${activeTab==='workflows'?' active':''}" data-tab-name="workflows" onclick="_mcMenuSwitchTab('${esc(p.id)}','workflows')">
+            ${window.ProjectTestRuns?.navigationHTML(p.id, activeTab, true) || ''}<button class="modal-menu-item${activeTab==='workflows'?' active':''}" data-tab-name="workflows" onclick="_mcMenuSwitchTab('${esc(p.id)}','workflows')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-workflow"/></svg></span> Workflows
             </button>
             <div class="modal-menu-sep"></div>
@@ -920,7 +921,7 @@ function modalContentHTML(p) {
       <div class="modal-tab ${activeTab==='agent-log'?'active':''}" data-tab-name="agent-log" onclick="switchModalTab('${esc(p.id)}','agent-log')">Agent Log</div>
       <div class="modal-tab ${activeTab==='documents'?'active':''}" onclick="switchModalTab('${esc(p.id)}','documents')">Documents</div>
       <div class="modal-tab ${activeTab==='activity'?'active':''}" onclick="switchModalTab('${esc(p.id)}','activity')">Activity</div>
-      <div class="modal-tab ${activeTab==='workflows'?'active':''}" data-tab-name="workflows" onclick="switchModalTab('${esc(p.id)}','workflows')">Workflows</div>
+      ${window.ProjectTestRuns?.navigationHTML(p.id, activeTab) || ''}<div class="modal-tab ${activeTab==='workflows'?'active':''}" data-tab-name="workflows" onclick="switchModalTab('${esc(p.id)}','workflows')">Workflows</div>
       ${(activeTab === 'workflows') ? `<div class="modal-tab-search">
         <input type="text" id="tab-search-${esc(p.id)}" placeholder="Filter..."
           value="${esc(modalSearchQuery[p.id] || '')}"
@@ -930,7 +931,7 @@ function modalContentHTML(p) {
     </div>
     <div class="modal-scroll-body${activeTab==='agent'?' agent-active':''}${activeTab==='workflows'?' wf-tab-active':''}">
       <button type="button" class="modal-back-to-chat" onclick="switchModalTab('${esc(p.id)}','agent')" title="Back to the conversation">&#8592; Back to conversation</button>
-      <div class="modal-tab-content ${activeTab==='backlog'?'active':''}" data-tab="backlog">
+      ${window.ProjectTestRuns?.panelHTML(p.id, activeTab) || ''}<div class="modal-tab-content ${activeTab==='backlog'?'active':''}" data-tab="backlog">
         ${!tabOn('backlog') ? '' : `
         <div class="card-section">
           <div class="section-title">
