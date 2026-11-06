@@ -33,8 +33,9 @@ The network is kept OUT of that lock. The request is done in three steps
 (`_HttpPost`): resolve + TCP + TLS (``connect``) with no lock held; gate re-check
 and the ~1KB request write (``send``) under the lock; then the response is read
 with no lock held. A save therefore never waits on DNS, the handshake or the
-server: the longest it can wait is one local socket write of ~1KB, hard-capped
-by the socket timeout (TIMEOUT_S). If an opt-out lands after ``connect`` but
+server: the longest it can wait is the ~1KB request write (headers and body are
+two socket writes, each bounded by TIMEOUT_S, so ~2x TIMEOUT_S worst case under
+backpressure; one 10s timeout measured, Fenn review 4). If an opt-out lands after ``connect`` but
 before ``send``, the open connection is closed unused: a TCP/TLS handshake to the
 endpoint may have happened (the server can see an address and a hostname, never
 an id, version or request), but no request bytes were written. A request already
