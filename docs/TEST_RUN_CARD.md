@@ -8,13 +8,14 @@ polling, SSE or timer-per-run. Branch candidate only; dark behind the existing
 server flag `test_run_progress_enabled` (default off). No config write, merge,
 push or restart is part of this phase.
 
-## What the server still has to do
+## Server anchor integration (Phase 14)
 
-**The server does not emit the `[test-run:<id>]` line yet.** Phase 10 is the
-client half (design §7: "inserted once by the server when the launch is
-enrolled"). Until a server phase posts that line when it enrolls a run, no card
-appears in a real chat. The client path is exercised end to end by the smoke
-below with synthetic marker lines.
+Phase 14 adds `mc/test_run_anchor.py` and enrollment/job/detection wiring to
+emit the line through the existing session log path. Its durable run-ID claim
+prevents repeated emission across retries/restarts; ownerless and flag-off
+runs emit nothing. Contract, crash boundary and branch verification:
+`TEST_RUN_ANCHOR.md`. The card smoke now also renders the actual output from
+an isolated Python enrollment, alongside the original synthetic cases.
 
 ## Contract
 
@@ -89,8 +90,8 @@ sweep-timer teardown, no stream opened, and flag off (bare 404 → plain line).
 
 ## Not verified / not in this phase
 
-- No real server run: the marker line is not emitted yet (see above), so a card
-  has never been driven by a live agent turn.
+- No deployed enabled-server run or live agent turn is verified here. Phase
+  14's smoke joins real enrollment output to the real client using fixture APIs.
 - Screen-reader output was not listened to; the semantics (`progress` with
   `aria-valuetext`, `details/summary`, one polite live region, an `aria-label`
   carrying the verdict) are asserted, not heard.

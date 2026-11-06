@@ -458,10 +458,11 @@ smokes after each merge. No phase edits `mc/agent_shim*.py` or
 | 7 | `data/test_reporters/smoke-progress.mjs` | Standalone lifecycle/checkpoint preload with separate `tools/test_run_node.py` adapter. Dave chose Q2 A: script units only, no existing helper migration. Actual wait owns script pass/fail; explicit manifest retains order and not-run remainder. Branch contract/verification limits: `TEST_RUN_NODE.md`. |
 | 8 | `mc/test_run_detection.py` | Shared raw tool observer with tiny reader hooks, all-block scanning, old/new Codex and Qwen suppression support. Dave's Phase 8 ruling: generic delivery per vendor call identity; exclude wrapper/job handoffs without joining. Integer envelope exits only; otherwise unknown, no counts/ETA. Branch contract: `TEST_RUN_DETECTION.md`. Never rewrite or rerun commands. |
 | 9 | `static/js/test-run-data.js` | Shared poll/cache/sequence reconciliation; tiny SSE hint bridge in `static/js/resume-preview.js`. Prove updates continue after idle/turn end and across mobile suspension, with no per-run SSE connections. Branch contract and limits: `TEST_RUN_DATA.md`. |
-| 10 | `static/js/test-run-card.js` | Mount/live/cold hooks in `static/js/conversation.js` and `static/index.html`; ID anchors, accessible bar and failure list, companion stylesheet. Test repeated rebuild, inactive tab reopen, malicious names, unknown total and no duplicate cards. Branch contract and verification: `TEST_RUN_CARD.md` (server does not emit the anchor yet). |
+| 10 | `static/js/test-run-card.js` | Mount/live/cold hooks in `static/js/conversation.js` and `static/index.html`; ID anchors, accessible bar and failure list, companion stylesheet. Test repeated rebuild, inactive tab reopen, malicious names, unknown total and no duplicate cards. Branch contract and verification: `TEST_RUN_CARD.md`; server emission is Phase 14. |
 | 11 | `mc/test_run_floor.py` | Pure server projections; minimal wiring in `mc/blueprints/floor_routes.py`. Idle/ended owners, asking precedence, compatible/incompatible totals, ownerless/unavailable rooms and terminal cleanup. Branch contract and verification limits: `TEST_RUN_FLOOR.md`; Floor rendering remains Phase 12. |
 | 12 | `static/js/test-run-floor.js` | Branch renderer with small hooks in `static/js/floor.js`, companion CSS and figure/room summaries. Asking priority, honest indeterminate states and existing poll/error recovery preserved. Contract and worktree smoke evidence: `TEST_RUN_FLOOR.md`, Phase 12 section. |
 | 13 | `static/js/project-test-runs.js` | Separate project panel with lifecycle/navigation hooks only; ownerless/recent runs through Phase 9's shared reader, no new poller. Two projects/two owners each with identical names, ownerless/no-figure history, default-off parity and teardown verified. Branch contract/limits: `TEST_RUN_PROJECT_PANEL.md`. |
+| 14 | `mc/test_run_anchor.py` | Server-inserted ID-only anchor via existing session chat output; tiny ingest/detection/pre-enrolled-job hooks. Durable per-run claim prevents duplicate emission across retries/restarts; ownerless/flag-off emit nothing and failures preserve launch outcomes. Contract, crash-loss boundary and enrollment-to-card browser check: `TEST_RUN_ANCHOR.md`. |
 
 Optional native Node Test and Playwright Test reporters each get their own
 module/build unit, rather than adding framework-specific bodies to the smoke
@@ -469,7 +470,7 @@ emitter. Their implementation is needed to claim measured framework counts in
 projects using those runners; otherwise those runs use the generic fallback.
 
 Phases 1-4 create a dark backend. Phases 5-8 establish capture coverage;
-phases 9-13 deliver the requested surfaces. This is not shipped after backend
+phases 9-14 deliver the requested surfaces and server anchor emission. This is not shipped after backend
 capture alone, or after a card mockup. Estimates in section 9 are incremental
 engineering effort for those choices, overlap these phases, and are not
 additive delivery commitments.

@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-06] - Emit server-owned test-run chat anchors (MC-1148 P14, dark)
+
+- Added `mc/test_run_anchor.py` with minimal enrollment/detection/pre-enrolled-job hooks so conversation-owned runs post the ID-only line that mounts the existing chat card. Durable run-ID claims prevent duplicate emission across retries/restarts; ownerless, restricted and flag-off runs add no line. Emission failures are logged without changing launch or completion results.
+- Extended the card smoke to render actual isolated Python enrollment output. Contract, crash-loss boundary and verification: `docs/TEST_RUN_ANCHOR.md`. Branch candidate only; no merge, push, restart or config write.
+
 ## [2026-11-06] - Project test-run history without a live agent (MC-1148 P13, dark)
 
 - Added a separate project Test runs panel for active/recent conversation-owned and ownerless runs, using the existing shared reader. Source, unit, observed outcomes, failure details and process verdict stay distinct; identical names across projects or conversations never merge.

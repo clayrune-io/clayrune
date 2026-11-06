@@ -981,6 +981,16 @@ active testing, including ownerless runs and runs whose owner is unavailable.
 Active badges disappear after process finalization; the Floor is not a test
 history view. With the feature disabled, the Floor has no added testing display.
 
+### Test runs in chat
+
+When live test-run progress is enabled, an enrolled run with an available
+owning conversation adds a test-run card to that chat. The card updates even
+after the agent turn ends. Unknown totals stay indeterminate; **Finalizing**
+is not a passing verdict. Ownerless runs appear in project history instead.
+If a chat anchor was trimmed or lost during a crash, use the project's
+**Test runs** panel to find the recorded run. With the feature disabled,
+new runs add no chat card.
+
 ### Project test-run history
 
 When live test-run progress is enabled, open a project's three-dot menu and

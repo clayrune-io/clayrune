@@ -20,6 +20,7 @@ from typing import Any, Callable, Iterator
 from mc import state
 from mc.core import _log
 from mc.test_run_store import SCHEMA, TestRunStore
+from mc import test_run_anchor
 
 FLAG = 'test_run_progress_enabled'
 MAX_PENDING = 256
@@ -253,6 +254,7 @@ class DetectionObserver:
                                      target_id=f'{provider}:{identity}', display_label='Test command')
             run = _Run(snap['run_id'])
             self.runs[key] = run
+        test_run_anchor.post(self.store, pid, run.run_id)
         if run.terminal:
             return
         if not run.marked:
