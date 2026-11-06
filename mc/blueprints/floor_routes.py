@@ -31,6 +31,7 @@ from mc import background_tasks as _bg_tasks
 from mc import delegation_waiting as _delegation_waiting
 from mc import identity as _identity
 from mc import state
+from mc import test_run_floor as _test_runs
 from mc.characters import MAX_EMOJI_LEN, clean_avatar
 from mc.core import _atomic_write_text, _log, time_ago
 
@@ -323,12 +324,14 @@ def _figure_model(s, proj_default):
     return '', ''
 
 
-def _figure(s, proj_default='', labels=None, projects=None, reports_waiting=None):
+def _figure(s, proj_default='', labels=None, projects=None, reports_waiting=None, test_runs=None):
     _fig_model, _fig_model_from = _figure_model(s, proj_default)
     st, reason = _figure_state(s)
     ch = _character_of(s)
     name, name_from = _figure_name(s, labels or {})
     return {
+        **({'test_runs': _test_runs.owner_summary(test_runs, s) or _test_runs.summarize([])}
+           if test_runs is not None else {}),
         'session_id': s.get('session_id', ''),
         'claude_session_id': s.get('claude_session_id', ''),
         'state': st,
@@ -405,7 +408,7 @@ def _figure_subagents(s, projects=None):
         return []
 
 
-def _live_sessions(defaults=None, labels=None, projects=None):
+def _live_sessions(defaults=None, labels=None, projects=None, test_runs=None):
     """Sessions worth drawing, grouped by project.
 
     Incognito is excluded because that is its whole promise: it does not show
@@ -434,17 +437,15 @@ def _live_sessions(defaults=None, labels=None, projects=None):
             continue
         if s.get('housekeeping') and not s.get('hivemind_id'):
             continue
-        if s.get('status') not in ('running', 'idle'):
+        if s.get('status') not in ('running', 'idle') and not _test_runs.retain_owner(test_runs, s):
             continue
         pid = s.get('project_id')
         if not pid:
             continue
         rooms.setdefault(pid, []).append(
-            _figure(s, (defaults or {}).get(pid, ''), labels, projects, reports_waiting))
-    order = {'asking': 0, 'working': 1, 'idle': 2}
+            _figure(s, (defaults or {}).get(pid, ''), labels, projects, reports_waiting, test_runs))
     for figs in rooms.values():
-        figs.sort(key=lambda f: (order.get(f['state'], 3),
-                                 f.get('started_at') or ''))
+        figs.sort(key=_test_runs.figure_rank)
     return rooms
 
 
@@ -485,25 +486,25 @@ def floor():
     defaults = {p.get('id'): ('' if isinstance(state.CONFIG.get('provider_defaults'), dict)
                              or isinstance(p.get('provider_overrides'), dict)
                              else p.get('agent_model') or _global) for p in projects}
-    rooms = _live_sessions(defaults, read_labels(), projects)
+    test_runs = _test_runs.read_projects(projects, agent_sessions)
+    rooms = _live_sessions(defaults, read_labels(), projects, test_runs)
     live, quiet = [], []
     for p in projects:
         pid = p.get('id')
         card = {'id': pid, 'name': p.get('name') or pid,
                 'emoji': p.get('emoji') or '', 'color': p.get('modal_color') or ''}
+        summary = test_runs.get(pid, {}).get('summary') if test_runs is not None else None
+        if summary is not None:
+            card['test_runs'] = summary
         figs = rooms.get(pid)
-        if figs:
-            live.append({**card, 'figures': figs})
+        if figs or _test_runs.room_visible(summary):
+            live.append({**card, 'figures': figs or []})
         else:
             quiet.append(card)
 
     # A room with someone waiting on you comes first: the board's job is to put
     # the thing that needs a human at the top, not to render an alphabet.
-    def room_rank(r):
-        states = {f['state'] for f in r['figures']}
-        return (0 if 'asking' in states else 1 if 'working' in states else 2,
-                (r['name'] or '').lower())
-    live.sort(key=room_rank)
+    live.sort(key=_test_runs.room_rank)
     quiet.sort(key=lambda r: (r['name'] or '').lower())
 
     # The bench is the ROSTER — every hired type, whether or not it is already

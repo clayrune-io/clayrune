@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-06] - Project active test runs onto the Floor API (MC-1148 P11, dark)
+
+- Added a separate server projection for idle/ended owners, ownerless and unavailable-owner room activity, compatible measured totals and terminal cleanup. Agent activity stays unchanged; pending questions keep priority. Parent/child runs do not double-count work.
+- The existing flag gates storage reads and new Floor payload fields. Read failures remain visible without breaking other rooms. Contract: `docs/TEST_RUN_FLOOR.md`. Branch candidate only; frontend rendering remains Phase 12. No config write, merge, push or restart.
+
 ## [2026-11-06] - Observe unwrapped test calls without inventing success (MC-1148 P8, dark)
 
 - Added a shared passive detector with tiny Claude A/B, shared Mode A and Gemini reader hooks. Every recognized unwrapped vendor call gets a separate generic fallback; wrapper/job handoffs are excluded without correlation. Qwen results are observed before UI suppression; both Codex envelope generations are covered.
