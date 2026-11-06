@@ -104,6 +104,7 @@ async function scenario(name, { config, configPutHandler = null, dest = { config
     if (path === '/api/walkthrough/sample-project') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, id: 'clayrune', existed: true }) });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === '/api/agent/providers') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(ONE_PROVIDER_OK) });
+    if (path === '/api/update-ping/choice') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });   // setup's update-check step awaits this save
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: false }) });
     if (path === '/api/local-auth/set' && req.method() === 'POST') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
     if (path === '/api/system/update/status') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ is_git_repo: true, behind: 0, ahead: 0, has_local_changes: false, update_available: false, projects_in_install_dir: [] }) });
@@ -122,7 +123,9 @@ async function scenario(name, { config, configPutHandler = null, dest = { config
 // Walks Welcome -> (connections skips) -> essentials A -> B -> C -> protect.
 async function walkToProtectStep(page) {
   await page.waitForSelector('#setup-overlay', { timeout: 5000 }).catch(() => {});
-  await page.click('#setup-overlay .wt-btn-primary'); // Get started -> essentials A (connections skipped)
+  await page.click('#setup-overlay .wt-btn-primary'); // Get started -> update-check step (connections skipped)
+  await page.waitForTimeout(150);
+  await page.click('#setup-overlay .wt-btn-primary'); // Next -> essentials A
   await page.waitForTimeout(150);
   await page.click('#setup-overlay .wt-btn-primary'); // Next -> essentials-phone
   await page.waitForTimeout(150);

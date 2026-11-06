@@ -1,4 +1,5 @@
 import {supportsSetupTier, setupModelControl} from './setup-model-preferences.js';
+import {UPDATE_PING_SETUP_STEP, resetUpdatePingStep, commitUpdatePingStep} from './setup-update-ping-step.js';
 
 // Model preferences belong to the provider selected in this setup draft.
 function _setupSavedModel() {
@@ -124,6 +125,7 @@ const SETUP_STEPS = [
       return !!(p && p.installed && p.auth_status === 'ok');
     },
   },
+  UPDATE_PING_SETUP_STEP,     // static/js/setup-update-ping-step.js
   {
     id: 'essentials-yours',
     title: 'Make it yours',
@@ -837,6 +839,7 @@ function startFirstRun(opts) {
   setupModelTierVisited = false;
   _setupPhoneRevealed = false;
   _setupAdvExpanded = false;
+  resetUpdatePingStep();
   _setupOpenedTerminalIds = new Set();
   _setupBackupDest = { loaded: false, configured: null, effective: null, override: '', saving: false, saveError: null };
   // Reflect what is already saved, same rule as setupModelTier above — an
@@ -1070,7 +1073,15 @@ async function setupShow(idx) {
   if (step.onEnter) step.onEnter();
 }
 
-function setupNext() {
+async function setupNext() {
+  // Leaving the ping step records the answer AND that the disclosure was shown;
+  // the first ping can only happen after this (mc/update_ping.py). The save is
+  // awaited: if it fails the step shows the error and we stay here.
+  if (SETUP_STEPS[setupStep].id === 'update-ping') {
+    const at = setupStep;
+    const saved = await commitUpdatePingStep();
+    if (!saved || setupStep !== at) return;
+  }
   // Never blocks (see _setupConnectionsWarning). Leaving with NO vendor ready
   // gets one confirm naming the consequence; clicking OK finishes setup
   // normally, so the user is not re-asked on every load.

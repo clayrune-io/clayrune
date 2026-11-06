@@ -90,6 +90,7 @@ async function scenario(name, { width, scan, refuse = {}, setupDone = false }, r
     if (path === '/api/projects') return json(route, [CLAYRUNE_PROJECT]);
     if (path === '/api/config') return json(route, req.method() === 'PUT' ? {} : config);
     if (path === '/api/setup/complete') return json(route, { ok: true, setup_completed: true });
+    if (path === '/api/update-ping/choice') return json(route, { ok: true });   // setup's update-check step awaits this save
     if (path === '/api/local-auth/status') return json(route, { configured: true });
     if (path === '/api/claude-import/scan') {
       if (scan === 'fail') return json(route, { ok: false, error: 'disk on fire' }, 500);
@@ -125,6 +126,8 @@ const shot = async (page, file) => { if (SHOTS) await page.screenshot({ path: re
 async function walkToAfterProtect(page) {
   await page.waitForSelector('#setup-overlay .wt-title', { timeout: 5000 });
   await page.click('#setup-overlay .wt-btn-primary');                       // Get started (connections skipped)
+  await page.waitForFunction(() => document.querySelector('#setup-overlay .wt-title')?.textContent === 'Help count Clayrune installs');
+  await page.click('#setup-overlay .wt-btn-primary');                       // -> Make it yours
   await page.waitForFunction(() => document.querySelector('#setup-overlay .wt-title')?.textContent === 'Make it yours');
   await page.click('#setup-overlay .wt-btn-primary');                       // -> phone
   await page.waitForFunction(() => document.querySelector('#setup-overlay .wt-title')?.textContent === 'Use Clayrune from your phone?');

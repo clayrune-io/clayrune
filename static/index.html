@@ -3892,6 +3892,10 @@ fetchProjects().then(async () => {
   if (realProjectCount === 0 && firstRunNeeded()) {
     setTimeout(() => startFirstRun(), 600);
   }
+  // Daily update-check ping: the one-time disclosure for installs that did not
+  // go through the first-run step, and the "update available" notice. Runs after
+  // the first-run wizard has had its chance to open (it owns the disclosure then).
+  setTimeout(() => { try { window.checkUpdatePingNotice && window.checkUpdatePingNotice(); } catch (_) {} }, 2500);
   // Existing install: no dialog, ever (Ron 2026-09-14 — the provider
   // question belongs at install time, installers ask it now). The one
   // silent exception -- nothing was ever chosen and exactly one provider CLI
@@ -4217,6 +4221,7 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/learn-practice.js"></script>
 <script type="module" src="/static/js/learn.js"></script>
 <script type="module" src="/static/js/claude-import.js"></script>
+<script type="module" src="/static/js/update-ping-notice.js"></script>
 <script type="module" src="/static/js/first-run.js"></script>
 <script type="module" src="/static/js/team-card.js"></script>
 <script type="module" src="/static/js/exploration-card.js"></script>

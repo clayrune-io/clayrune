@@ -170,6 +170,9 @@ _CONFIG_EDITABLE_KEYS = {
     # Daily agent-CLI update (MC-1025, mc/cli_update.py). Read live inside every
     # pass -- OFF stops all checks and updates, no restart.
     'cli_auto_update_enabled',
+    # Daily update-check ping (mc/update_ping.py). Read live every pass. The
+    # disclosure flag and the URL are deliberately NOT here.
+    'update_ping_enabled',
     # Leaked pane-Chromium sweep (MC-997, mc/blueprints/browser_routes.py).
     # Read live by the periodic loop and the startup pass — no respawn needed.
     'browser_pane_leak_sweep_enabled',

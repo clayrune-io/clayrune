@@ -2,6 +2,7 @@ import './engine-preferences.js';
 import './settings-ownership.js';
 import './floor-preferences.js';
 import './unattended-retry-settings.js';
+import { updatePingSettingsHTML, refreshUpdatePingSection } from './settings-update-ping.js';
 
 // ── Settings categories + drill-down (WhatsApp-style) ────────────────────────
 // The settings modal is a master list of categories; tapping one drills into a
@@ -760,6 +761,8 @@ async function _renderSettings() {
       </div>
     </div>
 
+    ${updatePingSettingsHTML(cfg)}
+
     ${installedAppSettingsHTML()}
 
     <div class="settings-section">
@@ -781,6 +784,7 @@ async function _renderSettings() {
   // body.innerHTML was set, which raced and left the row stuck on the
   // "Checking for updates..." placeholder.)
   refreshUpdateStatus();
+  refreshUpdatePingSection().catch(() => {});
 
   // Same lesson — hydrate the push + mobile-pair sections AFTER the DOM has
   // their containers. Both functions early-return if their target element
