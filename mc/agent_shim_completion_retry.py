@@ -12,6 +12,14 @@ when `replay_pending` clears it; a step already recorded is acknowledged without
 being recorded again), then the run is advanced the way boot's workflow adoption
 would. `advanced` counts only advances that moved the run.
 
+Every advance this module makes goes through the one gate below (Fenn r5; Dave's
+call, journal ebbb15a7): `advance_idle_run(idle_for_s=IDLE_RUN_GRACE_S)`, including
+the advance after an owed replay. Acknowledging an old completed step does not mean
+this retry owns the run -- the current step's completion callback may have recorded
+and not yet advanced -- so a freshly written run is left alone and the idle scan
+picks it up once stale. Recovering a step whose record failed to clear therefore
+takes up to the grace plus one tick (~90s), not one tick.
+
 Idle-run scan (Fenn r4 Repro B; Dave's call, journal ebbb15a7): a `running` run
 with nothing in flight and a pending frontier also gets `advance_idle_run`, but
 only once `run['updated']` is older than IDLE_RUN_GRACE_S. `workflows._write_run`
@@ -22,7 +30,9 @@ the caller's own advance would dispatch a second. The window is milliseconds; th
 grace is a minute. An unparseable, missing, naive or future `updated` counts as
 fresh (skipped). The scan's own read is lock-free, so it is only a pre-filter:
 `advance_idle_run(idle_for_s=...)` re-checks `updated` on the run as read under the
-run lock (a step completing after the scan re-stamps it). Those advances add to `advanced`.
+run lock (a step completing after the scan re-stamps it). Those advances add to `advanced`. A run is excluded from the scan
+only for the tick on which its replay succeeded (`replayed_runs`); a record that stays
+owed does not exclude its run from later scans.
 
 Bounds: once per session per call (the tick is 30s); not before boot's workflow
 adoption has finished; not while another replay holds the lock; never for a
@@ -62,6 +72,7 @@ def retry_owed_workflow_steps(root: Optional[Any] = None, *,
         if not _wf.boot_adoption_done():
             return counts
         owed = {}
+        replayed_runs = set()
         for run_id, _, sid, _st in _wf.running_run_session_steps():
             live = state.agent_sessions.get(sid)
             if live is not None and _comp.pending_of(live) is not None:
@@ -76,12 +87,16 @@ def retry_owed_workflow_steps(root: Optional[Any] = None, *,
                      f'failed, record kept: {why}')
             for sid in rep.replayed:
                 counts['replayed'] += 1
-                if _wf.advance_idle_run(owed[sid]):
+                # Same under-lock 60s gate as the idle scan below (Fenn r5): acking an OLD
+                # completed step does not mean this retry owns the run's frontier; the
+                # current step's completion callback may be mid-follow-up. A run skipped
+                # here is picked up by the idle scan on a later tick once it is stale.
+                replayed_runs.add(owed[sid])
+                if _wf.advance_idle_run(owed[sid], idle_for_s=IDLE_RUN_GRACE_S):
                     counts['advanced'] += 1
         now = datetime.now(timezone.utc)
-        handled = set(owed.values())
         for run_id, updated in _wf.running_run_updated():
-            if run_id in handled or not _is_stale(updated, now):
+            if run_id in replayed_runs or not _is_stale(updated, now):
                 continue
             if _wf.advance_idle_run(run_id, idle_for_s=IDLE_RUN_GRACE_S):
                 _log(f'[agent-shim-completion] advanced idle run {run_id[:12]} '

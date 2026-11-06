@@ -14,6 +14,9 @@ Run:  .venv/Scripts/python.exe -m pytest tests/test_agent_shim_completion_retry.
 """
 from __future__ import annotations
 
+import json
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from mc import agent_shim_adopt as A
@@ -49,6 +52,16 @@ def _boot_with_failed_replay(env, wf, monkeypatch):
     monkeypatch.setattr(wf.m, '_write_run', real)
 
 
+def _age_run(wf_, run_id, seconds=120):
+    """Make the run look untouched for `seconds` (the tick advances only after the
+    60s grace, Fenn r5); written straight to disk so _write_run does not re-stamp it."""
+    path = wf_.m._run_path(run_id)
+    data = json.loads(path.read_text(encoding='utf-8'))
+    data['updated'] = (datetime.now(timezone.utc) - timedelta(seconds=seconds)
+                       ).isoformat().replace('+00:00', 'Z')
+    path.write_text(json.dumps(data), encoding='utf-8')
+
+
 def test_next_tick_retries_a_failed_boot_replay_and_advances_the_run_once(
         env, wf, owed, monkeypatch):
     """FAILS-BEFORE (73c31e02: no retry, the run stays on the first step)."""
@@ -62,8 +75,11 @@ def test_next_tick_retries_a_failed_boot_replay_and_advances_the_run_once(
     assert _state(wf, run) == ('running', 'running')
 
     got = retry.retry_owed_workflow_steps(env.root)    # the new first half of the tick
-    assert got == {'retried': 1, 'replayed': 1, 'advanced': 1}
+    assert got == {'retried': 1, 'replayed': 1, 'advanced': 0}   # run just written: gate holds
     assert comp.KEY not in env.ck()['session']
+    assert len(wf.dispatch.calls) == 1
+    _age_run(wf, run['id'])                            # the 60s grace passes
+    assert retry.retry_owed_workflow_steps(env.root) == {'retried': 0, 'replayed': 0, 'advanced': 1}
     after = wf.m.get_run(run['id'])
     assert after['steps']['first']['status'] == 'completed'
     assert after['steps']['second']['status'] == 'running'
@@ -96,6 +112,8 @@ def test_a_retry_that_fails_again_keeps_the_record_and_logs_it(env, wf, owed, mo
     monkeypatch.setattr(wf.m, '_write_run', real)      # the disk is back
     assert retry.retry_owed_workflow_steps(env.root)['replayed'] == 1
     assert comp.KEY not in env.ck()['session']
+    _age_run(wf, run['id'])
+    assert retry.retry_owed_workflow_steps(env.root)['advanced'] == 1
     assert len(wf.dispatch.calls) == 2
 
 

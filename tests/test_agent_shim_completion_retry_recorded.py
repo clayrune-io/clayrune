@@ -52,9 +52,16 @@ def test_ack_failure_after_the_step_is_recorded_is_retried_and_advances_once(
     assert r['steps']['second']['status'] == 'pending'
     assert len(wf.dispatch.calls) == 1
 
-    got = retry.retry_owed_workflow_steps(env.root)             # healthy tick
-    assert got == {'retried': 1, 'replayed': 1, 'advanced': 1}
+    got = retry.retry_owed_workflow_steps(env.root)             # healthy tick: acked, run is fresh
+    assert got == {'retried': 1, 'replayed': 1, 'advanced': 0}
     assert not comp.is_owed(sid, env.root)
+    r = wf.m.get_run(run['id'])
+    assert (r['steps']['first']['status'], r['steps']['second']['status']) == ('completed', 'pending')
+    assert len(wf.dispatch.calls) == 1                          # the 60s gate holds the advance (Fenn r5)
+
+    _set_updated(wf, run['id'], _ago(120))                      # the grace passes
+    got = retry.retry_owed_workflow_steps(env.root)             # idle scan picks the run up
+    assert got == {'retried': 0, 'replayed': 0, 'advanced': 1}
     r = wf.m.get_run(run['id'])
     assert (r['steps']['first']['status'], r['steps']['second']['status']) == ('completed', 'running')
     assert len(wf.dispatch.calls) == 2                          # exactly one successor
@@ -219,3 +226,90 @@ def test_staleness_is_rechecked_under_the_run_lock(env, wf, owed, monkeypatch):
     _set_updated(wf, run['id'], _ago(retry.IDLE_RUN_GRACE_S + 60))
     assert retry.retry_owed_workflow_steps(env.root)['advanced'] == 1
     assert len(wf.dispatch.calls) == 2
+
+
+# ── Fenn fifth review (P1): the owed-replay advance must use the same 60s gate ──
+def test_old_owed_step_ack_does_not_race_a_fresh_successor_completion(env, wf, monkeypatch):
+    """Regression. Boot's ack of step A fails after A is recorded; adoption starts B;
+    B's completion callback has recorded B and released the run lock but not yet
+    advanced. A tick in that window acknowledges A's old record. It must NOT advance
+    the run (B's own callback owns that), or C and D both end up running.
+
+    Ported from Fenn's probe test_old_owed_step_ack_races_fresh_successor_completion[True]
+    (MAIN _scratch/fenn-p4-fifth-review/test_fifth_probes.py), inverted: the probe's
+    PASS confirmed the double dispatch. FAILS-BEFORE on fe9fc1cf (4 dispatches, D running).
+    """
+    from mc import agent_spawn
+    from tests.test_workflows import _agent, _doc, _edge
+
+    doc = wf.m.create_workflow(_doc('fork after second',
+        [_agent(n) for n in ('first', 'second', 'third', 'fourth')],
+        [_edge('first', 'second'), _edge('second', 'third'), _edge('second', 'fourth')]))
+    run = wf.m.start_run(doc['id'])
+    sid = run['steps']['first']['session_id']
+    monkeypatch.setattr(agent_spawn, '_root_override', env.root)
+    env.s.update(session_id=sid, mode='B', status='idle', provider='claude',
+                 _notify_session='', _notify_workflow={'run_id': run['id'], 'step': 'first'})
+    comp.begin(env.s, 'turn')
+    env.sdir.rename(env.root / sid)
+
+    real_write = comp.write_json_atomic
+
+    def fail(*a, **kw):
+        raise PermissionError('boot ack clear fails after first step recorded')
+
+    monkeypatch.setattr(comp, 'write_json_atomic', fail)
+    assert sid in comp.replay_pending(env.root).retained
+    monkeypatch.setattr(comp, 'write_json_atomic', real_write)
+    wf.m.adopt_on_startup()                                    # starts `second`; A's record stays owed
+    second = wf.m.get_run(run['id'])['steps']['second']
+    assert second['status'] == 'running'
+    assert len(wf.dispatch.calls) == 2
+    assert comp.is_owed(sid, env.root)
+
+    real_advance, ticks = wf.m._advance_run, []
+
+    def advance(rid, **kw):
+        # on_agent_step_complete wrote second=completed and released _runs_lock; this is
+        # the moment before its own unconditional _advance_run.
+        if not kw and not ticks:
+            ticks.append(retry.retry_owed_workflow_steps(env.root))
+            assert len(wf.dispatch.calls) == 2                 # the tick dispatched nothing
+        return real_advance(rid, **kw)
+
+    monkeypatch.setattr(wf.m, '_advance_run', advance)
+    assert wf.m.on_agent_step_complete(run['id'], 'second', 'p1', second['session_id'],
+                                       'idle', 'second succeeded') == 'recorded'
+
+    assert ticks == [{'retried': 1, 'replayed': 1, 'advanced': 0}]   # acked, not advanced
+    assert not comp.is_owed(sid, env.root)
+    steps = wf.m.get_run(run['id'])['steps']
+    assert (steps['third']['status'], steps['fourth']['status']) == ('running', 'pending')
+    assert len(wf.dispatch.calls) == 3                         # serial: one successor, not two
+    for _ in range(3):
+        retry.retry_owed_workflow_steps(env.root)
+        wf.m.reconcile_running_steps()
+    assert len(wf.dispatch.calls) == 3
+
+
+def test_a_record_that_stays_owed_does_not_exclude_its_run_from_the_idle_scan(
+        env, wf, owed, monkeypatch):
+    """The checkpoint clear keeps failing; the step IS recorded. The run must still be
+    advanced by the idle scan once stale (it was excluded for as long as the record
+    stayed owed, when the scan skipped every run that had an owed session)."""
+    run, sid = owed
+    _boot_with_failed_replay(env, wf, monkeypatch)
+
+    def fail(*a, **k):
+        raise PermissionError('checkpoint clear keeps failing')
+
+    monkeypatch.setattr(comp, 'write_json_atomic', fail)
+    assert retry.retry_owed_workflow_steps(env.root) == {'retried': 1, 'replayed': 0, 'advanced': 0}
+    assert wf.m.get_run(run['id'])['steps']['first']['status'] == 'completed'
+    _set_updated(wf, run['id'], _ago(120))
+    assert retry.retry_owed_workflow_steps(env.root) == {'retried': 1, 'replayed': 0, 'advanced': 1}
+    assert comp.is_owed(sid, env.root)                          # still owed
+    assert len(wf.dispatch.calls) == 2
+    for _ in range(3):
+        retry.retry_owed_workflow_steps(env.root)
+    assert len(wf.dispatch.calls) == 2                          # and only one successor
