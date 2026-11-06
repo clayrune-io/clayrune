@@ -242,13 +242,19 @@ def _prompt_delivered(sdir: Path, launch_id: Any, timeout: float) -> 'tuple[bool
         time.sleep(0.02)
 
 
-def _prior_shim_gone(prior: '_client.ManifestStatus', timeout: float) -> bool:
-    """True once the previous shim process is positively gone. exit.json only
-    says the CLI ended: that shim still writes its final manifest afterwards."""
+def _prior_gone(prior: '_client.ManifestStatus', timeout: float) -> bool:
+    """True only once the previous shim AND CLI are both positively gone
+    (`process_state == 'gone'`). `inspect`'s booleans fold 'cannot tell' (the
+    create-time lookup was denied) into False, which is not evidence of absence:
+    `write_spec` deletes shim.json/exit.json, so reusing the directory beside an
+    unverifiable process discards the only record of its pid/create-time. exit.json
+    only says the CLI ended: its shim still writes a final manifest afterwards.
+    Same rule as `agent_spawn_interactive._await_prior`."""
     m = prior.manifest
     end = time.monotonic() + timeout
     while True:
-        if _shim.process_state(m.get('shim_pid'), m.get('shim_ct')) == 'gone':
+        if (_shim.process_state(m.get('shim_pid'), m.get('shim_ct')) == 'gone'
+                and _shim.process_state(m.get('cli_pid'), m.get('cli_ct')) == 'gone'):
             return True
         if time.monotonic() >= end:
             return False
@@ -342,11 +348,13 @@ def spawn_engine_proc(cmd: Sequence[Any], *, session_id: Optional[str], engine: 
         _log(f'[agent-spawn] session={session_id} engine={engine}: previous shim still alive; '
              'spawning without a shim')
         return _popen(cmd, deliver=deliver, **plain)
-    if prior is not None and not _prior_shim_gone(prior, _PRIOR_SHIM_GONE_S):
-        # The previous CLI has exited but its shim has not: it still rewrites
-        # shim.json after exit.json, which would overwrite this launch's manifest.
-        _log(f'[agent-spawn] session={session_id} engine={engine}: previous shim still exiting; '
-             'spawning without a shim')
+    if prior is not None and not _prior_gone(prior, _PRIOR_SHIM_GONE_S):
+        # Either the previous CLI has exited but its shim has not (it still rewrites
+        # shim.json after exit.json, which would overwrite this launch's manifest), or
+        # a recorded process cannot be proven gone (identity lookup denied): reusing
+        # the directory would delete its pid/create-time record. Leave shim.json/exit.json.
+        _log(f'[agent-spawn] session={session_id} engine={engine}: previous shim/CLI still '
+             'exiting or unverifiable; spawning without a shim')
         return _popen(cmd, deliver=deliver, **plain)
 
     cap = _capture_prompt(deliver, str(session_id), engine) if deliver is not None else None
