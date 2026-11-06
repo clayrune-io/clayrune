@@ -203,6 +203,8 @@
           <span class="desk-v1-studio-tile-name">${esc(t.label)}</span>
           <span class="desk-v1-studio-tile-hint">${esc(t.hint)}</span>
         </button>`).join('')}</div>
+      <h3 class="desk-v1-studio-sub">Material library</h3>
+      <div class="desk-v1-studio-lib" data-studio-lib>${_libHTML()}</div>
       <h3 class="desk-v1-studio-sub">Recent</h3>
       <div class="desk-v1-studio-recent" data-studio-recent>${rows.length ? rows.map((r) => `
         <div class="desk-v1-studio-recent-item" data-studio-recent-item="${esc(r.id)}">
@@ -215,8 +217,6 @@
           </button>
           ${window.DeskV1StudioDelete ? window.DeskV1StudioDelete.buttonHTML(r, _recentCtx) : ''}
         </div>`).join('') : '<div class="desk-v1-camp-empty">Nothing made yet.</div>'}</div>
-      <h3 class="desk-v1-studio-sub">Material library</h3>
-      <div class="desk-v1-studio-lib" data-studio-lib>${_libHTML()}</div>
     </div>`;
   }
 

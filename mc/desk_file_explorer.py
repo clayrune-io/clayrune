@@ -172,5 +172,8 @@ def browse(root_id: str = 'home', relative: str = '', *, query: str = '', all_fi
     parts = Path(relative).parts if relative else ()
     crumbs = [{'title': root['title'], 'path': ''}]
     crumbs.extend({'title': part, 'path': Path(*parts[:i + 1]).as_posix()} for i, part in enumerate(parts))
-    return {'root': root_id, 'path': relative, 'breadcrumbs': crumbs, 'items': rows,
+    # The host path of the folder being read (or searched). `start` is the
+    # authorized, resolved directory, so this names only a location the guards
+    # already let the caller list; it is never built from raw request text.
+    return {'root': root_id, 'path': relative, 'display_path': str(start), 'breadcrumbs': crumbs, 'items': rows,
             'limited': capped, 'truncated': capped, 'shortcuts': navigation}

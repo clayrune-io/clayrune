@@ -40,9 +40,9 @@
         <span class="desk-v1-studio-folderbar-name">${esc(folder.title)} · ${folder.files} files</span></div>
         <button data-fe-close aria-label="Close file explorer">✕</button>
       </header>
-      <details class="desk-fe-saved"${folder.items.length ? ' open' : ''}><summary>In this library folder <span data-fe-saved-count>${folder.files}</span></summary><div class="desk-v1-studio-files" data-fe-saved></div></details>
+      <details class="desk-fe-saved" data-fe-saved-box${folder.items.length ? ' open' : ''}><summary>In this library folder <span data-fe-saved-count>${folder.files}</span></summary><div class="desk-v1-studio-files" data-fe-saved></div></details>
       <div class="desk-fe-workspace"><nav class="desk-fe-rail" aria-label="Locations" data-fe-shortcuts></nav>
-        <div class="desk-fe-main"><nav class="desk-fe-crumbs" aria-label="Current folder" data-fe-crumbs></nav>
+        <div class="desk-fe-main"><p class="desk-fe-path" data-fe-pathline hidden><span class="desk-fe-path-label" data-fe-path-label></span><span class="desk-fe-path-text"><bdi dir="ltr" data-fe-path></bdi></span></p><nav class="desk-fe-crumbs" aria-label="Current folder" data-fe-crumbs></nav>
           <div class="desk-fe-tools"><input type="search" data-fe-search aria-label="Search this folder" placeholder="Search this folder" maxlength="200">
             <select data-fe-filter aria-label="Show files"><option value="media">Media only</option></select></div>
           <p class="desk-fe-note">Browse your computer. Pictures and videos are copied here; originals stay where they are.</p>
@@ -88,6 +88,10 @@
         el.querySelectorAll('[data-fe-location]').forEach((b) => b.onclick = () => {
           const loc = data.shortcuts[Number(b.dataset.feLocation)]; navigate(loc.root, loc.path);
         });
+        const line = el.querySelector('[data-fe-pathline]'), pathText = el.querySelector('[data-fe-path]');
+        line.hidden = !data.display_path;
+        pathText.textContent = data.display_path || ''; pathText.parentNode.title = data.display_path || '';
+        el.querySelector('[data-fe-path-label]').textContent = st.query ? 'Searching in' : '';
         el.querySelector('[data-fe-crumbs]').innerHTML = data.breadcrumbs.map((it, i) => `<button data-fe-crumb="${i}">${esc(it.title)}</button>`).join('<span aria-hidden="true">›</span>');
         el.querySelectorAll('[data-fe-crumb]').forEach((b) => b.onclick = () => navigate(st.root, data.breadcrumbs[Number(b.dataset.feCrumb)].path));
         const cut = data.truncated || data.limited;
@@ -95,7 +99,7 @@
           ${st.filter === 'all' ? '<p class="desk-fe-note">All files are visible. Only supported pictures and videos can be copied.</p>' : ''}
           ${data.items.length ? `<div class="desk-fe-grid">${data.items.map((it, i) => {
             const key = JSON.stringify([st.root, it.path]);
-            return `<button class="desk-fe-entry" ${it.directory ? `data-fe-dir="${i}"` : `data-fe-pick="${esc(key)}" data-fe-index="${i}" aria-pressed="${st.selected.has(key)}"`}${!it.directory && !it.selectable ? ' disabled' : ''}>
+            return `<button class="desk-fe-entry" ${it.directory ? `data-fe-dir="${i}"` : `data-fe-pick="${esc(key)}" data-fe-index="${i}" aria-pressed="${st.selected.has(key)}"${it.selectable ? ' draggable="true"' : ''}`}${!it.directory && !it.selectable ? ' disabled' : ''}>
               <span class="desk-fe-thumb">${it.src ? `<img src="${esc(it.src)}" alt="" loading="lazy">` : it.play ? `<video src="${esc(it.play)}" preload="metadata" muted playsinline></video><span class="desk-fe-play">▶</span>` : `<span>${it.directory ? '📁' : '▤'}</span>`}</span>
               <span class="desk-fe-name">${esc(it.title)}</span>${st.query ? `<small>${esc(it.path.split('/').slice(0, -1).join(' › '))}</small>` : ''}</button>`;
           }).join('')}</div>` : (cut ? '' : '<p>No files match. Try another folder or search.</p>')}`;
@@ -128,21 +132,25 @@
     };
     el.querySelector('[data-fe-filter]').onchange = (e) => { st.filter = e.target.value; load(); };
     el.querySelector('[data-fe-clear]').onclick = () => { st.selected.clear(); paintSelection(); };
-    copy.onclick = async () => {
-      if (st.busy || !st.selected.size) return;
+    // The one copy path: the button passes the selection, a drop passes the
+    // selection or the single dragged file (desk-v1-file-explorer-drop.js).
+    const copyFiles = async (files) => {
+      if (st.busy || !files.length) return;
       st.busy = true; paintSelection();
       try {
-        const out = await api('POST', '/api/desk/library/folders/copy', { id: folder.id, files: [...st.selected.values()] });
+        const out = await api('POST', '/api/desk/library/folders/copy', { id: folder.id, files });
         st.folder.items.push(...out.items); st.changed = st.changed || out.items.length > 0; saved();
         // Clear successes only; failed files remain selected for a retry.
         const failed = new Set(out.errors.map((e) => JSON.stringify([e.root, e.path])));
-        for (const key of st.selected.keys()) if (!failed.has(key)) st.selected.delete(key);
+        for (const f of files) { const key = JSON.stringify([f.root, f.path]); if (!failed.has(key)) st.selected.delete(key); }
         const status = document.createElement('p'); status.setAttribute('role', 'status');
         status.textContent = `${out.items.length} file${out.items.length === 1 ? '' : 's'} copied. ${out.errors.map((e) => `${e.title}: ${e.error}`).join(' ')}`;
         results.prepend(status);
       } catch (e) { window.DeskV1Kit.toast(e.message || 'Could not copy these files.'); }
       finally { st.busy = false; paintSelection(); }
     };
+    copy.onclick = () => copyFiles([...st.selected.values()]);
+    window.DeskV1FileExplorerDrop.attach({ el, st, copyFiles });
     el.querySelector('[data-fe-close]').onclick = close;
     el.querySelector('[data-studio-lib-back]').onclick = close;
     st.keys = (e) => {

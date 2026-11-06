@@ -26,11 +26,20 @@
 .desk-fe-saved summary { cursor: pointer; color: var(--text-dim); }
 .desk-fe-saved .desk-v1-studio-files { margin-top: 10px; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); }
 .desk-fe-saved .desk-v1-studio-file-thumb { height: 55px; }
+.desk-fe-saved.desk-fe-drop-ready { outline: 2px dashed var(--border2); outline-offset: -4px; }
+.desk-fe-saved.desk-fe-drop-on { outline: 2px dashed var(--accent); outline-offset: -4px; background: var(--accent-dim); }
+.desk-fe-saved.desk-fe-drop-on::after { content: 'Drop to copy into this folder'; display: block; margin-top: 8px; color: var(--accent); font-weight: 600; }
+.desk-fe-entry[draggable=true] { cursor: grab; }
 .desk-fe-workspace { display: flex; flex: 1; min-height: 0; }
 .desk-fe-rail { width: 180px; flex-shrink: 0; padding: 12px; overflow: auto; background: var(--surface2); border-right: 1px solid var(--border2); }
 .desk-fe-rail button { display: block; width: 100%; text-align: left; margin-bottom: 4px; background: transparent; border-color: transparent; overflow-wrap: anywhere; }
 .desk-fe-rail [aria-current=location] { background: var(--surface); border-color: var(--accent); }
 .desk-fe-main { display: flex; flex: 1; flex-direction: column; padding: 14px 18px 0; min-width: 0; min-height: 0; }
+.desk-fe-path { display: flex; align-items: baseline; gap: 6px; margin: 0 0 6px; min-width: 0; flex-shrink: 0; font-size: 12px; color: var(--text-dim); user-select: text; }
+.desk-fe-path-label { flex: none; color: var(--text-faint); }
+.desk-fe-path-label:empty { display: none; }
+/* Ellipsize from the LEFT so the deepest folder stays visible; <bdi> keeps the path itself left-to-right. */
+.desk-fe-path-text { flex: 1; min-width: 0; direction: rtl; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, Consolas, monospace; }
 .desk-fe-crumbs { display: flex; align-items: center; gap: 4px; overflow: auto; white-space: nowrap; margin-bottom: 10px; flex-shrink: 0; }
 .desk-fe-crumbs button { border: 0; background: transparent; padding: 6px; }
 .desk-fe-tools { display: flex; gap: 8px; }
