@@ -12,6 +12,16 @@ when `replay_pending` clears it; a step already recorded is acknowledged without
 being recorded again), then the run is advanced the way boot's workflow adoption
 would. `advanced` counts only advances that moved the run.
 
+Idle-run scan (Fenn r4 Repro B; Dave's call, journal ebbb15a7): a `running` run
+with nothing in flight and a pending frontier also gets `advance_idle_run`, but
+only once `run['updated']` is older than IDLE_RUN_GRACE_S. `workflows._write_run`
+re-stamps `updated` on every run write, and `on_agent_step_complete`,
+`resolve_decision` and `resume_due_waits` record a step, release the run lock and
+THEN advance -- a tick inside that window would dispatch the successor first and
+the caller's own advance would dispatch a second. The window is milliseconds; the
+grace is a minute. An unparseable, missing, naive or future `updated` counts as
+fresh (skipped). `advance_idle_run` stays the gate. Those advances add to `advanced`.
+
 Bounds: once per session per call (the tick is 30s); not before boot's workflow
 adoption has finished; not while another replay holds the lock; never for a
 session that is live in this process with a stamp (its own thread acks it).
@@ -20,6 +30,7 @@ honored while OFF). Never raises.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
 from mc import agent_shim_completion as _comp
@@ -27,8 +38,21 @@ from mc import state
 from mc import workflows as _wf
 
 
+# A running, idle run is touched by the tick only after this long without a write.
+IDLE_RUN_GRACE_S = 60
+
+
 def _log(msg: str) -> None:
     _comp._log(msg)
+
+
+def _is_stale(updated: Any, now: datetime) -> bool:
+    """True only for a parseable, timezone-aware `updated` older than the grace."""
+    try:
+        t = datetime.fromisoformat(str(updated).replace('Z', '+00:00'))
+        return (now - t).total_seconds() > IDLE_RUN_GRACE_S
+    except (TypeError, ValueError):
+        return False
 
 
 def retry_owed_workflow_steps(root: Optional[Any] = None, *,
@@ -45,16 +69,24 @@ def retry_owed_workflow_steps(root: Optional[Any] = None, *,
                 continue                         # its own thread is mid-completion
             if _comp.is_owed(sid, root):
                 owed[sid] = run_id
-        if not owed:
-            return counts
-        counts['retried'] = len(owed)
-        rep = _comp.replay_pending(root, runners=runners, only=set(owed), wait=False)
-        for sid, why in rep.retained.items():
-            _log(f'[agent-shim-completion] retry of {sid[:12]} (run {owed.get(sid, "")[:12]}) '
-                 f'failed, record kept: {why}')
-        for sid in rep.replayed:
-            counts['replayed'] += 1
-            if _wf.advance_idle_run(owed[sid]):
+        if owed:
+            counts['retried'] = len(owed)
+            rep = _comp.replay_pending(root, runners=runners, only=set(owed), wait=False)
+            for sid, why in rep.retained.items():
+                _log(f'[agent-shim-completion] retry of {sid[:12]} (run {owed.get(sid, "")[:12]}) '
+                     f'failed, record kept: {why}')
+            for sid in rep.replayed:
+                counts['replayed'] += 1
+                if _wf.advance_idle_run(owed[sid]):
+                    counts['advanced'] += 1
+        now = datetime.now(timezone.utc)
+        handled = set(owed.values())
+        for run_id, updated in _wf.running_run_updated():
+            if run_id in handled or not _is_stale(updated, now):
+                continue
+            if _wf.advance_idle_run(run_id):
+                _log(f'[agent-shim-completion] advanced idle run {run_id[:12]} '
+                     f'(no write for over {IDLE_RUN_GRACE_S}s)')
                 counts['advanced'] += 1
     except Exception as e:
         _log(f'[agent-shim-completion] retry tick failed: {type(e).__name__}: {e}')

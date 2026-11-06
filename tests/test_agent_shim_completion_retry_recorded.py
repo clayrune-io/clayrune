@@ -10,6 +10,8 @@ Run:  .venv/Scripts/python.exe -m pytest tests/test_agent_shim_completion_retry_
 """
 from __future__ import annotations
 
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -130,21 +132,71 @@ def test_an_advance_that_did_nothing_is_not_counted_as_advanced(env, wf, owed, m
     assert len(wf.dispatch.calls) == 1
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "Needs requirement (2): after the record is acked and the advance failed, nothing "
-    "owns the idle `running` run. Not built: an idle `running` run with a pending "
-    "frontier DOES occur legitimately (workflows.on_agent_step_complete, resolve_decision "
-    "and resume_due_waits record the step, release _runs_lock, then call _advance_run), "
-    "so the brief says stop and report to Dave. See docs/_journal/ebbb15a7-agent-survive-restart.md."))
-def test_advance_read_failure_after_ack_is_recovered_by_a_later_tick(env, wf, owed, monkeypatch):
-    """Fenn Repro B, second half."""
+def _set_updated(wf, run_id, value):
+    """Rewrite run['updated'] on disk without going through _write_run (which re-stamps it)."""
+    path = wf.m._run_path(run_id)
+    data = json.loads(path.read_text(encoding='utf-8'))
+    if value is _MISSING:
+        data.pop('updated', None)
+    else:
+        data['updated'] = value
+    path.write_text(json.dumps(data), encoding='utf-8')
+
+
+_MISSING = object()
+
+
+def _ago(seconds):
+    t = datetime.now(timezone.utc) - timedelta(seconds=seconds)
+    return t.isoformat().replace('+00:00', 'Z')
+
+
+def _idle_run_after_failed_advance(env, wf, owed, monkeypatch):
+    """Step recorded, record acked, advance could not read the run: idle `running`
+    run, pending frontier, nothing owed any more."""
     run, sid = owed
     _boot_with_failed_replay(env, wf, monkeypatch)
     _one_read_failure_on_advance(wf, monkeypatch)
-    retry.retry_owed_workflow_steps(env.root)
-    for _ in range(3):
-        retry.retry_owed_workflow_steps(env.root)
-        wf.m.reconcile_running_steps()
+    got = retry.retry_owed_workflow_steps(env.root)
+    assert got == {'retried': 1, 'replayed': 1, 'advanced': 0}
+    assert not comp.is_owed(sid, env.root)
+    assert len(wf.dispatch.calls) == 1
+    assert wf.m.get_run(run['id'])['steps']['second']['status'] == 'pending'
+    return run
+
+
+def test_advance_read_failure_after_ack_is_recovered_by_a_later_tick(env, wf, owed, monkeypatch):
+    """Fenn Repro B, second half: a stale idle run is advanced exactly once."""
+    run = _idle_run_after_failed_advance(env, wf, owed, monkeypatch)
+    _set_updated(wf, run['id'], _ago(retry.IDLE_RUN_GRACE_S + 5))
+    got = retry.retry_owed_workflow_steps(env.root)
+    assert got == {'retried': 0, 'replayed': 0, 'advanced': 1}
     r = wf.m.get_run(run['id'])
-    assert r['steps']['second']['status'] == 'running'
+    assert (r['steps']['first']['status'], r['steps']['second']['status']) == ('completed', 'running')
     assert len(wf.dispatch.calls) == 2
+    for _ in range(3):                                          # nothing more, ever
+        assert retry.retry_owed_workflow_steps(env.root)['advanced'] == 0
+        wf.m.reconcile_running_steps()
+    assert len(wf.dispatch.calls) == 2
+
+
+def test_a_run_written_inside_the_grace_is_not_advanced(env, wf, owed, monkeypatch):
+    """The record-then-advance window: the caller of the write advances it itself."""
+    run = _idle_run_after_failed_advance(env, wf, owed, monkeypatch)
+    _set_updated(wf, run['id'], _ago(retry.IDLE_RUN_GRACE_S - 30))
+    for _ in range(3):
+        assert retry.retry_owed_workflow_steps(env.root)['advanced'] == 0
+    assert len(wf.dispatch.calls) == 1
+    assert wf.m.get_run(run['id'])['steps']['second']['status'] == 'pending'
+
+
+@pytest.mark.parametrize('bad', ['not-a-date', '', None, 12345, '2026-11-05T20:00:00',
+                                 _MISSING, '2099-01-01T00:00:00Z'])
+def test_an_unusable_updated_counts_as_fresh(env, wf, owed, monkeypatch, bad):
+    """Unparseable, empty, null, non-string, missing, naive (no zone) or future `updated`: skip."""
+    run = _idle_run_after_failed_advance(env, wf, owed, monkeypatch)
+    _set_updated(wf, run['id'], bad)
+    for _ in range(3):
+        assert retry.retry_owed_workflow_steps(env.root)['advanced'] == 0
+    assert len(wf.dispatch.calls) == 1
+    assert wf.m.get_run(run['id'])['steps']['second']['status'] == 'pending'

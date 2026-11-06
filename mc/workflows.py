@@ -2128,6 +2128,24 @@ def running_run_session_steps() -> list:
     return out
 
 
+def running_run_updated() -> list:
+    """[(run_id, updated)] for every `running` run -- `updated` as stored (the
+    string `_write_run` stamps on every run write; None if absent). Read-only;
+    unreadable run files are skipped. For the owed-completion retry's idle-run
+    scan (mc/agent_shim_completion_retry.py), which decides staleness itself."""
+    out = []
+    if WORKFLOW_RUNS_DIR is None or not WORKFLOW_RUNS_DIR.exists():
+        return out
+    for f in WORKFLOW_RUNS_DIR.glob('*.json'):
+        try:
+            run = _read_run(f.stem)
+            if run is not None and run.get('status') == 'running':
+                out.append((run['id'], run.get('updated')))
+        except Exception as e:
+            _log(f'[workflows] running_run_updated: {f.name} skipped: {e}')
+    return out
+
+
 def _run_signature(run_id: str):
     run = _read_run(run_id)
     if run is None:
