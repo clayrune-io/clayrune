@@ -52,6 +52,7 @@ import concurrent.futures
 import contextlib
 from mc import codex_run_error as _codex_run_error  # MC-1147: rollout error as the failure summary
 from mc import empty_turn as _empty_turn
+from mc import agent_shim_adopt as _agent_shim_adopt  # MC-1150 P4: checkpoint + adoption (flag-gated)
 from mc import mid_turn_send as _mid_turn_send  # MC-1086: steer / queue / interrupt routing
 from mc import triggered_turns as _triggered_turns  # seed-line label for non-human turns
 from mc import engine_selection
@@ -5968,10 +5969,8 @@ def _read_agent_stream(proc, session):
     # Last total_cost_usd THIS process reported, plus its CLI version and, on
     # CLI >= 2.1.277, the total its resume carried over (read from the
     # transcript at init). This reader IS the process. See accumulate_result_cost.
-    proc_cost = {}
-    # Turns THIS process produced (num_turns itself is per turn; see
-    # accumulate_result_turns). The failed-resume guard reads it.
-    proc_turns = {}
+    # MC-1150 P4: an adopted process hands back the counters its checkpoint held.
+    proc_cost, proc_turns = _agent_shim_adopt.reader_counters(session, proc)
     try:
         for raw_line in proc.stdout:
             obs.heartbeat('stream-reader:a')  # Phase 2 loop observability (1.12)
@@ -6262,7 +6261,8 @@ def _read_agent_stream_b(proc, session):
     # MC-958: background jobs belong to the process that started them. A
     # respawn (followup, eviction, AskUserQuestion) means they are gone —
     # say so instead of letting the promised wake silently never come.
-    _gone = _bg_tasks.drain(session)
+    # MC-1150 P4: an ADOPTED process is the one that started them, so they did survive.
+    _gone = [] if _agent_shim_adopt.take_skip_drain(session) else _bg_tasks.drain(session)
     if _gone:
         session['log_lines'].append(
             f"[{len(_gone)} background task(s) did not survive the previous "
@@ -6270,10 +6270,9 @@ def _read_agent_stream_b(proc, session):
     # Last total_cost_usd THIS process reported, plus its CLI version and, on
     # CLI >= 2.1.277, the total its resume carried over (read from the
     # transcript at init). This reader IS the process. See accumulate_result_cost.
-    proc_cost = {}
     # Turns THIS process produced (num_turns itself is per turn; see
     # accumulate_result_turns). The failed-resume guard reads it.
-    proc_turns = {}
+    proc_cost, proc_turns = _agent_shim_adopt.reader_counters(session, proc)
     try:
         for raw_line in proc.stdout:
             obs.heartbeat('stream-reader:b')  # Phase 2 loop observability (1.12)
@@ -6473,6 +6472,9 @@ def _read_agent_stream_b(proc, session):
                     # this turn is "started it, waiting", the CLI will run a
                     # turn of its own when the job ends, and THAT turn's
                     # result is the answer the spawner is waiting for.
+                    # MC-1150 P4: checkpoint past this result BEFORE it is announced, so a
+                    # restart cannot replay it into a second completion.
+                    _agent_shim_adopt.force_checkpoint(session)
                     if not _hold_notify_for_background(session):
                         _maybe_notify_spawner(session, _last_reply_text(session))
                     # Step 6: mid-session note-taker (default-off; fast-gated).
@@ -9542,6 +9544,9 @@ def _log_agent_completion(session):
     `_maybe_notify_spawner` is latched, so the normal path's own call inside
     the body makes this a no-op.
     """
+    # MC-1150 P4: checkpoint (offset past the stream's end) before any completion
+    # side effect, so a restart in the middle of them cannot run them twice.
+    _agent_shim_adopt.force_checkpoint(session)
     try:
         _log_agent_completion_body(session)
     finally:

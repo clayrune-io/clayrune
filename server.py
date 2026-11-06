@@ -1796,6 +1796,11 @@ def _reconcile_pending_agent_log_entries():
         _log(f"[reconcile-pending] load_projects failed: {e}")
         return
     flipped_total = 0
+    try:                                  # MC-1150 P4: adopted sessions ARE live
+        from mc import agent_shim_adopt as _adopt
+        adopted = _adopt.adopted_session_ids()
+    except Exception:
+        adopted = frozenset()
     for p in projects:
         pid = p.get('id')
         if not pid:
@@ -1806,7 +1811,7 @@ def _reconcile_pending_agent_log_entries():
             log = _load_agent_log(pid)
             changed = False
             for e in log:
-                if e.get('status') == 'in_progress':
+                if e.get('status') == 'in_progress' and e.get('session_id') not in adopted:
                     e['status'] = 'interrupted'
                     changed = True
                     flipped_total += 1
@@ -3595,7 +3600,16 @@ def boot(check_port=True):
     # (restart/crash) without killing them. Reads the PID ledger the prior
     # instance persisted; identity-guarded so it can't friendly-fire. Must run
     # before any subsystem spawns its own children. [leak fix 2026-06-03]
-    _boot_phase('reap prior strays', process_ledger._reap_prior_instance_strays)
+    #
+    # MC-1150 P4 (flag-gated; both phases return at once with it off): shim-run
+    # agents that survived the restart are CLAIMED before the reaper, so it
+    # leaves their pids alone, and STARTED after it, so registering them does not
+    # overwrite the prior instance's PID ledger before the reaper has read it.
+    from mc import agent_shim_adopt as _agent_shim_adopt
+    _boot_phase('claim surviving agents', _agent_shim_adopt.claim_all)
+    _boot_phase('reap prior strays', lambda: process_ledger._reap_prior_instance_strays(
+        protected=_agent_shim_adopt.protected_pids()))
+    _boot_phase('adopt surviving agents', _agent_shim_adopt.start_all)
     _bp_sched._start_scheduler()
     _desk_project_media.start()
     _start_hivemind_orchestrator()

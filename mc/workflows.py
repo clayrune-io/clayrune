@@ -1963,6 +1963,14 @@ def _execute_action(run: dict, node: dict, workflow: Optional[dict] = None) -> t
 
 # ── Restart adoption (fail-closed, spec Q5 / R2-D4) ──────────────────────────
 
+def _step_adopted(step_state: dict) -> bool:
+    try:
+        from mc import agent_shim_adopt
+        return (step_state.get('session_id') or '') in agent_shim_adopt.adopted_session_ids()
+    except Exception:
+        return False
+
+
 def adopt_on_startup() -> None:
     """Scan `data/workflow_runs/` for runs that were mid-step when the server
     went down. A `waiting` run is simply still waiting -- untouched. A run
@@ -1994,8 +2002,12 @@ def adopt_on_startup() -> None:
             continue
         # Boot: no session can be live yet, so only the durable agent_log
         # can confirm. Anything short of a confirmed end is interrupted.
+        # MC-1150 P4: a step whose agent was adopted from a surviving shim IS live.
+        adopted = _step_adopted(run['steps'][step_name])
         verdict, status, summary = _step_session_verdict(run['steps'][step_name],
-                                                         use_live=False)
+                                                         use_live=adopted)
+        if verdict == 'in_flight':
+            continue                    # its completion hook advances the run
         if verdict == 'ended':
             _replay_step_end(run, step_name, status, summary, 'completed while down')
         else:

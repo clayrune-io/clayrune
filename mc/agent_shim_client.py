@@ -446,6 +446,11 @@ class LogTail:
                  finished: Callable[[], bool] = lambda: True, poll_s: float = 0.05):
         self.path = str(path)
         self.offset = int(offset)
+        # Byte position before the line the reader is still processing (MC-1150
+        # P4): asking for the next line means the previous one is done, so
+        # `next()` advances it. A checkpoint taken at `committed` re-reads the
+        # in-flight line after a restart instead of skipping it.
+        self.committed = int(offset)
         self._finished = finished
         self._poll = poll_s
         self._buf = b''
@@ -488,6 +493,7 @@ class LogTail:
         return text
 
     def __next__(self) -> str:
+        self.committed = self.offset
         while True:
             raw = self._cut(final=False)
             if raw is not None:
