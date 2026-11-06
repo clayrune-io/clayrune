@@ -173,7 +173,8 @@ def test_real_completion_sources_survive_enqueue_fault_and_next_turn(monkeypatch
     monkeypatch.setattr(ar, '_delivery_store', store)
     monkeypatch.setattr(ar, '_write_session_memory', lambda *args, **kwargs: True)
     monkeypatch.setattr(ar, '_extract_transcript_telemetry', lambda *args: {})
-    monkeypatch.setattr(store, 'enqueue', lambda *args: (_ for _ in ()).throw(OSError('disk full')))
+    # The notifier enqueues through `enqueue_outcome` (`enqueue` is its bool view).
+    monkeypatch.setattr(store, 'enqueue_outcome', lambda *args: (_ for _ in ()).throw(OSError('disk full')))
     for turn in (1, 2):
         ar._log_agent_completion({
             'project_id': 'p', 'session_id': 'child',

@@ -52,6 +52,8 @@ import concurrent.futures
 import contextlib
 from mc import codex_run_error as _codex_run_error  # MC-1147: rollout error as the failure summary
 from mc import empty_turn as _empty_turn
+from mc import agent_shim_adopt as _agent_shim_adopt  # MC-1150 P4: checkpoint + adoption (flag-gated)
+from mc import agent_shim_completion as _agent_shim_completion  # MC-1150 P4: crash-safe completion record
 from mc import mid_turn_send as _mid_turn_send  # MC-1086: steer / queue / interrupt routing
 from mc import triggered_turns as _triggered_turns  # seed-line label for non-human turns
 from mc import engine_selection
@@ -1714,8 +1716,13 @@ def _project_guardian_loop(manager):
             except Exception as e:
                 _log(f"[guardian:{manager.project_id[:8]}] Error checking {sid[:8]}: {e}")
 
-def _register_process(proc, name, proc_type, session_id, project_id, command_preview=''):
-    """Register a spawned process in the PID tracker."""
+def _register_process(proc, name, proc_type, session_id, project_id, command_preview='',
+                      identity=None):
+    """Register a spawned process in the PID tracker.
+
+    `identity` = (os_image, create_time) the caller has already verified is the
+    process's (MC-1150 P4: an adopted shim CLI keeps the create-time its manifest
+    recorded instead of one sampled from whatever now holds the pid)."""
     project_name = project_id
     try:
         p = load_project(project_id)
@@ -1723,7 +1730,7 @@ def _register_process(proc, name, proc_type, session_id, project_id, command_pre
             project_name = p.get('name', project_id)
     except Exception:
         pass
-    _img, _ct = _proc_identity(proc.pid)
+    _img, _ct = identity if identity is not None else _proc_identity(proc.pid)
     with process_tracker_lock:
         tracked_processes[proc.pid] = {
             'pid': proc.pid,
@@ -5968,10 +5975,8 @@ def _read_agent_stream(proc, session):
     # Last total_cost_usd THIS process reported, plus its CLI version and, on
     # CLI >= 2.1.277, the total its resume carried over (read from the
     # transcript at init). This reader IS the process. See accumulate_result_cost.
-    proc_cost = {}
-    # Turns THIS process produced (num_turns itself is per turn; see
-    # accumulate_result_turns). The failed-resume guard reads it.
-    proc_turns = {}
+    # MC-1150 P4: an adopted process hands back the counters its checkpoint held.
+    proc_cost, proc_turns = _agent_shim_adopt.reader_counters(session, proc)
     try:
         for raw_line in proc.stdout:
             obs.heartbeat('stream-reader:a')  # Phase 2 loop observability (1.12)
@@ -6262,7 +6267,8 @@ def _read_agent_stream_b(proc, session):
     # MC-958: background jobs belong to the process that started them. A
     # respawn (followup, eviction, AskUserQuestion) means they are gone —
     # say so instead of letting the promised wake silently never come.
-    _gone = _bg_tasks.drain(session)
+    # MC-1150 P4: an ADOPTED process is the one that started them, so they did survive.
+    _gone = [] if _agent_shim_adopt.take_skip_drain(session) else _bg_tasks.drain(session)
     if _gone:
         session['log_lines'].append(
             f"[{len(_gone)} background task(s) did not survive the previous "
@@ -6270,10 +6276,9 @@ def _read_agent_stream_b(proc, session):
     # Last total_cost_usd THIS process reported, plus its CLI version and, on
     # CLI >= 2.1.277, the total its resume carried over (read from the
     # transcript at init). This reader IS the process. See accumulate_result_cost.
-    proc_cost = {}
     # Turns THIS process produced (num_turns itself is per turn; see
     # accumulate_result_turns). The failed-resume guard reads it.
-    proc_turns = {}
+    proc_cost, proc_turns = _agent_shim_adopt.reader_counters(session, proc)
     try:
         for raw_line in proc.stdout:
             obs.heartbeat('stream-reader:b')  # Phase 2 loop observability (1.12)
@@ -6473,8 +6478,13 @@ def _read_agent_stream_b(proc, session):
                     # this turn is "started it, waiting", the CLI will run a
                     # turn of its own when the job ends, and THAT turn's
                     # result is the answer the spawner is waiting for.
+                    # MC-1150 P4: checkpoint past this result BEFORE it is announced, so a
+                    # restart cannot replay it into a second completion, and stamp the
+                    # checkpoint with the wake it now owes so a crash cannot lose it.
+                    _agent_shim_completion.begin(session, 'turn')
                     if not _hold_notify_for_background(session):
                         _maybe_notify_spawner(session, _last_reply_text(session))
+                    _agent_shim_completion.ack(session, owed=_spawner_notify_owed(session))
                     # Step 6: mid-session note-taker (default-off; fast-gated).
                     _maybe_checkpoint(session)
                     # MC-998 bugfix: this IS the turn boundary for a Mode B
@@ -8700,8 +8710,15 @@ def _maybe_notify_spawner(session, summary):
              f"spawner latch _notify_session_sent already set for turn "
              f"{session.get('_delegation_turn', 1)}", flush=True)
     if has_workflow and not session.get('_notify_workflow_sent'):
-        session['_notify_workflow_sent'] = True
-        _notify_workflow_step(wf_wait, session, summary)
+        if session.get('_completion_replay'):
+            # Boot replay of a crash-surviving completion: the latch is the
+            # durable record's mirror, so it is set only once the step is on
+            # disk. A failure leaves it unset and `_workflow_notify_owed` true.
+            if _notify_workflow_step(wf_wait, session, summary, sync=True):
+                session['_notify_workflow_sent'] = True
+        else:
+            session['_notify_workflow_sent'] = True
+            _notify_workflow_step(wf_wait, session, summary)
     elif has_workflow:
         _log(f"[notify-spawner] workflow callback suppressed for {session.get('session_id', '')}: "
              f"_notify_workflow_sent already set (a workflow step completes once)", flush=True)
@@ -9024,7 +9041,7 @@ def _rearm_notify_for_new_turn(session):
     _advance_delegation_turn(session, owner=_OWNER_SPAWNER)
 
 
-def _notify_workflow_step(wf_wait, session, summary):
+def _notify_workflow_step(wf_wait, session, summary, *, sync=False):
     """Wake a workflow run parked on this session's agent step.
 
     Thread + best-effort for the same reason `_notify_agent_spawner` is: a
@@ -9032,22 +9049,44 @@ def _notify_workflow_step(wf_wait, session, summary):
     child that just finished. `mc.workflows` is a leaf module (no Flask import,
     wired to `_dispatch_agent_internal` from server.py rather than importing
     this module) so calling it directly here carries no import-cycle risk.
+
+    `sync=True` is the boot replay of a completion that survived a crash
+    (mc/agent_shim_completion.py): the callback runs HERE, to completion, and
+    returns True only once the step's transition is durable (it does not start
+    the next step: workflow adoption, which runs right after the replay, does
+    that). A thread would let the replay acknowledge its pending record before
+    the step moved, and the adoption that follows would then interrupt the run
+    and refuse the late result (Fenn, MC-1150 P4 re-review). Never raises.
     """
+    def _call(advance):
+        return _workflows.on_agent_step_complete(
+            run_id=wf_wait.get('run_id', ''),
+            step_name=wf_wait.get('step', ''),
+            project_id=session.get('project_id', ''),
+            session_id=session.get('session_id', ''),
+            status=session.get('status', 'unknown'),
+            summary=summary or '',
+            advance=advance,
+        )
+
+    if sync:
+        try:
+            _call(False)
+            return True
+        except Exception as e:
+            _log(f"[notify-workflow] replayed step callback failed for run "
+                 f"{wf_wait.get('run_id','')[:12]}: {e}")
+            return False
+
     def _send():
         try:
-            _workflows.on_agent_step_complete(
-                run_id=wf_wait.get('run_id', ''),
-                step_name=wf_wait.get('step', ''),
-                project_id=session.get('project_id', ''),
-                session_id=session.get('session_id', ''),
-                status=session.get('status', 'unknown'),
-                summary=summary or '',
-            )
+            _call(True)
         except Exception as e:
             _log(f"[notify-workflow] step callback failed for run "
                  f"{wf_wait.get('run_id','')[:12]}: {e}")
 
     threading.Thread(target=_send, daemon=True).start()
+    return True
 
 
 def _notify_agent_spawner(project_id, notify_sid, child, summary):
@@ -9066,7 +9105,12 @@ def _notify_agent_spawner(project_id, notify_sid, child, summary):
             # turn overwriting the agent-log projection.
             _delivery_store.record_completion_source(
                 event_id, project_id, notify_sid, payload)
-            return _delivery_store.enqueue(event_id, project_id, notify_sid, payload)
+            # True for a newly committed wake AND for an identical one already
+            # in the outbox (a crash-and-replay lands here): either way the wake
+            # exists and is on its way. Refused (revoked, no identity, insert did
+            # not land) and a conflicting identity (raises) are NOT a wake.
+            return _delivery_store.enqueue_outcome(
+                event_id, project_id, notify_sid, payload) in ('committed', 'duplicate')
         except Exception as exc:
             # Completion logging must still commit its source-of-record row;
             # startup recovery can rebuild this outbox event from that row.
@@ -9542,14 +9586,73 @@ def _log_agent_completion(session):
     `_maybe_notify_spawner` is latched, so the normal path's own call inside
     the body makes this a no-op.
     """
+    # MC-1150 P4: checkpoint (offset past the stream's end) before any completion
+    # side effect, so a restart in the middle of them cannot run them twice, and
+    # stamp it with the completion now owed so a crash in the middle cannot lose
+    # them either. Acknowledged below only once the body AND the wake succeeded.
+    _agent_shim_completion.begin(session, 'exit')
+    _clean = False
     try:
         _log_agent_completion_body(session)
+        _clean = True
     finally:
         try:
             _notify_spawner_unless_jobs_open(session, _last_reply_text(session))
         except Exception as e:
+            _clean = False
             _log(f"[notify] completion wake backstop failed for "
                  f"{session.get('session_id', '')[:12]}: {e}")
+    if _clean:
+        _agent_shim_completion.ack(session, owed=_spawner_notify_owed(session)
+                                   and not _hold_notify_for_agent_jobs(session))
+
+
+def _spawner_notify_owed(session):
+    """True while a spawner wake is still owed for this session's finished turn:
+    it has a spawner, nothing is deliberately holding the wake, and the durable
+    enqueue has not committed (`_notify_session_sent` is its latch)."""
+    if session.get('incognito') or session.get('waiting_for_question'):
+        return False
+    sid = (session.get('_notify_session') or '').strip()
+    return bool(sid) and sid != session.get('session_id') and not session.get('_notify_session_sent')
+
+
+def _workflow_notify_owed(session):
+    """True while a workflow run parked on this session's step has not yet had
+    the step's transition recorded (`_notify_workflow_sent`, which a boot replay
+    sets only after `on_agent_step_complete` returned)."""
+    if session.get('incognito') or session.get('waiting_for_question'):
+        return False
+    wf_wait = session.get('_notify_workflow') or None
+    return (bool(wf_wait) and bool(wf_wait.get('run_id'))
+            and not session.get('_notify_workflow_sent'))
+
+
+def _replay_exit_completion(session):
+    """Boot replay of an 'exit' completion (mc/agent_shim_completion.py). True
+    once nothing is owed: neither the spawner's durable wake nor the workflow
+    step's recorded transition. The body is idempotent on `completion_key`."""
+    _log_agent_completion_body(session)
+    _notify_spawner_unless_jobs_open(session, _last_reply_text(session))
+    owed = _spawner_notify_owed(session) or _workflow_notify_owed(session)
+    return not (owed and not _hold_notify_for_agent_jobs(session))
+
+
+def _replay_turn_completion(session):
+    """Boot replay of a Mode B turn boundary: only the wake was owed."""
+    if not _hold_notify_for_background(session):
+        _maybe_notify_spawner(session, _last_reply_text(session))
+    owed = _spawner_notify_owed(session) or _workflow_notify_owed(session)
+    return not (owed and not _bg_tasks.held_tasks(session))
+
+
+def _completion_row(project_id, key):
+    """The agent-log row a previous run of this completion wrote (matched on the
+    `completion_key` stamped by mc/agent_shim_completion.py), or None."""
+    for row in _load_agent_log(project_id):
+        if row.get('completion_key') == key:
+            return row
+    return None
 
 
 def _log_agent_completion_body(session):
@@ -9557,14 +9660,26 @@ def _log_agent_completion_body(session):
     if not project_id:
         return
 
+    # MC-1150 P4: a completion replayed at boot (the server died after the forced
+    # checkpoint) is the same completion, not a new one. `_ckey` ties its agent-log
+    # row to the pending record; `_done_row` is the row a previous run already
+    # wrote, in which case merge-back and the row write are skipped.
+    _pend = _agent_shim_completion.pending_of(session)
+    _ckey = (_pend or {}).get('id') or ''
+    _replay = bool(session.get('_completion_replay'))
+    _done_row = _completion_row(project_id, _ckey) if (_ckey and _replay) else None
+
     # MC-998 phase 3: LOC attribution. Must run BEFORE the worktree merge-back
     # immediately below — merge-back can merge and then delete the isolated
     # branch/worktree, after which the diff this reads is gone. Best-effort;
     # never let a git failure here block completion logging.
-    try:
-        _code_delta = _compute_code_delta(session)
-    except Exception as e:
-        _code_delta = {'status': 'unavailable', 'reason': f'LOC computation failed: {e}'}
+    if _done_row is not None:
+        _code_delta = {'status': 'unavailable', 'reason': 'completion replayed after a restart'}
+    else:
+        try:
+            _code_delta = _compute_code_delta(session)
+        except Exception as e:
+            _code_delta = {'status': 'unavailable', 'reason': f'LOC computation failed: {e}'}
 
     # Worktree isolation (b264200a): merge this agent's committed work back
     # into the base branch before anything else. Runs FIRST and outside the
@@ -9572,7 +9687,7 @@ def _log_agent_completion_body(session):
     # commits on a private branch would turn isolation into silent work loss —
     # the exact failure this feature exists to prevent. Best-effort; a conflict
     # preserves the branch and tells the user rather than auto-resolving.
-    if session.get('_worktree_isolated'):
+    if session.get('_worktree_isolated') and _done_row is None:
         try:
             _worktree_merge_back_on_end(session)
         except Exception as e:
@@ -9763,17 +9878,28 @@ def _log_agent_completion_body(session):
         entry.update(attempt_metadata(session))
     if session.get('human_joined'):
         entry['human_joined'] = True   # display-only, see _mark_human_joined
+    if _ckey:
+        entry['completion_key'] = _ckey
     def complete(log):
         sid = entry['session_id']
         if sid:
             for i, e in enumerate(log):
-                if e.get('session_id') == sid and e.get('status') == 'in_progress':
+                # A replay also takes the row boot's reconcile already flipped.
+                if e.get('session_id') == sid and (
+                        e.get('status') == 'in_progress'
+                        or (_replay and e.get('status') == 'interrupted')):
                     if e.get('human_joined'):
                         entry['human_joined'] = True
                     log.pop(i)
                     break
         log.insert(0, entry)
-    _update_agent_log(project_id, complete)
+    if _done_row is not None:
+        # Written by the run that died after this point: keep that row, whose ts
+        # and scribed marker are what the steps below key on.
+        entry['ts'] = _done_row.get('ts', entry['ts'])
+        entry['scribed'] = bool(_done_row.get('scribed'))
+    else:
+        _update_agent_log(project_id, complete)
 
     # MC-998 Phase 2: durable session_fact for the Usage Breakdown dashboard.
     # Written for every completed/errored/stopped session INCLUDING housekeeping
@@ -9848,7 +9974,7 @@ def _log_agent_completion_body(session):
     # MC-kill case (this function never runs) is closed by the startup
     # scribe-reconciliation pass, not here. SPEC §3 Leg A.
     status = session.get('status')
-    if status in ('completed', 'error', 'stopped'):
+    if status in ('completed', 'error', 'stopped') and not (_done_row is not None and entry['scribed']):
         try:
             p = load_project(project_id)
             if p and _write_session_memory(p, session, status, summary,
