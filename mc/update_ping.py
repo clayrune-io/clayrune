@@ -24,16 +24,23 @@ socket is opened; `tests/test_update_ping.py` proves zero requests for each):
   * the endpoint URL is not https (loopback http is allowed for local testing).
 
 The gates are checked again, under the config writers' lock, and the request
-is STARTED inside that same critical section (`_gate_and_send`). So an opt-out
-save (PUT /api/config, /api/update-ping/choice) either finishes first, and no
-request starts, or waits for the request already in flight: once a save has
-returned success, no NEW request starts. A request already on the wire cannot
-be recalled, and a save that arrives during it waits for it, at most about
-twice TIMEOUT_S (see `_http_post`) plus name resolution, which the socket
-timeout does not cover. The slow work (version lookup, id file) happens before
-the lock is taken, so that wait is the request and nothing else. If an opt-out
-lands during the id-file step, the random id may already have been created
-(nothing is sent).
+bytes are written inside that same critical section (`_gate_and_send`). So an
+opt-out save (PUT /api/config, /api/update-ping/choice) either finishes first,
+and no request byte is ever written, or waits for the write already under way:
+once a save has returned success, no request bytes leave the machine afterwards.
+
+The network is kept OUT of that lock. The request is done in three steps
+(`_HttpPost`): resolve + TCP + TLS (``connect``) with no lock held; gate re-check
+and the ~1KB request write (``send``) under the lock; then the response is read
+with no lock held. A save therefore never waits on DNS, the handshake or the
+server: the longest it can wait is one local socket write of ~1KB, hard-capped
+by the socket timeout (TIMEOUT_S). If an opt-out lands after ``connect`` but
+before ``send``, the open connection is closed unused: a TCP/TLS handshake to the
+endpoint may have happened (the server can see an address and a hostname, never
+an id, version or request), but no request bytes were written. A request already
+written cannot be recalled. The slow work (version lookup, id file) also happens
+before the lock is taken. If an opt-out lands during the id-file step, the random
+id may already have been created (nothing is sent).
 
 The endpoint is config ``update_ping_url`` (default below). It is deliberately
 not on the Settings-editable list: an agent session must not be able to point
@@ -47,6 +54,7 @@ parameter so tests never touch the network.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import platform
@@ -54,7 +62,6 @@ import re
 import threading
 import time
 import urllib.parse
-import urllib.request
 import uuid
 from pathlib import Path
 from typing import Callable, Optional
@@ -200,34 +207,88 @@ def is_newer(latest: str, current: str) -> bool:
 
 # ── transport ────────────────────────────────────────────────────────────────
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
+class _HttpPost:
+    """One JSON POST in three steps, so the config lock covers only the middle one.
 
+    connect(): DNS + TCP + TLS, NO lock held (nothing bounds the resolver but the
+    OS). send(): write the ~1KB request; called by `_gate_and_send` under the
+    config lock. read(): the reply, again with no lock. Redirects are never
+    followed (http.client does not follow them; any non-2xx status, 3xx included,
+    raises). The reply is size-capped.
+    """
 
-def _http_post(url: str, payload: dict) -> dict:
-    """POST JSON, no redirects, size-capped. Returns the parsed JSON object ({} if none)."""
-    req = urllib.request.Request(
-        url, data=json.dumps(payload).encode('utf-8'), method='POST',
-        headers={'Content-Type': 'application/json', 'User-Agent': 'Clayrune'})
-    opener = urllib.request.build_opener(_NoRedirect)
-    # This runs while holding the config writers' lock (see _gate_and_send), so it
-    # must be bounded. urllib's timeout is per socket operation; a server that
-    # drips the body would hold the lock indefinitely, hence the deadline.
-    deadline = time.monotonic() + TIMEOUT_S
-    with opener.open(req, timeout=TIMEOUT_S) as resp:
+    def __init__(self, url: str, payload: dict):
+        p = urllib.parse.urlsplit(url)
+        self._https = p.scheme == 'https'
+        self._host = p.hostname or ''
+        self._port = p.port
+        self._target = (p.path or '/') + ('?' + p.query if p.query else '')
+        self._body = json.dumps(payload).encode('utf-8')
+        self._conn: Optional[http.client.HTTPConnection] = None
+
+    def connect(self) -> None:
+        cls = http.client.HTTPSConnection if self._https else http.client.HTTPConnection
+        self._conn = cls(self._host, self._port, timeout=TIMEOUT_S)
+        self._conn.connect()
+
+    def send(self) -> None:
+        assert self._conn is not None
+        self._conn.request('POST', self._target, body=self._body, headers={
+            'Content-Type': 'application/json', 'User-Agent': 'Clayrune',
+            'Connection': 'close'})
+
+    def read(self) -> dict:
+        """Parsed JSON object of the reply ({} if none). Runs outside the lock."""
+        assert self._conn is not None
+        resp = self._conn.getresponse()
+        if not 200 <= resp.status < 300:
+            raise ValueError(f'HTTP {resp.status}')
+        # The lock is not held here; this deadline only stops a server that drips
+        # its body from parking the ping thread (and its recorded attempt) forever.
+        deadline = time.monotonic() + TIMEOUT_S
         body = b''
         while len(body) <= MAX_RESPONSE_BYTES:
             if time.monotonic() > deadline:
                 raise TimeoutError('response too slow')
-            chunk = resp.read(1024)
+            chunk = resp.read1(1024)    # one socket read, so the deadline is checked between bytes
             if not chunk:
                 break
             body += chunk
-    if len(body) > MAX_RESPONSE_BYTES:
-        raise ValueError('response too large')
-    data = json.loads(body.decode('utf-8')) if body.strip() else {}
-    return data if isinstance(data, dict) else {}
+        if len(body) > MAX_RESPONSE_BYTES:
+            raise ValueError('response too large')
+        data = json.loads(body.decode('utf-8')) if body.strip() else {}
+        return data if isinstance(data, dict) else {}
+
+    def close(self) -> None:
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+
+
+class _CallablePost:
+    """Test seam: an injected `post_fn(url, payload)` stands in for the whole request.
+
+    It runs inside the send step, i.e. under the config lock, which is what the
+    tests that pin the opt-out ordering rely on. connect/read are no-ops.
+    """
+
+    def __init__(self, fn: Callable[[str, dict], dict], url: str, payload: dict):
+        self._fn, self._url, self._payload = fn, url, payload
+        self._reply: dict = {}
+
+    def connect(self) -> None:
+        pass
+
+    def send(self) -> None:
+        self._reply = self._fn(self._url, self._payload) or {}
+
+    def read(self) -> dict:
+        return self._reply
+
+    def close(self) -> None:
+        pass
 
 
 def _recheck(environ=None) -> Optional[str]:
@@ -242,17 +303,18 @@ def _recheck(environ=None) -> Optional[str]:
         lambda: blocked_reason(_config_fn() or {}, environ))()
 
 
-def _gate_and_send(url: str, payload: dict, post_fn: Callable[[str, dict], dict],
-                   environ=None) -> tuple:
-    """Final gate AND transport in ONE critical section of the config writers' lock.
+def _gate_and_send(transport, environ=None) -> Optional[str]:
+    """Final gate AND the request write in ONE critical section of the config lock.
 
-    The lock is the one PUT /api/config and the /api/update-ping/* routes take for
-    the whole read/merge/write + live-dict update. Holding it from the gate through
-    the request means an opt-out save either completed before the gate (we see it,
-    nothing is sent) or blocks until the request returns (it was already past the
-    point of no return). Re-checking without holding the lock only narrows the
-    window; that is the defect this replaces. Returns (reason, reply); reply is
-    None when blocked. Transport exceptions propagate to the caller.
+    `transport` is already connected (that happened with no lock held). The lock is
+    the one PUT /api/config and the /api/update-ping/* routes take for the whole
+    read/merge/write + live-dict update. Holding it from the gate through
+    `transport.send()` means an opt-out save either completed before the gate (we
+    see it, return its reason, write nothing) or blocks until the ~1KB write returns
+    (the request was already past the point of no return). The hold is one local
+    socket write, bounded by the socket timeout; it never spans DNS, the handshake
+    or the response. Returns the blocking reason, or None once the request has been
+    written. Send errors propagate to the caller.
 
     Lock order is always module `_lock` -> config write lock. Nothing that holds
     the config write lock takes `_lock` (the routes call only `status()` and
@@ -263,8 +325,9 @@ def _gate_and_send(url: str, payload: dict, post_fn: Callable[[str, dict], dict]
     def _run():
         reason = blocked_reason(_config_fn() or {}, environ)
         if reason:
-            return reason, None
-        return None, post_fn(url, payload)
+            return reason
+        transport.send()
+        return None
     return provider_preferences.serialized_write(_run)()
 
 
@@ -293,8 +356,15 @@ def maybe_ping(now: Optional[float] = None, post_fn: Optional[Callable[[str, dic
             reply: dict = {}
             if not reason:
                 payload = build_payload(version)          # id file I/O, deliberately BEFORE the gate
-                reason, sent_reply = _gate_and_send(url, payload, post_fn or _http_post, environ)
-                reply = sent_reply or {}
+                transport = (_CallablePost(post_fn, url, payload) if post_fn
+                             else _HttpPost(url, payload))
+                try:
+                    transport.connect()                   # DNS/TCP/TLS: NO lock held
+                    reason = _gate_and_send(transport, environ)   # lock: gate + request write
+                    if not reason:
+                        reply = transport.read()          # response: NO lock held
+                finally:
+                    transport.close()                     # unused if the gate said no: no bytes written
             if reason:
                 # Nothing was sent, so this must not eat the day.
                 if prior_attempt is None:

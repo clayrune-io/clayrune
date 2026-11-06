@@ -177,12 +177,8 @@ def test_status_reports_env_off(ping, monkeypatch):
     assert s['env_disabled'] is True and s['latest_version'] == ''
 
 
-def test_real_transport_refuses_redirects():
-    import urllib.request
-    h = update_ping._NoRedirect()
-    req = urllib.request.Request('https://a.example/x')
-    assert h.redirect_request(req, None, 302, 'Found', {}, 'https://evil.example/') is None
-
+# (redirect refusal and the slow-body deadline are tested against real loopback
+# sockets in tests/test_update_ping_transport_lock.py)
 
 def test_server_defaults_on_but_undisclosed():
     import server
@@ -450,20 +446,3 @@ def test_opt_out_after_the_final_gate_waits_for_the_post(route_app, monkeypatch)
     assert update_ping.maybe_ping(now=1_000_000 + 2 * DAY, post_fn=post, environ={})['reason'] == 'disabled'
     assert [e for e in events if e[0] == 'post'] == [('post', True)]
 
-
-def test_http_post_is_bounded_against_a_dripping_server(monkeypatch):
-    """The POST now runs under the config lock, so a slow-drip body must not hold it forever."""
-    class Drip:
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-        def read(self, n):
-            time.sleep(0.05)
-            return b'x'
-    class Opener:
-        def open(self, req, timeout=None): return Drip()
-    monkeypatch.setattr(update_ping.urllib.request, 'build_opener', lambda *a: Opener())
-    monkeypatch.setattr(update_ping, 'TIMEOUT_S', 0.3)
-    start = time.monotonic()
-    with pytest.raises(TimeoutError):
-        update_ping._http_post('https://example.invalid/ping', {})
-    assert time.monotonic() - start < 2
