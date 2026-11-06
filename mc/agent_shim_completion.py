@@ -33,10 +33,11 @@ turn boundary: only the wake).
 """
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Callable, Collection, Dict, List, Mapping, Optional
 
 from mc import agent_shim_adopt as _adopt
 from mc.atomic_json import write_json_atomic
@@ -122,18 +123,39 @@ def default_runners() -> Dict[str, Runner]:
     return {'exit': ar._replay_exit_completion, 'turn': ar._replay_turn_completion}
 
 
+# One replay at a time in this process: the boot phase and the scheduler-tick retry
+# (mc/agent_shim_completion_retry.py) must not run the same completion together.
+_REPLAY_LOCK = threading.Lock()
+
+
 def replay_pending(root: Optional[Any] = None, *,
-                   runners: Optional[Mapping[str, Runner]] = None) -> ReplayReport:
+                   runners: Optional[Mapping[str, Runner]] = None,
+                   only: Optional[Collection[str]] = None,
+                   wait: bool = True) -> ReplayReport:
     """Boot phase: run the completion of every checkpoint that still carries a
     stamp, then clear it. Not gated on the flag: a stamp on disk is work owed
-    whatever the flag says now. Never raises."""
+    whatever the flag says now. `only` limits it to those session ids; `wait=False`
+    returns an empty report instead of waiting when another replay is running.
+    Never raises."""
     rep = ReplayReport()
+    if not _REPLAY_LOCK.acquire(blocking=wait):
+        return rep
+    try:
+        return _replay_pending_locked(rep, root, runners, only)
+    finally:
+        _REPLAY_LOCK.release()
+
+
+def _replay_pending_locked(rep: ReplayReport, root: Optional[Any],
+                           runners: Optional[Mapping[str, Runner]],
+                           only: Optional[Collection[str]]) -> ReplayReport:
     try:
         from mc import agent_spawn
         base = Path(root) if root is not None else agent_spawn.default_root()
         if not base.is_dir():
             return rep
-        dirs = sorted(p for p in base.iterdir() if p.is_dir())
+        dirs = sorted(p for p in base.iterdir()
+                      if p.is_dir() and (only is None or p.name in only))
     except Exception as e:
         _log(f'[agent-shim-completion] replay scan failed: {e}')
         return rep

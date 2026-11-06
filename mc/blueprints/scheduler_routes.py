@@ -866,6 +866,14 @@ def _scheduler_loop():
         # deadline lives on disk.
         # Running agent steps whose completion hook never arrived (MC-871
         # backstop): advance a confirmed end, surface a stall. Idempotent.
+        # An owed completion whose boot replay failed (MC-1150 P4): retry it
+        # first, so the reconcile below finds the step recorded, not skipped.
+        try:
+            from mc import agent_shim_completion_retry as _comp_retry
+            _comp_retry.retry_owed_workflow_steps()
+        except Exception as e:
+            _log(f"[scheduler] owed completion retry error: {e}")
+
         try:
             _wf.reconcile_running_steps()
         except Exception as e:

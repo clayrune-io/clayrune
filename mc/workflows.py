@@ -1405,7 +1405,7 @@ def _fail_run(run: dict, message: str) -> None:
     _log(f"[workflows] run {run['id'][:12]} failed: {message}")
 
 
-def _advance_run(run_id: str) -> None:
+def _advance_run(run_id: str, *, only_if_idle: bool = False) -> None:
     """Execute frontier nodes, one at a time, until the run blocks (an agent
     step was dispatched, or an approval gate is waiting) or ends.
 
@@ -1418,6 +1418,8 @@ def _advance_run(run_id: str) -> None:
     with _runs_lock:
         run = _read_run(run_id)
         if run is None or run.get('status') != 'running':
+            return
+        if only_if_idle and _any_in_flight(run):
             return
         workflow = _run_definition(run)
         if not workflow:
@@ -1999,7 +2001,26 @@ def _step_adopted(step_state: dict) -> bool:
         return False
 
 
+_boot_adoption_done = False
+
+
+def boot_adoption_done() -> bool:
+    """True once `adopt_on_startup` has finished in this process. A periodic
+    retry of an owed completion (mc/agent_shim_completion_retry.py) waits for it:
+    advancing a run before boot adoption would hand adoption a step this process
+    just dispatched, which it would read as an unconfirmed pre-restart step."""
+    return _boot_adoption_done
+
+
 def adopt_on_startup() -> None:
+    global _boot_adoption_done
+    try:
+        _adopt_runs_on_startup()
+    finally:
+        _boot_adoption_done = True
+
+
+def _adopt_runs_on_startup() -> None:
     """Scan `data/workflow_runs/` for runs that were mid-step when the server
     went down. A `waiting` run is simply still waiting -- untouched. A run
     with status `running` has at most one node in `running` state (R2-D4:
@@ -2062,6 +2083,33 @@ _session_summary: Optional[Callable[[dict], str]] = None
 def _running_step(run: dict) -> Optional[str]:
     return next((n for n, st in (run.get('steps') or {}).items()
                  if st.get('status') == 'running'), None)
+
+
+def running_agent_steps() -> list:
+    """[(run_id, step_name, session_id)] for every `running` run's running step
+    that has a recorded session. Read-only; unreadable run files are skipped."""
+    out = []
+    if WORKFLOW_RUNS_DIR is None or not WORKFLOW_RUNS_DIR.exists():
+        return out
+    for f in WORKFLOW_RUNS_DIR.glob('*.json'):
+        try:
+            run = _read_run(f.stem)
+            if run is None or run.get('status') != 'running':
+                continue
+            name = _running_step(run)
+            sid = ((run.get('steps') or {}).get(name) or {}).get('session_id') if name else ''
+            if name and sid:
+                out.append((run['id'], name, sid))
+        except Exception as e:
+            _log(f'[workflows] running_agent_steps: {f.name} skipped: {e}')
+    return out
+
+
+def advance_idle_run(run_id: str) -> None:
+    """`_advance_run`, but a no-op unless nothing in the run is in flight, decided
+    under the same lock the advance takes. For a caller that has just recorded a
+    step on a run whose frontier it does not own (a retried completion replay)."""
+    _advance_run(run_id, only_if_idle=True)
 
 
 def _completion_owed(session_id: str) -> bool:
