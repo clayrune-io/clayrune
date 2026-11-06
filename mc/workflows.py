@@ -1405,9 +1405,26 @@ def _fail_run(run: dict, message: str) -> None:
     _log(f"[workflows] run {run['id'][:12]} failed: {message}")
 
 
-def _advance_run(run_id: str, *, only_if_idle: bool = False) -> None:
+def updated_older_than(updated: Any, seconds: float, now: Optional[datetime] = None) -> bool:
+    """True only for a parseable, timezone-aware `updated` stamp older than
+    `seconds`. A missing, unparseable, non-string, naive or future stamp is
+    "fresh" (False): the caller then leaves the run alone."""
+    try:
+        t = datetime.fromisoformat(str(updated).replace('Z', '+00:00'))
+        return ((now or datetime.now(timezone.utc)) - t).total_seconds() > seconds
+    except (TypeError, ValueError):
+        return False
+
+
+def _advance_run(run_id: str, *, only_if_idle: bool = False,
+                 idle_for_s: Optional[float] = None) -> None:
     """Execute frontier nodes, one at a time, until the run blocks (an agent
     step was dispatched, or an approval gate is waiting) or ends.
+
+    `idle_for_s`: when set, a no-op unless the run's `updated` stamp -- read here,
+    under `_runs_lock` -- is older than that (see `updated_older_than`). A caller
+    that decided staleness from an earlier lock-free read cannot be trusted: a
+    step may have completed (re-stamping `updated`) between that read and this lock.
 
     Serialized per-process by `_runs_lock` -- workflows still run one agent
     step in flight at a time (R2-D4: the DAG expresses dependency, not
@@ -1420,6 +1437,8 @@ def _advance_run(run_id: str, *, only_if_idle: bool = False) -> None:
         if run is None or run.get('status') != 'running':
             return
         if only_if_idle and _any_in_flight(run):
+            return
+        if idle_for_s is not None and not updated_older_than(run.get('updated'), idle_for_s):
             return
         workflow = _run_definition(run)
         if not workflow:
@@ -2154,14 +2173,15 @@ def _run_signature(run_id: str):
             tuple(sorted((n, (st or {}).get('status')) for n, st in (run.get('steps') or {}).items())))
 
 
-def advance_idle_run(run_id: str) -> bool:
+def advance_idle_run(run_id: str, *, idle_for_s: Optional[float] = None) -> bool:
     """`_advance_run`, but a no-op unless nothing in the run is in flight, decided
-    under the same lock the advance takes. For a caller that has just recorded a
+    under the same lock the advance takes -- and, with `idle_for_s`, unless the run
+    has also had no write for that long, decided under that lock too. For a caller that has just recorded a
     step on a run whose frontier it does not own (a retried completion replay).
     Returns True only when the run's state actually moved (a step dispatched, the
     run completed or ended); False for a no-op or when the run could not be read."""
     before = _run_signature(run_id)
-    _advance_run(run_id, only_if_idle=True)
+    _advance_run(run_id, only_if_idle=True, idle_for_s=idle_for_s)
     after = _run_signature(run_id)
     if after is None:
         return False

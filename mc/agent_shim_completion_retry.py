@@ -20,7 +20,9 @@ re-stamps `updated` on every run write, and `on_agent_step_complete`,
 THEN advance -- a tick inside that window would dispatch the successor first and
 the caller's own advance would dispatch a second. The window is milliseconds; the
 grace is a minute. An unparseable, missing, naive or future `updated` counts as
-fresh (skipped). `advance_idle_run` stays the gate. Those advances add to `advanced`.
+fresh (skipped). The scan's own read is lock-free, so it is only a pre-filter:
+`advance_idle_run(idle_for_s=...)` re-checks `updated` on the run as read under the
+run lock (a step completing after the scan re-stamps it). Those advances add to `advanced`.
 
 Bounds: once per session per call (the tick is 30s); not before boot's workflow
 adoption has finished; not while another replay holds the lock; never for a
@@ -47,12 +49,9 @@ def _log(msg: str) -> None:
 
 
 def _is_stale(updated: Any, now: datetime) -> bool:
-    """True only for a parseable, timezone-aware `updated` older than the grace."""
-    try:
-        t = datetime.fromisoformat(str(updated).replace('Z', '+00:00'))
-        return (now - t).total_seconds() > IDLE_RUN_GRACE_S
-    except (TypeError, ValueError):
-        return False
+    """Cheap lock-free pre-filter only; `advance_idle_run(idle_for_s=...)` re-decides
+    under the run lock, which is the check that counts."""
+    return _wf.updated_older_than(updated, IDLE_RUN_GRACE_S, now)
 
 
 def retry_owed_workflow_steps(root: Optional[Any] = None, *,
@@ -84,7 +83,7 @@ def retry_owed_workflow_steps(root: Optional[Any] = None, *,
         for run_id, updated in _wf.running_run_updated():
             if run_id in handled or not _is_stale(updated, now):
                 continue
-            if _wf.advance_idle_run(run_id):
+            if _wf.advance_idle_run(run_id, idle_for_s=IDLE_RUN_GRACE_S):
                 _log(f'[agent-shim-completion] advanced idle run {run_id[:12]} '
                      f'(no write for over {IDLE_RUN_GRACE_S}s)')
                 counts['advanced'] += 1

@@ -102,9 +102,9 @@ def _one_read_failure_on_advance(wf, monkeypatch):
     real_read, real_advance = Path.read_text, wf.m.advance_idle_run
     state = {'done': False}
 
-    def advance(rid):
+    def advance(rid, **kw):
         if state['done']:
-            return real_advance(rid)
+            return real_advance(rid, **kw)
         state['done'] = True
 
         def fail(path, *a, **k):
@@ -114,7 +114,7 @@ def _one_read_failure_on_advance(wf, monkeypatch):
 
         monkeypatch.setattr(Path, 'read_text', fail)
         try:
-            return real_advance(rid)
+            return real_advance(rid, **kw)
         finally:
             monkeypatch.setattr(Path, 'read_text', real_read)
 
@@ -200,3 +200,22 @@ def test_an_unusable_updated_counts_as_fresh(env, wf, owed, monkeypatch, bad):
         assert retry.retry_owed_workflow_steps(env.root)['advanced'] == 0
     assert len(wf.dispatch.calls) == 1
     assert wf.m.get_run(run['id'])['steps']['second']['status'] == 'pending'
+
+
+def test_staleness_is_rechecked_under_the_run_lock(env, wf, owed, monkeypatch):
+    """Fenn r4 Repro B send-back (TOCTOU). The scan's lock-free read says the run is
+    old, but a step's write landed after it: the run on disk is fresh. The tick must
+    re-decide on the run as read under the lock and dispatch nothing.
+    FAILS-BEFORE (d82149d3: the scan's stale snapshot was the only check, so the tick
+    dispatched the successor and the writer's own advance would dispatch a second)."""
+    run = _idle_run_after_failed_advance(env, wf, owed, monkeypatch)    # disk: fresh `updated`
+    stale = [(run['id'], _ago(retry.IDLE_RUN_GRACE_S + 60))]
+    monkeypatch.setattr(wf.m, 'running_run_updated', lambda: stale)
+    for _ in range(3):
+        assert retry.retry_owed_workflow_steps(env.root)['advanced'] == 0
+    assert len(wf.dispatch.calls) == 1
+    assert wf.m.get_run(run['id'])['steps']['second']['status'] == 'pending'
+    # same snapshot, but the run really is old on disk: advanced exactly once
+    _set_updated(wf, run['id'], _ago(retry.IDLE_RUN_GRACE_S + 60))
+    assert retry.retry_owed_workflow_steps(env.root)['advanced'] == 1
+    assert len(wf.dispatch.calls) == 2
