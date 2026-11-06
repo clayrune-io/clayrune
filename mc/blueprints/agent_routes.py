@@ -51,6 +51,7 @@ _get_mem_write_lock or writes MEMORY.md.
 import concurrent.futures
 import contextlib
 from mc import codex_run_error as _codex_run_error  # MC-1147: rollout error as the failure summary
+from mc import test_run_detection as _test_run_detection
 from mc import empty_turn as _empty_turn
 from mc import agent_shim_adopt as _agent_shim_adopt  # MC-1150 P4: checkpoint + adoption (flag-gated)
 from mc import agent_shim_completion as _agent_shim_completion  # MC-1150 P4: crash-safe completion record
@@ -5988,6 +5989,7 @@ def _read_agent_stream(proc, session):
             if not line:
                 continue
             _resume_target.observe_child_line(session, my_proc, line, log=_log)
+            _test_run_detection.observe(session, 'claude', line, proc)
             # Try to parse stream-json output
             try:
                 msg = json.loads(line)
@@ -6288,6 +6290,7 @@ def _read_agent_stream_b(proc, session):
             if not line:
                 continue
             _resume_target.observe_child_line(session, my_proc, line, log=_log)
+            _test_run_detection.observe(session, 'claude', line, proc)
             try:
                 msg = json.loads(line)
                 # See Mode A reader: any non-dict JSON envelope crashes the

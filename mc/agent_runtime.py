@@ -41,6 +41,7 @@ from typing import (
 )
 
 from mc import vendor_fence
+from mc import test_run_detection as _test_run_detection
 from mc.core import TimestampedLines, _log
 from mc import doc_write_cache_store as _doc_cache_store
 from mc.unix_path import nvm_bin_dirs as _nvm_bin_dirs
@@ -4983,6 +4984,7 @@ class GeminiRuntime(AgentRuntime):
                         del tail_buf[:-40]
                     continue
 
+                _test_run_detection.observe(session, 'gemini', line, proc)
                 ev = self.parse_event(line, handle.mc_session_id)
                 if not (ev and ev.type == EventType.ASSISTANT_TEXT):
                     # Any other event ends the text run: write it out first
@@ -6315,7 +6317,7 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
     """
     session = handle.session_dict
     cbs = handle.meta.get('callbacks', {})
-    raw_record = cbs.get('on_raw_record')
+    raw_record = _test_run_detection.compose_raw(cbs.get('on_raw_record'), runtime.name)
     raw_eof = cbs.get('on_raw_eof')
     raw_sequence = 0
     capture_failed = False

@@ -11,6 +11,7 @@ from typing import Any, Callable
 from flask import Blueprint, abort, jsonify, request
 
 from mc import caller_attribution, state
+from mc import test_run_detection
 from mc.core import _log
 from mc.test_run_ingest import IngestRefused, OwnerBinding, TestRunIngest, MAX_BATCH_BYTES
 from mc.test_run_finalize import TestRunFinalize, FinalizeConflict, peer_process_identity
@@ -40,6 +41,7 @@ def wire(*, data_root: Path, load_project_fn: Callable[[str], Any],
     _data_root, _load_project = Path(data_root), load_project_fn
     _load_agent_log, _session_cwd = load_agent_log_fn, session_cwd_fn
     _proc_identity, _store = proc_identity_fn, None
+    test_run_detection.wire(_data_root, _load_project)
 
 
 def close() -> None:

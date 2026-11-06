@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-06] - Observe unwrapped test calls without inventing success (MC-1148 P8, dark)
+
+- Added a shared passive detector with tiny Claude A/B, shared Mode A and Gemini reader hooks. Every recognized unwrapped vendor call gets a separate generic fallback; wrapper/job handoffs are excluded without correlation. Qwen results are observed before UI suppression; both Codex envelope generations are covered.
+- Process verdicts require an integer exit code in the result envelope; unavailable evidence stays unknown. Bounded storage delivery and observer failures preserve agent verdicts. No inferred test counts or ETA. Contract and limits: `docs/TEST_RUN_DETECTION.md`. Branch candidate only; no UI, config write, merge, push or restart.
+
 ## [2026-11-06] - Observe Node smoke scripts without inventing assertion counts (MC-1148 P7, dark)
 
 - Added a standalone Node lifecycle/checkpoint preload and separate launcher adapter for direct scripts. Script results follow actual child exits; ordered manifests retain fail-fast not-run remainder, separate from skips. Existing smoke helpers stay unchanged.
