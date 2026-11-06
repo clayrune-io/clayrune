@@ -109,6 +109,27 @@ reference-protected deletion. `tools/smoke/desk-v1-file-explorer.mjs` exercises
 the real SPA with a fake API at 1440 and 390. Existing Desk, Studio, library and
 boot smokes cover wiring and older consumers.
 
+## Drag to copy, host path line, page order (2026-11-05)
+
+- **Studio page order:** tiles, Material library, Recent.
+- **Drag to copy:** a picture/video tile in the PC results can be dragged onto the
+  "In this library folder" block (`static/js/desk-v1-file-explorer-drop.js`). Drop
+  runs the same `copyFiles` as the Copy button (`POST /api/desk/library/folders/copy`):
+  the whole selection if the dragged file is selected, otherwise just that file.
+  Directories and unsupported files are not draggable; a collapsed or empty block
+  opens on drag-enter; ignored while a copy is running. Touch devices have no
+  HTML5 drag, so the button stays the mobile path. Only drags that start on a
+  result tile are accepted (an OS file dropped there is ignored). `index.html`
+  swallows `dragover`/`drop` defaults document-wide, so `defaultPrevented` on
+  those events is not a usable signal in tests.
+- **Host path line:** `GET /api/desk/explorer` returns `display_path`, the
+  authorized resolved directory being listed or searched (`str(start)` in
+  `browse`). Success responses only; refusals never carry it. The UI shows it
+  above the breadcrumbs, selectable, ellipsized from the left (rtl box, ltr
+  `<bdi>`), with a "Searching in" label while a query is active.
+- Tests: `tests/test_desk_file_explorer.py` (display path),
+  `tools/smoke/desk-v1-file-explorer-drop.mjs` (order, path line, drops; 1440 and 390).
+
 This implementation is branch-only. Wren audit F1-F6 are addressed; F7 absolute
 source-path receipts, F8 render-job references/trash retention, and F9 loopback
 CORS remain follow-ups by scope. After integration: verify live host

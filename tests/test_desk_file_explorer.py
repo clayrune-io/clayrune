@@ -356,3 +356,29 @@ def test_refused_entries_do_not_spend_the_visit_budget(env, monkeypatch):
     monkeypatch.setattr(explorer, 'MAX_VISITS', 3)
     out = client.get('/api/desk/explorer?q=wanted').get_json()
     assert [i['path'] for i in out['items']] == ['wanted.png']
+
+
+def test_display_path_is_the_authorized_host_folder(env):
+    home, project, _, _, client = env
+    put(home, 'Videos/clips/a.mp4')
+    here = client.get('/api/desk/explorer').get_json()
+    assert here['display_path'] == str(home.resolve())
+    nested = client.get('/api/desk/explorer?path=Videos/clips').get_json()
+    assert nested['display_path'] == str((home / 'Videos' / 'clips').resolve())
+    # Search mode names the folder being searched, not where each match lives.
+    found = client.get('/api/desk/explorer?path=Videos&q=a.mp4').get_json()
+    assert found['display_path'] == str((home / 'Videos').resolve())
+    assert [i['title'] for i in found['items']] == ['a.mp4']
+    # A project root reports the project's own folder.
+    root = next(s for s in here['shortcuts'] if s['title'] == 'My project')
+    proj = client.get(f"/api/desk/explorer?root={root['root']}").get_json()
+    assert proj['display_path'] == str(project.resolve())
+
+
+@pytest.mark.parametrize('path', ['../outside', 'Videos/../../outside', '/etc', 'C:/Windows'])
+def test_display_path_never_appears_in_refusals(env, path):
+    home, _, _, _, client = env
+    response = client.get('/api/desk/explorer', query_string={'path': path})
+    assert response.status_code in (403, 404)
+    body = response.get_data(as_text=True)
+    assert 'display_path' not in body and str(home) not in body
