@@ -48,11 +48,11 @@ def _spawn_calls(path: str):
             and getattr(n.func, 'id', getattr(n.func, 'attr', None)) == 'spawn_engine_proc']
 
 
-def test_the_five_claude_route_sites_pass_the_routes_own_flags():
+def test_the_claude_route_sites_pass_the_routes_own_flags():
     # server.py injects CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP into agent_routes;
     # agent_runtime's constant is CREATE_NO_WINDOW alone. The routes must hand theirs over.
     calls = _spawn_calls('mc/blueprints/agent_routes.py')
-    assert len(calls) == 5
+    assert len(calls) == 11          # 5 Mode A (P2) + 6 Mode B / mid-turn roll (P3)
     for call in calls:
         kw = {k.arg: ast.unparse(k.value) for k in call.keywords}
         assert kw.get('creationflags') == '_POPEN_FLAGS', ast.unparse(call)[:80]

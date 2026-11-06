@@ -6599,14 +6599,10 @@ def _auto_recover_failed_resume(session):
                    character_skills=_session_skills(p, session)),
                    *_sp_args]
             cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), pp)
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, cwd=pp,
-                text=True, encoding='utf-8', errors='replace',
+            proc = spawn_engine_proc(
+                cmd, session_id=session.get('session_id'), engine='claude', cwd=pp,
                 env=_launch_marker.launch_env(session.get('trigger_type')),
-                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-            )
+                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, interactive=True)
             _sysprompt_cleanup(_sp_path, proc)
             initial_msg = json.dumps({
                 "type": "user",
@@ -7728,14 +7724,10 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             cmd.extend(_sp_args)
         try:
             cmd = _launch_marker.launch_cmd(cmd, entry.get('trigger_type'), _revive_cwd)
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, cwd=_revive_cwd,
-                text=True, encoding='utf-8', errors='replace',
+            proc = spawn_engine_proc(
+                cmd, session_id=session_id, engine='claude', cwd=_revive_cwd,
                 env=_launch_marker.launch_env(entry.get('trigger_type')),
-                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-            )
+                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, interactive=True)
         except Exception as e:
             _log(f"[revive] {project_id}: spawn failed: {e}")
             if _sp_path:
@@ -12344,19 +12336,11 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 cmd = [_resolve_claude(), *base_flags, *_sp_args]
 
             cmd = _launch_marker.launch_cmd(cmd, trigger_type, _agent_cwd)
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+            proc = spawn_engine_proc(
+                cmd, session_id=session_id, engine='claude',
                 cwd=_agent_cwd,  # worktree when isolated, else pp
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                creationflags=_POPEN_FLAGS,
                 env=_launch_marker.launch_env(trigger_type),
-                startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-            )
+                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, interactive=True)
             _sysprompt_cleanup(_sp_path, proc)
 
             threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
@@ -14048,16 +14032,14 @@ def agent_followup(project_id):
                                 _log(f"[spawn-guard] sysprompt cleanup failed: {e}")
                         return
                 _log(f"[respawn-B] {rb['project_id']}: spawning cmd={' '.join(rb['cmd'][:5])}...")
-                proc = subprocess.Popen(
+                proc = spawn_engine_proc(
                     _launch_marker.launch_cmd(
                         rb['cmd'], rb['existing'].get('trigger_type'),
                         _session_cwd(rb['existing'], rb['pp'])),
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT, cwd=_session_cwd(rb['existing'], rb['pp']),
-                    text=True, encoding='utf-8', errors='replace',
+                    session_id=rb['session_id'], engine='claude',
+                    cwd=_session_cwd(rb['existing'], rb['pp']),
                     env=_launch_marker.launch_env(rb['existing'].get('trigger_type')),
-                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-                )
+                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, interactive=True)
                 _sysprompt_cleanup(rb.get('sysprompt_path'), proc)
                 _log(f"[respawn-B] {rb['project_id']}: spawned PID {proc.pid}")
                 threading.Thread(target=_hide_windows_delayed,
@@ -14746,14 +14728,11 @@ def agent_interrupt(project_id, *, _internal=None):
                     _sp_args, _sp_path = _sysprompt_file_args(context)
                     cmd.extend(_sp_args)
                 cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _session_cwd(session, pp))
-                proc = subprocess.Popen(
-                    cmd,
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT, cwd=_session_cwd(session, pp),
-                    text=True, encoding='utf-8', errors='replace',
+                proc = spawn_engine_proc(
+                    cmd, session_id=session_id, engine='claude',
+                    cwd=_session_cwd(session, pp),
                     env=_launch_marker.launch_env(session.get('trigger_type')),
-                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-                )
+                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, interactive=True)
                 _sysprompt_cleanup(_sp_path, proc)
                 threading.Thread(target=_hide_windows_delayed,
                                  args=(proc.pid,), daemon=True).start()
@@ -14823,15 +14802,14 @@ def agent_interrupt(project_id, *, _internal=None):
                            *_sp_args]
 
                 cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _session_cwd(session, pp))
-                proc = subprocess.Popen(
-                    cmd,
-                    stdin=subprocess.PIPE if is_midturn else subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT, cwd=_session_cwd(session, pp),
-                    text=True, encoding='utf-8', errors='replace',
+                # A mid-turn roll's prompt goes down stdin after the reader starts, so
+                # it needs the interactive shim; the ordinary Mode A resume has no stdin.
+                proc = spawn_engine_proc(
+                    cmd, session_id=session_id, engine='claude',
+                    cwd=_session_cwd(session, pp),
                     env=_launch_marker.launch_env(session.get('trigger_type')),
-                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, **POPEN_NEW_SESSION,
-                )
+                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+                    interactive=is_midturn)
                 _sysprompt_cleanup(_sp_path, proc)
                 threading.Thread(target=_hide_windows_delayed,
                                  args=(proc.pid,), daemon=True).start()

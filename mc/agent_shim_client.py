@@ -725,7 +725,8 @@ def launch(root: Any, session_id: str, *, argv: List[str], cwd: Optional[str],
            tick_s: float = 5.0, ready_timeout: float = 20.0,
            owner_pid: Optional[int] = None,
            log: Optional[Callable[[str], None]] = None,
-           start_offset: int = 0) -> LaunchResult:
+           start_offset: int = 0,
+           io_timeout: Optional[float] = None) -> LaunchResult:
     """Spec -> detached spawn -> wait for the manifest -> attach. `ok=False`
     means no CLI is running under a shim and the caller falls back to its
     ordinary spawn (the session stays non-adoptable, as today) -- unless
@@ -733,7 +734,9 @@ def launch(root: Any, session_id: str, *, argv: List[str], cwd: Optional[str],
     not fall back. A shim that started but could not be attached is torn down
     before `ok=False` is returned, so the fallback never doubles the CLI.
     `start_offset` is where the returned proc's `.stdout` begins in out.log
-    (append-only across turns, so a later turn skips the earlier ones)."""
+    (append-only across turns, so a later turn skips the earlier ones).
+    `io_timeout` (interactive only) bounds one socket round trip; None keeps
+    ShimClient's default."""
     sdir = session_dir(root, session_id)
     env_map = dict(env) if env is not None else dict(os.environ)
     spec = build_spec(argv=argv, cwd=cwd, mode=mode, session_id=session_id, engine=engine,
@@ -769,7 +772,9 @@ def launch(root: Any, session_id: str, *, argv: List[str], cwd: Optional[str],
                             error='shim did not become ready (no manifest: a slow shim may still start its CLI)')
     client: Optional[ShimClient] = None
     if mode == _shim.MODE_INTERACTIVE:
-        client = ShimClient(sdir, owner_pid=owner_pid)   # HELLO as the pid the spec names
+        # HELLO as the pid the spec names
+        client = (ShimClient(sdir, owner_pid=owner_pid) if io_timeout is None
+                  else ShimClient(sdir, owner_pid=owner_pid, io_timeout=io_timeout))
         try:
             client.connect()
         except ShimError as e:

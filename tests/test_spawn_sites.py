@@ -418,6 +418,7 @@ class TestScribeCallEquivalence:
 # 4. GeminiRuntime smoke test — spawns stub binary without crashing
 # ─────────────────────────────────────────────────────────────────────────────
 
+@pytest.mark.usefixtures('survive_restart_off')
 class TestGeminiRuntimeSmoke:
     """GeminiRuntime.dispatch() must not crash when pointed at a stub binary.
     We verify the Popen call is made with the expected structure.

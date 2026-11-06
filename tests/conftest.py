@@ -364,6 +364,54 @@ def _install_real_cli_guard() -> None:
 _install_real_cli_guard()
 
 
+# The Popen guard above cannot see a CLI the supervisor shim starts: with
+# `agent_survive_restart_enabled` ON, `mc.agent_shim_client.launch` writes the
+# argv into spec.json and `spawn_detached` starts Python -> trampoline -> shim,
+# and the SHIM execs the CLI in a fresh interpreter this conftest never ran in
+# (MC-1150 P3 review: the flag-ON Mode B interrupt and Mode A mid-turn roll
+# reached a real `claude` this way). The last place the argv is still visible
+# to the test process is the spec the launch just wrote, so refuse there.
+# Same opt-in, same record list, same failure path as the Popen guard.
+def _install_real_shim_cli_guard() -> None:
+    from mc import agent_shim_client as client
+    if getattr(client.spawn_detached, "_mc_cli_guard", False):
+        return
+    real_spawn = client.spawn_detached
+
+    def guarded_spawn(sdir, *a, **kw):
+        spec = client.read_json(os.path.join(os.fspath(sdir), "spec.json")) or {}
+        argv = spec.get("argv") or []
+        if (argv and _cli_argv0(argv) in _REAL_CLI_NAMES and not _is_version_probe(argv)
+                and os.environ.get("MC_LIVE_CLI_TESTS") != "1"):
+            import threading
+            msg = (f"{os.environ.get('PYTEST_CURRENT_TEST', '-')} | thread "
+                   f"{threading.current_thread().name} | shim spec argv "
+                   f"{str(argv)[:200]} mode={spec.get('mode')}")
+            _REAL_CLI_ATTEMPTS.append(msg)
+            raise RealCliSpawnBlocked(
+                "a test tried to launch a real model CLI under the supervisor shim "
+                f"(blocked by tests/conftest.py; set MC_LIVE_CLI_TESTS=1 to allow): {msg}")
+        return real_spawn(sdir, *a, **kw)
+
+    guarded_spawn._mc_cli_guard = True
+    client.spawn_detached = guarded_spawn
+
+
+_install_real_shim_cli_guard()
+
+
+@pytest.fixture
+def survive_restart_off(monkeypatch):
+    """Pin `agent_survive_restart_enabled` OFF for a test that asserts on the
+    plain `subprocess.Popen` its call site makes. The flag is read from the
+    operator's live config, so a test that mocks Popen and does not pin it
+    would, with the flag ON, bypass its own mock and run the real CLI under a
+    shim. Flag-ON behaviour is covered by tests that set the flag themselves
+    and run an owned stand-in CLI (tests/fake_claude_streamjson.py)."""
+    from mc import state
+    monkeypatch.setitem(state.CONFIG, "agent_survive_restart_enabled", False)
+
+
 @pytest.fixture(autouse=True)
 def _no_real_cli_spawn():
     """Fail the test that (or whose leaked thread) tried to launch a real CLI."""

@@ -69,7 +69,7 @@ class _FakeProc:
 
 
 @pytest.fixture()
-def env(tmp_path, monkeypatch):
+def env(tmp_path, monkeypatch, survive_restart_off):
     import server  # noqa: F401  (registers the blueprint + runs wire())
     from mc import state as mc_state
     from mc.blueprints import agent_routes as ar

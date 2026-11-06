@@ -302,14 +302,22 @@ def spawn_engine_proc(cmd: Sequence[Any], *, session_id: Optional[str], engine: 
                       cfg: Optional[Mapping[str, Any]] = None,
                       root: Optional[Any] = None,
                       creationflags: Optional[int] = None, startupinfo: Any = None,
-                      defer_delivery: bool = False) -> Any:
+                      defer_delivery: bool = False, interactive: bool = False) -> Any:
     """Spawn one engine turn. `deliver(p)` (optional) starts writing the prompt
     to `p.stdin` and closing it; its presence is what means "stdin is a pipe".
     `creationflags`/`startupinfo` are the flag-OFF Popen's (None = agent_runtime's).
-    See the module docstring."""
+    `interactive=True` is a CLI whose stdin stays open and is written by the
+    caller after the spawn (Claude Mode B, the mid-turn roll): flag OFF it is the
+    same Popen with `stdin=PIPE`; flag ON it runs under an interactive shim and
+    `.stdin` goes over its socket (mc/agent_spawn_interactive.py). It excludes
+    `deliver`. See the module docstring."""
     config = cfg if cfg is not None else _config()
     plain: dict = dict(cwd=cwd, env=env, creationflags=creationflags, startupinfo=startupinfo,
                        defer_delivery=defer_delivery)
+    if interactive:
+        if deliver is not None:
+            raise ValueError('spawn_engine_proc: interactive and deliver are mutually exclusive')
+        plain['pipe_stdin'] = True
     if not session_id:
         return _popen(cmd, deliver=deliver, **plain)
 
@@ -321,6 +329,12 @@ def spawn_engine_proc(cmd: Sequence[Any], *, session_id: Optional[str], engine: 
     _uncertain.refuse_if_pending(sdir, str(session_id))
     if not _client.enabled(config):
         return _popen(cmd, deliver=deliver, **plain)
+    if interactive:
+        # Imported here so a default install (flag off) never loads it.
+        from mc import agent_spawn_interactive as _interactive
+        return _interactive.spawn_interactive(
+            cmd, session_id=str(session_id), engine=engine, base=base, cwd=cwd, env=env,
+            config=config, fallback=lambda: _popen(cmd, deliver=None, **plain))
     prior = _client.inspect(sdir)
     if prior is not None and not prior.exited and (prior.shim_alive or prior.cli_alive):
         # The previous turn of this session still runs under its shim; reusing
