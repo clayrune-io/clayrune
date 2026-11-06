@@ -114,7 +114,7 @@ def _wait(pred, timeout=3.0):
 
 
 @pytest.fixture()
-def env(tmp_path, monkeypatch):
+def env(tmp_path, monkeypatch, survive_restart_off):
     import server  # noqa: F401  (registers the blueprint)
     from mc import state as mc_state
     from mc import midturn_rollover

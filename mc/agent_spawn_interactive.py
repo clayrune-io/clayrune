@@ -76,22 +76,38 @@ def _collect_prior(sdir: Path) -> None:
         c.close()
 
 
+def _prior_states(st: '_client.ManifestStatus') -> 'tuple[str, str]':
+    """(shim, cli) three-valued liveness of the previous run, from the same
+    recorded (pid, create-time) identities `inspect` used. `inspect`'s booleans
+    fold 'cannot tell' into False, which is not evidence that a process is gone."""
+    m = st.manifest
+    return (_shim.process_state(m.get('shim_pid'), m.get('shim_ct')),
+            _shim.process_state(m.get('cli_pid'), m.get('cli_ct')))
+
+
 def _await_prior(sdir: Path, session_id: str, engine: str, timeout: float = _PRIOR_WAIT_S) -> bool:
-    """True when no shim or CLI of a previous run is alive in `sdir`. Waits up to
-    `timeout` for a kill that is in flight to land; collects a finished CLI's
-    lingering shim."""
+    """True only when the previous shim AND CLI of this directory are positively
+    gone (`process_state == 'gone'`). 'unknown' (e.g. the create-time lookup was
+    denied) is treated as alive: `write_spec` deletes shim.json/exit.json, and a
+    live shim still writes its final manifest into them. Waits up to `timeout`
+    for a kill that is in flight to land; collects a finished CLI's lingering
+    shim."""
     end = time.monotonic() + timeout
     collected = False
     while True:
         st = _client.inspect(sdir)
-        if st is None or not (st.shim_alive or st.cli_alive):
+        if st is None:
             return True
-        if st.exited and st.shim_alive and not collected:
+        shim_state, cli_state = _prior_states(st)
+        if shim_state == 'gone' and cli_state == 'gone':
+            return True
+        if st.exited and shim_state != 'gone' and not collected:
             collected = True
             _collect_prior(sdir)
         if time.monotonic() >= end:
             _log(f'[agent-spawn] session={session_id} engine={engine}: previous '
-                 f'{"CLI" if st.cli_alive else "shim"} still alive after {timeout:g}s; '
+                 f'{"CLI" if cli_state != "gone" else "shim"} still alive or unverifiable '
+                 f'after {timeout:g}s (shim={shim_state} cli={cli_state}); '
                  'spawning without a shim')
             return False
         time.sleep(0.05)

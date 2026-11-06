@@ -9,6 +9,7 @@ boundary). Exits 0 on stdin EOF, like the real CLI. Every other argument
 
     --hang        never read stdin, print nothing (a CLI stuck at startup)
     --pid-file F  write this process's pid to F first
+    --dump-stdin F  append every raw stdin line to F (what the CLI was actually sent)
 """
 import json
 import os
@@ -26,7 +27,11 @@ def main(argv):
         return 0
     sid = f'fake-sid-{os.getpid()}'
     print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': sid}), flush=True)
+    dump = argv[argv.index('--dump-stdin') + 1] if '--dump-stdin' in argv else None
     for raw in sys.stdin:
+        if dump:
+            with open(dump, 'a', encoding='utf-8') as f:
+                f.write(raw)
         raw = raw.strip()
         if not raw:
             continue
