@@ -21,9 +21,12 @@ This module is the record of what is owed:
 
 Replay is at-least-once, so every step it re-runs is idempotent: the agent-log
 row carries `completion_key` (= the stamp's id) and is not written twice; the
-spawner wake is a durable outbox row keyed by the child's session + turn; the
-workflow wake is a no-op for a step that already advanced. `agent_routes` owns
-those; this file owns the record.
+spawner wake is a durable outbox row keyed by the child's session + turn (an
+identical row already there counts as the wake); the workflow wake runs
+synchronously under replay and is a no-op for a step that already advanced. A
+runner returns True only when all of it is durable, so the record is never
+cleared on the strength of a thread that has merely been started. `agent_routes`
+owns those; this file owns the record.
 
 `kind` is 'exit' (the whole completion body, then the wake) or 'turn' (a Mode B
 turn boundary: only the wake).

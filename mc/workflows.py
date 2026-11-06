@@ -1599,49 +1599,63 @@ def _dispatch_step(run: dict, node: dict) -> bool:
 # ── Agent step completion (the handoff) ──────────────────────────────────────
 
 def on_agent_step_complete(run_id: str, step_name: str, project_id: str,
-                           session_id: str, status: str, summary: str) -> None:
+                           session_id: str, status: str, summary: str,
+                           *, advance: bool = True) -> str:
     """Called from `agent_routes._notify_workflow_step` when a workflow's
     agent step finishes (Mode A exit or Mode B turn boundary -- the same
     latch MC-946 already fires from, generalised; see that module). Also the
     entry point restart adoption replays through, with `status`/`summary`
     taken from the persisted agent_log instead of a live session.
+
+    Returns what became of the completion, so a caller that OWES it (the boot
+    replay of a crash-surviving shim completion, mc/agent_shim_completion.py)
+    acknowledges only once it is settled: 'recorded' (the step's transition is
+    on disk), 'terminal' (this call ended the run -- failed / interrupted --
+    also on disk) or 'ignored' (nothing to apply: the run is gone, already past
+    this step, or the completion came from a stale session; retrying could never
+    change that). An exception means NOT settled.
+
+    `advance=False` stops once the step is durably recorded and leaves
+    `_advance_run` to the caller. Boot replay uses it: starting the next step is
+    not the replay's job, and `adopt_on_startup`, which runs right after it,
+    re-derives the frontier of any run that has no step in flight.
     """
     with _runs_lock:
         run = _read_run(run_id)
         if run is None:
-            return
+            return 'ignored'
         st = (run.get('steps') or {}).get(step_name) or {}
         # Idempotency / restart-race guard: only apply if this exact step is
         # still actually the one running. A run that already advanced (this
         # callback firing twice, or racing restart adoption) is a no-op.
         if run.get('status') != 'running' or st.get('status') != 'running':
-            return
+            return 'ignored'
         recorded_sid = st.get('session_id')
         if recorded_sid and session_id and recorded_sid != session_id:
             _log(f"[workflows] run {run_id[:12]} step '{step_name}': ignoring "
                  f"completion from stale session {session_id[:12]} (project "
                  f"{project_id}), expected {recorded_sid[:12]}")
-            return
+            return 'ignored'
         workflow = _run_definition(run)
         if not workflow:
             _fail_run(run, 'workflow definition no longer exists')
-            return
+            return 'terminal'
         try:
             nodes, _ = compile_workflow(workflow)
         except ValueError as e:
             _fail_run(run, f'workflow no longer compiles: {e}')
-            return
+            return 'terminal'
         node = nodes.get(step_name)
         if node is None:
             _fail_run(run, f"step '{step_name}' no longer exists in the definition")
-            return
+            return 'terminal'
 
         if status == 'error':
             run['steps'][step_name] = {
                 **st, 'status': 'failed', 'error': summary or 'agent ended in error',
             }
             _fail_run(run, f"step '{step_name}' agent ended in error")
-            return
+            return 'terminal'
         if status not in STEP_SUCCESS_STATUSES:
             # 'stopped' (someone hit Stop), 'interrupted' (boot reconcile's
             # "we don't know what happened") or anything unrecognised is NOT a
@@ -1658,7 +1672,7 @@ def on_agent_step_complete(run_id: str, step_name: str, project_id: str,
                             f"ended '{status or 'unknown'}' without completing")
             _write_run(run)
             _log(f"[workflows] run {run_id[:12]} marked interrupted: {run['error']}")
-            return
+            return 'terminal'
 
         outcomes = node.get('outcomes') or []
         result = _parse_wf_result(summary) if outcomes else None
@@ -1677,7 +1691,9 @@ def on_agent_step_complete(run_id: str, step_name: str, project_id: str,
         }
         _write_run(run)
 
-    _advance_run(run_id)
+    if advance:
+        _advance_run(run_id)
+    return 'recorded'
 
 
 # ── Approval gate decision ───────────────────────────────────────────────────

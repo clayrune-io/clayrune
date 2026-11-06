@@ -8710,8 +8710,15 @@ def _maybe_notify_spawner(session, summary):
              f"spawner latch _notify_session_sent already set for turn "
              f"{session.get('_delegation_turn', 1)}", flush=True)
     if has_workflow and not session.get('_notify_workflow_sent'):
-        session['_notify_workflow_sent'] = True
-        _notify_workflow_step(wf_wait, session, summary)
+        if session.get('_completion_replay'):
+            # Boot replay of a crash-surviving completion: the latch is the
+            # durable record's mirror, so it is set only once the step is on
+            # disk. A failure leaves it unset and `_workflow_notify_owed` true.
+            if _notify_workflow_step(wf_wait, session, summary, sync=True):
+                session['_notify_workflow_sent'] = True
+        else:
+            session['_notify_workflow_sent'] = True
+            _notify_workflow_step(wf_wait, session, summary)
     elif has_workflow:
         _log(f"[notify-spawner] workflow callback suppressed for {session.get('session_id', '')}: "
              f"_notify_workflow_sent already set (a workflow step completes once)", flush=True)
@@ -9034,7 +9041,7 @@ def _rearm_notify_for_new_turn(session):
     _advance_delegation_turn(session, owner=_OWNER_SPAWNER)
 
 
-def _notify_workflow_step(wf_wait, session, summary):
+def _notify_workflow_step(wf_wait, session, summary, *, sync=False):
     """Wake a workflow run parked on this session's agent step.
 
     Thread + best-effort for the same reason `_notify_agent_spawner` is: a
@@ -9042,22 +9049,44 @@ def _notify_workflow_step(wf_wait, session, summary):
     child that just finished. `mc.workflows` is a leaf module (no Flask import,
     wired to `_dispatch_agent_internal` from server.py rather than importing
     this module) so calling it directly here carries no import-cycle risk.
+
+    `sync=True` is the boot replay of a completion that survived a crash
+    (mc/agent_shim_completion.py): the callback runs HERE, to completion, and
+    returns True only once the step's transition is durable (it does not start
+    the next step: workflow adoption, which runs right after the replay, does
+    that). A thread would let the replay acknowledge its pending record before
+    the step moved, and the adoption that follows would then interrupt the run
+    and refuse the late result (Fenn, MC-1150 P4 re-review). Never raises.
     """
+    def _call(advance):
+        return _workflows.on_agent_step_complete(
+            run_id=wf_wait.get('run_id', ''),
+            step_name=wf_wait.get('step', ''),
+            project_id=session.get('project_id', ''),
+            session_id=session.get('session_id', ''),
+            status=session.get('status', 'unknown'),
+            summary=summary or '',
+            advance=advance,
+        )
+
+    if sync:
+        try:
+            _call(False)
+            return True
+        except Exception as e:
+            _log(f"[notify-workflow] replayed step callback failed for run "
+                 f"{wf_wait.get('run_id','')[:12]}: {e}")
+            return False
+
     def _send():
         try:
-            _workflows.on_agent_step_complete(
-                run_id=wf_wait.get('run_id', ''),
-                step_name=wf_wait.get('step', ''),
-                project_id=session.get('project_id', ''),
-                session_id=session.get('session_id', ''),
-                status=session.get('status', 'unknown'),
-                summary=summary or '',
-            )
+            _call(True)
         except Exception as e:
             _log(f"[notify-workflow] step callback failed for run "
                  f"{wf_wait.get('run_id','')[:12]}: {e}")
 
     threading.Thread(target=_send, daemon=True).start()
+    return True
 
 
 def _notify_agent_spawner(project_id, notify_sid, child, summary):
@@ -9076,7 +9105,12 @@ def _notify_agent_spawner(project_id, notify_sid, child, summary):
             # turn overwriting the agent-log projection.
             _delivery_store.record_completion_source(
                 event_id, project_id, notify_sid, payload)
-            return _delivery_store.enqueue(event_id, project_id, notify_sid, payload)
+            # True for a newly committed wake AND for an identical one already
+            # in the outbox (a crash-and-replay lands here): either way the wake
+            # exists and is on its way. Refused (revoked, no identity, insert did
+            # not land) and a conflicting identity (raises) are NOT a wake.
+            return _delivery_store.enqueue_outcome(
+                event_id, project_id, notify_sid, payload) in ('committed', 'duplicate')
         except Exception as exc:
             # Completion logging must still commit its source-of-record row;
             # startup recovery can rebuild this outbox event from that row.
@@ -9583,19 +9617,33 @@ def _spawner_notify_owed(session):
     return bool(sid) and sid != session.get('session_id') and not session.get('_notify_session_sent')
 
 
+def _workflow_notify_owed(session):
+    """True while a workflow run parked on this session's step has not yet had
+    the step's transition recorded (`_notify_workflow_sent`, which a boot replay
+    sets only after `on_agent_step_complete` returned)."""
+    if session.get('incognito') or session.get('waiting_for_question'):
+        return False
+    wf_wait = session.get('_notify_workflow') or None
+    return (bool(wf_wait) and bool(wf_wait.get('run_id'))
+            and not session.get('_notify_workflow_sent'))
+
+
 def _replay_exit_completion(session):
     """Boot replay of an 'exit' completion (mc/agent_shim_completion.py). True
-    once nothing is owed. The body is idempotent on `completion_key`."""
+    once nothing is owed: neither the spawner's durable wake nor the workflow
+    step's recorded transition. The body is idempotent on `completion_key`."""
     _log_agent_completion_body(session)
     _notify_spawner_unless_jobs_open(session, _last_reply_text(session))
-    return not (_spawner_notify_owed(session) and not _hold_notify_for_agent_jobs(session))
+    owed = _spawner_notify_owed(session) or _workflow_notify_owed(session)
+    return not (owed and not _hold_notify_for_agent_jobs(session))
 
 
 def _replay_turn_completion(session):
     """Boot replay of a Mode B turn boundary: only the wake was owed."""
     if not _hold_notify_for_background(session):
         _maybe_notify_spawner(session, _last_reply_text(session))
-    return not (_spawner_notify_owed(session) and not _bg_tasks.held_tasks(session))
+    owed = _spawner_notify_owed(session) or _workflow_notify_owed(session)
+    return not (owed and not _bg_tasks.held_tasks(session))
 
 
 def _completion_row(project_id, key):
