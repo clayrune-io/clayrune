@@ -158,6 +158,21 @@ def describe_open_jobs(session_id: str, limit: int = 3) -> str:
     return '; '.join(parts)
 
 
+def list_open_jobs() -> List[Dict[str, Any]]:
+    """Every job still `running`, across all sessions, oldest first.
+
+    Plain-dict snapshots (no `proc` handle) for the restart-blocker list: the
+    jobs live only in this process's `_jobs`, so a server restart orphans them
+    and drops the completion callback that would wake their session."""
+    with _lock:
+        rows = [{'job_id': j.get('job_id'), 'project_id': j.get('project_id'),
+                 'session_id': j.get('session_id'), 'command': j.get('command') or '',
+                 'started_at': j.get('started_at')}
+                for j in _jobs.values() if j.get('status') == 'running']
+    rows.sort(key=lambda r: r.get('started_at') or 0)
+    return rows
+
+
 def start_job(*, project_id: str, session_id: str, command: str, cwd: str,
               timeout_minutes: float, log_dir: Path, shell: Optional[str] = None,
               popen_flags: int = 0, startupinfo: Any = None,
