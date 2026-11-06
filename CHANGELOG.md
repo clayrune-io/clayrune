@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-06] - Shared client data layer for test-run progress (MC-1148 P9, dark)
+
+- Added `static/js/test-run-data.js`: one visible-page poll coordinator (one request per project, ~1s while a run is active, backing off when quiet, paused while hidden, immediate refetch on visible/focus/pageshow/resume/online and after a late timer), reconciled by the server's per-run `seq`. Opens no EventSource, so updates continue after the agent turn ends.
+- `resume-preview.js` gains a tiny `test_run` hint branch that only pulls the poller forward. The server does not emit that event yet. No UI. Contract and limits: `docs/TEST_RUN_DATA.md`. Branch candidate only; no config change, merge, push or restart.
+
 ## [2026-11-06] - Observe unwrapped test calls without inventing success (MC-1148 P8, dark)
 
 - Added a shared passive detector with tiny Claude A/B, shared Mode A and Gemini reader hooks. Every recognized unwrapped vendor call gets a separate generic fallback; wrapper/job handoffs are excluded without correlation. Qwen results are observed before UI suppression; both Codex envelope generations are covered.
