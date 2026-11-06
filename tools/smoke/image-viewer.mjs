@@ -18,7 +18,7 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><link rel="styles
 <body style="margin:0;background:#e9e6de"><div id="minimized-tray"></div><textarea id="composer" aria-label="Composer"></textarea>
 <script>window.API_BASE='';window.esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));</script>
 <script type="module" src="/static/js/image-viewer.js"></script><script type="module" src="/static/js/desk-v1-library-viewer.js"></script>
-<script type="module" src="/static/js/mermaid.js"></script><script type="module" src="/static/js/rich-text.js"></script><script type="module" src="/static/js/resume-preview.js"></script><script type="module" src="/static/js/media.js"></script></body></html>`;
+<script type="module" src="/static/js/mermaid.js"></script><script type="module" src="/static/js/rich-text.js"></script><script type="module" src="/static/js/prompt-time-tag.js"></script><script type="module" src="/static/js/resume-preview.js"></script><script type="module" src="/static/js/media.js"></script></body></html>`;
 let checks = 0;
 function check(condition, label) { assert.ok(condition, label); checks++; console.log('PASS ' + label); }
 const browser = await chromium.launch();
