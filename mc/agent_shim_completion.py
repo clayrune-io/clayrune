@@ -82,6 +82,28 @@ def ack(session: Dict[str, Any], *, owed: bool = False) -> bool:
     return _adopt.force_checkpoint(session)
 
 
+def is_owed(session_id: str, root: Optional[Any] = None) -> bool:
+    """True while a completion for this session is still owed: its checkpoint on
+    disk carries a pending stamp (a boot replay that failed leaves it there).
+    Every other path that would end a workflow step from this session's agent-log
+    row (adoption, the scheduler's reconciler) must leave the step alone, or it
+    terminalizes the run on a stale `interrupted` row and the owed success is
+    refused for good (Fenn, MC-1150 P4 third review). Never raises; a missing or
+    unreadable checkpoint is not an owed completion (replay could not read it
+    either)."""
+    if not session_id:
+        return False
+    try:
+        from mc import agent_spawn
+        base = Path(root) if root is not None else agent_spawn.default_root()
+        ck = _adopt.read_checkpoint(base / str(session_id))
+        snap = ck.get('session') if isinstance(ck, dict) else None
+        return isinstance(snap, dict) and pending_of(snap) is not None
+    except Exception as e:
+        _log(f'[agent-shim-completion] owed check for {str(session_id)[:12]} failed: {e}')
+        return False
+
+
 # ─────────────────────────────────── replay ──────────────────────────────────
 class ReplayReport:
     def __init__(self) -> None:

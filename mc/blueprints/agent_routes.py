@@ -9054,7 +9054,8 @@ def _notify_workflow_step(wf_wait, session, summary, *, sync=False):
     (mc/agent_shim_completion.py): the callback runs HERE, to completion, and
     returns True only once the step's transition is durable (it does not start
     the next step: workflow adoption, which runs right after the replay, does
-    that). A thread would let the replay acknowledge its pending record before
+    that). A 'refused' outcome (a success for a run a reconciler had already
+    interrupted) is NOT settled: the record stays, nothing is acknowledged. A thread would let the replay acknowledge its pending record before
     the step moved, and the adoption that follows would then interrupt the run
     and refuse the late result (Fenn, MC-1150 P4 re-review). Never raises.
     """
@@ -9071,7 +9072,11 @@ def _notify_workflow_step(wf_wait, session, summary, *, sync=False):
 
     if sync:
         try:
-            _call(False)
+            if _call(False) == 'refused':
+                _log(f"[notify-workflow] replayed success for run "
+                     f"{wf_wait.get('run_id','')[:12]} refused (run already interrupted); "
+                     f"record kept")
+                return False
             return True
         except Exception as e:
             _log(f"[notify-workflow] replayed step callback failed for run "

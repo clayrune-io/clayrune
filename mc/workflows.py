@@ -1611,9 +1611,11 @@ def on_agent_step_complete(run_id: str, step_name: str, project_id: str,
     replay of a crash-surviving shim completion, mc/agent_shim_completion.py)
     acknowledges only once it is settled: 'recorded' (the step's transition is
     on disk), 'terminal' (this call ended the run -- failed / interrupted --
-    also on disk) or 'ignored' (nothing to apply: the run is gone, already past
-    this step, or the completion came from a stale session; retrying could never
-    change that). An exception means NOT settled.
+    also on disk), 'ignored' (nothing to apply: the run is gone, cancelled, already
+    past this step, or the completion came from a stale session; retrying could
+    never change that) or 'refused' (a SUCCESS for a run a reconciler already
+    interrupted: the result is lost, so a caller that owes it keeps its record
+    instead of acknowledging). An exception means NOT settled.
 
     `advance=False` stops once the step is durably recorded and leaves
     `_advance_run` to the caller. Boot replay uses it: starting the next step is
@@ -1629,6 +1631,16 @@ def on_agent_step_complete(run_id: str, step_name: str, project_id: str,
         # still actually the one running. A run that already advanced (this
         # callback firing twice, or racing restart adoption) is a no-op.
         if run.get('status') != 'running' or st.get('status') != 'running':
+            # A SUCCESS arriving at a run a machine path interrupted is a result
+            # that was lost, not a duplicate: 'refused' tells a replay to keep
+            # its record. Nothing human sets `interrupted` (an operator cancel
+            # is `cancelled`, which stays 'ignored' so cancellation still wins).
+            if (run.get('status') == 'interrupted' and status in STEP_SUCCESS_STATUSES
+                    and (not st.get('session_id') or not session_id
+                         or st.get('session_id') == session_id)):
+                _log(f"[workflows] run {run_id[:12]} step '{step_name}': success from "
+                     f"{(session_id or '')[:12]} refused, the run was already interrupted")
+                return 'refused'
             return 'ignored'
         recorded_sid = st.get('session_id')
         if recorded_sid and session_id and recorded_sid != session_id:
@@ -2052,6 +2064,25 @@ def _running_step(run: dict) -> Optional[str]:
                  if st.get('status') == 'running'), None)
 
 
+def _completion_owed(session_id: str) -> bool:
+    """True while the step's child has a durable completion checkpoint nobody has
+    finished (mc/agent_shim_completion.py): a stamp on its shim checkpoint, or
+    one on the live session between `begin` and `ack`. That completion is the
+    child's real result; the agent-log row every reconciler reads is only the
+    dispatch-time/`interrupted` placeholder boot wrote over it, so ending the
+    step from the row loses a success. Includes a replay that FAILED and kept
+    its record for the next boot. Never raises."""
+    try:
+        from mc import agent_shim_completion as _comp
+        live = state.agent_sessions.get(session_id)
+        if live is not None and _comp.pending_of(live) is not None:
+            return True
+        return _comp.is_owed(session_id)
+    except Exception as e:
+        _log(f'[workflows] owed-completion check for {session_id[:12]} failed: {e}')
+        return False
+
+
 def _step_session_verdict(step_state: dict, *, use_live: bool) -> tuple:
     """('in_flight' | 'ended' | 'unconfirmed', status, summary) for one
     running agent step -- the ONE place both restart adoption and the periodic
@@ -2067,6 +2098,8 @@ def _step_session_verdict(step_state: dict, *, use_live: bool) -> tuple:
     pid = step_state.get('project_id') or ''
     if not sid or not pid:
         return 'unconfirmed', None, ''
+    if _completion_owed(sid):
+        return 'in_flight', None, ''    # its crash-surviving completion replays itself
     live = state.agent_sessions.get(sid) if use_live else None
     if live is not None and live.get('status') not in _STEP_END_STATUSES:
         return 'in_flight', live.get('status'), ''
@@ -2093,6 +2126,8 @@ def _step_session_verdict(step_state: dict, *, use_live: bool) -> tuple:
 
 def _replay_step_end(run: dict, step_name: str, status, summary: str, why: str) -> None:
     st = run['steps'][step_name]
+    if _completion_owed(st.get('session_id') or ''):
+        return                          # re-checked: it may have been stamped since the verdict
     _log(f"[workflows] run {run['id'][:12]} step '{step_name}': child "
          f"{(st.get('session_id') or '')[:12]} ended '{status}' ({why}), replaying "
          f"through on_agent_step_complete")
@@ -2113,6 +2148,8 @@ def _interrupt_unconfirmed(run_id: str, step_name: str, reason: str) -> bool:
         st = (run.get('steps') or {}).get(step_name) or {}
         if st.get('status') != 'running':
             return False
+        if _completion_owed(st.get('session_id') or ''):
+            return False                # an owed completion decides this step, not us
         sid = (st.get('session_id') or '')[:12]
         run['steps'][step_name] = {**st, 'stalled_at': now_iso()}
         run['status'] = 'interrupted'
