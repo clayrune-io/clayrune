@@ -1562,6 +1562,15 @@ function agentPanelHTML(p) {
           result += window.agentReadCardPlaceholderHTML(_arcId);
           continue;
         }
+        // Test-run card (MC-1148 P10, static/js/test-run-card.js): `[test-run:<id>]`.
+        const _trcId = typeof window.testRunMarkerId === 'function' ? window.testRunMarkerId(line) : null;
+        if (_trcId) {
+          flushTable();
+          result += planBlock;
+          planBlock = ''; planRawLines = [];
+          result += window.testRunCardPlaceholderHTML(_trcId, p.id, activeSessionId);
+          continue;
+        }
         // Stop-hook block/resend boundary (see agent_runtime.stop_hook_marker):
         // collapse the draft accumulated since the last tool/prompt line into
         // a native <details> toggle ONLY when the follow-up (the narration up
@@ -5071,6 +5080,11 @@ function appendAgentLine(sessionId, text, dateHint, promptTs = dateHint) {
   }
   // Agent-read request card (MC-1059): the server's `[agent-read-request:<id>]` line.
   if (typeof window._handleAgentReadLine === 'function' && window._handleAgentReadLine(sessionId, text, el)) {
+    if (wasPinned) _scheduleAgentPinScroll(sessionId, el, freshMount);
+    return;
+  }
+  // Test-run card (MC-1148 P10): the server's `[test-run:<id>]` line.
+  if (typeof window._handleTestRunLine === 'function' && window._handleTestRunLine(sessionId, text, el)) {
     if (wasPinned) _scheduleAgentPinScroll(sessionId, el, freshMount);
     return;
   }

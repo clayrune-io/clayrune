@@ -5,6 +5,11 @@
 - Added a separate project Test runs panel for active/recent conversation-owned and ownerless runs, using the existing shared reader. Source, unit, observed outcomes, failure details and process verdict stay distinct; identical names across projects or conversations never merge.
 - Navigation and scoped styles appear only after an enabled read; flag-off leaves existing project UI unchanged. Stale snapshots remain visible, modal rebuilds do not duplicate rows, and close releases the subscription. Contract and worktree verification: `docs/TEST_RUN_PROJECT_PANEL.md`. Branch candidate only; no merge, push, restart or config write.
 
+## [2026-11-06] - In-chat test-run card (MC-1148 P10, dark)
+
+- Added `static/js/test-run-card.js` and `static/css/test-run-card.css`: a `[test-run:<id>]` chat line becomes a live card (verdict, accessible `<progress>`, counts, elapsed, keyboard-expandable failure list) fed only by the shared `TestRunData` layer, so no new polling or SSE. Unknown totals are indeterminate with no percent or ETA; all-units-done while running reads Finalizing, never Passed.
+- Wiring only in `conversation.js` (cold render + live line) and `index.html` (stylesheet, module, `refreshModalById` mount). Duplicates are removed by looking at the DOM, every string goes through `textContent`, and flag off leaves the marker as the plain line it is today. The server does not emit the anchor yet, so no card appears in a real chat. Contract: `docs/TEST_RUN_CARD.md`. Branch candidate only; no config write, merge, push or restart.
+
 ## [2026-11-06] - Show active testing on the Floor (MC-1148 P12, dark)
 
 - Added figure progress and project room summaries from the existing flagged Floor projection. Known compatible totals show done/total, a bar and outcome counts; collecting, unknown, partial and mixed runs keep explicit wording. Questions stay primary, and finalizing never implies a passing process exit.

@@ -260,6 +260,7 @@
 </script>
 <link rel="stylesheet" href="/static/css/app.css">
 <link rel="stylesheet" href="/static/css/test-run-floor.css">
+<link rel="stylesheet" href="/static/css/test-run-card.css">
 <link rel="stylesheet" href="/static/css/chat-selection.css">
 <link rel="stylesheet" href="/static/css/provider-preferences.css">
 <link rel="stylesheet" href="/static/css/vendor-preference-draft.css">
@@ -2493,6 +2494,7 @@ function refreshModalById(modalId) {
   if (typeof window.mountTeamCards === 'function') window.mountTeamCards(content);
   if (typeof window.mountExplorationCards === 'function') window.mountExplorationCards(content);
   if (typeof window.mountAgentReadCards === 'function') window.mountAgentReadCards(content);
+  if (typeof window.mountTestRunCards === 'function') window.mountTestRunCards(content);
   // Re-apply the 3-pane rail search filter after the rebuild (the input value +
   // focus are already restored above; this re-hides the non-matching rows).
   if (typeof _applyRailFilter === 'function') { try { _applyRailFilter(entry.projectId); } catch (_) {} }
@@ -4436,6 +4438,7 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/resume-preview.js"></script>
 <script type="module" src="/static/js/test-run-data.js"></script>
 <script type="module" src="/static/js/project-test-runs.js"></script>
+<script type="module" src="/static/js/test-run-card.js"></script>
 <script type="module" src="/static/js/agent-log.js"></script>
 <script type="module" src="/static/js/documents-search.js"></script>
 <script type="module" src="/static/js/hivemind-review.js"></script>
