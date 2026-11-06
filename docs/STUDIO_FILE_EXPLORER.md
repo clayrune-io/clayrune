@@ -18,7 +18,10 @@ key4.db and logins.json join the Chromium profile checks. Preview/copy verify th
 handle, not just its pre-open path. Arbitrary non-media bodies are never served.
 
 `mc/desk_file_explorer.py` owns roots, shortcuts and bounded directory/search
-listing (2,000 results, 3,000 entries, depth 8, two-second traversal budget).
+listing (2,000 results, 200,000 accepted entries, depth 8, two-second traversal
+budget). Search walks breadth-first, so shallow folders are searched before deep
+ones. A query with `*` or `?` is a case-insensitive whole-name glob (`[` is
+literal); a query without them is a case-insensitive substring match.
 Directory chains are checked once per visited directory; immediate entries use
 lstat and name/profile checks. `mc/desk_explorer_file.py` owns
 opened-handle verification (Windows final handle name, Linux proc fd, macOS
