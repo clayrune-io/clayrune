@@ -281,3 +281,78 @@ def test_library_destination_link_escape_refused(env, tmp_path):
         'id': folder['id'], 'files': [{'root': 'home', 'path': 'photo.png'}]})
     assert response.status_code == 403
     assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize('query,expected', [
+    ('mp4', ['a.mp4', 'b.MP4', 'x.mp4.png']),         # substring, case-insensitive
+    ('*.mp4', ['a.mp4', 'b.MP4']),                     # glob is a whole-name match
+    ('*.MP4', ['a.mp4', 'b.MP4']),
+    ('?.mp4', ['a.mp4', 'b.MP4']),
+    ('a.*', ['a.mp4']),
+    ('*.avi', ['c.avi']),
+    ('*.mov', []),
+])
+def test_wildcard_query_is_a_glob_and_plain_query_is_a_substring(env, query, expected):
+    home, _, _, _, client = env
+    for name in ('a.mp4', 'b.MP4', 'x.mp4.png', 'c.avi', 'note.txt'):
+        put(home, f'Videos/{name}')
+    out = client.get('/api/desk/explorer', query_string={'path': 'Videos', 'q': query}).get_json()
+    assert sorted(i['title'] for i in out['items']) == sorted(expected)
+
+
+def test_glob_matches_in_subfolders_and_guards_still_apply(env):
+    home, _, _, _, client = env
+    put(home, 'Videos/deep/er/clip.mp4')
+    put(home, '.hidden/secret.mp4')
+    put(home, 'node_modules/pkg/leak.mp4')
+    out = client.get('/api/desk/explorer?q=*.mp4').get_json()
+    assert [i['path'] for i in out['items']] == ['Videos/deep/er/clip.mp4']
+
+
+def test_bracket_in_query_is_literal(env):
+    home, _, _, _, client = env
+    put(home, 'Videos/a[1].mp4')
+    put(home, 'Videos/a1.mp4')
+    out = client.get('/api/desk/explorer', query_string={'path': 'Videos', 'q': 'a[1]*'}).get_json()
+    assert [i['title'] for i in out['items']] == ['a[1].mp4']
+
+
+def test_breadth_first_finds_shallow_matches_in_tree_wider_than_budget(env, monkeypatch):
+    home, _, _, _, client = env
+    # Each d<n> holds a shallow match (d<n>/s/m.mp4) and a wide, deep decoy
+    # subtree (d<n>/w/<a>/<b>/f.txt). A depth-first walk burns the whole budget
+    # inside one decoy; breadth-first reaches every depth-2 match first.
+    for n in range(4):
+        put(home, f'd{n}/s/m.mp4')
+        for a in range(5):
+            for b in range(5):
+                put(home, f'd{n}/w/{a}/{b}/f.txt')
+    monkeypatch.setattr(explorer, 'MAX_VISITS', 40)
+    out = client.get('/api/desk/explorer?q=mp4').get_json()
+    assert sorted(i['path'] for i in out['items']) == [f'd{n}/s/m.mp4' for n in range(4)]
+    assert out['truncated']
+
+
+def test_search_scans_folders_shallowest_first(env, monkeypatch):
+    home, _, _, _, client = env
+    for path in ('a/b/c/x.png', 'a/b/y.png', 'a/z.png', 'q/r/s.png', 'top.png'):
+        put(home, path)
+    seen = []
+    real = explorer.authorize
+    def record(root_id, relative='', **kw):
+        if relative in {'.', 'a', 'q', 'a/b', 'q/r', 'a/b/c'}:  # the scan loop, not shortcuts()
+            seen.append(0 if relative == '.' else len(Path(relative).parts))
+        return real(root_id, relative, **kw)
+    monkeypatch.setattr(explorer, 'authorize', record)
+    client.get('/api/desk/explorer?q=png')
+    assert seen and seen == sorted(seen)
+
+
+def test_refused_entries_do_not_spend_the_visit_budget(env, monkeypatch):
+    home, _, _, _, client = env
+    for n in range(30):
+        put(home, f'.dot{n}/x.png')
+    put(home, 'wanted.png')
+    monkeypatch.setattr(explorer, 'MAX_VISITS', 3)
+    out = client.get('/api/desk/explorer?q=wanted').get_json()
+    assert [i['path'] for i in out['items']] == ['wanted.png']

@@ -68,7 +68,7 @@ try {
           ...(all ? [{ title: 'readme.txt', path: here + '/readme.txt', selectable: false }] : []),
         ] : [{ title: 'Pictures', path: 'Pictures', directory: true }];
         if (q) items = items.filter((it) => it.title.includes(q));
-        return J({ items, shortcuts, truncated: q === 'limit', allow_all_files: !remote, breadcrumbs: [{ title: 'Home', path: '' }, ...(here ? [{ title: here, path: here }] : [])] });
+        return J({ items, shortcuts, truncated: q === 'limit' || q === 'clip', allow_all_files: !remote, breadcrumbs: [{ title: 'Home', path: '' }, ...(here ? [{ title: here, path: here }] : [])] });
       }
       return J({});
     });
@@ -108,9 +108,14 @@ try {
     await page.fill('[data-fe-search]', 'hero');
     await page.waitForFunction(() => document.querySelectorAll('[data-fe-pick]').length === 1);
     assert.equal(await page.locator('[data-fe-count]').textContent(), '2 selected');
-    await page.fill('[data-fe-search]', 'limit');
-    await page.waitForSelector('.desk-fe-limit');
+    await page.fill('[data-fe-search]', 'clip');
+    await page.waitForFunction(() => document.querySelectorAll('[data-fe-pick]').length === 1 && document.querySelector('.desk-fe-limit'));
     assert.match(await page.locator('.desk-fe-limit').textContent(), /Search truncated/);
+    // Truncated AND empty must not read as "no such files".
+    await page.fill('[data-fe-search]', 'limit');
+    await page.waitForFunction(() => /stopped early/.test(document.querySelector('.desk-fe-limit')?.textContent || ''));
+    assert.match(await page.locator('.desk-fe-limit').textContent(), /does not mean there are no matching files/);
+    assert.doesNotMatch(await page.locator('[data-fe-results]').textContent(), /No files match/);
     const slowRequest = page.waitForRequest((r) => r.url().includes('/api/desk/explorer?') && new URL(r.url()).searchParams.get('q') === 'slow');
     await page.fill('[data-fe-search]', 'slow');
     await slowRequest;

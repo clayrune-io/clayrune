@@ -1,6 +1,7 @@
 """Read-only, bounded host browsing for Studio. Every request rechecks live roots."""
 from __future__ import annotations
 
+import collections
 import hashlib
 import os
 import stat
@@ -13,7 +14,10 @@ from mc import desk_pieces as pieces, desk_project_media as project_media
 from mc.core import _log
 from mc import desk_explorer_guard as guard, desk_explorer_search as search
 
-MAX_VISITS = 3000
+# Entries that PASS the guards and are actually examined. A safety valve only:
+# the real bound is search.MAX_SECONDS. Entries the guards refuse (protected,
+# dot, link, profile) cost time but are not counted against this.
+MAX_VISITS = 200000
 MAX_FILES = project_media.MAX_FILES
 MAX_DEPTH = project_media.MAX_DEPTH
 _home: Path | None = None
@@ -101,9 +105,12 @@ def browse(root_id: str = 'home', relative: str = '', *, query: str = '', all_fi
     root, start = authorize(root_id, relative, directory=True, locations=locations)
     if not isinstance(query, str) or len(query) > 200:
         raise pieces.PieceError('Search must be at most 200 characters.')
-    query = query.strip().casefold()
+    matches = search.matcher(query)
+    query = query.strip()
     navigation = shortcuts(locations)
-    pending = [(start, 0)]
+    # Breadth-first: shallow matches are found before the budget is spent
+    # inside one deep branch.
+    pending = collections.deque([(start, 0)])
     seen: set[Path] = set()
     rows: list[dict] = []
     visits = 0
@@ -112,7 +119,7 @@ def browse(root_id: str = 'home', relative: str = '', *, query: str = '', all_fi
         if interrupted():
             capped = True
             break
-        folder, depth = pending.pop()
+        folder, depth = pending.popleft()
         if folder in seen:
             continue
         seen.add(folder)
@@ -128,7 +135,6 @@ def browse(root_id: str = 'home', relative: str = '', *, query: str = '', all_fi
                 if visits >= MAX_VISITS or len(rows) >= MAX_FILES or interrupted():
                     capped = True
                     break
-                visits += 1
                 path = Path(entry.path)
                 rel = path.relative_to(root['root']).as_posix()
                 try:
@@ -141,13 +147,14 @@ def browse(root_id: str = 'home', relative: str = '', *, query: str = '', all_fi
                     _check_parts(path)
                     if is_dir:
                         guard.check_profile(path)
+                    visits += 1
                     if query and is_dir:
                         if depth < MAX_DEPTH:
                             pending.append((path, depth + 1))
                         else:
                             capped = True
                     kind = pieces.asset_kind_for(entry.name) if not is_dir else None
-                    if (not is_dir and not kind and not all_files) or (query and query not in entry.name.casefold()):
+                    if (not is_dir and not kind and not all_files) or (query and not matches(entry.name)):
                         continue
                     row = {'title': entry.name, 'path': rel, 'directory': is_dir, 'kind': kind,
                            'selectable': bool(kind), 'size': info.st_size if not is_dir else None}

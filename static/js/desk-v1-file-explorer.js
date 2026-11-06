@@ -90,14 +90,15 @@
         });
         el.querySelector('[data-fe-crumbs]').innerHTML = data.breadcrumbs.map((it, i) => `<button data-fe-crumb="${i}">${esc(it.title)}</button>`).join('<span aria-hidden="true">›</span>');
         el.querySelectorAll('[data-fe-crumb]').forEach((b) => b.onclick = () => navigate(st.root, data.breadcrumbs[Number(b.dataset.feCrumb)].path));
-        results.innerHTML = `${data.truncated || data.limited ? '<p class="desk-fe-limit">Search truncated. Some files are not shown. Open a smaller folder or narrow your search.</p>' : ''}
+        const cut = data.truncated || data.limited;
+        results.innerHTML = `${cut ? (data.items.length ? '<p class="desk-fe-limit">Search truncated. Some files are not shown. Open a smaller folder or narrow your search.</p>' : '<p class="desk-fe-limit">The search stopped early before it found anything. This does not mean there are no matching files. Open a subfolder and search there.</p>') : ''}
           ${st.filter === 'all' ? '<p class="desk-fe-note">All files are visible. Only supported pictures and videos can be copied.</p>' : ''}
           ${data.items.length ? `<div class="desk-fe-grid">${data.items.map((it, i) => {
             const key = JSON.stringify([st.root, it.path]);
             return `<button class="desk-fe-entry" ${it.directory ? `data-fe-dir="${i}"` : `data-fe-pick="${esc(key)}" data-fe-index="${i}" aria-pressed="${st.selected.has(key)}"`}${!it.directory && !it.selectable ? ' disabled' : ''}>
               <span class="desk-fe-thumb">${it.src ? `<img src="${esc(it.src)}" alt="" loading="lazy">` : it.play ? `<video src="${esc(it.play)}" preload="metadata" muted playsinline></video><span class="desk-fe-play">▶</span>` : `<span>${it.directory ? '📁' : '▤'}</span>`}</span>
               <span class="desk-fe-name">${esc(it.title)}</span>${st.query ? `<small>${esc(it.path.split('/').slice(0, -1).join(' › '))}</small>` : ''}</button>`;
-          }).join('')}</div>` : '<p>No files match. Try another folder or search.</p>'}`;
+          }).join('')}</div>` : (cut ? '' : '<p>No files match. Try another folder or search.</p>')}`;
         results.querySelectorAll('[data-fe-dir]').forEach((b) => b.onclick = () => navigate(st.root, data.items[Number(b.dataset.feDir)].path));
         results.querySelectorAll('[data-fe-pick]').forEach((b) => b.onclick = () => {
           if (st.busy) return;

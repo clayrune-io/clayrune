@@ -1,16 +1,37 @@
 """Bounded per-client search leases: newest request cancels older work."""
 from __future__ import annotations
 
+import fnmatch
+import re
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from typing import Callable
 
 from mc.desk_pieces import PieceError
 
 MAX_SECONDS = 2.0
 MAX_CLIENTS = 128
 _guard = threading.Lock()
+
+
+def matcher(query: str) -> Callable[[str], bool]:
+    """Name predicate for a search box. Case-insensitive.
+
+    No ``*``/``?`` in the query: plain substring ("mp4" finds "clip.mp4").
+    With one: a whole-name glob ("*.mp4" matches names ending in .mp4). The
+    pattern is translated to a regex here rather than handed to the OS-aware
+    ``fnmatch.fnmatch`` (which would also fold case/separators by platform);
+    ``[`` is escaped so a stray bracket in a filename search stays literal.
+    """
+    query = query.strip().casefold()
+    if not query:
+        return lambda _name: True
+    if '*' not in query and '?' not in query:
+        return lambda name: query in name.casefold()
+    pattern = re.compile(fnmatch.translate(query.replace('[', '[[]')))
+    return lambda name: pattern.match(name.casefold()) is not None
 
 
 @dataclass
