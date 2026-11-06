@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from mc.core import _log
 from mc.test_run_capture import RunCapture, finish_capture, start_capture
+from mc import test_run_anchor
 
 # Matches background_tasks.DEFAULT_WAIT_MAX_MINUTES -- the existing cap for
 # "how long may a spawner wait on a background job before Clayrune reports
@@ -245,6 +246,8 @@ def start_job(*, project_id: str, session_id: str, command: str, cwd: str,
     with _lock:
         _jobs[job_id] = job
 
+    if capture is not None:
+        test_run_anchor.post(capture.store, capture.project_id, capture.run_id)
     observer = start_capture(capture, log_path, suppressed=direct_argv is not None)
 
     def _watch():

@@ -21,6 +21,7 @@ from typing import Any, Callable
 
 from mc.atomic_json import write_json_atomic
 from mc import test_run_store as runs
+from mc import test_run_anchor
 
 MAX_BATCH_EVENTS = 64
 MAX_BATCH_BYTES = 256 * 1024
@@ -181,6 +182,7 @@ class TestRunIngest:
                     owner_turn_id=owner.turn_id, cwd=owner.cwd, job_id=owner.job_id,
                     parent_run_id=parent_run_id,
                     process_identity=owner.process_identity, source=owner.source, **metadata)
+            test_run_anchor.post(self.store, project_id, snapshot['run_id'])
             return snapshot, self._issue(owner, snapshot['run_id'])
 
     def producer(self, project_id: str, caller: Any, run_id: str) -> ProducerReceipt:

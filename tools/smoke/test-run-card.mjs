@@ -26,6 +26,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { spawnSync } from 'node:child_process';
 import { loadStaticJsCss } from './_static.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -36,6 +37,11 @@ const ORIGIN = 'http://trc.smoke.test';
 const PID = 'smoke_trc';
 const SID = 'trc_sid';
 const SID2 = 'trc_sid_other';
+// Real Python enrollment and server anchor emission; no synthetic marker here.
+const enrolledResult = spawnSync(process.env.PYTHON || 'python',
+  [resolve(here, '_test_run_anchor_fixture.py')], { cwd: ROOT, encoding: 'utf8', timeout: 15000 });
+if (enrolledResult.status !== 0) throw new Error(`Anchor fixture failed: ${enrolledResult.error || enrolledResult.stderr}`);
+const enrolled = JSON.parse(enrolledResult.stdout);
 
 const PROJECT = {
   id: PID, name: 'Test run card smoke', status: 'active', domain: 'general', emoji: '🧪',
@@ -69,6 +75,7 @@ const srv = {
   mode: 'ok',
   calls: 0,
   runs: [
+    enrolled.run,
     row(ID.unknown),                                                         // total unknown
     row(ID.running, { selected_total: 10, completed: 4, counts: counts({ pass: 4 }), eta_seconds: null }),
     row(ID.twin, { selected_total: 5, completed: 5, counts: counts({ pass: 5 }) }),   // all done, no exit yet
@@ -146,6 +153,14 @@ try {
   const vis = await page.evaluate(() => [...document.querySelectorAll('#agent-output-trc_sid .agent-line')]
     .filter((e) => /\[test-run:[0-9a-f]{32}\]/.test(e.textContent) && e.closest('.test-run-card-mount') == null && e.offsetParent !== null).length);
   check(vis === 0, 'no raw marker line is left visible for a run that has a card');
+
+  await page.evaluate(({ sid, lines }) => {
+    for (const line of lines) window.appendAgentLine(sid, line);
+  }, { sid: SID, lines: enrolled.lines });
+  await page.waitForSelector(`.test-run-card[data-test-run-id="${enrolled.run.run_id}"]`, { timeout: 6000 });
+  check(await cardCount(page, enrolled.run.run_id) === 1 &&
+    /Server-enrolled anchor/.test(await cardText(page, enrolled.run.run_id)),
+    'real Python enrollment emits one anchor that renders its authoritative card');
 
   // unknown total
   const u = page.locator(`.test-run-card[data-test-run-id="${ID.unknown}"]`);
