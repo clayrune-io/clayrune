@@ -3666,6 +3666,12 @@ def boot(check_port=True):
     # agent-log sweep and never launches a child; stale work is only retried as
     # delivery/parent processing with bounded leases.
     _boot_phase('delegation delivery', _bp_agent.start_delegation_delivery)
+    # MC-1150 P4: a completion the previous server owed when it died (a pending
+    # record in a shim checkpoint) is run again here: after the reconcile and the
+    # delivery store it needs, before the workflow adoption that would otherwise
+    # read its half-finished agent_log row as an interrupted run.
+    from mc import agent_shim_completion as _agent_shim_completion
+    _boot_phase('replay pending completions', _agent_shim_completion.replay_pending)
     # Workflow run restart adoption (MC-871 spec §Q5, fail-closed): a run whose
     # current step was 'running' when the server went down is checked against
     # the agent_log just reconciled above; confirmed-complete children advance

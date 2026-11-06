@@ -1758,15 +1758,20 @@ def _adoptable_sessions_to_spare():
         return set()
 
 
-def _stop_all_sessions_for_restart(grace_seconds=3.0):
+def _stop_all_sessions_for_restart(grace_seconds=3.0, spare_adoptable=False):
     """Best-effort graceful stop of every tracked session before re-exec.
 
     Iterates agent_sessions, sends graceful stop (Mode B closes stdin; both modes
     schedule a background kill of the proc tree). Then waits up to grace_seconds
     for processes to exit before letting the re-exec orphan/kill the rest.
+
+    `spare_adoptable` (MC-1150 P4): only a RESTART that has started a replacement
+    server may leave adoptable shim agents running, because only a replacement
+    can adopt them. Power off shares this helper and never passes it, so it stops
+    every session exactly as before.
     """
     procs = []
-    spared = _adoptable_sessions_to_spare()
+    spared = _adoptable_sessions_to_spare() if spare_adoptable else set()
     for sid, sess in list(agent_sessions.items()):
         if sid in spared:
             # MC-1150 P4: left running under its shim; one last checkpoint instead
@@ -1977,7 +1982,8 @@ def _perform_server_restart_async(audit_entry):
         # below. Whether or not it finishes, we proceed.
         stop_done = threading.Event()
         def _bounded_stop():
-            try: _stop_all_sessions_for_restart()
+            # MC-1150 P4: spare adoptable agents only if a replacement server started.
+            try: _stop_all_sessions_for_restart(spare_adoptable=spawned)
             except Exception as e:
                 try: _log(f"[restart] stop-all failed: {e}")
                 except Exception: pass

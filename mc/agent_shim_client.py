@@ -451,6 +451,14 @@ class LogTail:
         # `next()` advances it. A checkpoint taken at `committed` re-reads the
         # in-flight line after a restart instead of skipping it.
         self.committed = int(offset)
+        # Reader boundary (MC-1150 P4 review): held by the reader thread from the
+        # moment a line is handed out until it asks for the next one, i.e. while
+        # that line's effects are being applied to the session. A checkpoint takes
+        # it, so it snapshots session state and `committed` at the same instant
+        # instead of state that already includes a line whose offset it omits.
+        # Re-entrant so the reader's own forced checkpoint does not deadlock.
+        self.boundary = threading.RLock()
+        self._holds_boundary = False
         self._finished = finished
         self._poll = poll_s
         self._buf = b''
@@ -492,12 +500,26 @@ class LogTail:
             return text[:-1] + '\n'
         return text
 
+    def _hand_out(self, raw: bytes) -> str:
+        """Take the reader boundary, THEN advance `offset`: a checkpoint holding
+        the boundary never sees an offset past a line the reader has not applied."""
+        self.boundary.acquire()
+        self._holds_boundary = True
+        return self._line(raw)
+
     def __next__(self) -> str:
+        # Asking for the next line means the previous one is fully applied.
         self.committed = self.offset
+        if self._holds_boundary:
+            self._holds_boundary = False
+            try:
+                self.boundary.release()
+            except RuntimeError:                        # iterated from a second thread
+                pass
         while True:
             raw = self._cut(final=False)
             if raw is not None:
-                return self._line(raw)
+                return self._hand_out(raw)
             if self._closed:
                 raise StopIteration
             done = self._finished()                    # sample BEFORE the read: no lost tail
@@ -510,7 +532,7 @@ class LogTail:
                     raw = self._cut(final=True)
                     if raw is None:
                         raw, self._buf = self._buf, b''
-                    return self._line(raw)
+                    return self._hand_out(raw)
                 raise StopIteration
             time.sleep(self._poll)
 

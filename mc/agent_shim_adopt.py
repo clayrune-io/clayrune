@@ -29,8 +29,9 @@ What lives here
                  system_routes' restart path (spec section 9).
 
 Reader state that is NOT in a session dict (per-turn locals of the stream
-readers) is not rebuilt. See the "Known limits" part of the journal; the cost
-and turn counters of the Claude readers are the exception, kept on the session.
+readers) is not rebuilt, so a session is adopted ONLY if its reader path is
+listed in `RESTORABLE_READER_PATHS` (Dave's decision on Fenn's P4 review,
+2026-11-05). Every other path stays a restart blocker, exactly as before P4.
 """
 from __future__ import annotations
 
@@ -53,7 +54,22 @@ CHECKPOINT_NAME = 'checkpoint.json'
 SUPPORTED_ENGINES = frozenset({'claude', 'gemini', 'qwen', 'codex', 'opencode',
                                'goose', 'aider', 'kiro'})
 
+# Reader paths whose per-turn state is FULLY in the checkpoint, so a fresh reader
+# started at the checkpoint offset reaches the same verdict as the one that died.
+# Key = `reader_path(engine, session mode)`, e.g. 'qwen:A', 'claude:B'. EMPTY on
+# purpose: none of the readers qualifies yet. `_mode_a_reader` keeps
+# `turn_text_parts`, the mc: control-block suppression flag, tool counts and the
+# empty-turn state in locals; Gemini's `_read_stream` keeps `pending_run`; the
+# Claude readers keep their own. A path may be added ONLY together with (a) every
+# one of its locals being published on the session dict, so `project_session`
+# carries it, and (b) a restart test with protocol output and one at end of
+# output (tests/test_agent_shim_adopt_blockers.py shows the shape). Adopting a
+# path without both turned a successful turn into "ended with no reply" and lost
+# half-read mc:question blocks.
+RESTORABLE_READER_PATHS: frozenset = frozenset()
+
 LOG_TAIL_MAX = 2000                 # spec 6.3: the last ~2000 log_lines
+BOUNDARY_WAIT_S = 2.0               # how long a checkpoint waits for the reader to finish its line
 CHECKPOINT_MAX_AGE_S = 10.0         # config shim_checkpoint_max_age_s (spec 9)
 HEARTBEAT_S = 3.0                   # rewrite an unchanged checkpoint this often
 TICK_S = 1.0
@@ -93,6 +109,20 @@ def max_age_s(cfg: Optional[Mapping[str, Any]] = None) -> float:
         return v if v > 0 else CHECKPOINT_MAX_AGE_S
     except (TypeError, ValueError, AttributeError):
         return CHECKPOINT_MAX_AGE_S
+
+
+def reader_path(engine: Any, session_mode: Any) -> str:
+    """The key the restorable-reader registry is indexed by."""
+    return f"{engine or ''}:{session_mode or 'A'}"
+
+
+def reader_path_restorable(engine: Any, session_mode: Any) -> bool:
+    return reader_path(engine, session_mode) in RESTORABLE_READER_PATHS
+
+
+# Set on the session dict by `mc/agent_shim_completion.py` while a completion's
+# side effects are in flight; it rides in every projection until acknowledged.
+PENDING_KEY = '_pending_completion'
 
 
 # ──────────────────────────────── projection ─────────────────────────────────
@@ -232,21 +262,59 @@ def build_checkpoint(session: Mapping[str, Any], *, inflight: bool = False,
 
 _REGISTRY_LOCK = threading.Lock()
 _LAST_WRITE: Dict[str, Tuple[Any, float]] = {}   # session_id -> (launch_id, epoch)
+# Per (session, launch): the lock that serializes snapshot + replace, and the
+# highest consumed offset already on disk. Atomic rename stops a torn file; it
+# does not stop an OLDER snapshot landing after a newer one.
+_WRITE_LOCKS: Dict[Tuple[str, Any], threading.Lock] = {}
+_LAST_OFFSET: Dict[Tuple[str, Any], int] = {}
+
+
+def _write_lock(sid: str, launch_id: Any) -> threading.Lock:
+    with _REGISTRY_LOCK:
+        return _WRITE_LOCKS.setdefault((sid, launch_id), threading.Lock())
 
 
 def write_checkpoint(session: Mapping[str, Any], *, inflight: bool = False,
                      now: Optional[float] = None) -> bool:
     """Atomically write the session's checkpoint. False when the session is not
-    shim-run or the write failed (logged); never raises."""
+    shim-run, the write failed (logged), or a newer snapshot is already on disk;
+    never raises.
+
+    Ordering (MC-1150 P4 review): the reader boundary is taken first, so the
+    projection and the offset describe the same instant; then a per
+    session/launch lock covers snapshot AND replace, so the daemon checkpointer,
+    the reader's forced checkpoint and the restart flush cannot interleave; and
+    a snapshot whose offset is behind what is already on disk is dropped, so a
+    later committed snapshot is never replaced by an earlier one."""
     try:
-        ck = build_checkpoint(session, inflight=inflight, now=now)
         proc = _shim_proc(session)
-        if ck is None or proc is None:
+        if proc is None:
             return False
-        write_json_atomic(checkpoint_path(proc.dir), ck)
-        with _REGISTRY_LOCK:
-            _LAST_WRITE[str(ck['session_id'])] = (ck['launch_id'], ck['written_epoch'])
-        return True
+        sid = str(session.get('session_id'))
+        launch_id = proc.manifest.get('launch_id')
+        boundary = getattr(proc.stdout, 'boundary', None)
+        if boundary is not None and not boundary.acquire(timeout=BOUNDARY_WAIT_S):
+            _log(f"[agent-shim-adopt] checkpoint for {sid[:12]} skipped: reader did not "
+                 f"reach a line boundary in {BOUNDARY_WAIT_S}s")
+            return False
+        try:
+            with _write_lock(sid, launch_id):
+                ck = build_checkpoint(session, inflight=inflight, now=now)
+                if ck is None:
+                    return False
+                prev = _LAST_OFFSET.get((sid, launch_id))
+                if prev is not None and ck['consumed_offset'] < prev:
+                    _log(f"[agent-shim-adopt] stale checkpoint for {sid[:12]} dropped "
+                         f"(offset {ck['consumed_offset']} < {prev} already on disk)")
+                    return False
+                write_json_atomic(checkpoint_path(proc.dir), ck)
+                with _REGISTRY_LOCK:
+                    _LAST_WRITE[sid] = (ck['launch_id'], ck['written_epoch'])
+                    _LAST_OFFSET[(sid, launch_id)] = ck['consumed_offset']
+                return True
+        finally:
+            if boundary is not None:
+                boundary.release()
     except Exception as e:
         _log(f"[agent-shim-adopt] checkpoint write failed for "
              f"{str(session.get('session_id'))[:12]}: {e}")
@@ -270,6 +338,9 @@ def last_checkpoint(session_id: str) -> Optional[Tuple[Any, float]]:
 
 def forget(session_id: str) -> None:
     with _REGISTRY_LOCK:
+        # Only the freshness stamp. `_LAST_OFFSET`/`_WRITE_LOCKS` stay for the life
+        # of the process: dropping a lock another writer holds would let a second
+        # writer in, and the completion checkpoints land after the daemon forgets.
         _LAST_WRITE.pop(str(session_id), None)
 
 
@@ -364,11 +435,23 @@ class Assessment:
     checkpoint: Optional[Dict[str, Any]] = None
 
     @property
-    def protected_pids(self) -> List[int]:
+    def protected_identities(self) -> List[Tuple[int, Any]]:
+        """(pid, create_time) of the processes assessment found POSITIVELY alive
+        and matching the manifest. A CLI that finished during downtime, or a pid
+        that now belongs to a stranger, is not here: nothing about it is ours."""
         if not self.ok or self.status is None:
             return []
         m = self.status.manifest
-        return [int(p) for p in (m.get('cli_pid'), m.get('shim_pid')) if p]
+        out: List[Tuple[int, Any]] = []
+        if self.status.cli_alive and m.get('cli_pid'):
+            out.append((int(m['cli_pid']), m.get('cli_ct')))
+        if self.status.shim_alive and m.get('shim_pid'):
+            out.append((int(m['shim_pid']), m.get('shim_ct')))
+        return out
+
+    @property
+    def protected_pids(self) -> List[int]:
+        return [pid for pid, _ct in self.protected_identities]
 
 
 def assess(sdir: Any, *, sleep: Callable[[float], None] = time.sleep) -> Assessment:
@@ -416,6 +499,14 @@ def assess(sdir: Any, *, sleep: Callable[[float], None] = time.sleep) -> Assessm
                 return no('checkpoint offset is past the end of out.log', spec=spec, status=st)
         except OSError:
             return no('out.log missing', spec=spec, status=st)
+        if ck['session'].get(PENDING_KEY):
+            return no('a completion is pending replay for this turn (agent_shim_completion)',
+                      spec=spec, status=st, checkpoint=ck)
+        path = reader_path(engine, ck['session'].get('mode'))
+        if path not in RESTORABLE_READER_PATHS:
+            return no(f'reader path {path} does not checkpoint its per-turn state; '
+                      f'left to the reaper and revive-on-message', spec=spec, status=st,
+                      checkpoint=ck)
         cli = _shim.process_state(m.get('cli_pid'), m.get('cli_ct'))
         shim = _shim.process_state(m.get('shim_pid'), m.get('shim_ct'))
         if 'unknown' in (cli, shim):
@@ -488,13 +579,16 @@ class AdoptReport:
 
 
 _CLAIMS: List[Claim] = []
-_PROTECTED: Set[int] = set()
+_PROTECTED: Dict[int, Any] = {}              # pid -> create_time recorded in the manifest
 _ADOPTED_IDS: Set[str] = set()
 
 
 def protected_pids() -> frozenset:
-    """Pids the startup reaper must leave alone (CLI + shim of every claim)."""
-    return frozenset(_PROTECTED)
+    """Pids the startup reaper must leave alone: the CLI/shim of every claim that
+    was positively alive and is STILL the recorded process (re-verified here, at
+    the moment the reaper asks, not at assessment)."""
+    return frozenset(pid for pid, ct in list(_PROTECTED.items())
+                     if _shim.process_state(pid, ct) == 'ours')
 
 
 def adopted_session_ids() -> frozenset:
@@ -507,6 +601,8 @@ def reset_for_tests() -> None:
     _ADOPTED_IDS.clear()
     with _REGISTRY_LOCK:
         _LAST_WRITE.clear()
+        _LAST_OFFSET.clear()
+        _WRITE_LOCKS.clear()
 
 
 def claim_all(root: Optional[Any] = None, *, cfg: Optional[Mapping[str, Any]] = None,
@@ -536,7 +632,7 @@ def claim_all(root: Optional[Any] = None, *, cfg: Optional[Mapping[str, Any]] = 
             _log(f'[agent-shim-adopt] {a.session_id[:12]} not adopted: {proc}')
             continue
         _CLAIMS.append(Claim(a, proc))
-        _PROTECTED.update(a.protected_pids)
+        _PROTECTED.update({pid: ct for pid, ct in a.protected_identities})
         rep.claimed.append(a.session_id)
     return rep
 
@@ -608,6 +704,8 @@ class Deps:
     register_process: Callable[..., Any]
     start_reader: Callable[[str, Any, Dict[str, Any]], None]
     session_provider: Callable[[Dict[str, Any], Mapping[str, Any]], str]
+    # (image, create_time) of the live process at a pid, or (None, None).
+    proc_identity: Callable[[int], Tuple[Any, Any]] = lambda pid: (None, None)
 
 
 def default_deps() -> Deps:
@@ -615,7 +713,8 @@ def default_deps() -> Deps:
     from mc.blueprints import agent_routes as ar
     return Deps(agent_sessions=state.agent_sessions, get_manager=ar.get_manager,
                 register_process=ar._register_process, start_reader=_start_reader,
-                session_provider=lambda s, spec: str(spec.get('engine') or 'claude'))
+                session_provider=lambda s, spec: str(spec.get('engine') or 'claude'),
+                proc_identity=ar._proc_identity)
 
 
 def _start_reader(engine: str, proc: Any, session: Dict[str, Any]) -> None:
@@ -644,6 +743,33 @@ def _start_reader(engine: str, proc: Any, session: Dict[str, Any]) -> None:
                      name=f'adopted-reader-{engine}-{str(session.get("session_id"))[:8]}').start()
 
 
+def _register_adopted_cli(claim: Claim, deps: Deps, engine: str, sid: str,
+                          session: Mapping[str, Any]) -> bool:
+    """Put the adopted CLI into the live-process ledger, or do not.
+
+    The ledger is a KILL list (the startup reaper acts on it), so it holds only a
+    process that is positively the one the manifest recorded, checked HERE at the
+    registration boundary and not at assessment. A CLI that finished during
+    downtime is replayed from out.log and never registered; neither is a pid that
+    now belongs to a stranger. The entry keeps the manifest's create-time, never
+    one sampled from the current holder of the pid (MC-1150 P4 review, finding 1)."""
+    m = claim.proc.manifest or {}
+    pid, ct = m.get('cli_pid'), m.get('cli_ct')
+    if not pid or ct is None:
+        return False
+    try:
+        img, live_ct = deps.proc_identity(int(pid))
+    except Exception as e:
+        _log(f'[agent-shim-adopt] {sid[:12]} identity sample failed: {e}')
+        return False
+    if not img or live_ct is None or abs(float(live_ct) - float(ct)) > _shim.IDENTITY_TOLERANCE_S:
+        return False
+    deps.register_process(claim.proc, f'Agent ({engine} adopted)', 'agent', sid,
+                          str(session.get('project_id') or ''), str(session.get('task') or '')[:80],
+                          identity=(img, float(ct)))
+    return True
+
+
 def start_one(claim: Claim, deps: Deps) -> Dict[str, Any]:
     a = claim.assessment
     assert a.checkpoint is not None
@@ -668,8 +794,7 @@ def start_one(claim: Claim, deps: Deps) -> Dict[str, Any]:
     mgr = deps.get_manager(str(session.get('project_id') or ''))
     if mgr is not None:
         mgr.session_ids.add(sid)
-    deps.register_process(claim.proc, f'Agent ({engine} adopted)', 'agent', sid,
-                          str(session.get('project_id') or ''), str(session.get('task') or '')[:80])
+    _register_adopted_cli(claim, deps, engine, sid, session)
     _ADOPTED_IDS.add(sid)
     deps.start_reader(engine, claim.proc, session)
     _log(f'[agent-shim-adopt] adopted {sid[:12]} engine={engine} mode={a.spec.get("mode")} '
@@ -699,6 +824,13 @@ def is_adoptable_session(session: Mapping[str, Any], *, cfg: Optional[Mapping[st
     try:
         spec = _client.read_json(Path(proc.dir) / 'spec.json') or {}
         if spec.get('engine') not in SUPPORTED_ENGINES or spec.get('schema') != _shim.SCHEMA:
+            return False
+        # The same two refusals boot assessment makes (see `assess`): an agent the
+        # restart would spare must be one the next server will actually adopt, and
+        # an unsupported reader path stays a restart blocker exactly as before P4.
+        if not reader_path_restorable(spec.get('engine'), session.get('mode')):
+            return False
+        if session.get(PENDING_KEY):
             return False
         st = _client.inspect(proc.dir)
         if st is None or st.manifest.get('launch_id') != proc.manifest.get('launch_id'):

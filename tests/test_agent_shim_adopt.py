@@ -38,8 +38,13 @@ def tracker():
 
 
 @pytest.fixture(autouse=True)
-def _clean_registry():
+def _clean_registry(monkeypatch):
     A.reset_for_tests()
+    # The production registry is empty (no reader path checkpoints all of its
+    # per-turn state yet). These tests exercise assessment/claim/protection with
+    # a fake CLI that prints plain lines, so they declare that path restorable;
+    # tests/test_agent_shim_adopt_blockers.py pins the empty default.
+    monkeypatch.setattr(A, 'RESTORABLE_READER_PATHS', frozenset({'qwen:A'}))
     yield
     A.reset_for_tests()
 

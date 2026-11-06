@@ -72,6 +72,7 @@ def start(work, sid, lines, interval, with_hm):
     from mc import agent_spawn as S
     from mc import state
     state.CONFIG['agent_survive_restart_enabled'] = True
+    A.RESTORABLE_READER_PATHS = frozenset({'qwen:A'})   # test-only, as in adopt() below
     S.set_root(work / 'shims')
     R = _wrap_completion(work)
     rt = ar.get_runtime('qwen')
@@ -97,6 +98,12 @@ def adopt(work, sid, with_hm):
     from mc import agent_spawn as S
     from mc import state
     state.CONFIG['agent_survive_restart_enabled'] = True
+    # Test-only. The production registry is empty (no real reader path
+    # checkpoints all of its per-turn state); the fake CLI prints plain lines, for
+    # which the Mode A reader has no per-turn state worth losing, so this path is
+    # declared restorable to exercise the adoption machinery end to end.
+    # tests/test_agent_shim_adopt_blockers.py pins the empty default.
+    A.RESTORABLE_READER_PATHS = frozenset({'qwen:A'})
     S.set_root(work / 'shims')
     _wrap_completion(work)
     claimed = A.claim_all(work / 'shims')
