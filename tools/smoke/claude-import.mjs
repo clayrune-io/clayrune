@@ -125,6 +125,8 @@ const shot = async (page, file) => { if (SHOTS) await page.screenshot({ path: re
 async function walkToAfterProtect(page) {
   await page.waitForSelector('#setup-overlay .wt-title', { timeout: 5000 });
   await page.click('#setup-overlay .wt-btn-primary');                       // Get started (connections skipped)
+  await page.waitForFunction(() => document.querySelector('#setup-overlay .wt-title')?.textContent === 'Help count Clayrune installs');
+  await page.click('#setup-overlay .wt-btn-primary');                       // -> Make it yours
   await page.waitForFunction(() => document.querySelector('#setup-overlay .wt-title')?.textContent === 'Make it yours');
   await page.click('#setup-overlay .wt-btn-primary');                       // -> phone
   await page.waitForFunction(() => document.querySelector('#setup-overlay .wt-title')?.textContent === 'Use Clayrune from your phone?');

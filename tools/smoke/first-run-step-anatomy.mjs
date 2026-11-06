@@ -150,6 +150,10 @@ try {
     page.once('dialog', (d) => d.accept());
     await page.click('#setup-overlay .wt-btn-primary');
     await page.waitForTimeout(150);
+    await checkStep(page, 'update-ping');
+
+    await page.click('#setup-overlay .wt-btn-primary'); // Next -> essentials-yours
+    await page.waitForTimeout(150);
     await checkStep(page, 'essentials-yours');
 
     await page.click('#setup-overlay .wt-btn-primary'); // Next -> essentials-phone

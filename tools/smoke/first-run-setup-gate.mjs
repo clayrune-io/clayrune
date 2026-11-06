@@ -174,6 +174,20 @@ const answerHumanProofSetModal = async (page, timeout = 5000) => {
   });
 };
 
+// Update-check ping step (static/js/first-run.js 'update-ping'): sits right after
+// the connections step. Asserts the Ron-2026-11-05 shape (toggle shown pre-ON, no
+// skip control) and passes through it with its default.
+const passPing = async (page, label = '', forced = false) => {
+  const st = await overlayState(page);
+  if (st.title !== 'Help count Clayrune installs') { fail(`expected the update-check step${label}, got: ${st.title}`); return false; }
+  if (!(await page.locator('#setup-ping-toggle.on').count())) fail('update-check toggle is not pre-ON');
+  else ok('update-check step: toggle is pre-ON');
+  if (!forced && await page.locator('#setup-overlay .wt-btn-skip, #setup-overlay .setup-btn-secondary').count()) fail('a skip-style control is present on the update-check step of a first run');
+  await page.click('#setup-overlay .wt-btn-primary'); // Next -> essentials A
+  await page.waitForTimeout(150);
+  return true;
+};
+
 try {
   browser = await chromium.launch();
 
@@ -200,8 +214,9 @@ try {
     if (st.title !== 'Welcome to Clayrune') { fail(`expected Welcome first, got: ${st.title}`); return null; }
     await page.click('#setup-overlay .wt-btn-primary'); // "Get started"
     await page.waitForTimeout(150);
+    if (!(await passPing(page, ' (connections step should have auto-skipped: provider already installed+signed-in)'))) return null;
     st = await overlayState(page);
-    if (st.title !== 'Make it yours') { fail(`connections step should have auto-skipped (provider already installed+signed-in); expected essentials step A, got: ${st.title}`); return null; }
+    if (st.title !== 'Make it yours') { fail(`expected essentials step A, got: ${st.title}`); return null; }
     ok('connections step skipped (default provider already installed + signed in)');
     // Three essentials steps now (A "Make it yours" -> B phone -> C detail).
     // Unrevealed step B has no generic Next (the body's own "Not now"/"Set it
@@ -392,6 +407,7 @@ try {
     await page.waitForSelector('#setup-overlay', { timeout: 5000 }).catch(() => {});
     await page.click('#setup-overlay .wt-btn-primary'); // Get started -> essentials A (connections skipped)
     await page.waitForTimeout(150);
+    if (!(await passPing(page))) return;
     const st = await overlayState(page);
     if (st.title !== 'Make it yours') { fail(`expected essentials step A, got: ${st.title}`); return; }
     if (await page.locator('#setup-overlay .wt-btn-skip, #setup-overlay .setup-btn-secondary').count()) fail('a skip-style control is present on the essentials step of a first run');
@@ -408,6 +424,7 @@ try {
     await page.waitForSelector('#setup-overlay', { timeout: 5000 }).catch(() => {});
     await page.click('#setup-overlay .wt-btn-primary'); // Get started -> essentials A
     await page.waitForTimeout(150);
+    if (!(await passPing(page))) return;
     let st = await overlayState(page);
     if (st.title !== 'Make it yours') { fail(`expected essentials step A before reload, got: ${st.title}`); return; }
     await page.reload({ waitUntil: 'domcontentloaded' });
@@ -515,8 +532,8 @@ try {
     st = await overlayState(page);
     if (st.title !== 'Welcome to Clayrune') { fail(`"Run setup again" should start at Welcome, got: ${st.title}`); return; }
     // 8 since the 'import' step (backlog ba3b73f9): never skipped on a forced re-run.
-    if (st.progress !== 'Step 1 of 8') fail(`forced re-run should show all 8 steps (none skipped), got progress "${st.progress}"`);
-    else ok('forced re-run shows all 8 steps (progress "Step 1 of 8") despite an already-configured install');
+    if (st.progress !== 'Step 1 of 9') fail(`forced re-run should show all 9 steps (none skipped), got progress "${st.progress}"`);
+    else ok('forced re-run shows all 9 steps (progress "Step 1 of 9") despite an already-configured install');
     if (!st.isMarkedAsSetup) fail('forced re-run card does not carry the wt-card-setup marker');
     else ok('forced re-run card also carries the wt-card-setup marker');
 
@@ -528,6 +545,7 @@ try {
 
     await page.click('#setup-overlay .wt-btn-primary'); // Next (validation passes: claude selected+default+ok)
     await page.waitForTimeout(150);
+    if (!(await passPing(page, '', true))) return;
     st = await overlayState(page);
     if (st.title !== 'Make it yours') { fail(`expected essentials step A, got: ${st.title}`); return; }
 
@@ -567,8 +585,9 @@ try {
     providers: ONE_PROVIDER_OK, // connections step auto-skips
   }, async (page) => {
     await page.waitForSelector('#setup-overlay', { timeout: 5000 }).catch(() => {});
-    await page.click('#setup-overlay .wt-btn-primary'); // Get started -> essentials A
+    await page.click('#setup-overlay .wt-btn-primary'); // Get started -> update-check step
     await page.waitForTimeout(150);
+    if (!(await passPing(page))) return;
     await page.click('#setup-overlay .wt-btn-primary'); // Next -> essentials B
     await page.waitForTimeout(150);
     let st = await overlayState(page);

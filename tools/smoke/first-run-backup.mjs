@@ -122,7 +122,9 @@ async function scenario(name, { config, configPutHandler = null, dest = { config
 // Walks Welcome -> (connections skips) -> essentials A -> B -> C -> protect.
 async function walkToProtectStep(page) {
   await page.waitForSelector('#setup-overlay', { timeout: 5000 }).catch(() => {});
-  await page.click('#setup-overlay .wt-btn-primary'); // Get started -> essentials A (connections skipped)
+  await page.click('#setup-overlay .wt-btn-primary'); // Get started -> update-check step (connections skipped)
+  await page.waitForTimeout(150);
+  await page.click('#setup-overlay .wt-btn-primary'); // Next -> essentials A
   await page.waitForTimeout(150);
   await page.click('#setup-overlay .wt-btn-primary'); // Next -> essentials-phone
   await page.waitForTimeout(150);
