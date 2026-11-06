@@ -249,3 +249,120 @@ def test_unattended_caller_refused(client, monkeypatch):
     assert c.post('/api/update-ping/seen').status_code == 403
     assert json.loads(path.read_text()) == {'keep': 1}
     assert live['update_ping_disclosed'] is False
+
+
+# ── Fenn review 2026-11-05: regressions (each fails on 82619240) ──────────────
+
+import threading
+import time
+
+from mc import provider_preferences
+
+
+def _run(fn):
+    out = {}
+
+    def target():
+        out['r'] = fn()
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    return t, out
+
+
+def test_seen_cannot_overwrite_a_concurrent_opt_out(client, monkeypatch):
+    """P1: /seen read enabled=true, paused before its write; /choice {false} saved OFF;
+    /seen then wrote the stale copy back. Disk said ON while the live dict said OFF."""
+    c0, path, live = client
+    app = Flask(__name__)
+    app.register_blueprint(update_ping_routes.bp)
+    reached, release = threading.Event(), threading.Event()
+    real = update_ping_routes.write_json_atomic
+
+    def paused_write(p, obj, **kw):
+        if threading.current_thread().name == 'seen-writer' and not reached.is_set():
+            reached.set()
+            release.wait(5)
+        return real(p, obj, **kw)
+    monkeypatch.setattr(update_ping_routes, 'write_json_atomic', paused_write)
+
+    seen_t = threading.Thread(target=lambda: app.test_client().post('/api/update-ping/seen'),
+                              name='seen-writer', daemon=True)
+    seen_t.start()
+    assert reached.wait(5)
+    choice_t = threading.Thread(
+        target=lambda: app.test_client().post('/api/update-ping/choice', json={'enabled': False}),
+        daemon=True)
+    choice_t.start()
+    time.sleep(0.3)              # lets an unserialized /choice run to completion first
+    release.set()
+    seen_t.join(5)
+    choice_t.join(5)
+    assert json.loads(path.read_text())['update_ping_enabled'] is False
+    assert live['update_ping_enabled'] is False
+    sent = []
+    update_ping.maybe_ping(now=1_000_000, post_fn=lambda u, p: sent.append(p) or {})
+    assert sent == []
+
+
+def test_routes_take_the_settings_config_lock(client):
+    """P1: the routes must serialize with PUT /api/config, i.e. the shared lock."""
+    c, path, _ = client
+    done = threading.Event()
+    with provider_preferences._write_lock:       # what PUT /api/config holds while it writes
+        t, _out = _run(lambda: (c.post('/api/update-ping/choice', json={'enabled': False}), done.set()))
+        assert not done.wait(0.4), 'choice wrote while another config writer held the lock'
+        assert json.loads(path.read_text()) == {'keep': 1}
+    assert done.wait(5)
+    assert json.loads(path.read_text())['update_ping_enabled'] is False
+
+
+def test_opt_out_during_version_lookup_sends_nothing(ping):
+    """P2: OFF saved while the (git describe) version callback is running must stop the POST."""
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_version():
+        entered.set()
+        release.wait(5)
+        return 'v2.3.0'
+    update_ping.wire(ping.dir / 'state.json', config_fn=lambda: ping.cfg,
+                     version_fn=slow_version, ping_id_path=ping.dir / 'ping_id')
+    t, out = _run(lambda: update_ping.maybe_ping(now=1_000_000, post_fn=ping.post))
+    assert entered.wait(5)
+    ping.cfg['update_ping_enabled'] = False      # the user's opt-out lands now
+    release.set()
+    t.join(5)
+    assert ping.calls == []
+    assert out['r'] == {'sent': False, 'reason': 'disabled'}
+    assert not (ping.dir / 'ping_id').exists()
+    # nothing was sent, so the day is not consumed: opting back in pings immediately
+    ping.cfg['update_ping_enabled'] = True
+    assert update_ping.maybe_ping(now=1_000_001, post_fn=ping.post)['sent'] is True
+
+
+def test_env_off_during_version_lookup_sends_nothing(ping):
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_version():
+        entered.set()
+        release.wait(5)
+        return 'v2.3.0'
+    update_ping.wire(ping.dir / 'state.json', config_fn=lambda: ping.cfg,
+                     version_fn=slow_version, ping_id_path=ping.dir / 'ping_id')
+    env = {}
+    t, out = _run(lambda: update_ping.maybe_ping(now=1_000_000, post_fn=ping.post, environ=env))
+    assert entered.wait(5)
+    env['DO_NOT_TRACK'] = '1'
+    release.set()
+    t.join(5)
+    assert ping.calls == [] and out['r']['reason'] == 'env_off'
+
+
+def test_update_ping_routes_wire_guard(tmp_path):
+    """pyright: CONFIG_PATH may be None; _persist must say so rather than open(None)."""
+    saved = update_ping_routes.CONFIG_PATH
+    update_ping_routes.CONFIG_PATH = None
+    try:
+        with pytest.raises(RuntimeError):
+            update_ping_routes._persist({'x': 1})
+    finally:
+        update_ping_routes.CONFIG_PATH = saved

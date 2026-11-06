@@ -23,6 +23,11 @@ socket is opened; `tests/test_update_ping.py` proves zero requests for each):
     "at most once per 24h" holds even when the endpoint is down;
   * the endpoint URL is not https (loopback http is allowed for local testing).
 
+The gates are checked again, under the config writers' lock, immediately before
+the request (after the slow version lookup), so an opt-out saved while the
+sender was working is honoured and no new request starts after it returns.
+A request already on the wire cannot be recalled.
+
 The endpoint is config ``update_ping_url`` (default below). It is deliberately
 not on the Settings-editable list: an agent session must not be able to point
 the ping somewhere else. Redirects are refused, the response is size-capped,
@@ -163,9 +168,14 @@ def os_name() -> str:
     return {'Windows': 'windows', 'Darwin': 'darwin', 'Linux': 'linux'}.get(platform.system(), 'other')
 
 
-def build_payload() -> dict:
-    """Exactly three keys. Anything added here must also change the disclosure text."""
-    version = str(_version_fn() or '')[:64]
+def build_payload(version: Optional[str] = None) -> dict:
+    """Exactly three keys. Anything added here must also change the disclosure text.
+
+    `version` lets the sender read the (slow, `git describe`) version BEFORE its
+    final eligibility recheck and build the rest after it; omitted, it is read here.
+    """
+    if version is None:
+        version = str(_version_fn() or '')[:64]
     return {'install_id': get_ping_id(), 'version': version, 'os': os_name()}
 
 
@@ -202,6 +212,21 @@ def _http_post(url: str, payload: dict) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _recheck(environ=None) -> Optional[str]:
+    """Final eligibility check, taken under the config writers' lock.
+
+    The same lock covers every config write (PUT /api/config and the
+    /api/update-ping/* routes, which update the live dict inside it), so an
+    opt-out that has returned HTTP 200 is always visible here, and one still
+    in progress is waited for. Without this, the gates in `maybe_ping` ran once
+    before the slow version lookup and an OFF saved during it still got a POST.
+    Returns the blocking reason, or None if the ping may go.
+    """
+    from mc import provider_preferences
+    return provider_preferences.serialized_write(
+        lambda: blocked_reason(_config_fn() or {}, environ))()
+
+
 def maybe_ping(now: Optional[float] = None, post_fn: Optional[Callable[[str, dict], dict]] = None,
                environ=None) -> dict:
     """One decision pass. Sends at most one request. Never raises."""
@@ -217,10 +242,21 @@ def maybe_ping(now: Optional[float] = None, post_fn: Optional[Callable[[str, dic
             return {'sent': False, 'reason': 'not_due'}
         # Record the attempt BEFORE the request: a crash or hang mid-request
         # must not turn into a retry storm.
+        prior_attempt = _STATE.get('last_attempt_ts')
         _STATE['last_attempt_ts'] = t
         _save()
         try:
-            payload = build_payload()
+            version = str(_version_fn() or '')[:64]      # slow: may run `git describe`
+            reason = _recheck(environ)                    # an opt-out may have landed meanwhile
+            if reason:
+                # Nothing was sent, so this must not eat the day.
+                if prior_attempt is None:
+                    _STATE.pop('last_attempt_ts', None)
+                else:
+                    _STATE['last_attempt_ts'] = prior_attempt
+                _save()
+                return {'sent': False, 'reason': reason}
+            payload = build_payload(version)
             reply = (post_fn or _http_post)(url, payload)
         except Exception as e:
             _STATE['last_error'] = str(e)[:200]

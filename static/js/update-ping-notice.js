@@ -3,8 +3,8 @@
 //
 // The ping is ON by default but sends nothing until the user has SEEN this text
 // (server flag update_ping_disclosed). Two places show it: the first-run step
-// (first-run.js imports UPDATE_PING_DISCLOSURE and posts /choice when the user
-// leaves the step) and the one-time notice below for installs that already
+// (setup-update-ping-step.js imports UPDATE_PING_DISCLOSURE and posts /choice
+// when the user leaves the step) and the one-time notice below for installs that already
 // finished setup. Dismissing the notice keeps the ping ON; the toggle on it
 // turns it off. Both write through POST /api/update-ping/*, not PUT /api/config:
 // a fresh install has no passcode for a yes/no to hang off (see
@@ -19,7 +19,7 @@ export const UPDATE_PING_DISCLOSURE =
 export const UPDATE_PING_HOWTO_OFF =
   'Turn it off any time in Settings → System, or set DO_NOT_TRACK=1 (or CLAYRUNE_NO_PING=1) in the environment.';
 
-async function _pingStatus() {
+export async function pingStatus() {
   try {
     const r = await fetch(API_BASE + '/api/update-ping/status');
     return r.ok ? await r.json() : null;
@@ -63,11 +63,34 @@ async function _showDisclosureNotice(st) {
     <div class="upn-actions"><button class="toast-btn primary" id="upn-dismiss">Got it</button></div>`;
   document.body.appendChild(card);
   const toggle = card.querySelector('#upn-toggle');
+  // "First ping only after it was SHOWN". Appending the card is not showing it:
+  // a dashboard restored in a background tab has a card nobody can see, and
+  // update_ping_disclosed is installation-wide and permanent. So the display is
+  // recorded only when the page is visible and the card has painted, or when the
+  // person acts on it (dismiss; the toggle records via /choice, which also
+  // counts). Dismissing keeps the ping ON; the toggle is the way to opt out.
+  let acked = false;
+  const markAcked = () => { acked = true; document.removeEventListener('visibilitychange', armAck); };
+  const ack = async () => {
+    if (acked) return;
+    markAcked();
+    try { await fetch(API_BASE + '/api/update-ping/seen', { method: 'POST' }); } catch (_) {}
+  };
+  const pageVisible = () => document.visibilityState === 'visible' && !document.hidden;
+  function armAck() {
+    if (acked || !pageVisible() || !card.isConnected) return;
+    // Two frames: the card is in the DOM, then it has actually been painted.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (pageVisible() && card.isConnected) ack();
+    }));
+  }
   const flip = async () => {
     const on = !toggle.classList.contains('on');
     toggle.classList.toggle('on', on);
     toggle.setAttribute('aria-checked', on ? 'true' : 'false');
-    if (!(await updatePingChoose(on))) {
+    if (await updatePingChoose(on)) {
+      markAcked();                       // /choice records the disclosure as seen too
+    } else {
       toggle.classList.toggle('on', !on);
       toggle.setAttribute('aria-checked', !on ? 'true' : 'false');
       if (typeof showToast === 'function') showToast('Could not save that choice. Try Settings → System.', 5000);
@@ -75,10 +98,9 @@ async function _showDisclosureNotice(st) {
   };
   toggle.addEventListener('click', flip);
   toggle.addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); flip(); } });
-  card.querySelector('#upn-dismiss').addEventListener('click', _closeNotice);
-  // "First ping only after it was shown": record the display now. Dismissing
-  // changes nothing (the ping stays ON); the toggle above is the way to opt out.
-  try { await fetch(API_BASE + '/api/update-ping/seen', { method: 'POST' }); } catch (_) {}
+  document.addEventListener('visibilitychange', armAck);
+  card.querySelector('#upn-dismiss').addEventListener('click', () => { _closeNotice(); ack(); });
+  armAck();
 }
 
 function _showUpdateAvailable(st) {
@@ -97,7 +119,7 @@ function _showUpdateAvailable(st) {
 // Boot hook (index.html). Waits for the first-run wizard to have its chance to
 // open, so a brand-new install sees the disclosure as a setup step, not twice.
 export async function checkUpdatePingNotice() {
-  const st = await _pingStatus();
+  const st = await pingStatus();
   if (!st || st.env_disabled) return;       // env hard-off: nothing is ever sent, nothing to disclose
   if (!st.disclosed) {
     if (document.getElementById('setup-overlay')) return;   // first-run owns the disclosure
@@ -114,19 +136,4 @@ export async function checkUpdatePingNotice() {
   }
 }
 
-// Settings -> System row: a note when the environment forces the ping off, so a
-// toggle that reads ON is not a lie.
-export async function refreshUpdatePingSection() {
-  const note = document.getElementById('update-ping-env-note');
-  const toggle = document.getElementById('update-ping-toggle');
-  if (!note) return;
-  const st = await _pingStatus();
-  if (st && st.env_disabled) {
-    note.style.display = '';
-    note.textContent = 'Off: DO_NOT_TRACK or CLAYRUNE_NO_PING is set in the environment, which overrides this switch.';
-    if (toggle) toggle.classList.remove('on');
-  }
-}
-
 window.checkUpdatePingNotice = checkUpdatePingNotice;     // interop: boot continuation (index.html)
-window.refreshUpdatePingSection = refreshUpdatePingSection; // interop: Settings render (settings-drill.js)

@@ -86,6 +86,7 @@ async function withPage(run) {
     if (path === '/api/walkthrough/sample-project') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, id: 'clayrune', existed: true }) });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === '/api/agent/providers') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(TWO_PROVIDERS_UNSET) });
+    if (path === '/api/update-ping/choice') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });   // setup's update-check step awaits this save
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: false }) });
     if (path === '/api/system/update/status') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ is_git_repo: true, behind: 0, ahead: 0, has_local_changes: false, update_available: false, projects_in_install_dir: [] }) });
     return route.abort();

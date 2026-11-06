@@ -2,6 +2,7 @@ import './engine-preferences.js';
 import './settings-ownership.js';
 import './floor-preferences.js';
 import './unattended-retry-settings.js';
+import { updatePingSettingsHTML, refreshUpdatePingSection } from './settings-update-ping.js';
 
 // ── Settings categories + drill-down (WhatsApp-style) ────────────────────────
 // The settings modal is a master list of categories; tapping one drills into a
@@ -760,17 +761,7 @@ async function _renderSettings() {
       </div>
     </div>
 
-    <div class="settings-section">
-      <div class="settings-section-title">Update check</div>
-      <div class="settings-row">
-        <div>
-          <div class="settings-label">Count my install and tell me about updates</div>
-          <div class="settings-hint">Once a day Clayrune sends one small message to clayrune.io: a random install ID, your Clayrune version, and your operating system. Nothing else. No name, no computer name, no projects, no files. It replies with the newest version so Clayrune can tell you when an update is out. Setting DO_NOT_TRACK=1 or CLAYRUNE_NO_PING=1 in the environment turns it off regardless of this switch.</div>
-          <div class="settings-hint" id="update-ping-env-note" style="display:none;color:var(--amber-text,#c98a2c);margin-top:4px"></div>
-        </div>
-        <div class="settings-toggle ${cfg.update_ping_enabled !== false ? 'on' : ''}" id="update-ping-toggle" onclick="toggleSetting(this,'update_ping_enabled')"></div>
-      </div>
-    </div>
+    ${updatePingSettingsHTML(cfg)}
 
     ${installedAppSettingsHTML()}
 
@@ -793,7 +784,7 @@ async function _renderSettings() {
   // body.innerHTML was set, which raced and left the row stuck on the
   // "Checking for updates..." placeholder.)
   refreshUpdateStatus();
-  try { window.refreshUpdatePingSection && window.refreshUpdatePingSection(); } catch (_) {}
+  refreshUpdatePingSection().catch(() => {});
 
   // Same lesson — hydrate the push + mobile-pair sections AFTER the DOM has
   // their containers. Both functions early-return if their target element

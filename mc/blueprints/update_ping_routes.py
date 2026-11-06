@@ -19,7 +19,7 @@ import json
 
 from flask import Blueprint, jsonify, request
 
-from mc import state, update_ping
+from mc import provider_preferences, state, update_ping
 from mc.atomic_json import write_json_atomic
 from mc.core import _log
 from mc.unattended import is_unattended_caller
@@ -34,8 +34,17 @@ def wire(*, config_path):
     CONFIG_PATH = config_path
 
 
+@provider_preferences.serialized_write
 def _persist(updates: dict) -> None:
-    """Read-merge-write config.json (as setup_complete does), then update the live dict."""
+    """Read-merge-write config.json (as setup_complete does), then update the live dict.
+
+    Runs under the same lock as PUT /api/config (provider_preferences.serialized_write)
+    and holds it across the live-dict update, so a /seen can never write back a stale
+    copy over an opt-out saved a moment earlier, and mc.update_ping's pre-send
+    recheck sees disk and memory agree.
+    """
+    if CONFIG_PATH is None:
+        raise RuntimeError('update_ping_routes.wire() was not called')
     try:
         with open(CONFIG_PATH, encoding='utf-8') as f:
             on_disk = json.load(f)

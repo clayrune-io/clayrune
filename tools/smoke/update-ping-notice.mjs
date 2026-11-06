@@ -34,6 +34,12 @@ try {
   const ctx = await browser.newContext({ viewport: { width: 1000, height: 800 } });
   const page = await ctx.newPage();
   await page.addInitScript(() => localStorage.setItem('walkthrough_done', '1'));
+  await page.addInitScript(() => {
+    if (localStorage.getItem('smoke_hidden') === '1') {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    }
+  });
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
   await page.route('**/*', (route) => {
@@ -76,6 +82,35 @@ try {
   await page.click('#upn-dismiss');
   !(await page.locator('#upn-card').count()) ? ok('Got it closes the notice') : fail('notice still open after dismiss');
   !calls.some((c) => c.startsWith('choice')) ? ok('dismissing sends no choice (stays ON)') : fail('dismiss changed the choice: ' + calls);
+
+  // 1b. Fenn 2026-11-05: a card created in a hidden tab must NOT mark disclosure seen.
+  // Visibility is simulated through the same document getters the page reads.
+  const hideTab = (hidden) => page.evaluate((h) => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (h ? 'hidden' : 'visible') });
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => h });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }, hidden);
+  reset({});
+  await page.evaluate(() => localStorage.setItem('smoke_hidden', '1'));   // read by the init script above
+  await boot();
+  await page.waitForSelector('#upn-card', { timeout: 8000 });
+  await page.waitForTimeout(1200);
+  !calls.includes('seen') ? ok('hidden tab: card created but disclosure NOT recorded') : fail('seen recorded while the tab was hidden');
+  await hideTab(false);
+  await page.waitForTimeout(500);
+  calls.includes('seen') ? ok('tab becomes visible: disclosure recorded once painted') : fail('seen not recorded after the tab became visible: ' + calls);
+  calls.filter((c) => c === 'seen').length === 1 ? ok('recorded exactly once') : fail('seen recorded ' + calls.length + ' times');
+
+  // 1c. an explicit action in a hidden tab still counts ("Got it")
+  reset({});
+  await boot();
+  await page.waitForSelector('#upn-card', { timeout: 8000 });
+  await page.waitForTimeout(600);
+  !calls.includes('seen') ? ok('hidden tab again: nothing recorded yet') : fail('seen recorded while hidden (2nd boot)');
+  await page.click('#upn-dismiss');
+  await page.waitForTimeout(300);
+  calls.includes('seen') ? ok('"Got it" in a hidden tab records the disclosure') : fail('Got it did not record seen: ' + calls);
+  await page.evaluate(() => localStorage.removeItem('smoke_hidden'));
 
   // 2
   reset({});

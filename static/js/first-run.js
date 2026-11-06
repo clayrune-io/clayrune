@@ -1,5 +1,5 @@
 import {supportsSetupTier, setupModelControl} from './setup-model-preferences.js';
-import {UPDATE_PING_DISCLOSURE, UPDATE_PING_HOWTO_OFF, updatePingChoose} from './update-ping-notice.js';
+import {UPDATE_PING_SETUP_STEP, resetUpdatePingStep, commitUpdatePingStep} from './setup-update-ping-step.js';
 
 // Model preferences belong to the provider selected in this setup draft.
 function _setupSavedModel() {
@@ -34,9 +34,6 @@ let setupModelTierVisited = false;
 const MODEL_TIER_LABEL = { best: 'Best', balanced: 'Balanced', fast: 'Fast' };
 let _setupPhoneRevealed = false;    // essentials-phone: "Set it up" clicked this run
 let _setupAdvExpanded = false;      // essentials-detail: "Choose individually" expander
-// Update-check ping step. ON by default (Ron, 2026-11-05) but nothing is sent
-// until the user has seen the text: the answer is posted when they leave the step.
-let _setupPingOn = true;
 
 // "Protect your work" step (MC-982) — backup destination + optional
 // immediate backup + automatic-cadence preference. Deliberately NOT the
@@ -128,17 +125,7 @@ const SETUP_STEPS = [
       return !!(p && p.installed && p.auth_status === 'ok');
     },
   },
-  {
-    id: 'update-ping',
-    title: 'Help count Clayrune installs',
-    wide: true,
-    body: () => `<div class="setup-lead">${esc(UPDATE_PING_DISCLOSURE)}</div>
-      <div class="setup-section" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
-        <div class="setup-section-label" style="margin:0">Send the daily update check</div>
-        <div class="settings-toggle ${_setupPingOn ? 'on' : ''}" id="setup-ping-toggle" role="switch" aria-checked="${_setupPingOn}" tabindex="0" onclick="setupTogglePing(this)"></div>
-      </div>
-      <div class="setup-footer-note">${esc(UPDATE_PING_HOWTO_OFF)}</div>`,
-  },
+  UPDATE_PING_SETUP_STEP,     // static/js/setup-update-ping-step.js
   {
     id: 'essentials-yours',
     title: 'Make it yours',
@@ -852,7 +839,7 @@ function startFirstRun(opts) {
   setupModelTierVisited = false;
   _setupPhoneRevealed = false;
   _setupAdvExpanded = false;
-  _setupPingOn = !(_globalConfig && _globalConfig.update_ping_enabled === false);
+  resetUpdatePingStep();
   _setupOpenedTerminalIds = new Set();
   _setupBackupDest = { loaded: false, configured: null, effective: null, override: '', saving: false, saveError: null };
   // Reflect what is already saved, same rule as setupModelTier above — an
@@ -1086,16 +1073,15 @@ async function setupShow(idx) {
   if (step.onEnter) step.onEnter();
 }
 
-function setupTogglePing(el) {
-  _setupPingOn = !_setupPingOn;
-  el.classList.toggle('on', _setupPingOn);
-  el.setAttribute('aria-checked', String(_setupPingOn));
-}
-
-function setupNext() {
+async function setupNext() {
   // Leaving the ping step records the answer AND that the disclosure was shown;
-  // the first ping can only happen after this (mc/update_ping.py).
-  if (SETUP_STEPS[setupStep].id === 'update-ping') updatePingChoose(_setupPingOn);
+  // the first ping can only happen after this (mc/update_ping.py). The save is
+  // awaited: if it fails the step shows the error and we stay here.
+  if (SETUP_STEPS[setupStep].id === 'update-ping') {
+    const at = setupStep;
+    const saved = await commitUpdatePingStep();
+    if (!saved || setupStep !== at) return;
+  }
   // Never blocks (see _setupConnectionsWarning). Leaving with NO vendor ready
   // gets one confirm naming the consequence; clicking OK finishes setup
   // normally, so the user is not re-asked on every load.
@@ -1150,7 +1136,6 @@ window.firstRunNeeded = firstRunNeeded; // interop: boot gate (index.html)
 window.setupNext = setupNext;           // interop: setup card generated onclick
 window.setupBack = setupBack;
 window.setupSkip = setupSkip;
-window.setupTogglePing = setupTogglePing;       // interop: update-ping step toggle generated onclick
 window.setupFinish = setupFinish;
 window.setupTakeTour = setupTakeTour;
 window.setupSelectProvider = setupSelectProvider;         // interop: provider row checkbox onchange (provider-auth.js _renderProviderRow)
