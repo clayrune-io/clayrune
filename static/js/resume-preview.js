@@ -976,6 +976,10 @@ function connectAgentStream(projectId, sessionId) {
         // server has `activity_states_enabled` on; otherwise never fires and the
         // indicator stays the plain dots.
         setAgentActivity(sessionId, msg.state || '');
+      } else if (msg.type === 'test_run') {
+        // MC-1148 phase 9: optional {run_id, seq} hint. It only pulls the shared
+        // poller forward (static/js/test-run-data.js); it never carries run data.
+        window.TestRunData?.hint(projectId, msg);
       } else if (msg.type === 'question' && msg.questions) {
         if (agentStatusCache[sessionId]) agentStatusCache[sessionId].waitingForQuestion = true;
         const _hQ = agentHistory.find(h => h.sessionId === sessionId);
