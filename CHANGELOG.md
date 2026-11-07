@@ -1,5 +1,41 @@
 # Clayrune — Changelog
 
+## [2026-11-07] - Keep closed reset-resume chats closed (MC-1163 fifth review)
+
+- Explicit session closure durably cancels active reset receipts under the same project lock as acknowledgment, cancellation and takeover. A compact cancellation fence replaces saved output, so boot cannot recreate the closed chat.
+- Boot and scheduler cleanup prune completed receipts once the matching agent log and workflow transition are durable. Incomplete completion recovery and continuing-turn attempt budgets remain intact; a recovered turn writes its missing exit log before cleanup.
+- Added Fenn's closed-chat and downstream-dispatch probes plus cleanup, stale-writer, project-lock and storage-failure regressions. Branch review candidate only; no merge, push, restart or deployment.
+
+## [2026-11-07] - Preserve reset completion across restart (MC-1163 fourth review)
+
+- Deferred successful results and their output now persist against the submitting attempt. Matching acknowledgment records completion before activating the row; boot finishes a saved success without launching a provider or replaying input.
+- Stable completion keys and durable receipts prevent duplicate completion logs and workflow transitions across repeated finalization or crashes between log write and acknowledgment. Cancellation, human takeover, stale attempts and uncertain-delivery review retain precedence.
+- Added the original real worker/reader restart reproductions and disk-backed completion, cancellation and failure-recovery regressions. Branch review candidate only; no merge, push, restart or deployment.
+
+## [2026-11-07] - Release reset completions after launch acknowledgment (MC-1163 third review)
+
+- A successful Mode B result arriving before its reset-continuation acknowledgment is deferred against that attempt. The matching acknowledgment releases normal turn or process-exit completion under the project lock, so the chat finishes and workflow reconciliation advances.
+- Exhaustion, manual review, stale attempts, cancellation and human takeover retain their existing holds; uncertain delivery is never replayed. Added real respawn-worker/reader ordering regressions and concurrent cancellation checks.
+- Branch review candidate only; no merge, push, restart or deployment.
+
+## [2026-11-07] - Keep failed reset launches visible for review (MC-1163 second review)
+
+- Failed or uncertain continuation launches and deliveries retain the Floor's review/cancel hold immediately, including delayed stdin failures. Durable failure evidence lets workflow reconciliation fail the step instead of counting it as in flight indefinitely; downstream steps stay pending.
+- Codex reset times in a DST overlap resolve to the later occurrence; nonexistent spring-forward times resolve forward. Added fixed Los Angeles regressions and executed the real Mode B launch worker to reproduce the failure before fixing it.
+- Branch review candidate only; no merge, push, restart or deployment.
+
+## [2026-11-07] - Keep reset continuations recoverable during queued launches (MC-1163 review)
+
+- Claude reset continuations stay pending until process launch (Mode A) or launch plus stdin delivery (Mode B) is confirmed. A crash before the queued worker starts restores a visible review hold, with no automatic replay or extra attempt.
+- Codex dated reset messages now normalize host-local time to UTC with the reset date's offset. Human takeover clears the cancelled waiting status even when allowance refuses the new message.
+- Added regressions for all three findings, including Claude A/B launch windows, uncertain writes and Codex winter/summer offsets. Branch review candidate only; no merge, push, restart or deployment.
+
+## [2026-11-07] - Continue unattended runs after a known usage reset (MC-1163)
+
+- Scheduled, steward and dispatched runs can wait for a provider's reported reset plus two minutes, then continue the same session, up to twice per task chain. Durable waits survive server restarts; human-owned turns and limits without reset timestamps retain existing behavior.
+- The Floor shows the local resume deadline and a Cancel resume action. Stop, closing the tab and a human follow-up cancel the wait. Parent/workflow completion and worktree finalization stay held while parked.
+- Added default-on `limit_resume_enabled` and a project-scoped cancel route. State lives outside project records. Interrupted submissions require manual review to prevent duplicate work. Contract and verification: `docs/LIMIT_RESUME.md`. Branch candidate; no merge, push, restart or deployment.
+
 ## [2026-11-06] - Keep passive test detection running at identity capacity (MC-1148, dark)
 
 - Reclaim the oldest terminal identities when the detector reaches 4096 entries, preserving active calls. A separate bounded FIFO of 65536 scoped-key hashes blocks replay of evicted completed calls while retained; all-active capacity still logs and skips.

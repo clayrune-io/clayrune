@@ -318,6 +318,7 @@ _CONFIG_EDITABLE_KEYS = {
     'engine_pace_ceiling_percent', 'engine_pace_alternates',
     'claude_resume_fresh_prompt',
     'unattended_retry',
+    'limit_resume_enabled',
 }
 
 # Respawn-trigger ("Tier-1") settings: baked into the spawn (CLI flags or the

@@ -56,6 +56,35 @@ cadence, so its label is **PARTIAL**. The other engines are labelled
 Unsupported engines keep their own retry behavior and existing hang recovery.
 The same screen has the default-off fresh-Claude-prompt-on-resume toggle.
 
+### Continuing after a usage-limit reset
+
+When a scheduled, steward or dispatched run stops on a provider usage limit and
+the provider gives a reset time, Clayrune can keep the task paused and continue
+the same chat two minutes after that reset. The Floor shows **Waiting for reset
+until** with the resume time in your local timezone and a **Cancel resume** button.
+Stop, closing the chat tab or sending a human follow-up also cancels the pending
+automatic continuation. Your normal attended chats never resume automatically.
+If your follow-up is refused because allowance is still exhausted, the old wait
+stays cancelled and the chat returns to idle; it is no longer waiting for reset.
+
+There are at most two automatic continuations per task. No known reset time means
+no automatic continuation. The default-on config flag `limit_resume_enabled`
+controls this behavior; pausing the scheduler also prevents continuations. This
+waits for scheduled resets and never spends a vendor's optional reset grant.
+If a restart interrupts submission itself, the Floor shows **Reset continuation
+needs review**; continue the chat manually or cancel to avoid duplicate work.
+Failed launches or uncertain message delivery show the same review hold
+immediately. An associated workflow fails that step and keeps later steps
+pending; the chat remains available to review or cancel. Codex reset messages
+during the repeated DST hour use the later occurrence; skipped spring-forward
+times resolve forward so the continuation never starts early.
+If a resumed run finishes before its launch acknowledgment arrives, Clayrune
+holds that completion until delivery is confirmed, then completes the chat and
+advances its workflow normally. The successful result survives a server restart:
+Clayrune finishes recording it without resending the task. Interrupted submissions
+without a saved successful result still require manual review. A cancellation or
+human takeover still wins.
+
 ### Starter experts on the Floor
 
 A fresh install includes nine agent types. Hire Claydo from the Floor's Bench

@@ -864,6 +864,12 @@ def _scheduler_loop():
         # sleeping, so a wait of any length is just a timestamp comparison
         # here, polled every 30s, and survives a restart for free since the
         # deadline lives on disk.
+        try:
+            from mc.limit_resume_dispatch import tick as _limit_resume_tick
+            _limit_resume_tick()
+        except Exception as e:
+            _log(f'[scheduler] limit resume failed: {e}')
+
         # Running agent steps whose completion hook never arrived (MC-871
         # backstop): advance a confirmed end, surface a stall. Idempotent.
         # An owed completion whose boot replay failed (MC-1150 P4): retry it
@@ -945,7 +951,7 @@ def _scheduler_loop():
                         if s is None:
                             stale.append(sid)
                             continue
-                        if s['status'] not in ('running', 'idle'):
+                        if s['status'] not in ('running', 'idle', 'waiting_for_reset'):
                             try:
                                 # Key staleness on LAST ACTIVITY, not dispatch
                                 # time. `started_at` is set once at construction

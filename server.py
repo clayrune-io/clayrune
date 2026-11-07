@@ -505,6 +505,7 @@ def _load_config():
         # predates this key (defaults merge under saved values); set it false in
         # config.json to opt out.
         'sticky_agent_settings': True,
+        'limit_resume_enabled': True,
         # Browser pane: profile used when a launch names none. '' (the default)
         # keeps the original behaviour — every unnamed launch gets a throwaway
         # profile and therefore starts logged out. Set a name (e.g. 'main') to
@@ -3160,6 +3161,12 @@ _usage_breakdown_prune_loop = _bp_system._usage_breakdown_prune_loop
 from mc import allowance_state as _allowance_state  # noqa: E402
 
 _allowance_state.wire(_DATA_ROOT / 'data' / 'allowance_state.json')
+
+from mc import limit_resume as _limit_resume  # noqa: E402
+from mc import limit_resume_dispatch as _limit_resume_dispatch  # noqa: E402
+_limit_resume.wire(_DATA_ROOT / 'data' / 'limit_resume.json')
+app.register_blueprint(_limit_resume_dispatch.bp)
+_limit_resume_dispatch.restore_waits(_bp_agent)
 
 # ── Daily update-check ping (mc/update_ping.py) ─────────────────────────────
 # State beside data/, never in data/projects/. version_fn reads the build

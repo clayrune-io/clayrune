@@ -2227,6 +2227,23 @@ def _step_session_verdict(step_state: dict, *, use_live: bool) -> tuple:
     pid = step_state.get('project_id') or ''
     if not sid or not pid:
         return 'unconfirmed', None, ''
+    from mc.limit_resume import store as _reset_store
+    reset_store = _reset_store()
+    pending_reset = reset_store.get(sid) if reset_store else None
+    if (pending_reset and pending_reset['project_id'] == pid
+            and pending_reset['phase'] == 'active' and pending_reset.get('completion_done')
+            and not pending_reset.get('review_required')
+            and (pending_reset.get('deferred_success') or {}).get('attempt') == pending_reset['attempts']):
+        live_reset = state.agent_sessions.get(sid)
+        if live_reset is None or live_reset.get('status') in ('idle', 'completed'):
+            from mc.agent_runtime import _collect_trailing_reply_text
+            return ('ended', 'completed', _collect_trailing_reply_text(
+                pending_reset['snapshot'].get('log_lines', [])))
+    if (pending_reset and pending_reset['project_id'] == pid
+            and pending_reset['phase'] in ('waiting', 'submitting')):
+        if pending_reset.get('review_required'):
+            return 'ended', 'error', 'Reset continuation needs manual review; continue manually or cancel.'
+        return 'in_flight', 'waiting_for_reset', ''
     if _completion_owed(sid):
         return 'in_flight', None, ''    # its crash-surviving completion replays itself
     live = state.agent_sessions.get(sid) if use_live else None

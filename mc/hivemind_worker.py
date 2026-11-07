@@ -197,6 +197,7 @@ def _revive_roster_worker(entry: dict, project: dict, message: str) -> dict:
             **attempt_metadata(entry), 'hivemind_id': hm_id, 'hivemind_ws_id': ws_id,
             'trigger_type': 'hivemind_worker', 'trigger_id': ws_id, 'housekeeping': True,
             'project_generation': entry['project_generation'],
+            '_turn_owner': entry.get('_turn_owner', 'spawner'),
             **_hm_lineage.worker_metadata(manifest),
         }
         session = {

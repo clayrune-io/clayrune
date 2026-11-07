@@ -1,0 +1,284 @@
+# Usage-limit continuation (MC-1163)
+
+An unattended run that ends on an observed provider usage limit with a known
+reset timestamp waits for the reset plus two minutes, then continues the same
+session through the existing follow-up handler. It makes at most two automatic
+continuations per task chain. A third exhaustion ends through normal completion.
+This waits for a provider's scheduled reset; it never redeems an account reset.
+
+`limit_resume_enabled` defaults to `true` and is accepted by the existing config
+settings allowlist. Turning it off prevents new waits and automatic submissions;
+already-persisted waits remain paused until enabled or cancelled. The scheduler
+master pause also blocks submissions. The scheduler checks every 30 seconds, so
+submission may occur up to one tick after the reset-plus-two-minute deadline.
+
+## Eligibility and lifecycle
+
+- A session must have `source=agent|schedule` or an unattended schedule/steward/
+  dispatch trigger. Incognito, human-owned turns, stopped/cancelled sessions,
+  questions and approval waits are excluded. Workflow children use `source=agent`.
+- Only an exhaustion observed on that session can arm a wait. A global provider
+  exhaustion record alone cannot. Invalid, missing or unnormalized timezone-less
+  reset times preserve existing terminal behavior. Codex's dated reset prose is
+  host-local time: its parser converts that date to aware UTC before parking,
+  including the reset date's DST offset. Allowed/advisory events do not arm it.
+- Claude's two readers capture the normalized rejected/exceeded event. Native
+  readers capture `ALLOWANCE_EXHAUSTED`; Codex's exit-error fallback does too.
+- A parked session has `status=waiting_for_reset`. Completion logging, worktree
+  merge-back and parent/workflow completion notifications are held. Guardian
+  recovery and stale-session cleanup leave it parked. Workflow boot adoption and
+  reconciliation treat the durable wait as in flight.
+- A human message cancels the previous wait even if the new send is refused for
+  allowance, and changes `waiting_for_reset` to `idle` under the project lock.
+  A refused message therefore leaves an ordinary idle chat, without a reset
+  deadline or orphaned wait status. Normal new turns clear retry bookkeeping;
+  an internal reset continuation keeps it and keeps the current turn owner. Trigger/fence identity
+  is unchanged. Stop, closing the chat tab and the explicit cancel action cancel
+  the pending wait durably.
+
+## State and recovery
+
+`mc/limit_resume.py` owns policy and the atomic store at `data/limit_resume.json`,
+outside `data/projects/` and gitignored. Writes use the existing fsync/replace
+helper and publish in-memory state only after the disk write succeeds. Unreadable
+state disables this feature for that process and is logged without overwriting
+the file. A failed initial park falls through to existing terminal handling.
+An OS lock in the sibling `limit_resume.lock` serializes transactions across the
+brief old/new server overlap at restart. Each transaction reloads state while
+holding that lock, preventing stale attempt claims and cancellation overwrites.
+The OS releases the lock if the process crashes; no stale-file deletion is needed.
+
+Each record contains `session_id`, `project_id`, `resets_at`, `resume_at`,
+`attempts`, `phase` and an allowlisted session snapshot. The snapshot preserves
+the provider conversation, model/effort, persona, dispatch callbacks, worktree,
+roster prompt references, task and visible log. It excludes process/lock objects
+and cached system prompts. Recovery restores a paused session without launching
+a provider. The existing follow-up code recreates its runtime and process
+registration when due. Deleted projects are never recreated.
+
+The store claims `phase=submitting` and increments the attempt count *before*
+provider submission. Confirmed submissions become `active`; another exhaustion
+re-parks with the same count. This is a conservative at-most-once submission
+boundary: a crash after claim and before a definite acknowledgment leaves
+submission uncertain. On restart it is shown as **Reset continuation needs
+review**, never automatically replayed. The user can continue manually or cancel.
+This avoids duplicate paid work in the crash window. Attempt bookkeeping remains
+until a new normal turn, so an intermediate successful turn or background-task
+wake cannot replenish the task chain's two-continuation budget.
+
+Claude's async follow-up response carries `submission_pending=true` only for the
+internal reset continuation. Queuing its worker is not acknowledgment: Mode A
+confirms after process launch/registration; Mode B confirms after launch and a
+successful bounded stdin write. An idle/completed status alone never confirms a
+claim. The acknowledgment checks the claimed attempt and cannot activate a
+cancelled record or a different attempt. A crash before the worker starts leaves
+`submitting` intact and restores the manual-review hold on restart, without
+automatically spending another continuation.
+
+A successful Mode B result can arrive before its bounded stdin acknowledgment.
+The result boundary atomically persists `deferred_success` (`attempt`, `kind`,
+`status`) and a current allowlisted session/output snapshot on the submitting
+row. If the process exits first, the deferred boundary becomes an exit completion.
+A matching acknowledgment finalizes the normal turn/exit completion FIRST, then
+writes `completion_done` and advances the row to `active`. The receipt and
+snapshot remain readable until their effects are fully applied, including by
+workflow reconciliation without a live session. Boot and scheduler cleanup prune
+an active receipt only when the durable agent log has its matching completion key
+and completed status, and its workflow step (if any) is durably completed for the
+same session. Missing evidence, read errors and cleanup-write failures retain the
+receipt. Ordinary Mode B turn completion keeps its process alive and does not run
+exit-only worktree cleanup; its attempt budget remains until exit completion or a
+new normal turn. Boot recovery of such a turn writes the missing exit log before
+the receipt becomes eligible for cleanup; failures retry without provider work.
+
+Boot recovery finalizes a submitting row's own persisted deferred success as
+completed, without launching a provider or resending input. A stable completion
+key, allocated when first persisting that success and unique across task chains,
+reuses the existing agent-log deduplication; workflow completion uses its
+existing synchronous, idempotent replay and parent delivery uses its durable
+outbox. A crash after writing the log but before the receipt therefore keeps one
+log entry. A receipt already fully applied is pruned without restoring its chat.
+An unapplied receipt remains available for completion recovery.
+Completion write/callback failures retain the obligation for a later tick/boot;
+they do not convert successful output into uncertain-delivery review.
+
+Explicit session deletion calls the reset adapter under the same project-manager
+lock used by acknowledgment, cancellation and human takeover. It replaces any
+matching waiting, submitting or active row with a compact cancelled fence, dropping
+saved output and completion payload. Boot never restores cancelled rows, and stale
+store instances cannot reactivate them. Project-mismatched deletes cannot affect
+another project's receipt. This close operation also works when the live session
+has already gone. Normal pending-wait cancellation semantics are unchanged.
+
+Status alone never creates a deferral. Fresh exhaustion, new turns and submission
+failure discard old success state; review-required rows, mismatched attempts,
+cancellation and human ownership prevent release. A live pending acknowledgment
+is not released by a scheduler tick. A submitting row WITHOUT a persisted success
+still restores manual review, without replaying provider delivery.
+
+An explicit launch failure, rejected/uncertain delivery or delayed stdin error
+immediately restores the same review/cancel hold, even when the live session's
+attempt stamp matches the claim. The durable `submitting` row gains
+`review_required=true`; it is not replayed and a late acknowledgment cannot
+activate it. Workflow boot adoption and periodic reconciliation read this
+evidence as an error end, failing the step and retaining pending downstream
+steps rather than counting a failed launch as in flight forever. The chat stays
+visible for manual review/cancellation. A still-pending launch without failure
+evidence remains in flight. Completion holds still permit a fresh exhaustion
+from the current attempt to park its next reset within the existing budget.
+
+Codex timezone evidence: the vendor's
+[`format_retry_timestamp`](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/error.rs)
+converts UTC to `chrono::Local` before formatting dated reset text (read
+2026-11-07). The parser converts this local wall time with `astimezone(UTC)`;
+it does not attach UTC to a local time or reuse today's fixed offset.
+For DST transitions the parser checks both folds and selects the later UTC
+instant: the second occurrence in an overlap, and the forward mapping across a
+gap. In America/Los_Angeles, Nov 1 2026 1:30 AM resolves to 09:30Z (fold=1),
+and Mar 8 2026 2:30 AM resolves forward to 10:30Z (3:30 AM local).
+
+`mc/limit_resume_dispatch.py` owns the scheduler adapter and cancel blueprint.
+Its private request-environment marker preserves ownership and retry count when
+calling the existing follow-up handler; an external JSON field cannot select it.
+The attempt cap survives a server restart and is not a global provider counter.
+
+## API and Floor
+
+Session status responses and Floor figures include `limit_resume` (or null):
+`{resume_at, resets_at, attempts, phase}`. Floor keeps parked figures visible,
+formats the resume deadline in the viewing browser's local timezone, and offers
+**Cancel resume**. No additional poller or SSE connection is opened.
+
+`POST /api/project/<project_id>/agent/<session_id>/limit-resume/cancel` cancels a
+matching pending wait and completes it as stopped. Unknown/mismatched waits
+return 404; unavailable state returns 503. An already-running continuation returns
+409 and can be ended with normal Stop. Cancelling a paused session does not
+terminate another process.
+
+## Validation
+
+Fifth-review validation (2026-11-07): Fenn's exact closed-chat probe failed on
+`42fbdd9a` with `after close and boot: ['child'] active`; after the fix it passes
+with `after close and boot: [] cancelled`. The unchanged independent fifth- and
+fourth-review probes report **6 passed**, including both real worker/reader crash
+windows, attended readers and the two-node workflow's single downstream dispatch.
+The final full 15-file suite reports **445 passed in 17.11s**, exit 0.
+The new `tests/test_limit_resume_cleanup.py` preserves the fifth-review probes and
+adds scoped durable-close, stale-writer, lock serialization, delayed cleanup,
+failed evidence reads/writes and turn-to-exit recovery coverage. The full suite
+command below additionally includes `tests/test_limit_resume_completion.py` and
+`tests/test_limit_resume_cleanup.py` before `-o`.
+
+Pyright on the three reset modules and `mc/workflows.py` reports **0 errors**.
+The one-line route hook reports the same **15 existing diagnostics** as the exact
+`42fbdd9a` route source (rule/message multiset comparison: zero added). No static
+files changed. The launcher reports incomplete telemetry; test exit codes and
+counts are verified, complete dashboard capture is not claimed. No live provider
+execution, merge, push or production restart was performed.
+
+Fourth-review branch validation (2026-11-07): the exact requested 13-file suite
+reported **415 passed in 16.87s** (exit 0). The final combined selection with
+`tests/test_limit_resume_completion.py` reported **429 passed in 15.28s** (exit 0).
+Both original worker/reader restart probes failed on the exact pre-fix base and
+passed after the fix. Added disk-backed regressions cover repeated finalization,
+crashes before/after the receipt, cancellation/takeover/review/stale-attempt
+recovery, failed log/parent delivery, distinct completion keys for new tasks and
+boot-only receipt restoration (ordinary ticks do not resurrect cleaned-up chats).
+
+Pyright on `mc/limit_resume.py`, `mc/limit_resume_dispatch.py`,
+`mc/limit_resume_completion.py` and `mc/workflows.py`: **0 errors** (exit 0).
+Including the touched `mc/blueprints/agent_routes.py` reports the same **15 existing
+diagnostics** as that file extracted from the exact base `33f43415`; no new errors.
+No frontend files changed; no UI/build checks are needed for this review fix.
+The launcher printed telemetry queue incompleteness; complete dashboard capture
+is not claimed. Real vendor execution and production restart remain unverified.
+
+The final suite uses the existing 13-file command below plus
+`tests/test_limit_resume_completion.py` immediately before `-o`. The typecheck is:
+
+```powershell
+python tools/test-run.py --project mission_control --port 5199 -- pyright mc/limit_resume.py mc/limit_resume_dispatch.py mc/limit_resume_completion.py mc/blueprints/agent_routes.py mc/workflows.py
+```
+
+Third-review validation on 2026-11-07: the same 13-file suite reported
+**415 passed in 14.72s** (exit 0). Real Mode B respawn-worker/reader regressions
+cover success before acknowledgment with the process alive or exited, success
+after acknowledgment, exhaustion before acknowledgment, and success followed by
+unknown delivery plus a late acknowledgment. Concurrent tests prove the project
+lock serializes release with cancellation/human takeover, and check review,
+stale-turn and duplicate-ack holds. Workflow reconciliation completes after
+acknowledged success. Both success-before-ack cases failed before the fix.
+
+Pyright on `mc/limit_resume.py`, `mc/limit_resume_dispatch.py` and
+`mc/blueprints/agent_routes.py` returned exit 1 with the same **15 pre-existing
+route-module diagnostics** as exact base `a36946c9`; no new diagnostics.
+Policy/adapter alone returned **0 errors** (exit 0). The reported launcher
+printed `telemetry_queue_full_progress_incomplete`; complete capture is not
+claimed. No static files changed; no live provider or production restart tested.
+
+Second-review validation on 2026-11-07: the requested 13-file suite reported
+**404 passed in 18.20s** (exit 0). Both findings failed dynamically before their fixes;
+the spring-forward guard already passed. New coverage executes the real Mode B
+launch worker and delayed stdin writer, checks Floor visibility and cancellation,
+and reconciles a real workflow from durable failure evidence after recovery.
+Pyright on all five touched modules reports the same **15 pre-existing errors**
+in `mc/blueprints/agent_routes.py` as exact base `0d8f28f2`, with no added
+diagnostics; the other four touched modules have none. The launcher reported
+`telemetry_queue_full_progress_incomplete`; complete dashboard capture is not
+claimed. No static files changed and no live provider reset was executed.
+
+The second-review typecheck command adds the existing integration modules:
+
+```powershell
+python tools/test-run.py --project mission_control --port 5199 -- pyright mc/limit_resume.py mc/limit_resume_dispatch.py mc/allowance_state.py mc/blueprints/agent_routes.py mc/workflows.py
+```
+
+Review-fix validation on 2026-11-07: **397 passed in 14.27s** (exit 0),
+including the original branch suite, ten additional reset regressions and the
+respawn-stdin/guardian suites. All three findings were reproduced against the
+base before fixes. Pyright on policy, adapter and allowance parser reported
+**0 errors, 0 warnings, 0 informations** (exit 0). The test launcher reported
+`telemetry_queue_full_progress_incomplete`; the child result above is authoritative,
+and complete dashboard capture is not claimed.
+
+Exact review-fix commands from the worktree root (use the installed project's
+reported-test launcher, shown here with its portable repository-relative path):
+
+```powershell
+python tools/test-run.py --project mission_control --port 5199 -- python -m pytest tests/test_limit_resume.py tests/test_workflow_runtime_notify.py tests/test_runtime_completion_log.py tests/test_allowance_state.py tests/test_codex_run_error.py tests/test_floor_routes.py tests/test_human_joined_scheduled_chat.py tests/test_scheduler_routes.py tests/test_stream_reader_malformed.py tests/test_revive_notify_carry.py tests/test_hivemind_roster_worker.py tests/test_respawn_stdin_deadlock.py tests/test_guardian_respawn_race.py -o addopts=-ra -q
+python tools/test-run.py --project mission_control --port 5199 -- pyright mc/limit_resume.py mc/limit_resume_dispatch.py mc/allowance_state.py
+```
+
+No frontend files changed in the review fixes; the prior UI smoke results below
+were not rerun. Real vendor execution and production restart remain unverified.
+
+Branch validation on 2026-11-07: the selected backend suite reported
+`373 passed in 15.31s` (exit 0); pyright on both new modules reported
+`0 errors, 0 warnings, 0 informations` (exit 0). The reset UI smoke, inline-handler
+scope check (278 modules) and seven-scenario boot smoke with its UI guards passed.
+The launcher printed telemetry queue/transport/enrollment incompleteness notices;
+these do not change child exit results, and complete dashboard progress capture
+is not claimed.
+
+Use the project interpreter and reported-test launcher. From the repository root:
+
+```powershell
+python tools/test-run.py --project mission_control --port 5199 -- python -m pytest tests/test_limit_resume.py tests/test_workflow_runtime_notify.py tests/test_runtime_completion_log.py tests/test_allowance_state.py tests/test_codex_run_error.py tests/test_floor_routes.py tests/test_human_joined_scheduled_chat.py tests/test_scheduler_routes.py tests/test_stream_reader_malformed.py tests/test_revive_notify_carry.py tests/test_hivemind_roster_worker.py -o addopts=-ra -q
+python tools/test-run.py --project mission_control --port 5199 -- pyright mc/limit_resume.py mc/limit_resume_dispatch.py
+```
+
+From `tools/smoke/`, with the main checkout's existing dependencies linked into
+the worktree (do not install another copy):
+
+```powershell
+python ../test-run.py --project mission_control --port 5199 -- node limit-resume.mjs
+python ../test-run.py --project mission_control --port 5199 -- node boot-smoke.mjs
+python ../test-run.py --project mission_control --port 5199 -- node inline-handler-scope-check.mjs
+```
+
+The dedicated UI smoke loads this worktree's real SPA with fixture endpoints and
+checks the local deadline, cancellation request, refresh and click propagation.
+Backend tests exercise both real Claude readers with synthetic rejected-limit
+streams and the real native follow-up handler with a stubbed provider. A real
+vendor limit/reset, production restart recovery and live continuation are not
+exercised: this branch is not merged, pushed, restarted or deployed.
