@@ -80,7 +80,10 @@ during the repeated DST hour use the later occurrence; skipped spring-forward
 times resolve forward so the continuation never starts early.
 If a resumed run finishes before its launch acknowledgment arrives, Clayrune
 holds that completion until delivery is confirmed, then completes the chat and
-advances its workflow normally. A cancellation or human takeover still wins.
+advances its workflow normally. The successful result survives a server restart:
+Clayrune finishes recording it without resending the task. Interrupted submissions
+without a saved successful result still require manual review. A cancellation or
+human takeover still wins.
 
 ### Starter experts on the Floor
 

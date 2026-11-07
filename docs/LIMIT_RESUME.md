@@ -76,17 +76,30 @@ cancelled record or a different attempt. A crash before the worker starts leaves
 automatically spending another continuation.
 
 A successful Mode B result can arrive before its bounded stdin acknowledgment.
-The result boundary records a runtime-only deferred completion tied to the
-claimed attempt; the session remains held until acknowledgment. If the process
-exits first, the deferred boundary becomes a process-exit completion. The
-matching acknowledgment activates the durable row and releases the normal
-turn/exit completion path under the project lock, restoring `idle`/`completed`
-and allowing workflow reconciliation to advance. Repeated acknowledgments do
-not release the completion twice. Status alone never creates this marker.
-New turns, fresh exhaustion and submission failure discard the marker;
-review-required rows, stale attempts, cancellation and human ownership prevent
-release. The marker is not persisted or used to authorize a retry: a crash
-before acknowledgment still restores manual review without replaying delivery.
+The result boundary atomically persists `deferred_success` (`attempt`, `kind`,
+`status`) and a current allowlisted session/output snapshot on the submitting
+row. If the process exits first, the deferred boundary becomes an exit completion.
+A matching acknowledgment finalizes the normal turn/exit completion FIRST, then
+writes `completion_done` and advances the row to `active`. The receipt and
+snapshot remain readable after activation, including by workflow reconciliation
+without a live session. Ordinary Mode B turn completion still keeps its process
+alive and does not run exit-only worktree cleanup.
+
+Boot recovery finalizes a submitting row's own persisted deferred success as
+completed, without launching a provider or resending input. A stable completion
+key, allocated when first persisting that success and unique across task chains,
+reuses the existing agent-log deduplication; workflow completion uses its
+existing synchronous, idempotent replay and parent delivery uses its durable
+outbox. A crash after writing the log but before the receipt therefore keeps one
+log entry. A receipt already on disk restores completed without repeating effects.
+Completion write/callback failures retain the obligation for a later tick/boot;
+they do not convert successful output into uncertain-delivery review.
+
+Status alone never creates a deferral. Fresh exhaustion, new turns and submission
+failure discard old success state; review-required rows, mismatched attempts,
+cancellation and human ownership prevent release. A live pending acknowledgment
+is not released by a scheduler tick. A submitting row WITHOUT a persisted success
+still restores manual review, without replaying provider delivery.
 
 An explicit launch failure, rejected/uncertain delivery or delayed stdin error
 immediately restores the same review/cancel hold, even when the live session's
@@ -128,6 +141,30 @@ return 404; unavailable state returns 503. An already-running continuation retur
 terminate another process.
 
 ## Validation
+
+Fourth-review branch validation (2026-11-07): the exact requested 13-file suite
+reported **415 passed in 16.87s** (exit 0). The final combined selection with
+`tests/test_limit_resume_completion.py` reported **429 passed in 15.28s** (exit 0).
+Both original worker/reader restart probes failed on the exact pre-fix base and
+passed after the fix. Added disk-backed regressions cover repeated finalization,
+crashes before/after the receipt, cancellation/takeover/review/stale-attempt
+recovery, failed log/parent delivery, distinct completion keys for new tasks and
+boot-only receipt restoration (ordinary ticks do not resurrect cleaned-up chats).
+
+Pyright on `mc/limit_resume.py`, `mc/limit_resume_dispatch.py`,
+`mc/limit_resume_completion.py` and `mc/workflows.py`: **0 errors** (exit 0).
+Including the touched `mc/blueprints/agent_routes.py` reports the same **15 existing
+diagnostics** as that file extracted from the exact base `33f43415`; no new errors.
+No frontend files changed; no UI/build checks are needed for this review fix.
+The launcher printed telemetry queue incompleteness; complete dashboard capture
+is not claimed. Real vendor execution and production restart remain unverified.
+
+The final suite uses the existing 13-file command below plus
+`tests/test_limit_resume_completion.py` immediately before `-o`. The typecheck is:
+
+```powershell
+python tools/test-run.py --project mission_control --port 5199 -- pyright mc/limit_resume.py mc/limit_resume_dispatch.py mc/limit_resume_completion.py mc/blueprints/agent_routes.py mc/workflows.py
+```
 
 Third-review validation on 2026-11-07: the same 13-file suite reported
 **415 passed in 14.72s** (exit 0). Real Mode B respawn-worker/reader regressions

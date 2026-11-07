@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-07] - Preserve reset completion across restart (MC-1163 fourth review)
+
+- Deferred successful results and their output now persist against the submitting attempt. Matching acknowledgment records completion before activating the row; boot finishes a saved success without launching a provider or replaying input.
+- Stable completion keys and durable receipts prevent duplicate completion logs and workflow transitions across repeated finalization or crashes between log write and acknowledgment. Cancellation, human takeover, stale attempts and uncertain-delivery review retain precedence.
+- Added the original real worker/reader restart reproductions and disk-backed completion, cancellation and failure-recovery regressions. Branch review candidate only; no merge, push, restart or deployment.
+
 ## [2026-11-07] - Release reset completions after launch acknowledgment (MC-1163 third review)
 
 - A successful Mode B result arriving before its reset-continuation acknowledgment is deferred against that attempt. The matching acknowledgment releases normal turn or process-exit completion under the project lock, so the chat finishes and workflow reconciliation advances.

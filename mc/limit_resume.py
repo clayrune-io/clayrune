@@ -11,6 +11,7 @@ import math
 import os
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,6 +22,14 @@ from mc.core import _log
 
 MAX_ATTEMPTS = 2
 GRACE_SECONDS = 120
+_finalizing = threading.local()
+
+
+def finalizing(session: dict) -> bool:
+    """Only the current completion call may bypass its own hold, never a snapshot."""
+    return getattr(_finalizing, 'session', None) is session
+
+
 CONTINUATION = ('[The provider usage-limit reset time has passed. Continue the '
                 'same task from where you stopped; preserve all existing constraints.]')
 
@@ -64,6 +73,8 @@ def observe(session: dict, payload: dict) -> None:
     """Only a real exhaustion event for THIS session may arm a wait."""
     session['_limit_resume_exhaustion'] = dict(payload)
     session.pop('_limit_resume_completion', None)
+    if _store:
+        _store.discard_success(session.get('session_id', ''), session.get('_limit_resume_attempt'))
 
 
 def observe_claude(session: dict, msg: dict) -> None:
@@ -191,17 +202,63 @@ class ResumeStore:
             # A fast new exhaustion may already have parked the next attempt.
             if (row and row['phase'] == 'submitting'
                     and not row.get('review_required')
+                    and (not row.get('deferred_success') or row.get('completion_done'))
                     and (attempt is None or row['attempts'] == attempt)):
                 self._commit({**self.rows, sid: {**row, 'phase': 'active'}})
                 return True
             return False
+
+    def defer_success(self, session: dict, kind: str) -> dict | None:
+        """Commit success and its current output before publishing the hold."""
+        sid = session['session_id']
+        with self._transaction():
+            row = self.rows.get(sid)
+            if (not row or row['phase'] != 'submitting' or row.get('review_required')
+                    or row['attempts'] != session.get('_limit_resume_attempt')):
+                return None
+            prior = row.get('deferred_success') or {}
+            if kind == 'exit' and prior.get('attempt') != row['attempts']:
+                return None  # an exit alone is not successful result evidence
+            deferred = {'attempt': row['attempts'], 'kind': kind,
+                        'status': 'completed' if kind == 'exit' else 'idle'}
+            snapshot = {key: session[key] for key in _SNAPSHOT_KEYS if key in session}
+            snapshot['log_lines'] = list(session.get('log_lines', []))
+            self._commit({**self.rows, sid: {**row, 'deferred_success': deferred,
+                                           'completion_key': row.get('completion_key')
+                                           or f'limit-resume:{sid}:{uuid.uuid4().hex}',
+                                           'snapshot': snapshot}})
+            return deferred
+
+    def completion_done(self, session: dict, attempt: int) -> bool:
+        """Receipt written only after completion effects have committed."""
+        sid = session['session_id']
+        with self._transaction():
+            row = self.rows.get(sid)
+            if (not row or row['phase'] != 'submitting' or row.get('review_required')
+                    or row['attempts'] != attempt):
+                return False
+            snapshot = {key: session[key] for key in _SNAPSHOT_KEYS if key in session}
+            snapshot['log_lines'] = list(session.get('log_lines', []))
+            self._commit({**self.rows, sid: {**row, 'completion_done': True,
+                                           'snapshot': snapshot}})
+            return True
+
+    def discard_success(self, sid: str, attempt: int | None) -> None:
+        with self._transaction():
+            row = self.rows.get(sid)
+            if row and row['attempts'] == attempt and row.get('deferred_success'):
+                clean = {k: v for k, v in row.items()
+                         if k not in ('deferred_success', 'completion_done', 'completion_key')}
+                self._commit({**self.rows, sid: clean})
 
     def require_review(self, sid: str, attempt: int) -> bool:
         with self._transaction():
             row = self.rows.get(sid)
             if not row or row['phase'] != 'submitting' or row['attempts'] != attempt:
                 return False
-            self._commit({**self.rows, sid: {**row, 'review_required': True}})
+            reviewed = {k: v for k, v in row.items()
+                        if k not in ('deferred_success', 'completion_done', 'completion_key')}
+            self._commit({**self.rows, sid: {**reviewed, 'review_required': True}})
             return True
 
     def cancel(self, sid: str, project_id: str) -> bool:
@@ -276,9 +333,12 @@ def hold_completion(session: dict, config: dict, *, completion_kind: str | None 
     """Hold pending launches; remember actual success boundaries for their ack.
 
     Call boundary/ack hooks under the project lock. An idle status alone is not
-    success evidence. This runtime-only marker cannot authorize a crash replay.
+    success evidence. Persisted success authorizes completion, never delivery.
     """
+    row = None
     try:
+        if finalizing(session):
+            return False  # project-locked completion of the persisted result
         row = _store.get(session.get('session_id', '')) if _store else None
         if (row and row['phase'] == 'submitting' and unattended(session)
                 and session.get('status') != 'stopped'
@@ -287,15 +347,15 @@ def hold_completion(session: dict, config: dict, *, completion_kind: str | None 
                      or not session.get('_limit_resume_exhaustion'))):
             if (not row.get('review_required')
                     and session.get('_limit_resume_attempt') == row['attempts']):
-                deferred = session.get('_limit_resume_completion') or {}
                 if (completion_kind == 'turn' and session.get('status') == 'idle'
                         and not session.get('_limit_resume_exhaustion')):
-                    session['_limit_resume_completion'] = {
-                        'attempt': row['attempts'], 'kind': 'turn', 'status': 'idle'}
-                elif (completion_kind == 'exit' and deferred.get('attempt') == row['attempts']):
-                    # A process may exit between its successful result and ack.
-                    session['_limit_resume_completion'] = {
-                        'attempt': row['attempts'], 'kind': 'exit', 'status': 'completed'}
+                    assert _store is not None
+                    session['_limit_resume_completion'] = _store.defer_success(session, 'turn')
+                elif completion_kind == 'exit':
+                    assert _store is not None
+                    deferred = _store.defer_success(session, 'exit')
+                    if deferred:
+                        session['_limit_resume_completion'] = deferred
             session['status'] = 'waiting_for_reset'
             return True  # pending acknowledgment or manual review
         if (row and row['phase'] == 'waiting' and unattended(session)
@@ -305,6 +365,11 @@ def hold_completion(session: dict, config: dict, *, completion_kind: str | None 
         return bool(_store and _store.park(session, enabled=config.get('limit_resume_enabled', True)))
     except Exception as exc:
         _log(f'[limit-resume] could not persist wait: {exc}', flush=True)
+        # Do not leak a success through normal completion after its deferral
+        # write failed. Keep the pending claim visible for manual review.
+        if row and row['phase'] == 'submitting':
+            session['status'] = 'waiting_for_reset'
+            return True
         return session.get('status') == 'waiting_for_reset'
 
 
@@ -312,6 +377,8 @@ def new_turn(session: dict, *, internal: bool = False) -> None:
     session.pop('_limit_resume_completion', None)
     session.pop('_limit_resume_exhaustion', None)
     session.pop('_allowance_exhausted', None)
+    if internal and _store:
+        _store.discard_success(session.get('session_id', ''), session.get('_limit_resume_attempt'))
     if not internal:
         session.pop('_limit_resume_attempt', None)
         session.pop('_limit_resume_cancelled', None)

@@ -9614,7 +9614,8 @@ def _write_usage_breakdown_sample_tick(session, observed_at: str):
 
 def _complete_agent_turn(session):
     """Normal Mode B boundary, also used when a launch ack releases success."""
-    _agent_shim_completion.begin(session, 'turn')
+    if not _limit_resume.finalizing(session):
+        _agent_shim_completion.begin(session, 'turn')
     if not _hold_notify_for_background(session):
         _maybe_notify_spawner(session, _last_reply_text(session))
     _agent_shim_completion.ack(session, owed=_spawner_notify_owed(session))
@@ -9637,7 +9638,8 @@ def _log_agent_completion(session):
     # them either. Acknowledged below only once the body AND the wake succeeded.
     if _limit_resume.hold_completion(session, state.CONFIG, completion_kind='exit'):
         return
-    _agent_shim_completion.begin(session, 'exit')
+    if not _limit_resume.finalizing(session):
+        _agent_shim_completion.begin(session, 'exit')
     _clean = False
     try:
         _log_agent_completion_body(session)

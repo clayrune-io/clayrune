@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify
 
 from mc import limit_resume as policy
+from mc.limit_resume_completion import finalize
 from mc.core import _log
 
 bp = Blueprint('limit_resume', __name__)
@@ -20,31 +21,41 @@ def confirm_submission(session: dict, attempt: int | None) -> None:
         if (attempt is None or session.get('_limit_resume_attempt') != attempt
                 or not policy.unattended(session) or session.get('status') == 'stopped'):
             return
-        if not policy.confirm_submission(session['session_id'], attempt):
-            return  # cancelled, review-required, stale, or already re-parked
-        deferred = session.pop('_limit_resume_completion', None)
-        if not deferred or deferred['attempt'] != attempt:
+        store = policy.store()
+        row = store.get(session['session_id']) if store else None
+        if row and row.get('deferred_success') and not finalize(ar, session, attempt):
             return
-        session['status'] = deferred['status']
-        session['last_status_change_time'] = time.time()
-        if deferred['kind'] == 'exit':
-            ar._log_agent_completion(session)
-        else:
-            ar._complete_agent_turn(session)
+        if policy.confirm_submission(session['session_id'], attempt):
+            session.pop('_limit_resume_completion', None)
 
 
-def restore_waits(ar) -> None:
+def restore_waits(ar, *, include_completed: bool = True) -> None:
     """Rehydrate paused sessions without starting provider processes."""
     store = policy.store()
     if not store:
         return
     rows = store.records()
     for row in rows:
-        if row['phase'] not in ('waiting', 'submitting'):
+        if row['phase'] not in ('waiting', 'submitting') and not (
+                include_completed and row['phase'] == 'active' and row.get('completion_done')):
             continue
         sid, pid = row['session_id'], row['project_id']
         with ar.get_manager(pid).lock:
-            if sid in ar.agent_sessions:
+            existing = ar.agent_sessions.get(sid)
+            # Re-read after taking the same lock as cancel/takeover/ack.
+            row = store.get(sid)
+            if not row or row['phase'] == 'cancelled':
+                continue
+            deferred = row.get('deferred_success') or {}
+            recover_success = (not row.get('review_required')
+                               and deferred.get('attempt') == row['attempts'])
+            if existing:
+                if (existing.get('_limit_resume_recovering') and recover_success
+                        and existing.get('status') == 'waiting_for_reset'
+                        and row['phase'] == 'submitting'):
+                    if finalize(ar, existing, row['attempts'],
+                                restoring=not existing.get('process_alive')):
+                        policy.confirm_submission(sid, row['attempts'])
                 continue
             if not ar.load_project(pid):
                 continue  # a deleted project is never recreated
@@ -53,11 +64,20 @@ def restore_waits(ar) -> None:
                            stdin_lock=threading.Lock(), pending_followups=[],
                            last_output_time=time.time(), last_status_change_time=time.time())
             session['log_lines'] = list(session.get('log_lines', []))
-            if row['phase'] == 'submitting':
+            if row['phase'] == 'submitting' and not recover_success:
                 session['log_lines'].append(
                     '[Reset continuation submission was interrupted; continue manually to avoid a duplicate.]')
             ar.agent_sessions[sid] = session
             ar.get_manager(pid).session_ids.add(sid)
+            if row.get('completion_done') and recover_success:
+                session['status'] = 'completed'
+                if row['phase'] == 'submitting':
+                    policy.confirm_submission(sid, row['attempts'])
+            elif recover_success:
+                session['_limit_resume_attempt'] = row['attempts']
+                session['_limit_resume_recovering'] = True
+                if finalize(ar, session, row['attempts'], restoring=True):
+                    policy.confirm_submission(sid, row['attempts'])
 
 
 def tick(now: datetime | None = None) -> None:
@@ -65,7 +85,7 @@ def tick(now: datetime | None = None) -> None:
     store = policy.store()
     if not store:
         return
-    restore_waits(ar)
+    restore_waits(ar, include_completed=False)
     if (not ar.state.CONFIG.get('limit_resume_enabled', True)
             or ar.state.CONFIG.get('scheduler_paused')):
         return
