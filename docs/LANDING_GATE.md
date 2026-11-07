@@ -70,9 +70,21 @@ Nonzero command exits normalize to:
   line (including Node `not ok`, usage and missing-input diagnostics), even when
   pytest/smoke signatures also exist. An unfamiliar failure format cannot hide
   behind a recognized one.
+- `tap:<suite> > <test name>` from TAP `not ok N - name` (Node `--reporter=tap`).
+  The number is the test's position, not its identity, so it is dropped; the
+  enclosing `# Subtest:` names qualify it so a same-named test failing in a
+  second suite still blocks.
+- `pytest-report:<test>` from the `____ test_x ____` report heading, the only
+  per-test name when pytest prints no short summary (`-r`).
+- Runner count lines are bookkeeping, not failures: pytest's closing
+  `N failed, M passed in …`, TAP `# tests/pass/fail/…` and Node `ℹ tests/pass/…`
+  totals change whenever an unrelated test is added or fixed. They are used only
+  when no named failure exists, so a summary-only nonzero exit still fails closed.
 - Without detailed findings, an aggregate summary, last nonempty output line
   or `<no output>` supplies a nonzero-exit signature. ANSI colors, checkout
-  roots, absolute file locations and numeric durations are normalized; file
+  roots, `:LINE[:COL]` after any path (relative or absolute; needs a separator
+  or a source-file extension, so `host.com:8080` keeps its port) and numeric
+  durations are normalized; file
   basenames, pytest node IDs and non-timing assertion values remain distinct.
 
 The 2026-11-07 review audited failure-print sites in all 327
@@ -87,7 +99,8 @@ The 2026-11-07 review audited failure-print sites in all 327
 | `capture failed`, `bench failed`, custom smoke errors | `capture-screenshot.mjs`, `desk-v1-exit.mjs`, `desk-v1-journey.mjs` | Additive error signatures |
 | Usage, missing selectors/inputs, unreachable registration | `capture-screenshot.mjs`, `installed-app.mjs`, `split-view-real.mjs`, `first-run-signin-flow.mjs` | Additive diagnostic signatures |
 | Counts, `FAILED (n)`, `n FAILED`, `RESULT: FAIL`, `fails=n` | `settings-providers.mjs`, `desk-studio-render-scenes.mjs`, `terminal-pty-popout.mjs` | Summary only when no detailed failure exists |
-| Assertion errors / TAP `not ok` | Node assertions and `test-run-data.test.mjs` | Additive error signatures |
+| Assertion errors | Node assertions | Additive error signatures |
+| TAP `not ok N - name` | `test-run-data.test.mjs`, `node --test` | Named `tap:` signature, number dropped |
 
 Signatures are scoped by command position. Candidate signatures absent from
 the baseline block. Baseline failures are reported even when the candidate

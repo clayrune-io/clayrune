@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -508,3 +509,181 @@ def test_gc_preserves_blocked_work_without_caching_verdict(repo):
     assert result['merged'] == result['removed'] == 0
     assert refs(repo) == before
     assert worktrees._load_gc_cache(project) == {}
+
+
+# ── Round two: failure identity must not carry runner noise (Fenn P1) ─────────
+# Every output below is captured from the real runner on a tiny fixture, then
+# fed through failure_signatures; nothing is hand-typed.
+
+OLD_FAIL = 'def test_old():\n    x = 1\n    assert x == 2\n'
+NEW_FAIL = 'def test_new():\n    assert "a" == "b"\n'
+PASS_TEST = 'def test_fine():\n    assert True\n'
+needs_node = pytest.mark.skipif(shutil.which('node') is None, reason='node not installed')
+NODE_HEAD = "import test, { describe, it } from 'node:test';\nimport assert from 'node:assert';\n"
+NODE_OLD = "test('old thing', () => { assert.strictEqual(1, 2); });\n"
+NODE_NEW = "test('new thing', () => { assert.strictEqual(3, 4); });\n"
+NODE_PASS = "test('fine', () => {});\n"
+_STRIPPED_ENV = ('PYTEST_ADDOPTS', 'PYTEST_CURRENT_TEST', 'NODE_OPTIONS', 'PYTHONPATH')
+
+
+def captured(argv, cwd: Path, extra_env=None):
+    env = {k: v for k, v in os.environ.items() if k not in _STRIPPED_ENV}
+    env.update(extra_env or {})
+    done = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True,
+                          encoding='utf-8', errors='replace', timeout=120)
+    assert done.returncode != 0, done.stdout + done.stderr
+    return done.stdout + done.stderr, done.returncode
+
+
+def real_pytest(tmp_path: Path, label: str, source: str, extra_env=None):
+    folder = tmp_path/label
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder/'test_fx.py').write_text(source, encoding='utf-8')
+    return captured([sys.executable, '-m', 'pytest', 'test_fx.py', '-q', '-ra', '-p', 'no:cacheprovider',
+                     '-o', 'addopts=', '--rootdir', str(folder)], folder, extra_env)
+
+
+def real_tap(tmp_path: Path, label: str, source: str):
+    folder = tmp_path/label
+    folder.mkdir()
+    (folder/'fx.test.mjs').write_text(source, encoding='utf-8')
+    return captured(['node', '--test', '--test-reporter=tap', 'fx.test.mjs'], folder)
+
+
+def sigs(captured_run, root=None):
+    output, code = captured_run
+    return gate.failure_signatures(output, code, root)
+
+
+def verdict(old, new):
+    return gate.compare([run(old)], [run(new)])
+
+
+def test_real_runner_output_is_what_the_fixtures_assume(tmp_path):
+    output, _ = real_pytest(tmp_path, 'p', PASS_TEST + OLD_FAIL)
+    assert 'FAILED test_fx.py::test_old' in output and '1 failed, 1 passed' in output
+
+
+def test_adding_a_passing_pytest_test_is_not_a_new_failure(tmp_path):
+    old = sigs(real_pytest(tmp_path, 'old', OLD_FAIL))
+    new = sigs(real_pytest(tmp_path, 'new', OLD_FAIL + PASS_TEST))
+    assert verdict(old, new)['status'] == 'pass', verdict(old, new)['new_failures']
+
+
+@needs_node
+def test_adding_a_passing_tap_test_is_not_a_new_failure(tmp_path):
+    old = sigs(real_tap(tmp_path, 'old', NODE_HEAD + NODE_OLD))
+    new = sigs(real_tap(tmp_path, 'new', NODE_HEAD + NODE_OLD + NODE_PASS))
+    assert verdict(old, new)['status'] == 'pass', verdict(old, new)['new_failures']
+
+
+@needs_node
+def test_tap_test_number_change_is_not_a_new_failure(tmp_path):
+    old = sigs(real_tap(tmp_path, 'old', NODE_HEAD + NODE_OLD))
+    new = sigs(real_tap(tmp_path, 'new', NODE_HEAD + NODE_PASS + NODE_OLD))
+    assert verdict(old, new)['status'] == 'pass', verdict(old, new)['new_failures']
+    assert 'tap:old thing' in old and old == new
+
+
+def test_moving_a_failing_pytest_assertion_is_not_a_new_failure(tmp_path):
+    old_run = real_pytest(tmp_path, 'old', OLD_FAIL)
+    new_run = real_pytest(tmp_path, 'new', '# moved\n\n\n' + OLD_FAIL)
+    assert 'test_fx.py:3:' in old_run[0] and 'test_fx.py:6:' in new_run[0]  # relative, line moved
+    assert verdict(sigs(old_run), sigs(new_run))['status'] == 'pass'
+
+
+@needs_node
+def test_moving_a_failing_tap_assertion_is_not_a_new_failure(tmp_path):
+    old_run = real_tap(tmp_path, 'old', NODE_HEAD + NODE_OLD)
+    new_run = real_tap(tmp_path, 'new', NODE_HEAD + '// moved\n\n\n' + NODE_OLD)
+    assert 'fx.test.mjs:3:' in old_run[0] and 'fx.test.mjs:6:' in new_run[0]  # absolute location, line moved
+    root_old, root_new = tmp_path/'old', tmp_path/'new'
+    assert verdict(sigs(old_run, root_old), sigs(new_run, root_new))['status'] == 'pass'
+
+
+@pytest.mark.skipif(shutil.which('pyright') is None, reason='pyright not installed')
+def test_moving_a_failing_assertion_in_absolute_path_output_is_not_a_new_failure(tmp_path):
+    def real(label, pad):
+        folder = tmp_path/label
+        folder.mkdir()
+        (folder/'fx.py').write_text(pad + 'x: int = "a"\n', encoding='utf-8')
+        return captured(['pyright', str(folder/'fx.py')], folder)
+    old_run, new_run = real('old', ''), real('new', '\n\n\n')
+    assert 'fx.py:1:' in old_run[0].replace('\\', '/') and 'fx.py:4:' in new_run[0].replace('\\', '/')
+    assert str(tmp_path/'old').lower() in old_run[0].lower()  # genuinely absolute in the real output
+    assert verdict(sigs(old_run), sigs(new_run))['status'] == 'pass'
+
+
+def test_a_genuinely_new_failing_pytest_test_blocks(tmp_path):
+    old = sigs(real_pytest(tmp_path, 'old', OLD_FAIL + PASS_TEST))
+    new = sigs(real_pytest(tmp_path, 'new', OLD_FAIL + PASS_TEST + NEW_FAIL))
+    result = verdict(old, new)
+    assert result['status'] == 'blocked'
+    assert any('pytest:test_fx.py::test_new' in s for s in result['new_failures'])
+
+
+@needs_node
+def test_a_genuinely_new_failing_tap_test_blocks(tmp_path):
+    old = sigs(real_tap(tmp_path, 'old', NODE_HEAD + NODE_OLD))
+    new = sigs(real_tap(tmp_path, 'new', NODE_HEAD + NODE_PASS + NODE_OLD + NODE_NEW))
+    result = verdict(old, new)
+    assert result['status'] == 'blocked'
+    assert result['new_failures'] == ['1:tap:new thing']
+
+
+@needs_node
+def test_same_named_tap_test_failing_in_a_second_suite_blocks(tmp_path):
+    suite = "describe('%s', () => { it('works', () => { %s }); });\n"
+    fail, ok = 'assert.strictEqual(1, 2);', ''
+    old = sigs(real_tap(tmp_path, 'old', NODE_HEAD + suite % ('suiteA', fail) + suite % ('suiteB', ok)))
+    new = sigs(real_tap(tmp_path, 'new', NODE_HEAD + suite % ('suiteA', fail) + suite % ('suiteB', fail)))
+    assert verdict(old, new)['status'] == 'blocked'
+
+
+def test_a_new_failure_in_an_unrecognised_format_still_blocks_beside_a_known_one(tmp_path):
+    output, code = real_pytest(tmp_path, 'old', OLD_FAIL + PASS_TEST)
+    old = gate.failure_signatures(output, code)
+    new = gate.failure_signatures(output + 'widgetcheck: Fatal: widget exploded\n', code)
+    result = verdict(old, new)
+    assert result['status'] == 'blocked'
+    assert any('widget exploded' in s for s in result['new_failures'])
+
+
+@pytest.mark.parametrize('line', [
+    '============================== 1 failed, 1 passed in 0.06s ==============================',
+    '1 failed, 3 passed, 2 skipped, 1 warning in 61.00s (0:01:01)', '2 errors in 0.10s',
+    '# tests 2', '# pass 1', '# fail 1', '# cancelled 0', '# duration_ms 57.3414',
+    'ℹ tests 2', 'ℹ fail 1', 'ℹ duration_ms 57.3414'])
+def test_runner_summary_count_lines_are_not_failure_identities(line):
+    assert gate.failure_signatures('FAILED tests/a.py::test_x - boom\n' + line, 1) == ['pytest:tests/a.py::test_x']
+    assert gate.failure_signatures(line, 1)  # a summary alone still fails closed
+
+
+@pytest.mark.parametrize(('before', 'after'), [
+    ('Error: bad at tests/x.py:42', 'Error: bad at tests/x.py:97'),
+    (r'Error: bad at src\x.mjs:4:9', r'Error: bad at src\x.mjs:70:2'),
+    ('Error: bad at ./x.ts:4', 'Error: bad at ./x.ts:5:5'),
+])
+def test_line_and_column_are_stripped_from_relative_paths(before, after):
+    assert gate.failure_signatures(before, 1) == gate.failure_signatures(after, 1)
+
+
+def test_ports_and_hosts_are_not_mistaken_for_line_numbers():
+    assert gate.failure_signatures('Error: refused example.com:8080', 1) != \
+        gate.failure_signatures('Error: refused example.com:9090', 1)
+
+
+def test_pytest_without_a_short_summary_still_names_each_failure(tmp_path):
+    def real(label, source):
+        folder = tmp_path/label
+        folder.mkdir()
+        (folder/'test_fx.py').write_text(source, encoding='utf-8')
+        return captured([sys.executable, '-m', 'pytest', 'test_fx.py', '-q', '-rN', '-p', 'no:cacheprovider',
+                         '-o', 'addopts=', '--rootdir', str(folder)], folder)
+    old_run = real('old', OLD_FAIL + PASS_TEST)
+    new_run = real('new', OLD_FAIL + PASS_TEST + OLD_FAIL.replace('test_old', 'test_also'))
+    assert 'FAILED' not in old_run[0]  # no short summary: only the report headers name the test
+    assert verdict(sigs(old_run), sigs(real('moved', '#\n#\n' + OLD_FAIL + PASS_TEST)))['status'] == 'pass'
+    result = verdict(sigs(old_run), sigs(new_run))
+    assert result['status'] == 'blocked'
+    assert any('test_also' in s for s in result['new_failures'])

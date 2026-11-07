@@ -37,10 +37,31 @@ _SUMMARY = re.compile(
     r'(?:check|assertion|problem|case|failure|behaviour)(?:\(s\)|s)?'
     r'(?: (?:failed|regressed))?\.?|FAILED(?:[: (]+\d+\)?)?|\d+ FAILED|'
     r'RESULT: FAIL|Checks=\d+ failures=\d+|fails=\d+)$', re.I)
+# Runner bookkeeping, not a failure: pytest's closing count line and the TAP / node
+# test-runner totals. Counts change when unrelated tests are added or fixed.
+_RUNNER_SUMMARY = re.compile(
+    r'=*\s*(?:\d+ (?:failed|passed|skipped|deselected|xfailed|xpassed|errors?|warnings?|rerun)(?:, )?)+'
+    r'(?: in (?:<duration>|[\d.]+s)(?: \(\d+:\d{2}:\d{2}\))?)?\s*=*|'
+    r'=*\s*no tests ran(?: in <duration>)?\s*=*|'
+    r'(?:#|ℹ) (?:tests|suites|pass|fail|cancelled|skipped|todo|duration_ms) [\d.]+')
+# TAP `not ok 3 - name`: the number is the test's position, not its identity.
+_TAP = re.compile(r'^not ok\s+\d+\b\s*(?:-\s*)?(?P<name>.*?)\s*$')
+_TAP_SUBTEST = re.compile(r'^# Subtest:\s*(?P<name>.*?)\s*$')
+# pytest report heading `____ test_x ____`: the only per-test name when no short
+# summary (-r) is printed, now that the closing count line is ignored.
+_PYTEST_SECTION = re.compile(r'^_{2,} (?P<name>\S.*?) _{2,}$')
 _DURATION = re.compile(r'\b\d+(?:\.\d+)?\s*(?:ms|milliseconds?|s|seconds?|secs?|minutes?|mins?)\b', re.I)
 _ABSOLUTE_FILE = re.compile(
     r'(?<![\w>])(?:file://)?(?:[A-Za-z]:[\\/]|/)(?:[^\s<>\"\'():]+[\\/])*'
     r'(?P<file>[^\s<>\"\'():/\\]+\.[A-Za-z0-9]+)(?::\d+(?::\d+)?)?')
+# `file.ext:LINE[:COL]` -> `file.ext` for relative and absolute paths alike, so a
+# moved assertion keeps its identity. Needs a path separator or a source-file
+# extension, so `example.com:8080` keeps its port.
+_LOCATION = re.compile(
+    r'(?P<file>[\w.\-~@+\\/]*[\w\-]\.(?P<ext>[A-Za-z][A-Za-z0-9]{0,7}))(?::\d+){1,2}(?!\w)')
+_SOURCE_EXTENSIONS = frozenset(
+    'py pyi js mjs cjs jsx ts tsx json html htm css scss md txt sh bash ps1 bat cmd rs go java kt c h cc cpp '
+    'hpp cs rb php swift yml yaml toml ini cfg vue svelte sql'.split())
 _cache: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
 _cache_lock = threading.Lock()
 Reviewer = Callable[[dict[str, Any]], dict[str, Any]]
@@ -61,10 +82,18 @@ def settings(project: dict[str, Any]) -> tuple[list[str], float]:
     return list(commands), float(timeout)
 
 
+def _drop_location(match: re.Match[str]) -> str:
+    file = match['file']
+    if '/' in file or '\\' in file or match['ext'].lower() in _SOURCE_EXTENSIONS:
+        return file
+    return match[0]
+
+
 def _stable_line(line: str) -> str:
     # Keep assertion values and file/check names; remove locations and elapsed time.
     line = _ABSOLUTE_FILE.sub(lambda m: '<path>/' + m['file'], line)
     line = re.sub(r'(<worktree>[/\\][^\s:]+):\d+(?::\d+)?', r'\1', line)
+    line = _LOCATION.sub(_drop_location, line)
     return ' '.join(_DURATION.sub('<duration>', line).split())
 
 
@@ -77,19 +106,41 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
     names: set[str] = set()
     summaries: set[str] = set()
     heading = ''
+    subtests: list[tuple[int, str]] = []  # enclosing TAP `# Subtest:` lines, by indent
     for raw in clean.splitlines():
         line = raw.strip()
         if not line:
             continue
+        indent = len(raw) - len(raw.lstrip())
         match = _PYTEST.match(line.split(' - ', 1)[0])
         if match:
             names.add('pytest:' + match[1])
             heading = ''
             continue
         line = _stable_line(line)
+        subtest = _TAP_SUBTEST.match(line)
+        if subtest:
+            while subtests and subtests[-1][0] >= indent:
+                subtests.pop()
+            subtests.append((indent, subtest['name']))
+            heading = ''
+            continue
+        section = _PYTEST_SECTION.match(line)
+        if section:
+            names.add('pytest-report:' + section['name'])
+            heading = ''
+            continue
+        tap = _TAP.match(line)
+        if tap:
+            # Qualified by enclosing suites, so the same test name failing in a
+            # second suite is still a new failure.
+            path = [name for depth, name in subtests if depth < indent]
+            names.add('tap:' + ' > '.join([*path, tap['name'] or '<unspecified>']))
+            heading = ''
+            continue
         match = _SMOKE.match(line)
         detail = match['name'].strip() if match else line
-        if _SUMMARY.fullmatch(detail):
+        if _SUMMARY.fullmatch(detail) or _RUNNER_SUMMARY.fullmatch(detail):
             summaries.add(line)
             heading = ''
             continue
