@@ -73,6 +73,11 @@ controls this behavior; pausing the scheduler also prevents continuations. This
 waits for scheduled resets and never spends a vendor's optional reset grant.
 If a restart interrupts submission itself, the Floor shows **Reset continuation
 needs review**; continue the chat manually or cancel to avoid duplicate work.
+Failed launches or uncertain message delivery show the same review hold
+immediately. An associated workflow fails that step and keeps later steps
+pending; the chat remains available to review or cancel. Codex reset messages
+during the repeated DST hour use the later occurrence; skipped spring-forward
+times resolve forward so the continuation never starts early.
 
 ### Starter experts on the Floor
 

@@ -265,6 +265,8 @@ def test_uncertain_submit_is_not_replayed_after_restart(integration, monkeypatch
         raise RuntimeError('pipe write outcome unknown')
     monkeypatch.setattr(env.ar, 'agent_followup', fail)
     dispatch.tick(DUE)
+    assert env.store.get('child')['review_required'] is True
+    assert env.sessions['child']['status'] == 'waiting_for_reset'
     env.sessions.clear()
     monkeypatch.setattr(lr, '_store', lr.ResumeStore(env.store.path))
     monkeypatch.setattr(env.ar, 'agent_followup', lambda pid: pytest.fail('no duplicate'))
@@ -438,6 +440,78 @@ def test_claude_respawn_unacknowledged_write_stays_recoverable(claude_followup, 
     assert env.store.claim('child', DUE) is None
 
 
+@pytest.mark.parametrize('failure', ['launch', 'failed', 'unknown'])
+def test_failed_mode_b_continuation_is_visible_and_reconciles(claude_followup, monkeypatch, tmp_path, failure):
+    from mc import workflows
+    from mc.blueprints import floor_routes as floor
+    env = claude_followup
+    s = exhausted(session())
+    s.update(proc=None, process_alive=False, _turn_owner='spawner')
+    env.sessions['child'] = s
+    env.store.park(s)
+    monkeypatch.setattr(workflows, 'WORKFLOWS_PATH', tmp_path / 'workflows.json')
+    monkeypatch.setattr(workflows, 'WORKFLOW_RUNS_DIR', tmp_path / 'workflow_runs')
+    monkeypatch.setattr(workflows, '_dispatch_agent_internal', lambda *a, **k: 'child')
+    workflow = workflows.create_workflow({'name': 'resume-review', 'nodes': [
+        {'type': 'agent', 'name': 'first', 'project_id': 'p', 'prompt': 'original task'},
+        {'type': 'agent', 'name': 'next', 'project_id': 'p', 'prompt': 'never run on failure'},
+    ], 'edges': [{'from': 'first', 'to': 'next'}]})
+    run = workflows.start_run(workflow['id'])
+    def launch(*a, **k):
+        if failure == 'launch':
+            raise OSError('synthetic continuation Popen failure')
+        return SimpleNamespace(pid=12345)
+    monkeypatch.setattr(env.ar, 'spawn_engine_proc', launch)
+    real_write = env.ar._bounded_stdin_write
+    monkeypatch.setattr(env.ar, '_bounded_stdin_write', lambda *a, **k: {'ack': failure})
+    dispatch.tick(DUE)
+    worker = next(t for t in env.pending if t.target.__name__ == '_do_respawn_b')
+    assert s['_limit_resume_attempt'] == env.store.get('child')['attempts'] == 1
+    worker.target(*worker.args)
+    assert env.store.get('child')['phase'] == 'submitting'
+    assert s['status'] == 'waiting_for_reset', (s['status'], s['log_lines'])
+    if failure == 'unknown':
+        # A timed-out writer may fail after the worker already established the
+        # review hold; execute the real writer's delayed failure as well.
+        def broken_write(payload):
+            raise BrokenPipeError('synthetic late pipe failure')
+        proc = SimpleNamespace(pid=12345, stdin=SimpleNamespace(write=broken_write))
+        real_write(proc, 'continuation', session=s)
+        writer = next(t for t in env.pending if t.target.__name__ == '_writer')
+        writer.target(*writer.args)
+        assert s['status'] == 'waiting_for_reset'
+    # Completion/recovery cannot erase the hold or replay the failed claim.
+    env.ar._log_agent_completion(s)
+    dispatch.tick(DUE)
+    assert s['status'] == 'waiting_for_reset'
+    assert env.store.get('child')['attempts'] == 1
+    monkeypatch.setattr(floor, 'agent_sessions', env.sessions)
+    assert floor._live_sessions({}, {}, {})['p'][0]['limit_resume']['phase'] == 'submitting'
+    for use_live in (False, True):
+        verdict, status, summary = workflows._step_session_verdict(
+            {'session_id': 'child', 'project_id': 'p'}, use_live=use_live)
+        assert (verdict, status) == ('ended', 'error')
+        assert 'manual review' in summary
+    # The same verdict and visible hold survive losing the live session.
+    env.sessions.clear()
+    monkeypatch.setattr(lr, '_store', lr.ResumeStore(env.store.path))
+    dispatch.restore_waits(env.ar)
+    assert env.sessions['child']['status'] == 'waiting_for_reset'
+    assert workflows._step_session_verdict(
+        {'session_id': 'child', 'project_id': 'p'}, use_live=False)[:2] == ('ended', 'error')
+    assert workflows.reconcile_running_steps() == {'advanced': 1, 'stalled': 0}
+    after = workflows.get_run(run['id'])
+    assert after['status'] == 'failed'
+    assert after['steps']['first']['status'] == 'failed'
+    assert 'manual review' in after['steps']['first']['error']
+    assert after['steps']['next']['status'] == 'pending'
+    assert workflows.reconcile_running_steps() == {'advanced': 0, 'stalled': 0}
+    monkeypatch.setattr(env.ar, '_log_agent_completion', lambda s: None)
+    response = env.app.test_client().post('/api/project/p/agent/child/limit-resume/cancel')
+    assert response.status_code == 200
+    assert env.sessions['child']['status'] == 'stopped'
+
+
 def test_launch_ack_cannot_activate_cancelled_or_different_attempt(store):
     s = exhausted(session())
     store.park(s)
@@ -447,6 +521,44 @@ def test_launch_ack_cannot_activate_cancelled_or_different_attempt(store):
     store.cancel('child', 'p')
     lr.confirm_submission('child', 1)
     assert store.get('child')['phase'] == 'cancelled'
+
+
+def test_submission_review_rejects_late_ack_and_stale_or_cancelled_failure(store):
+    s = exhausted(session())
+    store.park(s)
+    store.claim('child', DUE)
+    lr.new_turn(s, internal=True)
+    s['status'] = 'running'
+    lr.submission_failed(s, 2)
+    assert s['status'] == 'running'
+    lr.submission_failed(s, 1)
+    assert s['status'] == 'waiting_for_reset'
+    lr.confirm_submission('child', 1)
+    assert store.get('child')['phase'] == 'submitting'
+    assert store.cancel('child', 'p')
+    s['status'] = 'idle'
+    lr.submission_failed(s, 1)
+    assert s['status'] == 'idle'
+    assert store.get('child')['phase'] == 'cancelled'
+
+
+def test_pending_claim_holds_without_exhaustion_but_can_park_fresh_limit(store):
+    s = exhausted(session())
+    store.park(s)
+    claim = store.claim('child', DUE)
+    s['_limit_resume_attempt'] = claim['attempts']
+    lr.new_turn(s, internal=True)
+    s['status'] = 'error'
+    assert lr.hold_completion(s, {})
+    assert s['status'] == 'waiting_for_reset'
+    assert store.get('child')['phase'] == 'submitting'
+    exhausted(s)  # new evidence from the continuation before its launch ack
+    s['status'] = 'error'
+    assert lr.hold_completion(s, {})
+    assert store.get('child')['phase'] == 'waiting'
+    lr.confirm_submission('child', claim['attempts'])
+    assert store.get('child')['phase'] == 'waiting'
+    assert store.claim('child', DUE)['attempts'] == 2
 
 
 @pytest.mark.parametrize('month,offset', [(1, -8), (7, -7)])

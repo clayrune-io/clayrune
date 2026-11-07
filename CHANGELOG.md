@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-07] - Keep failed reset launches visible for review (MC-1163 second review)
+
+- Failed or uncertain continuation launches and deliveries retain the Floor's review/cancel hold immediately, including delayed stdin failures. Durable failure evidence lets workflow reconciliation fail the step instead of counting it as in flight indefinitely; downstream steps stay pending.
+- Codex reset times in a DST overlap resolve to the later occurrence; nonexistent spring-forward times resolve forward. Added fixed Los Angeles regressions and executed the real Mode B launch worker to reproduce the failure before fixing it.
+- Branch review candidate only; no merge, push, restart or deployment.
+
 ## [2026-11-07] - Keep reset continuations recoverable during queued launches (MC-1163 review)
 
 - Claude reset continuations stay pending until process launch (Mode A) or launch plus stdin delivery (Mode B) is confirmed. A crash before the queued worker starts restores a visible review hold, with no automatic replay or extra attempt.

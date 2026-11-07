@@ -189,8 +189,17 @@ class ResumeStore:
             row = self.rows.get(sid)
             # A fast new exhaustion may already have parked the next attempt.
             if (row and row['phase'] == 'submitting'
+                    and not row.get('review_required')
                     and (attempt is None or row['attempts'] == attempt)):
                 self._commit({**self.rows, sid: {**row, 'phase': 'active'}})
+
+    def require_review(self, sid: str, attempt: int) -> bool:
+        with self._transaction():
+            row = self.rows.get(sid)
+            if not row or row['phase'] != 'submitting' or row['attempts'] != attempt:
+                return False
+            self._commit({**self.rows, sid: {**row, 'review_required': True}})
+            return True
 
     def cancel(self, sid: str, project_id: str) -> bool:
         with self._transaction():
@@ -236,6 +245,24 @@ def confirm_submission(sid: str, attempt: int | None) -> None:
         _store.submitted(sid, attempt=attempt)
 
 
+def submission_failed(session: dict, attempt: int | None) -> None:
+    """Keep an unacknowledged launch visible and durably end its workflow step.
+
+    The claim remains submitting: uncertain delivery must never be replayed.
+    Call under the project lock so cancellation/human takeover wins.
+    """
+    if not _store or attempt is None or not unattended(session) or session.get('status') == 'stopped':
+        return
+    try:
+        if not _store.require_review(session.get('session_id', ''), attempt):
+            return
+    except Exception as exc:
+        _log(f'[limit-resume] could not persist submission review: {exc}', flush=True)
+    session['status'] = 'waiting_for_reset'
+    session['last_status_change_time'] = time.time()
+    session['log_lines'].append('[Reset continuation needs manual review; continue manually or cancel.]')
+
+
 def view(session: dict) -> dict | None:
     return _store.view(session.get('session_id', '')) if _store else None
 
@@ -245,7 +272,9 @@ def hold_completion(session: dict, config: dict) -> bool:
         row = _store.get(session.get('session_id', '')) if _store else None
         if (row and row['phase'] == 'submitting' and unattended(session)
                 and session.get('status') != 'stopped'
-                and session.get('_limit_resume_attempt') != row['attempts']):
+                and (row.get('review_required')
+                     or session.get('_limit_resume_attempt') != row['attempts']
+                     or not session.get('_limit_resume_exhaustion'))):
             session['status'] = 'waiting_for_reset'
             return True  # an uncertain submission is a manual-review hold
         if (row and row['phase'] == 'waiting' and unattended(session)

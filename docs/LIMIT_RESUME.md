@@ -75,11 +75,26 @@ cancelled record or a different attempt. A crash before the worker starts leaves
 `submitting` intact and restores the manual-review hold on restart, without
 automatically spending another continuation.
 
+An explicit launch failure, rejected/uncertain delivery or delayed stdin error
+immediately restores the same review/cancel hold, even when the live session's
+attempt stamp matches the claim. The durable `submitting` row gains
+`review_required=true`; it is not replayed and a late acknowledgment cannot
+activate it. Workflow boot adoption and periodic reconciliation read this
+evidence as an error end, failing the step and retaining pending downstream
+steps rather than counting a failed launch as in flight forever. The chat stays
+visible for manual review/cancellation. A still-pending launch without failure
+evidence remains in flight. Completion holds still permit a fresh exhaustion
+from the current attempt to park its next reset within the existing budget.
+
 Codex timezone evidence: the vendor's
 [`format_retry_timestamp`](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/error.rs)
 converts UTC to `chrono::Local` before formatting dated reset text (read
 2026-11-07). The parser converts this local wall time with `astimezone(UTC)`;
 it does not attach UTC to a local time or reuse today's fixed offset.
+For DST transitions the parser checks both folds and selects the later UTC
+instant: the second occurrence in an overlap, and the forward mapping across a
+gap. In America/Los_Angeles, Nov 1 2026 1:30 AM resolves to 09:30Z (fold=1),
+and Mar 8 2026 2:30 AM resolves forward to 10:30Z (3:30 AM local).
 
 `mc/limit_resume_dispatch.py` owns the scheduler adapter and cancel blueprint.
 Its private request-environment marker preserves ownership and retry count when
@@ -100,6 +115,23 @@ return 404; unavailable state returns 503. An already-running continuation retur
 terminate another process.
 
 ## Validation
+
+Second-review validation on 2026-11-07: the requested 13-file suite reported
+**404 passed in 18.20s** (exit 0). Both findings failed dynamically before their fixes;
+the spring-forward guard already passed. New coverage executes the real Mode B
+launch worker and delayed stdin writer, checks Floor visibility and cancellation,
+and reconciles a real workflow from durable failure evidence after recovery.
+Pyright on all five touched modules reports the same **15 pre-existing errors**
+in `mc/blueprints/agent_routes.py` as exact base `0d8f28f2`, with no added
+diagnostics; the other four touched modules have none. The launcher reported
+`telemetry_queue_full_progress_incomplete`; complete dashboard capture is not
+claimed. No static files changed and no live provider reset was executed.
+
+The second-review typecheck command adds the existing integration modules:
+
+```powershell
+python tools/test-run.py --project mission_control --port 5199 -- pyright mc/limit_resume.py mc/limit_resume_dispatch.py mc/allowance_state.py mc/blueprints/agent_routes.py mc/workflows.py
+```
 
 Review-fix validation on 2026-11-07: **397 passed in 14.27s** (exit 0),
 including the original branch suite, ten additional reset regressions and the

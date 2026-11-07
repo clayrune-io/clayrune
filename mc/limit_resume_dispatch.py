@@ -78,6 +78,7 @@ def tick(now: datetime | None = None) -> None:
             app = ar._delegation_app
             if app is None:
                 _log(f'[limit-resume] no follow-up app for {sid}; manual continuation required')
+                policy.submission_failed(session, claimed['attempts'])
                 continue
             try:
                 with app.test_request_context(json={
@@ -101,8 +102,7 @@ def tick(now: datetime | None = None) -> None:
                 # Keep the durable submitting claim. Retrying an unknown write
                 # after a crash could spend twice on the same task.
                 _log(f'[limit-resume] {sid} submission needs manual review: {exc}', flush=True)
-                if session.get('status') != 'running':
-                    session['status'] = 'waiting_for_reset'
+                policy.submission_failed(session, claimed['attempts'])
 
 
 @bp.route('/api/project/<project_id>/agent/<session_id>/limit-resume/cancel', methods=['POST'])

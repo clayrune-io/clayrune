@@ -2232,6 +2232,8 @@ def _step_session_verdict(step_state: dict, *, use_live: bool) -> tuple:
     pending_reset = reset_store.get(sid) if reset_store else None
     if (pending_reset and pending_reset['project_id'] == pid
             and pending_reset['phase'] in ('waiting', 'submitting')):
+        if pending_reset.get('review_required'):
+            return 'ended', 'error', 'Reset continuation needs manual review; continue manually or cancel.'
         return 'in_flight', 'waiting_for_reset', ''
     if _completion_owed(sid):
         return 'in_flight', None, ''    # its crash-surviving completion replays itself

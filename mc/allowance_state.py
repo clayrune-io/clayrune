@@ -413,7 +413,11 @@ def _parse_codex_reset_text(message: str) -> Optional[datetime]:
             # before rendering this wall-clock string (protocol/src/error.rs).
             # Let the host resolve the offset at the RESET date, including DST;
             # attaching today's fixed offset or assuming UTC shifts the wait.
-            return datetime.strptime(text, fmt).astimezone(timezone.utc)
+            local = datetime.strptime(text, fmt)
+            # Later occurrence in a fall-back overlap; forward across a spring
+            # gap. fold has reversed meanings in gaps, so choose by UTC time.
+            return max(local.replace(fold=fold).astimezone(timezone.utc)
+                       for fold in (0, 1))
         except ValueError:
             continue
     return None

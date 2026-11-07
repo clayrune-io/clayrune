@@ -14262,6 +14262,9 @@ def agent_followup(project_id):
                                            context='respawn-B')
                 if _limit_internal and ack and ack.get('ack') == 'written':
                     _limit_resume.confirm_submission(rb['session_id'], _limit_attempt)
+                elif _limit_internal:
+                    with get_manager(rb['project_id']).lock:
+                        _limit_resume.submission_failed(rb['existing'], _limit_attempt)
             except Exception as e:
                 _log(f"[respawn-B] {rb['project_id']}: FAILED — {e}")
                 rb['existing']['log_lines'].append(f'[respawn error: {e}]')
@@ -14269,6 +14272,9 @@ def agent_followup(project_id):
                 rb['existing']['status'] = 'error'
                 rb['existing']['last_status_change_time'] = _time.time()
                 rb['existing']['process_alive'] = False
+                if _limit_internal:
+                    with get_manager(rb['project_id']).lock:
+                        _limit_resume.submission_failed(rb['existing'], _limit_attempt)
                 # Pop the temp sysprompt file: spawn never reached the
                 # cleanup wiring, so the watchdog thread doesn't exist.
                 _sp_orphan = rb.get('sysprompt_path')
@@ -14368,6 +14374,8 @@ def agent_followup(project_id):
                 existing.pop('_respawn_in_flight', None)  # MC-1002 — handoff window over (failed)
                 existing['status'] = 'error'
                 existing['last_status_change_time'] = _time.time()
+                if _limit_internal:
+                    _limit_resume.submission_failed(existing, _limit_attempt)
             # Popen may have raised before sysprompt cleanup was wired — sweep.
             if _sp_path:
                 try:
@@ -14497,9 +14505,15 @@ def _bounded_stdin_write(proc, data, *, session=None, lock=None, close_after=Fal
             if close_after:
                 try:
                     proc.stdin.close()  # pyright: ignore[reportOptionalMemberAccess]
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _log(f'[stdin-write] closing PID {proc.pid} stdin failed: {exc}')
             done.set()
+            # Release acknowledgment waiters before taking the project lock:
+            # a synchronous follow-up caller may still be holding that lock.
+            if (result.get('error') and session is not None
+                    and session.get('_limit_resume_attempt') is not None):
+                with get_manager(session['project_id']).lock:
+                    _limit_resume.submission_failed(session, session.get('_limit_resume_attempt'))
 
     threading.Thread(target=_writer, daemon=True).start()
 
