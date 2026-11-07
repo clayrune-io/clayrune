@@ -13,6 +13,26 @@ from mc.core import _log
 bp = Blueprint('limit_resume', __name__)
 
 
+def confirm_submission(session: dict, attempt: int | None) -> None:
+    """Acknowledge and release only this attempt's deferred success boundary."""
+    from mc.blueprints import agent_routes as ar
+    with ar.get_manager(session['project_id']).lock:
+        if (attempt is None or session.get('_limit_resume_attempt') != attempt
+                or not policy.unattended(session) or session.get('status') == 'stopped'):
+            return
+        if not policy.confirm_submission(session['session_id'], attempt):
+            return  # cancelled, review-required, stale, or already re-parked
+        deferred = session.pop('_limit_resume_completion', None)
+        if not deferred or deferred['attempt'] != attempt:
+            return
+        session['status'] = deferred['status']
+        session['last_status_change_time'] = time.time()
+        if deferred['kind'] == 'exit':
+            ar._log_agent_completion(session)
+        else:
+            ar._complete_agent_turn(session)
+
+
 def restore_waits(ar) -> None:
     """Rehydrate paused sessions without starting provider processes."""
     store = policy.store()
@@ -96,7 +116,7 @@ def tick(now: datetime | None = None) -> None:
                 # The worker confirms launch/delivery; a crash first must leave
                 # a recoverable review hold, never an invisible active record.
                 if not body.get('submission_pending'):
-                    store.submitted(sid, attempt=claimed['attempts'])
+                    confirm_submission(session, claimed['attempts'])
                 ar.get_manager(pid).ensure_guardian()
             except Exception as exc:
                 # Keep the durable submitting claim. Retrying an unknown write

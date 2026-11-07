@@ -78,6 +78,9 @@ immediately. An associated workflow fails that step and keeps later steps
 pending; the chat remains available to review or cancel. Codex reset messages
 during the repeated DST hour use the later occurrence; skipped spring-forward
 times resolve forward so the continuation never starts early.
+If a resumed run finishes before its launch acknowledgment arrives, Clayrune
+holds that completion until delivery is confirmed, then completes the chat and
+advances its workflow normally. A cancellation or human takeover still wins.
 
 ### Starter experts on the Floor
 

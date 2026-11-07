@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-07] - Release reset completions after launch acknowledgment (MC-1163 third review)
+
+- A successful Mode B result arriving before its reset-continuation acknowledgment is deferred against that attempt. The matching acknowledgment releases normal turn or process-exit completion under the project lock, so the chat finishes and workflow reconciliation advances.
+- Exhaustion, manual review, stale attempts, cancellation and human takeover retain their existing holds; uncertain delivery is never replayed. Added real respawn-worker/reader ordering regressions and concurrent cancellation checks.
+- Branch review candidate only; no merge, push, restart or deployment.
+
 ## [2026-11-07] - Keep failed reset launches visible for review (MC-1163 second review)
 
 - Failed or uncertain continuation launches and deliveries retain the Floor's review/cancel hold immediately, including delayed stdin failures. Durable failure evidence lets workflow reconciliation fail the step instead of counting it as in flight indefinitely; downstream steps stay pending.

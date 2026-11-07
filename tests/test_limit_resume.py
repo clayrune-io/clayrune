@@ -2,6 +2,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from threading import Event, Thread as RealThread
 
 import pytest
 from flask import Flask, request
@@ -440,6 +441,108 @@ def test_claude_respawn_unacknowledged_write_stays_recoverable(claude_followup, 
     assert env.store.claim('child', DUE) is None
 
 
+@pytest.mark.parametrize('order', [
+    'before_ack_live', 'before_ack_exit', 'after_ack', 'exhaustion_before_ack', 'success_unknown_ack'])
+def test_mode_b_result_and_submission_ack_order(claude_followup, monkeypatch, tmp_path, order):
+    """Run the real respawn worker and reader across the stdin-ack boundary."""
+    from mc import workflows
+    from tests.test_stream_reader_malformed import _FakeProc
+    env = claude_followup
+    s = exhausted(session())
+    s.update(proc=None, process_alive=False, _turn_owner='spawner', _notify_session='parent')
+    env.sessions['child'] = s
+    env.store.park(s)
+    monkeypatch.setattr(workflows.state, 'agent_sessions', env.sessions)
+    monkeypatch.setattr(workflows, '_load_agent_log', lambda pid: [])
+    monkeypatch.setattr(workflows, '_session_summary', lambda live: 'finished task')
+    monkeypatch.setattr(workflows, 'WORKFLOWS_PATH', tmp_path / 'workflows.json')
+    monkeypatch.setattr(workflows, 'WORKFLOW_RUNS_DIR', tmp_path / 'workflow_runs')
+    monkeypatch.setattr(workflows, '_dispatch_agent_internal', lambda *a, **k: 'child')
+    workflow = workflows.create_workflow({'name': 'resume-success', 'nodes': [
+        {'type': 'agent', 'name': 'first', 'project_id': 'p', 'prompt': 'original task'},
+    ]})
+    run = workflows.start_run(workflow['id'])
+    calls = []
+    monkeypatch.setattr(env.ar, '_capture_system_init', lambda *a: None)
+    monkeypatch.setattr(env.ar, '_write_usage_breakdown_turn_checkpoint', lambda *a: None)
+    monkeypatch.setattr(env.ar, '_maybe_checkpoint', lambda *a: None)
+    monkeypatch.setattr(env.ar, '_run_runtime_callbacks', lambda *a: None)
+    monkeypatch.setattr(env.ar, '_log_agent_completion_body', lambda live: calls.append('exit'))
+    monkeypatch.setattr(env.ar, '_notify_agent_spawner', lambda *a: calls.append('parent'))
+    monkeypatch.setattr(env.ar._agent_shim_completion, 'begin', lambda *a: calls.append(a[1]))
+    monkeypatch.setattr(env.ar._agent_shim_completion, 'ack', lambda *a, **k: None)
+    reached_result, exit_reader = Event(), Event()
+    proc = _FakeProc([])
+    proc.poll = lambda: None
+    def output():
+        if order == 'exhaustion_before_ack':
+            yield json.dumps({'type': 'rate_limit_event', 'rate_limit_info': {
+                'status': 'rejected', 'resetsAt': RESET.timestamp()}}) + '\n'
+        yield json.dumps({'type': 'result', 'is_error': order == 'exhaustion_before_ack',
+                          'num_turns': 1}) + '\n'
+        reached_result.set()
+        if order == 'before_ack_live':
+            assert exit_reader.wait(5), 'test did not release reader'
+    proc.stdout = output()
+    monkeypatch.setattr(env.ar, 'spawn_engine_proc', lambda *a, **k: proc)
+    reader_thread = None
+    def write(*a, **k):
+        nonlocal reader_thread
+        reader = next(t for t in env.pending if t.target.__name__ == '_read_agent_stream_b')
+        if order == 'before_ack_live':
+            reader_thread = RealThread(target=reader.target, args=reader.args)
+            reader_thread.start()
+            assert reached_result.wait(5), s['log_lines']
+        elif order != 'after_ack':
+            reader.target(*reader.args)
+        if order != 'after_ack':
+            assert s['status'] == 'waiting_for_reset'
+            assert calls == []
+            assert workflows._step_session_verdict(
+                {'session_id': 'child', 'project_id': 'p'}, use_live=True)[0] == 'in_flight'
+        return {'ack': 'unknown' if order == 'success_unknown_ack' else 'written'}
+    monkeypatch.setattr(env.ar, '_bounded_stdin_write', write)
+    dispatch.tick(DUE)
+    worker = next(t for t in env.pending if t.target.__name__ == '_do_respawn_b')
+    try:
+        worker.target(*worker.args)
+        if order == 'success_unknown_ack':
+            assert env.store.get('child')['phase'] == 'submitting'
+            assert env.store.get('child')['review_required'] is True
+            assert s['status'] == 'waiting_for_reset'
+            assert calls == []
+            dispatch.confirm_submission(s, 1)  # late ack cannot release manual review
+            dispatch.tick(DUE)
+            assert s['status'] == 'waiting_for_reset'
+            assert env.store.get('child')['attempts'] == 1
+            assert calls == []
+            return
+        if order == 'exhaustion_before_ack':
+            assert env.store.get('child')['phase'] == 'waiting'
+            assert s['status'] == 'waiting_for_reset'
+            assert calls == []
+            assert env.store.get('child')['attempts'] == 1
+            return
+        assert env.store.get('child')['phase'] == 'active'
+        if order == 'after_ack':
+            reader = next(t for t in env.pending if t.target.__name__ == '_read_agent_stream_b')
+            reader.target(*reader.args)
+        assert s['status'] == ('idle' if order == 'before_ack_live' else 'completed'), s['log_lines']
+        assert calls.count('parent') == 1
+        assert workflows._step_session_verdict(
+            {'session_id': 'child', 'project_id': 'p'}, use_live=True)[0] == 'ended'
+        assert workflows.reconcile_running_steps() == {'advanced': 1, 'stalled': 0}
+        assert workflows.get_run(run['id'])['status'] == 'completed'
+    finally:
+        exit_reader.set()
+        if reader_thread:
+            reader_thread.join(5)
+            assert not reader_thread.is_alive()
+    assert s['status'] == 'completed'
+    assert calls.count('parent') == 1
+    assert calls.count('exit') >= 1
+
+
 @pytest.mark.parametrize('failure', ['launch', 'failed', 'unknown'])
 def test_failed_mode_b_continuation_is_visible_and_reconciles(claude_followup, monkeypatch, tmp_path, failure):
     from mc import workflows
@@ -540,6 +643,65 @@ def test_submission_review_rejects_late_ack_and_stale_or_cancelled_failure(store
     lr.submission_failed(s, 1)
     assert s['status'] == 'idle'
     assert store.get('child')['phase'] == 'cancelled'
+
+
+@pytest.mark.parametrize('intervention', ['none', 'cancel', 'human', 'review', 'stale_ack', 'stale_turn'])
+def test_deferred_completion_release_respects_attempt_and_project_lock(integration, monkeypatch, intervention):
+    env = integration
+    s = exhausted(session())
+    env.sessions['child'] = s
+    env.store.park(s)
+    env.store.claim('child', DUE)
+    s['_limit_resume_attempt'] = 1
+    lr.new_turn(s, internal=True)
+    s['status'] = 'idle'
+    assert lr.hold_completion(s, {}, completion_kind='turn')
+    lock = env.ar.get_manager('p').lock
+    release_started, release_finished = Event(), Event()
+    calls = []
+    def complete(live):
+        assert lock._is_owned()
+        calls.append(live['status'])
+    monkeypatch.setattr(env.ar, '_complete_agent_turn', complete)
+    monkeypatch.setattr(env.ar, '_log_agent_completion', lambda live: None)
+    monkeypatch.setattr(env.ar, '_update_agent_log', lambda *a, **k: None)
+    def acknowledge():
+        release_started.set()
+        dispatch.confirm_submission(s, 2 if intervention == 'stale_ack' else 1)
+        release_finished.set()
+    with lock:
+        worker = RealThread(target=acknowledge)
+        worker.start()
+        assert release_started.wait(5)
+        assert not release_finished.is_set()
+        if intervention == 'cancel':
+            response = env.app.test_client().post('/api/project/p/agent/child/limit-resume/cancel')
+            assert response.status_code == 200
+        elif intervention == 'human':
+            with env.app.test_request_context(headers={'Origin': 'http://localhost:5199'}):
+                env.ar._mark_human_joined('p', 'child')
+        elif intervention == 'review':
+            lr.submission_failed(s, 1)
+        elif intervention == 'stale_turn':
+            lr.new_turn(s)
+            s['status'] = 'running'
+    worker.join(5)
+    assert not worker.is_alive()
+    assert release_finished.is_set()
+    if intervention == 'none':
+        assert calls == ['idle']
+        assert '_limit_resume_completion' not in s
+        dispatch.confirm_submission(s, 1)  # duplicate ack never repeats completion
+        assert calls == ['idle']
+    else:
+        assert calls == []
+        assert s['status'] == {
+            'cancel': 'stopped', 'human': 'idle', 'review': 'waiting_for_reset',
+            'stale_ack': 'waiting_for_reset', 'stale_turn': 'running',
+        }[intervention]
+        if intervention in ('review', 'stale_ack'):
+            assert env.store.get('child')['phase'] == 'submitting'
+            assert env.store.claim('child', DUE) is None
 
 
 def test_pending_claim_holds_without_exhaustion_but_can_park_fresh_limit(store):

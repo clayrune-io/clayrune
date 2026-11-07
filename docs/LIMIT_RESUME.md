@@ -75,6 +75,19 @@ cancelled record or a different attempt. A crash before the worker starts leaves
 `submitting` intact and restores the manual-review hold on restart, without
 automatically spending another continuation.
 
+A successful Mode B result can arrive before its bounded stdin acknowledgment.
+The result boundary records a runtime-only deferred completion tied to the
+claimed attempt; the session remains held until acknowledgment. If the process
+exits first, the deferred boundary becomes a process-exit completion. The
+matching acknowledgment activates the durable row and releases the normal
+turn/exit completion path under the project lock, restoring `idle`/`completed`
+and allowing workflow reconciliation to advance. Repeated acknowledgments do
+not release the completion twice. Status alone never creates this marker.
+New turns, fresh exhaustion and submission failure discard the marker;
+review-required rows, stale attempts, cancellation and human ownership prevent
+release. The marker is not persisted or used to authorize a retry: a crash
+before acknowledgment still restores manual review without replaying delivery.
+
 An explicit launch failure, rejected/uncertain delivery or delayed stdin error
 immediately restores the same review/cancel hold, even when the live session's
 attempt stamp matches the claim. The durable `submitting` row gains
@@ -115,6 +128,22 @@ return 404; unavailable state returns 503. An already-running continuation retur
 terminate another process.
 
 ## Validation
+
+Third-review validation on 2026-11-07: the same 13-file suite reported
+**415 passed in 14.72s** (exit 0). Real Mode B respawn-worker/reader regressions
+cover success before acknowledgment with the process alive or exited, success
+after acknowledgment, exhaustion before acknowledgment, and success followed by
+unknown delivery plus a late acknowledgment. Concurrent tests prove the project
+lock serializes release with cancellation/human takeover, and check review,
+stale-turn and duplicate-ack holds. Workflow reconciliation completes after
+acknowledged success. Both success-before-ack cases failed before the fix.
+
+Pyright on `mc/limit_resume.py`, `mc/limit_resume_dispatch.py` and
+`mc/blueprints/agent_routes.py` returned exit 1 with the same **15 pre-existing
+route-module diagnostics** as exact base `a36946c9`; no new diagnostics.
+Policy/adapter alone returned **0 errors** (exit 0). The reported launcher
+printed `telemetry_queue_full_progress_incomplete`; complete capture is not
+claimed. No static files changed; no live provider or production restart tested.
 
 Second-review validation on 2026-11-07: the requested 13-file suite reported
 **404 passed in 18.20s** (exit 0). Both findings failed dynamically before their fixes;

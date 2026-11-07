@@ -63,6 +63,7 @@ def unattended(session: dict) -> bool:
 def observe(session: dict, payload: dict) -> None:
     """Only a real exhaustion event for THIS session may arm a wait."""
     session['_limit_resume_exhaustion'] = dict(payload)
+    session.pop('_limit_resume_completion', None)
 
 
 def observe_claude(session: dict, msg: dict) -> None:
@@ -184,7 +185,7 @@ class ResumeStore:
             self._commit({**self.rows, sid: claimed})
             return claimed
 
-    def submitted(self, sid: str, *, attempt: int | None = None) -> None:
+    def submitted(self, sid: str, *, attempt: int | None = None) -> bool:
         with self._transaction():
             row = self.rows.get(sid)
             # A fast new exhaustion may already have parked the next attempt.
@@ -192,6 +193,8 @@ class ResumeStore:
                     and not row.get('review_required')
                     and (attempt is None or row['attempts'] == attempt)):
                 self._commit({**self.rows, sid: {**row, 'phase': 'active'}})
+                return True
+            return False
 
     def require_review(self, sid: str, attempt: int) -> bool:
         with self._transaction():
@@ -239,10 +242,11 @@ def store() -> ResumeStore | None:
     return _store
 
 
-def confirm_submission(sid: str, attempt: int | None) -> None:
+def confirm_submission(sid: str, attempt: int | None) -> bool:
     """Async launch acknowledgment, scoped to the claim that queued it."""
     if _store and attempt is not None:
-        _store.submitted(sid, attempt=attempt)
+        return _store.submitted(sid, attempt=attempt)
+    return False
 
 
 def submission_failed(session: dict, attempt: int | None) -> None:
@@ -258,6 +262,7 @@ def submission_failed(session: dict, attempt: int | None) -> None:
             return
     except Exception as exc:
         _log(f'[limit-resume] could not persist submission review: {exc}', flush=True)
+    session.pop('_limit_resume_completion', None)
     session['status'] = 'waiting_for_reset'
     session['last_status_change_time'] = time.time()
     session['log_lines'].append('[Reset continuation needs manual review; continue manually or cancel.]')
@@ -267,7 +272,12 @@ def view(session: dict) -> dict | None:
     return _store.view(session.get('session_id', '')) if _store else None
 
 
-def hold_completion(session: dict, config: dict) -> bool:
+def hold_completion(session: dict, config: dict, *, completion_kind: str | None = None) -> bool:
+    """Hold pending launches; remember actual success boundaries for their ack.
+
+    Call boundary/ack hooks under the project lock. An idle status alone is not
+    success evidence. This runtime-only marker cannot authorize a crash replay.
+    """
     try:
         row = _store.get(session.get('session_id', '')) if _store else None
         if (row and row['phase'] == 'submitting' and unattended(session)
@@ -275,8 +285,19 @@ def hold_completion(session: dict, config: dict) -> bool:
                 and (row.get('review_required')
                      or session.get('_limit_resume_attempt') != row['attempts']
                      or not session.get('_limit_resume_exhaustion'))):
+            if (not row.get('review_required')
+                    and session.get('_limit_resume_attempt') == row['attempts']):
+                deferred = session.get('_limit_resume_completion') or {}
+                if (completion_kind == 'turn' and session.get('status') == 'idle'
+                        and not session.get('_limit_resume_exhaustion')):
+                    session['_limit_resume_completion'] = {
+                        'attempt': row['attempts'], 'kind': 'turn', 'status': 'idle'}
+                elif (completion_kind == 'exit' and deferred.get('attempt') == row['attempts']):
+                    # A process may exit between its successful result and ack.
+                    session['_limit_resume_completion'] = {
+                        'attempt': row['attempts'], 'kind': 'exit', 'status': 'completed'}
             session['status'] = 'waiting_for_reset'
-            return True  # an uncertain submission is a manual-review hold
+            return True  # pending acknowledgment or manual review
         if (row and row['phase'] == 'waiting' and unattended(session)
                 and session.get('status') != 'stopped'):
             session['status'] = 'waiting_for_reset'
@@ -288,6 +309,7 @@ def hold_completion(session: dict, config: dict) -> bool:
 
 
 def new_turn(session: dict, *, internal: bool = False) -> None:
+    session.pop('_limit_resume_completion', None)
     session.pop('_limit_resume_exhaustion', None)
     session.pop('_allowance_exhausted', None)
     if not internal:

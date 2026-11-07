@@ -113,6 +113,7 @@ import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 import mc.context_profile as _context_profile  # backlog 4a11b6a5: per-model context slim
 from mc import allowance_state as _allowance_state
 from mc import limit_resume as _limit_resume
+from mc import limit_resume_dispatch as _limit_resume_dispatch
 from mc import memory_state_trigger as _state_trigger  # MC-964 T5: note frontmatter as a Step D signal
 from mc import attend_once_replay as _attend_once_replay  # MC-1055: one tool call, one spend
 from mc import attend_once_pass as _attend_once_pass  # pass record: mode, expiry, spend
@@ -6475,8 +6476,6 @@ def _read_agent_stream_b(proc, session):
                     _scan_result_event_for_auth(msg)
                     _delegation_settlement.note_claude_turn(session, msg, _delivery_store, _midturn.note_turn_complete)
                     # Turn boundary — process stays alive
-                    session['status'] = 'idle'
-                    session['last_status_change_time'] = _time.time()
                     # MC-946: for a dispatched child this IS "done" — Mode B
                     # never exits on its own, so the exit-time hook would fire
                     # late or never. Latched, so the exit path can't repeat it.
@@ -6487,11 +6486,14 @@ def _read_agent_stream_b(proc, session):
                     # MC-1150 P4: checkpoint past this result BEFORE it is announced, so a
                     # restart cannot replay it into a second completion, and stamp the
                     # checkpoint with the wake it now owes so a crash cannot lose it.
-                    if not _limit_resume.hold_completion(session, state.CONFIG):
-                        _agent_shim_completion.begin(session, 'turn')
-                        if not _hold_notify_for_background(session):
-                            _maybe_notify_spawner(session, _last_reply_text(session))
-                        _agent_shim_completion.ack(session, owed=_spawner_notify_owed(session))
+                    with get_manager(session['project_id']).lock:
+                        if session.get('status') != 'stopped':
+                            session['status'] = 'idle'
+                            session['last_status_change_time'] = _time.time()
+                        if not _limit_resume.hold_completion(
+                                session, state.CONFIG,
+                                completion_kind='turn' if not msg.get('is_error') else None):
+                            _complete_agent_turn(session)
                     # Step 6: mid-session note-taker (default-off; fast-gated).
                     _maybe_checkpoint(session)
                     # MC-998 bugfix: this IS the turn boundary for a Mode B
@@ -9610,6 +9612,14 @@ def _write_usage_breakdown_sample_tick(session, observed_at: str):
         _log(f"[usage-breakdown] sample-tick write failed for {sid[:12]}: {e}")
 
 
+def _complete_agent_turn(session):
+    """Normal Mode B boundary, also used when a launch ack releases success."""
+    _agent_shim_completion.begin(session, 'turn')
+    if not _hold_notify_for_background(session):
+        _maybe_notify_spawner(session, _last_reply_text(session))
+    _agent_shim_completion.ack(session, owed=_spawner_notify_owed(session))
+
+
 def _log_agent_completion(session):
     """Save a summary entry when an agent session finishes.
 
@@ -9625,7 +9635,7 @@ def _log_agent_completion(session):
     # side effect, so a restart in the middle of them cannot run them twice, and
     # stamp it with the completion now owed so a crash in the middle cannot lose
     # them either. Acknowledged below only once the body AND the wake succeeded.
-    if _limit_resume.hold_completion(session, state.CONFIG):
+    if _limit_resume.hold_completion(session, state.CONFIG, completion_kind='exit'):
         return
     _agent_shim_completion.begin(session, 'exit')
     _clean = False
@@ -14261,7 +14271,7 @@ def agent_followup(project_id):
                                            wait_for_ack=10.0 if _limit_internal else None,
                                            context='respawn-B')
                 if _limit_internal and ack and ack.get('ack') == 'written':
-                    _limit_resume.confirm_submission(rb['session_id'], _limit_attempt)
+                    _limit_resume_dispatch.confirm_submission(rb['existing'], _limit_attempt)
                 elif _limit_internal:
                     with get_manager(rb['project_id']).lock:
                         _limit_resume.submission_failed(rb['existing'], _limit_attempt)
@@ -14366,7 +14376,7 @@ def agent_followup(project_id):
             _register_process(proc, 'Agent followup (A)', 'agent',
                               session_id, project_id, followup_msg[:80])
             if _limit_internal:
-                _limit_resume.confirm_submission(session_id, _limit_attempt)
+                _limit_resume_dispatch.confirm_submission(existing, _limit_attempt)
             threading.Thread(target=_read_agent_stream, args=(proc, existing), daemon=True).start()
         except Exception as e:
             with get_manager(project_id).lock:
