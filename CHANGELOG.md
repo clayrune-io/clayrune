@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-07] - Prevent stale baseline exemptions and hidden smoke failures (MC-1164)
+
+- Restricted baseline-cache reuse to fully successful checks; failing baselines re-run before exempting candidate failures, including after dependency or configuration repairs.
+- Added scheduler/calendar smoke markers and guard details, retained unknown failure/error lines alongside recognized checks, and normalized duration/file-location noise. Added cache-repair, mixed-output and smoke-format regressions. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-07] - Gate agent landings on new verification failures (MC-1164)
 
 - Added optional per-project verification commands with a 20-minute default timeout per command. Checks run against the combined target/agent tree and compare failure signatures with a target-SHA baseline; known failures are reported, while new failures and incomplete verification block landing without moving branch refs.

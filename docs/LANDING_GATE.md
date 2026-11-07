@@ -62,10 +62,32 @@ Nonzero command exits normalize to:
 
 - `pytest:<nodeid>` from pytest `FAILED` / `ERROR` summaries, including module
   collection errors and parameter IDs containing spaces.
-- `smoke:<check name>` from the repository's cross-mark and `FAIL` lines;
-  aggregate failure counts are excluded when check names are present.
-- Otherwise `exit:<code>:<last error line>`, falling back to the last nonempty
-  output line or `<no output>`. ANSI colors and checkout paths are normalized.
+- `smoke:<check name>` from the repository's cross-mark and `FAIL` lines,
+  plus `smoke:SCHEDFAIL:<check>` / `smoke:CALFAIL:<check>` for boot guards.
+  Indented guard findings receive their own signatures scoped by the heading.
+  Pure aggregate failure counts are excluded when detailed failures are present.
+- `exit:<code>:<error line>` for **every** other failure/error/exception/fatal
+  line (including Node `not ok`, usage and missing-input diagnostics), even when
+  pytest/smoke signatures also exist. An unfamiliar failure format cannot hide
+  behind a recognized one.
+- Without detailed findings, an aggregate summary, last nonempty output line
+  or `<no output>` supplies a nonzero-exit signature. ANSI colors, checkout
+  roots, absolute file locations and numeric durations are normalized; file
+  basenames, pytest node IDs and non-timing assertion values remain distinct.
+
+The 2026-11-07 review audited failure-print sites in all 327
+`tools/smoke/*.mjs` files. Regression cases cover these output families:
+
+| Format | Representative sources | Handling |
+| --- | --- | --- |
+| Cross marks, `FAIL`, `FAIL:`, `FAIL —` | `agent-read-request-ui.mjs`, `hivemind-roster.mjs`, `terminal-pty-popout.mjs` | Named smoke signatures |
+| `SCHEDFAIL`, `CALFAIL` | `boot-smoke.mjs` | Tagged smoke signatures |
+| Guard headings with `•`, `*`, `-` findings | `boot-smoke.mjs`, `walkthrough.mjs` | Each indented detail retained |
+| Harness/page errors and uncaught Node errors | `pointer-drag.mjs`, `test-run-card.mjs`, `desk-v1-piece-editor.mjs` | Additive error signatures |
+| `capture failed`, `bench failed`, custom smoke errors | `capture-screenshot.mjs`, `desk-v1-exit.mjs`, `desk-v1-journey.mjs` | Additive error signatures |
+| Usage, missing selectors/inputs, unreachable registration | `capture-screenshot.mjs`, `installed-app.mjs`, `split-view-real.mjs`, `first-run-signin-flow.mjs` | Additive diagnostic signatures |
+| Counts, `FAILED (n)`, `n FAILED`, `RESULT: FAIL`, `fails=n` | `settings-providers.mjs`, `desk-studio-render-scenes.mjs`, `terminal-pty-popout.mjs` | Summary only when no detailed failure exists |
+| Assertion errors / TAP `not ok` | Node assertions and `test-run-data.test.mjs` | Additive error signatures |
 
 Signatures are scoped by command position. Candidate signatures absent from
 the baseline block. Baseline failures are reported even when the candidate
@@ -78,11 +100,14 @@ Baselines use a process-local LRU cache (64 entries), keyed by repository
 common directory, target commit SHA, exact command list, timeout and environment
 digest. Raw environment values are not stored in cache keys or reports. Output
 tails are verifier output: do not print credentials or put them in commands.
-Infrastructure errors
-and dirty baselines are not cached. A new target commit or changed configuration
-requires a fresh baseline; server restart clears the cache. Runtime/dependency
-changes without an environment or commit change are outside this cache identity.
-Use deterministic checks and stable runtime dependencies.
+Only completely successful baselines (every exit zero, no failure signatures,
+no infrastructure errors, clean tracked state) are cached or reused. A failing
+baseline is always run fresh before it can exempt a candidate failure: repaired
+`node_modules`, `.venv` or `config.json` state cannot leave a stale exemption.
+Cached non-green entries are discarded defensively. A new target commit or
+changed configuration requires a fresh baseline; server restart clears the
+cache. Runtime/dependency contents are outside the cache identity, but reusing
+a green baseline cannot waive any candidate failure. Use deterministic checks.
 
 Tracked verifier output is preserved and blocks landing. Normal checkout can
 refuse restoration if that output conflicts with the agent tree; the result
@@ -121,7 +146,9 @@ model call, reviewer configuration or reviewer dispatch is implemented here.
 `tests/test_landing_gate.py` exercises parsing, old/new comparison, command
 position isolation, actual combined-tree regressions, ref preservation, successful
 landing with known failures, historical unset behavior, timeout, process
-registration/cleanup, cache invalidation, output limits, checkout mutation,
+registration/cleanup, cache invalidation and runtime repair after failing
+baselines, mixed recognized/unrecognized errors, smoke print families and
+timing/path stability, output limits, checkout mutation,
 reviewer holds and stale GC. All repositories and merges in tests are temporary.
 The adjacent worktree/native/review/safety suites cover composition. Tests run
 through the installation's reported-test launcher. Pyright basic checks the new

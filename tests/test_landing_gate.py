@@ -75,6 +75,88 @@ def test_generic_signature_normalizes_checkout_path(tmp_path):
     assert gate.failure_signatures(f'Error: {tmp_path}/bad', 1, tmp_path) == ['exit:1:Error: <worktree>/bad']
 
 
+@pytest.mark.parametrize('line', [
+    # Failure-print families audited across tools/smoke/*.mjs, including boot guards.
+    'SCHEDFAIL scheduler layout guard: grid never rendered.',
+    'CALFAIL calendar guard:',
+    '✗ opens tab', '✘ opens tab', '× opens tab', '❌ opens tab',
+    '❌ FAIL — opens tab', '❌ FAIL: opens tab', 'FAIL opens tab',
+    'FAIL: opens tab', 'FAIL — opens tab',
+    'HARNESS ERROR: page crashed', 'PAGE ERROR ReferenceError: missing',
+    'capture failed: selector missing', 'bench failed: page crashed',
+    'journey smoke error: the page RENDERER CRASHED',
+    'TypeError: missing method', 'AssertionError [ERR_ASSERTION]: missing tab',
+    'not ok 2 - opens tab',
+    'NEWSTYLEFAIL opens tab', 'fatal: missing checkout',
+    'CUSTOM error: 2 check(s) failed',
+    'selector not found: #missing', 'could not find SW_VERSION in static/sw.js',
+    'SPLIT_PROJECT is required (a project id on this server).',
+    'usage: node capture-screenshot.mjs <url> <output-name.png> [selector]',
+    'output name must be a bare filename (no path separators)',
+    'process registration unreachable for pid 123: refused',
+])
+def test_each_smoke_failure_family_is_additive(line):
+    baseline = gate.failure_signatures('FAIL old: known', 1)
+    candidate = gate.failure_signatures('FAIL old: known\n' + line, 1)
+    assert set(candidate) > set(baseline)
+    assert gate.compare([run(baseline)], [run(candidate)])['status'] == 'blocked'
+
+
+@pytest.mark.parametrize('line', [
+    '❌ FAIL — 2 check(s) failed.', '❌ FAIL — 2/5 check(s) failed.',
+    '2 check(s) FAILED', 'FAILED (2)', 'FAILED: 2', '2 FAILED',
+    '❌ FAIL — 2 Desk v1 check(s) regressed.', '❌ FAIL: 2 problem(s).',
+    '2 assertion(s) failed', 'RTL smoke: 2 failure(s).',
+    'human-proof-busy: 2 failure(s)', 'RESULT: FAIL', 'Checks=5 failures=2',
+    'MC-1070 wired controls: fails=2',
+])
+def test_smoke_aggregate_counts_do_not_create_new_check_failures(line):
+    assert gate.failure_signatures('FAIL old: known\n' + line, 1) == ['smoke:old: known']
+    assert gate.failure_signatures(line, 1)  # Summary-only exits still fail closed.
+
+
+@pytest.mark.parametrize('header', ['CALFAIL calendar guard:', 'FAIL floor guard:',
+                                   '❌ model picker guard:'])
+@pytest.mark.parametrize('bullet', ['•', '*', '-'])
+def test_boot_guard_detail_is_not_hidden_by_existing_heading(header, bullet):
+    old = gate.failure_signatures(f'{header}\n       {bullet} old finding', 1)
+    new = gate.failure_signatures(f'{header}\n       {bullet} old finding\n       {bullet} new finding', 1)
+    assert len(set(new) - set(old)) == 1
+    assert 'new finding' in next(iter(set(new) - set(old)))
+
+
+def test_mixed_failure_formats_collect_every_error_line():
+    output = ('FAILED tests/old.py::test_old - known\nFAIL old smoke: known\n'
+              'SCHEDFAIL scheduler shifted\nCALFAIL calendar clipped\n'
+              'TypeError: new method missing\nCUSTOM failure: another regression\n')
+    assert gate.failure_signatures(output, 1) == [
+        'exit:1:CUSTOM failure: another regression',
+        'exit:1:TypeError: new method missing',
+        'pytest:tests/old.py::test_old',
+        'smoke:CALFAIL:calendar clipped', 'smoke:SCHEDFAIL:scheduler shifted',
+        'smoke:old smoke: known',
+    ]
+
+
+def test_failure_noise_is_normalized_without_erasing_assertion_values(tmp_path):
+    def output(root, duration, external, location):
+        return (f'FAIL old: known\nCUSTOM error: {root}/check.mjs:{location} after {duration}\n'
+                f'TypeError: {external}:{location} expected 2, got 3\n')
+    old_root, new_root = tmp_path/'old', tmp_path/'new'
+    old = gate.failure_signatures(output(old_root, '123.4ms', '/tmp/first/lib.mjs', '40:5'), 1, old_root)
+    new = gate.failure_signatures(output(new_root, '2 seconds', r'C:\temp\second\lib.mjs', '80:9'), 1, new_root)
+    assert old == new
+    assert any('expected 2, got 3' in s for s in new)
+    changed = gate.failure_signatures(output(new_root, '2 seconds', '/tmp/lib.mjs', '80:9')
+                                      .replace('got 3', 'got 4'), 1, new_root)
+    assert gate.compare([run(old)], [run(changed)])['status'] == 'blocked'
+
+
+def test_generic_fallback_keeps_all_errors_without_known_formats():
+    assert gate.failure_signatures('TypeError: first\nError: second\nfinished', 1) == [
+        'exit:1:Error: second', 'exit:1:TypeError: first']
+
+
 def run(signatures=(), error=None):
     return {'signatures': list(signatures), 'error': error}
 
@@ -215,6 +297,61 @@ def test_baseline_cache_pins_sha_commands_and_timeout(repo, monkeypatch):
     git(repo, 'commit', '-qm', 'new target')
     assert verify()['baseline_cached'] is False
     assert len(calls) == 9
+
+
+def test_failing_baseline_is_fresh_after_runtime_repair(repo):
+    runtime_ready = repo.parent/'runtime-ready'
+    project, wt = setup(repo, "from pathlib import Path\nimport sys\n"
+        f"broken = not Path({str(runtime_ready)!r}).exists() or Path('agent.txt').exists()\n"
+        "print('FAIL runtime: broken' if broken else 'pass')\nsys.exit(int(broken))\n")
+    before = refs(repo)
+    def verify():
+        with landing(repo) as owner:
+            return gate.verify(project, wt, 'master', 'clayrune/agent/gate', owner)
+    first = verify()
+    assert first['status'] == 'pass'  # Matching failures can be waived on this run.
+    assert first['baseline_cached'] is False
+    assert first['baseline_failures'] == ['1:smoke:runtime: broken']
+    assert not gate._cache
+    runtime_ready.write_text('dependencies/config repaired')  # No SHA/env/command change.
+    second = verify()
+    assert second['baseline_cached'] is False
+    assert second['status'] == 'blocked'
+    assert second['baseline_failures'] == []
+    assert second['new_failures'] == ['1:smoke:runtime: broken']
+    assert second['checkout_restored']
+    assert refs(repo) == before
+
+
+def test_non_green_cache_entry_cannot_exempt_candidate(repo, monkeypatch):
+    project, wt = setup(repo, 'print("pass")\n')
+    def verify():
+        with landing(repo) as owner:
+            return gate.verify(project, wt, 'master', 'clayrune/agent/gate', owner)
+    assert verify()['status'] == 'pass'
+    key = next(iter(gate._cache))
+    gate._cache[key] = [{'exit_code': 1, 'signatures': ['smoke:regression'], 'error': None}]
+    monkeypatch.setattr(gate, 'run_command', lambda *a: {
+        'exit_code': int((wt/'agent.txt').exists()),
+        'signatures': ['smoke:regression'] if (wt/'agent.txt').exists() else [],
+        'error': None, 'output_tail': ''})
+    result = verify()
+    assert result['baseline_cached'] is False
+    assert result['status'] == 'blocked'
+    assert result['new_failures'] == ['1:smoke:regression']
+
+
+def test_added_boot_smoke_failure_blocks_actual_merge(repo):
+    project, _ = setup(repo, "from pathlib import Path\nimport sys\n"
+        "print('FAIL old: known')\n"
+        "if Path('agent.txt').exists(): print('SCHEDFAIL scheduler layout shifted')\n"
+        "sys.exit(1)\n")
+    before = refs(repo)
+    status, detail = worktrees.merge_back(project, 'gate')
+    assert status == 'blocked'
+    assert detail['landing_gate']['new_failures'] == ['1:smoke:SCHEDFAIL:scheduler layout shifted']
+    assert detail['landing_gate']['checkout_restored']
+    assert refs(repo) == before
 
 
 def test_multiple_commands_continue_and_keep_failure_scope(repo):

@@ -25,7 +25,22 @@ MAX_OUTPUT_BYTES = 32 * 1024 * 1024
 TAIL_CHARS = 12000
 _ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
 _PYTEST = re.compile(r'^(?:FAILED|ERROR)\s+(\S+\.py(?:::.+)?)$')
-_SMOKE = re.compile(r'^\s*(?:[✗✘×]|❌\s*(?:FAIL\s*[:—-]\s*)?|FAIL[:\s]+)(.+?)\s*$')
+_SMOKE = re.compile(
+    r'^(?:(?P<tag>SCHEDFAIL|CALFAIL)\s+|[✗✘×]\s*|'
+    r'❌\s*(?:FAIL\s*[:—-]?\s*)?|FAIL(?:\s*[:—-]\s*|\s+|$))(?P<name>.*?)\s*$')
+_FAILURE = re.compile(
+    r'fail|error|exception|fatal|\bnot ok\b|\busage:|'
+    r'\b(?:not found|could not|unreachable|is required|must be)\b', re.I)
+_SUMMARY = re.compile(
+    r'^(?:(?:RTL smoke|desk-studio-passcode-replay|human-proof-busy|'
+    r'MC-1070 (?:independent|wired) controls):\s*)?(?:\d+(?:/\d+)?(?: [\w-]+)* '
+    r'(?:check|assertion|problem|case|failure|behaviour)(?:\(s\)|s)?'
+    r'(?: (?:failed|regressed))?\.?|FAILED(?:[: (]+\d+\)?)?|\d+ FAILED|'
+    r'RESULT: FAIL|Checks=\d+ failures=\d+|fails=\d+)$', re.I)
+_DURATION = re.compile(r'\b\d+(?:\.\d+)?\s*(?:ms|milliseconds?|s|seconds?|secs?|minutes?|mins?)\b', re.I)
+_ABSOLUTE_FILE = re.compile(
+    r'(?<![\w>])(?:file://)?(?:[A-Za-z]:[\\/]|/)(?:[^\s<>\"\'():]+[\\/])*'
+    r'(?P<file>[^\s<>\"\'():/\\]+\.[A-Za-z0-9]+)(?::\d+(?::\d+)?)?')
 _cache: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
 _cache_lock = threading.Lock()
 Reviewer = Callable[[dict[str, Any]], dict[str, Any]]
@@ -46,6 +61,13 @@ def settings(project: dict[str, Any]) -> tuple[list[str], float]:
     return list(commands), float(timeout)
 
 
+def _stable_line(line: str) -> str:
+    # Keep assertion values and file/check names; remove locations and elapsed time.
+    line = _ABSOLUTE_FILE.sub(lambda m: '<path>/' + m['file'], line)
+    line = re.sub(r'(<worktree>[/\\][^\s:]+):\d+(?::\d+)?', r'\1', line)
+    return ' '.join(_DURATION.sub('<duration>', line).split())
+
+
 def failure_signatures(output: str, exit_code: int, root: Path | None = None) -> list[str]:
     if exit_code == 0:
         return []
@@ -53,19 +75,42 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
     if root is not None:
         clean = clean.replace(str(root), '<worktree>').replace(root.as_posix(), '<worktree>')
     names: set[str] = set()
+    summaries: set[str] = set()
+    heading = ''
     for raw in clean.splitlines():
         line = raw.strip()
+        if not line:
+            continue
         match = _PYTEST.match(line.split(' - ', 1)[0])
         if match:
             names.add('pytest:' + match[1])
+            heading = ''
             continue
+        line = _stable_line(line)
         match = _SMOKE.match(line)
-        if match and not re.search(r'\b\d+ check\(s\) failed', match[1]):
-            names.add('smoke:' + match[1].strip())
+        detail = match['name'].strip() if match else line
+        if _SUMMARY.fullmatch(detail):
+            summaries.add(line)
+            heading = ''
+            continue
+        if match:
+            tag = (match['tag'] + ':') if match['tag'] else ''
+            name = tag + (detail or '<unspecified>')
+            names.add('smoke:' + name)
+            heading = name if detail.endswith(':') else ''
+            continue
+        # boot-smoke prints multiple findings under one guard heading. Also keep
+        # indented inline-handler/stack diagnostics in such a failure block.
+        if heading and raw[:1].isspace():
+            names.add('smoke:' + heading + ' ' + re.sub(r'^[•*\-]\s+', '', line))
+            continue
+        heading = ''
+        # Additive: a known pytest/smoke failure must not hide another format.
+        if _FAILURE.search(line):
+            names.add(f'exit:{exit_code}:' + line)
     if not names:
-        lines = [line.strip() for line in clean.splitlines() if line.strip()]
-        error_lines = [line for line in lines if re.search(r'error|exception|fatal|fail', line, re.I)]
-        names.add(f'exit:{exit_code}:' + (error_lines or lines or ['<no output>'])[-1])
+        lines = [_stable_line(line) for line in clean.splitlines() if line.strip()]
+        names.add(f'exit:{exit_code}:' + (sorted(summaries) or lines or ['<no output>'])[-1])
     return sorted(names)
 
 
@@ -173,7 +218,14 @@ def verify(project: dict[str, Any], worktree: Path, target: str, incoming: str,
                 sorted(os.environ.items())], ensure_ascii=True).encode()).hexdigest()
             with _cache_lock:
                 baseline = _cache.get(key)
-                if baseline is not None:
+                # Runtime dependencies/config are not in the key. Only a green
+                # baseline is safe to reuse: it cannot exempt any new failure.
+                if baseline is not None and not all(
+                        run.get('exit_code') == 0 and not run.get('signatures') and not run.get('error')
+                        for run in baseline):
+                    del _cache[key]
+                    baseline = None
+                elif baseline is not None:
                     _cache.move_to_end(key)
             result['baseline_cached'] = baseline is not None
             borrowed = True
@@ -188,7 +240,8 @@ def verify(project: dict[str, Any], worktree: Path, target: str, incoming: str,
             # are unsuitable for this borrowed checkout and block for inspection.
             if git_bytes(worktree, ['status', '--porcelain', '--untracked-files=no']):
                 raise ValueError('verification_modified_tracked_files')
-            if not any(run.get('error') for run in baseline):
+            if all(run.get('exit_code') == 0 and not run.get('signatures') and not run.get('error')
+                   for run in baseline):
                 with _cache_lock:
                     _cache[key] = baseline
                     while len(_cache) > 64:
