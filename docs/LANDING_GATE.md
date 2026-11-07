@@ -94,9 +94,13 @@ Nonzero command exits normalize to:
   failing in a second file is a new identity (and a failure that moves from one
   file to another blocks even at an equal count). Pairing needs the same number of
   recap entries as live lines for that name; otherwise the name stays unqualified
-  (stable, and the count backstop below still applies). TAP carries no such
-  qualifier: a same-named TAP test failing in a second file is caught by the
-  multiset and the count, but a failure that merely moves files is not.
+  (stable, and the totals check below still applies). Node's TAP block carries the
+  file in its `location:` line and the `tap:` signature gets the same
+  `@<file>` qualifier. The qualifier is the **full path relative to the directory
+  the command ran in, with forward slashes**, not the basename: `a/same.test.mjs`
+  and `b/same.test.mjs` are different files. A path outside that directory stays
+  absolute (a stable string, so it still compares). A TAP producer that prints no
+  `location:` stays unqualified.
 - Runner count lines are bookkeeping, not failures: pytest's closing
   `N failed, M passed in …`, TAP `# tests/pass/fail/…` and Node `ℹ tests/pass/…`
   totals change whenever an unrelated test is added or fixed. They are never a
@@ -131,18 +135,56 @@ the baseline block. `pytest:`, `pytest-report:`, `tap:` and `spec:` identities
 are compared as a multiset: a failure the baseline listed once and the candidate
 lists twice is new. Smoke and `exit:` lines stay a set.
 
-**Count backstop.** Identity says *which* failure is new; the runner's own total
-says *how many*. Each command result records `failure_count`: the sum of pytest's
-closing `N failed` / `N error(s)` and node:test's `ℹ fail N` / `# fail N`
-(plus `cancelled`, a test that never finished), over every runner in the output;
-a zero exit is 0, and output with no recognised total is `null`. `compare()` blocks
-when the candidate's total exceeds the baseline's for the same command position,
-even when every identity matches, and reports it in `count_increases`
-(`["1:runner failure count 1 -> 2"]`). A drop, a change in passing tests, or a
-`null` total on either side never blocks by count: signatures alone decide then.
-This closes the class where two failures share one identity (a printed banner, a
-test name in two files, an unfamiliar format), not only the instances found so far.
-Smoke scripts print no such total and rely on identities. Baseline failures are reported even when the candidate
+**Contract: when the gate cannot prove the candidate adds no failure, it blocks.**
+Reading free-form runner output cannot be made unambiguous: a test may print a line
+spelled exactly like a runner's total, a banner or a failure marker, and a wrapper
+may print after the runner. So the rule is not "find every such case", it is "when
+the output cannot be matched one for one between baseline and candidate, block, and
+a human merges by hand". A hole the parser has not met yet therefore shows up as a
+false block, not as a silent pass.
+
+**Totals check.** Identity says *which* failure is new; the runner's own totals say
+*how many*. Each command result records `failure_totals`, an **ordered list**, one
+entry per total line the output printed: pytest's closing `N failed` / `N error(s)`
+(only a line that ends ` in <time>`) and node:test's `ℹ fail N` / `# fail N` and
+`cancelled N`. Totals are never summed, so a total a test printed cannot offset one
+the runner did not print. A zero exit is `[]`; output with no recognised total is
+`[]` too. A total the parser had to drop (see below) is the explicit marker
+`"ambiguous"`, never a gap. For each command position where the **candidate exits
+non-zero**, `compare()` blocks, reporting the reason in `unprovable`, when:
+
+- either side has an `ambiguous` total;
+- the baseline and candidate lists have different lengths (the reason names both);
+- same length, and any element is higher in the candidate: reported in
+  `count_increases` (`["1:runner failure count 1 -> 2"]`, or `#2` for the second
+  element). A drop in one element does not offset a rise in another.
+
+A candidate that exits 0 passes this check whatever the baseline printed. Smoke
+scripts print no such total (`[]` against `[]`, equal) and rely on identities.
+
+**Ambiguous.** Inside a `---- Captured stdout ----` block a pytest-format line is
+almost always a test's own `print()`. The one exception is pytest's bare closing line
+under `-rN` (no short summary between it and the last captured block), which is the
+last thing in the output. So such a line is held back and kept only if nothing
+follows it. If anything follows (a wrapper's `verification finished` footer, more
+test output, another count line) the gate cannot tell a test's print from the
+runner's total, and records `ambiguous` instead of guessing.
+
+**Accepted false blocks.** These harmless changes block by design; the cost is a
+manual merge:
+
+- A test that prints a full pytest total (`1 failed in 0.01s`) or a node total
+  (`ℹ fail 1`) to output the parser reads as the runner's (under `-s`, `-rP`/`-rA`,
+  or any reporter that does not capture it): the totals list gains an entry or an
+  `ambiguous` marker.
+- A wrapper that prints after pytest's closing line, when that line sits in a
+  captured block.
+- Renaming a failing test (a new identity), and a runner or reporter change that
+  adds or removes total lines (node prints `fail` and `cancelled` as two).
+- A baseline that exits non-zero without printing any total against a candidate that
+  prints one, or the reverse.
+
+Baseline failures are reported even when the candidate
 fixes them. A matching nonzero baseline/candidate failure allows landing.
 Timeouts, unavailable execution, output overflow, invalid configuration,
 changed refs/checkouts or failed restoration always block; they are not waived
@@ -179,7 +221,7 @@ For configured verification, `merge_back` still returns a two-element tuple:
 ```
 
 The report carries `status: pass|blocked`, `new_failures`, `baseline_failures`,
-`errors`, `count_increases`, per-command `baseline` / `candidate` results, SHA/tree pins, cache
+`errors`, `count_increases`, `unprovable`, per-command `baseline` / `candidate` results, SHA/tree pins, cache
 status and restoration status when available. Earlier historical refusals
 retain their existing return shapes. The full gate report is logged. The
 session-end handler surfaces blocked landings and keeps the branch/worktree;

@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-07] - Landing gate blocks when it cannot prove no new failure (MC-1164 review round 6)
+
+- Runner totals are now an ordered list per command (`failure_totals`), never a sum. A different number of total lines between baseline and candidate blocks, as does any element that rose. A pytest total the parser cannot attribute (a wrapper footer after it, a test printing one) is an explicit `ambiguous` marker and blocks while the candidate exits non-zero; an exit-0 candidate still passes. Reasons are reported in the new `unprovable` list.
+- TAP and spec failures are qualified by the full path relative to the run directory, not the basename, so `a/same.test.mjs` and `b/same.test.mjs` are different files.
+- Closes the three round-6 bypasses (nested pytest total followed by a wrapper footer, same-basename TAP files, a printed total under `-s` offsetting a new failure). Accepted false blocks (chatty tests printing totals, renamed failing tests) are listed in `docs/LANDING_GATE.md`. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-07] - Stop failures sharing one identity from slipping past the landing gate (MC-1164 review round 4)
 
 - A banner a test prints (`=== PASSES ===`) inside its captured output no longer moves the pytest parser into the PASSES section, so a second failing test with the same assertion blocks again. A banner inside captured output counts only at pytest's own banner width.

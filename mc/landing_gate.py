@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 import os
+import posixpath
 import re
 import subprocess
 import tempfile
@@ -93,7 +94,7 @@ _SOURCE_EXTENSIONS = frozenset(
 class _PytestFrame:
     """Where a line sits in pytest's report: the current `=== NAME ===` banner and whether
     we are inside a `--- Captured ... ---` block. Shared by failure_signatures (headings
-    count only under FAILURES / ERRORS) and failure_count (a count line inside captured
+    count only under FAILURES / ERRORS) and failure_totals (a count line inside captured
     output is the test's print, not pytest's total)."""
 
     def __init__(self) -> None:
@@ -113,6 +114,10 @@ class _PytestFrame:
         if _PYTEST_SECTION.match(line):
             self.in_capture = False
 
+
+# A runner total the parser could not attribute. Stored in failure_totals in place of a
+# number so it survives into the result; compare() blocks on it ("unprovable").
+AMBIGUOUS = 'ambiguous'
 
 _cache: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
 _cache_lock = threading.Lock()
@@ -149,6 +154,25 @@ def _stable_line(line: str) -> str:
     return ' '.join(_DURATION.sub('<duration>', line).split())
 
 
+def _qualifier(path: str, root: Path | None) -> str:
+    """A test file as the identity qualifier: the full path relative to the run cwd,
+    forward slashes, no :LINE:COL. NOT the basename: a/same.test.mjs and
+    b/same.test.mjs are different files. Input is _clean() output, where the cwd is
+    already <worktree>; a path outside the cwd stays absolute (fails closed)."""
+    path = re.sub(r':\d+(?::\d+)?$', '', path.strip().strip('\'"'))
+    if path.startswith('file://'):
+        path = re.sub(r'^/(?=[A-Za-z]:)', '', path[len('file://'):])
+    path = path.replace('\\', '/')
+    if path.startswith('<worktree>/'):
+        path = path[len('<worktree>/'):]
+    elif root is not None and os.path.isabs(path):
+        try:
+            path = Path(path).resolve().relative_to(root.resolve()).as_posix()
+        except (ValueError, OSError):
+            pass
+    return posixpath.normpath(path)
+
+
 def _clean(output: str, root: Path | None) -> str:
     clean = _ANSI.sub('', output).replace('\r', '\n')
     if root is not None:
@@ -156,20 +180,25 @@ def _clean(output: str, root: Path | None) -> str:
     return clean
 
 
-def failure_count(output: str, exit_code: int, root: Path | None = None) -> int | None:
-    """The runner's own failed/error total, summed over every runner in the output.
+def failure_totals(output: str, exit_code: int, root: Path | None = None) -> list[int | str]:
+    """The runner's own failed/error total lines, IN OUTPUT ORDER, one entry each.
 
-    A zero exit is 0. None means the output carries no recognised total (a smoke
-    script, a crash before the summary): compare() then relies on signatures alone.
+    Never summed: a sum lets a total a test printed offset one pytest never printed
+    (MC-1164 round 6). A zero exit is []. A total the parser had to drop because it
+    could not tell the runner's line from a test's print is the explicit AMBIGUOUS
+    marker, not a silent gap: compare() cannot prove anything from it and blocks.
+    [] with a non-zero exit means no recognised total (a smoke script, a crash before
+    the summary): compare() then relies on signatures alone.
     """
     if exit_code == 0:
-        return 0
-    total, seen = 0, False
+        return []
+    totals: list[int | str] = []
     frame = _PytestFrame()
     # A count line inside a captured block is almost always the test's print(). The one
     # exception is pytest's own bare closing line when no short summary (`-rN`) separates
     # it from the last captured block: that line is the LAST thing in the output. So it
-    # is held back, and kept only if nothing but more count lines follows it.
+    # is held back, and kept only if nothing follows it. Anything that does follow
+    # (a wrapper's footer, more test output, another count line) leaves it unprovable.
     held: int | None = None
     for raw in _clean(output, root).splitlines():
         shown = raw.strip()
@@ -179,18 +208,18 @@ def failure_count(output: str, exit_code: int, root: Path | None = None) -> int 
         frame.feed(shown, line)
         node = _NODE_COUNTS.fullmatch(line)
         pytest_count = None if node else _PYTEST_COUNTS.fullmatch(line)
+        if held is not None:
+            totals.append(AMBIGUOUS)  # the held line was not provably the last thing
+            held = None
         if pytest_count and frame.in_capture:
             held = sum(int(n) for n in _PYTEST_FAILED_PART.findall(line))
-            continue
-        held = None
-        if node:
-            total, seen = total + int(node['n']), True
+        elif node:
+            totals.append(int(node['n']))
         elif pytest_count:
-            total += sum(int(n) for n in _PYTEST_FAILED_PART.findall(line))
-            seen = True
+            totals.append(sum(int(n) for n in _PYTEST_FAILED_PART.findall(line)))
     if held is not None:
-        total, seen = total + held, True
-    return total if seen else None
+        totals.append(held)
+    return totals
 
 
 def failure_signatures(output: str, exit_code: int, root: Path | None = None) -> list[str]:
@@ -269,7 +298,7 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
             continue
         if recap:
             recap_entry = bool(_SPEC_RECAP_ENTRY.match(line))
-            recap_file = line[len('test at '):].strip() if recap_entry else ''
+            recap_file = _qualifier(shown[len('test at '):], root) if recap_entry else ''
         tap = _TAP.match(line)
         if tap:
             # Qualified by enclosing suites, so the same test name failing in a
@@ -280,13 +309,13 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
             heading = ''
             continue
         # node's TAP block names the file in `location: '<file>:LINE:COL'`; the identity
-        # includes it, as the spec reporter's does, so a failure that moves to another
-        # file (same test name, same count) is a new one. Other TAP producers print no
-        # location and stay unqualified.
+        # includes it (full path relative to the run cwd, as the spec reporter's does), so
+        # a failure that moves to another file (same test name, same count) is a new one.
+        # Other TAP producers print no location and stay unqualified.
         if tap_open >= 0:
-            location = _TAP_LOCATION.match(line)
+            location = _TAP_LOCATION.match(shown)
             if location:
-                counted[tap_open] += ' @' + location['file']
+                counted[tap_open] += ' @' + _qualifier(location['file'], root)
             if location or line == '...' or line.startswith(('ok ', 'not ok ')):
                 tap_open = -1
         match = _SMOKE.match(line)
@@ -336,17 +365,32 @@ def compare(baseline: list[dict[str, Any]], candidate: list[dict[str, Any]]) -> 
               (('baseline', baseline), ('candidate', candidate))
               for i, run in enumerate(runs) if run.get('error')]
     new = sorted((current - old).elements())
-    # Backstop: whatever the identities say, more failures than the baseline had at
-    # the same command position blocks. Identity names WHICH failure is new; the
-    # runner's own total says HOW MANY, and cannot be fooled by two failures that
-    # share a name, a message or a banner. A drop, or passing-count noise, is fine.
-    count_increases = []
+    # Backstop, and the "cannot prove it -> block" rule. The runner's own totals are an
+    # ORDERED LIST per command position, never summed. When the candidate fails and the
+    # totals cannot be compared one for one, the gate cannot prove the candidate has no
+    # new failure, so it blocks and a human merges by hand: an AMBIGUOUS total on either
+    # side, a different number of total lines, or any element that went up. A drop, or
+    # passing-count noise, is fine. A candidate that exits 0 has nothing to prove.
+    count_increases: list[str] = []
+    unprovable: list[str] = []
     for i, (before, after) in enumerate(zip(baseline, candidate)):
-        was, now = before.get('failure_count'), after.get('failure_count')
-        if isinstance(was, int) and isinstance(now, int) and now > was:
-            count_increases.append(f'{i + 1}:runner failure count {was} -> {now}')
-    return {'status': 'blocked' if new or errors or count_increases else 'pass',
-            'new_failures': new, 'count_increases': count_increases,
+        if after.get('exit_code') == 0:
+            continue
+        was, now = list(before.get('failure_totals') or []), list(after.get('failure_totals') or [])
+        if AMBIGUOUS in was or AMBIGUOUS in now:
+            side = ' and '.join(n for n, t in (('baseline', was), ('candidate', now)) if AMBIGUOUS in t)
+            unprovable.append(f'{i + 1}:runner total ambiguous on {side} '
+                              f'(baseline {len(was)} total lines, candidate {len(now)})')
+        elif len(was) != len(now):
+            unprovable.append(f'{i + 1}:runner total lines differ '
+                              f'(baseline {len(was)}, candidate {len(now)})')
+        else:
+            for j, (w, n) in enumerate(zip(was, now)):
+                if n > w:
+                    where = '' if len(was) == 1 else f' #{j + 1}'
+                    count_increases.append(f'{i + 1}:runner failure count{where} {w} -> {n}')
+    return {'status': 'blocked' if new or errors or count_increases or unprovable else 'pass',
+            'new_failures': new, 'count_increases': count_increases, 'unprovable': unprovable,
             'baseline_failures': sorted(old.elements()), 'errors': errors,
             'baseline': baseline, 'candidate': candidate}
 
@@ -355,7 +399,7 @@ def run_command(command: str, cwd: Path, timeout: float, project_id: str) -> dic
     """Run one exact platform-shell command with the existing owned-tree cleanup."""
     from mc.blueprints.agent_routes import _register_process, _unregister_process
     from mc.blueprints.secrets_routes import _kill_process_tree, _win_job_object_for
-    result: dict[str, Any] = {'exit_code': None, 'signatures': [], 'failure_count': None,
+    result: dict[str, Any] = {'exit_code': None, 'signatures': [], 'failure_totals': [],
                               'output_tail': '', 'error': None}
     proc = None
     job = None
@@ -399,7 +443,7 @@ def run_command(command: str, cwd: Path, timeout: float, project_id: str) -> dic
             output.seek(0)
             text = output.read().decode('utf-8', 'replace')
             result['signatures'] = failure_signatures(text, result['exit_code'], cwd)
-            result['failure_count'] = failure_count(text, result['exit_code'], cwd)
+            result['failure_totals'] = failure_totals(text, result['exit_code'], cwd)
     return result
 
 
@@ -419,6 +463,7 @@ def verify(project: dict[str, Any], worktree: Path, target: str, incoming: str,
         if project.get('verify_command') is None or project.get('verify_command') in ('', []):
             return None
     result: dict[str, Any] = {'status': 'blocked', 'new_failures': [], 'count_increases': [],
+        'unprovable': [],
         'baseline_failures': [], 'errors': [], 'baseline': [], 'candidate': []}
     restored = False
     original_ref = ''

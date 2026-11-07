@@ -526,13 +526,21 @@ NODE_PASS = "test('fine', () => {});\n"
 _STRIPPED_ENV = ('PYTEST_ADDOPTS', 'PYTEST_CURRENT_TEST', 'NODE_OPTIONS', 'PYTHONPATH')
 
 
+class Captured(tuple):
+    """(output, exit code) of a real runner, plus the cwd it ran in: run_command parses
+    with that cwd as the root, so the helpers below default to it."""
+    root: Path
+
+
 def captured(argv, cwd: Path, extra_env=None):
     env = {k: v for k, v in os.environ.items() if k not in _STRIPPED_ENV}
     env.update(extra_env or {})
     done = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True,
                           encoding='utf-8', errors='replace', timeout=120)
     assert done.returncode != 0, done.stdout + done.stderr
-    return done.stdout + done.stderr, done.returncode
+    result = Captured((done.stdout + done.stderr, done.returncode))
+    result.root = cwd
+    return result
 
 
 def real_pytest(tmp_path: Path, label: str, source: str, extra_env=None):
@@ -552,7 +560,7 @@ def real_tap(tmp_path: Path, label: str, source: str):
 
 def sigs(captured_run, root=None):
     output, code = captured_run
-    return gate.failure_signatures(output, code, root)
+    return gate.failure_signatures(output, code, root or captured_run.root)
 
 
 def verdict(old, new):
@@ -582,7 +590,7 @@ def test_tap_test_number_change_is_not_a_new_failure(tmp_path):
     old = sigs(real_tap(tmp_path, 'old', NODE_HEAD + NODE_OLD))
     new = sigs(real_tap(tmp_path, 'new', NODE_HEAD + NODE_PASS + NODE_OLD))
     assert verdict(old, new)['status'] == 'pass', verdict(old, new)['new_failures']
-    assert 'tap:old thing @<path>/fx.test.mjs' in old and old == new
+    assert 'tap:old thing @fx.test.mjs' in old and old == new
 
 
 def test_moving_a_failing_pytest_assertion_is_not_a_new_failure(tmp_path):
@@ -628,7 +636,7 @@ def test_a_genuinely_new_failing_tap_test_blocks(tmp_path):
     new = sigs(real_tap(tmp_path, 'new', NODE_HEAD + NODE_PASS + NODE_OLD + NODE_NEW))
     result = verdict(old, new)
     assert result['status'] == 'blocked'
-    assert result['new_failures'] == ['1:tap:new thing @<path>/fx.test.mjs']
+    assert result['new_failures'] == ['1:tap:new thing @fx.test.mjs']
 
 
 @needs_node
@@ -823,10 +831,11 @@ FILE_OK = "test('works', () => {});\n"
 
 
 def counted(captured_run, root=None):
-    """What run_command stores per command: identities plus the runner's own total."""
+    """What run_command stores per command: identities plus the runner's own totals."""
     output, code = captured_run
-    return {'signatures': gate.failure_signatures(output, code, root),
-            'failure_count': gate.failure_count(output, code, root), 'error': None}
+    root = root or captured_run.root
+    return {'exit_code': code, 'signatures': gate.failure_signatures(output, code, root),
+            'failure_totals': gate.failure_totals(output, code, root), 'error': None}
 
 
 def full_verdict(old_run, new_run, old_root=None, new_root=None):
@@ -880,14 +889,14 @@ def test_banner_width_follows_the_terminal_not_a_constant(tmp_path):
 
 
 def test_runner_failure_totals_from_real_output(tmp_path):
-    assert gate.failure_count(*real_pytest(tmp_path, 'p', OLD_FAIL + PASS_TEST)) == 1
+    assert gate.failure_totals(*real_pytest(tmp_path, 'p', OLD_FAIL + PASS_TEST)) == [1]
     two = real_pytest(tmp_path, 'two', OLD_FAIL + NEW_FAIL + PASS_TEST)
-    assert '2 failed, 1 passed' in two[0] and gate.failure_count(*two) == 2
+    assert '2 failed, 1 passed' in two[0] and gate.failure_totals(*two) == [2]
     broken = 'import pytest\n@pytest.fixture\ndef boom():\n    raise RuntimeError("x")\ndef test_e(boom):\n    pass\n'
     mixed = real_pytest(tmp_path, 'mixed', OLD_FAIL + broken)
-    assert '1 failed, 1 error' in mixed[0] and gate.failure_count(*mixed) == 2   # failures + errors
-    assert gate.failure_count('anything at all', 0) == 0
-    assert gate.failure_count('boom: something unrecognised', 3) is None
+    assert '1 failed, 1 error' in mixed[0] and gate.failure_totals(*mixed) == [2]   # failures + errors
+    assert gate.failure_totals('anything at all', 0) == []
+    assert gate.failure_totals('boom: something unrecognised', 3) == []   # no total: identities only
 
 
 @needs_node
@@ -895,7 +904,7 @@ def test_node_failure_totals_from_real_spec_and_tap_output(tmp_path):
     spec = real_spec(tmp_path, 's', NODE_HEAD + NODE_OLD + NODE_NEW + NODE_PASS)
     tap = real_tap(tmp_path, 't', NODE_HEAD + NODE_OLD + NODE_NEW + NODE_PASS)
     assert 'ℹ fail 2' in spec[0] and '# fail 2' in tap[0]
-    assert gate.failure_count(*spec) == gate.failure_count(*tap) == 2
+    assert gate.failure_totals(*spec) == gate.failure_totals(*tap) == [2, 0]   # fail, cancelled
 
 
 def test_run_command_records_the_runner_total(tmp_path):
@@ -904,7 +913,7 @@ def test_run_command_records_the_runner_total(tmp_path):
     (folder/'test_fx.py').write_text(OLD_FAIL + NEW_FAIL + PASS_TEST, encoding='utf-8')
     done = gate.run_command(command('-m', 'pytest', 'test_fx.py', '-q', '-ra', '-p', 'no:cacheprovider',
                                     '-o', 'addopts=', '--rootdir', str(folder)), folder, 120, 'one')
-    assert done['exit_code'] == 1 and done['failure_count'] == 2
+    assert done['exit_code'] == 1 and done['failure_totals'] == [2]
     assert 'pytest:test_fx.py::test_old' in done['signatures']
 
 
@@ -917,7 +926,7 @@ def test_same_test_name_failing_in_a_second_file_blocks(tmp_path, reporter):
     new_run = real_two_files(tmp_path, 'new', FILE_FAIL, FILE_FAIL, reporter)
     result = full_verdict(old_run, new_run)
     assert result['status'] == 'blocked'
-    assert result['count_increases'] == ['1:runner failure count 1 -> 2']
+    assert result['count_increases'] == ['1:runner failure count #1 1 -> 2']
     assert result['new_failures']  # the identities see it too (spec: the file, tap: the multiset)
 
 
@@ -948,7 +957,7 @@ def test_passing_count_changes_never_block_but_failure_count_increases_do(tmp_pa
     old_run = real_pytest(tmp_path, 'old', OLD_FAIL)
     more_passing = real_pytest(tmp_path, 'passing', OLD_FAIL + PASS_TEST + PASS_PRINTS)
     assert full_verdict(old_run, more_passing)['status'] == 'pass'
-    assert counted(old_run)['failure_count'] == counted(more_passing)['failure_count'] == 1
+    assert counted(old_run)['failure_totals'] == counted(more_passing)['failure_totals'] == [1]
     two = real_pytest(tmp_path, 'two', OLD_FAIL + NEW_FAIL)
     assert full_verdict(two, old_run)['status'] == 'pass'       # fewer failures than before
     result = full_verdict(old_run, two)
@@ -978,17 +987,44 @@ def test_compare_counts_a_repeated_signature_and_ignores_missing_totals():
     assert gate.compare([run(['pytest:a', 'pytest:a'])], [run(['pytest:a', 'pytest:a'])])['baseline_failures'] == [
         '1:pytest:a', '1:pytest:a']
 
-    def with_total(total, signatures=('pytest:a',)):
-        return {**run(signatures), 'failure_count': total}
-    only_count = gate.compare([with_total(1)], [with_total(2)])      # same identities, one more failure
+    def with_totals(totals, signatures=('pytest:a',)):
+        return {**run(signatures), 'failure_totals': totals, 'exit_code': 1}
+    only_count = gate.compare([with_totals([1])], [with_totals([2])])  # same identities, one more failure
     assert only_count['status'] == 'blocked' and only_count['new_failures'] == []
     assert only_count['count_increases'] == ['1:runner failure count 1 -> 2']
-    assert gate.compare([with_total(2)], [with_total(2)])['status'] == 'pass'
-    assert gate.compare([with_total(3)], [with_total(1)])['status'] == 'pass'
-    assert gate.compare([with_total(None)], [with_total(5)])['status'] == 'pass'   # no baseline total: identities only
-    assert gate.compare([with_total(1)], [with_total(None)])['status'] == 'pass'
-    assert gate.compare([with_total(1), with_total(0, ())], [with_total(1), with_total(2, ())])['count_increases'] == [
-        '2:runner failure count 0 -> 2']                                  # scoped by command position
+    assert gate.compare([with_totals([2])], [with_totals([2])])['status'] == 'pass'
+    assert gate.compare([with_totals([3])], [with_totals([1])])['status'] == 'pass'
+    # No totals on either side (a smoke script): identities only.
+    assert gate.compare([with_totals([])], [with_totals([])])['status'] == 'pass'
+    assert gate.compare([with_totals([1]), with_totals([0], ())], [with_totals([1]), with_totals([2], ())])[
+        'count_increases'] == ['2:runner failure count 0 -> 2']          # scoped by command position
+
+
+def test_compare_blocks_when_the_candidate_totals_cannot_be_proved_no_worse():
+    # Round 6, "unprovable means block": totals are an ordered list, never summed.
+    def with_totals(totals, exit_code=1):
+        return {**run(['pytest:a']), 'failure_totals': totals, 'exit_code': exit_code}
+    # A different number of total lines blocks even though the SUMS tie at 2.
+    fewer = gate.compare([with_totals([1, 1])], [with_totals([2])])
+    assert fewer['status'] == 'blocked' and fewer['count_increases'] == []
+    assert fewer['unprovable'] == ['1:runner total lines differ (baseline 2, candidate 1)']
+    more = gate.compare([with_totals([2])], [with_totals([1, 1])])
+    assert more['unprovable'] == ['1:runner total lines differ (baseline 1, candidate 2)']
+    # No total at all on one side is a length difference too.
+    assert gate.compare([with_totals([])], [with_totals([1])])['status'] == 'blocked'
+    assert gate.compare([with_totals([1])], [with_totals([])])['status'] == 'blocked'
+    # Same length: element by element, any increase blocks, a drop elsewhere does not offset it.
+    swap = gate.compare([with_totals([1, 3])], [with_totals([2, 0])])
+    assert swap['status'] == 'blocked' and swap['count_increases'] == ['1:runner failure count #1 1 -> 2']
+    assert gate.compare([with_totals([2, 0])], [with_totals([1, 0])])['status'] == 'pass'
+    # AMBIGUOUS on either side blocks while the candidate fails...
+    for was, now in (([gate.AMBIGUOUS], [1]), ([1], [gate.AMBIGUOUS]), ([gate.AMBIGUOUS], [gate.AMBIGUOUS])):
+        result = gate.compare([with_totals(was)], [with_totals(now)])
+        assert result['status'] == 'blocked' and len(result['unprovable']) == 1, (was, now)
+        assert 'ambiguous' in result['unprovable'][0]
+    # ...and a candidate that exits 0 has nothing to prove, whatever the baseline printed.
+    green = gate.compare([with_totals([gate.AMBIGUOUS])], [with_totals([], exit_code=0)])
+    assert green['status'] == 'pass' and green['unprovable'] == []
 
 
 # ── Round five: TAP file identity, and only the runner's own summary is a count ─
@@ -1005,7 +1041,7 @@ def test_tap_failure_moving_to_another_file_blocks_even_at_equal_count(tmp_path)
     # One failure either way, so only the `location:` node prints in the TAP block can tell.
     old_run = real_two_files(tmp_path, 'old', FILE_FAIL, FILE_OK, 'tap')
     new_run = real_two_files(tmp_path, 'new', FILE_OK, FILE_FAIL, 'tap')
-    assert gate.failure_count(*old_run) == gate.failure_count(*new_run) == 1
+    assert gate.failure_totals(*old_run) == gate.failure_totals(*new_run) == [1, 0]
     result = full_verdict(old_run, new_run, tmp_path/'old', tmp_path/'new')
     assert result['count_increases'] == []
     assert result['status'] == 'blocked'
@@ -1028,14 +1064,28 @@ def test_tap_stability_with_file_qualified_names(tmp_path):
 
 
 @pytest.mark.parametrize('flag', ['-rP', '-rA'])  # the flags that show a PASSING test's output
-@pytest.mark.parametrize('printed', [PRINTS_FAILED, PRINTS_FAILED_IN], ids=['bare', 'with-duration'])
-def test_a_passing_test_printing_a_failure_count_is_not_a_failure(tmp_path, flag, printed):
-    # Fenn r5 P2: the printed line used to be summed in as one more runner failure.
+def test_a_passing_test_printing_a_bare_failure_count_is_not_a_failure(tmp_path, flag):
+    # Fenn r5 P2: a bare `1 failed` (no ` in <time>`) is never pytest's line.
     old_run = real_pytest_flags(tmp_path, 'old', OLD_FAIL, [flag])
-    new_run = real_pytest_flags(tmp_path, 'new', OLD_FAIL + printed, [flag])
-    assert '\n' + printed.split('"')[1] + '\n' in new_run[0].replace('\r', '')  # really in the output
-    assert gate.failure_count(*old_run) == gate.failure_count(*new_run) == 1
+    new_run = real_pytest_flags(tmp_path, 'new', OLD_FAIL + PRINTS_FAILED, [flag])
+    assert '\n1 failed\n' in new_run[0].replace('\r', '')  # really in the output
+    assert gate.failure_totals(*old_run) == gate.failure_totals(*new_run) == [1]
     assert full_verdict(old_run, new_run)['status'] == 'pass'
+
+
+@pytest.mark.parametrize('flag', ['-rP', '-rA'])
+def test_a_passing_test_printing_a_full_pytest_total_line_is_an_accepted_false_block(tmp_path, flag):
+    # A test's print() spelled exactly like pytest's closing line cannot be told from it.
+    # Round 5 guessed (and a wrapper footer then made the guess wrong, Fenn r6 P1); round 6
+    # blocks instead: the held total is AMBIGUOUS. This is a harmless change that blocks.
+    old_run = real_pytest_flags(tmp_path, 'old', OLD_FAIL, [flag])
+    new_run = real_pytest_flags(tmp_path, 'new', OLD_FAIL + PRINTS_FAILED_IN, [flag])
+    assert '\n1 failed in 0.01s\n' in new_run[0].replace('\r', '')  # really in the output
+    assert gate.failure_totals(*old_run) == [1]
+    assert gate.failure_totals(*new_run) == [gate.AMBIGUOUS, 1]
+    result = full_verdict(old_run, new_run)
+    assert result['status'] == 'blocked' and result['new_failures'] == []
+    assert result['unprovable'] == ['1:runner total ambiguous on candidate (baseline 1 total lines, candidate 2)']
 
 
 @needs_node
@@ -1043,15 +1093,129 @@ def test_a_passing_node_test_printing_a_failure_count_is_not_a_failure(tmp_path)
     old_run = real_spec(tmp_path, 'old', NODE_HEAD + NODE_OLD)
     new_run = real_spec(tmp_path, 'new', NODE_HEAD + NODE_OLD + NODE_PRINTS_FAILED)
     assert '1 failed' in new_run[0] and 'ℹ fail 1' in new_run[0]
-    assert gate.failure_count(*old_run) == gate.failure_count(*new_run) == 1
+    assert gate.failure_totals(*old_run) == gate.failure_totals(*new_run) == [1, 0]  # fail, cancelled
     assert full_verdict(old_run, new_run)['status'] == 'pass'
 
 
 def test_the_real_summary_after_a_failures_captured_output_still_counts(tmp_path):
     # `-rN` prints no short summary, so pytest's bare closing line directly follows the last
     # captured block. Skipping captured text must not lose it, or the backstop goes quiet.
+    one = real_pytest_flags(tmp_path, 'one', OLD_FAIL_PRINTS, ['-rN'])
+    two = real_pytest_flags(tmp_path, 'two', OLD_FAIL_PRINTS + NEW_FAIL, ['-rN'])
+    assert gate.failure_totals(*one) == [1] and gate.failure_totals(*two) == [2]
+    assert full_verdict(one, two)['count_increases'] == ['1:runner failure count 1 -> 2']
+
+
+def test_a_failing_test_printing_a_pytest_total_line_is_an_accepted_false_block(tmp_path):
+    # The same layout, but the failing test's own print is spelled like pytest's closing line
+    # and sits right above the real one. The two cannot be told apart, so the first is AMBIGUOUS
+    # (round 5 summed them away; round 6 blocks). A harmless change, blocked by design.
     chatty_fail = 'def test_old():\n    print("1 failed in 0.01s")\n    assert 1 == 2\n'
     one = real_pytest_flags(tmp_path, 'one', chatty_fail, ['-rN'])
-    two = real_pytest_flags(tmp_path, 'two', chatty_fail + NEW_FAIL, ['-rN'])
-    assert gate.failure_count(*one) == 1 and gate.failure_count(*two) == 2
-    assert full_verdict(one, two)['count_increases'] == ['1:runner failure count 1 -> 2']
+    same = real_pytest_flags(tmp_path, 'same', chatty_fail + PASS_TEST, ['-rN'])
+    assert gate.failure_totals(*one) == gate.failure_totals(*same) == [gate.AMBIGUOUS, 1]
+    result = full_verdict(one, same)
+    assert result['status'] == 'blocked' and result['new_failures'] == []
+    assert 'ambiguous on baseline and candidate' in result['unprovable'][0]
+
+
+# ── Round six: "unprovable means block" (Fenn, 2026-11-07) ────────────────────
+# Same rule: every output is captured from the real runner (pytest, node --test).
+# Each test is one of Fenn's three P1 repros, rebuilt from his fixtures.
+
+WRAPPER = '''import subprocess, sys
+p = subprocess.run([sys.executable, '-m', 'pytest', 'test_fx.py', '-q', '-rN', '-p', 'no:cacheprovider',
+                    '-o', 'addopts=', '--rootdir=.'])
+print('verification finished', flush=True)
+sys.exit(p.returncode)
+'''
+NESTED_OUTER = '''import subprocess, sys
+def test_old():
+    subprocess.run([sys.executable, '-m', 'pytest', 'inner.py', '-q', '-rP', '-p', 'no:cacheprovider',
+                    '-o', 'addopts=', '--rootdir=.'])
+    assert 1 == 2
+'''
+NESTED_NEW = 'def test_new():\n    print("hello")\n    assert 1 == 2\n'
+
+
+def real_wrapped_nested(tmp_path: Path, label: str, extra: str):
+    folder = tmp_path/label
+    folder.mkdir()
+    for name, body in (('run.py', WRAPPER), ('inner.py', 'def test_inner():\n    print("hello")\n'),
+                       ('test_fx.py', NESTED_OUTER + extra)):
+        (folder/name).write_text(body, encoding='utf-8')
+    return captured([sys.executable, 'run.py'], folder)
+
+
+def test_nested_pytest_total_followed_by_a_wrapper_footer_blocks_a_new_failure(tmp_path):
+    # Fenn r6 P1 (inner_old_True / inner_new_True): a wrapper prints a footer after pytest's
+    # closing line, so the held total could not be told from a test's print. Round 5 dropped
+    # it silently and 1 -> 2 failures passed. Now the dropped total is AMBIGUOUS and blocks.
+    old_run = real_wrapped_nested(tmp_path, 'old', '')
+    new_run = real_wrapped_nested(tmp_path, 'new', NESTED_NEW)
+    assert '1 failed in' in old_run[0] and '2 failed in' in new_run[0]
+    assert old_run[0].rstrip().endswith('verification finished')
+    assert gate.AMBIGUOUS in gate.failure_totals(*old_run) and gate.AMBIGUOUS in gate.failure_totals(*new_run)
+    result = full_verdict(old_run, new_run)
+    assert result['status'] == 'blocked'
+    assert len(result['unprovable']) == 1 and 'ambiguous on baseline and candidate' in result['unprovable'][0]
+
+
+def real_same_basename(tmp_path: Path, label: str, in_a: str, in_b: str, reporter: str):
+    folder = tmp_path/label
+    for sub, body in (('a', in_a), ('b', in_b)):
+        (folder/sub).mkdir(parents=True)
+        (folder/sub/'same.test.mjs').write_text(NODE_HEAD + body, encoding='utf-8')
+    return captured(['node', '--test', f'--test-reporter={reporter}', 'a/same.test.mjs', 'b/same.test.mjs'], folder)
+
+
+@needs_node
+@pytest.mark.parametrize('reporter', ['tap', 'spec'])
+def test_same_basename_in_two_directories_is_two_files(tmp_path, reporter):
+    # Fenn r6 P1 (basename_old_tap / basename_new_tap): `works` fails in a/same.test.mjs and is
+    # repaired there while b/same.test.mjs breaks. One failure either way; the qualifier was the
+    # basename, so both runs had the identity `tap:works @same.test.mjs` and the gate said pass.
+    old_run = real_same_basename(tmp_path, 'old', FILE_FAIL, FILE_OK, reporter)
+    new_run = real_same_basename(tmp_path, 'new', FILE_OK, FILE_FAIL, reporter)
+    old_sigs = sigs(old_run)
+    assert f'{reporter}:works @a/same.test.mjs' in old_sigs
+    assert not any(s.endswith('@same.test.mjs') for s in old_sigs)
+    result = full_verdict(old_run, new_run)
+    assert result['count_increases'] == [] and result['unprovable'] == []   # the totals tie: identity decides
+    assert result['status'] == 'blocked'
+    assert result['new_failures'] == [f'1:{reporter}:works @b/same.test.mjs']
+
+
+@needs_node
+@pytest.mark.parametrize('reporter', ['tap', 'spec'])
+def test_same_basename_qualifier_is_stable_when_nothing_moved(tmp_path, reporter):
+    # The path is relative to the run cwd, so the same failure in two checkouts is one identity.
+    old_run = real_same_basename(tmp_path, 'old', FILE_FAIL, FILE_OK, reporter)
+    added = real_same_basename(tmp_path, 'added', '// moved\n\n\n' + FILE_FAIL, FILE_OK + NODE_PASS, reporter)
+    mine = lambda run_: [s for s in sigs(run_) if s.startswith(reporter + ':')]  # noqa: E731
+    assert mine(old_run) == mine(added) == [f'{reporter}:works @a/same.test.mjs']
+    assert full_verdict(old_run, added)['status'] == 'pass'
+
+
+def real_s_flag(tmp_path: Path, label: str, source: str):
+    folder = tmp_path/label
+    folder.mkdir()
+    (folder/'test_fx.py').write_text(source, encoding='utf-8')
+    return captured([sys.executable, '-m', 'pytest', 'test_fx.py', '-p', 'no:cacheprovider', '-o', 'addopts=',
+                     '--rootdir', str(folder), '-q', '-s', '-rN', '--tb=line'], folder)
+
+
+def test_a_printed_total_cannot_offset_a_new_failure_under_dash_s(tmp_path):
+    # Fenn r6 P1 (s_line_replacement_old / _new): under -s a passing test's print of
+    # `1 failed in 0.01s` is a plain count line. The old SUM (printed 1 + real 1 = 2) tied the
+    # candidate's real 2, and --tb=line leaves no per-test heading. The totals are now a list:
+    # [1, 1] against [2] is a different number of total lines, so the gate blocks.
+    chatty = '\ndef test_chatty():\n    print("\\n1 failed in 0.01s")\n'
+    old_run = real_s_flag(tmp_path, 'old', 'def test_old():\n    assert 1 == 2\n' + chatty + '\ndef test_new():\n    pass\n')
+    new_run = real_s_flag(tmp_path, 'new', 'def test_old():\n    assert 1 == 2\n'
+                          '\ndef test_chatty():\n    pass\n\ndef test_new():\n    assert 1 == 2\n')
+    assert '1 failed, 2 passed' in old_run[0] and '2 failed, 1 passed' in new_run[0]
+    assert gate.failure_totals(*old_run) == [1, 1] and gate.failure_totals(*new_run) == [2]
+    result = full_verdict(old_run, new_run)
+    assert result['status'] == 'blocked' and result['new_failures'] == []   # identities cannot see it
+    assert result['unprovable'] == ['1:runner total lines differ (baseline 2, candidate 1)']
