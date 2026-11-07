@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-07] - Gate agent landings on new verification failures (MC-1164)
+
+- Added optional per-project verification commands with a 20-minute default timeout per command. Checks run against the combined target/agent tree and compare failure signatures with a target-SHA baseline; known failures are reported, while new failures and incomplete verification block landing without moving branch refs.
+- Preserved existing native standards and merge review, added a future reviewer callback seam, protected verification settings with existing human-only controls, and kept blocked worktrees through session end and stale GC. Contract: `docs/LANDING_GATE.md`. Branch candidate only; no live configuration, merge, push or restart.
+
 ## [2026-11-06] - Keep passive test detection running at identity capacity (MC-1148, dark)
 
 - Reclaim the oldest terminal identities when the detector reaches 4096 entries, preserving active calls. A separate bounded FIFO of 65536 scoped-key hashes blocks replay of evicted completed calls while retained; all-active capacity still logs and skips.

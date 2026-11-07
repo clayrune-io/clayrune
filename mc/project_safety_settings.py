@@ -15,6 +15,8 @@ from mc.blueprints.workflow_routes import _is_agent_caller
 
 PROJECT_SAFETY_KEYS = frozenset({
     'merge_requires_review',
+    'verify_command',
+    'verify_timeout_seconds',
     'worktree_isolation',
     'worktree_base_branch',
     'worktree_shared_runtime',

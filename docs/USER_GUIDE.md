@@ -435,6 +435,16 @@ the asset cache. No Windows registry change or provider re-login is needed.
 - **Pop out**: the `Pop out ↗` button opens the active session in its own
   resizable window for focus mode.
 
+### Agent landing verification
+
+Projects with configured landing checks compare the agent's combined changes
+against failures already present on the target branch. Existing failures are
+reported; new failures or a check timeout keep the branch and worktree for
+inspection. The activity log reports a blocked landing. Projects without
+configured checks retain their current behavior. Existing merge review and
+standards requirements still apply. This backend option has no new settings
+control; command configuration and results are documented in `LANDING_GATE.md`.
+
 ---
 
 ## Incognito mode

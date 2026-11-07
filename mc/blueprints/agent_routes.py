@@ -1644,6 +1644,8 @@ def _worktree_merge_back_on_end(session, _attempt=0):
         if not p:
             return
         status, detail = _agent_worktree.merge_back(p, sid)
+        if isinstance(detail, dict):
+            detail = json.dumps(detail, ensure_ascii=True)
         if status in ('clean', 'nothing'):
             ok, msg = _agent_worktree.remove(p, sid, delete_branch=True)
             if not ok:
@@ -1661,7 +1663,7 @@ def _worktree_merge_back_on_end(session, _attempt=0):
             _log_agent_activity(
                 pid, f'Agent worktree needs manual merge ({status}): '
                      f'branch {_agent_worktree.branch_name(sid)} — {detail[:120]}')
-        elif status in ('awaiting_review', 'awaiting_standards'):
+        elif status in ('awaiting_review', 'awaiting_standards', 'blocked'):
             # MC-1075 merge review gate: branch and worktree stay; nothing merged.
             _log_agent_activity(
                 pid, f'Agent branch {status} ({sid[:8]}): '
