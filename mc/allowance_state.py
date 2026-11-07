@@ -409,7 +409,11 @@ def _parse_codex_reset_text(message: str) -> Optional[datetime]:
     for fmt in ('%b %d %Y %I:%M %p', '%B %d %Y %I:%M %p',
                 '%b %d %Y', '%B %d %Y'):
         try:
-            return datetime.strptime(text, fmt)
+            # Codex's format_retry_timestamp converts UTC to chrono::Local
+            # before rendering this wall-clock string (protocol/src/error.rs).
+            # Let the host resolve the offset at the RESET date, including DST;
+            # attaching today's fixed offset or assuming UTC shifts the wait.
+            return datetime.strptime(text, fmt).astimezone(timezone.utc)
         except ValueError:
             continue
     return None

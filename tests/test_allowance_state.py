@@ -110,7 +110,8 @@ def test_detect_codex_real_captured_usage_limit_event():
     assert hit['verified'] is True
     assert hit['resets_at_display'] == 'Sep 24th, 2026 7:58 AM'
     assert hit['resets_at'] is not None
-    assert hit['resets_at'].startswith('2026-09-24T07:58:00')
+    expected = _real_datetime(2026, 9, 24, 7, 58).astimezone(timezone.utc)
+    assert hit['resets_at'] == expected.isoformat()
     assert 'usage_limit_exceeded' not in hit['raw_ref'] or 'hit your usage limit' in hit['raw_ref']
 
 

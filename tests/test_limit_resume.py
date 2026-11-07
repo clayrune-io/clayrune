@@ -307,6 +307,171 @@ def test_human_message_cancels_even_if_allowance_refuses(integration, monkeypatc
     assert env.store.get('child')['phase'] == 'cancelled'
 
 
+def test_human_takeover_allowance_409_clears_reset_status(integration, monkeypatch):
+    env = integration
+    env.store.park(exhausted(session()))
+    dispatch.restore_waits(env.ar)
+    monkeypatch.setattr(env.ar, '_update_agent_log', lambda *a, **k: None)
+    monkeypatch.setattr(env.ar, '_load_agent_log', lambda *a: [])
+    monkeypatch.setattr(env.ar, '_observe_habit_cue', lambda *a, **k: None)
+    monkeypatch.setattr(env.ar, '_allowance_refusal', lambda *a, **k: 'still exhausted')
+    with env.app.test_request_context(json={'session_id': 'child', 'message': 'take over'},
+                                     headers={'Origin': 'http://localhost:5199'}):
+        response = env.app.make_response(env.ar.agent_followup('p'))
+    assert response.status_code == 409
+    live = env.sessions['child']
+    assert live['status'] == 'idle'
+    assert live['last_status_change_time'] > 0
+    assert live['_turn_owner'] == 'human'
+    assert env.store.get('child')['phase'] == 'cancelled'
+    assert lr.view(live) is None
+    assert not lr.hold_completion(live, {})
+    dispatch.tick(DUE)
+    assert live['status'] == 'idle'
+
+
+@pytest.fixture
+def claude_followup(integration, monkeypatch):
+    """Exercise the real handler while holding only its async launch threads."""
+    env = integration
+    ar = env.ar
+    for name in ('_observe_habit_cue', '_allocate_delegation_turn',
+                 '_log_agent_dispatch_pending', '_write_usage_breakdown_turn_start_checkpoint',
+                 '_log_agent_activity', '_sysprompt_cleanup', '_register_process'):
+        monkeypatch.setattr(ar, name, lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_allowance_refusal', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_auto_fresh_trigger', lambda *a, **k: (None, None))
+    monkeypatch.setattr(ar, '_resume_unresumable', lambda *a: False)
+    monkeypatch.setattr(ar, '_fragile_resume_target', lambda *a: False)
+    monkeypatch.setattr(ar, '_refuse_duplicate_spawn', lambda *a: None)
+    monkeypatch.setattr(ar, '_resolve_claude', lambda: 'claude')
+    monkeypatch.setattr(ar, '_build_claude_flags', lambda *a, **k: [])
+    monkeypatch.setattr(ar, '_respawn_sysprompt_args', lambda *a: ([], None))
+    monkeypatch.setattr(ar, '_continuation_model', lambda *a: None)
+    monkeypatch.setattr(ar, '_continuation_effort', lambda *a: None)
+    monkeypatch.setattr(ar, '_session_skills', lambda *a: [])
+    monkeypatch.setattr(ar, '_clock_wrap', lambda p, s, msg, *a: msg)
+    monkeypatch.setattr(ar._memory_turn, 'reset_conversation_state', lambda *a: None)
+    monkeypatch.setattr(ar._behavior_tail, 'reset_conversation_state', lambda *a: None)
+    pending = []
+    class DeferredThread:
+        def __init__(self, target, args=(), **kwargs):
+            self.target, self.args = target, args
+        def start(self):
+            pending.append(self)
+    monkeypatch.setattr(ar.threading, 'Thread', DeferredThread)
+    env.pending = pending
+    return env
+
+
+@pytest.mark.parametrize('mode', ['A', 'B'])
+def test_claude_queued_launch_crash_restores_review_without_replay(claude_followup, monkeypatch, mode):
+    env = claude_followup
+    s = exhausted(session())
+    s.update(mode=mode, proc=None, process_alive=False, _turn_owner='spawner')
+    env.sessions['child'] = s
+    assert env.store.park(s)
+    dispatch.tick(DUE)
+    assert any(t.target.__name__ in ('_do_respawn_b', '_start_followup') for t in env.pending)
+    assert env.store.get('child')['phase'] == 'submitting'
+    assert env.store.get('child')['attempts'] == 1
+    # Status alone is not launch evidence (an old reader may report idle).
+    s['status'] = 'idle'
+    lr.hold_completion(s, {})
+    assert env.store.get('child')['phase'] == 'submitting'
+    # Simulate server death before the queued launch thread runs.
+    env.sessions.clear()
+    monkeypatch.setattr(lr, '_store', lr.ResumeStore(env.store.path))
+    dispatch.tick(DUE)
+    live = env.sessions['child']
+    assert live['status'] == 'waiting_for_reset'
+    assert lr.view(live)['phase'] == 'submitting'
+    assert any('continue manually' in line for line in live['log_lines'])
+    assert env.store.claim('child', DUE) is None
+    assert sum(t.target.__name__ in ('_do_respawn_b', '_start_followup')
+               for t in env.pending) == 1
+
+
+@pytest.mark.parametrize('mode', ['A', 'B'])
+def test_claude_launch_ack_activates_only_after_delivery(claude_followup, monkeypatch, mode):
+    env = claude_followup
+    s = exhausted(session())
+    s.update(mode=mode, proc=None, process_alive=False, _turn_owner='spawner')
+    env.sessions['child'] = s
+    env.store.park(s)
+    def launch(*a, **k):
+        assert env.store.get('child')['phase'] == 'submitting'
+        return SimpleNamespace(pid=12345)
+    monkeypatch.setattr(env.ar, 'spawn_engine_proc', launch)
+    writes = []
+    def write(*a, **k):
+        assert env.store.get('child')['phase'] == 'submitting'
+        assert k['wait_for_ack'] is not None
+        writes.append(a)
+        return {'ack': 'written'}
+    monkeypatch.setattr(env.ar, '_bounded_stdin_write', write)
+    dispatch.tick(DUE)
+    launch_thread = next(t for t in env.pending
+                         if t.target.__name__ in ('_do_respawn_b', '_start_followup'))
+    launch_thread.target(*launch_thread.args)
+    assert env.store.get('child')['phase'] == 'active', s['log_lines']
+    assert env.store.get('child')['attempts'] == 1
+    assert len(writes) == (mode == 'B')
+
+
+@pytest.mark.parametrize('ack', ['failed', 'unknown'])
+def test_claude_respawn_unacknowledged_write_stays_recoverable(claude_followup, monkeypatch, ack):
+    env = claude_followup
+    s = exhausted(session())
+    s.update(proc=None, process_alive=False, _turn_owner='spawner')
+    env.sessions['child'] = s
+    env.store.park(s)
+    monkeypatch.setattr(env.ar, 'spawn_engine_proc', lambda *a, **k: SimpleNamespace(pid=12345))
+    monkeypatch.setattr(env.ar, '_bounded_stdin_write', lambda *a, **k: {'ack': ack})
+    dispatch.tick(DUE)
+    launch_thread = next(t for t in env.pending if t.target.__name__ == '_do_respawn_b')
+    launch_thread.target(*launch_thread.args)
+    assert env.store.get('child')['phase'] == 'submitting'
+    env.sessions.clear()
+    dispatch.tick(DUE)
+    assert lr.view(env.sessions['child'])['phase'] == 'submitting'
+    assert env.store.claim('child', DUE) is None
+
+
+def test_launch_ack_cannot_activate_cancelled_or_different_attempt(store):
+    s = exhausted(session())
+    store.park(s)
+    store.claim('child', DUE)
+    lr.confirm_submission('child', 2)
+    assert store.get('child')['phase'] == 'submitting'
+    store.cancel('child', 'p')
+    lr.confirm_submission('child', 1)
+    assert store.get('child')['phase'] == 'cancelled'
+
+
+@pytest.mark.parametrize('month,offset', [(1, -8), (7, -7)])
+def test_codex_local_reset_parks_with_utc_deadline(store, monkeypatch, month, offset):
+    from mc import allowance_state as allowance
+    # Simulate a host with DST, independently of the test runner's timezone.
+    class LocalDatetime(datetime):
+        def astimezone(self, tz=None):
+            assert self.tzinfo is None  # vendor emits a local wall-clock time
+            local = datetime(self.year, self.month, self.day, self.hour, self.minute,
+                             tzinfo=timezone(timedelta(hours=offset)))
+            return local.astimezone(tz)
+    monkeypatch.setattr(allowance, 'datetime', LocalDatetime)
+    text = f"You've hit your usage limit. try again at {'Jan' if month == 1 else 'Jul'} 1st, 2030 7:58 AM."
+    hit = allowance.detect('codex', {'type': 'error', 'message': text})
+    s = session()
+    s.update(provider='codex', mode='A')
+    lr.observe(s, hit)
+    assert store.park(s)
+    expected = datetime(2030, month, 1, 7 - offset, 58, tzinfo=timezone.utc)
+    row = store.get('child')
+    assert row['resets_at'] == expected.isoformat()
+    assert lr.reset_time(row['resume_at']) == expected + timedelta(seconds=120)
+
+
 def test_workflow_boot_and_reconcile_keep_wait_in_flight(integration):
     from mc import workflows
     integration.store.park(exhausted(session()))

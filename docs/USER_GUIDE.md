@@ -64,6 +64,8 @@ the same chat two minutes after that reset. The Floor shows **Waiting for reset
 until** with the resume time in your local timezone and a **Cancel resume** button.
 Stop, closing the chat tab or sending a human follow-up also cancels the pending
 automatic continuation. Your normal attended chats never resume automatically.
+If your follow-up is refused because allowance is still exhausted, the old wait
+stays cancelled and the chat returns to idle; it is no longer waiting for reset.
 
 There are at most two automatic continuations per task. No known reset time means
 no automatic continuation. The default-on config flag `limit_resume_enabled`

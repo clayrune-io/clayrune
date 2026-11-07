@@ -18,8 +18,10 @@ submission may occur up to one tick after the reset-plus-two-minute deadline.
   dispatch trigger. Incognito, human-owned turns, stopped/cancelled sessions,
   questions and approval waits are excluded. Workflow children use `source=agent`.
 - Only an exhaustion observed on that session can arm a wait. A global provider
-  exhaustion record alone cannot. Invalid, missing or timezone-less reset times
-  preserve existing terminal behavior. Allowed/advisory rate events do not arm it.
+  exhaustion record alone cannot. Invalid, missing or unnormalized timezone-less
+  reset times preserve existing terminal behavior. Codex's dated reset prose is
+  host-local time: its parser converts that date to aware UTC before parking,
+  including the reset date's DST offset. Allowed/advisory events do not arm it.
 - Claude's two readers capture the normalized rejected/exceeded event. Native
   readers capture `ALLOWANCE_EXHAUSTED`; Codex's exit-error fallback does too.
 - A parked session has `status=waiting_for_reset`. Completion logging, worktree
@@ -27,8 +29,10 @@ submission may occur up to one tick after the reset-plus-two-minute deadline.
   recovery and stale-session cleanup leave it parked. Workflow boot adoption and
   reconciliation treat the durable wait as in flight.
 - A human message cancels the previous wait even if the new send is refused for
-  allowance. Normal new turns clear retry bookkeeping; an internal reset
-  continuation keeps it and keeps the current turn owner. Trigger/fence identity
+  allowance, and changes `waiting_for_reset` to `idle` under the project lock.
+  A refused message therefore leaves an ordinary idle chat, without a reset
+  deadline or orphaned wait status. Normal new turns clear retry bookkeeping;
+  an internal reset continuation keeps it and keeps the current turn owner. Trigger/fence identity
   is unchanged. Stop, closing the chat tab and the explicit cancel action cancel
   the pending wait durably.
 
@@ -53,7 +57,7 @@ a provider. The existing follow-up code recreates its runtime and process
 registration when due. Deleted projects are never recreated.
 
 The store claims `phase=submitting` and increments the attempt count *before*
-provider submission. Accepted submissions become `active`; another exhaustion
+provider submission. Confirmed submissions become `active`; another exhaustion
 re-parks with the same count. This is a conservative at-most-once submission
 boundary: a crash after claim and before a definite acknowledgment leaves
 submission uncertain. On restart it is shown as **Reset continuation needs
@@ -61,6 +65,21 @@ review**, never automatically replayed. The user can continue manually or cancel
 This avoids duplicate paid work in the crash window. Attempt bookkeeping remains
 until a new normal turn, so an intermediate successful turn or background-task
 wake cannot replenish the task chain's two-continuation budget.
+
+Claude's async follow-up response carries `submission_pending=true` only for the
+internal reset continuation. Queuing its worker is not acknowledgment: Mode A
+confirms after process launch/registration; Mode B confirms after launch and a
+successful bounded stdin write. An idle/completed status alone never confirms a
+claim. The acknowledgment checks the claimed attempt and cannot activate a
+cancelled record or a different attempt. A crash before the worker starts leaves
+`submitting` intact and restores the manual-review hold on restart, without
+automatically spending another continuation.
+
+Codex timezone evidence: the vendor's
+[`format_retry_timestamp`](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/error.rs)
+converts UTC to `chrono::Local` before formatting dated reset text (read
+2026-11-07). The parser converts this local wall time with `astimezone(UTC)`;
+it does not attach UTC to a local time or reuse today's fixed offset.
 
 `mc/limit_resume_dispatch.py` owns the scheduler adapter and cancel blueprint.
 Its private request-environment marker preserves ownership and retry count when
@@ -81,6 +100,25 @@ return 404; unavailable state returns 503. An already-running continuation retur
 terminate another process.
 
 ## Validation
+
+Review-fix validation on 2026-11-07: **397 passed in 14.27s** (exit 0),
+including the original branch suite, ten additional reset regressions and the
+respawn-stdin/guardian suites. All three findings were reproduced against the
+base before fixes. Pyright on policy, adapter and allowance parser reported
+**0 errors, 0 warnings, 0 informations** (exit 0). The test launcher reported
+`telemetry_queue_full_progress_incomplete`; the child result above is authoritative,
+and complete dashboard capture is not claimed.
+
+Exact review-fix commands from the worktree root (use the installed project's
+reported-test launcher, shown here with its portable repository-relative path):
+
+```powershell
+python tools/test-run.py --project mission_control --port 5199 -- python -m pytest tests/test_limit_resume.py tests/test_workflow_runtime_notify.py tests/test_runtime_completion_log.py tests/test_allowance_state.py tests/test_codex_run_error.py tests/test_floor_routes.py tests/test_human_joined_scheduled_chat.py tests/test_scheduler_routes.py tests/test_stream_reader_malformed.py tests/test_revive_notify_carry.py tests/test_hivemind_roster_worker.py tests/test_respawn_stdin_deadlock.py tests/test_guardian_respawn_race.py -o addopts=-ra -q
+python tools/test-run.py --project mission_control --port 5199 -- pyright mc/limit_resume.py mc/limit_resume_dispatch.py mc/allowance_state.py
+```
+
+No frontend files changed in the review fixes; the prior UI smoke results below
+were not rerun. Real vendor execution and production restart remain unverified.
 
 Branch validation on 2026-11-07: the selected backend suite reported
 `373 passed in 15.31s` (exit 0); pyright on both new modules reported

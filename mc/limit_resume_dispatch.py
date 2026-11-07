@@ -91,7 +91,11 @@ def tick(now: datetime | None = None) -> None:
                         or session.get('status') == 'error'
                         or body.get('stdin_write_ack') in ('unknown', 'failed')):
                     raise RuntimeError(f'follow-up rejected or uncertain (HTTP {response.status_code})')
-                store.submitted(sid)
+                # Claude respawns return before their worker even calls Popen.
+                # The worker confirms launch/delivery; a crash first must leave
+                # a recoverable review hold, never an invisible active record.
+                if not body.get('submission_pending'):
+                    store.submitted(sid, attempt=claimed['attempts'])
                 ar.get_manager(pid).ensure_guardian()
             except Exception as exc:
                 # Keep the durable submitting claim. Retrying an unknown write

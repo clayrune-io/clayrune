@@ -7292,6 +7292,9 @@ def _mark_human_joined(project_id, session_id):
                     _reset_store.cancel(session_id, project_id)
                 s['_turn_owner'] = 'human'
                 s['_limit_resume_cancelled'] = True
+                if s.get('status') == 'waiting_for_reset':
+                    s['status'] = 'idle'
+                    s['last_status_change_time'] = _time.time()
                 live_trigger = s.get('trigger_type') or 'manual'
                 if live_trigger in _HUMAN_JOINABLE_TRIGGERS:
                     s['human_joined'] = True
@@ -13612,6 +13615,7 @@ def agent_followup(project_id):
     # thread as submission.  The normal interactive path remains fire-and-
     # forget; the internal flag makes the caller wait for the real pipe write.
     durable_ack = bool(data.get('_durable_delivery_ack'))
+    _limit_internal = bool(request.environ.get('clayrune.limit_resume'))
 
     def _write_mode_b_stdin(content, sess, project, msg):
         if durable_ack and sess.get('_stdin_write_uncertain'):
@@ -13696,6 +13700,8 @@ def agent_followup(project_id):
         existing = agent_sessions.get(session_id)
         if not existing or existing['project_id'] != project_id:
             return jsonify({'error': 'session not found'}), 404
+
+        _limit_attempt = existing.get('_limit_resume_attempt') if _limit_internal else None
 
         # Clear plan approval / question flags — user has responded
         existing['waiting_for_plan_approval'] = False
@@ -14250,9 +14256,12 @@ def agent_followup(project_id):
                 # (the stuck write here held stdin_lock forever, which then
                 # made agent_interrupt's stdin.close() hang while it held the
                 # project manager lock).
-                _bounded_stdin_write(proc, stdin_msg, session=rb['existing'],
-                                      lock=rb['existing']['stdin_lock'],
-                                      context='respawn-B')
+                ack = _bounded_stdin_write(proc, stdin_msg, session=rb['existing'],
+                                           lock=rb['existing']['stdin_lock'],
+                                           wait_for_ack=10.0 if _limit_internal else None,
+                                           context='respawn-B')
+                if _limit_internal and ack and ack.get('ack') == 'written':
+                    _limit_resume.confirm_submission(rb['session_id'], _limit_attempt)
             except Exception as e:
                 _log(f"[respawn-B] {rb['project_id']}: FAILED — {e}")
                 rb['existing']['log_lines'].append(f'[respawn error: {e}]')
@@ -14271,7 +14280,8 @@ def agent_followup(project_id):
 
         threading.Thread(target=_do_respawn_b, daemon=True).start()
         _log_agent_activity(project_id, f"Agent resumed: {message[:100]}")
-        return jsonify({'ok': True, 'session_id': session_id, 'resumed': True})
+        return jsonify({'ok': True, 'session_id': session_id, 'resumed': True,
+                        **({'submission_pending': True} if _limit_internal else {})})
 
     # Mode A: Spawn process outside the lock to avoid blocking other requests
     def _start_followup():
@@ -14349,6 +14359,8 @@ def agent_followup(project_id):
             existing['status'] = 'running'
             _register_process(proc, 'Agent followup (A)', 'agent',
                               session_id, project_id, followup_msg[:80])
+            if _limit_internal:
+                _limit_resume.confirm_submission(session_id, _limit_attempt)
             threading.Thread(target=_read_agent_stream, args=(proc, existing), daemon=True).start()
         except Exception as e:
             with get_manager(project_id).lock:
@@ -14366,7 +14378,8 @@ def agent_followup(project_id):
     threading.Thread(target=_start_followup, daemon=True).start()
 
     _log_agent_activity(project_id, f"Agent follow-up: {message[:100]}")
-    return jsonify({'ok': True, 'session_id': session_id})
+    return jsonify({'ok': True, 'session_id': session_id,
+                    **({'submission_pending': True} if _limit_internal else {})})
 
 
 def _stop_session(session, session_id):

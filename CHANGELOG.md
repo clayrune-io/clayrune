@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-07] - Keep reset continuations recoverable during queued launches (MC-1163 review)
+
+- Claude reset continuations stay pending until process launch (Mode A) or launch plus stdin delivery (Mode B) is confirmed. A crash before the queued worker starts restores a visible review hold, with no automatic replay or extra attempt.
+- Codex dated reset messages now normalize host-local time to UTC with the reset date's offset. Human takeover clears the cancelled waiting status even when allowance refuses the new message.
+- Added regressions for all three findings, including Claude A/B launch windows, uncertain writes and Codex winter/summer offsets. Branch review candidate only; no merge, push, restart or deployment.
+
 ## [2026-11-07] - Continue unattended runs after a known usage reset (MC-1163)
 
 - Scheduled, steward and dispatched runs can wait for a provider's reported reset plus two minutes, then continue the same session, up to twice per task chain. Durable waits survive server restarts; human-owned turns and limits without reset timestamps retain existing behavior.

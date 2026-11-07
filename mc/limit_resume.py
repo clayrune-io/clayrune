@@ -184,11 +184,12 @@ class ResumeStore:
             self._commit({**self.rows, sid: claimed})
             return claimed
 
-    def submitted(self, sid: str) -> None:
+    def submitted(self, sid: str, *, attempt: int | None = None) -> None:
         with self._transaction():
             row = self.rows.get(sid)
             # A fast new exhaustion may already have parked the next attempt.
-            if row and row['phase'] == 'submitting':
+            if (row and row['phase'] == 'submitting'
+                    and (attempt is None or row['attempts'] == attempt)):
                 self._commit({**self.rows, sid: {**row, 'phase': 'active'}})
 
     def cancel(self, sid: str, project_id: str) -> bool:
@@ -229,6 +230,12 @@ def store() -> ResumeStore | None:
     return _store
 
 
+def confirm_submission(sid: str, attempt: int | None) -> None:
+    """Async launch acknowledgment, scoped to the claim that queued it."""
+    if _store and attempt is not None:
+        _store.submitted(sid, attempt=attempt)
+
+
 def view(session: dict) -> dict | None:
     return _store.view(session.get('session_id', '')) if _store else None
 
@@ -245,11 +252,6 @@ def hold_completion(session: dict, config: dict) -> bool:
                 and session.get('status') != 'stopped'):
             session['status'] = 'waiting_for_reset'
             return True
-        if (row and row['phase'] == 'submitting' and _store
-                and not session.get('_limit_resume_exhaustion')
-                and session.get('_limit_resume_attempt') == row['attempts']
-                and session.get('status') in ('idle', 'completed')):
-            _store.submitted(session.get('session_id', ''))
         return bool(_store and _store.park(session, enabled=config.get('limit_resume_enabled', True)))
     except Exception as exc:
         _log(f'[limit-resume] could not persist wait: {exc}', flush=True)
