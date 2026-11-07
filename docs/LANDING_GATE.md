@@ -135,13 +135,35 @@ the baseline block. `pytest:`, `pytest-report:`, `tap:` and `spec:` identities
 are compared as a multiset: a failure the baseline listed once and the candidate
 lists twice is new. Smoke and `exit:` lines stay a set.
 
-**Contract: when the gate cannot prove the candidate adds no failure, it blocks.**
-Reading free-form runner output cannot be made unambiguous: a test may print a line
-spelled exactly like a runner's total, a banner or a failure marker, and a wrapper
-may print after the runner. So the rule is not "find every such case", it is "when
-the output cannot be matched one for one between baseline and candidate, block, and
-a human merges by hand". A hole the parser has not met yet therefore shows up as a
-false block, not as a silent pass.
+**Contract: a failure is "pre-existing" only if the gate can name it.** Reading
+free-form runner output cannot be made unambiguous: a test may print a line spelled
+exactly like a runner's total, a banner or a failure marker, and a wrapper may print
+after the runner. So the rule is not "find every such case", it is two checks applied
+once at compare time, for every command position where the candidate exits non-zero.
+They are the only guarantee; the gate does **not** promise that every unusual output
+shape blocks. A shape that reports no runner total at all (a smoke script, a crash
+before the summary) is judged on its signatures alone, and a wrapper that swallows the
+runner's exit status is outside the gate (see "trusted local project configuration").
+Where a runner total was recognised, a failing candidate passes only if both hold;
+otherwise the gate blocks and a human merges by hand:
+
+1. **Named.** Each run (baseline and candidate) names at least as many failures as its
+   own `failure_totals` add up to. A name is a `pytest:`, `pytest-report:`, `tap:` or
+   `spec:` identity; pytest lists one failure twice (short summary and report heading),
+   so the larger of those two lists counts, not their sum. A generic line is **not** a
+   name: `=== FAILURES ===`, `1 failed, 1 passed in …` and every `exit:` signature name
+   no test. This is what stops a swapped failure under `pytest -q -rN --tb=no|line`,
+   which prints no test name: both runs are `1 failed`, and nothing says it is the same
+   test.
+2. **Resolvable.** A file qualifier counts only if the path resolves to an existing file
+   from the directory the command ran in (the verification cwd). An absolute path under
+   it is made relative first; an absolute path outside it stays absolute. A relative path
+   that does not resolve is marked `@?<path>` in the signature and is not a name. This is
+   what stops a wrapper that runs Node in child directories: the spec reporter prints
+   `test at same.test.mjs:3:1` relative to the *child* cwd, so `a/same.test.mjs` and
+   `b/same.test.mjs` both read `same.test.mjs`, which the gate cannot place.
+
+A failed check is reported in `unprovable`, not dropped.
 
 **Totals check.** Identity says *which* failure is new; the runner's own totals say
 *how many*. Each command result records `failure_totals`, an **ordered list**, one
@@ -183,6 +205,11 @@ manual merge:
   adds or removes total lines (node prints `fail` and `cancelled` as two).
 - A baseline that exits non-zero without printing any total against a candidate that
   prints one, or the reverse.
+- An unchanged red pytest suite run with `--tb=no` or `--tb=line` (no per-test name, so
+  the failure cannot be named), or red tests whose runner prints no names for them.
+- An unchanged red Node *spec* suite run through a wrapper that `cd`s into
+  subprojects: the printed paths are relative to the child cwd and do not resolve.
+  Run Node from the verification cwd, or use the TAP reporter (absolute `location:`).
 
 Baseline failures are reported even when the candidate
 fixes them. A matching nonzero baseline/candidate failure allows landing.

@@ -987,7 +987,7 @@ def test_compare_counts_a_repeated_signature_and_ignores_missing_totals():
     assert gate.compare([run(['pytest:a', 'pytest:a'])], [run(['pytest:a', 'pytest:a'])])['baseline_failures'] == [
         '1:pytest:a', '1:pytest:a']
 
-    def with_totals(totals, signatures=('pytest:a',)):
+    def with_totals(totals, signatures=('pytest:a',) * 3):  # named >= every total (round 7)
         return {**run(signatures), 'failure_totals': totals, 'exit_code': 1}
     only_count = gate.compare([with_totals([1])], [with_totals([2])])  # same identities, one more failure
     assert only_count['status'] == 'blocked' and only_count['new_failures'] == []
@@ -1003,7 +1003,7 @@ def test_compare_counts_a_repeated_signature_and_ignores_missing_totals():
 def test_compare_blocks_when_the_candidate_totals_cannot_be_proved_no_worse():
     # Round 6, "unprovable means block": totals are an ordered list, never summed.
     def with_totals(totals, exit_code=1):
-        return {**run(['pytest:a']), 'failure_totals': totals, 'exit_code': exit_code}
+        return {**run(['pytest:a'] * 4), 'failure_totals': totals, 'exit_code': exit_code}  # named >= totals
     # A different number of total lines blocks even though the SUMS tie at 2.
     fewer = gate.compare([with_totals([1, 1])], [with_totals([2])])
     assert fewer['status'] == 'blocked' and fewer['count_increases'] == []
@@ -1218,4 +1218,159 @@ def test_a_printed_total_cannot_offset_a_new_failure_under_dash_s(tmp_path):
     assert gate.failure_totals(*old_run) == [1, 1] and gate.failure_totals(*new_run) == [2]
     result = full_verdict(old_run, new_run)
     assert result['status'] == 'blocked' and result['new_failures'] == []   # identities cannot see it
-    assert result['unprovable'] == ['1:runner total lines differ (baseline 2, candidate 1)']
+    # The identity rule (round 7) also fires: --tb=line names no test, so neither run is provable.
+    assert result['unprovable'] == ['1:runner total lines differ (baseline 2, candidate 1)',
+                                    '1:baseline names 0 of 2 failures the runner counted',
+                                    '1:candidate names 0 of 2 failures the runner counted']
+
+
+# ── Round seven: a failure is "pre-existing" only if it is NAMED (Fenn, 2026-11-07) ──
+# Dave's decision (b): when the candidate fails, each run must name at least as many failures
+# as its runner counted, and a relative file qualifier must resolve from the verification cwd.
+# Same rule: every output is captured from the real runner (pytest, node --test).
+
+SWAP_BEFORE = 'def test_old():\n    assert False\n\ndef test_new():\n    pass\n'
+SWAP_AFTER = 'def test_old():\n    pass\n\ndef test_new():\n    assert False\n'
+
+
+def pytest_swap(tmp_path: Path, flags):
+    old_run = real_pytest_flags(tmp_path, 'old', SWAP_BEFORE, flags)
+    new_run = real_pytest_flags(tmp_path, 'new', SWAP_AFTER, flags)
+    assert gate.failure_totals(*old_run) == gate.failure_totals(*new_run) == [1]
+    return old_run, new_run
+
+
+@pytest.mark.parametrize('flags', [['-rN', '--tb=no'], ['-rN', '--tb=line']])
+def test_a_swapped_pytest_failure_with_no_per_test_name_blocks(tmp_path, flags):
+    # Fenn r7 P1 (pytest_replaced_none / _line): `-rN --tb=no|line` prints no test name, so
+    # old-test-repaired / new-test-broken is `1 failed` -> `1 failed` and passed at [1] -> [1].
+    old_run, new_run = pytest_swap(tmp_path, flags)
+    result = full_verdict(old_run, new_run)
+    assert result['status'] == 'blocked' and result['new_failures'] == [] and result['count_increases'] == []
+    assert result['unprovable'] == ['1:baseline names 0 of 1 failures the runner counted',
+                                    '1:candidate names 0 of 1 failures the runner counted']
+
+
+@pytest.mark.parametrize('flags', [['-rN', '--tb=no'], ['-rN', '--tb=line']])
+def test_an_unchanged_red_pytest_with_no_per_test_name_blocks_by_design(tmp_path, flags):
+    # The accepted cost of the rule: an unchanged red suite that hides its test names cannot be
+    # proved unchanged, so a person merges it by hand (or fixes the red test).
+    old_run, _ = pytest_swap(tmp_path, flags)
+    same = real_pytest_flags(tmp_path, 'same', SWAP_BEFORE, flags)
+    result = full_verdict(old_run, same)
+    assert result['status'] == 'blocked' and len(result['unprovable']) == 2
+
+
+@pytest.mark.parametrize('flags', [[], ['-rN'], ['-ra']])
+def test_a_swapped_pytest_failure_with_names_blocks_on_identity_and_unchanged_passes(tmp_path, flags):
+    # Controls: with full tracebacks (and/or -ra) the failure is named, so the old behaviour holds.
+    old_run, new_run = pytest_swap(tmp_path, flags)
+    swapped = full_verdict(old_run, new_run)
+    assert swapped['status'] == 'blocked' and swapped['unprovable'] == []
+    assert any('test_new' in n for n in swapped['new_failures'])
+    same = real_pytest_flags(tmp_path, 'same', SWAP_BEFORE, flags)
+    unchanged = full_verdict(old_run, same)
+    assert unchanged['status'] == 'pass' and unchanged['unprovable'] == []
+
+
+def test_named_identities_counts_a_pytest_failure_once_across_summary_and_report():
+    # `-ra` with tracebacks lists a failure twice (short summary + report heading).
+    both = ['pytest:test_fx.py::test_a', 'pytest-report:test_a', 'pytest:test_fx.py::test_b', 'pytest-report:test_b']
+    assert gate.named_identities(both) == 2
+    assert gate.named_identities(both[1::2]) == 2 and gate.named_identities(both[::2]) == 2
+    # A generic banner, an exit signature and a smoke line name no test.
+    assert gate.named_identities(['exit:1:================== FAILURES ===================', 'smoke:x']) == 0
+    assert gate.named_identities(['tap:a @x.mjs', 'spec:b @y.mjs']) == 2
+    # An unproven file qualifier is not a name.
+    assert gate.named_identities(['spec:works @?same.test.mjs', 'spec:other @a/same.test.mjs']) == 1
+
+
+SUBPROJECT_RUNNER = """import subprocess, sys
+from pathlib import Path
+codes = []
+for where in Path('selected.txt').read_text().split():
+    p = subprocess.run(['node', '--test', '--test-reporter=%s', 'same.test.mjs'], cwd=where)
+    codes.append(p.returncode)
+sys.exit(max(codes))
+"""
+
+
+def real_subprojects(tmp_path: Path, label: str, selected: str, in_a: str, in_b: str, reporter: str):
+    """A wrapper that runs node in child directories: the spec reporter prints paths relative
+    to the CHILD cwd, which the gate (knowing only the wrapper's cwd) cannot interpret."""
+    folder = tmp_path/label
+    for sub, body in (('a', in_a), ('b', in_b)):
+        (folder/sub).mkdir(parents=True)
+        (folder/sub/'same.test.mjs').write_text(NODE_HEAD + body, encoding='utf-8')
+    (folder/'run.py').write_text(SUBPROJECT_RUNNER % reporter, encoding='utf-8')
+    (folder/'selected.txt').write_text(selected, encoding='utf-8')
+    return captured([sys.executable, 'run.py'], folder)
+
+
+@needs_node
+def test_a_child_cwd_spec_wrapper_cannot_swap_failures_between_subprojects(tmp_path):
+    # Fenn r7 P1 (child_cwd_old_spec / _new_spec): selected.txt reordered `a b` -> `b a`, a is
+    # repaired, b now fails the same way. Both runs parsed to `spec:works @same.test.mjs` with
+    # totals [1,0,0,0], so it passed. `same.test.mjs` is not a file in the wrapper's cwd.
+    old_run = real_subprojects(tmp_path, 'old', 'a b', FILE_FAIL, FILE_OK, 'spec')
+    new_run = real_subprojects(tmp_path, 'new', 'b a', FILE_OK, FILE_FAIL, 'spec')
+    assert sigs(old_run).count('spec:works @?same.test.mjs') == 1 and sigs(new_run).count('spec:works @?same.test.mjs') == 1
+    result = full_verdict(old_run, new_run)
+    assert result['status'] == 'blocked' and result['new_failures'] == []
+    assert result['unprovable'][0].startswith('1:test file path does not resolve from the verification cwd on baseline')
+    assert any('on candidate' in reason for reason in result['unprovable'])
+    # Unchanged is the accepted harmless block: the child-relative path is still unproven.
+    unchanged = full_verdict(old_run, real_subprojects(tmp_path, 'same', 'a b', FILE_FAIL, FILE_OK, 'spec'))
+    assert unchanged['status'] == 'blocked' and len(unchanged['unprovable']) >= 2
+
+
+@needs_node
+def test_a_child_cwd_tap_wrapper_still_blocks_a_swap_on_the_absolute_location(tmp_path):
+    # TAP prints an absolute `location:`, relativized against the wrapper's cwd: still proven.
+    old_run = real_subprojects(tmp_path, 'old', 'a b', FILE_FAIL, FILE_OK, 'tap')
+    new_run = real_subprojects(tmp_path, 'new', 'b a', FILE_OK, FILE_FAIL, 'tap')
+    assert 'tap:works @a/same.test.mjs' in sigs(old_run)
+    result = full_verdict(old_run, new_run)
+    assert result['status'] == 'blocked' and result['unprovable'] == []
+    assert result['new_failures'] == ['1:tap:works @b/same.test.mjs']
+    assert full_verdict(old_run, real_subprojects(tmp_path, 'same', 'a b', FILE_FAIL, FILE_OK, 'tap'))['status'] == 'pass'
+
+
+@needs_node
+@pytest.mark.parametrize('reporter', ['tap', 'spec'])
+def test_unchanged_red_node_suite_run_from_the_verification_cwd_still_passes(tmp_path, reporter):
+    old_run = real_same_basename(tmp_path, 'old', FILE_FAIL, FILE_OK, reporter)
+    same = real_same_basename(tmp_path, 'same', FILE_FAIL, FILE_OK, reporter)
+    assert not any(gate._UNRESOLVED in s for s in sigs(old_run))
+    result = full_verdict(old_run, same)
+    assert result['status'] == 'pass' and result['unprovable'] == []
+
+
+@needs_node
+@pytest.mark.parametrize('reporter', ['tap', 'spec'])
+def test_node_timeout_cancellation_is_unchanged_by_the_identity_rule(tmp_path, reporter):
+    # A test that times out is counted as `cancelled` ([0, 1]). Unchanged it passes; a new
+    # ordinary failure beside it still blocks.
+    cancel = "test('pending', {timeout: 20}, () => new Promise(resolve => setTimeout(resolve, 100)));\n"
+
+    def real(label, body):
+        folder = tmp_path/label
+        folder.mkdir()
+        (folder/'fx.test.mjs').write_text(NODE_HEAD + body, encoding='utf-8')
+        return captured(['node', '--test', f'--test-reporter={reporter}', 'fx.test.mjs'], folder)
+    old_run, same = real('old', cancel), real('same', cancel)
+    assert gate.failure_totals(*old_run) == [0, 1]
+    unchanged = full_verdict(old_run, same)
+    assert unchanged['status'] == 'pass' and unchanged['unprovable'] == [], unchanged['unprovable']
+    added = full_verdict(old_run, real('added', cancel + "test('boom', () => { assert.equal(1, 2); });\n"))
+    assert added['status'] == 'blocked'
+
+
+def test_identity_file_resolves_relative_paths_against_the_cwd_only(tmp_path):
+    (tmp_path/'a').mkdir()
+    (tmp_path/'a'/'t.test.mjs').write_text('', encoding='utf-8')
+    assert gate._identity_file('a/t.test.mjs:3:1', tmp_path) == 'a/t.test.mjs'
+    assert gate._identity_file('t.test.mjs:3:1', tmp_path) == '?t.test.mjs'            # child-relative
+    assert gate._identity_file('a/missing.test.mjs', tmp_path) == '?a/missing.test.mjs'
+    assert gate._identity_file(str(tmp_path/'a'/'t.test.mjs') + ':3:1', tmp_path) == 'a/t.test.mjs'
+    assert gate._identity_file('t.test.mjs', None) == 't.test.mjs'                      # no cwd: nothing to resolve

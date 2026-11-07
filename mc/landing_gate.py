@@ -118,6 +118,12 @@ class _PytestFrame:
 # A runner total the parser could not attribute. Stored in failure_totals in place of a
 # number so it survives into the result; compare() blocks on it ("unprovable").
 AMBIGUOUS = 'ambiguous'
+# A test identity whose relative file qualifier does not resolve to a file under the
+# verification cwd (a wrapper that runs the runner in a child directory prints paths
+# relative to THAT directory). It is not proof of which file failed, so compare() does
+# not count it as a named failure and blocks while the candidate fails (MC-1164 round 7).
+_UNRESOLVED = ' @?'
+_NAMED_PREFIXES = ('pytest:', 'pytest-report:', 'tap:', 'spec:')
 
 _cache: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
 _cache_lock = threading.Lock()
@@ -171,6 +177,17 @@ def _qualifier(path: str, root: Path | None) -> str:
         except (ValueError, OSError):
             pass
     return posixpath.normpath(path)
+
+
+def _identity_file(path: str, root: Path | None) -> str:
+    """_qualifier() plus provenance: a RELATIVE qualifier counts only if it names an
+    existing file under the verification cwd, else it is marked `?` (unproven). An
+    absolute path outside the cwd stays absolute and is left alone. With no cwd there is
+    nothing to resolve against (direct parser calls); run_command always passes one."""
+    qualified = _qualifier(path, root)
+    if root is None or os.path.isabs(qualified) or re.match(r'^[A-Za-z]:/', qualified):
+        return qualified
+    return qualified if (root / qualified).is_file() else '?' + qualified
 
 
 def _clean(output: str, root: Path | None) -> str:
@@ -298,7 +315,7 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
             continue
         if recap:
             recap_entry = bool(_SPEC_RECAP_ENTRY.match(line))
-            recap_file = _qualifier(shown[len('test at '):], root) if recap_entry else ''
+            recap_file = _identity_file(shown[len('test at '):], root) if recap_entry else ''
         tap = _TAP.match(line)
         if tap:
             # Qualified by enclosing suites, so the same test name failing in a
@@ -315,7 +332,7 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
         if tap_open >= 0:
             location = _TAP_LOCATION.match(shown)
             if location:
-                counted[tap_open] += ' @' + _qualifier(location['file'], root)
+                counted[tap_open] += ' @' + _identity_file(location['file'], root)
             if location or line == '...' or line.startswith(('ok ', 'not ok ')):
                 tap_open = -1
         match = _SMOKE.match(line)
@@ -356,6 +373,17 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
     return sorted([*names, *counted])
 
 
+def named_identities(signatures: list[str]) -> int:
+    """How many distinct failures the signatures NAME (unproven file qualifiers excluded).
+
+    pytest lists a failure up to twice (the `-r` short summary and the report heading), so
+    the larger of the two lists is the count, not their sum. Generic lines (`exit:...`,
+    including a `=== FAILURES ===` banner) and smoke lines name no test."""
+    resolved = [s for s in signatures if _UNRESOLVED not in s]
+    by_prefix = {p: sum(1 for s in resolved if s.startswith(p)) for p in _NAMED_PREFIXES}
+    return max(by_prefix['pytest:'], by_prefix['pytest-report:']) + by_prefix['tap:'] + by_prefix['spec:']
+
+
 def compare(baseline: list[dict[str, Any]], candidate: list[dict[str, Any]]) -> dict[str, Any]:
     # Scope signatures by command position: one command cannot hide another.
     # A multiset: a failure the baseline has once and the candidate has twice is new.
@@ -371,6 +399,11 @@ def compare(baseline: list[dict[str, Any]], candidate: list[dict[str, Any]]) -> 
     # new failure, so it blocks and a human merges by hand: an AMBIGUOUS total on either
     # side, a different number of total lines, or any element that went up. A drop, or
     # passing-count noise, is fine. A candidate that exits 0 has nothing to prove.
+    # The same holds for identity (round 7): a failure is "pre-existing" only if it is
+    # NAMED. Either run must name at least as many failures as its runner counted, and
+    # every file qualifier must resolve from the verification cwd; otherwise an equal
+    # count could be a different failure (a swapped test under `--tb=no`, or the same
+    # relative path in two subprojects) and the gate blocks.
     count_increases: list[str] = []
     unprovable: list[str] = []
     for i, (before, after) in enumerate(zip(baseline, candidate)):
@@ -389,6 +422,17 @@ def compare(baseline: list[dict[str, Any]], candidate: list[dict[str, Any]]) -> 
                 if n > w:
                     where = '' if len(was) == 1 else f' #{j + 1}'
                     count_increases.append(f'{i + 1}:runner failure count{where} {w} -> {n}')
+        for side, run_, totals in (('baseline', before, was), ('candidate', after, now)):
+            signatures = list(run_.get('signatures') or [])
+            unresolved = [s for s in signatures if _UNRESOLVED in s]
+            if unresolved:
+                unprovable.append(f'{i + 1}:test file path does not resolve from the verification '
+                                  f'cwd on {side}: {unresolved[0]}')
+            counted_by_runner = sum(t for t in totals if isinstance(t, int))
+            named = named_identities(signatures)
+            if named < counted_by_runner:
+                unprovable.append(f'{i + 1}:{side} names {named} of {counted_by_runner} failures '
+                                  f'the runner counted')
     return {'status': 'blocked' if new or errors or count_increases or unprovable else 'pass',
             'new_failures': new, 'count_increases': count_increases, 'unprovable': unprovable,
             'baseline_failures': sorted(old.elements()), 'errors': errors,
