@@ -84,7 +84,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
-from flask import Blueprint, Flask, Response, jsonify, make_response, request
+from flask import Blueprint, Flask, Response, has_request_context, jsonify, make_response, request
 
 from mc import media as _media
 from mc import obs, state
@@ -112,6 +112,7 @@ from mc.state import (
 import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 import mc.context_profile as _context_profile  # backlog 4a11b6a5: per-model context slim
 from mc import allowance_state as _allowance_state
+from mc import limit_resume as _limit_resume
 from mc import memory_state_trigger as _state_trigger  # MC-964 T5: note frontmatter as a Step D signal
 from mc import attend_once_replay as _attend_once_replay  # MC-1055: one tool call, one spend
 from mc import attend_once_pass as _attend_once_pass  # pass record: mode, expiry, spend
@@ -6009,6 +6010,7 @@ def _read_agent_stream(proc, session):
                 # `system/init` and `rate_limit_event` messages (every claude
                 # session emits these). No-op for any other message type.
                 _capture_system_init(msg)
+                _limit_resume.observe_claude(session, msg)
                 if msg_type == 'system' and msg.get('subtype') == 'init':
                     _agent_runtime.note_cli_init(proc_cost, msg)
                 _mc_state._LAST_SYSTEM_STATUS['provider'] = session.get('provider', 'claude')
@@ -6303,6 +6305,7 @@ def _read_agent_stream_b(proc, session):
                     _note_claude_sid(session, msg['session_id'])
                 # See Mode A reader: refresh the system-status cache.
                 _capture_system_init(msg)
+                _limit_resume.observe_claude(session, msg)
                 if msg_type == 'system' and msg.get('subtype') == 'init':
                     _agent_runtime.note_cli_init(proc_cost, msg)
                 _mc_state._LAST_SYSTEM_STATUS['provider'] = session.get('provider', 'claude')
@@ -6484,10 +6487,11 @@ def _read_agent_stream_b(proc, session):
                     # MC-1150 P4: checkpoint past this result BEFORE it is announced, so a
                     # restart cannot replay it into a second completion, and stamp the
                     # checkpoint with the wake it now owes so a crash cannot lose it.
-                    _agent_shim_completion.begin(session, 'turn')
-                    if not _hold_notify_for_background(session):
-                        _maybe_notify_spawner(session, _last_reply_text(session))
-                    _agent_shim_completion.ack(session, owed=_spawner_notify_owed(session))
+                    if not _limit_resume.hold_completion(session, state.CONFIG):
+                        _agent_shim_completion.begin(session, 'turn')
+                        if not _hold_notify_for_background(session):
+                            _maybe_notify_spawner(session, _last_reply_text(session))
+                        _agent_shim_completion.ack(session, owed=_spawner_notify_owed(session))
                     # Step 6: mid-session note-taker (default-off; fast-gated).
                     _maybe_checkpoint(session)
                     # MC-998 bugfix: this IS the turn boundary for a Mode B
@@ -7275,11 +7279,19 @@ def _mark_human_joined(project_id, session_id):
     from mc.blueprints.workflow_routes import _is_agent_caller
     if not session_id or _is_agent_caller():
         return
+    request.environ['clayrune.human_continuation'] = True
     try:
         live_trigger = None
         with get_manager(project_id).lock:
             s = agent_sessions.get(session_id)
             if s and s.get('project_id') == project_id:
+                # A real human message owns this turn even if allowance still
+                # blocks submission. Do not resume the old unattended task.
+                _reset_store = _limit_resume.store()
+                if _reset_store:
+                    _reset_store.cancel(session_id, project_id)
+                s['_turn_owner'] = 'human'
+                s['_limit_resume_cancelled'] = True
                 live_trigger = s.get('trigger_type') or 'manual'
                 if live_trigger in _HUMAN_JOINABLE_TRIGGERS:
                     s['human_joined'] = True
@@ -7548,6 +7560,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         return None
     if entry.get('character_ref'):
         from mc.hivemind_worker import revive_roster_worker
+        entry = {**entry, '_turn_owner': 'spawner' if carry_notify else 'human'}
         return revive_roster_worker(entry, p, message)
     revive_project_generation = entry.get('project_generation', 1)
     _assert_runtime_project_generation(
@@ -7818,6 +7831,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             '_delivery_generation': revive_generation,
             'project_generation': revive_project_generation,
             '_notify_workflow': _revive_notify_workflow,
+            '_turn_owner': 'spawner' if carry_notify else 'human',
         }
         with mgr.lock:
             agent_sessions[session_id] = session
@@ -7917,6 +7931,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         '_delivery_generation': revive_generation,
         'project_generation': revive_project_generation,
         '_notify_workflow': _revive_notify_workflow,
+        '_turn_owner': 'spawner' if carry_notify else 'human',
     }
     with mgr.lock:
         agent_sessions[session_id] = session
@@ -7989,6 +8004,7 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
     entry = entries[-1]
     if entry.get('character_ref'):
         from mc.hivemind_worker import revive_roster_worker
+        entry = {**entry, '_turn_owner': 'spawner' if carry_notify else 'human'}
         return revive_roster_worker(entry, p, message)['session_id']
     if entry.get('claude_session_id'):
         return None  # the Claude -r path owns this one
@@ -8049,6 +8065,7 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
                                  notify_session=_revive_notify_session,
                                  notify_workflow=_revive_notify_workflow,
                                  spawned_by=_revive_spawned_by,
+                                 session_metadata={'_turn_owner': 'spawner' if carry_notify else 'human'},
                                  **({'prepared_context': role_context, 'preserve_model': True}
                                     if role_context is not None else {}))
     except Exception as e:
@@ -8691,6 +8708,8 @@ def _maybe_notify_spawner(session, summary):
     only the spawner/workflow WAKE is suppressed here, so a client watching
     the conversation rail is unaffected.
     """
+    if _limit_resume.hold_completion(session, state.CONFIG):
+        return
     if session.get('incognito'):
         return
     if session.get('waiting_for_question'):
@@ -9008,6 +9027,11 @@ def _advance_delegation_turn(session, owner: "str | None" = _OWNER_HUMAN):
     ... Continue the work' twice for a task already merged, and Ron read it
     as Clayrune having a cross-chat memory bug.
     """
+    _limit_internal = owner is None or bool(
+        has_request_context() and request.environ.get('clayrune.limit_resume'))
+    _limit_resume.new_turn(session, internal=_limit_internal)
+    if _limit_internal:
+        owner = None
     if owner:
         session[_TURN_OWNER_KEY] = owner
     _empty_turn.begin_turn(session)
@@ -9598,6 +9622,8 @@ def _log_agent_completion(session):
     # side effect, so a restart in the middle of them cannot run them twice, and
     # stamp it with the completion now owed so a crash in the middle cannot lose
     # them either. Acknowledged below only once the body AND the wake succeeded.
+    if _limit_resume.hold_completion(session, state.CONFIG):
+        return
     _agent_shim_completion.begin(session, 'exit')
     _clean = False
     try:
@@ -10131,6 +10157,8 @@ _RUNTIME_CALLBACKS = _delegation_settlement.runtime_callbacks({
 
 def _run_runtime_callbacks(session, event=None):
     """Run optional feature callbacks without affecting terminal handling."""
+    if session.get('status') == 'waiting_for_reset':
+        return
     callback = (session.get('_runtime_callbacks') or {}).get('on_process_exit')
     if not callback:
         return
@@ -11908,6 +11936,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     (unlike `notify_session`, which a human-driven revive must NOT re-arm --
     see `carry_notify` on `_revive_from_agent_log`).
     """
+    if (has_request_context() and request.environ.get('clayrune.human_continuation')
+            and not notify_session):
+        session_metadata = {**(session_metadata or {}), '_turn_owner': 'human'}
     p = load_project(project_id)
     if not p:
         if project_id == INCOGNITO_PROJECT_ID:
@@ -13554,7 +13585,7 @@ def agent_followup(project_id):
         return jsonify({'error': 'message required'}), 400
     if not session_id:
         return jsonify({'error': 'session_id required'}), 400
-    _mark_human_joined(project_id, session_id)   # display-only; no-op for agent callers
+    _mark_human_joined(project_id, session_id)   # marks human ownership; no-op for agent callers
     _observe_habit_cue(project_id, session_id, message)
     # MC-970: this endpoint is answered by a human (chat form, plan-approval
     # click, the emailed-question-reply relay in question_channel.py) far more
@@ -13571,7 +13602,7 @@ def agent_followup(project_id):
             sess['_notify_session'] = _explicit_notify_session
             _rearm_notify_for_new_turn(sess)
         else:
-            _advance_delegation_turn(sess)
+            _advance_delegation_turn(sess, owner=None if request.environ.get('clayrune.limit_resume') else _OWNER_HUMAN)
         _write_usage_breakdown_turn_start_checkpoint(sess)
 
     _respawn_b = None  # set if Mode B needs to respawn outside lock
@@ -13801,7 +13832,8 @@ def agent_followup(project_id):
                     context = _fresh_context_for(p, existing, message or '')
                     message = (f"[Resumed session did not provide a continuable session ID. "
                                f"Starting fresh.]\n\n{message}")
-                elif _resume_is_fragile(was_resume, existing.get('_resume_confirmed')):
+                elif (not request.environ.get('clayrune.limit_resume')
+                      and _resume_is_fragile(was_resume, existing.get('_resume_confirmed'))):
                     # The resume itself proved fragile — it died BEFORE producing any
                     # output, so -r-ing it again would just loop. Start fresh.
                     # (A resume that already produced output is healthy and falls
@@ -13878,8 +13910,8 @@ def agent_followup(project_id):
                     _unregister_process(old_proc.pid)
                     try:
                         old_proc.stdin.close()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _log(f'[followup] old stdin close failed: {e}')
                 # Build command while under lock, spawn outside to avoid blocking.
                 # Honor a per-chat model pin across the death/respawn so the
                 # conversation keeps its chosen model (else it silently reverts
@@ -13969,8 +14001,8 @@ def agent_followup(project_id):
                         _unregister_process(_sticky_old.pid)
                         try:
                             _sticky_old.stdin.close()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            _log(f'[followup] old stdin close failed: {e}')
                     _respawn_b = {
                         'cmd': _sticky_cmd, 'pp': pp, 'message': message,
                         'existing': existing, 'session_id': session_id,
@@ -14348,11 +14380,15 @@ def _stop_session(session, session_id):
     session.pop('pending_followups', None)
     session.pop('_dispatching_followup', None)
     if session.get('mode') == 'B':
+        session['process_alive'] = False
+        if proc is None:  # reset wait restored after a server restart
+            return None
         try:
             proc.stdin.close()
-        except Exception:
-            pass
-        session['process_alive'] = False
+        except Exception as e:
+            _log(f'[agent-stop] stdin close failed: {e}')
+    if proc is None:
+        return None
     _unregister_process(proc.pid)
     return proc
 
@@ -14543,9 +14579,16 @@ def agent_stop(project_id):
         session = agent_sessions.get(session_id)
         if not session or session['project_id'] != project_id:
             return jsonify({'ok': True, 'already_stopped': True, 'reason': 'no session'})
-        if session['status'] not in ('running', 'idle', 'error'):
+        if session['status'] not in ('running', 'idle', 'error', 'waiting_for_reset'):
             return jsonify({'ok': True, 'already_stopped': True, 'reason': session['status']})
+        _reset_store = _limit_resume.store()
+        if _reset_store:
+            _reset_store.cancel(session_id, project_id)
+        session['_limit_resume_cancelled'] = True
+        _was_reset_wait = session['status'] == 'waiting_for_reset'
         proc = _stop_session(session, session_id)
+        if _was_reset_wait and proc is None:
+            _log_agent_completion(session)
 
     if proc is not None:
         # Kill outside the lock — taskkill can take seconds on Windows
@@ -15044,33 +15087,31 @@ def agent_session_delete(project_id):
 
     proc = None
     with get_manager(project_id).lock:
+        _reset_store = _limit_resume.store()
+        if _reset_store:
+            _reset_store.cancel(session_id, project_id)
         session = agent_sessions.get(session_id)
         if not session or session['project_id'] != project_id:
             return jsonify({'ok': True})  # Already gone — idempotent
-        if session['status'] in ('running', 'idle'):
-            proc = session['proc']
-            session['status'] = 'stopped'
-            session['last_status_change_time'] = _time.time()
-            session['log_lines'].append('[Agent stopped — tab closed]')
-            if session.get('mode') == 'B':
+        session['_limit_resume_cancelled'] = True
+        if session['status'] in ('running', 'idle', 'waiting_for_reset'):
+            _was_reset_wait = session['status'] == 'waiting_for_reset'
+            proc = _stop_session(session, session_id)
+            if proc is not None:
+                _kill_pid(proc.pid, tree=True)
                 try:
-                    proc.stdin.close()
-                except Exception:
-                    pass
-                session['process_alive'] = False
-            _kill_pid(proc.pid, tree=True)
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            _unregister_process(proc.pid)
+                    proc.kill()
+                except Exception as e:
+                    _log(f'[agent-delete] process kill failed: {e}')
+            elif _was_reset_wait:
+                _log_agent_completion(session)
 
     # Wait outside lock for process to fully exit
     if proc:
         try:
             proc.wait(timeout=5)
-        except Exception:
-            pass
+        except Exception as e:
+            _log(f'[agent-delete] process wait failed: {e}')
 
     # Remove session from tracking.
     # The stream reader thread has already called _log_agent_completion()
@@ -15377,6 +15418,7 @@ def agent_status(project_id):
                 'attend_once_pass': _attend_once_pass.view(s),
                 'waiting_for_plan_approval': s.get('waiting_for_plan_approval', False),
                 'waiting_for_question': s.get('waiting_for_question', False),
+                'limit_resume': _limit_resume.view(s),
                 # Mirror pending_questions so the FE can re-render the form on
                 # reconcile even when SSE silently buffered the question event
                 # (mobile WebView / CF Tunnel). Dedupe is by question_id on
@@ -17767,6 +17809,8 @@ def _guardian_check_session(sid, session, now):
     from mc.qwen_retry_wait import KEY as _retry_wait_key, check_session
     if session.get(_retry_wait_key) and check_session(
             session, now, get_manager(session['project_id']).lock, _kill_proc_background):
+        return
+    if session.get('status') == 'waiting_for_reset':
         return
     status = session['status']
     proc = session.get('proc')

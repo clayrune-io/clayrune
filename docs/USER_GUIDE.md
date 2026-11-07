@@ -56,6 +56,22 @@ cadence, so its label is **PARTIAL**. The other engines are labelled
 Unsupported engines keep their own retry behavior and existing hang recovery.
 The same screen has the default-off fresh-Claude-prompt-on-resume toggle.
 
+### Continuing after a usage-limit reset
+
+When a scheduled, steward or dispatched run stops on a provider usage limit and
+the provider gives a reset time, Clayrune can keep the task paused and continue
+the same chat two minutes after that reset. The Floor shows **Waiting for reset
+until** with the resume time in your local timezone and a **Cancel resume** button.
+Stop, closing the chat tab or sending a human follow-up also cancels the pending
+automatic continuation. Your normal attended chats never resume automatically.
+
+There are at most two automatic continuations per task. No known reset time means
+no automatic continuation. The default-on config flag `limit_resume_enabled`
+controls this behavior; pausing the scheduler also prevents continuations. This
+waits for scheduled resets and never spends a vendor's optional reset grant.
+If a restart interrupts submission itself, the Floor shows **Reset continuation
+needs review**; continue the chat manually or cancel to avoid duplicate work.
+
 ### Starter experts on the Floor
 
 A fresh install includes nine agent types. Hire Claydo from the Floor's Bench

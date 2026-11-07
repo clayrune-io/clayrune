@@ -167,6 +167,7 @@ can drive a project's agent. Listed for completeness.
 | GET | `/api/project/<project_id>/agent/stream` | SSE stream of agent events. |
 | POST | `/api/project/<project_id>/agent/followup` | Resume after an asked question. |
 | POST | `/api/project/<project_id>/agent/stop` | Stop the running agent (clean). |
+| POST | `/api/project/<project_id>/agent/<session_id>/limit-resume/cancel` | Cancel a pending automatic usage-reset continuation. The Floor and agent status include `limit_resume: {resume_at,resets_at,attempts,phase}` while paused. Default-on `limit_resume_enabled` waits until the reported reset plus two minutes, with at most two continuations for unattended task chains. Human-owned turns and unknown reset times are excluded. |
 | POST | `/api/project/<project_id>/agent/interrupt` | Hard interrupt (force). |
 | DELETE / POST | `/api/project/<project_id>/agent/session` | Reset the live session. |
 | GET | `/api/project/<project_id>/agent/status` | Current run state (status, claude_session_id, queued msgs). |

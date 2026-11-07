@@ -5082,11 +5082,14 @@ class GeminiRuntime(AgentRuntime):
                         if _ctx is not None:
                             session['context_tokens'] = _ctx
                     _allowance_state.clear_exhaustion('gemini')
+                    session.pop('_limit_resume_exhaustion', None)
                     _cb('on_turn_end', ev)
                 elif ev and ev.type == EventType.ALLOWANCE_EXHAUSTED:
                     # Mirrors _mode_a_reader's own branch — a terminal
                     # failure is never content (Fenn #4).
                     _allowance_state.record_exhaustion('gemini', **ev.payload)
+                    from mc.limit_resume import observe as _observe_reset_wait
+                    _observe_reset_wait(session, ev.payload)
                     session['log_lines'].append(
                         f"[gemini] {_allowance_state.refusal_message('gemini')}")
                     session['last_output_time'] = _time.time()
@@ -6501,12 +6504,15 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 accumulate_result_cost(session, ev.payload, proc_cost)
                 accumulate_result_turns(session, ev.payload, proc_turns)
                 _allowance_state.clear_exhaustion(runtime.name)
+                session.pop('_limit_resume_exhaustion', None)
                 _cb('on_turn_end', ev)
             elif ev.type == EventType.ALLOWANCE_EXHAUSTED:
                 # A terminal failure is never content (Fenn #4): this is the
                 # normalized allowance shape, never the vendor's raw quota
                 # text appended as if it were the model's own line.
                 _allowance_state.record_exhaustion(runtime.name, **ev.payload)
+                from mc.limit_resume import observe as _observe_reset_wait
+                _observe_reset_wait(session, ev.payload)
                 session['log_lines'].append(
                     f"[{runtime.name}] {_allowance_state.refusal_message(runtime.name)}")
                 session['last_output_time'] = _time.time()

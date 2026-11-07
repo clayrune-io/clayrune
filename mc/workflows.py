@@ -2227,6 +2227,12 @@ def _step_session_verdict(step_state: dict, *, use_live: bool) -> tuple:
     pid = step_state.get('project_id') or ''
     if not sid or not pid:
         return 'unconfirmed', None, ''
+    from mc.limit_resume import store as _reset_store
+    reset_store = _reset_store()
+    pending_reset = reset_store.get(sid) if reset_store else None
+    if (pending_reset and pending_reset['project_id'] == pid
+            and pending_reset['phase'] in ('waiting', 'submitting')):
+        return 'in_flight', 'waiting_for_reset', ''
     if _completion_owed(sid):
         return 'in_flight', None, ''    # its crash-surviving completion replays itself
     live = state.agent_sessions.get(sid) if use_live else None

@@ -170,6 +170,8 @@ def capture(session: Dict[str, Any], rollout: Optional[Path],
                     'codex_error_info': err['codex_error_info']}}})
             if exhausted:
                 _allowance_state.record_exhaustion('codex', **exhausted)
+                from mc.limit_resume import observe as _observe_reset_wait
+                _observe_reset_wait(session, exhausted)
                 session['_allowance_exhausted'] = True
         if not streamed:
             session['log_lines'].append(format_summary(err))

@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-07] - Continue unattended runs after a known usage reset (MC-1163)
+
+- Scheduled, steward and dispatched runs can wait for a provider's reported reset plus two minutes, then continue the same session, up to twice per task chain. Durable waits survive server restarts; human-owned turns and limits without reset timestamps retain existing behavior.
+- The Floor shows the local resume deadline and a Cancel resume action. Stop, closing the tab and a human follow-up cancel the wait. Parent/workflow completion and worktree finalization stay held while parked.
+- Added default-on `limit_resume_enabled` and a project-scoped cancel route. State lives outside project records. Interrupted submissions require manual review to prevent duplicate work. Contract and verification: `docs/LIMIT_RESUME.md`. Branch candidate; no merge, push, restart or deployment.
+
 ## [2026-11-06] - Keep passive test detection running at identity capacity (MC-1148, dark)
 
 - Reclaim the oldest terminal identities when the detector reaches 4096 entries, preserving active calls. A separate bounded FIFO of 65536 scoped-key hashes blocks replay of evicted completed calls while retained; all-active capacity still logs and skips.

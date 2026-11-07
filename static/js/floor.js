@@ -304,6 +304,8 @@ function _floorFigure(pid, f) {
         <span class="fl-state">${esc(stateWord)}</span>${helpers}
         <span class="fl-age">${esc(f.age || '')}</span></div>
       <div class="fl-engine">${esc(engine)}</div>
+      ${f.limit_resume ? `<div class="fl-allowance">${f.limit_resume.phase === 'submitting' ? 'Reset continuation needs review' : 'Waiting for reset until ' + esc(new Date(f.limit_resume.resume_at).toLocaleString())}
+        <button type="button" onclick="event.stopPropagation();floorCancelLimitResume('${esc(pid)}','${esc(f.session_id)}')">Cancel resume</button></div>` : ''}
       ${f.allowance_exhausted ? `<div class="fl-allowance">${esc(f.allowance_exhausted)}</div>` : ''}
       <div class="fl-act">${esc(_floorLine(f, helperActive))}</div>
       ${testRunFloorHTML(f.test_runs, { secondary: f.state === 'asking' })}
@@ -312,6 +314,18 @@ function _floorFigure(pid, f) {
       <div class="fl-cta">Open this chat &#8594;</div>
     </div>
   </div>`;
+}
+
+async function floorCancelLimitResume(projectId, sessionId) {
+  try {
+    const res = await fetch(API_BASE + '/api/project/' + encodeURIComponent(projectId) + '/agent/' + encodeURIComponent(sessionId) + '/limit-resume/cancel', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+    });
+    if (!res.ok) throw new Error(await res.text());
+    await refreshFloor();
+  } catch (err) {
+    showToast('Could not cancel reset continuation: ' + err.message, 'error');
+  }
 }
 
 async function floorRename(sessionId, current) {
@@ -906,6 +920,7 @@ window.floorFigDown = floorFigDown;
 window.floorHireMenu = floorHireMenu;
 window.floorOpenFigure = floorOpenFigure;
 window.floorRename = floorRename;
+window.floorCancelLimitResume = floorCancelLimitResume;
 window.floorSetAvatar = floorSetAvatar;
 window.floorTogglePicker = floorTogglePicker;
 window.floorClosePicker = floorClosePicker;

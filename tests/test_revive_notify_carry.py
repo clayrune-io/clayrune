@@ -180,6 +180,7 @@ class TestReviveDoesNotRearm:
 
         assert session is not None
         assert session['_notify_session'] == ''
+        assert session['_turn_owner'] == 'human'
 
     def test_carry_notify_false_drops_the_workflow_callback_too(self, ar, tmp_path, monkeypatch):
         entries = [{'session_id': 's6', 'claude_session_id': CSID,
@@ -219,6 +220,7 @@ class TestReviveDoesNotRearm:
 
         assert out == 's8'
         assert captured['notify_session'] == ''
+        assert captured['session_metadata']['_turn_owner'] == 'human'
 
 
 def test_rearm_clears_only_the_session_latch():

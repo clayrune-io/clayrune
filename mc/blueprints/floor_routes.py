@@ -26,6 +26,7 @@ from typing import Any, Callable
 
 from flask import Blueprint, jsonify, request
 
+from mc.limit_resume import view as _limit_resume_view
 from mc import allowance_state as _allowance_state
 from mc import background_tasks as _bg_tasks
 from mc import delegation_waiting as _delegation_waiting
@@ -335,6 +336,7 @@ def _figure(s, proj_default='', labels=None, projects=None, reports_waiting=None
         'session_id': s.get('session_id', ''),
         'claude_session_id': s.get('claude_session_id', ''),
         'state': st,
+        'limit_resume': _limit_resume_view(s),
         'reason': reason,
         # 'thinking' | 'writing' | 'tool' | '' — only present while a turn is
         # actually streaming, and only when activity_states_enabled is on.
@@ -437,7 +439,7 @@ def _live_sessions(defaults=None, labels=None, projects=None, test_runs=None):
             continue
         if s.get('housekeeping') and not s.get('hivemind_id'):
             continue
-        if s.get('status') not in ('running', 'idle') and not _test_runs.retain_owner(test_runs, s):
+        if s.get('status') not in ('running', 'idle', 'waiting_for_reset') and not _test_runs.retain_owner(test_runs, s):
             continue
         pid = s.get('project_id')
         if not pid:
