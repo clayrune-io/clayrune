@@ -141,8 +141,14 @@ const drillToAdvanced = async () => {
 
 const readEF = () => page.evaluate(() => {
   const sec = document.getElementById('engine-fallback-section');
+  // The section also holds other Advanced rows (Desk research/dispatch), each
+  // with its own .settings-hint, so anchor on the "Engine fallback" label and
+  // take the hint that opens the fallback block -- not the first one in the section.
+  const efLabel = [...sec.querySelectorAll(':scope > .settings-label')]
+    .find(l => l.textContent.trim() === 'Engine fallback');
+  const efHint = efLabel && efLabel.nextElementSibling;
   return {
-    hint: (sec.querySelector('.settings-hint') || {}).textContent || '',
+    hint: (efHint && efHint.classList.contains('settings-hint') ? efHint.textContent : '') || '',
     rows: [...sec.querySelectorAll('[data-ef-idx]')].map(r => r.querySelector('.settings-label').textContent),
     addSelect: !!document.getElementById('engine-fallback-add-provider'),
     addOptions: [...(document.getElementById('engine-fallback-add-provider')?.options || [])].map(o => o.value),
