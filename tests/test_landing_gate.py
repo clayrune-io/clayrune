@@ -582,7 +582,7 @@ def test_tap_test_number_change_is_not_a_new_failure(tmp_path):
     old = sigs(real_tap(tmp_path, 'old', NODE_HEAD + NODE_OLD))
     new = sigs(real_tap(tmp_path, 'new', NODE_HEAD + NODE_PASS + NODE_OLD))
     assert verdict(old, new)['status'] == 'pass', verdict(old, new)['new_failures']
-    assert 'tap:old thing' in old and old == new
+    assert 'tap:old thing @<path>/fx.test.mjs' in old and old == new
 
 
 def test_moving_a_failing_pytest_assertion_is_not_a_new_failure(tmp_path):
@@ -628,7 +628,7 @@ def test_a_genuinely_new_failing_tap_test_blocks(tmp_path):
     new = sigs(real_tap(tmp_path, 'new', NODE_HEAD + NODE_PASS + NODE_OLD + NODE_NEW))
     result = verdict(old, new)
     assert result['status'] == 'blocked'
-    assert result['new_failures'] == ['1:tap:new thing']
+    assert result['new_failures'] == ['1:tap:new thing @<path>/fx.test.mjs']
 
 
 @needs_node
@@ -989,3 +989,69 @@ def test_compare_counts_a_repeated_signature_and_ignores_missing_totals():
     assert gate.compare([with_total(1)], [with_total(None)])['status'] == 'pass'
     assert gate.compare([with_total(1), with_total(0, ())], [with_total(1), with_total(2, ())])['count_increases'] == [
         '2:runner failure count 0 -> 2']                                  # scoped by command position
+
+
+# ── Round five: TAP file identity, and only the runner's own summary is a count ─
+# Same rule: every output is captured from the real runner (pytest, node --test).
+
+PRINTS_FAILED = 'def test_chatty():\n    print("1 failed")\n'
+PRINTS_FAILED_IN = 'def test_chatty():\n    print("1 failed in 0.01s")\n'
+NODE_PRINTS_FAILED = "test('chatty', () => { console.log('1 failed'); });\n"
+
+
+@needs_node
+def test_tap_failure_moving_to_another_file_blocks_even_at_equal_count(tmp_path):
+    # Fenn r5 P1: a.test.mjs is repaired and b.test.mjs breaks; both name the test `works`.
+    # One failure either way, so only the `location:` node prints in the TAP block can tell.
+    old_run = real_two_files(tmp_path, 'old', FILE_FAIL, FILE_OK, 'tap')
+    new_run = real_two_files(tmp_path, 'new', FILE_OK, FILE_FAIL, 'tap')
+    assert gate.failure_count(*old_run) == gate.failure_count(*new_run) == 1
+    result = full_verdict(old_run, new_run, tmp_path/'old', tmp_path/'new')
+    assert result['count_increases'] == []
+    assert result['status'] == 'blocked'
+    assert len(result['new_failures']) == 1 and result['new_failures'][0].startswith('1:tap:works @')
+    assert result['new_failures'][0].endswith('b.test.mjs')
+    assert any(s.startswith('tap:works @') and s.endswith('a.test.mjs') for s in counted(old_run)['signatures'])
+
+
+@needs_node
+def test_tap_stability_with_file_qualified_names(tmp_path):
+    # The file qualifier must not turn a harmless edit into a new failure.
+    old_run = real_two_files(tmp_path, 'old', FILE_FAIL, FILE_OK, 'tap')
+    added = real_two_files(tmp_path, 'added', FILE_FAIL, FILE_OK + NODE_PASS, 'tap')
+    moved = real_two_files(tmp_path, 'moved', '// moved\n\n\n' + FILE_FAIL, FILE_OK, 'tap')
+    renumbered = real_two_files(tmp_path, 'renum', NODE_PASS + FILE_FAIL, FILE_OK, 'tap')
+    assert 'a.test.mjs:3:' in old_run[0].replace('\\', '/') and 'a.test.mjs:6:' in moved[0].replace('\\', '/')
+    for label, new_run in (('added', added), ('moved', moved), ('renum', renumbered)):
+        result = full_verdict(old_run, new_run, tmp_path/'old', tmp_path/label)
+        assert result['status'] == 'pass', result['new_failures']
+
+
+@pytest.mark.parametrize('flag', ['-rP', '-rA'])  # the flags that show a PASSING test's output
+@pytest.mark.parametrize('printed', [PRINTS_FAILED, PRINTS_FAILED_IN], ids=['bare', 'with-duration'])
+def test_a_passing_test_printing_a_failure_count_is_not_a_failure(tmp_path, flag, printed):
+    # Fenn r5 P2: the printed line used to be summed in as one more runner failure.
+    old_run = real_pytest_flags(tmp_path, 'old', OLD_FAIL, [flag])
+    new_run = real_pytest_flags(tmp_path, 'new', OLD_FAIL + printed, [flag])
+    assert '\n' + printed.split('"')[1] + '\n' in new_run[0].replace('\r', '')  # really in the output
+    assert gate.failure_count(*old_run) == gate.failure_count(*new_run) == 1
+    assert full_verdict(old_run, new_run)['status'] == 'pass'
+
+
+@needs_node
+def test_a_passing_node_test_printing_a_failure_count_is_not_a_failure(tmp_path):
+    old_run = real_spec(tmp_path, 'old', NODE_HEAD + NODE_OLD)
+    new_run = real_spec(tmp_path, 'new', NODE_HEAD + NODE_OLD + NODE_PRINTS_FAILED)
+    assert '1 failed' in new_run[0] and 'ℹ fail 1' in new_run[0]
+    assert gate.failure_count(*old_run) == gate.failure_count(*new_run) == 1
+    assert full_verdict(old_run, new_run)['status'] == 'pass'
+
+
+def test_the_real_summary_after_a_failures_captured_output_still_counts(tmp_path):
+    # `-rN` prints no short summary, so pytest's bare closing line directly follows the last
+    # captured block. Skipping captured text must not lose it, or the backstop goes quiet.
+    chatty_fail = 'def test_old():\n    print("1 failed in 0.01s")\n    assert 1 == 2\n'
+    one = real_pytest_flags(tmp_path, 'one', chatty_fail, ['-rN'])
+    two = real_pytest_flags(tmp_path, 'two', chatty_fail + NEW_FAIL, ['-rN'])
+    assert gate.failure_count(*one) == 1 and gate.failure_count(*two) == 2
+    assert full_verdict(one, two)['count_increases'] == ['1:runner failure count 1 -> 2']

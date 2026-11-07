@@ -39,20 +39,23 @@ _SUMMARY = re.compile(
     r'RESULT: FAIL|Checks=\d+ failures=\d+|fails=\d+)$', re.I)
 # Runner bookkeeping, not a failure: pytest's closing count line and the TAP / node
 # test-runner totals. Counts change when unrelated tests are added or fixed.
-_PYTEST_COUNT_LINE = (
-    r'=*\s*(?:\d+ (?:failed|passed|skipped|deselected|xfailed|xpassed|errors?|warnings?|rerun)(?:, )?)+'
-    r'(?: in (?:<duration>|[\d.]+s)(?: \(\d+:\d{2}:\d{2}\))?)?\s*=*')
+_PYTEST_COUNT_ITEMS = (
+    r'=*\s*(?:\d+ (?:failed|passed|skipped|deselected|xfailed|xpassed|errors?|warnings?|rerun)(?:, )?)+')
+_PYTEST_COUNT_DURATION = r' in (?:<duration>|[\d.]+s)(?: \(\d+:\d{2}:\d{2}\))?'
+_PYTEST_COUNT_LINE = _PYTEST_COUNT_ITEMS + '(?:' + _PYTEST_COUNT_DURATION + r')?\s*=*'
 _RUNNER_SUMMARY = re.compile(
     _PYTEST_COUNT_LINE + r'|=*\s*no tests ran(?: in <duration>)?\s*=*|'
     r'(?:#|ℹ) (?:tests|suites|pass|fail|cancelled|skipped|todo|duration_ms) [\d.]+')
 # The runner's own failure totals, used as a count backstop in compare(): pytest's
 # closing `N failed` / `N error(s)` and node:test's `ℹ fail N` / `# fail N`
-# (`cancelled` is a failed test that never finished, so it counts too).
-_PYTEST_COUNTS = re.compile(_PYTEST_COUNT_LINE)
+# (`cancelled` is a failed test that never finished, so it counts too). pytest ALWAYS
+# ends its closing line with ` in <time>`; a bare `1 failed` is a test's own print().
+_PYTEST_COUNTS = re.compile(_PYTEST_COUNT_ITEMS + _PYTEST_COUNT_DURATION + r'\s*=*')
 _PYTEST_FAILED_PART = re.compile(r'(\d+) (?:failed|errors?)\b')
 _NODE_COUNTS = re.compile(r'(?:#|ℹ) (?:fail|cancelled) (?P<n>\d+)')
 # TAP `not ok 3 - name`: the number is the test's position, not its identity.
 _TAP = re.compile(r'^not ok\s+\d+\b\s*(?:-\s*)?(?P<name>.*?)\s*$')
+_TAP_LOCATION = re.compile(r'''^location:\s*['"]?(?P<file>[^'"]+?)['"]?$''')
 _TAP_SUBTEST = re.compile(r'^# Subtest:\s*(?P<name>.*?)\s*$')
 # pytest report heading `____ test_x ____`: the only per-test name when no short
 # summary (-r) is printed, now that the closing count line is ignored. It names a
@@ -85,6 +88,32 @@ _LOCATION = re.compile(
 _SOURCE_EXTENSIONS = frozenset(
     'py pyi js mjs cjs jsx ts tsx json html htm css scss md txt sh bash ps1 bat cmd rs go java kt c h cc cpp '
     'hpp cs rb php swift yml yaml toml ini cfg vue svelte sql'.split())
+
+
+class _PytestFrame:
+    """Where a line sits in pytest's report: the current `=== NAME ===` banner and whether
+    we are inside a `--- Captured ... ---` block. Shared by failure_signatures (headings
+    count only under FAILURES / ERRORS) and failure_count (a count line inside captured
+    output is the test's print, not pytest's total)."""
+
+    def __init__(self) -> None:
+        self.section = ''  # current pytest `=== NAME ===` banner
+        self.in_capture = False  # inside a captured block: the test's own output
+        self.banner_width = 0  # width of the first banner seen outside captured output
+
+    def feed(self, shown: str, line: str) -> None:
+        if _PYTEST_CAPTURE.match(line):
+            self.in_capture = True
+        banner = _PYTEST_BANNER.match(line)
+        if banner and (not self.in_capture or len(shown) == self.banner_width):
+            # A banner inside captured output that is not pytest's own width is the
+            # test's print(); it must not move the section.
+            self.section, self.in_capture = banner['name'], False
+            self.banner_width = self.banner_width or len(shown)
+        if _PYTEST_SECTION.match(line):
+            self.in_capture = False
+
+
 _cache: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
 _cache_lock = threading.Lock()
 Reviewer = Callable[[dict[str, Any]], dict[str, Any]]
@@ -136,14 +165,31 @@ def failure_count(output: str, exit_code: int, root: Path | None = None) -> int 
     if exit_code == 0:
         return 0
     total, seen = 0, False
+    frame = _PytestFrame()
+    # A count line inside a captured block is almost always the test's print(). The one
+    # exception is pytest's own bare closing line when no short summary (`-rN`) separates
+    # it from the last captured block: that line is the LAST thing in the output. So it
+    # is held back, and kept only if nothing but more count lines follows it.
+    held: int | None = None
     for raw in _clean(output, root).splitlines():
-        line = _stable_line(raw.strip())
+        shown = raw.strip()
+        if not shown:
+            continue
+        line = _stable_line(shown)
+        frame.feed(shown, line)
         node = _NODE_COUNTS.fullmatch(line)
+        pytest_count = None if node else _PYTEST_COUNTS.fullmatch(line)
+        if pytest_count and frame.in_capture:
+            held = sum(int(n) for n in _PYTEST_FAILED_PART.findall(line))
+            continue
+        held = None
         if node:
             total, seen = total + int(node['n']), True
-        elif _PYTEST_COUNTS.fullmatch(line):
+        elif pytest_count:
             total += sum(int(n) for n in _PYTEST_FAILED_PART.findall(line))
             seen = True
+    if held is not None:
+        total, seen = total + held, True
     return total if seen else None
 
 
@@ -159,14 +205,13 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
     heading = ''
     subtests: list[tuple[int, str]] = []  # enclosing TAP `# Subtest:` lines, by indent
     suites: list[tuple[int, str]] = []  # enclosing spec `▶ name` suites, by indent
-    pytest_section = ''  # current pytest `=== NAME ===` banner
-    in_capture = False  # inside a pytest `--- Captured ... ---` block: the test's own output
-    banner_width = 0  # width of the first banner seen outside captured output
+    frame = _PytestFrame()
     recap = False  # inside the spec reporter's trailing `✖ failing tests:` recap
     recap_entry = False  # the previous recap line was `test at file:line:col`
     recap_file = ''  # the file that line named
     spec_live: list[tuple[int, str]] = []  # (index into counted, test name) per live `✖`
     recap_files: list[tuple[str, str]] = []  # (test name, file) per recap entry
+    tap_open = -1  # index into counted of the `not ok` whose YAML block is still open
     for raw in clean.splitlines():
         line = raw.strip()
         if not line:
@@ -186,22 +231,12 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
             subtests.append((indent, subtest['name']))
             heading = ''
             continue
-        if _PYTEST_CAPTURE.match(line):
-            in_capture = True
-        banner = _PYTEST_BANNER.match(line)
-        if banner and (not in_capture or len(shown) == banner_width):
-            # A banner inside captured output that is not pytest's own width is the
-            # test's print(); it must not move the section. Then fall through: the
-            # line keeps its old treatment either way.
-            pytest_section, in_capture = banner['name'], False
-            banner_width = banner_width or len(shown)
+        frame.feed(shown, line)  # a banner/heading line then keeps its old treatment below
         section = _PYTEST_SECTION.match(line)
-        if section:
-            in_capture = False
-            if pytest_section in _PYTEST_FAILURE_BANNERS:
-                counted.append('pytest-report:' + section['name'])
-                heading = ''
-                continue
+        if section and frame.section in _PYTEST_FAILURE_BANNERS:
+            counted.append('pytest-report:' + section['name'])
+            heading = ''
+            continue
         if _SPEC_RECAP.match(line):
             recap, recap_entry = True, False
             suites.clear()
@@ -241,8 +276,19 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
             # second suite is still a new failure.
             path = [name for depth, name in subtests if depth < indent]
             counted.append('tap:' + ' > '.join([*path, tap['name'] or '<unspecified>']))
+            tap_open = len(counted) - 1
             heading = ''
             continue
+        # node's TAP block names the file in `location: '<file>:LINE:COL'`; the identity
+        # includes it, as the spec reporter's does, so a failure that moves to another
+        # file (same test name, same count) is a new one. Other TAP producers print no
+        # location and stay unqualified.
+        if tap_open >= 0:
+            location = _TAP_LOCATION.match(line)
+            if location:
+                counted[tap_open] += ' @' + location['file']
+            if location or line == '...' or line.startswith(('ok ', 'not ok ')):
+                tap_open = -1
         match = _SMOKE.match(line)
         detail = match['name'].strip() if match else line
         if _SUMMARY.fullmatch(detail) or _RUNNER_SUMMARY.fullmatch(detail):
