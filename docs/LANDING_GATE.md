@@ -75,7 +75,15 @@ Nonzero command exits normalize to:
   enclosing `# Subtest:` names qualify it so a same-named test failing in a
   second suite still blocks.
 - `pytest-report:<test>` from the `____ test_x ____` report heading, the only
-  per-test name when pytest prints no short summary (`-r`).
+  per-test name when pytest prints no short summary (`-r`). Only headings under a
+  `=== FAILURES ===` / `=== ERRORS ===` banner count: `-rP`/`-rA` print the same
+  heading for passing tests with captured output under `=== PASSES ===`.
+- `spec:<suite> > <test name>` from the Node `spec` reporter's `✖ name (dur)`
+  lines (the default for a non-TTY stdout). Suites open with `▶ name`; names are
+  qualified by enclosing suites, so a same-named test in a second suite still
+  blocks. The trailing `✖ failing tests:` recap is skipped (the live lines already
+  name each failure). Known limit: the live lines carry no file name, so the same
+  suite/test name failing in two different files is one identity.
 - Runner count lines are bookkeeping, not failures: pytest's closing
   `N failed, M passed in …`, TAP `# tests/pass/fail/…` and Node `ℹ tests/pass/…`
   totals change whenever an unrelated test is added or fixed. They are used only
@@ -101,6 +109,7 @@ The 2026-11-07 review audited failure-print sites in all 327
 | Counts, `FAILED (n)`, `n FAILED`, `RESULT: FAIL`, `fails=n` | `settings-providers.mjs`, `desk-studio-render-scenes.mjs`, `terminal-pty-popout.mjs` | Summary only when no detailed failure exists |
 | Assertion errors | Node assertions | Additive error signatures |
 | TAP `not ok N - name` | `test-run-data.test.mjs`, `node --test` | Named `tap:` signature, number dropped |
+| Node spec `✖ name (dur)` | `node --test` (default reporter, non-TTY) | Named `spec:` signature, suite-qualified, recap skipped |
 
 Signatures are scoped by command position. Candidate signatures absent from
 the baseline block. Baseline failures are reported even when the candidate

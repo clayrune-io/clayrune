@@ -48,8 +48,19 @@ _RUNNER_SUMMARY = re.compile(
 _TAP = re.compile(r'^not ok\s+\d+\b\s*(?:-\s*)?(?P<name>.*?)\s*$')
 _TAP_SUBTEST = re.compile(r'^# Subtest:\s*(?P<name>.*?)\s*$')
 # pytest report heading `____ test_x ____`: the only per-test name when no short
-# summary (-r) is printed, now that the closing count line is ignored.
+# summary (-r) is printed, now that the closing count line is ignored. It names a
+# failure only under a `=== FAILURES ===` / `=== ERRORS ===` banner; `-rP`/`-rA`
+# print the same heading for PASSING tests with captured output under `=== PASSES ===`.
 _PYTEST_SECTION = re.compile(r'^_{2,} (?P<name>\S.*?) _{2,}$')
+_PYTEST_BANNER = re.compile(r'^={2,} (?P<name>\S.*?) ={2,}$')
+_PYTEST_FAILURE_BANNERS = frozenset({'FAILURES', 'ERRORS'})
+# node:test `spec` reporter (the default for a non-TTY stdout): one glyph line per
+# test, nested suites indented, each suite opened by `▶ name` and closed by a `✔`/`✖`
+# line carrying its own name. Failures are re-listed after the totals in a
+# `✖ failing tests:` recap that this parser skips (the live lines already name them).
+_SPEC = re.compile(r'^(?P<glyph>[▶✔✖﹣])\s+(?P<name>.*?)(?:\s+\(<duration>\))?(?:\s+# (?:SKIP|TODO).*)?$')
+_SPEC_RECAP = re.compile(r'^✖ failing tests:?$')
+_SPEC_RECAP_ENTRY = re.compile(r'^test at \S')
 _DURATION = re.compile(r'\b\d+(?:\.\d+)?\s*(?:ms|milliseconds?|s|seconds?|secs?|minutes?|mins?)\b', re.I)
 _ABSOLUTE_FILE = re.compile(
     r'(?<![\w>])(?:file://)?(?:[A-Za-z]:[\\/]|/)(?:[^\s<>\"\'():]+[\\/])*'
@@ -107,6 +118,10 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
     summaries: set[str] = set()
     heading = ''
     subtests: list[tuple[int, str]] = []  # enclosing TAP `# Subtest:` lines, by indent
+    suites: list[tuple[int, str]] = []  # enclosing spec `▶ name` suites, by indent
+    pytest_section = ''  # current pytest `=== NAME ===` banner
+    recap = False  # inside the spec reporter's trailing `✖ failing tests:` recap
+    recap_entry = False  # the previous recap line was `test at file:line:col`
     for raw in clean.splitlines():
         line = raw.strip()
         if not line:
@@ -125,11 +140,44 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
             subtests.append((indent, subtest['name']))
             heading = ''
             continue
+        banner = _PYTEST_BANNER.match(line)
+        if banner:
+            pytest_section = banner['name']  # then fall through: the line keeps its old treatment
         section = _PYTEST_SECTION.match(line)
-        if section:
+        if section and pytest_section in _PYTEST_FAILURE_BANNERS:
             names.add('pytest-report:' + section['name'])
             heading = ''
             continue
+        if _SPEC_RECAP.match(line):
+            recap, recap_entry = True, False
+            suites.clear()
+            heading = ''
+            continue
+        spec = _SPEC.match(line)
+        if spec:
+            glyph, name = spec['glyph'], spec['name']
+            if recap and recap_entry and glyph == '✖':
+                recap_entry = False  # the recap's copy of a failure already named above
+                continue
+            recap = False  # a glyph line that is not a recap entry: a new run's live output
+            if glyph == '▶':
+                while suites and suites[-1][0] >= indent:
+                    suites.pop()
+                suites.append((indent, name))
+            else:
+                while suites and suites[-1][0] > indent:
+                    suites.pop()
+                if suites and suites[-1] == (indent, name):
+                    suites.pop()  # a suite's own closing line
+                if glyph == '✖':
+                    # Qualified by enclosing suites, like TAP. A suite that fails only
+                    # because a child failed is listed too: it is stable and harmless.
+                    path = [n for depth, n in suites if depth < indent]
+                    names.add('spec:' + ' > '.join([*path, name or '<unspecified>']))
+            heading = ''
+            continue
+        if recap:
+            recap_entry = bool(_SPEC_RECAP_ENTRY.match(line))
         tap = _TAP.match(line)
         if tap:
             # Qualified by enclosing suites, so the same test name failing in a

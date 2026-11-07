@@ -687,3 +687,125 @@ def test_pytest_without_a_short_summary_still_names_each_failure(tmp_path):
     result = verdict(sigs(old_run), sigs(new_run))
     assert result['status'] == 'blocked'
     assert any('test_also' in s for s in result['new_failures'])
+
+
+# ── Round three: report sections and the node `spec` reporter (Fenn P1s) ─────
+# Same rule: every output is captured from the real runner, none is hand-typed.
+
+PASS_PRINTS = 'def test_ok():\n    print("hello")\n'
+FAIL_PRINTS = 'def test_ok():\n    print("hello")\n    assert 1 == 2\n'
+
+
+def real_pytest_flags(tmp_path: Path, label: str, source: str, flags):
+    folder = tmp_path/label
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder/'test_fx.py').write_text(source, encoding='utf-8')
+    return captured([sys.executable, '-m', 'pytest', 'test_fx.py', '-q', *flags, '-p', 'no:cacheprovider',
+                     '-o', 'addopts=', '--rootdir', str(folder)], folder)
+
+
+def real_spec(tmp_path: Path, label: str, source: str):
+    """Node 24's default reporter for a non-TTY stdout, with no --test-reporter flag."""
+    folder = tmp_path/label
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder/'fx.test.mjs').write_text(source, encoding='utf-8')
+    return captured(['node', '--test', 'fx.test.mjs'], folder)
+
+
+def suite_source(*bodies):
+    return NODE_HEAD + ''.join(
+        "describe('%s', () => { it('works', () => { %s }); });\n" % (name, body) for name, body in bodies)
+
+
+@pytest.mark.parametrize('flag', ['-rP', '-rA'])
+def test_passing_test_with_captured_output_turning_red_blocks(tmp_path, flag):
+    # Fenn P1-a, verbatim: one failure + one passing test whose output -rP prints
+    # under `=== PASSES ===`; then the passing test fails too.
+    old_run = real_pytest_flags(tmp_path, 'old', OLD_FAIL + PASS_PRINTS, [flag])
+    new_run = real_pytest_flags(tmp_path, 'new', OLD_FAIL + FAIL_PRINTS, [flag])
+    assert '= PASSES =' in old_run[0] and '_ test_ok _' in old_run[0]  # the heading really is there
+    result = verdict(sigs(old_run), sigs(new_run))
+    assert result['status'] == 'blocked'
+    assert any('test_ok' in s for s in result['new_failures'])
+
+
+@pytest.mark.parametrize('flag', ['-rP', '-rA'])
+def test_adding_a_passing_captured_output_test_is_not_a_new_failure(tmp_path, flag):
+    old_run = real_pytest_flags(tmp_path, 'old', OLD_FAIL, [flag])
+    new_run = real_pytest_flags(tmp_path, 'new', OLD_FAIL + PASS_PRINTS, [flag])
+    assert '_ test_ok _' in new_run[0]
+    assert not any('test_ok' in s for s in sigs(new_run))
+    assert verdict(sigs(old_run), sigs(new_run))['status'] == 'pass'
+
+
+def test_error_section_headings_still_name_failures(tmp_path):
+    # Setup errors are reported under `=== ERRORS ===` with `_ ERROR at setup of x _`.
+    broken = 'import pytest\n@pytest.fixture\ndef boom():\n    raise RuntimeError("x")\ndef test_e(boom):\n    pass\n'
+    run = real_pytest_flags(tmp_path, 'e', broken + PASS_PRINTS, ['-rN', '-rP'])
+    assert '= ERRORS =' in run[0]
+    assert any(s.startswith('pytest-report:') and 'test_e' in s for s in sigs(run))
+    assert not any('test_ok' in s for s in sigs(run))
+
+
+@needs_node
+def test_real_spec_output_is_what_the_fixtures_assume(tmp_path):
+    output, _ = real_spec(tmp_path, 's', NODE_HEAD + NODE_OLD + NODE_PASS)
+    assert '✖ old thing (' in output and '✖ failing tests:' in output and '\ntest at ' in output
+
+
+@needs_node
+def test_spec_failure_with_the_same_assertion_as_an_existing_one_blocks(tmp_path):
+    # Fenn P1-b, verbatim: `old thing` fails; `new thing` is added with the same assert.equal(1, 2).
+    head = NODE_HEAD
+    old_run = real_spec(tmp_path, 'old', head + "test('old thing', () => { assert.equal(1, 2); });\n")
+    new_run = real_spec(tmp_path, 'new', head + "test('old thing', () => { assert.equal(1, 2); });\n"
+                        "test('new thing', () => { assert.equal(1, 2); });\n")
+    assert sigs(old_run) != sigs(new_run)
+    result = verdict(sigs(old_run), sigs(new_run))
+    assert result['status'] == 'blocked'
+    assert result['new_failures'] == ['1:spec:new thing']
+
+
+@needs_node
+def test_spec_names_are_suite_qualified_and_the_recap_adds_nothing(tmp_path):
+    out, code = real_spec(tmp_path, 's', suite_source(('suiteA', 'assert.equal(1, 2);'), ('suiteB', 'assert.equal(1, 2);')))
+    signatures = gate.failure_signatures(out, code)
+    assert {'spec:suiteA > works', 'spec:suiteB > works'} <= set(signatures)
+    assert 'spec:works' not in signatures                      # the recap's unqualified copy is skipped
+    assert [s for s in signatures if s.startswith('spec:')] == [
+        'spec:suiteA', 'spec:suiteA > works', 'spec:suiteB', 'spec:suiteB > works']
+
+
+@needs_node
+def test_same_named_spec_test_failing_in_a_second_suite_blocks(tmp_path):
+    fail, ok = 'assert.equal(1, 2);', ''
+    old = sigs(real_spec(tmp_path, 'old', suite_source(('suiteA', fail), ('suiteB', ok))))
+    new = sigs(real_spec(tmp_path, 'new', suite_source(('suiteA', fail), ('suiteB', fail))))
+    result = verdict(old, new)
+    assert result['status'] == 'blocked'
+    assert 'spec:suiteB > works' in [s.split(':', 1)[1] for s in result['new_failures']]
+
+
+@needs_node
+def test_nested_spec_subtest_failure_is_named_under_its_parent(tmp_path):
+    source = NODE_HEAD + ("test('parent', async (t) => {\n  await t.test('child ok', () => {});\n"
+                          "  await t.test('child bad', () => { assert.equal(1, 2); });\n});\n")
+    assert 'spec:parent > child bad' in sigs(real_spec(tmp_path, 's', source))
+
+
+@needs_node
+def test_spec_stability_adding_a_passing_test_or_moving_the_assertion_is_not_new(tmp_path):
+    old_run = real_spec(tmp_path, 'old', NODE_HEAD + NODE_OLD)
+    added = real_spec(tmp_path, 'added', NODE_HEAD + NODE_PASS + NODE_OLD + NODE_PASS)
+    moved = real_spec(tmp_path, 'moved', NODE_HEAD + '// moved\n\n\n' + NODE_OLD)
+    assert 'fx.test.mjs:3:' in old_run[0] and 'fx.test.mjs:6:' in moved[0]  # the recap and stack really moved
+    for label, new_run in (('added', added), ('moved', moved)):
+        assert verdict(sigs(old_run, tmp_path/'old'), sigs(new_run, tmp_path/label))['status'] == 'pass'
+
+
+def test_two_node_runs_in_one_output_are_both_parsed_past_the_first_recap():
+    # Two node invocations in one command output: the second starts after the first's recap.
+    first = "✖ one (0.5ms)\nℹ tests 1\nℹ fail 1\n\n✖ failing tests:\n\ntest at a.test.mjs:3:1\n✖ one (0.5ms)\n  Error: x\n"
+    second = "✖ two (0.4ms)\nℹ tests 1\nℹ fail 1\n"
+    assert gate.failure_signatures(first + second, 1) == sorted(
+        {'spec:one', 'spec:two', 'exit:1:Error: x'})

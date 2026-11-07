@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-07] - Close two ways a new failure slipped through the landing gate (MC-1164 review round 3)
+
+- A passing pytest test with captured output (`-rP`/`-rA` list it under `=== PASSES ===`) no longer becomes a `pytest-report:` identity, so that test later failing blocks, and adding one no longer false-blocks. Report headings now count only under `FAILURES`/`ERRORS`.
+- Node's default non-TTY `spec` reporter `✖ name` lines are named, suite-qualified `spec:` failures, so a second failing test with the same assertion message blocks; the `✖ failing tests:` recap is skipped. Real-runner regressions added. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-07] - Stop runner noise from becoming landing-gate failure identity (MC-1164 review round 2)
 
 - Adding a passing test (pytest count line), renumbering a failing TAP test, or moving a failing assertion (relative `file:LINE`) no longer reads as a new failure. TAP `not ok N - name` is a named signature (suite-qualified), pytest/TAP/Node count lines are summaries, `:LINE[:COL]` is stripped from every path-like token, and pytest report headings name failures when no short summary prints. The additive fallback for unrecognised formats is unchanged. Real-runner regressions added. Branch candidate only; no merge, push or restart.
