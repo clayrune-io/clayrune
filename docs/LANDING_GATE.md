@@ -78,16 +78,31 @@ Nonzero command exits normalize to:
   per-test name when pytest prints no short summary (`-r`). Only headings under a
   `=== FAILURES ===` / `=== ERRORS ===` banner count: `-rP`/`-rA` print the same
   heading for passing tests with captured output under `=== PASSES ===`.
+  A banner's provenance is checked: after a `---- Captured stdout call ----` header
+  the text is the test's own output, and a banner-looking line there counts only at
+  pytest's own banner width (every real banner is padded to the same width, taken
+  from the first banner outside captured output). A test that prints
+  `=== PASSES ===` therefore cannot move the parser into the PASSES section and hide
+  the next failure heading. The captured block ends at the next `____ name ____`
+  heading or at a banner of the right width.
 - `spec:<suite> > <test name>` from the Node `spec` reporter's `✖ name (dur)`
   lines (the default for a non-TTY stdout). Suites open with `▶ name`; names are
   qualified by enclosing suites, so a same-named test in a second suite still
-  blocks. The trailing `✖ failing tests:` recap is skipped (the live lines already
-  name each failure). Known limit: the live lines carry no file name, so the same
-  suite/test name failing in two different files is one identity.
+  blocks. The live lines carry no file; the trailing `✖ failing tests:` recap does
+  (`test at FILE:L:C`). Live and recap entries are paired by test name and order,
+  and the signature becomes `spec:<suite> > <test> @<file>`, so the same test name
+  failing in a second file is a new identity (and a failure that moves from one
+  file to another blocks even at an equal count). Pairing needs the same number of
+  recap entries as live lines for that name; otherwise the name stays unqualified
+  (stable, and the count backstop below still applies). TAP carries no such
+  qualifier: a same-named TAP test failing in a second file is caught by the
+  multiset and the count, but a failure that merely moves files is not.
 - Runner count lines are bookkeeping, not failures: pytest's closing
   `N failed, M passed in …`, TAP `# tests/pass/fail/…` and Node `ℹ tests/pass/…`
-  totals change whenever an unrelated test is added or fixed. They are used only
-  when no named failure exists, so a summary-only nonzero exit still fails closed.
+  totals change whenever an unrelated test is added or fixed. They are never a
+  failure identity unless no named failure exists, so a summary-only nonzero exit
+  still fails closed. Their failure total is used separately, as the count
+  backstop below.
 - Without detailed findings, an aggregate summary, last nonempty output line
   or `<no output>` supplies a nonzero-exit signature. ANSI colors, checkout
   roots, `:LINE[:COL]` after any path (relative or absolute; needs a separator
@@ -112,7 +127,22 @@ The 2026-11-07 review audited failure-print sites in all 327
 | Node spec `✖ name (dur)` | `node --test` (default reporter, non-TTY) | Named `spec:` signature, suite-qualified, recap skipped |
 
 Signatures are scoped by command position. Candidate signatures absent from
-the baseline block. Baseline failures are reported even when the candidate
+the baseline block. `pytest:`, `pytest-report:`, `tap:` and `spec:` identities
+are compared as a multiset: a failure the baseline listed once and the candidate
+lists twice is new. Smoke and `exit:` lines stay a set.
+
+**Count backstop.** Identity says *which* failure is new; the runner's own total
+says *how many*. Each command result records `failure_count`: the sum of pytest's
+closing `N failed` / `N error(s)` and node:test's `ℹ fail N` / `# fail N`
+(plus `cancelled`, a test that never finished), over every runner in the output;
+a zero exit is 0, and output with no recognised total is `null`. `compare()` blocks
+when the candidate's total exceeds the baseline's for the same command position,
+even when every identity matches, and reports it in `count_increases`
+(`["1:runner failure count 1 -> 2"]`). A drop, a change in passing tests, or a
+`null` total on either side never blocks by count: signatures alone decide then.
+This closes the class where two failures share one identity (a printed banner, a
+test name in two files, an unfamiliar format), not only the instances found so far.
+Smoke scripts print no such total and rely on identities. Baseline failures are reported even when the candidate
 fixes them. A matching nonzero baseline/candidate failure allows landing.
 Timeouts, unavailable execution, output overflow, invalid configuration,
 changed refs/checkouts or failed restoration always block; they are not waived
@@ -149,7 +179,7 @@ For configured verification, `merge_back` still returns a two-element tuple:
 ```
 
 The report carries `status: pass|blocked`, `new_failures`, `baseline_failures`,
-`errors`, per-command `baseline` / `candidate` results, SHA/tree pins, cache
+`errors`, `count_increases`, per-command `baseline` / `candidate` results, SHA/tree pins, cache
 status and restoration status when available. Earlier historical refusals
 retain their existing return shapes. The full gate report is logged. The
 session-end handler surfaces blocked landings and keeps the branch/worktree;

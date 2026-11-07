@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-07] - Stop failures sharing one identity from slipping past the landing gate (MC-1164 review round 4)
+
+- A banner a test prints (`=== PASSES ===`) inside its captured output no longer moves the pytest parser into the PASSES section, so a second failing test with the same assertion blocks again. A banner inside captured output counts only at pytest's own banner width.
+- Count backstop: each verify command records the runner's own failed/error total (pytest `N failed`/`N error(s)`, node `ℹ fail N` / `# fail N`) and the gate blocks when the candidate's total exceeds the baseline's at the same command position, reported as `count_increases`. Pytest/TAP/spec identities are now compared as a multiset. Passing-count changes still do not block.
+- Node `spec` identities carry the file from the failing-tests recap (`spec:works @b.test.mjs`), so the same test name failing in a second file blocks. Real pytest and node --test regressions added, including both reviewer repros. Contract: `docs/LANDING_GATE.md`. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-07] - Close two ways a new failure slipped through the landing gate (MC-1164 review round 3)
 
 - A passing pytest test with captured output (`-rP`/`-rA` list it under `=== PASSES ===`) no longer becomes a `pytest-report:` identity, so that test later failing blocks, and adding one no longer false-blocks. Report headings now count only under `FAILURES`/`ERRORS`.

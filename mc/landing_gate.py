@@ -13,7 +13,7 @@ import re
 import subprocess
 import tempfile
 import threading
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from pathlib import Path
 from typing import Any, Callable
 
@@ -39,11 +39,18 @@ _SUMMARY = re.compile(
     r'RESULT: FAIL|Checks=\d+ failures=\d+|fails=\d+)$', re.I)
 # Runner bookkeeping, not a failure: pytest's closing count line and the TAP / node
 # test-runner totals. Counts change when unrelated tests are added or fixed.
-_RUNNER_SUMMARY = re.compile(
+_PYTEST_COUNT_LINE = (
     r'=*\s*(?:\d+ (?:failed|passed|skipped|deselected|xfailed|xpassed|errors?|warnings?|rerun)(?:, )?)+'
-    r'(?: in (?:<duration>|[\d.]+s)(?: \(\d+:\d{2}:\d{2}\))?)?\s*=*|'
-    r'=*\s*no tests ran(?: in <duration>)?\s*=*|'
+    r'(?: in (?:<duration>|[\d.]+s)(?: \(\d+:\d{2}:\d{2}\))?)?\s*=*')
+_RUNNER_SUMMARY = re.compile(
+    _PYTEST_COUNT_LINE + r'|=*\s*no tests ran(?: in <duration>)?\s*=*|'
     r'(?:#|ℹ) (?:tests|suites|pass|fail|cancelled|skipped|todo|duration_ms) [\d.]+')
+# The runner's own failure totals, used as a count backstop in compare(): pytest's
+# closing `N failed` / `N error(s)` and node:test's `ℹ fail N` / `# fail N`
+# (`cancelled` is a failed test that never finished, so it counts too).
+_PYTEST_COUNTS = re.compile(_PYTEST_COUNT_LINE)
+_PYTEST_FAILED_PART = re.compile(r'(\d+) (?:failed|errors?)\b')
+_NODE_COUNTS = re.compile(r'(?:#|ℹ) (?:fail|cancelled) (?P<n>\d+)')
 # TAP `not ok 3 - name`: the number is the test's position, not its identity.
 _TAP = re.compile(r'^not ok\s+\d+\b\s*(?:-\s*)?(?P<name>.*?)\s*$')
 _TAP_SUBTEST = re.compile(r'^# Subtest:\s*(?P<name>.*?)\s*$')
@@ -54,6 +61,11 @@ _TAP_SUBTEST = re.compile(r'^# Subtest:\s*(?P<name>.*?)\s*$')
 _PYTEST_SECTION = re.compile(r'^_{2,} (?P<name>\S.*?) _{2,}$')
 _PYTEST_BANNER = re.compile(r'^={2,} (?P<name>\S.*?) ={2,}$')
 _PYTEST_FAILURE_BANNERS = frozenset({'FAILURES', 'ERRORS'})
+# `---- Captured stdout call ----`: from here to the next `____ name ____` heading the
+# text is the TEST's own output, which can print anything, including a line spelled
+# like a banner. pytest pads every real banner to one fixed width, so inside captured
+# output a banner counts only at the width of the banners seen outside it.
+_PYTEST_CAPTURE = re.compile(r'^-{2,} Captured .+ -{2,}$')
 # node:test `spec` reporter (the default for a non-TTY stdout): one glyph line per
 # test, nested suites indented, each suite opened by `▶ name` and closed by a `✔`/`✖`
 # line carrying its own name. Failures are re-listed after the totals in a
@@ -108,20 +120,53 @@ def _stable_line(line: str) -> str:
     return ' '.join(_DURATION.sub('<duration>', line).split())
 
 
-def failure_signatures(output: str, exit_code: int, root: Path | None = None) -> list[str]:
-    if exit_code == 0:
-        return []
+def _clean(output: str, root: Path | None) -> str:
     clean = _ANSI.sub('', output).replace('\r', '\n')
     if root is not None:
         clean = clean.replace(str(root), '<worktree>').replace(root.as_posix(), '<worktree>')
+    return clean
+
+
+def failure_count(output: str, exit_code: int, root: Path | None = None) -> int | None:
+    """The runner's own failed/error total, summed over every runner in the output.
+
+    A zero exit is 0. None means the output carries no recognised total (a smoke
+    script, a crash before the summary): compare() then relies on signatures alone.
+    """
+    if exit_code == 0:
+        return 0
+    total, seen = 0, False
+    for raw in _clean(output, root).splitlines():
+        line = _stable_line(raw.strip())
+        node = _NODE_COUNTS.fullmatch(line)
+        if node:
+            total, seen = total + int(node['n']), True
+        elif _PYTEST_COUNTS.fullmatch(line):
+            total += sum(int(n) for n in _PYTEST_FAILED_PART.findall(line))
+            seen = True
+    return total if seen else None
+
+
+def failure_signatures(output: str, exit_code: int, root: Path | None = None) -> list[str]:
+    """Sorted failure identities. Test identities (pytest, TAP, spec) are a multiset:
+    the same one printed twice is listed twice. Smoke and fallback lines are a set."""
+    if exit_code == 0:
+        return []
+    clean = _clean(output, root)
     names: set[str] = set()
+    counted: list[str] = []  # test identities, one entry per failure the runner printed
     summaries: set[str] = set()
     heading = ''
     subtests: list[tuple[int, str]] = []  # enclosing TAP `# Subtest:` lines, by indent
     suites: list[tuple[int, str]] = []  # enclosing spec `▶ name` suites, by indent
     pytest_section = ''  # current pytest `=== NAME ===` banner
+    in_capture = False  # inside a pytest `--- Captured ... ---` block: the test's own output
+    banner_width = 0  # width of the first banner seen outside captured output
     recap = False  # inside the spec reporter's trailing `✖ failing tests:` recap
     recap_entry = False  # the previous recap line was `test at file:line:col`
+    recap_file = ''  # the file that line named
+    spec_live: list[tuple[int, str]] = []  # (index into counted, test name) per live `✖`
+    recap_files: list[tuple[str, str]] = []  # (test name, file) per recap entry
     for raw in clean.splitlines():
         line = raw.strip()
         if not line:
@@ -129,9 +174,10 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
         indent = len(raw) - len(raw.lstrip())
         match = _PYTEST.match(line.split(' - ', 1)[0])
         if match:
-            names.add('pytest:' + match[1])
+            counted.append('pytest:' + match[1])
             heading = ''
             continue
+        shown = line
         line = _stable_line(line)
         subtest = _TAP_SUBTEST.match(line)
         if subtest:
@@ -140,14 +186,22 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
             subtests.append((indent, subtest['name']))
             heading = ''
             continue
+        if _PYTEST_CAPTURE.match(line):
+            in_capture = True
         banner = _PYTEST_BANNER.match(line)
-        if banner:
-            pytest_section = banner['name']  # then fall through: the line keeps its old treatment
+        if banner and (not in_capture or len(shown) == banner_width):
+            # A banner inside captured output that is not pytest's own width is the
+            # test's print(); it must not move the section. Then fall through: the
+            # line keeps its old treatment either way.
+            pytest_section, in_capture = banner['name'], False
+            banner_width = banner_width or len(shown)
         section = _PYTEST_SECTION.match(line)
-        if section and pytest_section in _PYTEST_FAILURE_BANNERS:
-            names.add('pytest-report:' + section['name'])
-            heading = ''
-            continue
+        if section:
+            in_capture = False
+            if pytest_section in _PYTEST_FAILURE_BANNERS:
+                counted.append('pytest-report:' + section['name'])
+                heading = ''
+                continue
         if _SPEC_RECAP.match(line):
             recap, recap_entry = True, False
             suites.clear()
@@ -158,6 +212,7 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
             glyph, name = spec['glyph'], spec['name']
             if recap and recap_entry and glyph == '✖':
                 recap_entry = False  # the recap's copy of a failure already named above
+                recap_files.append((name or '<unspecified>', recap_file))
                 continue
             recap = False  # a glyph line that is not a recap entry: a new run's live output
             if glyph == '▶':
@@ -173,17 +228,19 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
                     # Qualified by enclosing suites, like TAP. A suite that fails only
                     # because a child failed is listed too: it is stable and harmless.
                     path = [n for depth, n in suites if depth < indent]
-                    names.add('spec:' + ' > '.join([*path, name or '<unspecified>']))
+                    spec_live.append((len(counted), name or '<unspecified>'))
+                    counted.append('spec:' + ' > '.join([*path, name or '<unspecified>']))
             heading = ''
             continue
         if recap:
             recap_entry = bool(_SPEC_RECAP_ENTRY.match(line))
+            recap_file = line[len('test at '):].strip() if recap_entry else ''
         tap = _TAP.match(line)
         if tap:
             # Qualified by enclosing suites, so the same test name failing in a
             # second suite is still a new failure.
             path = [name for depth, name in subtests if depth < indent]
-            names.add('tap:' + ' > '.join([*path, tap['name'] or '<unspecified>']))
+            counted.append('tap:' + ' > '.join([*path, tap['name'] or '<unspecified>']))
             heading = ''
             continue
         match = _SMOKE.match(line)
@@ -207,22 +264,44 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
         # Additive: a known pytest/smoke failure must not hide another format.
         if _FAILURE.search(line):
             names.add(f'exit:{exit_code}:' + line)
-    if not names:
+    # The live `✖` lines carry no file; the recap's `test at FILE` does. Pair them up
+    # by test name and order, so two files that both name a test `works` stay apart.
+    # Only when the counts agree: a mismatch leaves the name unqualified (stable).
+    live_by_name: dict[str, list[int]] = {}
+    for index, name in spec_live:
+        live_by_name.setdefault(name, []).append(index)
+    for name, indexes in live_by_name.items():
+        files = [file for recap_name, file in recap_files if recap_name == name]
+        if len(files) == len(indexes) and all(files):
+            for index, file in zip(indexes, files):
+                counted[index] += ' @' + file
+    if not names and not counted:
         lines = [_stable_line(line) for line in clean.splitlines() if line.strip()]
         names.add(f'exit:{exit_code}:' + (sorted(summaries) or lines or ['<no output>'])[-1])
-    return sorted(names)
+    return sorted([*names, *counted])
 
 
 def compare(baseline: list[dict[str, Any]], candidate: list[dict[str, Any]]) -> dict[str, Any]:
     # Scope signatures by command position: one command cannot hide another.
-    old = {f'{i + 1}:{s}' for i, run in enumerate(baseline) for s in run['signatures']}
-    current = {f'{i + 1}:{s}' for i, run in enumerate(candidate) for s in run['signatures']}
+    # A multiset: a failure the baseline has once and the candidate has twice is new.
+    old = Counter(f'{i + 1}:{s}' for i, run in enumerate(baseline) for s in run['signatures'])
+    current = Counter(f'{i + 1}:{s}' for i, run in enumerate(candidate) for s in run['signatures'])
     errors = [f'{phase}:{i + 1}:{run["error"]}' for phase, runs in
               (('baseline', baseline), ('candidate', candidate))
               for i, run in enumerate(runs) if run.get('error')]
-    new = sorted(current - old)
-    return {'status': 'blocked' if new or errors else 'pass', 'new_failures': new,
-            'baseline_failures': sorted(old), 'errors': errors,
+    new = sorted((current - old).elements())
+    # Backstop: whatever the identities say, more failures than the baseline had at
+    # the same command position blocks. Identity names WHICH failure is new; the
+    # runner's own total says HOW MANY, and cannot be fooled by two failures that
+    # share a name, a message or a banner. A drop, or passing-count noise, is fine.
+    count_increases = []
+    for i, (before, after) in enumerate(zip(baseline, candidate)):
+        was, now = before.get('failure_count'), after.get('failure_count')
+        if isinstance(was, int) and isinstance(now, int) and now > was:
+            count_increases.append(f'{i + 1}:runner failure count {was} -> {now}')
+    return {'status': 'blocked' if new or errors or count_increases else 'pass',
+            'new_failures': new, 'count_increases': count_increases,
+            'baseline_failures': sorted(old.elements()), 'errors': errors,
             'baseline': baseline, 'candidate': candidate}
 
 
@@ -230,7 +309,8 @@ def run_command(command: str, cwd: Path, timeout: float, project_id: str) -> dic
     """Run one exact platform-shell command with the existing owned-tree cleanup."""
     from mc.blueprints.agent_routes import _register_process, _unregister_process
     from mc.blueprints.secrets_routes import _kill_process_tree, _win_job_object_for
-    result: dict[str, Any] = {'exit_code': None, 'signatures': [], 'output_tail': '', 'error': None}
+    result: dict[str, Any] = {'exit_code': None, 'signatures': [], 'failure_count': None,
+                              'output_tail': '', 'error': None}
     proc = None
     job = None
     with tempfile.TemporaryFile() as output:
@@ -271,8 +351,9 @@ def run_command(command: str, cwd: Path, timeout: float, project_id: str) -> dic
             result['error'] = 'output_limit'
         elif result['exit_code'] is not None:
             output.seek(0)
-            result['signatures'] = failure_signatures(
-                output.read().decode('utf-8', 'replace'), result['exit_code'], cwd)
+            text = output.read().decode('utf-8', 'replace')
+            result['signatures'] = failure_signatures(text, result['exit_code'], cwd)
+            result['failure_count'] = failure_count(text, result['exit_code'], cwd)
     return result
 
 
@@ -291,7 +372,7 @@ def verify(project: dict[str, Any], worktree: Path, target: str, incoming: str,
         # False/0 are malformed settings, not an opt-out.
         if project.get('verify_command') is None or project.get('verify_command') in ('', []):
             return None
-    result: dict[str, Any] = {'status': 'blocked', 'new_failures': [],
+    result: dict[str, Any] = {'status': 'blocked', 'new_failures': [], 'count_increases': [],
         'baseline_failures': [], 'errors': [], 'baseline': [], 'candidate': []}
     restored = False
     original_ref = ''

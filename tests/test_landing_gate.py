@@ -763,17 +763,17 @@ def test_spec_failure_with_the_same_assertion_as_an_existing_one_blocks(tmp_path
     assert sigs(old_run) != sigs(new_run)
     result = verdict(sigs(old_run), sigs(new_run))
     assert result['status'] == 'blocked'
-    assert result['new_failures'] == ['1:spec:new thing']
+    assert result['new_failures'] == ['1:spec:new thing @fx.test.mjs']
 
 
 @needs_node
 def test_spec_names_are_suite_qualified_and_the_recap_adds_nothing(tmp_path):
     out, code = real_spec(tmp_path, 's', suite_source(('suiteA', 'assert.equal(1, 2);'), ('suiteB', 'assert.equal(1, 2);')))
     signatures = gate.failure_signatures(out, code)
-    assert {'spec:suiteA > works', 'spec:suiteB > works'} <= set(signatures)
-    assert 'spec:works' not in signatures                      # the recap's unqualified copy is skipped
+    assert {'spec:suiteA > works @fx.test.mjs', 'spec:suiteB > works @fx.test.mjs'} <= set(signatures)
+    assert not any(s.startswith('spec:works') for s in signatures)   # the recap's own copy adds nothing
     assert [s for s in signatures if s.startswith('spec:')] == [
-        'spec:suiteA', 'spec:suiteA > works', 'spec:suiteB', 'spec:suiteB > works']
+        'spec:suiteA', 'spec:suiteA > works @fx.test.mjs', 'spec:suiteB', 'spec:suiteB > works @fx.test.mjs']
 
 
 @needs_node
@@ -783,14 +783,14 @@ def test_same_named_spec_test_failing_in_a_second_suite_blocks(tmp_path):
     new = sigs(real_spec(tmp_path, 'new', suite_source(('suiteA', fail), ('suiteB', fail))))
     result = verdict(old, new)
     assert result['status'] == 'blocked'
-    assert 'spec:suiteB > works' in [s.split(':', 1)[1] for s in result['new_failures']]
+    assert 'spec:suiteB > works @fx.test.mjs' in [s.split(':', 1)[1] for s in result['new_failures']]
 
 
 @needs_node
 def test_nested_spec_subtest_failure_is_named_under_its_parent(tmp_path):
     source = NODE_HEAD + ("test('parent', async (t) => {\n  await t.test('child ok', () => {});\n"
                           "  await t.test('child bad', () => { assert.equal(1, 2); });\n});\n")
-    assert 'spec:parent > child bad' in sigs(real_spec(tmp_path, 's', source))
+    assert 'spec:parent > child bad @fx.test.mjs' in sigs(real_spec(tmp_path, 's', source))
 
 
 @needs_node
@@ -808,4 +808,184 @@ def test_two_node_runs_in_one_output_are_both_parsed_past_the_first_recap():
     first = "✖ one (0.5ms)\nℹ tests 1\nℹ fail 1\n\n✖ failing tests:\n\ntest at a.test.mjs:3:1\n✖ one (0.5ms)\n  Error: x\n"
     second = "✖ two (0.4ms)\nℹ tests 1\nℹ fail 1\n"
     assert gate.failure_signatures(first + second, 1) == sorted(
-        {'spec:one', 'spec:two', 'exit:1:Error: x'})
+        {'spec:one @a.test.mjs', 'spec:two', 'exit:1:Error: x'})
+
+
+# ── Round four: provenance of a banner, and a count backstop (Fenn, 2026-11-07) ─
+# Same rule: every output is captured from the real runner (pytest, node --test).
+
+BANNER_OLD = 'def test_old():\n    print("=== PASSES ===")\n    assert 1 == 2\n'
+BANNER_NEW = 'def test_new():\n    assert 1 == 2\n'
+OLD_FAIL_PRINTS = 'def test_old():\n    print("hello")\n    assert 1 == 2\n'
+PASS_PRINTS_TOO = 'def test_ok_too():\n    print("again")\n'
+FILE_FAIL = "test('works', () => { assert.equal(1, 2); });\n"
+FILE_OK = "test('works', () => {});\n"
+
+
+def counted(captured_run, root=None):
+    """What run_command stores per command: identities plus the runner's own total."""
+    output, code = captured_run
+    return {'signatures': gate.failure_signatures(output, code, root),
+            'failure_count': gate.failure_count(output, code, root), 'error': None}
+
+
+def full_verdict(old_run, new_run, old_root=None, new_root=None):
+    return gate.compare([counted(old_run, old_root)], [counted(new_run, new_root)])
+
+
+def real_two_files(tmp_path: Path, label: str, first: str, second: str, reporter: str):
+    folder = tmp_path/label
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, body in (('a.test.mjs', first), ('b.test.mjs', second)):
+        (folder/name).write_text(NODE_HEAD + body, encoding='utf-8')
+    return captured(['node', '--test', f'--test-reporter={reporter}', 'a.test.mjs', 'b.test.mjs'], folder)
+
+
+@pytest.mark.parametrize('flag', ['-rP', '-rA'])
+def test_a_banner_printed_by_a_test_does_not_hide_the_next_failure_heading(tmp_path, flag):
+    # Fenn P1 (banner_old / banner_new): test_old prints `=== PASSES ===`, then a second
+    # failing test with the same assertion is added. The printed banner used to move the
+    # parser into PASSES, so the second real heading was ignored and the gate said pass.
+    old_run = real_pytest_flags(tmp_path, 'old', BANNER_OLD, [flag])
+    new_run = real_pytest_flags(tmp_path, 'new', BANNER_OLD + BANNER_NEW, [flag])
+    assert 'Captured stdout call' in old_run[0] and '\n=== PASSES ===' in old_run[0].replace('\r', '')
+    by_identity = verdict(sigs(old_run), sigs(new_run))  # no totals: the heading alone must block
+    assert by_identity['status'] == 'blocked'
+    assert any('test_new' in s for s in by_identity['new_failures'])
+    assert full_verdict(old_run, new_run)['status'] == 'blocked'
+
+
+def test_a_real_passes_banner_after_captured_output_still_ends_the_failures_section(tmp_path):
+    # The failing test has captured output, so its block is open when pytest's own
+    # `=== PASSES ===` arrives. That banner is the right width and must still count.
+    old_run = real_pytest_flags(tmp_path, 'old', OLD_FAIL_PRINTS + PASS_PRINTS, ['-rP'])
+    new_run = real_pytest_flags(tmp_path, 'new', OLD_FAIL_PRINTS + PASS_PRINTS + PASS_PRINTS_TOO, ['-rP'])
+    assert '= PASSES =' in new_run[0] and 'hello' in new_run[0] and '_ test_ok_too _' in new_run[0]
+    assert not any('test_ok' in s for s in sigs(new_run))
+    assert full_verdict(old_run, new_run)['status'] == 'pass'
+
+
+def test_banner_width_follows_the_terminal_not_a_constant(tmp_path):
+    def real(label, source):
+        folder = tmp_path/label
+        folder.mkdir()
+        (folder/'test_fx.py').write_text(source, encoding='utf-8')
+        return captured([sys.executable, '-m', 'pytest', 'test_fx.py', '-q', '-rP', '-p', 'no:cacheprovider',
+                         '-o', 'addopts=', '--rootdir', str(folder)], folder, {'COLUMNS': '120'})
+    old_run = real('old', OLD_FAIL_PRINTS + PASS_PRINTS)
+    new_run = real('new', OLD_FAIL_PRINTS + PASS_PRINTS + PASS_PRINTS_TOO)
+    assert max(len(line) for line in old_run[0].splitlines()) >= 110  # not the 80-column default
+    assert not any('test_ok' in s for s in sigs(new_run))
+    assert full_verdict(old_run, new_run)['status'] == 'pass'
+
+
+def test_runner_failure_totals_from_real_output(tmp_path):
+    assert gate.failure_count(*real_pytest(tmp_path, 'p', OLD_FAIL + PASS_TEST)) == 1
+    two = real_pytest(tmp_path, 'two', OLD_FAIL + NEW_FAIL + PASS_TEST)
+    assert '2 failed, 1 passed' in two[0] and gate.failure_count(*two) == 2
+    broken = 'import pytest\n@pytest.fixture\ndef boom():\n    raise RuntimeError("x")\ndef test_e(boom):\n    pass\n'
+    mixed = real_pytest(tmp_path, 'mixed', OLD_FAIL + broken)
+    assert '1 failed, 1 error' in mixed[0] and gate.failure_count(*mixed) == 2   # failures + errors
+    assert gate.failure_count('anything at all', 0) == 0
+    assert gate.failure_count('boom: something unrecognised', 3) is None
+
+
+@needs_node
+def test_node_failure_totals_from_real_spec_and_tap_output(tmp_path):
+    spec = real_spec(tmp_path, 's', NODE_HEAD + NODE_OLD + NODE_NEW + NODE_PASS)
+    tap = real_tap(tmp_path, 't', NODE_HEAD + NODE_OLD + NODE_NEW + NODE_PASS)
+    assert 'ℹ fail 2' in spec[0] and '# fail 2' in tap[0]
+    assert gate.failure_count(*spec) == gate.failure_count(*tap) == 2
+
+
+def test_run_command_records_the_runner_total(tmp_path):
+    folder = tmp_path/'rc'
+    folder.mkdir()
+    (folder/'test_fx.py').write_text(OLD_FAIL + NEW_FAIL + PASS_TEST, encoding='utf-8')
+    done = gate.run_command(command('-m', 'pytest', 'test_fx.py', '-q', '-ra', '-p', 'no:cacheprovider',
+                                    '-o', 'addopts=', '--rootdir', str(folder)), folder, 120, 'one')
+    assert done['exit_code'] == 1 and done['failure_count'] == 2
+    assert 'pytest:test_fx.py::test_old' in done['signatures']
+
+
+@needs_node
+@pytest.mark.parametrize('reporter', ['spec', 'tap'])
+def test_same_test_name_failing_in_a_second_file_blocks(tmp_path, reporter):
+    # Fenn P1 (files_old_* / files_new_*): `works` fails in a.test.mjs; b.test.mjs also
+    # has a `works` that starts failing. Before: one identity, count line ignored, pass.
+    old_run = real_two_files(tmp_path, 'old', FILE_FAIL, FILE_OK, reporter)
+    new_run = real_two_files(tmp_path, 'new', FILE_FAIL, FILE_FAIL, reporter)
+    result = full_verdict(old_run, new_run)
+    assert result['status'] == 'blocked'
+    assert result['count_increases'] == ['1:runner failure count 1 -> 2']
+    assert result['new_failures']  # the identities see it too (spec: the file, tap: the multiset)
+
+
+@needs_node
+def test_spec_failure_moving_to_another_file_blocks_even_at_equal_count(tmp_path):
+    # a fixed, b broken: one failure either way, so only the file in the identity can tell.
+    old_run = real_two_files(tmp_path, 'old', FILE_FAIL, FILE_OK, 'spec')
+    new_run = real_two_files(tmp_path, 'new', FILE_OK, FILE_FAIL, 'spec')
+    result = full_verdict(old_run, new_run)
+    assert result['count_increases'] == []
+    assert result['status'] == 'blocked'
+    assert result['new_failures'] == ['1:spec:works @b.test.mjs']
+    assert 'spec:works @a.test.mjs' in counted(old_run)['signatures']
+
+
+@needs_node
+def test_spec_stability_with_file_qualified_names(tmp_path):
+    old_run = real_two_files(tmp_path, 'old', FILE_FAIL, FILE_OK, 'spec')
+    added = real_two_files(tmp_path, 'added', FILE_FAIL, FILE_OK + NODE_PASS, 'spec')
+    moved = real_two_files(tmp_path, 'moved', '// moved\n\n\n' + FILE_FAIL, FILE_OK, 'spec')
+    assert 'a.test.mjs:3:' in old_run[0] and 'a.test.mjs:6:' in moved[0]
+    for label, new_run in (('added', added), ('moved', moved)):
+        result = full_verdict(old_run, new_run, tmp_path/'old', tmp_path/label)
+        assert result['status'] == 'pass', result['new_failures']
+
+
+def test_passing_count_changes_never_block_but_failure_count_increases_do(tmp_path):
+    old_run = real_pytest(tmp_path, 'old', OLD_FAIL)
+    more_passing = real_pytest(tmp_path, 'passing', OLD_FAIL + PASS_TEST + PASS_PRINTS)
+    assert full_verdict(old_run, more_passing)['status'] == 'pass'
+    assert counted(old_run)['failure_count'] == counted(more_passing)['failure_count'] == 1
+    two = real_pytest(tmp_path, 'two', OLD_FAIL + NEW_FAIL)
+    assert full_verdict(two, old_run)['status'] == 'pass'       # fewer failures than before
+    result = full_verdict(old_run, two)
+    assert result['status'] == 'blocked' and result['count_increases'] == ['1:runner failure count 1 -> 2']
+
+
+def test_two_files_with_one_failing_test_name_are_both_listed_without_a_short_summary(tmp_path):
+    def real(label, with_second):
+        folder = tmp_path/label
+        folder.mkdir()
+        (folder/'test_a.py').write_text(OLD_FAIL, encoding='utf-8')
+        if with_second:
+            (folder/'test_b.py').write_text(OLD_FAIL, encoding='utf-8')
+        return captured([sys.executable, '-m', 'pytest', '-q', '-rN', '-p', 'no:cacheprovider',
+                         '-o', 'addopts=', '--rootdir', str(folder)], folder)
+    old_run, new_run = real('old', False), real('new', True)
+    assert 'FAILED' not in new_run[0]
+    assert sigs(old_run).count('pytest-report:test_old') == 1 and sigs(new_run).count('pytest-report:test_old') == 2
+    result = verdict(sigs(old_run), sigs(new_run))  # identities only: the multiset is what blocks
+    assert result['status'] == 'blocked' and '1:pytest-report:test_old' in result['new_failures']
+
+
+def test_compare_counts_a_repeated_signature_and_ignores_missing_totals():
+    twice = gate.compare([run(['pytest:a'])], [run(['pytest:a', 'pytest:a'])])
+    assert twice['status'] == 'blocked' and twice['new_failures'] == ['1:pytest:a']
+    assert gate.compare([run(['pytest:a', 'pytest:a'])], [run(['pytest:a'])])['status'] == 'pass'
+    assert gate.compare([run(['pytest:a', 'pytest:a'])], [run(['pytest:a', 'pytest:a'])])['baseline_failures'] == [
+        '1:pytest:a', '1:pytest:a']
+
+    def with_total(total, signatures=('pytest:a',)):
+        return {**run(signatures), 'failure_count': total}
+    only_count = gate.compare([with_total(1)], [with_total(2)])      # same identities, one more failure
+    assert only_count['status'] == 'blocked' and only_count['new_failures'] == []
+    assert only_count['count_increases'] == ['1:runner failure count 1 -> 2']
+    assert gate.compare([with_total(2)], [with_total(2)])['status'] == 'pass'
+    assert gate.compare([with_total(3)], [with_total(1)])['status'] == 'pass'
+    assert gate.compare([with_total(None)], [with_total(5)])['status'] == 'pass'   # no baseline total: identities only
+    assert gate.compare([with_total(1)], [with_total(None)])['status'] == 'pass'
+    assert gate.compare([with_total(1), with_total(0, ())], [with_total(1), with_total(2, ())])['count_increases'] == [
+        '2:runner failure count 0 -> 2']                                  # scoped by command position
