@@ -120,8 +120,13 @@ def test_detect_codex_real_captured_usage_limit_event():
     ('Mar 8th, 2026 2:30 AM', '2026-03-08T10:30:00+00:00'),
 ])
 def test_codex_dst_reset_never_resolves_early(monkeypatch, wall, expected):
-    from zoneinfo import ZoneInfo
-    zone = ZoneInfo('America/Los_Angeles')
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    try:
+        zone = ZoneInfo('America/Los_Angeles')
+    except ZoneInfoNotFoundError:
+        # Windows ships no IANA database; production resolves the reset in
+        # the host zone and never needs one, so only this seam is missing.
+        pytest.skip('IANA tz database unavailable (pip install tzdata)')
     class LocalDatetime(_real_datetime):
         def astimezone(self, tz=None):
             # Fixed local-zone seam: no dependence on this host's TZ or OS.
