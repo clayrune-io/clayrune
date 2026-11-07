@@ -94,9 +94,21 @@ deferred under Q4. Untrusted envelopes cannot set project/session ownership.
 
 Readers parse/classify, discard commands and enqueue compact lifecycle records
 without waiting for disk. A single daemon worker owns store writes. The queue
-holds at most 256 records; the identity table holds at most 4096 calls per
-observer lifetime. Full capacity logs incomplete progress and refuses new
-observations/identities; existing identities are never evicted and recreated.
+holds at most 256 records; the identity table holds at most 4096 calls.
+When a new candidate needs a slot, the worker evicts the oldest terminal run
+by terminal-transition order; repeated results do not refresh that order.
+Active runs are never evicted. A table full of active runs logs incomplete
+progress and refuses new identities; a full observation queue still drops
+incoming observations with a log.
+
+Each evicted identity leaves only a SHA-256 hash of its full scoped key in a
+separate FIFO of at most 65536 tombstones. Candidates with retained hashes
+are ignored before eviction or storage, so replay cannot recreate those
+completed calls or consume an active run's slot. Tombstone hits do not refresh
+FIFO order. Once the oldest tombstone ages out, that identity can be enrolled
+again: replay protection is bounded and process-local, not permanent.
+Terminal-order and tombstone structures are owned by the same single worker
+as the run table; flag-off returns before reading or mutating any of them.
 All generic runs are already partial. Queue loss can leave a run running or
 undelivered; it cannot manufacture success. Store/decoder failures log exception
 class only, never arbitrary message contents, and cannot change the agent's
@@ -151,3 +163,30 @@ frozen artifacts, clean installs, restricted capture, UI and restart survival
 remain unverified. No static edits: browser smokes are inapplicable. No new
 dependencies, user-facing controls or binding rules: USER_GUIDE, README,
 CLAUDE/AGENTS and agent-rule changes are inapplicable.
+
+## 2026-11-06 identity-capacity follow-up verification
+
+Six additional regression cases cover slot reuse and completed-call replay,
+terminal-transition ordering (including repeated results), all-active refusal,
+bounded hash-only FIFO tombstones without hit refresh, separate session scope,
+and disabled reader/queued-worker behavior with populated retention state.
+
+Commands run from the branch worktree:
+
+```text
+./.venv/Scripts/python.exe _scratch/run_eviction_checks.py -m pytest tests/test_test_run_detection.py
+./.venv/Scripts/python.exe _scratch/run_eviction_checks.py all-test-runs
+C:/Users/levir/AppData/Local/Programs/Python/Python312/Scripts/pyright.exe mc/test_run_detection.py tests/test_test_run_detection.py
+git diff --check
+```
+
+The scratch runner starts the shared-venv Python with the supplied arguments,
+immediately registers its child PID, and waits for its exit code. Its
+`all-test-runs` selector expands every `tests/test_test_run_*.py` in sorted
+order (12 files) and invokes `-m pytest` on that full set. Focused result:
+**87 passed**, rc=0. Full test-run result: **660 passed, 3 skipped in 187.17s**,
+rc=0. Skips are two POSIX signal cases on Windows and an unavailable requested
+shell. Pyright: **0 errors, 0 warnings, 0 informations**, rc=0; the shared
+venv lacks pyright, so the existing Python 3.12 installation supplied it.
+Whitespace check: rc=0. No dependency installation, live-config change,
+merge, push, restart, store/anchor/route edit or deployed-server verification.
