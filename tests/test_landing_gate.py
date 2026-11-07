@@ -527,9 +527,11 @@ _STRIPPED_ENV = ('PYTEST_ADDOPTS', 'PYTEST_CURRENT_TEST', 'NODE_OPTIONS', 'PYTHO
 
 
 class Captured(tuple):
-    """(output, exit code) of a real runner, plus the cwd it ran in: run_command parses
-    with that cwd as the root, so the helpers below default to it."""
+    """(output, exit code) of a real runner, plus the cwd it ran in and the command line
+    that ran it: run_command parses with that cwd as the root and that command, so the
+    helpers below default to both."""
     root: Path
+    command: str
 
 
 def captured(argv, cwd: Path, extra_env=None):
@@ -540,6 +542,8 @@ def captured(argv, cwd: Path, extra_env=None):
     assert done.returncode != 0, done.stdout + done.stderr
     result = Captured((done.stdout + done.stderr, done.returncode))
     result.root = cwd
+    result.command = subprocess.list2cmdline([str(a) for a in argv]) if os.name == 'nt' else shlex.join(
+        [str(a) for a in argv])
     return result
 
 
@@ -560,7 +564,8 @@ def real_tap(tmp_path: Path, label: str, source: str):
 
 def sigs(captured_run, root=None):
     output, code = captured_run
-    return gate.failure_signatures(output, code, root or captured_run.root)
+    return gate.failure_signatures(output, code, root or captured_run.root,
+                                   gate._direct_node(captured_run.command))
 
 
 def verdict(old, new):
@@ -834,8 +839,9 @@ def counted(captured_run, root=None):
     """What run_command stores per command: identities plus the runner's own totals."""
     output, code = captured_run
     root = root or captured_run.root
-    return {'exit_code': code, 'signatures': gate.failure_signatures(output, code, root),
-            'failure_totals': gate.failure_totals(output, code, root), 'error': None}
+    return {'exit_code': code, 'signatures': sigs(captured_run, root),
+            'failure_totals': gate.failure_totals(output, code, root),
+            'proof': gate.prove(output, code, root, captured_run.command), 'error': None}
 
 
 def full_verdict(old_run, new_run, old_root=None, new_root=None):
@@ -1085,7 +1091,9 @@ def test_a_passing_test_printing_a_full_pytest_total_line_is_an_accepted_false_b
     assert gate.failure_totals(*new_run) == [gate.AMBIGUOUS, 1]
     result = full_verdict(old_run, new_run)
     assert result['status'] == 'blocked' and result['new_failures'] == []
-    assert result['unprovable'] == ['1:runner total ambiguous on candidate (baseline 1 total lines, candidate 2)']
+    # Round 8 adds the one-total-line reason beside the round-6 ambiguity reason; still blocked.
+    assert result['unprovable'] == ['1:runner total ambiguous on candidate (baseline 1 total lines, candidate 2)',
+                                    '1:candidate printed 2 runner total lines, only exactly 1 is provable']
 
 
 @needs_node
@@ -1158,7 +1166,9 @@ def test_nested_pytest_total_followed_by_a_wrapper_footer_blocks_a_new_failure(t
     assert gate.AMBIGUOUS in gate.failure_totals(*old_run) and gate.AMBIGUOUS in gate.failure_totals(*new_run)
     result = full_verdict(old_run, new_run)
     assert result['status'] == 'blocked'
-    assert len(result['unprovable']) == 1 and 'ambiguous on baseline and candidate' in result['unprovable'][0]
+    # Round 8 adds the 2-total-lines / pytest-twice reasons beside the ambiguity reason.
+    assert 'ambiguous on baseline and candidate' in result['unprovable'][0]
+    assert any('ran pytest 2 times in one command' in reason for reason in result['unprovable'])
 
 
 def real_same_basename(tmp_path: Path, label: str, in_a: str, in_b: str, reporter: str):
@@ -1219,9 +1229,10 @@ def test_a_printed_total_cannot_offset_a_new_failure_under_dash_s(tmp_path):
     result = full_verdict(old_run, new_run)
     assert result['status'] == 'blocked' and result['new_failures'] == []   # identities cannot see it
     # The identity rule (round 7) also fires: --tb=line names no test, so neither run is provable.
-    assert result['unprovable'] == ['1:runner total lines differ (baseline 2, candidate 1)',
-                                    '1:baseline names 0 of 2 failures the runner counted',
-                                    '1:candidate names 0 of 2 failures the runner counted']
+    # Round 8: the baseline also prints two total lines, which is unprovable by itself.
+    assert result['unprovable'][0] == '1:runner total lines differ (baseline 2, candidate 1)'
+    assert '1:baseline printed 2 runner total lines, only exactly 1 is provable' in result['unprovable']
+    assert '1:candidate names 0 of 2 failures the runner counted' in result['unprovable']
 
 
 # ── Round seven: a failure is "pre-existing" only if it is NAMED (Fenn, 2026-11-07) ──
@@ -1331,9 +1342,25 @@ def test_a_child_cwd_tap_wrapper_still_blocks_a_swap_on_the_absolute_location(tm
     new_run = real_subprojects(tmp_path, 'new', 'b a', FILE_OK, FILE_FAIL, 'tap')
     assert 'tap:works @a/same.test.mjs' in sigs(old_run)
     result = full_verdict(old_run, new_run)
+    # Round 8: this wrapper runs node twice (two total lines), so it is unprovable; the TAP
+    # identity itself is still resolved and still reported as the new failure.
+    assert result['status'] == 'blocked'
+    assert all('printed 2 runner total lines' in reason for reason in result['unprovable']), result['unprovable']
+    assert result['new_failures'] == ['1:tap:works @b/same.test.mjs']
+    assert full_verdict(old_run, real_subprojects(tmp_path, 'same', 'a b', FILE_FAIL, FILE_OK, 'tap'))['status'] == 'blocked'
+
+
+@needs_node
+def test_a_one_child_tap_wrapper_keeps_its_absolute_location_identity_and_passes_unchanged(tmp_path):
+    # Round 8 rule 5: a TAP absolute location relativized against the cwd stays valid under a
+    # wrapper, when the wrapper runs exactly one node invocation (one total line).
+    old_run = real_subprojects(tmp_path, 'old', 'a', FILE_FAIL, FILE_OK, 'tap')
+    new_run = real_subprojects(tmp_path, 'new', 'b', FILE_OK, FILE_FAIL, 'tap')
+    assert 'tap:works @a/same.test.mjs' in sigs(old_run) and not gate._direct_node(old_run.command)
+    result = full_verdict(old_run, new_run)
     assert result['status'] == 'blocked' and result['unprovable'] == []
     assert result['new_failures'] == ['1:tap:works @b/same.test.mjs']
-    assert full_verdict(old_run, real_subprojects(tmp_path, 'same', 'a b', FILE_FAIL, FILE_OK, 'tap'))['status'] == 'pass'
+    assert full_verdict(old_run, real_subprojects(tmp_path, 'same', 'a', FILE_FAIL, FILE_OK, 'tap'))['status'] == 'pass'
 
 
 @needs_node
@@ -1374,3 +1401,183 @@ def test_identity_file_resolves_relative_paths_against_the_cwd_only(tmp_path):
     assert gate._identity_file('a/missing.test.mjs', tmp_path) == '?a/missing.test.mjs'
     assert gate._identity_file(str(tmp_path/'a'/'t.test.mjs') + ':3:1', tmp_path) == 'a/t.test.mjs'
     assert gate._identity_file('t.test.mjs', None) == 't.test.mjs'                      # no cwd: nothing to resolve
+
+
+# ── Round eight: a count is provable only from ONE runner's own report (Fenn, 2026-11-07) ──
+# Dave's decision (b). Same rule: every output is captured from the real runner. Repros A, B
+# and C are Fenn's `suite_*`, `duplicate_*` and `printed_*_uncaptured`, rebuilt from his fixtures.
+
+PY_FLAGS = ['-p', 'no:cacheprovider', '-o', 'addopts=', '--rootdir=.']
+R8_SWAP_BEFORE = 'def test_old():\n    assert False\n\ndef test_new():\n    pass\n'
+R8_SWAP_AFTER = 'def test_old():\n    pass\n\ndef test_new():\n    assert False\n'
+R8_SUITE = ("import {describe, it} from 'node:test';\nimport assert from 'node:assert/strict';\n"
+            "describe('suite', () => { it('known', () => {assert.equal(1,2);}); });\n")
+R8_NODE_THEN_PYTEST = f'''import subprocess, sys
+a = subprocess.run(['node', '--test', '--test-reporter=spec', 'known.test.mjs'])
+b = subprocess.run([sys.executable, '-m', 'pytest', 'test_fx.py', '-q', '-rN', '--tb=no'] + {PY_FLAGS!r})
+sys.exit(max(a.returncode, b.returncode))
+'''
+R8_PYTEST_TWICE = f'''import subprocess, sys
+common = [sys.executable, '-m', 'pytest', '-q'] + {PY_FLAGS!r}
+a = subprocess.run(common + ['test_visible.py', '-ra'])
+b = subprocess.run(common + ['test_hidden.py', '-rN', '--tb=no'])
+sys.exit(max(a.returncode, b.returncode))
+'''
+R8_VISIBLE = 'def test_known():\n    print("FAILED test_visible.py::test_known")\n    assert False\n'
+R8_CHATTY = '\ndef test_chatty():\n    print("\\nFAILED test_fx.py::test_chatty")\n'
+
+
+def real_wrapper(tmp_path: Path, label: str, files: dict):
+    folder = tmp_path/label
+    folder.mkdir()
+    for name, body in files.items():
+        (folder/name).write_text(body, encoding='utf-8')
+    return captured([sys.executable, 'run.py'], folder)
+
+
+def assert_unprovable(result, *needles):
+    assert result['status'] == 'blocked' and result['new_failures'] == [], result
+    for needle in needles:
+        assert any(needle in reason for reason in result['unprovable']), (needle, result['unprovable'])
+
+
+@needs_node
+def test_repro_a_node_suite_plus_unnamed_pytest_swap_blocks(tmp_path):
+    # Fenn r8 P1 A: the failing describe() supplied a spare identity, so the `--tb=no` pytest
+    # swap was "named" by node's container line. Two runner families in one command: unprovable.
+    def real(label, test):
+        return real_wrapper(tmp_path, label, {'run.py': R8_NODE_THEN_PYTEST, 'known.test.mjs': R8_SUITE,
+                                              'test_fx.py': test})
+    old_run, new_run = real('old', R8_SWAP_BEFORE), real('new', R8_SWAP_AFTER)
+    assert_unprovable(full_verdict(old_run, new_run), 'more than one runner family (pytest, node)',
+                      'runner total lines')
+    assert full_verdict(old_run, real('same', R8_SWAP_BEFORE))['status'] == 'blocked'  # accepted false block
+
+
+def test_repro_b_a_captured_duplicate_name_plus_second_pytest_blocks(tmp_path):
+    # Fenn r8 P1 B: test_known prints its own `FAILED ...` (captured), so pytest's report names it
+    # twice; the duplicate filled the count of a second, unnamed `-rN --tb=no` pytest run.
+    def real(label, hidden):
+        return real_wrapper(tmp_path, label, {'run.py': R8_PYTEST_TWICE, 'test_visible.py': R8_VISIBLE,
+                                              'test_hidden.py': hidden})
+    result = full_verdict(real('old', R8_SWAP_BEFORE), real('new', R8_SWAP_AFTER))
+    assert_unprovable(result, '2 runner total lines', 'ran pytest 2 times in one command')
+
+
+def test_repro_b2_without_the_duplicate_two_pytest_runs_still_block(tmp_path):
+    def real(label, hidden):
+        return real_wrapper(tmp_path, label, {'run.py': R8_PYTEST_TWICE,
+                                              'test_visible.py': 'def test_known():\n    assert False\n',
+                                              'test_hidden.py': hidden})
+    assert_unprovable(full_verdict(real('old', R8_SWAP_BEFORE), real('new', R8_SWAP_AFTER)), '2 runner total lines')
+
+
+def test_repro_c_a_passing_test_printing_failed_under_dash_s_is_not_an_identity(tmp_path):
+    # Fenn r8 P1 C: `-s` lets a passing test write `FAILED test_fx.py::test_chatty` straight into
+    # the stream, where it looked like a short-summary line and filled the count of the real,
+    # unnamed (`-rN --tb=no`) failure that swapped under it. Only the LAST short-summary section
+    # before the total is a name source, and `-rN` has none.
+    argv = [sys.executable, '-m', 'pytest', 'test_fx.py', '-q', '--tb=no', '-s', '-rN', *PY_FLAGS]
+
+    def real(label, source):
+        folder = tmp_path/label
+        folder.mkdir()
+        (folder/'test_fx.py').write_text(source, encoding='utf-8')
+        return captured(argv, folder)
+    old_run, new_run = real('old', R8_SWAP_BEFORE + R8_CHATTY), real('new', R8_SWAP_AFTER + R8_CHATTY)
+    assert 'FAILED test_fx.py::test_chatty' in old_run[0]
+    assert gate.prove(*old_run, old_run.root, old_run.command)['identities'] == []
+    assert_unprovable(full_verdict(old_run, new_run), 'baseline names 0 of 1 failures',
+                      'candidate names 0 of 1 failures')
+
+
+@needs_node
+def test_a_same_named_file_at_the_wrapper_cwd_does_not_prove_a_child_cwd_path(tmp_path):
+    # Fenn r8 P1 (child_old_True / child_new_True): a decoy `same.test.mjs` at the wrapper's own
+    # cwd made `exists()` true for the child-relative spec path, so the swap `a b` -> `b a` passed.
+    def real(label, selected, in_a, in_b):
+        folder = tmp_path/label
+        for sub, body in (('a', in_a), ('b', in_b)):
+            (folder/sub).mkdir(parents=True)
+            (folder/sub/'same.test.mjs').write_text(NODE_HEAD + body, encoding='utf-8')
+        (folder/'same.test.mjs').write_text(NODE_HEAD + FILE_OK, encoding='utf-8')  # the decoy
+        (folder/'run.py').write_text(SUBPROJECT_RUNNER % 'spec', encoding='utf-8')
+        (folder/'selected.txt').write_text(selected, encoding='utf-8')
+        return captured([sys.executable, 'run.py'], folder)
+    old_run, new_run = real('old', 'a b', FILE_FAIL, FILE_OK), real('new', 'b a', FILE_OK, FILE_FAIL)
+    assert (tmp_path/'old'/'same.test.mjs').is_file()
+    assert 'spec:works @same.test.mjs' not in sigs(old_run)  # the wrapper is not a direct node run
+    assert_unprovable(full_verdict(old_run, new_run), 'test file path does not resolve from the verification cwd')
+
+
+@needs_node
+def test_a_decoy_file_also_fails_a_single_child_cwd_spec_wrapper(tmp_path):
+    # Same decoy with ONE node invocation: only the wrapper rule (not the two-totals rule) can block it.
+    def real(label, selected, in_a, in_b):
+        folder = tmp_path/label
+        for sub, body in (('a', in_a), ('b', in_b)):
+            (folder/sub).mkdir(parents=True)
+            (folder/sub/'same.test.mjs').write_text(NODE_HEAD + body, encoding='utf-8')
+        (folder/'same.test.mjs').write_text(NODE_HEAD + FILE_OK, encoding='utf-8')
+        (folder/'run.py').write_text(SUBPROJECT_RUNNER % 'spec', encoding='utf-8')
+        (folder/'selected.txt').write_text(selected, encoding='utf-8')
+        return captured([sys.executable, 'run.py'], folder)
+    old_run, new_run = real('old', 'a', FILE_FAIL, FILE_OK), real('new', 'b', FILE_OK, FILE_FAIL)
+    assert_unprovable(full_verdict(old_run, new_run), 'test file path does not resolve from the verification cwd')
+
+
+@needs_node
+def test_a_direct_node_spec_run_still_resolves_relative_paths_against_the_cwd(tmp_path):
+    old_run = real_same_basename(tmp_path, 'old', FILE_FAIL, FILE_OK, 'spec')
+    assert gate._direct_node(old_run.command)
+    assert 'spec:works @a/same.test.mjs' in sigs(old_run)
+    new_run = real_same_basename(tmp_path, 'new', FILE_OK, FILE_FAIL, 'spec')
+    swapped = full_verdict(old_run, new_run)
+    assert swapped['status'] == 'blocked' and swapped['new_failures'] == ['1:spec:works @b/same.test.mjs']
+
+
+@needs_node
+@pytest.mark.parametrize('reporter', ['spec', 'tap'])
+def test_a_failing_describe_container_is_not_a_test_identity(tmp_path, reporter):
+    folder = tmp_path/reporter
+    folder.mkdir()
+    (folder/'known.test.mjs').write_text(R8_SUITE, encoding='utf-8')
+    run_ = captured(['node', '--test', f'--test-reporter={reporter}', 'known.test.mjs'], folder)
+    proof = gate.prove(*run_, run_.root, run_.command)
+    assert proof['reasons'] == [], proof
+    assert proof['total'] == len(proof['identities']) == 1, proof
+    assert proof['identities'][0].endswith(' @known.test.mjs') and 'known' in proof['identities'][0]
+    assert len(sigs(run_)) > len(proof['identities']) or reporter == 'tap'  # the container is still a signature
+    assert full_verdict(run_, run_)['status'] == 'pass'
+
+
+def test_prove_requires_the_name_count_to_equal_the_total_and_deduplicates():
+    short = ('=========== short test summary info ===========\n'
+             'FAILED test_fx.py::test_a - assert False\nFAILED test_fx.py::test_a - assert False\n'
+             '============== 2 failed in 0.01s ==============\n')
+    proof = gate.prove(short, 1, None, 'pytest -q')
+    assert proof['identities'] == ['pytest:test_fx.py::test_a'] and proof['total'] == 2
+    assert proof['reasons'] == ['names 1 of 2 failures the runner counted']
+    over = ('=========== short test summary info ===========\n'
+            'FAILED test_fx.py::test_a - assert False\nFAILED test_fx.py::test_b - assert False\n'
+            '============== 1 failed in 0.01s ==============\n')
+    assert gate.prove(over, 1, None, 'pytest -q')['reasons'] == ['names 2 failures but the runner counted only 1']
+
+
+def test_prove_takes_pytest_names_only_from_the_summary_directly_before_the_total():
+    text = ('FAILED test_fx.py::test_printed\n'
+            '=========== short test summary info ===========\n'
+            'FAILED test_fx.py::test_real - assert False\n'
+            'a stray line a wrapper printed\n'
+            '============== 1 failed in 0.01s ==============\n')
+    reasons = gate.prove(text, 1, None, 'pytest -q')['reasons']
+    assert reasons and 'not immediately followed by the runner total line' in reasons[0]
+
+
+def test_direct_node_accepts_only_a_bare_node_test_invocation():
+    for yes in ('node --test', 'node --test --test-reporter=spec a.test.mjs', 'node.exe --test x',
+                'node --no-warnings --test x'):
+        assert gate._direct_node(yes), yes
+    for no in ('npm test', 'python run.py', 'cd a && node --test', 'node --test | tee x', 'FOO=1 node --test',
+               'node a.test.mjs', 'node', '', 'node --test "unterminated', 'node --test; echo done'):
+        assert not gate._direct_node(no), no

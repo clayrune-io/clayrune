@@ -11,6 +11,7 @@ import math
 import os
 import posixpath
 import re
+import shlex
 import subprocess
 import tempfile
 import threading
@@ -58,6 +59,7 @@ _NODE_COUNTS = re.compile(r'(?:#|ℹ) (?:fail|cancelled) (?P<n>\d+)')
 _TAP = re.compile(r'^not ok\s+\d+\b\s*(?:-\s*)?(?P<name>.*?)\s*$')
 _TAP_LOCATION = re.compile(r'''^location:\s*['"]?(?P<file>[^'"]+?)['"]?$''')
 _TAP_SUBTEST = re.compile(r'^# Subtest:\s*(?P<name>.*?)\s*$')
+_TAP_SUITE_TYPE = re.compile(r"""^type:\s*['"]?suite['"]?$""")
 # pytest report heading `____ test_x ____`: the only per-test name when no short
 # summary (-r) is printed, now that the closing count line is ignored. It names a
 # failure only under a `=== FAILURES ===` / `=== ERRORS ===` banner; `-rP`/`-rA`
@@ -102,7 +104,9 @@ class _PytestFrame:
         self.in_capture = False  # inside a captured block: the test's own output
         self.banner_width = 0  # width of the first banner seen outside captured output
 
-    def feed(self, shown: str, line: str) -> None:
+    def feed(self, shown: str, line: str) -> str | None:
+        """Advance past one line; return the banner name if it was accepted as a real one."""
+        accepted = None
         if _PYTEST_CAPTURE.match(line):
             self.in_capture = True
         banner = _PYTEST_BANNER.match(line)
@@ -111,8 +115,10 @@ class _PytestFrame:
             # test's print(); it must not move the section.
             self.section, self.in_capture = banner['name'], False
             self.banner_width = self.banner_width or len(shown)
+            accepted = banner['name']
         if _PYTEST_SECTION.match(line):
             self.in_capture = False
+        return accepted
 
 
 # A runner total the parser could not attribute. Stored in failure_totals in place of a
@@ -179,15 +185,26 @@ def _qualifier(path: str, root: Path | None) -> str:
     return posixpath.normpath(path)
 
 
-def _identity_file(path: str, root: Path | None) -> str:
-    """_qualifier() plus provenance: a RELATIVE qualifier counts only if it names an
-    existing file under the verification cwd, else it is marked `?` (unproven). An
-    absolute path outside the cwd stays absolute and is left alone. With no cwd there is
-    nothing to resolve against (direct parser calls); run_command always passes one."""
+def _identity_file(path: str, root: Path | None, relative_ok: bool = True) -> str:
+    """_qualifier() plus provenance. A RELATIVE qualifier is the runner's own cwd-relative
+    spelling, so it names a file under the verification cwd only if the configured command
+    IS that runner (relative_ok: a direct `node --test`, see _direct_node). Under any
+    wrapper the runner may have run in a child directory, and a same-named file at the
+    outer cwd proves nothing (MC-1164 round 8), so it is marked `?` (unproven). Even when
+    relative_ok it must also exist there. An absolute path outside the cwd stays absolute.
+    With no cwd there is nothing to resolve against (direct parser calls); run_command
+    always passes one and always passes relative_ok."""
     qualified = _qualifier(path, root)
     if root is None or os.path.isabs(qualified) or re.match(r'^[A-Za-z]:/', qualified):
         return qualified
-    return qualified if (root / qualified).is_file() else '?' + qualified
+    # A path the runner printed absolute (a TAP `location:`, already <worktree>/ after
+    # _clean) is anchored to the cwd whatever wrapper ran it; only a bare relative one is not.
+    spelled = path.strip().strip("'\"").replace(chr(92), '/')
+    anchored = (spelled.startswith(('<worktree>/', 'file://')) or os.path.isabs(spelled)
+                or bool(re.match(r'^[A-Za-z]:/', spelled)))
+    if anchored:
+        return qualified if (root / qualified).is_file() else '?' + qualified
+    return qualified if relative_ok and (root / qualified).is_file() else '?' + qualified
 
 
 def _clean(output: str, root: Path | None) -> str:
@@ -239,14 +256,32 @@ def failure_totals(output: str, exit_code: int, root: Path | None = None) -> lis
     return totals
 
 
-def failure_signatures(output: str, exit_code: int, root: Path | None = None) -> list[str]:
+class _Scan:
+    """One pass over a failing command's output: the sorted signatures plus the parts of the
+    pass that prove() reuses (which `counted` entries were node suite/describe containers)."""
+
+    def __init__(self, signatures: list[str], counted: list[str], containers: set[int]) -> None:
+        self.signatures = signatures
+        self.counted = counted
+        self.containers = containers  # indexes into counted: spec `✖ suite` / TAP `type: 'suite'`
+
+
+def failure_signatures(output: str, exit_code: int, root: Path | None = None,
+                       relative_ok: bool = True) -> list[str]:
     """Sorted failure identities. Test identities (pytest, TAP, spec) are a multiset:
-    the same one printed twice is listed twice. Smoke and fallback lines are a set."""
+    the same one printed twice is listed twice. Smoke and fallback lines are a set.
+    relative_ok is _direct_node(command) when the command is known (run_command always
+    passes it): a relative spec/TAP file path is trusted only then (see _identity_file)."""
+    return _scan(output, exit_code, root, relative_ok).signatures
+
+
+def _scan(output: str, exit_code: int, root: Path | None, relative_ok: bool) -> _Scan:
     if exit_code == 0:
-        return []
+        return _Scan([], [], set())
     clean = _clean(output, root)
     names: set[str] = set()
     counted: list[str] = []  # test identities, one entry per failure the runner printed
+    containers: set[int] = set()  # indexes in counted that are a node suite, not a test
     summaries: set[str] = set()
     heading = ''
     subtests: list[tuple[int, str]] = []  # enclosing TAP `# Subtest:` lines, by indent
@@ -303,19 +338,23 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
             else:
                 while suites and suites[-1][0] > indent:
                     suites.pop()
-                if suites and suites[-1] == (indent, name):
+                closing = bool(suites and suites[-1] == (indent, name))
+                if closing:
                     suites.pop()  # a suite's own closing line
                 if glyph == '✖':
                     # Qualified by enclosing suites, like TAP. A suite that fails only
-                    # because a child failed is listed too: it is stable and harmless.
+                    # because a child failed is listed too: it is stable and harmless as a
+                    # signature, but it is a container, not a test (prove() skips it).
                     path = [n for depth, n in suites if depth < indent]
                     spec_live.append((len(counted), name or '<unspecified>'))
                     counted.append('spec:' + ' > '.join([*path, name or '<unspecified>']))
+                    if closing:
+                        containers.add(len(counted) - 1)
             heading = ''
             continue
         if recap:
             recap_entry = bool(_SPEC_RECAP_ENTRY.match(line))
-            recap_file = _identity_file(shown[len('test at '):], root) if recap_entry else ''
+            recap_file = _identity_file(shown[len('test at '):], root, relative_ok) if recap_entry else ''
         tap = _TAP.match(line)
         if tap:
             # Qualified by enclosing suites, so the same test name failing in a
@@ -330,9 +369,11 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
         # a failure that moves to another file (same test name, same count) is a new one.
         # Other TAP producers print no location and stay unqualified.
         if tap_open >= 0:
+            if _TAP_SUITE_TYPE.match(line):
+                containers.add(tap_open)  # `type: 'suite'`: a describe(), not a test
             location = _TAP_LOCATION.match(shown)
             if location:
-                counted[tap_open] += ' @' + _identity_file(location['file'], root)
+                counted[tap_open] += ' @' + _identity_file(location['file'], root, relative_ok)
             if location or line == '...' or line.startswith(('ok ', 'not ok ')):
                 tap_open = -1
         match = _SMOKE.match(line)
@@ -370,7 +411,7 @@ def failure_signatures(output: str, exit_code: int, root: Path | None = None) ->
     if not names and not counted:
         lines = [_stable_line(line) for line in clean.splitlines() if line.strip()]
         names.add(f'exit:{exit_code}:' + (sorted(summaries) or lines or ['<no output>'])[-1])
-    return sorted([*names, *counted])
+    return _Scan(sorted([*names, *counted]), counted, containers)
 
 
 def named_identities(signatures: list[str]) -> int:
@@ -382,6 +423,155 @@ def named_identities(signatures: list[str]) -> int:
     resolved = [s for s in signatures if _UNRESOLVED not in s]
     by_prefix = {p: sum(1 for s in resolved if s.startswith(p)) for p in _NAMED_PREFIXES}
     return max(by_prefix['pytest:'], by_prefix['pytest-report:']) + by_prefix['tap:'] + by_prefix['spec:']
+
+
+# ── Identity proof (MC-1164 round 8) ───────────────────────────────────────────
+# Free text from an arbitrary wrapper cannot be counted: every counting rule so far was fed
+# surplus text (suite containers, a name a passing test printed, a second runner). So a red
+# candidate is let through only when each command's output is ONE runner's own report: one
+# runner family, one total line, names taken from that runner's report section, deduplicated,
+# and exactly as many as the total. Anything else is `unprovable` and blocks.
+_PYTEST_BANNER_NAMES = frozenset({'test session starts', 'FAILURES', 'ERRORS', 'warnings summary',
+                                  'PASSES', 'short test summary info'})
+_PYTEST_SUMMARY_BANNER = 'short test summary info'
+# Every line pytest writes in its short summary section (-r chars f E p P s x X a A).
+_PYTEST_SUMMARY_LINE = re.compile(r'^(?:FAILED|ERROR|PASSED|SKIPPED|XFAIL|XPASS)\b')
+# `.F.  [100%]` / `test_x.py F  [ 50%]`: pytest's per-session progress; never inside a report.
+_PYTEST_PROGRESS = re.compile(r'\[\s*\d{1,3}%\]\s*$')
+_PYTEST_PROGRESS_DONE = re.compile(r'^(?:\S+\s+)?[.FEsxXQ]+\s+\[\s*100%\]$')
+_PYTEST_NO_TESTS = re.compile(r'=*\s*no tests ran(?: in <duration>)?\s*=*')
+_NODE_TOTAL = re.compile(r'(?:#|ℹ) tests \d+')
+_NODE_SIGNAL = re.compile(
+    r'TAP version \d+|(?:#|ℹ) (?:suites|pass|fail|cancelled|skipped|todo|duration_ms) [\d.]+|'
+    r'✖ failing tests:?')
+# Shell syntax that can change the directory or run a second thing: `cd a && node ...`,
+# `a; b`, pipes, redirects, substitution, `%VAR%` / `^` (cmd), newlines.
+_SHELL_SYNTAX = re.compile(r'[;&|<>`$()%^\r\n]')
+_Row = tuple[str, str, 'str | None', str, bool]  # shown, stable, accepted banner, section, in_capture
+
+
+def _direct_node(command: str) -> bool:
+    """True only for a bare `node [flags] --test ...` invocation: no shell syntax, and
+    `--test` among the leading flags. Node then runs in the verification cwd, so the
+    relative paths it prints are relative to it. A wrapper (npm, python run.py, cd x && node,
+    VAR=1 node) may run it anywhere, and its relative paths cannot be placed."""
+    if _SHELL_SYNTAX.search(command):
+        return False
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    if not tokens or re.split(r'[\\/]', tokens[0])[-1].lower() not in ('node', 'node.exe'):
+        return False
+    for token in tokens[1:]:
+        if not token.startswith('-'):
+            return False
+        if token == '--test':
+            return True
+    return False
+
+
+def prove(output: str, exit_code: int, root: Path | None = None, command: str | None = None,
+          scan: _Scan | None = None) -> dict[str, Any]:
+    """Can this command's failures be told apart from another run's? Returns
+    {'families', 'totals_lines', 'total', 'identities', 'reasons'}; `reasons` empty means
+    provable. All of these must hold, else a reason is added and compare() blocks:
+
+    1. exactly one recognised runner family (pytest or node) and exactly one total line;
+    2. pytest names come from the LAST `short test summary info` section that sits
+       immediately before the total line, else from the `____ name ____` headings of its
+       FAILURES / ERRORS report. FAILED / ERROR text anywhere else (captured stdout, `-s`
+       output, a traceback) is never a name;
+    3. node suite / describe containers are not tests; only leaf tests (plus, in TAP, a
+       parent test that has subtests) count, each with a resolved file qualifier;
+    4. names are deduplicated and their number EQUALS the runner's failure total.
+
+    Output with no recognised runner family at all (a smoke script, a crash before any
+    report) has nothing to prove here: compare() judges it on its signatures alone, as before.
+    """
+    proof: dict[str, Any] = {'families': [], 'totals_lines': 0, 'total': 0, 'identities': [], 'reasons': []}
+    if exit_code == 0:
+        return proof
+    reasons: list[str] = proof['reasons']
+    frame = _PytestFrame()
+    rows: list[_Row] = []
+    for raw in _clean(output, root).splitlines():
+        shown = raw.strip()
+        if not shown:
+            continue
+        line = _stable_line(shown)
+        banner = frame.feed(shown, line)
+        rows.append((shown, line, banner, frame.section, frame.in_capture))
+    pytest_totals = [i for i, row in enumerate(rows)
+                     if _PYTEST_COUNTS.fullmatch(row[1]) or _PYTEST_NO_TESTS.fullmatch(row[1])]
+    node_totals = [i for i, row in enumerate(rows) if _NODE_TOTAL.fullmatch(row[1])]
+    banners = [(i, row[2]) for i, row in enumerate(rows) if row[2] and row[2] in _PYTEST_BANNER_NAMES]
+    sessions = sum(1 for row in rows if _PYTEST_PROGRESS_DONE.fullmatch(row[1]))
+    families = []
+    if pytest_totals or banners or sessions:
+        families.append('pytest')
+    if node_totals or any(_NODE_SIGNAL.fullmatch(row[1]) for row in rows):
+        families.append('node')
+    proof['families'], proof['totals_lines'] = families, len(pytest_totals) + len(node_totals)
+    if not families:
+        return proof
+    if len(families) > 1:
+        reasons.append(f'ran more than one runner family ({", ".join(families)}) in one command')
+    if proof['totals_lines'] != 1:
+        reasons.append('printed no runner total line' if not proof['totals_lines']
+                       else f'printed {proof["totals_lines"]} runner total lines, only exactly 1 is provable')
+    if sessions > 1:
+        reasons.append(f'ran pytest {sessions} times in one command')
+    if len(families) != 1 or proof['totals_lines'] != 1:
+        return proof
+    if families == ['pytest']:
+        total_at = pytest_totals[0]
+        proof['total'] = sum(int(n) for n in _PYTEST_FAILED_PART.findall(rows[total_at][1]))
+        identities = _pytest_identities(rows, total_at, banners, reasons)
+    else:
+        proof['total'] = sum(int(m['n']) for m in (_NODE_COUNTS.fullmatch(row[1]) for row in rows) if m)
+        scan = scan or _scan(output, exit_code, root, command is None or _direct_node(command))
+        identities = {
+            entry for index, entry in enumerate(scan.counted)
+            if index not in scan.containers and _UNRESOLVED not in entry and ' @' in entry}
+    proof['identities'] = sorted(identities)
+    if len(identities) < proof['total']:
+        reasons.append(f'names {len(identities)} of {proof["total"]} failures the runner counted')
+    elif len(identities) > proof['total']:
+        reasons.append(f'names {len(identities)} failures but the runner counted only {proof["total"]}')
+    return proof
+
+
+def _pytest_identities(rows: list[_Row], total_at: int, banners: list[tuple[int, str]],
+                       reasons: list[str]) -> set[str]:
+    if any(index > total_at for index, _ in banners):
+        reasons.append('pytest report sections follow the runner total line')
+    summaries = [index for index, name in banners if name == _PYTEST_SUMMARY_BANNER and index < total_at]
+    if summaries:
+        found: set[str] = set()
+        for row in rows[summaries[-1] + 1:total_at]:
+            if not _PYTEST_SUMMARY_LINE.match(row[0]):
+                reasons.append('the pytest short summary is not immediately followed by the runner total line')
+                return set()
+            match = _PYTEST.match(row[0].split(' - ', 1)[0])
+            if match:
+                found.add('pytest:' + match[1])
+        if found:
+            return found
+    # No (usable) short summary, e.g. `-rN`: the report headings, only under a real
+    # FAILURES / ERRORS banner. A pytest report never contains a progress line outside a
+    # captured block, so one there means the "banner" was printed live by a test.
+    headings: set[str] = set()
+    for row in rows[:total_at]:
+        if row[3] not in _PYTEST_FAILURE_BANNERS:
+            continue
+        if _PYTEST_PROGRESS.search(row[1]) and not row[4]:
+            reasons.append('a progress line sits inside the pytest failure report (a test printed the banner)')
+            return set()
+        heading = _PYTEST_SECTION.match(row[1])
+        if heading:
+            headings.add('pytest-report:' + heading['name'])
+    return headings
 
 
 def compare(baseline: list[dict[str, Any]], candidate: list[dict[str, Any]]) -> dict[str, Any]:
@@ -428,11 +618,24 @@ def compare(baseline: list[dict[str, Any]], candidate: list[dict[str, Any]]) -> 
             if unresolved:
                 unprovable.append(f'{i + 1}:test file path does not resolve from the verification '
                                   f'cwd on {side}: {unresolved[0]}')
-            counted_by_runner = sum(t for t in totals if isinstance(t, int))
-            named = named_identities(signatures)
-            if named < counted_by_runner:
-                unprovable.append(f'{i + 1}:{side} names {named} of {counted_by_runner} failures '
-                                  f'the runner counted')
+            proof = run_.get('proof')
+            if proof is None:
+                # A hand-built run (no output to analyse): the weaker signature-count check.
+                counted_by_runner = sum(t for t in totals if isinstance(t, int))
+                named = named_identities(signatures)
+                if named < counted_by_runner:
+                    unprovable.append(f'{i + 1}:{side} names {named} of {counted_by_runner} failures '
+                                      f'the runner counted')
+            else:
+                unprovable.extend(f'{i + 1}:{side} {reason}' for reason in proof['reasons'])
+        # Round 8: a name only counts if it came from the runner's own report, so compare
+        # those names directly; a name that also appears in the baseline's free text
+        # (a passing test's print, a duplicate) must not hide a different failure.
+        if before.get('proof') is not None and after.get('proof') is not None:
+            known = set(before['proof']['identities'])
+            new.extend(label for label in (f'{i + 1}:{name}' for name in after['proof']['identities']
+                                           if name not in known) if label not in new)
+    new.sort()
     return {'status': 'blocked' if new or errors or count_increases or unprovable else 'pass',
             'new_failures': new, 'count_increases': count_increases, 'unprovable': unprovable,
             'baseline_failures': sorted(old.elements()), 'errors': errors,
@@ -444,7 +647,7 @@ def run_command(command: str, cwd: Path, timeout: float, project_id: str) -> dic
     from mc.blueprints.agent_routes import _register_process, _unregister_process
     from mc.blueprints.secrets_routes import _kill_process_tree, _win_job_object_for
     result: dict[str, Any] = {'exit_code': None, 'signatures': [], 'failure_totals': [],
-                              'output_tail': '', 'error': None}
+                              'proof': None, 'output_tail': '', 'error': None}
     proc = None
     job = None
     with tempfile.TemporaryFile() as output:
@@ -486,8 +689,10 @@ def run_command(command: str, cwd: Path, timeout: float, project_id: str) -> dic
         elif result['exit_code'] is not None:
             output.seek(0)
             text = output.read().decode('utf-8', 'replace')
-            result['signatures'] = failure_signatures(text, result['exit_code'], cwd)
+            scan = _scan(text, result['exit_code'], cwd, _direct_node(command))
+            result['signatures'] = scan.signatures
             result['failure_totals'] = failure_totals(text, result['exit_code'], cwd)
+            result['proof'] = prove(text, result['exit_code'], cwd, command, scan)
     return result
 
 

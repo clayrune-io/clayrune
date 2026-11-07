@@ -165,6 +165,48 @@ otherwise the gate blocks and a human merges by hand:
 
 A failed check is reported in `unprovable`, not dropped.
 
+**Identity proof (round 8).** Checks 1 and 2 above are necessary, not sufficient: every
+counting rule so far was beaten by surplus text (a Node `describe` container line, a
+`FAILED ...` a passing test printed, a second runner in the same wrapper). So when the
+candidate exits non-zero, a command's output is *provable* only if it is ONE runner's own
+report. `landing_gate.prove()` records the verdict per command (`proof`: families, number
+of total lines, total, identities, reasons); every reason is an `unprovable` entry and
+blocks. The exact provable shapes:
+
+1. **One runner family, one total line.** Exactly one of pytest or node:test is
+   recognised in the output, and exactly one total line (pytest's closing
+   `N failed ... in <time>`, or node's `# tests N` / `ℹ tests N`). A wrapper that runs Node
+   and then pytest, or pytest twice, is unprovable (`ran more than one runner family`,
+   `printed 2 runner total lines`, `ran pytest 2 times in one command`). Output with no
+   recognised runner family at all (a smoke script, a crash before any report) has nothing
+   to prove and is judged on its signatures alone, as before.
+2. **pytest names come from one place.** Only the LAST `short test summary info` section,
+   and only when it is followed by nothing but summary lines and then the total line
+   (`FAILED`/`ERROR`/... lines up to the total). `FAILED`/`ERROR` text anywhere else
+   (captured stdout, `-s` output, a traceback) is never a name. With no usable short
+   summary (`-rN`), names are the `____ test ____` headings of the `FAILURES`/`ERRORS`
+   report; a progress line inside that report means a test printed the banner, and is
+   unprovable. Report sections after the total line are unprovable.
+3. **Node counts leaf tests only.** A spec `✖ suite` line (a `describe` that failed only
+   because a child failed, or one that closes a suite) and a TAP block with
+   `type: 'suite'` are containers, not tests. A TAP parent test that has subtests is still
+   a test. Every counted test also needs a resolved file qualifier.
+4. **Equal, not at-least.** Names are deduplicated, and their number must EQUAL the
+   runner's failure total (`names N of M failures the runner counted`, or
+   `names N failures but the runner counted only M`).
+5. **A relative path qualifier needs a direct `node --test`.** A relative spec path, or a
+   relative TAP `location:`, is trusted only when the configured command itself is a bare
+   `node [flags] --test ...` invocation (no `cd`, `&&`, `;`, pipe, redirect, `VAR=1`, `npm`,
+   or script wrapper; see `_direct_node`). Under any wrapper the runner may have run in a
+   child directory, and a same-named file at the outer cwd proves nothing (the 2026-11-07
+   round-8 decoy `same.test.mjs`), so the path is marked `@?` and is unprovable. Existence
+   at the outer cwd never proves a relative path on its own. A path the runner printed
+   absolute (TAP `location:`) and that relativizes under the cwd stays valid under a wrapper.
+
+Once the checks pass, `compare()` also compares the two runs' proven identity sets directly,
+so a name that merely appears elsewhere in the baseline's free text cannot hide a different
+failure.
+
 **Totals check.** Identity says *which* failure is new; the runner's own totals say
 *how many*. Each command result records `failure_totals`, an **ordered list**, one
 entry per total line the output printed: pytest's closing `N failed` / `N error(s)`
@@ -210,6 +252,16 @@ manual merge:
 - An unchanged red Node *spec* suite run through a wrapper that `cd`s into
   subprojects: the printed paths are relative to the child cwd and do not resolve.
   Run Node from the verification cwd, or use the TAP reporter (absolute `location:`).
+- Round 8 (identity proof). Each of these is harmless when nothing changed and now blocks:
+  - A wrapper that runs Node and then pytest, runs pytest twice, or otherwise prints more
+    than one runner total line, even when every failure is unchanged.
+  - A pytest run whose names are not in the last short summary directly before the total
+    (`-rN` with tracebacks is fine: the `FAILURES` headings name them), or whose short
+    summary is followed by anything but summary lines and the total.
+  - Any Node spec or TAP run through a wrapper (`npm test`, `python run.py`, `cd x && node`)
+    whose failures carry a relative path qualifier. TAP under a one-`node` wrapper is fine:
+    its absolute `location:` still relativizes.
+  - A name count that exceeds the runner's own failure total (duplicates are removed first).
 
 Baseline failures are reported even when the candidate
 fixes them. A matching nonzero baseline/candidate failure allows landing.
