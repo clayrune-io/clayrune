@@ -67,7 +67,7 @@ function providerRuntime(cfg, {toggle, textInput, engineFallbackHTML}) { return 
         ${textInput('agent_channels', cfg.agent_channels)}
       </div></details></div>`; }
 const moved = [
-  ['Agent name face identity maximum turns permissions brief replies emojis', 'Floor defaults', 'openFloorPreferences()'],
+  ['Agent name face identity maximum turns permissions brief replies emojis live test-run progress test runs pytest', 'Floor defaults', 'openFloorPreferences()'],
   ['User name timezone profile', 'Your profile', 'openUserProfile()'],
   ['Model effort condense housekeeping fallback provider engine', 'Providers', 'SettingsOwnership.openProviders()'],
   ['Pause all scheduled runs', 'Scheduler', "sidebarNav('scheduler')"],
