@@ -37,6 +37,11 @@ def pytest_position(argv: list[str] | str) -> int | None:
 
 class PytestProgress:
     def __init__(self, spec: Any, telemetry: Telemetry, key: str, warn: Callable[[str], None]):
+        # A progress path inherited from an outer monitored run belongs to that
+        # run, never to this unit: scrub it so off/refused runs stay clean and a
+        # nested pytest cannot write into the outer run's sidecar.
+        env = {k: v for k, v in spec.env.items() if k.upper() != ENV_PATH}
+        spec = replace(spec, env=env) if len(env) != len(spec.env) else spec
         self.spec, self.telemetry, self.key, self.warn = spec, telemetry, key, warn
         self.position = pytest_position(spec.argv)
         self.seq = self.offset = 0

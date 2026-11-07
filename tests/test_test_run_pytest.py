@@ -136,6 +136,7 @@ import os
 def test_clean():
     assert 'CLAYRUNE_PYTEST_PROGRESS_PATH' not in os.environ
 ''')
+    env['CLAYRUNE_PYTEST_PROGRESS_PATH'] = str(api.tmp / 'outer-run-events.jsonl')  # inherited from an outer run
     if restricted == 'config':
         api.controls['config'] = False
     else:
