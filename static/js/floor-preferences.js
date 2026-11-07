@@ -6,6 +6,7 @@ const FIELDS = [
   {key: 'agent_avatar', label: 'Default agent face', type: 'text', section: 'Identity', hint: 'An emoji or a figure such as fig:navigator. Hired agents keep their own faces.'},
   {key: 'agent_max_turns', label: 'Maximum turns', type: 'number', section: 'Working defaults', hint: '0 means unlimited.'},
   {key: 'agent_permission_mode', label: 'Tool permissions', type: 'select', section: 'Working defaults', choices: [['','Provider default'],['default','Ask'],['plan','Plan'],['auto-edit','Auto-edit'],['full-auto','Full auto']]},
+  {key: 'test_run_progress_enabled', label: 'Live test-run progress', type: 'checkbox', section: 'Working defaults', hint: 'When an agent runs tests (pytest, smoke scripts), show a progress card in its chat, a testing N% badge on its Floor figure, and a Test runs tab in the project. Experimental. Changing it needs your dashboard passcode.'},
   {key: 'brief', label: 'Brief replies', type: 'select', section: 'Replies', choices: [['off','Off'],['phone','Phone'],['all','Everywhere']]},
   {key: 'agent_emojis_enabled', label: 'Agents may use emojis', type: 'checkbox', section: 'Replies', hint: 'Individual agent types can override this preference.'},
 ];

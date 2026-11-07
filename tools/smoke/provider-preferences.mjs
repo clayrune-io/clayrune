@@ -176,6 +176,28 @@ try {
     assert.equal(config.agent_name,'Saved helper');
     await page.evaluate(() => window.openFloorPreferences());
     assert.equal(await page.locator('#floor-pref-agent_name').inputValue(),'Saved helper');
+    // MC-1148 follow-up: the test_run_progress_enabled row renders, reflects cfg, and saves behind the passcode.
+    const testRunRow = page.locator('#floor-pref-test_run_progress_enabled');
+    assert.equal(await testRunRow.count(),1,'Live test-run progress row renders');
+    assert.equal(await page.locator('[data-modal-id="__floor_preferences"] .settings-label').filter({hasText:/^Live test-run progress$/}).count(),1);
+    assert.equal(await testRunRow.isChecked(),false,'Row reflects cfg (off)');
+    await testRunRow.check();
+    const beforeTestRun = puts.length;
+    await page.getByRole('button',{name:'Save',exact:true}).click(); await proof(false);
+    await page.waitForSelector('[data-modal-id="__floor_preferences"]',{state:'detached'});
+    assert.equal(puts.length,beforeTestRun+1);
+    assert.deepEqual(Object.keys(puts.at(-1)).filter(key => key !== 'passcode'),['test_run_progress_enabled']);
+    assert.equal(puts.at(-1).test_run_progress_enabled,true);
+    assert.equal(config.test_run_progress_enabled,true);
+    await page.evaluate(() => window.openFloorPreferences());
+    assert.equal(await page.locator('#floor-pref-test_run_progress_enabled').isChecked(),true,'Row reflects cfg (on)');
+    await page.evaluate(() => window.closeModalById('__floor_preferences'));
+    await page.evaluate(() => window.openSettings());
+    await page.locator('#settings-search').fill('test-run progress');
+    assert.ok(await page.locator('#settings-moved-results').isVisible(),'Settings search finds the test-run progress row');
+    await page.locator('#settings-search').fill('');
+    await page.evaluate(() => window.closeModalById('__settings'));
+    await page.evaluate(() => window.openFloorPreferences());
     await page.locator('#toast-container .toast').evaluateAll(elements => elements.forEach(el => el.remove()));
     await page.screenshot({path:resolve(SHOTS,`floor-${width}.png`),animations:'disabled'});
     await page.evaluate(() => window.closeModalById('__floor_preferences'));
