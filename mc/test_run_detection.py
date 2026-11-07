@@ -5,6 +5,7 @@ Readers enqueue small observations; only the bounded worker touches storage.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 import hashlib
 import json
@@ -25,6 +26,7 @@ from mc import test_run_anchor
 FLAG = 'test_run_progress_enabled'
 MAX_PENDING = 256
 MAX_IDENTITIES = 4096
+MAX_TOMBSTONES = 65536
 MAX_COMMAND = 32768
 _observer: DetectionObserver | None = None
 
@@ -181,6 +183,9 @@ class DetectionObserver:
         self.load_project = load_project
         self.pending: queue.Queue[tuple[dict[str, Any], str, str, ToolObservation, float]] = queue.Queue(MAX_PENDING)
         self.runs: dict[tuple[str, str, str, str], _Run] = {}
+        # Worker-owned FIFOs: completion order, then bounded replay protection.
+        self._terminal: OrderedDict[tuple[str, str, str, str], None] = OrderedDict()
+        self._tombstones: OrderedDict[str, None] = OrderedDict()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -246,7 +251,17 @@ class DetectionObserver:
         if run is None:
             if item.name != 'candidate':
                 return
-            # Never evict identities then accidentally recreate a completed call.
+            key_hash = hashlib.sha256(json.dumps(key).encode()).hexdigest()
+            if key_hash in self._tombstones:
+                return
+            while len(self.runs) >= MAX_IDENTITIES and self._terminal:
+                oldest, _ = self._terminal.popitem(last=False)
+                del self.runs[oldest]
+                # Never recreate an evicted completed call while its hash is retained.
+                old_hash = hashlib.sha256(json.dumps(oldest).encode()).hexdigest()
+                self._tombstones[old_hash] = None
+                while len(self._tombstones) > MAX_TOMBSTONES:
+                    self._tombstones.popitem(last=False)
             if len(self.runs) >= MAX_IDENTITIES:
                 _log('[test-run-detection] identity capacity reached; progress incomplete', flush=True)
                 return
@@ -278,6 +293,7 @@ class DetectionObserver:
                               state='lost' if item.exit_code is None else
                               'passed' if item.exit_code == 0 else 'failed')
             run.terminal = True
+            self._terminal[key] = None
 
     def _work(self) -> None:
         while not self._stop.is_set() or not self.pending.empty():

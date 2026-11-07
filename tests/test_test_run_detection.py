@@ -248,6 +248,103 @@ def test_identity_capacity_refuses_new_calls_without_recreating_old_calls(observ
     assert any('identity capacity' in msg for msg in logs)
 
 
+def test_terminal_eviction_frees_capacity_without_recreating_completed_call(observer, monkeypatch):
+    monkeypatch.setattr(detection, 'MAX_IDENTITIES', 1)
+    service, _ = observer
+    emit(observer, 'claude', envelope(use('one')))
+    emit(observer, 'claude', envelope(result('one', exit_code=0), kind='user'))
+    old_key = next(iter(service.runs))
+    rows = emit(observer, 'claude', envelope(use('two')))
+    assert len(rows) == 2 and old_key not in service.runs
+    assert len(service.runs) == 1 and not next(iter(service.runs.values())).terminal
+    assert len(service._tombstones) == 1
+    snapshot = [(row['run_id'], row['seq'], row['state']) for row in rows]
+    # Replayed declarations and results must leave stored history unchanged.
+    emit(observer, 'claude', envelope(use('one')))
+    rows = emit(observer, 'claude', envelope(use('one'), result('one', exit_code=9), kind='user'))
+    assert [(row['run_id'], row['seq'], row['state']) for row in rows] == snapshot
+    assert old_key not in service.runs
+
+
+def test_eviction_uses_terminal_transition_order_and_never_evicts_active(observer, monkeypatch):
+    monkeypatch.setattr(detection, 'MAX_IDENTITIES', 3)
+    service, _ = observer
+    emit(observer, 'claude', envelope(use('first'), use('second'), use('active')))
+    first, second, active = service.runs
+    emit(observer, 'claude', envelope(result('second', exit_code=1), kind='user'))
+    emit(observer, 'claude', envelope(result('first'), kind='user'))
+    # A repeated result must not refresh a terminal run's age.
+    emit(observer, 'claude', envelope(result('second', exit_code=1), kind='user'))
+    assert len(emit(observer, 'claude', envelope(use('new')))) == 4
+    assert second not in service.runs
+    assert first in service.runs and active in service.runs
+    assert not service.runs[active].terminal
+
+
+def test_all_active_identity_capacity_logs_and_skips(observer, monkeypatch):
+    monkeypatch.setattr(detection, 'MAX_IDENTITIES', 2)
+    service, _ = observer
+    logs = []
+    monkeypatch.setattr(detection, '_log', lambda msg, **_: logs.append(msg))
+    emit(observer, 'claude', envelope(use('one'), use('two')))
+    original = dict(service.runs)
+    assert len(emit(observer, 'claude', envelope(use('three')))) == 2
+    assert service.runs == original and all(not run.terminal for run in service.runs.values())
+    assert not service._terminal and not service._tombstones
+    assert any('identity capacity reached' in msg for msg in logs)
+
+
+def test_tombstones_are_bounded_hash_only_fifo_without_replay_refresh(observer, monkeypatch):
+    monkeypatch.setattr(detection, 'MAX_IDENTITIES', 1)
+    monkeypatch.setattr(detection, 'MAX_TOMBSTONES', 2)
+    service, _ = observer
+    def complete(call):
+        return emit(observer, 'codex', {'type': 'item.completed', 'item': {
+            'type': 'command_execution', 'id': call, 'command': 'pytest', 'exit_code': 0}})
+    for call in ['one', 'two', 'three']:
+        complete(call)
+    oldest, newest = service._tombstones
+    assert all(len(key) == 64 and set(key) <= set('0123456789abcdef')
+               for key in service._tombstones)
+    assert all(value is None for value in service._tombstones.values())
+    assert len(complete('one')) == 3
+    assert list(service._tombstones) == [oldest, newest]
+    assert len(complete('four')) == 4
+    assert len(service._tombstones) == 2 and oldest not in service._tombstones
+    assert next(iter(service._tombstones)) == newest
+    assert len(complete('two')) == 4
+
+
+def test_tombstone_does_not_suppress_same_call_in_another_session(observer, monkeypatch):
+    monkeypatch.setattr(detection, 'MAX_IDENTITIES', 1)
+    service, session = observer
+    emit(observer, 'claude', envelope(use('one'), result('one', exit_code=0)))
+    emit(observer, 'claude', envelope(use('two'), result('two', exit_code=0)))
+    other = {**session, 'session_id': 'other'}
+    monkeypatch.setitem(state.agent_sessions, 'other', other)
+    detection.observe(other, 'claude', envelope(use('one')))
+    service.pending.join()
+    assert len(service.store.list_runs('p')) == 3
+    assert next(iter(service.runs))[1] == 'other'
+
+
+def test_flag_off_does_not_evict_terminal_runs_or_change_tombstones(observer, monkeypatch):
+    monkeypatch.setattr(detection, 'MAX_IDENTITIES', 1)
+    service, session = observer
+    for call in ['one', 'two']:
+        emit(observer, 'claude', envelope(use(call), result(call, exit_code=0)))
+    original_runs = dict(service.runs)
+    original_terminal = list(service._terminal)
+    original_tombstones = list(service._tombstones)
+    monkeypatch.setitem(state.CONFIG, detection.FLAG, False)
+    assert len(emit(observer, 'claude', envelope(use('three')))) == 2
+    # The queued worker policy check must also precede eviction.
+    service._apply(session, 'launch', 'claude', detection.ToolObservation('four', 'candidate'), 1.0)
+    assert service.runs == original_runs
+    assert list(service._terminal) == original_terminal
+    assert list(service._tombstones) == original_tombstones
+
+
 def test_failed_startup_event_keeps_later_process_result_partial(observer, monkeypatch):
     service, _ = observer
     apply = service.store.apply

@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-06] - Keep passive test detection running at identity capacity (MC-1148, dark)
+
+- Reclaim the oldest terminal identities when the detector reaches 4096 entries, preserving active calls. A separate bounded FIFO of 65536 scoped-key hashes blocks replay of evicted completed calls while retained; all-active capacity still logs and skips.
+- Added eviction, replay, ordering, FIFO-bound, session-scope and flag-off regressions. Contract: `docs/TEST_RUN_DETECTION.md`. Branch candidate only; no merge, push, restart or config write.
+
 ## [2026-11-06] - Emit server-owned test-run chat anchors (MC-1148 P14, dark)
 
 - Added `mc/test_run_anchor.py` with minimal enrollment/detection/pre-enrolled-job hooks so conversation-owned runs post the ID-only line that mounts the existing chat card. Durable run-ID claims prevent duplicate emission across retries/restarts; ownerless, restricted and flag-off runs add no line. Emission failures are logged without changing launch or completion results.
