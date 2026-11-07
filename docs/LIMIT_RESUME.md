@@ -81,9 +81,15 @@ The result boundary atomically persists `deferred_success` (`attempt`, `kind`,
 row. If the process exits first, the deferred boundary becomes an exit completion.
 A matching acknowledgment finalizes the normal turn/exit completion FIRST, then
 writes `completion_done` and advances the row to `active`. The receipt and
-snapshot remain readable after activation, including by workflow reconciliation
-without a live session. Ordinary Mode B turn completion still keeps its process
-alive and does not run exit-only worktree cleanup.
+snapshot remain readable until their effects are fully applied, including by
+workflow reconciliation without a live session. Boot and scheduler cleanup prune
+an active receipt only when the durable agent log has its matching completion key
+and completed status, and its workflow step (if any) is durably completed for the
+same session. Missing evidence, read errors and cleanup-write failures retain the
+receipt. Ordinary Mode B turn completion keeps its process alive and does not run
+exit-only worktree cleanup; its attempt budget remains until exit completion or a
+new normal turn. Boot recovery of such a turn writes the missing exit log before
+the receipt becomes eligible for cleanup; failures retry without provider work.
 
 Boot recovery finalizes a submitting row's own persisted deferred success as
 completed, without launching a provider or resending input. A stable completion
@@ -91,9 +97,18 @@ key, allocated when first persisting that success and unique across task chains,
 reuses the existing agent-log deduplication; workflow completion uses its
 existing synchronous, idempotent replay and parent delivery uses its durable
 outbox. A crash after writing the log but before the receipt therefore keeps one
-log entry. A receipt already on disk restores completed without repeating effects.
+log entry. A receipt already fully applied is pruned without restoring its chat.
+An unapplied receipt remains available for completion recovery.
 Completion write/callback failures retain the obligation for a later tick/boot;
 they do not convert successful output into uncertain-delivery review.
+
+Explicit session deletion calls the reset adapter under the same project-manager
+lock used by acknowledgment, cancellation and human takeover. It replaces any
+matching waiting, submitting or active row with a compact cancelled fence, dropping
+saved output and completion payload. Boot never restores cancelled rows, and stale
+store instances cannot reactivate them. Project-mismatched deletes cannot affect
+another project's receipt. This close operation also works when the live session
+has already gone. Normal pending-wait cancellation semantics are unchanged.
 
 Status alone never creates a deferral. Fresh exhaustion, new turns and submission
 failure discard old success state; review-required rows, mismatched attempts,
@@ -141,6 +156,25 @@ return 404; unavailable state returns 503. An already-running continuation retur
 terminate another process.
 
 ## Validation
+
+Fifth-review validation (2026-11-07): Fenn's exact closed-chat probe failed on
+`42fbdd9a` with `after close and boot: ['child'] active`; after the fix it passes
+with `after close and boot: [] cancelled`. The unchanged independent fifth- and
+fourth-review probes report **6 passed**, including both real worker/reader crash
+windows, attended readers and the two-node workflow's single downstream dispatch.
+The final full 15-file suite reports **445 passed in 17.11s**, exit 0.
+The new `tests/test_limit_resume_cleanup.py` preserves the fifth-review probes and
+adds scoped durable-close, stale-writer, lock serialization, delayed cleanup,
+failed evidence reads/writes and turn-to-exit recovery coverage. The full suite
+command below additionally includes `tests/test_limit_resume_completion.py` and
+`tests/test_limit_resume_cleanup.py` before `-o`.
+
+Pyright on the three reset modules and `mc/workflows.py` reports **0 errors**.
+The one-line route hook reports the same **15 existing diagnostics** as the exact
+`42fbdd9a` route source (rule/message multiset comparison: zero added). No static
+files changed. The launcher reports incomplete telemetry; test exit codes and
+counts are verified, complete dashboard capture is not claimed. No live provider
+execution, merge, push or production restart was performed.
 
 Fourth-review branch validation (2026-11-07): the exact requested 13-file suite
 reported **415 passed in 16.87s** (exit 0). The final combined selection with

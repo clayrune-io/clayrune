@@ -13,17 +13,44 @@ from mc import limit_resume as policy
 from mc.core import _log
 
 
+def prune_applied(ar, row: dict) -> bool:
+    """Agent log and workflow files replace a receipt, never just live latches."""
+    store = policy.store()
+    if not store or row['phase'] != 'active' or not row.get('completion_done'):
+        return False
+    try:
+        key = row.get('completion_key')
+        if not key or not any(
+                entry.get('session_id') == row['session_id']
+                and entry.get('completion_key') == key and entry.get('status') == 'completed'
+                for entry in ar._load_agent_log(row['project_id'])):
+            return False
+        target = row['snapshot'].get('_notify_workflow')
+        if target:
+            from mc import workflows
+            run = workflows.get_run(target['run_id'])
+            step = ((run or {}).get('steps') or {}).get(target['step']) or {}
+            if step.get('session_id') != row['session_id'] or step.get('status') != 'completed':
+                return False
+        return store.prune_completed(row['session_id'], key)
+    except Exception as exc:
+        _log(f"[limit-resume] receipt retained for {row['session_id']}: {exc}", flush=True)
+        return False
+
+
 def finalize(ar, session: dict, attempt: int, *, restoring: bool = False) -> bool:
     """Called under the project lock; leave the obligation on any failure."""
     store = policy.store()
     row = store.get(session['session_id']) if store else None
     deferred = (row or {}).get('deferred_success') or {}
-    if (not store or not row or row['phase'] != 'submitting'
+    if (not store or not row or (row['phase'] != 'submitting'
+                                and not (restoring and row['phase'] == 'active'
+                                         and row.get('completion_done')))
             or row.get('review_required') or row['attempts'] != attempt
             or deferred.get('attempt') != attempt
             or not policy.unattended(session) or session.get('status') == 'stopped'):
         return False
-    if row.get('completion_done'):
+    if row.get('completion_done') and not (restoring and deferred['kind'] == 'turn'):
         session['status'] = 'completed' if restoring else deferred['status']
         return True
     kind = 'exit' if restoring else deferred['kind']

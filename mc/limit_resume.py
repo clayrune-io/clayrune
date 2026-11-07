@@ -234,12 +234,18 @@ class ResumeStore:
         sid = session['session_id']
         with self._transaction():
             row = self.rows.get(sid)
-            if (not row or row['phase'] != 'submitting' or row.get('review_required')
+            if (not row or (row['phase'] != 'submitting'
+                            and not (row['phase'] == 'active' and row.get('completion_done')))
+                    or row.get('review_required')
                     or row['attempts'] != attempt):
                 return False
             snapshot = {key: session[key] for key in _SNAPSHOT_KEYS if key in session}
             snapshot['log_lines'] = list(session.get('log_lines', []))
+            deferred = dict(row.get('deferred_success') or {})
+            if session.get('status') == 'completed':
+                deferred.update(kind='exit', status='completed')
             self._commit({**self.rows, sid: {**row, 'completion_done': True,
+                                           'deferred_success': deferred,
                                            'snapshot': snapshot}})
             return True
 
@@ -267,6 +273,28 @@ class ResumeStore:
             if not row or row['project_id'] != project_id or row['phase'] not in ('waiting', 'submitting'):
                 return False
             self._commit({**self.rows, sid: {**row, 'phase': 'cancelled'}})
+            return True
+
+    def close(self, sid: str, project_id: str) -> None:
+        """Explicit close also fences active receipts and stale store writers."""
+        with self._transaction():
+            row = self.rows.get(sid)
+            if not row or row['project_id'] != project_id:
+                return
+            # Keep only the cancellation fence, not the completed chat/output.
+            closed = {key: row[key] for key in
+                      ('session_id', 'project_id', 'resets_at', 'resume_at', 'attempts')}
+            closed.update(phase='cancelled', snapshot={'session_id': sid, 'project_id': project_id})
+            self._commit({**self.rows, sid: closed})
+
+    def prune_completed(self, sid: str, completion_key: str) -> bool:
+        """Remove only the exact receipt whose durable effects were verified."""
+        with self._transaction():
+            row = self.rows.get(sid)
+            if (not row or row['phase'] != 'active' or not row.get('completion_done')
+                    or row.get('completion_key') != completion_key):
+                return False
+            self._commit({key: value for key, value in self.rows.items() if key != sid})
             return True
 
     def clear(self, sid: str) -> None:
@@ -340,6 +368,13 @@ def hold_completion(session: dict, config: dict, *, completion_kind: str | None 
         if finalizing(session):
             return False  # project-locked completion of the persisted result
         row = _store.get(session.get('session_id', '')) if _store else None
+        if (row and row['phase'] == 'active' and row.get('completion_done')
+                and (row.get('deferred_success') or {}).get('kind') == 'turn'
+                and completion_kind == 'exit' and session.get('status') == 'completed'
+                and unattended(session)):
+            from mc.limit_resume_dispatch import finish_active_exit
+            finish_active_exit(session, row['attempts'])
+            return True  # the receipt owns this exit's stable log key and retry
         if (row and row['phase'] == 'submitting' and unattended(session)
                 and session.get('status') != 'stopped'
                 and (row.get('review_required')

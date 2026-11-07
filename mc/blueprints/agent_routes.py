@@ -15126,9 +15126,7 @@ def agent_session_delete(project_id):
 
     proc = None
     with get_manager(project_id).lock:
-        _reset_store = _limit_resume.store()
-        if _reset_store:
-            _reset_store.cancel(session_id, project_id)
+        _limit_resume_dispatch.close_session(project_id, session_id)
         session = agent_sessions.get(session_id)
         if not session or session['project_id'] != project_id:
             return jsonify({'ok': True})  # Already gone — idempotent

@@ -151,7 +151,7 @@ def test_finalization_is_idempotent_across_log_and_receipt_crashes(
     assert len(rows) == 1
     assert rows[0]['summary'] == 'finished task'
     assert rows[0]['status'] == 'completed'
-    assert lr.store().get('child')['phase'] == 'active'
+    assert lr.store().get('child') is None
     assert env.workflows._step_session_verdict(
         {'session_id': 'child', 'project_id': 'p'}, use_live=False)[:2] == ('ended', 'completed')
     assert env.workflows.reconcile_running_steps() == {'advanced': 0, 'stalled': 0}
@@ -207,6 +207,8 @@ def test_failed_completion_write_retains_success_for_recovery(durable_completion
     assert not env.store.get('child').get('review_required')
     dispatch.tick(DUE)
     assert env.store.get('child')['phase'] == 'active'
+    dispatch.tick(DUE)  # next cleanup pass sees the now-committed receipt
+    assert env.store.get('child') is None
     assert len(env.ar._load_agent_log('p')) == 1
 
 
@@ -224,14 +226,15 @@ def test_new_task_cannot_reuse_previous_completion_key(durable_completion):
     assert env.store.get('child')['completion_key'] != first_key
 
 
-def test_terminal_receipt_restores_at_boot_without_recurring_resurrection(durable_completion):
+def test_applied_terminal_receipt_is_pruned_without_restoring_chat(durable_completion):
     env = durable_completion
     dispatch.confirm_submission(env.live, 1)
     env.sessions.clear()
     dispatch.tick(DUE)
     assert 'child' not in env.sessions
     dispatch.restore_waits(env.ar)
-    assert env.sessions['child']['status'] == 'completed'
+    assert 'child' not in env.sessions
+    assert env.store.get('child') is None
 
 
 def test_failed_parent_wake_retries_completion_without_provider(durable_completion, monkeypatch):
@@ -245,4 +248,6 @@ def test_failed_parent_wake_retries_completion_without_provider(durable_completi
     monkeypatch.setattr(env.ar, 'agent_followup', lambda pid: pytest.fail('provider replay'))
     dispatch.tick(DUE)
     assert env.store.get('child')['phase'] == 'active'
+    dispatch.tick(DUE)
+    assert env.store.get('child') is None
     assert len(env.ar._load_agent_log('p')) == 1

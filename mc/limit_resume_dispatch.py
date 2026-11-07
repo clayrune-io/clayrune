@@ -8,10 +8,26 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify
 
 from mc import limit_resume as policy
-from mc.limit_resume_completion import finalize
+from mc.limit_resume_completion import finalize, prune_applied
 from mc.core import _log
 
 bp = Blueprint('limit_resume', __name__)
+
+
+def close_session(project_id: str, session_id: str) -> None:
+    """Serialize durable close with acknowledgment, cancellation and takeover."""
+    from mc.blueprints import agent_routes as ar
+    with ar.get_manager(project_id).lock:
+        store = policy.store()
+        if store:
+            store.close(session_id, project_id)
+
+
+def finish_active_exit(session: dict, attempt: int) -> None:
+    """A completed turn's later exit must use the receipt's stable log key."""
+    from mc.blueprints import agent_routes as ar
+    with ar.get_manager(session['project_id']).lock:
+        finalize(ar, session, attempt, restoring=True)
 
 
 def confirm_submission(session: dict, attempt: int | None) -> None:
@@ -37,7 +53,7 @@ def restore_waits(ar, *, include_completed: bool = True) -> None:
     rows = store.records()
     for row in rows:
         if row['phase'] not in ('waiting', 'submitting') and not (
-                include_completed and row['phase'] == 'active' and row.get('completion_done')):
+                row['phase'] == 'active' and row.get('completion_done')):
             continue
         sid, pid = row['session_id'], row['project_id']
         with ar.get_manager(pid).lock:
@@ -46,13 +62,20 @@ def restore_waits(ar, *, include_completed: bool = True) -> None:
             row = store.get(sid)
             if not row or row['phase'] == 'cancelled':
                 continue
+            if row['phase'] == 'active':
+                if not row.get('completion_done') or prune_applied(ar, row):
+                    continue
+                if not include_completed and not (existing or {}).get('_limit_resume_recovering'):
+                    continue
+            elif row['phase'] not in ('waiting', 'submitting'):
+                continue
             deferred = row.get('deferred_success') or {}
             recover_success = (not row.get('review_required')
                                and deferred.get('attempt') == row['attempts'])
             if existing:
                 if (existing.get('_limit_resume_recovering') and recover_success
                         and existing.get('status') == 'waiting_for_reset'
-                        and row['phase'] == 'submitting'):
+                        and row['phase'] in ('submitting', 'active')):
                     if finalize(ar, existing, row['attempts'],
                                 restoring=not existing.get('process_alive')):
                         policy.confirm_submission(sid, row['attempts'])
@@ -69,7 +92,8 @@ def restore_waits(ar, *, include_completed: bool = True) -> None:
                     '[Reset continuation submission was interrupted; continue manually to avoid a duplicate.]')
             ar.agent_sessions[sid] = session
             ar.get_manager(pid).session_ids.add(sid)
-            if row.get('completion_done') and recover_success:
+            if (row.get('completion_done') and recover_success
+                    and deferred['kind'] != 'turn'):
                 session['status'] = 'completed'
                 if row['phase'] == 'submitting':
                     policy.confirm_submission(sid, row['attempts'])

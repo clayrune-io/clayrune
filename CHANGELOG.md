@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-07] - Keep closed reset-resume chats closed (MC-1163 fifth review)
+
+- Explicit session closure durably cancels active reset receipts under the same project lock as acknowledgment, cancellation and takeover. A compact cancellation fence replaces saved output, so boot cannot recreate the closed chat.
+- Boot and scheduler cleanup prune completed receipts once the matching agent log and workflow transition are durable. Incomplete completion recovery and continuing-turn attempt budgets remain intact; a recovered turn writes its missing exit log before cleanup.
+- Added Fenn's closed-chat and downstream-dispatch probes plus cleanup, stale-writer, project-lock and storage-failure regressions. Branch review candidate only; no merge, push, restart or deployment.
+
 ## [2026-11-07] - Preserve reset completion across restart (MC-1163 fourth review)
 
 - Deferred successful results and their output now persist against the submitting attempt. Matching acknowledgment records completion before activating the row; boot finishes a saved success without launching a provider or replaying input.
