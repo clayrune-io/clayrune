@@ -153,10 +153,15 @@ def rejected_by(project_id: str, sha: str) -> str:
     return ''
 
 
-def hold_reason(project_id: str, branch: str, tip: str) -> str:
+def hold_reason(project_id: str, branch: str, tip: str, require_cold: bool = False) -> str:
     """Why the merge is held, '' when the tip has a pass on record and no
     review of that commit, under any branch name, requested changes. One place
-    for the wording so merge_back, the CLI and the hook say the same thing."""
+    for the wording so merge_back, the CLI and the hook say the same thing.
+
+    `require_cold` (MC-1165, project setting `cold_review_required`): the pass
+    must carry the `cold` marker only the server-side cold reviewer writes
+    (`record(cold=True)`; no route accepts it), so a pass recorded by hand or by
+    a reviewer session does not satisfy a project that demands a cold review."""
     if not tip:
         return f'cannot resolve the tip of {branch}'
     other = rejected_by(project_id, tip)
@@ -164,6 +169,9 @@ def hold_reason(project_id: str, branch: str, tip: str) -> str:
         return f'review of {other} at {tip[:8]} requested changes on this commit'
     v = verdict_for(project_id, branch, tip)
     if v == PASS:
+        if require_cold and (find(project_id, branch, tip) or {}).get('cold') is not True:
+            return (f'no cold review on record for {branch} at {tip[:8]} '
+                    f'(a pass that was not made by the cold reviewer does not count)')
         return ''
     if v == CHANGES_REQUESTED:
         return f'review of {branch} at {tip[:8]} requested changes'
@@ -175,14 +183,20 @@ def _text(value, limit: int = _MAX_TEXT) -> str:
 
 
 def record(project: dict, branch: str, *, sha, verdict, reviewer_session: str = '',
-           reviewer_character: str = '', report_path: object = '', attribution: str = '') -> dict:
+           reviewer_character: str = '', report_path: object = '', attribution: str = '',
+           cold: bool = False, summary: str = '') -> dict:
     """Write one review. Raises ReviewRefused; returns the stored record.
 
     `reviewer_session` is the session the CALLER was attributed to by the
     server (never a value the caller typed) -- '' means an unattributed caller
     (a human, or a process outside every managed session's tree). The latest
     review of a given branch+SHA replaces the earlier one, so a later
-    `changes_requested` withdraws an earlier `pass` on the same commit."""
+    `changes_requested` withdraws an earlier `pass` on the same commit.
+
+    `cold=True` marks a review made by the server-side cold reviewer
+    (`mc.cold_review_runner`, MC-1165). Only that internal caller sets it; the
+    record route never passes it, so no HTTP caller can mint one. `summary` is
+    the reviewer's own words, kept so a human can see why."""
     pid = (project or {}).get('id') or ''
     if not branch.startswith(BRANCH_PREFIX) or len(branch) == len(BRANCH_PREFIX):
         raise ReviewRefused(400, f'not an agent branch: {branch!r}')
@@ -204,24 +218,67 @@ def record(project: dict, branch: str, *, sha, verdict, reviewer_session: str = 
     path = store_path(pid)
     if path is None:
         raise ReviewRefused(500, 'review store is not available for this project')
-    rec = {
+    rec: dict[str, object] = {
         'sha': sha, 'branch': branch, 'verdict': verdict,
         'reviewer_session': reviewer_session, 'reviewer_character': _text(reviewer_character, 120),
         'report_path': _text(report_path),
         'attribution': attribution or ('attributed' if reviewer_session else 'unattributed'),
         'at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
     }
+    if cold:
+        rec['cold'] = True
+    if summary:
+        rec['summary'] = _text(summary, 1000)
+    _mutate(path, lambda doc: doc['records'].__setitem__(_key(branch, sha), rec))
+    return rec
+
+
+def _mutate(path: Path, fn) -> None:
+    """Read-modify-write the whole store under the write lock. Side sections
+    (see `update_section`) survive a record write. An existing file that does
+    not parse as an object is kept as `.corrupt` rather than overwritten."""
     with _write_lock:
-        records = _read(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        if not records and path.exists():
-            # `_read` found nothing in an existing file: empty store or an
-            # unparseable one. Keep an unparseable one rather than overwrite it.
+        doc: dict = {}
+        if path.exists():
             try:
-                json.loads(path.read_text(encoding='utf-8'))
+                loaded = json.loads(path.read_text(encoding='utf-8'))
+                if not isinstance(loaded, dict):
+                    raise ValueError('store is not an object')
+                doc = loaded
             except Exception:
                 path.replace(path.with_name(path.name + '.corrupt'))
-        records[_key(branch, sha)] = rec
-        write_json_atomic(path, {'version': 1, 'records': records},
-                          indent=2, ensure_ascii=False)
-    return rec
+        if not isinstance(doc.get('records'), dict):
+            doc['records'] = {}
+        doc['version'] = 1
+        fn(doc)
+        write_json_atomic(path, doc, indent=2, ensure_ascii=False)
+
+
+def read_section(project_id: str, name: str) -> dict:
+    """A named side section of the store (MC-1165 keeps cold-review attempt
+    counts here, in the one review store, not a second file). {} for anything
+    unreadable. Never raises."""
+    path = store_path(project_id)
+    if path is None:
+        return {}
+    try:
+        doc = json.loads(path.read_text(encoding='utf-8'))
+        sec = doc.get(name) if isinstance(doc, dict) else None
+        return sec if isinstance(sec, dict) else {}
+    except Exception:
+        return {}
+
+
+def update_section(project_id: str, name: str, fn) -> None:
+    """Apply `fn(section_dict)` to a named side section and write it back.
+    Raises ReviewRefused(500) when this project has no store location."""
+    path = store_path(project_id)
+    if path is None:
+        raise ReviewRefused(500, 'review store is not available for this project')
+
+    def apply(doc):
+        if not isinstance(doc.get(name), dict):
+            doc[name] = {}
+        fn(doc[name])
+    _mutate(path, apply)

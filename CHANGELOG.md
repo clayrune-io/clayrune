@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-07] - Cold review wired into merge-back (MC-1165 round 1)
+
+- A project with `cold_review_required: true` gets a toolless one-shot review (`ClaudeRuntime.oneshot`) of the branch tip before `merge_back`. The reviewer sees only the diff and the dispatched task text. Runs on a worker thread because the session-end handler executes inside the project lock on stream-reader threads; the worker re-enters `_worktree_merge_back_on_end`. New: `mc/cold_review_runner.py`, `mc/cold_review_gate.py`; wiring is 10 lines in `agent_worktree.py` and 15 in `agent_routes.py`.
+- The verdict is recorded by an internal function only (no HTTP route) as a cold record with an empty `reviewer_session`. `hold_reason` demands that cold record when the setting is on, so a hand-recorded pass no longer satisfies it. An error, timeout or malformed reply retries once; two attempts per tip SHA, then the merge holds for a human with the attempt count and last error in the hold message. Off by default; residual risk (a diff that talks the reviewer into approving) is documented in `docs/COLD_REVIEW.md`. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-07] - Cold-review packet and verdict parser, setting added (MC-1165, partial)
 
 - New `mc/cold_review.py`: builds a reviewer's whole input from git (merge-base..tip diff) plus the item ask, nothing else, and reads its reply strictly (one JSON object, verdict exactly `pass` or `changes_requested`; anything else holds). An empty diff, missing ask, oversize diff (refused, never truncated) or unreadable ref raises instead of building a partial packet.

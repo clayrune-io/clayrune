@@ -128,6 +128,7 @@ import mc.skills as _skills                # _skills_catalog_block
 import mc.skill_scoping as _skill_scoping  # per-agent skill scoping
 import mc.agent_worktree as _agent_worktree  # per-agent worktree isolation (b264200a)
 import mc.agent_worktree_followup as _agent_worktree_followup  # MC-1081: follow-up into a removed worktree
+import mc.cold_review_runner as _cold_review_runner  # MC-1165: cold review before merge-back
 import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§9.6)
 from mc import native_followup_context as _native_followup_context
 import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends §9.6's split)
@@ -1630,7 +1631,7 @@ def _worktree_retry_removal(session, attempt):
     _worktree_merge_back_on_end(session, _attempt=attempt)
 
 
-def _worktree_merge_back_on_end(session, _attempt=0):
+def _worktree_merge_back_on_end(session, _attempt=0, _cold_done=False):
     """Merge an isolated agent's committed work back into the base branch when
     its session ends. Without this the work sits stranded on the agent branch
     and isolation silently becomes work loss. Best-effort; on conflict the
@@ -1644,6 +1645,18 @@ def _worktree_merge_back_on_end(session, _attempt=0):
     try:
         p = load_project(pid)
         if not p:
+            return
+        # MC-1165: a project that requires a cold review gets it BEFORE merge-back,
+        # on a worker thread. This function runs inside the project lock on the
+        # stream-reader threads (`with get_manager(..).lock:` around
+        # `_log_agent_completion`), so a model call here would hold that lock for
+        # minutes. The worker calls back into this function with _cold_done=True.
+        if (not _cold_done and not _agent_worktree.is_hivemind_worker(sid)
+                and _cold_review_runner.needs_review(p, _agent_worktree.branch_name(sid))):
+            _cold_review_runner.start(
+                p, _agent_worktree.branch_name(sid), session.get('task') or '',
+                lambda: _worktree_merge_back_on_end(session, _attempt, _cold_done=True),
+                log=_log, announce=lambda m: _log_agent_activity(pid, m))
             return
         status, detail = _agent_worktree.merge_back(p, sid)
         if isinstance(detail, dict):

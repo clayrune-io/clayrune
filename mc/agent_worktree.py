@@ -48,7 +48,7 @@ import threading
 from pathlib import Path
 from typing import Callable, Iterable
 
-import mc.merge_review_gate as _review_gate
+import mc.cold_review_gate as _cold_gate
 import mc.project_sync as _sync
 
 # ── Injected helpers (set by register()) ────────────────────────────────────
@@ -540,9 +540,9 @@ def _merge_back_locked(project: dict, session_id: str, target_ref: str, owner):
     merge_ref = candidate.tip
     # Review gate (MC-1075): only for a landing on the project's base branch.
     # An explicit target_ref is the integration path's own call (see above).
-    if _review_gate.enabled(project) and ref == _base_ref(project):
+    if _cold_gate.gated(project) and ref == _base_ref(project):
         tip = candidate.tip
-        held = _review_gate.hold_reason(project.get('id', ''), branch, tip)
+        held = _cold_gate.hold_reason(project, branch, tip)
         if held:
             _plog(f"[worktree] {branch} HELD for review: {held}")
             return 'awaiting_review', held
@@ -570,8 +570,8 @@ def _merge_back_locked(project: dict, session_id: str, target_ref: str, owner):
     if merge_ref != branch:
         args[2:2] = ['-m', f"Merge branch '{branch}' (reviewed {merge_ref[:8]})"]
     with candidate.git_environment() as env:
-        if _review_gate.enabled(project) and ref == _base_ref(project):
-            held = _review_gate.hold_reason(project.get('id', ''), branch, candidate.tip)
+        if _cold_gate.gated(project) and ref == _base_ref(project):
+            held = _cold_gate.hold_reason(project, branch, candidate.tip)
             if held:
                 return 'awaiting_review', held
         ok, msg = _sync.git_run(base, args, timeout=120, env=env)

@@ -1,112 +1,156 @@
 # Cold reviewer on agent handoff (MC-1165)
 
-Status: **partly built, three design choices open.** Branch candidate only. Nothing
-here dispatches an agent, calls a model, records a verdict, or changes `merge_back`.
-Nothing is on for any project: the setting is off unless it is boolean `true`.
+Branch candidate. No push, merge, server restart or live setting change is part of
+this. The setting is off unless it is boolean `true`; nothing is enabled on any
+existing project. Tests never call a model or dispatch an agent.
 
-## What exists (built on, not duplicated)
+When a project sets `cold_review_required`, an agent branch with commits is
+reviewed at session end by a **toolless one-shot model call** that sees only the
+dispatched task text and the git diff. `merge_back` then lands the branch only if
+a **cold** pass for the exact tip SHA is on record. Any error, timeout, bad reply
+or out-of-attempts state leaves the branch held (`awaiting_review`).
 
-| Piece | Where | Role here |
-|---|---|---|
-| Verdict store, keyed `branch@sha` | `mc/merge_review_gate.py` | The only review store. A cold verdict goes here. |
-| Hold in the auto-merge path | `agent_worktree._merge_back_locked` returns `awaiting_review` | No pass for the exact tip = nothing lands. Already fails closed. |
-| Record route (attributed, lineage-checked) | `mc/blueprints/merge_review_routes.py`, `mc/review_lineage.py` | A reviewer *session* records `pass` / `changes_requested`. |
-| Reviewer callback seam | `landing_gate.verify(..., reviewer=cb)` | Only `{"status": "pass"}` allows; raise/None/other = block. |
-| Human-only settings | `mc/project_safety_settings.py` | `cold_review_required` added next to `verify_command`. |
+## Calls made by Dave (2026-11-07), as built
 
-## What this change adds
+1. **Reviewer = A, toolless one-shot.** `agent_runtime.run_text_transform('claude', ...)`,
+   the Scribe / mail-launder seam (no tools, no MCP, neutral cwd, TOOL_FREE_TRANSFORM
+   authorization). Fenn-by-hand stays for judgment reviews. The verdict is written by
+   an internal call, `merge_review_gate.record(cold=True, reviewer_session='')`, from
+   `mc/cold_review_runner.py`. **No HTTP route was added** and the record route never
+   passes `cold`, so no agent-reachable write path exists (tests:
+   `test_no_new_http_route`, `test_record_route_cannot_mint_a_cold_record`).
+2. **Timing = pre-lock sync, on a worker thread.** See "Threading" below.
+3. **Hold = one automatic retry, cap 2 attempts per tip SHA, then a human.** Attempt
+   count and last error are stored in the review store and lead the `awaiting_review`
+   detail, so the merge state shows them.
+4. **Ask = the dispatched task text** (`session['task']`).
 
-`mc/cold_review.py` (stdlib + `mc.dev_harness_diff`), tests `tests/test_cold_review.py`.
+## Pieces
 
-* `SETTING = 'cold_review_required'`, `enabled()`: strict `is True`. Added to
-  `PROJECT_SAFETY_KEYS`, so an agent caller is refused the whole write, same as
-  `verify_command`.
-* `build_packet(repo, base, tip, ask)`: the reviewer's entire input, read from git
-  (merge-base..tip, so what landing would add) plus the item ask.
-* `render_prompt(packet)`: prints exactly `PACKET_KEYS`; the diff and ask sit
-  between a per-render random boundary the diff cannot forge.
-* `parse_verdict(reply)`: one JSON object, `verdict` exactly `pass` or
-  `changes_requested`. Prose, two objects, a repeated `verdict` key, unknown
-  values, a non-string summary: all `hold`. Never raises.
+| What | Where |
+|---|---|
+| Setting, packet, prompt, verdict parser | `mc/cold_review.py` |
+| Cold-aware hold + attempt state | `mc/cold_review_gate.py` |
+| Review, retry, worker thread | `mc/cold_review_runner.py` |
+| Store (one, shared): cold marker, side sections | `mc/merge_review_gate.py` |
+| Hold wiring in `merge_back` | `mc/agent_worktree.py` (`_cold_gate`, 4 lines) |
+| Session-end wiring | `_worktree_merge_back_on_end` in `mc/blueprints/agent_routes.py` |
+| Human-only setting | `cold_review_required` in `mc/project_safety_settings.py` |
+| Tests | `tests/test_cold_review.py`, `tests/test_cold_review_wiring.py` |
 
-### How "cold" is enforced
+## How "cold" is enforced
 
-By construction, in this module: `build_packet` has no parameter for a transcript,
-journal or final message; `render_prompt` refuses a packet with any other key
-(test: `test_prompt_prints_only_packet_fields_and_a_fresh_boundary`). The diff is
-read from git, not from anything the builder wrote. A missing ask, an empty diff,
-a diff over 256 KiB (refused, never truncated: a half-read diff is an unreviewed
-diff) and an unreadable ref all raise `ColdReviewError` = no pass.
+By construction. `cold_review.build_packet(repo, base, tip, ask)` returns a dict with
+exactly `ask, base_sha, tip_sha, diffstat, diff`; `render_prompt` refuses any other
+key. The runner is handed the project, the branch name and the ask string only; it
+never receives the session, so it has no path to a transcript, journal or final
+message (`test_cold_review_module_imports_nothing_from_session_state`,
+`test_reviewer_receives_only_the_prompt_built_from_ask_and_diff`). The diff is read
+from git (merge-base..tip), not from anything the builder wrote. The model call is
+toolless, so the reviewer cannot read anything else. An empty diff, a missing ask,
+a diff over 256 KiB (refused, never truncated) or an unreadable ref is a failed
+attempt, not a pass.
 
-This holds for a **toolless** reviewer. It does **not** hold for a reviewer with
-tools (see choice 1): the packet is then only its first message.
+## The cold record requirement
 
-## Open design choices (stopped here, per the brief)
+`merge_review_gate.hold_reason(..., require_cold=True)` passes a tip only when the
+`pass` on record carries `cold: true`. `cold_review_gate.hold_reason` sets it
+whenever `cold_review_required` is on, and `merge_back` calls that for both of its
+hold checks (before and after verification). A pass recorded by hand, or by a
+reviewer session through the route, does not satisfy it. The latest record for a
+branch+SHA wins, so a later hand-recorded pass replaces a cold one and holds again.
+With the setting on, the hold runs even when `merge_requires_review` is off. With the
+setting off, behavior is byte-for-byte the old path.
 
-**1. Which agent reviews.**
+## Threading (the check Dave asked for)
 
-* **A. Toolless one-shot** (`ClaudeRuntime.oneshot`, the Scribe/Distiller sandbox: no
-  tools, no MCP, neutral cwd). Cold is real: it can see only the prompt. Cost: one
-  model call, up to ~65k input tokens at the 256 KiB cap, <= 180 s default timeout.
-  Weaker review (diff only, cannot open surrounding code). It is not a session, so it
-  cannot use the record route (which refuses unattributed callers by design); the
-  server would write the record itself through `merge_review_gate.record` with an
-  empty `reviewer_session` and a cold marker. That is a new server-side record path
-  and is the one place the "no human path" route rule is not reused.
-* **B. Fenn session** (`global:code-reviewer` dispatched as a new agent). Better
-  review (reads the repo, runs tests). Records through the existing route with its
-  existing attribution and `review_lineage` checks. Cold is **by instruction and
-  lineage only**: it has tools, so it can read `docs/_journal/`, the agent log
-  under `data/`, and the builder's worktree. Cost: a full agent session per
-  handoff (minutes; tens to hundreds of thousands of tokens on a premium model).
+`_worktree_merge_back_on_end` is called synchronously from
+`_log_agent_completion_body` (`agent_routes.py`, the "Worktree isolation" block). That
+function is reached from `_log_agent_completion`, whose callers include:
 
-  *Recommendation: A for the gate*, because the brief requires cold to be enforced
-  and only A can; keep Fenn-by-hand for judgment reviews. Residual either way: the
-  diff is untrusted text, so an injected "approve" can forge a `pass`; fail-closed
-  covers absence and error, not a manipulated verdict.
+* the Claude stream-reader threads, **inside** `with get_manager(...).lock:`
+  (`agent_routes.py` ~L6221 -> `_log_agent_completion` ~L6247, and ~L6535 -> ~L6574);
+* the non-Claude runtime exit hook, **inside** `with get_manager(project_id).lock:`
+  (~L10077 -> ~L10115);
+* the stop / delete routes, inside the same project lock, for a session that was
+  waiting for a limit reset (~L14632, ~L15146);
+* the deferred-removal `threading.Timer` (`_worktree_retry_removal`, ~L1625), which is
+  a plain worker thread.
 
-**2. Sync vs async verdict.**
+So it does run under the project lock, which every other session of that project
+waits on (and the spawner wake, `_notify_spawner_unless_jobs_open`, follows it). A
+model call there would hold the lock for up to two attempts x 180 s. Therefore
+`_worktree_merge_back_on_end` hands a qualifying branch to
+`cold_review_runner.start`, which reviews and then calls the same function again with
+`_cold_done=True` on the worker thread (the Timer path already runs merge-back off the
+lock). Pre-existing, not changed here: with `verify_command` set, `landing_gate.verify`
+also runs its commands (default 1200 s each) inside that same lock.
 
-* **Sync, inside landing:** pass `reviewer=cb` to `landing_gate.verify`. Simple, one
-  place. But it runs under the repository-wide landing lock, after the verify
-  commands, and holds that lock for the whole model call. Workable only with A.
-* **Async:** on handoff, start the review, return `awaiting_review` (existing), land
-  when a verdict for the tip exists. Needs something to call `merge_back` again when
-  the verdict arrives; today session end calls it once and a later pass is noticed
-  only by a manual retry or `gc_stale`.
-* **Pre-lock sync (A only):** run the one-shot in the session-end handler *before*
-  `merge_back`, record the verdict, and let `merge_back` find it via the existing
-  hold. No lock held, no new retrigger. Blocks that handler for up to the timeout;
-  I did not check what else waits on it.
+A branch qualifies when the setting is on, it is not a hivemind worker, and its tip is
+ahead of the landing base. A second end-of-session for a branch whose review is still
+running is dropped (the running worker calls its own merge-back).
 
-  *Recommendation: pre-lock sync with A.* Smallest surface that works; revisit async
-  only if B is chosen.
+## Retry and the visible state
 
-**3. How a block is re-tried.** A verdict is per tip SHA, so a new commit is a new
-review with no extra mechanism, and `changes_requested` already sticks to its commit
-(`merge_review_gate.rejected_by`). The open part is `hold` (error, timeout, bad
-reply): (i) retry at the next handoff only; (ii) one automatic retry then a human;
-(iii) a human route/button. *Recommendation: (ii), cap 2 attempts per tip SHA*, so a
-broken reviewer costs two calls, not an unbounded loop, and the state is visible.
+Attempts are counted **before** the model call (a crash mid-call still spends one),
+per tip SHA, in the review store's `cold_attempts` section (the same file, preserved
+across record writes). The second attempt runs immediately after the first fails. A
+verdict of either kind (`pass` or `changes_requested`) is recorded and ends the
+review; `changes_requested` sticks to that commit as before. After two failed attempts
+no further model call is made for that SHA. The held state reads, in the
+`awaiting_review` detail (also written to the project activity feed):
 
-**4. Where "the item ask" comes from (a gap, not a choice).** No session-to-backlog-item
-link exists in the code (grep of `agent_routes.py`, `dispatch_lineage.py`,
-`dev_harness_landing.py` finds none). Options: record `backlog_item_id` at dispatch
-(new field, honest, needs the dispatcher to pass it); parse `Backlog <id>` out of the
-task text (fragile); or use the dispatched task text itself as the ask (exists today,
-is what the builder was told, is not its transcript). *Recommendation: task text now,
-explicit `backlog_item_id` as a follow-up.*
+    cold review attempt 2/2, last error: model_timeout; out of attempts, needs a human - no review on record for clayrune/agent/<id> at <sha8>
 
-## Wiring that is left (depends on 1-3)
+Error codes: `packet:<missing_ask|empty_diff|diff_too_large|git_unavailable>`,
+`model_timeout`, `model_error:<ExceptionType>`, `claude_unavailable`,
+`reply:<empty_reply|not_json|not_an_object|unknown_verdict|bad_summary>`,
+`record_refused:<http status>`, `internal:<ExceptionType>`.
 
-* `merge_review_gate.hold_reason` must require a **cold** record when
-  `cold_review_required` is on, otherwise a hand-recorded `pass` satisfies it. That
-  needs a cold marker on the record (small change to `record()`).
-* The dispatch/one-shot call, the server-side record path (A) and the retry cap.
-* Session-end trigger in `_worktree_merge_back_on_end`.
+A new commit is a new SHA and starts at zero. There is no HTTP route and no CLI to
+reset a spent SHA: the human merges by hand after their own review (hand merges are
+not cold-gated, see below) or the agent commits a change.
+
+## Limits, stated plainly
+
+* **An injected "approve" in the diff can forge a pass.** The diff is untrusted text
+  fed to a model. The boundary fence is random per render and the prompt says to
+  ignore instructions in it, but nothing proves the model obeyed. Fail-closed covers
+  absence and error, not a manipulated verdict. A pass is evidence, not proof.
+* **The reviewer sees only the diff.** It cannot open surrounding code or run tests,
+  so it can miss what only context shows. That is the price of enforced coldness.
+* **Default reviewer model is the one-shot runtime's default (Haiku).** Set the global
+  config key `cold_review_model` to change it; empty means the runtime default.
+* **The spawner is woken before the landing.** With the review on a worker thread, the
+  completion wake can fire while the review is still running; the branch lands (or
+  holds) a minute or more later. The activity feed gets "Cold review started" and the
+  outcome.
+* **Triggered at session end only.** The startup `gc_stale` pass and the Timer retry
+  call `merge_back`, which holds for want of a cold pass but does not start a review.
+  A server restart while a review runs leaves the branch held until its session ends
+  again.
+* **Hand merges are not cold-aware.** `tools/merge-review-check.py` and the opt-in git
+  hooks still read `merge_requires_review` and accept any pass; they do not know the
+  `cold` marker. Client-side hooks remain advisory.
+* **Task text is the ask, not the backlog item.** It is what the builder was told, up
+  to 4000 characters, and may include the dispatcher's own framing.
+
+## Follow-up (not built): explicit `backlog_item_id` at dispatch
+
+No session-to-backlog-item link exists in the code. Recording a `backlog_item_id` on
+the dispatched session (a new field on `POST .../agent/dispatch`, stored on the
+session and agent-log row) would let the reviewer be given the item's own text
+instead of the task string. Then `session['task']` in
+`_worktree_merge_back_on_end` becomes a lookup of that item, falling back to the task.
+Filed here, not implemented, per Dave's call 4.
 
 ## Verification
 
-`tests/test_cold_review.py` (29 checks, temporary repos, no model, no dispatch).
-Adjacent: `test_project_safety_settings.py`, `test_merge_review_gate.py`,
-`test_landing_gate.py`. Pyright basic on `mc/cold_review.py`: 0 errors.
+`tests/test_cold_review.py` (packet and parser, 29 checks) and
+`tests/test_cold_review_wiring.py` (31 checks: cold record requirement, one-shot
+input, retry and cap with visible state, worker thread and dedupe, session-end wiring
+including an end-to-end landing). Mutation-checked: disabling `require_cold` fails 3
+tests, disabling the deferral fails 2. Adjacent suites and exact commands are in the
+journal and the final report. Pyright basic: 0 errors on the touched `mc/` modules
+(`agent_routes.py` carries 15 pre-existing errors, unchanged; `agent_worktree.py` is
+excluded from pyright by `pyproject.toml`).
