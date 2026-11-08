@@ -194,7 +194,15 @@ def start(project: dict, branch: str, ask: str, then: Callable[[], None], *,
                 result = review_tip(project, branch, ask_now, transform=transform, model=model,
                                     timeout=timeout, log=log)
                 if result['status'] == 'superseded':
-                    continue   # the branch moved mid-review: review the new tip now
+                    # The branch moved mid-review: review the new tip now, against
+                    # the ask of the completion that produced it (a revived session
+                    # can carry a different task). No pending completion means the
+                    # tip moved without one, so the running ask still applies.
+                    with _inflight_lock:
+                        pending = _rerun.pop(key, None)
+                    if pending is not None:
+                        ask_now, then_now = pending
+                    continue
                 if result['status'] != 'recorded':
                     announce(f"Cold review of {branch}: {result['status']} "
                              f"(attempts {result['attempts']}, {result.get('error', '')})")

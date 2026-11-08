@@ -128,6 +128,7 @@ import mc.skills as _skills                # _skills_catalog_block
 import mc.skill_scoping as _skill_scoping  # per-agent skill scoping
 import mc.agent_worktree as _agent_worktree  # per-agent worktree isolation (b264200a)
 import mc.agent_worktree_followup as _agent_worktree_followup  # MC-1081: follow-up into a removed worktree
+from mc import worktree_lifecycle as _worktree_lifecycle  # MC-1165: resume vs worktree-removal exclusion
 import mc.cold_review_runner as _cold_review_runner  # MC-1165: cold review before merge-back
 import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§9.6)
 from mc import native_followup_context as _native_followup_context
@@ -1625,10 +1626,14 @@ def _worktree_retry_removal(session, attempt):
     sid = session.get('session_id', '')
     with _worktree_retry_lock:
         _worktree_retry_pending.discard(sid)
-    live = agent_sessions.get(sid)
-    if live and live.get('status') in ('running', 'idle'):
-        return  # resumed since; its own end re-runs the merge-back/removal
-    _worktree_merge_back_on_end(session, _attempt=attempt)
+    # The terminal check and the removal are one decision (MC-1165 review 2): a
+    # resume landing between them would have its worktree deleted underneath it.
+    with _worktree_lifecycle.removal_window(
+            get_manager(session.get('project_id', '')).lock, sid):
+        live = agent_sessions.get(sid)
+        if live and live.get('status') in ('running', 'idle'):
+            return  # resumed since; its own end re-runs the merge-back/removal
+        _worktree_merge_back_on_end(session, _attempt=attempt)
 
 
 def _worktree_cold_review_done(session, attempt, turn_stamp):
@@ -1638,14 +1643,17 @@ def _worktree_cold_review_done(session, attempt, turn_stamp):
     directory out from under the live process (MC-1165 review 1, finding 2 --
     `live_process_refs` excludes agent processes, so nothing else protects it).
 
-    The decision is made under the project lock, which every resume path holds
-    when it flips the status to `running`, so a resume cannot land between the
-    check and the merge. The model call already finished outside the lock; only
-    this cheap check plus the merge-back (what the session-end handler always
-    did under that lock) runs inside it. A resumed session's own end re-runs the
-    merge-back, so skipping here loses nothing."""
+    The decision is made inside `worktree_lifecycle.removal_window` (the project
+    lock plus the session's lifecycle lock): the HTTP resume paths flip the status
+    to `running` under the project lock, and `_auto_dispatch_followup` (guardian
+    recovery, queued follow-ups) holds the lifecycle lock, so no resume can land
+    between the check and the removal (MC-1165 review 2). The model call already
+    finished outside; only this cheap check plus the merge-back (what the
+    session-end handler always did under that lock) runs inside. A resumed
+    session's own end re-runs the merge-back, so skipping here loses nothing."""
     sid = session.get('session_id', '')
-    with get_manager(session.get('project_id', '')).lock:
+    with _worktree_lifecycle.removal_window(
+            get_manager(session.get('project_id', '')).lock, sid):
         live = agent_sessions.get(sid)
         if live is not None and (live.get('status') in ('running', 'idle')
                                  or live.get('last_status_change_time') != turn_stamp):
@@ -10226,7 +10234,17 @@ def _run_runtime_callbacks(session, event=None):
 
 
 def _auto_dispatch_followup(session, message):
-    """Auto-dispatch a queued follow-up after the current task completes."""
+    """Auto-dispatch a queued follow-up after the current task completes.
+
+    This spawns before it marks the session `running`, and the guardian calls it
+    without the project lock, so it holds the session's lifecycle lock for that
+    whole span; a worktree removal that already checked "terminal" finishes
+    first (`mc/worktree_lifecycle.py`)."""
+    with _worktree_lifecycle.resuming(session.get('session_id', '')):
+        _auto_dispatch_followup_locked(session, message)
+
+
+def _auto_dispatch_followup_locked(session, message):
     project_id = session.get('project_id')
     p = load_project(project_id)
     if not p:

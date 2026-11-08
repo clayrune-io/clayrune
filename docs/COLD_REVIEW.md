@@ -99,13 +99,27 @@ in flight, the loop stops without spending another attempt on the old SHA
 
 **The callback is bound to the turn that ended** (`_worktree_cold_review_done`). The
 review runs minutes after the turn ended, and the session may have resumed. Under the
-project lock (every resume path flips `status` to `running` under it) the callback
-skips when the session is `running`/`idle` or its `last_status_change_time` is no
-longer the stamp captured at turn end; the resumed turn's own end re-runs the
-merge-back. Only that cheap check and the merge-back itself run in the lock, never
-the model call. Agent processes are excluded from the teardown guard's live-process
-list, so nothing else would stop the worktree being removed from under a resumed
-session.
+project lock plus the session's lifecycle lock (`mc/worktree_lifecycle.py`,
+`removal_window`) the callback skips when the session is `running`/`idle` or its
+`last_status_change_time` is no longer the stamp captured at turn end; the resumed
+turn's own end re-runs the merge-back. Only that cheap check and the merge-back itself
+run in the window, never the model call. Agent processes are excluded from the teardown
+guard's live-process list, so nothing else would stop the worktree being removed from
+under a resumed session.
+
+**Both locks are needed.** The HTTP resume paths flip `running` under the project lock,
+but `_auto_dispatch_followup` (guardian recovery, the stuck-queue replay) spawns first
+and flips after, and the guardian calls it with no lock. It therefore holds the
+session's lifecycle lock (`resuming`) for that whole span. The removal-retry timer
+(`_worktree_retry_removal`) runs in the same window from its terminal check through
+removal. A resume that arrives mid-window waits, then finds the tree gone and
+`agent_worktree_followup` recreates it. Lock order is project lock first, lifecycle
+lock second, everywhere.
+
+**A superseded review is reviewed against its own ask.** When the tip moves mid-review,
+the worker consumes the pending `(ask, callback)` before reviewing the new tip, so a
+revived session with a different task is judged against that task. With no pending
+completion the running ask carries over.
 
 **The gate reads one snapshot.** `hold_reason` takes the rejection list, the branch's
 record and its `cold` marker from a single read of the store. Review writes do not take
