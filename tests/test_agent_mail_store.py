@@ -461,7 +461,23 @@ def test_crash_after_submission_claim_becomes_uncertain_never_replayed(tmp_path,
     assert restarted.claim_for_submission()['event_id'] == 'ev1'
 
 
-def test_startup_reconcile_marks_inflight_submission_uncertain_even_inside_the_lease(tmp_path, clock):
+def test_startup_reconcile_never_touches_a_live_lease_owned_by_another_process(tmp_path, clock):
+    """Two store instances on one file: B starting up must not flip A's live claim."""
+    path = tmp_path / 'm.sqlite3'
+    a = MailStore(path, clock=clock)
+    a.register(REG)
+    a.bind_thread(REG, TOKEN, 'p', 's')
+    put(a, 1)
+    launder_and_ready(a)
+    claim = a.claim_for_submission()
+    b = MailStore(path, clock=clock)                     # second process starts up
+    assert b.reconcile(startup=True)['uncertain'] == 0   # A's lease is live: untouched
+    assert b.get_event('ev1')['state'] == SUBMITTING
+    a.mark_submitted('ev1', claim['fence_token'], {'turn_id': 't1'})   # A's acceptance still lands
+    assert a.get_event('ev1')['state'] == SUBMITTED
+
+
+def test_startup_reconcile_still_settles_an_orphaned_claim_once_its_lease_ends(tmp_path, clock):
     path = tmp_path / 'm.sqlite3'
     s = MailStore(path, clock=clock)
     s.register(REG)
@@ -469,10 +485,10 @@ def test_startup_reconcile_marks_inflight_submission_uncertain_even_inside_the_l
     put(s, 1)
     launder_and_ready(s)
     s.claim_for_submission()
+    clock.advance(s.config.lease_seconds + 1)
     again = MailStore(path, clock=clock)
-    assert again.reconcile()['uncertain'] == 0           # lease still live: not touched
     assert again.reconcile(startup=True)['uncertain'] == 1
-    assert again.get_event('ev1')['reason'] == 'restart_during_submit'
+    assert again.get_event('ev1')['state'] == UNCERTAIN
 
 
 def test_uncertain_reconciles_to_submitted_only_with_turn_evidence(store, clock):
@@ -598,6 +614,104 @@ def test_replay_of_an_already_accepted_event_after_revocation_is_a_duplicate(sto
                                message_id='<a@x>', body='x')
     assert again.status == 'duplicate'                   # replay cannot resurrect or re-queue it
     assert store.get_event('ev1')['state'] == REVOKED
+
+
+# --- MC-1166 unit 1 fix round -----------------------------------------------------------------------------
+
+def _small(tmp_path, clock, **kw):
+    s = MailStore(tmp_path / 'm.sqlite3', config=MailStoreConfig(**kw), clock=clock)
+    s.register(REG)
+    s.bind_thread(REG, TOKEN, 'proj', 'sess-1')
+    return s
+
+
+def _submitted(s, n=1):
+    put(s, n)
+    launder_and_ready(s)
+    c = s.claim_for_submission()
+    s.mark_submitted(c['event_id'], c['fence_token'], {'turn_id': f't{n}'})
+    return c['event_id']
+
+
+def test_submitted_event_with_lost_completion_expires_visibly_and_purges_content(store, clock):
+    ev = _submitted(store)
+    row = store.get_event(ev, include_content=True)
+    assert row['body'] is not None and row['laundered'] is not None
+    clock.advance(store.config.completion_window_seconds - 1)
+    assert store.reconcile()['expired'] == 0
+    assert store.get_event(ev)['state'] == SUBMITTED
+    clock.advance(2)
+    assert store.reconcile()['expired'] == 1
+    row = store.get_event(ev, include_content=True)
+    assert row['state'] == EXPIRED and row['reason'] == 'completion_window_expired'
+    assert row['body'] is None and row['laundered'] is None      # tombstone stays, content gone
+
+
+def test_completed_submitted_event_is_not_expired(store, clock):
+    ev = _submitted(store)
+    store.complete_turn(ev, 't1')
+    clock.advance(store.config.completion_window_seconds + 5)
+    assert store.reconcile()['expired'] == 0
+    assert store.get_event(ev)['state'] == TURN_COMPLETED
+
+
+def test_revocation_purges_content_of_submitted_rows_and_keeps_metadata(store, clock):
+    ev = _submitted(store)
+    store.revoke_registration(REG)
+    row = store.get_event(ev, include_content=True)
+    assert row['body'] is None and row['laundered'] is None
+    assert row['state'] == SUBMITTED and row['turn_id'] == 't1' and row['reason']   # metadata kept
+    store.complete_turn(ev, 't1')                         # the in-flight turn can still finish
+    assert store.get_event(ev)['state'] == TURN_COMPLETED
+
+
+def test_session_and_thread_deletion_purge_submitted_content(store):
+    store.bind_thread(REG, 'tok-two', 'proj', 'sess-2')
+    a = _submitted(store, 1)
+    store.insert_event(event_id='b1', registration_id=REG, thread_token='tok-two',
+                       message_id='<b>', body='other session body')
+    c = store.claim_for_laundering()
+    store.complete_laundering(c['event_id'], c['fence_token'], {'reply_text': 'x'})
+    d = store.claim_for_submission()
+    store.mark_submitted(d['event_id'], d['fence_token'], {'turn_id': 'tb'})
+    store.revoke_session('proj', 'sess-2')
+    assert store.get_event('b1', include_content=True)['body'] is None
+    assert store.get_event(a, include_content=True)['body'] is not None   # other session untouched
+    store.revoke_thread(TOKEN)
+    assert store.get_event(a, include_content=True)['body'] is None
+
+
+def test_reconcile_backstop_purges_submitted_content_of_revoked_registration(store):
+    ev = _submitted(store)
+    with store._tx() as db:     # missed revocation: registration disabled under a submitted row
+        db.execute('UPDATE registrations SET enabled=0 WHERE registration_id=?', (REG,))
+    store.reconcile()
+    row = store.get_event(ev, include_content=True)
+    assert row['state'] == SUBMITTED and row['body'] is None and row['laundered'] is None
+
+
+def test_oversize_body_is_never_stored_on_the_missing_message_id_path(tmp_path, clock):
+    s = _small(tmp_path, clock, max_body_bytes=100)
+    r = s.insert_event(event_id='ev1', registration_id=REG, thread_token=TOKEN,
+                       message_id='', body='x' * 101)
+    assert r.state == BLOCKED
+    assert s.get_event('ev1', include_content=True)['body'] is None
+    assert s.get_event('ev1')['body_len'] == 101
+    assert s.claim_for_laundering() is None
+    with pytest.raises(ValueError):
+        s.release_hold('ev1')
+
+
+def test_oversize_body_is_never_stored_on_the_conflicting_message_id_path(tmp_path, clock):
+    s = _small(tmp_path, clock, max_body_bytes=100)
+    assert put(s, 1, 'small', mid='<a@x>').status == 'accepted'
+    r = s.insert_event(event_id='ev2', registration_id=REG, thread_token=TOKEN,
+                       message_id='<a@x>', body='y' * 101)
+    assert (r.status, r.state) == ('held', BLOCKED)
+    row = s.get_event('ev2', include_content=True)
+    assert row['body'] is None and row['conflict_of'] == 'ev1'
+    with pytest.raises(ValueError):
+        s.release_hold('ev2')
 
 
 # --- corruption --------------------------------------------------------------------------------------------------

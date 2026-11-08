@@ -29,7 +29,16 @@ What it guarantees (each pinned in tests/test_agent_mail_store.py):
   earlier one is still unsettled.
 * Expiry, queue exhaustion and revocation always leave a visible terminal
   row or a metadata rejection record, never a silent delete. Terminal rows
-  drop their content and keep metadata until ``purge_terminal``.
+  drop their content and keep metadata until ``purge_terminal``. A
+  `submitted` row whose completion never arrives becomes a visible `expired`
+  after ``completion_window_seconds``; revocation, session and thread
+  deletion purge the bodies of `submitted` rows too (state and metadata
+  stay, so the in-flight turn can still complete).
+* Reconciliation settles a claim only after its lease has run out; it never
+  touches a live lease, so a second process starting up cannot break the
+  first one's valid acceptance.
+* The body-size bound holds on every insert path: an oversize body is never
+  stored, whatever else holds the event.
 * A corrupt, foreign or zero-byte store file raises ``MailStoreCorrupt``
   and the file is never replaced; the instance then refuses all work.
 * The raw thread token is never stored, only its SHA-256.
@@ -85,7 +94,7 @@ TRANSITIONS: dict[str, frozenset[str]] = {
     # submitting -> ready is a release with nothing handed to the provider
     # (session busy). A possible handoff only ever goes to submitted/uncertain.
     SUBMITTING: frozenset({SUBMITTED, READY, RETRYABLE, BLOCKED, UNCERTAIN, REVOKED}),
-    SUBMITTED: frozenset({TURN_COMPLETED}),
+    SUBMITTED: frozenset({TURN_COMPLETED, EXPIRED}),
     RETRYABLE: frozenset({LAUNDERING, SUBMITTING, BLOCKED, REJECTED, EXPIRED, REVOKED}),
     BLOCKED: frozenset({LOCAL_RECEIVED, READY, REJECTED, EXPIRED, REVOKED}),
     UNCERTAIN: frozenset({READY, SUBMITTED, REJECTED, EXPIRED, REVOKED}),
@@ -122,6 +131,7 @@ class MailStoreConfig:
     """Operating limits. Defaults are D4's PROVISIONAL starting values
     (Marlow, 2026-11-08), pending a capacity check; they are config, not law."""
     queue_ttl_seconds: float = 30 * 86400.0        # offline queue / hold retention
+    completion_window_seconds: float = 86400.0     # submitted -> turn_completed, else expired
     thread_ttl_seconds: float = 90 * 86400.0
     terminal_retention_seconds: float = 30 * 86400.0  # dedupe + terminal metadata
     max_body_bytes: int = 64 * 1024                # inbound text kept in custody
@@ -518,7 +528,18 @@ class MailStore:
                           args + _CANCELLABLE).fetchall()
         for row in rows:
             self._move(db, row['event_id'], row['state'], REVOKED, reason=reason)
-        return len(rows)
+        # `submitted` was already handed over, so the row stays (its turn may
+        # still complete) but the raw and laundered bodies go now.
+        return len(rows) + self._purge_submitted_content(db, where, args, reason)
+
+    def _purge_submitted_content(self, db: sqlite3.Connection, where: str, args: tuple,
+                                 reason: str) -> int:
+        """Drop the bodies of `submitted` rows matching `where`; state and
+        metadata stay. Returns the number of rows that still held content."""
+        return db.execute(
+            f'UPDATE events SET body=NULL,laundered=NULL,reason=?,state_at=? '
+            f'WHERE {where} AND state=? AND (body IS NOT NULL OR laundered IS NOT NULL)',
+            (reason, self.clock(), *args, SUBMITTED)).rowcount
 
     def _backoff(self, attempts: int) -> float:
         return min(self.config.max_backoff_seconds,
@@ -591,10 +612,13 @@ class MailStore:
                 hold, conflict_of = 'conflicting_message_id', twins[0]['event_id']
             elif not mid:
                 hold = 'missing_message_id'
-            elif blen > cfg.max_body_bytes:
-                hold, kept = 'oversize_body', None   # never a silent partial instruction
             elif not body.strip():
                 hold = 'empty_body'
+            if blen > cfg.max_body_bytes:
+                # The bound holds on every path, whatever else holds the event:
+                # an oversize body is never stored, so it can never reach
+                # laundering. Never a silent partial instruction either.
+                hold, kept = 'oversize_body', None
             state = BLOCKED if hold else LOCAL_RECEIVED
             db.execute(
                 'INSERT INTO events(event_id,registration_id,thread_hash,project_id,session_id,'
@@ -647,11 +671,14 @@ class MailStore:
     def reconcile(self, *, startup: bool = False) -> dict[str, int]:
         """Settle everything time or restart has overtaken, in one transaction.
 
-        * `submitting` past its lease (any `submitting` when `startup`) ->
-          `uncertain`: a provider write may have happened, so no auto-replay.
+        * `submitting` past its lease -> `uncertain`: a provider write may have
+          happened, so no auto-replay. A live lease is never touched, at
+          startup or otherwise: another process may own it.
         * `laundering` past its lease -> `retryable` (toolless; safe to redo).
-        * events of a revoked/stale registration or revoked thread -> `revoked`.
-        * events past their retention deadline -> visible `expired`.
+        * events of a revoked/stale registration or revoked thread -> `revoked`;
+          `submitted` ones keep their state but lose their content.
+        * events past their retention deadline -> visible `expired`; `submitted`
+          ones past ``completion_window_seconds`` likewise.
         """
         with self._tx() as db:
             return self._reconcile_locked(db, startup)
@@ -659,20 +686,18 @@ class MailStore:
     def _reconcile_locked(self, db: sqlite3.Connection, startup: bool = False) -> dict[str, int]:
         now = self.clock()
         out = {'uncertain': 0, 'retryable': 0, 'revoked': 0, 'expired': 0}
-        # At startup nothing in this process can still hold a claim, so every
-        # claimed row is orphaned whether or not its lease has run out.
-        lease_cut = '' if startup else 'AND lease_until<=?'
-        cut_args = () if startup else (now,)
-        for row in db.execute(f"SELECT * FROM events WHERE state=? {lease_cut}",
-                              (SUBMITTING, *cut_args)).fetchall():
+        # Only an expired lease is orphaned. At startup another process sharing
+        # this file may hold a live claim; `startup` only names the cause.
+        for row in db.execute("SELECT * FROM events WHERE state=? AND lease_until<=?",
+                              (SUBMITTING, now)).fetchall():
             self._move(db, row['event_id'], SUBMITTING, UNCERTAIN,
                        reason='restart_during_submit' if startup else 'lease_expired_during_submit',
                        attempts=int(row['attempts']) + 1)
             out['uncertain'] += 1
             _log(f"[agent-mail] event {row['event_id']} -> uncertain: submission was in "
                  f"flight; not replayed without review", flush=True)
-        for row in db.execute(f"SELECT * FROM events WHERE state=? {lease_cut}",
-                              (LAUNDERING, *cut_args)).fetchall():
+        for row in db.execute("SELECT * FROM events WHERE state=? AND lease_until<=?",
+                              (LAUNDERING, now)).fetchall():
             self._fail_locked(db, row, 'lease_expired_during_laundering', True)
             out['retryable'] += 1
         marks = ','.join('?' * len(_CANCELLABLE))
@@ -686,6 +711,13 @@ class MailStore:
         for row in stale:
             self._move(db, row['event_id'], row['state'], REVOKED, reason='revoked_or_stale')
             out['revoked'] += 1
+        # Backstop for `submitted` rows of a revoked/stale registration or thread.
+        self._purge_submitted_content(
+            db, 'event_id IN (SELECT e.event_id FROM events e '
+            'LEFT JOIN registrations r ON r.registration_id=e.registration_id '
+            'LEFT JOIN thread_bindings b ON b.thread_hash=e.thread_hash '
+            'WHERE r.registration_id IS NULL OR r.enabled=0 OR r.generation!=e.generation '
+            'OR b.revoked_at IS NOT NULL OR b.thread_hash IS NULL)', (), 'revoked_or_stale')
         emarks = ','.join('?' * len(_EXPIRABLE))
         for row in db.execute(f'SELECT event_id,state FROM events WHERE state IN ({emarks}) '
                               'AND expires_at<=?', (*_EXPIRABLE, now)).fetchall():
@@ -693,6 +725,12 @@ class MailStore:
             out['expired'] += 1
             _log(f"[agent-mail] event {row['event_id']} expired from {row['state']}; "
                  f"content purged, tombstone kept", flush=True)
+        for row in db.execute('SELECT event_id FROM events WHERE state=? AND state_at<=?',
+                              (SUBMITTED, now - self.config.completion_window_seconds)).fetchall():
+            self._move(db, row['event_id'], SUBMITTED, EXPIRED, reason='completion_window_expired')
+            out['expired'] += 1
+            _log(f"[agent-mail] event {row['event_id']} expired: submitted but no turn "
+                 f"completion within the window; content purged, tombstone kept", flush=True)
         return out
 
     def purge_terminal(self) -> int:
