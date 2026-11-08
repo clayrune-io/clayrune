@@ -45,6 +45,13 @@
 //     RFC 2231, quoting, an unreadable earlier parameter), so the two would split the
 //     message on different delimiters; only shapes both read alike are admitted.
 //     `filename*` is not affected.
+//   - allowlists on top of the grammar (canonical.js; round 12): a C0 control (not HTAB) or
+//     DEL in a Content-* header name or value; a Content-Transfer-Encoding other than 7bit,
+//     8bit, binary, quoted-printable or base64; a Content-Type or Content-Disposition
+//     parameter whose name contains `*` and does not start `name` or `filename`; or an
+//     X-Sun-Charset header: `malformed_mime`. Thunderbird truncates a value at NUL, decodes
+//     uuencode/yEnc bodies, prefers `start*`/`charset*` to the plain parameter and reads
+//     X-Sun-Charset; postal-mime does none of those.
 //
 // ALLOWLIST. Text is taken ONLY from text/plain leaves where
 //   - every ancestor is multipart/mixed, multipart/alternative or
@@ -78,7 +85,7 @@ import PostalMime from 'postal-mime';
 import { strictMsgId } from './content-id.js';
 import {
   bareCrRefusal, boundaryLineRefusal, boundaryNestingRefusal, boundaryOf,
-  headerGrammarRefusal, boundaryParamRefusal, multipartBoundaryRefusal,
+  headerGrammarRefusal, headerAllowlistRefusal, boundaryParamRefusal, multipartBoundaryRefusal,
 } from './canonical.js';
 
 // Provisional limits from AGENT_MAIL_SPEC D4 (64 KiB inbound MIME, 16 KiB reply).
@@ -351,6 +358,7 @@ export async function strip(raw, opts = {}) {
   const boundaries = boundariesOf(parser.root);
   const refusal = treeRefusal(parser.root)
     || headerGrammarRefusal(parser.root)
+    || headerAllowlistRefusal(parser.root)
     || boundaryParamRefusal(parser.root)
     || multipartBoundaryRefusal(parser.root)
     || boundaryNestingRefusal(parser.root)

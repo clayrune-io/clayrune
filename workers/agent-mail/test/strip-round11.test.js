@@ -151,7 +151,8 @@ passes('Content-Type with trailing ";" then a fold (Gmail)', J(['Content-Type: t
 passes('Content-Disposition bare', J(['Content-Type: multipart/mixed; boundary=B', '', '--B', 'Content-Type: text/plain', 'Content-Disposition: inline', '', 'Hello', '--B--', '']), /Hello/);
 passes('Content-Disposition with quoted and token parameters', J(['Content-Type: multipart/mixed; boundary=B', '', '--B', 'Content-Type: text/plain',
   'Content-Disposition: attachment; filename="a b.txt"; size=5;', '', 'Hello', 'xx', '--B--', '']), undefined);
-for (const v of ['7bit', '8bit', 'binary', 'quoted-printable', 'base64', 'BASE64', 'x-uuencode']) {
+for (const v of ['7bit', '8bit', 'binary', 'quoted-printable', 'base64', 'BASE64']) {
+  // round 12 removed 'x-uuencode' here: the CTE allowlist refuses it (strip-round12.test.js)
   passes(`Content-Transfer-Encoding ${v}`, J(['Content-Type: text/plain', `Content-Transfer-Encoding: ${v}`, '', 'SGVsbG8=', '']));
 }
 

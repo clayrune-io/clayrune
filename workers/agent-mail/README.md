@@ -17,7 +17,7 @@ text ever reaches custody. A failed check is a **drop**, not a hold.
 | `authres.js` | Cloudflare `Authentication-Results` (authserv-id `mx.cloudflare.net` only) and the D6=A rule: DMARC pass with aligned SPF **or** DKIM. |
 | `content-id.js` | `strictMsgId(value)`: the bare id of a plain msg-id (atext, `.`, `@`, optional simple `[literal]`), CFWS outside the brackets skipped; `null` for anything else. Used for Content-ID / `start` matching. |
 | `headers.js` | Ordered header-list helpers. |
-| `canonical.js` | Canonical-form gate helpers for `strip()` (bare CR, boundary-line shape, boundary nesting, header grammar). Pure. |
+| `canonical.js` | Canonical-form gate helpers for `strip()` (bare CR, boundary-line shape, boundary nesting, header grammar, header allowlists). Pure. |
 | `strip.js` | `strip(raw)` -> plain text plus counts of what was removed (never the removed bytes). MIME-tree allowlist, no HTML conversion. |
 
 ### `decide` inputs
@@ -136,6 +136,19 @@ text and no counts:
   the grammar, so Gmail, Apple Mail, Outlook and Thunderbird output (including
   non-ASCII attachment names) still passes; a legal but rare message with a comment,
   a backslash escape or an RFC 2231 boundary is refused on purpose.
+- `malformed_mime`, header allowlists (`canonical.js` `headerAllowlistRefusal`, round
+  12). Thunderbird truncates a header value at NUL, decodes uuencode/yEnc bodies,
+  prefers RFC 2231 `start*`/`charset*` to the plain parameter and reads `X-Sun-Charset`;
+  postal-mime does none of those. Closed as classes, each an allowlist:
+  9. a C0 control (0x00-0x1F except HTAB) or DEL (0x7F) in the name or unfolded value of
+     any `Content-*` header, in any part;
+  10. a Content-Transfer-Encoding other than `7bit`, `8bit`, `binary`,
+      `quoted-printable`, `base64` (case-insensitive; absent is 7bit);
+  11. on Content-Type / Content-Disposition, a parameter whose name contains `*` unless
+      the part before the first `*` is `name` or `filename`;
+  12. an `X-Sun-Charset` header on any part.
+  Apple `name*=`, Gmail/Thunderbird `filename*0*=` and every other fixture still pass.
+  Cost: a legal `start*=` / `charset*=` / `boundary*=` message is refused.
 
 **HTML is never converted or kept.** A message with `text/html` and no surviving
 `text/plain` returns `{ok:false, reason_code:'html_only', stripped}`: a drop with

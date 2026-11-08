@@ -177,6 +177,81 @@ export function headerGrammarRefusal(root) {
   return null;
 }
 
+// ---- Header allowlists (fix round 12) ---------------------------------------------------------
+//
+// Rule 5 pins the SHAPE of a Content-* value; it does not pin what the characters or the words
+// mean to each reader. Fenn's round 12 found three more splits inside the grammar, and Dave
+// (round 12) closed them as classes rather than instances. Each rule below is an allowlist:
+//
+//   9  a C0 control (0x00-0x1F except HTAB) or DEL (0x7F) anywhere in the unfolded name or value
+//      of a Content-* header, in any part. Thunderbird copies a value through a C string, so a
+//      NUL ends it early (an unterminated quote then ends parameter parsing, or cuts a boundary
+//      short); postal-mime keeps the NUL. Real clients never emit one. postal-mime has already
+//      removed the CRLF of a fold, so CR and LF cannot appear in a value that got this far; they
+//      are in the class anyway.
+//  10  Content-Transfer-Encoding is one of 7bit, 8bit, binary, quoted-printable, base64
+//      (case-insensitive); absent means 7bit. Thunderbird also decodes x-uuencode, uuencode,
+//      x-uue, uue and x-yencode, discarding every line before `begin `, so a text part with
+//      one of those is blank to Ron and plain text to postal-mime.
+//  11  on Content-Type and Content-Disposition, a parameter whose name contains `*` is refused
+//      unless the part before the first `*` is `name` or `filename` (Apple `name*=`, Gmail
+//      `filename*0*=`). Thunderbird prefers an RFC 2231 form to a plain parameter of the same
+//      name (`start*`, `charset*`, `boundary*`, `type*`); postal-mime keeps the plain one.
+//  12  no X-Sun-Charset header in any part. Thunderbird uses it as the charset when the
+//      Content-Type has none; postal-mime ignores it.
+
+const ALLOWED_CTE = new Set(['7bit', '8bit', 'binary', 'quoted-printable', 'base64']);
+const STARRED_OK = new Set(['name', 'filename']);
+const C0_OR_DEL = /[\x00-\x08\x0a-\x1f\x7f]/;
+
+function controlRefusal(root) {
+  for (const node of nodesOf(root)) {
+    for (const h of node.headers || []) {
+      const key = String(h.key || '').trim();
+      if (!key.startsWith('content-')) continue;
+      if (C0_OR_DEL.test(key) || C0_OR_DEL.test(String(h.value || ''))) return REFUSED;
+    }
+  }
+  return null;
+}
+
+function transferEncodingRefusal(root) {
+  for (const node of nodesOf(root)) {
+    for (const h of parsedHeaders(node, ['content-transfer-encoding'])) {
+      if (h.parsed === null || !ALLOWED_CTE.has(h.parsed.type.toLowerCase())) return REFUSED;
+    }
+  }
+  return null;
+}
+
+function starredParamRefusal(root) {
+  for (const node of nodesOf(root)) {
+    for (const h of parsedHeaders(node, ['content-type', 'content-disposition'])) {
+      if (h.parsed === null) continue;
+      for (const p of h.parsed.params) {
+        const star = p.name.indexOf('*');
+        if (star !== -1 && !STARRED_OK.has(p.name.slice(0, star))) return REFUSED;
+      }
+    }
+  }
+  return null;
+}
+
+function sunCharsetRefusal(root) {
+  for (const node of nodesOf(root)) {
+    for (const h of node.headers || []) {
+      if (String(h.key || '').trim() === 'x-sun-charset') return REFUSED;
+    }
+  }
+  return null;
+}
+
+// Rules 9-12 in one call; each is independent and returns 'malformed_mime' or null.
+export function headerAllowlistRefusal(root) {
+  return controlRefusal(root) || transferEncodingRefusal(root)
+    || starredParamRefusal(root) || sunCharsetRefusal(root);
+}
+
 // Rule 6: no `boundary*` parameter (RFC 2231 `boundary*=`, `boundary*0=`; Thunderbird
 // prefers them to a plain `boundary=`, postal-mime does not) and at most one `boundary`
 // parameter. Rule 7: that parameter's value is a plain token or a quoted string with no
