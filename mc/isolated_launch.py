@@ -118,7 +118,7 @@ def hold_vendor_recovery(session: dict) -> bool:
     provider with the wrong continuation protocol while the session still says
     it is a vendor session. Provider-native recovery is not built, so such a
     session stays in `error`, `guardian_state='needs_attention'`, with the
-    request retained for a human (Try Again / dismiss). Mirrors the vendor
+    request retained for a human (resend / dismiss). Mirrors the vendor
     exclusion on guardian State 4. Claude's bounded retry is untouched. Call
     under the project lock; the log line is written once."""
     if (session.get('provider') or 'claude').lower() == 'claude':
@@ -127,26 +127,28 @@ def hold_vendor_recovery(session: dict) -> bool:
         session['guardian_state'] = 'needs_attention'
         session.setdefault('log_lines', []).append(
             f"[Guardian: auto-recovery is Claude-only; this {session.get('provider')} "
-            f"session's request is kept, not retried. Use \"Try Again\" or \"Start Fresh\".]")
+            f"session's request is kept, not retried. Resend it yourself or dismiss it.]")
     return True
 
 
-def owned_worktree(project: dict, session_id: str) -> str:
+def owned_worktree(project: dict, session_id: str, *, logged: bool = False) -> str:
     """The worktree path this conversation owns, or '' when it never had one.
 
-    A revived (purged) session has no `_worktree_isolated` flag to read, and the
-    agent log does not record one. What does persist is git's own state, keyed
-    on the session id: the worktree directory `<project>/.clayrune/agents/<sid>`
-    and the branch `clayrune/agent/<sid>` that `agent_worktree.create` made for
-    it (kept when a no-commit end removes the tree). Either one means the
-    conversation was isolated, so its revival must start in that tree. The
-    directory is returned even if it is unusable; `launch_cwd` then recreates it
-    or refuses, it never falls back to the project checkout. A session whose
-    tree AND branch are both gone (merged and deleted) leaves no record, and
-    revives as an ordinary session."""
+    A revived (purged) session has no `_worktree_isolated` flag in memory. Two
+    things persist it. From r5 on the agent-log row carries `worktree_isolated`
+    (written at dispatch, kept through completion); the caller passes it as
+    `logged`, and that alone is enough even after the worktree directory and its
+    branch are both gone (merged and deleted). Rows written before r5 carry no
+    flag, so git's own state is the fallback: the worktree directory
+    `<project>/.clayrune/agents/<sid>` or the branch `clayrune/agent/<sid>`
+    that `agent_worktree.create` made for it (kept when a no-commit end removes
+    the tree). The path is returned even if it is unusable; `launch_cwd` then
+    recreates it or refuses, it never falls back to the project checkout. A
+    legacy row whose tree AND branch are both gone leaves no record anywhere and
+    revives as an ordinary session (disclosed residual)."""
     wt = _aw.worktree_path(project, session_id)
     if wt is None:
         return ''
-    if wt.exists() or _aw.branch_exists(project, session_id):
+    if logged or wt.exists() or _aw.branch_exists(project, session_id):
         return str(wt)
     return ''

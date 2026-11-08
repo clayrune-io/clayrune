@@ -7759,7 +7759,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         return None
     # MC-1165 r5: a conversation that owned a worktree revives into it (or a
     # recreation of it), never into the project checkout. See owned_worktree.
-    _revive_wt = _isolated_launch.owned_worktree(p, session_id)
+    _revive_wt = _isolated_launch.owned_worktree(p, session_id, logged=bool(entry.get('worktree_isolated')))
     _revive_isolated = bool(_revive_wt)
     _revive_cwd = _revive_wt or _resume_cwd_for(pp, claude_sid) or pp
 
@@ -8684,6 +8684,8 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
     }
     if session.get('human_joined'):
         entry['human_joined'] = True   # display-only, see _mark_human_joined
+    if session.get('_worktree_isolated'):
+        entry['worktree_isolated'] = True   # MC-1165 r5: durable, outlives purge + worktree removal
     def upsert(log):
         # Upsert: a continued scheduled run reuses the prior run's session_id
         # (see _dispatch_agent_internal reuse_session_id). Refresh that row in
@@ -8713,6 +8715,8 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
             # fresh session dict that never saw the human message.
             if prev.get('human_joined'):
                 entry['human_joined'] = True
+            if prev.get('worktree_isolated'):
+                entry['worktree_isolated'] = True
             # Union with the outgoing row's history rather than replacing it
             # -- a new process reusing this session_id (server restart across
             # a scheduled cadence tick) starts with an empty in-memory
@@ -10087,6 +10091,8 @@ def _log_agent_completion_body(session):
         entry.update(attempt_metadata(session))
     if session.get('human_joined'):
         entry['human_joined'] = True   # display-only, see _mark_human_joined
+    if session.get('_worktree_isolated'):
+        entry['worktree_isolated'] = True   # MC-1165 r5: durable isolation record
     if _ckey:
         entry['completion_key'] = _ckey
     def complete(log):
@@ -10099,6 +10105,8 @@ def _log_agent_completion_body(session):
                         or (_replay and e.get('status') == 'interrupted')):
                     if e.get('human_joined'):
                         entry['human_joined'] = True
+                    if e.get('worktree_isolated'):
+                        entry['worktree_isolated'] = True
                     log.pop(i)
                     break
         log.insert(0, entry)
@@ -17941,6 +17949,12 @@ def _guardian_should_recover(session):
 
 
 def _guardian_attempt_recovery(session):
+    # Every caller (State 6, the two dead-process states, the user's Try Again)
+    # ends in `_auto_dispatch_followup`, which spawns Claude. A vendor session's
+    # held request must never go there (MC-1165 r5): hold it for a human.
+    with get_manager(session['project_id']).lock:
+        if _isolated_launch.hold_vendor_recovery(session):
+            return
     if not _guardian_should_recover(session):
         if session.get('guardian_state') == 'recovering':
             session['guardian_state'] = 'needs_attention'
