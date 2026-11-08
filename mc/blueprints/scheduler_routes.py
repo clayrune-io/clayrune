@@ -1743,6 +1743,14 @@ def schedule_run_now(schedule_id):
                                        character=sched.get('character') or '',
                                        **iso_kw,
                                        **_schedule_engine_kwargs(sched))
+    except _isolated_launch.RevivalRefused as e:
+        # MC-1165 r9: the isolated conversation is still live (or its tree is
+        # gone); same 409 shape as the refusals above, never a second run.
+        sched['last_error'] = str(e)
+        sched['last_error_at'] = now_iso()
+        _role_writes.save_runtime_schedules(schedules)
+        return jsonify({'ok': False, 'refused': True, 'session_id': reuse_sid,
+                        'error': str(e)}), 409
     except ValueError as e:
         code = 404 if 'not found' in str(e) else 400
         return jsonify({'error': str(e)}), code

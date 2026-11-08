@@ -53,6 +53,29 @@ def _same(a: str, b: str) -> bool:
         return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
 
+def check_reuse(existing: dict | None, project_id: str, sid: str, *, proc_alive: bool) -> None:
+    """Raise `RevivalRefused` when an isolated dispatch that must keep session id
+    `sid` would land on a session dict that is still live (MC-1165 r9).
+
+    A resume that carries a worktree keeps the id that names it: tree, branch,
+    merge-back, cold review and `gc_stale` all find the work by that id, so a
+    fresh id running in `sid`'s tree is invisible to every one of them. A
+    retained DEAD dict is replaced; a live one is refused, never forked to a
+    fresh id and never started a second time. `existing` is what
+    `agent_sessions` holds for `sid` (None when purged: nothing to check)."""
+    if existing is None:
+        return
+    if existing.get('project_id') != project_id:
+        why = 'belongs to another project'
+    elif proc_alive or existing.get('status') in ('running', 'idle'):
+        why = 'is still running'
+    else:
+        return
+    raise RevivalRefused(
+        f"conversation {sid[:12]} {why}; an isolated resume keeps its session id and "
+        f"worktree, so it was not started a second time")
+
+
 def held_tree_mismatch(session: dict, project: dict | None) -> str:
     """'' when an isolated session's process ran in the worktree its own id
     names; otherwise one sentence saying which tree it actually held.

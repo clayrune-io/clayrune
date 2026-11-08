@@ -8170,6 +8170,24 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
 _COLD_RESUMABLE_PROVIDERS = {'codex', 'qwen', 'gemini'}
 
 
+def _guard_isolated_reuse(project_id, reuse_session_id, session_dict_override=None):
+    """Loud refusal when an isolated dispatch must keep `reuse_session_id` but the
+    session dict registered under it is live (see `isolated_launch.check_reuse`).
+    A caller that hands us that very dict (`session_dict_override`, a Hivemind
+    worker) owns the id and is not a conflict. Logs and surfaces to the project
+    activity before raising `RevivalRefused`."""
+    existing = agent_sessions.get(reuse_session_id)
+    if existing is not None and existing is session_dict_override:
+        return
+    try:
+        _isolated_launch.check_reuse(existing, project_id, reuse_session_id,
+                                     proc_alive=_session_proc_alive(existing))
+    except _isolated_launch.RevivalRefused as e:
+        _log(f"[isolated-reuse] {project_id}: {e}", level='error')
+        _log_agent_activity(project_id, f"Isolated resume refused for {reuse_session_id[:8]}: {e}")
+        raise
+
+
 def _isolated_resume_kwargs(project_id, session_id, p, *, logged=False, who='revive'):
     """`_dispatch_agent_internal` kwargs that keep a RESUMED conversation in the
     worktree it owns; `{}` when it never had one (MC-1165 r6, lifted r7).
@@ -8184,9 +8202,13 @@ def _isolated_resume_kwargs(project_id, session_id, p, *, logged=False, who='rev
     `logged` is the agent-log row's `worktree_isolated` flag (see
     `isolated_launch.owned_worktree`).
 
-    Call with NO project lock held. The `resuming` window covers the cwd
-    decision only (as `_followup_cwd_for` does): a purged session is not in
-    `agent_sessions`, so nothing removes its tree."""
+    Call with the project lock NOT held where you can. The delegation caller
+    (`_process_inbox`) already holds `manager.lock`: that is safe, the lock is
+    an RLock and the order is project lock then lifecycle lock, the same as
+    `removal_window`; the cost is that `git worktree add` runs under the project
+    lock there, as the Claude dispatch branch already does. The `resuming`
+    window covers the cwd decision only (as `_followup_cwd_for` does): a purged
+    session is not in `agent_sessions`, so nothing removes its tree."""
     _wt = _isolated_launch.owned_worktree(p, session_id, logged=bool(logged))
     if not _wt:
         return {}
@@ -10980,6 +11002,9 @@ def _dispatch_via_runtime(p, task, *, provider_name,
     mgr.ensure_guardian()
 
     with mgr.lock:
+        if isolated and reuse_session_id and planned_session_id == reuse_session_id:
+            # MC-1165 r9: re-check under the lock (see `_guard_isolated_reuse`).
+            _guard_isolated_reuse(project_id, reuse_session_id)
         if reuse_session_id and reuse_session_id not in agent_sessions:
             session_id = reuse_session_id
         elif planned_session_id:
@@ -12444,6 +12469,12 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                            else uuid.uuid4().hex[:12])
         if getattr(prepared_context, 'steward_role', False) and reuse_session_id:
             _rt_planned_sid = reuse_session_id
+        if isolated_override and reuse_session_id:
+            # MC-1165 r9: a resume that carries a worktree keeps the id that names
+            # it. A retained dead dict is replaced, a live one refused; never a
+            # fresh id running in this id's tree.
+            _guard_isolated_reuse(project_id, reuse_session_id, session_dict_override)
+            _rt_planned_sid = reuse_session_id
         _rt_resume_tree = _resume_cwd_for(pp, resume_id, provider_name) if resume_id else None
         if agent_cwd_override:
             _rt_agent_cwd, _rt_isolated = agent_cwd_override, bool(isolated_override)
@@ -12587,9 +12618,17 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # (`session_dict_override`, e.g. a Hivemind worker) owns the id, so the
     # planned id — and any worktree keyed on it — must be that id, not a
     # fresh one the lock block will then discard.
+    # MC-1165 r9: an isolated resume (`isolated_override` + `reuse_session_id`)
+    # keeps that id even when a dead dict is still registered under it, because
+    # the worktree it was handed is keyed on the id (see `isolated_launch.check_reuse`).
+    # A live dict under it is refused here, before anything is built.
+    _keep_reuse_id = bool(isolated_override and reuse_session_id)
+    if _keep_reuse_id:
+        _guard_isolated_reuse(project_id, reuse_session_id, session_dict_override)
     _planned_sid = (reuse_session_id
                     if (reuse_session_id and (
-                        reuse_session_id not in agent_sessions
+                        _keep_reuse_id
+                        or reuse_session_id not in agent_sessions
                         or (session_dict_override is not None
                             and agent_sessions.get(reuse_session_id) is session_dict_override)))
                     else _fresh_sid)
@@ -12733,7 +12772,20 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     with mgr.lock, _pending_launch_scope() as _pending_launch:
         # Reuse the prior run's id (continued scheduled thread) unless that id is
         # somehow still a live session — never clobber a running session dict.
-        if reuse_session_id and (
+        if _keep_reuse_id:
+            # Re-check under the lock: S may have started running since the
+            # early guard. Never fall back to `_fresh_sid` on this path.
+            try:
+                _guard_isolated_reuse(project_id, reuse_session_id, session_dict_override)
+            except _isolated_launch.RevivalRefused:
+                if _sp_path:
+                    try:
+                        os.unlink(_sp_path)
+                    except OSError as e:
+                        _log(f"[spawn-guard] sysprompt cleanup failed: {e}")
+                raise
+            session_id = reuse_session_id
+        elif reuse_session_id and (
                 reuse_session_id not in agent_sessions
                 or (session_dict_override is not None
                     and agent_sessions.get(reuse_session_id) is session_dict_override)):
