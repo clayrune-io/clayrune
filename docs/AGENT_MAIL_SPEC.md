@@ -445,6 +445,32 @@ accept, replace or escalate if they would change Ron's fixed requirements.
 | D7 | Worker/install authentication: A. per-install signed requests with a separate scoped service credential; B. use the existing tunnel/session authorization mechanism if it can issue a narrowly scoped mail capability. | B only after its scope, replay and rotation contract is proved; otherwise A. | B avoids a parallel identity system but dashboard credentials must not become a mail bypass. A adds credential issuance/rotation/recovery and human enrollment UX. Both require tunnel-ownership proof, receiver authentication, revocation and body-bound replay protection. No implementation may pick conditionally without Dave resolving the evidence. |
 | D8 | Toolless extraction on installs without Claude: A. v1 requires the existing verified Claude transform; B. verify toolless isolation for additional installed providers through the existing transform seam before general availability. | A for a clearly labeled limited pilot; B before claiming provider-independent availability. | A adds a disclosed Claude installation/authentication/cost prerequisite and must block activation as reply-capable without it. B expands verification work; never substitute an unverified provider or a cloud fallback silently. Both need a general free-text schema compatible with existing digest callers. |
 
+### Dave's calls (2026-11-08, pending Ron's review)
+
+DECIDED WITHOUT RON; each is reversible until build starts.
+
+- **D1: A.** Managed enrollment. With no tunnel, enrollment stays pending and
+  offers explicit tunnel setup. Mail never provisions a tunnel silently.
+- **D2: A.** Opaque install address, per-thread tokenized Reply-To, never reassigned.
+- **D3: A.** Mail registration count stays separate from the anonymous ping. No join.
+- **D4: A.** D1 reply ledger plus a dedicated local SQLite store. Marlow's
+  starting numbers stand as provisional until a capacity check.
+- **D5: A.** Revive the exact conversation only; otherwise hold. A successor
+  session would change Ron's exact-session requirement, so it needs his explicit yes.
+- **D6: A.** DMARC pass with aligned SPF or DKIM.
+- **D7: A.** Separate per-install scoped mail credential. The dashboard
+  session credential is not reused as a mail capability, which removes the
+  conditional and the bypass risk.
+- **D8: A.** Claude-only labelled pilot; other providers verified before GA.
+
+**Scale ceiling for Ron:** Cloudflare limits page (updated 2026-10-30,
+re-checked 2026-11-08) caps verified destination addresses at 200 per
+account. Owner-only free sending therefore tops out near 200 mail-enabled
+installs. Going past that means onboarding clayrune.io as a sending domain
+(paid monthly quota; owner-only still enforced in our Worker) or a limit
+increase. Both spend money or change providers, so both are Ron's call. The
+pilot fits under the cap; nothing is needed now.
+
 ### Cloudflare capacity and deployment gates
 
 Current [send bindings documentation](https://developers.cloudflare.com/email-service/configuration/send-bindings/)
