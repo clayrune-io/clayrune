@@ -15,6 +15,7 @@ text ever reaches custody. A failed check is a **drop**, not a hold.
 | `auth.js` | `decide(meta, ownerRecord, tokenLookup)` -> `{accept:true, thread, evidence}` or `{accept:false, reason_code}`. `rejectionRecord()` is the only thing kept about a drop: time, reason code, auth result words. |
 | `mailbox.js` | Strict one-mailbox From parsing. Domain case-insensitive, local part exact. No substring or display-name matching. |
 | `authres.js` | Cloudflare `Authentication-Results` (authserv-id `mx.cloudflare.net` only) and the D6=A rule: DMARC pass with aligned SPF **or** DKIM. |
+| `content-id.js` | `normalizeMsgId(value)`: msg-id with CFWS outside the brackets removed, for Content-ID / `start` matching. |
 | `headers.js` | Ordered header-list helpers. |
 | `strip.js` | `strip(raw)` -> plain text plus counts of what was removed (never the removed bytes). MIME-tree allowlist, no HTML conversion. |
 
@@ -50,7 +51,9 @@ the `text/plain` alternative is read. Inside `multipart/related` only the **root
 is read (RFC 2387: the child whose `Content-ID` matches the `start` parameter, or
 the first child when there is no `start`); the other children are resources of the
 root, counted and never read. A `start` that names no child (or several) reads
-nothing under that container.
+nothing under that container. Content-IDs and `start` are compared as msg-ids with
+comments and whitespace outside the angle brackets removed (`content-id.js`,
+RFC 5322 3.6.4); two children whose IDs normalise equal select no root.
 
 **Two refusals, checked over the whole tree before any text is taken** (including
 subtrees the allowlist would drop). Both return `{ok:false, reason_code}` with no
@@ -64,7 +67,11 @@ text and no counts:
 - `malformed_mime`: a part's raw `Content-Type` declares `multipart/*` but postal-mime
   parsed it as a leaf (it rewrites a multipart with a missing, empty or non-ASCII
   boundary to `text/plain`), which would hide a declared `signed`/`digest`/... type
-  from the subtype exclusion.
+  from the subtype exclusion. The declared type is read the way postal-mime reads a
+  Content-Type value (comments carry no meaning, quoted strings are honoured), so
+  `(a; b) multipart/signed` and `multipart(x)/signed` are multipart and
+  `text/plain (multipart/signed)` is not. `Content-Type : multipart/...` (space before
+  the colon) counts as a Content-Type here, as in the duplicate check.
 
 **HTML is never converted or kept.** A message with `text/html` and no surviving
 `text/plain` returns `{ok:false, reason_code:'html_only', stripped}`: a drop with

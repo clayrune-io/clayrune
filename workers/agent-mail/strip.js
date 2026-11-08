@@ -18,7 +18,10 @@
 //   - a part's raw Content-Type declares multipart/* but postal-mime parsed it as
 //     a leaf (it rewrites a multipart with a missing, empty or non-ASCII boundary
 //     to text/plain): `malformed_mime`. Otherwise the declared subtype exclusion
-//     below would be applied to the rewritten type and its bytes read as text.
+//     below would be applied to the rewritten type and its bytes read as text. The
+//     declared type is read through postal-mime's own structured-header parser, so
+//     comments carry no meaning and `Content-Type :` is the same header as in the
+//     duplicate check above.
 //
 // ALLOWLIST. Text is taken ONLY from text/plain leaves where
 //   - every ancestor is multipart/mixed, multipart/alternative or
@@ -49,6 +52,7 @@
 // test/strip.test.js fails if the tree shape or the pin moves.
 
 import PostalMime from 'postal-mime';
+import { normalizeMsgId } from './content-id.js';
 
 // Provisional limits from AGENT_MAIL_SPEC D4 (64 KiB inbound MIME, 16 KiB reply).
 export const DEFAULT_LIMITS = Object.freeze({
@@ -103,15 +107,24 @@ function rawHeaderKeys(node) {
   return (node.rawHeaderLines || []).map((h) => String(h.key || '').trim());
 }
 
+// The Content-Type this node DECLARED, as postal-mime reads a Content-Type value
+// (comments dropped, quoted strings honoured): its own structured-header parser, run
+// on the raw header value, because node.contentType is rewritten to text/plain when a
+// multipart has no usable boundary. The header is found by the same trimmed name the
+// duplicate check uses, so `Content-Type : multipart/signed` (postal-mime keeps the
+// space in the key and ignores the line) is the same header to both policies.
+function declaredType(node) {
+  const h = (node.headers || []).find((x) => String(x.key || '').trim() === 'content-type');
+  if (!h) return '';
+  return String(node.parseStructuredHeader(String(h.value || '')).value || '').trim().toLowerCase();
+}
+
 // -> 'ambiguous_mime' | 'malformed_mime' | null, over every node in the tree,
 // dropped subtrees included.
 function treeRefusal(node) {
   const keys = rawHeaderKeys(node);
   if (SINGLE_HEADERS.some((k) => keys.filter((x) => x === k).length > 1)) return 'ambiguous_mime';
-  if (!node.contentType.multipart) {
-    const declared = String(node.contentType.value || '').split(';')[0];
-    if (/multipart\s*\//i.test(declared)) return 'malformed_mime';
-  }
+  if (!node.contentType.multipart && /^multipart\s*\//.test(declaredType(node))) return 'malformed_mime';
   let ambiguous = false;
   let malformed = false;
   for (const child of node.childNodes || []) {
@@ -123,16 +136,14 @@ function treeRefusal(node) {
   return malformed ? 'malformed_mime' : null;
 }
 
-const cid = (v) => String(v || '').trim().replace(/^<(.*)>$/s, '$1');
-
 // RFC 2387 root of a multipart/related node: the child to read, or null for none.
 function relatedRoot(node) {
   const kids = node.childNodes;
   const start = node.contentType.parsed.params.start;
   if (start === undefined) return kids[0] || null;
-  const want = cid(start);
+  const want = normalizeMsgId(start);
   if (want === '') return null;
-  const hits = kids.filter((k) => k.contentId !== undefined && cid(k.contentId) === want);
+  const hits = kids.filter((k) => k.contentId !== undefined && normalizeMsgId(k.contentId) === want);
   return hits.length === 1 ? hits[0] : null;
 }
 
