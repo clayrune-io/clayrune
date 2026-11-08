@@ -31,15 +31,20 @@ function skipCfws(s, i) {
   }
 }
 
-// Index of the `>` closing the bracket opened at `open`, honouring quoted-strings and
-// quoted-pairs; -1 when there is none.
+// Index of the `>` closing the bracket opened at `open`, honouring quoted-strings,
+// quoted-pairs and a bracketed domain literal on the right of `@` (RFC 5322 3.6.4
+// no-fold-literal, whose dtext may contain `>`); -1 when there is none.
 function closingBracket(s, open) {
   let quoted = false;
+  let literal = false;
   for (let i = open + 1; i < s.length; i += 1) {
     const c = s[i];
     if (c === '\\') i += 1;
+    else if (literal) { if (c === ']') literal = false; }
     else if (c === '"') quoted = !quoted;
-    else if (c === '>' && !quoted) return i;
+    else if (quoted) continue;
+    else if (c === '[') literal = true;
+    else if (c === '>') return i;
   }
   return -1;
 }
