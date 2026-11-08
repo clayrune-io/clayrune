@@ -53,6 +53,40 @@ def _same(a: str, b: str) -> bool:
         return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
 
+def held_tree_mismatch(session: dict, project: dict | None) -> str:
+    """'' when an isolated session's process ran in the worktree its own id
+    names; otherwise one sentence saying which tree it actually held.
+
+    Every finish-time step (cold review, merge-back, LOC, removal) finds the
+    work by `session_id` alone: `.clayrune/agents/<id>` and `clayrune/agent/<id>`.
+    A run that holds some OTHER tree (a dispatch that minted a fresh id but was
+    handed a reused session's tree, MC-1165 r9) is invisible to all of them, so
+    its work is never reviewed or merged. Callers log this loudly; it is not
+    recoverable by retrying. Never raises."""
+    try:
+        sid = (session or {}).get('session_id', '')
+        held = (session or {}).get('_agent_cwd') or ''
+        if not (session or {}).get('_worktree_isolated') or not sid or not held:
+            return ''
+        expected = _aw.worktree_path(project or {}, sid)
+        if expected is None:
+            return ''
+        if _same(held, str(expected)):
+            return ''
+        try:
+            if os.path.commonpath([os.path.normcase(os.path.realpath(held)),
+                                   os.path.normcase(os.path.realpath(str(expected)))]
+                                  ) == os.path.normcase(os.path.realpath(str(expected))):
+                return ''  # a subdirectory of its own tree
+        except ValueError:
+            pass
+        return (f"session {sid[:12]} ran in {held}, not in its own worktree "
+                f"{expected} (branch {_aw.branch_name(sid)}"
+                f"{'' if _aw.branch_exists(project or {}, sid) else ', which does not exist'})")
+    except Exception as e:  # diagnostic only; never block the finish path
+        return f"session tree identity could not be checked: {type(e).__name__}: {e}"
+
+
 def _usable(path: str, project_path: str) -> bool:
     """A real worktree: an existing directory, not the project checkout, whose
     `.git` marker git itself resolves to a worktree of THIS project's

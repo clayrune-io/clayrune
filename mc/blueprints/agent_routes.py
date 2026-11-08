@@ -1744,6 +1744,17 @@ def _worktree_merge_back_on_end(session, _attempt=0, _cold_done=False):
         p = load_project(pid)
         if not p:
             return
+        # MC-1165 r9: every step below finds the work by session id. A run that
+        # holds another session's tree is invisible to all of them, so say so
+        # here, once, instead of letting merge_back answer 'no worktree'.
+        if not _cold_done and not _attempt and not _agent_worktree.is_hivemind_worker(sid):
+            _mismatch = _isolated_launch.held_tree_mismatch(session, p)
+            if _mismatch:
+                _log(f"[worktree] {sid[:12]} work NOT reviewed or merged: {_mismatch}",
+                     level='error')
+                _log_agent_activity(
+                    pid, f"Agent work NOT reviewed or merged ({sid[:8]}): {_mismatch}. "
+                         f"Its commits are on that tree's branch and need a manual look.")
         # MC-1165: a project that requires a cold review gets it BEFORE merge-back,
         # on a worker thread. This function runs inside the project lock on the
         # stream-reader threads (`with get_manager(..).lock:` around

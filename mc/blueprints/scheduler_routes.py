@@ -787,7 +787,8 @@ def _scheduler_loop():
                                     dispatch_task = task
                                     iso_kw = {}
                                     if resume_id:
-                                        reuse_sid = _newest_run_session_id_for_schedule(pid, sched_id)
+                                        reuse_sid = (_session_owning_resume(pid, sched_id, resume_id)
+                                                     or _newest_run_session_id_for_schedule(pid, sched_id))
                                         dispatch_task = _scheduled_run_marker() + task
                                         if reuse_sid:
                                             # MC-1165 r7: this cold resume bypasses
@@ -1126,6 +1127,26 @@ def _newest_run_session_id_for_schedule(project_id, schedule_id):
         if (e.get('trigger_type') == 'schedule'
                 and e.get('trigger_id') == schedule_id
                 and e.get('session_id')):
+            return e.get('session_id', '')
+    return ''
+
+
+def _session_owning_resume(project_id, schedule_id, resume_id):
+    """MC session_id of the newest schedule row whose provider-native id IS
+    `resume_id` ('' if none). The isolation lookup and the row a cold resume
+    adopts must come from the row that owns the conversation being resumed, not
+    from the newest row of the schedule: a newest row with no native id (a run
+    that died before init) is a different row, and asking about it hid the
+    owner's worktree (MC-1165 r9)."""
+    if not (project_id and schedule_id and resume_id):
+        return ''
+    for e in _load_agent_log(project_id):  # newest-first
+        if e.get('trigger_type') != 'schedule' or e.get('trigger_id') != schedule_id:
+            continue
+        provider = (e.get('provider') or 'claude').lower()
+        candidate = (e.get('claude_session_id') if provider == 'claude'
+                     else e.get('provider_session_id')) or ''
+        if candidate == resume_id and e.get('session_id'):
             return e.get('session_id', '')
     return ''
 
@@ -1694,7 +1715,8 @@ def schedule_run_now(schedule_id):
     dispatch_task = task
     iso_kw = {}
     if resume_id:
-        reuse_sid = _newest_run_session_id_for_schedule(pid, schedule_id)
+        reuse_sid = (_session_owning_resume(pid, schedule_id, resume_id)
+                     or _newest_run_session_id_for_schedule(pid, schedule_id))
         dispatch_task = _scheduled_run_marker() + task
         if reuse_sid:
             # MC-1165 r8: this cold resume bypasses _scheduled_continue (it
