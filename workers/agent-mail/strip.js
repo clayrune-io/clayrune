@@ -103,6 +103,17 @@ const SINGLE_HEADERS = ['content-type', 'content-disposition', 'content-transfer
 // Content-Type: postal-mime keeps the whitespace in the key so it does not collide
 // with the real header, but here the only question is "could any reader take this
 // for one", so a false positive (refuse) is the safe side.
+//
+// A field name folded before its colon (`Content-ID` CRLF TAB `: <x>`): postal-mime
+// ends the header block on the bare name line and reads the rest as body, while
+// Thunderbird joins the fold and reads the header. No per-header check can see a
+// header the parser already dropped, so any line holding one header-name token and
+// no colon, followed by a folded line that opens with the colon, refuses the whole
+// message. Scanned over the raw bytes, bodies included: a false positive refuses,
+// it never leaks.
+const FOLDED_NAME = /(?:^|[\r\n])[!-9;-~]+[ \t]*(?:(?:\r\n|\n|\r)[ \t]+)+:/;
+const latin1 = new TextDecoder('latin1');
+
 function rawHeaderKeys(node) {
   return (node.rawHeaderLines || []).map((h) => String(h.key || '').trim());
 }
@@ -223,6 +234,7 @@ export async function strip(raw, opts = {}) {
   else if (raw instanceof ArrayBuffer) bytes = new Uint8Array(raw);
   else return { ok: false, reason_code: 'bad_input' };
   if (bytes.byteLength > lim.maxRawBytes) return { ok: false, reason_code: 'mime_too_large' };
+  if (FOLDED_NAME.test(latin1.decode(bytes))) return { ok: false, reason_code: 'malformed_mime' };
 
   const parser = new PostalMime({
     forceRfc822Attachments: true, // a forwarded message is an attachment, never inlined
