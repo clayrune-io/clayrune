@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-07] - Cold-review packet and verdict parser, setting added (MC-1165, partial)
+
+- New `mc/cold_review.py`: builds a reviewer's whole input from git (merge-base..tip diff) plus the item ask, nothing else, and reads its reply strictly (one JSON object, verdict exactly `pass` or `changes_requested`; anything else holds). An empty diff, missing ask, oversize diff (refused, never truncated) or unreadable ref raises instead of building a partial packet.
+- `cold_review_required` project setting (off unless boolean `true`) joins `verify_command` in the human-only safety keys. Nothing dispatches a reviewer or reads the setting yet: reviewer type, sync vs async and retry are open choices listed in `docs/COLD_REVIEW.md`. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-07] - Landing gate blocks every red branch (MC-1164 round 9)
 
 - The merged candidate now passes only if every `verify_command` exits 0 with no timeout, infrastructure error or oversize output; otherwise it blocks and the message names each failing command, its exit code and the output tail. No runner output is parsed to decide a verdict.
