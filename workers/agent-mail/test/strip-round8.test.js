@@ -182,8 +182,10 @@ test('the same body text inside a multipart text/plain part passes', async () =>
   assert.equal(r.text, 'Approved\n  : proceed');
 });
 
-test('junk lines, a bare CR, form feed and vertical tab inside a BODY pass', async () => {
-  const r = await strip(bytes('Content-Type: text/plain\r\n\r\nX\r\nOK\rstill\fbody\vtext\r\nContent-ID\f: <x>'));
+// Round 9 superseded the bare-CR half of this control: a CR not followed by LF is refused
+// anywhere, bodies included (strip-round9.test.js). Junk lines, FF and VT in a body still pass.
+test('junk lines, form feed and vertical tab inside a BODY pass', async () => {
+  const r = await strip(bytes('Content-Type: text/plain\r\n\r\nX\r\nOK\nstill\fbody\vtext\r\nContent-ID\f: <x>'));
   assert.equal(r.ok, true);
 });
 

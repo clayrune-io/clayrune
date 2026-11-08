@@ -17,6 +17,7 @@ text ever reaches custody. A failed check is a **drop**, not a hold.
 | `authres.js` | Cloudflare `Authentication-Results` (authserv-id `mx.cloudflare.net` only) and the D6=A rule: DMARC pass with aligned SPF **or** DKIM. |
 | `content-id.js` | `strictMsgId(value)`: the bare id of a plain msg-id (atext, `.`, `@`, optional simple `[literal]`), CFWS outside the brackets skipped; `null` for anything else. Used for Content-ID / `start` matching. |
 | `headers.js` | Ordered header-list helpers. |
+| `canonical.js` | Canonical-form gate helpers for `strip()` (bare CR, boundary-line shape, boundary nesting). Pure. |
 | `strip.js` | `strip(raw)` -> plain text plus counts of what was removed (never the removed bytes). MIME-tree allowlist, no HTML conversion. |
 
 ### `decide` inputs
@@ -61,8 +62,8 @@ the match is not unique (case-insensitively), no root is read. A child's
 Content-ID is found by trimmed header name, so `Content-ID : <x>` (whitespace
 before the colon, which postal-mime does not parse) still counts.
 
-**Three refusals, checked before any text is taken** (including
-subtrees the allowlist would drop). Both return `{ok:false, reason_code}` with no
+**Four refusals, checked before any text is taken** (including
+subtrees the allowlist would drop). Each returns `{ok:false, reason_code}` with no
 text and no counts:
 
 - `ambiguous_mime`: any part, the top level included, has more than one
@@ -89,8 +90,27 @@ text and no counts:
   junk line, a bare CR, a folded name (`Content-ID` CRLF TAB `: <x>`), or a form feed /
   vertical tab before the colon was therefore read by one and not the other. Only
   header sections are inspected, so body text such as `Approved` followed by an
-  indented `: proceed` line is accepted. A blank line made of CR CR is refused. A
-  legitimate reply never trips it.
+  indented `: proceed` line is accepted. A section whose first line is a fold
+  (space/tab) is refused: postal-mime reads it as a fold of nothing, Thunderbird keeps
+  the whitespace in the field name, so `<TAB>Content-ID: <x>` is an ID to one and not
+  the other. A legitimate reply never trips it.
+- `malformed_mime`, canonical form (`canonical.js`, round 9), checked on the raw bytes
+  and bodies included. postal-mime and Thunderbird disagree on which lines are
+  delimiters (Thunderbird ends a line at a lone CR, ignores FF/VT after a boundary and
+  asks the innermost multipart first; postal-mime splits on LF, accepts only space/tab
+  after a boundary and asks the outermost first), so a part could be a body part to
+  one and a hidden resource to the other. Refused outright rather than reconciled:
+  1. any CR not immediately followed by LF (this also refuses CR CR LF);
+  2. any line that starts `--` + a declared boundary and continues with anything other
+     than an optional `--` and then only space/tab (`--Bx`, `--B--x`, `--B` FF, ...);
+  3. a nested multipart whose boundary equals, is a prefix of, or has as a prefix, any
+     ancestor's boundary (RFC 2046 5.1.1 forbids a delimiter inside the parts it
+     encloses; sibling boundaries are not compared with each other, but rule 2 refuses
+     a line that continues any declared boundary);
+  4. a header section with a fold as its first line (above).
+  Gmail, Apple Mail, Outlook and Thunderbird send CRLF with random distinct boundaries,
+  so none of these refuses ordinary mail. Not refused: text after the closing
+  `--B--` (epilogue); postal-mime ignores it, so it is never returned.
 
 **HTML is never converted or kept.** A message with `text/html` and no surviving
 `text/plain` returns `{ok:false, reason_code:'html_only', stripped}`: a drop with
@@ -114,7 +134,9 @@ and `remote_image_refs` are counts only.
   reads each node's `rawHeaderLines` from that same tree, so it sees exactly the
   header block postal-mime split. The header-section check is the one place strip.js
   reads the raw bytes itself: a line-shape check (field / fold / empty line), not a
-  second header parser, with its boundaries taken from the tree.
+  second header parser, with its boundaries taken from the tree. `canonical.js` does
+  the same for the whole message (bodies included), refusing non-canonical input rather
+  than reconciling it with Thunderbird's parsing.
 - Plain text is still untrusted data: invisible Unicode (zero-width, bidi, tag
   characters) and command-shaped text pass through; the injection screen (unit 5)
   owns them.

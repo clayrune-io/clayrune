@@ -27,7 +27,14 @@
 //     holds a bare CR, or does not end on an empty line: `malformed_mime`. postal-mime
 //     ends a header block at the first such line, Thunderbird only at a blank line, so
 //     a Content-ID behind it is read by one reader and not the other. Bodies are not
-//     inspected. See headerSectionRefusal.
+//     inspected. See headerSectionRefusal. A section whose first line is a fold is
+//     refused too.
+//   - the raw message is not in canonical form (canonical.js; round 9): a CR not
+//     followed by LF anywhere, bodies included; a line that starts `--` + a declared
+//     boundary and continues with anything but an optional `--` and space/tab; a nested
+//     multipart whose boundary equals, prefixes or extends an ancestor's:
+//     `malformed_mime`. postal-mime and Thunderbird disagree on which lines are
+//     delimiters in each of those cases, so a part is hidden from one and not the other.
 //
 // ALLOWLIST. Text is taken ONLY from text/plain leaves where
 //   - every ancestor is multipart/mixed, multipart/alternative or
@@ -59,6 +66,7 @@
 
 import PostalMime from 'postal-mime';
 import { strictMsgId } from './content-id.js';
+import { bareCrRefusal, boundaryLineRefusal, boundaryNestingRefusal, boundaryOf } from './canonical.js';
 
 // Provisional limits from AGENT_MAIL_SPEC D4 (64 KiB inbound MIME, 16 KiB reply).
 export const DEFAULT_LIMITS = Object.freeze({
@@ -193,10 +201,8 @@ function relatedRoot(node) {
 // Every boundary a multipart node of the tree declares, as postal-mime registers it
 // (mime-node.ts: trailing space trimmed, ASCII only).
 function boundariesOf(node, out = new Set()) {
-  if (node.contentType.multipart) {
-    const b = String((node.contentType.parsed.params || {}).boundary || '').trimEnd();
-    if (b && !/[^\x00-\x7f]/.test(b)) out.add(b);
-  }
+  const b = boundaryOf(node);
+  if (b) out.add(b);
   for (const child of node.childNodes || []) boundariesOf(child, out);
   return out;
 }
@@ -223,7 +229,12 @@ function delimiterKind(line, boundaries) {
 // view (the lines it dropped are not in it): every header section -- the top level and
 // each part after a delimiter line -- must hold only header-field lines and folds, no
 // bare CR, and end on an empty line. Anything else is malformed_mime. Body text is not
-// inspected. A blank line made of CR CR is not blank to postal-mime, so it is refused.
+// inspected here (canonical.js covers bodies). A section's first line must not be a fold:
+// there is nothing to fold onto, postal-mime reads it as a continuation of nothing and
+// Thunderbird keeps the leading whitespace in the name, so the two disagree on whether
+// `<TAB>Content-ID: <x>` is a Content-ID. A CR CR LF line is blank to both readers
+// (postal-mime drops every trailing CR); it is refused only because a CR not followed by
+// LF is non-canonical (bareCrRefusal), and the bare-CR check below stays as a second line.
 function headerSectionRefusal(text, boundaries) {
   const lines = text.split('\n');
   let inHeaders = true;
@@ -242,6 +253,7 @@ function headerSectionRefusal(text, boundaries) {
       continue;
     }
     if (line.includes('\r')) return 'malformed_mime';
+    if (section.length === 0 && /^[ \t]/.test(line)) return 'malformed_mime';
     if (!(/^[ \t]/.test(line) || FIELD_LINE.test(line))) return 'malformed_mime';
     section.push(line);
   }
@@ -304,6 +316,11 @@ export async function strip(raw, opts = {}) {
   else return { ok: false, reason_code: 'bad_input' };
   if (bytes.byteLength > lim.maxRawBytes) return { ok: false, reason_code: 'mime_too_large' };
 
+  // canonical-form gate, rule 1 (see canonical.js): needs no tree, so it runs before parsing
+  const rawText = latin1.decode(bytes);
+  const crRefusal = bareCrRefusal(rawText);
+  if (crRefusal) return { ok: false, reason_code: crRefusal };
+
   const parser = new PostalMime({
     forceRfc822Attachments: true, // a forwarded message is an attachment, never inlined
     maxPartCount: lim.maxParts,
@@ -317,8 +334,12 @@ export async function strip(raw, opts = {}) {
     return { ok: false, reason_code: /^EMAX/.test(String(e && e.code)) ? 'mime_limits' : 'mime_parse_error' };
   }
 
+  // rules 2-4 need the tree's declared boundaries; ambiguous_mime keeps priority
+  const boundaries = boundariesOf(parser.root);
   const refusal = treeRefusal(parser.root)
-    || headerSectionRefusal(latin1.decode(bytes), boundariesOf(parser.root));
+    || boundaryNestingRefusal(parser.root)
+    || boundaryLineRefusal(rawText, boundaries)
+    || headerSectionRefusal(rawText, boundaries);
   if (refusal) return { ok: false, reason_code: refusal };
 
   const stripped = emptyCounts();

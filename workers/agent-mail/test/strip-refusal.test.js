@@ -130,7 +130,8 @@ test('related: nested under mixed, a non-root plain resource is still not read',
     'Content-Type: text/html\r\n\r\n<p>VISIBLE</p>',
     `Content-Type: text/plain\r\n\r\n${P}`,
   ]);
-  const r = await strip(multipart('mixed', [{ headers: [inner.split('\r\n\r\n')[0]], body: inner.slice(inner.indexOf('\r\n\r\n') + 4) }]));
+  // outer boundary must not equal or share a prefix with the inner `B` (round 9, rule 3)
+  const r = await strip(multipart('mixed', [{ headers: [inner.split('\r\n\r\n')[0]], body: inner.slice(inner.indexOf('\r\n\r\n') + 4) }], 'OUTER'));
   assert.equal(r.reason_code, 'html_only');
   assertAbsent(r, P);
 });
