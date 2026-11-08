@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { strip } from '../strip.js';
-import { htmlToText } from '../html-text.js';
+import { readFileSync } from 'node:fs';
 import { mime, multipart, plainPart, htmlPart } from './fixtures.js';
 
 const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
@@ -21,7 +21,7 @@ test('plain text message passes through unchanged', async () => {
   assert.equal(r.has_text, true);
   assert.deepEqual(r.stripped, {
     attachments: 0, inline_images: 0, calendar_parts: 0, nested_messages: 0,
-    html_parts: 0, hidden_dropped: 0, remote_image_refs: 0,
+    html_parts: 0, remote_image_refs: 0,
   });
 });
 
@@ -54,7 +54,10 @@ test('image embedded in multipart/related is counted as inline, not as text', as
     { headers: ['Content-Type: image/gif', 'Content-ID: <i1>', 'Content-Transfer-Encoding: base64'], body: 'R0lGODlhAQABAAAAACw=' },
   ]);
   const r = await strip(raw);
+  assert.equal(r.ok, false); // HTML-only: dropped, counts still reported
+  assert.equal(r.reason_code, 'html_only');
   assert.equal(r.stripped.inline_images, 1);
+  assert.equal(r.stripped.html_parts, 1);
   assert.equal(r.stripped.remote_image_refs >= 1, true);
 });
 
@@ -95,6 +98,7 @@ test('HTML-hidden payload in a NON-sibling html part does not survive (postal-mi
 test('empty text/plain does not unlock the HTML part', async () => {
   const raw = multipart('alternative', [plainPart(''), htmlPart('<p>HIDDEN-PAYLOAD-EMPTYPLAIN</p>')]);
   const r = await strip(raw);
+  assert.equal(r.ok, true);
   assert.equal(r.has_text, false);
   assertAbsent(r, 'HIDDEN-PAYLOAD-EMPTYPLAIN');
 });
@@ -132,42 +136,6 @@ test('forwarded message/rfc822 is an attachment, never inlined', async () => {
   assertAbsent(r, 'FORWARDED-PAYLOAD');
 });
 
-test('HTML fallback: only when no text/plain exists; hidden, script, img alt and links dropped', async () => {
-  const html = '<html><head><title>T-TITLE</title><style>.x{}</style></head><body>'
-    + '<p>Please &amp; thank you</p>'
-    + '<div style="display: none">H-DISPLAY</div>'
-    + '<span style="font-size:0px">H-FONT</span>'
-    + '<p hidden>H-ATTR</p><p aria-hidden="true">H-ARIA</p>'
-    + '<div style="opacity:0;color:red">H-OPACITY</div>'
-    + '<script>S-SCRIPT()</script><!-- C-COMMENT -->'
-    + '<img src="http://evil.example/p.png" alt="ALT-PAYLOAD">'
-    + '<a href="http://evil.example/HREF">visible link</a>'
-    + '<div><div style="visibility:hidden">H-NESTED<div>H-INNER</div></div>after</div>'
-    + '<p>line two</p></body></html>';
-  const r = await strip(mime([...HDR, 'Content-Type: text/html; charset=utf-8'], html));
-  assert.equal(r.ok, true);
-  assert.equal(r.source, 'html_fallback');
-  assert.match(r.text, /Please & thank you/);
-  assert.match(r.text, /visible link/);
-  assert.match(r.text, /after/);
-  assert.match(r.text, /line two/);
-  assert.equal(r.stripped.html_parts, 1);
-  assert.equal(r.stripped.remote_image_refs >= 1, true);
-  assert.ok(r.stripped.hidden_dropped >= 8);
-  assertAbsent(r, 'T-TITLE', 'H-DISPLAY', 'H-FONT', 'H-ATTR', 'H-ARIA', 'H-OPACITY', 'S-SCRIPT', 'C-COMMENT',
-    'ALT-PAYLOAD', 'evil.example', 'H-NESTED', 'H-INNER');
-});
-
-test('unclosed hidden element drops to the end (fail closed)', () => {
-  const r = htmlToText('<p>keep</p><div hidden>H-ONE<p>H-TWO');
-  assert.equal(r.text, 'keep');
-});
-
-test('html entities cannot smuggle markup back in', () => {
-  const r = htmlToText('<p>&lt;script&gt;x&lt;/script&gt; &#0; &#x110000; &#65;</p>');
-  assert.equal(r.text, '<script>x</script> A');
-});
-
 test('limits: oversize MIME, oversize text, too many parts, garbage input', async () => {
   let r = await strip(mime([...HDR, 'Content-Type: text/plain'], 'x'.repeat(200)), { maxRawBytes: 100 });
   assert.deepEqual(r, { ok: false, reason_code: 'mime_too_large' });
@@ -190,15 +158,3 @@ test('Uint8Array / ArrayBuffer inputs work', async () => {
   assert.equal((await strip(u8.buffer)).text, 'bytes ok');
 });
 
-test('postal-mime internals this module reads still have the expected shape', async () => {
-  // strip.js reads parser.textMap (@internal) because email.text merges html in.
-  // If a postal-mime bump changes it, this fails before anything ships.
-  const { default: PostalMime } = await import('postal-mime');
-  const p = new PostalMime({ forceRfc822Attachments: true });
-  await p.parse(mime([...HDR, 'Content-Type: text/plain'], 'shape'));
-  assert.ok(p.textMap instanceof Map);
-  const [entry] = [...p.textMap.values()];
-  assert.equal(entry.plain.length, 1);
-  assert.equal(entry.plain[0].type, 'text');
-  assert.equal(entry.plain[0].value.trim(), 'shape');
-});

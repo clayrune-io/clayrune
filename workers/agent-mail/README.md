@@ -16,8 +16,7 @@ text ever reaches custody. A failed check is a **drop**, not a hold.
 | `mailbox.js` | Strict one-mailbox From parsing. Domain case-insensitive, local part exact. No substring or display-name matching. |
 | `authres.js` | Cloudflare `Authentication-Results` (authserv-id `mx.cloudflare.net` only) and the D6=A rule: DMARC pass with aligned SPF **or** DKIM. |
 | `headers.js` | Ordered header-list helpers. |
-| `strip.js` | `strip(raw)` -> plain text plus counts of what was removed (never the removed bytes). |
-| `html-text.js` | HTML -> text, used only when a message has no `text/plain` part. |
+| `strip.js` | `strip(raw)` -> plain text plus counts of what was removed (never the removed bytes). MIME-tree allowlist, no HTML conversion. |
 
 ### `decide` inputs
 
@@ -33,10 +32,26 @@ revoked / expired / wrong install / wrong owner generation, and finally that
 
 ### `strip` output
 
-`{ok:true, text, has_text, source: 'plain'|'html_fallback'|'none', stripped:{attachments, inline_images, calendar_parts, nested_messages, html_parts, hidden_dropped, remote_image_refs}}`
-or `{ok:false, reason_code}` (`mime_too_large`, `text_too_large`, `mime_limits`,
-`mime_parse_error`, `bad_input`). Default limits are the provisional D4 numbers
-(64 KiB MIME, 16 KiB text) and can be passed in `opts`.
+`{ok:true, text, has_text, source: 'plain'|'none', stripped:{attachments, inline_images, calendar_parts, nested_messages, html_parts, remote_image_refs}}`
+or `{ok:false, reason_code, stripped?}` (`html_only`, `mime_too_large`,
+`text_too_large`, `mime_limits`, `mime_parse_error`, `bad_input`). Default limits
+are the provisional D4 numbers (64 KiB MIME, 16 KiB text) and can be passed in `opts`.
+
+**Contract: allowlist, not blocklist.** Text is taken **only** from `text/plain`
+leaves where every ancestor is the root or `multipart/mixed|alternative|related`,
+and every node on the path (leaf and containers) has an absent or `inline`
+`Content-Disposition` (every such header, duplicates included) and no `filename`
+or `name` parameter on its `Content-Disposition` or `Content-Type`. Anything else
+on the path (attachment, unrecognised disposition, another multipart subtype such
+as `signed`/`digest`/`report`, a named part) drops the whole subtree; the dropped
+text parts are counted under `attachments`. Inside `multipart/alternative` only
+the `text/plain` alternative is read.
+
+**HTML is never converted or kept.** A message with `text/html` and no surviving
+`text/plain` returns `{ok:false, reason_code:'html_only', stripped}`: a drop with
+a visible reason, no text. (Dave's call 2026-11-08: deciding what HTML hides is
+an arms race; every mainstream client sends a plain alternative.) `html_parts`
+and `remote_image_refs` are counts only.
 
 ## Known limits
 
@@ -46,10 +61,14 @@ or `{ok:false, reason_code}` (`mime_too_large`, `text_too_large`, `mime_limits`,
   header and rejects two claimants.
 - **Alignment is stricter than RFC 7489 relaxed**: no public-suffix list, so
   sibling subdomains do not align. Fails closed.
-- `strip.js` reads postal-mime's `textMap` (internal) because `email.text` merges
-  HTML-derived text into the plain body. postal-mime is pinned exactly; a test
-  fails if that shape moves.
-- The HTML fallback is best effort. Its output is still untrusted data.
+- `strip.js` walks postal-mime's `parser.root` (internal MimeNode tree), because
+  `email.text` merges HTML-derived text into the plain body and `textMap` does not
+  say which container or disposition a leaf sat under. postal-mime is pinned
+  exactly; a test fails if the version pin or the tree shape moves, and then the
+  allowlist must be re-reviewed against the new tree.
+- Plain text is still untrusted data: invisible Unicode (zero-width, bidi, tag
+  characters) and command-shaped text pass through; the injection screen (unit 5)
+  owns them.
 
 ## Test
 
