@@ -510,6 +510,9 @@ def _merge_back_locked(project: dict, session_id: str, target_ref: str, owner):
                    the branch tip has no `pass` review on record (MC-1075);
                    nothing merged, branch and worktree preserved. A review of
                    an older SHA does not count.
+      'blocked' — configured verification found new failures or could not
+                   complete. Detail is a dict containing landing_gate; configured
+                   clean/conflict results also carry that projection.
     """
     base = project.get('project_path') or ''
     wt = worktree_path(project, session_id)
@@ -554,6 +557,15 @@ def _merge_back_locked(project: dict, session_id: str, target_ref: str, owner):
     cur = _sync.git_run(base, ['rev-parse', '--abbrev-ref', 'HEAD'])[1].strip()
     if cur != ref:
         return 'skipped', f'main tree is on {cur}, not {ref}'
+    from mc.landing_gate import verify
+    verification = verify(project, wt, ref, branch, owner)
+    if verification is not None:
+        _plog('[worktree] landing verification: ' + json.dumps(verification, ensure_ascii=True))
+        if verification['status'] == 'blocked':
+            return 'blocked', {'landing_gate': verification}
+        # Commands can take minutes. Revalidate both pins, source and standards
+        # after restoring the borrowed agent checkout and before moving target.
+        candidate.revalidate()
     args = ['merge', '--no-edit', merge_ref]
     if merge_ref != branch:
         args[2:2] = ['-m', f"Merge branch '{branch}' (reviewed {merge_ref[:8]})"]
@@ -569,14 +581,16 @@ def _merge_back_locked(project: dict, session_id: str, target_ref: str, owner):
         if _log_activity:
             _log_activity(project.get('id', ''),
                           f'Agent worktree merged back: {session_id[:8]} → {ref}')
-        return 'clean', msg
+        return 'clean', ({'message': msg, 'landing_gate': verification}
+                         if verification is not None else msg)
     _sync.git_run(base, ['merge', '--abort'], timeout=30)
     _plog(f"[worktree] CONFLICT merging {branch} into {ref} — branch preserved")
     if _log_activity:
         _log_activity(project.get('id', ''),
                       f'Agent worktree CONFLICT: {session_id[:8]} — '
                       f'branch {branch} preserved for manual merge')
-    return 'conflict', msg
+    return 'conflict', ({'message': msg, 'landing_gate': verification}
+                        if verification is not None else msg)
 
 
 # ── Teardown guards (MC-1029) ───────────────────────────────────────────────
@@ -924,7 +938,7 @@ def gc_stale(project: dict, live_session_ids, merge_first: bool = True,
                 out['merged'] += 1
                 if use_cache and cache.pop(sid, None) is not None:
                     cache_dirty = True
-            elif status in ('awaiting_review', 'awaiting_standards'):
+            elif status in ('awaiting_review', 'awaiting_standards', 'blocked'):
                 # Held by the merge review gate: never remove, and never cache
                 # the verdict -- a pass recorded later changes it without the
                 # worktree's HEAD or dirty flag moving.

@@ -1,5 +1,41 @@
 # Clayrune — Changelog
 
+## [2026-11-07] - Landing gate blocks every red branch (MC-1164 round 9)
+
+- The merged candidate now passes only if every `verify_command` exits 0 with no timeout, infrastructure error or oversize output; otherwise it blocks and the message names each failing command, its exit code and the output tail. No runner output is parsed to decide a verdict.
+- The target-tip baseline run, its cache and all failure-identity code (`failure_signatures`, `failure_totals`, `prove`, `compare`) are removed, along with their tests. Accepted cost: nothing lands while master is red. Result fields `new_failures`, `baseline_failures`, `count_increases`, `unprovable`, `baseline` are replaced by `failures` and `message`. Contract: `docs/LANDING_GATE.md`. Branch candidate only; no merge, push or restart.
+
+## [2026-11-07] - Landing gate blocks when it cannot prove no new failure (MC-1164 review round 6)
+
+- Runner totals are now an ordered list per command (`failure_totals`), never a sum. A different number of total lines between baseline and candidate blocks, as does any element that rose. A pytest total the parser cannot attribute (a wrapper footer after it, a test printing one) is an explicit `ambiguous` marker and blocks while the candidate exits non-zero; an exit-0 candidate still passes. Reasons are reported in the new `unprovable` list.
+- TAP and spec failures are qualified by the full path relative to the run directory, not the basename, so `a/same.test.mjs` and `b/same.test.mjs` are different files.
+- Closes the three round-6 bypasses (nested pytest total followed by a wrapper footer, same-basename TAP files, a printed total under `-s` offsetting a new failure). Accepted false blocks (chatty tests printing totals, renamed failing tests) are listed in `docs/LANDING_GATE.md`. Branch candidate only; no merge, push or restart.
+
+## [2026-11-07] - Stop failures sharing one identity from slipping past the landing gate (MC-1164 review round 4)
+
+- A banner a test prints (`=== PASSES ===`) inside its captured output no longer moves the pytest parser into the PASSES section, so a second failing test with the same assertion blocks again. A banner inside captured output counts only at pytest's own banner width.
+- Count backstop: each verify command records the runner's own failed/error total (pytest `N failed`/`N error(s)`, node `ℹ fail N` / `# fail N`) and the gate blocks when the candidate's total exceeds the baseline's at the same command position, reported as `count_increases`. Pytest/TAP/spec identities are now compared as a multiset. Passing-count changes still do not block.
+- Node `spec` identities carry the file from the failing-tests recap (`spec:works @b.test.mjs`), so the same test name failing in a second file blocks. Real pytest and node --test regressions added, including both reviewer repros. Contract: `docs/LANDING_GATE.md`. Branch candidate only; no merge, push or restart.
+
+## [2026-11-07] - Close two ways a new failure slipped through the landing gate (MC-1164 review round 3)
+
+- A passing pytest test with captured output (`-rP`/`-rA` list it under `=== PASSES ===`) no longer becomes a `pytest-report:` identity, so that test later failing blocks, and adding one no longer false-blocks. Report headings now count only under `FAILURES`/`ERRORS`.
+- Node's default non-TTY `spec` reporter `✖ name` lines are named, suite-qualified `spec:` failures, so a second failing test with the same assertion message blocks; the `✖ failing tests:` recap is skipped. Real-runner regressions added. Branch candidate only; no merge, push or restart.
+
+## [2026-11-07] - Stop runner noise from becoming landing-gate failure identity (MC-1164 review round 2)
+
+- Adding a passing test (pytest count line), renumbering a failing TAP test, or moving a failing assertion (relative `file:LINE`) no longer reads as a new failure. TAP `not ok N - name` is a named signature (suite-qualified), pytest/TAP/Node count lines are summaries, `:LINE[:COL]` is stripped from every path-like token, and pytest report headings name failures when no short summary prints. The additive fallback for unrecognised formats is unchanged. Real-runner regressions added. Branch candidate only; no merge, push or restart.
+
+## [2026-11-07] - Prevent stale baseline exemptions and hidden smoke failures (MC-1164)
+
+- Restricted baseline-cache reuse to fully successful checks; failing baselines re-run before exempting candidate failures, including after dependency or configuration repairs.
+- Added scheduler/calendar smoke markers and guard details, retained unknown failure/error lines alongside recognized checks, and normalized duration/file-location noise. Added cache-repair, mixed-output and smoke-format regressions. Branch candidate only; no merge, push or restart.
+
+## [2026-11-07] - Gate agent landings on new verification failures (MC-1164)
+
+- Added optional per-project verification commands with a 20-minute default timeout per command. Checks run against the combined target/agent tree and compare failure signatures with a target-SHA baseline; known failures are reported, while new failures and incomplete verification block landing without moving branch refs.
+- Preserved existing native standards and merge review, added a future reviewer callback seam, protected verification settings with existing human-only controls, and kept blocked worktrees through session end and stale GC. Contract: `docs/LANDING_GATE.md`. Branch candidate only; no live configuration, merge, push or restart.
+
 ## [2026-11-07] - Keep closed reset-resume chats closed (MC-1163 fifth review)
 
 - Explicit session closure durably cancels active reset receipts under the same project lock as acknowledgment, cancellation and takeover. A compact cancellation fence replaces saved output, so boot cannot recreate the closed chat.

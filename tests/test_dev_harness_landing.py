@@ -20,6 +20,27 @@ from test_dev_harness_activation_evidence import install_fixture
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_configured_verification_composes_with_enforced_native_standards(configured):
+    inputs, _ = configured
+    project = inputs[1]
+    root = Path(project['project_path'])
+    argv = [sys.executable, '-c', 'print("landing check")']
+    project['verify_command'] = subprocess.list2cmdline(argv) if os.name == 'nt' else shlex.join(argv)
+    ok, path = worktrees.create(project, 'verified')
+    assert ok, path
+    (Path(path)/'new.py').write_text('new source\n')
+    git(Path(path), 'add', 'new.py')
+    git(Path(path), 'commit', '-qm', 'source')
+    (root/'base.py').write_text('base\n')
+    git(root, 'add', 'base.py')
+    git(root, 'commit', '-qm', 'base')
+    result = worktrees.merge_back(project, 'verified')
+    assert result[0] == 'clean', result
+    assert result[1]['landing_gate']['status'] == 'pass'
+    assert result[1]['landing_gate']['checkout_restored']
+    assert (root/'new.py').read_text() == 'new source\n'
+
+
 @pytest.fixture
 def configured(executable, monkeypatch):
     executable = (HarnessStore(executable[0].root.parent/'data'), *executable[1:])

@@ -15,6 +15,8 @@ from mc.blueprints import project_routes as pr
 
 VALUES = {
     'merge_requires_review': False,
+    'verify_command': '',
+    'verify_timeout_seconds': 1200,
     'worktree_isolation': False,
     'worktree_base_branch': 'other-base',
     'worktree_shared_runtime': False,
