@@ -100,6 +100,7 @@ _pid_is_alive: Callable[[int], bool] = None  # type: ignore[assignment]
 _revive_from_agent_log: Callable[..., bool] = None  # type: ignore[assignment]
 _revive_non_claude_from_agent_log: Callable[..., Any] = None  # type: ignore[assignment]
 _record_usage_breakdown_turn_started: Optional[Callable[[dict], Any]] = None
+_isolated_resume_kwargs: Callable[..., dict] = None  # type: ignore[assignment]  # MC-1165 r7
 
 
 def wire(*, schedules_path, load_project_fn, load_projects_fn,
@@ -107,13 +108,16 @@ def wire(*, schedules_path, load_project_fn, load_projects_fn,
          enrich_run_entries_fn, get_manager_fn, all_managers_fn,
          pid_is_alive_fn, revive_from_agent_log_fn,
          revive_non_claude_from_agent_log_fn, save_project_fn=None,
-         record_usage_breakdown_turn_started_fn=None):
+         record_usage_breakdown_turn_started_fn=None,
+         isolated_resume_kwargs_fn=None):
     """Late-bind cross-family deps. Called once by server.py before
     register_blueprint + _start_scheduler()."""
     global SCHEDULES_PATH, load_project, save_project, load_projects, _log_agent_activity
     global _dispatch_agent_internal, _load_agent_log, _enrich_run_entries
     global get_manager, all_managers, _pid_is_alive, _revive_from_agent_log
     global _revive_non_claude_from_agent_log, _record_usage_breakdown_turn_started
+    global _isolated_resume_kwargs
+    _isolated_resume_kwargs = isolated_resume_kwargs_fn  # type: ignore[assignment]
     SCHEDULES_PATH = schedules_path
     load_project = load_project_fn
     save_project = save_project_fn  # type: ignore[assignment]  # optional kwarg (steward cycle stamp)
@@ -781,9 +785,21 @@ def _scheduler_loop():
                                     # a csid-less row per cadence tick.
                                     reuse_sid = ''
                                     dispatch_task = task
+                                    iso_kw = {}
                                     if resume_id:
                                         reuse_sid = _newest_run_session_id_for_schedule(pid, sched_id)
                                         dispatch_task = _scheduled_run_marker() + task
+                                        if reuse_sid:
+                                            # MC-1165 r7: this cold resume bypasses
+                                            # _scheduled_continue, so it must apply the
+                                            # isolation boundary itself or an isolated
+                                            # steward session resumes in main. Raises
+                                            # RevivalRefused -> the except below records
+                                            # a failed run, never a dispatch in main.
+                                            iso_kw = _isolated_resume_kwargs(
+                                                pid, reuse_sid, load_project(pid) or {},
+                                                logged=_row_flags_isolated(pid, reuse_sid),
+                                                who='scheduler-respawn')
                                     sid = _dispatch_agent_internal(pid, dispatch_task,
                                                                   resume_id=resume_id,
                                                                   trigger_type='schedule',
@@ -791,6 +807,7 @@ def _scheduler_loop():
                                                                   reuse_session_id=reuse_sid,
                                                                   provider_override=resume_provider,
                                                                   character=sched.get('character') or '',
+                                                                  **iso_kw,
                                                                   **_schedule_engine_kwargs(sched))
                                     tag = ' (resumed)' if resume_id else ''
                                     _log(f"[scheduler] Dispatched{tag} for {pid}: {task[:60]} -> session {sid}")
@@ -1111,6 +1128,17 @@ def _newest_run_session_id_for_schedule(project_id, schedule_id):
                 and e.get('session_id')):
             return e.get('session_id', '')
     return ''
+
+
+def _row_flags_isolated(project_id, session_id):
+    """True when any agent-log row of `session_id` carries `worktree_isolated`
+    (the durable isolation record, MC-1165 r5). Never raises."""
+    try:
+        return any(e.get('worktree_isolated') for e in _load_agent_log(project_id)
+                   if e.get('session_id') == session_id)
+    except Exception as e:
+        _log(f"[scheduler] isolation flag lookup failed for {session_id}: {e}")
+        return False
 
 
 def _scheduled_run_marker():

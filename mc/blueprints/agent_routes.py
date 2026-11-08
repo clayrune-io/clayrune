@@ -8159,6 +8159,44 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
 _COLD_RESUMABLE_PROVIDERS = {'codex', 'qwen', 'gemini'}
 
 
+def _isolated_resume_kwargs(project_id, session_id, p, *, logged=False, who='revive'):
+    """`_dispatch_agent_internal` kwargs that keep a RESUMED conversation in the
+    worktree it owns; `{}` when it never had one (MC-1165 r6, lifted r7).
+
+    A conversation that owned a worktree resumes into it (recreated if it was
+    removed) and the dispatch is told so (`isolated_override`), so its
+    completion still runs the merge-review gate. It is never handed to
+    `_maybe_isolate_worktree`, which returns the project checkout for a lone
+    agent, nor to `_resume_cwd_for`, which returns a tree but marks it
+    not-isolated. If the tree cannot be had, raises `RevivalRefused`: the
+    conversation exists and may only run there, so it is not re-run in main.
+    `logged` is the agent-log row's `worktree_isolated` flag (see
+    `isolated_launch.owned_worktree`).
+
+    Call with NO project lock held. The `resuming` window covers the cwd
+    decision only (as `_followup_cwd_for` does): a purged session is not in
+    `agent_sessions`, so nothing removes its tree."""
+    _wt = _isolated_launch.owned_worktree(p, session_id, logged=bool(logged))
+    if not _wt:
+        return {}
+    _stub = {'session_id': session_id, 'project_id': project_id,
+             '_worktree_isolated': True, '_agent_cwd': _wt}
+    with _worktree_lifecycle.resuming(get_manager(project_id).lock, session_id):
+        try:
+            _iso_cwd, _iso_note = _isolated_launch.launch_cwd(
+                _stub, p, p.get('project_path', ''))
+        except _isolated_launch.LaunchRefused as e:
+            _log(f"[{who}] {project_id}: {session_id[:12]} not resumed, "
+                 f"worktree unusable: {e}", level='error')
+            _log_agent_activity(project_id, f"Revive refused for {session_id[:8]}: {e}")
+            raise _isolated_launch.RevivalRefused(
+                f"conversation {session_id[:8]} owns an isolated worktree that cannot be "
+                f"restored ({e}); it was not started in the project checkout") from e
+    if _iso_note:
+        _log_agent_activity(project_id, _iso_note)
+    return {'agent_cwd_override': _iso_cwd, 'isolated_override': True}
+
+
 def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, carry_notify=True, role_context=None):
     """Continue (or, for a provider with no cold resume, restart) a dead
     non-Claude conversation (MC-929; cold-resume support added 2026-09-16,
@@ -8236,33 +8274,11 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
     _resume_id = ''
     if provider in _COLD_RESUMABLE_PROVIDERS:
         _resume_id = (entry.get('provider_session_id') or '').strip()
-    # MC-1165 r6: same isolation boundary as `_revive_from_agent_log`. A
-    # conversation that owned a worktree revives into it (recreated if it was
-    # removed) and the dispatch is told so; it is never handed to
-    # `_maybe_isolate_worktree`, which returns the project checkout for a lone
-    # agent. If the tree cannot be had the revival is refused, not re-run in main.
-    # The window covers the cwd decision only (as `_followup_cwd_for` does): a
-    # purged session is not in `agent_sessions`, so nothing removes its tree.
-    _iso_kw = {}
-    _revive_wt = _isolated_launch.owned_worktree(
-        p, session_id, logged=bool(entry.get('worktree_isolated')))
-    if _revive_wt:
-        _stub = {'session_id': session_id, 'project_id': project_id,
-                 '_worktree_isolated': True, '_agent_cwd': _revive_wt}
-        with _worktree_lifecycle.resuming(get_manager(project_id).lock, session_id):
-            try:
-                _iso_cwd, _iso_note = _isolated_launch.launch_cwd(
-                    _stub, p, p.get('project_path', ''))
-            except _isolated_launch.LaunchRefused as e:
-                _log(f"[revive-non-claude] {project_id}: {session_id[:12]} not revived, "
-                     f"worktree unusable: {e}", level='error')
-                _log_agent_activity(project_id, f"Revive refused for {session_id[:8]}: {e}")
-                raise _isolated_launch.RevivalRefused(
-                    f"conversation {session_id[:8]} owns an isolated worktree that cannot be "
-                    f"restored ({e}); it was not started in the project checkout") from e
-        if _iso_note:
-            _log_agent_activity(project_id, _iso_note)
-        _iso_kw = {'agent_cwd_override': _iso_cwd, 'isolated_override': True}
+    # MC-1165 r6/r7: same isolation boundary as `_revive_from_agent_log`; see
+    # `_isolated_resume_kwargs` (raises RevivalRefused when the tree cannot be had).
+    _iso_kw = _isolated_resume_kwargs(
+        project_id, session_id, p, logged=bool(entry.get('worktree_isolated')),
+        who='revive-non-claude')
     try:
         _dispatch_agent_internal(project_id, message, resume_id=_resume_id,
                                  incognito=bool(entry.get('incognito')),
@@ -8400,12 +8416,18 @@ def _revive_parent_for_delegation(project_id, session_id, message, p, from_sessi
             if not revived:
                 raise DeliveryBlocked('Claude parent could not be safely revived')
         else:
+            # MC-1165 r7: this branch dispatches itself, so it needs the same
+            # isolation boundary `_revive_non_claude_from_agent_log` applies.
+            _iso_kw = _isolated_resume_kwargs(
+                project_id, session_id, p, logged=bool(entry.get('worktree_isolated')),
+                who='revive-delegation')
             _dispatch_agent_internal(project_id, message, resume_id=native_id,
                                      incognito=False,
                                      reuse_session_id=session_id,
                                      provider_override=provider,
                                      effort_override=_continuation_effort(entry),
                                      model_override=model, character=character,
+                                     **_iso_kw,
                                      project_generation=project_generation,
                                      preserve_model=True,
                                      source=entry.get('source') or '',
