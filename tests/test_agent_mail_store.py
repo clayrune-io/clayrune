@@ -690,6 +690,28 @@ def test_reconcile_backstop_purges_submitted_content_of_revoked_registration(sto
     assert row['state'] == SUBMITTED and row['body'] is None and row['laundered'] is None
 
 
+@pytest.mark.parametrize('purge', ['registration', 'thread', 'session', 'backstop'])
+def test_purging_submitted_content_does_not_extend_the_completion_window(store, clock, purge):
+    """Fenn review 2: purge reset state_at, so revoke at 23h moved expiry to 47h."""
+    window = store.config.completion_window_seconds
+    ev = _submitted(store)
+    clock.advance(window - 3600)
+    if purge == 'registration':
+        store.revoke_registration(REG)
+    elif purge == 'thread':
+        store.revoke_thread(TOKEN)
+    elif purge == 'session':
+        store.revoke_session('proj', 'sess-1')
+    else:
+        with store._tx() as db:
+            db.execute('UPDATE registrations SET enabled=0 WHERE registration_id=?', (REG,))
+        store.reconcile()
+    assert store.get_event(ev, include_content=True)['body'] is None
+    clock.advance(3601)
+    store.reconcile()
+    assert store.get_event(ev)['state'] == EXPIRED
+
+
 def test_oversize_body_is_never_stored_on_the_missing_message_id_path(tmp_path, clock):
     s = _small(tmp_path, clock, max_body_bytes=100)
     r = s.insert_event(event_id='ev1', registration_id=REG, thread_token=TOKEN,

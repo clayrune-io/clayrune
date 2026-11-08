@@ -536,10 +536,13 @@ class MailStore:
                                  reason: str) -> int:
         """Drop the bodies of `submitted` rows matching `where`; state and
         metadata stay. Returns the number of rows that still held content."""
+        # state_at is deliberately left alone: it is the submission time, and
+        # the completion window is measured from it. Resetting it here would
+        # let a purge push a stuck row's expiry out by a full window.
         return db.execute(
-            f'UPDATE events SET body=NULL,laundered=NULL,reason=?,state_at=? '
+            f'UPDATE events SET body=NULL,laundered=NULL,reason=? '
             f'WHERE {where} AND state=? AND (body IS NOT NULL OR laundered IS NOT NULL)',
-            (reason, self.clock(), *args, SUBMITTED)).rowcount
+            (reason, *args, SUBMITTED)).rowcount
 
     def _backoff(self, attempts: int) -> float:
         return min(self.config.max_backoff_seconds,
