@@ -61,7 +61,7 @@ the match is not unique (case-insensitively), no root is read. A child's
 Content-ID is found by trimmed header name, so `Content-ID : <x>` (whitespace
 before the colon, which postal-mime does not parse) still counts.
 
-**Two refusals, checked over the whole tree before any text is taken** (including
+**Three refusals, checked before any text is taken** (including
 subtrees the allowlist would drop). Both return `{ok:false, reason_code}` with no
 text and no counts:
 
@@ -78,6 +78,19 @@ text and no counts:
   `(a; b) multipart/signed` and `multipart(x)/signed` are multipart and
   `text/plain (multipart/signed)` is not. `Content-Type : multipart/...` (space before
   the colon) counts as a Content-Type here, as in the duplicate check.
+- `malformed_mime`, header sections: every header section of the message (the top
+  level, and each part after a delimiter line of a boundary the tree declares) is read
+  from the raw bytes, not from postal-mime's parsed view. It must consist only of
+  header-field lines (`name:` with optional space/tab before the colon) and space/tab
+  folds, contain no bare CR, and end on an empty line (LF or CRLF); otherwise the whole
+  message is refused. postal-mime ends a header block at the first line that is neither
+  a field nor a fold and splits lines on LF only, while Thunderbird ends it at a
+  blank line, skips colon-less lines and splits on a bare CR. A Content-ID behind a
+  junk line, a bare CR, a folded name (`Content-ID` CRLF TAB `: <x>`), or a form feed /
+  vertical tab before the colon was therefore read by one and not the other. Only
+  header sections are inspected, so body text such as `Approved` followed by an
+  indented `: proceed` line is accepted. A blank line made of CR CR is refused. A
+  legitimate reply never trips it.
 
 **HTML is never converted or kept.** A message with `text/html` and no surviving
 `text/plain` returns `{ok:false, reason_code:'html_only', stripped}`: a drop with
@@ -99,7 +112,9 @@ and `remote_image_refs` are counts only.
   exactly; a test fails if the version pin or the tree shape moves, and then the
   allowlist must be re-reviewed against the new tree. The duplicate-header check
   reads each node's `rawHeaderLines` from that same tree, so it sees exactly the
-  header block postal-mime split; it is not a second header parser.
+  header block postal-mime split. The header-section check is the one place strip.js
+  reads the raw bytes itself: a line-shape check (field / fold / empty line), not a
+  second header parser, with its boundaries taken from the tree.
 - Plain text is still untrusted data: invisible Unicode (zero-width, bidi, tag
   characters) and command-shaped text pass through; the injection screen (unit 5)
   owns them.

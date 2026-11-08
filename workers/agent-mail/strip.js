@@ -22,6 +22,12 @@
 //     declared type is read through postal-mime's own structured-header parser, so
 //     comments carry no meaning and `Content-Type :` is the same header as in the
 //     duplicate check above.
+//   - any header section (top level, and each part after a delimiter line), read from
+//     the RAW bytes, holds a line that is neither a header field nor a space/tab fold,
+//     holds a bare CR, or does not end on an empty line: `malformed_mime`. postal-mime
+//     ends a header block at the first such line, Thunderbird only at a blank line, so
+//     a Content-ID behind it is read by one reader and not the other. Bodies are not
+//     inspected. See headerSectionRefusal.
 //
 // ALLOWLIST. Text is taken ONLY from text/plain leaves where
 //   - every ancestor is multipart/mixed, multipart/alternative or
@@ -106,12 +112,16 @@ const SINGLE_HEADERS = ['content-type', 'content-disposition', 'content-transfer
 //
 // A field name folded before its colon (`Content-ID` CRLF TAB `: <x>`): postal-mime
 // ends the header block on the bare name line and reads the rest as body, while
-// Thunderbird joins the fold and reads the header. No per-header check can see a
-// header the parser already dropped, so any line holding one header-name token and
-// no colon, followed by a folded line that opens with the colon, refuses the whole
-// message. Scanned over the raw bytes, bodies included: a false positive refuses,
-// it never leaks.
-const FOLDED_NAME = /(?:^|[\r\n])[!-9;-~]+[ \t]*(?:(?:\r\n|\n|\r)[ \t]+)+:/;
+// Thunderbird joins the fold and reads the header. Scanned over header sections only
+// (headerSectionRefusal), so a body line followed by an indented colon line is ordinary
+// text. Any whitespace but a line break counts as padding or fold, form feed and
+// vertical tab included: Thunderbird backs up over ASCII isspace before the colon and
+// jsmime's rule is unverified, so doubt resolves to refusal. The field-line check
+// there already refuses a bare name line (no colon); this stays as a second line.
+const FOLDED_NAME = /(?:^|[\r\n])[!-9;-~]+[^\S\r\n]*(?:(?:\r\n|\n|\r)[^\S\r\n]+)+[^\S\r\n]*:/;
+// A header line as postal-mime reads it (mime-node.ts FIELD_START): a name of printable
+// ASCII bar the colon, optional space or tab, a colon. Anything else is not a header.
+const FIELD_LINE = /^(?:From |[!-9;-~]*[ \t]*:)/;
 const latin1 = new TextDecoder('latin1');
 
 function rawHeaderKeys(node) {
@@ -180,6 +190,65 @@ function relatedRoot(node) {
   return exact.length === 1 && folded.length === 1 ? exact[0][0] : null;
 }
 
+// Every boundary a multipart node of the tree declares, as postal-mime registers it
+// (mime-node.ts: trailing space trimmed, ASCII only).
+function boundariesOf(node, out = new Set()) {
+  if (node.contentType.multipart) {
+    const b = String((node.contentType.parsed.params || {}).boundary || '').trimEnd();
+    if (b && !/[^\x00-\x7f]/.test(b)) out.add(b);
+  }
+  for (const child of node.childNodes || []) boundariesOf(child, out);
+  return out;
+}
+
+// Is this line `--B` ('open') or `--B--` ('close') of one of `boundaries`, followed by
+// nothing but space or tab? Matched the way postal-mime's processLine matches.
+function delimiterKind(line, boundaries) {
+  if (line.length <= 2 || !line.startsWith('--')) return null;
+  for (const b of boundaries) {
+    if (!line.startsWith(b, 2)) continue;
+    let rest = line.slice(2 + b.length);
+    const close = rest.startsWith('--');
+    if (close) rest = rest.slice(2);
+    if (/^[ \t]*$/.test(rest)) return close ? 'close' : 'open';
+  }
+  return null;
+}
+
+// Where does a part's header block end? postal-mime (mime-node.ts feed) ends it at the
+// first line that is neither a header field nor a space/tab fold, and splits lines on
+// LF only. Thunderbird (libmime) ends it only at a blank line, skips colon-less lines
+// and splits on a bare CR too, so a Content-ID behind a junk line or a bare CR is read
+// by one reader and not the other. Judged on the RAW bytes, never postal-mime's parsed
+// view (the lines it dropped are not in it): every header section -- the top level and
+// each part after a delimiter line -- must hold only header-field lines and folds, no
+// bare CR, and end on an empty line. Anything else is malformed_mime. Body text is not
+// inspected. A blank line made of CR CR is not blank to postal-mime, so it is refused.
+function headerSectionRefusal(text, boundaries) {
+  const lines = text.split('\n');
+  let inHeaders = true;
+  let section = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const hasLf = i < lines.length - 1;
+    let line = lines[i];
+    if (hasLf && line.endsWith('\r')) line = line.slice(0, -1);
+    if (!inHeaders) {
+      if (delimiterKind(line, boundaries) === 'open') { inHeaders = true; section = []; }
+      continue;
+    }
+    if (hasLf && line === '') {
+      if (FOLDED_NAME.test(section.join('\n'))) return 'malformed_mime';
+      inHeaders = false;
+      continue;
+    }
+    if (line.includes('\r')) return 'malformed_mime';
+    if (!(/^[ \t]/.test(line) || FIELD_LINE.test(line))) return 'malformed_mime';
+    section.push(line);
+  }
+  // the text ended inside a header section, so it did not end on an empty line
+  return inHeaders ? 'malformed_mime' : null;
+}
+
 function hasNameParam(parsed, raw) {
   const keys = Object.keys((parsed && parsed.params) || {});
   return keys.some((k) => NAME_PARAM_KEY.test(k)) || NAME_PARAM_RAW.test(String(raw || ''));
@@ -234,7 +303,6 @@ export async function strip(raw, opts = {}) {
   else if (raw instanceof ArrayBuffer) bytes = new Uint8Array(raw);
   else return { ok: false, reason_code: 'bad_input' };
   if (bytes.byteLength > lim.maxRawBytes) return { ok: false, reason_code: 'mime_too_large' };
-  if (FOLDED_NAME.test(latin1.decode(bytes))) return { ok: false, reason_code: 'malformed_mime' };
 
   const parser = new PostalMime({
     forceRfc822Attachments: true, // a forwarded message is an attachment, never inlined
@@ -249,7 +317,8 @@ export async function strip(raw, opts = {}) {
     return { ok: false, reason_code: /^EMAX/.test(String(e && e.code)) ? 'mime_limits' : 'mime_parse_error' };
   }
 
-  const refusal = treeRefusal(parser.root);
+  const refusal = treeRefusal(parser.root)
+    || headerSectionRefusal(latin1.decode(bytes), boundariesOf(parser.root));
   if (refusal) return { ok: false, reason_code: refusal };
 
   const stripped = emptyCounts();
