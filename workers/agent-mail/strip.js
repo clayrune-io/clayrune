@@ -52,7 +52,7 @@
 // test/strip.test.js fails if the tree shape or the pin moves.
 
 import PostalMime from 'postal-mime';
-import { normalizeMsgId } from './content-id.js';
+import { strictMsgId } from './content-id.js';
 
 // Provisional limits from AGENT_MAIL_SPEC D4 (64 KiB inbound MIME, 16 KiB reply).
 export const DEFAULT_LIMITS = Object.freeze({
@@ -141,10 +141,22 @@ function relatedRoot(node) {
   const kids = node.childNodes;
   const start = node.contentType.parsed.params.start;
   if (start === undefined) return kids[0] || null;
-  const want = normalizeMsgId(start);
-  if (want === '') return null;
-  const hits = kids.filter((k) => k.contentId !== undefined && normalizeMsgId(k.contentId) === want);
-  return hits.length === 1 ? hits[0] : null;
+  const want = strictMsgId(start);
+  if (want === null) return null;
+  // Every child's Content-ID must read strictly: one we cannot read could be a
+  // disguised duplicate of the root, so it voids root selection for the node.
+  const ids = [];
+  for (const k of kids) {
+    if (k.contentId === undefined) continue;
+    const id = strictMsgId(k.contentId);
+    if (id === null) return null;
+    ids.push([k, id]);
+  }
+  // Exactly one exact match, and no other child equal ignoring case (a reader
+  // that folds the domain's case would see two roots).
+  const exact = ids.filter(([, id]) => id === want);
+  const folded = ids.filter(([, id]) => id.toLowerCase() === want.toLowerCase());
+  return exact.length === 1 && folded.length === 1 ? exact[0][0] : null;
 }
 
 function hasNameParam(parsed, raw) {

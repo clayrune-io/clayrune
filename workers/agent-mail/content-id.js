@@ -1,19 +1,26 @@
-// Normalise a Content-ID / `start` value to the bare msg-id used for matching a
-// multipart/related root (RFC 2387 3.2, 3.4).
+// Strict msg-id reading for multipart/related root selection (RFC 2387 3.2, 3.4).
 //
-// Content-ID has the Message-ID syntax (RFC 2045 7): `[CFWS] "<" id-left "@"
-// id-right ">" [CFWS]` (RFC 5322 3.6.4). CFWS -- whitespace and parenthesised,
-// nestable comments -- sits OUTSIDE the angle brackets and carries no meaning, so
-// `<root@example.net> (comment)` and `<root@example.net>` are the same ID. Inside the
-// brackets a quoted-string local part may legitimately contain `(`, `)` and `>`, so
-// nothing between the brackets is touched.
+// MC-1166 unit 3 fix round 5 (Dave's call, logged DECIDED WITHOUT RON). Rounds 3-5
+// each found one more spelling of a msg-id (comments, quoted local parts, domain
+// literals, obsolete comment-in-local-part) where our reading and a mail reader's
+// reading disagree, so two parts carrying the SAME id compared as different and the
+// injected one was chosen as the root. Chasing the full RFC 5322 grammar is a
+// lexer we would keep getting wrong. Instead the id itself must be plain:
 //
-//   normalizeMsgId(value) -> string
+//   [CFWS] "<" id ">" [CFWS]   or   [CFWS] id [CFWS]
 //
-// A value that is not a well-formed bracketed msg-id (no brackets, junk after the
-// closing bracket, unterminated comment/quote) is returned trimmed with a whole-string
-// pair of brackets removed, which is the literal comparison the caller used before.
+// where id is atext/"."/"@" only, optionally ending in a simple bracketed literal
+// of [A-Za-z0-9.:-]. No quotes, comments, backslashes, whitespace or angle brackets
+// can appear inside the id, so the first ">" closes it and there is exactly one way
+// to read it. CFWS outside the brackets is still skipped (it is common and carries
+// no meaning). Anything else returns null: the caller then selects NO root, so a
+// sender using exotic syntax loses the body rather than gaining a disguise.
+//
+//   strictMsgId(value) -> string | null
+//
 // Pure, total, never throws.
+
+const ID = /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~.@-]+(?:\[[A-Za-z0-9.:-]*\])?/;
 
 // Index after the CFWS starting at i, or -1 for an unterminated comment.
 function skipCfws(s, i) {
@@ -31,30 +38,17 @@ function skipCfws(s, i) {
   }
 }
 
-// Index of the `>` closing the bracket opened at `open`, honouring quoted-strings,
-// quoted-pairs and a bracketed domain literal on the right of `@` (RFC 5322 3.6.4
-// no-fold-literal, whose dtext may contain `>`); -1 when there is none.
-function closingBracket(s, open) {
-  let quoted = false;
-  let literal = false;
-  for (let i = open + 1; i < s.length; i += 1) {
-    const c = s[i];
-    if (c === '\\') i += 1;
-    else if (literal) { if (c === ']') literal = false; }
-    else if (c === '"') quoted = !quoted;
-    else if (quoted) continue;
-    else if (c === '[') literal = true;
-    else if (c === '>') return i;
-  }
-  return -1;
-}
-
-export function normalizeMsgId(value) {
+export function strictMsgId(value) {
   const s = String(value === undefined || value === null ? '' : value);
-  const open = skipCfws(s, 0);
-  if (open >= 0 && s[open] === '<') {
-    const close = closingBracket(s, open);
-    if (close > open && skipCfws(s, close + 1) === s.length) return s.slice(open + 1, close);
+  const at = skipCfws(s, 0);
+  if (at < 0) return null;
+  const bracketed = s[at] === '<';
+  const m = ID.exec(s.slice(bracketed ? at + 1 : at));
+  if (!m) return null;
+  let end = (bracketed ? at + 1 : at) + m[0].length;
+  if (bracketed) {
+    if (s[end] !== '>') return null;
+    end += 1;
   }
-  return s.trim().replace(/^<(.*)>$/s, '$1');
+  return skipCfws(s, end) === s.length ? m[0] : null;
 }

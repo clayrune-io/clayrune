@@ -6,7 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { strip } from '../strip.js';
-import { normalizeMsgId } from '../content-id.js';
+import { strictMsgId } from '../content-id.js';
 
 const P = 'INJECTED-CONTENT';
 const OK = 'Approved.';
@@ -111,8 +111,9 @@ test('start parameter with a comment outside its brackets matches a bare Content
 test('parentheses inside a quoted local part are not stripped', () =>
   noText(multi('related', 'B', [leaf('<"a(b)"@example.net>', P)], '; type="text/plain"; start="<a@example.net>"')));
 
-test('quoted local part with parentheses matches itself', () =>
-  retained(multi('related', 'B', [leaf('<"a(b)"@example.net> (c)')], '; type="text/plain"; start="<\\"a(b)\\"@example.net>"')));
+// fix round 5: a quoted local part is not strict syntax -> no root, even matching itself
+test('quoted local part with parentheses selects no root (strict ids only)', () =>
+  noText(multi('related', 'B', [leaf('<"a(b)"@example.net> (c)', P)], '; type="text/plain"; start="<\\"a(b)\\"@example.net>"')));
 
 test('different IDs stay different (case, domain)', async () => {
   await noText(multi('related', 'B', [leaf('<ROOT@example.net> (c)', P)], relatedType('text/plain')));
@@ -122,24 +123,29 @@ test('different IDs stay different (case, domain)', async () => {
 test('junk after the closing bracket is not CFWS: no match', () =>
   noText(multi('related', 'B', [leaf('<root@example.net> junk', P)], relatedType('text/plain'))));
 
-test('normalizeMsgId: unit cases', () => {
+test('strictMsgId: unit cases', () => {
   const cases = [
     ['<a@b>', 'a@b'],
     ['  <a@b>  ', 'a@b'],
     ['<a@b> (c)', 'a@b'],
     ['(c) <a@b>', 'a@b'],
     ['(c (d) e)<a@b>(f)', 'a@b'],
-    ['<"a(b)"@c> (d)', '"a(b)"@c'],
-    ['<"a>b"@c>', '"a>b"@c'],
     ['(esc \\) still) <a@b>', 'a@b'],
     ['a@b', 'a@b'],
-    ['<a@b> junk', '<a@b> junk'],
-    ['<a@b> (unterminated', '<a@b> (unterminated'],
-    ['', ''],
-    [undefined, ''],
+    ['<root>', 'root'],
+    ['<root@[192.0.2.1]>', 'root@[192.0.2.1]'],
+    ['<"a(b)"@c> (d)', null],
+    ['<"a>b"@c>', null],
+    ['<a@b> junk', null],
+    ['<a@b> (unterminated', null],
+    ['<a b@c>', null],
+    ['<a@b', null],
+    ['', null],
+    [undefined, null],
   ];
-  for (const [input, want] of cases) assert.equal(normalizeMsgId(input), want, JSON.stringify(input));
+  for (const [input, want] of cases) assert.equal(strictMsgId(input), want, JSON.stringify(input));
 });
+
 
 // ---- Dave's call: `Content-Type :` is Content-Type to both policies --------
 

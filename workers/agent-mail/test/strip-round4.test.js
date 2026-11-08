@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { strip } from '../strip.js';
-import { normalizeMsgId } from '../content-id.js';
+import { strictMsgId } from '../content-id.js';
 
 const P = 'INJECTED-CONTENT';
 const OK = 'Approved.';
@@ -26,20 +26,20 @@ test('domain-literal IDs that normalise equal count as two hits -> no root (Fenn
   assert.equal(r.reason_code, 'html_only');
 });
 
-test('single root with domain literal and trailing comment is kept (Fenn R4 control)', async () => {
-  const r = await strip(multi('related', 'B', [leaf('<root@[a>b]> (comment)')], start('text/plain')));
-  assert.equal(r.ok, true, JSON.stringify(r));
-  assert.equal(r.text, OK);
-  assert.equal(r.source, 'plain');
+// fix round 5: a domain literal holding '>' is not strict syntax -> no root
+test('single root with a ">" domain literal selects no root (strict ids only)', async () => {
+  const r = await strip(multi('related', 'B', [leaf('<root@[a>b]> (comment)', P)], start('text/plain')));
+  assert.ok(!JSON.stringify(r).includes(P), `leaked: ${JSON.stringify(r)}`);
+  assert.equal(r.has_text, false, JSON.stringify(r));
 });
 
-test('normalizeMsgId: domain-literal cases', () => {
+test('strictMsgId: domain-literal cases', () => {
   const cases = [
-    ['<root@[a>b]>', 'root@[a>b]'],
-    ['<root@[a>b]> (comment)', 'root@[a>b]'],
-    ['(c) <root@[a>b]>', 'root@[a>b]'],
-    ['<root@[a>b]> junk', '<root@[a>b]> junk'],
-    ['<root@[unclosed>', 'root@[unclosed'],
+    ['<root@[a>b]>', null],
+    ['<root@[a>b]> (comment)', null],
+    ['(c) <root@[a>b]>', null],
+    ['<root@[unclosed>', null],
+    ['<root@[10.0.0.1]> (c)', 'root@[10.0.0.1]'],
   ];
-  for (const [input, want] of cases) assert.equal(normalizeMsgId(input), want, JSON.stringify(input));
+  for (const [input, want] of cases) assert.equal(strictMsgId(input), want, JSON.stringify(input));
 });

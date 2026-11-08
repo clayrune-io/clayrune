@@ -15,7 +15,7 @@ text ever reaches custody. A failed check is a **drop**, not a hold.
 | `auth.js` | `decide(meta, ownerRecord, tokenLookup)` -> `{accept:true, thread, evidence}` or `{accept:false, reason_code}`. `rejectionRecord()` is the only thing kept about a drop: time, reason code, auth result words. |
 | `mailbox.js` | Strict one-mailbox From parsing. Domain case-insensitive, local part exact. No substring or display-name matching. |
 | `authres.js` | Cloudflare `Authentication-Results` (authserv-id `mx.cloudflare.net` only) and the D6=A rule: DMARC pass with aligned SPF **or** DKIM. |
-| `content-id.js` | `normalizeMsgId(value)`: msg-id with CFWS outside the brackets removed, for Content-ID / `start` matching. |
+| `content-id.js` | `strictMsgId(value)`: the bare id of a plain msg-id (atext, `.`, `@`, optional simple `[literal]`), CFWS outside the brackets skipped; `null` for anything else. Used for Content-ID / `start` matching. |
 | `headers.js` | Ordered header-list helpers. |
 | `strip.js` | `strip(raw)` -> plain text plus counts of what was removed (never the removed bytes). MIME-tree allowlist, no HTML conversion. |
 
@@ -51,9 +51,13 @@ the `text/plain` alternative is read. Inside `multipart/related` only the **root
 is read (RFC 2387: the child whose `Content-ID` matches the `start` parameter, or
 the first child when there is no `start`); the other children are resources of the
 root, counted and never read. A `start` that names no child (or several) reads
-nothing under that container. Content-IDs and `start` are compared as msg-ids with
-comments and whitespace outside the angle brackets removed (`content-id.js`,
-RFC 5322 3.6.4); two children whose IDs normalise equal select no root.
+nothing under that container. Content-IDs and `start` are read strictly
+(`content-id.js`): the id inside the brackets must be plain atext, `.` and `@`,
+optionally ending in a `[literal]` of letters, digits, `.`, `:` and `-`; comments
+and whitespace outside the brackets are skipped. Quoted local parts, comments
+inside the id and other exotic RFC 5322 spellings are not interpreted. Root
+selection **fails closed**: if `start` or any child's Content-ID is not strict, or
+the match is not unique (case-insensitively), no root is read.
 
 **Two refusals, checked over the whole tree before any text is taken** (including
 subtrees the allowlist would drop). Both return `{ok:false, reason_code}` with no
