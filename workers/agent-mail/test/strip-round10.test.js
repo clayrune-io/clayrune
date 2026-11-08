@@ -1,5 +1,5 @@
 // MC-1166 unit 3 fix round 10: refuse a Content-Type grammar the two readers parse
-// differently (canonical.js headerCommentRefusal, boundaryParamRefusal,
+// differently (canonical.js headerGrammarRefusal, boundaryParamRefusal,
 // multipartBoundaryRefusal).
 //
 // postal-mime strips comments from a Content-Type value, prefers a plain boundary= to an

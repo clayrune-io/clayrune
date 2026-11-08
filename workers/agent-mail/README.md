@@ -17,7 +17,7 @@ text ever reaches custody. A failed check is a **drop**, not a hold.
 | `authres.js` | Cloudflare `Authentication-Results` (authserv-id `mx.cloudflare.net` only) and the D6=A rule: DMARC pass with aligned SPF **or** DKIM. |
 | `content-id.js` | `strictMsgId(value)`: the bare id of a plain msg-id (atext, `.`, `@`, optional simple `[literal]`), CFWS outside the brackets skipped; `null` for anything else. Used for Content-ID / `start` matching. |
 | `headers.js` | Ordered header-list helpers. |
-| `canonical.js` | Canonical-form gate helpers for `strip()` (bare CR, boundary-line shape, boundary nesting, Content-Type grammar). Pure. |
+| `canonical.js` | Canonical-form gate helpers for `strip()` (bare CR, boundary-line shape, boundary nesting, header grammar). Pure. |
 | `strip.js` | `strip(raw)` -> plain text plus counts of what was removed (never the removed bytes). MIME-tree allowlist, no HTML conversion. |
 
 ### `decide` inputs
@@ -113,24 +113,29 @@ text and no counts:
   Gmail, Apple Mail, Outlook and Thunderbird send CRLF with random distinct boundaries,
   so none of these refuses ordinary mail. Not refused: text after the closing
   `--B--` (epilogue); postal-mime ignores it, so it is never returned.
-- `malformed_mime`, Content-Type grammar (`canonical.js`, round 10), checked on the
+- `malformed_mime`, header grammar (`canonical.js`, rounds 10-11), checked on the
   raw header values of every part, top level and nested, dropped subtrees included.
-  postal-mime and Thunderbird read the boundary PARAMETER differently (postal-mime
-  drops comments, lets a plain `boundary=` beat RFC 2231 `boundary*=` and trims a
-  quoted value; Thunderbird does none of that), so the two would split one message on
-  different delimiters. The headers that decide how a part is read must therefore be
-  plain:
-  5. `(` outside a quoted string in a Content-Type, Content-Disposition or
-     Content-Transfer-Encoding (a comment);
+  postal-mime and Thunderbird read a Content-Type differently (postal-mime drops
+  comments, lets a plain `boundary=` beat RFC 2231 `boundary*=`, trims a quoted value
+  and unquotes a quoted type; Thunderbird stops all parameter parsing at the first
+  parameter it cannot read and keeps a quoted type quoted), so the two would split one
+  message on different delimiters. A home-grown scanner for those differences was a
+  third reader and did not converge, so the WHOLE value must match a strict grammar
+  and anything else is refused (round 11):
+  5. Content-Type = `token "/" token *( OWS ";" OWS token "=" ( token / quoted ) ) OWS
+     [";"]`; Content-Disposition = the same with a single leading token and no `/`;
+     Content-Transfer-Encoding = one token. token = RFC 2045 token; quoted = `"` +
+     anything but `"`, backslash, CR, LF + `"`; OWS may include a fold. So no comment,
+     no backslash, no space in a name or around `=`, no junk after a value, no quoted
+     type, no empty parameter;
   6. any `boundary*` parameter, or more than one `boundary` parameter;
-  7. a `boundary` that is not exactly `boundary=` + an RFC 2045 token or a quoted
-     string with no inner `"` or backslash and no leading or trailing space inside,
-     with no space around the `=`;
-  8. a `multipart/*` with no usable boundary.
-  A quote left open (odd number of `"`) counts as rule 5. `filename*` and other
-  parameters are unaffected, so non-ASCII attachment names still pass. Real Gmail,
-  Apple Mail, Outlook and Thunderbird output has none of these shapes; a legal but
-  rare message with a comment or an RFC 2231 boundary is refused on purpose.
+  7. a `boundary` whose value is not an RFC 2045 token or a quoted string with no
+     leading or trailing space inside;
+  8. a `multipart/*` with no `boundary` parameter.
+  `filename*`, `name*`, `x-unix-mode`, `creation-date="..."` and similar parameters match
+  the grammar, so Gmail, Apple Mail, Outlook and Thunderbird output (including
+  non-ASCII attachment names) still passes; a legal but rare message with a comment,
+  a backslash escape or an RFC 2231 boundary is refused on purpose.
 
 **HTML is never converted or kept.** A message with `text/html` and no surviving
 `text/plain` returns `{ok:false, reason_code:'html_only', stripped}`: a drop with

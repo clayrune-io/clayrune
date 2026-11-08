@@ -16,12 +16,12 @@ const leaf = (id, body = OK, type = 'text/plain') =>
   msg(`Content-Type: ${type}\r\nContent-ID: ${id}`, body);
 const noLeak = (r) => assert.ok(!JSON.stringify(r).includes(P), `leaked: ${JSON.stringify(r)}`);
 
-const fennStart = `; type="text/html"; start="<\\"root\\"([)@example.net>"`;
+const fennStart = `; type="text/html"; start="<root([)@example.net>"`;
 
 test('Fenn R5 repro: comment-in-local-part duplicate pair -> nothing read', async () => {
   const r = await strip(multi('related', 'B', [
-    leaf('<"root"([)@example.net>', '<p>Visible</p>', 'text/html'),
-    leaf('<"root"([)@example.net> (outside)', P),
+    leaf('<root([)@example.net>', '<p>Visible</p>', 'text/html'),
+    leaf('<root([)@example.net> (outside)', P),
   ], fennStart));
   noLeak(r);
   assert.equal(r.ok, false, JSON.stringify(r));
@@ -29,8 +29,8 @@ test('Fenn R5 repro: comment-in-local-part duplicate pair -> nothing read', asyn
 });
 
 test('Fenn R5 control: single non-strict root fails closed', async () => {
-  const r = await strip(multi('related', 'B', [leaf('<"root"([)@example.net>', P)],
-    `; type="text/plain"; start="<\\"root\\"([)@example.net>"`));
+  const r = await strip(multi('related', 'B', [leaf('<root([)@example.net>', P)],
+    `; type="text/plain"; start="<root([)@example.net>"`));
   noLeak(r);
   assert.equal(r.has_text, false, JSON.stringify(r));
 });

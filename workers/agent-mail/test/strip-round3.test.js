@@ -54,7 +54,7 @@ test('comment between slash and subtype -> malformed_mime', () =>
 test('nested comment before the type -> malformed_mime', () =>
   refused(msg('Content-Type: (a (b; c) d) multipart/signed'), 'malformed_mime'));
 
-// Round 10 (canonical.js headerCommentRefusal): a "(" outside a quoted string in a
+// Round 10 (canonical.js headerGrammarRefusal): a "(" outside a quoted string in a
 // Content-Type is refused outright, so this comment form, kept before, is now refused.
 test('plain declaration that merely mentions multipart in a comment is refused (Fenn P2-1d; round 10 rule: no comments)', () =>
   refused(msg('Content-Type: text/plain (multipart/signed)', OK), 'malformed_mime'));

@@ -73,35 +73,83 @@ export function boundaryNestingRefusal(node, ancestors = []) {
   return null;
 }
 
-// ---- Content-Type grammar gate (fix round 10) ------------------------------------------
+// ---- Header grammar gate (fix rounds 10-11) -----------------------------------------------
 //
 // Rules 2 and 3 take their boundaries from postal-mime's reading of the Content-Type.
 // Thunderbird reads the boundary PARAMETER differently (nsMIMEHeaderParamImpl.cpp
 // DoParameterInternal): it strips no comments, an unquoted value runs to `;`, RFC 2231
 // `boundary*` forms outrank a plain `boundary=`, and a name followed by anything but `=`
-// stops all parameter parsing. A message can then be split into parts under one boundary by
-// postal-mime and another by Thunderbird, and the lines between the two readers' delimiters
-// are visible text to one and a hidden attachment to the other. Rather than port a second
-// parser, the headers that decide how a part is read must be in a plain grammar that every
-// reader reads the same way (Dave, round 10). Rules 5-8 below check the raw header values
-// of EVERY node of the tree (top level and nested, dropped subtrees included), found by
-// trimmed header name like the duplicate check, duplicates included. Each returns
+// stops all parameter parsing; it also keeps a quoted type token quoted where postal-mime
+// unquotes it. A message can then be split into parts under one boundary by postal-mime and
+// another by Thunderbird, and the lines between the two readers' delimiters are visible text
+// to one and a hidden attachment to the other.
+//
+// Round 10 walked the value with a home-grown scanner; Fenn's round 11 showed that scanner is
+// a third reader that agrees with neither (backslash outside quotes, an unreadable earlier
+// parameter, a quoted type). Eleven rounds of per-shape patches did not converge, so the
+// walker is gone (Dave, round 11): the WHOLE value of Content-Type, Content-Disposition and
+// Content-Transfer-Encoding must match a strict grammar that only admits shapes both readers
+// parse identically, and anything else is refused. There is no scanner left to disagree with.
+//
+//   Content-Type        token "/" token *( OWS ";" OWS token "=" ( token / quoted ) ) OWS [ ";" OWS ]
+//   Content-Disposition token           *( OWS ";" OWS token "=" ( token / quoted ) ) OWS [ ";" OWS ]
+//   Content-Transfer-Encoding  token   (OWS allowed after it)
+//   token  = RFC 2045 token (ASCII, no space, CTL or tspecials), so no `\`, `(`, `"`, `,`, `=`
+//   quoted = DQUOTE *( any char but DQUOTE, "\", CR, LF ) DQUOTE   (no escapes, no comments)
+//   OWS    = *( [CRLF] SP / HTAB )   (a fold; postal-mime has already unfolded the value)
+//
+// That refuses a comment, a backslash, a space inside a name, junk after a quoted value, a
+// quoted type or subtype, an empty parameter, a stray `,`. Real Gmail, Thunderbird, Apple Mail
+// (`filename*=utf-8''..`, `x-unix-mode=0644`) and Outlook (`creation-date="..."`, `size=68`)
+// headers all match. Rules 6-8 then read the parsed parameters. All rules check the raw header
+// values of EVERY node of the tree (top level and nested, dropped subtrees included), found
+// by trimmed header name like the duplicate check, duplicates included. Each returns
 // 'malformed_mime' or null.
 
 const SHAPING_HEADERS = ['content-type', 'content-disposition', 'content-transfer-encoding'];
 
 // RFC 2045 token: any ASCII char but space, CTLs and tspecials ( ) < > @ , ; : \ " / [ ] ? =
-const TOKEN = /^[!#$%&'*+\-.0-9A-Z^_`a-z{|}~]+$/;
+const TOKEN_CLASS = "[!#$%&'*+\\-.0-9A-Z^_`a-z{|}~]+";
+const TOKEN = new RegExp('^' + TOKEN_CLASS + '$');
 // A quoted string with no inner `"` or `\` and no leading or trailing whitespace inside.
+// (Rule 7 uses this stricter form for a boundary; the grammar below allows any quoted value.)
 const QUOTED = /^"[^"\\\s](?:[^"\\]*[^"\\\s])?"$/;
-// `boundary=` + token or quoted string, optionally preceded (a fold) and followed (before
-// the `;`) by whitespace. No whitespace around the `=`: Thunderbird stops parameter
-// parsing at a name not followed directly by it.
-const PLAIN_BOUNDARY = /^\s*boundary=(\S.*?)\s*$/is;
 
-function plainBoundarySegment(seg) {
-  const m = PLAIN_BOUNDARY.exec(seg);
-  return m !== null && (TOKEN.test(m[1]) || QUOTED.test(m[1]));
+const OWS = '(?:(?:\\r?\\n)?[ \\t])*';
+const GRAMMAR_QUOTED = '"[^"\\\\\\r\\n]*"';
+// ` ; name=value`: sticky, so the walk is anchored where the last one ended.
+const PARAM_STEP = new RegExp(OWS + ';' + OWS + '(' + TOKEN_CLASS + ')=(' + TOKEN_CLASS + '|' + GRAMMAR_QUOTED + ')', 'y');
+const PARAM_TAIL = new RegExp(OWS + '(?:;' + OWS + ')?$', 'y');
+const TYPE_HEAD = new RegExp('^(' + TOKEN_CLASS + ')/(' + TOKEN_CLASS + ')');
+const TOKEN_HEAD = new RegExp('^(' + TOKEN_CLASS + ')');
+const CTE_WHOLE = new RegExp('^' + TOKEN_CLASS + OWS + '$');
+
+// Parse `head *( ";" param )` from the start of `value`. Returns { type, params } or null when
+// the value is not wholly in the grammar. Parameter names are lowercased; values are raw
+// (a quoted value keeps its quotes).
+function parseParameterised(value, headRe) {
+  const head = headRe.exec(value);
+  if (head === null) return null;
+  const params = [];
+  let at = head[0].length;
+  for (;;) {
+    PARAM_STEP.lastIndex = at;
+    const m = PARAM_STEP.exec(value);
+    if (m === null) break;
+    params.push({ name: m[1].toLowerCase(), value: m[2] });
+    at = PARAM_STEP.lastIndex;
+  }
+  PARAM_TAIL.lastIndex = at;
+  if (!PARAM_TAIL.test(value)) return null;
+  return { type: head.slice(1).join('/'), params };
+}
+
+// One header value against its grammar: { type, params } (Content-Transfer-Encoding gets
+// no parameters) or null.
+function parseShaping(name, value) {
+  if (name === 'content-type') return parseParameterised(value, TYPE_HEAD);
+  if (name === 'content-disposition') return parseParameterised(value, TOKEN_HEAD);
+  return CTE_WHOLE.test(value) ? { type: value.trim(), params: [] } : null;
 }
 
 function* nodesOf(node) {
@@ -109,46 +157,21 @@ function* nodesOf(node) {
   for (const child of node.childNodes || []) yield* nodesOf(child);
 }
 
-// Values of one node's headers of the given (trimmed, lowercase) names, unfolded.
-function headerValues(node, names) {
+// [{ name, parsed }] for one node's headers of the given (trimmed, lowercase) names, unfolded;
+// `parsed` is null when the value is outside the grammar.
+function parsedHeaders(node, names) {
   return (node.headers || [])
-    .filter((h) => names.includes(String(h.key || '').trim()))
-    .map((h) => String(h.value || ''));
+    .map((h) => ({ name: String(h.key || '').trim(), value: String(h.value || '') }))
+    .filter((h) => names.includes(h.name))
+    .map((h) => ({ name: h.name, parsed: parseShaping(h.name, h.value) }));
 }
 
-// Walk a header value tracking quoted strings. `honorEscape` says whether a backslash
-// inside quotes escapes the next char (quoted-pair) or is literal; readers differ, so each
-// check runs both and refuses if either refuses. Returns the `;`-separated segments
-// (outside quotes), whether `(` occurred outside quotes, and whether a quote was left open.
-function scanValue(value, honorEscape) {
-  const segs = [];
-  let cur = '';
-  let inQuote = false;
-  let paren = false;
-  for (let i = 0; i < value.length; i += 1) {
-    const c = value[i];
-    if (inQuote) {
-      cur += c;
-      if (c === '\\' && honorEscape && i + 1 < value.length) { i += 1; cur += value[i]; } else if (c === '"') inQuote = false;
-    } else if (c === '"') { inQuote = true; cur += c; } else if (c === ';') { segs.push(cur); cur = ''; } else {
-      if (c === '(') paren = true;
-      cur += c;
-    }
-  }
-  segs.push(cur);
-  return { segs, paren, open: inQuote };
-}
-
-// Rule 5: Content-Type, Content-Disposition or Content-Transfer-Encoding containing `(`
-// outside a quoted string. postal-mime drops a comment; Thunderbird keeps it as part of the
-// token (`boundary= (c)B`, `Content-Type: (c)text/plain`). A quote left open when escapes
-// are ignored (an odd number of `"`) is refused as well: which `(` sits inside it is then a
-// matter of opinion.
-export function headerCommentRefusal(root) {
+// Rule 5: Content-Type, Content-Disposition and Content-Transfer-Encoding must match the
+// grammar above in full. Replaces the round-10 comment/open-quote scan.
+export function headerGrammarRefusal(root) {
   for (const node of nodesOf(root)) {
-    for (const value of headerValues(node, SHAPING_HEADERS)) {
-      const literal = scanValue(value, false);
-      if (literal.paren || literal.open || scanValue(value, true).paren) return REFUSED;
+    for (const h of parsedHeaders(node, SHAPING_HEADERS)) {
+      if (h.parsed === null) return REFUSED;
     }
   }
   return null;
@@ -156,24 +179,21 @@ export function headerCommentRefusal(root) {
 
 // Rule 6: no `boundary*` parameter (RFC 2231 `boundary*=`, `boundary*0=`; Thunderbird
 // prefers them to a plain `boundary=`, postal-mime does not) and at most one `boundary`
-// parameter. Rule 7: that parameter is exactly `boundary=` + a plain token or a quoted
-// string (TOKEN / QUOTED above). Content-Type only. A parameter is a `boundary` one when
-// its name (text before the first `=`, trimmed) is `boundary`.
+// parameter. Rule 7: that parameter's value is a plain token or a quoted string with no
+// whitespace just inside the quotes (TOKEN / QUOTED above; the grammar already forbids
+// whitespace around the `=`). Content-Type only. A header outside the grammar is rule 5's.
 export function boundaryParamRefusal(root) {
   for (const node of nodesOf(root)) {
-    for (const value of headerValues(node, ['content-type'])) {
-      for (const honor of [false, true]) {
-        const params = scanValue(value, honor).segs.slice(1).filter((s) => s.trim() !== '');
-        let count = 0;
-        for (const seg of params) {
-          const name = seg.split('=')[0].trim().toLowerCase();
-          if (/^boundary\s*\*/.test(name)) return REFUSED;
-          if (name !== 'boundary') continue;
-          count += 1;
-          if (!plainBoundarySegment(seg)) return REFUSED;
-        }
-        if (count > 1) return REFUSED;
+    for (const h of parsedHeaders(node, ['content-type'])) {
+      if (h.parsed === null) continue;
+      let count = 0;
+      for (const p of h.parsed.params) {
+        if (/^boundary\*/.test(p.name)) return REFUSED;
+        if (p.name !== 'boundary') continue;
+        count += 1;
+        if (!TOKEN.test(p.value) && !QUOTED.test(p.value)) return REFUSED;
       }
+      if (count > 1) return REFUSED;
     }
   }
   return null;
@@ -181,12 +201,12 @@ export function boundaryParamRefusal(root) {
 
 // Rule 8: a multipart/* Content-Type must carry a usable boundary parameter. postal-mime
 // reads a multipart with none as text/plain; Thunderbird reads a multipart with no
-// delimiters. The type is the first segment, as the header declares it.
+// delimiters.
 export function multipartBoundaryRefusal(root) {
   for (const node of nodesOf(root)) {
-    for (const value of headerValues(node, ['content-type'])) {
-      const { segs } = scanValue(value, false);
-      if (/^multipart/i.test(segs[0].trim()) && !segs.slice(1).some(plainBoundarySegment)) return REFUSED;
+    for (const h of parsedHeaders(node, ['content-type'])) {
+      if (h.parsed === null) continue;
+      if (/^multipart/i.test(h.parsed.type) && !h.parsed.params.some((p) => p.name === 'boundary')) return REFUSED;
     }
   }
   return null;

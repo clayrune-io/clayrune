@@ -35,13 +35,16 @@
 //     multipart whose boundary equals, prefixes or extends an ancestor's:
 //     `malformed_mime`. postal-mime and Thunderbird disagree on which lines are
 //     delimiters in each of those cases, so a part is hidden from one and not the other.
-//   - a Content-Type, Content-Disposition or Content-Transfer-Encoding (any part) holds
-//     `(` outside a quoted string; a Content-Type has a `boundary*` parameter, more than
-//     one `boundary`, or a boundary that is not exactly a plain token or a quoted string
-//     with no inner `"` or `\` and no edge whitespace; or a multipart/* has no usable
-//     boundary: `malformed_mime` (canonical.js; round 10). postal-mime and Thunderbird
-//     read the boundary PARAMETER differently (comments, RFC 2231, quoting), so the two
-//     would split the message on different delimiters. `filename*` is not affected.
+//   - a Content-Type, Content-Disposition or Content-Transfer-Encoding (any part) is not
+//     wholly in the strict grammar `token "/" token *( ";" token "=" ( token / quoted ) )`
+//     (quoted: no `\`, no CR/LF; Disposition without the `/`; CTE one token); a
+//     Content-Type has a `boundary*` parameter, more than one `boundary`, or a boundary
+//     that is not a plain token or a quoted string with no edge whitespace; or a
+//     multipart/* has no `boundary`: `malformed_mime` (canonical.js; rounds 10-11).
+//     postal-mime and Thunderbird read a Content-Type differently (comments, backslashes,
+//     RFC 2231, quoting, an unreadable earlier parameter), so the two would split the
+//     message on different delimiters; only shapes both read alike are admitted.
+//     `filename*` is not affected.
 //
 // ALLOWLIST. Text is taken ONLY from text/plain leaves where
 //   - every ancestor is multipart/mixed, multipart/alternative or
@@ -75,7 +78,7 @@ import PostalMime from 'postal-mime';
 import { strictMsgId } from './content-id.js';
 import {
   bareCrRefusal, boundaryLineRefusal, boundaryNestingRefusal, boundaryOf,
-  headerCommentRefusal, boundaryParamRefusal, multipartBoundaryRefusal,
+  headerGrammarRefusal, boundaryParamRefusal, multipartBoundaryRefusal,
 } from './canonical.js';
 
 // Provisional limits from AGENT_MAIL_SPEC D4 (64 KiB inbound MIME, 16 KiB reply).
@@ -347,7 +350,7 @@ export async function strip(raw, opts = {}) {
   // rules 2-4 need the tree's declared boundaries; ambiguous_mime keeps priority
   const boundaries = boundariesOf(parser.root);
   const refusal = treeRefusal(parser.root)
-    || headerCommentRefusal(parser.root)
+    || headerGrammarRefusal(parser.root)
     || boundaryParamRefusal(parser.root)
     || multipartBoundaryRefusal(parser.root)
     || boundaryNestingRefusal(parser.root)
