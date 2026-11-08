@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-07] - Cold review: four review blockers fixed (MC-1165 round 2)
+
+- `hold_reason` reads the rejection list, the branch record and its `cold` marker from one store snapshot; a hand pass plus a concurrent cold rejection can no longer read as a cold pass (the interleaved merge landed a rejected tip).
+- The cold-review callback is bound to the turn that ended and decides under the project lock: a session resumed during the review keeps its worktree (`_worktree_cold_review_done`).
+- A completion that arrives while a review of the branch is running is remembered; the worker re-checks the tip, reviews a newer one, and no retry is spent on a tip that moved.
+- The two-attempt budget is keyed by commit SHA and reserved atomically (`reserve_attempt`), shared by every branch name on that commit.
+
 ## [2026-11-07] - Cold review wired into merge-back (MC-1165 round 1)
 
 - A project with `cold_review_required: true` gets a toolless one-shot review (`ClaudeRuntime.oneshot`) of the branch tip before `merge_back`. The reviewer sees only the diff and the dispatched task text. Runs on a worker thread because the session-end handler executes inside the project lock on stream-reader threads; the worker re-enters `_worktree_merge_back_on_end`. New: `mc/cold_review_runner.py`, `mc/cold_review_gate.py`; wiring is 10 lines in `agent_worktree.py` and 15 in `agent_routes.py`.

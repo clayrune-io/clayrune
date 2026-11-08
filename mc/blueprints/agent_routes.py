@@ -1631,6 +1631,30 @@ def _worktree_retry_removal(session, attempt):
     _worktree_merge_back_on_end(session, _attempt=attempt)
 
 
+def _worktree_cold_review_done(session, attempt, turn_stamp):
+    """The cold-review worker's callback: the merge-back that `_worktree_merge_back_on_end`
+    deferred. It runs minutes after the turn ended, so the session may have been
+    resumed meanwhile; merging and removing the worktree then would pull the
+    directory out from under the live process (MC-1165 review 1, finding 2 --
+    `live_process_refs` excludes agent processes, so nothing else protects it).
+
+    The decision is made under the project lock, which every resume path holds
+    when it flips the status to `running`, so a resume cannot land between the
+    check and the merge. The model call already finished outside the lock; only
+    this cheap check plus the merge-back (what the session-end handler always
+    did under that lock) runs inside it. A resumed session's own end re-runs the
+    merge-back, so skipping here loses nothing."""
+    sid = session.get('session_id', '')
+    with get_manager(session.get('project_id', '')).lock:
+        live = agent_sessions.get(sid)
+        if live is not None and (live.get('status') in ('running', 'idle')
+                                 or live.get('last_status_change_time') != turn_stamp):
+            _log(f"[worktree] cold review of {sid[:12]} finished after the session "
+                 f"resumed; merge-back left to its next end")
+            return
+        _worktree_merge_back_on_end(session, attempt, _cold_done=True)
+
+
 def _worktree_merge_back_on_end(session, _attempt=0, _cold_done=False):
     """Merge an isolated agent's committed work back into the base branch when
     its session ends. Without this the work sits stranded on the agent branch
@@ -1653,9 +1677,12 @@ def _worktree_merge_back_on_end(session, _attempt=0, _cold_done=False):
         # minutes. The worker calls back into this function with _cold_done=True.
         if (not _cold_done and not _agent_worktree.is_hivemind_worker(sid)
                 and _cold_review_runner.needs_review(p, _agent_worktree.branch_name(sid))):
+            # Bound to THIS turn's end: the stamp is when the session reached the
+            # state it ended in, and a resume changes it.
+            _turn_stamp = session.get('last_status_change_time')
             _cold_review_runner.start(
                 p, _agent_worktree.branch_name(sid), session.get('task') or '',
-                lambda: _worktree_merge_back_on_end(session, _attempt, _cold_done=True),
+                lambda: _worktree_cold_review_done(session, _attempt, _turn_stamp),
                 log=_log, announce=lambda m: _log_agent_activity(pid, m))
             return
         status, detail = _agent_worktree.merge_back(p, sid)

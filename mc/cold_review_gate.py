@@ -12,10 +12,10 @@ Two jobs, both small:
     the last one failed. Stored in the SAME review store (`mc.merge_review_gate`,
     side section `cold_attempts`), not a second file.
 
-The attempt cap is per tip SHA: a new commit is a new SHA and starts at zero. A
-tip that has used its attempts without a verdict stays held until a human acts
-(merge by hand after their own review, or commit a change). There is no HTTP
-route that resets it.
+The attempt cap is per commit SHA (project+SHA, shared by every branch name that
+points at it): a new commit is a new SHA and starts at zero. A commit that has
+used its attempts without a verdict stays held until a human acts (merge by hand
+after their own review, or commit a change). There is no HTTP route that resets it.
 """
 from __future__ import annotations
 
@@ -46,13 +46,16 @@ def gated(project: dict) -> bool:
     return _gate.enabled(project) or _enabled(project)
 
 
-def _key(branch: str, sha: str) -> str:
-    return f'{branch}@{sha.lower()}'
+def _key(sha: str) -> str:
+    # The store is one file per project, so the SHA alone is project+SHA. NOT
+    # branch+SHA: the budget belongs to the commit, and a second branch pointing
+    # at the same commit must not get a fresh one (MC-1165 review 1, finding 4).
+    return sha.lower()
 
 
-def attempts(project_id: str, branch: str, sha: str) -> dict:
+def attempts(project_id: str, sha: str) -> dict:
     """`{'count': int, 'last_error': str, 'at': str}`; zeros when none."""
-    raw = _gate.read_section(project_id, SECTION).get(_key(branch, sha))
+    raw = _gate.read_section(project_id, SECTION).get(_key(sha))
     if not isinstance(raw, dict):
         return {'count': 0, 'last_error': '', 'at': ''}
     count = raw.get('count')
@@ -61,33 +64,38 @@ def attempts(project_id: str, branch: str, sha: str) -> dict:
             'at': str(raw.get('at') or '')}
 
 
-def begin_attempt(project_id: str, branch: str, sha: str) -> int:
-    """Count an attempt BEFORE the model call, so a crash mid-call still spends
-    it. Returns the new count."""
+def reserve_attempt(project_id: str, sha: str) -> int:
+    """Spend one attempt on this commit BEFORE the model call, so a crash
+    mid-call still spends it. The check and the increment are one store
+    mutation (under the store's write lock), so two callers on the same SHA --
+    two branches, two threads -- can never both take the last attempt.
+    Returns the new count, or 0 when the commit has none left."""
     out = [0]
 
     def apply(sec):
-        cur = sec.get(_key(branch, sha))
+        cur = sec.get(_key(sha))
         n = cur.get('count') if isinstance(cur, dict) else 0
         n = n if isinstance(n, int) and n > 0 else 0
+        if n >= MAX_ATTEMPTS:
+            return
         out[0] = n + 1
-        sec[_key(branch, sha)] = {'count': out[0], 'last_error': '', 'at': _now()}
+        sec[_key(sha)] = {'count': out[0], 'last_error': '', 'at': _now()}
     _gate.update_section(project_id, SECTION, apply)
     return out[0]
 
 
-def note_error(project_id: str, branch: str, sha: str, error: str) -> None:
+def note_error(project_id: str, sha: str, error: str) -> None:
     def apply(sec):
-        cur = sec.get(_key(branch, sha))
+        cur = sec.get(_key(sha))
         entry: dict[str, object] = dict(cur) if isinstance(cur, dict) else {'count': 1}
         entry['last_error'] = str(error)[:_ERROR_CHARS]
         entry['at'] = _now()
-        sec[_key(branch, sha)] = entry
+        sec[_key(sha)] = entry
     _gate.update_section(project_id, SECTION, apply)
 
 
-def exhausted(project_id: str, branch: str, sha: str) -> bool:
-    return attempts(project_id, branch, sha)['count'] >= MAX_ATTEMPTS
+def exhausted(project_id: str, sha: str) -> bool:
+    return attempts(project_id, sha)['count'] >= MAX_ATTEMPTS
 
 
 def hold_reason(project: dict, branch: str, tip: str) -> str:
@@ -96,7 +104,7 @@ def hold_reason(project: dict, branch: str, tip: str) -> str:
     base = _gate.hold_reason(pid, branch, tip, require_cold=required(project))
     if not base or not required(project) or not tip:
         return base
-    a = attempts(pid, branch, tip)
+    a = attempts(pid, tip)
     if not a['count']:
         return base
     state = f"cold review attempt {a['count']}/{MAX_ATTEMPTS}"

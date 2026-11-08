@@ -20,7 +20,7 @@ or out-of-attempts state leaves the branch held (`awaiting_review`).
    passes `cold`, so no agent-reachable write path exists (tests:
    `test_no_new_http_route`, `test_record_route_cannot_mint_a_cold_record`).
 2. **Timing = pre-lock sync, on a worker thread.** See "Threading" below.
-3. **Hold = one automatic retry, cap 2 attempts per tip SHA, then a human.** Attempt
+3. **Hold = one automatic retry, cap 2 attempts per commit SHA, then a human.** Attempt
    count and last error are stored in the review store and lead the `awaiting_review`
    detail, so the merge state shows them.
 4. **Ask = the dispatched task text** (`session['task']`).
@@ -87,14 +87,38 @@ lock). Pre-existing, not changed here: with `verify_command` set, `landing_gate.
 also runs its commands (default 1200 s each) inside that same lock.
 
 A branch qualifies when the setting is on, it is not a hivemind worker, and its tip is
-ahead of the landing base. A second end-of-session for a branch whose review is still
-running is dropped (the running worker calls its own merge-back).
+ahead of the landing base.
+
+**A second end-of-session while a review is running is remembered, not dropped.**
+`start()` returns `None` for the caller but records the newest completion. When the
+current review ends, the worker re-checks the branch tip: a newer tip gets its own
+review, an unchanged one is already recorded or out of attempts (no model call), then
+the worker calls the NEWEST completion's callback. If the tip moves while an attempt is
+in flight, the loop stops without spending another attempt on the old SHA
+(`superseded`) and the worker reviews the new tip.
+
+**The callback is bound to the turn that ended** (`_worktree_cold_review_done`). The
+review runs minutes after the turn ended, and the session may have resumed. Under the
+project lock (every resume path flips `status` to `running` under it) the callback
+skips when the session is `running`/`idle` or its `last_status_change_time` is no
+longer the stamp captured at turn end; the resumed turn's own end re-runs the
+merge-back. Only that cheap check and the merge-back itself run in the lock, never
+the model call. Agent processes are excluded from the teardown guard's live-process
+list, so nothing else would stop the worktree being removed from under a resumed
+session.
+
+**The gate reads one snapshot.** `hold_reason` takes the rejection list, the branch's
+record and its `cold` marker from a single read of the store. Review writes do not take
+the landing lock, so separate reads could combine a hand pass with a later cold
+rejection into a cold pass that was never recorded.
 
 ## Retry and the visible state
 
-Attempts are counted **before** the model call (a crash mid-call still spends one),
-per tip SHA, in the review store's `cold_attempts` section (the same file, preserved
-across record writes). The second attempt runs immediately after the first fails. A
+Attempts are reserved **before** the model call (a crash mid-call still spends one),
+per commit SHA, in the review store's `cold_attempts` section (the same file, preserved
+across record writes). The key is the SHA, not branch+SHA: a second branch name on the
+same commit shares the budget. The check and the increment are one store mutation, so
+two callers cannot both take the last attempt. The second attempt runs immediately after the first fails. A
 verdict of either kind (`pass` or `changes_requested`) is recorded and ends the
 review; `changes_requested` sticks to that commit as before. After two failed attempts
 no further model call is made for that SHA. The held state reads, in the

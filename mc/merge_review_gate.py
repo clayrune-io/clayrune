@@ -118,17 +118,41 @@ def _read(path: Path) -> dict:
         return {}
 
 
-def find(project_id: str, branch: str, sha: str) -> dict | None:
-    """The review on record for exactly this branch at exactly this SHA."""
+def _snapshot(project_id: str) -> dict:
+    """One read of the whole `records` map. A gate decision that needs more than
+    one fact about the store (who rejected the commit, what this branch's record
+    says, whether it is cold) must take them all from ONE snapshot: review writes
+    do not take the landing lock, so two reads can straddle a replacement."""
     path = store_path(project_id)
-    if path is None or not sha:
+    return {} if path is None else _read(path)
+
+
+def _record_in(recs: dict, branch: str, sha: str) -> dict | None:
+    if not sha:
         return None
-    rec = _read(path).get(_key(branch, sha.lower()))
+    sha = sha.lower()
+    rec = recs.get(_key(branch, sha))
     if not isinstance(rec, dict) or rec.get('verdict') not in VERDICTS:
         return None
-    if rec.get('sha') != sha.lower() or rec.get('branch') != branch:
+    if rec.get('sha') != sha or rec.get('branch') != branch:
         return None
     return rec
+
+
+def _rejected_in(recs: dict, sha: str) -> str:
+    if not sha:
+        return ''
+    sha = sha.lower()
+    for rec in recs.values():
+        if (isinstance(rec, dict) and rec.get('sha') == sha
+                and rec.get('verdict') == CHANGES_REQUESTED):
+            return str(rec.get('branch') or '?')
+    return ''
+
+
+def find(project_id: str, branch: str, sha: str) -> dict | None:
+    """The review on record for exactly this branch at exactly this SHA."""
+    return _record_in(_snapshot(project_id), branch, sha)
 
 
 def verdict_for(project_id: str, branch: str, sha: str) -> str:
@@ -142,15 +166,7 @@ def rejected_by(project_id: str, sha: str) -> str:
     review of it did. Looked up across every branch name: a rejection is of
     the commit, so renaming or recreating the branch, or reviewing the same
     commit under a second branch, must not leave it behind."""
-    path = store_path(project_id)
-    if path is None or not sha:
-        return ''
-    sha = sha.lower()
-    for rec in _read(path).values():
-        if (isinstance(rec, dict) and rec.get('sha') == sha
-                and rec.get('verdict') == CHANGES_REQUESTED):
-            return str(rec.get('branch') or '?')
-    return ''
+    return _rejected_in(_snapshot(project_id), sha)
 
 
 def hold_reason(project_id: str, branch: str, tip: str, require_cold: bool = False) -> str:
@@ -164,12 +180,17 @@ def hold_reason(project_id: str, branch: str, tip: str, require_cold: bool = Fal
     a reviewer session does not satisfy a project that demands a cold review."""
     if not tip:
         return f'cannot resolve the tip of {branch}'
-    other = rejected_by(project_id, tip)
+    # One snapshot for every fact below (MC-1165 review 1, finding 1): reading
+    # the verdict and the cold marker separately let a hand pass and a later
+    # cold rejection combine into a cold pass that was never recorded.
+    recs = _snapshot(project_id)
+    other = _rejected_in(recs, tip)
     if other and other != branch:
         return f'review of {other} at {tip[:8]} requested changes on this commit'
-    v = verdict_for(project_id, branch, tip)
+    rec = _record_in(recs, branch, tip)
+    v = rec['verdict'] if rec else NONE
     if v == PASS:
-        if require_cold and (find(project_id, branch, tip) or {}).get('cold') is not True:
+        if require_cold and (rec or {}).get('cold') is not True:
             return (f'no cold review on record for {branch} at {tip[:8]} '
                     f'(a pass that was not made by the cold reviewer does not count)')
         return ''

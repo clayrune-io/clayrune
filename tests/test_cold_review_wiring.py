@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import threading
+from pathlib import Path
 
 import pytest
 from flask import Flask
@@ -189,7 +190,7 @@ def test_two_failures_hold_for_a_human_with_visible_state(project):
     assert status == 'awaiting_review'
     assert 'cold review attempt 2/2' in detail and 'model_timeout' in detail
     assert 'needs a human' in detail and len(detail) < 160
-    assert cg.attempts('testproj', _branch('a2'), tip)['count'] == 2
+    assert cg.attempts('testproj', tip)['count'] == 2
 
 
 @pytest.mark.parametrize('failure, code', [
@@ -215,25 +216,25 @@ def test_missing_ask_holds_without_a_model_call(project):
 def test_new_commit_starts_a_fresh_attempt_count(project):
     path, tip = _agent(project, 'a5')
     runner.review_tip(project, _branch('a5'), 'ask', transform=Fake('x', 'x'), model='')
-    assert cg.exhausted('testproj', _branch('a5'), tip)
+    assert cg.exhausted('testproj', tip)
     new_tip = _commit(path, 'def one():\n    return "AGENT2"\n')
     fake = Fake(PASS_REPLY)
     assert runner.review_tip(project, _branch('a5'), 'ask', transform=fake, model='')['status'] == 'recorded'
-    assert cg.attempts('testproj', _branch('a5'), new_tip)['count'] == 1
+    assert cg.attempts('testproj', new_tip)['count'] == 1
 
 
 def test_attempts_live_in_the_same_store_and_survive_a_record_write(project):
     _, tip = _agent(project, 'a6')
-    cg.begin_attempt('testproj', _branch('a6'), tip)
+    cg.reserve_attempt('testproj', tip)
     gate.record(project, _branch('a6'), sha=tip, verdict='pass', reviewer_session='fenn')
-    assert cg.attempts('testproj', _branch('a6'), tip)['count'] == 1
+    assert cg.attempts('testproj', tip)['count'] == 1
     path = gate.store_path('testproj')
     assert sorted(json.loads(path.read_text(encoding='utf-8'))) == ['cold_attempts', 'records', 'version']
 
 
 def test_runner_never_raises(project, monkeypatch):
     _agent(project, 'a7')
-    monkeypatch.setattr(cg, 'begin_attempt', lambda *a: (_ for _ in ()).throw(OSError('disk')))
+    monkeypatch.setattr(cg, 'reserve_attempt', lambda *a: (_ for _ in ()).throw(OSError('disk')))
     out = runner.review_tip(project, _branch('a7'), 'ask', transform=Fake(PASS_REPLY), model='')
     assert out['status'] == 'held' and out['error'] == 'internal:OSError'
 
@@ -270,18 +271,20 @@ def test_then_runs_even_when_the_review_fails_and_merge_back_holds(project):
 def test_concurrent_start_for_the_same_branch_is_deduplicated(project):
     _agent(project, 't3')
     gate_open = threading.Event()
-    calls = []
+    calls, model_calls = [], []
 
     def slow(**kw):
+        model_calls.append(kw)
         gate_open.wait(10)
         return PASS_REPLY
 
     t1 = runner.start(project, _branch('t3'), 'ask', lambda: calls.append(1), transform=slow, model='')
     t2 = runner.start(project, _branch('t3'), 'ask', lambda: calls.append(2), transform=slow, model='')
-    assert t1 is not None and t2 is None
+    assert t1 is not None and t2 is None            # one worker, not two...
     gate_open.set()
     t1.join(30)
-    assert calls == [1]
+    assert calls == [2]                             # ...which answers the NEWEST completion once
+    assert len(model_calls) == 1                    # same tip: the rerun costs no model call
     # The slot is released afterwards.
     t3 = runner.start(project, _branch('t3'), 'ask', lambda: None, transform=slow, model='')
     assert t3 is not None
@@ -376,3 +379,224 @@ def test_modules_import_cleanly_from_any_entry_point(first):
     done = subprocess.run([sys.executable, '-I', '-c', f'import sys; sys.path.insert(0, {str(__import__('pathlib').Path(__file__).resolve().parents[1])!r}); import {first}'],
                           capture_output=True, text=True, timeout=60)
     assert done.returncode == 0, done.stderr[-600:]
+
+
+# ── MC-1165 review 1 (Fenn): four blockers, probes ported ──────────────────
+
+def _flip_store(monkeypatch, states):
+    """Make the review store's `records` map read as `states[i]` on the i-th read
+    (the last one repeats): an atomic replacement between a gate's reads. Review
+    writes do not take the landing lock, so this interleaving is real."""
+    reads = []
+
+    def fake_read(path):
+        reads.append(1)
+        return states[min(len(reads), len(states)) - 1]
+    monkeypatch.setattr(gate, '_read', fake_read)
+    return reads
+
+
+def _rec(branch, sha, verdict, cold):
+    r = {'sha': sha, 'branch': branch, 'verdict': verdict, 'reviewer_session': ''}
+    if cold:
+        r['cold'] = True
+    return {f'{branch}@{sha}': r}
+
+
+def test_cold_marker_and_pass_are_read_from_the_same_record(project, monkeypatch):
+    # Finding 1. The store reads as a hand PASS, then (from the third read on) a
+    # cold CHANGES_REQUESTED. A gate that reads the rejection list, the verdict
+    # and the cold marker separately sees PASS and then a cold record, and
+    # reports a cold pass nobody recorded. One snapshot sees only the hand PASS.
+    _, tip = _agent(project, 'mixed')
+    branch = _branch('mixed')
+    hand_pass = _rec(branch, tip, 'pass', cold=False)
+    cold_reject = _rec(branch, tip, 'changes_requested', cold=True)
+    _flip_store(monkeypatch, [hand_pass, hand_pass, cold_reject])
+    assert gate.hold_reason('testproj', branch, tip, require_cold=True), (
+        'mixed two different records into a cold pass that never existed')
+
+
+def test_record_race_cannot_land_a_cold_rejected_tip(project, repo, monkeypatch):
+    # Finding 1, at the final merge check. The first hold sees the cold pass; while
+    # the final one runs the store flips hand PASS -> cold CHANGES_REQUESTED.
+    _, tip = _agent(project, 'mixedlanding')
+    branch = _branch('mixedlanding')
+    gate.record(project, branch, sha=tip, verdict='pass', cold=True)
+    real_hold = gate.hold_reason
+    holds = []
+
+    def hold(*a, **k):
+        holds.append(1)
+        if len(holds) == 2:
+            hand_pass = _rec(branch, tip, 'pass', cold=False)
+            _flip_store(monkeypatch, [hand_pass, hand_pass,
+                                      _rec(branch, tip, 'changes_requested', cold=True)])
+        return real_hold(*a, **k)
+
+    monkeypatch.setattr(gate, 'hold_reason', hold)
+    status, detail = w.merge_back(project, 'mixedlanding')
+    landed = 'AGENT' in (repo / 'app.py').read_text(encoding='utf-8')
+    assert len(holds) == 2
+    assert status == 'awaiting_review', f'merge returned {status}; master contains AGENT={landed}'
+    assert not landed
+
+
+def test_resumed_session_keeps_its_worktree(routes, project, monkeypatch):
+    # Finding 2. A follow-up resumes the session while the review is outstanding;
+    # the old turn's callback must neither merge nor remove the worktree.
+    tree, tip = _agent(project, 'resumed')
+    session = _session('resumed')
+    session['status'] = 'completed'
+    session['last_status_change_time'] = 100.0
+    monkeypatch.setitem(agent_sessions, 'resumed', session)
+    # An agent-type registry entry does not protect the tree: the teardown
+    # helper filters agents out before looking for dependencies.
+    monkeypatch.setattr(w, '_live_processes', lambda: [
+        {'type': 'agent', 'pid': 12345, 'command_preview': str(tree)}])
+    real_start = runner.start
+    threads = []
+
+    def transform(**kw):
+        session['status'] = 'running'
+        session['last_status_change_time'] = 200.0
+        return PASS_REPLY
+
+    monkeypatch.setattr(routes._cold_review_runner, 'start', lambda *a, **k:
+                        threads.append(real_start(*a, transform=transform, model='', **k)) or threads[-1])
+    merged = []
+    real_merge = w.merge_back
+    monkeypatch.setattr(w, 'merge_back', lambda p, sid: merged.append(sid) or real_merge(p, sid))
+    routes._worktree_merge_back_on_end(session)
+    threads[0].join(30)
+    assert not threads[0].is_alive()
+    assert session['status'] == 'running'
+    assert Path(tree).exists(), 'cold callback deleted the resumed agent worktree'
+    assert merged == [], 'cold callback merged for a session that had resumed'
+
+
+def test_callback_skips_when_the_session_finished_another_turn_meanwhile(routes, project, monkeypatch):
+    # Finding 2, identity half: resumed AND ended again (status back to completed)
+    # during the review. The old turn's callback is stale; the new turn owns it.
+    _agent(project, 'turn2')
+    session = _session('turn2')
+    session['status'] = 'completed'
+    session['last_status_change_time'] = 100.0
+    monkeypatch.setitem(agent_sessions, 'turn2', session)
+    merged = []
+    monkeypatch.setattr(w, 'merge_back', lambda p, sid: merged.append(sid) or ('nothing', 'x'))
+    session['last_status_change_time'] = 300.0                    # a later turn ended
+    routes._worktree_cold_review_done(session, 0, 100.0)          # the old turn's stamp
+    assert merged == []
+    routes._worktree_cold_review_done(session, 0, 300.0)          # the current turn's
+    assert merged == ['turn2']
+
+
+def test_callback_decides_under_the_project_lock(routes, project, monkeypatch):
+    # Finding 2, synchronization: a resume that holds the project lock must finish
+    # flipping the status before the callback decides.
+    _agent(project, 'locked')
+    session = _session('locked')
+    session['status'] = 'completed'
+    session['last_status_change_time'] = 100.0
+    monkeypatch.setitem(agent_sessions, 'locked', session)
+    merged = []
+    monkeypatch.setattr(w, 'merge_back', lambda p, sid: merged.append(sid) or ('nothing', 'x'))
+    lock = routes.get_manager('testproj').lock
+    started = threading.Event()
+    done = threading.Event()
+
+    def callback():
+        started.set()
+        routes._worktree_cold_review_done(session, 0, 100.0)
+        done.set()
+
+    with lock:
+        t = threading.Thread(target=callback, daemon=True)
+        t.start()
+        assert started.wait(10)
+        assert not done.wait(0.3), 'callback decided without taking the project lock'
+        session['status'] = 'running'                             # the resume, under the lock
+        session['last_status_change_time'] = 200.0
+    t.join(10)
+    assert done.is_set() and merged == []
+
+
+def test_new_tip_completion_is_not_lost(routes, project, monkeypatch):
+    # Finding 3. Turn A is under review; the session resumes, commits B and ends
+    # before A's reply arrives. B's end event must lead to a review of B.
+    tree, tip = _agent(project, 'newtip')
+    session = _session('newtip')
+    real_start = runner.start
+    threads, calls, new_tip = [], [], []
+
+    def transform(**kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            new_tip.append(_commit(tree, 'def one():\n    return "SECOND TURN"\n'))
+            routes._worktree_merge_back_on_end(session)       # B's end event, mid-review
+        return PASS_REPLY
+
+    def start(*a, **k):
+        t = real_start(*a, transform=transform, model='', **k)
+        if t is not None:
+            threads.append(t)
+        return t
+
+    monkeypatch.setattr(routes._cold_review_runner, 'start', start)
+    routes._worktree_merge_back_on_end(session)
+    threads[0].join(30)
+    assert not threads[0].is_alive()
+    assert len(threads) == 1 and len(calls) == 2              # one worker; A, then B
+    assert cg.attempts('testproj', tip)['count'] == 1         # no retry spent on the moved tip
+    assert cg.attempts('testproj', new_tip[0])['count'] == 1
+    rec = gate.find('testproj', _branch('newtip'), new_tip[0])
+    assert rec is not None and rec['cold'] is True and rec['verdict'] == 'pass'
+    assert gate.find('testproj', _branch('newtip'), tip) is None   # A was never recorded
+
+
+def test_moved_tip_stops_the_attempt_loop(project):
+    # Finding 3, second half: a reply that arrives for a tip that has since moved
+    # is not retried against the old SHA.
+    path, tip = _agent(project, 'moved')
+    calls = []
+
+    def transform(**kw):
+        calls.append(kw)
+        _commit(path, 'def one():\n    return "MOVED"\n')
+        return PASS_REPLY
+
+    out = runner.review_tip(project, _branch('moved'), 'ask', transform=transform, model='')
+    assert out['status'] == 'superseded' and len(calls) == 1
+    assert cg.attempts('testproj', tip)['count'] == 1
+
+
+def test_retry_budget_is_per_sha_not_branch_alias(project):
+    # Finding 4. Two branch names, one commit, one budget.
+    _, tip = _agent(project, 'alias1')
+    _git(project['project_path'], 'branch', _branch('alias2'), tip)
+    fake = Fake('bad', 'bad', PASS_REPLY)
+    first = runner.review_tip(project, _branch('alias1'), 'ask', transform=fake, model='')
+    assert first['attempts'] == 2
+    second = runner.review_tip(project, _branch('alias2'), 'ask', transform=fake, model='')
+    assert len(fake.calls) == 2, f'third model call on identical SHA produced {second}'
+    assert second['status'] == 'held' and second['attempts'] == 2
+
+
+def test_reservation_is_capped_and_atomic(project):
+    _, tip = _agent(project, 'cap')
+    got = []
+    barrier = threading.Barrier(8)
+
+    def grab():
+        barrier.wait()
+        got.append(cg.reserve_attempt('testproj', tip))
+
+    threads = [threading.Thread(target=grab) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+    assert sorted(got) == [0] * 6 + [1, 2]                    # exactly MAX_ATTEMPTS granted
+    assert cg.attempts('testproj', tip)['count'] == cg.MAX_ATTEMPTS
+    assert cg.reserve_attempt('testproj', tip.upper()) == 0   # case-insensitive key

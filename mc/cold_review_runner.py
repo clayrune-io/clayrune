@@ -17,9 +17,17 @@ that lock for minutes, so `start()` hands the review to a worker thread, which
 then runs the normal merge-back (`then`). `merge_back` holds the landing unless a
 cold pass for the exact tip is on record, so an error or timeout never lands.
 
-Retries: at most `cold_review_gate.MAX_ATTEMPTS` (2) per tip SHA, counted before
-each model call and kept in the review store with the last error. The second
-attempt follows the first immediately. Past the cap this makes no model call.
+Retries: at most `cold_review_gate.MAX_ATTEMPTS` (2) per commit SHA (shared by
+every branch name pointing at it), reserved atomically before each model call and
+kept in the review store with the last error. The second attempt follows the first
+immediately. Past the cap this makes no model call.
+
+A tip that moves while a review is in flight (the session resumed, committed and
+ended again) is not retried: the attempt loop stops without spending anything
+more on the old SHA (`superseded`), and the worker reviews the new tip. A
+completion that arrives while a review of the same branch is running is not
+dropped either: `start()` records it and the worker re-checks the branch tip
+once the current review ends, then calls the NEWEST completion's `then`.
 
 `review_tip` and the worker never raise.
 """
@@ -37,7 +45,11 @@ CONFIG_MODEL_KEY = 'cold_review_model'   # '' = the one-shot runtime's own defau
 
 Transform = Callable[..., str]
 _inflight: set[str] = set()
+# key -> (ask, then) of the newest completion that arrived while `key` was in
+# flight. Guarded by `_inflight_lock`, like `_inflight`.
+_rerun: dict[str, tuple[str, Callable[[], None]]] = {}
 _inflight_lock = threading.Lock()
+_MAX_ROUNDS = 10   # a runaway guard: one round per distinct tip the branch reaches
 
 
 def _default_transform(*, prompt: str, model: str, timeout: int) -> str:
@@ -81,10 +93,12 @@ def review_tip(project: dict, branch: str, ask: str, *, transform: Transform | N
                log: Callable[[str], None] = lambda m: None) -> dict[str, Any]:
     """Review the branch's current tip and record the verdict. Never raises.
 
-    Returns `{'status': 'recorded'|'held'|'skipped', 'verdict'?, 'attempts', 'error'?}`.
+    Returns `{'status': 'recorded'|'held'|'skipped'|'superseded', 'verdict'?, 'attempts', 'error'?}`.
     `recorded` = a cold verdict (pass or changes_requested) is on record for the
     tip; `held` = no verdict (error/timeout/bad reply, or attempts spent);
-    `skipped` = nothing to review.
+    `skipped` = nothing to review; `superseded` = the branch moved off the tip
+    being reviewed, so no more attempts were spent on it (the caller reviews the
+    new tip).
     """
     pid = (project or {}).get('id') or ''
     try:
@@ -94,21 +108,25 @@ def review_tip(project: dict, branch: str, ask: str, *, transform: Transform | N
         done = _gate.find(pid, branch, tip)
         if done and done.get('cold') is True:
             return {'status': 'recorded', 'verdict': done['verdict'],
-                    'attempts': _state.attempts(pid, branch, tip)['count']}
+                    'attempts': _state.attempts(pid, tip)['count']}
         run = transform or _default_transform
         use_model = _configured_model() if model is None else model
         error = ''
-        while not _state.exhausted(pid, branch, tip):
-            n = _state.begin_attempt(pid, branch, tip)
+        while True:
+            if _gate.branch_tip(project, branch) != tip:
+                return {'status': 'superseded', 'attempts': _state.attempts(pid, tip)['count']}
+            n = _state.reserve_attempt(pid, tip)
+            if not n:
+                break
             verdict, error = _once(project, branch, tip, ask, run, use_model, timeout)
             if verdict is not None:
                 log(f'[cold-review] {verdict["verdict"]} recorded for {branch} at '
                     f'{tip[:8]} (attempt {n})')
                 return {'status': 'recorded', 'verdict': verdict['verdict'], 'attempts': n}
-            _state.note_error(pid, branch, tip, error)
+            _state.note_error(pid, tip, error)
             log(f'[cold-review] attempt {n}/{_state.MAX_ATTEMPTS} for {branch} at '
                 f'{tip[:8]} failed: {error}')
-        a = _state.attempts(pid, branch, tip)
+        a = _state.attempts(pid, tip)
         return {'status': 'held', 'attempts': a['count'], 'error': a['last_error'] or error}
     except Exception as e:  # noqa: BLE001 - documented never-raises
         log(f'[cold-review] review of {branch} failed: {type(e).__name__}: {e}')
@@ -153,31 +171,51 @@ def start(project: dict, branch: str, ask: str, then: Callable[[], None], *,
           announce: Callable[[str], None] = lambda m: None) -> threading.Thread | None:
     """Review in a worker thread, then call `then` (the normal merge-back) on it.
 
-    Returns the thread, or None when a review of this branch is already running
-    (that worker calls its own `then`). `then` runs whatever the outcome, since
-    `merge_back` is what refuses to land without a cold pass.
+    Returns the thread, or None when a review of this branch is already running.
+    That worker is not told to stop: this completion is remembered, and once its
+    current review ends the worker re-checks the branch tip (a newer tip gets its
+    own review; an unchanged one is already recorded or out of attempts, so no
+    model call) and calls the newest completion's `then`. `then` runs whatever the
+    outcome, since `merge_back` is what refuses to land without a cold pass.
     """
     key = f"{(project or {}).get('id', '')}:{branch}"
     with _inflight_lock:
         if key in _inflight:
+            _rerun[key] = (ask, then)
             return None
         _inflight.add(key)
 
     def work():
+        ask_now, then_now = ask, then
+        released = False
         try:
             announce(f'Cold review started for {branch}')
-            result = review_tip(project, branch, ask, transform=transform, model=model,
-                                timeout=timeout, log=log)
-            if result['status'] != 'recorded':
-                announce(f"Cold review of {branch}: {result['status']} "
-                         f"(attempts {result['attempts']}, {result.get('error', '')})")
+            for _ in range(_MAX_ROUNDS):
+                result = review_tip(project, branch, ask_now, transform=transform, model=model,
+                                    timeout=timeout, log=log)
+                if result['status'] == 'superseded':
+                    continue   # the branch moved mid-review: review the new tip now
+                if result['status'] != 'recorded':
+                    announce(f"Cold review of {branch}: {result['status']} "
+                             f"(attempts {result['attempts']}, {result.get('error', '')})")
+                with _inflight_lock:
+                    pending = _rerun.pop(key, None)
+                    if pending is None:
+                        _inflight.discard(key)
+                        released = True
+                        break
+                ask_now, then_now = pending
         except Exception as e:  # noqa: BLE001
             log(f'[cold-review] worker failed for {branch}: {e}')
         finally:
-            with _inflight_lock:
-                _inflight.discard(key)
+            if not released:
+                with _inflight_lock:
+                    pending = _rerun.pop(key, None)
+                    _inflight.discard(key)
+                if pending is not None:
+                    then_now = pending[1]
             try:
-                then()
+                then_now()
             except Exception as e:  # noqa: BLE001
                 log(f'[cold-review] merge-back after review failed for {branch}: {e}')
 
