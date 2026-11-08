@@ -57,7 +57,9 @@ optionally ending in a `[literal]` of letters, digits, `.`, `:` and `-`; comment
 and whitespace outside the brackets are skipped. Quoted local parts, comments
 inside the id and other exotic RFC 5322 spellings are not interpreted. Root
 selection **fails closed**: if `start` or any child's Content-ID is not strict, or
-the match is not unique (case-insensitively), no root is read.
+the match is not unique (case-insensitively), no root is read. A child's
+Content-ID is found by trimmed header name, so `Content-ID : <x>` (whitespace
+before the colon, which postal-mime does not parse) still counts.
 
 **Two refusals, checked over the whole tree before any text is taken** (including
 subtrees the allowlist would drop). Both return `{ok:false, reason_code}` with no
