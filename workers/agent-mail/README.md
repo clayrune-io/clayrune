@@ -17,7 +17,7 @@ text ever reaches custody. A failed check is a **drop**, not a hold.
 | `authres.js` | Cloudflare `Authentication-Results` (authserv-id `mx.cloudflare.net` only) and the D6=A rule: DMARC pass with aligned SPF **or** DKIM. |
 | `content-id.js` | `strictMsgId(value)`: the bare id of a plain msg-id (atext, `.`, `@`, optional simple `[literal]`), CFWS outside the brackets skipped; `null` for anything else. Used for Content-ID / `start` matching. |
 | `headers.js` | Ordered header-list helpers. |
-| `canonical.js` | Canonical-form gate helpers for `strip()` (bare CR, boundary-line shape, boundary nesting). Pure. |
+| `canonical.js` | Canonical-form gate helpers for `strip()` (bare CR, boundary-line shape, boundary nesting, Content-Type grammar). Pure. |
 | `strip.js` | `strip(raw)` -> plain text plus counts of what was removed (never the removed bytes). MIME-tree allowlist, no HTML conversion. |
 
 ### `decide` inputs
@@ -62,7 +62,7 @@ the match is not unique (case-insensitively), no root is read. A child's
 Content-ID is found by trimmed header name, so `Content-ID : <x>` (whitespace
 before the colon, which postal-mime does not parse) still counts.
 
-**Four refusals, checked before any text is taken** (including
+**Refusals, checked before any text is taken** (including
 subtrees the allowlist would drop). Each returns `{ok:false, reason_code}` with no
 text and no counts:
 
@@ -105,12 +105,32 @@ text and no counts:
      than an optional `--` and then only space/tab (`--Bx`, `--B--x`, `--B` FF, ...);
   3. a nested multipart whose boundary equals, is a prefix of, or has as a prefix, any
      ancestor's boundary (RFC 2046 5.1.1 forbids a delimiter inside the parts it
-     encloses; sibling boundaries are not compared with each other, but rule 2 refuses
-     a line that continues any declared boundary);
+     encloses; the equal half is a real split, the prefix halves are defence in depth
+     because Thunderbird matches a delimiter at exactly the boundary's length; sibling
+     boundaries are not compared with each other, but rule 2 refuses a line that
+     continues any declared boundary);
   4. a header section with a fold as its first line (above).
   Gmail, Apple Mail, Outlook and Thunderbird send CRLF with random distinct boundaries,
   so none of these refuses ordinary mail. Not refused: text after the closing
   `--B--` (epilogue); postal-mime ignores it, so it is never returned.
+- `malformed_mime`, Content-Type grammar (`canonical.js`, round 10), checked on the
+  raw header values of every part, top level and nested, dropped subtrees included.
+  postal-mime and Thunderbird read the boundary PARAMETER differently (postal-mime
+  drops comments, lets a plain `boundary=` beat RFC 2231 `boundary*=` and trims a
+  quoted value; Thunderbird does none of that), so the two would split one message on
+  different delimiters. The headers that decide how a part is read must therefore be
+  plain:
+  5. `(` outside a quoted string in a Content-Type, Content-Disposition or
+     Content-Transfer-Encoding (a comment);
+  6. any `boundary*` parameter, or more than one `boundary` parameter;
+  7. a `boundary` that is not exactly `boundary=` + an RFC 2045 token or a quoted
+     string with no inner `"` or backslash and no leading or trailing space inside,
+     with no space around the `=`;
+  8. a `multipart/*` with no usable boundary.
+  A quote left open (odd number of `"`) counts as rule 5. `filename*` and other
+  parameters are unaffected, so non-ASCII attachment names still pass. Real Gmail,
+  Apple Mail, Outlook and Thunderbird output has none of these shapes; a legal but
+  rare message with a comment or an RFC 2231 boundary is refused on purpose.
 
 **HTML is never converted or kept.** A message with `text/html` and no surviving
 `text/plain` returns `{ok:false, reason_code:'html_only', stripped}`: a drop with

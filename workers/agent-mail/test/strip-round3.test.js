@@ -54,8 +54,10 @@ test('comment between slash and subtype -> malformed_mime', () =>
 test('nested comment before the type -> malformed_mime', () =>
   refused(msg('Content-Type: (a (b; c) d) multipart/signed'), 'malformed_mime'));
 
-test('plain declaration that merely mentions multipart in a comment is kept (Fenn P2-1d, regression vs 358970eb)', () =>
-  retained(msg('Content-Type: text/plain (multipart/signed)', OK)));
+// Round 10 (canonical.js headerCommentRefusal): a "(" outside a quoted string in a
+// Content-Type is refused outright, so this comment form, kept before, is now refused.
+test('plain declaration that merely mentions multipart in a comment is refused (Fenn P2-1d; round 10 rule: no comments)', () =>
+  refused(msg('Content-Type: text/plain (multipart/signed)', OK), 'malformed_mime'));
 
 test('multipart string in a plain type parameter is kept', () =>
   retained(msg('Content-Type: text/plain; note="multipart/signed"', OK)));
@@ -64,13 +66,11 @@ test('same malformed comment form nested under a dropped container refuses', () 
   refused(multi('mixed', 'OUT', [leaf(null),
     multi('mixed', 'IN', [msg('Content-Type: (n; n) multipart/related')], '\r\nContent-Disposition: attachment')]), 'malformed_mime'));
 
-test('well-formed multipart/signed with a boundary behind a comment is not a parser-fallback refusal', async () => {
-  const r = await strip(multi('signed', 'B', [leaf(null), 'Content-Type: application/pgp-signature\r\n\r\nsig'])
-    .replace('Content-Type: multipart/signed', 'Content-Type: (n; n) multipart/signed'));
-  // signed is outside the allowlist, so nothing is read, but it is not malformed_mime
-  assert.notEqual(r.reason_code, 'malformed_mime');
-  assert.ok(!JSON.stringify(r).includes(OK));
-});
+// Round 10: a comment in a Content-Type is refused whatever follows it. This was a
+// non-parser-fallback pass before; the comment rule now refuses it as malformed_mime.
+test('well-formed multipart/signed with a comment in its Content-Type is refused (round 10 rule: no comments)', () =>
+  refused(multi('signed', 'B', [leaf(null), 'Content-Type: application/pgp-signature\r\n\r\nsig'])
+    .replace('Content-Type: multipart/signed', 'Content-Type: (n; n) multipart/signed'), 'malformed_mime'));
 
 // ---- P2 #2: Content-ID / start compared as normalised msg-ids --------------
 
