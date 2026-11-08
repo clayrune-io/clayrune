@@ -1692,9 +1692,26 @@ def schedule_run_now(schedule_id):
             resume_provider = _schedule_resume_provider(pid, schedule_id, resume_id)
     reuse_sid = ''
     dispatch_task = task
+    iso_kw = {}
     if resume_id:
         reuse_sid = _newest_run_session_id_for_schedule(pid, schedule_id)
         dispatch_task = _scheduled_run_marker() + task
+        if reuse_sid:
+            # MC-1165 r8: this cold resume bypasses _scheduled_continue (it
+            # returned None), so apply the isolation boundary here or Run Now
+            # on an isolated session resumes in main. Same helper and refusal
+            # shape as the _scheduled_continue refusal above; never dispatches.
+            try:
+                iso_kw = _isolated_resume_kwargs(
+                    pid, reuse_sid, load_project(pid) or {},
+                    logged=_row_flags_isolated(pid, reuse_sid),
+                    who='schedule-run-now')
+            except _isolated_launch.RevivalRefused as e:
+                sched['last_error'] = str(e)
+                sched['last_error_at'] = now_iso()
+                _role_writes.save_runtime_schedules(schedules)
+                return jsonify({'ok': False, 'refused': True, 'session_id': reuse_sid,
+                                'error': str(e)}), 409
     try:
         sid = _dispatch_agent_internal(pid, dispatch_task, resume_id=resume_id,
                                        trigger_type='schedule',
@@ -1702,6 +1719,7 @@ def schedule_run_now(schedule_id):
                                        reuse_session_id=reuse_sid,
                                        provider_override=resume_provider,
                                        character=sched.get('character') or '',
+                                       **iso_kw,
                                        **_schedule_engine_kwargs(sched))
     except ValueError as e:
         code = 404 if 'not found' in str(e) else 400
