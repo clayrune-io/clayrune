@@ -136,6 +136,15 @@ function treeRefusal(node) {
   return malformed ? 'malformed_mime' : null;
 }
 
+// A child's Content-ID found by trimmed header name, like the duplicate check and
+// declaredType: postal-mime keeps whitespace before the colon in the key, so
+// `Content-ID : <x>` leaves node.contentId unset while another reader still sees the ID.
+// Reading it here keeps that child inside the strictness and uniqueness checks.
+function rawContentId(node) {
+  const h = (node.headers || []).find((x) => String(x.key || '').trim() === 'content-id');
+  return h ? String(h.value || '') : undefined;
+}
+
 // RFC 2387 root of a multipart/related node: the child to read, or null for none.
 function relatedRoot(node) {
   const kids = node.childNodes;
@@ -147,8 +156,9 @@ function relatedRoot(node) {
   // disguised duplicate of the root, so it voids root selection for the node.
   const ids = [];
   for (const k of kids) {
-    if (k.contentId === undefined) continue;
-    const id = strictMsgId(k.contentId);
+    const raw = rawContentId(k);
+    if (raw === undefined) continue;
+    const id = strictMsgId(raw);
     if (id === null) return null;
     ids.push([k, id]);
   }
