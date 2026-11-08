@@ -50,6 +50,7 @@ _get_mem_write_lock or writes MEMORY.md.
 
 import concurrent.futures
 import contextlib
+import functools
 from mc import codex_run_error as _codex_run_error  # MC-1147: rollout error as the failure summary
 from mc import test_run_detection as _test_run_detection
 from mc import empty_turn as _empty_turn
@@ -7646,7 +7647,21 @@ def _transcript_buffer_lines_and_ts(project_path, claude_sid, user_label, max_me
         _log(f"[transcript-render] failed: {e}")
         return [], []
 
-def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=True, role_context=None):
+def _with_window_stack(fn):
+    """Give `fn` an ExitStack as `_window` and close it on every return. An
+    ISOLATED revival opens its session's `resuming` window mid-function (choose
+    the launch directory, spawn, publish) and this is what lets it do that
+    without re-indenting the whole body (MC-1165 r5)."""
+    @functools.wraps(fn)
+    def run(*args, **kwargs):
+        with contextlib.ExitStack() as stack:
+            return fn(*args, _window=stack, **kwargs)
+    return run
+
+
+@_with_window_stack
+def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=True, role_context=None,
+                           _window: contextlib.ExitStack = None):  # pyright: ignore[reportArgumentType]  # supplied by _with_window_stack
     """Revive a finalized/purged session by spawning a fresh process with -r <claude_session_id>.
 
     Looks up the most recent agent_log entry whose session_id matches; if it has a
@@ -7742,7 +7757,11 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
     # session already runs would fork the transcript.
     if _refuse_duplicate_spawn(project_id, claude_sid, session_id, 'revive'):
         return None
-    _revive_cwd = _resume_cwd_for(pp, claude_sid) or pp
+    # MC-1165 r5: a conversation that owned a worktree revives into it (or a
+    # recreation of it), never into the project checkout. See owned_worktree.
+    _revive_wt = _isolated_launch.owned_worktree(p, session_id)
+    _revive_isolated = bool(_revive_wt)
+    _revive_cwd = _revive_wt or _resume_cwd_for(pp, claude_sid) or pp
 
     use_streaming = p.get('use_streaming_agent', state.CONFIG.get('use_streaming_agent', False))
 
@@ -7865,6 +7884,24 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             _clock_sess, [e for e in log if e.get('session_id') == session_id])
     revival_msg = _clock_wrap(p, _clock_sess, revival_msg, message)
 
+    if _revive_isolated:
+        # Project lock, then lifecycle lock (the order every window uses); held
+        # by `window` through the spawn and the publish below, so a worktree
+        # removal cannot slip between choosing the directory and using it.
+        _window.enter_context(_worktree_lifecycle.resuming(mgr.lock, session_id))
+        _revive_stub = {'session_id': session_id, 'project_id': project_id,
+                        '_worktree_isolated': True, '_agent_cwd': _revive_wt}
+        try:
+            _revive_cwd, _revive_note = _isolated_launch.launch_cwd(_revive_stub, p, pp)
+        except _isolated_launch.LaunchRefused as e:
+            _log(f"[revive] {project_id}: {session_id[:12]} not revived, "
+                 f"worktree unusable: {e}", level='error')
+            _log_agent_activity(project_id, f"Revive refused for {session_id[:8]}: {e}")
+            return None
+        if _revive_note:
+            seed_lines.append(f"[{_revive_note}]")
+            seed_ts.append(now_iso())
+
     if use_streaming:
         cmd = [_resolve_claude(), *resume_flags,
                *_build_claude_flags(p, streaming=True, model_override=revive_model,
@@ -7918,6 +7955,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             '_resume_id': claude_sid,
             '_resume_confirmed': False,   # a just-spawned resume hasn't proven itself yet
             '_agent_cwd': _revive_cwd,
+            '_worktree_isolated': _revive_isolated,
             '_dispatch_time': _time.time(),
             'usage': entry.get('usage', {}),
             'cost_usd': entry.get('cost_usd', 0),
@@ -8033,6 +8071,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         'claude_session_id': claude_sid,
         '_resume_id': claude_sid,
         '_agent_cwd': _revive_cwd,
+        '_worktree_isolated': _revive_isolated,
         '_dispatch_time': _time.time(),
         'usage': entry.get('usage', {}),
         'cost_usd': entry.get('cost_usd', 0),
@@ -18193,6 +18232,10 @@ def _guardian_check_session(sid, session, now):
 
     # State 6: error session with pending recovery message — retry or trip breaker
     if status == 'error' and session.get('pending_recovery_message'):
+        with proj_lock:
+            vendor_hold = _isolated_launch.hold_vendor_recovery(session)
+        if vendor_hold:
+            return
         attempts = session.get('recovery_attempts', 0)
         last_recovery = session.get('last_recovery_time', 0)
         if attempts >= 2 and now - last_recovery < 60:

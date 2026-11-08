@@ -42,11 +42,16 @@ def _same(a: str, b: str) -> bool:
 
 
 def _usable(path: str, project_path: str) -> bool:
-    """A real worktree: an existing directory with its own `.git`, not the
-    project checkout. A bare directory under `.clayrune/agents/` is not one:
-    git run inside it would act on the project repository."""
-    return (bool(path) and not _same(path, project_path)
-            and Path(path).is_dir() and (Path(path) / '.git').exists())
+    """A real worktree: an existing directory, not the project checkout, whose
+    `.git` marker git itself resolves to a worktree of THIS project's
+    repository. A bare directory under `.clayrune/agents/` is not one (git run
+    inside it would act on the project repository), and neither is a restored
+    directory whose registration git has since removed (every git command in it
+    fails)."""
+    if not (path and not _same(path, project_path) and Path(path).is_dir()
+            and (Path(path) / '.git').exists()):
+        return False
+    return _aw.valid_worktree(project_path, path)[0]
 
 
 def launch_cwd(session: dict, project: dict | None, project_path: str,
@@ -101,3 +106,47 @@ def mark_refused(session: dict, message: str | None, reason: str, now: float) ->
             f'checkout.{" Its request is kept for retry." if message else ""}]')
     session.setdefault('log_lines', []).append(line)
     return line
+
+
+def hold_vendor_recovery(session: dict) -> bool:
+    """True when the guardian must NOT retry this session's held request.
+
+    The guardian's retry (`_guardian_attempt_recovery` -> `_auto_dispatch_followup`)
+    builds a `claude --continue` command and spawns it as engine 'claude'. A
+    refused launch for a Codex/Gemini/Qwen session leaves its request in
+    `pending_recovery_message`; handing that to Claude would run it on the wrong
+    provider with the wrong continuation protocol while the session still says
+    it is a vendor session. Provider-native recovery is not built, so such a
+    session stays in `error`, `guardian_state='needs_attention'`, with the
+    request retained for a human (Try Again / dismiss). Mirrors the vendor
+    exclusion on guardian State 4. Claude's bounded retry is untouched. Call
+    under the project lock; the log line is written once."""
+    if (session.get('provider') or 'claude').lower() == 'claude':
+        return False
+    if session.get('guardian_state') != 'needs_attention':
+        session['guardian_state'] = 'needs_attention'
+        session.setdefault('log_lines', []).append(
+            f"[Guardian: auto-recovery is Claude-only; this {session.get('provider')} "
+            f"session's request is kept, not retried. Use \"Try Again\" or \"Start Fresh\".]")
+    return True
+
+
+def owned_worktree(project: dict, session_id: str) -> str:
+    """The worktree path this conversation owns, or '' when it never had one.
+
+    A revived (purged) session has no `_worktree_isolated` flag to read, and the
+    agent log does not record one. What does persist is git's own state, keyed
+    on the session id: the worktree directory `<project>/.clayrune/agents/<sid>`
+    and the branch `clayrune/agent/<sid>` that `agent_worktree.create` made for
+    it (kept when a no-commit end removes the tree). Either one means the
+    conversation was isolated, so its revival must start in that tree. The
+    directory is returned even if it is unusable; `launch_cwd` then recreates it
+    or refuses, it never falls back to the project checkout. A session whose
+    tree AND branch are both gone (merged and deleted) leaves no record, and
+    revives as an ordinary session."""
+    wt = _aw.worktree_path(project, session_id)
+    if wt is None:
+        return ''
+    if wt.exists() or _aw.branch_exists(project, session_id):
+        return str(wt)
+    return ''

@@ -135,6 +135,15 @@ def branch_name(session_id: str) -> str:
     return f'clayrune/agent/{session_id}'
 
 
+def branch_exists(project: dict, session_id: str) -> bool:
+    """True when the session's agent branch is in the project repository."""
+    base = project.get('project_path') or ''
+    if not base or not _SAFE_ID.match(session_id or '') or not (Path(base) / '.git').exists():
+        return False
+    ok, refs = _sync.git_run(base, ['branch', '--list', branch_name(session_id)])
+    return ok and refs.strip() != ''
+
+
 def is_hivemind_worker(session_id: str) -> bool:
     """Hivemind workers mint `hm_<8 hex>` session ids; dispatched agents mint
     bare 12-hex ids, so the prefix cannot collide. A hivemind worker's branch
@@ -408,6 +417,44 @@ def retarget_mcp(project: dict, wt: Path) -> bool:
 
 # ── Lifecycle ───────────────────────────────────────────────────────────────
 
+def _same_dir(a: str, b: str) -> bool:
+    try:
+        return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+    except OSError:
+        return False
+
+
+def valid_worktree(base: str, wt) -> tuple[bool, str]:
+    """(ok, why) -- is `wt` a live linked worktree of the repository at `base`?
+
+    A directory holding a `.git` marker file is not enough: after `git worktree
+    remove` (or a prune) a restored directory keeps its old `gitdir:` pointer
+    to registration that no longer exists, and every git command inside it
+    fails. Ask git itself: the tree must be its own toplevel (not a subfolder
+    of some enclosing repo) and share the common git dir of `base`."""
+    wt = str(wt)
+    ok, out = _sync.git_run(wt, ['rev-parse', '--show-toplevel', '--git-common-dir'], timeout=15)
+    if not ok:
+        return False, f'git rejects {wt}: {out}'
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return False, f'unexpected git answer for {wt}: {out!r}'
+    top, common = lines[0], lines[1]
+    ok, bout = _sync.git_run(base, ['rev-parse', '--git-common-dir'], timeout=15)
+    if not ok:
+        return False, f'git rejects {base}: {bout}'
+    base_common = bout.strip()
+    if not os.path.isabs(common):
+        common = os.path.join(wt, common)
+    if not os.path.isabs(base_common):
+        base_common = os.path.join(base, base_common)
+    if not _same_dir(top, wt):
+        return False, f'{wt} is inside the repository at {top}, not a worktree of its own'
+    if not _same_dir(common, base_common):
+        return False, f'{wt} belongs to {common}, not the project repository {base_common}'
+    return True, ''
+
+
 def create(project: dict, session_id: str, base_ref: str = 'HEAD', *, isolated: bool = False):
     """Create an isolated worktree for one agent session.
 
@@ -425,7 +472,8 @@ def create(project: dict, session_id: str, base_ref: str = 'HEAD', *, isolated: 
 
     with _lock(pid):
         if wt.exists() and (wt / '.git').exists():
-            return True, str(wt)
+            good, why = valid_worktree(base, wt)
+            return (True, str(wt)) if good else (False, f'{wt} is not a usable worktree: {why}')
         if wt.exists():
             return False, f'{wt} exists but is not a worktree'
         wt.parent.mkdir(parents=True, exist_ok=True)
