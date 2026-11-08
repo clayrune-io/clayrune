@@ -276,36 +276,43 @@ def test_stop_during_review_releases_worker(routes, project, monkeypatch):
 # ── the shared exclusion itself ───────────────────────────────────────────────
 
 def test_removal_window_excludes_a_resume_of_the_same_session_only():
-    entered = threading.Event()
+    """A resume waits for a removal of ITS session. Since the lock order is
+    project lock first (MC-1165 round 4) every resume of the same project also
+    queues behind the window's project lock; only another project is untouched."""
     got = {}
 
-    def resume(sid, key):
-        with lifecycle.resuming(sid):
+    def resume(lock, sid, key):
+        with lifecycle.resuming(lock, sid):
             got[key] = time.monotonic()
-        entered.set()
 
     project_lock = threading.RLock()
     with lifecycle.removal_window(project_lock, 's-a'):
-        t = threading.Thread(target=resume, args=('s-a', 'same'))
+        t = threading.Thread(target=resume, args=(project_lock, 's-a', 'same'))
         t.start()
         t.join(0.3)
         assert t.is_alive() and 'same' not in got          # same session waits
-        other = threading.Thread(target=resume, args=('s-b', 'other'))
+        sibling = threading.Thread(target=resume, args=(project_lock, 's-b', 'sibling'))
+        sibling.start()
+        sibling.join(0.3)
+        assert sibling.is_alive() and 'sibling' not in got  # same project: the project lock
+        other = threading.Thread(target=resume, args=(threading.RLock(), 's-c', 'other'))
         other.start()
         other.join(5)
-        assert 'other' in got                              # another session does not
+        assert 'other' in got                              # another project does not
     t.join(5)
-    assert 'same' in got
+    sibling.join(5)
+    assert 'same' in got and 'sibling' in got
 
 
 def test_exclusion_is_reentrant_and_orders_project_lock_first():
     project_lock = threading.RLock()
     with lifecycle.removal_window(project_lock, 's-r'):
         with lifecycle.removal_window(project_lock, 's-r'):    # callback -> merge-back -> retry
-            with lifecycle.resuming('s-r'):
-                pass
+            with lifecycle.resuming(project_lock, 's-r'):
+                assert lifecycle.holds('s-r')
+    assert not lifecycle.holds('s-r')
     # a resume already under the project lock (the reader thread's follow-up
-    # drain) takes the session lock second, the same order the window uses
+    # drain) re-enters it and takes the session lock second, the order the window uses
     with project_lock:
-        with lifecycle.resuming('s-r'):
+        with lifecycle.resuming(project_lock, 's-r'):
             pass

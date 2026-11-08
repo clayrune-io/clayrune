@@ -3256,7 +3256,7 @@ _bp_test_runs.wire(
     data_root=DATA_DIR.parent,
     load_project_fn=_bp_projects.load_project,
     load_agent_log_fn=_bp_agent._load_agent_log,
-    session_cwd_fn=_bp_agent._session_cwd,
+    session_cwd_fn=_bp_agent._session_cwd_for_reading,
     proc_identity_fn=_bp_agent._proc_identity,
 )
 app.register_blueprint(_bp_test_runs.bp)

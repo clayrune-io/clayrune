@@ -1,0 +1,103 @@
+"""MC-1165 round 4: the one rule for where an isolated session's process starts.
+
+A session with `_worktree_isolated` set was promised its own worktree and
+branch. Every time it is respawned the process must start THERE. Three rounds
+of per-path guards each left another respawn path that quietly started it in
+the project checkout instead (queued follow-up replay, the failed-resume
+recovery that passed the project path straight to the spawn, the vendor
+follow-up that flipped the session to non-isolated when recreation failed).
+This module is the single place that decides, so a path cannot forget.
+
+`launch_cwd` returns the session's existing worktree, or recreates it (same
+path, same branch) when it was removed, or raises `LaunchRefused`. It never
+returns the project checkout for an isolated session. It must be called inside
+`worktree_lifecycle.resuming` / `removal_window` for the session: recreation and
+the spawn that follows must not interleave with a removal.
+
+A refusal is not a loss. `mark_refused` leaves the session in `error` with a
+plain reason and keeps the request it could not run in
+`pending_recovery_message`, which the guardian retries with its normal backoff
+and which makes the cold-review callback and the removal timer leave the branch
+alone. Pure policy plus one call into `agent_worktree`; no server state.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Callable
+
+from mc import agent_worktree as _aw
+from mc import worktree_lifecycle as _lifecycle
+
+
+class LaunchRefused(RuntimeError):
+    """The session is isolated and a usable worktree could not be produced."""
+
+
+def _same(a: str, b: str) -> bool:
+    try:
+        return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+    except OSError:
+        return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def _usable(path: str, project_path: str) -> bool:
+    """A real worktree: an existing directory with its own `.git`, not the
+    project checkout. A bare directory under `.clayrune/agents/` is not one:
+    git run inside it would act on the project repository."""
+    return (bool(path) and not _same(path, project_path)
+            and Path(path).is_dir() and (Path(path) / '.git').exists())
+
+
+def launch_cwd(session: dict, project: dict | None, project_path: str,
+               create: Callable | None = None) -> tuple[str, str]:
+    """`(cwd, note)` for starting `session`'s next process. `note` is '' when its
+    worktree was usable as it stood, otherwise one sentence for the agent log.
+
+    Raises `LaunchRefused` for an isolated session that has no usable worktree
+    and cannot get one. A non-isolated session has nothing to protect and gets
+    its recorded directory, or the project path when that is gone."""
+    sid = (session or {}).get('session_id', '')
+    cwd = (session or {}).get('_agent_cwd') or ''
+    if not session.get('_worktree_isolated'):
+        return (cwd if cwd and Path(cwd).is_dir() else project_path), ''
+    if not _lifecycle.holds(sid):
+        raise LaunchRefused(f'launch directory for isolated session {sid[:12]} chosen '
+                            f'outside the lifecycle exclusion')
+    if _usable(cwd, project_path):
+        session.pop('_launch_refused', None)
+        return cwd, ''
+    why = f'worktree {cwd or "(none recorded)"} is not usable'
+    if not project or not sid:
+        raise LaunchRefused(f'{why}, and the project record is unavailable to recreate it')
+    try:
+        ok, path = (create or _aw.create)(project, sid)
+    except Exception as e:  # create() is documented best-effort; belt and braces
+        ok, path = False, f'{type(e).__name__}: {e}'
+    if not ok or not _usable(path, project_path):
+        raise LaunchRefused(f'{why}, and recreating it failed: {path}')
+    session['_agent_cwd'] = path
+    session['_worktree_recreated'] = session.get('_worktree_recreated', 0) + 1
+    session.pop('_launch_refused', None)
+    return path, (f'Worktree {cwd or path} was missing; recreated it from base so this '
+                  f'turn runs in an isolated tree again.')
+
+
+def mark_refused(session: dict, message: str | None, reason: str, now: float) -> str:
+    """Put a refused session into a visible, recoverable state. Call under the
+    project lock. Returns the line written to the session log."""
+    session['status'] = 'error'
+    session['last_status_change_time'] = now
+    if session.get('mode') == 'B':
+        session['process_alive'] = False
+    session['_launch_refused'] = reason
+    if message:
+        held = session.get('pending_recovery_message')
+        if not held:
+            session['pending_recovery_message'] = message
+        elif message not in held:
+            session['pending_recovery_message'] = f'{held}\n\n{message}'
+    line = (f'[Launch refused: {reason}. The session was NOT started in the project '
+            f'checkout.{" Its request is kept for retry." if message else ""}]')
+    session.setdefault('log_lines', []).append(line)
+    return line
