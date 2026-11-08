@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-08] - Specify owner-only per-install agent email
+
+- Added `docs/AGENT_MAIL_SPEC.md`: opt-in installation enrollment, verified-owner sending, identified activation counts, authenticated and laundered replies, durable offline replay, and exact-conversation follow-up requirements. Eight design decisions remain open for Dave, with alternatives, recommendations and costs.
+- Specification only; no implementation, enrollment, mail, deployment, merge or push. Privacy/disclosure updates and a real-mail pilot remain launch gates.
+
 ## [2026-11-07] - Landing gate blocks every red branch (MC-1164 round 9)
 
 - The merged candidate now passes only if every `verify_command` exits 0 with no timeout, infrastructure error or oversize output; otherwise it blocks and the message names each failing command, its exit code and the output tail. No runner output is parsed to decide a verdict.
