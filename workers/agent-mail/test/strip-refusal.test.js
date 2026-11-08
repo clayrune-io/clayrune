@@ -142,6 +142,13 @@ test('related: ordinary mixed/alternative are unaffected (all plain children sti
 
 // ---- Fenn round 2, P1: duplicate MIME headers -> ambiguous_mime -------------
 
+test('duplicate Content-ID on a related child refuses (root selection must not be first-wins)', async () => {
+  refused(await strip(related(relatedHeader.replace('text/html', 'text/plain'), [
+    CRLF('Content-Type: text/plain', 'Content-ID: <other>', 'Content-ID: <root>', '', 'FIRST-ROOT'),
+    CRLF('Content-Type: text/plain', 'Content-ID: <root>', '', P),
+  ])), 'ambiguous_mime');
+});
+
 test('duplicate Content-Disposition with a commented filename on the second (Fenn P1 A)', async () => {
   refused(await strip(CRLF('Content-Type: text/plain', 'Content-Disposition: inline',
     'Content-Disposition: inline; (note) filename=x.txt', '', P)), 'ambiguous_mime');

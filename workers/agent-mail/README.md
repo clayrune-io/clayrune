@@ -57,7 +57,7 @@ subtrees the allowlist would drop). Both return `{ok:false, reason_code}` with n
 text and no counts:
 
 - `ambiguous_mime`: any part, the top level included, has more than one
-  `Content-Type`, `Content-Disposition` or `Content-Transfer-Encoding` header.
+  `Content-Type`, `Content-Disposition`, `Content-Transfer-Encoding` or `Content-ID` header.
   Counted on each part's raw header lines (name case-insensitive, folded lines
   grouped, whitespace before the colon ignored), not on the parsed first-wins view,
   so a second header cannot show one parser a body and another a filename.

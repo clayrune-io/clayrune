@@ -9,7 +9,8 @@
 // REFUSALS. Before any text is taken, the whole MIME tree is checked and the
 // message is refused (no text, no counts) when
 //   - any part, the top level included, carries more than one Content-Type,
-//     Content-Disposition or Content-Transfer-Encoding header: `ambiguous_mime`.
+//     Content-Disposition, Content-Transfer-Encoding or Content-ID header
+//     (Content-ID picks the multipart/related root): `ambiguous_mime`.
 //     Parsers resolve duplicates differently (postal-mime: first wins), so a
 //     second header is a way to show one parser a body and another a name or
 //     an attachment. Counted on each part's RAW header lines, not on the parsed
@@ -92,7 +93,7 @@ const lc = (v) => String(v || '').toLowerCase();
 
 // Headers that decide how a part's body is read or whether it is a file; a second
 // copy of any of them is a parser differential (see REFUSALS above).
-const SINGLE_HEADERS = ['content-type', 'content-disposition', 'content-transfer-encoding'];
+const SINGLE_HEADERS = ['content-type', 'content-disposition', 'content-transfer-encoding', 'content-id'];
 
 // Raw header lines of one node. Trimming the name makes `Content-Type :` count as a
 // Content-Type: postal-mime keeps the whitespace in the key so it does not collide
