@@ -116,6 +116,12 @@ removal. A resume that arrives mid-window waits, then finds the tree gone and
 `agent_worktree_followup` recreates it. Lock order is project lock first, lifecycle
 lock second, everywhere.
 
+**A queued recovery owns the tree.** If the session has a truthy `pending_recovery_message`
+(the guardian is about to resume it), the callback and the retry timer neither merge nor
+remove: a resume after removal spawns in the project tree via `_session_cwd`. The
+resumed turn's own end lands the work. Only the recovery message is checked, not
+`pending_followups`.
+
 **A superseded review is reviewed against its own ask.** When the tip moves mid-review,
 the worker consumes the pending `(ask, callback)` before reviewing the new tip, so a
 revived session with a different task is judged against that task. With no pending

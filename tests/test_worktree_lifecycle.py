@@ -64,7 +64,7 @@ def test_guardian_resume_waits_for_the_cold_callback_window(routes, project, mon
     tree, tip = _agent(project, 'guardianrace')
     session = _session('guardianrace')
     session.update(status='error', last_status_change_time=100.0, log_lines=[],
-                   mode='A', pending_recovery_message='retry', proc=None,
+                   mode='A', pending_followups=['retry'], proc=None,   # the stuck-queue replay
                    _agent_cwd=str(tree))
     monkeypatch.setitem(agent_sessions, 'guardianrace', session)
     gate.record(project, _branch('guardianrace'), sha=tip, verdict='pass', cold=True)
@@ -147,6 +147,41 @@ def test_timer_retry_leaves_a_session_that_resumed_before_it_ran(routes, project
     session = _session('timerskip')
     session.update(status='running', last_status_change_time=200.0)
     monkeypatch.setitem(agent_sessions, 'timerskip', session)
+    at_removal = _record_status_at_removal(session, monkeypatch)
+    routes._worktree_retry_removal(session, 1)
+    assert at_removal == [] and Path(tree).exists()
+
+
+# ── a queued guardian recovery owns the tree (Dave's call, round 3) ───────────
+
+def test_callback_leaves_merge_and_tree_to_a_pending_recovery(routes, project, monkeypatch):
+    tree, tip = _agent(project, 'pendrec')
+    session = _session('pendrec')
+    session.update(status='error', last_status_change_time=100.0,
+                   pending_recovery_message='retry')
+    monkeypatch.setitem(agent_sessions, 'pendrec', session)
+    gate.record(project, _branch('pendrec'), sha=tip, verdict='pass', cold=True)
+    merged = []
+    real_merge = w.merge_back
+    monkeypatch.setattr(w, 'merge_back', lambda *a, **k: merged.append(a) or real_merge(*a, **k))
+    at_removal = _record_status_at_removal(session, monkeypatch)
+    routes._worktree_cold_review_done(session, 0, 100.0)
+    assert merged == [] and at_removal == []
+    assert Path(tree).exists() and gate.branch_tip(project, _branch('pendrec')) == tip
+    # the resumed turn ends with the message consumed: now it lands
+    session.update(pending_recovery_message=None, last_status_change_time=300.0)
+    routes._worktree_cold_review_done(session, 0, 300.0)
+    assert len(merged) == 1 and not Path(tree).exists()
+
+
+def test_timer_retry_leaves_a_pending_recovery_alone(routes, project, monkeypatch):
+    tree, tip = _agent(project, 'pendtimer')
+    session = _session('pendtimer')
+    session.update(status='error', last_status_change_time=100.0,
+                   pending_recovery_message='retry')
+    monkeypatch.setitem(agent_sessions, 'pendtimer', session)
+    gate.record(project, _branch('pendtimer'), sha=tip, verdict='pass', cold=True)
+    assert w.merge_back(project, 'pendtimer')[0] == 'clean'
     at_removal = _record_status_at_removal(session, monkeypatch)
     routes._worktree_retry_removal(session, 1)
     assert at_removal == [] and Path(tree).exists()

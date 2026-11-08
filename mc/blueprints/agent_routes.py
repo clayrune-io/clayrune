@@ -1622,6 +1622,14 @@ def _worktree_schedule_retry(session, attempt):
     t.start()
 
 
+def _worktree_resume_pending(session, live):
+    """A guardian recovery is queued for this session. Removing the tree now would
+    make that resume spawn in the project tree via `_session_cwd` (MC-1165 round 3);
+    leave the merge and the removal to the resumed turn's own end."""
+    return bool((live or session).get('pending_recovery_message')
+                or session.get('pending_recovery_message'))
+
+
 def _worktree_retry_removal(session, attempt):
     sid = session.get('session_id', '')
     with _worktree_retry_lock:
@@ -1633,6 +1641,10 @@ def _worktree_retry_removal(session, attempt):
         live = agent_sessions.get(sid)
         if live and live.get('status') in ('running', 'idle'):
             return  # resumed since; its own end re-runs the merge-back/removal
+        if _worktree_resume_pending(session, live):
+            _log(f"[worktree] removal retry of {sid[:12]} skipped: a recovery resume is "
+                 f"pending; merge-back left to its next end")
+            return
         _worktree_merge_back_on_end(session, _attempt=attempt)
 
 
@@ -1659,6 +1671,10 @@ def _worktree_cold_review_done(session, attempt, turn_stamp):
                                  or live.get('last_status_change_time') != turn_stamp):
             _log(f"[worktree] cold review of {sid[:12]} finished after the session "
                  f"resumed; merge-back left to its next end")
+            return
+        if _worktree_resume_pending(session, live):
+            _log(f"[worktree] cold review of {sid[:12]} finished with a recovery resume "
+                 f"pending; merge-back left to its next end")
             return
         _worktree_merge_back_on_end(session, attempt, _cold_done=True)
 
