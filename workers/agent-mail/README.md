@@ -33,8 +33,9 @@ revoked / expired / wrong install / wrong owner generation, and finally that
 ### `strip` output
 
 `{ok:true, text, has_text, source: 'plain'|'none', stripped:{attachments, inline_images, calendar_parts, nested_messages, html_parts, remote_image_refs}}`
-or `{ok:false, reason_code, stripped?}` (`html_only`, `mime_too_large`,
-`text_too_large`, `mime_limits`, `mime_parse_error`, `bad_input`). Default limits
+or `{ok:false, reason_code, stripped?}` (`html_only`, `ambiguous_mime`,
+`malformed_mime`, `mime_too_large`, `text_too_large`, `mime_limits`,
+`mime_parse_error`, `bad_input`). Default limits
 are the provisional D4 numbers (64 KiB MIME, 16 KiB text) and can be passed in `opts`.
 
 **Contract: allowlist, not blocklist.** Text is taken **only** from `text/plain`
@@ -45,7 +46,25 @@ or `name` parameter on its `Content-Disposition` or `Content-Type`. Anything els
 on the path (attachment, unrecognised disposition, another multipart subtype such
 as `signed`/`digest`/`report`, a named part) drops the whole subtree; the dropped
 text parts are counted under `attachments`. Inside `multipart/alternative` only
-the `text/plain` alternative is read.
+the `text/plain` alternative is read. Inside `multipart/related` only the **root**
+is read (RFC 2387: the child whose `Content-ID` matches the `start` parameter, or
+the first child when there is no `start`); the other children are resources of the
+root, counted and never read. A `start` that names no child (or several) reads
+nothing under that container.
+
+**Two refusals, checked over the whole tree before any text is taken** (including
+subtrees the allowlist would drop). Both return `{ok:false, reason_code}` with no
+text and no counts:
+
+- `ambiguous_mime`: any part, the top level included, has more than one
+  `Content-Type`, `Content-Disposition` or `Content-Transfer-Encoding` header.
+  Counted on each part's raw header lines (name case-insensitive, folded lines
+  grouped, whitespace before the colon ignored), not on the parsed first-wins view,
+  so a second header cannot show one parser a body and another a filename.
+- `malformed_mime`: a part's raw `Content-Type` declares `multipart/*` but postal-mime
+  parsed it as a leaf (it rewrites a multipart with a missing, empty or non-ASCII
+  boundary to `text/plain`), which would hide a declared `signed`/`digest`/... type
+  from the subtype exclusion.
 
 **HTML is never converted or kept.** A message with `text/html` and no surviving
 `text/plain` returns `{ok:false, reason_code:'html_only', stripped}`: a drop with
@@ -65,7 +84,9 @@ and `remote_image_refs` are counts only.
   `email.text` merges HTML-derived text into the plain body and `textMap` does not
   say which container or disposition a leaf sat under. postal-mime is pinned
   exactly; a test fails if the version pin or the tree shape moves, and then the
-  allowlist must be re-reviewed against the new tree.
+  allowlist must be re-reviewed against the new tree. The duplicate-header check
+  reads each node's `rawHeaderLines` from that same tree, so it sees exactly the
+  header block postal-mime split; it is not a second header parser.
 - Plain text is still untrusted data: invisible Unicode (zero-width, bidi, tag
   characters) and command-shaped text pass through; the injection screen (unit 5)
   owns them.

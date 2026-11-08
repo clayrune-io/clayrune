@@ -226,4 +226,20 @@ test('postal-mime internals this module reads still have the expected shape', as
   assert.equal(att.contentDisposition.parsed.params.filename, 'a.pdf');
   assert.equal(typeof att.contentDisposition.value, 'string');
   assert.ok(att.headers.some((h) => h.key === 'content-disposition' && typeof h.value === 'string'));
+  // raw header lines (duplicate-header refusal) and Content-ID (related root selection)
+  assert.ok(Array.isArray(att.rawHeaderLines));
+  assert.ok(att.rawHeaderLines.some((h) => h.key === 'content-disposition' && typeof h.line === 'string'));
+});
+
+test('postal-mime exposes rawHeaderLines (all duplicates) and contentId on child nodes', async () => {
+  const { default: PostalMime } = await import('postal-mime');
+  const p = new PostalMime({ forceRfc822Attachments: true });
+  await p.parse(multipart('related', [
+    { headers: ['Content-Type: text/plain', 'Content-ID: <r1>', 'Content-Type: text/html'], body: 'x' },
+  ]));
+  const [child] = p.root.childNodes;
+  assert.equal(child.contentId, '<r1>');
+  assert.equal(child.rawHeaderLines.filter((h) => h.key === 'content-type').length, 2);
+  assert.equal(child.headers.filter((h) => h.key === 'content-type').length, 2);
+  assert.equal(child.contentType.parsed.value, 'text/plain'); // first wins: why the parsed view is not enough
 });

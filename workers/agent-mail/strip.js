@@ -6,6 +6,19 @@
 //     { ok: true,  text, has_text, source: 'plain'|'none', stripped } |
 //     { ok: false, reason_code, stripped? } >
 //
+// REFUSALS. Before any text is taken, the whole MIME tree is checked and the
+// message is refused (no text, no counts) when
+//   - any part, the top level included, carries more than one Content-Type,
+//     Content-Disposition or Content-Transfer-Encoding header: `ambiguous_mime`.
+//     Parsers resolve duplicates differently (postal-mime: first wins), so a
+//     second header is a way to show one parser a body and another a name or
+//     an attachment. Counted on each part's RAW header lines, not on the parsed
+//     first-wins view; a legitimate reply never carries a duplicate.
+//   - a part's raw Content-Type declares multipart/* but postal-mime parsed it as
+//     a leaf (it rewrites a multipart with a missing, empty or non-ASCII boundary
+//     to text/plain): `malformed_mime`. Otherwise the declared subtype exclusion
+//     below would be applied to the rewritten type and its bytes read as text.
+//
 // ALLOWLIST. Text is taken ONLY from text/plain leaves where
 //   - every ancestor is multipart/mixed, multipart/alternative or
 //     multipart/related (the root is its own ancestor chain, so a bare
@@ -13,6 +26,10 @@
 //   - every node on the path, leaf and containers, has an absent or `inline`
 //     Content-Disposition (every such header, duplicates included) and no
 //     filename / name parameter on its Content-Disposition or Content-Type.
+// Under multipart/related only the root part (RFC 2387: the child whose Content-ID
+// matches the `start` parameter, else the first child) is read; every other child
+// is a resource of the root, never a reply body. If `start` is given and names no
+// child (or several), nothing under the container is read.
 // Anything else on the path -- attachment, an unrecognised disposition
 // (RFC 2183 2.8: treat as attachment), another multipart subtype, a named part --
 // drops the whole subtree. A multipart disposition applies to the container.
@@ -73,6 +90,51 @@ const NAME_PARAM_RAW = /(?:^|;)\s*(?:file)?name\s*\*?\s*\d*\s*\*?\s*=/i;
 
 const lc = (v) => String(v || '').toLowerCase();
 
+// Headers that decide how a part's body is read or whether it is a file; a second
+// copy of any of them is a parser differential (see REFUSALS above).
+const SINGLE_HEADERS = ['content-type', 'content-disposition', 'content-transfer-encoding'];
+
+// Raw header lines of one node. Trimming the name makes `Content-Type :` count as a
+// Content-Type: postal-mime keeps the whitespace in the key so it does not collide
+// with the real header, but here the only question is "could any reader take this
+// for one", so a false positive (refuse) is the safe side.
+function rawHeaderKeys(node) {
+  return (node.rawHeaderLines || []).map((h) => String(h.key || '').trim());
+}
+
+// -> 'ambiguous_mime' | 'malformed_mime' | null, over every node in the tree,
+// dropped subtrees included.
+function treeRefusal(node) {
+  const keys = rawHeaderKeys(node);
+  if (SINGLE_HEADERS.some((k) => keys.filter((x) => x === k).length > 1)) return 'ambiguous_mime';
+  if (!node.contentType.multipart) {
+    const declared = String(node.contentType.value || '').split(';')[0];
+    if (/multipart\s*\//i.test(declared)) return 'malformed_mime';
+  }
+  let ambiguous = false;
+  let malformed = false;
+  for (const child of node.childNodes || []) {
+    const r = treeRefusal(child);
+    if (r === 'ambiguous_mime') ambiguous = true;
+    else if (r) malformed = true;
+  }
+  if (ambiguous) return 'ambiguous_mime';
+  return malformed ? 'malformed_mime' : null;
+}
+
+const cid = (v) => String(v || '').trim().replace(/^<(.*)>$/s, '$1');
+
+// RFC 2387 root of a multipart/related node: the child to read, or null for none.
+function relatedRoot(node) {
+  const kids = node.childNodes;
+  const start = node.contentType.parsed.params.start;
+  if (start === undefined) return kids[0] || null;
+  const want = cid(start);
+  if (want === '') return null;
+  const hits = kids.filter((k) => k.contentId !== undefined && cid(k.contentId) === want);
+  return hits.length === 1 ? hits[0] : null;
+}
+
 function hasNameParam(parsed, raw) {
   const keys = Object.keys((parsed && parsed.params) || {});
   return keys.some((k) => NAME_PARAM_KEY.test(k)) || NAME_PARAM_RAW.test(String(raw || ''));
@@ -81,6 +143,8 @@ function hasNameParam(parsed, raw) {
 // May body text sit under this node? Judged on the node's own headers only.
 function nodeAllowed(node) {
   // every Content-Disposition header, not just the one postal-mime resolves
+  // (duplicates are refused as ambiguous_mime before the walk; this stays as a
+  // second line)
   for (const h of node.headers || []) {
     if (h.key !== 'content-disposition') continue;
     const token = String(h.value || '').split(';')[0].trim().toLowerCase();
@@ -101,7 +165,9 @@ function nodeAllowed(node) {
 function walk(node, ok, counts, kept) {
   const here = ok && nodeAllowed(node);
   if (node.contentType.multipart) {
-    for (const child of node.childNodes) walk(child, here, counts, kept);
+    const root = lc(node.contentType.multipart) === 'related' ? relatedRoot(node) : undefined;
+    // a related child that is not the root is walked as dropped, so it is counted
+    for (const child of node.childNodes) walk(child, here && (root === undefined || child === root), counts, kept);
     return;
   }
   const type = lc(node.contentType.parsed.value);
@@ -136,6 +202,9 @@ export async function strip(raw, opts = {}) {
   } catch (e) {
     return { ok: false, reason_code: /^EMAX/.test(String(e && e.code)) ? 'mime_limits' : 'mime_parse_error' };
   }
+
+  const refusal = treeRefusal(parser.root);
+  if (refusal) return { ok: false, reason_code: refusal };
 
   const stripped = emptyCounts();
   for (const att of email.attachments || []) classify(att, stripped);
