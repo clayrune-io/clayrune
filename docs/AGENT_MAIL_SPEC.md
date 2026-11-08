@@ -471,6 +471,33 @@ installs. Going past that means onboarding clayrune.io as a sending domain
 increase. Both spend money or change providers, so both are Ron's call. The
 pilot fits under the cap; nothing is needed now.
 
+### Inbound hardening (Ron, 2026-11-08) - fixed requirements
+
+1. **Owner-only inbound, enforced at the Worker edge.** Mail that fails the D6
+   check (exact verified owner From, valid thread token, DMARC pass) is dropped
+   at the Worker. It is never forwarded to the install, never queued in the
+   local store and never shown to any model. Only a metadata-only rejection
+   record (time, reason code, no body) is kept. A failed check means drop, not hold.
+2. **Strip everything but plain text before custody.** The Worker removes every
+   attachment, inline/embedded image, remote image reference, calendar part and
+   HTML part (HTML is converted to plain text only as a fallback when there is
+   no text/plain part). Stripped parts are never stored, OCR'd or passed to a
+   model. Images can carry injected text, so v1 treats them as a closed door.
+   Adding image or attachment support later requires its own review and must
+   route through the same toolless transform. It may never reach a tool-enabled agent.
+3. **Screen for commands and injection.** The toolless extraction step also
+   flags instruction-like content (tool or command syntax, "ignore previous",
+   requests to change permissions, run, install, send or approve). A flagged
+   reply is held visibly for the owner and is not delivered as actionable text.
+   An unflagged reply is still delivered as quoted, untrusted data, never as an
+   instruction. A mail reply can never grant an approval, unlock a human-only
+   gate or expand an agent's permissions.
+
+Tests: a non-owner sender, a spoofed From with failed DMARC, an image-only
+reply, an attachment carrying instructions, an HTML-hidden payload and a
+command-shaped plain-text reply. Each must be dropped or held with no body
+reaching the install's tools, transcripts or the agent context.
+
 ### Cloudflare capacity and deployment gates
 
 Current [send bindings documentation](https://developers.cloudflare.com/email-service/configuration/send-bindings/)
