@@ -94,7 +94,10 @@ def test_logged_isolation_refuses_rather_than_use_main(routes, project, monkeypa
     _git(project['project_path'], 'branch', '-D', w.branch_name(sid))
     routes._load_agent_log('testproj')[0]['worktree_isolated'] = True
     monkeypatch.setattr(w, 'create', lambda *a, **k: (False, 'no disk'))
-    assert routes._revive_from_agent_log('testproj', sid, 'continue', project) is None
+    # r6: a typed refusal, not None -- None is "nothing to revive" and the callers
+    # answer that with a fresh dispatch in the project checkout.
+    with pytest.raises(launch.RevivalRefused, match='no disk'):
+        routes._revive_from_agent_log('testproj', sid, 'continue', project)
     assert not spawned and sid not in agent_sessions
 
 

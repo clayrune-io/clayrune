@@ -66,6 +66,7 @@ import mc.project_sync as _proj_sync
 import mc.distiller as _distiller           # exploration read-floor (steward cycle refresh)
 from mc import workflows as _wf             # MC-871 Q4: a schedule may invoke a workflow run
 from mc import memory as _mem            # memory read-floor (steward cycle refresh)
+from mc import isolated_launch as _isolated_launch  # MC-1165 r6: typed revival refusal
 from mc import engine_fallback as _engine_fallback  # MC-961: blocked-run pointer on a timer fire
 from mc import engine_pace_dispatch as _engine_pace_dispatch  # usage reader for run conditions
 from mc import schedule_conditions as _schedule_conditions    # "spend leftover weekly allowance"
@@ -1201,6 +1202,13 @@ def _scheduled_continue(p, project_id, session_id, task):
         if _revive_non_claude_from_agent_log(project_id, session_id, task, p):
             _log_agent_activity(project_id, f"Scheduled run (revived): {task[:100]}")
             return 'revived'
+    except _isolated_launch.RevivalRefused as e:
+        # Not "nothing continuable": the conversation owns a worktree that cannot
+        # be restored. Returning None would send the caller to a fresh dispatch
+        # that resumes the same session in the project checkout (MC-1165 r6).
+        # The cadence loop records a failed run with this reason.
+        _log(f"[scheduled-continue] {project_id}: revive refused: {e}")
+        raise
     except Exception as e:
         _log(f"[scheduled-continue] {project_id}: revive failed: {e}")
     return None
@@ -1629,8 +1637,15 @@ def schedule_run_now(schedule_id):
         if prev_sid:
             pcur = load_project(pid)
             if pcur:
-                outcome = _scheduled_continue(pcur, pid, prev_sid,
-                                              _scheduled_run_marker() + task)
+                try:
+                    outcome = _scheduled_continue(pcur, pid, prev_sid,
+                                                  _scheduled_run_marker() + task)
+                except _isolated_launch.RevivalRefused as e:
+                    sched['last_error'] = str(e)
+                    sched['last_error_at'] = now_iso()
+                    _role_writes.save_runtime_schedules(schedules)
+                    return jsonify({'ok': False, 'refused': True, 'session_id': prev_sid,
+                                    'error': str(e)}), 409
                 if outcome == 'busy':
                     return jsonify({'ok': False, 'busy': True,
                                     'session_id': prev_sid,

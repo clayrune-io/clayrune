@@ -207,7 +207,10 @@ def test_hold_vendor_recovery_only_holds_non_claude(provider, held):
 def test_revive_refused_when_the_tree_cannot_be_rebuilt(routes, project, monkeypatch, streaming):
     sid, tree, spawned, _ = revive_setup(routes, project, monkeypatch, streaming, removed=True)
     monkeypatch.setattr(w, 'create', lambda *a, **k: (False, 'no disk'))
-    assert routes._revive_from_agent_log('testproj', sid, 'continue', project) is None
+    # r6: a typed refusal, not None -- None is "nothing to revive" and the callers
+    # answer that with a fresh dispatch in the project checkout.
+    with pytest.raises(launch.RevivalRefused, match='no disk'):
+        routes._revive_from_agent_log('testproj', sid, 'continue', project)
     assert not spawned and sid not in agent_sessions
 
 

@@ -7897,7 +7897,11 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             _log(f"[revive] {project_id}: {session_id[:12]} not revived, "
                  f"worktree unusable: {e}", level='error')
             _log_agent_activity(project_id, f"Revive refused for {session_id[:8]}: {e}")
-            return None
+            # Not None: None reads as "nothing to revive" and the callers start a
+            # fresh dispatch, which can land in the project checkout (r6).
+            raise _isolated_launch.RevivalRefused(
+                f"conversation {session_id[:8]} owns an isolated worktree that cannot be "
+                f"restored ({e}); it was not started in the project checkout") from e
         if _revive_note:
             seed_lines.append(f"[{_revive_note}]")
             seed_ts.append(now_iso())
@@ -7924,6 +7928,10 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                     os.unlink(_sp_path)
                 except OSError:
                     pass
+            if _revive_isolated:
+                raise _isolated_launch.RevivalRefused(
+                    f"conversation {session_id[:8]} could not be restarted in its worktree "
+                    f"({e}); it was not started in the project checkout") from e
             return None
         _sysprompt_cleanup(_sp_path, proc)
         threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
@@ -8017,12 +8025,20 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             from mc.steward_role_dispatch import _append_ack
             _append_ack(session, revival_msg)
         else:
-            with session['stdin_lock']:
-                try:
-                    proc.stdin.write(stdin_msg)  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
-                    proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
-                except Exception as e:
-                    session['log_lines'].append(f'[stdin write error on revive: {e}]')
+            # Deferred to a daemon thread, as normal dispatch does: an ISOLATED
+            # revival holds the project lock (`resuming`) until this function
+            # returns, and a child that has not started reading stdin (rate-limited
+            # startup, the respawn-stdin hang) would pin it, and every send and
+            # dispatch on the project with it (MC-1165 r6). Follow-ups serialize on
+            # `stdin_lock`, so this message still lands first.
+            def _write_revival(_proc=proc, _msg=stdin_msg, _sess=session):
+                with _sess['stdin_lock']:
+                    try:
+                        _proc.stdin.write(_msg)  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
+                        _proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
+                    except Exception as e:
+                        _sess['log_lines'].append(f'[stdin write error on revive: {e}]')
+            threading.Thread(target=_write_revival, daemon=True).start()
         _log(f"[revive] {project_id}: Mode B revived session {session_id} via -r {claude_sid[:12]}")
         return session
 
@@ -8045,6 +8061,10 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                 os.unlink(_sp_path)
             except OSError:
                 pass
+        if _revive_isolated:
+            raise _isolated_launch.RevivalRefused(
+                f"conversation {session_id[:8]} could not be restarted in its worktree "
+                f"({e}); it was not started in the project checkout") from e
         return None
     _sysprompt_cleanup(_sp_path, proc)
     threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
@@ -8216,6 +8236,33 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
     _resume_id = ''
     if provider in _COLD_RESUMABLE_PROVIDERS:
         _resume_id = (entry.get('provider_session_id') or '').strip()
+    # MC-1165 r6: same isolation boundary as `_revive_from_agent_log`. A
+    # conversation that owned a worktree revives into it (recreated if it was
+    # removed) and the dispatch is told so; it is never handed to
+    # `_maybe_isolate_worktree`, which returns the project checkout for a lone
+    # agent. If the tree cannot be had the revival is refused, not re-run in main.
+    # The window covers the cwd decision only (as `_followup_cwd_for` does): a
+    # purged session is not in `agent_sessions`, so nothing removes its tree.
+    _iso_kw = {}
+    _revive_wt = _isolated_launch.owned_worktree(
+        p, session_id, logged=bool(entry.get('worktree_isolated')))
+    if _revive_wt:
+        _stub = {'session_id': session_id, 'project_id': project_id,
+                 '_worktree_isolated': True, '_agent_cwd': _revive_wt}
+        with _worktree_lifecycle.resuming(get_manager(project_id).lock, session_id):
+            try:
+                _iso_cwd, _iso_note = _isolated_launch.launch_cwd(
+                    _stub, p, p.get('project_path', ''))
+            except _isolated_launch.LaunchRefused as e:
+                _log(f"[revive-non-claude] {project_id}: {session_id[:12]} not revived, "
+                     f"worktree unusable: {e}", level='error')
+                _log_agent_activity(project_id, f"Revive refused for {session_id[:8]}: {e}")
+                raise _isolated_launch.RevivalRefused(
+                    f"conversation {session_id[:8]} owns an isolated worktree that cannot be "
+                    f"restored ({e}); it was not started in the project checkout") from e
+        if _iso_note:
+            _log_agent_activity(project_id, _iso_note)
+        _iso_kw = {'agent_cwd_override': _iso_cwd, 'isolated_override': True}
     try:
         _dispatch_agent_internal(project_id, message, resume_id=_resume_id,
                                  incognito=bool(entry.get('incognito')),
@@ -8231,10 +8278,15 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
                                  notify_workflow=_revive_notify_workflow,
                                  spawned_by=_revive_spawned_by,
                                  session_metadata={'_turn_owner': 'spawner' if carry_notify else 'human'},
+                                 **_iso_kw,
                                  **({'prepared_context': role_context, 'preserve_model': True}
                                     if role_context is not None else {}))
     except Exception as e:
         _log(f"[revive-non-claude] {project_id}: dispatch failed: {e}")
+        if _iso_kw:
+            raise _isolated_launch.RevivalRefused(
+                f"conversation {session_id[:8]} could not be restarted in its worktree "
+                f"({e}); it was not started in the project checkout") from e
         return None
     return session_id
 
@@ -8365,6 +8417,9 @@ def _revive_parent_for_delegation(project_id, session_id, message, p, from_sessi
                                                        'step': entry['trigger_id'].split(':', 1)[1]}
                                                       if entry.get('trigger_type') == 'workflow'
                                                       and ':' in (entry.get('trigger_id') or '') else None))
+    except _isolated_launch.RevivalRefused as exc:
+        # Refused before any process started: definitely not delivered.
+        raise DeliveryBlocked(str(exc)) from exc
     except Exception as exc:
         raise DeliveryUncertain(f'parent revival outcome unknown: {exc}')
     return {'revived': True, 'parent_session_id': session_id,
@@ -13390,6 +13445,10 @@ def agent_send(project_id):
                 revived = _revive_from_agent_log(
                     project_id, session_id, message, p,
                     carry_notify=bool(_explicit_notify_session))
+            except _isolated_launch.RevivalRefused as e:
+                # A refusal is not "nothing to revive": do not fall through to a
+                # fresh dispatch (MC-1165 r6).
+                return jsonify({'ok': False, 'error': str(e), 'refused': True}), 409
             except RosterRecoveryHeld as e:
                 return jsonify({'ok': False, 'error': str(e)}), 409
             except Exception as e:
@@ -13413,6 +13472,8 @@ def agent_send(project_id):
                 fresh_sid = _revive_non_claude_from_agent_log(
                     project_id, session_id, message, p,
                     carry_notify=bool(_explicit_notify_session))
+            except _isolated_launch.RevivalRefused as e:
+                return jsonify({'ok': False, 'error': str(e), 'refused': True}), 409
             except RosterRecoveryHeld as e:
                 return jsonify({'ok': False, 'error': str(e)}), 409
             except Exception as e:
@@ -13877,6 +13938,8 @@ def agent_followup(project_id):
             revived = _revive_from_agent_log(
                 project_id, session_id, message, p,
                 carry_notify=bool(_explicit_notify_session))
+        except _isolated_launch.RevivalRefused as e:
+            return jsonify({'ok': False, 'error': str(e), 'refused': True}), 409
         except RosterRecoveryHeld as e:
             return jsonify({'ok': False, 'error': str(e)}), 409
         if revived:
@@ -13892,6 +13955,8 @@ def agent_followup(project_id):
             fresh_sid = _revive_non_claude_from_agent_log(
                 project_id, session_id, message, p,
                 carry_notify=bool(_explicit_notify_session))
+        except _isolated_launch.RevivalRefused as e:
+            return jsonify({'ok': False, 'error': str(e), 'refused': True}), 409
         except RosterRecoveryHeld as e:
             return jsonify({'ok': False, 'error': str(e)}), 409
         if fresh_sid:

@@ -34,6 +34,18 @@ class LaunchRefused(RuntimeError):
     """The session is isolated and a usable worktree could not be produced."""
 
 
+class RevivalRefused(LaunchRefused):
+    """A purged isolated conversation could not be revived into its worktree.
+
+    Raised by the two `_revive_*_from_agent_log` functions INSTEAD of returning
+    None. None means "nothing to revive here", and every caller answers that by
+    starting a fresh dispatch, which for a lone agent runs in the project
+    checkout. A refusal is a different answer: the conversation exists, its
+    worktree is the only place it may run, and that cannot be had. Callers turn
+    this into a 409 (HTTP) or a failed run (scheduler) carrying `str(exc)` and
+    never fall through to a fresh dispatch (MC-1165 r6)."""
+
+
 def _same(a: str, b: str) -> bool:
     try:
         return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
