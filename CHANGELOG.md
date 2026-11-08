@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-07] - Landing gate blocks every red branch (MC-1164 round 9)
+
+- The merged candidate now passes only if every `verify_command` exits 0 with no timeout, infrastructure error or oversize output; otherwise it blocks and the message names each failing command, its exit code and the output tail. No runner output is parsed to decide a verdict.
+- The target-tip baseline run, its cache and all failure-identity code (`failure_signatures`, `failure_totals`, `prove`, `compare`) are removed, along with their tests. Accepted cost: nothing lands while master is red. Result fields `new_failures`, `baseline_failures`, `count_increases`, `unprovable`, `baseline` are replaced by `failures` and `message`. Contract: `docs/LANDING_GATE.md`. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-07] - Landing gate blocks when it cannot prove no new failure (MC-1164 review round 6)
 
 - Runner totals are now an ordered list per command (`failure_totals`), never a sum. A different number of total lines between baseline and candidate blocks, as does any element that rose. A pytest total the parser cannot attribute (a wrapper footer after it, a test printing one) is an explicit `ambiguous` marker and blocks while the candidate exits non-zero; an exit-0 candidate still passes. Reasons are reported in the new `unprovable` list.
