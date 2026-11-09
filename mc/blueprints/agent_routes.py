@@ -8841,7 +8841,7 @@ def _session_cumulative_transcript_telemetry(project_id, session):
 
 
 def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
-                                write_turn_start=True, attempt=None):
+                                write_turn_start=True, attempt=None, self_started=False):
     """Write a placeholder agent_log row at dispatch time so trigger correlation
     survives a server restart that kills the session before _log_agent_completion
     can run.
@@ -8860,14 +8860,22 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
     `write_turn_start=False` is for callers whose turn already has (or is
     about to get) its own 'turn_start' row -- see the usage-breakdown block
     at the bottom.
+
+    `self_started=True` revalidates the observed idle attempt under the
+    manager lock, then claims and marks running in that same critical section.
+    Already-running work keeps its reader on storage failure; its live token
+    rolls back to the saved owner. False means another delivery won the claim.
     """
     project_id = session.get('project_id')
-    if not project_id or session.get('incognito') or session.get('housekeeping'):
+    skip_history = not project_id or session.get('incognito') or session.get('housekeeping')
+    if skip_history and not self_started:
         return
     sid = session.get('session_id', '')
     if not sid:
         return
     callback_attempt = _delivery_attempt.DeliveryAttempt(session.get('_delivery_attempt_id') or '')
+    if self_started and (session.get('status') != 'idle' or session.get('waiting_for_question')):
+        return False
     entry = {
         'ts': now_iso(),
         'task': session.get('task', ''),
@@ -8938,7 +8946,9 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
     if session.get('human_joined'):
         entry['human_joined'] = True   # display-only, see _mark_human_joined
     entry.update(_resume_cwd.isolation_log_fields(session))
+    superseded = False
     def upsert(log):
+        nonlocal superseded
         # Upsert: a continued scheduled run reuses the prior run's session_id
         # (see _dispatch_agent_internal reuse_session_id). Refresh that row in
         # place — reset it to in_progress for this fire, preserve any csid
@@ -8948,6 +8958,9 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
                            if e.get('session_id') == sid), None)
         if existing_i is not None:
             prev = log[existing_i]
+            if self_started and not callback_attempt.owns_row(prev):
+                superseded = True
+                return
             if identity_only:
                 if not callback_attempt.owns_row(prev):
                     return
@@ -8999,13 +9012,32 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
             else:
                 entry.update(_delivery_attempt.pending_fields(session))
             log.insert(0, entry)
-    try:
-        with get_manager(project_id).lock:
-            _update_agent_log(project_id, upsert)
-    except Exception as e:
-        _log(f"[dispatch-log] {project_id}: pending write failed: {e}")
-        if strict:
-            raise
+    with get_manager(project_id or '').lock:
+        if self_started and (session.get('status') != 'idle'
+                or session.get('waiting_for_question')
+                or (session.get('_delivery_attempt_id') or '') != callback_attempt.attempt_id):
+            return False
+        had_attempt = '_delivery_attempt_id' in session
+        prior_attempt = session.get('_delivery_attempt_id')
+        try:
+            if not skip_history:
+                _update_agent_log(project_id, upsert)
+        except Exception as e:
+            if self_started:
+                if had_attempt:
+                    session['_delivery_attempt_id'] = prior_attempt
+                else:
+                    session.pop('_delivery_attempt_id', None)
+            _log(f"[dispatch-log] {project_id}: pending write failed: {e}")
+            if strict and not self_started:
+                raise
+        if superseded:
+            return False
+        if self_started:
+            session['status'] = 'running'
+            session['last_status_change_time'] = _time.time()
+    if skip_history:
+        return True
 
     # P1-3 fix (docs/_journal/4668eafc-mc998-fenn-review.md finding 3): a
     # dispatch-time 'baseline' session_checkpoint row, zero cumulative tokens
@@ -9051,6 +9083,7 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
     else:
         if not identity_only and not _first_turn and write_turn_start:
             _write_usage_breakdown_turn_start_checkpoint(session)
+    return True
 
 def _last_reply_text(session):
     """The child's last real assistant text, for the spawner callback.
@@ -9269,11 +9302,8 @@ def _note_self_started_turn(session):
     8d17c1c423d8 on 2026-10-04) when neither wake re-armed. Only the spawner
     latch re-arms; `_notify_workflow_sent` stays permanent (a workflow step
     completes once)."""
-    if session.get('status') != 'idle' or session.get('waiting_for_question'):
+    if not _log_agent_dispatch_pending(session, write_turn_start=False, self_started=True):
         return
-    _log_agent_dispatch_pending(session, strict=True, write_turn_start=False)
-    session['status'] = 'running'
-    session['last_status_change_time'] = _time.time()
     background_wake = bool(session.pop(_bg_tasks.RESUME_PENDING_KEY, None))
     # MC-998 round 4: this turn never passes the dispatch-pending writer, so
     # the usage store still held the previous turn's 'completed' fact (or a

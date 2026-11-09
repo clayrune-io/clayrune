@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Keep self-started readers on their current delivery (MC-1168 round 9)
+
+- Self-started Mode B turns recheck idle status and captured attempt ownership under the project lock before claiming history and marking running. Delayed wakes preserve newer scheduled or user deliveries, including their task and failure handling.
+- A history-write failure after execution starts logs the error, restores the saved attempt token and keeps draining stdout. Strict prelaunch refusal remains. Retained Fenn's two reproductions byte-for-byte, added ownership/failure controls and integrated master `5c5a4b9d`. Branch candidate only; no merge to master, push or restart.
+
 ## [2026-11-09] - Require attempt ownership for run-history updates (MC-1168 round 8)
 
 - Missing or empty attempt IDs now refuse runtime updates. Completion, start failure and native-identity backfills compare the durable ID before changing a row; a late predecessor completion cannot replace or outrank a newer attempt.

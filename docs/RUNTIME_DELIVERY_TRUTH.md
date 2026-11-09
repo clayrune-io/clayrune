@@ -1,6 +1,6 @@
 # Runtime delivery acknowledgment (MC-1168)
 
-Round 8 completes round 7's durable ownership invariant. `mc/delivery_attempt.py`
+Round 9 closes the self-start races in round 8's durable ownership guards. `mc/delivery_attempt.py`
 mints a UUID at capture, before spawn can start an acknowledgment writer.
 It claims the existing durable session row inside the manager -> log-leaf
 transaction. Storage failure propagates before spawn. The captured token is
@@ -51,8 +51,28 @@ and production persistence requirements remain intact.
 Live scheduled Mode B appends capture a new `DeliveryAttempt`, then publish the
 pending task using that same token before starting stdin delivery. Its deferred
 write failure keeps the captured token and original process. No manager/log
-lock is acquired while the stdin lock is held. Self-started Mode B turns also
-publish a fresh pending identity. Hivemind lineage/reviewer pending writers
+lock is acquired while the stdin lock is held. Self-started Mode B turns capture
+the previous attempt before observing idle. Pending-entry preparation stays
+outside the manager lock; at claim time, the status must still be idle, no
+question may be waiting, and the captured live token must still match. The
+durable row must also belong to that token. Only then can the writer mint a
+fresh pending identity and mark the session running, in the same manager-lock
+critical section. A delayed wake loses without changing a newer delivery's
+row, task, status or callback state, even if that delivery already returned to
+idle. No UUID is minted for a refused claim.
+
+This wake is already executing: a pending-history save failure is logged and
+does not escape the live reader. The live token is restored to its prior saved
+owner while still holding the manager lock, the session is marked running,
+and stdout continues draining. Strict prelaunch persistence still refuses a
+launch on failure. Incognito and housekeeping wakes update liveness without
+minting tokens or writing history. Fenn's two unchanged real-reader probes live
+in `tests/mc1168_r9/test_self_start.py`; round-9 controls additionally cover
+token rollback, ownership before the first idle read, completed intervening
+deliveries, question/running transitions, manager-lock atomicity, unowned rows,
+prelaunch refusal and history exclusions. Provider processes/pipes are doubles.
+
+Hivemind lineage/reviewer pending writers
 claim fresh IDs; the integration-review task update requires the existing ID.
 
 `mc/agent_log_maintenance.py` owns startup log concurrency. It claims untagged
