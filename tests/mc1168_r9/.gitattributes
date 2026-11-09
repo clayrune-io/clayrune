@@ -1,0 +1,2 @@
+# Preserve the unchanged reviewer probe bytes on Windows checkouts too.
+test_self_start.py text eol=lf
