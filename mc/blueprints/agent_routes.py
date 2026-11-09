@@ -90,7 +90,7 @@ from flask import Blueprint, Flask, Response, has_request_context, jsonify, make
 from mc import media as _media
 from mc import obs, state
 from mc.terminal_delivery import TerminalDeliveryGate
-from mc.pending_delivery import after_publication, complete_or_defer, publication_boundary
+from mc.pending_delivery import after_publication, complete_or_defer, delivery_failure_handler, publication_boundary
 from mc.pending_delivery_http import delivery_response
 from mc import workflows as _workflows  # leaf module (no Flask import); see _notify_workflow_step
 from mc import state as _mc_state  # readers write _mc_state._LAST_SYSTEM_STATUS verbatim
@@ -11407,12 +11407,15 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                 [str(UPLOADS_DIR)] if UPLOADS_DIR else []),
         )
 
-    try:
-        handle = bridge.launch(_spawn_runtime) if bridge is not None else _spawn_runtime()
-        if bridge is not None and (handle is None or not hasattr(handle, 'session_dict')
-                                   or not hasattr(handle, 'mc_session_id')):
-            raise TypeError('lifecycle bridge launch must return SessionHandle')
-    except Exception as e:
+    launched_proc = None
+
+    def _start_failed(e, *, deferred=False):
+        # Delivery may settle after this helper returned. Never overwrite a
+        # replacement owner; the runtime disowns only its own rejected proc.
+        if (agent_sessions.get(session_id) is not session
+                or (deferred and session.get('proc') is not None
+                    and session.get('proc') is not launched_proc)):
+            return
         session['status'] = 'error'
         # A missing CLI can never succeed by retrying — trip the circuit
         # breaker on the FIRST failure instead of leaving pending_recovery_message
@@ -11431,6 +11434,16 @@ def _dispatch_via_runtime(p, task, *, provider_name,
         session['process_alive'] = False
         session['last_status_change_time'] = _time.time()
         _persist_runtime_start_failure(session)
+
+    try:
+        with delivery_failure_handler(lambda e: _start_failed(e, deferred=True)):
+            handle = bridge.launch(_spawn_runtime) if bridge is not None else _spawn_runtime()
+            launched_proc = session.get('proc')
+            if bridge is not None and (handle is None or not hasattr(handle, 'session_dict')
+                                       or not hasattr(handle, 'mc_session_id')):
+                raise TypeError('lifecycle bridge launch must return SessionHandle')
+    except Exception as e:
+        _start_failed(e)
         raise
 
     _log_agent_activity(project_id, f"Agent dispatched (provider={provider_name}): {task[:100]}")

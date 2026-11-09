@@ -403,20 +403,18 @@ def test_agent_followup_reports_a_failed_revive_delivery(revive_env, monkeypatch
     assert body['ok'] is False and body['delivered'] is False
 
 
-def test_scheduled_continue_does_not_report_revived_on_a_failed_delivery(revive_env):
-    """scheduler_routes' caller wraps the revive in `except Exception` and
-    answers None (= fall back to a fresh run), never 'revived'."""
+def test_scheduled_continue_does_not_report_revived_on_a_failed_delivery(revive_env, monkeypatch):
+    """A failed addressed revival propagates; None would authorize replay."""
     from mc.blueprints import scheduler_routes as sr
     ar = revive_env['ar']
     revive_env['spawned']['proc'] = _Proc(_Stdin(fail_on='write'), pid=515156)
-    prev = (sr._revive_from_agent_log, sr.get_manager, sr._revive_non_claude_from_agent_log)
-    try:
-        sr._revive_from_agent_log = ar._revive_from_agent_log
-        sr._revive_non_claude_from_agent_log = lambda *a, **k: pytest.fail('unexpected')
-        out = sr._scheduled_continue(revive_env['project'], 'p1', 'revsid000001', 'task')
-    finally:
-        sr._revive_from_agent_log, sr.get_manager, sr._revive_non_claude_from_agent_log = prev
-    assert out is None
+    monkeypatch.setattr(ar.get_manager('p1'), 'ensure_guardian', lambda: None)
+    monkeypatch.setattr(sr, 'get_manager', ar.get_manager)
+    monkeypatch.setattr(sr, '_revive_from_agent_log', ar._revive_from_agent_log)
+    monkeypatch.setattr(sr, '_revive_non_claude_from_agent_log',
+                        lambda *a, **k: pytest.fail('unexpected'))
+    with pytest.raises(ar.ReviveDeliveryError, match='BrokenPipeError'):
+        sr._scheduled_continue(revive_env['project'], 'p1', 'revsid000001', 'task')
 
 
 def test_delegation_parent_revive_fails_closed_on_a_failed_delivery(app_env, monkeypatch):

@@ -7,6 +7,23 @@ outermost guarded caller awaits only after its project/lifecycle locks exit.
 
 ## Failure contract
 
+- Scheduled cold revival propagates `ReviveDeliveryError` and
+  `PromptDeliveryError` to cadence and Run Now. Neither automatically dispatches
+  or retries that task. Run Now returns HTTP 502 with `ok: false`,
+  `delivered: false`, the addressed `session_id` and the delivery error. Cadence
+  consumes the failed slot, retaining the regular next cadence; a failed
+  one-shot stays disabled rather than retrying or deleting itself.
+- Both paths retain `last_error` / `last_error_at` and mark the schedule's
+  conversation row `error` with the delivery error in its summary. Prior
+  conversation identity and usage remain intact. If no row exists yet, the
+  failure is inserted into the same serialized agent-log store, so Runs can
+  show it. MC-1165 isolation refusals retain their existing handling. Only
+  explicit clean misses permit fallback; unexpected revival errors propagate.
+- `delivery_failure_handler` captures runtime launch cleanup with each deferred
+  acknowledgment. A rejected Codex write reaches `_persist_runtime_start_failure`
+  after the outer publication locks exit, marking its pending row `error` with
+  the failure summary. Cleanup checks session and process ownership, leaving
+  a newer owner and its pending row untouched.
 - Cold Codex revival preserves `PromptDeliveryError` through
   `_revive_non_claude_from_agent_log`. Both `/agent/send` and `/agent/followup`
   return HTTP 502 with `ok: false`, `delivered: false`, the error, and the
@@ -73,6 +90,36 @@ MC-1165 hung-writer regression now expects the truthful acknowledgment wait
 and proves another thread can acquire the project lock before releasing stdin.
 
 ## Validation
+
+Round-4 results and exact commands are recorded in the main-checkout journal
+`docs/_journal/da5ee79f-runtime-delivery-truth.md`. All three round-3 finding
+probes were copied unchanged and pass. The permanent regressions run real
+scheduler/revival/dispatch paths with process doubles; cadence and Run Now
+each cover write failure and flush failure after an accepted write. They also
+check Run history, native-provider delivery errors, deferred durable cleanup
+outside locks, and preservation of replacement process/registry ownership.
+
+The historical round-3 594-pass run below used a corrected scratch retry
+probe. Fenn's original retained probe has contradictory assertions requiring
+two spawned processes before requiring only one. Round 4 retains that original
+file unchanged in the requested 18-file selection; its failure is disclosed
+separately from the permanent tests and the three finding probes.
+
+| Round-4 selection | Passed | Failed | Skipped | Exit |
+| --- | ---: | ---: | ---: | ---: |
+| Three unchanged round-3 finding probes | 3 | 0 | 0 | 0 |
+| New permanent regressions + scheduler route suite | 84 | 0 | 0 | 0 |
+| Fenn's exact 18-file runtime selection, unchanged scratch probes | 593 | 1 | 1 | 1 |
+| Fenn's exact 12-file MC-1165 selection | 209 | 0 | 13 | 0 |
+
+The 18-file failure is solely the contradictory scratch retry assertion at
+line 109; its 592 permanent tests pass. The first run also exposed an old
+permanent scheduler test expecting `None`; that test now requires propagation
+and passes in the final exact selection. Counts overlap. Pyright on the seven
+reviewed runtime modules plus scheduler routes and the new failure module
+reports 15 errors, all pre-existing in agent routes. Comparing diagnostic
+file/rule/message/severity multiplicities with Fenn's exact `156d8a56` report
+gives zero new and zero removed diagnostics; the other eight modules are clean.
 
 Round-3 validation through the installation's `tools/test-run.py` launcher,
 from the task worktree with the project's interpreter (`-q -o addopts=`):
@@ -174,6 +221,10 @@ review candidate: no merge, push, or server restart.
 For round 3, revert its task-branch integration commit to restore the prior
 branch state; preserve the separate MC-1165 work on master. No production
 deployment or master merge is part of this review candidate.
+
+Round 4 is a separate fix commit on that branch state. Reverting it removes
+the scheduler failure history and deferred runtime cleanup repairs without
+changing MC-1165 or the round-3 acknowledgment boundaries.
 
 Round 3 preserves Claude revival's existing unbounded acknowledgment wait,
 now outside the project/lifecycle locks; it does not add a startup deadline.

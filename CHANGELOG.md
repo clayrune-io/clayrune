@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Keep failed scheduled deliveries failed (MC-1168 round 4)
+
+- Scheduled revival write/flush failures propagate through cadence and Run Now without fallback dispatch or retry. The schedule retains its delivery error and its Runs row becomes `error`; Run Now returns HTTP 502 for the addressed conversation. MC-1165 isolation refusals stay unchanged.
+- Deferred Codex delivery failures run launch cleanup when acknowledgment settles after publication locks exit, preserving replacement ownership. The durable pending row becomes `error` with the dispatch-failure summary.
+- Added permanent scheduler, durable-row, lock and ownership regressions. Contract: `docs/RUNTIME_DELIVERY_TRUTH.md`. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-09] - Acknowledge delivery after guarded publication (MC-1168 round 3)
 
 - Codex first-turn and follow-up readers drain stdout while delivery is pending; turn completion, EOF callbacks and model-refusal retry wait for the actual stdin write and close. A rejected write cannot launch a retry or mark a replacement process dead.

@@ -12,6 +12,18 @@ from typing import Callable, Iterator
 
 
 _pending: ContextVar[list[Callable[[], None]] | None] = ContextVar('pending_delivery', default=None)
+_failure_handler: ContextVar[Callable[[Exception], None] | None] = ContextVar(
+    'delivery_failure_handler', default=None)
+
+
+@contextmanager
+def delivery_failure_handler(handler: Callable[[Exception], None]) -> Iterator[None]:
+    """Carry launch cleanup with acknowledgments beyond publication locks."""
+    token = _failure_handler.set(handler)
+    try:
+        yield
+    finally:
+        _failure_handler.reset(token)
 
 
 def complete_or_defer(acknowledge: Callable[[], None]) -> None:
@@ -19,7 +31,17 @@ def complete_or_defer(acknowledge: Callable[[], None]) -> None:
     if pending is None:
         acknowledge()
     else:
-        pending.append(acknowledge)
+        handler = _failure_handler.get()
+        if handler is None:
+            pending.append(acknowledge)
+        else:
+            def settle():
+                try:
+                    acknowledge()
+                except Exception as exc:
+                    handler(exc)
+                    raise
+            pending.append(settle)
 
 
 @contextmanager
