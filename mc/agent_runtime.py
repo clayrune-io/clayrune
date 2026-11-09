@@ -5530,6 +5530,8 @@ def _require_prompt_delivered(delivery: Optional[_PromptDelivery], session: Dict
 
 
 def _pending_prompt(delivery, session, proc, engine):
+    from mc.delivery_attempt import DeliveryAttempt
+    attempt = DeliveryAttempt.capture(session, proc=proc)
     gate = TerminalDeliveryGate(
         lambda exc: _log(f'[runtime:{engine}] terminal processing failed: {exc}', flush=True))
     session['_terminal_delivery_gate'] = (proc, gate)
@@ -5537,6 +5539,9 @@ def _pending_prompt(delivery, session, proc, engine):
     def acknowledge():
         try:
             _require_prompt_delivered(delivery, session, proc, engine, gate.reject)
+        except Exception as exc:
+            gate.reject()
+            raise attempt.bind(exc)
         except BaseException:
             gate.reject()
             raise

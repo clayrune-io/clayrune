@@ -8094,6 +8094,8 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         with mgr.lock:
             _prior_session = agent_sessions.get(session_id)
             _was_listed = session_id in mgr.session_ids
+            from mc.delivery_attempt import DeliveryAttempt
+            delivery_attempt = DeliveryAttempt.capture(session, _prior_session, proc=proc)
             session.update(_credits_session.snapshot(entry))
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
@@ -8153,8 +8155,8 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                 delivery_gate.reject()
                 _abort_failed_revive(mgr, session_id, session, proc, _prior_session, _was_listed)
                 _log(f"[revive] {project_id}: stdin delivery failed for {session_id}: {why}")
-                raise ReviveDeliveryError(
-                    f'revive spawned but the message was not written to the agent: {why}')
+                raise delivery_attempt.bind(ReviveDeliveryError(
+                    f'revive spawned but the message was not written to the agent: {why}'))
 
             complete_or_defer(_acknowledge_revival)
         _log(f"[revive] {project_id}: Mode B revived session {session_id} via -r {claude_sid[:12]}")

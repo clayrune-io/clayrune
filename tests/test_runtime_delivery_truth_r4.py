@@ -9,6 +9,7 @@ import pytest
 
 import mc.agent_runtime as art
 from mc.pending_delivery import publication_boundary
+from mc.delivery_attempt import DeliveryAttempt
 from test_runtime_delivery_truth import (  # noqa: F401
     app_env, revive_env, codex, _Proc, _Stdin, CSID,
 )
@@ -106,7 +107,7 @@ def test_schedule_codex_delivery_error_never_falls_back(scheduled, monkeypatch, 
 
     def reject(*a):
         calls.append(a)
-        raise art.PromptDeliveryError('codex delivery failed')
+        raise DeliveryAttempt.capture(None).bind(art.PromptDeliveryError('codex delivery failed'))
 
     monkeypatch.setattr(env['sr'], '_revive_non_claude_from_agent_log', reject)
     if path == 'run-now':
@@ -215,7 +216,8 @@ def test_failed_schedule_history_can_precede_pending_row(app_env, monkeypatch):
     from mc.schedule_delivery_failure import record_failure
     rows = []
     monkeypatch.setattr(app_env['ar'], '_update_agent_log', lambda pid, update: update(rows))
-    record_failure('p1', 's1', 'addressed', 'task', art.PromptDeliveryError('failed'))
+    record_failure('p1', 's1', 'addressed', 'task',
+                   DeliveryAttempt.capture(None).bind(art.PromptDeliveryError('failed')))
     assert rows[0]['status'] == 'error' and rows[0]['session_id'] == 'addressed'
     assert rows[0]['trigger_type'] == 'schedule' and rows[0]['trigger_id'] == 's1'
     assert 'failed' in rows[0]['summary']

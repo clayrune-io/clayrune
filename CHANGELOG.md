@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Preserve replacement runs after stale delivery failures (MC-1168 round 6)
+
+- Claude revival and Codex acknowledgment capture immutable process, registry and turn ownership before waiting. A failed scheduled attempt updates history only while that ownership matches and the durable turn has not advanced; superseded failures log a skip and preserve the replacement row.
+- Cadence and Run Now retain the original failure, with no fallback dispatch or retry. Added real-path replacement regressions for both entry points, including same-turn takeover and takeover after rollback. Integrated exact master `2ffe19ad`; local review candidate only, with no push, merge to master or restart.
+
 ## [2026-11-09] - Preserve delivery, cwd and billing behavior together (MC-1168 round 5)
 
 - Integrated master MC-1167 and API credits phase 2 without dropping missing-cwd HTTP 409 refusals or failed-delivery handling. Mode B billing result accounting and exit replay retain the delivery acknowledgment gate; revival retains both billing state and rollback ownership.

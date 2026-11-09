@@ -1,5 +1,59 @@
 # Runtime delivery acknowledgment (MC-1168)
 
+Round 6 integrates exact master `2ffe19ad` and repairs stale scheduled-failure
+persistence. `mc/delivery_attempt.py` captures the attempted session object,
+process and delegation turn before acknowledgment can wait, plus the predecessor
+that Claude rollback may restore. Claude revival and both Codex launch paths
+bind this immutable snapshot to their delivery exception. Neither scheduler
+caller infers ownership from the replacement session at failure time.
+
+`record_failure` takes the project lock, checks the captured owner (including
+unchanged predecessor restoration), then uses the serialized log transaction.
+The transaction refuses to update a row with a later delegation turn. Manager
+then log remains the lock order; no acknowledgment or process wait occurs in
+this compare-and-set. Replaced process, replaced registry object, reused
+predecessor or newer durable turn causes a logged skip. An exception without
+captured attempt identity also logs a skip rather than guessing. The original
+Run Now still returns HTTP 502; cadence still records the error and consumes
+the slot. Dave's pick (c), no automatic fallback or retry, remains intact.
+
+`tests/test_runtime_delivery_truth_r6.py` ports Fenn's two replacement probes
+and covers cadence and Run Now, same-turn replacements, takeover between
+rollback and recording, newer durable rows after owner cleanup, absent attempt
+identity and predecessor reuse. A real Codex acknowledgment regression checks
+that capture uses its actual spawned process even if the session field already
+points at a successor. The two synthetic failures in the round-4
+fixtures now supply the same ownership snapshot as real delivery exceptions;
+the real failure-history and no-replay assertions are retained. No scheduler
+route policy changed. Round 6 validation is recorded below.
+
+Round-6 stable-source checks after exact master integration, all through the
+installation test launcher:
+
+| Selection | Passed | Failed | Skipped | Exit |
+| --- | ---: | ---: | ---: | ---: |
+| Fenn's unchanged replacement probes | 2 | 0 | 0 | 0 |
+| Round 4 + round 5 + round 6 regressions | 31 | 0 | 0 | 0 |
+| Exact requested 18-file runtime selection | 593 | 1 | 1 | 1 |
+| All five resume-cwd files | 54 | 0 | 0 | 0 |
+| All six API-credits files | 161 | 0 | 0 | 0 |
+| Six scheduler files | 195 | 0 | 0 | 0 |
+| Exact 12-file MC-1165 selection | 211 | 0 | 13 | 0 |
+
+Counts overlap. Round 6 contributes 15 permanent tests. The exact runtime
+selection retains the original contradictory scratch retry assertion at line
+109, unchanged: it requires two spawns before requiring one spawn at line 115.
+The sole failure remains that assertion; the command is red, with no landing
+gate waiver. Pyright on ten production modules (including the new module)
+exits 1 with 15 existing agent-route diagnostics. Comparison by normalized
+file, rule, message, severity and multiplicity against Fenn's exact round-5
+artifact gives zero new and zero removed diagnostics; that baseline was not
+rerun. The other nine modules are clean. Telemetry gaps were printed; counts
+and exits derive from child output. Exact commands, outputs and timing are
+retained in the main-checkout journal and scratch handoff report. No live
+provider, authenticated conversation, paid billing, deployment, master merge,
+push or restart was exercised.
+
 Round 3 integrates master `1fdffd96` with the prior delivery repair at
 `c046c4da`. Dave selected Option A: keep draining stdout while initial delivery
 is pending, and separate guarded launch/publication from acknowledgment. The
@@ -59,7 +113,9 @@ paid billing run, deployment, master merge, push or restart was exercised.
   consumes the failed slot, retaining the regular next cadence; a failed
   one-shot stays disabled rather than retrying or deleting itself.
 - Both paths retain `last_error` / `last_error_at` and mark the schedule's
-  conversation row `error` with the delivery error in its summary. Prior
+  conversation row `error` with the delivery error in its summary if it is
+  still owned by the failed attempt. A superseding owner or newer durable turn
+  preserves its row and produces a logged skip. Prior
   conversation identity and usage remain intact. If no row exists yet, the
   failure is inserted into the same serialized agent-log store, so Runs can
   show it. MC-1165 isolation refusals retain their existing handling. Only
