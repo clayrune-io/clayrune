@@ -531,6 +531,12 @@ strategy decision is part of this spec.
 
 ## Implementation boundaries and build gates
 
+Unit 2's separate mail-only Ed25519 wire contract (Dave's D7 B resolution,
+2026-11-09), Worker APIs, D1 schema, custody receipts and unit 4/7 handoff are in
+[AGENT_MAIL_TRANSPORT.md](AGENT_MAIL_TRANSPORT.md). This is a synthetic-tested
+branch candidate, not evidence of deployment or live readiness. Unit 3's later
+no-HTML-fallback decision remains stricter than this draft's fallback wording.
+
 This is a specification-only change. No implementation, API registration,
 Cloudflare deployment, enrollment, test mail, privacy publication, migration,
 live config change or tunnel provisioning is authorized by this document.
