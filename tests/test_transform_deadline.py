@@ -34,6 +34,7 @@ def legs(monkeypatch, tmp_path):
 
         monkeypatch.setattr(rt._api_credits_offload, 'try_offload', api)
         monkeypatch.setattr(rt.subprocess, 'run', cli)
+        monkeypatch.setattr(rt._transform_process_deadline, 'run', cli)
 
     return runtime, clock, calls, configure
 

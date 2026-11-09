@@ -379,6 +379,20 @@ per-leg timeout and return behavior; API credits billing selection is preserved.
 Deadline policy lives in `mc/transform_deadline.py`; the runtime only wires the
 optional parameter and checks its legs.
 
+For deadline callers, `mc/transform_http_deadline.py` owns a streamed requests
+session. The calling thread watches the absolute deadline across headers and
+body reads, shuts down/closes the active socket and closes the session on
+exhaustion; a trickle cannot extend the budget. Socket references survive
+urllib3 detaching a `Connection: close` response from its connection. A blocked
+resolver/connect worker cannot delay the caller; cancellation refuses any
+connection completing afterward. No response returned after the deadline is
+accepted. `mc/transform_process_deadline.py` uses Popen and daemon pipe readers;
+on timeout it kills only a still-live owned root tree using the same platform
+split as `_kill_pid` (Windows `taskkill /F /T /PID`, guarded POSIX `kill_tree`).
+Cleanup and output draining share a 0.5-second cap inside the existing
+three-second finalization reserve. An exited root is never passed to the tree
+killer. Omitted/None deadlines retain the original requests/subprocess.run paths.
+
 Finalization shares the store write transaction with
 consent/generation/thread/expiry/lease revalidation; a late result cannot make a
 revoked or expired claim ready. Existing crash/backoff recovery is bounded;
@@ -422,6 +436,25 @@ errors, warnings and informations (exit 0). The temporary Worker dependency
 junction was removed nonrecursively after all cross-language tests completed;
 the main checkout dependency remained intact. No live mail/model validation,
 merge, push, restart or deployment was performed.
+
+Round 3 adds the real-I/O review probes at
+`tools/smoke/agent_mail_deadline_probe.py` (12 cases) and
+`tools/smoke/agent_mail_cli_tree_probe.py` (one Windows case). Run them with the
+same installation launcher and `python -m pytest -o addopts=` selection.
+These smokes register their harmless synthetic children with the live Process
+Manager; they live outside `tests/`, whose live-state guard correctly refuses
+that registration. No guard or permission setting is changed. The HTTP probe
+uses real requests/urllib3 reads on a socket pair, with no listener/provider.
+Per Dave's 2026-11-09 13:03 decision, its only relaxed assertion permits
+ConnectionAbortedError/ConnectionResetError/BrokenPipeError or OSError winerror
+10053/10054, recorded at/after the absolute deadline minus 50ms measurement
+tolerance. Other errors or early disconnects fail. Added assertions require
+elapsed time below the lease, persisted blocked/extraction_timeout after one
+attempt, and no automatic reclaim. Original reviewer files remain byte-identical
+in retained scratch evidence. Synthetic clock mocks also target the new CLI
+runner seam; their assertions remain unchanged. Seven isolated tests in
+`tests/test_transform_hard_io_deadline.py` cover headers, body trickles including
+`Connection: close`, timely success, stale-root refusal and bounded cleanup.
 
 ## D1 ledger, replay, bounds and visibility
 

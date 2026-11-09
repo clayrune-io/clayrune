@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Enforce mail-transform deadlines during HTTP and CLI I/O (MC-1166 unit 5 round 3)
+
+- Deadline callers use an owned streamed HTTP session with a watchdog that shuts down the active socket, including trickling headers and response bodies. API credit selection/accounting and no-deadline calls keep their existing paths.
+- Deadline CLI calls use Popen with a live owned-root check, Windows `taskkill /F /T /PID` or the existing guarded POSIX helper, and a half-second cap on cleanup/output draining. Store lease fencing is unchanged; timeout holds persist before the lease expires.
+- Retained the independent real-I/O review probes as registered-process smokes. The committed HTTP probe accepts only specified peer disconnects after deadline (50ms measurement tolerance), and asserts durable timeout state, elapsed time below the lease, and no reclaim, per Dave's 13:03 decision. Branch candidate only; no merge, push, restart or real mail/model calls.
+
 ## [2026-11-09] - Bound agent-mail extraction across API and CLI fallback (MC-1166 unit 5 round 2)
 
 - Added an optional total monotonic deadline to the verified Claude transform. API and CLI legs receive only the remaining budget; subscription fallback is skipped below three seconds. Callers without a deadline retain their existing per-leg timeout behavior.

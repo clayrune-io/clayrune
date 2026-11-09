@@ -190,6 +190,7 @@ def test_real_runtime_fallback_exceeds_adapter_deadline(monkeypatch, tmp_path, o
 
     monkeypatch.setattr(offload.transport, 'send', api_timeout)
     monkeypatch.setattr(rt.subprocess, 'run', cli_success)
+    monkeypatch.setattr(rt._transform_process_deadline, 'run', cli_success)
     adapter = MailLaunder(store, enabled=True)
     results = []
     for _ in range(store.config.max_attempts if offload_seconds else 1):

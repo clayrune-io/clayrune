@@ -61,6 +61,7 @@ from mc import empty_turn as _empty_turn
 from mc import turn_clock as _turn_clock  # elapsed-since-last-reply stamp (mc/turn_clock.py)
 from mc import transform_sandbox as _transform_sandbox
 from mc import transform_deadline as _transform_deadline
+from mc import transform_process_deadline as _transform_process_deadline
 from mc import api_credits_offload as _api_credits_offload
 from mc.execution_policy import (
     Blocker, Capability, CapabilityClaim, Certification, ExecutionIdentity,
@@ -3253,8 +3254,9 @@ class ClaudeRuntime(AgentRuntime):
 
         # API-credits offload (docs/API_CREDITS_BUILD_SPEC.md): None unless mode is
         # `on`, the budget gate allows it and the Messages API call succeeded.
+        deadline_kw: Dict[str, Any] = {} if deadline is None else {'deadline': deadline}
         offloaded = _api_credits_offload.try_offload(user_text=stdin_payload, model=model,
-                            timeout=_transform_deadline.remaining(timeout, deadline))
+                            timeout=_transform_deadline.remaining(timeout, deadline), **deadline_kw)
         _transform_deadline.check(deadline)
         if offloaded is not None:
             self.last_error = ''
@@ -3264,7 +3266,8 @@ class ClaudeRuntime(AgentRuntime):
         leg_timeout = (max(1, int(timeout)) if deadline is None else
                       _transform_deadline.remaining(timeout, deadline, fallback=True))
         try:
-            r = subprocess.run(
+            runner = subprocess.run if deadline is None else _transform_process_deadline.run
+            r = runner(
                 cmd,
                 input=stdin_payload,
                 stdout=subprocess.PIPE,
@@ -3277,6 +3280,7 @@ class ClaudeRuntime(AgentRuntime):
                 env=_transform_sandbox.transform_env(),
                 creationflags=_POPEN_FLAGS,
                 startupinfo=_STARTUPINFO,
+                **deadline_kw,
             )
         except subprocess.TimeoutExpired:
             self.last_error = f'timeout after {timeout}s ({len(stdin_payload)}c in)'
