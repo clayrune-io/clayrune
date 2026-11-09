@@ -24,7 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from mc import agent_worktree as _aw
+from mc import isolated_launch as _launch
 
 
 def resolve_followup_cwd(session: dict, project: dict | None, project_path: str,
@@ -35,35 +35,22 @@ def resolve_followup_cwd(session: dict, project: dict | None, project_path: str,
     case: shared tree, or a worktree that still exists). Otherwise it is a
     one-line human sentence saying what changed, for the agent log.
 
-    Never raises and never returns a path that is not an existing directory
-    unless `project_path` itself is missing (nothing better exists then):
-      1. worktree missing + session was isolated  -> recreate from base at the
-         same path; `_agent_cwd` unchanged.
-      2. recreate fails (or session was not isolated) -> fall back to the
-         project tree, mark the session non-isolated so its end-hook does not
-         try to merge back a tree that no longer exists, and say so.
+    An isolated session goes through `isolated_launch.launch_cwd`: its worktree
+    is recreated from base at the same path when it was removed, and when that
+    cannot be done `LaunchRefused` is raised. It used to fall back to the
+    project tree and flip the session to non-isolated, which put its next turn
+    in the shared checkout without anyone having decided that (MC-1165 round 4).
+    The caller must hold `worktree_lifecycle.resuming` for the session.
+
+    A session that was never isolated keeps the old behaviour: a recorded
+    directory that is gone falls back to the project tree, and says so.
     """
+    if (session or {}).get('_worktree_isolated'):
+        return _launch.launch_cwd(session, project, project_path, create=create)
     cwd = (session or {}).get('_agent_cwd') or ''
     if not cwd or cwd == project_path or Path(cwd).is_dir():
         return (cwd or project_path), ''
-
-    sid = (session or {}).get('session_id', '')
-    reason = ''
-    if session.get('_worktree_isolated') and project and sid:
-        try:
-            ok, path = (create or _aw.create)(project, sid)
-        except Exception as e:  # create() is documented best-effort; belt and braces
-            ok, path = False, f'{type(e).__name__}: {e}'
-        if ok and Path(path).is_dir():
-            session['_agent_cwd'] = path
-            session['_worktree_recreated'] = session.get('_worktree_recreated', 0) + 1
-            return path, (f'Worktree {cwd} was removed after the previous turn '
-                          f'(it ended with nothing to keep); recreated it from '
-                          f'base so this follow-up runs in an isolated tree again.')
-        reason = f' (recreate failed: {path})'
-
     session['_cwd_moved_from'] = cwd
     session['_agent_cwd'] = project_path
-    session['_worktree_isolated'] = False
-    return project_path, (f'Worktree {cwd} no longer exists{reason}; this follow-up '
-                          f'runs in the project tree instead of an isolated one.')
+    return project_path, (f'Worktree {cwd} no longer exists; this follow-up '
+                          f'runs in the project tree instead.')

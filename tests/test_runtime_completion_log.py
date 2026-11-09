@@ -1139,6 +1139,7 @@ def test_auto_dispatch_followup_writes_a_turn_start_checkpoint(env, monkeypatch)
     monkeypatch.setattr(ar, '_read_agent_stream', lambda *a, **k: None)
     monkeypatch.setattr(ar.subprocess, 'Popen', lambda *a, **k: _FakeFollowupProc())
 
+    s['status'] = 'completed'   # the reader flips status before it drains a follow-up (r4 refuses a 'running' one)
     ar._auto_dispatch_followup(s, 'continue please')
 
     assert s['status'] == 'running'

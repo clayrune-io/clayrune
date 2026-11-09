@@ -17,6 +17,7 @@ PROJECT_SAFETY_KEYS = frozenset({
     'merge_requires_review',
     'verify_command',
     'verify_timeout_seconds',
+    'cold_review_required',
     'worktree_isolation',
     'worktree_base_branch',
     'worktree_shared_runtime',
