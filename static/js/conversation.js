@@ -1916,7 +1916,7 @@ function agentPanelHTML(p) {
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;flex-shrink:0">
         <span class="agent-status-dot ${st}"></span>
         <span class="agent-status-label ${st}">${esc(consoleStatusLabelText)}</span>
-        ${_provBadge}
+        ${_provBadge}${window.ApiCreditsSession.badge(activeSession?.billing)}
         ${_charBadge}
         ${_apkBadge}
         ${_attendBadge}
@@ -2437,6 +2437,7 @@ function _userInitiatedConvos(projectId, includeHidden) {
       // log (rather than /conversations) would fail the character-carries-a-
       // human-pick override above and be dropped all over again.
       character: e.character || null,
+      billing: e.billing || 'subscription',
       // Same reasoning as `character` above (MC-938) — the fallback path in
       // _convCharKey resolves off `identity` when `character` is unset, so
       // dropping it here re-creates the same aged-out-persona loss.
@@ -6101,7 +6102,7 @@ async function fetchAgentStatus(projectId) {
       // nag. The server still computes `s.long_session_advisory`; nothing
       // consumes it now. To bring the nudge back, render it somewhere
       // non-intrusive (e.g. an inline session-panel hint) rather than a toast.
-      agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, contextTokens: (typeof s.context_tokens === 'number' ? s.context_tokens : null), contextWindow: (typeof s.context_window === 'number' ? s.context_window : null), hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', providerSessionId: s.provider_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, identity: s.identity || null, pinned: !!s.pinned, activeSubagents: s.active_subagents || [], liveCopies: s.live_copies || [], cwdMovedFrom: s.cwd_moved_from || '', processAlive: !!s.process_alive, spawnedBySessionId: s.spawned_by_session_id || '', attendOncePass: s.attend_once_pass || null };
+      agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, contextTokens: (typeof s.context_tokens === 'number' ? s.context_tokens : null), contextWindow: (typeof s.context_window === 'number' ? s.context_window : null), hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', providerSessionId: s.provider_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', billing: s.billing || 'subscription', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, identity: s.identity || null, pinned: !!s.pinned, activeSubagents: s.active_subagents || [], liveCopies: s.live_copies || [], cwdMovedFrom: s.cwd_moved_from || '', processAlive: !!s.process_alive, spawnedBySessionId: s.spawned_by_session_id || '', attendOncePass: s.attend_once_pass || null };
       agentStatusCache[sid].reportsWaiting = s.reports_waiting || [];
       window.paintBgWait?.(sid, s.bg_wait || '');   // MC-946 (bg-wait-status.js)
       window.paintReportsWaiting?.(sid, s.reports_waiting || []);   // MC-1063 (report-waiting.js)
@@ -6213,8 +6214,9 @@ async function fetchAgentStatus(projectId) {
       }
       const existingHist = agentHistory.find(h => h.sessionId === sid);
       if (!existingHist) {
-        agentHistory.unshift({ projectId, sessionId: sid, projectName: pName, task: s.task || '', status: s.status, startedAt: s.started_at || '', hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', character: s.character || null });
+        agentHistory.unshift({ projectId, sessionId: sid, projectName: pName, task: s.task || '', status: s.status, startedAt: s.started_at || '', hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', billing: s.billing || 'subscription', modelSource: s.model_source || 'manual', character: s.character || null });
       } else {
+        existingHist.billing = s.billing || 'subscription';
         if (s.incognito && !existingHist.incognito) existingHist.incognito = true;
         if (s.trigger_type && !existingHist.triggerType) existingHist.triggerType = s.trigger_type;
         if (s.trigger_id && !existingHist.triggerId) existingHist.triggerId = s.trigger_id;

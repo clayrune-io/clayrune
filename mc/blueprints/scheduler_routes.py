@@ -44,6 +44,7 @@ import threading
 import time as _time
 import uuid
 
+from mc import api_credits_session as _credits_session
 from flask import Blueprint, jsonify, request
 
 from mc import obs
@@ -699,7 +700,7 @@ def _scheduler_loop():
                         # normally) and stay out of dispatch_ok; only the bare
                         # Exception below is an actual dispatch failure.
                         try:
-                            run = _wf.start_run(workflow_id, trigger_type='schedule')
+                            run = _wf.start_run(workflow_id, trigger_type='schedule', billing=sched.get('billing', 'auto'))
                             _log(f"[scheduler] Started workflow run {run.get('id')} "
                                  f"for schedule {sched.get('id')} ({workflow_id})")
                         except KeyError:
@@ -1203,7 +1204,10 @@ def _scheduled_continue(p, project_id, session_id, task):
                      and proc is not None
                      and proc.poll() is None
                      and _pid_is_alive(proc.pid))
+            if alive and _credits_session.end_idle_child_if_stopped(existing):
+                alive = False
             if alive:
+                _credits_session.note_turn(existing, task)
                 existing['status'] = 'running'
                 existing['last_status_change_time'] = _time.time()
                 existing['last_output_time'] = _time.time()
@@ -1314,7 +1318,7 @@ def _schedule_engine_kwargs(sched):
     provider cannot honour raises ValueError in dispatch -- a loud failure,
     never a substitution.
     """
-    kw = {}
+    kw: dict = {'session_metadata': {'billing_preference': sched.get('billing', 'auto')}}
     model = (sched.get('model') or '').strip()
     effort = (sched.get('effort') or '').strip()
     if model:
@@ -1441,6 +1445,8 @@ def _build_schedule_from_spec(data: dict):
     pid = (data.get('project_id') or '').strip()
     task = (data.get('task') or '').strip()
     workflow_id = (data.get('workflow_id') or '').strip()
+    if data.get('billing', 'auto') not in ('auto', 'subscription'):
+        return None, (jsonify({'error': 'billing must be auto or subscription'}), 400)
     stype = data.get('schedule_type', 'daily')
     rerr = _run_at_error(data.get('run_at'))
     if rerr:
@@ -1507,6 +1513,7 @@ def _build_schedule_from_spec(data: dict):
         'effort': effort,
         'description': (data.get('description') or '').strip(),
         'continue_session': bool(data.get('continue_session', True)),
+        'billing': data.get('billing', 'auto'),
         'schedule_type': stype,
         'time': data.get('time', '09:00'),
         'days': data.get('days', []),
@@ -1558,6 +1565,8 @@ def update_schedule(schedule_id):
     sched = next((s for s in schedules if s['id'] == schedule_id), None)
     if not sched:
         return jsonify({'error': 'not found'}), 404
+    if data.get('billing', 'auto') not in ('auto', 'subscription'):
+        return jsonify({'error': 'billing must be auto or subscription'}), 400
     # Same reason as create: a type nothing can schedule turns a working row
     # into an enabled one that never fires again, silently.
     if 'schedule_type' in data and data['schedule_type'] not in SCHEDULE_TYPES:
@@ -1619,7 +1628,7 @@ def update_schedule(schedule_id):
     for key in ('project_id', 'task', 'workflow_id', 'description', 'continue_session',
                 'schedule_type', 'time', 'days',
                 'interval_minutes', 'enabled', 'run_at', 'cron_expr',
-                'delete_after_run'):
+                'delete_after_run', 'billing'):
         if key in data:
             sched[key] = data[key]
 
@@ -1662,7 +1671,7 @@ def schedule_run_now(schedule_id):
         # extra dispatch, not a different code path, so it inherits the same
         # deleted/disabled/busy guards for free.
         try:
-            run = _wf.start_run(workflow_id, trigger_type='schedule')
+            run = _wf.start_run(workflow_id, trigger_type='schedule', billing=sched.get('billing', 'auto'))
         except KeyError:
             return jsonify({'error': f'workflow {workflow_id!r} not found'}), 404
         except RuntimeError as e:

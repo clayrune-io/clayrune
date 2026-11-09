@@ -420,6 +420,7 @@ function showScheduleForm(existing) {
       <select id="sched-agent"><option value="">Loading…</option></select>
     </div>
     <div id="sched-role-area"></div>
+    ${window.ApiCreditsSession.scheduleSelect(existing?.billing || 'auto')}
     <label>Description <span class="memory-hint" style="margin:0;font-weight:normal">(for you &mdash; not sent to the agent)</span></label>
     <textarea id="sched-description" rows="2" placeholder="Why this schedule exists, what &ldquo;done&rdquo; looks like, etc.">${esc(selDescription)}</textarea>
     <div id="sched-task-block">
@@ -658,6 +659,7 @@ async function saveSchedule() {
     task,
     description,
     continue_session: continueSession,
+    billing: document.getElementById('sched-billing')?.value || 'auto',
     schedule_type: activeType,
     // Always sent, empty included: '' is a real value here (inherit the
     // project default), so an absent key could never clear a pinned persona.

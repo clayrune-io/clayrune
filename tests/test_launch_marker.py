@@ -102,6 +102,15 @@ def _popen_sites(path):
                 marked = (isinstance(env, ast.Call)
                           and isinstance(env.func, ast.Attribute)
                           and env.func.attr == 'launch_env')
+                if isinstance(env, ast.Name) and env.id == '_billing_env':
+                    # Phase 2 gates billing before writing the pending record;
+                    # both initial spawns reuse that already-scoped environment.
+                    marked = any(isinstance(x, ast.Assign)
+                        and any(isinstance(t, ast.Name) and t.id == '_billing_env' for t in x.targets)
+                        and isinstance(x.value, ast.Call)
+                        and isinstance(x.value.func, ast.Attribute)
+                        and x.value.func.attr == 'launch_env'
+                        for x in ast.walk(tree))
                 sites.append((n.lineno, self.stack[-1] if self.stack else '<module>', marked))
                 cwd_kw = next((k.value for k in n.keywords if k.arg == 'cwd'), None)
                 popen_cwds.append((n.lineno, ast.unparse(cwd_kw) if cwd_kw else None))

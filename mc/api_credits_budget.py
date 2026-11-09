@@ -109,7 +109,7 @@ def _iso(dt: datetime) -> str:
 def default_settings() -> Dict[str, Any]:
     return {'mode': 'off', 'secret_name': '', 'plan_credit_usd': None,
             'budget_usd': None, 'stop_pct': 90, 'reset_day': 1,
-            'default_model': DEFAULT_MODEL, 'prices': {}}
+            'default_model': DEFAULT_MODEL, 'prices': {}, 'session_reserve_usd': 3.0}
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -138,8 +138,11 @@ def clean_settings(raw: Dict[str, Any]) -> Dict[str, Any]:
         s['mode'] = raw['mode']
     if isinstance(raw.get('secret_name'), str):
         s['secret_name'] = raw['secret_name'].strip()
-    for key, lo, hi in (('plan_credit_usd', 0, 100_000), ('budget_usd', 0, 100_000)):
-        s[key] = _num(raw.get(key), lo, hi)
+    for key, lo, hi in (('plan_credit_usd', 0, 100_000), ('budget_usd', 0, 100_000),
+                        ('session_reserve_usd', 0, 100_000)):
+        s[key] = _num(raw.get(key, s.get(key)), lo, hi)
+        if key == 'session_reserve_usd' and s[key] is None:
+            s[key] = 3.0
     pct = _num(raw.get('stop_pct'), 1, 100)
     s['stop_pct'] = pct if pct is not None else 90
     day = _num(raw.get('reset_day'), 1, 31)
@@ -157,7 +160,8 @@ def validate_settings(raw: Any) -> Tuple[Optional[Dict[str, Any]], str]:
     if 'mode' in raw and raw['mode'] not in MODES:
         return None, f"mode must be one of {', '.join(MODES)}"
     for key, lo, hi in (('plan_credit_usd', 0, 100_000), ('budget_usd', 0, 100_000),
-                        ('stop_pct', 1, 100), ('reset_day', 1, 31)):
+                        ('stop_pct', 1, 100), ('reset_day', 1, 31),
+                        ('session_reserve_usd', 0, 100_000)):
         if raw.get(key) is not None and _num(raw[key], lo, hi) is None:
             return None, f'{key} must be a number between {lo} and {hi}'
     if raw.get('reset_day') is not None and float(raw['reset_day']) != int(raw['reset_day']):
@@ -280,11 +284,19 @@ def cycle_bounds(now: datetime, reset_day: int) -> Tuple[date, date]:
 
 def _empty_cycle() -> Dict[str, Any]:
     return {'entries': [], 'spent_usd': 0.0, 'estimated_usd': 0.0, 'calls': 0,
-            'estimated_calls': 0}
+            'estimated_calls': 0, 'session_spent_usd': 0.0}
 
 
-def _load_ledger() -> Dict[str, Any]:
-    led = _read_json(ledger_path())
+def _load_ledger(*, strict: bool = False) -> Dict[str, Any]:
+    if strict:
+        try:
+            led = json.loads(read_text_with_retry(ledger_path()))
+        except FileNotFoundError:
+            led = {}
+        if not isinstance(led, dict) or ('cycles' in led and not isinstance(led['cycles'], dict)):
+            raise ValueError('invalid accounting ledger')
+    else:
+        led = _read_json(ledger_path())
     if not isinstance(led.get('cycles'), dict):
         led['cycles'] = {}
     return led
@@ -307,20 +319,28 @@ def _prune(led: Dict[str, Any], start: date, reset_day: int) -> None:
 
 def _cycle(led: Dict[str, Any], start: date) -> Dict[str, Any]:
     cyc = led['cycles'].setdefault(start.isoformat(), _empty_cycle())
+    if 'session_spent_usd' not in cyc:
+        cyc['session_spent_usd'] = sum((e.get('cost_usd') or 0.0) for e in cyc.get('entries', [])
+            if str(e.get('caller', '')).startswith('session:') and not e.get('estimated'))
     for k, v in _empty_cycle().items():
         cyc.setdefault(k, v)
     return cyc
 
 
 def record(*, caller: str, model: str, usage: Dict[str, int], cost: Optional[float],
-           estimated: bool, settings: Optional[Dict[str, Any]] = None) -> None:
+           estimated: bool, settings: Optional[Dict[str, Any]] = None,
+           event_id: Optional[str] = None, cycle_start: Optional[str] = None,
+           recorded_at: Optional[str] = None) -> None:
     """Append one call to the current cycle. `estimated` marks token counts that
     came from chars/4 (measure mode) rather than the API's `usage`; those add to
     `estimated_usd` and never to `spent_usd`, so measuring cannot trip the gate."""
     s = settings or load_settings()
     now = _now()
     start, _end = cycle_bounds(now, s['reset_day'])
-    entry = {'ts': _iso(now), 'caller': caller, 'model': model,
+    current_start = start
+    if cycle_start is not None:
+        start = date.fromisoformat(cycle_start)
+    entry = {'ts': recorded_at or _iso(now), 'caller': caller, 'model': model,
              'input_tokens': int(usage.get('input_tokens', 0)),
              'output_tokens': int(usage.get('output_tokens', 0)),
              'cache_read_input_tokens': int(usage.get('cache_read_input_tokens', 0)),
@@ -328,7 +348,15 @@ def record(*, caller: str, model: str, usage: Dict[str, int], cost: Optional[flo
              'cost_usd': cost, 'estimated': bool(estimated)}
     notice = ''
     with _lock:
-        led = _load_ledger()
+        led = _load_ledger(strict=event_id is not None)
+        if event_id is not None:
+            receipts = led.setdefault('pending_receipts', [])
+            if event_id in receipts:
+                return
+            receipts.append(event_id)
+        # Prune relative to today before inserting a late retry. Retrying last
+        # month's event must neither delete this month's ledger nor move its cost.
+        _prune(led, current_start, s['reset_day'])
         cyc = _cycle(led, start)
         cyc['entries'].append(entry)
         if len(cyc['entries']) > ENTRIES_PER_CYCLE_CAP:
@@ -344,7 +372,8 @@ def record(*, caller: str, model: str, usage: Dict[str, int], cost: Optional[flo
         else:
             cyc['calls'] += 1
             cyc['spent_usd'] = round(cyc['spent_usd'] + (cost or 0.0), 8)
-        _prune(led, start, s['reset_day'])
+            if caller.startswith('session:'):
+                cyc['session_spent_usd'] = round(cyc['session_spent_usd'] + (cost or 0.0), 8)
         if not estimated:
             notice = _crossing_notice(led, s, start, cyc)
         _save_ledger(led)
@@ -361,7 +390,7 @@ def _crossing_notice(led: Dict[str, Any], s: Dict[str, Any], start: date,
         return ''
     led['notified_cycle'] = start.isoformat()
     return (f"Clayrune has used ${cyc['spent_usd']:.2f} of its ${s['budget_usd']:.2f} API-credit "
-            f"budget (stop at {s['stop_pct']:g}%). Background calls are back on your "
+            f"budget (stop at {s['stop_pct']:g}%). Background work is back on your "
             f"subscription until the cycle resets.")
 
 
@@ -394,7 +423,7 @@ def halt(reason: str, kind: str, settings: Optional[Dict[str, Any]] = None) -> N
         led['last_error'] = reason
         if led.get('notified_cycle') != start.isoformat():
             led['notified_cycle'] = start.isoformat()
-            notice = f'Background calls are back on your subscription. {reason}'
+            notice = f'Background work is back on your subscription. {reason}'
         _save_ledger(led)
     if notice:
         _notify('API credits stopped', notice)
@@ -448,9 +477,16 @@ def can_spend(model: str, settings: Optional[Dict[str, Any]] = None) -> Tuple[bo
         return False, 'no_budget'
     if not is_priced(model, s):
         return False, 'price_unknown'
+    from mc import api_credits_pending as pending
     start, _ = cycle_bounds(_now(), s['reset_day'])
     with _lock:
-        led = _load_ledger()
+        if not pending.flush():
+            return False, 'accounting_pending'
+        try:
+            led = _load_ledger(strict=True)
+        except Exception as exc:
+            _log(f'[api-credits] spend gate ledger read failed: {type(exc).__name__}', flush=True)
+            return False, 'accounting_pending'
     if _active_halt(led, start):
         return False, 'halted'
     cyc = led['cycles'].get(start.isoformat()) or {}
@@ -466,7 +502,9 @@ def status() -> Dict[str, Any]:
     s = load_settings()
     now = _now()
     start, end = cycle_bounds(now, s['reset_day'])
+    from mc import api_credits_pending as pending
     with _lock:
+        accounted = pending.flush()
         led = _load_ledger()
     cyc = led['cycles'].get(start.isoformat()) or _empty_cycle()
     spent = float(cyc.get('spent_usd', 0.0))
@@ -476,6 +514,8 @@ def status() -> Dict[str, Any]:
         state, reason = 'off', ''
     elif s['mode'] == 'measure':
         state, reason = 'measuring', 'estimated, not billed'
+    elif not accounted:
+        state, reason = 'stopped', 'pending spend could not be recorded'
     elif h:
         state, reason = 'stopped', h['reason']
     elif stop is not None and spent >= stop:
@@ -489,6 +529,8 @@ def status() -> Dict[str, Any]:
         'state': state, 'reason': reason,
         'cycle': {'start': start.isoformat(), 'resets_on': end.isoformat(),
                   'spent_usd': round(spent, 6),
+                  'session_spent_usd': round(float(cyc.get('session_spent_usd', 0.0)), 6),
+                  'background_spent_usd': round(spent - float(cyc.get('session_spent_usd', 0.0)), 6),
                   'estimated_usd': round(float(cyc.get('estimated_usd', 0.0)), 6),
                   'calls': int(cyc.get('calls', 0)),
                   'estimated_calls': int(cyc.get('estimated_calls', 0)),

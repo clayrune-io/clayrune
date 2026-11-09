@@ -1,5 +1,22 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Preserve OAuth downgrade through reset recovery (e98832d9 round 3)
+
+- Reset-wait park, deferred-success and completion snapshots now retain `billing_oauth`, preventing a restored subscription session from regaining configured API-key auth after restart.
+- Retained the cold-review restart probe unchanged and added billing/auth consistency coverage for all three snapshot paths. Branch candidate only; no merge, push, restart or paid acceptance run.
+
+## [2026-11-09] - Keep session credit spend durable and auth choices intact (e98832d9 round 2)
+
+- Session spending uses a write-ahead journal and idempotent ledger receipts; failed accounting blocks further API credits and retries without replaying successful work.
+- Cold dispatch restores the latest billing choice. Off, untouched and ineligible launches retain provider-scoped Claude auth; only an actual credits-to-OAuth downgrade strips API auth.
+- Integrated MC-1165 lifecycle locks, isolated cwd resolution and launch refusals into every billing-aware continuation path. Branch candidate only; no master merge, push, restart or paid acceptance run.
+
+## [2026-11-09] - Bill unattended Claude sessions to API credits (e98832d9)
+
+- Added sticky per-session billing with a vault key injected only into the eligible child environment, a $3 default start reserve, and subscription fallback on billing errors. Both Claude reader modes record per-turn actual cost deltas in the existing cycle ledger; persistent children change auth through respawn.
+- Added scheduler Auto/Subscription billing, reserve editing and background/session spend totals in the API credits card, and a chat header badge. Schedule opt-outs also reach workflow steps and steward-role dispatches; attended chats retain subscription billing.
+- Branch candidate only. No merge, push, server restart or paid run; live scheduled-run verification remains the integration gate. Contract and checks: `docs/API_CREDITS_SESSION.md`.
+
 ## [2026-11-09] - Refuse padded MIME shaping-header names (MC-1166 unit 3 round 13)
 
 - The inbound plain-text strip refuses whitespace before the colon of Content-Type, Content-Disposition, Content-Transfer-Encoding and Content-ID in every parsed MIME part, including dropped subtrees. This closes an extraction bypass that kept attachment text or raw HTML; duplicate-header refusal retains priority.
