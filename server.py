@@ -3261,6 +3261,8 @@ _bp_test_runs.wire(
     proc_identity_fn=_bp_agent._proc_identity,
 )
 app.register_blueprint(_bp_test_runs.bp)
+from mc.blueprints.agent_mail_routes import create_blueprint as _mail_ingress_blueprint  # noqa: E402
+app.register_blueprint(_mail_ingress_blueprint(DATA_DIR))
 # Only the server process may sweep orphaned Chromium profile dirs: it is the
 # only one whose browser_sessions actually says what is live. Deliberately NOT
 # inside wire() — test harnesses call that too. See browser_routes.SWEEP_ENABLED.
