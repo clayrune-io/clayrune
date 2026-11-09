@@ -1004,6 +1004,37 @@ preferences and creates a preference-only rollback snapshot outside the
 repository. Opening an editor changes nothing. Unsupported selections show an
 error instead of silently selecting another provider or model.
 
+### API credits for background work
+
+The **API credits** card under Claude in **Settings > Providers > Connections**
+uses a vault key and a cycle budget. It defaults to **Off**. **Measure first**
+keeps background calls on the subscription and estimates their cost. **On**
+lets background calls and new unattended Claude sessions use API credits.
+Human-opened chats stay on the subscription; other engines are unchanged.
+
+Scheduled tasks, stewards, night-review and agent-dispatched work qualify.
+The scheduler form offers **Billing: Auto (API credits)** or **Subscription**.
+Auto uses credits only when mode is On and the budget permits it. A schedule's
+opt-out also reaches its workflow agent steps. Billing stays fixed for an
+existing session across resumes; enabling credits does not move an existing
+subscription conversation to credits. Start a new session to make a new choice.
+
+**Session reserve ($)** defaults to $3: a new credits session needs at least
+that much headroom below the stop point. It is a start gate, not a per-session
+cap. The card separates cycle spending into **background calls** and **agent
+sessions**. Background costs use the price table; session costs come from the
+CLI's reported total, recorded as per-turn deltas. Credits chats show a small
+**API credits** badge beside the model.
+
+A credit-balance, spend-limit or authentication failure stops offloading,
+notifies once per cycle and retries the failed turn once on the subscription.
+A persistent credits child respawns on subscription before its next turn when
+the budget stops or mode is turned off. The session then stays on subscription.
+Claude.ai-hosted connectors are unavailable in credits sessions; local/project
+MCP servers still load. Set a workspace spend limit in the Anthropic Console
+as the enforced backstop. Turning credits on, widening the budget or lowering
+the session reserve uses the existing dashboard-passcode gate.
+
 ### Testing on the Floor
 
 When live test-run progress is enabled, a figure can show testing even between

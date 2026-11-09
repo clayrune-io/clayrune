@@ -36,6 +36,7 @@ CONTINUATION = ('[The provider usage-limit reset time has passed. Continue the '
 # Runtime objects and cached system prompts are deliberately not persisted.
 _SNAPSHOT_KEYS = (
     'session_id project_id started_at task provider mode source trigger_type trigger_id '
+    'billing billing_reason billing_preference '
     'claude_session_id provider_session_id agent_model model model_source pinned_model '
     'requested_effort effort_support character character_body character_name character_skills '
     'project_generation _delivery_generation _delegation_turn _notify_session _spawned_by '

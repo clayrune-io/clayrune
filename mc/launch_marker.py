@@ -54,7 +54,8 @@ def _fence_enabled() -> bool:
 
 
 def launch_env(trigger_type: Optional[str],
-               base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+               base: Optional[Dict[str, str]] = None, *,
+               session: Optional[dict] = None) -> Dict[str, str]:
     """Environment for a Claude child: a copy of `base` (default: the server's
     environ) with the marker set when `trigger_type` arms the fence, and
     REMOVED otherwise.
@@ -75,7 +76,11 @@ def launch_env(trigger_type: Optional[str],
         env.pop(LAUNCH_MARKER_ENV, None)
     if unattended and not (env.get(RETRY_WATCHDOG_ENV) or '').strip():
         env[RETRY_WATCHDOG_ENV] = '1'
-    return retry_budgets.apply_env('claude', trigger_type, env, state.CONFIG)
+    env = retry_budgets.apply_env('claude', trigger_type, env, state.CONFIG)
+    if session is not None:
+        from mc.api_credits_session import env_for_session
+        env = env_for_session(session, env)
+    return env
 
 
 def launch_cmd(cmd: List[str], trigger_type: Optional[str],

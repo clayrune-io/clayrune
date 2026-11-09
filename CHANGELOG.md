@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Bill unattended Claude sessions to API credits (e98832d9)
+
+- Added sticky per-session billing with a vault key injected only into the eligible child environment, a $3 default start reserve, and subscription fallback on billing errors. Both Claude reader modes record per-turn actual cost deltas in the existing cycle ledger; persistent children change auth through respawn.
+- Added scheduler Auto/Subscription billing, reserve editing and background/session spend totals in the API credits card, and a chat header badge. Schedule opt-outs also reach workflow steps and steward-role dispatches; attended chats retain subscription billing.
+- Branch candidate only. No merge, push, server restart or paid run; live scheduled-run verification remains the integration gate. Contract and checks: `docs/API_CREDITS_SESSION.md`.
+
 ## [2026-11-08] - Specify owner-only per-install agent email
 
 - Added `docs/AGENT_MAIL_SPEC.md`: opt-in installation enrollment, verified-owner sending, identified activation counts, authenticated and laundered replies, durable offline replay, and exact-conversation follow-up requirements. Eight design decisions remain open for Dave, with alternatives, recommendations and costs.

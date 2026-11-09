@@ -60,6 +60,7 @@ from mc import triggered_turns as _triggered_turns  # seed-line label for non-hu
 from mc import engine_selection
 from mc.hivemind_worker import RosterRecoveryHeld, revive_roster_worker
 from mc import provider_preferences as _provider_preferences
+from mc import api_credits_session as _credits_session
 from mc import provider_env_scope as _provider_env_scope  # saved keys stay with their provider
 from mc import launch_marker as _launch_marker  # per-launch unattended marker (fence fail-open, MC-1040)
 from mc import proc_kill as _proc_kill
@@ -6183,7 +6184,9 @@ def _read_agent_stream(proc, session):
                     # in Mode B; overwriting would discard all prior turns).
                     if 'usage' in msg:
                         _accumulate_session_usage(session, msg['usage'])
-                    _agent_runtime.accumulate_result_cost(session, msg, proc_cost)
+                    if _credits_session.record_result(session, msg, proc_cost):
+                        proc.terminate()
+                        break
                     _agent_runtime.accumulate_result_turns(session, msg, proc_turns)
                     _record_permission_denials(session, msg)
                     _apply_mc_tool_blocks_for_turn(session)
@@ -6217,12 +6220,13 @@ def _read_agent_stream(proc, session):
     finally:
         rc = proc.wait()
         _unregister_process(proc.pid)
+        _credits_replayed = _credits_session.replay_after_exit(session, proc, sys.modules[__name__])
         # Acquire per-project lock to prevent race with agent_stop setting 'stopped'
         with get_manager(session['project_id']).lock:
             # Single-emit gate: only update session status if we still own it.
             # Covers normal replacement (new proc assigned) AND in-flight interrupt
             # (kill issued, new proc not yet spawned — `_interrupting` flag set).
-            if _session_owned_by(session, my_proc):
+            if not _credits_replayed and _session_owned_by(session, my_proc):
                 # Never overwrite 'stopped' — that's a user-initiated terminal state
                 if session['status'] == 'running':
                     if session.get('waiting_for_question'):
@@ -6256,7 +6260,7 @@ def _read_agent_stream(proc, session):
                     session.pop('_dispatching_followup', None)
 
         # Auto-recover failed resume (Mode A)
-        if (session.get('_resume_id')
+        if (not _credits_replayed and session.get('_resume_id')
                 and session.get('status') == 'error'
                 and not session.get('_resume_recovery_attempted')
                 and _time.time() - session.get('_dispatch_time', 0) < 60
@@ -6469,7 +6473,9 @@ def _read_agent_stream_b(proc, session):
                         _note_claude_sid(session, msg['session_id'])
                     if 'usage' in msg:
                         _accumulate_session_usage(session, msg['usage'])
-                    _agent_runtime.accumulate_result_cost(session, msg, proc_cost)
+                    if _credits_session.record_result(session, msg, proc_cost):
+                        proc.terminate()
+                        break
                     _agent_runtime.accumulate_result_turns(session, msg, proc_turns)
                     _record_permission_denials(session, msg)
                     _apply_mc_tool_blocks_for_turn(session)
@@ -6531,12 +6537,13 @@ def _read_agent_stream_b(proc, session):
     finally:
         rc = proc.wait()
         _unregister_process(proc.pid)
+        _credits_replayed = _credits_session.replay_after_exit(session, proc, sys.modules[__name__])
         # Acquire per-project lock to prevent race with agent_stop setting 'stopped'
         with get_manager(session['project_id']).lock:
             # Single-emit gate (see _session_owned_by). Skip when interrupt
             # is in flight — the new reader will set process_alive=True/status
             # legitimately and there's no point flipping it False between.
-            if _session_owned_by(session, my_proc):
+            if not _credits_replayed and _session_owned_by(session, my_proc):
                 session['process_alive'] = False
                 _gone = _bg_tasks.drain(session)
                 if _gone:
@@ -6576,7 +6583,7 @@ def _read_agent_stream_b(proc, session):
 
         # Auto-recover failed resume: if we tried to resume a prior session and
         # it died quickly without producing meaningful output, restart fresh.
-        if (session.get('_resume_id')
+        if (not _credits_replayed and session.get('_resume_id')
                 and session.get('status') == 'error'
                 and not session.get('_resume_recovery_attempted')
                 and _time.time() - session.get('_dispatch_time', 0) < 60
@@ -6622,7 +6629,7 @@ def _auto_recover_failed_resume(session):
             cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), pp)
             proc = spawn_engine_proc(
                 cmd, session_id=session.get('session_id'), engine='claude', cwd=pp,
-                env=_launch_marker.launch_env(session.get('trigger_type')),
+                env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, interactive=True)
             _sysprompt_cleanup(_sp_path, proc)
             initial_msg = json.dumps({
@@ -6662,7 +6669,7 @@ def _auto_recover_failed_resume(session):
             cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), pp)
             proc = spawn_engine_proc(
                 cmd, session_id=session.get('session_id'), engine='claude', cwd=pp,
-                env=_launch_marker.launch_env(session.get('trigger_type')),
+                env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             _sysprompt_cleanup(_sp_path, proc)
             threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
@@ -7759,7 +7766,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             cmd = _launch_marker.launch_cmd(cmd, entry.get('trigger_type'), _revive_cwd)
             proc = spawn_engine_proc(
                 cmd, session_id=session_id, engine='claude', cwd=_revive_cwd,
-                env=_launch_marker.launch_env(entry.get('trigger_type')),
+                env=_launch_marker.launch_env(entry.get('trigger_type'), session=entry),
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, interactive=True)
         except Exception as e:
             _log(f"[revive] {project_id}: spawn failed: {e}")
@@ -7786,6 +7793,8 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             'session_id': session_id,
             'project_id': project_id,
             'mode': 'B',
+            **_credits_session.snapshot(entry),
+            '_api_credits_turn_message': message,
             'stdin_lock': threading.Lock(),
             'process_alive': True,
             'last_output_time': _time.time(),
@@ -7841,6 +7850,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             '_turn_owner': 'spawner' if carry_notify else 'human',
         }
         with mgr.lock:
+            session.update(_credits_session.snapshot(entry))
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
         # Backlog 4668eafc (re-run turn_start): a revive starts a new turn
@@ -7879,7 +7889,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         cmd = _launch_marker.launch_cmd(cmd, entry.get('trigger_type'), _revive_cwd)
         proc = spawn_engine_proc(
             cmd, session_id=session_id, engine='claude', cwd=_revive_cwd,
-            env=_launch_marker.launch_env(entry.get('trigger_type')),
+            env=_launch_marker.launch_env(entry.get('trigger_type'), session=entry),
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
     except Exception as e:
         _log(f"[revive] {project_id}: spawn failed: {e}")
@@ -7904,6 +7914,8 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         'session_id': session_id,
         'project_id': project_id,
         'mode': 'A',
+        **_credits_session.snapshot(entry),
+        '_api_credits_turn_message': message,
         'last_output_time': _time.time(),
         'last_status_change_time': _time.time(),
         'guardian_state': None,
@@ -7941,6 +7953,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         '_turn_owner': 'spawner' if carry_notify else 'human',
     }
     with mgr.lock:
+        session.update(_credits_session.snapshot(entry))
         agent_sessions[session_id] = session
         mgr.session_ids.add(session_id)
     _write_usage_breakdown_turn_start_checkpoint(session)   # see Mode B above
@@ -8491,6 +8504,7 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
         'hivemind_ws_id': session.get('hivemind_ws_id', ''),
         'hivemind_role': session.get('hivemind_role', ''),
         'trigger_type': session.get('trigger_type', 'manual'),
+        **_credits_session.snapshot(session),
         'source': session.get('source', ''),
         'trigger_id': session.get('trigger_id', ''),
         'character': session.get('character'),
@@ -9475,6 +9489,7 @@ def _write_usage_breakdown_turn_checkpoint(session):
         'ts': now_iso(),
         'usage': session.get('usage', {}),
         'trigger_type': session.get('trigger_type', 'manual'),
+        **_credits_session.snapshot(session),
         'character': session.get('character'),
         'model': _requested_model_snapshot(session),
         'agent_model': _requested_model_snapshot(session),
@@ -9885,6 +9900,7 @@ def _log_agent_completion_body(session):
         # trigger_id: schedule_id, workflow run:step, hivemind_id, or
         # workstream_id depending on type
         'trigger_type': session.get('trigger_type', 'manual'),
+        **_credits_session.snapshot(session),
         'source': session.get('source', ''),
         'trigger_id': session.get('trigger_id', ''),
         # Provider that ran this session ('claude', 'gemini', ...). Absent on
@@ -10220,7 +10236,7 @@ def _auto_dispatch_followup(session, message):
         proc = spawn_engine_proc(
             cmd, session_id=session.get('session_id'), engine='claude',
             cwd=_session_cwd(session, pp),
-            env=_launch_marker.launch_env(session.get('trigger_type')),
+            env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
     except Exception as e:
         session['log_lines'].append(f'[follow-up failed: {e}]')
@@ -10499,6 +10515,7 @@ def _clock_header(project, session, message) -> str:
 def _clock_wrap(project, session, content, message=None) -> str:
     """`content` with the clock header in front. `message` is the user's
     original text (slash-command check); defaults to `content`."""
+    _credits_session.note_turn(session, message if message is not None else content)
     if _turn_clock.has_header(content):
         return content          # already stamped upstream: never stack two
     header = _clock_header(project, session, content if message is None else message)
@@ -12483,6 +12500,19 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         # spawner-of-record, distinct from the re-armable `notify_session`.
         _spawned_by_value = spawned_by if spawned_by is not None else notify_session
 
+        _billing_prior = session_dict_override or agent_sessions.get(reuse_session_id) or {}
+        if reuse_session_id and not _billing_prior:
+            _billing_prior = next((e for e in reversed(_load_agent_log(project_id))
+                                   if e.get('session_id') == reuse_session_id), {})
+        _billing_record = {
+            **_credits_session.snapshot(_billing_prior),
+            **{k: v for k, v in (session_metadata or {}).items() if k == 'billing_preference'},
+            'project_id': project_id, 'provider': 'claude', 'model': routed_model,
+            'trigger_type': trigger_type, 'trigger_id': trigger_id,
+            '_spawned_by': _spawned_by_value,
+        }
+        _billing_env = _launch_marker.launch_env(trigger_type, session=_billing_record)
+
         # The dispatch record is durable before Popen. If Popen or the reader
         # setup fails, reconciliation can see an in-progress launch and retain
         # the unknown outcome instead of leaving an untracked child process.
@@ -12500,6 +12530,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 'requested_effort': _char_effort,
                 'incognito': False, 'source': source or '',
                 'trigger_type': trigger_type, 'trigger_id': trigger_id,
+                **_credits_session.snapshot(_billing_record),
                 'character': character_meta,
                 'housekeeping': bool(housekeeping),
                 '_runtime_callbacks': dict(runtime_callbacks or {}),
@@ -12521,7 +12552,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             proc = spawn_engine_proc(
                 cmd, session_id=session_id, engine='claude',
                 cwd=_agent_cwd,  # worktree when isolated, else pp
-                env=_launch_marker.launch_env(trigger_type),
+                env=_billing_env,
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, interactive=True)
             _sysprompt_cleanup(_sp_path, proc)
 
@@ -12544,6 +12575,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
 
             session = {
                 'proc': proc,
+                **_credits_session.snapshot(_billing_record),
+                '_api_credits_turn_message': task,
                 'status': 'running',
                 'task': task,
                 'log_lines': TimestampedLines(_seed_log_lines, ts=_seed_log_ts),
@@ -12674,7 +12707,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             proc = spawn_engine_proc(
                 cmd, session_id=session_id, engine='claude',
                 cwd=_agent_cwd,  # worktree when isolated, else pp
-                env=_launch_marker.launch_env(trigger_type),
+                env=_billing_env,
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             _sysprompt_cleanup(_sp_path, proc)
 
@@ -12684,6 +12717,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
 
             session = {
                 'proc': proc,
+                **_credits_session.snapshot(_billing_record),
+                '_api_credits_turn_message': task,
                 'status': 'running',
                 'task': task,
                 'log_lines': TimestampedLines(_seed_log_lines, ts=_seed_log_ts),
@@ -12959,6 +12994,7 @@ def agent_set_model(project_id, session_id):
                     'character': session.get('character'),
                     'source': session.get('source', ''),
                     'trigger_type': session.get('trigger_type', 'manual'),
+                    **_credits_session.snapshot(session),
                     'trigger_id': session.get('trigger_id', ''),
                 })
             try:
@@ -13602,7 +13638,8 @@ def agent_followup(project_id):
         return jsonify({'error': 'message required'}), 400
     if not session_id:
         return jsonify({'error': 'session_id required'}), 400
-    _mark_human_joined(project_id, session_id)   # marks human ownership; no-op for agent callers
+    if not request.environ.get('clayrune.api_credits_retry'):
+        _mark_human_joined(project_id, session_id)   # marks human ownership; no-op for agent callers
     _observe_habit_cue(project_id, session_id, message)
     # MC-970: this endpoint is answered by a human (chat form, plan-approval
     # click, the emailed-question-reply relay in question_channel.py) far more
@@ -13615,6 +13652,8 @@ def agent_followup(project_id):
     _explicit_notify_session = (data.get('notify_session') or '').strip()
 
     def _start_new_turn(sess):
+        if request.environ.get('clayrune.api_credits_retry'):
+            return
         if _explicit_notify_session:
             sess['_notify_session'] = _explicit_notify_session
             _rearm_notify_for_new_turn(sess)
@@ -13853,6 +13892,7 @@ def agent_followup(project_id):
                     message = (f"[Resumed session did not provide a continuable session ID. "
                                f"Starting fresh.]\n\n{message}")
                 elif (not request.environ.get('clayrune.limit_resume')
+                      and not request.environ.get('clayrune.api_credits_retry')
                       and _resume_is_fragile(was_resume, existing.get('_resume_confirmed'))):
                     # The resume itself proved fragile — it died BEFORE producing any
                     # output, so -r-ing it again would just loop. Start fresh.
@@ -13986,8 +14026,9 @@ def agent_followup(project_id):
                 # CLI/system-prompt changes, so resume it into a fresh process
                 # that rebuilds flags + context from current CONFIG. Mirrors the
                 # auto-router's alive-process respawn just below.
-                if (state.CONFIG.get('sticky_agent_settings', False)
-                        and existing.pop('_needs_respawn', None)):
+                if (_credits_session.needs_respawn(existing) or
+                        (state.CONFIG.get('sticky_agent_settings', False)
+                         and existing.pop('_needs_respawn', None))):
                     _sticky_sid = existing.get('claude_session_id')
                     _sticky_resume = ['-r', _sticky_sid] if _sticky_sid else []
                     # A per-chat pin outranks the project/global model even while
@@ -14224,7 +14265,7 @@ def agent_followup(project_id):
                         _session_cwd(rb['existing'], rb['pp'])),
                     session_id=rb['session_id'], engine='claude',
                     cwd=_session_cwd(rb['existing'], rb['pp']),
-                    env=_launch_marker.launch_env(rb['existing'].get('trigger_type')),
+                    env=_launch_marker.launch_env(rb['existing'].get('trigger_type'), session=rb['existing']),
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, interactive=True)
                 _sysprompt_cleanup(rb.get('sysprompt_path'), proc)
                 _log(f"[respawn-B] {rb['project_id']}: spawned PID {proc.pid}")
@@ -14363,7 +14404,7 @@ def agent_followup(project_id):
             proc = spawn_engine_proc(
                 cmd, session_id=session_id, engine='claude',
                 cwd=_session_cwd(existing, pp),
-                env=_launch_marker.launch_env(existing.get('trigger_type')),
+                env=_launch_marker.launch_env(existing.get('trigger_type'), session=existing),
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             _sysprompt_cleanup(_sp_path, proc)
             threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
@@ -14949,7 +14990,7 @@ def agent_interrupt(project_id, *, _internal=None):
                 proc = spawn_engine_proc(
                     cmd, session_id=session_id, engine='claude',
                     cwd=_session_cwd(session, pp),
-                    env=_launch_marker.launch_env(session.get('trigger_type')),
+                    env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, interactive=True)
                 _sysprompt_cleanup(_sp_path, proc)
                 threading.Thread(target=_hide_windows_delayed,
@@ -15025,7 +15066,7 @@ def agent_interrupt(project_id, *, _internal=None):
                 proc = spawn_engine_proc(
                     cmd, session_id=session_id, engine='claude',
                     cwd=_session_cwd(session, pp),
-                    env=_launch_marker.launch_env(session.get('trigger_type')),
+                    env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
                     interactive=is_midturn)
                 _sysprompt_cleanup(_sp_path, proc)
@@ -15448,6 +15489,7 @@ def agent_status(project_id):
                 'hivemind_ws_id': s.get('hivemind_ws_id', ''),
                 'hivemind_role': s.get('hivemind_role', ''),
                 'trigger_type': s.get('trigger_type', 'manual'),
+                **_credits_session.snapshot(s),
                 'trigger_id': s.get('trigger_id', ''),
                 # {'open': True, 'expires_at': iso} while a granted "Allow
                 # once" pass (MC-994 follow-up) is unconsumed and unexpired,

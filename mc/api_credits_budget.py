@@ -109,7 +109,7 @@ def _iso(dt: datetime) -> str:
 def default_settings() -> Dict[str, Any]:
     return {'mode': 'off', 'secret_name': '', 'plan_credit_usd': None,
             'budget_usd': None, 'stop_pct': 90, 'reset_day': 1,
-            'default_model': DEFAULT_MODEL, 'prices': {}}
+            'default_model': DEFAULT_MODEL, 'prices': {}, 'session_reserve_usd': 3.0}
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -138,8 +138,11 @@ def clean_settings(raw: Dict[str, Any]) -> Dict[str, Any]:
         s['mode'] = raw['mode']
     if isinstance(raw.get('secret_name'), str):
         s['secret_name'] = raw['secret_name'].strip()
-    for key, lo, hi in (('plan_credit_usd', 0, 100_000), ('budget_usd', 0, 100_000)):
-        s[key] = _num(raw.get(key), lo, hi)
+    for key, lo, hi in (('plan_credit_usd', 0, 100_000), ('budget_usd', 0, 100_000),
+                        ('session_reserve_usd', 0, 100_000)):
+        s[key] = _num(raw.get(key, s.get(key)), lo, hi)
+        if key == 'session_reserve_usd' and s[key] is None:
+            s[key] = 3.0
     pct = _num(raw.get('stop_pct'), 1, 100)
     s['stop_pct'] = pct if pct is not None else 90
     day = _num(raw.get('reset_day'), 1, 31)
@@ -157,7 +160,8 @@ def validate_settings(raw: Any) -> Tuple[Optional[Dict[str, Any]], str]:
     if 'mode' in raw and raw['mode'] not in MODES:
         return None, f"mode must be one of {', '.join(MODES)}"
     for key, lo, hi in (('plan_credit_usd', 0, 100_000), ('budget_usd', 0, 100_000),
-                        ('stop_pct', 1, 100), ('reset_day', 1, 31)):
+                        ('stop_pct', 1, 100), ('reset_day', 1, 31),
+                        ('session_reserve_usd', 0, 100_000)):
         if raw.get(key) is not None and _num(raw[key], lo, hi) is None:
             return None, f'{key} must be a number between {lo} and {hi}'
     if raw.get('reset_day') is not None and float(raw['reset_day']) != int(raw['reset_day']):
@@ -280,7 +284,7 @@ def cycle_bounds(now: datetime, reset_day: int) -> Tuple[date, date]:
 
 def _empty_cycle() -> Dict[str, Any]:
     return {'entries': [], 'spent_usd': 0.0, 'estimated_usd': 0.0, 'calls': 0,
-            'estimated_calls': 0}
+            'estimated_calls': 0, 'session_spent_usd': 0.0}
 
 
 def _load_ledger() -> Dict[str, Any]:
@@ -307,6 +311,9 @@ def _prune(led: Dict[str, Any], start: date, reset_day: int) -> None:
 
 def _cycle(led: Dict[str, Any], start: date) -> Dict[str, Any]:
     cyc = led['cycles'].setdefault(start.isoformat(), _empty_cycle())
+    if 'session_spent_usd' not in cyc:
+        cyc['session_spent_usd'] = sum((e.get('cost_usd') or 0.0) for e in cyc.get('entries', [])
+            if str(e.get('caller', '')).startswith('session:') and not e.get('estimated'))
     for k, v in _empty_cycle().items():
         cyc.setdefault(k, v)
     return cyc
@@ -344,6 +351,8 @@ def record(*, caller: str, model: str, usage: Dict[str, int], cost: Optional[flo
         else:
             cyc['calls'] += 1
             cyc['spent_usd'] = round(cyc['spent_usd'] + (cost or 0.0), 8)
+            if caller.startswith('session:'):
+                cyc['session_spent_usd'] = round(cyc['session_spent_usd'] + (cost or 0.0), 8)
         _prune(led, start, s['reset_day'])
         if not estimated:
             notice = _crossing_notice(led, s, start, cyc)
@@ -361,7 +370,7 @@ def _crossing_notice(led: Dict[str, Any], s: Dict[str, Any], start: date,
         return ''
     led['notified_cycle'] = start.isoformat()
     return (f"Clayrune has used ${cyc['spent_usd']:.2f} of its ${s['budget_usd']:.2f} API-credit "
-            f"budget (stop at {s['stop_pct']:g}%). Background calls are back on your "
+            f"budget (stop at {s['stop_pct']:g}%). Background work is back on your "
             f"subscription until the cycle resets.")
 
 
@@ -394,7 +403,7 @@ def halt(reason: str, kind: str, settings: Optional[Dict[str, Any]] = None) -> N
         led['last_error'] = reason
         if led.get('notified_cycle') != start.isoformat():
             led['notified_cycle'] = start.isoformat()
-            notice = f'Background calls are back on your subscription. {reason}'
+            notice = f'Background work is back on your subscription. {reason}'
         _save_ledger(led)
     if notice:
         _notify('API credits stopped', notice)
@@ -489,6 +498,8 @@ def status() -> Dict[str, Any]:
         'state': state, 'reason': reason,
         'cycle': {'start': start.isoformat(), 'resets_on': end.isoformat(),
                   'spent_usd': round(spent, 6),
+                  'session_spent_usd': round(float(cyc.get('session_spent_usd', 0.0)), 6),
+                  'background_spent_usd': round(spent - float(cyc.get('session_spent_usd', 0.0)), 6),
                   'estimated_usd': round(float(cyc.get('estimated_usd', 0.0)), 6),
                   'calls': int(cyc.get('calls', 0)),
                   'estimated_calls': int(cyc.get('estimated_calls', 0)),

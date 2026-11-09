@@ -39,7 +39,8 @@ def _unattended_refusal():
 def _widens_spend(old: dict, new: dict) -> bool:
     if new['mode'] != 'on':
         return False
-    return any(old[f] != new[f] for f in _SPEND_FIELDS)
+    return (any(old[f] != new[f] for f in _SPEND_FIELDS)
+            or new['session_reserve_usd'] < old['session_reserve_usd'])
 
 
 @bp.get('/api/api-credits/status')
