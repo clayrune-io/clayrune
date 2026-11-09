@@ -1,5 +1,30 @@
 # Runtime delivery acknowledgment (MC-1168)
 
+Round 12 is an investigation checkpoint on `fix/mc1168-r12`, based on
+`e7d252440bb921239758c5a0c97e417a735f2fa0`; no runtime fix is implemented.
+Fenn's r11 blockers reproduce: queued spawn refusal overwrites completed
+history with a pending row, and cold scheduled reuse without `notify_session`
+can lose its completion after postspawn persistence failure. The earlier
+statement that queue spawn-error handling was wholly pre-existing was wrong:
+the history overwrite is a regression from the new prelaunch reservation.
+
+The requested structural fix requires a shared reserve -> launch ->
+settle-or-restore transaction across launch paths. Its acceptance currently
+conflicts with the unchanged cold-reuse probe: `test_reused_initial.py`
+records `bool(spawned)` on every history save and asserts `saves == [True]`.
+A prelaunch reservation through the existing history transaction necessarily
+records `False` first. Changing that assertion or bypassing its save hook
+has not been authorized. Dave must resolve the acceptance requirement before
+implementation; the recommendation is to retain the original evidence and
+authorize an explicit ordering-corrected test, preserving the completion checks.
+
+The two unchanged r12 probe copies plus the queue parent-control source are
+retained under `tests/mc1168_r12/` with exact-byte attributes. Their baseline
+selection has **3 failed, 3 passed**, child exit **1**. This is recorded failing
+evidence, not a green candidate. No full r11 matrix or pyright rerun is claimed
+for this checkpoint. No production source changed. The dated journal records
+the source/probe hashes, launch inventory, and handoff location.
+
 Round 11 carries initial Claude reservations through postlaunch enrichment and
 reserves queued replay before spawning. Round 10 extends postlaunch token
 rollback through self-start callback rearming.
@@ -79,8 +104,9 @@ for a new row with no destination; model-pin metadata mints only when creating
 a previously absent row; Hivemind lineage/reviewer/integration records reserve
 before worker dispatch. None replaces a successful prelaunch reservation with
 a second postlaunch owner. No change to callback gates, provider timeouts or
-startup retry policy is included. Existing spawn-error behavior after a
-successful queue reservation is outside this storage-refusal repair.
+startup retry policy is included. Fenn's later r11 review established that
+spawn refusal after a successful queue reservation strands an overwritten
+pending row; that regression is still unresolved at the r12 checkpoint.
 `agent_log_file.claim_rows` assigns identities only to untagged legacy rows;
 its merge path mints only for a new synthesized transcript without a managed
 session. `resume_cwd.refusal` mints only for a new refusal row and preserves

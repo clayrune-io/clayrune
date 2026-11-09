@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Retain round-12 launch regression evidence (MC-1168)
+
+- Preserved Fenn's queue-spawn-refusal and cold-scheduled-reuse probes byte-for-byte, including the extracted queue parent control. Baseline remains 3 failed/3 passed; no runtime repair is claimed.
+- Documented an acceptance conflict: the unchanged cold-reuse probe requires only a postspawn save, while the requested shared launch transaction requires a prelaunch reservation. Implementation awaits the dispatcher's decision; no merge, push or restart.
+
 ## [2026-11-09] - Reserve delivery ownership before queued launch (MC-1168 round 11)
 
 - Initial delegated Claude sessions keep their prelaunch reservation through both Mode A and Mode B history enrichment, so a failed second save no longer discards their eventual completion.

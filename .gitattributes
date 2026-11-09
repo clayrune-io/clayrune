@@ -42,3 +42,6 @@ tests/fixtures/dev_harness/*.json text eol=lf
 tests/mc1168_r10/test_rearm_claim.py -text
 tests/mc1168_r11/test_initial_pending.py -text
 tests/mc1168_r11/test_reader_pending.py -text
+tests/mc1168_r12/test_queue_spawn_failure.py -text
+tests/mc1168_r12/test_reused_initial.py -text
+tests/mc1168_r12/parent_queue_function.py -text
