@@ -6387,8 +6387,10 @@ def _read_agent_stream(proc, session):
                 if pending:
                     session['_dispatching_followup'] = True
                     followup_msg = pending.pop(0)
-                    _auto_dispatch_followup(session, followup_msg)
-                    session.pop('_dispatching_followup', None)
+                    try:
+                        _auto_dispatch_followup(session, followup_msg)
+                    finally:
+                        session.pop('_dispatching_followup', None)
 
         # Auto-recover failed resume (Mode A)
         if (not _credits_replayed and session.get('_resume_id')
@@ -10767,6 +10769,32 @@ def _auto_dispatch_followup_locked(session, message, p, pp, cmd, _sp_path):
     try:
         _cwd = _session_cwd(session, pp, message)
         cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _cwd)
+    except Exception as e:
+        session['log_lines'].append(f'[follow-up failed: {e}]')
+        if _sp_path:
+            try:
+                os.unlink(_sp_path)
+            except OSError:
+                pass
+        return
+    # Reserve before launch: a refused save must leave no live unread child.
+    # Stage turn bookkeeping so refusal also preserves the completed owner.
+    reserved = dict(session)
+    try:
+        _advance_delegation_turn(reserved, owner=None)
+    except Exception as e:
+        session.setdefault('pending_followups', []).insert(0, message)
+        session['log_lines'].append(f'[follow-up reservation failed; message kept queued: {e}]')
+        if _sp_path:
+            try:
+                os.unlink(_sp_path)
+            except OSError as cleanup_error:
+                _log(f'[follow-up] sysprompt cleanup failed: {cleanup_error}')
+        return
+    for key in session.keys() - reserved.keys():
+        session.pop(key)
+    session.update(reserved)
+    try:
         proc = spawn_engine_proc(
             cmd, session_id=session.get('session_id'), engine='claude',
             cwd=_cwd,
@@ -10787,10 +10815,6 @@ def _auto_dispatch_followup_locked(session, message, p, pp, cmd, _sp_path):
     if old_proc:
         _unregister_process(old_proc.pid)
     session['proc'] = proc
-    # Guardian/queue replay of an already-received message, not a fresh
-    # caller decision -- never re-arms (see _advance_delegation_turn). The
-    # queue does not record who sent the message, so the owner is kept.
-    _advance_delegation_turn(session, owner=None)
     # Backlog 4668eafc calibration fix, defect 2 (WAKE TURNS WITH NO
     # turn_start): this dispatches a fresh turn exactly like agent_followup's
     # own `_start_new_turn` does, but historically skipped the matching
@@ -13117,13 +13141,14 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         # The dispatch record is durable before Popen. If Popen or the reader
         # setup fails, reconciliation can see an in-progress launch and retain
         # the unknown outcome instead of leaving an untracked child process.
+        _initial_attempt = None
         if notify_session and not incognito:
             # Live to the usage-breakdown reconcile from here until this
             # `with` block exits -- by then the session is in agent_sessions,
             # or the launch failed (MC-998 round 4).
             _pending_launch.append(session_id)
             pending_launches[session_id] = _time.time()
-            _log_agent_dispatch_pending({
+            _pending_session = {
                 'project_id': project_id, 'session_id': session_id,
                 'task': task, 'provider': provider_name,
                 'model': routed_model, 'agent_model': routed_model,
@@ -13140,7 +13165,10 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 '_delegation_turn': _delegation_turn_reserved,
                 '_delivery_generation': _delivery_generation_reserved,
                 'project_generation': canonical_project_generation,
-            }, strict=True)
+            }
+            _log_agent_dispatch_pending(_pending_session, strict=True)
+            _initial_attempt = _delivery_attempt.DeliveryAttempt(
+                _pending_session.get('_delivery_attempt_id') or '')
 
         if use_streaming:
             # Mode B: persistent process with stream-json stdin
@@ -13260,13 +13288,16 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 session = session_dict_override
             if session_metadata:
                 session.update(session_metadata)
+            if _initial_attempt is not None:
+                _initial_attempt.stamp(session)
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
 
             # A notify_session dispatch already called this before Popen (and
             # wrote this turn's turn_start there) -- don't write a second.
             _log_agent_dispatch_pending(
-                session, write_turn_start=not (notify_session and not incognito))
+                session, write_turn_start=not (notify_session and not incognito),
+                attempt=_initial_attempt, postlaunch=True)
             t = threading.Thread(target=_read_agent_stream_b, args=(proc, session), daemon=True)
             t.start()
 
@@ -13386,11 +13417,14 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 session = session_dict_override
             if session_metadata:
                 session.update(session_metadata)
+            if _initial_attempt is not None:
+                _initial_attempt.stamp(session)
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
 
             _log_agent_dispatch_pending(
-                session, write_turn_start=not (notify_session and not incognito))
+                session, write_turn_start=not (notify_session and not incognito),
+                attempt=_initial_attempt, postlaunch=True)
             t = threading.Thread(target=_read_agent_stream, args=(proc, session), daemon=True)
             t.start()
 

@@ -1,6 +1,8 @@
 # Runtime delivery acknowledgment (MC-1168)
 
-Round 10 extends postlaunch token rollback through self-start callback rearming.
+Round 11 carries initial Claude reservations through postlaunch enrichment and
+reserves queued replay before spawning. Round 10 extends postlaunch token
+rollback through self-start callback rearming.
 Round 9 closes the self-start races in round 8's durable ownership guards. `mc/delivery_attempt.py`
 mints a UUID at capture, before spawn can start an acknowledgment writer.
 It claims the existing durable session row inside the manager -> log-leaf
@@ -12,7 +14,7 @@ Both Claude revival modes claim and carry a token, including Mode A's argv
 delivery, so a successful Mode A successor cannot become an untagged legacy
 row on completion. Both Codex first-turn and follow-up capture before spawn.
 
-Every non-identity pending-row upsert takes the row with a fresh token,
+Every new-delivery pending-row upsert takes the row with a fresh token,
 including a non-delegated continuation whose `delegation_turn` remains 1.
 Identity-only native-thread backfills require and preserve the token. Completion
 compares it against the newest session row before replacing or inserting any
@@ -22,6 +24,78 @@ its token into the replacement durable row; tab closure removes only the registr
 object and cannot erase it. UUID claim and pending upsert serialize under the
 same manager -> log-leaf lock order as failure recording. No acknowledgment
 or process wait was added inside those locks.
+
+Initial delegated Claude dispatch keeps the strict pending save before Popen.
+Its temporary reservation dictionary owns the token; both published Mode A
+and Mode B sessions receive that exact token after metadata hydration. Their
+postlaunch pending write enriches history using the reserved `DeliveryAttempt`
+instead of minting another owner. A failed enrichment logs and retains the
+saved owner, so reader completion can commit once storage recovers. Merely
+rolling back a token on a fresh session would not recover the temporary
+dictionary's owner. Standalone initial dispatch retains its existing best-effort
+history behavior; when no row exists, completion can insert one with an identity.
+
+Queue replay now resolves its isolated cwd, then reserves the next turn and
+pending row before `spawn_engine_proc`. Turn bookkeeping is staged in a shallow
+copy under the existing project/lifecycle locks; a refused save leaves prior
+live ownership and turn flags intact, puts the message back at the queue front,
+and cleans the temporary prompt file. A consumed durable delegation number is
+not reused. Successful reservation is published before spawn; registration,
+running state and reader startup contain no later strict pending save. The
+reader clears `_dispatching_followup` in `finally`. This uses the preferred
+prelaunch reservation approach, not recovery of a live unread child.
+
+Fenn's r10 probes are retained unchanged in `tests/mc1168_r11/`:
+
+- `test_initial_pending.py`: SHA256 `c6e61494378af3a343aa0e2a3b2cd087b8775b890584753fb80d0163a15b72ab`.
+- `test_reader_pending.py`: SHA256 `a1533204f1f61d457a637628bb1654630a104cfaf8d774b95fd321d0a068b254`.
+
+Git treats those two files as exact bytes. Additional refusal and single-mint
+controls live separately in `tests/test_runtime_delivery_truth_r11.py`.
+
+### Round-11 pending-writer audit
+
+The complete direct `_log_agent_dispatch_pending` call inventory and its
+indirect turn-helper paths were inspected at the candidate. These are code
+ordering verdicts, supported by the reviewer probes and regression selections;
+they do not certify live provider behavior.
+
+| Call site | Ownership boundary and verdict |
+| --- | --- |
+| `_note_claude_sid` | Postlaunch, `identity_only=True`; compares/preserves the owner, no mint. Unchanged injected-save-failure control passes. |
+| `_note_self_started_turn` initial pending write | Already executing; idle/live/durable revalidation and failed-save token rollback under manager lock; reader continues. r9 probes cover it. |
+| `_note_self_started_turn` callback rearm | Already executing; `postlaunch=True` reaches strict pending write through both turn helpers; rollback occurs before the existing catch. r10 probe covers both save boundaries. |
+| `_auto_dispatch_followup_locked` | Fixed in r11: staged strict reservation before spawn; refusal retains queued message and prior live state. No postspawn pending write remains. |
+| `_dispatch_via_runtime` | Strict delegated pending reservation before `runtime.dispatch`; INIT uses `_runtime_note_init` with owner-checked metadata only. No postspawn mint. |
+| `_dispatch_agent_internal` temporary pending dictionary | Strict delegated save before either Claude spawn. r11 preserves that dictionary's owner in the real session. |
+| `_dispatch_agent_internal` Mode B enrichment | Fixed in r11: postlaunch write passes the prelaunch attempt; no second mint. Storage failure keeps that owner and reader setup proceeds. |
+| `_dispatch_agent_internal` Mode A enrichment | Same r11 fix as Mode B; unchanged probe exercises actual Mode A completion. |
+| `agent_followup._start_new_turn` | Native runtime call, Claude dead-child/model-switch spawn, Mode A spawn, and live Mode B stdin delivery all follow strict turn reservation. A live process exists in the last case, but the new input has not been submitted. Not postsubmission bookkeeping. |
+| `agent_interrupt._start_new_turn` | Native write/respawn and Claude replacement spawn occur later; strict prelaunch reservation. Claude sets `_interrupting` before reservation and restores it on refusal. |
+| `scheduler_routes._scheduled_continue` | Captures/publishes pending with the same explicit attempt before stdin delivery. A live child alone does not make this a postsubmission save. |
+
+Other direct `pending_fields` users were also checked: completion mints only
+for a new row with no destination; model-pin metadata mints only when creating
+a previously absent row; Hivemind lineage/reviewer/integration records reserve
+before worker dispatch. None replaces a successful prelaunch reservation with
+a second postlaunch owner. No change to callback gates, provider timeouts or
+startup retry policy is included. Existing spawn-error behavior after a
+successful queue reservation is outside this storage-refusal repair.
+`agent_log_file.claim_rows` assigns identities only to untagged legacy rows;
+its merge path mints only for a new synthesized transcript without a managed
+session. `resume_cwd.refusal` mints only for a new refusal row and preserves
+the identity of an existing row. These are maintenance/refusal writers rather
+than postlaunch delivery replacements.
+
+Round-11 verification through the installation test launcher: unchanged
+initial6 and reader5, permanent18 (the original11 plus seven new controls),
+r10-rearm5, self-start50, independent9, focused50, runtime592/skip1,
+resume54, API-credits161, scheduler195, MC-1165 isolation211/skip13,
+writer-audit222 and receiver92 all exit 0. Counts overlap. All four recorded
+owned/r8/r9/r10 Pyright selections and the new r11 controls have zero errors,
+exit 0. Core retains 15 errors, exit 1: normalized additions0/removals0 against
+the retained Fenn r9 baseline, not a regenerated baseline. No live-provider
+or deployment verification is claimed.
 
 `record_failure` finds the session row and compares its `delivery_attempt_id`
 with the captured UUID inside that same transaction. A different token logs

@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Reserve delivery ownership before queued launch (MC-1168 round 11)
+
+- Initial delegated Claude sessions keep their prelaunch reservation through both Mode A and Mode B history enrichment, so a failed second save no longer discards their eventual completion.
+- Queued replay saves its reservation before spawning. Storage refusal retains the message, prior live owner and turn state; reader cleanup clears the dispatch flag. Retained Fenn's two probes byte-for-byte and added refusal/single-token controls. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-09] - Preserve self-start ownership through callback rearm (MC-1168 round 10)
 
 - Self-start callback rearming now carries the postlaunch token-rollback policy through its second pending-history write. Failed saves restore the preceding owner, so recovered storage can record the running turn's completion; strict prelaunch refusal remains.

@@ -40,3 +40,5 @@ tests/fixtures/dev_harness/*.json text eol=lf
 
 # Retained reviewer regression: preserve the original bytes on every platform.
 tests/mc1168_r10/test_rearm_claim.py -text
+tests/mc1168_r11/test_initial_pending.py -text
+tests/mc1168_r11/test_reader_pending.py -text
