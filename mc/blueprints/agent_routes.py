@@ -88,6 +88,7 @@ from flask import Blueprint, Flask, Response, has_request_context, jsonify, make
 
 from mc import media as _media
 from mc import obs, state
+from mc.terminal_delivery import TerminalDeliveryGate
 from mc import workflows as _workflows  # leaf module (no Flask import); see _notify_workflow_step
 from mc import state as _mc_state  # readers write _mc_state._LAST_SYSTEM_STATUS verbatim
 from mc.atomic_json import read_text_with_retry, write_json_atomic
@@ -6286,6 +6287,113 @@ def _read_agent_stream_b(proc, session):
     # Turns THIS process produced (num_turns itself is per turn; see
     # accumulate_result_turns). The failed-resume guard reads it.
     proc_cost, proc_turns = _agent_shim_adopt.reader_counters(session, proc)
+    pending_delivery = session.get('_terminal_delivery_gate')
+    delivery_gate = (pending_delivery[1] if pending_delivery is not None
+                     and pending_delivery[0] is my_proc else None)
+
+    def terminal(event):
+        if delivery_gate is None:
+            event()
+        else:
+            delivery_gate.submit(event)
+
+    def result(msg):
+        if not _session_owned_by(session, my_proc):
+            return
+        if 'session_id' in msg:
+            _note_claude_sid(session, msg['session_id'])
+        if 'usage' in msg:
+            _accumulate_session_usage(session, msg['usage'])
+        _agent_runtime.accumulate_result_cost(session, msg, proc_cost)
+        _agent_runtime.accumulate_result_turns(session, msg, proc_turns)
+        _record_permission_denials(session, msg)
+        _apply_mc_tool_blocks_for_turn(session)
+        _auto_snapshot_notes_on_turn(session)
+        _emit_coverage_advisory(session)
+        _scan_result_event_for_auth(msg)
+        _delegation_settlement.note_claude_turn(session, msg, _delivery_store, _midturn.note_turn_complete)
+        # Turn boundary — process stays alive
+        # MC-946: for a dispatched child this IS "done" — Mode B
+        # never exits on its own, so the exit-time hook would fire
+        # late or never. Latched, so the exit path can't repeat it.
+        # MC-958: unless a background job is still running — then
+        # this turn is "started it, waiting", the CLI will run a
+        # turn of its own when the job ends, and THAT turn's
+        # result is the answer the spawner is waiting for.
+        # MC-1150 P4: checkpoint past this result BEFORE it is announced, so a
+        # restart cannot replay it into a second completion, and stamp the
+        # checkpoint with the wake it now owes so a crash cannot lose it.
+        with get_manager(session['project_id']).lock:
+            if session.get('status') != 'stopped':
+                session['status'] = 'idle'
+                session['last_status_change_time'] = _time.time()
+            if not _limit_resume.hold_completion(
+                    session, state.CONFIG,
+                    completion_kind='turn' if not msg.get('is_error') else None):
+                _complete_agent_turn(session)
+        # Step 6: mid-session note-taker (default-off; fast-gated).
+        _maybe_checkpoint(session)
+        # MC-998 bugfix: this IS the turn boundary for a Mode B
+        # session (process stays alive) -- see
+        # _write_usage_breakdown_turn_checkpoint's docstring.
+        _write_usage_breakdown_turn_checkpoint(session)
+        _handle_push_signal(
+            session.get('project_id', ''), session.get('session_id', ''), msg)
+
+    def finish(rc):
+        # Acquire per-project lock to prevent race with agent_stop setting 'stopped'
+        with get_manager(session['project_id']).lock:
+            # Single-emit gate (see _session_owned_by). Skip when interrupt
+            # is in flight — the new reader will set process_alive=True/status
+            # legitimately and there's no point flipping it False between.
+            if _session_owned_by(session, my_proc):
+                session['process_alive'] = False
+                _gone = _bg_tasks.drain(session)
+                if _gone:
+                    session['log_lines'].append(
+                        f"[process ended with {len(_gone)} background task(s) still "
+                        f"running — they were stopped with it: {'; '.join(_gone)}]")
+                # Never overwrite 'stopped' — that's a user-initiated terminal state
+                if session['status'] in ('running', 'idle'):
+                    if session.get('waiting_for_question'):
+                        # Process was intentionally killed after AskUserQuestion —
+                        # not an error, just waiting for user's answer
+                        session['status'] = 'idle'
+                        session['last_status_change_time'] = _time.time()
+                    else:
+                        # rc!=0 while 'idle' = the turn ALREADY ended cleanly
+                        # (the result event set 'idle' at the turn boundary);
+                        # the nonzero exit is post-turn teardown — e.g.
+                        # claude-fable-5 exits 1 after every turn under the
+                        # full Mode B flag set — not a task failure. Logging
+                        # it 'error' painted a red "Blocked" tile after each
+                        # successful turn (2026-06-10). Mid-turn deaths still
+                        # classify as error: they die with status 'running'.
+                        _post_turn = session['status'] == 'idle'
+                        session['status'] = 'completed' if (rc == 0 or _post_turn) else 'error'
+                        session['last_status_change_time'] = _time.time()
+                        if rc != 0:
+                            session['log_lines'].append(f"[exited with code {rc}]")
+                        if rc == 0 or _post_turn:
+                            session['recovery_attempts'] = 0
+                            session['guardian_state'] = None
+                            session['pending_recovery_message'] = None
+                            session['circuit_breaker_tripped'] = False
+                elif session['status'] == 'stopped':
+                    pass  # User stopped — don't change status regardless of rc
+                _log_agent_completion(session)
+                _run_runtime_callbacks(session)
+
+        # Auto-recover failed resume: if we tried to resume a prior session and
+        # it died quickly without producing meaningful output, restart fresh.
+        if (_session_owned_by(session, my_proc)
+                and session.get('_resume_id')
+                and session.get('status') == 'error'
+                and not session.get('_resume_recovery_attempted')
+                and _time.time() - session.get('_dispatch_time', 0) < 60
+                and not proc_turns.get('num_turns')):
+            _auto_recover_failed_resume(session)
+
     try:
         for raw_line in proc.stdout:
             obs.heartbeat('stream-reader:b')  # Phase 2 loop observability (1.12)
@@ -6465,43 +6573,8 @@ def _read_agent_stream_b(proc, session):
                         if _midturn.note_tool_results(session, msg['message'].get('content')):
                             _maybe_midturn_roll(session, my_proc)
                 elif msg_type == 'result':
-                    if 'session_id' in msg:
-                        _note_claude_sid(session, msg['session_id'])
-                    if 'usage' in msg:
-                        _accumulate_session_usage(session, msg['usage'])
-                    _agent_runtime.accumulate_result_cost(session, msg, proc_cost)
-                    _agent_runtime.accumulate_result_turns(session, msg, proc_turns)
-                    _record_permission_denials(session, msg)
-                    _apply_mc_tool_blocks_for_turn(session)
-                    _auto_snapshot_notes_on_turn(session)
-                    _emit_coverage_advisory(session)
-                    _scan_result_event_for_auth(msg)
-                    _delegation_settlement.note_claude_turn(session, msg, _delivery_store, _midturn.note_turn_complete)
-                    # Turn boundary — process stays alive
-                    # MC-946: for a dispatched child this IS "done" — Mode B
-                    # never exits on its own, so the exit-time hook would fire
-                    # late or never. Latched, so the exit path can't repeat it.
-                    # MC-958: unless a background job is still running — then
-                    # this turn is "started it, waiting", the CLI will run a
-                    # turn of its own when the job ends, and THAT turn's
-                    # result is the answer the spawner is waiting for.
-                    # MC-1150 P4: checkpoint past this result BEFORE it is announced, so a
-                    # restart cannot replay it into a second completion, and stamp the
-                    # checkpoint with the wake it now owes so a crash cannot lose it.
-                    with get_manager(session['project_id']).lock:
-                        if session.get('status') != 'stopped':
-                            session['status'] = 'idle'
-                            session['last_status_change_time'] = _time.time()
-                        if not _limit_resume.hold_completion(
-                                session, state.CONFIG,
-                                completion_kind='turn' if not msg.get('is_error') else None):
-                            _complete_agent_turn(session)
-                    # Step 6: mid-session note-taker (default-off; fast-gated).
-                    _maybe_checkpoint(session)
-                    # MC-998 bugfix: this IS the turn boundary for a Mode B
-                    # session (process stays alive) -- see
-                    # _write_usage_breakdown_turn_checkpoint's docstring.
-                    _write_usage_breakdown_turn_checkpoint(session)
+                    terminal(lambda msg=msg: result(msg))
+                    continue
                 # Web push hook: intercept PushNotification tool_use + turn results.
                 _handle_push_signal(
                     session.get('project_id', ''),
@@ -6531,57 +6604,7 @@ def _read_agent_stream_b(proc, session):
     finally:
         rc = proc.wait()
         _unregister_process(proc.pid)
-        # Acquire per-project lock to prevent race with agent_stop setting 'stopped'
-        with get_manager(session['project_id']).lock:
-            # Single-emit gate (see _session_owned_by). Skip when interrupt
-            # is in flight — the new reader will set process_alive=True/status
-            # legitimately and there's no point flipping it False between.
-            if _session_owned_by(session, my_proc):
-                session['process_alive'] = False
-                _gone = _bg_tasks.drain(session)
-                if _gone:
-                    session['log_lines'].append(
-                        f"[process ended with {len(_gone)} background task(s) still "
-                        f"running — they were stopped with it: {'; '.join(_gone)}]")
-                # Never overwrite 'stopped' — that's a user-initiated terminal state
-                if session['status'] in ('running', 'idle'):
-                    if session.get('waiting_for_question'):
-                        # Process was intentionally killed after AskUserQuestion —
-                        # not an error, just waiting for user's answer
-                        session['status'] = 'idle'
-                        session['last_status_change_time'] = _time.time()
-                    else:
-                        # rc!=0 while 'idle' = the turn ALREADY ended cleanly
-                        # (the result event set 'idle' at the turn boundary);
-                        # the nonzero exit is post-turn teardown — e.g.
-                        # claude-fable-5 exits 1 after every turn under the
-                        # full Mode B flag set — not a task failure. Logging
-                        # it 'error' painted a red "Blocked" tile after each
-                        # successful turn (2026-06-10). Mid-turn deaths still
-                        # classify as error: they die with status 'running'.
-                        _post_turn = session['status'] == 'idle'
-                        session['status'] = 'completed' if (rc == 0 or _post_turn) else 'error'
-                        session['last_status_change_time'] = _time.time()
-                        if rc != 0:
-                            session['log_lines'].append(f"[exited with code {rc}]")
-                        if rc == 0 or _post_turn:
-                            session['recovery_attempts'] = 0
-                            session['guardian_state'] = None
-                            session['pending_recovery_message'] = None
-                            session['circuit_breaker_tripped'] = False
-                elif session['status'] == 'stopped':
-                    pass  # User stopped — don't change status regardless of rc
-                _log_agent_completion(session)
-                _run_runtime_callbacks(session)
-
-        # Auto-recover failed resume: if we tried to resume a prior session and
-        # it died quickly without producing meaningful output, restart fresh.
-        if (session.get('_resume_id')
-                and session.get('status') == 'error'
-                and not session.get('_resume_recovery_attempted')
-                and _time.time() - session.get('_dispatch_time', 0) < 60
-                and not proc_turns.get('num_turns')):
-            _auto_recover_failed_resume(session)
+        terminal(lambda: finish(rc))
 
 
 def _auto_recover_failed_resume(session):
@@ -7538,14 +7561,16 @@ class ReviveDeliveryError(RuntimeError):
 def _abort_failed_revive(mgr, session_id, session, proc, prior_session, was_listed):
     """Undo a revive whose stdin write failed, to the state before it ran.
 
-    `session['proc']` is cleared BEFORE the kill: the revive's reader gates all
-    of its exit handling (status, completion log, notify-spawner callback,
-    auto-recover-from-failed-resume) on owning the proc, so a disowned reader
-    reports nothing for a turn that never started."""
+    Clear only this process's ownership, and restore registration only if both
+    the process and the registered object still belong to this revive. A newer
+    process/object owns its membership and must survive the old write failure.
+    The terminal-delivery gate is rejected before calling this rollback."""
     with mgr.lock:
-        session['proc'] = None
-        session['process_alive'] = False
-        if agent_sessions.get(session_id) is session:
+        owns_proc = session.get('proc') is proc
+        if owns_proc:
+            session['proc'] = None
+            session['process_alive'] = False
+        if owns_proc and agent_sessions.get(session_id) is session:
             if prior_session is not None:
                 agent_sessions[session_id] = prior_session
             else:
@@ -7879,6 +7904,9 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         # under an existing session_id without passing
         # `_log_agent_dispatch_pending`, so mark where it really begins.
         _write_usage_breakdown_turn_start_checkpoint(session)
+        delivery_gate = TerminalDeliveryGate(
+            lambda exc: _log(f"[revive] {project_id}: terminal processing failed: {exc}"))
+        session['_terminal_delivery_gate'] = (proc, delivery_gate)
         threading.Thread(target=_read_agent_stream_b, args=(proc, session), daemon=True).start()
         # MC-944 (§9.6): the revival context above already carries a read floor
         # keyed on `message` (via _build_agent_context's task=), even when
@@ -7890,7 +7918,11 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         stdin_msg = json.dumps({"type": "user", "message": {"role": "user", "content": revival_msg}}) + '\n'
         if role_context is not None:
             from mc.steward_role_dispatch import _append_ack
-            _append_ack(session, revival_msg)
+            try:
+                _append_ack(session, revival_msg)
+            except Exception:
+                delivery_gate.reject()
+                raise
         else:
             _stdin_err = None
             with session['stdin_lock']:
@@ -7904,9 +7936,11 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                 # caller recorded a message delivered to a process that never got it.
                 _log(f"[revive] {project_id}: stdin write failed on revive of {session_id}: "
                      f"{_stdin_err}; rolled back")
+                delivery_gate.reject()
                 _abort_failed_revive(mgr, session_id, session, proc, _prior_session, _was_listed)
                 raise ReviveDeliveryError(
                     f'revive spawned but the message was not written to the agent: {_stdin_err}')
+        delivery_gate.accept()
         _log(f"[revive] {project_id}: Mode B revived session {session_id} via -r {claude_sid[:12]}")
         return session
 
@@ -8043,7 +8077,8 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
 
     Returns the session_id on success, None if not revivable (no matching log
     entry, entry belongs to the Claude path, unknown provider, or dispatch
-    failure).
+    failure). Raises PromptDeliveryError if a spawned process rejected the
+    message; callers must report failure for this same conversation.
     """
     entries = [e for e in _load_agent_log(project_id) if e.get('session_id') == session_id]
     if not entries:
@@ -8116,6 +8151,8 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
                                  session_metadata={'_turn_owner': 'spawner' if carry_notify else 'human'},
                                  **({'prepared_context': role_context, 'preserve_model': True}
                                     if role_context is not None else {}))
+    except _agent_runtime.PromptDeliveryError:
+        raise  # An existing conversation failed delivery; never fresh-dispatch.
     except Exception as e:
         _log(f"[revive-non-claude] {project_id}: dispatch failed: {e}")
         return None
@@ -13218,8 +13255,8 @@ def agent_send(project_id):
                     # flag is still set).
                     resp = make_response(agent_followup(project_id))
                     decision = 'interrupt_to_followup'
-            except Exception:
-                pass
+            except Exception as e:
+                _log(f"[send] interrupt-to-followup routing failed: {e}", flush=True)
     elif decision == 'followup':
         # agent_followup has the same jsonify(...), status tuple pattern on
         # its error returns — normalize here too (see the interrupt branch
@@ -13269,6 +13306,10 @@ def agent_send(project_id):
                     carry_notify=bool(_explicit_notify_session))
             except RosterRecoveryHeld as e:
                 return jsonify({'ok': False, 'error': str(e)}), 409
+            except _agent_runtime.PromptDeliveryError as e:
+                _log_agent_activity(project_id, f"Non-Claude revive delivery failed in /send: {e}")
+                return jsonify({'ok': False, 'delivered': False, 'error': str(e),
+                                'session_id': session_id}), 502
             except Exception as e:
                 fresh_sid = None
                 _log_agent_activity(project_id, f"Non-claude revive error in /send: {e}")
@@ -13754,6 +13795,10 @@ def agent_followup(project_id):
                 carry_notify=bool(_explicit_notify_session))
         except RosterRecoveryHeld as e:
             return jsonify({'ok': False, 'error': str(e)}), 409
+        except _agent_runtime.PromptDeliveryError as e:
+            _log_agent_activity(project_id, f"Non-Claude revive delivery failed in followup: {e}")
+            return jsonify({'ok': False, 'delivered': False, 'error': str(e),
+                            'session_id': session_id}), 502
         if fresh_sid:
             if _explicit_notify_session:
                 _fresh_sess = agent_sessions.get(fresh_sid)

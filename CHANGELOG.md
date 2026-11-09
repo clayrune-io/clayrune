@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Hold revival completion until message delivery resolves (MC-1168 round 2)
+
+- Cold Codex `/send` and `/followup` return 502 for the original conversation when prompt delivery fails, without starting a fresh chat.
+- Mode B revival keeps draining stdout while result and EOF terminal handlers wait for stdin acknowledgment. Accepted handlers run in order; rejected deliveries emit no terminal callbacks or failed-resume recovery. Rollback preserves replacement process and registry ownership.
+- Added real-reader ordering, rejection, EOF-before-write and route regressions. Contract and validation: `docs/RUNTIME_DELIVERY_TRUTH.md`. Branch review candidate only; no merge, push or restart.
+
 ## [2026-11-08] - Specify owner-only per-install agent email
 
 - Added `docs/AGENT_MAIL_SPEC.md`: opt-in installation enrollment, verified-owner sending, identified activation counts, authenticated and laundered replies, durable offline replay, and exact-conversation follow-up requirements. Eight design decisions remain open for Dave, with alternatives, recommendations and costs.
