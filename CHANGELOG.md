@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Save live isolated resume refusals on Run Now (MC-1165 round 10)
+
+- Claude dispatch checks isolated session reuse before generic conversation duplication, so a live owner of the reused session returns HTTP 409 with `refused` and `session_id`, and Run Now saves `last_error` and `last_error_at` instead of returning an unrecorded 400.
+- Kept duplicate protection for a different live owner and the locked liveness recheck. Added Fenn's five real-guard probes and two different-owner controls. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-07] - Cold review: four review blockers fixed (MC-1165 round 2)
 
 - `hold_reason` reads the rejection list, the branch record and its `cold` marker from one store snapshot; a hand pass plus a concurrent cold rejection can no longer read as a cold pass (the interleaved merge landed a rejected tip).

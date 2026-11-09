@@ -188,6 +188,18 @@ instead of the task string. Then `session['task']` in
 `_worktree_merge_back_on_end` becomes a lookup of that item, falling back to the task.
 Filed here, not implemented, per Dave's call 4.
 
+## Isolated continuation refusals
+
+An isolated continuation keeps the session ID that owns its worktree. Claude
+dispatch checks whether that session is live before the generic native-conversation
+duplicate check. A same-session conflict raises `RevivalRefused`: Run Now returns
+HTTP 409 with `refused`, `session_id` and `error`, and persists `last_error` and
+`last_error_at` on the schedule. A different live owner of the native conversation
+still trips the duplicate guard. Both checks run again under the project lock
+before spawning, so a concurrent start during context construction is refused too.
+The real dispatch and duplicate guards are covered by
+`tests/test_mc1165_review9_probes.py`, using temporary state and fake providers.
+
 ## Verification
 
 `tests/test_cold_review.py` (packet and parser, 29 checks) and

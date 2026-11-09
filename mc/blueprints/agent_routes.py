@@ -12548,6 +12548,12 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             _clear_live_context_tokens(project_id, resume_id)
             resume_id = ''
 
+    # Same-owner isolated conflicts must raise RevivalRefused before the
+    # generic duplicate guard, so Run Now returns 409 and saves the error.
+    _keep_reuse_id = bool(isolated_override and reuse_session_id)
+    if _keep_reuse_id:
+        _guard_isolated_reuse(project_id, reuse_session_id, session_dict_override)
+
     # One live process per conversation (2026-09-14). Refused BEFORE a worktree
     # is created or a context is built; re-checked under mgr.lock at spawn.
     if resume_id:
@@ -12621,10 +12627,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # MC-1165 r9: an isolated resume (`isolated_override` + `reuse_session_id`)
     # keeps that id even when a dead dict is still registered under it, because
     # the worktree it was handed is keyed on the id (see `isolated_launch.check_reuse`).
-    # A live dict under it is refused here, before anything is built.
-    _keep_reuse_id = bool(isolated_override and reuse_session_id)
-    if _keep_reuse_id:
-        _guard_isolated_reuse(project_id, reuse_session_id, session_dict_override)
+    # A live dict under it was refused before the duplicate guard above.
     _planned_sid = (reuse_session_id
                     if (reuse_session_id and (
                         _keep_reuse_id
