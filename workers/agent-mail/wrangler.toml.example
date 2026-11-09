@@ -1,0 +1,12 @@
+# Copy to wrangler.toml and fill in your own values. Never commit the copy.
+#
+# Unit 3 is library code only: there is no Worker entry point yet. The email()
+# handler, forwarding and tunnel delivery arrive in a later unit, which will set
+# `main` and add its bindings (D1 reply ledger, routing, the per-install scoped
+# credential). Nothing here has touched a Cloudflare account.
+name = "clayrune-agent-mail"
+# main = "<entry point added by the email() handler unit>"
+compatibility_date = "2026-11-01"
+
+# Real account id, zone id, destination addresses and routing rules belong in
+# your own wrangler.toml / dashboard, never in this repo.
