@@ -167,6 +167,14 @@ class CLINotInstalledError(RuntimeError):
     pass
 
 
+class PromptDeliveryError(RuntimeError):
+    """The engine's prompt was NOT written to its stdin (MC-1168): the pipe
+    broke, the write raised, or it had not finished within the bound. Raised by
+    a runtime's dispatch()/write_followup() so the caller never records a
+    message as delivered that the engine never received. Unlike
+    CLINotInstalledError this one can succeed on a retry."""
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Event types and dataclasses
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5451,6 +5459,70 @@ def _compose_respawn_prompt(session: Dict[str, Any], message: str, *,
     return '\n\n---\n\n'.join(parts)
 
 
+# MC-1168: the Mode A prompt is written by a daemon thread the call site starts
+# inside `deliver`, so the spawn returned before a byte was written and a
+# BrokenPipe/OSError there was invisible to the caller. The thread's outcome is
+# held here and awaited (bounded) once the reader is draining stdout, so a full
+# stdout pipe cannot stall the write the wait is waiting on.
+_PROMPT_DELIVERY_WAIT_S = 15.0
+
+
+class _PromptDelivery:
+    """Outcome of one prompt write running on its own thread."""
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.ok = False
+        self.why = ''
+
+
+def _start_prompt_delivery(write: Callable[[Callable[[Exception], None]], bool],
+                           name: str) -> _PromptDelivery:
+    """Run `write(on_error)` on a daemon thread. `write` returns True only when
+    the prompt was written and stdin closed; it may report why it did not
+    through `on_error`. An exception it raises counts as a failed delivery."""
+    delivery = _PromptDelivery()
+
+    def _note(exc: Exception) -> None:
+        delivery.why = f'{type(exc).__name__}: {exc}'
+
+    def _run() -> None:
+        try:
+            delivery.ok = bool(write(_note))
+        except BaseException as exc:
+            delivery.ok = False
+            _note(exc)    # type: ignore[arg-type]
+        finally:
+            delivery.done.set()
+    threading.Thread(target=_run, daemon=True, name=name).start()
+    return delivery
+
+
+def _require_prompt_delivered(delivery: Optional[_PromptDelivery], session: Dict[str, Any],
+                              proc: Any, engine: str) -> None:
+    """Return only once the prompt was written and stdin closed; otherwise
+    disown and kill `proc` and raise PromptDeliveryError. The proc is disowned
+    BEFORE the kill (`session['proc'] = None`) so its reader's exit handling
+    does not write a status for a turn the caller is about to report failed."""
+    if delivery is None:
+        why = 'prompt delivery was never started'
+    elif not delivery.done.wait(_PROMPT_DELIVERY_WAIT_S):
+        why = f'prompt write did not finish within {_PROMPT_DELIVERY_WAIT_S:g}s'
+    elif delivery.ok:
+        return
+    else:
+        why = delivery.why or 'prompt write failed'
+    if session.get('proc') is proc:
+        session['proc'] = None
+    session['process_alive'] = False
+    try:
+        _kill_pid(proc.pid)
+    except Exception as exc:
+        _log(f'[runtime:{engine}] could not stop proc after failed prompt delivery: {exc}',
+             flush=True)
+    raise PromptDeliveryError(f'{engine} prompt was not delivered to the CLI ({why})')
+
+
 def _mode_a_dispatch(runtime: 'AgentRuntime',
                      cmd: List[str],
                      full_prompt: str,
@@ -5487,7 +5559,21 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
     vendor_fence.prepare_env(
         runtime.name, session_dict, env, binary=Path(cmd[0]), cwd=project_path)
     cmd = vendor_fence.prepare_command(runtime.name, session_dict, cmd, project_path, env)
+    # MC-1168: Codex's write is awaited below (`_require_prompt_delivered`) so a
+    # dispatch whose prompt never reached the CLI fails instead of returning a
+    # live-looking handle. Other engines keep the fire-and-forget thread.
+    _verify_delivery = runtime.name == 'codex' and prompt_via_stdin
+    _delivery: List[_PromptDelivery] = []
+
     def _deliver(p: Any) -> None:
+        if _verify_delivery:
+            from mc.resume_context import write_context_prompt
+            _delivery.append(_start_prompt_delivery(
+                lambda on_error: write_context_prompt(
+                    p.stdin, full_prompt, session_dict, system_prompt, on_error=on_error),
+                name=f'{runtime.name}-stdin-{mc_session_id[:8]}'))
+            return
+
         def _send() -> None:
             if runtime.name in ('codex', 'qwen'):
                 from mc.resume_context import write_context_prompt
@@ -5548,6 +5634,9 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
                          daemon=True,
                          name=f'{runtime.name}-reader-{mc_session_id[:8]}')
     t.start()
+    if _verify_delivery:
+        _require_prompt_delivered(_delivery[0] if _delivery else None,
+                                  session_dict, proc, runtime.name)
     return handle
 
 
@@ -9399,6 +9488,10 @@ class CodexRuntime(AgentRuntime):
         except Exception as e:
             from mc.core import _log
             _log(f"[codex] model-refusal retry failed to launch: {e}", flush=True)
+            if isinstance(e, PromptDeliveryError) and session.get('proc') is None:
+                # _spawn_turn disowned the retry's proc; hand the session back to
+                # the caller's reader so it still writes this turn's final status.
+                session['proc'] = old_proc
             return False
 
     @staticmethod
@@ -9676,14 +9769,21 @@ class CodexRuntime(AgentRuntime):
         vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
         context = session.get('_system_prompt') or ''
 
-        def _send(p: Any) -> None:
+        # MC-1168: the write runs on its own thread (a CLI that fills stdout
+        # before reading a large prompt would otherwise block the spawn), but its
+        # outcome is awaited below once the reader drains stdout. Returning
+        # before that reported a turn delivered that never reached codex.
+        _delivery: List[_PromptDelivery] = []
+
+        def _deliver(p: Any) -> None:
             from mc.resume_context import write_context_prompt
-            write_context_prompt(p.stdin, full_prompt, session, context)
+            _delivery.append(_start_prompt_delivery(
+                lambda on_error: write_context_prompt(
+                    p.stdin, full_prompt, session, context, on_error=on_error),
+                name=f'codex-stdin-{mc_sid[:8]}'))
         proc = spawn_engine_proc(
             cmd, session_id=mc_sid, engine=self.name, cwd=handle.project_path, env=env,
-            deliver=lambda p: threading.Thread(
-                target=_send, args=(p,), daemon=True,
-                name=f'codex-stdin-{mc_sid[:8]}').start())
+            deliver=_deliver)
         session['proc'] = proc
         session['status'] = 'running'
         session['process_alive'] = True
@@ -9691,6 +9791,7 @@ class CodexRuntime(AgentRuntime):
         session['last_status_change_time'] = _time.time()
         threading.Thread(target=_mode_a_reader, args=(proc, handle, self),
                          daemon=True, name=f'codex-reader-{mc_sid[:8]}').start()
+        _require_prompt_delivered(_delivery[0] if _delivery else None, session, proc, self.name)
 
     def interrupt(self, handle: SessionHandle) -> None:
         _mode_a_interrupt(handle)

@@ -504,6 +504,8 @@ def test_claude_cold_revival_uses_saved_native_identity_and_lineage(monkeypatch,
     class Proc:
         pid = 999
         stdout = iter([])
+        # MC-1168: a revive whose stdin write fails now raises, so the double needs one.
+        stdin = SimpleNamespace(write=lambda s: len(s), flush=lambda: None)
     argv = []
     def fake_popen(cmd, **kwargs):
         argv.append(cmd)
@@ -585,6 +587,8 @@ def test_interrupted_claude_parent_is_fully_revived(monkeypatch, tmp_path):
     class Proc:
         pid = 999
         stdout = iter([])
+        # MC-1168: a revive whose stdin write fails now raises, so the double needs one.
+        stdin = SimpleNamespace(write=lambda s: len(s), flush=lambda: None)
     argv = []
     def fake_popen(cmd, **kwargs):
         argv.append(cmd)

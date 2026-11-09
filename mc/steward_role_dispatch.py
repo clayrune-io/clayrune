@@ -501,8 +501,9 @@ def begin_native_delivery(session: dict) -> None:
     session['_steward_role_ack'] = {'done': threading.Event(), 'ok': False}
 
 
-def write_native_delivery(stream: Any, prompt: str, session: Any, context: str) -> None:
-    """Final native context seam: marker first and real pipe acknowledgment."""
+def write_native_delivery(stream: Any, prompt: str, session: Any, context: str) -> bool:
+    """Final native context seam: marker first and real pipe acknowledgment.
+    Never raises; returns True only when the prompt was written and closed."""
     from mc.resume_context import context_sha, resume_prompt
     ack = session['_steward_role_ack']
     try:
@@ -522,6 +523,7 @@ def write_native_delivery(stream: Any, prompt: str, session: Any, context: str) 
         _log(f'[steward-role] native prompt delivery failed: {exc}')
     finally:
         ack['done'].set()
+    return bool(ack['ok'])
 
 
 def wait_native_delivery(session: dict | None, timeout: float = 10) -> None:

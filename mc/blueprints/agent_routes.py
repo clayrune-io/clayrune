@@ -7527,6 +7527,34 @@ def _transcript_buffer_lines_and_ts(project_path, claude_sid, user_label, max_me
         _log(f"[transcript-render] failed: {e}")
         return [], []
 
+class ReviveDeliveryError(RuntimeError):
+    """A Mode B revive spawned its process but the message never reached its
+    stdin (MC-1168). The process and the session registration are already torn
+    down. Raised, not returned as None: None means "nothing to revive", and the
+    callers answer that with a fresh dispatch of the same message under a new
+    session -- the wrong answer for a conversation that exists."""
+
+
+def _abort_failed_revive(mgr, session_id, session, proc, prior_session, was_listed):
+    """Undo a revive whose stdin write failed, to the state before it ran.
+
+    `session['proc']` is cleared BEFORE the kill: the revive's reader gates all
+    of its exit handling (status, completion log, notify-spawner callback,
+    auto-recover-from-failed-resume) on owning the proc, so a disowned reader
+    reports nothing for a turn that never started."""
+    with mgr.lock:
+        session['proc'] = None
+        session['process_alive'] = False
+        if agent_sessions.get(session_id) is session:
+            if prior_session is not None:
+                agent_sessions[session_id] = prior_session
+            else:
+                agent_sessions.pop(session_id, None)
+            if not was_listed:
+                mgr.session_ids.discard(session_id)
+    _kill_pid(proc.pid, tree=True)
+
+
 def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=True, role_context=None):
     """Revive a finalized/purged session by spawning a fresh process with -r <claude_session_id>.
 
@@ -7557,6 +7585,8 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
 
     Returns the new session dict on success, None if not revivable (no matching
     log entry, no claude_session_id, missing project_path, or spawn failure).
+    Raises ReviveDeliveryError when the process spawned but the message could
+    not be written to it (Mode B); the revive is rolled back first.
     """
     if not state.CONFIG.get('agent_revive_from_log', True):
         return None
@@ -7841,6 +7871,8 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             '_turn_owner': 'spawner' if carry_notify else 'human',
         }
         with mgr.lock:
+            _prior_session = agent_sessions.get(session_id)
+            _was_listed = session_id in mgr.session_ids
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
         # Backlog 4668eafc (re-run turn_start): a revive starts a new turn
@@ -7860,12 +7892,21 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             from mc.steward_role_dispatch import _append_ack
             _append_ack(session, revival_msg)
         else:
+            _stdin_err = None
             with session['stdin_lock']:
                 try:
                     proc.stdin.write(stdin_msg)  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
                     proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
                 except Exception as e:
-                    session['log_lines'].append(f'[stdin write error on revive: {e}]')
+                    _stdin_err = e
+            if _stdin_err is not None:
+                # MC-1168: this used to log and fall through to "revived", so every
+                # caller recorded a message delivered to a process that never got it.
+                _log(f"[revive] {project_id}: stdin write failed on revive of {session_id}: "
+                     f"{_stdin_err}; rolled back")
+                _abort_failed_revive(mgr, session_id, session, proc, _prior_session, _was_listed)
+                raise ReviveDeliveryError(
+                    f'revive spawned but the message was not written to the agent: {_stdin_err}')
         _log(f"[revive] {project_id}: Mode B revived session {session_id} via -r {claude_sid[:12]}")
         return session
 
@@ -13199,6 +13240,12 @@ def agent_send(project_id):
                     carry_notify=bool(_explicit_notify_session))
             except RosterRecoveryHeld as e:
                 return jsonify({'ok': False, 'error': str(e)}), 409
+            except ReviveDeliveryError as e:
+                # MC-1168: must not fall through to the fresh dispatch below --
+                # the conversation exists, the message just did not reach it.
+                _log_agent_activity(project_id, f"Revive delivery failed in /send: {e}")
+                return jsonify({'ok': False, 'delivered': False, 'error': str(e),
+                                'session_id': session_id}), 502
             except Exception as e:
                 revived = None
                 _log_agent_activity(project_id, f"Revive error in /send: {e}")
@@ -13686,6 +13733,12 @@ def agent_followup(project_id):
                 carry_notify=bool(_explicit_notify_session))
         except RosterRecoveryHeld as e:
             return jsonify({'ok': False, 'error': str(e)}), 409
+        except ReviveDeliveryError as e:
+            # MC-1168: the emailed-answer relay posts here and treats 2xx as
+            # delivered; the message did not reach the agent.
+            _log_agent_activity(project_id, f"Revive delivery failed in followup: {e}")
+            return jsonify({'ok': False, 'delivered': False, 'error': str(e),
+                            'session_id': session_id}), 502
         if revived:
             if _explicit_notify_session:
                 revived['_notify_session'] = _explicit_notify_session
@@ -13793,6 +13846,11 @@ def agent_followup(project_id):
                 existing['last_status_change_time'] = _time.time()
                 if isinstance(e, _agent_runtime.vendor_fence.VendorFenceError):
                     return jsonify({'ok': False, 'error': str(e), 'session_id': session_id}), 409
+                if isinstance(e, _agent_runtime.PromptDeliveryError):
+                    # MC-1168: the engine never got the message. ok:True here is
+                    # what let the emailed-answer relay mark the question answered.
+                    return jsonify({'ok': False, 'delivered': False, 'error': str(e),
+                                    'session_id': session_id}), 502
             _log_agent_activity(project_id, f"Agent follow-up (provider={session_provider}): {message[:100]}")
             return jsonify({'ok': True, 'session_id': session_id})
 
@@ -14781,6 +14839,9 @@ def agent_interrupt(project_id, *, _internal=None):
                 session['last_status_change_time'] = _time.time()
                 if isinstance(e, _agent_runtime.vendor_fence.VendorFenceError):
                     return _ret({'ok': False, 'error': str(e), 'session_id': session_id}, 409)
+                if isinstance(e, _agent_runtime.PromptDeliveryError):
+                    return _ret({'ok': False, 'delivered': False, 'error': str(e),
+                                 'session_id': session_id}, 502)
             _log_agent_activity(project_id, f"Agent interrupt (provider={session_provider}): {message[:80]}")
             return _ret({'ok': True, 'session_id': session_id})
 
