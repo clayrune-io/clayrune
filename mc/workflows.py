@@ -1295,7 +1295,9 @@ def _any_in_flight(run: dict) -> bool:
 
 # ── Starting + advancing a run ───────────────────────────────────────────────
 
-def start_run(workflow_id: str, trigger_type: str = 'manual') -> dict:
+def start_run(workflow_id: str, trigger_type: str = 'manual', *, billing: str = 'auto') -> dict:
+    if billing not in ('auto', 'subscription'):
+        raise ValueError('billing must be auto or subscription')
     workflow = get_workflow(workflow_id)
     if not workflow:
         raise KeyError('workflow not found')
@@ -1312,6 +1314,7 @@ def start_run(workflow_id: str, trigger_type: str = 'manual') -> dict:
             'workflow_id': workflow_id,
             'status': 'running',
             'trigger': {'type': trigger_type, 'fired_at': now_iso()},
+            'billing_preference': billing,
             # The definition this run executes, frozen at start. See
             # `_run_definition` for why a run must never re-read the live one.
             'definition': _snapshot_definition(workflow),
@@ -1568,6 +1571,7 @@ def _dispatch_step(run: dict, node: dict) -> bool:
         session_id = _dispatch_agent_internal(
             node['project_id'], prompt,
             trigger_type='workflow', trigger_id=f"{run['id']}:{name}",
+            session_metadata={'billing_preference': run.get('billing_preference', 'auto')},
             character=node.get('character') or '',
             # An explicit per-step pin wins over the character's and the
             # project's default -- the same precedence a chat dispatch gets.

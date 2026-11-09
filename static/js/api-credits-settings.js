@@ -110,8 +110,9 @@
         <span><b>${label}</b> <span style="color:var(--text-faint)">${hint}</span></span></label>`;
     return `
       <div class="apc-title" style="font-weight:600;color:var(--text);font-size:13px">API credits for background work</div>
-      <div class="settings-hint">Send Clayrune's small background calls (memory, Distiller, mail and page digests, the router) to your monthly API credits instead of your plan. Anything that fails goes back to your plan for that same call.</div>
+      <div class="settings-hint">Use monthly API credits for background calls and unattended Claude sessions (schedules, stewards and agent dispatches). Human-opened chats use your subscription. Claude.ai connectors are unavailable in credits sessions; local MCP servers still load.</div>
 
+      ${window.ApiCreditsSession.spend(status.cycle)}
       <div class="settings-row"><div>
           <div class="settings-label">1. Plan and monthly credit</div>
           <div class="settings-hint" id="apc-plan-line">${planLine()}</div>
@@ -139,8 +140,10 @@
       ${numField('apc-stop', '4. Stop at (% of budget)', 'Past this point background calls go back to your plan.', draft.stop_pct, 'min="1" max="100" step="1"')}
       ${numField('apc-reset', '5. Cycle reset day (1-31)', 'The day your credits refresh. Read it off the Console Billing page.', draft.reset_day, 'min="1" max="31" step="1"')}
 
+      ${numField('apc-reserve', '6. Session reserve ($)', 'Minimum headroom before starting an agent session. Default: $3. This is a start gate, not a per-session cap.', draft.session_reserve_usd ?? 3, 'min="0" step="0.01"')}
+
       <div class="settings-row" style="align-items:flex-start"><div>
-          <div class="settings-label">6. Mode</div>
+          <div class="settings-label">7. Mode</div>
           <div class="settings-hint">Start with Measure first to see what a cycle would cost before moving anything.</div>
         </div>
         <div style="display:flex;flex-direction:column;max-width:330px">
@@ -180,6 +183,7 @@
     const num = (v) => (v === '' || v == null ? null : Number(v));
     if (id === 'apc-credit') draft.plan_credit_usd = num(value);
     else if (id === 'apc-budget') draft.budget_usd = num(value);
+    else if (id === 'apc-reserve') draft.session_reserve_usd = num(value);
     else if (id === 'apc-stop') draft.stop_pct = num(value);
     else if (id === 'apc-reset') draft.reset_day = num(value);
     else if (id === 'apc-mode') draft.mode = value;
@@ -189,7 +193,7 @@
 
   function settingsBody() {
     const b = {};
-    for (const k of ['mode', 'secret_name', 'plan_credit_usd', 'budget_usd', 'stop_pct', 'reset_day']) b[k] = draft[k];
+    for (const k of ['mode', 'secret_name', 'plan_credit_usd', 'budget_usd', 'stop_pct', 'reset_day', 'session_reserve_usd']) b[k] = draft[k];
     return b;
   }
 
@@ -197,7 +201,8 @@
   // server enforces it; this only decides whether to open the prompt first.
   function widens() {
     const s = status.settings;
-    return draft.mode === 'on' && ['mode', 'secret_name', 'budget_usd', 'stop_pct'].some((k) => draft[k] !== s[k]);
+    return draft.mode === 'on' && (['mode', 'secret_name', 'budget_usd', 'stop_pct'].some((k) => draft[k] !== s[k])
+      || (draft.session_reserve_usd ?? 3) < (s.session_reserve_usd ?? 3));
   }
 
   async function putSettings(body) {

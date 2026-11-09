@@ -44,6 +44,23 @@ def test_removed_worktree_is_recreated_on_the_session_branch(project):
     assert 'recreated' in note and sess['_worktree_recreated'] == 1
 
 
+@pytest.mark.parametrize('removed', [False, True])
+def test_borrowed_tree_never_recreates_under_the_borrowers_id(project, removed):
+    tree, _tip = _agent(project, 'lender')
+    sess = {'session_id': 'borrower', '_worktree_isolated': True,
+            '_worktree_borrowed': True, '_agent_cwd': str(tree)}
+    if removed:
+        assert w.remove(project, 'lender', delete_branch=False, force=True)[0]
+    with _held('borrower'):
+        if removed:
+            with pytest.raises(launch.LaunchRefused, match='borrowed'):
+                launch.launch_cwd(sess, project, project['project_path'],
+                                  create=lambda *a: pytest.fail('borrower cannot recreate'))
+        else:
+            assert launch.launch_cwd(sess, project, project['project_path']) == (str(tree), '')
+    assert not w.worktree_path(project, 'borrower').exists()
+
+
 @pytest.mark.parametrize('recorded', ['', 'PROJECT', 'MISSING', 'BARE'])
 def test_unusable_worktree_with_failing_recreate_refuses_never_the_project(project, recorded, tmp_path):
     pp = project['project_path']

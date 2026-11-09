@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Preserve delivery, cwd and billing behavior together (MC-1168 round 5)
+
+- Integrated master MC-1167 and API credits phase 2 without dropping missing-cwd HTTP 409 refusals or failed-delivery handling. Mode B billing result accounting and exit replay retain the delivery acknowledgment gate; revival retains both billing state and rollback ownership.
+- Added combined request-path and deferred billing-hook regressions. Merge candidate only; no merge to master, push or restart.
+
 ## [2026-11-09] - Keep failed scheduled deliveries failed (MC-1168 round 4)
 
 - Scheduled revival write/flush failures propagate through cadence and Run Now without fallback dispatch or retry. The schedule retains its delivery error and its Runs row becomes `error`; Run Now returns HTTP 502 for the addressed conversation. MC-1165 isolation refusals stay unchanged.
@@ -17,6 +22,30 @@
 - Cold Codex `/send` and `/followup` return 502 for the original conversation when prompt delivery fails, without starting a fresh chat.
 - Mode B revival keeps draining stdout while result and EOF terminal handlers wait for stdin acknowledgment. Accepted handlers run in order; rejected deliveries emit no terminal callbacks or failed-resume recovery. Rollback preserves replacement process and registry ownership.
 - Added real-reader ordering, rejection, EOF-before-write and route regressions. Contract and validation: `docs/RUNTIME_DELIVERY_TRUTH.md`. Branch review candidate only; no merge, push or restart.
+
+## [2026-11-09] - Preserve OAuth downgrade through reset recovery (e98832d9 round 3)
+
+- Reset-wait park, deferred-success and completion snapshots now retain `billing_oauth`, preventing a restored subscription session from regaining configured API-key auth after restart.
+- Retained the cold-review restart probe unchanged and added billing/auth consistency coverage for all three snapshot paths. Branch candidate only; no merge, push, restart or paid acceptance run.
+
+## [2026-11-09] - Keep session credit spend durable and auth choices intact (e98832d9 round 2)
+
+- Session spending uses a write-ahead journal and idempotent ledger receipts; failed accounting blocks further API credits and retries without replaying successful work.
+- Cold dispatch restores the latest billing choice. Off, untouched and ineligible launches retain provider-scoped Claude auth; only an actual credits-to-OAuth downgrade strips API auth.
+- Integrated MC-1165 lifecycle locks, isolated cwd resolution and launch refusals into every billing-aware continuation path. Branch candidate only; no master merge, push, restart or paid acceptance run.
+
+## [2026-11-09] - Bill unattended Claude sessions to API credits (e98832d9)
+
+- Added sticky per-session billing with a vault key injected only into the eligible child environment, a $3 default start reserve, and subscription fallback on billing errors. Both Claude reader modes record per-turn actual cost deltas in the existing cycle ledger; persistent children change auth through respawn.
+- Added scheduler Auto/Subscription billing, reserve editing and background/session spend totals in the API credits card, and a chat header badge. Schedule opt-outs also reach workflow steps and steward-role dispatches; attended chats retain subscription billing.
+- Branch candidate only. No merge, push, server restart or paid run; live scheduled-run verification remains the integration gate. Contract and checks: `docs/API_CREDITS_SESSION.md`.
+
+## [2026-11-09] - Keep resumed chats in their recorded working tree (MC-1167)
+
+- Cold resumes use the transcript's recorded working directory rather than treating a broad transcript lookup as proof the chat ran in the project checkout. Agent trees must pass Git's worktree identity checks; a restored folder without a usable `.git` marker is refused. Qwen keeps its exact cwd-encoded recording directory even when records omit cwd, and Codex metadata remains discoverable after tree removal.
+- Known owners keep MC-1165's recreation, owner session ID, cold review and merge-back lifecycle. Transcript-only resumes borrow isolation without taking cleanup ownership. Send, follow-up and dispatch return HTTP 409 with `resume_cwd_missing` when an unowned recorded directory is missing or unusable; they never silently relocate to the project checkout.
+- Borrowed isolation and its actual working directory now survive pending, identity and completion log writes, including purge/restart. Revival keeps the original borrowed tree and pending files; it refuses an unusable borrowed tree rather than creating a replacement under the borrower's ID. Owner recreation, review and cleanup remain unchanged.
+- Refusals keep the original transcript readable and retain the request on the conversation log and in the response. Incognito requests are returned only; a storage failure reports `request_saved: false`. Restore a usable original worktree or start a new chat. Branch candidate only; no merge to master, push or restart.
 
 ## [2026-11-09] - Refuse padded MIME shaping-header names (MC-1166 unit 3 round 13)
 

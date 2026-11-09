@@ -421,6 +421,21 @@ the asset cache. No Windows registry change or provider re-login is needed.
   buttons. Nothing dangerous runs without your click.
 - **Stop / Continue**: stopped sessions can be revived by typing a new
   message — the agent picks up the same Claude conversation.
+  A cold resume returns to the working directory recorded in that conversation.
+  If Clayrune has the conversation's worktree ownership record, it restores a
+  missing tree through the existing isolated-session lifecycle; if restoration
+  fails, it refuses to run. Without that ownership record, a missing or unusable
+  recorded worktree is refused: start a new chat or restore the original Git
+  worktree. Restoring just a folder without its valid Git registration is not
+  enough. Clayrune never silently moves the conversation into the project
+  checkout. A chat borrowing another session's worktree keeps that same directory
+  after a purge or restart; borrowing does not transfer review, merge or cleanup
+  ownership. If that borrowed tree is removed, restore it or start a new chat.
+  The old transcript remains available to read. For a transcript-only
+  refusal, the request is retained in the conversation record and returned with
+  the error; it is not automatically retried. Incognito
+  requests are returned only. If saving fails, the response reports
+  `request_saved: false` and still includes the request text.
 - **Image upload**: paste or drop images into the input to attach them.
 - **Select and copy chat text**: drag across user messages, agent replies or code
   to highlight text, including text across multiple messages. Press **Cmd+C**
@@ -1009,6 +1024,41 @@ Changes use the existing human gates. The first scoped save retains legacy
 preferences and creates a preference-only rollback snapshot outside the
 repository. Opening an editor changes nothing. Unsupported selections show an
 error instead of silently selecting another provider or model.
+
+### API credits for background work
+
+The **API credits** card under Claude in **Settings > Providers > Connections**
+uses a vault key and a cycle budget. It defaults to **Off**. **Measure first**
+keeps background calls on the subscription and estimates their cost. **On**
+lets background calls and new unattended Claude sessions use API credits.
+Human-opened chats do not use this credits feature; other engines are unchanged.
+With credits Off or an ineligible session, existing Claude authentication is
+kept, including an API key explicitly configured for an API-only installation.
+
+Scheduled tasks, stewards, night-review and agent-dispatched work qualify.
+The scheduler form offers **Billing: Auto (API credits)** or **Subscription**.
+Auto uses credits only when mode is On and the budget permits it. A schedule's
+opt-out also reaches its workflow agent steps. Billing stays fixed for an
+existing session across resumes; enabling credits does not move an existing
+subscription conversation to credits. Start a new session to make a new choice.
+
+**Session reserve ($)** defaults to $3: a new credits session needs at least
+that much headroom below the stop point. It is a start gate, not a per-session
+cap. The card separates cycle spending into **background calls** and **agent
+sessions**. Background costs use the price table; session costs come from the
+CLI's reported total, recorded as per-turn deltas. Credits chats show a small
+**API credits** badge beside the model. If session spending cannot be saved,
+the card shows stopped and further credits work pauses while the pending record
+is retried. Successfully completed work is not rerun for an accounting failure.
+
+A credit-balance, spend-limit or authentication failure stops offloading,
+notifies once per cycle and retries the failed turn once on the subscription.
+A persistent credits child respawns on subscription before its next turn when
+the budget stops or mode is turned off. The session then stays on subscription.
+Claude.ai-hosted connectors are unavailable in credits sessions; local/project
+MCP servers still load. Set a workspace spend limit in the Anthropic Console
+as the enforced backstop. Turning credits on, widening the budget or lowering
+the session reserve uses the existing dashboard-passcode gate.
 
 ### Testing on the Floor
 

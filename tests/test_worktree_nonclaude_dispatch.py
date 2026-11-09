@@ -170,6 +170,19 @@ class TestWorktreeGrantedOnDispatch:
 
 class TestResumeReturnsToItsOwnTree:
 
+    def test_known_owner_keeps_id_and_cleanup_instead_of_transcript_refusal(
+            self, project, monkeypatch):
+        tree = str(Path(project['project_path']) / '.clayrune' / 'agents' / 'owner')
+        monkeypatch.setattr(ar, '_resume_cwd_for',
+                            lambda *a: pytest.fail('known owner uses validated recreation path'))
+        kwargs = _dispatch_and_capture(
+            project, monkeypatch, resume_id='native-xyz', reuse_session_id='owner',
+            agent_cwd_override=tree, isolated_override=True)
+        assert kwargs['agent_cwd'] == tree
+        assert kwargs['isolated'] is True
+        assert kwargs['planned_session_id'] == 'owner'
+        assert kwargs['borrowed_worktree'] is False
+
     def test_nonclaude_resume_reuses_its_recorded_worktree(
             self, project, monkeypatch):
         """A resume must go back to the tree its transcript lives in, not be
@@ -181,10 +194,13 @@ class TestResumeReturnsToItsOwnTree:
         monkeypatch.setattr(ar, '_resume_cwd_for',
                             lambda pp, sid, provider: recorded_tree)
 
-        kwargs = _dispatch_and_capture(project, monkeypatch, resume_id='native-xyz')
+        kwargs = _dispatch_and_capture(
+            project, monkeypatch, resume_id='native-xyz',
+            agent_cwd_override=project['project_path'], isolated_override=False)
 
         assert kwargs['agent_cwd'] == recorded_tree
-        assert kwargs['isolated'] is False
+        assert kwargs['isolated'] is True
+        assert kwargs['borrowed_worktree'] is True
 
     def test_nonclaude_resume_with_no_recorded_tree_makes_a_fresh_decision(
             self, project, monkeypatch):

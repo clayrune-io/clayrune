@@ -416,6 +416,9 @@ class SchedulerServices:
                 live = state.agent_sessions.get(sid)
                 if live and not _closed(live):
                     raise RoleBusy('role session became busy during preparation')
+                from mc import api_credits_session
+                if live and live.get('mode') == 'B' and live.get('process_alive'):
+                    api_credits_session.end_idle_child_if_stopped(live)
                 if live and live.get('mode') == 'B' and live.get('process_alive'):
                     proc = live.get('proc')
                     if proc is None or proc.poll() is not None:
@@ -424,6 +427,7 @@ class SchedulerServices:
                     # an inherited process. The caller owns the unknown claim.
                     live.update(status='running', task=task, trigger_type='schedule',
                                 trigger_id=row['id'], last_status_change_time=time.time())
+                    api_credits_session.note_turn(live, task)
                     _append_ack(live, task)
                     if self.scheduler._record_usage_breakdown_turn_started:
                         self.scheduler._record_usage_breakdown_turn_started(live)
@@ -448,7 +452,8 @@ class SchedulerServices:
             character=row['character'], strict_character=True,
             provider_override=prepared.assignment['provider'],
             model_override=prepared.assignment['model'],
-            effort_override=prepared.assignment['effort'], prepared_context=prepared)
+            effort_override=prepared.assignment['effort'], prepared_context=prepared,
+            session_metadata={'billing_preference': row.get('billing', 'auto')})
         if prepared.assignment['provider'] != 'claude':
             wait_native_delivery(state.agent_sessions.get(sid))
         return sid, 'dispatched'

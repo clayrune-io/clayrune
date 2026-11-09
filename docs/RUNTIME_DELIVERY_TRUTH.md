@@ -5,6 +5,51 @@ Round 3 integrates master `1fdffd96` with the prior delivery repair at
 is pending, and separate guarded launch/publication from acknowledgment. The
 outermost guarded caller awaits only after its project/lifecycle locks exit.
 
+Round 5 merges master `f9ebacd6` into round 4 `23fa5f2f`, retaining MC-1167
+resume provenance and API credits phase 2. `_revive_non_claude_from_agent_log`
+rethrows `ResumeCwdMissing` first, then `PromptDeliveryError`, before the broad
+logged fallback. They are separate exception classes: cwd refusal reaches the
+route's HTTP 409 `resume_cwd_missing` response, while failed delivery reaches
+HTTP 502. Send, follow-up and dispatch retain their existing missing-cwd
+handlers; neither typed failure authorizes a fresh conversation.
+
+API-credit result accounting/halting and exit replay stay inside Mode B's
+deferred result/finish handlers. They run after accepted delivery, in result
+then EOF order, and are discarded on rejection. A billing halt terminates the
+original child and suppresses later result settlement; exit replay retains
+master's completion/recovery suppression. Claude revival restores the billing
+snapshot while also retaining round 4's prior-session rollback ownership.
+
+`tests/test_runtime_delivery_truth_r5.py` drives the same cold non-Claude HTTP
+request through a cwd refusal and then a prompt failure for send and follow-up.
+It also exercises the real gated Mode B reader with accepted/rejected billing
+result and replay hooks. No new policy or startup timeout is introduced.
+
+The MC-1167 fake-process fixture now runs the named revival stdin writer as
+well as Git's pipe readers. Its provider readers/guardians remain inert;
+suppressing the writer would leave the new acknowledgment waiting forever.
+
+Round-5 combined-tree checks, all through the installation test launcher:
+
+| Selection | Passed | Failed | Skipped | Exit |
+| --- | ---: | ---: | ---: | ---: |
+| Exact requested 18-file delivery selection | 593 | 1 | 1 | 1 |
+| All five `test_resume_cwd_*.py` files | 54 | 0 | 0 | 0 |
+| All six `test_api_credits*.py` files | 161 | 0 | 0 | 0 |
+| Exact 12-file MC-1165 isolation selection | 211 | 0 | 13 | 0 |
+| Six scheduler-related files | 195 | 0 | 0 | 0 |
+| Round 5 + round 4 + API-credit session integration | 26 | 0 | 0 | 0 |
+
+These selections overlap. The 18-file run retains the unchanged original
+scratch retry probe: it first requires a replacement, then later requires no
+replacement. Its stale first assertion is the sole failure; the corrected
+permanent retry regressions pass. This is not a fully green selection.
+Pyright on 19 merged production modules exits 1 with the same 15 existing
+route errors and no new diagnostics. Explicit checks on both edited tests
+also add no diagnostics. Exact argv, outputs, durations and baseline
+comparison are recorded in the main-checkout item journal. No live provider,
+paid billing run, deployment, master merge, push or restart was exercised.
+
 ## Failure contract
 
 - Scheduled cold revival propagates `ReviveDeliveryError` and

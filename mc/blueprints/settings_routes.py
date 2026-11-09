@@ -339,6 +339,7 @@ _CONFIG_EDITABLE_KEYS = {
 # matters at the next fresh context build; agent_name/user_name change
 # rarely; MCP set is per-project (not a global key here).
 _RESPAWN_TRIGGER_KEYS = {
+    'billing',
     'agent_model', 'agent_effort', 'agent_max_turns', 'agent_permission_mode',
     'agent_channels', 'agent_remote_control', 'use_streaming_agent',
     # --include-partial-messages is a launch flag, so a live session only starts
