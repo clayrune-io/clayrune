@@ -389,8 +389,10 @@ connection completing afterward. No response returned after the deadline is
 accepted. `mc/transform_process_deadline.py` uses Popen and daemon pipe readers;
 on timeout it kills only a still-live owned root tree using the same platform
 split as `_kill_pid` (Windows `taskkill /F /T /PID`, guarded POSIX `kill_tree`).
-Cleanup and output draining share a 0.5-second cap inside the existing
-three-second finalization reserve. An exited root is never passed to the tree
+Cleanup and output draining share a 0.5-second cap reserved inside the total
+extraction budget: cancellation starts at deadline minus 0.5 seconds, or
+immediately if 0.5 seconds or less remains at entry (Dave's 13:14 decision).
+Startup time consumes that same budget. An exited root is never passed to the tree
 killer. Omitted/None deadlines retain the original requests/subprocess.run paths.
 
 Finalization shares the store write transaction with
@@ -452,9 +454,11 @@ tolerance. Other errors or early disconnects fail. Added assertions require
 elapsed time below the lease, persisted blocked/extraction_timeout after one
 attempt, and no automatic reclaim. Original reviewer files remain byte-identical
 in retained scratch evidence. Synthetic clock mocks also target the new CLI
-runner seam; their assertions remain unchanged. Seven isolated tests in
+runner seam; their assertions remain unchanged. The descendant probe requires
+elapsed < 3.2 seconds plus only 0.25 seconds of scheduling margin. Eleven isolated tests in
 `tests/test_transform_hard_io_deadline.py` cover headers, body trickles including
-`Connection: close`, timely success, stale-root refusal and bounded cleanup.
+`Connection: close`, timely success, stale-root refusal, bounded cleanup and
+immediate cancellation with 0.5 seconds or less remaining.
 
 ## D1 ledger, replay, bounds and visibility
 

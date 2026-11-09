@@ -84,7 +84,8 @@ def test_windows_tree_cleanup_uses_only_live_owned_pid_and_bounded_taskkill(monk
     assert not alive[0]
 
 
-def test_pipe_and_tree_cleanup_cannot_extend_the_finalization_reserve(monkeypatch):
+@pytest.mark.parametrize('budget', [.1, .5, .8])
+def test_pipe_and_tree_cleanup_stays_inside_total_budget(monkeypatch, budget):
     release = threading.Event()
     entered = threading.Event()
     killed = []
@@ -107,8 +108,38 @@ def test_pipe_and_tree_cleanup_cannot_extend_the_finalization_reserve(monkeypatc
     start = time.monotonic()
     try:
         with pytest.raises(process.subprocess.TimeoutExpired):
-            process.run(['synthetic'], input='data', timeout=.1, deadline=start + .1)
+            process.run(['synthetic'], input='data', timeout=budget, deadline=start + budget)
         assert entered.is_set()
-        assert time.monotonic() - start < .85
+        assert time.monotonic() - start < budget + .15
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize('remaining', [.1, .5])
+def test_half_second_or_less_remaining_cancels_immediately(monkeypatch, remaining):
+    release = threading.Event()
+    stopped = []
+
+    def communicate(data):
+        release.wait(2)
+        return '', ''
+
+    proc = SimpleNamespace(communicate=communicate, pid=12345,
+                           poll=lambda: 1 if stopped else None)
+    monkeypatch.setattr(process.subprocess, 'Popen', lambda *a, **kw: proc)
+
+    def stop(owned):
+        assert owned is proc
+        stopped.append(time.monotonic())
+        release.set()
+
+    monkeypatch.setattr(process, '_stop_owned', stop)
+    start = time.monotonic()
+    try:
+        with pytest.raises(process.subprocess.TimeoutExpired):
+            process.run(['synthetic'], input='data', timeout=10, deadline=start + remaining)
+        assert len(stopped) == 1
+        assert stopped[0] - start < .1
+        assert time.monotonic() - start < remaining + .15
     finally:
         release.set()

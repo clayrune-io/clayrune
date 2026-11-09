@@ -39,7 +39,10 @@ def run(cmd: list[str], *, input: str, timeout: float, deadline: float,
 
     communicate runs only in the reader thread. In particular, do not repeat
     communicate without a timeout on the calling thread (Windows run's trap).
+    The cleanup reserve is part of the entry budget, including process startup.
     """
+    limit = min(deadline, time.monotonic() + timeout)
+    compute_end = limit - CLEANUP_SECONDS
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, **kwargs,
                             **proc_kill.POPEN_NEW_SESSION)
     done = threading.Event()
@@ -56,9 +59,8 @@ def run(cmd: list[str], *, input: str, timeout: float, deadline: float,
 
     reader = threading.Thread(target=communicate, name='transform-pipes', daemon=True)
     reader.start()
-    limit = min(deadline, time.monotonic() + timeout)
-    if not done.wait(max(0, limit - time.monotonic())):
-        cleanup_end = time.monotonic() + CLEANUP_SECONDS
+    if not done.wait(max(0, compute_end - time.monotonic())):
+        cleanup_end = min(limit, time.monotonic() + CLEANUP_SECONDS)
         cleanup = threading.Thread(target=_stop_owned, args=(proc,),
                                    name='transform-cleanup', daemon=True)
         cleanup.start()

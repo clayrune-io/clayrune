@@ -72,8 +72,8 @@ time.sleep(10)
                           'child_pid': int(pid_file.read_text())})
         assert result['state'] == 'blocked', result
         assert result['reason'] == 'extraction_timeout', result
-        # 3.2s extraction budget, plus the explicitly bounded cleanup reserve.
-        assert elapsed < 3.2 + rt._transform_process_deadline.CLEANUP_SECONDS + .25
+        # Dave's 13:14 decision: cleanup is inside the 3.2s total budget.
+        assert elapsed < 3.2 + .25  # scheduling margin only
         assert parents[0].poll() is not None
         assert not psutil.pid_exists(int(pid_file.read_text()))
         assert store.claim_for_laundering() is None
