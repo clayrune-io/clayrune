@@ -287,8 +287,16 @@ def _empty_cycle() -> Dict[str, Any]:
             'estimated_calls': 0, 'session_spent_usd': 0.0}
 
 
-def _load_ledger() -> Dict[str, Any]:
-    led = _read_json(ledger_path())
+def _load_ledger(*, strict: bool = False) -> Dict[str, Any]:
+    if strict:
+        try:
+            led = json.loads(read_text_with_retry(ledger_path()))
+        except FileNotFoundError:
+            led = {}
+        if not isinstance(led, dict) or ('cycles' in led and not isinstance(led['cycles'], dict)):
+            raise ValueError('invalid accounting ledger')
+    else:
+        led = _read_json(ledger_path())
     if not isinstance(led.get('cycles'), dict):
         led['cycles'] = {}
     return led
@@ -320,14 +328,19 @@ def _cycle(led: Dict[str, Any], start: date) -> Dict[str, Any]:
 
 
 def record(*, caller: str, model: str, usage: Dict[str, int], cost: Optional[float],
-           estimated: bool, settings: Optional[Dict[str, Any]] = None) -> None:
+           estimated: bool, settings: Optional[Dict[str, Any]] = None,
+           event_id: Optional[str] = None, cycle_start: Optional[str] = None,
+           recorded_at: Optional[str] = None) -> None:
     """Append one call to the current cycle. `estimated` marks token counts that
     came from chars/4 (measure mode) rather than the API's `usage`; those add to
     `estimated_usd` and never to `spent_usd`, so measuring cannot trip the gate."""
     s = settings or load_settings()
     now = _now()
     start, _end = cycle_bounds(now, s['reset_day'])
-    entry = {'ts': _iso(now), 'caller': caller, 'model': model,
+    current_start = start
+    if cycle_start is not None:
+        start = date.fromisoformat(cycle_start)
+    entry = {'ts': recorded_at or _iso(now), 'caller': caller, 'model': model,
              'input_tokens': int(usage.get('input_tokens', 0)),
              'output_tokens': int(usage.get('output_tokens', 0)),
              'cache_read_input_tokens': int(usage.get('cache_read_input_tokens', 0)),
@@ -335,7 +348,15 @@ def record(*, caller: str, model: str, usage: Dict[str, int], cost: Optional[flo
              'cost_usd': cost, 'estimated': bool(estimated)}
     notice = ''
     with _lock:
-        led = _load_ledger()
+        led = _load_ledger(strict=event_id is not None)
+        if event_id is not None:
+            receipts = led.setdefault('pending_receipts', [])
+            if event_id in receipts:
+                return
+            receipts.append(event_id)
+        # Prune relative to today before inserting a late retry. Retrying last
+        # month's event must neither delete this month's ledger nor move its cost.
+        _prune(led, current_start, s['reset_day'])
         cyc = _cycle(led, start)
         cyc['entries'].append(entry)
         if len(cyc['entries']) > ENTRIES_PER_CYCLE_CAP:
@@ -353,7 +374,6 @@ def record(*, caller: str, model: str, usage: Dict[str, int], cost: Optional[flo
             cyc['spent_usd'] = round(cyc['spent_usd'] + (cost or 0.0), 8)
             if caller.startswith('session:'):
                 cyc['session_spent_usd'] = round(cyc['session_spent_usd'] + (cost or 0.0), 8)
-        _prune(led, start, s['reset_day'])
         if not estimated:
             notice = _crossing_notice(led, s, start, cyc)
         _save_ledger(led)
@@ -457,9 +477,16 @@ def can_spend(model: str, settings: Optional[Dict[str, Any]] = None) -> Tuple[bo
         return False, 'no_budget'
     if not is_priced(model, s):
         return False, 'price_unknown'
+    from mc import api_credits_pending as pending
     start, _ = cycle_bounds(_now(), s['reset_day'])
     with _lock:
-        led = _load_ledger()
+        if not pending.flush():
+            return False, 'accounting_pending'
+        try:
+            led = _load_ledger(strict=True)
+        except Exception as exc:
+            _log(f'[api-credits] spend gate ledger read failed: {type(exc).__name__}', flush=True)
+            return False, 'accounting_pending'
     if _active_halt(led, start):
         return False, 'halted'
     cyc = led['cycles'].get(start.isoformat()) or {}
@@ -475,7 +502,9 @@ def status() -> Dict[str, Any]:
     s = load_settings()
     now = _now()
     start, end = cycle_bounds(now, s['reset_day'])
+    from mc import api_credits_pending as pending
     with _lock:
+        accounted = pending.flush()
         led = _load_ledger()
     cyc = led['cycles'].get(start.isoformat()) or _empty_cycle()
     spent = float(cyc.get('spent_usd', 0.0))
@@ -485,6 +514,8 @@ def status() -> Dict[str, Any]:
         state, reason = 'off', ''
     elif s['mode'] == 'measure':
         state, reason = 'measuring', 'estimated, not billed'
+    elif not accounted:
+        state, reason = 'stopped', 'pending spend could not be recorded'
     elif h:
         state, reason = 'stopped', h['reason']
     elif stop is not None and spent >= stop:

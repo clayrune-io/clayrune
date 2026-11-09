@@ -1010,7 +1010,9 @@ The **API credits** card under Claude in **Settings > Providers > Connections**
 uses a vault key and a cycle budget. It defaults to **Off**. **Measure first**
 keeps background calls on the subscription and estimates their cost. **On**
 lets background calls and new unattended Claude sessions use API credits.
-Human-opened chats stay on the subscription; other engines are unchanged.
+Human-opened chats do not use this credits feature; other engines are unchanged.
+With credits Off or an ineligible session, existing Claude authentication is
+kept, including an API key explicitly configured for an API-only installation.
 
 Scheduled tasks, stewards, night-review and agent-dispatched work qualify.
 The scheduler form offers **Billing: Auto (API credits)** or **Subscription**.
@@ -1024,7 +1026,9 @@ that much headroom below the stop point. It is a start gate, not a per-session
 cap. The card separates cycle spending into **background calls** and **agent
 sessions**. Background costs use the price table; session costs come from the
 CLI's reported total, recorded as per-turn deltas. Credits chats show a small
-**API credits** badge beside the model.
+**API credits** badge beside the model. If session spending cannot be saved,
+the card shows stopped and further credits work pauses while the pending record
+is retried. Successfully completed work is not rerun for an accounting failure.
 
 A credit-balance, spend-limit or authentication failure stops offloading,
 notifies once per cycle and retries the failed turn once on the subscription.

@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Keep session credit spend durable and auth choices intact (e98832d9 round 2)
+
+- Session spending uses a write-ahead journal and idempotent ledger receipts; failed accounting blocks further API credits and retries without replaying successful work.
+- Cold dispatch restores the latest billing choice. Off, untouched and ineligible launches retain provider-scoped Claude auth; only an actual credits-to-OAuth downgrade strips API auth.
+- Integrated MC-1165 lifecycle locks, isolated cwd resolution and launch refusals into every billing-aware continuation path. Branch candidate only; no master merge, push, restart or paid acceptance run.
+
 ## [2026-11-09] - Bill unattended Claude sessions to API credits (e98832d9)
 
 - Added sticky per-session billing with a vault key injected only into the eligible child environment, a $3 default start reserve, and subscription fallback on billing errors. Both Claude reader modes record per-turn actual cost deltas in the existing cycle ledger; persistent children change auth through respawn.

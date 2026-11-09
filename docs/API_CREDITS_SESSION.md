@@ -14,8 +14,12 @@ Every Claude spawn/respawn/revival in `agent_routes.py` uses this seam.
 `agent_runtime.py` and `provider_env_scope.py` are unchanged.
 
 - New scheduled, steward, night-review, workflow, hivemind and agent-dispatched
-  Claude sessions qualify. An explicit manual trigger always stays on OAuth;
-  other engines receive no credits key.
+  Claude sessions qualify. An explicit manual trigger never receives a credits key;
+  other engines receive no credits key. Off, untouched and ineligible launches
+  preserve the provider-scoped environment, including explicitly configured
+  Claude API auth on API-only installations. Only a real credits-to-OAuth
+  downgrade removes API auth. Selecting credits replaces scoped API auth with
+  the chosen vault key in that child only.
 - Mode must be On, `can_spend()` must pass, and headroom below the stop point
   must be at least `session_reserve_usd` (default $3). The reserve is a start
   gate, not a reservation or a hard per-session ceiling.
@@ -24,10 +28,12 @@ Every Claude spawn/respawn/revival in `agent_routes.py` uses this seam.
   returned child env; no global environment or provider settings write.
   The shim launch path also inherits env in memory; its spec persists names
   only. No new secret file or credential-management path was added.
-- `billing`, `billing_reason`, `billing_preference` survive the pending and
-  completion records, revival and reset-wait snapshots. Subscription is sticky;
+- `billing`, `billing_reason`, `billing_preference`, `billing_oauth` survive
+  pending/completion records, revival and reset-wait snapshots. Subscription is sticky;
   a new cycle or mode change does not upgrade an existing conversation.
-  Credits can downgrade to subscription when stopped or unavailable.
+  Credits can downgrade to subscription when stopped or unavailable. The
+  downgrade marker retains OAuth across later spawns and cold restoration.
+  Cold dispatch reads the most recent matching log row (logs are newest-first).
 - A stop causes a live Mode B process to respawn before its next turn,
   independent of the sticky-settings toggle. Ordinary scheduler and role
   append paths check the same gate. A failed teardown retains the respawn
@@ -57,6 +63,21 @@ spawner ownership, skips human-joined marking, and prevents the fragile-resume
 heuristic discarding context solely because billing failed before output.
 Subscription results cannot arm another billing replay. The failed credits
 result does not settle the spawner or publish an intermediate completion.
+`mc/api_credits_pending.py` writes each session delta to a separate fsynced,
+atomic `data/api_credits_pending.json` journal before attempting the ledger.
+A failed ledger write leaves the full delta there, independent of the session
+and its raw-cost baseline. The shared `can_spend()` gate and status polling retry
+the journal; until it drains, all further credit work is blocked. A live child
+uses the existing next-turn respawn path; successful work is never replayed
+because accounting failed. Ledger receipts prevent double charging if a crash
+lands after ledger commit but before journal clear. Retries retain the original
+cycle and timestamp; receipts are removed only after the cleared journal is
+durable. Neither journal nor receipts contain auth values. Corrupt/unreadable
+journal or ledger state fails the spending gate closed. If the journal itself
+cannot be written, the delta stays in a process-level retry queue and spending
+remains blocked; a simultaneous process crash and complete storage failure
+cannot guarantee persistence of that unwritable delta.
+
 Ledger write failure still allows that session's OAuth fallback; a failed
 replay is an observable ordinary session error.
 
@@ -83,15 +104,15 @@ The journal retains the exact executed commands. The launcher requires the
 original command after `--`:
 
 ```powershell
-.venv\Scripts\python.exe <installation>\tools\test-run.py --project mission_control --port 5199 -- .venv\Scripts\python.exe -m pytest -o addopts= tests/test_api_credits_session.py tests/test_api_credits_session_integration.py tests/test_api_credits.py tests/test_launch_marker.py tests/test_provider_env_scope.py tests/test_scheduler_routes.py tests/test_scheduler_character.py tests/test_stream_reader_malformed.py tests/test_respawn_stdin_deadlock.py tests/test_guardian_respawn_race.py tests/test_workflows.py tests/test_workflow_runtime_notify.py tests/test_steward_role_dispatch.py -q
-pyright mc/api_credits_session.py mc/api_credits_budget.py mc/launch_marker.py
+<installation>\.venv\Scripts\python.exe <installation>\tools\test-run.py --project mission_control --port 5199 -- <installation>\.venv\Scripts\python.exe -m pytest -o addopts= tests/test_api_credits_session.py tests/test_api_credits_session_integration.py tests/test_api_credits.py tests/test_launch_marker.py tests/test_provider_env_scope.py tests/test_scheduler_routes.py tests/test_scheduler_character.py tests/test_stream_reader_malformed.py tests/test_respawn_stdin_deadlock.py tests/test_guardian_respawn_race.py tests/test_workflows.py tests/test_workflow_runtime_notify.py tests/test_steward_role_dispatch.py -q
+pyright mc/api_credits_session.py mc/api_credits_budget.py mc/launch_marker.py mc/api_credits_pending.py
 .venv\Scripts\python.exe <installation>\tools\test-run.py --project mission_control --port 5199 -- node tools/smoke/boot-smoke.mjs
 .venv\Scripts\python.exe <installation>\tools\test-run.py --project mission_control --port 5199 -- node tools/smoke/api-credits-settings.mjs
 .venv\Scripts\python.exe <installation>\tools\test-run.py --project mission_control --port 5199 -- node tools/smoke/api-credits-session.mjs
 .venv\Scripts\python.exe <installation>\tools\test-run.py --project mission_control --port 5199 -- node tools/smoke/inline-handler-scope-check.mjs
 ```
 
-Validated: 483 backend tests, pyright 0 errors on the session/budget/launch
+Initial phase-2 validation (261191b0, before round-2 integration): 483 backend tests, pyright 0 errors on the session/budget/launch
 modules, dashboard boot smoke, 14 key/settings checks, 18 phase-2 UI checks
 at 1440/390, and handler scope across 279 modules. All exit codes 0.
 
@@ -108,6 +129,30 @@ Screenshots: `_scratch/api_credits_phase2/{settings,scheduler,chat}-{1440,390}.p
 No live vault read, paid request, config mutation, schedule creation, merge,
 push or server restart was performed. Test reporting can print capture gaps;
 the actual framework output and child exit code are the verification evidence.
+
+## Round 2 validation and handoff
+
+On `clayrune/api-credits-phase2-r2`, master `1fdffd96` was integrated as
+`d495d1d5`, retaining MC-1165's lifecycle exclusions, resolved isolated cwd and
+refusals while passing each stored session to the billing hook.
+
+Fenn's three cold-review probes were copied to scratch, passed, and retained as
+`tests/test_api_credits_review_regressions.py`. The new pending suite covers
+failed writes, fail-closed gates, restart recovery, journal-clear failures,
+original-cycle attribution, corruption, capped totals and auth preservation.
+The 13-file backend selection plus both new suites and 18 MC-1165/worktree suites
+passed: **759 tests**. Their shared lifecycle fake needed the new `session=`
+keyword; no assertions were removed. The final cycle-pruning adjustment was
+then validated by **147 accounting/session/probe checks**. Pyright on the four
+billing/launch modules: **0 errors**. All four requested browser/static smokes
+passed (credits session, credits settings, handler scope and boot).
+
+Actual stdout and child exit codes are the evidence; reporting printed capture
+and transport gaps. The main journal retains exact commands and the initial
+22-failure fixture-signature run. No live paid acceptance was performed.
+
+Branch candidate only; live paid acceptance and deployment remain outside this
+branch. Local handoff state is recorded in the untracked main journal.
 
 ## Integration handoff
 

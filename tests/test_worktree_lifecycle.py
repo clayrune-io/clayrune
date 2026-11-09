@@ -38,7 +38,8 @@ def _fake_spawn(routes, monkeypatch):
     monkeypatch.setattr(routes, '_resolve_claude', lambda: 'fake-claude')
     monkeypatch.setattr(routes, '_clock_wrap', lambda *a: a[2])
     monkeypatch.setattr(routes._launch_marker, 'launch_cmd', lambda cmd, *a: cmd)
-    monkeypatch.setattr(routes._launch_marker, 'launch_env', lambda *a: {})
+    # Billing-aware continuations also pass the retained session by keyword.
+    monkeypatch.setattr(routes._launch_marker, 'launch_env', lambda *a, **k: {})
     monkeypatch.setattr(routes, 'spawn_engine_proc', lambda *a, **k: SimpleNamespace(pid=12345))
     for name in ('_sysprompt_cleanup', '_hide_windows_delayed', '_register_process',
                  '_read_agent_stream', '_advance_delegation_turn',

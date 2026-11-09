@@ -14,7 +14,7 @@ from mc import api_credits_offload as offload
 from mc import api_credits_transport as transport
 from mc.core import _log
 
-FIELDS = ('billing', 'billing_reason', 'billing_preference')
+FIELDS = ('billing', 'billing_reason', 'billing_preference', 'billing_oauth')
 UNATTENDED = frozenset({'schedule', 'steward', 'night_review', 'night-review',
                        'dispatch', 'workflow', 'hivemind_orchestrator', 'hivemind_worker'})
 
@@ -31,6 +31,8 @@ def eligible(session: dict) -> bool:
 
 
 def _subscription(session: dict, reason: str) -> None:
+    if session.get('billing') == 'credits':
+        session['billing_oauth'] = True
     session.update(billing='subscription', billing_reason=reason)
 
 
@@ -39,14 +41,20 @@ def _gate(session: dict, settings: dict) -> tuple[bool, str]:
     return budget.can_spend(model, settings)
 
 
+def _oauth_env(env: dict[str, str]) -> dict[str, str]:
+    return {k: v for k, v in env.items()
+            if k.upper() not in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN')}
+
+
 def env_for_session(session: dict, env: dict[str, str]) -> dict[str, str]:
     """A named exception AFTER provider scoping; never mutate the input env.
 
     Subscription remains sticky even if a later spawn could afford credits.
     Credits can only downgrade: stop/mode/key failures use OAuth thereafter.
     """
-    child = {k: v for k, v in env.items()
-             if k.upper() not in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN')}
+    child = dict(env)
+    if session.get('billing') == 'credits' or session.get('billing_oauth'):
+        child = _oauth_env(child)
     session.pop('_api_credits_respawn_required', None)
     try:
         settings = budget.load_settings()
@@ -79,6 +87,7 @@ def env_for_session(session: dict, env: dict[str, str]) -> dict[str, str]:
             _subscription(session, 'vault_secret_empty')
             return child
         session.update(billing='credits', billing_reason='')
+        child = _oauth_env(child)
         child['ANTHROPIC_API_KEY'] = key
         return child
     except Exception as exc:
@@ -148,8 +157,6 @@ def record_result(session: dict, msg: dict, proc_cost: dict) -> bool:
         carries = runtime._version_tuple(proc_cost.get('cli_version')) >= runtime.CLAUDE_RESUME_CARRIES_COST
         previous = saved if carries and saved is not None else 0.0
     delta = (total - previous if total >= previous else total) if total is not None else None
-    if total is not None:
-        proc_cost['_api_credits_total'] = total
     runtime.accumulate_result_cost(session, msg, proc_cost)
     if session.get('billing') != 'credits':
         return False
@@ -161,8 +168,12 @@ def record_result(session: dict, msg: dict, proc_cost: dict) -> bool:
             model = str(msg.get('model') or reported or session.get('observed_model')
                         or session.get('model') or session.get('agent_model') or '')
             caller = session.get('trigger_id') if session.get('trigger_type') == 'schedule' else 'dispatch'
-            budget.record(caller=f"session:{session.get('project_id', '')}:{caller or 'dispatch'}",
+            from mc import api_credits_pending as pending
+            pending.record(caller=f"session:{session.get('project_id', '')}:{caller or 'dispatch'}",
                           model=model, usage=usage, cost=delta, estimated=False)
+            # The delta now belongs to the independent retry journal, even if
+            # its ledger write failed. Never advance past an unretained delta.
+            proc_cost['_api_credits_total'] = total
     except Exception as exc:
         _log(f'[api-credits-session] result accounting failed: {type(exc).__name__}', flush=True)
     try:
