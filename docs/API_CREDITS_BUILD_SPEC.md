@@ -128,3 +128,78 @@ prompt tokens (input + cache read + cache write). The skill says to check the
 live Anthropic pricing page before budgeting on these numbers, so make the
 table overridable from `data/api_credits.json` (`prices` key, same shape) and
 show "estimated" in the UI for any cost computed from it.
+
+---
+
+# Phase 2: unattended agent sessions bill to API credits
+
+Dave, 2026-11-09. Ron unblocked it the same day ("we're leaving money on the
+table"). His gate was that phase 1 had to work on real traffic first. It has:
+4,971 offloaded oneshots from 2026-10-31 to 2026-11-09, $6.81 spent, and the
+Nov cycle at $6.41 of $200. Projected use is ~$22/month, so ~$178 expires unused.
+
+## Measured 2026-11-09 (the open question from the research note)
+
+- `claude -p --model claude-haiku-5-5 --output-format json` with the vault
+  key `anthropic_api` in `ANTHROPIC_API_KEY`: `is_error:false`,
+  `total_cost_usd 0.0054`. The credits org ACCEPTS headless Claude Code runs.
+- Same call with a bogus key: fails, 0 tokens. So the env key OVERRIDES the
+  OAuth login for that child, and the call above was billed to the key.
+- Side effect printed by the CLI: "claude.ai connectors are disabled because
+  ANTHROPIC_API_KEY ... takes precedence". Local/project MCP servers still
+  load; only claude.ai-hosted connectors drop. Acceptable for unattended runs.
+- Anthropic cloud routines (claude.ai/code) are NOT covered by the credits
+  (they are interactive Claude Code on the subscription). The credits are
+  spent locally, through this feature.
+
+## Decisions (Dave, DECIDED WITHOUT RON)
+
+1. **Eligible = unattended.** Scheduled runs, steward, night-review, and
+   dispatched sessions started by an agent (MC-946 `notify_session`
+   dispatches) bill to credits by default while `mode == "on"` and budget
+   remains. Attended chats a human opened stay on the subscription. A
+   per-schedule `billing` field: `auto` (default, = credits when eligible) |
+   `subscription` (opt out). Reverse: flip the default to `subscription`.
+2. **Injection is a named, per-spawn exception** to `provider_env_scope`.
+   New unit `mc/api_credits_session.py`: `env_for_session(session, env)`
+   returns the child env with `ANTHROPIC_API_KEY` read by
+   `secrets_store.get_secret_value('anthropic_api' (settings.secret_name),
+   consumer='api-credits-session', unattended=True)`. Only into that one
+   child env. Never `os.environ`, never `provider_env.json`, never logged.
+   `scope_claude_env` keeps stripping the key from every other Claude child.
+3. **Billing is sticky per session.** Chosen at first spawn, stored on the
+   session record (`billing: credits|subscription`), re-used on every
+   respawn/resume of that session, so a session never flips engines mid-run.
+4. **Gate before spawn:** `budget.can_spend()` AND remaining headroom to the
+   stop point >= `session_reserve_usd` (setting, default $3). Otherwise
+   subscription, with the reason on the session record.
+5. **Record actual cost** from the stream's `result` event (`total_cost_usd`,
+   `usage`, model) into the existing ledger with
+   `caller = "session:<project>:<schedule_id or dispatch>"`, `estimated:false`.
+   One entry per turn.
+6. **Failure fallback:** if a credits turn ends with credit-too-low / spend
+   limit / 401 (same matchers as phase 1), flip state to `stopped` (existing
+   one-notice-per-cycle path), mark the session `subscription`, and re-run
+   that same turn once on OAuth. The caller sees no new failure mode.
+7. **Mode B persistent children:** the billing choice is fixed at spawn; if
+   it changes (stopped mid-cycle), the next turn respawns. Add `billing` to
+   the respawn trigger keys.
+
+## UI
+
+- Scheduler form: "Billing: Auto (API credits) / Subscription". One select.
+- Settings > Agent Providers > API credits card: add `session_reserve_usd`,
+  and split the cycle spend into "background calls" vs "agent sessions"
+  (group ledger by caller prefix). Session chat header shows a small
+  "API credits" badge when `billing == credits`.
+
+## Done means
+
+- Tests: eligibility matrix (attended vs schedule vs steward vs dispatch),
+  env injection only on eligible child and stripped everywhere else, sticky
+  billing across respawn, reserve gate, fallback re-run, ledger record from a
+  fixture `result` event. Pyright 0 on new module.
+- Live: one real scheduled run on Haiku shows `billing: credits` on its
+  session and a `session:` ledger entry with non-zero cost. Ron restarts
+  nothing: Dave restarts :5199 (standing approval) after merge.
+- Do not grow `mc/agent_runtime.py` beyond the hook lines.

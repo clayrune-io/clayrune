@@ -18,6 +18,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,9 @@ if str(PROJECT_ROOT) not in sys.path:
 import mc.agent_runtime as agent_runtime_mod  # noqa: E402
 import mc.agent_worktree as aw  # noqa: E402
 import mc.agent_worktree_followup as fu  # noqa: E402
+from mc import isolated_launch  # noqa: E402
 from mc import project_sync  # noqa: E402
+from mc import worktree_lifecycle as lifecycle  # noqa: E402
 
 
 def _git(cwd, *args):
@@ -74,11 +77,18 @@ def _isolated_session(project, sid):
 
 
 # ── module-level policy ─────────────────────────────────────────────────────
+# An isolated session's cwd is chosen inside the session's lifecycle exclusion
+# (MC-1165 round 4), so these tests open it the way a resume path does.
+
+def _resolve(sess, project, repo, **kw):
+    with lifecycle.resuming(threading.RLock(), sess['session_id']):
+        return fu.resolve_followup_cwd(sess, project, str(repo), **kw)
+
 
 def test_existing_worktree_is_returned_untouched(repo):
     project = {'id': 'p1', 'project_path': str(repo)}
     sess = _isolated_session(project, 'aaaa1111bbbb')
-    cwd, note = fu.resolve_followup_cwd(sess, project, str(repo))
+    cwd, note = _resolve(sess, project, repo)
     assert (cwd, note) == (sess['_agent_cwd'], '')
     assert Path(cwd).is_dir()
 
@@ -97,7 +107,7 @@ def test_removed_worktree_is_recreated_at_the_same_path(repo):
     ok, msg = aw.remove(project, 'eeee3333ffff', delete_branch=True)
     assert ok and not Path(old).exists(), msg
 
-    cwd, note = fu.resolve_followup_cwd(sess, project, str(repo))
+    cwd, note = _resolve(sess, project, repo)
 
     assert cwd == old and Path(cwd).is_dir()
     assert (Path(cwd) / '.git').exists()
@@ -105,27 +115,43 @@ def test_removed_worktree_is_recreated_at_the_same_path(repo):
     assert 'recreated' in note and old in note
 
 
-def test_recreate_failure_falls_back_to_project_tree_and_says_so(repo):
+def test_recreate_failure_refuses_and_keeps_the_session_isolated(repo):
     project = {'id': 'p1', 'project_path': str(repo)}
     sess = {'session_id': 'gggg4444hhhh', '_agent_cwd': str(repo / 'gone'),
             '_worktree_isolated': True}
-    cwd, note = fu.resolve_followup_cwd(
-        sess, project, str(repo), create=lambda p, s: (False, 'disk full'))
-    assert cwd == str(repo)
-    assert 'disk full' in note and 'project tree' in note
-    assert sess['_worktree_isolated'] is False  # end-hook must not merge back a ghost
-    assert sess['_agent_cwd'] == str(repo) and sess['_cwd_moved_from'] == str(repo / 'gone')
+    with pytest.raises(isolated_launch.LaunchRefused, match='disk full'):
+        _resolve(sess, project, repo, create=lambda p, s: (False, 'disk full'))
+    # No silent flip to the shared checkout: still isolated, cwd unchanged.
+    assert sess['_worktree_isolated'] is True
+    assert sess['_agent_cwd'] == str(repo / 'gone')
+    assert '_cwd_moved_from' not in sess
 
 
-def test_create_raising_is_contained(repo):
+def test_create_raising_is_contained_as_a_refusal(repo):
     project = {'id': 'p1', 'project_path': str(repo)}
     sess = {'session_id': 'iiii5555jjjj', '_agent_cwd': str(repo / 'gone'),
             '_worktree_isolated': True}
 
     def boom(p, s):
         raise OSError('nope')
-    cwd, note = fu.resolve_followup_cwd(sess, project, str(repo), create=boom)
-    assert cwd == str(repo) and 'nope' in note
+    with pytest.raises(isolated_launch.LaunchRefused, match='nope'):
+        _resolve(sess, project, repo, create=boom)
+    assert sess['_worktree_isolated'] is True
+
+
+def test_isolated_cwd_outside_the_exclusion_is_refused(repo):
+    project = {'id': 'p1', 'project_path': str(repo)}
+    sess = _isolated_session(project, 'mmmm7777nnnn')
+    with pytest.raises(isolated_launch.LaunchRefused, match='outside the lifecycle'):
+        fu.resolve_followup_cwd(sess, project, str(repo))
+
+
+def test_non_isolated_session_with_a_gone_directory_still_falls_back(repo):
+    project = {'id': 'p1', 'project_path': str(repo)}
+    sess = {'session_id': 'oooo8888pppp', '_agent_cwd': str(repo / 'gone')}
+    cwd, note = fu.resolve_followup_cwd(sess, project, str(repo))
+    assert cwd == str(repo) and 'project tree' in note
+    assert sess['_cwd_moved_from'] == str(repo / 'gone')
 
 
 # ── the real route: end a no-commit run, then send a follow-up ──────────────

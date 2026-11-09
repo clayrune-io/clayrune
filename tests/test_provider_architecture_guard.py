@@ -128,7 +128,7 @@ ALLOWLIST: tuple[AllowlistedException, ...] = (
     AllowlistedException("mc/blueprints/agent_routes.py", "_revive_from_agent_log",
                          "inference-subprocess", 2, "agent-runtime owner",
                          "route cold revival through the durable provider-neutral lifecycle"),
-    AllowlistedException("mc/blueprints/agent_routes.py", "_auto_dispatch_followup",
+    AllowlistedException("mc/blueprints/agent_routes.py", "_auto_dispatch_followup_locked",
                          "inference-subprocess", 1, "agent-runtime owner",
                          "route follow-up turns through the provider runtime"),
     AllowlistedException("mc/blueprints/agent_routes.py", "_dispatch_agent_internal",

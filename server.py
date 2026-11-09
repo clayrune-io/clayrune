@@ -2251,6 +2251,7 @@ _bp_sched.wire(
     revive_from_agent_log_fn=_bp_agent._revive_from_agent_log,
     revive_non_claude_from_agent_log_fn=_bp_agent._revive_non_claude_from_agent_log,
     record_usage_breakdown_turn_started_fn=_bp_agent._record_usage_breakdown_turn_started,
+    isolated_resume_kwargs_fn=_bp_agent._isolated_resume_kwargs,
 )
 app.register_blueprint(_bp_sched.bp)
 
@@ -3256,7 +3257,7 @@ _bp_test_runs.wire(
     data_root=DATA_DIR.parent,
     load_project_fn=_bp_projects.load_project,
     load_agent_log_fn=_bp_agent._load_agent_log,
-    session_cwd_fn=_bp_agent._session_cwd,
+    session_cwd_fn=_bp_agent._session_cwd_for_reading,
     proc_identity_fn=_bp_agent._proc_identity,
 )
 app.register_blueprint(_bp_test_runs.bp)

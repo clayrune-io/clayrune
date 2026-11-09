@@ -66,6 +66,7 @@ import mc.project_sync as _proj_sync
 import mc.distiller as _distiller           # exploration read-floor (steward cycle refresh)
 from mc import workflows as _wf             # MC-871 Q4: a schedule may invoke a workflow run
 from mc import memory as _mem            # memory read-floor (steward cycle refresh)
+from mc import isolated_launch as _isolated_launch  # MC-1165 r6: typed revival refusal
 from mc import engine_fallback as _engine_fallback  # MC-961: blocked-run pointer on a timer fire
 from mc import engine_pace_dispatch as _engine_pace_dispatch  # usage reader for run conditions
 from mc import schedule_conditions as _schedule_conditions    # "spend leftover weekly allowance"
@@ -99,6 +100,7 @@ _pid_is_alive: Callable[[int], bool] = None  # type: ignore[assignment]
 _revive_from_agent_log: Callable[..., bool] = None  # type: ignore[assignment]
 _revive_non_claude_from_agent_log: Callable[..., Any] = None  # type: ignore[assignment]
 _record_usage_breakdown_turn_started: Optional[Callable[[dict], Any]] = None
+_isolated_resume_kwargs: Callable[..., dict] = None  # type: ignore[assignment]  # MC-1165 r7
 
 
 def wire(*, schedules_path, load_project_fn, load_projects_fn,
@@ -106,13 +108,16 @@ def wire(*, schedules_path, load_project_fn, load_projects_fn,
          enrich_run_entries_fn, get_manager_fn, all_managers_fn,
          pid_is_alive_fn, revive_from_agent_log_fn,
          revive_non_claude_from_agent_log_fn, save_project_fn=None,
-         record_usage_breakdown_turn_started_fn=None):
+         record_usage_breakdown_turn_started_fn=None,
+         isolated_resume_kwargs_fn=None):
     """Late-bind cross-family deps. Called once by server.py before
     register_blueprint + _start_scheduler()."""
     global SCHEDULES_PATH, load_project, save_project, load_projects, _log_agent_activity
     global _dispatch_agent_internal, _load_agent_log, _enrich_run_entries
     global get_manager, all_managers, _pid_is_alive, _revive_from_agent_log
     global _revive_non_claude_from_agent_log, _record_usage_breakdown_turn_started
+    global _isolated_resume_kwargs
+    _isolated_resume_kwargs = isolated_resume_kwargs_fn  # type: ignore[assignment]
     SCHEDULES_PATH = schedules_path
     load_project = load_project_fn
     save_project = save_project_fn  # type: ignore[assignment]  # optional kwarg (steward cycle stamp)
@@ -780,9 +785,22 @@ def _scheduler_loop():
                                     # a csid-less row per cadence tick.
                                     reuse_sid = ''
                                     dispatch_task = task
+                                    iso_kw = {}
                                     if resume_id:
-                                        reuse_sid = _newest_run_session_id_for_schedule(pid, sched_id)
+                                        reuse_sid = (_session_owning_resume(pid, sched_id, resume_id)
+                                                     or _newest_run_session_id_for_schedule(pid, sched_id))
                                         dispatch_task = _scheduled_run_marker() + task
+                                        if reuse_sid:
+                                            # MC-1165 r7: this cold resume bypasses
+                                            # _scheduled_continue, so it must apply the
+                                            # isolation boundary itself or an isolated
+                                            # steward session resumes in main. Raises
+                                            # RevivalRefused -> the except below records
+                                            # a failed run, never a dispatch in main.
+                                            iso_kw = _isolated_resume_kwargs(
+                                                pid, reuse_sid, load_project(pid) or {},
+                                                logged=_row_flags_isolated(pid, reuse_sid),
+                                                who='scheduler-respawn')
                                     sid = _dispatch_agent_internal(pid, dispatch_task,
                                                                   resume_id=resume_id,
                                                                   trigger_type='schedule',
@@ -790,6 +808,7 @@ def _scheduler_loop():
                                                                   reuse_session_id=reuse_sid,
                                                                   provider_override=resume_provider,
                                                                   character=sched.get('character') or '',
+                                                                  **iso_kw,
                                                                   **_schedule_engine_kwargs(sched))
                                     tag = ' (resumed)' if resume_id else ''
                                     _log(f"[scheduler] Dispatched{tag} for {pid}: {task[:60]} -> session {sid}")
@@ -1112,6 +1131,37 @@ def _newest_run_session_id_for_schedule(project_id, schedule_id):
     return ''
 
 
+def _session_owning_resume(project_id, schedule_id, resume_id):
+    """MC session_id of the newest schedule row whose provider-native id IS
+    `resume_id` ('' if none). The isolation lookup and the row a cold resume
+    adopts must come from the row that owns the conversation being resumed, not
+    from the newest row of the schedule: a newest row with no native id (a run
+    that died before init) is a different row, and asking about it hid the
+    owner's worktree (MC-1165 r9)."""
+    if not (project_id and schedule_id and resume_id):
+        return ''
+    for e in _load_agent_log(project_id):  # newest-first
+        if e.get('trigger_type') != 'schedule' or e.get('trigger_id') != schedule_id:
+            continue
+        provider = (e.get('provider') or 'claude').lower()
+        candidate = (e.get('claude_session_id') if provider == 'claude'
+                     else e.get('provider_session_id')) or ''
+        if candidate == resume_id and e.get('session_id'):
+            return e.get('session_id', '')
+    return ''
+
+
+def _row_flags_isolated(project_id, session_id):
+    """True when any agent-log row of `session_id` carries `worktree_isolated`
+    (the durable isolation record, MC-1165 r5). Never raises."""
+    try:
+        return any(e.get('worktree_isolated') for e in _load_agent_log(project_id)
+                   if e.get('session_id') == session_id)
+    except Exception as e:
+        _log(f"[scheduler] isolation flag lookup failed for {session_id}: {e}")
+        return False
+
+
 def _scheduled_run_marker():
     """A local-time header prepended to the task of a CONTINUED scheduled run so a
     single long thread reads as a time series ('when did each fire happen')."""
@@ -1201,6 +1251,13 @@ def _scheduled_continue(p, project_id, session_id, task):
         if _revive_non_claude_from_agent_log(project_id, session_id, task, p):
             _log_agent_activity(project_id, f"Scheduled run (revived): {task[:100]}")
             return 'revived'
+    except _isolated_launch.RevivalRefused as e:
+        # Not "nothing continuable": the conversation owns a worktree that cannot
+        # be restored. Returning None would send the caller to a fresh dispatch
+        # that resumes the same session in the project checkout (MC-1165 r6).
+        # The cadence loop records a failed run with this reason.
+        _log(f"[scheduled-continue] {project_id}: revive refused: {e}")
+        raise
     except Exception as e:
         _log(f"[scheduled-continue] {project_id}: revive failed: {e}")
     return None
@@ -1629,8 +1686,15 @@ def schedule_run_now(schedule_id):
         if prev_sid:
             pcur = load_project(pid)
             if pcur:
-                outcome = _scheduled_continue(pcur, pid, prev_sid,
-                                              _scheduled_run_marker() + task)
+                try:
+                    outcome = _scheduled_continue(pcur, pid, prev_sid,
+                                                  _scheduled_run_marker() + task)
+                except _isolated_launch.RevivalRefused as e:
+                    sched['last_error'] = str(e)
+                    sched['last_error_at'] = now_iso()
+                    _role_writes.save_runtime_schedules(schedules)
+                    return jsonify({'ok': False, 'refused': True, 'session_id': prev_sid,
+                                    'error': str(e)}), 409
                 if outcome == 'busy':
                     return jsonify({'ok': False, 'busy': True,
                                     'session_id': prev_sid,
@@ -1649,9 +1713,27 @@ def schedule_run_now(schedule_id):
             resume_provider = _schedule_resume_provider(pid, schedule_id, resume_id)
     reuse_sid = ''
     dispatch_task = task
+    iso_kw = {}
     if resume_id:
-        reuse_sid = _newest_run_session_id_for_schedule(pid, schedule_id)
+        reuse_sid = (_session_owning_resume(pid, schedule_id, resume_id)
+                     or _newest_run_session_id_for_schedule(pid, schedule_id))
         dispatch_task = _scheduled_run_marker() + task
+        if reuse_sid:
+            # MC-1165 r8: this cold resume bypasses _scheduled_continue (it
+            # returned None), so apply the isolation boundary here or Run Now
+            # on an isolated session resumes in main. Same helper and refusal
+            # shape as the _scheduled_continue refusal above; never dispatches.
+            try:
+                iso_kw = _isolated_resume_kwargs(
+                    pid, reuse_sid, load_project(pid) or {},
+                    logged=_row_flags_isolated(pid, reuse_sid),
+                    who='schedule-run-now')
+            except _isolated_launch.RevivalRefused as e:
+                sched['last_error'] = str(e)
+                sched['last_error_at'] = now_iso()
+                _role_writes.save_runtime_schedules(schedules)
+                return jsonify({'ok': False, 'refused': True, 'session_id': reuse_sid,
+                                'error': str(e)}), 409
     try:
         sid = _dispatch_agent_internal(pid, dispatch_task, resume_id=resume_id,
                                        trigger_type='schedule',
@@ -1659,7 +1741,16 @@ def schedule_run_now(schedule_id):
                                        reuse_session_id=reuse_sid,
                                        provider_override=resume_provider,
                                        character=sched.get('character') or '',
+                                       **iso_kw,
                                        **_schedule_engine_kwargs(sched))
+    except _isolated_launch.RevivalRefused as e:
+        # MC-1165 r9: the isolated conversation is still live (or its tree is
+        # gone); same 409 shape as the refusals above, never a second run.
+        sched['last_error'] = str(e)
+        sched['last_error_at'] = now_iso()
+        _role_writes.save_runtime_schedules(schedules)
+        return jsonify({'ok': False, 'refused': True, 'session_id': reuse_sid,
+                        'error': str(e)}), 409
     except ValueError as e:
         code = 404 if 'not found' in str(e) else 400
         return jsonify({'error': str(e)}), code
