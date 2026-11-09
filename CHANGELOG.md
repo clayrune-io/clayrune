@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Refuse padded MIME shaping-header names (MC-1166 unit 3 round 13)
+
+- The inbound plain-text strip refuses whitespace before the colon of Content-Type, Content-Disposition, Content-Transfer-Encoding and Content-ID in every parsed MIME part, including dropped subtrees. This closes an extraction bypass that kept attachment text or raw HTML; duplicate-header refusal retains priority.
+- Ported the review's six leak probes and added padding, nesting, encoding, related-root and ordinary-input controls. Branch candidate only; no merge, push, restart or deployment.
+
 ## [2026-11-08] - Specify owner-only per-install agent email
 
 - Added `docs/AGENT_MAIL_SPEC.md`: opt-in installation enrollment, verified-owner sending, identified activation counts, authenticated and laundered replies, durable offline replay, and exact-conversation follow-up requirements. Eight design decisions remain open for Dave, with alternatives, recommendations and costs.

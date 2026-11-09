@@ -15,13 +15,16 @@
 //     second header is a way to show one parser a body and another a name or
 //     an attachment. Counted on each part's RAW header lines, not on the parsed
 //     first-wins view; a legitimate reply never carries a duplicate.
+//   - any of those four header names has whitespace before its colon:
+//     `malformed_mime`. postal-mime ignores the padded name when extracting type,
+//     disposition, encoding or ID, while validation and other readers trim it.
+//     Refuse rather than let extraction default to an untyped plain body (round 13).
 //   - a part's raw Content-Type declares multipart/* but postal-mime parsed it as
 //     a leaf (it rewrites a multipart with a missing, empty or non-ASCII boundary
 //     to text/plain): `malformed_mime`. Otherwise the declared subtype exclusion
 //     below would be applied to the rewritten type and its bytes read as text. The
 //     declared type is read through postal-mime's own structured-header parser, so
-//     comments carry no meaning and `Content-Type :` is the same header as in the
-//     duplicate check above.
+//     comments carry no meaning. Padded names also count for duplicates, then refuse.
 //   - any header section (top level, and each part after a delimiter line), read from
 //     the RAW bytes, holds a line that is neither a header field nor a space/tab fold,
 //     holds a bare CR, or does not end on an empty line: `malformed_mime`. postal-mime
@@ -161,7 +164,7 @@ function rawHeaderKeys(node) {
 // on the raw header value, because node.contentType is rewritten to text/plain when a
 // multipart has no usable boundary. The header is found by the same trimmed name the
 // duplicate check uses, so `Content-Type : multipart/signed` (postal-mime keeps the
-// space in the key and ignores the line) is the same header to both policies.
+// space in the key and ignores the line) still counts here, then refuses in round 13.
 function declaredType(node) {
   const h = (node.headers || []).find((x) => String(x.key || '').trim() === 'content-type');
   if (!h) return '';
@@ -175,7 +178,12 @@ function treeRefusal(node) {
   if (SINGLE_HEADERS.some((k) => keys.filter((x) => x === k).length > 1)) return 'ambiguous_mime';
   if (!node.contentType.multipart && /^multipart\s*\//.test(declaredType(node))) return 'malformed_mime';
   let ambiguous = false;
-  let malformed = false;
+  // Keep duplicate-header priority, including duplicates in a descendant. All four
+  // body-shaping names must be exact: trimming here would disagree with extraction.
+  let malformed = (node.rawHeaderLines || []).some((h) => {
+    const key = String(h.key || '');
+    return key !== key.trim() && SINGLE_HEADERS.includes(key.trim());
+  });
   for (const child of node.childNodes || []) {
     const r = treeRefusal(child);
     if (r === 'ambiguous_mime') ambiguous = true;
@@ -188,7 +196,8 @@ function treeRefusal(node) {
 // A child's Content-ID found by trimmed header name, like the duplicate check and
 // declaredType: postal-mime keeps whitespace before the colon in the key, so
 // `Content-ID : <x>` leaves node.contentId unset while another reader still sees the ID.
-// Reading it here keeps that child inside the strictness and uniqueness checks.
+// Reading it here keeps that child inside the strictness and uniqueness checks;
+// round 13 now refuses the padded name before root selection can run.
 function rawContentId(node) {
   const h = (node.headers || []).find((x) => String(x.key || '').trim() === 'content-id');
   return h ? String(h.value || '') : undefined;

@@ -158,9 +158,9 @@ test('folded header VALUES (including a fold that begins with a colon) pass', as
   assert.equal(r.text, 'Approved.');
 });
 
-test('a header with spaces before its colon, on one line, is still a header (not refused)', async () => {
+test('a shaping header with spaces before its colon refuses (round 13)', async () => {
   const r = await strip(bytes('Content-Type : text/plain\r\n\r\nApproved.'));
-  assert.equal(r.ok, true);
+  assert.deepEqual(r, { ok: false, reason_code: 'malformed_mime' });
 });
 
 test('control (flipped from round 7): body text "Approved" then an indented colon line passes', async () => {

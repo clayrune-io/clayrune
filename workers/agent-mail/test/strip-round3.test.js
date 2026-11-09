@@ -159,8 +159,8 @@ test('Content-Type<TAB>: multipart/signed with a boundary (tab before colon) -> 
 test('Content-Type : (n; n) multipart/signed combines both rules -> malformed_mime', () =>
   refused(msg('Content-Type : (n; n) multipart/signed'), 'malformed_mime'));
 
-test('Content-Type : text/plain (spacing, non-multipart) is kept', () =>
-  retained(msg('Content-Type : text/plain', OK)));
+test('Content-Type : text/plain (spacing, non-multipart) refuses (round 13)', () =>
+  refused(msg('Content-Type : text/plain', OK), 'malformed_mime'));
 
 test('spaced and real Content-Type together stay ambiguous_mime (duplicate check unchanged)', () =>
   refused(msg('Content-Type: text/plain\r\nContent-Type : multipart/signed'), 'ambiguous_mime'));

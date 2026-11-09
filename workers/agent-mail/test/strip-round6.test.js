@@ -24,7 +24,7 @@ for (const [name, sep] of [['space', ' '], ['tab', '\t']]) {
     ], start('text/html')));
     noLeak(r);
     assert.equal(r.ok, false, JSON.stringify(r));
-    assert.equal(r.reason_code, 'html_only');
+    assert.equal(r.reason_code, 'malformed_mime'); // round 13 refuses padded shaping names
   });
 
   test(`Fenn R6 reversed (${name}): canonical html first, spaced plain duplicate -> nothing read`, async () => {
@@ -34,15 +34,14 @@ for (const [name, sep] of [['space', ' '], ['tab', '\t']]) {
     ], start('text/html')));
     noLeak(r);
     assert.equal(r.ok, false, JSON.stringify(r));
-    assert.equal(r.reason_code, 'html_only');
+    assert.equal(r.reason_code, 'malformed_mime');
   });
 
-  test(`spaced Content-ID on the only matching root is read consistently (${name})`, async () => {
+  test(`spaced Content-ID on the only matching root refuses (${name}, round 13)`, async () => {
     const r = await strip(multi('related', 'B', [
       part('text/plain', `Content-ID${sep}: <root@example.net>`, OK),
     ], start('text/plain')));
-    assert.equal(r.ok, true, JSON.stringify(r));
-    assert.equal(r.text.trim(), OK);
+    assert.deepEqual(r, { ok: false, reason_code: 'malformed_mime' });
   });
 }
 

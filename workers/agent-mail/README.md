@@ -58,9 +58,8 @@ optionally ending in a `[literal]` of letters, digits, `.`, `:` and `-`; comment
 and whitespace outside the brackets are skipped. Quoted local parts, comments
 inside the id and other exotic RFC 5322 spellings are not interpreted. Root
 selection **fails closed**: if `start` or any child's Content-ID is not strict, or
-the match is not unique (case-insensitively), no root is read. A child's
-Content-ID is found by trimmed header name, so `Content-ID : <x>` (whitespace
-before the colon, which postal-mime does not parse) still counts.
+the match is not unique (case-insensitively), no root is read. A padded
+Content-ID name now refuses the entire message before root selection (round 13).
 
 **Refusals, checked before any text is taken** (including
 subtrees the allowlist would drop). Each returns `{ok:false, reason_code}` with no
@@ -71,6 +70,13 @@ text and no counts:
   Counted on each part's raw header lines (name case-insensitive, folded lines
   grouped, whitespace before the colon ignored), not on the parsed first-wins view,
   so a second header cannot show one parser a body and another a filename.
+- `malformed_mime`, padded shaping-header names (round 13): whitespace between
+  `Content-Type`, `Content-Disposition`, `Content-Transfer-Encoding` or `Content-ID`
+  and its colon refuses the whole message, at the top level or in any nested part,
+  including dropped subtrees. postal-mime ignores these padded names during
+  extraction while validation trims them; accepting one could keep an attachment,
+  raw HTML or an undecoded body as plain text. Duplicate-header refusal retains
+  priority. Ordinary value whitespace/folding and body text are unaffected.
 - `malformed_mime`: a part's raw `Content-Type` declares `multipart/*` but postal-mime
   parsed it as a leaf (it rewrites a multipart with a missing, empty or non-ASCII
   boundary to `text/plain`), which would hide a declared `signed`/`digest`/... type
