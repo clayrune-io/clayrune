@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Preserve OAuth downgrade through reset recovery (e98832d9 round 3)
+
+- Reset-wait park, deferred-success and completion snapshots now retain `billing_oauth`, preventing a restored subscription session from regaining configured API-key auth after restart.
+- Retained the cold-review restart probe unchanged and added billing/auth consistency coverage for all three snapshot paths. Branch candidate only; no merge, push, restart or paid acceptance run.
+
 ## [2026-11-09] - Keep session credit spend durable and auth choices intact (e98832d9 round 2)
 
 - Session spending uses a write-ahead journal and idempotent ledger receipts; failed accounting blocks further API credits and retries without replaying successful work.

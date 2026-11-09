@@ -29,7 +29,10 @@ Every Claude spawn/respawn/revival in `agent_routes.py` uses this seam.
   The shim launch path also inherits env in memory; its spec persists names
   only. No new secret file or credential-management path was added.
 - `billing`, `billing_reason`, `billing_preference`, `billing_oauth` survive
-  pending/completion records, revival and reset-wait snapshots. Subscription is sticky;
+  pending/completion records and revival. Reset recovery persists all four in
+  the shared `limit_resume._SNAPSHOT_KEYS` contract used by park, deferred-success
+  and completion snapshots, including the OAuth downgrade marker across a
+  server restart. Subscription is sticky;
   a new cycle or mode change does not upgrade an existing conversation.
   Credits can downgrade to subscription when stopped or unavailable. The
   downgrade marker retains OAuth across later spawns and cold restoration.
@@ -153,6 +156,24 @@ and transport gaps. The main journal retains exact commands and the initial
 
 Branch candidate only; live paid acceptance and deployment remain outside this
 branch. Local handoff state is recorded in the untracked main journal.
+
+## Round 3 reset-recovery validation
+
+Fenn's unchanged restart probe first reproduced the missing `billing_oauth`
+marker, then passed after adding it to the shared snapshot contract. Its
+function body is retained unchanged in
+`tests/test_api_credits_reset_recovery.py`; three additional cases cover park,
+deferred-success and completion snapshots, checking billing fields, OAuth-only
+child auth and subscription accounting together.
+
+The exact round-2 review selections passed again: **759** combined tests,
+**73** cold-review tests, **99** reset-recovery tests, **3** original probes
+and **1** restart probe. The new permanent suite passed **4** tests. Pyright
+reported **0 errors** on the four billing modules and touched `limit_resume.py`.
+Smokes passed **18** session checks, **14** settings checks, **279** module scope
+checks and **7** boot scenarios plus **14** feature guards. Reporting emitted
+transport/capture gaps; framework stdout and child exits establish these
+results. No live paid acceptance was performed.
 
 ## Integration handoff
 
