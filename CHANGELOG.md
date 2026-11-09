@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Add signed owner-only Worker mail transport (MC-1166 unit 2)
+
+- Added separate Ed25519 signing, owner-only outbound, bounded authenticated ingress, D1 custody/lease ledger, scheduled replay and Worker entry modules. Exact-body signatures bind direction, generation and receiver path; durable nonces and stable ids prevent request replay and duplicate custody. Ambiguous sends remain visible and are never automatically resent.
+- Documented the unit 4/7 signing, route-proof and durable-custody contract in `docs/AGENT_MAIL_TRANSPORT.md`; added synthetic SQLite/WebCrypto transport checks alongside the existing inbound suite. Disabled branch candidate only; no deployment, enrollment, credentials, mail, merge, push or restart.
+
 ## [2026-11-09] - Refuse padded MIME shaping-header names (MC-1166 unit 3 round 13)
 
 - The inbound plain-text strip refuses whitespace before the colon of Content-Type, Content-Disposition, Content-Transfer-Encoding and Content-ID in every parsed MIME part, including dropped subtrees. This closes an extraction bypass that kept attachment text or raw HTML; duplicate-header refusal retains priority.

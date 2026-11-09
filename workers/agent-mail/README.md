@@ -1,9 +1,17 @@
-# Agent mail: inbound authentication + plain-text strip
+# Agent mail: Worker transport and inbound plain-text library
 
-Library code for the Cloudflare Email Worker behind per-install agent mail
-(`docs/AGENT_MAIL_SPEC.md`, MC-1166 unit 3). **Not deployed. No `email()`
-handler, no forwarding, no Cloudflare account touched.** Pure functions with
-unit tests; the handler (unit 2) and the injection screen (unit 5) call them.
+Cloudflare Email Worker candidate behind per-install agent mail
+(`docs/AGENT_MAIL_SPEC.md`, MC-1166 units 2 and 3). **Not deployed or enabled;
+no Cloudflare account touched.** Unit 2 adds `worker.js` fetch/email/scheduled
+handlers, separate Ed25519 signing, owner-only outbound construction, ingress,
+and a D1 ledger/replay loop. Unit 3 remains the authentication/strip library.
+
+The exact wire, custody, schema and enrollment handoff contract is in
+[`docs/AGENT_MAIL_TRANSPORT.md`](../../docs/AGENT_MAIL_TRANSPORT.md).
+`MAIL_ENABLED` and `MAIL_INGRESS_VERIFIED` default off; unit 7 must supply verified
+owner/public-key/generation and service-authoritative tunnel bindings, and unit
+4 must implement the signed receiver plus durable custody receipt. An account
+hostname suffix or an install-provided callback is never ownership evidence.
 
 ## What it does
 
@@ -12,6 +20,12 @@ text ever reaches custody. A failed check is a **drop**, not a hold.
 
 | File | Concern |
 | --- | --- |
+| `signing.js` | Mail-only Ed25519 v1, exact-body digest, scoped method/path/generation/direction, timestamp and durable nonce claim seam. |
+| `outbound.js` | Allowlisted note/question payload; server-derived recipient, From, Reply-To and Message-ID; send-intent deduplication and uncertainty. |
+| `ingress.js` | Bounded raw stream and ordered headers; provider header agreement, loop suppression, unit-3 auth/strip, stable event identity and held missing ids. |
+| `ledger.js`, `schema.sql` | Dedicated D1 state, transactional send/correlation reservation, queue bounds, leased claims, generation revocation and retention. |
+| `replay.js` | Scheduled or authenticated recovery replay; proven routes only, fresh signing nonce, manual redirects, exact durable-custody receipts. |
+| `worker.js` | Thin fetch/email/scheduled entry and synthetic dependency injection factory; no enrollment or dashboard-auth bypass. |
 | `auth.js` | `decide(meta, ownerRecord, tokenLookup)` -> `{accept:true, thread, evidence}` or `{accept:false, reason_code}`. `rejectionRecord()` is the only thing kept about a drop: time, reason code, auth result words. |
 | `mailbox.js` | Strict one-mailbox From parsing. Domain case-insensitive, local part exact. No substring or display-name matching. |
 | `authres.js` | Cloudflare `Authentication-Results` (authserv-id `mx.cloudflare.net` only) and the D6=A rule: DMARC pass with aligned SPF **or** DKIM. |
@@ -164,6 +178,16 @@ and `remote_image_refs` are counts only.
 
 ## Known limits
 
+- Synthetic transport tests use real SQLite through a minimal D1 facade and
+  generated test-only Ed25519 keys. They do not verify Cloudflare's runtime,
+  provider delivery, actual tunnel ownership, installed custody or completed
+  turns. No real destination verification, DNS/DKIM or mail has been performed.
+- Unit 2 keeps the stricter unit-3 no-HTML-fallback decision. The broader draft
+  spec's HTML fallback does not override Dave's recorded refusal decision.
+- Scheduled replay and the install recovery call are both required. A failed
+  Email Worker invocation is **not** claimed to provide a durable provider retry
+  guarantee; queue-capacity/storage failure is an explicit custody failure.
+
 - **Ingress trust is positional and unverified against real Cloudflare output.**
   The spec requires real provider fixtures before launch. `authres.js` believes
   the one `mx.cloudflare.net` result that is the first Authentication-Results
@@ -192,3 +216,7 @@ cd workers/agent-mail
 npm install        # postal-mime is the only dependency
 npm test           # node --test test/*.test.js
 ```
+
+Node 24.11+ is needed for the transport suite's test-only `node:sqlite` adapter.
+Run repository verification through the installation's `tools/test-run.py`
+launcher, preserving this working directory and the exact `npm test` command.

@@ -2,7 +2,7 @@
   "name": "clayrune-agent-mail-worker",
   "version": "0.0.0",
   "private": true,
-  "description": "Inbound authentication and plain-text strip for Clayrune agent mail (Cloudflare Worker library code). Not deployed.",
+  "description": "Owner-only signed agent-mail Worker transport and inbound plain-text library. Not deployed.",
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.js"
