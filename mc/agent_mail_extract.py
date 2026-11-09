@@ -102,6 +102,7 @@ def _validate(raw: str, text: str, max_reply_bytes: int) -> Extraction:
 
 def extract_reply(text: str, *, kind: str, provider: str = 'claude',
                   model: str = 'haiku', timeout: int = 25,
+                  deadline: Optional[float] = None,
                   max_reply_bytes: int = MAX_TEXT_BYTES) -> Extraction:
     """No runtime injection/fallback. Tests mock the shared verified oneshot seam."""
     reason = screen_text(text)
@@ -115,7 +116,8 @@ def extract_reply(text: str, *, kind: str, provider: str = 'claude',
         return Extraction('invalid_timeout')
     raw, error = mail_launder.claude_mail_transform(
         prompt=_PROMPT + '\nTrusted message kind: ' + kind,
-        stdin_text=text, model=model, timeout=timeout)
+        stdin_text=text, model=model, timeout=timeout,
+        **({'deadline': deadline} if deadline is not None else {}))
     if error:
         return Extraction({'claude_unavailable': 'runtime_unavailable',
                            'extraction_timeout': 'extraction_timeout'}.get(error, 'extraction_failed'))

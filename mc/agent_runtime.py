@@ -60,6 +60,7 @@ from mc import codex_run_error as _codex_run_error
 from mc import empty_turn as _empty_turn
 from mc import turn_clock as _turn_clock  # elapsed-since-last-reply stamp (mc/turn_clock.py)
 from mc import transform_sandbox as _transform_sandbox
+from mc import transform_deadline as _transform_deadline
 from mc import api_credits_offload as _api_credits_offload
 from mc.execution_policy import (
     Blocker, Capability, CapabilityClaim, Certification, ExecutionIdentity,
@@ -1503,7 +1504,8 @@ def run_text_transform(provider: str, *, prompt: str, system_prompt: str = '',
                        readiness: Optional[Readiness] = None,
                        certification: Optional[Certification] = None,
                        blockers: tuple[Blocker, ...] = (),
-                       timeout: Optional[int] = None) -> str:
+                       timeout: Optional[int] = None,
+                       deadline: Optional[float] = None) -> str:
     """Run a provider-selected, non-interactive text transform.
 
     Feature routes should not know a provider's executable or command-line
@@ -1546,6 +1548,10 @@ def run_text_transform(provider: str, *, prompt: str, system_prompt: str = '',
         kwargs['effort'] = effort
     if timeout is not None and ('timeout' in params or accepts_kwargs):
         kwargs['timeout'] = timeout
+    if deadline is not None:
+        if 'deadline' not in params and not accepts_kwargs:
+            raise RuntimeError(f"Provider '{provider}' does not support transform deadlines")
+        kwargs['deadline'] = deadline
 
     result = fn(**kwargs)
     if result is None:
@@ -3182,7 +3188,7 @@ class ClaudeRuntime(AgentRuntime):
                 model: str = '', max_turns: int = 1,
                 stdin_text: Optional[str] = None,
                 cwd: Optional[str] = None, effort: str = '',
-                timeout: int = 180) -> Optional[OneshotResult]:
+                timeout: int = 180, deadline: Optional[float] = None) -> Optional[OneshotResult]:
         """Non-interactive claude -p call for Scribe / condense / Distiller.
 
         Every caller of this method is a PURE TEXT TRANSFORM: read a transcript,
@@ -3218,7 +3224,9 @@ class ClaudeRuntime(AgentRuntime):
         load that project's CLAUDE.md + auto-memory (~7.4k tokens per call,
         measured 2026-10-06). It runs in transform_sandbox.neutral_cwd().
 
-        Returns None on any failure. `last_error` carries rc + a stderr/stdout
+        An optional absolute monotonic deadline bounds both runtime legs and
+        raises TimeoutError on exhaustion; without it failures still return None.
+        `last_error` carries rc + a stderr/stdout
         tail for the caller to log — the old code sent stderr to DEVNULL and
         collapsed timeout / spawn-failure / non-zero-exit into an indistinguish-
         able None, which is why 78 extraction errors sat unexplained for weeks.
@@ -3246,12 +3254,15 @@ class ClaudeRuntime(AgentRuntime):
         # API-credits offload (docs/API_CREDITS_BUILD_SPEC.md): None unless mode is
         # `on`, the budget gate allows it and the Messages API call succeeded.
         offloaded = _api_credits_offload.try_offload(user_text=stdin_payload, model=model,
-                                                     timeout=timeout)
+                            timeout=_transform_deadline.remaining(timeout, deadline))
+        _transform_deadline.check(deadline)
         if offloaded is not None:
             self.last_error = ''
             return offloaded
         cmd = self._oneshot_argv(model=model, max_turns=max_turns, effort=effort)
         self.last_error = ''
+        leg_timeout = (max(1, int(timeout)) if deadline is None else
+                      _transform_deadline.remaining(timeout, deadline, fallback=True))
         try:
             r = subprocess.run(
                 cmd,
@@ -3262,17 +3273,20 @@ class ClaudeRuntime(AgentRuntime):
                 text=True,
                 encoding='utf-8',
                 errors='replace',
-                timeout=max(1, int(timeout)),
+                timeout=leg_timeout,
                 env=_transform_sandbox.transform_env(),
                 creationflags=_POPEN_FLAGS,
                 startupinfo=_STARTUPINFO,
             )
         except subprocess.TimeoutExpired:
             self.last_error = f'timeout after {timeout}s ({len(stdin_payload)}c in)'
+            if deadline is not None:
+                raise TimeoutError('text transform deadline exceeded') from None
             return None
         except Exception as e:
             self.last_error = f'spawn failed: {e!r}'
             return None
+        _transform_deadline.check(deadline)
         if r.returncode != 0:
             tail = ((r.stderr or '') + (r.stdout or '')).strip().replace('\n', ' ')
             self.last_error = f'rc={r.returncode}: {tail[:300]}'

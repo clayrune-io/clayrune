@@ -136,7 +136,7 @@ def _launder_error(kind: str, detail: str) -> Dict[str, Any]:
 
 
 def claude_mail_transform(*, prompt: str, stdin_text: str, model: str,
-                          timeout: int) -> tuple[Optional[str], str]:
+                          timeout: int, deadline: Optional[float] = None) -> tuple[Optional[str], str]:
     """Shared, verified tool-free seam. Failures contain codes, never model text.
 
     The provider is deliberately fixed. D8 has not certified any other runtime.
@@ -146,8 +146,10 @@ def claude_mail_transform(*, prompt: str, stdin_text: str, model: str,
         import mc.agent_runtime as agent_runtime
         if not agent_runtime.claude_oneshot_available():
             return None, 'claude_unavailable'
+        deadline_kwargs: Dict[str, Any] = {'deadline': deadline} if deadline is not None else {}
         text = agent_runtime.run_text_transform(
-            'claude', prompt=prompt, model=model, stdin_text=stdin_text, timeout=timeout)
+            'claude', prompt=prompt, model=model, stdin_text=stdin_text, timeout=timeout,
+            **deadline_kwargs)
         return text, ''
     except TimeoutError:
         return None, 'extraction_timeout'

@@ -364,8 +364,22 @@ warning, reply text and quote/forward-presence flags; it remains untrusted data,
 never approval or authority to change permissions or bypass a human gate.
 
 Unavailable runtime, timeout, malformed/oversize output, ambiguity and flags
-become visible durable holds without raw fallback. The call deadline fits within
-the persisted lease. Finalization shares the store write transaction with
+become visible durable holds without raw fallback. The adapter computes one
+absolute monotonic deadline from `min(25 seconds, configured timeout, actual
+remaining persisted lease - 3 seconds)`. Claim validation/preparation time is
+therefore deducted before extraction. An insufficient initial budget holds
+without calling the model. The optional `deadline` keyword passes through the
+shared transform seam into `ClaudeRuntime.oneshot`; API credits and subscription
+CLI fallback each receive only the remaining budget, capped by the per-leg
+timeout. Fallback is skipped when fewer than three seconds remain. Exhaustion,
+a CLI timeout, or a result returned after the total deadline raises `TimeoutError`
+and becomes the durable visible `extraction_timeout` hold after one attempt,
+with no automatic retry spend. Callers omitting the deadline retain the existing
+per-leg timeout and return behavior; API credits billing selection is preserved.
+Deadline policy lives in `mc/transform_deadline.py`; the runtime only wires the
+optional parameter and checks its legs.
+
+Finalization shares the store write transaction with
 consent/generation/thread/expiry/lease revalidation; a late result cannot make a
 revoked or expired claim ready. Existing crash/backoff recovery is bounded;
 explicit hold release does not reset attempts. Body-free v2 holds are never
@@ -382,18 +396,32 @@ Verification from the checkout root (installation launcher path/interpreter may
 be supplied absolutely when running from a worktree):
 
 ```text
-python tools/test-run.py --project mission_control --port 5199 -- python -m pytest -o addopts= tests/test_agent_mail_launder.py tests/test_mail_launder.py tests/test_agent_mail_store.py tests/test_agent_mail_ingress.py tests/test_agent_mail_held.py -q --tb=short
-python tools/test-run.py --project mission_control --port 5199 -- pyright mc/agent_mail_screen.py mc/agent_mail_extract.py mc/agent_mail_launder.py mc/mail_launder.py mc/agent_mail_envelope.py mc/agent_mail_ingress.py
+python tools/test-run.py --project mission_control --port 5199 -- python -m pytest -o addopts= tests/test_agent_mail_launder.py tests/test_mail_launder.py tests/test_agent_mail_store.py tests/test_agent_mail_ingress.py tests/test_agent_mail_held.py tests/test_agent_mail_deadline_review.py tests/test_transform_deadline.py -q --tb=short
+python tools/test-run.py --project mission_control --port 5199 -- pyright mc/agent_runtime.py mc/transform_deadline.py mc/agent_mail_extract.py mc/agent_mail_launder.py mc/mail_launder.py
 ```
 
 From `workers/agent-mail`, use the installation's absolute launcher path with
 `--project mission_control --port 5199 --shell powershell --command "npm test"`
 on Windows (or the corresponding explicit shell on other platforms). The
 shell preserves the existing npm script exactly; no guessed test expansion.
-The completed candidate passed 330 selected pytest cases, 741 Worker cases and
-pyright with zero errors/warnings/informations on all six touched `mc` modules.
-Launcher progress capture reported gaps; these counts are framework results,
-not a claim of complete dashboard telemetry or live-provider verification.
+`tests/test_agent_mail_deadline_review.py` retains Fenn's original cold review
+probes. The deadline regression synchronizes its fake monotonic and persisted
+lease clocks: a 25-second API failure holds after one attempt without CLI or
+automatic retry, while an immediate API failure plus six-second CLI extraction
+reaches ready. `tests/test_transform_deadline.py` covers reduced/fractional leg
+budgets, the three-second fallback boundary, late results and omitted/None
+deadline compatibility. The adapter tests also consume lease time before
+extraction. Launcher progress capture may report gaps; counts are framework
+results, not complete dashboard telemetry or live-provider verification.
+
+Round 2 verification: the five mail files plus both deadline regression files
+passed 379 cases (exit 0); the Claude/provider/default/transform/sandbox/authorized
+bridge/API-credits selection passed 512 with one skipped (exit 0); Worker npm
+passed 741 (exit 0). Pyright on the five touched Python modules reported zero
+errors, warnings and informations (exit 0). The temporary Worker dependency
+junction was removed nonrecursively after all cross-language tests completed;
+the main checkout dependency remained intact. No live mail/model validation,
+merge, push, restart or deployment was performed.
 
 ## D1 ledger, replay, bounds and visibility
 

@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Bound agent-mail extraction across API and CLI fallback (MC-1166 unit 5 round 2)
+
+- Added an optional total monotonic deadline to the verified Claude transform. API and CLI legs receive only the remaining budget; subscription fallback is skipped below three seconds. Callers without a deadline retain their existing per-leg timeout behavior.
+- Agent mail caps extraction at 25 seconds and the actual remaining claim lease minus three seconds. Exhaustion becomes a durable `extraction_timeout` hold after one attempt, preserving late-result fencing and avoiding automatic retry expenditure.
+- Retained Fenn's synthetic deadline regression and immediate-failure positive control as repository tests, with additional budget, lease and legacy compatibility coverage. Branch candidate only; no merge, push, restart, live mail/model calls or credential use.
+
 ## [2026-11-09] - Hold unsafe agent mail before conversation delivery (MC-1166 unit 5)
 
 - Added a disabled recorded-event adapter, strict free-text extraction with quote/forward separation, and command/invisible-Unicode holds using the existing verified Claude transform. Removed fixed-owner assumptions from the legacy digest prompt while retaining its schema.

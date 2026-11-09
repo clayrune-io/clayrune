@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from typing import Any, Optional
 
 from mc.agent_mail_extract import Extraction, extract_reply
@@ -85,11 +86,14 @@ class MailLaunder:
                     reason = 'retry_exhausted'
             else:
                 reason = 'claim_lost'
-        # The model's deadline must fit inside the persisted claim's lease.
-        timeout = min(self.timeout, int(self.store.config.lease_seconds) - 2)
-        if not reason and timeout < 1:
-            reason = 'invalid_timeout'
+        # Reserve finalization time using the actual remaining persisted lease.
+        timeout = min(25, self.timeout)
+        seconds = min(timeout, claimed['lease_until'] - self.store.clock() - 3)
+        deadline = time.monotonic() + seconds
+        if not reason and seconds < 1:
+            reason = 'extraction_timeout'
         result = (Extraction(reason) if reason else extract_reply(
             claimed['body'], kind=kind, provider=self.provider, model=self.model,
-            timeout=timeout, max_reply_bytes=self.store.config.max_reply_bytes))
+            timeout=timeout, deadline=deadline,
+            max_reply_bytes=self.store.config.max_reply_bytes))
         return self._finish(event_id, fence, result)

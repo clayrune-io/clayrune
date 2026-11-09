@@ -447,8 +447,40 @@ def test_durable_finalization_storage_error_propagates_no_success(store, model, 
 def test_lease_too_short_holds_without_model(store, model):
     store.config = MailStoreConfig(lease_seconds=2)
     put(store)
-    assert_hold(store, run(store), 'invalid_timeout')
+    assert_hold(store, run(store), 'extraction_timeout')
     assert not model.calls
+
+
+def test_configured_long_timeout_still_uses_mail_cap(store, model):
+    put(store)
+    assert run(store, timeout=120)['state'] == READY
+    assert model.calls[0]['timeout'] == 25
+
+
+@pytest.mark.parametrize('elapsed,budget', [(0, 25), (8, 19), (26, 1), (27, 0)])
+def test_deadline_uses_remaining_claim_lease(store, model, clock, monkeypatch,
+                                            elapsed, budget):
+    from mc import agent_mail_launder
+    monkeypatch.setattr(agent_mail_launder.time, 'monotonic', lambda: clock.t - 999_000)
+    original_live = MailLaunder._live
+    first = True
+
+    def delayed_live(self, *args):
+        nonlocal first
+        if first:
+            clock.t += elapsed
+            first = False
+        return original_live(self, *args)
+
+    monkeypatch.setattr(MailLaunder, '_live', delayed_live)
+    # Only the first revalidation consumes time; finalization remains timely.
+    put(store)
+    if budget:
+        assert run(store)['state'] == READY
+        assert model.calls[0]['deadline'] - (clock.t - 999_000) == budget
+    else:
+        assert_hold(store, run(store), 'extraction_timeout')
+        assert model.calls == []
 
 
 def test_legacy_digest_owner_neutral_and_errors_sanitized(model):
