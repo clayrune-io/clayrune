@@ -45,7 +45,11 @@ export function orderedHeaders(raw) {
   return result;
 }
 export async function ingress({ message, ledger, config, now }) {
+  let reg;
   async function drop(reason) {
+    // Refusal accounting is bounded separately and never gates owner mail.
+    // Unknown recipients cannot choose an arbitrary per-install bucket.
+    if (reg) await ledger.limit(`ingress-refused:${reg.install_id}`, ledger.policy.ingressPerDay, now);
     await ledger.reject(reason, now);
     message.setReject('Agent mail refused');
     return { status: 'rejected', reason };
@@ -57,9 +61,8 @@ export async function ingress({ message, ledger, config, now }) {
   if (!Number.isFinite(message.rawSize) || message.rawSize > 65_536) return drop('mime_too_large');
   const match = /^([a-z0-9][a-z0-9._-]{0,63})\+([a-z0-9]{26,64})@([a-z0-9.-]+)$/.exec(message.to ?? '');
   if (!match || match[3] !== config.domain) return drop('unknown_recipient');
-  const reg = await ledger.recipient(match[1]);
+  reg = await ledger.recipient(match[1]);
   if (!reg?.active || !reg.owner_verified) return drop('owner_inactive');
-  if (!await ledger.limit(`ingress:${reg.install_id}`, ledger.policy.ingressPerDay, now)) return drop('ingress_limit');
   let raw, headers;
   try { raw = await readBounded(message.raw, 65_536); headers = orderedHeaders(raw); }
   catch { return drop('malformed_or_oversize'); }
@@ -78,6 +81,8 @@ export async function ingress({ message, ledger, config, now }) {
   // SMTP authentication rejection. The email adapter reports sanitized custody failure.
   if (!decision.accept && decision.reason_code === 'lookup_error') throw new Error('thread_lookup_failed');
   if (!decision.accept) return drop(decision.reason_code);
+  // Reserve the owner's allowance only after owner/auth/token/correlation pass.
+  if (!await ledger.limit(`ingress:${reg.install_id}`, ledger.policy.ingressPerDay, now)) return drop('ingress_limit');
   const content = await strip(raw);
   if (!content.ok) return drop(content.reason_code);
   if (!content.has_text) return drop('no_plain_text');

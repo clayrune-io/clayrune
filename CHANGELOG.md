@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Protect owner reply quota from stranger mail (MC-1166 unit 2 round 3)
+
+- Inbound per-install quota is reserved only after owner, authentication, token and Message-ID correlation checks accept. Post-lookup refusals use a separate bounded accounting bucket whose exhaustion never gates authenticated mail; the shared global ingress breaker remains provisional.
+- Ported the review's 200-stranger public-handler regression and positive control; added owner over-quota and refusal-accounting checks. Updated the transport contract. Local branch candidate only; no merge, push, restart, deployment or real mail.
+
 ## [2026-11-09] - Fix five Worker mail transport review findings (MC-1166 unit 2 round 2)
 
 - Authenticated send/recovery quota is consumed only after signature verification and durable nonce claim; unauthenticated refusals use a separate bucket. HTTP uploads have a 10-second deadline, and freshness is checked after the body, crypto and nonce storage.

@@ -253,10 +253,24 @@ per-day overflow count (also 30 days). No silent truncation or success claim.
 
 Additional conservative **candidate capacity brakes**, subject to pilot capacity
 review: 100 queued/held bodies per install, 10,000 globally; 20 sends/install/day,
-1000 sends/day globally; 200 inbound messages/install/day, 10,000 globally;
+1000 sends/day globally; 200 authenticated inbound attempts/install/day;
 200 authenticated-endpoint attempts/install/day, shared by send and reconcile.
-Only a verified signature with a successful durable nonce claim consumes this
-protected allowance. Invalid traffic uses a separate global 10,000-refusals/minute
+The inbound `ingress:<install_id>` allowance is reserved only after `decide()`
+accepts the owner, provider authentication, token and Message-ID correlation.
+Every normal SMTP refusal after a known recipient lookup also charges the separate
+`ingress-refused:<install_id>` accounting bucket, capped at 200/day. A saturated
+refusal bucket never gates owner mail or changes the refusal reason; the existing
+rejection audit/overflow records still apply. Unknown recipients create no
+per-install accounting bucket. Authenticated attempts that later fail MIME/text
+checks still spend owner allowance; duplicate authenticated deliveries do too.
+The unchanged **provisional shared global ingress breaker** (`ingress:global`,
+10,000 attempts/day) runs before recipient lookup and authentication. Stranger
+and owner traffic share it: exhausting it can still refuse genuine owner mail.
+Separating the per-install buckets does not establish global abuse isolation or
+pilot capacity. This shared limit must be assessed before enabling real mail.
+
+For HTTP send/reconcile, only a verified signature with a successful durable nonce
+claim consumes the protected allowance. Invalid traffic uses a separate global 10,000-refusals/minute
 bucket, never a client-supplied install id; beyond it, failed authentication gets
 429 `abuse_limit` instead of 401. That bucket is consulted only for failed
 authentication, so exhausting it cannot block an authenticated send or recovery.
@@ -286,7 +300,34 @@ leases, lost ack, order, pending routes, redirect refusal, revocation, expiry an
 bounded metadata. Run the **whole** existing worker suite through the repository
 test launcher, cwd `workers/agent-mail`, with exact shell command `npm test`.
 
-Round-2 candidate validation: 2026-11-09, whole suite **724 passed, 0 failed,
+Round-3 candidate validation: 2026-11-09, whole suite **738 passed, 0 failed,
+0 skipped/cancelled/todo, exit 0** (724 prior cases + 14 round-3 cases). Exact
+command, cwd `workers/agent-mail`:
+
+```powershell
+python C:/Users/levir/Documents/_claude/mission-control/tools/test-run.py --project mission_control --port 5199 --shell powershell --command 'npm test'
+```
+
+The targeted `node --test test/transport-round3.test.js` selection passed 14/14,
+exit 0, through the same launcher. Counts are Node cases, not dashboard assertions.
+No capture warning appeared in either returned output. Whole-suite tool output
+was truncated in the middle; its complete result summary was inspected. No full
+stdout artifact is claimed.
+
+`test/transport-round3.test.js` ports Fenn's round-2
+`_scratch/mc1166-u2-review-a08e979a/regression-probes.test.mjs:8` attack and adjacent
+positive control unchanged in substance: 200 public email-handler submissions,
+stranger's own-domain provider-auth fixture, guessed token and outbound id, then
+a real fixture owner reply. Imports are relocated and the pre-reply bucket
+diagnostic is null-safe because no protected row now exists. Added assertions
+check separate refusal counts, no SMTP rejection and one retained event.
+Controls verify the owner's 201st authenticated attempt is refused, saturated
+refusal accounting cannot gate owner mail or suppress audit, and post-lookup
+authentication/correlation/header/loop/MIME/empty/malformed/inactive refusals
+are accounted separately. Unknown recipients create no per-install bucket.
+These are synthetic handler/SQLite tests; the shared global breaker is unchanged.
+
+Historical round-2 candidate validation: 2026-11-09, whole suite **724 passed, 0 failed,
 0 skipped/cancelled/todo, exit 0** (707 baseline + 17 round-2 cases). Exact command,
 cwd `workers/agent-mail`:
 
