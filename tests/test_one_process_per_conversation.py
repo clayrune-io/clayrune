@@ -13,6 +13,7 @@ The route tests drive the real Flask routes; `subprocess.Popen` is patched to
 fail, so any second spawn fails the test instead of starting a process.
 """
 import sys
+import json
 import threading
 import time
 from pathlib import Path
@@ -361,6 +362,8 @@ def test_resume_cwd_is_the_transcript_tree(env, monkeypatch):
     pp = env['pp']
     wt = pp / '.clayrune' / 'agents' / '28aff8341987'
     wt.mkdir(parents=True)
+    transcript = wt / 't.jsonl'
+    transcript.write_text(json.dumps({'cwd': str(wt)}) + '\n', encoding='utf-8')
 
     class _RT:
         def transcript_path(self, path, csid):

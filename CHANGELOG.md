@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Keep resumed chats in their recorded working tree (MC-1167)
+
+- Cold resumes use the transcript's recorded working directory rather than treating a broad transcript lookup as proof the chat ran in the project checkout. Existing agent trees keep isolation; resuming them does not acquire merge/removal ownership.
+- Send, follow-up and dispatch resume return HTTP 409 with `resume_cwd_missing` when that directory was removed. No process starts, the original transcript remains readable, and the refused request is retained on the conversation log and returned to the caller. Incognito requests are returned only; a storage failure reports `request_saved: false`.
+- Start a new chat or restore the original directory to continue. Automatic worktree recreation is deferred until the MC-1165 lifecycle work lands. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-08] - Specify owner-only per-install agent email
 
 - Added `docs/AGENT_MAIL_SPEC.md`: opt-in installation enrollment, verified-owner sending, identified activation counts, authenticated and laundered replies, durable offline replay, and exact-conversation follow-up requirements. Eight design decisions remain open for Dave, with alternatives, recommendations and costs.

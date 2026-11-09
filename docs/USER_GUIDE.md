@@ -421,6 +421,13 @@ the asset cache. No Windows registry change or provider re-login is needed.
   buttons. Nothing dangerous runs without your click.
 - **Stop / Continue**: stopped sessions can be revived by typing a new
   message — the agent picks up the same Claude conversation.
+  A cold resume returns to the working directory recorded in that conversation.
+  If its working tree was removed, Clayrune refuses to start a process and asks
+  you to start a new chat or restore the original directory. The old transcript
+  remains available to read. The refused request is retained in the conversation
+  record and returned with the error; it is not automatically retried. Incognito
+  requests are returned only. If saving fails, the response reports
+  `request_saved: false` and still includes the request text.
 - **Image upload**: paste or drop images into the input to attach them.
 - **Select and copy chat text**: drag across user messages, agent replies or code
   to highlight text, including text across multiple messages. Press **Cmd+C**

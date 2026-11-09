@@ -3,7 +3,75 @@
 2026-11-09, Sol_Tobin. Backlog `c220712f`. Base `63b8b1df` (master at
 branch creation), branch `clayrune/c220712f-resume-cwd`.
 
-## Confirmed
+## Fix candidate after Dave's decision
+
+Dave selected option 1 on 2026-11-09: refuse when the original working tree
+was removed; do not recreate it or silently relocate to the project checkout.
+The probe checkpoint below is historical. Both strict xfail marks are removed.
+
+`mc/resume_cwd.py` reads the first recorded absolute cwd (Claude JSONL, plus
+the Codex session-meta format), checks that directory, and owns the distinct
+`ResumeCwdMissing` refusal and request-retention payload. The route module's
+lookup still uses the existing broad transcript reader; it no longer equates
+finding a transcript with finding the original cwd. The missing-cwd exception
+escapes its broad lookup catch, `/send`'s revive catch, and vendor revive's
+dispatch catch.
+
+Cold `/send` (saved session and transcript-only), `/followup`, and dispatch
+resume return HTTP 409 with `code: resume_cwd_missing`. The error names the
+removed directory and says to start a new chat or restore it. There is no
+spawn, recreation, rollover, or fallback dispatch. Dispatch checks cwd before
+auto-fresh clears its resume id. Recorded resume cwd also takes precedence
+over an explicit cwd override, so an existing worktree cannot relocate to main.
+
+The original transcript remains untouched and readable. The response returns
+the original input as `request_message`; `request_saved` reports whether it
+was also appended to the conversation record's `resume_refusals`. Existing
+identity, task and completion status are preserved. The row moves to the front
+so the existing newest-N log cap does not immediately discard the request.
+Incognito requests are returned only; storage failure is logged and reported
+as `request_saved: false`, with no fallback process.
+
+Live agent trees carry `_worktree_isolated: true` and
+`_worktree_borrowed: true` for both dispatch/revival and both Claude modes.
+The latter prevents merge/removal ownership transferring to a resumed session;
+that matches the old behavior of skipping cleanup for these resumed trees.
+Automatic recreation and the broader retained-session lifecycle remain with
+MC-1165; this patch does not reimplement that lifecycle.
+
+Final tests, via project interpreter and `tools/test-run.py` explicit manifest:
+
+| File | Passed | Child exit |
+| --- | ---: | ---: |
+| `tests/test_resume_cwd_provenance.py` | 7 | 0 |
+| `tests/test_claude_runtime.py` | 111 | 0 |
+| `tests/test_one_process_per_conversation.py` | 18 | 0 |
+| `tests/test_resume_cwd_routes.py` | 12 | 0 |
+| `tests/test_worktree_nonclaude_dispatch.py` | 6 | 0 |
+| `tests/test_revive_notify_carry.py` | 12 | 0 |
+| `tests/test_worktree_dispatch.py` | 9 | 0 |
+
+Total: 175 passed, manifest exit 0. The existing
+`test_transcript_path_finds_worktree_chat_after_worktree_is_gone` passes.
+The final launcher reported transport/parent/enrollment unavailable, so its
+telemetry is incomplete; the table records captured pytest results, not a
+claim that reporting succeeded. The final candidate's affected route/vendor
+suites were rerun after establishing recorded-cwd precedence over explicit
+overrides: 18 passed, exit 0. Exact argv and manifest are in the main journal.
+
+Full pyright comparison against the exact starting commit: 171 errors on each,
+zero new; `mc/resume_cwd.py` has zero errors. The checked-in baseline gate
+exits 1 because of six pre-existing baseline differences (two `ctypes.WinDLL`
+findings and four changed streaming-bool diagnostic headlines); this patch
+does not change that baseline. No real provider was launched or session resumed.
+
+USER_GUIDE and CHANGELOG updated. No static, installer, setup, or standing-rule
+change; frontend smoke and README/CLAUDE/AGENTS edits are not applicable.
+Commit on this branch only: no merge, push or restart authorized. Revert the
+fix commit to roll back. MC-1165 integration must retain the missing-cwd
+exception boundaries and the distinction between isolation and tree ownership.
+
+## Confirmed baseline defect (historical)
 
 The real `ClaudeRuntime.transcript_path(project_path, native_id)` finds a
 worktree transcript through its encoded-directory glob. `_resume_cwd_for`
@@ -33,7 +101,7 @@ before passing cwd to `spawn_engine_proc`. The probe does not claim every
 dispatch reaches that branch (explicit cwd overrides and auto-fresh decisions
 are separate paths).
 
-## Decision required from Dave
+## Decision checkpoint (historical)
 
 The task explicitly says to stop if the fix needs a missing-worktree policy.
 Master has no settled cold-resume policy that can simply be reused here:
@@ -57,11 +125,10 @@ would merely make dispatch choose fresh isolation, potentially main again.
    change, but gives up isolation and may expose a different branch/file state.
    Needs a visible relocation contract; current silent main selection is the bug.
 
-No option selected. No production code changed. Live-tree resolution and
-read-only transcript lookup can be separated once the missing-tree result
-contract is selected. Preserve broad transcript readability in every option.
+At this probe checkpoint, no option had been selected and no production code
+had changed. Dave subsequently selected option 1; see the fix candidate above.
 
-## Validation and checkpoint
+## Probe-only validation and checkpoint (historical)
 
 The initial bare `python` child resolved to system Python. It independently
 produced 2 failures and 2 passes, but is not the project-interpreter evidence.
@@ -75,10 +142,11 @@ The run below explicitly used the project's interpreter for launcher and child:
 Run from this branch's checkout. The journal records the actual local paths;
 the command above uses placeholders to keep operator paths out of source.
 
-The checkpoint marks only the two known defect probes `xfail(strict=True)`;
+The probe checkpoint marked only the two known defect probes `xfail(strict=True)`;
 they are not fixed or counted as passing coverage. Use `--runxfail` to reproduce
 the failures after checkout. Remove the annotations when implementing the fix.
-Main and absent-transcript controls remain ordinary passing tests.
+Main and absent-transcript controls remained ordinary passing tests. The fix
+candidate has now removed those annotations and passes both worktree cases.
 
 Project-interpreter regression run of this probe, `tests/test_claude_runtime.py`
 and `tests/test_one_process_per_conversation.py`: **131 passed, 2 xfailed**, exit

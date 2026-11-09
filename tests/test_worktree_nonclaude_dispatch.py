@@ -181,10 +181,13 @@ class TestResumeReturnsToItsOwnTree:
         monkeypatch.setattr(ar, '_resume_cwd_for',
                             lambda pp, sid, provider: recorded_tree)
 
-        kwargs = _dispatch_and_capture(project, monkeypatch, resume_id='native-xyz')
+        kwargs = _dispatch_and_capture(
+            project, monkeypatch, resume_id='native-xyz',
+            agent_cwd_override=project['project_path'], isolated_override=False)
 
         assert kwargs['agent_cwd'] == recorded_tree
-        assert kwargs['isolated'] is False
+        assert kwargs['isolated'] is True
+        assert kwargs['borrowed_worktree'] is True
 
     def test_nonclaude_resume_with_no_recorded_tree_makes_a_fresh_decision(
             self, project, monkeypatch):

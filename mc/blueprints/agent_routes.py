@@ -58,6 +58,7 @@ from mc import agent_shim_completion as _agent_shim_completion  # MC-1150 P4: cr
 from mc import mid_turn_send as _mid_turn_send  # MC-1086: steer / queue / interrupt routing
 from mc import triggered_turns as _triggered_turns  # seed-line label for non-human turns
 from mc import engine_selection
+from mc import resume_cwd as _resume_cwd
 from mc.hivemind_worker import RosterRecoveryHeld, revive_roster_worker
 from mc import provider_preferences as _provider_preferences
 from mc import provider_env_scope as _provider_env_scope  # saved keys stay with their provider
@@ -495,7 +496,8 @@ def _resolve_conversation_owner(project_id, session_id):
 
 def _resume_cwd_for(project_path, session_id, provider_name='claude'):
     """The directory a conversation's transcript was written from: the project
-    tree or one of its agent worktrees; None when neither holds it. A resume goes
+    tree or one of its agent worktrees; None without recorded cwd provenance.
+    Raises ResumeCwdMissing when the recorded directory was removed. A resume goes
     back there instead of into a brand-new worktree, so the agent sees the files
     it was working on and `-r` reads the transcript under the cwd it is keyed on.
 
@@ -511,13 +513,23 @@ def _resume_cwd_for(project_path, session_id, provider_name='claude'):
         return None
     try:
         rt = _agent_runtime.get_runtime(provider_name)
-        if rt.transcript_path(project_path, session_id):  # pyright: ignore[reportAttributeAccessIssue]
-            return project_path
+        transcript = rt.transcript_path(project_path, session_id)
+        if transcript:
+            recorded = _resume_cwd.recorded_cwd(transcript)
+            if recorded:
+                # The explicit catch below must propagate a missing directory.
+                return _resume_cwd.require_cwd(recorded, session_id, provider_name)
         agents_dir = Path(project_path) / '.clayrune' / 'agents'
         if agents_dir.is_dir():
             for wt in agents_dir.iterdir():
-                if wt.is_dir() and rt.transcript_path(str(wt), session_id):  # pyright: ignore[reportAttributeAccessIssue]
-                    return str(wt)
+                if wt.is_dir():
+                    transcript = rt.transcript_path(str(wt), session_id)
+                    if transcript:
+                        recorded = _resume_cwd.recorded_cwd(transcript)
+                        if recorded:
+                            return _resume_cwd.require_cwd(recorded, session_id, provider_name)
+    except _resume_cwd.ResumeCwdMissing:
+        raise
     except Exception as e:
         _log(f"[resume-cwd] transcript lookup failed for {session_id[:12]}: {e}")
     return None
@@ -1637,7 +1649,8 @@ def _worktree_merge_back_on_end(session, _attempt=0):
     branch is preserved and the user is told. Removal itself refuses/defers
     (see `agent_worktree.remove`): a deferral — a registered process still
     uses the tree — is retried on a timer (`_attempt` counts retries)."""
-    if not session or not session.get('_worktree_isolated'):
+    if (not session or not session.get('_worktree_isolated')
+            or session.get('_worktree_borrowed')):
         return
     sid = session.get('session_id', '')
     pid = session.get('project_id', '')
@@ -7799,6 +7812,8 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             '_resume_id': claude_sid,
             '_resume_confirmed': False,   # a just-spawned resume hasn't proven itself yet
             '_agent_cwd': _revive_cwd,
+            '_worktree_isolated': _resume_cwd.is_worktree(_revive_cwd, pp),
+            '_worktree_borrowed': _resume_cwd.is_worktree(_revive_cwd, pp),
             '_dispatch_time': _time.time(),
             'usage': entry.get('usage', {}),
             'cost_usd': entry.get('cost_usd', 0),
@@ -7914,6 +7929,8 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         'claude_session_id': claude_sid,
         '_resume_id': claude_sid,
         '_agent_cwd': _revive_cwd,
+        '_worktree_isolated': _resume_cwd.is_worktree(_revive_cwd, pp),
+        '_worktree_borrowed': _resume_cwd.is_worktree(_revive_cwd, pp),
         '_dispatch_time': _time.time(),
         'usage': entry.get('usage', {}),
         'cost_usd': entry.get('cost_usd', 0),
@@ -8075,6 +8092,8 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
                                  session_metadata={'_turn_owner': 'spawner' if carry_notify else 'human'},
                                  **({'prepared_context': role_context, 'preserve_model': True}
                                     if role_context is not None else {}))
+    except _resume_cwd.ResumeCwdMissing:
+        raise
     except Exception as e:
         _log(f"[revive-non-claude] {project_id}: dispatch failed: {e}")
         return None
@@ -10590,6 +10609,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                           display_task=None, character_meta=None,
                           character_body='', model_override='', effort_override=None,
                           resume_id='', source='',
+                          borrowed_worktree=False,
                           notify_session='', notify_workflow=None,
                           spawned_by=None,
                           project_generation=1,
@@ -10732,6 +10752,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # stays in the SAME tree it started in.
             '_agent_cwd': _run_cwd,
             '_worktree_isolated': isolated,
+            '_worktree_borrowed': borrowed_worktree,
             'process_alive': True,
             'last_output_time': _time.time(),
             'last_status_change_time': _time.time(),
@@ -12147,6 +12168,10 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # Housekeeping jobs are not conversations and keep their exact bytes.
     _clock_task = task if housekeeping else _dispatch_clock_task(
         p, project_id, task, reuse_session_id)
+    # Refuse before auto-fresh can clear resume_id, before context construction,
+    # and before an explicit cwd override can relocate a missing conversation.
+    _recorded_resume_tree = (
+        _resume_cwd_for(pp, resume_id, provider_name) if resume_id else None)
     if provider_name != 'claude':
         # Per-agent worktree isolation for non-claude runtimes (vendor-parity
         # gap 1, docs/VENDOR_HARNESS_MATRIX.md): this branch returns before the
@@ -12163,11 +12188,12 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                            else uuid.uuid4().hex[:12])
         if getattr(prepared_context, 'steward_role', False) and reuse_session_id:
             _rt_planned_sid = reuse_session_id
-        _rt_resume_tree = _resume_cwd_for(pp, resume_id, provider_name) if resume_id else None
-        if agent_cwd_override:
+        _rt_resume_tree = _recorded_resume_tree
+        if _rt_resume_tree:
+            _rt_agent_cwd = _rt_resume_tree
+            _rt_isolated = _resume_cwd.is_worktree(_rt_resume_tree, pp)
+        elif agent_cwd_override:
             _rt_agent_cwd, _rt_isolated = agent_cwd_override, bool(isolated_override)
-        elif _rt_resume_tree:
-            _rt_agent_cwd, _rt_isolated = _rt_resume_tree, False
         else:
             _rt_agent_cwd, _rt_isolated = _maybe_isolate_worktree(p, _rt_planned_sid, incognito)
         try:
@@ -12190,6 +12216,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                          project_generation=canonical_project_generation,
                                          agent_cwd=_rt_agent_cwd,
                                          isolated=_rt_isolated,
+                                          borrowed_worktree=bool(_rt_resume_tree),
                                          planned_session_id=_rt_planned_sid,
                                          engine_fallback=_engine_fallback_record,
                                          **({'role_context': prepared_context}
@@ -12434,18 +12461,18 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # the agent can name its own figure); only the tree is created here.
     # A resume goes back to the tree its transcript was written from instead of
     # a brand-new worktree (2026-09-14: every resumed copy of one chat got its
-    # own tree). Not marked isolated, so this session ending never merges or
-    # removes a tree it does not own.
-    _resume_tree = _resume_cwd_for(pp, resume_id) if resume_id else None
-    if agent_cwd_override:
+    # own tree). Borrowed isolation never transfers merge/removal ownership.
+    _resume_tree = _recorded_resume_tree
+    if _resume_tree:
+        _agent_cwd = _resume_tree
+        _isolated = _resume_cwd.is_worktree(_resume_tree, pp)
+    elif agent_cwd_override:
         # The caller already chose this session's working tree (a Hivemind
         # worker's `hm_*` worktree, or the orchestrator's shared tree). A second
         # `_maybe_isolate_worktree` here would mint a stray
         # `clayrune/agent/<id>` tree that the process runs in while the
         # integrator merges the empty `hm_*` branch (MC-1013 follow-up).
         _agent_cwd, _isolated = agent_cwd_override, bool(isolated_override)
-    elif _resume_tree:
-        _agent_cwd, _isolated = _resume_tree, False
     else:
         _agent_cwd, _isolated = _maybe_isolate_worktree(p, _planned_sid, incognito)
 
@@ -12556,6 +12583,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # stays in the SAME tree it started in.
                 '_agent_cwd': _agent_cwd,
                 '_worktree_isolated': _isolated,
+                '_worktree_borrowed': bool(_resume_tree),
                 # Spawner callback (MC-946). When an agent dispatches
                 # another agent over HTTP it goes dark: unlike the
                 # in-process Agent tool, nothing wakes the spawner when
@@ -12693,6 +12721,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # Worktree isolation (b264200a) — see the Mode B note above.
                 '_agent_cwd': _agent_cwd,
                 '_worktree_isolated': _isolated,
+                '_worktree_borrowed': bool(_resume_tree),
                 '_notify_session': notify_session,  # MC-946, see Mode B note
                 '_spawned_by': _spawned_by_value,  # bugfix, see Mode B note
                 '_delegation_turn': _delegation_turn_reserved,
@@ -12888,6 +12917,9 @@ def agent_dispatch(project_id):
                                               notify_session=notify_session,
                                               spawned_by=spawned_by,
                                               cross_provider_handoff=cross_provider_handoff)
+    except _resume_cwd.ResumeCwdMissing as e:
+        return jsonify(_resume_cwd.refusal(
+            e, data, project_id, _update_agent_log, _log, now_iso())), 409
     except _engine_fallback.EngineFallbackBlocked as e:
         return jsonify(e.payload), 400
     except _agent_runtime.vendor_fence.VendorFenceError as e:
@@ -13054,6 +13086,9 @@ def agent_send(project_id):
                             f'\n> {label}: {text}\n' if role == 'user' else text
                             for role, text in turns]
                     return jsonify({'ok': True, 'session_id': sid, 'route': 'resume-native'})
+                except _resume_cwd.ResumeCwdMissing as e:
+                    return jsonify(_resume_cwd.refusal(
+                        e, data, project_id, _update_agent_log, _log, now_iso())), 409
                 except Exception as e:
                     _log(f'[send] native conversation resume failed: {e}')
                     return jsonify({'error': f'conversation resume failed: {e}'}), 400
@@ -13197,6 +13232,9 @@ def agent_send(project_id):
                 revived = _revive_from_agent_log(
                     project_id, session_id, message, p,
                     carry_notify=bool(_explicit_notify_session))
+            except _resume_cwd.ResumeCwdMissing as e:
+                return jsonify(_resume_cwd.refusal(
+                    e, data, project_id, _update_agent_log, _log, now_iso())), 409
             except RosterRecoveryHeld as e:
                 return jsonify({'ok': False, 'error': str(e)}), 409
             except Exception as e:
@@ -13220,6 +13258,9 @@ def agent_send(project_id):
                 fresh_sid = _revive_non_claude_from_agent_log(
                     project_id, session_id, message, p,
                     carry_notify=bool(_explicit_notify_session))
+            except _resume_cwd.ResumeCwdMissing as e:
+                return jsonify(_resume_cwd.refusal(
+                    e, data, project_id, _update_agent_log, _log, now_iso())), 409
             except RosterRecoveryHeld as e:
                 return jsonify({'ok': False, 'error': str(e)}), 409
             except Exception as e:
@@ -13256,6 +13297,9 @@ def agent_send(project_id):
             new_session_id = _dispatch_agent_internal(
                 project_id, claude_message, resume_id=resume_from, incognito=incognito,
                 provider_override=(data.get('provider') or '').strip().lower())
+        except _resume_cwd.ResumeCwdMissing as e:
+            return jsonify(_resume_cwd.refusal(
+                e, data, project_id, _update_agent_log, _log, now_iso())), 409
         except _engine_fallback.EngineFallbackBlocked as e:
             return jsonify(e.payload), 400
         except _agent_runtime.vendor_fence.VendorFenceError as e:
@@ -13684,6 +13728,9 @@ def agent_followup(project_id):
             revived = _revive_from_agent_log(
                 project_id, session_id, message, p,
                 carry_notify=bool(_explicit_notify_session))
+        except _resume_cwd.ResumeCwdMissing as e:
+            return jsonify(_resume_cwd.refusal(
+                e, data, project_id, _update_agent_log, _log, now_iso())), 409
         except RosterRecoveryHeld as e:
             return jsonify({'ok': False, 'error': str(e)}), 409
         if revived:
@@ -13699,6 +13746,9 @@ def agent_followup(project_id):
             fresh_sid = _revive_non_claude_from_agent_log(
                 project_id, session_id, message, p,
                 carry_notify=bool(_explicit_notify_session))
+        except _resume_cwd.ResumeCwdMissing as e:
+            return jsonify(_resume_cwd.refusal(
+                e, data, project_id, _update_agent_log, _log, now_iso())), 409
         except RosterRecoveryHeld as e:
             return jsonify({'ok': False, 'error': str(e)}), 409
         if fresh_sid:

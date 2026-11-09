@@ -1,8 +1,7 @@
 """MC-1167 probes: transcript readability does not establish resume cwd.
 
 Use the real ClaudeRuntime lookup and a private transcript store. No provider
-is launched. The two worktree cases expose the baseline defect; the policy
-for a missing worktree must be selected before these become passing regressions.
+is launched. Dave selected refusal for a missing worktree on 2026-11-09.
 """
 import json
 
@@ -39,8 +38,6 @@ def _write_transcript(home, rt, cwd):
     return path
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason='MC-1167 reproduced; missing-tree policy awaiting Dave')
 @pytest.mark.parametrize('tree_exists', [True, False], ids=['live-tree', 'deleted-tree'])
 def test_worktree_transcript_must_not_resolve_resume_to_main(
         transcript_store, tree_exists):
@@ -55,11 +52,13 @@ def test_worktree_transcript_must_not_resolve_resume_to_main(
     assert rt.transcript_path(str(project), CSID) == transcript
     assert rt.transcript_path(str(tree), CSID) == transcript
 
-    actual = ar._resume_cwd_for(str(project), CSID)
-    print(f'{tree_exists=}: resume cwd={actual}; original cwd={tree}')
-    assert actual != str(project), 'worktree transcript silently selected main'
     if tree_exists:
-        assert actual == str(tree)
+        assert ar._resume_cwd_for(str(project), CSID) == str(tree)
+    else:
+        with pytest.raises(ar._resume_cwd.ResumeCwdMissing, match='Start a new chat') as exc:
+            ar._resume_cwd_for(str(project), CSID)
+        assert exc.value.cwd == str(tree)
+        assert transcript.is_file()
 
 
 def test_main_transcript_keeps_main_cwd(transcript_store):
@@ -71,3 +70,44 @@ def test_main_transcript_keeps_main_cwd(transcript_store):
 def test_absent_transcript_has_no_resume_cwd(transcript_store):
     project, _, _ = transcript_store
     assert ar._resume_cwd_for(str(project), CSID) is None
+
+
+def test_first_recorded_cwd_wins_over_later_directory_changes(transcript_store):
+    project, home, rt = transcript_store
+    tree = project / '.clayrune' / 'agents' / OWNER
+    tree.mkdir(parents=True)
+    transcript = _write_transcript(home, rt, tree)
+    with transcript.open('a', encoding='utf-8') as stream:
+        stream.write(json.dumps({'type': 'user', 'cwd': str(project)}) + '\n')
+    assert ar._resume_cwd_for(str(project), CSID) == str(tree)
+
+
+def test_recorded_cwd_skips_metadata_without_cwd_and_partial_rows(transcript_store):
+    project, home, rt = transcript_store
+    transcript = _write_transcript(home, rt, project)
+    transcript.write_text('null\n[]\n{"type":"summary"}\n{"unfinished":\n' +
+                          transcript.read_text(encoding='utf-8'), encoding='utf-8')
+    assert ar._resume_cwd_for(str(project), CSID) == str(project)
+
+
+def test_codex_metadata_refusal_keeps_vendor_native_identity(transcript_store):
+    project, home, rt = transcript_store
+    tree = project / '.clayrune' / 'agents' / OWNER
+    tree.mkdir(parents=True)
+    transcript = _write_transcript(home, rt, tree)
+    transcript.write_text(json.dumps({'type': 'session_meta', 'payload': {
+        'cwd': str(tree), 'id': CSID}}) + '\n', encoding='utf-8')
+    tree.rmdir()
+    with pytest.raises(ar._resume_cwd.ResumeCwdMissing) as exc:
+        ar._resume_cwd_for(str(project), CSID, 'codex')
+    rows = []
+
+    def update(pid, mutate):
+        return mutate(rows)
+
+    body = ar._resume_cwd.refusal(exc.value, {'message': 'keep me'}, 'p1',
+                                  update, lambda message: None, 'now')
+    assert body['request_saved'] is True
+    assert rows[0]['provider'] == 'codex'
+    assert rows[0]['provider_session_id'] == CSID
+    assert 'claude_session_id' not in rows[0]
