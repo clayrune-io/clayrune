@@ -46,6 +46,21 @@
 - Known owners keep MC-1165's recreation, owner session ID, cold review and merge-back lifecycle. Transcript-only resumes borrow isolation without taking cleanup ownership. Send, follow-up and dispatch return HTTP 409 with `resume_cwd_missing` when an unowned recorded directory is missing or unusable; they never silently relocate to the project checkout.
 - Borrowed isolation and its actual working directory now survive pending, identity and completion log writes, including purge/restart. Revival keeps the original borrowed tree and pending files; it refuses an unusable borrowed tree rather than creating a replacement under the borrower's ID. Owner recreation, review and cleanup remain unchanged.
 - Refusals keep the original transcript readable and retain the request on the conversation log and in the response. Incognito requests are returned only; a storage failure reports `request_saved: false`. Restore a usable original worktree or start a new chat. Branch candidate only; no merge to master, push or restart.
+## [2026-11-09] - Protect owner reply quota from stranger mail (MC-1166 unit 2 round 3)
+
+- Inbound per-install quota is reserved only after owner, authentication, token and Message-ID correlation checks accept. Post-lookup refusals use a separate bounded accounting bucket whose exhaustion never gates authenticated mail; the shared global ingress breaker remains provisional.
+- Ported the review's 200-stranger public-handler regression and positive control; added owner over-quota and refusal-accounting checks. Updated the transport contract. Local branch candidate only; no merge, push, restart, deployment or real mail.
+
+## [2026-11-09] - Fix five Worker mail transport review findings (MC-1166 unit 2 round 2)
+
+- Authenticated send/recovery quota is consumed only after signature verification and durable nonce claim; unauthenticated refusals use a separate bucket. HTTP uploads have a 10-second deadline, and freshness is checked after the body, crypto and nonce storage.
+- Transient thread lookups raise sanitized custody failure without permanent SMTP rejection. Full Reply-To validation and 1..31-character registration bounds prevent unusable reply addresses; racing Message-ID conflicts now retain audit metadata.
+- Ported all five failing review probes and positive controls, with additional quota, timeout and asynchronous-expiry cases. Updated the unit 4/7 contract. Local branch candidate only; no merge, push, restart, deployment or real mail.
+
+## [2026-11-09] - Add signed owner-only Worker mail transport (MC-1166 unit 2)
+
+- Added separate Ed25519 signing, owner-only outbound, bounded authenticated ingress, D1 custody/lease ledger, scheduled replay and Worker entry modules. Exact-body signatures bind direction, generation and receiver path; durable nonces and stable ids prevent request replay and duplicate custody. Ambiguous sends remain visible and are never automatically resent.
+- Documented the unit 4/7 signing, route-proof and durable-custody contract in `docs/AGENT_MAIL_TRANSPORT.md`; added synthetic SQLite/WebCrypto transport checks alongside the existing inbound suite. Disabled branch candidate only; no deployment, enrollment, credentials, mail, merge, push or restart.
 
 ## [2026-11-09] - Refuse padded MIME shaping-header names (MC-1166 unit 3 round 13)
 

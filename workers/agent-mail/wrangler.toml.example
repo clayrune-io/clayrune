@@ -1,12 +1,34 @@
 # Copy to wrangler.toml and fill in your own values. Never commit the copy.
 #
-# Unit 3 is library code only: there is no Worker entry point yet. The email()
-# handler, forwarding and tunnel delivery arrive in a later unit, which will set
-# `main` and add its bindings (D1 reply ledger, routing, the per-install scoped
-# credential). Nothing here has touched a Cloudflare account.
+# Candidate only. This template is disabled; no account or mail was touched.
+# Do not deploy/enable until enrollment, receiver, provider fixtures, retention,
+# domain namespace and privacy gates in docs/AGENT_MAIL_TRANSPORT.md are met.
 name = "clayrune-agent-mail"
-# main = "<entry point added by the email() handler unit>"
+main = "worker.js"
 compatibility_date = "2026-11-01"
+
+[vars]
+MAIL_ENABLED = "false"
+MAIL_INGRESS_VERIFIED = "false"
+MAIL_DOMAIN = "mail.example.net"
+MAIL_FROM = "agent@mail.example.net"
+MAIL_SERVICE_KEY_ID = "mail-service-v1"
+# MAIL_SERVICE_PRIVATE_KEY is a Worker secret: base64url PKCS#8 Ed25519.
+# Never put a private key in this file or registration rows.
+
+[[d1_databases]]
+binding = "MAIL_DB"
+database_name = "agent-mail"
+database_id = "REPLACE_ONLY_AFTER_DEPLOY_APPROVAL"
+# Apply schema.sql to this dedicated database before any enablement.
+
+[[send_email]]
+name = "MAIL_SEND"
+# Scope destinations/senders in the operator copy. Worker enforces each install's
+# verified owner even if the binding allows several verified destinations.
+
+[triggers]
+crons = ["* * * * *"]
 
 # Real account id, zone id, destination addresses and routing rules belong in
 # your own wrangler.toml / dashboard, never in this repo.
