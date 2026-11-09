@@ -38,6 +38,11 @@
 - Mode B revival keeps draining stdout while result and EOF terminal handlers wait for stdin acknowledgment. Accepted handlers run in order; rejected deliveries emit no terminal callbacks or failed-resume recovery. Rollback preserves replacement process and registry ownership.
 - Added real-reader ordering, rejection, EOF-before-write and route regressions. Contract and validation: `docs/RUNTIME_DELIVERY_TRUTH.md`. Branch review candidate only; no merge, push or restart.
 
+## [2026-11-09] - Accept signed agent mail into the local durable inbox (MC-1166 unit 4)
+
+- Added a dedicated, default-disabled receiver with mail-only Ed25519 verification, immutable local thread bindings and one SQLite transaction for consent, replay claims and inbox custody. Lost acknowledgments can retry with a fresh nonce without duplicating an event.
+- Added checked v1-to-v2 inbox migration, public service pins and synthetic interoperability/race/failure tests. Missing stores and damaged replay schemas refuse custody; dashboard authentication remains intact. Units 5-7 and real tunnel/mail validation remain deferred. Branch candidate only; no merge, push, restart or deployment.
+
 ## [2026-11-09] - Preserve OAuth downgrade through reset recovery (e98832d9 round 3)
 
 - Reset-wait park, deferred-success and completion snapshots now retain `billing_oauth`, preventing a restored subscription session from regaining configured API-key auth after restart.

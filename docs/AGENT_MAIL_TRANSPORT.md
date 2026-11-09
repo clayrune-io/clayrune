@@ -1,4 +1,4 @@
-# Agent mail Worker transport (MC-1166 unit 2)
+# Agent mail transport and local receiver (MC-1166 units 2/4)
 
 Branch candidate only. No deployment, account call, enrollment, credentials,
 real mail, merge, push, restart or live enablement is part of this unit.
@@ -63,8 +63,8 @@ fallback. A lost HTTP response requires a **fresh signature/nonce** around the
 same intent/event; stable identity supplies business-level deduplication.
 
 `signing.js` supplies signing/verification; it is not an install key manager.
-Unit 4 implements the equivalent verifier against the enrolled service pin and
-the local dedicated durable store. It must verify before interpreting JSON or
+Unit 4 supplies the equivalent verifier against the enrolled service pin and
+the local dedicated durable store. It verifies before interpreting JSON or
 accepting custody. Bind envelope install/generation to verified signature fields,
 check body text digest, expiry and local thread binding, and deduplicate event id
 before acknowledging. Mail cannot change consent, permissions or a human gate.
@@ -220,6 +220,96 @@ HTML, redirect, mismatched receipt, timeout, 5xx or lost acknowledgment retains 
 text. After receipt, state is `local_received` and text is NULL; that is neither
 turn submission nor proof the agent read or completed anything.
 
+## Local receiver and enrollment handoff (unit 4)
+
+The branch candidate registers `POST /api/agent-mail/ingress` through
+`mc/blueprints/agent_mail_routes.py`. It returns 404 unless
+`agent_mail_ingress_enabled` is literal `true`; the absent default is disabled.
+There is no new Settings control, consent endpoint, remote pin update, key
+creation or live configuration change. Existing application/dashboard auth gates
+still run before this blueprint. Unit 7 must prove the actual tunnel can reach
+this mail-authenticated route without loosening those gates. Registration alone
+is not tunnel readiness.
+
+`mc/agent_mail_signing.py` implements the v1 signature contract with the existing
+`cryptography` dependency. `mc/agent_mail_envelope.py` owns the strict delivery
+schema; `mc/agent_mail_ingress.py` owns immutable mappings, pins and receive.
+`mc/agent_mail_ingress_schema.py` adds schema version 2 to the existing dedicated
+unit-1 SQLite database. The original token-based API is preserved. Version-1
+inboxes migrate transactionally without guessing transport bindings; version-2
+tables and constraints are validated, never silently recreated after damage.
+The receiver refuses a missing database rather than starting an empty inbox.
+The data file and its WAL/SHM siblings are ignored by Git.
+
+Trusted local enrollment/outbound integration must perform these steps before
+calling `/v1/mail/send`:
+
+1. Unit 7 creates/reopens the dedicated store and establishes current human
+   consent and generation using the unit-1 registration lifecycle.
+2. `MailIngress(store).pin_service(ServicePin(install_id, generation, key_id,
+   public_key, route_path))` stores the pinned service **public** key and exact
+   receiver pathname. Same-value retries are idempotent; changing a pin/path
+   requires revocation and a new generation. A signed Worker request cannot
+   create or replace a pin. No private key is stored here.
+3. Existing `store.bind_thread(...)` records the authoritative local project and
+   session. `MailIngress(store).bind_transport(install_id, generation, thread_id,
+   thread_token)` then durably binds the opaque transport thread id to that
+   existing token hash. It refuses rebinding and cross-registration/generation
+   targets. One transport thread maps to one token hash. Plaintext tokens are
+   not retained; incoming mail cannot choose a project or session.
+4. Persist the remaining outbound/native-history/question/permission metadata
+   required by the parent spec in the owning integration unit, then send. There
+   is no reconstruction from subjects, old tokens or a guessed conversation.
+
+Receive first bounds the upload to 128 KiB, checks JSON content type and exact
+original pathname (WSGI must supply `RAW_URI` or `REQUEST_URI`), then verifies
+the exact bytes against the enrolled pin before parsing JSON. The decoded text
+limit remains 16 KiB. Extra/duplicate JSON keys, non-integral generations/times,
+wrong event identity, invalid/missing Message-ID, invalid auth evidence, text
+digest mismatch and expired events refuse custody. The permitted event lifetime
+cannot exceed the local configured queue TTL (provisional default 30 days).
+Worker events with missing identifiers stay held at the Worker; they cannot be
+promoted through this receiver. Plain text, including command-shaped text, enters
+only the unlaundered `local_received` inbox state. This unit never submits it to
+a model, transcript, tool, pending question or follow-up.
+
+After crypto, one `BEGIN IMMEDIATE` transaction rechecks current consent,
+generation, pin and live thread binding, claims the durable nonce, checks time
+again, and inserts the event and immutable delivery receipt. It shares unit-1
+revocation's SQLite serialization. A refusal/storage failure rolls back the
+nonce and insert together. A revocation that wins prevents custody; one that
+follows custody purges the queued content. Clock/expiry checks also run before
+and after commit. An expiry or lost response after commit emits no custody
+receipt; a fresh signature/nonce for the original event can recover it.
+
+An exact persisted-envelope retry with a fresh nonce returns the same bound
+custody receipt after commit and creates no second event. Changed bytes under
+an existing event id refuse with `event_conflict` and preserve the first body.
+The local unit-1 bounded-body digest and the wire UTF-8 text SHA-256 retain
+their separate definitions; the receipt uses the wire digest. Receipt tombstones
+last through the original Worker event expiry, including after local event
+metadata purge, so replay cannot resurrect a completed turn. Nonce claims last
+through `timestamp+300001` ms and survive reopen/process races.
+
+Only success returns the exact HTTP-200 receipt above. Queue full or unavailable
+storage returns 503; authentication/schema/binding/replay refusal returns 401;
+invalid HTTP framing/path/content type returns 400 and oversize upload 413.
+No refusal returns custody. Responses carry `Cache-Control: no-store`, and
+refusal logs contain closed reason codes only, never text, owner addresses,
+keys, tokens, raw MIME or signed headers. Upload wall-clock timeouts remain the
+hosting WSGI/tunnel responsibility and require actual-route verification.
+
+Synthetic coverage lives in `tests/test_agent_mail_ingress.py`: actual Worker
+MIME/auth/strip output and Worker signing into Python custody, signature/body
+tampering, timestamp boundaries, replay/reopen, concurrent receivers and
+revocation, queue full, corrupt schemas, migration rollback and lost receipts.
+Units 5/6 own laundering, injection screening, lifecycle wake and exact-session
+submission. Unit 7 owns human enrollment, route proof, key/consent lifecycle,
+outbound wiring and owner-facing status/recovery/deletion. Service pin/thread
+metadata retention/deletion and cleanup scheduling must be wired there; no
+enabled service is claimed by these internal Python seams. The Worker shared
+breaker P2, real Cloudflare ingress provenance and all live pilot gates remain.
+
 ## D1 ledger, replay, bounds and visibility
 
 Dedicated database; apply `schema.sql` before enabling. No automatic reset or
@@ -291,6 +381,23 @@ claimed complete by this library/transport unit.
 
 ## Synthetic validation and outstanding launch gates
 
+Unit-4 candidate validation (2026-11-09), from the branch worktree root:
+
+```powershell
+python tools/test-run.py --project mission_control --port 5199 -- python -m pytest -o addopts= tests/test_agent_mail_store.py tests/test_agent_mail_ingress.py -q
+pyright mc/agent_mail_store.py mc/agent_mail_ingress_schema.py mc/agent_mail_signing.py mc/agent_mail_envelope.py mc/agent_mail_ingress.py mc/blueprints/agent_mail_routes.py
+```
+
+Result: **151 passed, 0 failed, exit 0** (unit 1's 59 cases and 92 new ingress
+cases); pyright **0 errors, 0 warnings, exit 0** across all six changed/new
+modules. Whole Worker `npm test`, through the exact launcher command below from
+`workers/agent-mail`, also passed **738/738, 0 failed/skipped/cancelled, exit 0**,
+covering unit 3 plus transport regressions. An earlier Python verification run
+reported unavailable transport/parent/pytest progress capture; final framework
+counts and child exit codes are direct test output, not inferred telemetry.
+No frontend code changed, so browser smokes are not applicable. No deployed
+receiver, signed request through the real tunnel or real mail is claimed.
+
 `test/transport-support.js` uses Node 24.11+ built-in SQLite for actual schema,
 constraints, transactions, leases and reopen tests; no new package is needed.
 WebCrypto generates disposable synthetic mail keys. Tests cover signed-field
@@ -305,7 +412,7 @@ Round-3 candidate validation: 2026-11-09, whole suite **738 passed, 0 failed,
 command, cwd `workers/agent-mail`:
 
 ```powershell
-python C:/Users/levir/Documents/_claude/mission-control/tools/test-run.py --project mission_control --port 5199 --shell powershell --command 'npm test'
+python tools/test-run.py --project mission_control --port 5199 --shell powershell --command 'npm test'
 ```
 
 The targeted `node --test test/transport-round3.test.js` selection passed 14/14,
@@ -332,7 +439,7 @@ Historical round-2 candidate validation: 2026-11-09, whole suite **724 passed, 0
 cwd `workers/agent-mail`:
 
 ```powershell
-python C:/Users/levir/Documents/_claude/mission-control/tools/test-run.py --project mission_control --port 5199 --shell powershell --command 'npm test'
+python tools/test-run.py --project mission_control --port 5199 --shell powershell --command 'npm test'
 ```
 
 The targeted `node --test test/transport-round2.test.js` selection also passed
@@ -358,9 +465,10 @@ authenticated quota sharing, crypto/nonce expiry, stalled/oversize upload
 cancellation, malformed dot syntax and whole-address overflow.
 
 Not verified: actual Cloudflare runtime/bindings, account capacity, namespace and
-domain configuration, provider ingress headers, local receiver, enrollment/tunnel
+domain configuration, provider ingress headers, receiver through the actual tunnel, enrollment/tunnel
 proof, durable local follow-up or completed resumed turn. Unit 7 must wire consent,
-deletion and key lifecycle; unit 4 must implement custody/consent/reconciliation;
+deletion and key lifecycle; unit 4 supplies synthetic-tested custody/consent while
+recovery-triggered remote reconciliation remains an integration requirement;
 units 5/6 own laundering and exact-session submission. Privacy publication,
 destination verification, DNS/DKIM, Cloudflare deployment, real mail and a pilot
 remain separately human-gated. Disabled template is configuration documentation,

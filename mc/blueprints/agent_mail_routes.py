@@ -1,0 +1,72 @@
+"""Dedicated, default-disabled mail receiver. No dashboard-auth exemption."""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Callable
+
+from flask import Blueprint, jsonify, request
+from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.wsgi import get_input_stream
+
+from mc import state
+from mc.agent_mail_envelope import MAX_REQUEST_BYTES
+from mc.agent_mail_ingress import MailIngress
+from mc.agent_mail_signing import IngressRefused
+from mc.agent_mail_store import MailStore, MailStoreError, default_path
+from mc.core import _log
+
+FLAG = 'agent_mail_ingress_enabled'
+ROUTE = '/api/agent-mail/ingress'
+
+
+def create_blueprint(data_dir: Path, *, store_factory: Callable[[], MailStore] | None = None) -> Blueprint:
+    bp = Blueprint('agent_mail_ingress', __name__)
+
+    def enrolled_store() -> MailStore:
+        path = default_path(data_dir)
+        # Enrollment creates the database. A deleted inbox must never silently
+        # reset here; no store is opened at all while the feature is disabled.
+        if not path.is_file():
+            raise MailStoreError('agent mail store missing; enrollment/recovery required')
+        return MailStore(path)
+
+    factory = store_factory or enrolled_store
+
+    @bp.after_request
+    def private(response):
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+
+    @bp.route(ROUTE, methods=['POST'])
+    def ingress():
+        if state.CONFIG.get(FLAG) is not True:
+            return jsonify({'error': 'not_found'}), 404
+        if request.query_string or request.mimetype != 'application/json':
+            return jsonify({'error': 'invalid_request'}), 400
+        # A decoded path must not conceal percent-encoding/alternate wire paths.
+        original_uri = request.environ.get('RAW_URI') or request.environ.get('REQUEST_URI')
+        if original_uri != ROUTE:
+            return jsonify({'error': 'invalid_path'}), 400
+        if request.content_length is not None and request.content_length > MAX_REQUEST_BYTES:
+            return jsonify({'error': 'body_limit'}), 413
+        try:
+            # Works on supported Flask versions whose per-request limit is read-only.
+            stream = get_input_stream(request.environ, max_content_length=MAX_REQUEST_BYTES + 1)
+            raw = stream.read(MAX_REQUEST_BYTES + 1)
+            if len(raw) > MAX_REQUEST_BYTES:
+                return jsonify({'error': 'body_limit'}), 413
+            headers = {key.lower(): value for key, value in request.headers.items()}
+            receipt = MailIngress(factory()).receive(headers, raw,
+                                                     method=request.method, path=request.path)
+            return jsonify(receipt), 200
+        except RequestEntityTooLarge:
+            return jsonify({'error': 'body_limit'}), 413
+        except IngressRefused as exc:
+            reason = str(exc)  # only closed, code-owned reason strings
+            _log(f'[agent-mail] ingress refused: {reason}', flush=True)
+            return jsonify({'error': reason}), 503 if reason == 'queue_full' else 401
+        except (MailStoreError, OSError):
+            _log('[agent-mail] ingress storage unavailable; custody retained at Worker', flush=True)
+            return jsonify({'error': 'storage_unavailable'}), 503
+
+    return bp

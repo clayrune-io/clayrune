@@ -204,6 +204,9 @@ data/mc.db-shm
 data/usage_breakdown.sqlite
 data/usage_breakdown.sqlite-wal
 data/usage_breakdown.sqlite-shm
+data/agent_mail.sqlite3
+data/agent_mail.sqlite3-wal
+data/agent_mail.sqlite3-shm
 
 # Firebase Admin SDK service-account key — used by server to send FCM pushes
 # to the native Android app. Contains a private RSA key; never commit.
