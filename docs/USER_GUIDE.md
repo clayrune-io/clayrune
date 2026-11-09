@@ -421,6 +421,21 @@ the asset cache. No Windows registry change or provider re-login is needed.
   buttons. Nothing dangerous runs without your click.
 - **Stop / Continue**: stopped sessions can be revived by typing a new
   message — the agent picks up the same Claude conversation.
+  A cold resume returns to the working directory recorded in that conversation.
+  If Clayrune has the conversation's worktree ownership record, it restores a
+  missing tree through the existing isolated-session lifecycle; if restoration
+  fails, it refuses to run. Without that ownership record, a missing or unusable
+  recorded worktree is refused: start a new chat or restore the original Git
+  worktree. Restoring just a folder without its valid Git registration is not
+  enough. Clayrune never silently moves the conversation into the project
+  checkout. A chat borrowing another session's worktree keeps that same directory
+  after a purge or restart; borrowing does not transfer review, merge or cleanup
+  ownership. If that borrowed tree is removed, restore it or start a new chat.
+  The old transcript remains available to read. For a transcript-only
+  refusal, the request is retained in the conversation record and returned with
+  the error; it is not automatically retried. Incognito
+  requests are returned only. If saving fails, the response reports
+  `request_saved: false` and still includes the request text.
 - **Image upload**: paste or drop images into the input to attach them.
 - **Select and copy chat text**: drag across user messages, agent replies or code
   to highlight text, including text across multiple messages. Press **Cmd+C**

@@ -14,6 +14,10 @@ returns the project checkout for an isolated session. It must be called inside
 `worktree_lifecycle.resuming` / `removal_window` for the session: recreation and
 the spawn that follows must not interleave with a removal.
 
+A transcript-only resume may borrow a usable tree without owning it. Such a
+session refuses if that tree becomes unusable; it cannot recreate a replacement
+under its own id (MC-1167).
+
 A refusal is not a loss. `mark_refused` leaves the session in `error` with a
 plain reason and keeps the request it could not run in
 `pending_recovery_message`, which the guardian retries with its normal backoff
@@ -142,6 +146,9 @@ def launch_cwd(session: dict, project: dict | None, project_path: str,
         session.pop('_launch_refused', None)
         return cwd, ''
     why = f'worktree {cwd or "(none recorded)"} is not usable'
+    if session.get('_worktree_borrowed'):
+        raise LaunchRefused(f'{why}; this session borrowed the tree and cannot '
+                            'recreate it under a different owner id')
     if not project or not sid:
         raise LaunchRefused(f'{why}, and the project record is unavailable to recreate it')
     try:
