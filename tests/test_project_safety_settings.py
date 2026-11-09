@@ -17,6 +17,7 @@ VALUES = {
     'merge_requires_review': False,
     'verify_command': '',
     'verify_timeout_seconds': 1200,
+    'cold_review_required': False,
     'worktree_isolation': False,
     'worktree_base_branch': 'other-base',
     'worktree_shared_runtime': False,

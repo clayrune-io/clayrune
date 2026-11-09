@@ -50,6 +50,7 @@ _get_mem_write_lock or writes MEMORY.md.
 
 import concurrent.futures
 import contextlib
+import functools
 from mc import codex_run_error as _codex_run_error  # MC-1147: rollout error as the failure summary
 from mc import test_run_detection as _test_run_detection
 from mc import empty_turn as _empty_turn
@@ -129,6 +130,9 @@ import mc.skills as _skills                # _skills_catalog_block
 import mc.skill_scoping as _skill_scoping  # per-agent skill scoping
 import mc.agent_worktree as _agent_worktree  # per-agent worktree isolation (b264200a)
 import mc.agent_worktree_followup as _agent_worktree_followup  # MC-1081: follow-up into a removed worktree
+from mc import worktree_lifecycle as _worktree_lifecycle  # MC-1165: resume vs worktree-removal exclusion
+from mc import isolated_launch as _isolated_launch  # MC-1165 r4: the one launch directory rule
+import mc.cold_review_runner as _cold_review_runner  # MC-1165: cold review before merge-back
 import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§9.6)
 from mc import native_followup_context as _native_followup_context
 import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends §9.6's split)
@@ -524,9 +528,13 @@ def _resume_cwd_for(project_path, session_id, provider_name='claude'):
     return None
 
 
-def _session_cwd(sess, project_path):
-    """cwd for respawning an existing session: the tree it started in. Falls back
-    to the project tree, and records the move, when that worktree is gone."""
+def _session_cwd(sess, project_path, message=None):
+    """cwd for respawning an existing session. For an isolated session this is
+    `_launch_cwd`: its worktree, recreated if it was removed, or `LaunchRefused`
+    (keeping `message` for retry) -- never the project checkout. For any other session: the tree it started in,
+    falling back to the project tree (and recording the move) when that is gone."""
+    if (sess or {}).get('_worktree_isolated'):
+        return _launch_cwd(sess, load_project((sess or {}).get('project_id', '')), project_path, message)
     cwd = (sess or {}).get('_agent_cwd') or ''
     if not cwd or cwd == project_path:
         return project_path
@@ -539,11 +547,53 @@ def _session_cwd(sess, project_path):
     return project_path
 
 
-def _followup_cwd_for(session, project, project_path):
-    """cwd for a non-Claude follow-up/interrupt respawn (MC-1081). The tree
-    the session started in, recreated from base if a no-commit end already
-    removed it; the note lands in the agent log and activity feed so the move
-    is never silent."""
+def _session_cwd_for_reading(sess, project_path):
+    """The directory a session's state lives in, for code that only READS it (the
+    turn clock's commit list, the test-run owner binding). Never recreates a
+    worktree and never substitutes the project checkout for an isolated session's
+    missing one: that path is returned as recorded, and the reader finds nothing."""
+    if (sess or {}).get('_worktree_isolated'):
+        return (sess or {}).get('_agent_cwd') or project_path
+    return _session_cwd(sess, project_path)
+
+
+def _launch_cwd(session, project, project_path, message=None):
+    """The one cwd decision for spawning a process for an ISOLATED session
+    (`mc/isolated_launch.py`). Runs inside the session's lifecycle exclusion --
+    project lock, then lifecycle lock -- so it cannot interleave with a worktree
+    removal. Returns the worktree, recreating it if needed; if it cannot, marks
+    the session `error` with the reason, keeps `message` for retry and raises
+    `LaunchRefused`. Callers that also spawn and flip to `running` hold
+    `_worktree_lifecycle.resuming` themselves across all three (re-entrant)."""
+    sid = session.get('session_id', '')
+    with _worktree_lifecycle.resuming(get_manager(session.get('project_id', '')).lock, sid):
+        try:
+            cwd, note = _isolated_launch.launch_cwd(session, project, project_path)
+        except _isolated_launch.LaunchRefused as e:
+            line = _isolated_launch.mark_refused(session, message, str(e), _time.time())
+            _log(f"[launch-cwd] {sid[:12]}: {e}", level='error')
+            try:
+                _log_agent_activity(session.get('project_id', ''), line)
+            except Exception as ae:
+                _log(f"[launch-cwd] activity log failed (non-fatal): {ae}")
+            raise
+    if note:
+        session['log_lines'].append(f"[{note}]")
+        _log(f"[launch-cwd] {sid[:12]}: {note}")
+        try:
+            _log_agent_activity(session.get('project_id', ''), note)
+        except Exception as e:
+            _log(f"[launch-cwd] activity log failed (non-fatal): {e}")
+    return cwd
+
+
+def _followup_cwd_for(session, project, project_path, message=None):
+    """cwd for a non-Claude follow-up/interrupt respawn (MC-1081). An isolated
+    session gets its worktree, recreated from base if a no-commit end already
+    removed it, or a refusal (`LaunchRefused`) that keeps `message`; the note
+    lands in the agent log and activity feed so the move is never silent."""
+    if session.get('_worktree_isolated'):
+        return _launch_cwd(session, project, project_path, message)
     cwd, note = _agent_worktree_followup.resolve_followup_cwd(
         session, project, project_path)
     if note:
@@ -1621,17 +1671,66 @@ def _worktree_schedule_retry(session, attempt):
     t.start()
 
 
+def _worktree_resume_pending(session, live):
+    """A guardian recovery is queued for this session. Removing the tree now would
+    only make that resume recreate it from base (`mc/isolated_launch.py`; the
+    isolation itself no longer depends on this check, MC-1165 round 4); leave the
+    merge and the removal to the resumed turn's own end, and leave a refused or
+    breaker-tripped session's unmerged branch for a human."""
+    return bool((live or session).get('pending_recovery_message')
+                or session.get('pending_recovery_message'))
+
+
 def _worktree_retry_removal(session, attempt):
     sid = session.get('session_id', '')
     with _worktree_retry_lock:
         _worktree_retry_pending.discard(sid)
-    live = agent_sessions.get(sid)
-    if live and live.get('status') in ('running', 'idle'):
-        return  # resumed since; its own end re-runs the merge-back/removal
-    _worktree_merge_back_on_end(session, _attempt=attempt)
+    # The terminal check and the removal are one decision (MC-1165 review 2): a
+    # resume landing between them would have its worktree deleted underneath it.
+    with _worktree_lifecycle.removal_window(
+            get_manager(session.get('project_id', '')).lock, sid):
+        live = agent_sessions.get(sid)
+        if live and live.get('status') in ('running', 'idle'):
+            return  # resumed since; its own end re-runs the merge-back/removal
+        if _worktree_resume_pending(session, live):
+            _log(f"[worktree] removal retry of {sid[:12]} skipped: a recovery resume is "
+                 f"pending; merge-back left to its next end")
+            return
+        _worktree_merge_back_on_end(session, _attempt=attempt)
 
 
-def _worktree_merge_back_on_end(session, _attempt=0):
+def _worktree_cold_review_done(session, attempt, turn_stamp):
+    """The cold-review worker's callback: the merge-back that `_worktree_merge_back_on_end`
+    deferred. It runs minutes after the turn ended, so the session may have been
+    resumed meanwhile; merging and removing the worktree then would pull the
+    directory out from under the live process (MC-1165 review 1, finding 2 --
+    `live_process_refs` excludes agent processes, so nothing else protects it).
+
+    The decision is made inside `worktree_lifecycle.removal_window` (the project
+    lock plus the session's lifecycle lock): the HTTP resume paths flip the status
+    to `running` under the project lock, and `_auto_dispatch_followup` (guardian
+    recovery, queued follow-ups) holds the lifecycle lock, so no resume can land
+    between the check and the removal (MC-1165 review 2). The model call already
+    finished outside; only this cheap check plus the merge-back (what the
+    session-end handler always did under that lock) runs inside. A resumed
+    session's own end re-runs the merge-back, so skipping here loses nothing."""
+    sid = session.get('session_id', '')
+    with _worktree_lifecycle.removal_window(
+            get_manager(session.get('project_id', '')).lock, sid):
+        live = agent_sessions.get(sid)
+        if live is not None and (live.get('status') in ('running', 'idle')
+                                 or live.get('last_status_change_time') != turn_stamp):
+            _log(f"[worktree] cold review of {sid[:12]} finished after the session "
+                 f"resumed; merge-back left to its next end")
+            return
+        if _worktree_resume_pending(session, live):
+            _log(f"[worktree] cold review of {sid[:12]} finished with a recovery resume "
+                 f"pending; merge-back left to its next end")
+            return
+        _worktree_merge_back_on_end(session, attempt, _cold_done=True)
+
+
+def _worktree_merge_back_on_end(session, _attempt=0, _cold_done=False):
     """Merge an isolated agent's committed work back into the base branch when
     its session ends. Without this the work sits stranded on the agent branch
     and isolation silently becomes work loss. Best-effort; on conflict the
@@ -1645,6 +1744,32 @@ def _worktree_merge_back_on_end(session, _attempt=0):
     try:
         p = load_project(pid)
         if not p:
+            return
+        # MC-1165 r9: every step below finds the work by session id. A run that
+        # holds another session's tree is invisible to all of them, so say so
+        # here, once, instead of letting merge_back answer 'no worktree'.
+        if not _cold_done and not _attempt and not _agent_worktree.is_hivemind_worker(sid):
+            _mismatch = _isolated_launch.held_tree_mismatch(session, p)
+            if _mismatch:
+                _log(f"[worktree] {sid[:12]} work NOT reviewed or merged: {_mismatch}",
+                     level='error')
+                _log_agent_activity(
+                    pid, f"Agent work NOT reviewed or merged ({sid[:8]}): {_mismatch}. "
+                         f"Its commits are on that tree's branch and need a manual look.")
+        # MC-1165: a project that requires a cold review gets it BEFORE merge-back,
+        # on a worker thread. This function runs inside the project lock on the
+        # stream-reader threads (`with get_manager(..).lock:` around
+        # `_log_agent_completion`), so a model call here would hold that lock for
+        # minutes. The worker calls back into this function with _cold_done=True.
+        if (not _cold_done and not _agent_worktree.is_hivemind_worker(sid)
+                and _cold_review_runner.needs_review(p, _agent_worktree.branch_name(sid))):
+            # Bound to THIS turn's end: the stamp is when the session reached the
+            # state it ended in, and a resume changes it.
+            _turn_stamp = session.get('last_status_change_time')
+            _cold_review_runner.start(
+                p, _agent_worktree.branch_name(sid), session.get('task') or '',
+                lambda: _worktree_cold_review_done(session, _attempt, _turn_stamp),
+                log=_log, announce=lambda m: _log_agent_activity(pid, m))
             return
         status, detail = _agent_worktree.merge_back(p, sid)
         if isinstance(detail, dict):
@@ -1863,7 +1988,10 @@ def agent_job_start(project_id, session_id, *, job_data=None, completion_hook=No
                 'escape its own confinement, so this endpoint refuses them '
                 'until jobs can be sandboxed the same way. Run the command '
                 'directly in this turn instead.'}), 403
-        default_cwd = _session_cwd(sess, pp)
+        try:
+            default_cwd = _session_cwd(sess, pp)
+        except _isolated_launch.LaunchRefused as e:
+            return jsonify({'error': f'job not started: {e}'}), 409
         fence_armed = job_data is None and _fence_parity.armed(sess, state.CONFIG)
 
     data = job_data if job_data is not None else (request.get_json() or {})
@@ -6618,33 +6746,37 @@ def _auto_recover_failed_resume(session):
     fresh_task = (f"[Continuing from a previous conversation (session {resume_id}) that could not "
                   f"be resumed. Start fresh but continue the user's request below.]\n\n{task}")
 
+    # The spawn, the registration and the flip to `running` are one step under
+    # `resuming` (project lock, then lifecycle lock): a worktree removal that already
+    # decided the session was terminal cannot land in between, and the cwd is the
+    # isolated session's worktree or the launch is refused -- never `pp` (MC-1165
+    # round 4; this path used to spawn in `pp` first and take the lock afterwards).
+    # The Mode B opening message is written after the window closes: a child that
+    # never reads stdin must not hold the project lock.
+    initial_msg = None
     try:
-        if mode == 'B':
-            _sp_args, _sp_path = _sysprompt_file_args(context)
-            cmd = [_resolve_claude(), *_build_claude_flags(p, streaming=True,
-                   model_override=_continuation_model(session, p),
-                   effort_override=_continuation_effort(session),
-                   character_skills=_session_skills(p, session)),
-                   *_sp_args]
-            cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), pp)
-            proc = spawn_engine_proc(
-                cmd, session_id=session.get('session_id'), engine='claude', cwd=pp,
-                env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
-                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, interactive=True)
-            _sysprompt_cleanup(_sp_path, proc)
-            initial_msg = json.dumps({
-                "type": "user",
-                "message": {"role": "user", "content": _clock_wrap(p, session, fresh_task, task)}
-            }) + '\n'
-            proc.stdin.write(initial_msg)  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
-            proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
-
-            threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
-            _register_process(proc, 'Agent (Mode B, fresh retry)', 'agent',
-                              session['session_id'], project_id, task[:80])
-
-            mgr = get_manager(project_id)
-            with mgr.lock:
+        with _worktree_lifecycle.resuming(get_manager(project_id).lock, session.get('session_id', '')):
+            _cwd = (_launch_cwd(session, p, pp, task) if session.get('_worktree_isolated') else pp)
+            if mode == 'B':
+                _sp_args, _sp_path = _sysprompt_file_args(context)
+                cmd = [_resolve_claude(), *_build_claude_flags(p, streaming=True,
+                       model_override=_continuation_model(session, p),
+                       effort_override=_continuation_effort(session),
+                       character_skills=_session_skills(p, session)),
+                       *_sp_args]
+                cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _cwd)
+                proc = spawn_engine_proc(
+                    cmd, session_id=session.get('session_id'), engine='claude', cwd=_cwd,
+                    env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
+                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, interactive=True)
+                _sysprompt_cleanup(_sp_path, proc)
+                initial_msg = json.dumps({
+                    "type": "user",
+                    "message": {"role": "user", "content": _clock_wrap(p, session, fresh_task, task)}
+                }) + '\n'
+                threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
+                _register_process(proc, 'Agent (Mode B, fresh retry)', 'agent',
+                                  session['session_id'], project_id, task[:80])
                 session['proc'] = proc
                 session['status'] = 'running'
                 session['process_alive'] = True
@@ -6655,29 +6787,23 @@ def _auto_recover_failed_resume(session):
                 session['guardian_state'] = None
                 session['recovery_attempts'] = 0
                 session['circuit_breaker_tripped'] = False
-
-            threading.Thread(target=_read_agent_stream_b, args=(proc, session), daemon=True).start()
-
-        else:
-            # Mode A
-            _sp_args, _sp_path = _sysprompt_file_args(context)
-            cmd = [_resolve_claude(), '-p', _clock_wrap(p, session, fresh_task, task), *_build_claude_flags(p,
-                   model_override=_continuation_model(session, p),
-                   effort_override=_continuation_effort(session),
-                   character_skills=_session_skills(p, session)),
-                   *_sp_args]
-            cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), pp)
-            proc = spawn_engine_proc(
-                cmd, session_id=session.get('session_id'), engine='claude', cwd=pp,
-                env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
-                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
-            _sysprompt_cleanup(_sp_path, proc)
-            threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
-            _register_process(proc, 'Agent (Mode A, fresh retry)', 'agent',
-                              session['session_id'], project_id, task[:80])
-
-            mgr = get_manager(project_id)
-            with mgr.lock:
+            else:
+                # Mode A
+                _sp_args, _sp_path = _sysprompt_file_args(context)
+                cmd = [_resolve_claude(), '-p', _clock_wrap(p, session, fresh_task, task), *_build_claude_flags(p,
+                       model_override=_continuation_model(session, p),
+                       effort_override=_continuation_effort(session),
+                       character_skills=_session_skills(p, session)),
+                       *_sp_args]
+                cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _cwd)
+                proc = spawn_engine_proc(
+                    cmd, session_id=session.get('session_id'), engine='claude', cwd=_cwd,
+                    env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
+                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+                _sysprompt_cleanup(_sp_path, proc)
+                threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
+                _register_process(proc, 'Agent (Mode A, fresh retry)', 'agent',
+                                  session['session_id'], project_id, task[:80])
                 session['proc'] = proc
                 session['status'] = 'running'
                 session['last_output_time'] = _time.time()
@@ -6687,6 +6813,11 @@ def _auto_recover_failed_resume(session):
                 session['recovery_attempts'] = 0
                 session['circuit_breaker_tripped'] = False
 
+        if mode == 'B':
+            proc.stdin.write(initial_msg)  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
+            proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
+            threading.Thread(target=_read_agent_stream_b, args=(proc, session), daemon=True).start()
+        else:
             threading.Thread(target=_read_agent_stream, args=(proc, session), daemon=True).start()
 
     except Exception as e:
@@ -7534,7 +7665,21 @@ def _transcript_buffer_lines_and_ts(project_path, claude_sid, user_label, max_me
         _log(f"[transcript-render] failed: {e}")
         return [], []
 
-def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=True, role_context=None):
+def _with_window_stack(fn):
+    """Give `fn` an ExitStack as `_window` and close it on every return. An
+    ISOLATED revival opens its session's `resuming` window mid-function (choose
+    the launch directory, spawn, publish) and this is what lets it do that
+    without re-indenting the whole body (MC-1165 r5)."""
+    @functools.wraps(fn)
+    def run(*args, **kwargs):
+        with contextlib.ExitStack() as stack:
+            return fn(*args, _window=stack, **kwargs)
+    return run
+
+
+@_with_window_stack
+def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=True, role_context=None,
+                           _window: contextlib.ExitStack = None):  # pyright: ignore[reportArgumentType]  # supplied by _with_window_stack
     """Revive a finalized/purged session by spawning a fresh process with -r <claude_session_id>.
 
     Looks up the most recent agent_log entry whose session_id matches; if it has a
@@ -7630,7 +7775,11 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
     # session already runs would fork the transcript.
     if _refuse_duplicate_spawn(project_id, claude_sid, session_id, 'revive'):
         return None
-    _revive_cwd = _resume_cwd_for(pp, claude_sid) or pp
+    # MC-1165 r5: a conversation that owned a worktree revives into it (or a
+    # recreation of it), never into the project checkout. See owned_worktree.
+    _revive_wt = _isolated_launch.owned_worktree(p, session_id, logged=bool(entry.get('worktree_isolated')))
+    _revive_isolated = bool(_revive_wt)
+    _revive_cwd = _revive_wt or _resume_cwd_for(pp, claude_sid) or pp
 
     use_streaming = p.get('use_streaming_agent', state.CONFIG.get('use_streaming_agent', False))
 
@@ -7753,6 +7902,28 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             _clock_sess, [e for e in log if e.get('session_id') == session_id])
     revival_msg = _clock_wrap(p, _clock_sess, revival_msg, message)
 
+    if _revive_isolated:
+        # Project lock, then lifecycle lock (the order every window uses); held
+        # by `window` through the spawn and the publish below, so a worktree
+        # removal cannot slip between choosing the directory and using it.
+        _window.enter_context(_worktree_lifecycle.resuming(mgr.lock, session_id))
+        _revive_stub = {'session_id': session_id, 'project_id': project_id,
+                        '_worktree_isolated': True, '_agent_cwd': _revive_wt}
+        try:
+            _revive_cwd, _revive_note = _isolated_launch.launch_cwd(_revive_stub, p, pp)
+        except _isolated_launch.LaunchRefused as e:
+            _log(f"[revive] {project_id}: {session_id[:12]} not revived, "
+                 f"worktree unusable: {e}", level='error')
+            _log_agent_activity(project_id, f"Revive refused for {session_id[:8]}: {e}")
+            # Not None: None reads as "nothing to revive" and the callers start a
+            # fresh dispatch, which can land in the project checkout (r6).
+            raise _isolated_launch.RevivalRefused(
+                f"conversation {session_id[:8]} owns an isolated worktree that cannot be "
+                f"restored ({e}); it was not started in the project checkout") from e
+        if _revive_note:
+            seed_lines.append(f"[{_revive_note}]")
+            seed_ts.append(now_iso())
+
     if use_streaming:
         cmd = [_resolve_claude(), *resume_flags,
                *_build_claude_flags(p, streaming=True, model_override=revive_model,
@@ -7775,6 +7946,10 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                     os.unlink(_sp_path)
                 except OSError:
                     pass
+            if _revive_isolated:
+                raise _isolated_launch.RevivalRefused(
+                    f"conversation {session_id[:8]} could not be restarted in its worktree "
+                    f"({e}); it was not started in the project checkout") from e
             return None
         _sysprompt_cleanup(_sp_path, proc)
         threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
@@ -7808,6 +7983,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             '_resume_id': claude_sid,
             '_resume_confirmed': False,   # a just-spawned resume hasn't proven itself yet
             '_agent_cwd': _revive_cwd,
+            '_worktree_isolated': _revive_isolated,
             '_dispatch_time': _time.time(),
             'usage': entry.get('usage', {}),
             'cost_usd': entry.get('cost_usd', 0),
@@ -7870,12 +8046,20 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             from mc.steward_role_dispatch import _append_ack
             _append_ack(session, revival_msg)
         else:
-            with session['stdin_lock']:
-                try:
-                    proc.stdin.write(stdin_msg)  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
-                    proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
-                except Exception as e:
-                    session['log_lines'].append(f'[stdin write error on revive: {e}]')
+            # Deferred to a daemon thread, as normal dispatch does: an ISOLATED
+            # revival holds the project lock (`resuming`) until this function
+            # returns, and a child that has not started reading stdin (rate-limited
+            # startup, the respawn-stdin hang) would pin it, and every send and
+            # dispatch on the project with it (MC-1165 r6). Follow-ups serialize on
+            # `stdin_lock`, so this message still lands first.
+            def _write_revival(_proc=proc, _msg=stdin_msg, _sess=session):
+                with _sess['stdin_lock']:
+                    try:
+                        _proc.stdin.write(_msg)  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
+                        _proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
+                    except Exception as e:
+                        _sess['log_lines'].append(f'[stdin write error on revive: {e}]')
+            threading.Thread(target=_write_revival, daemon=True).start()
         _log(f"[revive] {project_id}: Mode B revived session {session_id} via -r {claude_sid[:12]}")
         return session
 
@@ -7898,6 +8082,10 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                 os.unlink(_sp_path)
             except OSError:
                 pass
+        if _revive_isolated:
+            raise _isolated_launch.RevivalRefused(
+                f"conversation {session_id[:8]} could not be restarted in its worktree "
+                f"({e}); it was not started in the project checkout") from e
         return None
     _sysprompt_cleanup(_sp_path, proc)
     threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
@@ -7926,6 +8114,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         'claude_session_id': claude_sid,
         '_resume_id': claude_sid,
         '_agent_cwd': _revive_cwd,
+        '_worktree_isolated': _revive_isolated,
         '_dispatch_time': _time.time(),
         'usage': entry.get('usage', {}),
         'cost_usd': entry.get('cost_usd', 0),
@@ -7992,6 +8181,66 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
 #            same conversation server-side, which is the property this set
 #            gates.
 _COLD_RESUMABLE_PROVIDERS = {'codex', 'qwen', 'gemini'}
+
+
+def _guard_isolated_reuse(project_id, reuse_session_id, session_dict_override=None):
+    """Loud refusal when an isolated dispatch must keep `reuse_session_id` but the
+    session dict registered under it is live (see `isolated_launch.check_reuse`).
+    A caller that hands us that very dict (`session_dict_override`, a Hivemind
+    worker) owns the id and is not a conflict. Logs and surfaces to the project
+    activity before raising `RevivalRefused`."""
+    existing = agent_sessions.get(reuse_session_id)
+    if existing is not None and existing is session_dict_override:
+        return
+    try:
+        _isolated_launch.check_reuse(existing, project_id, reuse_session_id,
+                                     proc_alive=_session_proc_alive(existing))
+    except _isolated_launch.RevivalRefused as e:
+        _log(f"[isolated-reuse] {project_id}: {e}", level='error')
+        _log_agent_activity(project_id, f"Isolated resume refused for {reuse_session_id[:8]}: {e}")
+        raise
+
+
+def _isolated_resume_kwargs(project_id, session_id, p, *, logged=False, who='revive'):
+    """`_dispatch_agent_internal` kwargs that keep a RESUMED conversation in the
+    worktree it owns; `{}` when it never had one (MC-1165 r6, lifted r7).
+
+    A conversation that owned a worktree resumes into it (recreated if it was
+    removed) and the dispatch is told so (`isolated_override`), so its
+    completion still runs the merge-review gate. It is never handed to
+    `_maybe_isolate_worktree`, which returns the project checkout for a lone
+    agent, nor to `_resume_cwd_for`, which returns a tree but marks it
+    not-isolated. If the tree cannot be had, raises `RevivalRefused`: the
+    conversation exists and may only run there, so it is not re-run in main.
+    `logged` is the agent-log row's `worktree_isolated` flag (see
+    `isolated_launch.owned_worktree`).
+
+    Call with the project lock NOT held where you can. The delegation caller
+    (`_process_inbox`) already holds `manager.lock`: that is safe, the lock is
+    an RLock and the order is project lock then lifecycle lock, the same as
+    `removal_window`; the cost is that `git worktree add` runs under the project
+    lock there, as the Claude dispatch branch already does. The `resuming`
+    window covers the cwd decision only (as `_followup_cwd_for` does): a purged
+    session is not in `agent_sessions`, so nothing removes its tree."""
+    _wt = _isolated_launch.owned_worktree(p, session_id, logged=bool(logged))
+    if not _wt:
+        return {}
+    _stub = {'session_id': session_id, 'project_id': project_id,
+             '_worktree_isolated': True, '_agent_cwd': _wt}
+    with _worktree_lifecycle.resuming(get_manager(project_id).lock, session_id):
+        try:
+            _iso_cwd, _iso_note = _isolated_launch.launch_cwd(
+                _stub, p, p.get('project_path', ''))
+        except _isolated_launch.LaunchRefused as e:
+            _log(f"[{who}] {project_id}: {session_id[:12]} not resumed, "
+                 f"worktree unusable: {e}", level='error')
+            _log_agent_activity(project_id, f"Revive refused for {session_id[:8]}: {e}")
+            raise _isolated_launch.RevivalRefused(
+                f"conversation {session_id[:8]} owns an isolated worktree that cannot be "
+                f"restored ({e}); it was not started in the project checkout") from e
+    if _iso_note:
+        _log_agent_activity(project_id, _iso_note)
+    return {'agent_cwd_override': _iso_cwd, 'isolated_override': True}
 
 
 def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, carry_notify=True, role_context=None):
@@ -8071,6 +8320,11 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
     _resume_id = ''
     if provider in _COLD_RESUMABLE_PROVIDERS:
         _resume_id = (entry.get('provider_session_id') or '').strip()
+    # MC-1165 r6/r7: same isolation boundary as `_revive_from_agent_log`; see
+    # `_isolated_resume_kwargs` (raises RevivalRefused when the tree cannot be had).
+    _iso_kw = _isolated_resume_kwargs(
+        project_id, session_id, p, logged=bool(entry.get('worktree_isolated')),
+        who='revive-non-claude')
     try:
         _dispatch_agent_internal(project_id, message, resume_id=_resume_id,
                                  incognito=bool(entry.get('incognito')),
@@ -8086,10 +8340,15 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
                                  notify_workflow=_revive_notify_workflow,
                                  spawned_by=_revive_spawned_by,
                                  session_metadata={'_turn_owner': 'spawner' if carry_notify else 'human'},
+                                 **_iso_kw,
                                  **({'prepared_context': role_context, 'preserve_model': True}
                                     if role_context is not None else {}))
     except Exception as e:
         _log(f"[revive-non-claude] {project_id}: dispatch failed: {e}")
+        if _iso_kw:
+            raise _isolated_launch.RevivalRefused(
+                f"conversation {session_id[:8]} could not be restarted in its worktree "
+                f"({e}); it was not started in the project checkout") from e
         return None
     return session_id
 
@@ -8203,12 +8462,18 @@ def _revive_parent_for_delegation(project_id, session_id, message, p, from_sessi
             if not revived:
                 raise DeliveryBlocked('Claude parent could not be safely revived')
         else:
+            # MC-1165 r7: this branch dispatches itself, so it needs the same
+            # isolation boundary `_revive_non_claude_from_agent_log` applies.
+            _iso_kw = _isolated_resume_kwargs(
+                project_id, session_id, p, logged=bool(entry.get('worktree_isolated')),
+                who='revive-delegation')
             _dispatch_agent_internal(project_id, message, resume_id=native_id,
                                      incognito=False,
                                      reuse_session_id=session_id,
                                      provider_override=provider,
                                      effort_override=_continuation_effort(entry),
                                      model_override=model, character=character,
+                                     **_iso_kw,
                                      project_generation=project_generation,
                                      preserve_model=True,
                                      source=entry.get('source') or '',
@@ -8220,6 +8485,9 @@ def _revive_parent_for_delegation(project_id, session_id, message, p, from_sessi
                                                        'step': entry['trigger_id'].split(':', 1)[1]}
                                                       if entry.get('trigger_type') == 'workflow'
                                                       and ':' in (entry.get('trigger_id') or '') else None))
+    except _isolated_launch.RevivalRefused as exc:
+        # Refused before any process started: definitely not delivered.
+        raise DeliveryBlocked(str(exc)) from exc
     except Exception as exc:
         raise DeliveryUncertain(f'parent revival outcome unknown: {exc}')
     return {'revived': True, 'parent_session_id': session_id,
@@ -8540,6 +8808,8 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
     }
     if session.get('human_joined'):
         entry['human_joined'] = True   # display-only, see _mark_human_joined
+    if session.get('_worktree_isolated'):
+        entry['worktree_isolated'] = True   # MC-1165 r5: durable, outlives purge + worktree removal
     def upsert(log):
         # Upsert: a continued scheduled run reuses the prior run's session_id
         # (see _dispatch_agent_internal reuse_session_id). Refresh that row in
@@ -8569,6 +8839,8 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
             # fresh session dict that never saw the human message.
             if prev.get('human_joined'):
                 entry['human_joined'] = True
+            if prev.get('worktree_isolated'):
+                entry['worktree_isolated'] = True
             # Union with the outgoing row's history rather than replacing it
             # -- a new process reusing this session_id (server restart across
             # a scheduled cadence tick) starts with an empty in-memory
@@ -9945,6 +10217,8 @@ def _log_agent_completion_body(session):
         entry.update(attempt_metadata(session))
     if session.get('human_joined'):
         entry['human_joined'] = True   # display-only, see _mark_human_joined
+    if session.get('_worktree_isolated'):
+        entry['worktree_isolated'] = True   # MC-1165 r5: durable isolation record
     if _ckey:
         entry['completion_key'] = _ckey
     def complete(log):
@@ -9957,6 +10231,8 @@ def _log_agent_completion_body(session):
                         or (_replay and e.get('status') == 'interrupted')):
                     if e.get('human_joined'):
                         entry['human_joined'] = True
+                    if e.get('worktree_isolated'):
+                        entry['worktree_isolated'] = True
                     log.pop(i)
                     break
         log.insert(0, entry)
@@ -10202,7 +10478,16 @@ def _run_runtime_callbacks(session, event=None):
 
 
 def _auto_dispatch_followup(session, message):
-    """Auto-dispatch a queued follow-up after the current task completes."""
+    """Auto-dispatch a queued follow-up after the current task completes.
+
+    Two phases (MC-1165 round 4). First everything that reads project state --
+    the system prompt, flags, the command -- with NO lifecycle lock held: building
+    the prompt reaches `ProjectAgentManager.iter_sessions`, which takes the project
+    lock. Then `resuming` (project lock, then the session's lifecycle lock) for the
+    cwd decision, the spawn and the flip to `running`. A worktree removal that
+    already checked "terminal" finishes first (`mc/worktree_lifecycle.py`); the cwd
+    is the isolated session's worktree or the launch is refused with `message` kept
+    (`mc/isolated_launch.py`), never the project checkout."""
     project_id = session.get('project_id')
     p = load_project(project_id)
     if not p:
@@ -10231,11 +10516,29 @@ def _auto_dispatch_followup(session, message):
         session['model'] = _pin
         session['model_source'] = 'manual'
 
+    with _worktree_lifecycle.resuming(get_manager(project_id).lock, session.get('session_id', '')):
+        _auto_dispatch_followup_locked(session, message, p, pp, cmd, _sp_path)
+
+
+def _auto_dispatch_followup_locked(session, message, p, pp, cmd, _sp_path):
+    """Second phase of `_auto_dispatch_followup`; the caller holds `resuming`."""
+    if session.get('status') == 'running':
+        # Another resume won while the prompt was being built: a second process in
+        # this worktree is worse than a delayed message. Queue it behind that turn.
+        session.setdefault('pending_followups', []).insert(0, message)
+        session['log_lines'].append('[follow-up queued: the session resumed while it was being prepared]')
+        if _sp_path:
+            try:
+                os.unlink(_sp_path)
+            except OSError:
+                pass
+        return
     try:
-        cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _session_cwd(session, pp))
+        _cwd = _session_cwd(session, pp, message)
+        cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _cwd)
         proc = spawn_engine_proc(
             cmd, session_id=session.get('session_id'), engine='claude',
-            cwd=_session_cwd(session, pp),
+            cwd=_cwd,
             env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
     except Exception as e:
@@ -10506,7 +10809,7 @@ def _clock_header(project, session, message) -> str:
         return _turn_clock.render(
             project, session,
             sessions=list(agent_sessions.values()),
-            cwd=_session_cwd(session, pp) if isinstance(session, dict) else pp)
+            cwd=_session_cwd_for_reading(session, pp) if isinstance(session, dict) else pp)
     except Exception as e:
         _log(f'[turn-clock] header failed: {e}')
         return ''
@@ -10716,6 +11019,9 @@ def _dispatch_via_runtime(p, task, *, provider_name,
     mgr.ensure_guardian()
 
     with mgr.lock:
+        if isolated and reuse_session_id and planned_session_id == reuse_session_id:
+            # MC-1165 r9: re-check under the lock (see `_guard_isolated_reuse`).
+            _guard_isolated_reuse(project_id, reuse_session_id)
         if reuse_session_id and reuse_session_id not in agent_sessions:
             session_id = reuse_session_id
         elif planned_session_id:
@@ -12180,6 +12486,12 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                            else uuid.uuid4().hex[:12])
         if getattr(prepared_context, 'steward_role', False) and reuse_session_id:
             _rt_planned_sid = reuse_session_id
+        if isolated_override and reuse_session_id:
+            # MC-1165 r9: a resume that carries a worktree keeps the id that names
+            # it. A retained dead dict is replaced, a live one refused; never a
+            # fresh id running in this id's tree.
+            _guard_isolated_reuse(project_id, reuse_session_id, session_dict_override)
+            _rt_planned_sid = reuse_session_id
         _rt_resume_tree = _resume_cwd_for(pp, resume_id, provider_name) if resume_id else None
         if agent_cwd_override:
             _rt_agent_cwd, _rt_isolated = agent_cwd_override, bool(isolated_override)
@@ -12253,6 +12565,12 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             _clear_live_context_tokens(project_id, resume_id)
             resume_id = ''
 
+    # Same-owner isolated conflicts must raise RevivalRefused before the
+    # generic duplicate guard, so Run Now returns 409 and saves the error.
+    _keep_reuse_id = bool(isolated_override and reuse_session_id)
+    if _keep_reuse_id:
+        _guard_isolated_reuse(project_id, reuse_session_id, session_dict_override)
+
     # One live process per conversation (2026-09-14). Refused BEFORE a worktree
     # is created or a context is built; re-checked under mgr.lock at spawn.
     if resume_id:
@@ -12323,9 +12641,14 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # (`session_dict_override`, e.g. a Hivemind worker) owns the id, so the
     # planned id — and any worktree keyed on it — must be that id, not a
     # fresh one the lock block will then discard.
+    # MC-1165 r9: an isolated resume (`isolated_override` + `reuse_session_id`)
+    # keeps that id even when a dead dict is still registered under it, because
+    # the worktree it was handed is keyed on the id (see `isolated_launch.check_reuse`).
+    # A live dict under it was refused before the duplicate guard above.
     _planned_sid = (reuse_session_id
                     if (reuse_session_id and (
-                        reuse_session_id not in agent_sessions
+                        _keep_reuse_id
+                        or reuse_session_id not in agent_sessions
                         or (session_dict_override is not None
                             and agent_sessions.get(reuse_session_id) is session_dict_override)))
                     else _fresh_sid)
@@ -12469,7 +12792,20 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     with mgr.lock, _pending_launch_scope() as _pending_launch:
         # Reuse the prior run's id (continued scheduled thread) unless that id is
         # somehow still a live session — never clobber a running session dict.
-        if reuse_session_id and (
+        if _keep_reuse_id:
+            # Re-check under the lock: S may have started running since the
+            # early guard. Never fall back to `_fresh_sid` on this path.
+            try:
+                _guard_isolated_reuse(project_id, reuse_session_id, session_dict_override)
+            except _isolated_launch.RevivalRefused:
+                if _sp_path:
+                    try:
+                        os.unlink(_sp_path)
+                    except OSError as e:
+                        _log(f"[spawn-guard] sysprompt cleanup failed: {e}")
+                raise
+            session_id = reuse_session_id
+        elif reuse_session_id and (
                 reuse_session_id not in agent_sessions
                 or (session_dict_override is not None
                     and agent_sessions.get(reuse_session_id) is session_dict_override)):
@@ -12502,7 +12838,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
 
         _billing_prior = session_dict_override or agent_sessions.get(reuse_session_id) or {}
         if reuse_session_id and not _billing_prior:
-            _billing_prior = next((e for e in reversed(_load_agent_log(project_id))
+            _billing_prior = next((e for e in _load_agent_log(project_id)
                                    if e.get('session_id') == reuse_session_id), {})
         _billing_record = {
             **_credits_session.snapshot(_billing_prior),
@@ -13233,6 +13569,10 @@ def agent_send(project_id):
                 revived = _revive_from_agent_log(
                     project_id, session_id, message, p,
                     carry_notify=bool(_explicit_notify_session))
+            except _isolated_launch.RevivalRefused as e:
+                # A refusal is not "nothing to revive": do not fall through to a
+                # fresh dispatch (MC-1165 r6).
+                return jsonify({'ok': False, 'error': str(e), 'refused': True}), 409
             except RosterRecoveryHeld as e:
                 return jsonify({'ok': False, 'error': str(e)}), 409
             except Exception as e:
@@ -13256,6 +13596,8 @@ def agent_send(project_id):
                 fresh_sid = _revive_non_claude_from_agent_log(
                     project_id, session_id, message, p,
                     carry_notify=bool(_explicit_notify_session))
+            except _isolated_launch.RevivalRefused as e:
+                return jsonify({'ok': False, 'error': str(e), 'refused': True}), 409
             except RosterRecoveryHeld as e:
                 return jsonify({'ok': False, 'error': str(e)}), 409
             except Exception as e:
@@ -13723,6 +14065,8 @@ def agent_followup(project_id):
             revived = _revive_from_agent_log(
                 project_id, session_id, message, p,
                 carry_notify=bool(_explicit_notify_session))
+        except _isolated_launch.RevivalRefused as e:
+            return jsonify({'ok': False, 'error': str(e), 'refused': True}), 409
         except RosterRecoveryHeld as e:
             return jsonify({'ok': False, 'error': str(e)}), 409
         if revived:
@@ -13738,6 +14082,8 @@ def agent_followup(project_id):
             fresh_sid = _revive_non_claude_from_agent_log(
                 project_id, session_id, message, p,
                 carry_notify=bool(_explicit_notify_session))
+        except _isolated_launch.RevivalRefused as e:
+            return jsonify({'ok': False, 'error': str(e), 'refused': True}), 409
         except RosterRecoveryHeld as e:
             return jsonify({'ok': False, 'error': str(e)}), 409
         if fresh_sid:
@@ -13803,7 +14149,7 @@ def agent_followup(project_id):
                 # recorded, when this conversation was isolated. Respawning into
                 # `pp` instead would silently move an isolated agent's later
                 # turns into the shared main checkout mid-conversation.
-                _followup_cwd = _followup_cwd_for(existing, p, pp)
+                _followup_cwd = _followup_cwd_for(existing, p, pp, message)
                 runtime = _agent_runtime.get_runtime(session_provider)
                 handle = _agent_runtime.SessionHandle(
                     mc_session_id=session_id,
@@ -14259,12 +14605,13 @@ def agent_followup(project_id):
                                 _log(f"[spawn-guard] sysprompt cleanup failed: {e}")
                         return
                 _log(f"[respawn-B] {rb['project_id']}: spawning cmd={' '.join(rb['cmd'][:5])}...")
+                _rb_cwd = _session_cwd(rb['existing'], rb['pp'], rb['message'])
                 proc = spawn_engine_proc(
                     _launch_marker.launch_cmd(
                         rb['cmd'], rb['existing'].get('trigger_type'),
-                        _session_cwd(rb['existing'], rb['pp'])),
+                        _rb_cwd),
                     session_id=rb['session_id'], engine='claude',
-                    cwd=_session_cwd(rb['existing'], rb['pp']),
+                    cwd=_rb_cwd,
                     env=_launch_marker.launch_env(rb['existing'].get('trigger_type'), session=rb['existing']),
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, interactive=True)
                 _sysprompt_cleanup(rb.get('sysprompt_path'), proc)
@@ -14400,10 +14747,11 @@ def agent_followup(project_id):
                 existing['_system_prompt'] = context
                 _sp_args, _sp_path = _sysprompt_file_args(context)
             cmd.extend(_sp_args)
-            cmd = _launch_marker.launch_cmd(cmd, existing.get('trigger_type'), _session_cwd(existing, pp))
+            _cwd = _session_cwd(existing, pp, message)
+            cmd = _launch_marker.launch_cmd(cmd, existing.get('trigger_type'), _cwd)
             proc = spawn_engine_proc(
                 cmd, session_id=session_id, engine='claude',
-                cwd=_session_cwd(existing, pp),
+                cwd=_cwd,
                 env=_launch_marker.launch_env(existing.get('trigger_type'), session=existing),
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             _sysprompt_cleanup(_sp_path, proc)
@@ -14793,7 +15141,7 @@ def agent_interrupt(project_id, *, _internal=None):
             try:
                 # Same tree the dispatch turn ran in — see the followup path's
                 # identical `_followup_cwd` for why `pp` alone is wrong here.
-                _followup_cwd = _followup_cwd_for(session, p, pp)
+                _followup_cwd = _followup_cwd_for(session, p, pp, message)
                 runtime = _agent_runtime.get_runtime(session_provider)
                 handle = _agent_runtime.SessionHandle(
                     mc_session_id=session_id,
@@ -14939,7 +15287,7 @@ def agent_interrupt(project_id, *, _internal=None):
             if claude_sid:
                 if is_midturn:
                     _af_reason, _af_detail = 'tokens', int(_mt.get('tokens') or 0)
-                    midturn_state = _mt['build_state'](_session_cwd(session, pp))
+                    midturn_state = _mt['build_state'](_session_cwd_for_reading(session, pp))
                 else:
                     _af_reason, _af_detail = _auto_fresh_trigger(
                         pp, claude_sid, session.get('context_tokens'),
@@ -14986,10 +15334,11 @@ def agent_interrupt(project_id, *, _internal=None):
                     session['_system_prompt'] = context
                     _sp_args, _sp_path = _sysprompt_file_args(context)
                     cmd.extend(_sp_args)
-                cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _session_cwd(session, pp))
+                _cwd = _session_cwd(session, pp, message)
+                cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _cwd)
                 proc = spawn_engine_proc(
                     cmd, session_id=session_id, engine='claude',
-                    cwd=_session_cwd(session, pp),
+                    cwd=_cwd,
                     env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, interactive=True)
                 _sysprompt_cleanup(_sp_path, proc)
@@ -15060,12 +15409,13 @@ def agent_interrupt(project_id, *, _internal=None):
                            character_skills=_session_skills(p, session)),
                            *_sp_args]
 
-                cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _session_cwd(session, pp))
+                _cwd = _session_cwd(session, pp, message)
+                cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _cwd)
                 # A mid-turn roll's prompt goes down stdin after the reader starts, so
                 # it needs the interactive shim; the ordinary Mode A resume has no stdin.
                 proc = spawn_engine_proc(
                     cmd, session_id=session_id, engine='claude',
-                    cwd=_session_cwd(session, pp),
+                    cwd=_cwd,
                     env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
                     interactive=is_midturn)
@@ -17794,6 +18144,12 @@ def _guardian_should_recover(session):
 
 
 def _guardian_attempt_recovery(session):
+    # Every caller (State 6, the two dead-process states, the user's Try Again)
+    # ends in `_auto_dispatch_followup`, which spawns Claude. A vendor session's
+    # held request must never go there (MC-1165 r5): hold it for a human.
+    with get_manager(session['project_id']).lock:
+        if _isolated_launch.hold_vendor_recovery(session):
+            return
     if not _guardian_should_recover(session):
         if session.get('guardian_state') == 'recovering':
             session['guardian_state'] = 'needs_attention'
@@ -18085,6 +18441,10 @@ def _guardian_check_session(sid, session, now):
 
     # State 6: error session with pending recovery message — retry or trip breaker
     if status == 'error' and session.get('pending_recovery_message'):
+        with proj_lock:
+            vendor_hold = _isolated_launch.hold_vendor_recovery(session)
+        if vendor_hold:
+            return
         attempts = session.get('recovery_attempts', 0)
         last_recovery = session.get('last_recovery_time', 0)
         if attempts >= 2 and now - last_recovery < 60:

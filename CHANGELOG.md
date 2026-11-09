@@ -6,10 +6,37 @@
 - Added scheduler Auto/Subscription billing, reserve editing and background/session spend totals in the API credits card, and a chat header badge. Schedule opt-outs also reach workflow steps and steward-role dispatches; attended chats retain subscription billing.
 - Branch candidate only. No merge, push, server restart or paid run; live scheduled-run verification remains the integration gate. Contract and checks: `docs/API_CREDITS_SESSION.md`.
 
+## [2026-11-09] - Refuse padded MIME shaping-header names (MC-1166 unit 3 round 13)
+
+- The inbound plain-text strip refuses whitespace before the colon of Content-Type, Content-Disposition, Content-Transfer-Encoding and Content-ID in every parsed MIME part, including dropped subtrees. This closes an extraction bypass that kept attachment text or raw HTML; duplicate-header refusal retains priority.
+- Ported the review's six leak probes and added padding, nesting, encoding, related-root and ordinary-input controls. Branch candidate only; no merge, push, restart or deployment.
+
 ## [2026-11-08] - Specify owner-only per-install agent email
 
 - Added `docs/AGENT_MAIL_SPEC.md`: opt-in installation enrollment, verified-owner sending, identified activation counts, authenticated and laundered replies, durable offline replay, and exact-conversation follow-up requirements. Eight design decisions remain open for Dave, with alternatives, recommendations and costs.
 - Specification only; no implementation, enrollment, mail, deployment, merge or push. Privacy/disclosure updates and a real-mail pilot remain launch gates.
+
+## [2026-11-09] - Save live isolated resume refusals on Run Now (MC-1165 round 10)
+
+- Claude dispatch checks isolated session reuse before generic conversation duplication, so a live owner of the reused session returns HTTP 409 with `refused` and `session_id`, and Run Now saves `last_error` and `last_error_at` instead of returning an unrecorded 400.
+- Kept duplicate protection for a different live owner and the locked liveness recheck. Added Fenn's five real-guard probes and two different-owner controls. Branch candidate only; no merge, push or restart.
+
+## [2026-11-07] - Cold review: four review blockers fixed (MC-1165 round 2)
+
+- `hold_reason` reads the rejection list, the branch record and its `cold` marker from one store snapshot; a hand pass plus a concurrent cold rejection can no longer read as a cold pass (the interleaved merge landed a rejected tip).
+- The cold-review callback is bound to the turn that ended and decides under the project lock: a session resumed during the review keeps its worktree (`_worktree_cold_review_done`).
+- A completion that arrives while a review of the branch is running is remembered; the worker re-checks the tip, reviews a newer one, and no retry is spent on a tip that moved.
+- The two-attempt budget is keyed by commit SHA and reserved atomically (`reserve_attempt`), shared by every branch name on that commit.
+
+## [2026-11-07] - Cold review wired into merge-back (MC-1165 round 1)
+
+- A project with `cold_review_required: true` gets a toolless one-shot review (`ClaudeRuntime.oneshot`) of the branch tip before `merge_back`. The reviewer sees only the diff and the dispatched task text. Runs on a worker thread because the session-end handler executes inside the project lock on stream-reader threads; the worker re-enters `_worktree_merge_back_on_end`. New: `mc/cold_review_runner.py`, `mc/cold_review_gate.py`; wiring is 10 lines in `agent_worktree.py` and 15 in `agent_routes.py`.
+- The verdict is recorded by an internal function only (no HTTP route) as a cold record with an empty `reviewer_session`. `hold_reason` demands that cold record when the setting is on, so a hand-recorded pass no longer satisfies it. An error, timeout or malformed reply retries once; two attempts per tip SHA, then the merge holds for a human with the attempt count and last error in the hold message. Off by default; residual risk (a diff that talks the reviewer into approving) is documented in `docs/COLD_REVIEW.md`. Branch candidate only; no merge, push or restart.
+
+## [2026-11-07] - Cold-review packet and verdict parser, setting added (MC-1165, partial)
+
+- New `mc/cold_review.py`: builds a reviewer's whole input from git (merge-base..tip diff) plus the item ask, nothing else, and reads its reply strictly (one JSON object, verdict exactly `pass` or `changes_requested`; anything else holds). An empty diff, missing ask, oversize diff (refused, never truncated) or unreadable ref raises instead of building a partial packet.
+- `cold_review_required` project setting (off unless boolean `true`) joins `verify_command` in the human-only safety keys. Nothing dispatches a reviewer or reads the setting yet: reviewer type, sync vs async and retry are open choices listed in `docs/COLD_REVIEW.md`. Branch candidate only; no merge, push or restart.
 
 ## [2026-11-07] - Landing gate blocks every red branch (MC-1164 round 9)
 

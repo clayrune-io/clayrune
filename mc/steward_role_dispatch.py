@@ -18,7 +18,7 @@ from pathlib import Path
 import uuid
 from typing import Any, Callable, Iterator, Protocol, cast
 
-from mc import characters, engine_selection, state
+from mc import characters, engine_selection, isolated_launch as _isolated_launch, state
 from mc import steward_role_model as model, steward_role_task as composer
 from mc.steward_role_state import RoleStateStore
 from mc import steward_role_comms as comms
@@ -438,7 +438,11 @@ class SchedulerServices:
             sid = previous['session_id']
             revive = (self.scheduler._revive_from_agent_log if prepared.assignment['provider'] == 'claude'
                       else self.scheduler._revive_non_claude_from_agent_log)
-            if not revive(pid, sid, task, project, role_context=prepared):
+            try:
+                revived = revive(pid, sid, task, project, role_context=prepared)
+            except _isolated_launch.RevivalRefused as exc:
+                raise model.RoleError(f'role revival refused: {exc}; recovery held') from exc
+            if not revived:
                 raise model.RoleError('role revival failed; no fresh fallback, recovery held')
             if prepared.assignment['provider'] != 'claude':
                 wait_native_delivery(state.agent_sessions.get(sid))

@@ -298,6 +298,7 @@ def test_followup_respawn_carries_the_sessions_stored_trigger_type(env):
     sid = env['ar']._dispatch_agent_internal('p1', 'do the thing', trigger_type='schedule')
     session = env['sessions'][sid]
     session['proc']._alive = False
+    session['status'] = 'completed'   # the reader flips status before it drains a follow-up (r4 refuses a 'running' one)
     env['ar']._auto_dispatch_followup(session, 'next')
     assert len(env['spawned']) == 2
     assert _marked(env['spawned'][1])
@@ -308,6 +309,7 @@ def test_followup_respawn_of_an_attended_session_stays_unmarked(env):
     sid = env['ar']._dispatch_agent_internal('p1', 'do the thing', trigger_type='manual')
     session = env['sessions'][sid]
     session['proc']._alive = False
+    session['status'] = 'completed'   # the reader flips status before it drains a follow-up (r4 refuses a 'running' one)
     env['ar']._auto_dispatch_followup(session, 'next')
     assert not _marked(env['spawned'][1])
 
@@ -320,6 +322,7 @@ def test_human_attend_restamp_drops_the_marker_on_the_next_respawn(env):
     session = env['sessions'][sid]
     session['trigger_type'] = 'manual'
     session['proc']._alive = False
+    session['status'] = 'completed'   # the reader flips status before it drains a follow-up (r4 refuses a 'running' one)
     env['ar']._auto_dispatch_followup(session, 'next')
     assert not _marked(env['spawned'][1])
 
@@ -367,6 +370,7 @@ def test_followup_respawn_of_an_unattended_session_self_tests_again(env):
     sid = env['ar']._dispatch_agent_internal('p1', 'do the thing', trigger_type='schedule')
     session = env['sessions'][sid]
     session['proc']._alive = False
+    session['status'] = 'completed'   # the reader flips status before it drains a follow-up (r4 refuses a 'running' one)
     env['self_test']['result'] = (False, 'fence broke between turns')
     env['ar']._auto_dispatch_followup(session, 'next')
     # This site already turns a Popen-time exception into a log line and a
