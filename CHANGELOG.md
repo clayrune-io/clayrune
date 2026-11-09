@@ -1,5 +1,35 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Contain Windows transforms before they execute (MC-1166 unit 5 round 5)
+
+- Deadline transforms now launch suspended, join a kill-on-close Job Object, then resume their primary thread through documented Toolhelp32/OpenThread/ResumeThread APIs. Failed job setup or resume terminates the original Popen handle, reaps the root and persists a hold without reclaim.
+- Added real Windows failure probes proving a wrapper cannot exit or spawn before assignment, plus thread discovery, handle cleanup and launch-order tests. POSIX launch and secrets-exec behavior are unchanged; the latter's pre-assignment window remains a follow-up.
+- Local branch candidate only; no merge, push, restart or real mail/model calls.
+
+## [2026-11-09] - Keep transform descendants owned after wrapper exit (MC-1166 unit 5 round 4)
+
+- Deadline transforms now cancel a Windows kill-on-close Job Object or the recorded POSIX session group while its pipe reader is alive. Descendants remain reachable after wrapper exit; exited roots still refuse PID-tree kills. Cleanup stays inside the total budget.
+- Extracted the existing Windows job helpers into one shared module used by both secrets-exec callers and transforms; their PID-tree fallback refuses exited roots. Assignment still follows Popen; descendants spawned before assignment can escape this existing window. Transform job-setup failure refuses execution results.
+- Added registered real-process live/exited-root regressions and job/group ownership tests. Local branch candidate only; no merge, push, restart or real mail/model calls.
+
+## [2026-11-09] - Enforce mail-transform deadlines during HTTP and CLI I/O (MC-1166 unit 5 round 3)
+
+- Deadline callers use an owned streamed HTTP session with a watchdog that shuts down the active socket, including trickling headers and response bodies. API credit selection/accounting and no-deadline calls keep their existing paths.
+- Deadline CLI calls use Popen with a live owned-root check, Windows `taskkill /F /T /PID` or the existing guarded POSIX helper, and a half-second cap on cleanup/output draining reserved inside the total budget. Cancellation starts half a second before deadline, immediately when that much or less remains. Store lease fencing is unchanged; timeout holds persist before the lease expires.
+- Retained the independent real-I/O review probes as registered-process smokes. The committed HTTP probe accepts only specified peer disconnects after deadline (50ms measurement tolerance), and asserts durable timeout state, elapsed time below the lease, and no reclaim, per Dave's 13:03 decision. Branch candidate only; no merge, push, restart or real mail/model calls.
+
+## [2026-11-09] - Bound agent-mail extraction across API and CLI fallback (MC-1166 unit 5 round 2)
+
+- Added an optional total monotonic deadline to the verified Claude transform. API and CLI legs receive only the remaining budget; subscription fallback is skipped below three seconds. Callers without a deadline retain their existing per-leg timeout behavior.
+- Agent mail caps extraction at 25 seconds and the actual remaining claim lease minus three seconds. Exhaustion becomes a durable `extraction_timeout` hold after one attempt, preserving late-result fencing and avoiding automatic retry expenditure.
+- Retained Fenn's synthetic deadline regression and immediate-failure positive control as repository tests, with additional budget, lease and legacy compatibility coverage. Branch candidate only; no merge, push, restart, live mail/model calls or credential use.
+
+## [2026-11-09] - Hold unsafe agent mail before conversation delivery (MC-1166 unit 5)
+
+- Added a disabled recorded-event adapter, strict free-text extraction with quote/forward separation, and command/invisible-Unicode holds using the existing verified Claude transform. Removed fixed-owner assumptions from the legacy digest prompt while retaining its schema.
+- Added a versioned, signed body-free hold from Worker queue/replay into local custody for authenticated mail with no retained text, including empty multipart/signed replies. The hold persists with its reason and never reaches a model; envelopes containing body fields or unknown versions refuse custody.
+- Branch candidate only, default-disabled. Synthetic cross-language/security/recovery checks cover the adapter and held-event transport; no wake, enrollment, real-model/mail validation, merge, push, restart or deployment. Contract: `docs/AGENT_MAIL_TRANSPORT.md`.
+
 ## [2026-11-09] - Accept signed agent mail into the local durable inbox (MC-1166 unit 4)
 
 - Added a dedicated, default-disabled receiver with mail-only Ed25519 verification, immutable local thread bindings and one SQLite transaction for consent, replay claims and inbox custody. Lost acknowledgments can retry with a fresh nonce without duplicating an event.

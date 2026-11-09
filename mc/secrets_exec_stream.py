@@ -61,9 +61,11 @@ from dataclasses import dataclass
 from mc import process_ledger
 from mc import secrets_exec_stream_wire as wire
 from mc import secrets_store as vault
-from mc.blueprints.secrets_routes import _kill_process_tree, _parse_pairs, _win_job_object_for
+from mc.blueprints.secrets_routes import _kill_process_tree, _parse_pairs
 from mc.core import _log, now_iso
 from mc.state import process_tracker_lock, tracked_processes
+from mc.windows_process_job import (create_for as _win_job_object_for,
+                                    set_kill_on_close as _set_kill_on_close)
 
 CONSUMER = 'server-exec-stream'
 
@@ -78,9 +80,6 @@ EXIT_DRAIN_S = 2.0      # after the child exits, how long its pipes may still dr
 READ_CHUNK = 65536
 QUEUE_FRAMES = 64        # bounded: a slow reader backs the child up, not the server
 MAX_STDIN_POST = 1 << 20
-
-_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
-_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 
 
 def _max_age_s() -> float:
@@ -228,44 +227,6 @@ class StreamRedactor:
 def _signed32(code: int) -> int:
     """Windows reports e.g. 0xC000013A as an unsigned int; the wire carries int32."""
     return code - (1 << 32) if code >= (1 << 31) else code
-
-
-def _set_kill_on_close(job) -> bool:
-    """Windows: make closing the job handle kill every process in the job. The
-    handle is owned by this (server) process, so however the server exits the OS
-    closes it and the child tree goes with it."""
-    from ctypes import wintypes
-
-    class _Basic(ctypes.Structure):
-        _fields_ = [('PerProcessUserTimeLimit', wintypes.LARGE_INTEGER),
-                    ('PerJobUserTimeLimit', wintypes.LARGE_INTEGER),
-                    ('LimitFlags', wintypes.DWORD),
-                    ('MinimumWorkingSetSize', ctypes.c_size_t),
-                    ('MaximumWorkingSetSize', ctypes.c_size_t),
-                    ('ActiveProcessLimit', wintypes.DWORD),
-                    ('Affinity', ctypes.c_size_t),
-                    ('PriorityClass', wintypes.DWORD),
-                    ('SchedulingClass', wintypes.DWORD)]
-
-    class _IoCounters(ctypes.Structure):
-        _fields_ = [(n, ctypes.c_uint64) for n in (
-            'ReadOperationCount', 'WriteOperationCount', 'OtherOperationCount',
-            'ReadTransferCount', 'WriteTransferCount', 'OtherTransferCount')]
-
-    class _Extended(ctypes.Structure):
-        _fields_ = [('BasicLimitInformation', _Basic), ('IoInfo', _IoCounters),
-                    ('ProcessMemoryLimit', ctypes.c_size_t),
-                    ('JobMemoryLimit', ctypes.c_size_t),
-                    ('PeakProcessMemoryUsed', ctypes.c_size_t),
-                    ('PeakJobMemoryUsed', ctypes.c_size_t)]
-
-    kernel32 = ctypes.windll.kernel32
-    kernel32.SetInformationJobObject.argtypes = [
-        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
-    info = _Extended()
-    info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    return bool(kernel32.SetInformationJobObject(
-        job, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ctypes.byref(info), ctypes.sizeof(info)))
 
 
 class StreamSession:

@@ -98,7 +98,8 @@ def _estimate_tokens(text: str) -> int:
 
 
 def try_offload(*, user_text: str, model: str, timeout: float,
-                post: Optional[Callable[..., Any]] = None):
+                post: Optional[Callable[..., Any]] = None,
+                deadline: Optional[float] = None):
     """See module docstring. `post` is the transport's injectable HTTP call."""
     try:
         s = budget.load_settings()
@@ -112,8 +113,9 @@ def try_offload(*, user_text: str, model: str, timeout: float,
         if key is None:
             budget.note_error(why)
             return None
+        deadline_kw: Dict[str, Any] = {} if deadline is None else {'deadline': deadline}
         res = transport.send(api_key=key, model=resolved, user_text=user_text,
-                             timeout=timeout, post=post)
+                             timeout=timeout, post=post, **deadline_kw)
         cost: Optional[float] = None
         if res.usage and (res.ok or res.error_kind == transport.TRUNCATED):
             cost = budget.cost_usd(resolved, res.usage, s.get('prices'))

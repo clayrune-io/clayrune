@@ -1,10 +1,10 @@
-# Agent mail transport and local receiver (MC-1166 units 2/4)
+# Agent mail transport, local receiver and laundering (MC-1166 units 2/4/5)
 
 Branch candidate only. No deployment, account call, enrollment, credentials,
 real mail, merge, push, restart or live enablement is part of this unit.
 Parent requirements: [AGENT_MAIL_SPEC.md](AGENT_MAIL_SPEC.md). Dave resolved D7's
 wire choice as **B, separate mail-only Ed25519 identities**, on 2026-11-09.
-This document is the shared contract for unit 4 (receiver) and unit 7 (enrollment).
+This document is the shared contract for the receiver, laundering and enrollment.
 
 ## Signing contract v1
 
@@ -207,6 +207,28 @@ Delivery body (the exact persisted JSON bytes are retried): `version` numeric 1,
 `received_at` and `expires_at` in epoch milliseconds. There are no callback,
 project/session or permission fields supplied by incoming mail.
 
+Body-free held-event variant: `version` numeric **2** replaces `text` with
+`reason`, currently only `empty_body`. Every other v1 field remains required;
+`body_digest` must be SHA-256 of zero bytes. The exact schema admits no body,
+text, reply text or arbitrary additional fields, even if empty or validly signed.
+Unknown versions/reasons refuse custody. This is an envelope version; the
+Ed25519 signing header/canonical contract remains v1 and binds **every** envelope
+field through its exact-byte request digest. `held-envelope.js` owns the Worker
+projection; `ingress.js` only selects it after authentication and successful
+stripping leave no text (including empty plain/signed, image-only or attachment-only
+mail). Failed MIME/HTML extraction still refuses at the edge.
+
+The Worker queues and replays this variant through the ordinary pending/delivery
+path; an authenticated empty message spends owner ingress allowance but is not
+an SMTP rejection. The local receiver atomically inserts a `blocked` event with
+reason `empty_body`, body NULL and length zero before acknowledging custody.
+Owner status can read its reason through the existing event metadata APIs; the
+owner UI remains unit 7. The hold persists across restart, blocks later submission
+in that conversation, and follows existing expiry/revocation/retention rules.
+It cannot be released into laundering because no content exists; owner rejection
+or eventual expiry can unblock the queue. No model receives this variant. Missing
+or invalid incoming Message-IDs retain the existing Worker-only hold policy.
+
 Only the following **HTTP 200** receipt transfers custody:
 
 ```json
@@ -309,6 +331,168 @@ outbound wiring and owner-facing status/recovery/deletion. Service pin/thread
 metadata retention/deletion and cleanup scheduling must be wired there; no
 enabled service is claimed by these internal Python seams. The Worker shared
 breaker P2, real Cloudflare ingress provenance and all live pilot gates remain.
+
+## Recorded-event laundering adapter (unit 5)
+
+`mc/agent_mail_launder.py` exposes `MailLaunder(store, enabled=False)` as a
+trusted Python integration seam, with no new route, scheduler or live setting.
+Only literal `enabled=True` allows `process_next()` to claim one already recorded
+event. Its return contains only event id, state and reason; ready text remains
+inside the dedicated inbox. No wake, provider submission, question consumption,
+outbound send or enrollment is performed. Units 6/7 own that integration.
+
+`mc/agent_mail_screen.py` conservatively holds command/tool syntax, impersonation,
+permission/approval requests, residual HTML, controls and invisible Unicode.
+Screening covers the whole input, including quoted/forwarded sections. It never
+silently removes or truncates those bytes; ambiguous everyday command words can
+therefore require owner review. This detector is not a complete injection defense.
+
+`mc/agent_mail_extract.py` uses the shared `claude_mail_transform()` in
+`mc/mail_launder.py`, backed by the verified isolated Claude text transform.
+Other providers fail closed. Legacy decision-digest callers keep their schema;
+their prompt no longer assumes an installation-specific owner identity. Child
+exceptions/errors are sanitized to constant codes, never echoed mail bodies.
+No real model calls are part of this unit's synthetic verification.
+
+The new extractor accepts exactly one bounded JSON object, false boolean
+ambiguity/failure/truncation/instruction flags, and literal ordered reply/quote/
+forward segments covering the entire input. Exactly one fresh reply segment
+must match `reply_text`. Excluded quoted/forwarded bytes never enter the ready
+envelope. Notes and free-text questions use the same extraction, with **no**
+invented yes/no decision. The stored envelope has version, source, event id,
+warning, reply text and quote/forward-presence flags; it remains untrusted data,
+never approval or authority to change permissions or bypass a human gate.
+
+Unavailable runtime, timeout, malformed/oversize output, ambiguity and flags
+become visible durable holds without raw fallback. The adapter computes one
+absolute monotonic deadline from `min(25 seconds, configured timeout, actual
+remaining persisted lease - 3 seconds)`. Claim validation/preparation time is
+therefore deducted before extraction. An insufficient initial budget holds
+without calling the model. The optional `deadline` keyword passes through the
+shared transform seam into `ClaudeRuntime.oneshot`; API credits and subscription
+CLI fallback each receive only the remaining budget, capped by the per-leg
+timeout. Fallback is skipped when fewer than three seconds remain. Exhaustion,
+a CLI timeout, or a result returned after the total deadline raises `TimeoutError`
+and becomes the durable visible `extraction_timeout` hold after one attempt,
+with no automatic retry spend. Callers omitting the deadline retain the existing
+per-leg timeout and return behavior; API credits billing selection is preserved.
+Deadline policy lives in `mc/transform_deadline.py`; the runtime only wires the
+optional parameter and checks its legs.
+
+For deadline callers, `mc/transform_http_deadline.py` owns a streamed requests
+session. The calling thread watches the absolute deadline across headers and
+body reads, shuts down/closes the active socket and closes the session on
+exhaustion; a trickle cannot extend the budget. Socket references survive
+urllib3 detaching a `Connection: close` response from its connection. A blocked
+resolver/connect worker cannot delay the caller; cancellation refuses any
+connection completing afterward. No response returned after the deadline is
+accepted. `mc/transform_process_deadline.py` uses Popen and daemon pipe readers.
+Windows creates the root with `CREATE_SUSPENDED`, assigns it to a Job Object
+with `KILL_ON_JOB_CLOSE`, then resumes its primary thread; cancellation
+uses `TerminateJobObject` then closes the handle, reaching descendants even when
+the wrapper has exited. `mc/windows_process_job.py` owns the shared helpers
+extracted from the existing secrets-exec routes/stream; both callers import them.
+Their Windows fallback also refuses an exited root before any PID-tree command.
+The transform root executes no user code before assignment. Popen closes the
+original primary-thread handle, so `resume_suspended` uses the documented
+Toolhelp32 `TH32CS_SNAPTHREAD` snapshot, filters `th32OwnerProcessID` against
+the owned root, requires exactly one thread, and calls `OpenThread` with
+`THREAD_SUSPEND_RESUME` then `ResumeThread`. Only a previous suspend count of
+one is accepted. Snapshot and thread handles close on success and failure.
+Failed job setup or resume refuses results, calls `TerminateProcess` with the
+original Popen process handle (never a PID lookup), waits inside the remaining
+cleanup budget and closes pipes/job. Mail persists an `extraction_failed` hold
+without reclaim. POSIX launch is unchanged. Secrets exec still assigns a
+running root; its pre-assignment descendant window is a separate follow-up.
+POSIX records the new-session pgid at spawn and signals it through
+`proc_kill.safe_killpg_recorded` only while the pipe reader is alive. This avoids
+resolving a stale root PID and refuses empty-holder and server-group targets.
+Cleanup and output draining share a 0.5-second cap reserved inside the total
+extraction budget: cancellation starts at deadline minus 0.5 seconds, or
+immediately if 0.5 seconds or less remains at entry (Dave's 13:14 decision).
+Startup time consumes that same budget. An exited root is never passed to the tree
+killer. The Windows job handle is released exactly once on success, error or
+cancellation; close also terminates remaining members. Omitted/None deadlines
+retain the original requests/subprocess.run paths.
+
+Finalization shares the store write transaction with
+consent/generation/thread/expiry/lease revalidation; a late result cannot make a
+revoked or expired claim ready. Existing crash/backoff recovery is bounded;
+explicit hold release does not reset attempts. Body-free v2 holds are never
+claimed, sent to a model or submitted.
+
+Dave selected the body-free local-custody variant on 2026-11-09. Cross-language
+tests exercise real Worker MIME strip, D1 queue, replay signing and Python
+custody for empty plain and multipart/signed messages; tampered held bytes,
+validly signed held envelopes containing text, and unknown envelope versions
+refuse without recording a nonce or event. The original body-bearing custody
+test now surfaces Node child stderr on failure.
+
+Verification from the checkout root (installation launcher path/interpreter may
+be supplied absolutely when running from a worktree):
+
+```text
+python tools/test-run.py --project mission_control --port 5199 -- python -m pytest -o addopts= tests/test_agent_mail_launder.py tests/test_mail_launder.py tests/test_agent_mail_store.py tests/test_agent_mail_ingress.py tests/test_agent_mail_held.py tests/test_agent_mail_deadline_review.py tests/test_transform_deadline.py -q --tb=short
+python tools/test-run.py --project mission_control --port 5199 -- pyright mc/agent_runtime.py mc/transform_deadline.py mc/agent_mail_extract.py mc/agent_mail_launder.py mc/mail_launder.py
+```
+
+From `workers/agent-mail`, use the installation's absolute launcher path with
+`--project mission_control --port 5199 --shell powershell --command "npm test"`
+on Windows (or the corresponding explicit shell on other platforms). The
+shell preserves the existing npm script exactly; no guessed test expansion.
+`tests/test_agent_mail_deadline_review.py` retains Fenn's original cold review
+probes. The deadline regression synchronizes its fake monotonic and persisted
+lease clocks: a 25-second API failure holds after one attempt without CLI or
+automatic retry, while an immediate API failure plus six-second CLI extraction
+reaches ready. `tests/test_transform_deadline.py` covers reduced/fractional leg
+budgets, the three-second fallback boundary, late results and omitted/None
+deadline compatibility. The adapter tests also consume lease time before
+extraction. Launcher progress capture may report gaps; counts are framework
+results, not complete dashboard telemetry or live-provider verification.
+
+Round 2 verification: the five mail files plus both deadline regression files
+passed 379 cases (exit 0); the Claude/provider/default/transform/sandbox/authorized
+bridge/API-credits selection passed 512 with one skipped (exit 0); Worker npm
+passed 741 (exit 0). Pyright on the five touched Python modules reported zero
+errors, warnings and informations (exit 0). The temporary Worker dependency
+junction was removed nonrecursively after all cross-language tests completed;
+the main checkout dependency remained intact. No live mail/model validation,
+merge, push, restart or deployment was performed.
+
+Round 3 adds the real-I/O review probes at
+`tools/smoke/agent_mail_deadline_probe.py` (12 cases) and
+`tools/smoke/agent_mail_cli_tree_probe.py` (live-root and exited-root cases). Run them with the
+same installation launcher and `python -m pytest -o addopts=` selection.
+These smokes register their harmless synthetic children with the live Process
+Manager; they live outside `tests/`, whose live-state guard correctly refuses
+that registration. No guard or permission setting is changed. The HTTP probe
+uses real requests/urllib3 reads on a socket pair, with no listener/provider.
+Per Dave's 2026-11-09 13:03 decision, its only relaxed assertion permits
+ConnectionAbortedError/ConnectionResetError/BrokenPipeError or OSError winerror
+10053/10054, recorded at/after the absolute deadline minus 50ms measurement
+tolerance. Other errors or early disconnects fail. Added assertions require
+elapsed time below the lease, persisted blocked/extraction_timeout after one
+attempt, and no automatic reclaim. Original reviewer files remain byte-identical
+in retained scratch evidence. Synthetic clock mocks also target the new CLI
+runner seam; their assertions remain unchanged. The descendant probe requires
+elapsed < 3.2 seconds plus only 0.25 seconds of scheduling margin. Eleven isolated tests in
+`tests/test_transform_hard_io_deadline.py` cover headers, body trickles including
+`Connection: close`, timely success, stale-root refusal, bounded cleanup and
+immediate cancellation with 0.5 seconds or less remaining.
+Round 4 adds `tests/test_transform_process_ownership.py` for Job Object
+configuration/assignment/failure/close semantics and the recorded-group seam.
+The exited-root smoke asserts the wrapper exited before cancellation, its
+registered grandchild is gone, the pipe reader finished and no event can be
+reclaimed. On Windows the test registers its root immediately after job
+assignment, while still suspended.
+Round 5 adds `tests/test_windows_suspended_process.py` for primary-thread
+selection, native API failures, handle release, flag preservation and setup
+order, plus `tools/smoke/agent_mail_suspended_probe.py`. The latter uses real
+Windows Popen/WinAPI calls and deliberately waits before assignment: the wrapper
+cannot execute, exit or spawn. Forced native setup/assignment/resume failures
+must reap the root, close pipes, persist a hold and leave no descendant. Fenn's
+original exited-before-assignment fixture is retained unchanged as evidence;
+waiting for a suspended wrapper to exit before assignment is now impossible.
 
 ## D1 ledger, replay, bounds and visibility
 

@@ -547,8 +547,9 @@ const h=await sign({...f.serviceKeys,key_id:'service1',install_id:'install1',gen
 console.log(JSON.stringify({public_key:f.serviceKeys.publicKey,headers:Object.fromEntries(h),raw:e.payload}));
 """
     result = subprocess.run(['node', '--input-type=module', '-e', script], text=True,
-                            capture_output=True, check=True, timeout=20,
+                            capture_output=True, check=False, timeout=20,
                             cwd=Path(__file__).resolve().parents[1])
+    assert result.returncode == 0, f'Node child exited {result.returncode}:\n{result.stderr}'
     fixture = json.loads(result.stdout)
     # New synthetic enrollment; never overwrite an existing immutable pin.
     store = MailStore(ingress.store.path.parent / 'worker.sqlite3', clock=setup[1])

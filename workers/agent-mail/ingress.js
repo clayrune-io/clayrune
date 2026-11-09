@@ -4,6 +4,7 @@ import { decide } from './auth.js';
 import { strip } from './strip.js';
 import { strictMsgId } from './content-id.js';
 import { bytes, sha256 } from './signing.js';
+import { heldEnvelope } from './held-envelope.js';
 export async function readBounded(stream, limit) {
   const reader = stream.getReader(); const chunks = []; let size = 0;
   try {
@@ -85,7 +86,6 @@ export async function ingress({ message, ledger, config, now }) {
   if (!await ledger.limit(`ingress:${reg.install_id}`, ledger.policy.ingressPerDay, now)) return drop('ingress_limit');
   const content = await strip(raw);
   if (!content.ok) return drop(content.reason_code);
-  if (!content.has_text) return drop('no_plain_text');
   const ids = headers.filter((h) => h.key === 'message-id');
   const incoming_id = ids.length === 1 ? strictMsgId(ids[0].value) : null;
   const digest = await sha256(bytes(content.text));
@@ -97,5 +97,5 @@ export async function ingress({ message, ledger, config, now }) {
     thread_id: decision.thread.thread_id, incoming_message_id: incoming_id, text: content.text,
     body_digest: digest, auth: decision.evidence, received_at: now, expires_at: now + ledger.policy.queueTTL };
   return ledger.enqueue(reg, { event_id, incoming_id: identity, thread_id: decision.thread.thread_id,
-    digest, payload, held: incoming_id === null }, now);
+    digest, payload: content.has_text ? payload : heldEnvelope(payload), held: incoming_id === null }, now);
 }

@@ -13,7 +13,7 @@ from typing import Any, Mapping
 from mc.agent_mail_envelope import MAX_REQUEST_BYTES, parse_envelope
 from mc.agent_mail_signing import (ID, IngressRefused, ServicePin, SKEW_MS,
                                    VerifiedRequest, verify)
-from mc.agent_mail_store import (LOCAL_RECEIVED, SUBMITTED, TERMINAL_STATES, MailStore,
+from mc.agent_mail_store import (BLOCKED, LOCAL_RECEIVED, SUBMITTED, TERMINAL_STATES, MailStore,
                                  _bounded_digest, hash_thread_token)
 
 
@@ -157,8 +157,9 @@ class MailIngress:
         if db.execute('SELECT 1 FROM events WHERE event_id=?', (env['event_id'],)).fetchone():
             raise IngressRefused('event_conflict')
         cfg = self.store.config
-        body = env['text']
-        digest, blen = _bounded_digest(body, cfg.max_body_bytes)
+        held = env['version'] == 2
+        body = None if held else env['text']
+        digest, blen = _bounded_digest(body or '', cfg.max_body_bytes)
         if blen > cfg.max_body_bytes:
             raise IngressRefused('body_limit')
         excluded = sorted(TERMINAL_STATES | {SUBMITTED})
@@ -175,11 +176,11 @@ class MailIngress:
         if db.execute('SELECT 1 FROM events WHERE dedupe_key=?', (dedupe,)).fetchone():
             raise IngressRefused('event_conflict')
         db.execute('INSERT INTO events(event_id,registration_id,thread_hash,project_id,session_id,'
-                   'generation,message_id,dedupe_key,body_digest,body_len,state,body,'
-                   'received_at,state_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                   'generation,message_id,dedupe_key,body_digest,body_len,state,body,reason,'
+                   'received_at,state_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                    (env['event_id'], env['install_id'], thash, binding['project_id'],
                     binding['session_id'], env['generation'], mid, dedupe, digest, blen,
-                    LOCAL_RECEIVED, body, now, now,
+                    BLOCKED if held else LOCAL_RECEIVED, body, env['reason'] if held else '', now, now,
                     min(env['expires_at'] / 1000, now + cfg.queue_ttl_seconds)))
         db.execute('INSERT INTO mail_ingress_receipts VALUES(?,?,?,?)',
                    (env['event_id'], envelope_digest, env['body_digest'], env['expires_at']))

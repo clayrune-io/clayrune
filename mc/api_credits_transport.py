@@ -91,8 +91,12 @@ def _classify_http(status: int, message: str) -> str:
 
 def send(*, api_key: str, model: str, user_text: str, system_text: str = '',
          max_tokens: int = DEFAULT_MAX_TOKENS, timeout: float = 180,
-         post: Optional[Callable[..., Any]] = None) -> TransportResult:
+         post: Optional[Callable[..., Any]] = None,
+         deadline: Optional[float] = None) -> TransportResult:
     """POST one system + one user message. `post` is injectable for tests."""
+    if deadline is not None and post is None:
+        from mc.transform_http_deadline import post as deadline_post
+        post = lambda *args, **kw: deadline_post(*args, deadline=deadline, **kw)
     post = post or requests.post
     body: Dict[str, Any] = {
         'model': model,
@@ -105,7 +109,7 @@ def send(*, api_key: str, model: str, user_text: str, system_text: str = '',
                'content-type': 'application/json'}
     try:
         resp = post(API_URL, headers=headers, json=body, timeout=max(1, float(timeout)))
-    except requests.Timeout:
+    except (requests.Timeout, TimeoutError):
         return TransportResult(False, error_kind=TIMEOUT,
                                error_message=f'timeout after {timeout}s')
     except Exception as e:
