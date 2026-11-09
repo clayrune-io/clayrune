@@ -8841,7 +8841,8 @@ def _session_cumulative_transcript_telemetry(project_id, session):
 
 
 def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
-                                write_turn_start=True, attempt=None, self_started=False):
+                                write_turn_start=True, attempt=None, self_started=False,
+                                postlaunch=False):
     """Write a placeholder agent_log row at dispatch time so trigger correlation
     survives a server restart that kills the session before _log_agent_completion
     can run.
@@ -8865,6 +8866,10 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
     manager lock, then claims and marks running in that same critical section.
     Already-running work keeps its reader on storage failure; its live token
     rolls back to the saved owner. False means another delivery won the claim.
+
+    `postlaunch=True` extends token rollback to callback-turn bookkeeping
+    after that claim. Strict errors still propagate to the rearm caller;
+    prelaunch callers retain their existing refusal policy.
     """
     project_id = session.get('project_id')
     skip_history = not project_id or session.get('incognito') or session.get('housekeeping')
@@ -9023,7 +9028,7 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
             if not skip_history:
                 _update_agent_log(project_id, upsert)
         except Exception as e:
-            if self_started:
+            if self_started or postlaunch:
                 if had_attempt:
                     session['_delivery_attempt_id'] = prior_attempt
                 else:
@@ -9305,11 +9310,8 @@ def _note_self_started_turn(session):
     if not _log_agent_dispatch_pending(session, write_turn_start=False, self_started=True):
         return
     background_wake = bool(session.pop(_bg_tasks.RESUME_PENDING_KEY, None))
-    # MC-998 round 4: this turn never passes the dispatch-pending writer, so
-    # the usage store still held the previous turn's 'completed' fact (or a
-    # reconcile-closed one) while it ran -- every automatic wake, not only
-    # the INTERIM-latched one below, reopens it. Same exclusions as that
-    # writer, same best-effort write.
+    # Every automatic wake, not only the INTERIM-latched one below, records
+    # its turn_start even if its pending-history claim could not be saved.
     _record_usage_breakdown_turn_started(session)
     interim = session.pop(_bg_tasks.INTERIM_KEY, None)
     background_wake = background_wake or bool(interim)
@@ -9331,7 +9333,7 @@ def _note_self_started_turn(session):
         if lines is not None and not last.startswith('['):
             lines.append('[agent started a new turn on its own — not sent from Clayrune]')
         try:
-            _rearm_notify_for_new_turn(session)
+            _rearm_notify_for_new_turn(session, postlaunch=True)
         except Exception as e:
             _log(f"[bg-tasks] could not re-arm spawner callback for "
                  f"{session.get('session_id', '')}: {e}")
@@ -9472,7 +9474,7 @@ def _release_held_job_notify_if_expired(session, now):
     return True
 
 
-def _advance_delegation_turn(session, owner: "str | None" = _OWNER_HUMAN):
+def _advance_delegation_turn(session, owner: "str | None" = _OWNER_HUMAN, *, postlaunch=False):
     """Turn-bookkeeping for a new turn on an existing session, WITHOUT
     touching the `_notify_session_sent` latch.
 
@@ -9505,22 +9507,24 @@ def _advance_delegation_turn(session, owner: "str | None" = _OWNER_HUMAN):
         session[_TURN_OWNER_KEY] = owner
     _empty_turn.begin_turn(session)
     _allocate_delegation_turn(session)
-    # Turn identity must be durable before provider execution begins; a cold
-    # revive can then reconstruct the same child/session turn without collision.
+    # Prelaunch turn identity must be durable before provider execution begins.
+    # A self-start is already executing: a failed rearm save must restore the
+    # claimed token so its eventual completion still owns the saved row.
     # write_turn_start=False: every caller (agent_followup / agent_interrupt
     # `_start_new_turn`, `_auto_dispatch_followup`) writes the usage-breakdown
     # turn_start itself right after this returns -- a second row here would
     # only add a duplicate.
-    _log_agent_dispatch_pending(session, strict=True, write_turn_start=False)
+    _log_agent_dispatch_pending(session, strict=True, write_turn_start=False,
+                                postlaunch=postlaunch)
 
 
-def _rearm_notify_for_new_turn(session):
+def _rearm_notify_for_new_turn(session, *, postlaunch=False):
     """Re-arm the spawner-chat completion callback for a NEW turn.
 
-    Only call this when an AGENT (not a human) is explicitly sending the
+    Call this when an AGENT (not a human) is explicitly sending the
     dispatched child new work through the API `notify_session` again — a
-    followup/interrupt whose request body names `notify_session` (see the
-    call sites in `agent_followup`/`agent_interrupt`). Every other new turn
+    followup/interrupt whose request body names `notify_session` — or when
+    its self-started reader resumes spawner-owned work. Every other new turn
     on an existing session must go through `_advance_delegation_turn` instead,
     which does the same turn bookkeeping without re-arming — see MC-970.
 
@@ -9532,9 +9536,12 @@ def _rearm_notify_for_new_turn(session):
     Deliberately does not touch `_notify_workflow_sent` -- see
     `_maybe_notify_spawner`'s docstring for why that latch must stay
     permanent.
+
+    A self-started reader passes `postlaunch=True`: callback rearming is
+    bookkeeping for running work, so failed persistence rolls back its token.
     """
     session.pop('_notify_session_sent', None)
-    _advance_delegation_turn(session, owner=_OWNER_SPAWNER)
+    _advance_delegation_turn(session, owner=_OWNER_SPAWNER, postlaunch=postlaunch)
 
 
 def _notify_workflow_step(wf_wait, session, summary, *, sync=False):

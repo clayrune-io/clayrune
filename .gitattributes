@@ -37,3 +37,6 @@ tests/fixtures/dev_harness/*.json text eol=lf
 
 # Patch files must stay LF on checkout: git apply rejects CRLF hunks ("corrupt patch").
 *.patch text eol=lf
+
+# Retained reviewer regression: preserve the original bytes on every platform.
+tests/mc1168_r10/test_rearm_claim.py -text

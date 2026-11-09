@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Preserve self-start ownership through callback rearm (MC-1168 round 10)
+
+- Self-start callback rearming now carries the postlaunch token-rollback policy through its second pending-history write. Failed saves restore the preceding owner, so recovered storage can record the running turn's completion; strict prelaunch refusal remains.
+- Retained Fenn's five-case rearm regression byte-for-byte, covering the second save alone failing and both saves failing. Branch candidate only; no merge, push or restart.
+
 ## [2026-11-09] - Keep self-started readers on their current delivery (MC-1168 round 9)
 
 - Self-started Mode B turns recheck idle status and captured attempt ownership under the project lock before claiming history and marking running. Delayed wakes preserve newer scheduled or user deliveries, including their task and failure handling.

@@ -1,5 +1,6 @@
 # Runtime delivery acknowledgment (MC-1168)
 
+Round 10 extends postlaunch token rollback through self-start callback rearming.
 Round 9 closes the self-start races in round 8's durable ownership guards. `mc/delivery_attempt.py`
 mints a UUID at capture, before spawn can start an acknowledgment writer.
 It claims the existing durable session row inside the manager -> log-leaf
@@ -71,6 +72,53 @@ in `tests/mc1168_r9/test_self_start.py`; round-9 controls additionally cover
 token rollback, ownership before the first idle read, completed intervening
 deliveries, question/running transitions, manager-lock atomicity, unowned rows,
 prelaunch refusal and history exclusions. Provider processes/pipes are doubles.
+
+Callback rearming also writes pending history after allocating the next
+delegation turn. The self-start caller explicitly passes `postlaunch=True`
+through `_rearm_notify_for_new_turn` and `_advance_delegation_turn` to the
+pending writer. If this second save fails, its newly minted token is restored
+to the immediately preceding live/saved owner under the manager lock before
+the exception reaches the existing reader-side rearm catch. This works when
+only the rearm save fails and when both self-start saves fail: once storage
+recovers, completion still owns the durable row and records the new answer.
+The callback latch and allocated turn keep their existing rearm behavior.
+Ordinary API continuations use the default prelaunch policy and still raise
+on a strict persistence failure before execution begins.
+
+`tests/mc1168_r10/test_rearm_claim.py` retains Fenn's five-case round-9 review
+probe byte-for-byte: successful rearm, rearm-only failure, both saves failing,
+competing self-start claims and a manager-lock waiter overtaken by a completed
+newer delivery. Its SHA256 is
+`dedfa0bdf18fe70169658de806792a037855ad61a4979310c9be8d90dc1e91d6`;
+the scoped `.gitattributes` entry preserves these bytes on checkout. Both
+failure cases failed before the fix; the unchanged five cases pass afterward.
+No pre-existing test assertions were changed. The monolith edits extend the
+existing ownership policy across its existing rearm helpers; no new feature
+body, module or dependency is added.
+
+Round-10 validation used the installation's `tools/test-run.py`, the project
+interpreter, the task worktree cwd and unchanged r9 file order/flags:
+
+| Selection | Passed | Skipped | Exit |
+| --- | ---: | ---: | ---: |
+| Unchanged round-9 rearm probe (permanent copy) | 5 | 0 | 0 |
+| Round-9 self-start/wake selection | 50 | 0 | 0 |
+| Independent prior-review probes | 9 | 0 | 0 |
+| Focused round-4 through round-7 and prior-review probes | 50 | 0 | 0 |
+| Permanent runtime17 | 592 | 1 | 0 |
+| Resume-cwd / API credits / scheduler | 54 / 161 / 195 | 0 | 0 each |
+| Exact twelve MC-1165 isolation files | 211 | 13 | 0 |
+| Round-8 writer audit | 222 | 0 | 0 |
+| Integrated receiver | 92 | 0 | 0 |
+
+Counts overlap. Core pyright retains the same 15 pre-existing route errors
+as Fenn's r9 artifact (exit 1), with zero added or removed diagnostic
+file/rule/message/severity multiplicities. Earlier owned checks and the new
+immutable r10 regression each report zero errors (exit 0). Reporting emitted
+transport/enrollment/finalization gaps; actual framework output and child exits
+establish these results. No live provider, outbound callback, authenticated
+conversation, paid billing, POSIX locking, restart or deployment was tested.
+This is a local branch candidate, with no merge or push.
 
 Hivemind lineage/reviewer pending writers
 claim fresh IDs; the integration-review task update requires the existing ID.
