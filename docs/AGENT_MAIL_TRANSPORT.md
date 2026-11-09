@@ -384,7 +384,7 @@ claimed complete by this library/transport unit.
 Unit-4 candidate validation (2026-11-09), from the branch worktree root:
 
 ```powershell
-python C:/Users/levir/Documents/_claude/mission-control/tools/test-run.py --project mission_control --port 5199 -- python -m pytest -o addopts= tests/test_agent_mail_store.py tests/test_agent_mail_ingress.py -q
+python tools/test-run.py --project mission_control --port 5199 -- python -m pytest -o addopts= tests/test_agent_mail_store.py tests/test_agent_mail_ingress.py -q
 pyright mc/agent_mail_store.py mc/agent_mail_ingress_schema.py mc/agent_mail_signing.py mc/agent_mail_envelope.py mc/agent_mail_ingress.py mc/blueprints/agent_mail_routes.py
 ```
 
@@ -412,7 +412,7 @@ Round-3 candidate validation: 2026-11-09, whole suite **738 passed, 0 failed,
 command, cwd `workers/agent-mail`:
 
 ```powershell
-python C:/Users/levir/Documents/_claude/mission-control/tools/test-run.py --project mission_control --port 5199 --shell powershell --command 'npm test'
+python tools/test-run.py --project mission_control --port 5199 --shell powershell --command 'npm test'
 ```
 
 The targeted `node --test test/transport-round3.test.js` selection passed 14/14,
@@ -439,7 +439,7 @@ Historical round-2 candidate validation: 2026-11-09, whole suite **724 passed, 0
 cwd `workers/agent-mail`:
 
 ```powershell
-python C:/Users/levir/Documents/_claude/mission-control/tools/test-run.py --project mission_control --port 5199 --shell powershell --command 'npm test'
+python tools/test-run.py --project mission_control --port 5199 --shell powershell --command 'npm test'
 ```
 
 The targeted `node --test test/transport-round2.test.js` selection also passed
