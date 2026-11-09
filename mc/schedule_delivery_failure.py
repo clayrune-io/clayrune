@@ -17,7 +17,7 @@ def record_failure(project_id: str, schedule_id: str, session_id: str,
     Continued fires share a row. Only the failed attempt may mark it failed;
     its replacement keeps both its live owner and its durable pending state.
     """
-    from mc.blueprints.agent_routes import _update_agent_log, agent_sessions, get_manager
+    from mc.blueprints.agent_routes import _update_agent_log, get_manager
 
     attempt = getattr(error, 'delivery_attempt', None)
     if not isinstance(attempt, DeliveryAttempt):
@@ -26,28 +26,22 @@ def record_failure(project_id: str, schedule_id: str, session_id: str,
         return
 
     def failed(rows):
-        row = next((r for r in rows if r.get('session_id') == session_id
-                    and r.get('trigger_type') == 'schedule'
-                    and r.get('trigger_id') == schedule_id), None)
-        if row is not None and int(row.get('delegation_turn', 1)) > attempt.turn:
+        row = next((r for r in rows if r.get('session_id') == session_id), None)
+        if row is not None and not attempt.owns_row(row):
             _log(f'[scheduler] skipped superseded delivery failure for {session_id}: '
-                 f'row turn exceeds failed turn {attempt.turn}', flush=True)
+                 'durable attempt changed', flush=True)
             return
         if row is None:
             row = {'session_id': session_id, 'trigger_type': 'schedule',
                    'trigger_id': schedule_id}
             rows.insert(0, row)
         row.update(status='error', summary=f'Scheduled delivery failed: {error}',
-                   ts=now_iso(), task=task)
+                   ts=now_iso(), task=task, delivery_attempt_id=attempt.attempt_id)
 
     try:
         # Existing lock order: manager -> log leaf. No acknowledgment or process
         # wait occurs here. A successor cannot publish between the check/write.
         with get_manager(project_id).lock:
-            if not attempt.owns(agent_sessions.get(session_id)):
-                _log(f'[scheduler] skipped superseded delivery failure for {session_id}: '
-                     f'owner changed since turn {attempt.turn}', flush=True)
-                return
             _update_agent_log(project_id, failed)
     except Exception as exc:
         _log(f'[scheduler] could not save delivery failure for {session_id}: {exc}',

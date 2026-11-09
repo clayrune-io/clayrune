@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 import mc.agent_runtime as art
-from mc.delivery_attempt import DeliveryAttempt
+from mc.delivery_attempt import DeliveryAttempt, pending_fields
 from mc.schedule_delivery_failure import record_failure
 from test_runtime_delivery_truth import app_env, revive_env, _Proc, _Stdin  # noqa: F401
 from test_runtime_delivery_truth_r4 import scheduled  # noqa: F401
@@ -93,7 +93,8 @@ def test_takeover_between_rollback_and_recording_preserves_row(scheduled, monkey
         with env['ar'].get_manager('p1').lock:
             assert env['sid'] not in env['sessions']  # Old rollback completed.
             env['sessions'][env['sid']] = successor
-            env['history'][0].update(delegation_turn=2, status='in_progress', task='new task')
+            env['history'][0].update(delegation_turn=2, status='in_progress', task='new task',
+                                     **pending_fields(successor))
             expected.extend(deepcopy(env['history']))
         record_failure(*args)
 
@@ -105,18 +106,19 @@ def test_takeover_between_rollback_and_recording_preserves_row(scheduled, monkey
 
 
 @pytest.mark.parametrize('owner', ['absent', 'disowned', 'restored'])
-def test_newer_durable_turn_is_preserved_even_after_owner_cleanup(app_env, monkeypatch, owner):
+def test_newer_durable_attempt_is_preserved_even_after_owner_cleanup(app_env, monkeypatch, owner):
     env = app_env
     prior = {'proc': _Proc(_Stdin()), '_delegation_turn': 1}
     session = {'proc': _Proc(_Stdin()), '_delegation_turn': 2}
-    attempt = DeliveryAttempt.capture(session, prior if owner == 'restored' else None)
+    attempt = DeliveryAttempt.capture(session)
     if owner == 'disowned':
         session['proc'] = None
         env['sessions']['addressed'] = session
     elif owner == 'restored':
         env['sessions']['addressed'] = prior
     rows = [{'session_id': 'addressed', 'trigger_type': 'schedule', 'trigger_id': 's1',
-             'delegation_turn': 3, 'status': 'in_progress', 'task': 'new task', 'summary': ''}]
+             'delegation_turn': 3, 'status': 'in_progress', 'task': 'new task', 'summary': '',
+             **pending_fields({})}]
     expected = deepcopy(rows)
     monkeypatch.setattr(env['ar'], '_update_agent_log', lambda pid, mutate: mutate(rows))
     record_failure('p1', 's1', 'addressed', 'old task', attempt.bind(art.PromptDeliveryError('old failure')))
@@ -130,12 +132,14 @@ def test_missing_attempt_identity_never_mutates_history(app_env, monkeypatch):
     record_failure('p1', 's1', 'addressed', 'old task', art.PromptDeliveryError('no identity'))
 
 
-def test_codex_acknowledgment_captures_actual_process_not_replaced_session(app_env, monkeypatch):
+def test_codex_acknowledgment_keeps_captured_attempt_after_process_replacement(app_env, monkeypatch):
     old_proc, replacement = _Proc(_Stdin(), pid=737373), _Proc(_Stdin(), pid=737374)
     session = {'proc': replacement, '_delegation_turn': 2, 'status': 'running'}
+    attempt = DeliveryAttempt.capture(session)
     app_env['sessions']['addressed'] = session
     rows = [{'session_id': 'addressed', 'trigger_type': 'schedule', 'trigger_id': 's1',
-             'delegation_turn': 2, 'status': 'in_progress', 'task': 'new task'}]
+             'delegation_turn': 2, 'status': 'in_progress', 'task': 'new task',
+             **pending_fields(session)}]
     expected = deepcopy(rows)
     killed = []
     monkeypatch.setattr(art, '_kill_pid', lambda pid: killed.append(pid))
@@ -143,10 +147,10 @@ def test_codex_acknowledgment_captures_actual_process_not_replaced_session(app_e
     delivery = art._PromptDelivery()
     delivery.why = 'old write rejected'
     delivery.done.set()
-    acknowledge = art._pending_prompt(delivery, session, old_proc, 'codex')
+    acknowledge = art._pending_prompt(delivery, session, old_proc, 'codex', attempt)
     with pytest.raises(art.PromptDeliveryError) as caught:
         acknowledge()
-    assert getattr(caught.value, 'delivery_attempt').owner.proc is old_proc
+    assert getattr(caught.value, 'delivery_attempt') is attempt
     record_failure('p1', 's1', 'addressed', 'old task', caught.value)
     assert rows == expected
     assert session['proc'] is replacement and session['status'] == 'running'
@@ -157,7 +161,7 @@ def test_restored_predecessor_allows_original_failure_but_not_reused_predecessor
     env = app_env
     prior = {'proc': _Proc(_Stdin()), '_delegation_turn': 1}
     session = {'proc': _Proc(_Stdin()), '_delegation_turn': 2}
-    attempt = DeliveryAttempt.capture(session, prior)
+    attempt = DeliveryAttempt.capture(session)
     env['sessions']['addressed'] = prior
     rows = [{'session_id': 'addressed', 'trigger_type': 'schedule', 'trigger_id': 's1',
              'delegation_turn': 1, 'status': 'completed', 'task': 'old'}]
@@ -166,6 +170,7 @@ def test_restored_predecessor_allows_original_failure_but_not_reused_predecessor
     record_failure('p1', 's1', 'addressed', 'attempt task', error)
     assert rows[0]['status'] == 'error' and rows[0]['task'] == 'attempt task'
     rows[0].update(status='in_progress', task='new task')
+    rows[0].update(pending_fields(prior))
     prior['_delegation_turn'] += 1
     expected = deepcopy(rows)
     record_failure('p1', 's1', 'addressed', 'attempt task', error)

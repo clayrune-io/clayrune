@@ -42,6 +42,7 @@ from typing import (
 
 from mc.pending_delivery import complete_or_defer
 from mc.terminal_delivery import TerminalDeliveryGate
+from mc.delivery_attempt import DeliveryAttempt
 from mc import vendor_fence
 from mc import test_run_detection as _test_run_detection
 from mc.core import TimestampedLines, _log
@@ -5529,9 +5530,7 @@ def _require_prompt_delivered(delivery: Optional[_PromptDelivery], session: Dict
     raise PromptDeliveryError(f'{engine} prompt was not delivered to the CLI ({why})')
 
 
-def _pending_prompt(delivery, session, proc, engine):
-    from mc.delivery_attempt import DeliveryAttempt
-    attempt = DeliveryAttempt.capture(session, proc=proc)
+def _pending_prompt(delivery, session, proc, engine, attempt):
     gate = TerminalDeliveryGate(
         lambda exc: _log(f'[runtime:{engine}] terminal processing failed: {exc}', flush=True))
     session['_terminal_delivery_gate'] = (proc, gate)
@@ -5591,6 +5590,7 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
     # live-looking handle. Other engines keep the fire-and-forget thread.
     _verify_delivery = runtime.name == 'codex' and prompt_via_stdin
     _delivery: List[_PromptDelivery] = []
+    attempt = DeliveryAttempt.capture(session_dict) if _verify_delivery else None
 
     def _deliver(p: Any) -> None:
         if _verify_delivery:
@@ -5657,7 +5657,7 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
             _log(f'[runtime:{runtime.name}] process registration failed: {exc}', flush=True)
 
     acknowledge = (_pending_prompt(_delivery[0] if _delivery else None,
-                                   session_dict, proc, runtime.name)
+                                   session_dict, proc, runtime.name, attempt)
                    if _verify_delivery else None)
     t = threading.Thread(target=_mode_a_reader,
                          args=(proc, handle, runtime),
@@ -9823,6 +9823,7 @@ class CodexRuntime(AgentRuntime):
         # outcome is awaited below once the reader drains stdout. Returning
         # before that reported a turn delivered that never reached codex.
         _delivery: List[_PromptDelivery] = []
+        attempt = DeliveryAttempt.capture(session)
 
         def _deliver(p: Any) -> None:
             from mc.resume_context import write_context_prompt
@@ -9839,7 +9840,7 @@ class CodexRuntime(AgentRuntime):
         session['last_output_time'] = _time.time()
         session['last_status_change_time'] = _time.time()
         acknowledge = _pending_prompt(_delivery[0] if _delivery else None,
-                                      session, proc, self.name)
+                                      session, proc, self.name, attempt)
         threading.Thread(target=_mode_a_reader, args=(proc, handle, self),
                          daemon=True, name=f'codex-reader-{mc_sid[:8]}').start()
         complete_or_defer(acknowledge)

@@ -3,6 +3,7 @@
 Real scheduler/revival/runtime call paths with isolated storage and process
 doubles. No vendor process, live schedule, or project data is used.
 """
+from copy import deepcopy
 import threading
 
 import pytest
@@ -164,6 +165,11 @@ def test_deferred_broken_pipe_closes_durable_row_outside_locks(runtime_start, mo
     mgr = ar.get_manager('p1')
 
     def update(pid, mutate):
+        # UUID claim is a short manager -> leaf transaction before launch.
+        # Failure bookkeeping below still runs after publication locks exit.
+        if mutate.__name__ == 'claim':
+            mutate(env['rows'])
+            return
         acquired = []
         def check():
             got = mgr.lock.acquire(timeout=1)
@@ -200,6 +206,7 @@ def test_deferred_start_cleanup_preserves_replacement_owner(runtime_start, repla
     with pytest.raises(art.PromptDeliveryError):
         with publication_boundary():
             _start(env)
+            expected = deepcopy(env['rows'])
             original = env['sessions']['codexstart']
             if replacement == 'registry':
                 env['sessions']['codexstart'] = dict(original, proc=new_proc)
@@ -208,7 +215,7 @@ def test_deferred_start_cleanup_preserves_replacement_owner(runtime_start, repla
     current = env['sessions']['codexstart']
     assert current['proc'] is new_proc
     assert current['process_alive'] is True and current['status'] == 'running'
-    assert env['rows'] == [{'session_id': 'codexstart', 'status': 'in_progress'}]
+    assert env['rows'] == expected
     assert env['codex']['killed'] == [737373]
 
 

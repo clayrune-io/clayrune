@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Retain delivery ownership after successor tabs close (MC-1168 round 7)
+
+- Replaced registry/turn inference with a durable UUID per captured delivery attempt and pending-row takeover. Completion retains the UUID, so a delayed failure cannot overwrite a successful same-turn successor after its tab closes.
+- Failure recording compares the durable token inside the manager -> log-leaf transaction. Legacy rows and ordinary rollback still record failures; Run Now remains HTTP 502 and cadence records its error without replay. Added Fenn's unchanged closed-successor regression and durable-log/rollback controls. Branch review candidate only; no merge, push or restart.
+
 ## [2026-11-09] - Preserve replacement runs after stale delivery failures (MC-1168 round 6)
 
 - Claude revival and Codex acknowledgment capture immutable process, registry and turn ownership before waiting. A failed scheduled attempt updates history only while that ownership matches and the durable turn has not advanced; superseded failures log a skip and preserve the replacement row.

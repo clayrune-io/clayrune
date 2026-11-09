@@ -1,5 +1,73 @@
 # Runtime delivery acknowledgment (MC-1168)
 
+Round 7 supersedes round 6's ownership predicate. `mc/delivery_attempt.py`
+mints a UUID at capture, before spawn can start an acknowledgment writer.
+It claims the existing durable session row inside the manager -> log-leaf
+transaction. Storage failure propagates before spawn. The captured token is
+bound to delivery errors; no failure-time live registry or delegation-turn
+comparison determines row ownership.
+
+Both Claude revival modes claim and carry a token, including Mode A's argv
+delivery, so a successful Mode A successor cannot become an untagged legacy
+row on completion. Both Codex first-turn and follow-up capture before spawn.
+
+Every non-identity pending-row upsert takes the row with a fresh token,
+including a non-delegated continuation whose `delegation_turn` remains 1.
+Identity-only native-thread backfills preserve the token. Completion copies
+it into the replacement durable row; tab closure removes only the registry
+object and cannot erase it. UUID claim and pending upsert serialize under the
+same manager -> log-leaf lock order as failure recording. No acknowledgment
+or process wait was added inside those locks.
+
+`record_failure` finds the session row and compares its `delivery_attempt_id`
+with the captured UUID inside that same transaction. A different token logs
+a skip, even after registry cleanup or a changed trigger. An absent token is
+legacy-compatible: the failure is recorded and stamps its UUID. An absent row
+is inserted as before. Ordinary rollback records its own failure because the
+durable claim survives restoration/removal of the failed live session. A
+failure lacking a captured attempt still logs a skip. Run Now stays 502 with
+`ok=false`/`delivered=false`; cadence retains `last_error` and consumes the slot
+without fallback or retry.
+
+`tests/test_closed_successor.py` is Fenn's round-6 probe, copied byte for byte
+from the main review folder. `tests/test_runtime_delivery_truth_r7.py` adds
+actual JSON-log reload after real completion, repeated capture with turn 1,
+identity-backfill preservation, legacy/own-row and restored/absent-registry
+controls, takeover inside the leaf transaction, changed-trigger protection,
+and storage failure before Claude/Codex spawn. The round-6 synthetic takeover
+fixtures now stamp durable successor tokens rather than inventing ownership
+from live objects/turn numbers; their preservation assertions remain. The
+round-4 lock probe distinguishes the new short prelaunch claim transaction
+from deferred failure cleanup, which must still run outside publication locks.
+Processes/pipes remain doubles; no live provider or deployment is certified.
+The shared MC-1165 revival fixture pairs its existing in-memory log reader
+with a matching writer for the new durable claim; its isolation assertions
+and production persistence requirements remain intact.
+
+Final round-7 stable-source checks, through the installation test launcher:
+
+| Selection | Passed | Skipped | Exit |
+| --- | ---: | ---: | ---: |
+| Unchanged r5/closed probes + r4/r5/r6/r7 | 50 | 0 | 0 |
+| Fenn's permanent runtime17 | 592 | 1 | 0 |
+| Five resume-cwd files | 54 | 0 | 0 |
+| Six API-credits files | 161 | 0 | 0 |
+| Six scheduler files | 195 | 0 | 0 |
+| Exact twelve MC-1165 isolation files | 211 | 13 | 0 |
+
+Counts overlap. Full ten-module pyright exits 1 with the same 15 existing
+route diagnostics as Fenn's exact `edc02876` artifact, zero new/removed by
+normalized file/rule/message/severity multiplicities; baseline not rerun.
+Owned-module and edited runtime-test pyright exits 0 with zero errors.
+Initial isolation fixture failures, its recovery, the final Mode A hook
+regression, exact argv and all final results are retained in the main journal
+and scratch handoff. Launcher progress telemetry had HTTP/enrollment gaps;
+framework stdout and child exits establish counts. No live timing,
+authenticated conversation, paid billing or deployment verification.
+
+The following round-6 design and validation describe the superseded snapshot
+predicate and are retained as historical evidence.
+
 Round 6 integrates exact master `2ffe19ad` and repairs stale scheduled-failure
 persistence. `mc/delivery_attempt.py` captures the attempted session object,
 process and delegation turn before acknowledgment can wait, plus the predecessor

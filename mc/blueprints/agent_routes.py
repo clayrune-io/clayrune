@@ -92,6 +92,7 @@ from flask import Blueprint, Flask, Response, has_request_context, jsonify, make
 from mc import media as _media
 from mc import obs, state
 from mc.terminal_delivery import TerminalDeliveryGate
+from mc import delivery_attempt as _delivery_attempt
 from mc.pending_delivery import after_publication, complete_or_defer, delivery_failure_handler, publication_boundary
 from mc.pending_delivery_http import delivery_response
 from mc import workflows as _workflows  # leaf module (no Flask import); see _notify_workflow_step
@@ -7989,6 +7990,8 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             seed_lines.append(f"[{_revive_note}]")
             seed_ts.append(now_iso())
 
+    delivery_attempt = _delivery_attempt.DeliveryAttempt.capture({
+        'project_id': project_id, 'session_id': session_id, 'incognito': _revive_incognito})
     if use_streaming:
         cmd = [_resolve_claude(), *resume_flags,
                *_build_claude_flags(p, streaming=True, model_override=revive_model,
@@ -8094,8 +8097,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         with mgr.lock:
             _prior_session = agent_sessions.get(session_id)
             _was_listed = session_id in mgr.session_ids
-            from mc.delivery_attempt import DeliveryAttempt
-            delivery_attempt = DeliveryAttempt.capture(session, _prior_session, proc=proc)
+            delivery_attempt.stamp(session)
             session.update(_credits_session.snapshot(entry))
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
@@ -8242,6 +8244,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         '_turn_owner': 'spawner' if carry_notify else 'human',
     }
     with mgr.lock:
+        delivery_attempt.stamp(session)
         session.update(_credits_session.snapshot(entry))
         agent_sessions[session_id] = session
         mgr.session_ids.add(session_id)
@@ -8953,6 +8956,7 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
                             merged.append(csid)
                     prev['claude_session_ids'] = merged
                 return
+            entry.update(_delivery_attempt.pending_fields(session))
             entry['claude_session_id'] = entry['claude_session_id'] or prev.get('claude_session_id', '')
             entry['provider_session_id'] = entry['provider_session_id'] or prev.get('provider_session_id', '')
             entry['started_at'] = prev.get('started_at', '') or entry['started_at']
@@ -8975,9 +8979,12 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
             log.pop(existing_i)
             log.insert(0, entry)
         else:
+            if not identity_only:
+                entry.update(_delivery_attempt.pending_fields(session))
             log.insert(0, entry)
     try:
-        _update_agent_log(project_id, upsert)
+        with get_manager(project_id).lock:
+            _update_agent_log(project_id, upsert)
     except Exception as e:
         _log(f"[dispatch-log] {project_id}: pending write failed: {e}")
         if strict:
@@ -10365,6 +10372,7 @@ def _log_agent_completion_body(session):
     entry.update(_resume_cwd.isolation_log_fields(session))
     if _ckey:
         entry['completion_key'] = _ckey
+    entry.update(_delivery_attempt.completion_fields(session))
     def complete(log):
         sid = entry['session_id']
         if sid:
