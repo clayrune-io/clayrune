@@ -9,6 +9,7 @@ import pytest
 
 from mc import agent_runtime
 from mc.blueprints import agent_routes as ar
+from resume_cwd_fixtures import make_tree, remove_tree
 
 
 CSID = '2033f331-a034-4efe-a95c-d1fd89fabf0a'
@@ -40,13 +41,13 @@ def _write_transcript(home, rt, cwd):
 
 @pytest.mark.parametrize('tree_exists', [True, False], ids=['live-tree', 'deleted-tree'])
 def test_worktree_transcript_must_not_resolve_resume_to_main(
-        transcript_store, tree_exists):
+        transcript_store, tree_exists, monkeypatch):
     project, home, rt = transcript_store
     tree = project / '.clayrune' / 'agents' / OWNER
-    tree.mkdir(parents=True)
+    make_tree(project, tree, monkeypatch)
     transcript = _write_transcript(home, rt, tree)
     if not tree_exists:
-        tree.rmdir()
+        remove_tree(tree)
     assert tree.is_dir() is tree_exists
     # This broad lookup is intentional: cleaned-up chats must remain readable.
     assert rt.transcript_path(str(project), CSID) == transcript
@@ -72,10 +73,10 @@ def test_absent_transcript_has_no_resume_cwd(transcript_store):
     assert ar._resume_cwd_for(str(project), CSID) is None
 
 
-def test_first_recorded_cwd_wins_over_later_directory_changes(transcript_store):
+def test_first_recorded_cwd_wins_over_later_directory_changes(transcript_store, monkeypatch):
     project, home, rt = transcript_store
     tree = project / '.clayrune' / 'agents' / OWNER
-    tree.mkdir(parents=True)
+    make_tree(project, tree, monkeypatch)
     transcript = _write_transcript(home, rt, tree)
     with transcript.open('a', encoding='utf-8') as stream:
         stream.write(json.dumps({'type': 'user', 'cwd': str(project)}) + '\n')
@@ -90,14 +91,20 @@ def test_recorded_cwd_skips_metadata_without_cwd_and_partial_rows(transcript_sto
     assert ar._resume_cwd_for(str(project), CSID) == str(project)
 
 
-def test_codex_metadata_refusal_keeps_vendor_native_identity(transcript_store):
-    project, home, rt = transcript_store
+def test_codex_metadata_refusal_keeps_vendor_native_identity(tmp_path, monkeypatch):
+    project = tmp_path / 'project'
+    home = tmp_path / 'codex-sessions'
+    monkeypatch.setattr(agent_runtime, '_CODEX_HOME', home)
+    rt = agent_runtime.CodexRuntime()
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda provider: rt)
     tree = project / '.clayrune' / 'agents' / OWNER
-    tree.mkdir(parents=True)
-    transcript = _write_transcript(home, rt, tree)
+    make_tree(project, tree, monkeypatch)
+    transcript = home / '2026' / '11' / '09' / f'rollout-now-{CSID}.jsonl'
+    transcript.parent.mkdir(parents=True)
     transcript.write_text(json.dumps({'type': 'session_meta', 'payload': {
         'cwd': str(tree), 'id': CSID}}) + '\n', encoding='utf-8')
-    tree.rmdir()
+    assert ar._resume_cwd_for(str(project), CSID, 'codex') == str(tree)
+    remove_tree(tree)
     with pytest.raises(ar._resume_cwd.ResumeCwdMissing) as exc:
         ar._resume_cwd_for(str(project), CSID, 'codex')
     rows = []

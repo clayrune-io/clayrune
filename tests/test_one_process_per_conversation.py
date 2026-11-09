@@ -358,10 +358,12 @@ def test_interrupt_with_explicit_notify_session_rearms_the_latch(env, monkeypatc
 
 
 def test_resume_cwd_is_the_transcript_tree(env, monkeypatch):
+    from resume_cwd_fixtures import make_tree
+
     ar = env['ar']
     pp = env['pp']
     wt = pp / '.clayrune' / 'agents' / '28aff8341987'
-    wt.mkdir(parents=True)
+    make_tree(pp, wt, monkeypatch)
     transcript = wt / 't.jsonl'
     transcript.write_text(json.dumps({'cwd': str(wt)}) + '\n', encoding='utf-8')
 

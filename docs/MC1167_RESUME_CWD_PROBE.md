@@ -3,7 +3,65 @@
 2026-11-09, Sol_Tobin. Backlog `c220712f`. Base `63b8b1df` (master at
 branch creation), branch `clayrune/c220712f-resume-cwd`.
 
-## Fix candidate after Dave's decision
+## Round 2 candidate: ownership-aware integration
+
+Branch `clayrune/c220712f-r2`, integrating exact master `1fdffd96` with
+round 1 `00fbca52`. Dave selected policy (c) on 2026-11-09: known owners keep
+master's worktree recreation and ownership; transcript-only resumes refuse
+when the recorded worktree is missing or unusable. No silent relocation to main.
+
+- `mc/resume_cwd.py` owns provider provenance and typed refusal. Managed
+  recorded paths must pass the existing Git worktree identity validator, so a
+  restored directory without a usable marker cannot masquerade as isolation.
+  A validation exception is also a refusal, with the original error surfaced.
+- Qwen's runtime performs an exact lookup in its cwd-encoded recording directory.
+  That directory remains provenance when normal Qwen rows omit cwd. There is
+  no broad glob fallback. Codex uses its native-id rollout lookup independently
+  of directory existence, then accepts metadata only for this project or its
+  managed agent trees. The metadata/refusal test now uses real CodexRuntime.
+- Route conflict resolution keeps both `ResumeCwdMissing` and
+  `RevivalRefused` HTTP 409 handlers, the owner-id reuse checks and lifecycle
+  exclusion. An owner resumes with `_worktree_borrowed: false`, so identity
+  diagnostics, cold review and merge-back remain active. A transcript-only
+  borrower cannot acquire cleanup ownership or recreate a tree under its own id.
+- Refused transcript-only input stays in the response and, except incognito,
+  the conversation log. Existing transcripts remain readable and untouched.
+
+Fenn's archived five probes were copied into this checkout's scratch directory.
+The candidate case was changed to read current working source instead of the
+immutable rejected commit `00fbca52`; the exact `63b8b1df` baseline control
+remained pinned. Live fixtures now create real private Git worktrees, and the
+plain-directory case explicitly removes its marker. All five adapted probes
+passed. These are not claimed as a byte-identical run of the archived source.
+Permanent equivalents cover both Claude modes, Qwen's exact lookup and
+resolver, and real Codex missing-tree refusal. Separate integration tests cover
+owner recreation and finish-time identity/review/merge in both Claude modes.
+
+Combined launcher run: **359 passed, 20 files, exit 0**. This includes the
+original seven files plus permanent review/ownership regressions and MC-1165's
+isolation, lifecycle, review-round and cold-review wiring tests. Local JUnit is
+the evidence: launcher telemetry was incomplete (queue, transport, event flush,
+capture diagnostic and unfinalized-run warnings). No reporting permission or
+configuration was changed. The preceding run had 355 passes and one ordinary-
+directory fixture failure; that fixture now uses a real Git worktree.
+
+Final affected-suite rerun after the error-detail/logging changes: **70 passed,
+exit 0**, including all five adapted scratch probes. The main journal records
+exact commands, per-file counts and final commit. Targeted pyright comparison against an isolated archive of exact master
+`1fdffd96`: 15 errors on each side, zero new. All 15 are existing route errors;
+`mc/resume_cwd.py` and `mc/isolated_launch.py` have zero. Both raw pyright
+commands exit 1; the diagnostic-count comparison exits 0. No baseline rewritten.
+
+USER_GUIDE and CHANGELOG describe policy (c). No new UI, static assets, setup or
+standing rules; README/CLAUDE/AGENTS changes and frontend smokes do not apply.
+The route monolith holds existing integration points only; provider provenance
+lives in the separate resolver module. The touched send reconciliation catch
+now logs its failure; temporary-file cleanup and cosmetic response tagging
+remain best effort. No real provider was launched, no live session resumed,
+and no merge to master, push or restart is authorized. Reverse this branch's
+integration commit to roll back; retain the round-1 branch as the starting point.
+
+## Round 1 candidate (historical; superseded by round 2)
 
 Dave selected option 1 on 2026-11-09: refuse when the original working tree
 was removed; do not recreate it or silently relocate to the project checkout.

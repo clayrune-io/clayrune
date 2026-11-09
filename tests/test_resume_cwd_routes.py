@@ -1,14 +1,17 @@
 """MC-1167: real routes refuse missing transcript cwd without a provider spawn."""
 import json
+import threading
 
 import pytest
 
 from mc import agent_runtime, resume_cwd
 from test_one_process_per_conversation import env, _Proc  # noqa: F401
+from resume_cwd_fixtures import make_tree, remove_tree
 
 
 CSID = '2033f331-a034-4efe-a95c-d1fd89fabf0a'
 OWNER = 'ea7620565ce1'
+REAL_THREAD = threading.Thread
 
 
 @pytest.fixture
@@ -21,7 +24,7 @@ def setup(env, tmp_path, monkeypatch):
     runtime = agent_runtime.ClaudeRuntime()
     monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtime)
     tree = env['pp'] / '.clayrune' / 'agents' / OWNER
-    tree.mkdir(parents=True)
+    make_tree(env['pp'], tree, monkeypatch)
     transcript = home / runtime._encoded_dir_candidates(str(tree))[-1] / f'{CSID}.jsonl'
     transcript.parent.mkdir(parents=True)
     transcript.write_text(json.dumps({'type': 'user', 'cwd': str(tree),
@@ -54,7 +57,7 @@ def setup(env, tmp_path, monkeypatch):
 def test_missing_tree_refused_and_request_retained(setup, route, logged):
     tree, transcript = setup['tree'], setup['transcript']
     original = transcript.read_bytes()
-    tree.rmdir()
+    remove_tree(tree)
     if logged:
         setup['logfile'].write_text(json.dumps([{
             'session_id': OWNER, 'claude_session_id': CSID,
@@ -101,8 +104,17 @@ def test_live_tree_revive_keeps_isolation_without_claiming_cleanup(setup, monkey
     monkeypatch.setattr(ar, '_router_stat', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda *a, **k: None)
     monkeypatch.setattr(ar.get_manager('p1'), 'ensure_guardian', lambda: None)
-    monkeypatch.setattr(ar.threading, 'Thread', type('InertThread', (), {
-        '__init__': lambda *a, **k: None, 'start': lambda *a: None}))
+    inert_thread = type('InertThread', (), {
+        '__init__': lambda *a, **k: None, 'start': lambda *a: None,
+        'is_alive': lambda *a: False})
+
+    def thread(*a, **k):
+        # Git's captured-pipe readers must run; provider/guardian work must not.
+        if getattr(k.get('target'), '__module__', '') == 'subprocess':
+            return REAL_THREAD(*a, **k)
+        return inert_thread(*a, **k)
+
+    monkeypatch.setattr(ar.threading, 'Thread', thread)
     spawned = []
 
     def spawn(*a, **k):
@@ -121,14 +133,15 @@ def test_live_tree_revive_keeps_isolation_without_claiming_cleanup(setup, monkey
     assert spawned[0]['cwd'] == str(setup['tree'])
     assert session['_agent_cwd'] == str(setup['tree'])
     assert session['_worktree_isolated'] is True
-    assert session['_worktree_borrowed'] is True
-    monkeypatch.setattr(ar._agent_worktree, 'merge_back',
-                        lambda *a, **k: pytest.fail('borrowed worktree must not be merged'))
-    ar._worktree_merge_back_on_end(session)
+    assert session['_worktree_borrowed'] is (method == 'dispatch')
+    if method == 'dispatch':
+        monkeypatch.setattr(ar._agent_worktree, 'merge_back',
+                            lambda *a, **k: pytest.fail('borrowed worktree must not be merged'))
+        ar._worktree_merge_back_on_end(session)
 
 
 def test_missing_tree_wins_over_auto_fresh_and_cwd_override(setup, monkeypatch):
-    setup['tree'].rmdir()
+    remove_tree(setup['tree'])
     monkeypatch.setattr(setup['ar'], '_auto_fresh_trigger',
                         lambda *a, **k: pytest.fail('refuse before rollover'))
     with pytest.raises(resume_cwd.ResumeCwdMissing):
@@ -139,7 +152,7 @@ def test_missing_tree_wins_over_auto_fresh_and_cwd_override(setup, monkeypatch):
 
 
 def test_refusal_storage_failure_is_explicit_and_keeps_response_copy(setup, monkeypatch):
-    setup['tree'].rmdir()
+    remove_tree(setup['tree'])
     monkeypatch.setattr(setup['ar'], '_update_agent_log',
                         lambda *a: (_ for _ in ()).throw(OSError('disk full')))
     response = setup['client'].post('/api/project/p1/agent/send', json={
@@ -150,8 +163,22 @@ def test_refusal_storage_failure_is_explicit_and_keeps_response_copy(setup, monk
     assert setup['attempts'] == []
 
 
+def test_git_validation_error_is_a_refusal_instead_of_missing_provenance(setup, monkeypatch):
+    def broken(*args):
+        raise OSError('Git check unavailable')
+
+    monkeypatch.setattr(setup['ar']._isolated_launch, '_usable', broken)
+    response = setup['client'].post('/api/project/p1/agent/dispatch', json={
+        'task': 'keep this request', 'resume_conversation_id': CSID})
+    assert response.status_code == 409
+    assert response.get_json()['code'] == 'resume_cwd_missing'
+    assert 'OSError: Git check unavailable' in response.get_json()['error']
+    assert response.get_json()['request_message'] == 'keep this request'
+    assert setup['attempts'] == []
+
+
 def test_incognito_refusal_only_returns_request_to_caller(setup):
-    setup['tree'].rmdir()
+    remove_tree(setup['tree'])
     response = setup['client'].post('/api/project/p1/agent/send', json={
         'session_id': CSID, 'message': 'private request', 'incognito': True})
     assert response.status_code == 409
@@ -162,7 +189,7 @@ def test_incognito_refusal_only_returns_request_to_caller(setup):
 
 
 def test_refused_old_chat_is_kept_inside_log_retention(setup, monkeypatch):
-    setup['tree'].rmdir()
+    remove_tree(setup['tree'])
     setup['logfile'].write_text(json.dumps([
         {'session_id': 'newer', 'task': 'unrelated'},
         {'session_id': OWNER, 'claude_session_id': CSID, 'task': 'old chat'}]),
