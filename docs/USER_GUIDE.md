@@ -428,7 +428,10 @@ the asset cache. No Windows registry change or provider re-login is needed.
   recorded worktree is refused: start a new chat or restore the original Git
   worktree. Restoring just a folder without its valid Git registration is not
   enough. Clayrune never silently moves the conversation into the project
-  checkout. The old transcript remains available to read. For a transcript-only
+  checkout. A chat borrowing another session's worktree keeps that same directory
+  after a purge or restart; borrowing does not transfer review, merge or cleanup
+  ownership. If that borrowed tree is removed, restore it or start a new chat.
+  The old transcript remains available to read. For a transcript-only
   refusal, the request is retained in the conversation record and returned with
   the error; it is not automatically retried. Incognito
   requests are returned only. If saving fails, the response reports

@@ -3,6 +3,60 @@
 2026-11-09, Sol_Tobin. Backlog `c220712f`. Base `63b8b1df` (master at
 branch creation), branch `clayrune/c220712f-resume-cwd`.
 
+## Round 3 candidate: borrowed provenance survives the log
+
+Branch `clayrune/c220712f-r3` starts at round-2 `b2bcf773`. Fenn's P1
+reproduced pending-log/purge/revive in both Claude modes: the isolated bit
+survived but the borrowed flag/cwd did not, so revival invented ownership.
+
+`resume_cwd.isolation_log_fields` writes isolation, borrowed ownership and actual
+cwd together in dispatch, INIT identity refresh and completion rows. Upserts
+retain the previous provenance when a rebuilt session lacks it.
+`borrowed_log_cwd` validates the saved Git worktree before any ownership
+inference. Claude revival consumes it directly; the shared vendor/delegation/
+scheduler helper passes a borrowed override through dispatch into either
+Claude mode or the vendor adapter. Missing/invalid borrowed provenance refuses
+before dispatch; owners retain MC-1165 recreation, review and merge-back.
+Existing legacy rows without borrowed provenance retain their prior behavior;
+this cannot reconstruct a cwd that was never persisted.
+
+Permanent `tests/test_resume_cwd_log_roundtrip.py` covers both log writers,
+INIT identity refresh, purge/revive with an uncommitted sentinel, owner
+log/purge/recreation/review/merge, missing borrowed trees, vendor/delegation/
+scheduler inputs, actual dispatch override propagation, and partial-session
+log rewrites. Fenn's round-2 probe is also run unchanged from scratch.
+No locking or acknowledgment restructuring; MC-1168 integration remains a
+separate merge/review responsibility. No static files or node_modules link.
+
+Validation results and exact commands follow below and in the main-checkout
+journal. No real provider launch or live resume; no merge,
+push or restart. Roll back by reverting this round's commit.
+
+Final validation: **384 passed**, 21 files, pytest 115.01s, reporting
+launcher exit 0. This repeats the exact round-2 selection (359 cases) and adds
+25 permanent round-3 regressions. Focused run: **27 passed**, pytest 11.71s,
+launcher exit 0 (25 permanent plus Fenn's two unchanged assertions).
+Targeted pyright versus exact `b2bcf773`: 15 baseline errors / 15 candidate
+errors, zero new (comparison exit 0; raw pyright exits 1 for each). All 15
+remain in the route module; `resume_cwd.py` has zero errors.
+
+Both test commands reported `transport_unavailable_progress_incomplete`,
+`parent_unavailable_progress_incomplete` and
+`pytest_enrollment_unavailable_progress_incomplete`. Counts come from captured
+pytest output and JUnit, not successful telemetry. No reporting configuration,
+permissions or enrollment was changed. No real provider or live resume tested.
+Source whitespace check passes. Scheduler, lifecycle and worktree engine are
+unchanged from round 2. No node_modules junction was created.
+
+Exact command shape (from the candidate checkout; installation-root paths
+are expanded in the main journal and the handoff command JSON):
+
+```text
+<project-python> <installation-root>/tools/test-run.py --project mission_control --port 5199 -- <project-python> -m pytest tests/test_resume_cwd_provenance.py tests/test_claude_runtime.py tests/test_one_process_per_conversation.py tests/test_resume_cwd_routes.py tests/test_worktree_nonclaude_dispatch.py tests/test_revive_notify_carry.py tests/test_worktree_dispatch.py tests/test_resume_cwd_review_regressions.py tests/test_resume_cwd_ownership.py tests/test_isolated_launch.py tests/test_worktree_lifecycle.py tests/test_mc1165_isolation_record.py tests/test_mc1165_review3_probes.py tests/test_mc1165_review4_probes.py tests/test_mc1165_review5_probes.py tests/test_mc1165_review7.py tests/test_mc1165_review8.py tests/test_mc1165_round9.py tests/test_mc1165_review9_probes.py tests/test_cold_review_wiring.py tests/test_resume_cwd_log_roundtrip.py -q --tb=short -o addopts= --junitxml=_scratch/mc1167-r3-suites-final.xml
+<project-python> <installation-root>/tools/test-run.py --project mission_control --port 5199 -- <project-python> -m pytest tests/test_resume_cwd_log_roundtrip.py _scratch/test_mc1167_r2_fenn.py -q --tb=short -o addopts= --junitxml=_scratch/mc1167-r3-roundtrip.xml
+<project-python> _scratch/check_mc1167_types.py
+```
+
 ## Round 2 candidate: ownership-aware integration
 
 Branch `clayrune/c220712f-r2`, integrating exact master `1fdffd96` with

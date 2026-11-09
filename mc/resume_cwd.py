@@ -71,6 +71,40 @@ def is_worktree(cwd: str, project_path: str) -> bool:
         Path(project_path) / '.clayrune' / 'agents').resolve()
 
 
+def isolation_log_fields(session: dict, previous: dict | None = None) -> dict:
+    """Keep isolation, ownership and cwd together across log rewrites.
+
+    A rebuilt session may have lost the entire isolation record. Preserve the
+    previous tuple in that case; copying only its isolation bit invents ownership.
+    """
+    if session.get('_worktree_isolated'):
+        previous = previous or {}
+        return {'worktree_isolated': True,
+                'worktree_borrowed': bool(session.get(
+                    '_worktree_borrowed', previous.get('worktree_borrowed'))),
+                'agent_cwd': session.get('_agent_cwd') or previous.get('agent_cwd') or ''}
+    if previous and previous.get('worktree_isolated'):
+        return {key: previous[key] for key in
+                ('worktree_isolated', 'worktree_borrowed', 'agent_cwd') if key in previous}
+    return {}
+
+
+def borrowed_log_cwd(entry: dict, project_path: str, native_id: str,
+                     provider: str = 'claude') -> str | None:
+    """A durable borrower can only return to its saved, usable Git worktree.
+
+    Consult this before any owner inference, even if a same-id branch exists.
+    Missing provenance refuses rather than acquiring a new tree after purge.
+    """
+    if not entry.get('worktree_borrowed'):
+        return None
+    cwd = entry.get('agent_cwd') or ''
+    if not cwd or not is_worktree(cwd, project_path):
+        raise ResumeCwdMissing(cwd, native_id, provider,
+                               detail='borrowed worktree directory was not recorded or is invalid')
+    return require_cwd(cwd, native_id, provider, project_path)
+
+
 def transcript_cwd(runtime, project_path: str, native_id: str,
                    provider: str) -> str | None:
     """Use each provider's exact provenance, including after tree removal.

@@ -7769,8 +7769,10 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         return None
     # MC-1165 r5: a conversation that owned a worktree revives into it (or a
     # recreation of it), never into the project checkout. See owned_worktree.
-    _revive_wt = _isolated_launch.owned_worktree(p, session_id, logged=bool(entry.get('worktree_isolated')))
-    _revive_cwd = _revive_wt or _resume_cwd_for(pp, claude_sid) or pp
+    _borrowed_cwd = _resume_cwd.borrowed_log_cwd(entry, pp, claude_sid)
+    _revive_wt = ('' if _borrowed_cwd else _isolated_launch.owned_worktree(
+        p, session_id, logged=bool(entry.get('worktree_isolated'))))
+    _revive_cwd = _borrowed_cwd or _revive_wt or _resume_cwd_for(pp, claude_sid) or pp
     _revive_isolated = bool(_revive_wt) or _resume_cwd.is_worktree(_revive_cwd, pp)
 
     use_streaming = p.get('use_streaming_agent', state.CONFIG.get('use_streaming_agent', False))
@@ -8189,7 +8191,7 @@ def _guard_isolated_reuse(project_id, reuse_session_id, session_dict_override=No
         raise
 
 
-def _isolated_resume_kwargs(project_id, session_id, p, *, logged=False, who='revive'):
+def _isolated_resume_kwargs(project_id, session_id, p, *, logged=False, who='revive', entry=None):
     """`_dispatch_agent_internal` kwargs that keep a RESUMED conversation in the
     worktree it owns; `{}` when it never had one (MC-1165 r6, lifted r7).
 
@@ -8210,6 +8212,23 @@ def _isolated_resume_kwargs(project_id, session_id, p, *, logged=False, who='rev
     lock there, as the Claude dispatch branch already does. The `resuming`
     window covers the cwd decision only (as `_followup_cwd_for` does): a purged
     session is not in `agent_sessions`, so nothing removes its tree."""
+    # Scheduler callers supply only the durable isolation bit. Recover the
+    # whole record before interpreting that bit as ownership.
+    if entry is None:
+        entry = next((e for e in _load_agent_log(project_id)
+                      if e.get('session_id') == session_id), {})
+    try:
+        _borrowed_cwd = _resume_cwd.borrowed_log_cwd(
+            entry, p.get('project_path', ''),
+            entry.get('provider_session_id') or entry.get('claude_session_id') or '',
+            entry.get('provider') or 'claude')
+    except _resume_cwd.ResumeCwdMissing as exc:
+        # Scheduler and vendor callers already treat this as a failed revival,
+        # never as permission to dispatch a replacement in the project checkout.
+        raise _isolated_launch.RevivalRefused(str(exc)) from exc
+    if _borrowed_cwd:
+        return {'agent_cwd_override': _borrowed_cwd, 'isolated_override': True,
+                'borrowed_worktree_override': True}
     _wt = _isolated_launch.owned_worktree(p, session_id, logged=bool(logged))
     if not _wt:
         return {}
@@ -8312,7 +8331,7 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
     # `_isolated_resume_kwargs` (raises RevivalRefused when the tree cannot be had).
     _iso_kw = _isolated_resume_kwargs(
         project_id, session_id, p, logged=bool(entry.get('worktree_isolated')),
-        who='revive-non-claude')
+        who='revive-non-claude', entry=entry)
     try:
         _dispatch_agent_internal(project_id, message, resume_id=_resume_id,
                                  incognito=bool(entry.get('incognito')),
@@ -8456,7 +8475,7 @@ def _revive_parent_for_delegation(project_id, session_id, message, p, from_sessi
             # isolation boundary `_revive_non_claude_from_agent_log` applies.
             _iso_kw = _isolated_resume_kwargs(
                 project_id, session_id, p, logged=bool(entry.get('worktree_isolated')),
-                who='revive-delegation')
+                who='revive-delegation', entry=entry)
             _dispatch_agent_internal(project_id, message, resume_id=native_id,
                                      incognito=False,
                                      reuse_session_id=session_id,
@@ -8475,7 +8494,7 @@ def _revive_parent_for_delegation(project_id, session_id, message, p, from_sessi
                                                        'step': entry['trigger_id'].split(':', 1)[1]}
                                                       if entry.get('trigger_type') == 'workflow'
                                                       and ':' in (entry.get('trigger_id') or '') else None))
-    except _isolated_launch.RevivalRefused as exc:
+    except (_isolated_launch.RevivalRefused, _resume_cwd.ResumeCwdMissing) as exc:
         # Refused before any process started: definitely not delivered.
         raise DeliveryBlocked(str(exc)) from exc
     except Exception as exc:
@@ -8797,8 +8816,7 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
     }
     if session.get('human_joined'):
         entry['human_joined'] = True   # display-only, see _mark_human_joined
-    if session.get('_worktree_isolated'):
-        entry['worktree_isolated'] = True   # MC-1165 r5: durable, outlives purge + worktree removal
+    entry.update(_resume_cwd.isolation_log_fields(session))
     def upsert(log):
         # Upsert: a continued scheduled run reuses the prior run's session_id
         # (see _dispatch_agent_internal reuse_session_id). Refresh that row in
@@ -8810,6 +8828,7 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
         if existing_i is not None:
             prev = log[existing_i]
             if identity_only:
+                prev.update(_resume_cwd.isolation_log_fields(session, prev))
                 for field in ('claude_session_id', 'provider_session_id'):
                     if entry[field]:
                         prev[field] = entry[field]
@@ -8828,8 +8847,7 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
             # fresh session dict that never saw the human message.
             if prev.get('human_joined'):
                 entry['human_joined'] = True
-            if prev.get('worktree_isolated'):
-                entry['worktree_isolated'] = True
+            entry.update(_resume_cwd.isolation_log_fields(session, prev))
             # Union with the outgoing row's history rather than replacing it
             # -- a new process reusing this session_id (server restart across
             # a scheduled cadence tick) starts with an empty in-memory
@@ -10204,8 +10222,7 @@ def _log_agent_completion_body(session):
         entry.update(attempt_metadata(session))
     if session.get('human_joined'):
         entry['human_joined'] = True   # display-only, see _mark_human_joined
-    if session.get('_worktree_isolated'):
-        entry['worktree_isolated'] = True   # MC-1165 r5: durable isolation record
+    entry.update(_resume_cwd.isolation_log_fields(session))
     if _ckey:
         entry['completion_key'] = _ckey
     def complete(log):
@@ -10218,8 +10235,7 @@ def _log_agent_completion_body(session):
                         or (_replay and e.get('status') == 'interrupted')):
                     if e.get('human_joined'):
                         entry['human_joined'] = True
-                    if e.get('worktree_isolated'):
-                        entry['worktree_isolated'] = True
+                    entry.update(_resume_cwd.isolation_log_fields(session, e))
                     log.pop(i)
                     break
         log.insert(0, entry)
@@ -12214,7 +12230,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              session_dict_override=None,
                              max_turns_override=None,
                              agent_cwd_override=None,
-                             isolated_override=False, prepared_context=None):
+                             isolated_override=False, prepared_context=None,
+                             borrowed_worktree_override=False):
     """Core dispatch logic shared by HTTP endpoint and scheduler.
 
     Returns session_id on success, raises ValueError on error.
@@ -12518,7 +12535,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                          project_generation=canonical_project_generation,
                                          agent_cwd=_rt_agent_cwd,
                                          isolated=_rt_isolated,
-                                          borrowed_worktree=bool(_rt_resume_tree and _rt_isolated),
+                                         borrowed_worktree=bool(borrowed_worktree_override
+                                                                or (_rt_resume_tree and _rt_isolated)),
                                          planned_session_id=_rt_planned_sid,
                                          engine_fallback=_engine_fallback_record,
                                          **({'role_context': prepared_context}
@@ -12909,7 +12927,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # stays in the SAME tree it started in.
                 '_agent_cwd': _agent_cwd,
                 '_worktree_isolated': _isolated,
-                '_worktree_borrowed': bool(_resume_tree and _isolated),
+                '_worktree_borrowed': bool(borrowed_worktree_override or (_resume_tree and _isolated)),
                 # Spawner callback (MC-946). When an agent dispatches
                 # another agent over HTTP it goes dark: unlike the
                 # in-process Agent tool, nothing wakes the spawner when
@@ -13047,7 +13065,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # Worktree isolation (b264200a) — see the Mode B note above.
                 '_agent_cwd': _agent_cwd,
                 '_worktree_isolated': _isolated,
-                '_worktree_borrowed': bool(_resume_tree and _isolated),
+                '_worktree_borrowed': bool(borrowed_worktree_override or (_resume_tree and _isolated)),
                 '_notify_session': notify_session,  # MC-946, see Mode B note
                 '_spawned_by': _spawned_by_value,  # bugfix, see Mode B note
                 '_delegation_turn': _delegation_turn_reserved,

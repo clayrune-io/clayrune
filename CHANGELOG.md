@@ -4,6 +4,7 @@
 
 - Cold resumes use the transcript's recorded working directory rather than treating a broad transcript lookup as proof the chat ran in the project checkout. Agent trees must pass Git's worktree identity checks; a restored folder without a usable `.git` marker is refused. Qwen keeps its exact cwd-encoded recording directory even when records omit cwd, and Codex metadata remains discoverable after tree removal.
 - Known owners keep MC-1165's recreation, owner session ID, cold review and merge-back lifecycle. Transcript-only resumes borrow isolation without taking cleanup ownership. Send, follow-up and dispatch return HTTP 409 with `resume_cwd_missing` when an unowned recorded directory is missing or unusable; they never silently relocate to the project checkout.
+- Borrowed isolation and its actual working directory now survive pending, identity and completion log writes, including purge/restart. Revival keeps the original borrowed tree and pending files; it refuses an unusable borrowed tree rather than creating a replacement under the borrower's ID. Owner recreation, review and cleanup remain unchanged.
 - Refusals keep the original transcript readable and retain the request on the conversation log and in the response. Incognito requests are returned only; a storage failure reports `request_saved: false`. Restore a usable original worktree or start a new chat. Branch candidate only; no merge to master, push or restart.
 
 ## [2026-11-09] - Refuse padded MIME shaping-header names (MC-1166 unit 3 round 13)
