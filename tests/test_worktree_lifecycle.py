@@ -28,8 +28,13 @@ from test_merge_review_gate import _agent, _commit, _git, _register, _store, rep
 GRACE = 0.6   # how long a blocked resume is watched before it is called blocked
 
 
-def _fake_spawn(routes, monkeypatch):
-    """The real `_auto_dispatch_followup` with only process creation faked."""
+def _fake_spawn(routes, monkeypatch, *, history=None):
+    """Real lifecycle locks, with process and history boundaries isolated."""
+    # These tests import routes without server.wire(), leaving DATA_DIR=None.
+    # Their mocked turn helper has no destination unless a composing revival
+    # fixture supplies one. Keep that supplied row visible to claim checks.
+    rows = [] if history is None else history
+    monkeypatch.setattr(routes, '_load_agent_log', lambda pid: rows)
     monkeypatch.setattr(routes, '_respawn_sysprompt_args', lambda *a: ([], None))
     monkeypatch.setattr(routes, '_continuation_model', lambda *a: '')
     monkeypatch.setattr(routes, '_continuation_effort', lambda *a: '')

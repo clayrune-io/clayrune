@@ -66,6 +66,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from mc import launch_transaction as _launch_transaction
 from mc import agent_shim as _shim
 from mc import agent_shim_client as _client
 from mc import agent_uncertain_launch as _uncertain
@@ -181,20 +182,27 @@ def _popen(cmd: Sequence[Any], *, cwd: Any, env: Optional[Mapping[str, str]],
     from mc.agent_runtime import _POPEN_FLAGS, _STARTUPINFO
     if pipe_stdin is None:
         pipe_stdin = deliver is not None
-    proc = subprocess.Popen(
-        cmd,
-        stdin=subprocess.PIPE if pipe_stdin else subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        cwd=cwd,
-        text=True,
-        encoding='utf-8',
-        errors='replace',
-        env=env,
-        creationflags=_POPEN_FLAGS if creationflags is None else creationflags,
-        startupinfo=_STARTUPINFO if startupinfo is None else startupinfo,
-        **POPEN_NEW_SESSION,
-    )
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE if pipe_stdin else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=cwd,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            env=env,
+            creationflags=_POPEN_FLAGS if creationflags is None else creationflags,
+            startupinfo=_STARTUPINFO if startupinfo is None else startupinfo,
+            **POPEN_NEW_SESSION,
+        )
+    except FileNotFoundError as exc:
+        # Missing executable/cwd is a proven CreateProcess/exec refusal. A
+        # generic OSError can also come from post-creation handle cleanup;
+        # leave that ambiguous. Delivery errors occur below this boundary.
+        setattr(exc, '_mc_prechild_refusal', True)
+        raise
     if deliver is not None:
         if defer_delivery:
             _hold_delivery(proc, lambda: deliver(proc))
@@ -302,6 +310,7 @@ def _capture_prompt(deliver: Callable[[Any], None], session_id: str, engine: str
     return cap
 
 
+@_launch_transaction.spawn_boundary
 def spawn_engine_proc(cmd: Sequence[Any], *, session_id: Optional[str], engine: str,
                       cwd: Any = None, env: Optional[Mapping[str, str]] = None,
                       deliver: Optional[Callable[[Any], None]] = None,

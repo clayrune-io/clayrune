@@ -92,6 +92,7 @@ from flask import Blueprint, Flask, Response, has_request_context, jsonify, make
 from mc import media as _media
 from mc import obs, state
 from mc.terminal_delivery import TerminalDeliveryGate
+from mc import launch_transaction as _launch_transaction
 from mc import delivery_attempt as _delivery_attempt
 from mc.pending_delivery import after_publication, complete_or_defer, delivery_failure_handler, publication_boundary
 from mc.pending_delivery_http import delivery_response
@@ -6790,6 +6791,7 @@ def _auto_recover_failed_resume(session):
     try:
         with _worktree_lifecycle.resuming(get_manager(project_id).lock, session.get('session_id', '')):
             _cwd = (_launch_cwd(session, p, pp, task) if session.get('_worktree_isolated') else pp)
+            _recovery_launch = _launch_transaction.claim(session)
             if mode == 'B':
                 _sp_args, _sp_path = _sysprompt_file_args(context)
                 cmd = [_resolve_claude(), *_build_claude_flags(p, streaming=True,
@@ -6798,7 +6800,7 @@ def _auto_recover_failed_resume(session):
                        character_skills=_session_skills(p, session)),
                        *_sp_args]
                 cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _cwd)
-                proc = spawn_engine_proc(
+                proc = _launch_transaction.launch(_recovery_launch, spawn_engine_proc,
                     cmd, session_id=session.get('session_id'), engine='claude', cwd=_cwd,
                     env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, interactive=True)
@@ -6829,7 +6831,7 @@ def _auto_recover_failed_resume(session):
                        character_skills=_session_skills(p, session)),
                        *_sp_args]
                 cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _cwd)
-                proc = spawn_engine_proc(
+                proc = _launch_transaction.launch(_recovery_launch, spawn_engine_proc,
                     cmd, session_id=session.get('session_id'), engine='claude', cwd=_cwd,
                     env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
@@ -7995,8 +7997,9 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             seed_lines.append(f"[{_revive_note}]")
             seed_ts.append(now_iso())
 
-    delivery_attempt = _delivery_attempt.DeliveryAttempt.capture({
+    _revive_launch = _launch_transaction.claim({
         'project_id': project_id, 'session_id': session_id, 'incognito': _revive_incognito})
+    delivery_attempt = _revive_launch.attempt
     if use_streaming:
         cmd = [_resolve_claude(), *resume_flags,
                *_build_claude_flags(p, streaming=True, model_override=revive_model,
@@ -8008,7 +8011,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             cmd.extend(_sp_args)
         try:
             cmd = _launch_marker.launch_cmd(cmd, entry.get('trigger_type'), _revive_cwd)
-            proc = spawn_engine_proc(
+            proc = _launch_transaction.launch(_revive_launch, spawn_engine_proc,
                 cmd, session_id=session_id, engine='claude', cwd=_revive_cwd,
                 env=_launch_marker.launch_env(entry.get('trigger_type'), session=entry),
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, interactive=True)
@@ -8019,6 +8022,10 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                     os.unlink(_sp_path)
                 except OSError:
                     pass
+            if (getattr(e, '_mc_launch_ambiguous', False)
+                    or isinstance(e, _launch_transaction.ReservationLost)):
+                raise delivery_attempt.bind(ReviveDeliveryError(
+                    f'revive launch outcome unknown; not retried: {e}')) from e
             if _revive_isolated:
                 raise _isolated_launch.RevivalRefused(
                     f"conversation {session_id[:8]} could not be restarted in its worktree "
@@ -8177,7 +8184,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                                 character_skills=_revive_char_skills), *_sp_args]
     try:
         cmd = _launch_marker.launch_cmd(cmd, entry.get('trigger_type'), _revive_cwd)
-        proc = spawn_engine_proc(
+        proc = _launch_transaction.launch(_revive_launch, spawn_engine_proc,
             cmd, session_id=session_id, engine='claude', cwd=_revive_cwd,
             env=_launch_marker.launch_env(entry.get('trigger_type'), session=entry),
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
@@ -8188,6 +8195,10 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                 os.unlink(_sp_path)
             except OSError:
                 pass
+        if (getattr(e, '_mc_launch_ambiguous', False)
+                or isinstance(e, _launch_transaction.ReservationLost)):
+            raise delivery_attempt.bind(ReviveDeliveryError(
+                f'revive launch outcome unknown; not retried: {e}')) from e
         if _revive_isolated:
             raise _isolated_launch.RevivalRefused(
                 f"conversation {session_id[:8]} could not be restarted in its worktree "
@@ -9500,24 +9511,7 @@ def _advance_delegation_turn(session, owner: "str | None" = _OWNER_HUMAN, *, pos
     ... Continue the work' twice for a task already merged, and Ron read it
     as Clayrune having a cross-chat memory bug.
     """
-    _limit_internal = owner is None or bool(
-        has_request_context() and request.environ.get('clayrune.limit_resume'))
-    _limit_resume.new_turn(session, internal=_limit_internal)
-    if _limit_internal:
-        owner = None
-    if owner:
-        session[_TURN_OWNER_KEY] = owner
-    _empty_turn.begin_turn(session)
-    _allocate_delegation_turn(session)
-    # Prelaunch turn identity must be durable before provider execution begins.
-    # A self-start is already executing: a failed rearm save must restore the
-    # claimed token so its eventual completion still owns the saved row.
-    # write_turn_start=False: every caller (agent_followup / agent_interrupt
-    # `_start_new_turn`, `_auto_dispatch_followup`) writes the usage-breakdown
-    # turn_start itself right after this returns -- a second row here would
-    # only add a duplicate.
-    _log_agent_dispatch_pending(session, strict=True, write_turn_start=False,
-                                postlaunch=postlaunch)
+    return _launch_transaction.start_turn(session, owner, running=postlaunch)
 
 
 def _rearm_notify_for_new_turn(session, *, postlaunch=False):
@@ -9542,8 +9536,8 @@ def _rearm_notify_for_new_turn(session, *, postlaunch=False):
     A self-started reader passes `postlaunch=True`: callback rearming is
     bookkeeping for running work, so failed persistence rolls back its token.
     """
-    session.pop('_notify_session_sent', None)
-    _advance_delegation_turn(session, owner=_OWNER_SPAWNER, postlaunch=postlaunch)
+    return _launch_transaction.rearm(session, lambda: _advance_delegation_turn(
+        session, owner=_OWNER_SPAWNER, postlaunch=postlaunch), running=postlaunch)
 
 
 def _notify_workflow_step(wf_wait, session, summary, *, sync=False):
@@ -10778,10 +10772,11 @@ def _auto_dispatch_followup_locked(session, message, p, pp, cmd, _sp_path):
                 pass
         return
     # Reserve before launch: a refused save must leave no live unread child.
-    # Stage turn bookkeeping so refusal also preserves the completed owner.
-    reserved = dict(session)
+    # The shared transaction snapshots turn state and restores only our owner.
+    reserved = session
     try:
-        _advance_delegation_turn(reserved, owner=None)
+        transaction = _launch_transaction.reserve(
+            reserved, lambda: _advance_delegation_turn(reserved, owner=None))
     except Exception as e:
         session.setdefault('pending_followups', []).insert(0, message)
         session['log_lines'].append(f'[follow-up reservation failed; message kept queued: {e}]')
@@ -10791,16 +10786,19 @@ def _auto_dispatch_followup_locked(session, message, p, pp, cmd, _sp_path):
             except OSError as cleanup_error:
                 _log(f'[follow-up] sysprompt cleanup failed: {cleanup_error}')
         return
-    for key in session.keys() - reserved.keys():
-        session.pop(key)
-    session.update(reserved)
     try:
-        proc = spawn_engine_proc(
+        proc = _launch_transaction.launch(transaction, spawn_engine_proc,
             cmd, session_id=session.get('session_id'), engine='claude',
             cwd=_cwd,
             env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
     except Exception as e:
+        if not transaction.launched:
+            session.setdefault('pending_followups', []).insert(0, message)
+        elif reserved.get('_launch_uncertain'):
+            session['_launch_uncertain'] = True
+            session['_stdin_write_uncertain'] = True
+            session['pending_recovery_message'] = None
         session['log_lines'].append(f'[follow-up failed: {e}]')
         if _sp_path:
             try:
@@ -13141,8 +13139,11 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         # The dispatch record is durable before Popen. If Popen or the reader
         # setup fails, reconciliation can see an in-progress launch and retain
         # the unknown outcome instead of leaving an untracked child process.
-        _initial_attempt = None
-        if notify_session and not incognito:
+        _initial_launch = None
+        _reserve_initial = not incognito and bool(
+            notify_session or any(row.get('session_id') == session_id
+                                  for row in _load_agent_log(project_id)))
+        if _reserve_initial:
             # Live to the usage-breakdown reconcile from here until this
             # `with` block exits -- by then the session is in agent_sessions,
             # or the launch failed (MC-998 round 4).
@@ -13166,9 +13167,13 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 '_delivery_generation': _delivery_generation_reserved,
                 'project_generation': canonical_project_generation,
             }
-            _log_agent_dispatch_pending(_pending_session, strict=True)
-            _initial_attempt = _delivery_attempt.DeliveryAttempt(
-                _pending_session.get('_delivery_attempt_id') or '')
+            _initial_launch = _launch_transaction.reserve(
+                _pending_session, lambda: _log_agent_dispatch_pending(_pending_session, strict=True))
+
+        if _initial_launch is None:
+            _initial_launch = _launch_transaction.reserve(
+                {'project_id': project_id, 'session_id': session_id,
+                 'incognito': incognito, 'housekeeping': housekeeping}, lambda: None)
 
         if use_streaming:
             # Mode B: persistent process with stream-json stdin
@@ -13178,7 +13183,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 cmd = [_resolve_claude(), *base_flags, *_sp_args]
 
             cmd = _launch_marker.launch_cmd(cmd, trigger_type, _agent_cwd)
-            proc = spawn_engine_proc(
+            proc = _launch_transaction.launch(_initial_launch, spawn_engine_proc,
                 cmd, session_id=session_id, engine='claude',
                 cwd=_agent_cwd,  # worktree when isolated, else pp
                 env=_billing_env,
@@ -13288,16 +13293,13 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 session = session_dict_override
             if session_metadata:
                 session.update(session_metadata)
-            if _initial_attempt is not None:
-                _initial_attempt.stamp(session)
+            _initial_launch.publish(session)
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
 
             # A notify_session dispatch already called this before Popen (and
             # wrote this turn's turn_start there) -- don't write a second.
-            _log_agent_dispatch_pending(
-                session, write_turn_start=not (notify_session and not incognito),
-                attempt=_initial_attempt, postlaunch=True)
+            _initial_launch.settle(session, write_turn_start=not _reserve_initial)
             t = threading.Thread(target=_read_agent_stream_b, args=(proc, session), daemon=True)
             t.start()
 
@@ -13337,7 +13339,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 cmd = [_resolve_claude(), '-p', _clock_task, *base_flags, *_sp_args]
 
             cmd = _launch_marker.launch_cmd(cmd, trigger_type, _agent_cwd)
-            proc = spawn_engine_proc(
+            proc = _launch_transaction.launch(_initial_launch, spawn_engine_proc,
                 cmd, session_id=session_id, engine='claude',
                 cwd=_agent_cwd,  # worktree when isolated, else pp
                 env=_billing_env,
@@ -13417,14 +13419,11 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 session = session_dict_override
             if session_metadata:
                 session.update(session_metadata)
-            if _initial_attempt is not None:
-                _initial_attempt.stamp(session)
+            _initial_launch.publish(session)
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
 
-            _log_agent_dispatch_pending(
-                session, write_turn_start=not (notify_session and not incognito),
-                attempt=_initial_attempt, postlaunch=True)
+            _initial_launch.settle(session, write_turn_start=not _reserve_initial)
             t = threading.Thread(target=_read_agent_stream, args=(proc, session), daemon=True)
             t.start()
 
@@ -14329,15 +14328,21 @@ def agent_followup(project_id):
     # touching the latch. See `_rearm_notify_for_new_turn` / MC-970 journal.
     _explicit_notify_session = (data.get('notify_session') or '').strip()
 
+    _turn_launch = None
+
     def _start_new_turn(sess):
-        if request.environ.get('clayrune.api_credits_retry'):
-            return
-        if _explicit_notify_session:
-            sess['_notify_session'] = _explicit_notify_session
-            _rearm_notify_for_new_turn(sess)
-        else:
-            _advance_delegation_turn(sess, owner=None if request.environ.get('clayrune.limit_resume') else _OWNER_HUMAN)
-        _write_usage_breakdown_turn_start_checkpoint(sess)
+        nonlocal _turn_launch
+
+        def prepare():
+            if request.environ.get('clayrune.api_credits_retry'):
+                return
+            if _explicit_notify_session:
+                sess['_notify_session'] = _explicit_notify_session
+                _rearm_notify_for_new_turn(sess)
+            else:
+                _advance_delegation_turn(sess, owner=None if request.environ.get('clayrune.limit_resume') else _OWNER_HUMAN)
+            _write_usage_breakdown_turn_start_checkpoint(sess)
+        _turn_launch = _launch_transaction.reserve(sess, prepare)
 
     _respawn_b = None  # set if Mode B needs to respawn outside lock
     _model_route_state = None  # set when alive+auto_model_enabled; handled post-lock
@@ -14968,7 +14973,7 @@ def agent_followup(project_id):
                         return
                 _log(f"[respawn-B] {rb['project_id']}: spawning cmd={' '.join(rb['cmd'][:5])}...")
                 _rb_cwd = _session_cwd(rb['existing'], rb['pp'], rb['message'])
-                proc = spawn_engine_proc(
+                proc = _launch_transaction.launch(_turn_launch, spawn_engine_proc,
                     _launch_marker.launch_cmd(
                         rb['cmd'], rb['existing'].get('trigger_type'),
                         _rb_cwd),
@@ -15111,7 +15116,7 @@ def agent_followup(project_id):
             cmd.extend(_sp_args)
             _cwd = _session_cwd(existing, pp, message)
             cmd = _launch_marker.launch_cmd(cmd, existing.get('trigger_type'), _cwd)
-            proc = spawn_engine_proc(
+            proc = _launch_transaction.launch(_turn_launch, spawn_engine_proc,
                 cmd, session_id=session_id, engine='claude',
                 cwd=_cwd,
                 env=_launch_marker.launch_env(existing.get('trigger_type'), session=existing),
@@ -15466,15 +15471,21 @@ def agent_interrupt(project_id, *, _internal=None):
     # `notify_session` in the request body re-arms it.
     _explicit_notify_session = (data.get('notify_session') or '').strip()
 
+    _turn_launch = None
+
     def _start_new_turn(sess):
-        if _explicit_notify_session:
-            sess['_notify_session'] = _explicit_notify_session
-            _rearm_notify_for_new_turn(sess)
-        else:
-            # A mid-turn rollover is the same chain continuing, not a human
-            # taking it over -- leave the owner alone.
-            _advance_delegation_turn(sess, owner=None if is_midturn else _OWNER_HUMAN)
-        _write_usage_breakdown_turn_start_checkpoint(sess)
+        nonlocal _turn_launch
+
+        def prepare():
+            if _explicit_notify_session:
+                sess['_notify_session'] = _explicit_notify_session
+                _rearm_notify_for_new_turn(sess)
+            else:
+                # A mid-turn rollover is the same chain continuing, not a human
+                # taking it over -- leave the owner alone.
+                _advance_delegation_turn(sess, owner=None if is_midturn else _OWNER_HUMAN)
+            _write_usage_breakdown_turn_start_checkpoint(sess)
+        _turn_launch = _launch_transaction.reserve(sess, prepare)
 
     with get_manager(project_id).lock:
         session = agent_sessions.get(session_id)
@@ -15711,7 +15722,7 @@ def agent_interrupt(project_id, *, _internal=None):
                     cmd.extend(_sp_args)
                 _cwd = _session_cwd(session, pp, message)
                 cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _cwd)
-                proc = spawn_engine_proc(
+                proc = _launch_transaction.launch(_turn_launch, spawn_engine_proc,
                     cmd, session_id=session_id, engine='claude',
                     cwd=_cwd,
                     env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
@@ -15788,7 +15799,7 @@ def agent_interrupt(project_id, *, _internal=None):
                 cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _cwd)
                 # A mid-turn roll's prompt goes down stdin after the reader starts, so
                 # it needs the interactive shim; the ordinary Mode A resume has no stdin.
-                proc = spawn_engine_proc(
+                proc = _launch_transaction.launch(_turn_launch, spawn_engine_proc,
                     cmd, session_id=session_id, engine='claude',
                     cwd=_cwd,
                     env=_launch_marker.launch_env(session.get('trigger_type'), session=session),

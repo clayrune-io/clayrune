@@ -1,29 +1,137 @@
 # Runtime delivery acknowledgment (MC-1168)
 
-Round 12 is an investigation checkpoint on `fix/mc1168-r12`, based on
-`e7d252440bb921239758c5a0c97e417a735f2fa0`; no runtime fix is implemented.
-Fenn's r11 blockers reproduce: queued spawn refusal overwrites completed
-history with a pending row, and cold scheduled reuse without `notify_session`
-can lose its completion after postspawn persistence failure. The earlier
-statement that queue spawn-error handling was wholly pre-existing was wrong:
-the history overwrite is a regression from the new prelaunch reservation.
+Round 12 introduces `mc/launch_transaction.py` on `fix/mc1168-r12`, continued
+from investigation checkpoint `10e13421`. This is a local review candidate;
+no merge, push, restart or live provider certification is implied.
 
-The requested structural fix requires a shared reserve -> launch ->
-settle-or-restore transaction across launch paths. Its acceptance currently
-conflicts with the unchanged cold-reuse probe: `test_reused_initial.py`
-records `bool(spawned)` on every history save and asserts `saves == [True]`.
-A prelaunch reservation through the existing history transaction necessarily
-records `False` first. Changing that assertion or bypassing its save hook
-has not been authorized. Dave must resolve the acceptance requirement before
-implementation; the recommendation is to retain the original evidence and
-authorize an explicit ordering-corrected test, preserving the completion checks.
+The shared transaction snapshots the previous row and turn state under the
+manager lock, reserves before launching, and carries that exact delivery token
+into publication and metadata settlement. It never adopts a later row's token.
+Cold initial reuse reserves whenever history already contains this session,
+even without `notify_session`. Fresh standalone/no-row dispatch retains its
+existing best-effort postlaunch insert and completion behavior. Incognito and
+housekeeping launches do not acquire history destinations.
 
-The two unchanged r12 probe copies plus the queue parent-control source are
-retained under `tests/mc1168_r12/` with exact-byte attributes. Their baseline
-selection has **3 failed, 3 passed**, child exit **1**. This is recorded failing
-evidence, not a green candidate. No full r11 matrix or pyright rerun is claimed
-for this checkpoint. No production source changed. The dated journal records
-the source/probe hashes, launch inventory, and handoff location.
+For a **proven pre-child refusal**, restoration requires both the live and
+durable owner still to be the reserved owner. The old complete row is restored,
+or a newly inserted reservation is removed. Queue replay puts the undelivered
+input back at the front, ahead of later messages. A successor's live state or
+durable result cannot be restored over. Allocated delegation numbers are never
+reused. Reservation/storage refusal remains strict and starts no process.
+
+The factory preserves exception types and marks all uncertain branches,
+including shim-launch and post-child delivery errors, as ambiguous. Production
+plain Popen proves refusal only for `FileNotFoundError` at its constructor
+boundary (missing executable/cwd); generic OSError may arise after creation
+during handle cleanup and remains ambiguous. The transaction's injectable
+factory contract permits an unmarked OSError only as a pre-child refusal;
+Fenn's unchanged queue probe uses that contract. No exception-type heuristic
+can downgrade a marked factory error to a safe refusal.
+
+An ambiguous launch keeps its reservation, clears automatic recovery input,
+and records `launch_outcome=unknown` on its still-owned durable row where
+storage permits. Both live and rebuilt transactions refuse another launch of
+that unresolved destination. Failure to save this marker is logged and retains
+the live refusal flag and pending owner. There is no retry or fallback dispatch.
+Once a child returns, the transaction cannot restore prelaunch history. Failed
+metadata settlement retains the original owner and lets its reader complete.
+
+Self-start callback rearm uses the same abstraction with `running=True`.
+Because execution already exists, failed rearm persistence rolls back **only
+the attempted owner replacement**, retaining the cleared callback latch and
+allocated turn. The reader continues and completion can save after recovery.
+The first self-start claim's existing idle/live/durable race checks, including
+preparing its expected owner before waiting for the manager, remain unchanged.
+
+### Complete route launch inventory
+
+Every `spawn_engine_proc` reference in `agent_routes.py` is passed directly to
+the shared transaction, with no direct call or factory alias. The AST guard in
+`tests/test_launch_transaction.py` pins all eleven sites and rejects an injected
+bypass:
+
+| Path | Sites | Reservation |
+| --- | ---: | --- |
+| `_auto_recover_failed_resume`, A/B | 2 | Claim the current destination without erasing its history; reject stale recovery owners. |
+| `_revive_from_agent_log`, B/A | 2 | Capture/claim before spawn; carry that attempt through publication and delivery errors. |
+| `_auto_dispatch_followup_locked` | 1 | Snapshot and reserve the next turn; restore only on proven refusal and retain queued input. |
+| `_dispatch_agent_internal`, B/A | 2 | Strict delegated or existing-row reservation; explicit fresh/no-row exception. |
+| `agent_followup._do_respawn_b` / `_start_followup` | 2 | Carry the request's turn reservation into asynchronous respawn. |
+| `agent_interrupt._do_respawn`, B/A | 2 | Carry the pre-interrupt turn reservation into either replacement mode. |
+
+Four direct `subprocess.Popen` calls are explicitly **out of scope**: the
+Windows, macOS and Linux terminal launches in `_launch_terminal_for_binary`
+(three), and remote authentication in `agent_auth_login_remote` (one). They
+launch auth/terminal tools, not conversation-history turns. Native runtime
+dispatch and live stdin submission retain their existing pre-submission
+ownership boundaries; this inventory is the eleven route factory sites, not a
+claim to replace every runtime's process factory.
+
+### Authorized acceptance correction and retained evidence
+
+Dave selected option 1 on 2026-11-09. `tests/mc1168_r12/reused_initial_original.py`
+preserves the original cold-reuse probe bytes. The corrected copy remains
+`tests/mc1168_r12/test_reused_initial.py`; its only changed line is:
+
+```diff
+-    assert saves == [True]
++    assert saves == [False, True]  # reservation before launch, then metadata enrichment
+```
+
+- Original SHA256: `0afecc8f9b05ca94b9ebe63b44c2b6233b1d6395ef476f224eeb571b5745e11f`.
+- Corrected SHA256: `8356654aa4d1dd17ded818a17ca90034f408b9bc76477951ac8892a3ca82fb8e`.
+- Unchanged queue probe SHA256: `b5ef9e440ce6f668d17959955fc33b80ddc321a094c0516e403e9df7a6525c97`.
+- Unchanged extracted parent control SHA256: `c51feb304b49639d4df8222758d7d91d77c5f5cb17e5f8210f3589298273fd96`.
+
+Every other assertion in both probes is unchanged. Literal-path attributes
+preserve the evidence across Windows checkouts. The shared older revival test
+fixture now uses a real temporary JSON log: its previous reader returned a new
+legacy literal on every call, hiding the owner's successful write from launch
+revalidation. Lifecycle fixtures explicitly supply either an empty history or
+their composing revival row, and the standalone factory outcome test gives
+Codex's writer a temporary directory. The older flags inventory now finds the
+same wrapped calls and keeps all eleven count/flag assertions. No assertion or
+production ownership check was weakened.
+
+Final round-12 validation used every original Fenn r11 argv through the
+installation launcher, plus separate r12/factory selections. All18 behavioral
+selections exit0. Core typing retains15 baseline diagnostics (exit1), with
+zero additions/removals against the retained r9 baseline; six narrower typing
+selections exit0 with zero diagnostics. Counts overlap. Identical final source
+hashes were recorded before/after every selection. Telemetry gaps are retained;
+framework summaries and actual child exits establish these results.
+
+| Selection | Actual result | Child exit |
+| --- | --- | ---: |
+| fresh-initial | 6 passed | 0 |
+| fresh-reader | 5 passed | 0 |
+| r10-final | 5 passed | 0 |
+| self-start-final | 50 passed | 0 |
+| independent | 9 passed | 0 |
+| focused-r5-probes-r4-r5-r6-r7-closed | 50 passed | 0 |
+| runtime-permanent17 | 592 passed, 1 skipped | 0 |
+| resume-cwd | 54 passed | 0 |
+| api-credits | 161 passed | 0 |
+| scheduler | 195 passed | 0 |
+| mc1165-exact12 | 211 passed, 13 skipped | 0 |
+| r8-audit | 222 passed | 0 |
+| merge-receiver | 92 passed | 0 |
+| pyright | 15 errors | 1 |
+| pyright-owned | 0 errors | 0 |
+| pyright-r8 | 0 errors | 0 |
+| pyright-r9-owned | 0 errors | 0 |
+| pyright-r10 | 0 errors | 0 |
+| permanent-r11 | 18 passed | 0 |
+| pyright-r11 | 0 errors | 0 |
+| spawn-refusal | 2 passed | 0 |
+| reused-initial | 4 passed | 0 |
+| permanent-r12 | 29 passed | 0 |
+| pyright-r12 | 0 errors | 0 |
+| spawn-factory | 95 passed | 0 |
+
+No live provider, deployment, POSIX or crash-during-storage-failure certification
+is implied. The dated journal and local handoff retain exact commands, hashes
+and raw evidence. Earlier verification below refers to earlier candidates.
 
 Round 11 carries initial Claude reservations through postlaunch enrichment and
 reserves queued replay before spawning. Round 10 extends postlaunch token
@@ -60,15 +168,14 @@ rolling back a token on a fresh session would not recover the temporary
 dictionary's owner. Standalone initial dispatch retains its existing best-effort
 history behavior; when no row exists, completion can insert one with an identity.
 
-Queue replay now resolves its isolated cwd, then reserves the next turn and
-pending row before `spawn_engine_proc`. Turn bookkeeping is staged in a shallow
-copy under the existing project/lifecycle locks; a refused save leaves prior
-live ownership and turn flags intact, puts the message back at the queue front,
-and cleans the temporary prompt file. A consumed durable delegation number is
-not reused. Successful reservation is published before spawn; registration,
+Queue replay resolves its isolated cwd, then snapshots/reserves the next
+turn through the shared transaction under the existing project/lifecycle locks.
+A refused save preserves the prior live owner and flags. A proven spawn refusal
+restores only its own reserved row. Both keep input at the queue front and clean
+the temporary prompt. A consumed delegation number is not reused. Registration,
 running state and reader startup contain no later strict pending save. The
-reader clears `_dispatching_followup` in `finally`. This uses the preferred
-prelaunch reservation approach, not recovery of a live unread child.
+reader clears `_dispatching_followup` in `finally`. Ambiguous launch never
+restores a retryable completed row or requeues that attempt.
 
 Fenn's r10 probes are retained unchanged in `tests/mc1168_r11/`:
 
@@ -106,7 +213,7 @@ before worker dispatch. None replaces a successful prelaunch reservation with
 a second postlaunch owner. No change to callback gates, provider timeouts or
 startup retry policy is included. Fenn's later r11 review established that
 spawn refusal after a successful queue reservation strands an overwritten
-pending row; that regression is still unresolved at the r12 checkpoint.
+pending row; that regression was reproduced at the investigation checkpoint and is addressed by the round-12 transaction above.
 `agent_log_file.claim_rows` assigns identities only to untagged legacy rows;
 its merge path mints only for a new synthesized transcript without a managed
 session. `resume_cwd.refusal` mints only for a new refusal row and preserves
@@ -181,7 +288,7 @@ to the immediately preceding live/saved owner under the manager lock before
 the exception reaches the existing reader-side rearm catch. This works when
 only the rearm save fails and when both self-start saves fail: once storage
 recovers, completion still owns the durable row and records the new answer.
-The callback latch and allocated turn keep their existing rearm behavior.
+The cleared callback latch and allocated turn keep their existing rearm behavior; the shared round-12 running policy restores only the failed token.
 Ordinary API continuations use the default prelaunch policy and still raise
 on a strict persistence failure before execution begins.
 

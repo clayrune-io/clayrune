@@ -47,7 +47,7 @@ def test_cold_scheduled_reuse_keeps_completion_after_pending_save_failure(dispat
     actual = ar._dispatch_agent_internal('p1', 'scheduled task', resume_id='native-conversation',
         reuse_session_id=sid, trigger_type='schedule', trigger_id='schedule1')
     assert actual == sid
-    assert saves == [True]
+    assert saves == [False, True]  # reservation before launch, then metadata enrichment
     session = dispatch_env['sessions'][sid]
     proc = dispatch_env['spawned'][0]
     proc.stdout = io.StringIO(_assistant_line('new scheduled answer') + '\n' + _result_line() + '\n')

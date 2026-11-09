@@ -1,9 +1,15 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Share ownership across route launches (MC-1168 round 12)
+
+- Added one reservation/launch/settlement transaction for all eleven Claude route spawn sites, with an AST inventory guard and explicit exclusions for four auth/terminal processes. Cold reuse reserves existing history even without a spawner callback; fresh standalone/no-row behavior stays unchanged.
+- Proven pre-child refusal restores history only while both owners still match and retains queued input. Ambiguous launch keeps its reservation and refuses replay; post-child storage failure retains the reader's owner. Running self-start rearm preserves the callback while rolling back only a failed owner replacement.
+- Retained the original reviewer probes and parent control. The corrected cold-reuse copy changes only Dave's authorized save-order assertion to `[False, True]`; original bytes and SHA256s remain available. Local review candidate only; no merge, push or restart.
+
 ## [2026-11-09] - Retain round-12 launch regression evidence (MC-1168)
 
 - Preserved Fenn's queue-spawn-refusal and cold-scheduled-reuse probes byte-for-byte, including the extracted queue parent control. Baseline remains 3 failed/3 passed; no runtime repair is claimed.
-- Documented an acceptance conflict: the unchanged cold-reuse probe requires only a postspawn save, while the requested shared launch transaction requires a prelaunch reservation. Implementation awaits the dispatcher's decision; no merge, push or restart.
+- Documented an acceptance conflict: the unchanged cold-reuse probe requires only a postspawn save, while the requested shared launch transaction requires a prelaunch reservation. This historical checkpoint preceded Dave's option-1 authorization and the implementation above; no merge, push or restart.
 
 ## [2026-11-09] - Reserve delivery ownership before queued launch (MC-1168 round 11)
 

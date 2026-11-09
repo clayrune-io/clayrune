@@ -302,7 +302,7 @@ CSID = '3f6c790f-9ec2-4ded-9793-970a6a2f340b'
 
 
 @pytest.fixture()
-def revive_env(app_env, monkeypatch):
+def revive_env(app_env, tmp_path, monkeypatch):
     """Everything `_revive_from_agent_log` touches before and after the spawn,
     stubbed; the spawned process is the double the test supplies."""
     ar = app_env['ar']
@@ -310,7 +310,14 @@ def revive_env(app_env, monkeypatch):
     p = app_env['project']
     p['use_streaming_agent'] = True
     monkeypatch.setitem(mc_state.CONFIG, 'agent_revive_from_log', True)
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [
+    # Launch revalidation must observe the claim the real writer just saved.
+    # A fresh literal on every read hid persistence and erased that identity.
+    import server
+    history = tmp_path / 'revive-history'
+    history.mkdir()
+    monkeypatch.setattr(ar, 'DATA_DIR', history)
+    monkeypatch.setattr(ar, '_load_agent_log', server._load_agent_log)
+    ar._save_agent_log('p1', [
         {'session_id': 'revsid000001', 'claude_session_id': CSID, 'provider': 'claude',
          'task': 'chat', 'trigger_type': 'manual'}])
     monkeypatch.setattr(ar, '_assert_runtime_project_generation', lambda *a, **k: None)
