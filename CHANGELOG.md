@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Checkpoint agent-mail laundering pending empty-text custody decision (MC-1166 unit 5)
+
+- Added a disabled recorded-event adapter, strict free-text extraction with quote/forward separation, and command/invisible-Unicode holds using the existing verified Claude transform. Removed fixed-owner assumptions from the legacy digest prompt while retaining its schema.
+- Incomplete branch checkpoint: empty multipart/signed mail is refused upstream before unit 5; the required owner-visible hold needs a transport/status decision. Combined tests are not green; no integration, wake, enrollment or real-mail readiness is claimed. See `docs/AGENT_MAIL_TRANSPORT.md`.
+
 ## [2026-11-09] - Accept signed agent mail into the local durable inbox (MC-1166 unit 4)
 
 - Added a dedicated, default-disabled receiver with mail-only Ed25519 verification, immutable local thread bindings and one SQLite transaction for consent, replay claims and inbox custody. Lost acknowledgments can retry with a fresh nonce without duplicating an event.

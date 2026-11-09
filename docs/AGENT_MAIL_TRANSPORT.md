@@ -310,6 +310,35 @@ metadata retention/deletion and cleanup scheduling must be wired there; no
 enabled service is claimed by these internal Python seams. The Worker shared
 breaker P2, real Cloudflare ingress provenance and all live pilot gates remain.
 
+## Unit 5 design checkpoint: empty stripped text (not complete)
+
+The unit-5 candidate adds a default-disabled recorded-event adapter, strict
+free-text/quote/forward extraction and conservative command/invisible-Unicode
+holds through the verified Claude tool-free transform. It does not wake sessions
+or consume questions. Existing legacy decision-digest callers retain their schema.
+This is an incomplete branch checkpoint, not an approved integration candidate.
+
+An unresolved cross-unit requirement blocks completion: authenticated
+multipart/signed owner mail can produce no retained plain text. The Worker
+currently calls `drop('no_plain_text')` before event persistence, and the local
+delivery schema rejects empty `text`. Such a message never reaches unit 5.
+Unit 1's local `empty_body` hold is independently tested, but that synthetic
+local insertion is **not** evidence of an end-to-end multipart/signed hold.
+
+Dave must select where the required owner-visible hold lives:
+
+- Extend authenticated transport with a body-free held-event representation,
+  persisted and delivered to local custody with an explicit reason. This needs
+  versioned Worker/envelope/receiver changes and cross-language tests; do not
+  silently reinterpret the existing empty-text refusal. Recommended because
+  owner status and retention can use the existing local event lifecycle.
+- Keep the hold at the Worker and expose authenticated remote hold metadata in
+  unit 7's owner status/recovery surface. This needs a durable remote hold plus
+  status protocol/UI; current rejection counters alone do not satisfy it.
+
+Until that choice is recorded, the adapter is not complete and no multipart/
+signed acceptance claim is made. No transport behavior changes in this checkpoint.
+
 ## D1 ledger, replay, bounds and visibility
 
 Dedicated database; apply `schema.sql` before enabling. No automatic reset or
