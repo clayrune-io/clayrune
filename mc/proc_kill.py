@@ -120,6 +120,25 @@ def safe_killpg(pid: int, sig: int = _SIGKILL) -> bool:
         return False
 
 
+def safe_killpg_recorded(pgid: int, *, holder_alive: bool,
+                         sig: int = _SIGKILL) -> bool:
+    """Signal a recorded new-session group while an owned pipe holder remains.
+
+    Unlike safe_killpg, this does not look up a root which may already have
+    exited. Only callers which recorded their own start_new_session root may
+    use this seam; without the pipe holder, a recycled group id is refused.
+    """
+    if _IS_WIN or not holder_alive or not _group_is_ours_to_kill(pgid, pgid):
+        return False
+    try:
+        getattr(os, 'killpg')(pgid, sig)
+        return True
+    except OSError as exc:
+        if not isinstance(exc, ProcessLookupError):
+            _log(f'[proc_kill] recorded group cleanup failed: {type(exc).__name__}', flush=True)
+        return False
+
+
 def kill_tree(pid: int, sig: int = _SIGKILL) -> bool:
     """Kill ``pid`` and everything under it. Never touches the server.
 

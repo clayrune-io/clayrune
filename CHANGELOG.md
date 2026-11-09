@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Keep transform descendants owned after wrapper exit (MC-1166 unit 5 round 4)
+
+- Deadline transforms now cancel a Windows kill-on-close Job Object or the recorded POSIX session group while its pipe reader is alive. Descendants remain reachable after wrapper exit; exited roots still refuse PID-tree kills. Cleanup stays inside the total budget.
+- Extracted the existing Windows job helpers into one shared module used by both secrets-exec callers and transforms; their PID-tree fallback refuses exited roots. Assignment still follows Popen; descendants spawned before assignment can escape this existing window. Transform job-setup failure refuses execution results.
+- Added registered real-process live/exited-root regressions and job/group ownership tests. Local branch candidate only; no merge, push, restart or real mail/model calls.
+
 ## [2026-11-09] - Enforce mail-transform deadlines during HTTP and CLI I/O (MC-1166 unit 5 round 3)
 
 - Deadline callers use an owned streamed HTTP session with a watchdog that shuts down the active socket, including trickling headers and response bodies. API credit selection/accounting and no-deadline calls keep their existing paths.

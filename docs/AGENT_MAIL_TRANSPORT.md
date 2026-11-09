@@ -386,14 +386,26 @@ exhaustion; a trickle cannot extend the budget. Socket references survive
 urllib3 detaching a `Connection: close` response from its connection. A blocked
 resolver/connect worker cannot delay the caller; cancellation refuses any
 connection completing afterward. No response returned after the deadline is
-accepted. `mc/transform_process_deadline.py` uses Popen and daemon pipe readers;
-on timeout it kills only a still-live owned root tree using the same platform
-split as `_kill_pid` (Windows `taskkill /F /T /PID`, guarded POSIX `kill_tree`).
+accepted. `mc/transform_process_deadline.py` uses Popen and daemon pipe readers.
+Windows assigns the root to a Job Object with `KILL_ON_JOB_CLOSE`; cancellation
+uses `TerminateJobObject` then closes the handle, reaching descendants even when
+the wrapper has exited. `mc/windows_process_job.py` owns the shared helpers
+extracted from the existing secrets-exec routes/stream; both callers import them.
+Their Windows fallback also refuses an exited root before any PID-tree command.
+Assignment follows Popen, matching that precedent: a descendant spawned before
+assignment can escape. This residual window is not eliminated or covered by a
+claim of atomic containment; that would require suspended/atomic process creation.
+Failed job setup refuses transform results and cleans up only a still-live root.
+POSIX records the new-session pgid at spawn and signals it through
+`proc_kill.safe_killpg_recorded` only while the pipe reader is alive. This avoids
+resolving a stale root PID and refuses empty-holder and server-group targets.
 Cleanup and output draining share a 0.5-second cap reserved inside the total
 extraction budget: cancellation starts at deadline minus 0.5 seconds, or
 immediately if 0.5 seconds or less remains at entry (Dave's 13:14 decision).
 Startup time consumes that same budget. An exited root is never passed to the tree
-killer. Omitted/None deadlines retain the original requests/subprocess.run paths.
+killer. The Windows job handle is released exactly once on success, error or
+cancellation; close also terminates remaining members. Omitted/None deadlines
+retain the original requests/subprocess.run paths.
 
 Finalization shares the store write transaction with
 consent/generation/thread/expiry/lease revalidation; a late result cannot make a
@@ -441,7 +453,7 @@ merge, push, restart or deployment was performed.
 
 Round 3 adds the real-I/O review probes at
 `tools/smoke/agent_mail_deadline_probe.py` (12 cases) and
-`tools/smoke/agent_mail_cli_tree_probe.py` (one Windows case). Run them with the
+`tools/smoke/agent_mail_cli_tree_probe.py` (live-root and exited-root cases). Run them with the
 same installation launcher and `python -m pytest -o addopts=` selection.
 These smokes register their harmless synthetic children with the live Process
 Manager; they live outside `tests/`, whose live-state guard correctly refuses
@@ -459,6 +471,12 @@ elapsed < 3.2 seconds plus only 0.25 seconds of scheduling margin. Eleven isolat
 `tests/test_transform_hard_io_deadline.py` cover headers, body trickles including
 `Connection: close`, timely success, stale-root refusal, bounded cleanup and
 immediate cancellation with 0.5 seconds or less remaining.
+Round 4 adds `tests/test_transform_process_ownership.py` for Job Object
+configuration/assignment/failure/close semantics and the recorded-group seam.
+The exited-root smoke asserts the wrapper exited before cancellation, its
+registered grandchild is gone, the pipe reader finished and no event can be
+reclaimed. On Windows the test registers its root immediately after job
+assignment so registration I/O cannot widen the production assignment window.
 
 ## D1 ledger, replay, bounds and visibility
 

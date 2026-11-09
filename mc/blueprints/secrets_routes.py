@@ -52,6 +52,7 @@ from mc import totp as _totp
 from mc.blueprints import local_auth
 from mc.core import _is_loopback_request, _log
 from mc.unattended import is_unattended_caller
+from mc.windows_process_job import create_for as _win_job_object_for
 
 bp = Blueprint('secrets_routes', __name__)
 
@@ -647,67 +648,6 @@ def _decode_and_scrub(raw_bytes: bytes) -> str:
     return text
 
 
-_PROCESS_SET_QUOTA = 0x0100
-_PROCESS_TERMINATE = 0x0001
-
-
-def _win_job_object_for(pid: int):
-    """Windows only: create a job object, put ``pid`` in it, return the job
-    HANDLE (an int) — or ``None`` on any failure, so the caller falls back to
-    plain ``taskkill /T``.
-
-    Why a job object and not just ``taskkill /T /PID <pid>`` (MC-981 review
-    finding, reproduced with a probe script): ``/T`` walks the process tree
-    from ``pid`` by PPID at the moment it's invoked. A command that forks a
-    grandchild and then EXITS ITSELF (the ordinary daemon/fork-and-detach
-    shape — confirmed with a script whose child's only job is to spawn a
-    sleeper and return) leaves nothing for `/T` to walk from: `pid` is
-    already gone by the time the timeout fires, so `taskkill` reports
-    "not found" and the grandchild — which kept the stdout pipe open, which
-    is *why* ``communicate()`` timed out in the first place — survives
-    forever. A job object doesn't have this hole: once a process is a
-    member, every process IT creates automatically joins too (as long as
-    membership happens before that grandchild is spawned), and the
-    membership persists independent of whether the original member is still
-    alive. ``TerminateJobObject`` then kills everyone still in the job in one
-    call, dead parent or not.
-
-    Assigned as early as possible after ``Popen`` returns to keep the window
-    where the child could fork before joining the job as small as possible —
-    not zero (that needs ``CREATE_SUSPENDED`` plus manual STARTUPINFO/pipe
-    wiring to replace ``subprocess.Popen``, which is a bigger rewrite than
-    this fix's scope), but in practice a fresh child process take many
-    milliseconds to reach the point of spawning anything, versus the
-    microseconds this function takes to run — the probe's fork-and-exit
-    shape reproduces the bug we're fixing but does not hit this residual
-    window.
-    """
-    from ctypes import wintypes
-    kernel32 = ctypes.windll.kernel32
-    # Declare HANDLE types: ctypes defaults to a 32-bit int, which can
-    # truncate a 64-bit handle on the way out and back in.
-    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
-    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    job = kernel32.CreateJobObjectW(None, None)
-    if not job:
-        return None
-    proc_handle = kernel32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid)
-    if not proc_handle:
-        kernel32.CloseHandle(job)
-        return None
-    try:
-        ok = kernel32.AssignProcessToJobObject(job, proc_handle)
-    finally:
-        kernel32.CloseHandle(proc_handle)
-    if not ok:
-        kernel32.CloseHandle(job)
-        return None
-    return job
-
-
 def _kill_process_tree(proc: subprocess.Popen, job_handle=None) -> None:
     """Kill ``proc`` AND every process it spawned, on timeout (MC-981 follow-up
     to MC-979). ``proc.kill()`` — what a bare ``timeout=`` on ``subprocess.run``
@@ -721,8 +661,8 @@ def _kill_process_tree(proc: subprocess.Popen, job_handle=None) -> None:
     ``job_handle`` (Windows only, from ``_win_job_object_for``) is tried
     FIRST and is the real fix — see that function's docstring for why a bare
     ``taskkill /T`` misses a child that already exited by the time the
-    timeout fires. ``taskkill /T`` still runs unconditionally afterward as a
-    fallback belt for anything the job object didn't catch (job creation
+    timeout fires. ``taskkill /T`` runs afterward only while the root is still
+    alive, as a fallback for anything the job object didn't catch (job creation
     failed, or a process that escaped it some other way).
 
     POSIX's ``os.killpg`` does not have the Windows hole: a process group is
@@ -740,11 +680,12 @@ def _kill_process_tree(proc: subprocess.Popen, job_handle=None) -> None:
             except Exception as e:
                 _log(f"[secrets] TerminateJobObject for server-exec pid "
                      f"{proc.pid} failed: {e}")
-        try:
-            subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)],
-                           stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
-        except Exception as e:
-            _log(f"[secrets] taskkill on server-exec pid {proc.pid} failed: {e}")
+        if proc.poll() is None:
+            try:
+                subprocess.run(['taskkill', '/T', '/F', '/PID', str(proc.pid)],
+                               stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+            except Exception as e:
+                _log(f"[secrets] taskkill on server-exec pid {proc.pid} failed: {e}")
     else:
         try:
             if not _proc_kill.kill_tree(proc.pid, signal.SIGKILL):
