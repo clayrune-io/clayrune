@@ -27,9 +27,10 @@ function subjectWords(subject) {
 export function constructMail(reg, value, message_id, config) {
   const owner = parseAddrSpec(reg.owner_address);
   const from = parseAddrSpec(config.from);
-  if (!owner || !from || from.domain !== config.domain || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(reg.address_local)
+  if (!owner || !from || from.domain !== config.domain || !/^[a-z0-9][a-z0-9._-]{0,30}$/.test(reg.address_local)
       || !/^[a-z0-9.-]+$/.test(config.domain)) throw new Error('invalid_service_address');
   const reply = `${reg.address_local}+${value.reply_token}@${config.domain}`;
+  if (!/^[a-f0-9]{32}$/.test(value.reply_token) || !parseAddrSpec(reply)) throw new Error('invalid_service_address');
   return { from: config.from, to: reg.owner_address,
     raw: [`From: ${config.from}`, `To: ${reg.owner_address}`, `Reply-To: ${reply}`,
       `Message-ID: <${message_id}>`, `Subject: ${subjectWords(value.subject)}`,

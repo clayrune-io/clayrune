@@ -74,6 +74,9 @@ export async function ingress({ message, ledger, config, now }) {
       || (h.key === 'precedence' && /^(bulk|list|junk)$/i.test(h.value))) || !message.from) return drop('loop_or_bounce');
   const decision = await decide({ rcptTo: message.to, headers, now }, { ...reg, active: true },
     async (token) => ledger.thread(await sha256(bytes(token))));
+  // Unit 3 still refuses identity on lookup failure; storage failure is not an
+  // SMTP authentication rejection. The email adapter reports sanitized custody failure.
+  if (!decision.accept && decision.reason_code === 'lookup_error') throw new Error('thread_lookup_failed');
   if (!decision.accept) return drop(decision.reason_code);
   const content = await strip(raw);
   if (!content.ok) return drop(content.reason_code);

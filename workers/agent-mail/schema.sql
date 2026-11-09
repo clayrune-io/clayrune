@@ -1,9 +1,11 @@
 -- Dedicated mail D1 database. Enrollment (unit 7) is the only registration writer.
+-- Reply-To local budget: 31 opaque characters + '+' + 32 lowercase-hex token.
+-- Enrollment also validates syntax and the full mailbox (see transport contract).
 PRAGMA foreign_keys = ON;
 CREATE TABLE registrations (
   install_id TEXT PRIMARY KEY, generation INTEGER NOT NULL CHECK(generation > 0),
   active INTEGER NOT NULL DEFAULT 0, owner_verified INTEGER NOT NULL DEFAULT 0,
-  owner_address TEXT NOT NULL, address_local TEXT NOT NULL UNIQUE,
+  owner_address TEXT NOT NULL, address_local TEXT NOT NULL UNIQUE CHECK(length(address_local) BETWEEN 1 AND 31),
   key_id TEXT NOT NULL, public_key TEXT NOT NULL,
   route_origin TEXT, route_path TEXT, route_generation INTEGER,
   route_verified INTEGER NOT NULL DEFAULT 0

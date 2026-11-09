@@ -50,10 +50,14 @@ a parsed/re-serialized value. Request content type is `application/json`.
 
 Receivers must check current consent, expected direction, key id, install,
 generation, POST and exact path, SHA-256, signature and timestamp within inclusive
-300,000 ms of their clock. After successful crypto verification, atomically claim
+300,000 ms of their current clock after the complete body arrives and again after
+asynchronous crypto verification. After successful verification, atomically claim
 `(direction,install,generation,key_id,nonce)` in a durable store. Retain through
 `timestamp+300001` ms; delete only when that deadline is reached. Only the first
-claim succeeds, including across processes and restarts. Invalid signatures do
+claim succeeds, including across processes and restarts. Recheck freshness after
+the durable claim completes too: a slow claim racing expiry/cleanup cannot
+authorize processing. `verify` accepts a live `clock` callback; its explicit
+`now` argument is a fixed-time test compatibility seam. Invalid signatures do
 not burn nonces. Storage failure refuses processing visibly; there is no memory
 fallback. A lost HTTP response requires a **fresh signature/nonce** around the
 same intent/event; stable identity supplies business-level deduplication.
@@ -78,6 +82,22 @@ verified exact owner address, active consent, positive generation, install
 public key/key id and proven route fields. `schema.sql` contains public keys,
 never install private keys or a fleet of symmetric secrets. Address reservations
 are never reassigned; preserve registration/revocation tombstones on deletion.
+
+Unit 7 must validate `address_local` as 1..31 lowercase ASCII characters matching
+`[a-z0-9][a-z0-9._-]{0,30}`. v1 reply tokens are exactly 32 lowercase hex
+characters (16 random bytes), never 26..64 variable-length tokens. The complete
+`address_local + '+' + reply_token + '@' + MAIL_DOMAIN` must also pass the same
+strict `parseAddrSpec` mailbox parser used for inbound authentication: local part
+at most 64 characters, whole address at most 254, dot-atom local and DNS domain.
+The 31+1+32 boundary makes a 64-character local part. Length alone is insufficient
+(consecutive dots and a long domain can still fail). The registration schema
+enforces 1..31 characters; enrollment must enforce syntax and the full mailbox
+before activation. Outbound repeats the full validation before reserving an
+intent/thread, spending send capacity or calling the provider. Legacy or corrupt
+rows fail visibly with HTTP 503 and no send; never silently rename an address.
+This undeployed schema candidate is not a migration of an existing service;
+unit 7 must check compatibility before applying a schema to any populated D1.
+Unit 3's broader token-extraction grammar does not expand this enrollment contract.
 
 The route is an **exact origin plus path**, proof-bound to this install and
 generation: `route_origin`, `route_path`, `route_generation`, `route_verified=1`.
@@ -112,7 +132,12 @@ Signed `/v1/mail/send` body contains **only**:
 `kind` is `note|question`; subject is 1-200 UTF-8 bytes without controls, body is
 nonempty plain text at most 16 KiB without NUL. IDs match the signing id syntax.
 The HTTP byte bound is 128 KiB to accommodate JSON escaping of a valid body;
-it does not increase the decoded-text bound.
+it does not increase the decoded-text bound. `request-body.js` bounds the entire
+HTTP upload to 10 seconds (not an idle timeout reset by each chunk), returning
+408 `body_timeout` or 413 `body_limit`, cancelling the stream without waiting
+for an unresponsive producer. These refusals consume no nonce or protected
+per-install HTTP allowance. A retry still uses a fresh nonce and the original
+immutable intent/event ids.
 The install creates a random 128-bit lowercase-hex reply token and durably binds
 thread/project/session/native history/question revision **before** calling this
 API. Each transport thread has one outbound intent; several such threads can
@@ -155,6 +180,12 @@ Message-ID correlation. Missing/unsupported provenance refuses. Automatic mail,
 outgoing copies and null-envelope bounces are suppressed. No forwarding or
 automatic replies, no fetching external MIME content.
 
+A unit-3 `lookup_error` still refuses identity, but denotes an operational thread
+lookup failure. The ingress adapter propagates it through the existing sanitized
+`agent_mail_custody_failed` path, without `setReject`, a rejection audit record
+or an event. An unknown token still follows the ordinary permanent refusal path.
+This distinction does not promise Cloudflare will retry a failed invocation.
+
 Unit 3 strips MIME before persistence: no HTML fallback, attachments, image or
 calendar bytes enter D1 or the install. Command-like plain text remains untrusted;
 unit 5, never this transport, performs toolless injection screening. No raw MIME
@@ -165,7 +196,8 @@ Stable event id = lowercase SHA-256 of compact JSON array
 number here). Incoming Message-ID is strict and angle brackets removed. D1
 deduplicates that authenticated tuple, compares the stripped-text SHA-256, and
 keeps the first accepted body on conflicting reuse with visible rejection
-metadata. Distinct incoming ids with equal text remain separate events. A missing
+metadata in both the prior-row and racing-insert paths. Distinct incoming ids
+with equal text remain separate events. A missing
 or malformed incoming id yields a non-deliverable `held` event keyed by a raw
 digest sentinel; it cannot shadow a valid id. Holds block later receipt order.
 
@@ -222,7 +254,14 @@ per-day overflow count (also 30 days). No silent truncation or success claim.
 Additional conservative **candidate capacity brakes**, subject to pilot capacity
 review: 100 queued/held bodies per install, 10,000 globally; 20 sends/install/day,
 1000 sends/day globally; 200 inbound messages/install/day, 10,000 globally;
-200 authenticated-endpoint attempts/install/day. `MAIL_ENABLED=false` is the
+200 authenticated-endpoint attempts/install/day, shared by send and reconcile.
+Only a verified signature with a successful durable nonce claim consumes this
+protected allowance. Invalid traffic uses a separate global 10,000-refusals/minute
+bucket, never a client-supplied install id; beyond it, failed authentication gets
+429 `abuse_limit` instead of 401. That bucket is consulted only for failed
+authentication, so exhausting it cannot block an authenticated send or recovery.
+This bounds refusal accounting, not pre-authentication crypto/D1 work; edge abuse
+protection and capacity still require pilot validation. `MAIL_ENABLED=false` is the
 global circuit breaker. Limits use atomic D1 reservations; racing attempts cannot
 overshoot. A failed reservation may consume rate capacity but cannot send.
 Full queue/failed D1 insertion propagates an explicit custody failure and creates
@@ -247,11 +286,35 @@ leases, lost ack, order, pending routes, redirect refusal, revocation, expiry an
 bounded metadata. Run the **whole** existing worker suite through the repository
 test launcher, cwd `workers/agent-mail`, with exact shell command `npm test`.
 
-Candidate validation: 2026-11-09, whole suite **707 passed, 0 failed, 0 skipped,
-exit 0** (591 existing inbound + 116 new transport tests). Launcher progress
+Round-2 candidate validation: 2026-11-09, whole suite **724 passed, 0 failed,
+0 skipped/cancelled/todo, exit 0** (707 baseline + 17 round-2 cases). Exact command,
+cwd `workers/agent-mail`:
+
+```powershell
+python C:/Users/levir/Documents/_claude/mission-control/tools/test-run.py --project mission_control --port 5199 --shell powershell --command 'npm test'
+```
+
+The targeted `node --test test/transport-round2.test.js` selection also passed
+17/17, exit 0, through the same launcher. Launcher progress
 capture reported `transport_unavailable_progress_incomplete` and
 `parent_unavailable_progress_incomplete`; these counts are Node's test cases,
 not dashboard assertions. No Python/static edits require pyright or boot smoke.
+
+`test/transport-round2.test.js` ports all five Fenn failing probes from the main
+checkout's `_scratch/mc1166-u2-review-92849c37/probes.test.mjs`, plus its three
+controls. Relative fixture/module imports are relocated to the real test directory.
+The quota probe also runs for reconcile and checks no protected bucket was spent;
+lookup failure adds sanitized-error/no-rejection/no-event and retry assertions;
+conflict adds retained-first-body assertions. The 32-character probe necessarily
+changes its expected outcome from a successful send to schema refusal, then
+HTTP 503 before reservation/provider when a test-only CHECK bypass models an
+old-schema row. Keeping its original unconditional HTTP-200 assertion would
+contradict the required registration bound. The 31-character round-trip control
+is retained. Delayed-upload/expired-nonce cleanup and forced racing SELECT
+interleavings are unchanged; these are deterministic synthetic reproductions,
+not live provider evidence. Other cases cover exhausted abuse quota isolation,
+authenticated quota sharing, crypto/nonce expiry, stalled/oversize upload
+cancellation, malformed dot syntax and whole-address overflow.
 
 Not verified: actual Cloudflare runtime/bindings, account capacity, namespace and
 domain configuration, provider ingress headers, local receiver, enrollment/tunnel

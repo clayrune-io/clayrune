@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Fix five Worker mail transport review findings (MC-1166 unit 2 round 2)
+
+- Authenticated send/recovery quota is consumed only after signature verification and durable nonce claim; unauthenticated refusals use a separate bucket. HTTP uploads have a 10-second deadline, and freshness is checked after the body, crypto and nonce storage.
+- Transient thread lookups raise sanitized custody failure without permanent SMTP rejection. Full Reply-To validation and 1..31-character registration bounds prevent unusable reply addresses; racing Message-ID conflicts now retain audit metadata.
+- Ported all five failing review probes and positive controls, with additional quota, timeout and asynchronous-expiry cases. Updated the unit 4/7 contract. Local branch candidate only; no merge, push, restart, deployment or real mail.
+
 ## [2026-11-09] - Add signed owner-only Worker mail transport (MC-1166 unit 2)
 
 - Added separate Ed25519 signing, owner-only outbound, bounded authenticated ingress, D1 custody/lease ledger, scheduled replay and Worker entry modules. Exact-body signatures bind direction, generation and receiver path; durable nonces and stable ids prevent request replay and duplicate custody. Ambiguous sends remain visible and are never automatically resent.

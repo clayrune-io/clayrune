@@ -83,7 +83,10 @@ export class Ledger {
       reg.install_id, reg.generation, event.thread_id, now, reg.install_id, this.policy.queueLimit, this.policy.globalQueueLimit);
     if (result.meta.changes === 1) return { status: event.held ? 'held' : 'queued', event_id: event.event_id };
     const raced = await this.first('SELECT * FROM events WHERE event_id=?', event.event_id);
-    if (raced) return { status: raced.digest === event.digest ? 'duplicate' : 'conflict', event_id: raced.event_id };
+    if (raced) {
+      if (raced.digest !== event.digest) await this.reject('message_id_conflict', now);
+      return { status: raced.digest === event.digest ? 'duplicate' : 'conflict', event_id: raced.event_id };
+    }
     await this.reject('queue_full_or_revoked', now);
     return { status: 'refused' };
   }

@@ -48,7 +48,7 @@ export async function sign({ privateKey, key_id, install_id, generation, directi
 // Replay claim MUST be durable and atomic. Call only after validation; a failed
 // signature cannot burn the owner's nonce. Retain claims through the skew window.
 export async function verify({ request, body, publicKey, direction, install_id, generation,
-  key_id, claimNonce, now = Date.now() }) {
+  key_id, claimNonce, now, clock = now === undefined ? Date.now : () => now }) {
   let verified;
   try {
     const m = Object.fromEntries(FIELDS.map((f) => [f, request.headers.get(`x-mail-${f.replaceAll('_', '-')}`)]));
@@ -57,12 +57,14 @@ export async function verify({ request, body, publicKey, direction, install_id, 
     if (url.search || url.hash || m.direction !== direction || m.install_id !== install_id
         || m.generation !== String(generation) || m.key_id !== key_id) return false;
     const input = canonical(m);
-    if (Math.abs(now - Number(m.timestamp)) > SKEW_MS || m.digest !== await sha256(body)) return false;
+    if (Math.abs(clock() - Number(m.timestamp)) > SKEW_MS || m.digest !== await sha256(body)) return false;
     const raw = unbase64url(publicKey);
     if (raw.length !== 32) return false;
     const key = await crypto.subtle.importKey('raw', raw, 'Ed25519', false, ['verify']);
     const sig = unbase64url(request.headers.get('x-mail-signature'));
     if (sig.length !== 64 || !await crypto.subtle.verify('Ed25519', key, sig, input)) return false;
+    // Crypto is asynchronous: an upload/verification begun in-window may finish late.
+    if (Math.abs(clock() - Number(m.timestamp)) > SKEW_MS) return false;
     verified = { ...m, expires_at: Number(m.timestamp) + SKEW_MS + 1 };
   } catch {
     // Invalid public wire material is an authentication refusal, never a fallback.
@@ -70,5 +72,7 @@ export async function verify({ request, body, publicKey, direction, install_id, 
   }
   // A durable-store failure must be observable as an operational failure, not
   // disguised as bad client authentication or followed by in-memory acceptance.
-  return await claimNonce(verified);
+  const claimed = await claimNonce(verified);
+  // Cleanup may race a slow durable claim. Never accept after its window expires.
+  return claimed && Math.abs(clock() - Number(verified.timestamp)) <= SKEW_MS;
 }

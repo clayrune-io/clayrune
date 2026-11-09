@@ -1,11 +1,12 @@
 // Cloudflare entry/factory. Dependencies are injected only by tests, never HTTP.
 import { Ledger } from './ledger.js';
 import { verify } from './signing.js';
-import { ingress, readBounded } from './ingress.js';
+import { ingress } from './ingress.js';
+import { readRequestBody, BODY_TIMEOUT_MS } from './request-body.js';
 import { outbound } from './outbound.js';
 import { replay } from './replay.js';
 const reply = (status, value) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
-export function createWorker({ send, fetcher = fetch, clock = Date.now } = {}) {
+export function createWorker({ send, fetcher = fetch, clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS } = {}) {
   const config = (env) => ({ domain: env.MAIL_DOMAIN, from: env.MAIL_FROM,
     ingressVerified: env.MAIL_INGRESS_VERIFIED === 'true', privateKey: env.MAIL_SERVICE_PRIVATE_KEY,
     keyId: env.MAIL_SERVICE_KEY_ID });
@@ -22,21 +23,29 @@ export function createWorker({ send, fetcher = fetch, clock = Date.now } = {}) {
       const url = new URL(request.url);
       if (request.method !== 'POST' || !['/v1/mail/send', '/v1/mail/reconcile'].includes(url.pathname)
           || url.search) return reply(404, { code: 'not_found' });
-      const now = clock(); const ledger = new Ledger(env.MAIL_DB);
+      const ledger = new Ledger(env.MAIL_DB);
       try {
+        // Invalid traffic shares a bounded bucket, never an install's allowance.
+        // Apply it only on refusal so abuse cannot lock out a valid signature.
+        const unauthorized = async () => await ledger.limit('http:unauthenticated', 10_000, clock(), 60_000)
+          ? reply(401, { code: 'unauthorized' }) : reply(429, { code: 'abuse_limit' });
         // No dashboard cookie/bearer token is read by this receiver.
         const id = request.headers.get('x-mail-install-id');
-        if (!/^[A-Za-z0-9_-]{1,128}$/.test(id ?? '')) return reply(401, { code: 'unauthorized' });
+        if (!/^[A-Za-z0-9_-]{1,128}$/.test(id ?? '')) return await unauthorized();
         const reg = await ledger.registration(id);
-        if (!reg?.active || !reg.owner_verified) return reply(401, { code: 'unauthorized' });
-        if (!await ledger.limit(`http:${id}`, 200, now)) return reply(429, { code: 'request_limit' });
+        if (!reg?.active || !reg.owner_verified) return await unauthorized();
         let body;
         // JSON escaping can expand a valid 16 KiB text body sixfold.
-        try { body = await readBounded(request.body, 131_072); }
-        catch { return reply(413, { code: 'body_limit' }); }
+        try { body = await readRequestBody(request.body, { timeoutMs: bodyTimeoutMs }); }
+        catch (error) {
+          return error.message === 'body_timeout' ? reply(408, { code: 'body_timeout' })
+            : reply(413, { code: 'body_limit' });
+        }
         if (!await verify({ request, body, publicKey: reg.public_key, key_id: reg.key_id,
           direction: 'install-to-service', install_id: reg.install_id, generation: reg.generation,
-          claimNonce: (m) => ledger.claimNonce(m), now })) return reply(401, { code: 'unauthorized' });
+          claimNonce: (m) => ledger.claimNonce(m), clock })) return await unauthorized();
+        const now = clock();
+        if (!await ledger.limit(`http:${id}`, 200, now)) return reply(429, { code: 'request_limit' });
         let value;
         try { value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body)); }
         catch { return reply(400, { code: 'invalid_json' }); }
