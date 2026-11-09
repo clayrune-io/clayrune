@@ -114,10 +114,13 @@ def project_path_for(projects_dir: Path, project_id: str) -> str:
 
 
 def run(projects_dir: Path, project_id: str, only_session: str, apply: bool) -> Counter:
+    from copy import deepcopy
+    from mc import agent_log_file
     counts: Counter = Counter()
     log_file = projects_dir / f'{project_id}_agent_log.json'
     try:
-        log = json.loads(log_file.read_text(encoding='utf-8'))
+        before = agent_log_file.snapshot(log_file) if apply else []
+        log = deepcopy(before) if apply else json.loads(log_file.read_text(encoding='utf-8'))
     except Exception as e:
         print(f'  ! {log_file.name} does not parse ({e}) -- SKIPPING, not rewriting')
         counts['unreadable'] += 1
@@ -174,8 +177,10 @@ def run(projects_dir: Path, project_id: str, only_session: str, apply: bool) -> 
             counts['no-human-turn'] += 1
 
     if changed and apply:
-        write_json_atomic(log_file, log, indent=2, ensure_ascii=False)
-        print(f'  wrote {log_file.name} ({changed} row(s) stamped)')
+        applied = agent_log_file.commit(log_file, before, log)
+        counts['stamp'] -= changed - applied
+        counts['superseded'] += changed - applied
+        print(f'  wrote {log_file.name} ({applied} of {changed} candidate row(s) stamped)')
     elif changed:
         print(f'  would stamp {changed} row(s) -- DRY RUN, nothing written (pass --apply)')
     else:

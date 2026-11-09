@@ -106,7 +106,7 @@ def test_takeover_between_rollback_and_recording_preserves_row(scheduled, monkey
 
 
 @pytest.mark.parametrize('owner', ['absent', 'disowned', 'restored'])
-def test_newer_durable_attempt_is_preserved_even_after_owner_cleanup(app_env, monkeypatch, owner):
+def test_newer_durable_turn_is_preserved_even_after_owner_cleanup(app_env, monkeypatch, owner):
     env = app_env
     prior = {'proc': _Proc(_Stdin()), '_delegation_turn': 1}
     session = {'proc': _Proc(_Stdin()), '_delegation_turn': 2}
@@ -117,8 +117,7 @@ def test_newer_durable_attempt_is_preserved_even_after_owner_cleanup(app_env, mo
     elif owner == 'restored':
         env['sessions']['addressed'] = prior
     rows = [{'session_id': 'addressed', 'trigger_type': 'schedule', 'trigger_id': 's1',
-             'delegation_turn': 3, 'status': 'in_progress', 'task': 'new task', 'summary': '',
-             **pending_fields({})}]
+             'delegation_turn': 3, 'status': 'in_progress', 'task': 'new task', 'summary': ''}]
     expected = deepcopy(rows)
     monkeypatch.setattr(env['ar'], '_update_agent_log', lambda pid, mutate: mutate(rows))
     record_failure('p1', 's1', 'addressed', 'old task', attempt.bind(art.PromptDeliveryError('old failure')))
@@ -164,13 +163,14 @@ def test_restored_predecessor_allows_original_failure_but_not_reused_predecessor
     attempt = DeliveryAttempt.capture(session)
     env['sessions']['addressed'] = prior
     rows = [{'session_id': 'addressed', 'trigger_type': 'schedule', 'trigger_id': 's1',
-             'delegation_turn': 1, 'status': 'completed', 'task': 'old'}]
+             'delegation_turn': 1, 'status': 'completed', 'task': 'old',
+             'delivery_attempt_id': attempt.attempt_id}]
     monkeypatch.setattr(env['ar'], '_update_agent_log', lambda pid, mutate: mutate(rows))
     error = attempt.bind(art.PromptDeliveryError('failed'))
     record_failure('p1', 's1', 'addressed', 'attempt task', error)
     assert rows[0]['status'] == 'error' and rows[0]['task'] == 'attempt task'
     rows[0].update(status='in_progress', task='new task')
-    rows[0].update(pending_fields(prior))
+    rows[0].pop('delivery_attempt_id')
     prior['_delegation_turn'] += 1
     expected = deepcopy(rows)
     record_failure('p1', 's1', 'addressed', 'attempt task', error)

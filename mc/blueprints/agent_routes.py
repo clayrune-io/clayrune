@@ -7382,7 +7382,8 @@ def _update_agent_log(project_id, mutate):
     """
     with _agent_log_mutation_locks_guard:
         lock = _agent_log_mutation_locks.setdefault(project_id, threading.RLock())
-    with lock:
+    from mc.agent_log_file import transaction
+    with lock, transaction(_agent_log_path(project_id)):
         if not _agent_log_is_readable(project_id):
             raise OSError('conversation log is unreadable')
         rows = _load_agent_log(project_id)
@@ -7481,14 +7482,16 @@ def _mark_human_joined(project_id, session_id):
                     and (r.get('trigger_type') or 'manual') in _HUMAN_JOINABLE_TRIGGERS
                     and not r.get('human_joined'))
 
-        if not any(_wants(r) for r in _load_agent_log(project_id)):
+        from mc import agent_log_maintenance
+        from copy import deepcopy
+        before = agent_log_maintenance.snapshot(project_id)
+        if not any(_wants(r) for r in before):
             return
-
-        def stamp(rows):
-            for r in rows:
-                if _wants(r):
-                    r['human_joined'] = True
-        _update_agent_log(project_id, stamp)
+        after = deepcopy(before)
+        for r in after:
+            if _wants(r):
+                r['human_joined'] = True
+        agent_log_maintenance.commit(project_id, before, after)
     except Exception as e:
         _log(f'[human-joined] {project_id}/{session_id}: stamp failed: {e}')
 
@@ -8838,7 +8841,7 @@ def _session_cumulative_transcript_telemetry(project_id, session):
 
 
 def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
-                                write_turn_start=True):
+                                write_turn_start=True, attempt=None):
     """Write a placeholder agent_log row at dispatch time so trigger correlation
     survives a server restart that kills the session before _log_agent_completion
     can run.
@@ -8864,6 +8867,7 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
     sid = session.get('session_id', '')
     if not sid:
         return
+    callback_attempt = _delivery_attempt.DeliveryAttempt(session.get('_delivery_attempt_id') or '')
     entry = {
         'ts': now_iso(),
         'task': session.get('task', ''),
@@ -8945,6 +8949,8 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
         if existing_i is not None:
             prev = log[existing_i]
             if identity_only:
+                if not callback_attempt.owns_row(prev):
+                    return
                 prev.update(_resume_cwd.isolation_log_fields(session, prev))
                 for field in ('claude_session_id', 'provider_session_id'):
                     if entry[field]:
@@ -8956,7 +8962,13 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
                             merged.append(csid)
                     prev['claude_session_ids'] = merged
                 return
-            entry.update(_delivery_attempt.pending_fields(session))
+            if attempt is not None:
+                if not attempt.owns_row(prev):
+                    raise RuntimeError('pending delivery attempt was superseded')
+                attempt.stamp(session)
+                entry.update(_delivery_attempt.completion_fields(session))
+            else:
+                entry.update(_delivery_attempt.pending_fields(session))
             entry['claude_session_id'] = entry['claude_session_id'] or prev.get('claude_session_id', '')
             entry['provider_session_id'] = entry['provider_session_id'] or prev.get('provider_session_id', '')
             entry['started_at'] = prev.get('started_at', '') or entry['started_at']
@@ -8979,7 +8991,12 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
             log.pop(existing_i)
             log.insert(0, entry)
         else:
-            if not identity_only:
+            if identity_only:
+                return
+            if attempt is not None:
+                attempt.stamp(session)
+                entry.update(_delivery_attempt.completion_fields(session))
+            else:
                 entry.update(_delivery_attempt.pending_fields(session))
             log.insert(0, entry)
     try:
@@ -9254,6 +9271,7 @@ def _note_self_started_turn(session):
     completes once)."""
     if session.get('status') != 'idle' or session.get('waiting_for_question'):
         return
+    _log_agent_dispatch_pending(session, strict=True, write_turn_start=False)
     session['status'] = 'running'
     session['last_status_change_time'] = _time.time()
     background_wake = bool(session.pop(_bg_tasks.RESUME_PENDING_KEY, None))
@@ -10373,9 +10391,14 @@ def _log_agent_completion_body(session):
     if _ckey:
         entry['completion_key'] = _ckey
     entry.update(_delivery_attempt.completion_fields(session))
+    completion_attempt = _delivery_attempt.DeliveryAttempt(entry.get('delivery_attempt_id') or '')
     def complete(log):
         sid = entry['session_id']
         if sid:
+            current = next((e for e in log if e.get('session_id') == sid), None)
+            if current is not None and not completion_attempt.owns_row(current):
+                _log(f'[agent-log] skipped superseded completion for {sid}: durable attempt changed')
+                return False
             for i, e in enumerate(log):
                 # A replay also takes the row boot's reconcile already flipped.
                 if e.get('session_id') == sid and (
@@ -10386,14 +10409,20 @@ def _log_agent_completion_body(session):
                     entry.update(_resume_cwd.isolation_log_fields(session, e))
                     log.pop(i)
                     break
+        if not entry.get('delivery_attempt_id'):
+            # New standalone/housekeeping history has no destination to own.
+            # Give the inserted row its identity; never adopt an existing row.
+            entry.update(_delivery_attempt.pending_fields(session))
         log.insert(0, entry)
+        return True
     if _done_row is not None:
         # Written by the run that died after this point: keep that row, whose ts
         # and scribed marker are what the steps below key on.
         entry['ts'] = _done_row.get('ts', entry['ts'])
         entry['scribed'] = bool(_done_row.get('scribed'))
     else:
-        _update_agent_log(project_id, complete)
+        if _update_agent_log(project_id, complete) is False:
+            return
 
     # MC-998 Phase 2: durable session_fact for the Usage Breakdown dashboard.
     # Written for every completed/errored/stopped session INCLUDING housekeeping
@@ -10476,9 +10505,12 @@ def _log_agent_completion_body(session):
                 # Persist the Fix B marker so the startup reconciler never
                 # re-scribes a session the completion path already captured.
                 entry['scribed'] = True
+                marker_attempt = _delivery_attempt.DeliveryAttempt(entry.get('delivery_attempt_id') or '')
                 def mark_scribed(rows):
                     for row in rows:
-                        if row.get('session_id') == entry['session_id'] and row.get('ts') == entry['ts']:
+                        if (row.get('session_id') == entry['session_id']
+                                and row.get('ts') == entry['ts']
+                                and marker_attempt.owns_row(row)):
                             row['scribed'] = True
                             break
                 _update_agent_log(project_id, mark_scribed)
@@ -10512,12 +10544,16 @@ def _runtime_log_completion(ev, session):
     agent_stop. Never raises — a completion hook must not kill the reader
     thread during teardown.
     """
+    attempt_id = session.get('_delivery_attempt_id')
     try:
         _delegation_settlement.note_runtime_exit(session, _delivery_store)
         project_id = session.get('project_id')
         if not project_id:
             return
         with get_manager(project_id).lock:
+            if session.get('_delivery_attempt_id') != attempt_id:
+                _log(f'[runtime-completion] skipped superseded callback for {session.get("session_id", "")}')
+                return
             # MC-935: this hook is the ONE place every non-claude provider's
             # process exit funnels through (Gemini's own `_read_stream` and
             # the shared `_mode_a_reader` used by codex/opencode/goose/aider/
@@ -10583,25 +10619,32 @@ def _runtime_note_init(_event, session):
     """Backfill identity without resetting prior turn usage, history or status."""
     if session.get('incognito') or session.get('housekeeping'):
         return
+    attempt = _delivery_attempt.DeliveryAttempt(session.get('_delivery_attempt_id') or '')
+    fields = {'provider_session_id': session.get('provider_session_id') or '',
+              'observed_model': session.get('observed_model') or '',
+              'agent_model': _requested_model_snapshot(session)}
     def backfill(rows):
         for row in rows:
-            if row.get('session_id') == session.get('session_id'):
-                row['provider_session_id'] = session.get('provider_session_id') or ''
-                row['observed_model'] = session.get('observed_model') or ''
-                row['agent_model'] = _requested_model_snapshot(session)
+            if (row.get('session_id') == session.get('session_id')
+                    and attempt.owns_row(row)):
+                row.update(fields)
                 return
     _update_agent_log(session['project_id'], backfill)
 
 
-def _persist_runtime_start_failure(session):
+def _persist_runtime_start_failure(session, attempt=None):
     if session.get('incognito') or session.get('housekeeping'):
         return
+    if not isinstance(attempt, _delivery_attempt.DeliveryAttempt):
+        attempt = _delivery_attempt.DeliveryAttempt(session.get('_delivery_attempt_id') or '')
+    summary = (session.get('log_lines') or ['Dispatch failed'])[-1]
     def failed(rows):
         for row in rows:
             if (row.get('session_id') == session.get('session_id')
+                    and attempt.owns_row(row)
                     and row.get('status') == 'in_progress'):
                 row['status'] = 'error'
-                row['summary'] = (session.get('log_lines') or ['Dispatch failed'])[-1]
+                row['summary'] = summary
                 return
     try:
         _update_agent_log(session['project_id'], failed)
@@ -11466,7 +11509,10 @@ def _dispatch_via_runtime(p, task, *, provider_name,
     def _start_failed(e, *, deferred=False):
         # Delivery may settle after this helper returned. Never overwrite a
         # replacement owner; the runtime disowns only its own rejected proc.
-        if (agent_sessions.get(session_id) is not session
+        attempt = getattr(e, 'delivery_attempt', None)
+        if ((isinstance(attempt, _delivery_attempt.DeliveryAttempt)
+                and session.get('_delivery_attempt_id') != attempt.attempt_id)
+                or agent_sessions.get(session_id) is not session
                 or (deferred and session.get('proc') is not None
                     and session.get('proc') is not launched_proc)):
             return
@@ -11487,7 +11533,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             session['log_lines'].append(f"[{provider_name} dispatch failed: {e}]")
         session['process_alive'] = False
         session['last_status_change_time'] = _time.time()
-        _persist_runtime_start_failure(session)
+        _persist_runtime_start_failure(session, attempt)
 
     try:
         with delivery_failure_handler(lambda e: _start_failed(e, deferred=True)):
@@ -13496,8 +13542,15 @@ def agent_set_model(project_id, session_id):
         # Persist before acknowledging the choice, including an explicit clear.
         # Incognito sessions deliberately leave no durable conversation record.
         if not session.get('incognito') and not session.get('housekeeping'):
+            from mc import agent_log_maintenance
+            prior_row = next((r for r in agent_log_maintenance.snapshot(project_id)
+                              if r.get('session_id') == session_id), None)
+            choice_owner = (_delivery_attempt.DeliveryAttempt(prior_row['delivery_attempt_id'])
+                            if prior_row is not None else None)
             def save_choice(rows):
                 row = next((r for r in rows if r.get('session_id') == session_id), None)
+                if row is not None and (choice_owner is None or not choice_owner.owns_row(row)):
+                    raise RuntimeError('model choice attempt was superseded')
                 if row is None:
                     row = {
                         'session_id': session_id, 'provider': 'claude',
@@ -13506,6 +13559,7 @@ def agent_set_model(project_id, session_id):
                         'started_at': session.get('started_at', ''),
                         'ts': now_iso(),
                     }
+                    row.update(_delivery_attempt.pending_fields(session))
                     rows.insert(0, row)
                 row.update({
                     'claude_session_id': session.get('claude_session_id') or row.get('claude_session_id', ''),
@@ -15868,32 +15922,38 @@ def delete_plans():
         try:
             if not p.resolve().is_relative_to(resolved_plans_dir):
                 continue
-        except Exception:
+        except Exception as e:
+            _log(f'[plans] could not resolve {p}: {e}', flush=True)
             continue
         if p.is_file():
             try:
                 p.unlink()
                 deleted += 1
-            except Exception:
-                pass
+            except Exception as e:
+                _log(f'[plans] could not delete {p}: {e}', flush=True)
         deleted_paths.add(str(p))
     # Scrub plan_file references from all agent logs
     if deleted_paths:
+        from mc import agent_log_maintenance
+        from copy import deepcopy
         for log_file in DATA_DIR.glob('*_agent_log.json'):
             try:
-                log = json.loads(log_file.read_text(encoding='utf-8'))
+                project_id = log_file.name[:-len('_agent_log.json')]
+                before = agent_log_maintenance.snapshot(project_id)
+                log = deepcopy(before)
                 changed = False
                 for entry in log:
                     if entry.get('plan_file', '') in deleted_paths:
                         entry['plan_file'] = ''
+                        changed = True
                     if entry.get('plan_files'):
                         entry['plan_files'] = [p for p in entry['plan_files']
                                                if p not in deleted_paths]
                         changed = True
                 if changed:
-                    write_json_atomic(log_file, log, indent=2, ensure_ascii=False)
-            except Exception:
-                pass
+                    agent_log_maintenance.commit(project_id, before, log)
+            except Exception as e:
+                _log(f'[plans] could not scrub {log_file}: {e}', flush=True)
     return jsonify({'ok': True, 'deleted': deleted})
 
 

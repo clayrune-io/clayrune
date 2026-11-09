@@ -52,10 +52,13 @@ def project_path_for(projects_dir: Path, project_id: str) -> str:
 
 
 def repair(projects_dir: Path, project_id: str, apply: bool) -> Counter:
+    from copy import deepcopy
+    from mc import agent_log_file
     counts: Counter = Counter()
     log_file = projects_dir / f'{project_id}_agent_log.json'
     try:
-        log = json.loads(log_file.read_text(encoding='utf-8'))
+        before = agent_log_file.snapshot(log_file) if apply else []
+        log = deepcopy(before) if apply else json.loads(log_file.read_text(encoding='utf-8'))
     except Exception as e:
         # The same rule the backfill now follows: a log we could not read is
         # never rewritten. Repairing rows we cannot see would drop them.
@@ -89,8 +92,9 @@ def repair(projects_dir: Path, project_id: str, apply: bool) -> Counter:
         changed += 1
 
     if changed and apply:
-        write_json_atomic(log_file, log, indent=2, ensure_ascii=False)
-        print(f'  wrote {log_file.name} ({changed} row(s) stamped)')
+        applied = agent_log_file.commit(log_file, before, log)
+        counts['superseded'] += changed - applied
+        print(f'  wrote {log_file.name} ({applied} of {changed} candidate row(s) stamped)')
     elif changed:
         print(f'  would stamp {changed} row(s) -- DRY RUN, nothing written '
               f'(pass --apply)')

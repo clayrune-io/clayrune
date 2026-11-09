@@ -70,6 +70,7 @@ class TestAgentLogMigration:
             del sys.modules['server']
         import server
         server.DATA_DIR = data_dir
+        monkeypatch.setattr(server._bp_agent, 'DATA_DIR', data_dir)
 
         server._migrate_agent_log_provider_field()
 
@@ -94,6 +95,7 @@ class TestAgentLogMigration:
             del sys.modules['server']
         import server
         server.DATA_DIR = data_dir
+        monkeypatch.setattr(server._bp_agent, 'DATA_DIR', data_dir)
 
         server._migrate_agent_log_provider_field()
 
@@ -115,6 +117,7 @@ class TestAgentLogMigration:
             del sys.modules['server']
         import server
         server.DATA_DIR = data_dir
+        monkeypatch.setattr(server._bp_agent, 'DATA_DIR', data_dir)
 
         server._migrate_agent_log_provider_field()
         server._migrate_agent_log_provider_field()  # second call must be safe
@@ -154,6 +157,7 @@ class TestApiUsageContract:
             del sys.modules['server']
         import server
         server.DATA_DIR = data_dir
+        monkeypatch.setattr(server._bp_agent, 'DATA_DIR', data_dir)
         # /api/usage moved to the agent_routes blueprint (1.12); it globs ITS
         # own wired DATA_DIR — mirror the test override onto the blueprint.
         from mc.blueprints import agent_routes as _bp_agent

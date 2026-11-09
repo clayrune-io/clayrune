@@ -195,8 +195,10 @@ def _pending(session: dict) -> None:
                dispatched_by_session_id=session['_spawned_by'], spawned_by_session_id='')
 
     def insert(rows: list[dict]) -> None:
+        from mc.delivery_attempt import pending_fields
         if any(r.get('session_id') == session['session_id'] for r in rows):
             raise ReviewRefused(409, 'reviewer session identity already exists')
+        row.update(pending_fields(session))
         rows.insert(0, row)
 
     ar._update_agent_log(session['project_id'], insert)

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from mc import resume_cwd
+from mc.delivery_attempt import DeliveryAttempt
 from test_one_process_per_conversation import env  # noqa: F401
 from test_resume_cwd_routes import setup, CSID, OWNER  # noqa: F401
 from test_resume_cwd_routes import (
@@ -34,8 +35,10 @@ def test_borrowed_tree_survives_log_and_purge(setup, monkeypatch, streaming, wri
     pending = setup['tree'] / 'pending-work.txt'
     pending.write_text('uncommitted work', encoding='utf-8')
     if writer == 'identity':
-        # A pre-upgrade pending row must be enriched when INIT saves identity.
+        # Legacy rows are claimed before execution; INIT may then enrich only
+        # that attempt's row, preserving the borrowed-tree round trip below.
         setup['logfile'].write_text(json.dumps([{'session_id': sid}]), encoding='utf-8')
+        DeliveryAttempt.capture(session)
     ar._log_agent_dispatch_pending(session, identity_only=(writer == 'identity'),
                                    write_turn_start=False)
     if writer == 'completion':

@@ -62,9 +62,8 @@ class DeliveryAttempt:
         session[_SESSION_KEY] = self.attempt_id
 
     def owns_row(self, row: dict[str, Any]) -> bool:
-        # Legacy rows have no token. Registry absence and delegation_turn are
-        # irrelevant; closing a tab must not erase ownership.
-        return not row.get(_ROW_KEY) or row[_ROW_KEY] == self.attempt_id
+        # A legacy row must be claimed before launch; absence is not ownership.
+        return bool(self.attempt_id) and row.get(_ROW_KEY) == self.attempt_id
 
     def bind(self, error: _Error) -> _Error:
         setattr(error, 'delivery_attempt', self)

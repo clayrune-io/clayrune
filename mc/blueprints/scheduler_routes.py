@@ -1215,17 +1215,22 @@ def _scheduled_continue(p, project_id, session_id, task):
             if alive and _credits_session.end_idle_child_if_stopped(existing):
                 alive = False
             if alive:
+                assert proc is not None
+                from mc.blueprints import agent_routes as ar
+                from mc.delivery_attempt import DeliveryAttempt
                 _credits_session.note_turn(existing, task)
+                # Claim before any write can reach the persistent child. The
+                # pending upsert publishes this turn's task and fresh identity.
+                attempt = DeliveryAttempt.capture(existing)
+                existing['task'] = task
+                ar._log_agent_dispatch_pending(existing, strict=True, write_turn_start=False,
+                                               attempt=attempt)
                 existing['status'] = 'running'
                 existing['last_status_change_time'] = _time.time()
                 existing['last_output_time'] = _time.time()
                 existing['log_lines'].append(f"\n> [scheduled run]: {task}\n")
-                # Backlog 4668eafc (MC-998): this turn never passes
-                # `_log_agent_dispatch_pending`, and status is already
-                # 'running' so `_note_self_started_turn` won't fire either.
-                # Without a turn_start, calibration starts the run at the
-                # previous completion (often a day earlier) and reads every
-                # interval in between as crossed.
+                # Pending publication skips its turn_start because this
+                # existing scheduler hook owns that usage checkpoint.
                 if _record_usage_breakdown_turn_started is not None:
                     _record_usage_breakdown_turn_started(existing)
                 stdin_msg = json.dumps({
@@ -1233,21 +1238,29 @@ def _scheduled_continue(p, project_id, session_id, task):
                     "message": {"role": "user", "content": task},
                 }) + '\n'
 
-                def _write_stdin():
+                def _write_stdin(delivery_proc=proc):
+                    error = None
                     lock = existing.get('stdin_lock')
                     if lock:
                         lock.acquire()
                     try:
-                        existing['proc'].stdin.write(stdin_msg)
-                        existing['proc'].stdin.flush()
+                        delivery_proc.stdin.write(stdin_msg)
+                        delivery_proc.stdin.flush()
                     except Exception as e:
-                        existing['log_lines'].append(f'[stdin write error: {e}]')
-                        existing['status'] = 'error'
-                        existing['last_status_change_time'] = _time.time()
-                        existing['process_alive'] = False
+                        error = e
                     finally:
                         if lock:
                             lock.release()
+                    if error is not None:
+                        with mgr.lock:
+                            if existing.get('_delivery_attempt_id') == attempt.attempt_id:
+                                existing['log_lines'].append(f'[stdin write error: {error}]')
+                                existing['status'] = 'error'
+                                existing['last_status_change_time'] = _time.time()
+                                existing['process_alive'] = False
+                        _delivery_failure.record_failure(
+                            project_id, existing.get('trigger_id', ''), session_id, task,
+                            attempt.bind(ar._agent_runtime.PromptDeliveryError(str(error))))
 
                 threading.Thread(target=_write_stdin, daemon=True).start()
                 _log_agent_activity(project_id, f"Scheduled run (appended): {task[:100]}")

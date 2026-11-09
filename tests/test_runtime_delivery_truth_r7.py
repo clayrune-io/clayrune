@@ -65,7 +65,7 @@ def test_ordinary_revival_rollback_records_its_claimed_attempt(scheduled, prior_
 
 @pytest.mark.parametrize('legacy', [False, True])
 @pytest.mark.parametrize('live_owner', ['absent', 'restored'])
-def test_legacy_or_own_row_records_failure_without_registry_or_turn_inference(app_env, monkeypatch, legacy, live_owner):
+def test_only_owned_row_records_failure_without_registry_or_turn_inference(app_env, monkeypatch, legacy, live_owner):
     attempt = DeliveryAttempt.capture(None)
     rows = [{'session_id': 'addressed', 'trigger_type': 'schedule', 'trigger_id': 's1',
              'delegation_turn': 99, 'status': 'completed', 'cost_usd': 1.25}]
@@ -74,7 +74,11 @@ def test_legacy_or_own_row_records_failure_without_registry_or_turn_inference(ap
     if live_owner == 'restored':
         app_env['sessions']['addressed'] = {'_delegation_turn': 456, 'proc': object()}
     monkeypatch.setattr(app_env['ar'], '_update_agent_log', lambda pid, mutate: mutate(rows))
+    expected = deepcopy(rows)
     record_failure('p1', 's1', 'addressed', 'failed task', attempt.bind(art.PromptDeliveryError('rejected')))
+    if legacy:
+        assert rows == expected
+        return
     assert rows[0]['status'] == 'error' and rows[0]['task'] == 'failed task'
     assert rows[0]['delivery_attempt_id'] == attempt.attempt_id
     assert rows[0]['cost_usd'] == 1.25

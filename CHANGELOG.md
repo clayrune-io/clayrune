@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Require attempt ownership for run-history updates (MC-1168 round 8)
+
+- Missing or empty attempt IDs now refuse runtime updates. Completion, start failure and native-identity backfills compare the durable ID before changing a row; a late predecessor completion cannot replace or outrank a newer attempt.
+- Live scheduled appends and Hivemind pending writers claim fresh IDs. Startup log maintenance commits only changes to its still-owned, unchanged snapshot, preserving concurrent launches and completions. Restored untagged-row regressions and retained independent reviewer probes. Branch review candidate only; no merge, push or restart.
+
 ## [2026-11-09] - Retain delivery ownership after successor tabs close (MC-1168 round 7)
 
 - Replaced registry/turn inference with a durable UUID per captured delivery attempt and pending-row takeover. Completion retains the UUID, so a delayed failure cannot overwrite a successful same-turn successor after its tab closes.

@@ -1,6 +1,6 @@
 # Runtime delivery acknowledgment (MC-1168)
 
-Round 7 supersedes round 6's ownership predicate. `mc/delivery_attempt.py`
+Round 8 completes round 7's durable ownership invariant. `mc/delivery_attempt.py`
 mints a UUID at capture, before spawn can start an acknowledgment writer.
 It claims the existing durable session row inside the manager -> log-leaf
 transaction. Storage failure propagates before spawn. The captured token is
@@ -13,16 +13,20 @@ row on completion. Both Codex first-turn and follow-up capture before spawn.
 
 Every non-identity pending-row upsert takes the row with a fresh token,
 including a non-delegated continuation whose `delegation_turn` remains 1.
-Identity-only native-thread backfills preserve the token. Completion copies
-it into the replacement durable row; tab closure removes only the registry
+Identity-only native-thread backfills require and preserve the token. Completion
+compares it against the newest session row before replacing or inserting any
+result. A stale completion returns without inserting an older result at the
+front, including when the newer attempt has already failed. Completion copies
+its token into the replacement durable row; tab closure removes only the registry
 object and cannot erase it. UUID claim and pending upsert serialize under the
 same manager -> log-leaf lock order as failure recording. No acknowledgment
 or process wait was added inside those locks.
 
 `record_failure` finds the session row and compares its `delivery_attempt_id`
 with the captured UUID inside that same transaction. A different token logs
-a skip, even after registry cleanup or a changed trigger. An absent token is
-legacy-compatible: the failure is recorded and stamps its UUID. An absent row
+a skip, even after registry cleanup or a changed trigger. An absent or empty
+destination token refuses the update: missing identity is not authorization.
+Legacy revival claims the row before executing. An absent row
 is inserted as before. Ordinary rollback records its own failure because the
 durable claim survives restoration/removal of the failed live session. A
 failure lacking a captured attempt still logs a skip. Run Now stays 502 with
@@ -32,17 +36,91 @@ without fallback or retry.
 `tests/test_closed_successor.py` is Fenn's round-6 probe, copied byte for byte
 from the main review folder. `tests/test_runtime_delivery_truth_r7.py` adds
 actual JSON-log reload after real completion, repeated capture with turn 1,
-identity-backfill preservation, legacy/own-row and restored/absent-registry
+identity-backfill preservation, unowned/own-row and restored/absent-registry
 controls, takeover inside the leaf transaction, changed-trigger protection,
-and storage failure before Claude/Codex spawn. The round-6 synthetic takeover
-fixtures now stamp durable successor tokens rather than inventing ownership
-from live objects/turn numbers; their preservation assertions remain. The
+and storage failure before Claude/Codex spawn. Round 8 restores untagged rows
+in the round-6 durable-preservation and reused-predecessor controls, and inverts
+round 7's unsafe legacy-overwrite expectation. The
 round-4 lock probe distinguishes the new short prelaunch claim transaction
 from deferred failure cleanup, which must still run outside publication locks.
 Processes/pipes remain doubles; no live provider or deployment is certified.
 The shared MC-1165 revival fixture pairs its existing in-memory log reader
 with a matching writer for the new durable claim; its isolation assertions
 and production persistence requirements remain intact.
+
+Live scheduled Mode B appends capture a new `DeliveryAttempt`, then publish the
+pending task using that same token before starting stdin delivery. Its deferred
+write failure keeps the captured token and original process. No manager/log
+lock is acquired while the stdin lock is held. Self-started Mode B turns also
+publish a fresh pending identity. Hivemind lineage/reviewer pending writers
+claim fresh IDs; the integration-review task update requires the existing ID.
+
+`mc/agent_log_maintenance.py` owns startup log concurrency. It claims untagged
+legacy records under the existing transaction, then returns a frozen snapshot.
+Transcript/Scribe work happens outside the locks. Commit requires the snapshot
+token and unchanged row contents, so neither a new claim nor a same-attempt
+completion can be undone by a delayed maintenance pass. Transcript synthesis
+inserts a newly tagged, sessionless row only if its native ID is still absent.
+Provider migration, transcript backfill, Scribe reconciliation, telemetry
+backfill and pending interruption all use this path rather than saving an old
+whole-log copy. Human-joined flags use the same snapshot guard; model selection
+checks its captured row ID. Existing-row resume-refusal edits only append
+request metadata; newly created refusal rows receive a fresh ID.
+
+Round-8 regressions cover untagged completion, stale native-init/pending-init/
+start-failure callbacks, callback-token capture before leaf acquisition, same-dictionary completion takeover, startup takeover,
+same-attempt completion, removed rows, legacy maintenance followed by revival,
+duplicate transcript imports, live scheduler pipe failure and superseded review
+task updates. Fenn's original scratch probes remain unchanged and run separately.
+
+### Run-row writer inventory (round 8)
+
+Line numbers are for the round-8 candidate. A claim intentionally changes the
+owner before delivery; every subsequent runtime write must match that ID.
+
+| Writer | Ownership evidence inside the log transaction |
+| --- | --- |
+| `mc/delivery_attempt.py:50` prelaunch claim | Explicit new attempt claims the current session row before launch; returned immutable ID travels with rejection. |
+| `mc/blueprints/agent_routes.py:8941` pending upsert | New delivery mints/stamps a fresh ID; an explicit captured attempt must match the destination; identity-only updates require `owns_row`. |
+| `mc/blueprints/agent_routes.py:10395` completion | Newest session row must carry this nonempty attempt ID before any replacement or front insertion; new standalone rows receive an ID. |
+| `mc/blueprints/agent_routes.py:10509` Scribe marker | Session ID, completion timestamp and attempt ID must all match. |
+| `mc/blueprints/agent_routes.py:10626` native INIT | Captured nonempty attempt ID and session ID must match; values are captured before waiting for the leaf. |
+| `mc/blueprints/agent_routes.py:10641` start failure | Captured attempt ID, session ID and pending status must match; deferred errors keep their captured attempt. |
+| `mc/schedule_delivery_failure.py:28` delivery failure | Captured `DeliveryAttempt.owns_row`; missing/empty destination IDs refuse; an absent destination is created with the captured ID. |
+| `mc/hivemind_lineage.py:68` worker pending/recovery | Explicit prelaunch claim mints/stamps a fresh ID before insertion or recovery update. |
+| `mc/hivemind_reviewer.py:197` reviewer pending | Existing session ID is refused; new row and session share a freshly claimed ID. |
+| `mc/hivemind_integration_cycle.py:222` frozen review task | Captured `DeliveryAttempt.owns_row(row)` before replacing task or launching. |
+| `mc/agent_log_file.py:61,68` migration/maintenance | Claims untagged rows before work; commit requires snapshot ID plus complete unchanged row; new synthesized native ID must still be absent. |
+| `server.py:1391` provider migration | Maintenance snapshot/commit; no whole-log replacement. |
+| `server.py:1500` transcript synthesis | Maintenance snapshot/commit; absent native ID and fresh insertion ID. |
+| `server.py:1579,1656` Scribe baseline/reconciliation | Maintenance snapshot/commit. |
+| `server.py:1706` telemetry backfill | Maintenance snapshot/commit. |
+| `server.py:1839` startup pending interruption | Maintenance snapshot/commit; adopted sessions remain excluded. |
+| `mc/blueprints/agent_routes.py:7487,7494` human-joined flag | Maintenance snapshot ID and unchanged-row check. |
+| `mc/blueprints/agent_routes.py:13550` model selection | Captured current row ID must match; absent-row creation claims a fresh ID before writing task/status. |
+| `mc/blueprints/agent_routes.py:15942,15954` plan-reference cleanup | Maintenance snapshot/commit; no stale whole-log replacement. |
+| `tools/backfill-human-joined.py:122,180` offline human-joined repair | Shared file transaction; snapshot ID and unchanged row required. Dry run writes nothing. |
+| `tools/repair-agent-log-personas.py:60,95` offline persona repair | Shared file transaction; snapshot ID and unchanged row required. Dry run writes nothing. |
+| `mc/resume_cwd.py:152` cwd refusal | New error-row creation claims an ID; existing-row path only appends refusal metadata, preserving all run fields and ownership. |
+
+The disabled `attend_session` body at `agent_routes.py:7090` is unreachable
+(unconditional HTTP 410), modifies only trigger metadata, and remains disabled.
+`_update_agent_log`/`_save_agent_log` are transaction/storage primitives; all
+production semantic callers are enumerated above. Grep covered these symbols,
+direct `_agent_log.json` writes, and status/summary/task/token mutations across
+`server.py`, `mc/`, and standalone repair tools. Live scheduler append and self-started-turn entry points
+route through the pending writer; Claude revival and both Codex launch paths
+retain their prelaunch capture. No human-only gate changes.
+
+`mc/agent_log_file.py:20` also serializes the server transaction and both offline
+repair tools across processes. It reuses the existing OS byte-lock pattern
+(Windows `msvcrt`, POSIX `fcntl`), with thread reentrancy and a bounded ten-second
+lock-acquisition budget. The per-log `*_agent_log.lock` sidecar is ignored and
+is not JSON, so project discovery cannot ingest it. No acknowledgment, provider
+wait, transcript read or Scribe call holds the file lock. Storage errors propagate
+through existing failure handling. There is no new dependency. A separate
+Windows two-process probe verifies contention followed by refusal of the stale
+snapshot, in addition to the permanent server/offline-tool takeover tests.
 
 Final round-7 stable-source checks, through the installation test launcher:
 

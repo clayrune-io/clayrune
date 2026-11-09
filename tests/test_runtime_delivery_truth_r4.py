@@ -108,7 +108,8 @@ def test_schedule_codex_delivery_error_never_falls_back(scheduled, monkeypatch, 
 
     def reject(*a):
         calls.append(a)
-        raise DeliveryAttempt.capture(None).bind(art.PromptDeliveryError('codex delivery failed'))
+        attempt = DeliveryAttempt.capture({'project_id': 'p1', 'session_id': env['sid']})
+        raise attempt.bind(art.PromptDeliveryError('codex delivery failed'))
 
     monkeypatch.setattr(env['sr'], '_revive_non_claude_from_agent_log', reject)
     if path == 'run-now':

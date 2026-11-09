@@ -1361,6 +1361,9 @@ def _worktree_gc_background_run(snapshot):
          f"merged={totals['merged']} preserved={totals['preserved']}")
 
 
+import copy
+from mc import agent_log_maintenance as _log_maintenance
+
 # _load_agent_log / _save_agent_log ── moved to mc/blueprints/agent_routes.py
 # (1.12); the startup/scheduler stayers below resolve the inbound shims.
 
@@ -1376,16 +1379,18 @@ def _migrate_agent_log_provider_field():
     stamped = 0
     for f in DATA_DIR.glob('*_agent_log.json'):
         try:
-            log = json.loads(f.read_text(encoding='utf-8'))
+            pid = f.name[:-len('_agent_log.json')]
+            log = _log_maintenance.snapshot(pid)
+            before = copy.deepcopy(log)
             dirty = False
             for entry in log:
                 if 'provider' not in entry:
                     entry['provider'] = 'claude'
                     dirty = True
-                    stamped += 1
             if dirty:
-                _atomic_json.write_json_atomic(f, log, indent=2, ensure_ascii=False)
-        except Exception:
+                stamped += _log_maintenance.commit(pid, before, log)
+        except Exception as e:
+            _log(f'[provider-migrate] log update failed: {e}')
             continue
     if stamped:
         _log(f"[provider-migrate] stamped provider='claude' on {stamped} legacy agent_log row(s)")
@@ -1438,7 +1443,8 @@ def _backfill_agent_log_from_transcripts(project_id, project):
     if not transcripts:
         return 0
 
-    log = _load_agent_log(project_id)
+    log = _log_maintenance.snapshot(project_id)
+    before = copy.deepcopy(log)
     known_csids = {e.get('claude_session_id') for e in log if e.get('claude_session_id')}
 
     added = 0
@@ -1491,7 +1497,7 @@ def _backfill_agent_log_from_transcripts(project_id, project):
 
     if added:
         log.sort(key=lambda e: e.get('ts', ''), reverse=True)
-        _save_agent_log(project_id, log)
+        added = _log_maintenance.commit(project_id, before, log)
         _log(f"[backfill] {project_id}: added {added} synthesized log entr{'y' if added == 1 else 'ies'} from transcripts")
     return added
 
@@ -1562,14 +1568,15 @@ def _reconcile_unscribed_sessions():
         if p.get('_is_incognito_project') or pid == INCOGNITO_PROJECT_ID:
             continue
         try:
-            log = _load_agent_log(pid)
+            log = _log_maintenance.snapshot(pid)
+            before = copy.deepcopy(log)
             if not log:
                 continue
             first_encounter = not any('scribed' in e for e in log)
             if first_encounter:
                 for e in log:
                     e['scribed'] = True
-                _save_agent_log(pid, log)
+                _log_maintenance.commit(pid, before, log)
                 baselined += 1
                 continue
             # Don't race a live session for this project.
@@ -1589,7 +1596,8 @@ def _reconcile_unscribed_sessions():
                 _legacy_wm = (_mem_split_full(_mp.read_text(encoding='utf-8'))[2]
                              if _mp.exists() else [])
                 _wm = _wm_merge(_log_wm, _legacy_wm)
-            except Exception:
+            except Exception as e:
+                _log(f'[scribe-reconcile] {pid} watermark read failed: {e}', flush=True)
                 _wm = []
             wrote = False
             done = 0
@@ -1645,7 +1653,7 @@ def _reconcile_unscribed_sessions():
                 except Exception as ex:
                     _log(f"[scribe-reconcile] {pid} entry: {ex}")
             if wrote:
-                _save_agent_log(pid, log)
+                _log_maintenance.commit(pid, before, log)
         except Exception as e:
             _log(f"[scribe-reconcile] {pid}: {e}")
     if baselined or scribed_n:
@@ -1661,7 +1669,8 @@ def _backfill_token_telemetry():
     """
     try:
         projects = load_projects()
-    except Exception:
+    except Exception as e:
+        _log(f'[telemetry-backfill] load_projects failed: {e}', flush=True)
         return 0
     updated = 0
     for p in projects:
@@ -1672,7 +1681,8 @@ def _backfill_token_telemetry():
         if p.get('_is_incognito_project') or pid == INCOGNITO_PROJECT_ID:
             continue
         try:
-            log = _load_agent_log(pid)
+            log = _log_maintenance.snapshot(pid)
+            before = copy.deepcopy(log)
             changed = False
             for entry in log:
                 if entry.get('model_tokens'):
@@ -1692,9 +1702,8 @@ def _backfill_token_telemetry():
                 entry['cache_read_tokens'] = tel.get('cache_read_tokens', 0)
                 entry['model_tokens'] = tel.get('model_tokens', {})
                 changed = True
-                updated += 1
             if changed:
-                _save_agent_log(pid, log)
+                updated += _log_maintenance.commit(pid, before, log)
         except Exception as e:
             _log(f"[telemetry-backfill] {pid}: {e}")
     if updated:
@@ -1809,7 +1818,8 @@ def _reconcile_pending_agent_log_entries():
     try:                                  # MC-1150 P4: adopted sessions ARE live
         from mc import agent_shim_adopt as _adopt
         adopted = _adopt.adopted_session_ids()
-    except Exception:
+    except Exception as e:
+        _log(f'[reconcile-pending] adoption lookup failed: {e}', flush=True)
         adopted = frozenset()
     for p in projects:
         pid = p.get('id')
@@ -1818,15 +1828,15 @@ def _reconcile_pending_agent_log_entries():
         if p.get('_is_incognito_project') or pid == INCOGNITO_PROJECT_ID:
             continue
         try:
-            log = _load_agent_log(pid)
+            log = _log_maintenance.snapshot(pid)
+            before = copy.deepcopy(log)
             changed = False
             for e in log:
                 if e.get('status') == 'in_progress' and e.get('session_id') not in adopted:
                     e['status'] = 'interrupted'
                     changed = True
-                    flipped_total += 1
             if changed:
-                _save_agent_log(pid, log)
+                flipped_total += _log_maintenance.commit(pid, before, log)
         except Exception as e:
             _log(f"[reconcile-pending] {pid}: {e}")
     if flipped_total:

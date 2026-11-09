@@ -66,12 +66,15 @@ def record_worker(session: dict, project_generation: int) -> None:
         row.update(attempt_metadata(session))
 
     def insert(rows: list[dict]) -> None:
+        from mc.delivery_attempt import pending_fields
         existing = next((r for r in rows if r.get('session_id') == row['session_id']), None)
         if existing is None:
+            row.update(pending_fields(session))
             rows.insert(0, row)
         elif session.get('character_ref'):
             # Recovery reuses the owner; re-arm its pending status durably
             # before dispatch while retaining its provider-native session id.
+            row.update(pending_fields(session))
             existing.update(row)
 
     ar._update_agent_log(session['project_id'], insert)
