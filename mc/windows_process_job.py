@@ -1,16 +1,26 @@
 """Shared Windows Job Object ownership for exec and transform children.
 
-Assignment follows Popen, as in the original secrets exec precedent. A child
-can spawn before assignment; that residual window is not eliminated here.
+Transform callers create a suspended root, assign it, then resume its primary
+thread. Secrets exec retains its existing running-process assignment behavior.
 """
 from __future__ import annotations
 
 import ctypes
+from ctypes import wintypes
 import threading
 from typing import Any
 
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+CREATE_SUSPENDED = 0x00000004
+
+
+class _ThreadEntry(ctypes.Structure):
+    # Stable pointer type: concurrent resumes share ctypes' cached API objects.
+    _fields_ = [('dwSize', wintypes.DWORD), ('cntUsage', wintypes.DWORD),
+                ('th32ThreadID', wintypes.DWORD), ('th32OwnerProcessID', wintypes.DWORD),
+                ('tpBasePri', wintypes.LONG), ('tpDeltaPri', wintypes.LONG),
+                ('dwFlags', wintypes.DWORD)]
 
 
 def set_kill_on_close(job) -> bool:
@@ -45,6 +55,7 @@ def set_kill_on_close(job) -> bool:
     kernel32 = ctypes.windll.kernel32
     kernel32.SetInformationJobObject.argtypes = [
         wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
     info = _Extended()
     info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
     return bool(kernel32.SetInformationJobObject(
@@ -76,12 +87,10 @@ def create_for(pid: int, *, kill_on_close: bool = False):
     alive. ``TerminateJobObject`` then kills everyone still in the job in one
     call, dead parent or not.
 
-    Assigned as early as possible after ``Popen`` returns to keep the window
-    where the child could fork before joining the job as small as possible —
-    not zero (that needs suspended/atomic process creation rather than this
-    existing Popen precedent). A descendant created before assignment remains
-    outside the job even if the root joins afterward. There is no guarantee
-    that a particular executable cannot reach that window.
+    This helper does not suspend the process. Transform callers launch with
+    CREATE_SUSPENDED and resume only after successful assignment. Existing
+    secrets exec callers assign a running root; descendants created before
+    assignment there remain outside the job even if the root joins afterward.
     """
     from ctypes import wintypes
     kernel32 = ctypes.windll.kernel32
@@ -92,8 +101,11 @@ def create_for(pid: int, *, kill_on_close: bool = False):
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
     kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateJobObject.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
     job = kernel32.CreateJobObjectW(None, None)
     if not job:
         return None
@@ -112,6 +124,76 @@ def create_for(pid: int, *, kill_on_close: bool = False):
         kernel32.CloseHandle(job)
         return None
     return job
+
+
+def resume_suspended(pid: int) -> None:
+    """Resume the sole primary thread of a root created with CREATE_SUSPENDED.
+
+    Popen closes CreateProcess's thread handle. Toolhelp's documented thread
+    snapshot recovers it without an undocumented process-resume API. The root
+    has executed no user code, so anything other than one thread fails closed.
+    The caller keeps its Popen process handle and assigned job throughout.
+    """
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ThreadEntry)]
+    kernel32.Thread32First.restype = wintypes.BOOL
+    kernel32.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ThreadEntry)]
+    kernel32.Thread32Next.restype = wintypes.BOOL
+    kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenThread.restype = wintypes.HANDLE
+    kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+    kernel32.ResumeThread.restype = wintypes.DWORD
+    kernel32.GetLastError.argtypes = []
+    kernel32.GetLastError.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x00000004, 0)  # TH32CS_SNAPTHREAD
+    if snapshot == ctypes.c_void_p(-1).value or snapshot is None:
+        raise ctypes.WinError()
+    tids: list[int] = []
+    try:
+        entry = _ThreadEntry()
+        entry.dwSize = ctypes.sizeof(entry)
+        found = kernel32.Thread32First(snapshot, ctypes.byref(entry))
+        while found:
+            if entry.th32OwnerProcessID == pid:
+                tids.append(entry.th32ThreadID)
+            entry.dwSize = ctypes.sizeof(entry)
+            found = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+        error = kernel32.GetLastError()
+        if error != 18:  # ERROR_NO_MORE_FILES is the only normal enumeration end.
+            raise ctypes.WinError(error)
+    finally:
+        kernel32.CloseHandle(snapshot)
+    if len(tids) != 1:
+        raise OSError('suspended transform primary thread could not be identified')
+    thread = kernel32.OpenThread(0x0002, False, tids[0])  # THREAD_SUSPEND_RESUME
+    if not thread:
+        raise ctypes.WinError()
+    try:
+        previous = kernel32.ResumeThread(thread)
+        if previous == 0xFFFFFFFF:
+            raise ctypes.WinError()
+        if previous != 1:
+            raise OSError('unexpected suspended transform thread count')
+    finally:
+        kernel32.CloseHandle(thread)
+
+
+def terminate_suspended(proc: Any, *, timeout: float) -> None:
+    """Abort failed setup via Popen's original process handle, never a PID lookup."""
+    from ctypes import wintypes
+    kernel32 = ctypes.windll.kernel32
+    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateProcess.restype = wintypes.BOOL
+    if not kernel32.TerminateProcess(int(proc._handle), 1) and proc.poll() is None:
+        raise ctypes.WinError()
+    proc.wait(timeout=timeout)
 
 
 class OwnedJob:

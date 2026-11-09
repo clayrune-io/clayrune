@@ -387,15 +387,23 @@ urllib3 detaching a `Connection: close` response from its connection. A blocked
 resolver/connect worker cannot delay the caller; cancellation refuses any
 connection completing afterward. No response returned after the deadline is
 accepted. `mc/transform_process_deadline.py` uses Popen and daemon pipe readers.
-Windows assigns the root to a Job Object with `KILL_ON_JOB_CLOSE`; cancellation
+Windows creates the root with `CREATE_SUSPENDED`, assigns it to a Job Object
+with `KILL_ON_JOB_CLOSE`, then resumes its primary thread; cancellation
 uses `TerminateJobObject` then closes the handle, reaching descendants even when
 the wrapper has exited. `mc/windows_process_job.py` owns the shared helpers
 extracted from the existing secrets-exec routes/stream; both callers import them.
 Their Windows fallback also refuses an exited root before any PID-tree command.
-Assignment follows Popen, matching that precedent: a descendant spawned before
-assignment can escape. This residual window is not eliminated or covered by a
-claim of atomic containment; that would require suspended/atomic process creation.
-Failed job setup refuses transform results and cleans up only a still-live root.
+The transform root executes no user code before assignment. Popen closes the
+original primary-thread handle, so `resume_suspended` uses the documented
+Toolhelp32 `TH32CS_SNAPTHREAD` snapshot, filters `th32OwnerProcessID` against
+the owned root, requires exactly one thread, and calls `OpenThread` with
+`THREAD_SUSPEND_RESUME` then `ResumeThread`. Only a previous suspend count of
+one is accepted. Snapshot and thread handles close on success and failure.
+Failed job setup or resume refuses results, calls `TerminateProcess` with the
+original Popen process handle (never a PID lookup), waits inside the remaining
+cleanup budget and closes pipes/job. Mail persists an `extraction_failed` hold
+without reclaim. POSIX launch is unchanged. Secrets exec still assigns a
+running root; its pre-assignment descendant window is a separate follow-up.
 POSIX records the new-session pgid at spawn and signals it through
 `proc_kill.safe_killpg_recorded` only while the pipe reader is alive. This avoids
 resolving a stale root PID and refuses empty-holder and server-group targets.
@@ -476,7 +484,15 @@ configuration/assignment/failure/close semantics and the recorded-group seam.
 The exited-root smoke asserts the wrapper exited before cancellation, its
 registered grandchild is gone, the pipe reader finished and no event can be
 reclaimed. On Windows the test registers its root immediately after job
-assignment so registration I/O cannot widen the production assignment window.
+assignment, while still suspended.
+Round 5 adds `tests/test_windows_suspended_process.py` for primary-thread
+selection, native API failures, handle release, flag preservation and setup
+order, plus `tools/smoke/agent_mail_suspended_probe.py`. The latter uses real
+Windows Popen/WinAPI calls and deliberately waits before assignment: the wrapper
+cannot execute, exit or spawn. Forced native setup/assignment/resume failures
+must reap the root, close pipes, persist a hold and leave no descendant. Fenn's
+original exited-before-assignment fixture is retained unchanged as evidence;
+waiting for a suspended wrapper to exit before assignment is now impossible.
 
 ## D1 ledger, replay, bounds and visibility
 

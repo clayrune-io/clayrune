@@ -142,18 +142,19 @@ def test_run_releases_job_on_success_and_reader_error(monkeypatch, reader_error)
     monkeypatch.setattr(process, 'sys', SimpleNamespace(platform='win32'))
     monkeypatch.setattr(process.subprocess, 'Popen', lambda *a, **kw: proc)
     monkeypatch.setattr(jobs, 'create_for', lambda pid, **kw: 100)
+    monkeypatch.setattr(jobs, 'resume_suspended', lambda pid: calls.append('resume'))
     monkeypatch.setattr(jobs, 'OwnedJob', lambda h: SimpleNamespace(
         close=lambda: calls.append('close'), stop=lambda: calls.append('stop')))
     if reader_error:
         with pytest.raises(ValueError):
             process.run(['synthetic'], input='payload', timeout=2,
                         deadline=process.time.monotonic() + 2)
-        assert calls == ['stop', 'close']
+        assert calls == ['resume', 'stop', 'close']
     else:
         result = process.run(['synthetic'], input='payload', timeout=2,
                              deadline=process.time.monotonic() + 2)
         assert result.stdout == 'result'
-        assert calls == ['close']
+        assert calls == ['resume', 'close']
 
 
 def test_failed_job_assignment_refuses_result_and_closes_pipes(monkeypatch):
@@ -164,11 +165,12 @@ def test_failed_job_assignment_refuses_result_and_closes_pipes(monkeypatch):
     monkeypatch.setattr(process, 'sys', SimpleNamespace(platform='win32'))
     monkeypatch.setattr(process.subprocess, 'Popen', lambda *a, **kw: proc)
     monkeypatch.setattr(jobs, 'create_for', lambda pid, **kw: None)
-    monkeypatch.setattr(process, '_stop_owned', lambda owned: calls.append('stop'))
+    monkeypatch.setattr(jobs, 'terminate_suspended', lambda owned, **kw: calls.append('terminate-handle'))
+    monkeypatch.setattr(process, '_stop_owned', lambda owned: pytest.fail('PID fallback during setup'))
     with pytest.raises(OSError, match='ownership could not be established'):
         process.run(['synthetic'], input='payload', timeout=2,
                     deadline=process.time.monotonic() + 2)
-    assert calls == ['stop', 'stdin', 'stdout', 'stderr']
+    assert calls == ['terminate-handle', 'stdin', 'stdout', 'stderr']
 
 
 def test_secrets_callers_share_the_extracted_helpers():

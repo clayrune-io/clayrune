@@ -100,6 +100,7 @@ def test_pipe_and_tree_cleanup_stays_inside_total_budget(monkeypatch, budget):
     monkeypatch.setattr(process.subprocess, 'Popen', lambda *a, **kw: proc)
 
     monkeypatch.setattr(process.windows_process_job, 'create_for', lambda *a, **kw: 42)
+    monkeypatch.setattr(process.windows_process_job, 'resume_suspended', lambda pid: None)
     monkeypatch.setattr(process.windows_process_job, 'OwnedJob', lambda handle: SimpleNamespace(close=lambda: None))
 
     def slow_cleanup(owned, **ownership):
@@ -132,6 +133,7 @@ def test_half_second_or_less_remaining_cancels_immediately(monkeypatch, remainin
     monkeypatch.setattr(process.subprocess, 'Popen', lambda *a, **kw: proc)
 
     monkeypatch.setattr(process.windows_process_job, 'create_for', lambda *a, **kw: 42)
+    monkeypatch.setattr(process.windows_process_job, 'resume_suspended', lambda pid: None)
     monkeypatch.setattr(process.windows_process_job, 'OwnedJob', lambda handle: SimpleNamespace(close=lambda: None))
 
     def stop(owned, **ownership):

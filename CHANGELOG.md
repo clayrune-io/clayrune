@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Contain Windows transforms before they execute (MC-1166 unit 5 round 5)
+
+- Deadline transforms now launch suspended, join a kill-on-close Job Object, then resume their primary thread through documented Toolhelp32/OpenThread/ResumeThread APIs. Failed job setup or resume terminates the original Popen handle, reaps the root and persists a hold without reclaim.
+- Added real Windows failure probes proving a wrapper cannot exit or spawn before assignment, plus thread discovery, handle cleanup and launch-order tests. POSIX launch and secrets-exec behavior are unchanged; the latter's pre-assignment window remains a follow-up.
+- Local branch candidate only; no merge, push, restart or real mail/model calls.
+
 ## [2026-11-09] - Keep transform descendants owned after wrapper exit (MC-1166 unit 5 round 4)
 
 - Deadline transforms now cancel a Windows kill-on-close Job Object or the recorded POSIX session group while its pipe reader is alive. Descendants remain reachable after wrapper exit; exited roots still refuse PID-tree kills. Cleanup stays inside the total budget.

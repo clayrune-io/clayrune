@@ -62,21 +62,31 @@ def run(cmd: list[str], *, input: str, timeout: float, deadline: float,
     """
     limit = min(deadline, time.monotonic() + timeout)
     compute_end = limit - CLEANUP_SECONDS
+    if sys.platform == 'win32':
+        kwargs['creationflags'] = kwargs.get('creationflags', 0) | windows_process_job.CREATE_SUSPENDED
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, **kwargs,
                             **proc_kill.POPEN_NEW_SESSION)
     job = None
     pgid = proc.pid if sys.platform != 'win32' else None
     if sys.platform == 'win32':
-        # Match the exec precedent: assign immediately after Popen. Descendants
-        # spawned BEFORE assignment can escape; CREATE_SUSPENDED is not used.
-        handle = windows_process_job.create_for(proc.pid, kill_on_close=True)
-        if not handle:
-            _stop_owned(proc)
-            for stream in (proc.stdin, proc.stdout, proc.stderr):
-                if stream is not None:
-                    stream.close()
-            raise OSError('transform process ownership could not be established')
-        job = windows_process_job.OwnedJob(handle)
+        # The root cannot execute or spawn descendants before job assignment.
+        try:
+            handle = windows_process_job.create_for(proc.pid, kill_on_close=True)
+            if not handle:
+                raise OSError('transform process ownership could not be established')
+            job = windows_process_job.OwnedJob(handle)
+            windows_process_job.resume_suspended(proc.pid)
+        except Exception:
+            try:
+                windows_process_job.terminate_suspended(
+                    proc, timeout=max(0, min(CLEANUP_SECONDS, limit - time.monotonic())))
+            finally:
+                if job is not None:
+                    job.close()
+                for stream in (proc.stdin, proc.stdout, proc.stderr):
+                    if stream is not None:
+                        stream.close()
+            raise
     done = threading.Event()
     output: list[tuple[Any, Any]] = []
     errors: list[Exception] = []
