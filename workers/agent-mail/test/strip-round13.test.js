@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import {strip} from '../strip.js';
 // Fenn's six original round-12 probes, with only the import path changed.
@@ -92,4 +92,3 @@ test('R13 padding in an unrelated header and shaping-looking body text remains p
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.equal(r.text, body);
 });
-
