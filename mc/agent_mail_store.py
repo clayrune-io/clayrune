@@ -60,9 +60,9 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, NoReturn, Optional
 
 from mc.core import _log
+from mc.agent_mail_ingress_schema import VERSION as SCHEMA_VERSION, migrate as _migrate_ingress
 
 
-SCHEMA_VERSION = 1
 APPLICATION_ID = 0x4D434D4C  # 'MCML'
 DB_FILENAME = 'agent_mail.sqlite3'
 
@@ -351,7 +351,7 @@ class MailStore:
                                                'refusing to start from nothing')
                     db.executescript(_SCHEMA)
                     db.execute(f'PRAGMA application_id={APPLICATION_ID}')
-                    db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
+                    db.execute('PRAGMA user_version=1')  # base schema; checked extension below
                 elif app != APPLICATION_ID:
                     raise MailStoreCorrupt('file is not an agent mail store')
                 elif version > SCHEMA_VERSION:
@@ -359,6 +359,7 @@ class MailStore:
                                          f'(v{SCHEMA_VERSION}); not downgrading')
                 else:
                     db.executescript(_SCHEMA)  # IF NOT EXISTS: idempotent
+                _migrate_ingress(db)
             finally:
                 db.close()
         except MailStoreError as exc:
