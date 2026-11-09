@@ -81,7 +81,6 @@ for (const [over, reason, protectedCount] of [
   [{ ar: null }, 'ingress_header_mismatch', 0],
   [{ extra: ['Auto-Submitted: auto-replied'] }, 'loop_or_bounce', 0],
   [{ type: 'text/html', text: '<b>hidden</b>' }, 'html_only', 1],
-  [{ text: '' }, 'no_plain_text', 1],
 ]) {
   test(`post-lookup ${reason} refusal has separate accounting`, async () => {
     const f = await fixture();

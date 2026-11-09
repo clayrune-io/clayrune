@@ -1,10 +1,10 @@
-# Agent mail transport and local receiver (MC-1166 units 2/4)
+# Agent mail transport, local receiver and laundering (MC-1166 units 2/4/5)
 
 Branch candidate only. No deployment, account call, enrollment, credentials,
 real mail, merge, push, restart or live enablement is part of this unit.
 Parent requirements: [AGENT_MAIL_SPEC.md](AGENT_MAIL_SPEC.md). Dave resolved D7's
 wire choice as **B, separate mail-only Ed25519 identities**, on 2026-11-09.
-This document is the shared contract for unit 4 (receiver) and unit 7 (enrollment).
+This document is the shared contract for the receiver, laundering and enrollment.
 
 ## Signing contract v1
 
@@ -207,6 +207,28 @@ Delivery body (the exact persisted JSON bytes are retried): `version` numeric 1,
 `received_at` and `expires_at` in epoch milliseconds. There are no callback,
 project/session or permission fields supplied by incoming mail.
 
+Body-free held-event variant: `version` numeric **2** replaces `text` with
+`reason`, currently only `empty_body`. Every other v1 field remains required;
+`body_digest` must be SHA-256 of zero bytes. The exact schema admits no body,
+text, reply text or arbitrary additional fields, even if empty or validly signed.
+Unknown versions/reasons refuse custody. This is an envelope version; the
+Ed25519 signing header/canonical contract remains v1 and binds **every** envelope
+field through its exact-byte request digest. `held-envelope.js` owns the Worker
+projection; `ingress.js` only selects it after authentication and successful
+stripping leave no text (including empty plain/signed, image-only or attachment-only
+mail). Failed MIME/HTML extraction still refuses at the edge.
+
+The Worker queues and replays this variant through the ordinary pending/delivery
+path; an authenticated empty message spends owner ingress allowance but is not
+an SMTP rejection. The local receiver atomically inserts a `blocked` event with
+reason `empty_body`, body NULL and length zero before acknowledging custody.
+Owner status can read its reason through the existing event metadata APIs; the
+owner UI remains unit 7. The hold persists across restart, blocks later submission
+in that conversation, and follows existing expiry/revocation/retention rules.
+It cannot be released into laundering because no content exists; owner rejection
+or eventual expiry can unblock the queue. No model receives this variant. Missing
+or invalid incoming Message-IDs retain the existing Worker-only hold policy.
+
 Only the following **HTTP 200** receipt transfers custody:
 
 ```json
@@ -310,34 +332,68 @@ metadata retention/deletion and cleanup scheduling must be wired there; no
 enabled service is claimed by these internal Python seams. The Worker shared
 breaker P2, real Cloudflare ingress provenance and all live pilot gates remain.
 
-## Unit 5 design checkpoint: empty stripped text (not complete)
+## Recorded-event laundering adapter (unit 5)
 
-The unit-5 candidate adds a default-disabled recorded-event adapter, strict
-free-text/quote/forward extraction and conservative command/invisible-Unicode
-holds through the verified Claude tool-free transform. It does not wake sessions
-or consume questions. Existing legacy decision-digest callers retain their schema.
-This is an incomplete branch checkpoint, not an approved integration candidate.
+`mc/agent_mail_launder.py` exposes `MailLaunder(store, enabled=False)` as a
+trusted Python integration seam, with no new route, scheduler or live setting.
+Only literal `enabled=True` allows `process_next()` to claim one already recorded
+event. Its return contains only event id, state and reason; ready text remains
+inside the dedicated inbox. No wake, provider submission, question consumption,
+outbound send or enrollment is performed. Units 6/7 own that integration.
 
-An unresolved cross-unit requirement blocks completion: authenticated
-multipart/signed owner mail can produce no retained plain text. The Worker
-currently calls `drop('no_plain_text')` before event persistence, and the local
-delivery schema rejects empty `text`. Such a message never reaches unit 5.
-Unit 1's local `empty_body` hold is independently tested, but that synthetic
-local insertion is **not** evidence of an end-to-end multipart/signed hold.
+`mc/agent_mail_screen.py` conservatively holds command/tool syntax, impersonation,
+permission/approval requests, residual HTML, controls and invisible Unicode.
+Screening covers the whole input, including quoted/forwarded sections. It never
+silently removes or truncates those bytes; ambiguous everyday command words can
+therefore require owner review. This detector is not a complete injection defense.
 
-Dave must select where the required owner-visible hold lives:
+`mc/agent_mail_extract.py` uses the shared `claude_mail_transform()` in
+`mc/mail_launder.py`, backed by the verified isolated Claude text transform.
+Other providers fail closed. Legacy decision-digest callers keep their schema;
+their prompt no longer assumes an installation-specific owner identity. Child
+exceptions/errors are sanitized to constant codes, never echoed mail bodies.
+No real model calls are part of this unit's synthetic verification.
 
-- Extend authenticated transport with a body-free held-event representation,
-  persisted and delivered to local custody with an explicit reason. This needs
-  versioned Worker/envelope/receiver changes and cross-language tests; do not
-  silently reinterpret the existing empty-text refusal. Recommended because
-  owner status and retention can use the existing local event lifecycle.
-- Keep the hold at the Worker and expose authenticated remote hold metadata in
-  unit 7's owner status/recovery surface. This needs a durable remote hold plus
-  status protocol/UI; current rejection counters alone do not satisfy it.
+The new extractor accepts exactly one bounded JSON object, false boolean
+ambiguity/failure/truncation/instruction flags, and literal ordered reply/quote/
+forward segments covering the entire input. Exactly one fresh reply segment
+must match `reply_text`. Excluded quoted/forwarded bytes never enter the ready
+envelope. Notes and free-text questions use the same extraction, with **no**
+invented yes/no decision. The stored envelope has version, source, event id,
+warning, reply text and quote/forward-presence flags; it remains untrusted data,
+never approval or authority to change permissions or bypass a human gate.
 
-Until that choice is recorded, the adapter is not complete and no multipart/
-signed acceptance claim is made. No transport behavior changes in this checkpoint.
+Unavailable runtime, timeout, malformed/oversize output, ambiguity and flags
+become visible durable holds without raw fallback. The call deadline fits within
+the persisted lease. Finalization shares the store write transaction with
+consent/generation/thread/expiry/lease revalidation; a late result cannot make a
+revoked or expired claim ready. Existing crash/backoff recovery is bounded;
+explicit hold release does not reset attempts. Body-free v2 holds are never
+claimed, sent to a model or submitted.
+
+Dave selected the body-free local-custody variant on 2026-11-09. Cross-language
+tests exercise real Worker MIME strip, D1 queue, replay signing and Python
+custody for empty plain and multipart/signed messages; tampered held bytes,
+validly signed held envelopes containing text, and unknown envelope versions
+refuse without recording a nonce or event. The original body-bearing custody
+test now surfaces Node child stderr on failure.
+
+Verification from the checkout root (installation launcher path/interpreter may
+be supplied absolutely when running from a worktree):
+
+```text
+python tools/test-run.py --project mission_control --port 5199 -- python -m pytest -o addopts= tests/test_agent_mail_launder.py tests/test_mail_launder.py tests/test_agent_mail_store.py tests/test_agent_mail_ingress.py tests/test_agent_mail_held.py -q --tb=short
+python tools/test-run.py --project mission_control --port 5199 -- pyright mc/agent_mail_screen.py mc/agent_mail_extract.py mc/agent_mail_launder.py mc/mail_launder.py mc/agent_mail_envelope.py mc/agent_mail_ingress.py
+```
+
+From `workers/agent-mail`, use the installation's absolute launcher path with
+`--project mission_control --port 5199 --shell powershell --command "npm test"`
+on Windows (or the corresponding explicit shell on other platforms). The
+shell preserves the existing npm script exactly; no guessed test expansion.
+The completed candidate passed 330 selected pytest cases, 741 Worker cases and
+pyright with zero errors/warnings/informations on all six touched `mc` modules.
+Launcher progress capture reported gaps; these counts are framework results,
+not a claim of complete dashboard telemetry or live-provider verification.
 
 ## D1 ledger, replay, bounds and visibility
 

@@ -11,7 +11,6 @@ test('only authenticated stripped text enters D1; no raw MIME retained', async (
 });
 for (const over of [ { from: 'stranger@example.com' }, { ar: cfAr({ dmarc: 'fail' }) }, { ar: null },
   { token: 'z'.repeat(32) }, { outId: 'wrong@example.com' }, { type: 'text/html', text: '<b>hidden</b>' },
-  { type: 'image/png', text: 'INJECTED' }, { extra: ['Content-Disposition: attachment; filename=x.txt'], text: 'INJECTED' },
   { extra: ['Auto-Submitted: auto-replied'] }, { extra: ['X-Clayrune-Agent-Mail: 1'] }, { envelope: '' },
   { extra: ['Authentication-Results: mx.cloudflare.net; dmarc=pass'] } ]) {
   test(`ingress drop never reaches custody: ${JSON.stringify(over).slice(0, 90)}`, async () => {

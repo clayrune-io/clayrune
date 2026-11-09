@@ -13,6 +13,8 @@ MAX_TEXT_BYTES = 16 * 1024
 _FIELDS = frozenset({'version', 'event_id', 'install_id', 'generation', 'thread_id',
                      'incoming_message_id', 'text', 'body_digest', 'auth',
                      'received_at', 'expires_at'})
+_HELD_FIELDS = (_FIELDS - {'text'}) | {'reason'}
+_EMPTY_DIGEST = hashlib.sha256(b'').hexdigest()
 _RESULT = r'(?:pass|fail|softfail|neutral|none|temperror|permerror|missing|other)'
 _MID = re.compile(r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~.@-]+(?:\[[A-Za-z0-9.:-]*\])?")
 
@@ -33,10 +35,14 @@ def parse_envelope(raw: bytes, signed: VerifiedRequest, now_ms: int) -> dict[str
     try:
         env = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs,
                          parse_constant=lambda _: None)
-        if not isinstance(env, dict) or env.keys() != _FIELDS:
+        if not isinstance(env, dict):
             raise IngressRefused('malformed_envelope')
-        if (type(env['version']) is not int or env['version'] != 1
-                or type(env['generation']) is not int
+        if type(env.get('version')) is not int:
+            raise IngressRefused('envelope_binding')
+        held = env['version'] == 2
+        if env['version'] not in (1, 2) or env.keys() != (_HELD_FIELDS if held else _FIELDS):
+            raise IngressRefused('malformed_envelope')
+        if (type(env['generation']) is not int
                 or env['generation'] != signed.pin.generation
                 or env['install_id'] != signed.pin.install_id):
             raise IngressRefused('envelope_binding')
@@ -49,12 +55,16 @@ def parse_envelope(raw: bytes, signed: VerifiedRequest, now_ms: int) -> dict[str
         # Unit 2 keeps null/invalid identifiers HELD at the Worker, not deliverable.
         if not isinstance(mid, str) or len(mid) > 8192 or not _MID.fullmatch(mid):
             raise IngressRefused('invalid_message_id')
-        text = env['text']
-        if (not isinstance(text, str) or not text.strip() or '\x00' in text
-                or len(text.encode('utf-8')) > MAX_TEXT_BYTES):
-            raise IngressRefused('invalid_text')
-        if hashlib.sha256(text.encode('utf-8')).hexdigest() != env['body_digest']:
-            raise IngressRefused('text_digest')
+        if held:
+            if env['reason'] != 'empty_body' or env['body_digest'] != _EMPTY_DIGEST:
+                raise IngressRefused('invalid_hold')
+        else:
+            text = env['text']
+            if (not isinstance(text, str) or not text.strip() or '\x00' in text
+                    or len(text.encode('utf-8')) > MAX_TEXT_BYTES):
+                raise IngressRefused('invalid_text')
+            if hashlib.sha256(text.encode('utf-8')).hexdigest() != env['body_digest']:
+                raise IngressRefused('text_digest')
         identity = json.dumps([env['install_id'], env['generation'], env['thread_id'], mid],
                               separators=(',', ':')).encode()
         if hashlib.sha256(identity).hexdigest() != env['event_id']:

@@ -289,7 +289,7 @@ def test_store_oversize_remains_hold_and_never_model(store, model):
 
 
 def test_recorded_empty_body_has_visible_existing_hold(store, model):
-    # Local-store behavior only. Current Worker/receiver do not deliver empty text.
+    # Local-store behavior; signed Worker empty-body transport is tested separately.
     put(store, '')
     assert run(store)['state'] == 'idle'
     assert store.get_event('e1')['reason'] == 'empty_body'
