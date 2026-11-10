@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from mc.atomic_json import read_text_with_retry, write_json_atomic
+from mc.test_run_listing import ListEntry, ListIndex
 from mc.test_run_snapshots import Fingerprint, SnapshotCache
 from mc.test_run_terminal import TerminalIndex
 
@@ -33,6 +34,7 @@ MAX_DETAILS = 100
 _LOCK = threading.RLock()
 _SNAPSHOTS = SnapshotCache()
 _TERMINAL = TerminalIndex()
+_LIST = ListIndex()
 _PROCESS_PRODUCER = '_store_process'
 
 
@@ -320,6 +322,11 @@ class TestRunStore:
             if (record['schema'] != SCHEMA or enrollment['project_id'] != project_id
                     or enrollment['run_id'] != run_id):
                 raise ValueError('Run identity mismatch')
+            # The list index relies on these canonical enrollment fields. A
+            # malformed record must not look like a disappearing file (KeyError).
+            _time(enrollment['created_at'])
+            if enrollment['owner_session_id'] is not None:
+                _text(enrollment['owner_session_id'], 'owner_session_id')
             if replay(enrollment, record['events']) != record['snapshot']:
                 raise ValueError('Snapshot differs from canonical replay')
         except (KeyError, TypeError, ValueError) as exc:
@@ -332,10 +339,12 @@ class TestRunStore:
         except FileNotFoundError:
             _SNAPSHOTS.discard(path)
             _TERMINAL.discard(path)
+            _LIST.discard(path)
             raise KeyError(path.stem) from None
         except OSError as exc:
             _SNAPSHOTS.discard(path)
             _TERMINAL.discard(path)
+            _LIST.discard(path)
             raise StoreError(f'Unreadable test run {path.stem}') from exc
         return stat.st_mtime_ns, stat.st_size
 
@@ -347,6 +356,7 @@ class TestRunStore:
         _TERMINAL.matches(path, fingerprint)
         cached = _SNAPSHOTS.get(path, fingerprint)
         if cached is not None:
+            _LIST.remember(path, fingerprint, cached)
             if cached['state'] in TERMINAL_STATES:
                 _TERMINAL.remember(path, fingerprint)
             return cached
@@ -354,6 +364,7 @@ class TestRunStore:
         # An external atomic replacement during validation must not tag the old
         # snapshot with the new version's fingerprint. Recheck on the next read.
         if self._fingerprint(path) == fingerprint:
+            _LIST.remember(path, fingerprint, snapshot)
             if cache_terminal or snapshot['state'] not in TERMINAL_STATES:
                 _SNAPSHOTS.put(path, fingerprint, snapshot, evict=evict)
             if snapshot['state'] in TERMINAL_STATES:
@@ -390,6 +401,7 @@ class TestRunStore:
             path.parent.mkdir(parents=True, exist_ok=True)
             _SNAPSHOTS.discard(path)
             _TERMINAL.discard(path)
+            _LIST.discard(path)
             write_json_atomic(path, {'schema': SCHEMA, 'enrollment': enrollment,
                                     'events': [], 'snapshot': snapshot}, allow_nan=False)
             return copy.deepcopy(snapshot)
@@ -423,6 +435,7 @@ class TestRunStore:
             path = self._path(project_id, run_id)
             _SNAPSHOTS.discard(path)
             _TERMINAL.discard(path)
+            _LIST.discard(path)
             write_json_atomic(path, record, allow_nan=False)
             return copy.deepcopy(record['snapshot'])
 
@@ -453,10 +466,55 @@ class TestRunStore:
         _integer(offset, 'offset')
         if limit > 100:
             raise ValueError('List limit exceeds 100')
-        snapshots = self.all_snapshots(project_id)
-        if owner_session_id is not None:
-            snapshots = [s for s in snapshots if s['owner_session_id'] == owner_session_id]
-        return snapshots[offset:offset + limit]
+        # Only metadata scales with unchanged history. Missing/stale metadata
+        # must first pass canonical validation, including off-page corruption.
+        # As with all_snapshots this is a per-file view, not a transaction.
+        folder = self._path(project_id, '0' * 32).parent
+        entries: list[ListEntry] = []
+        for path in list(folder.glob('*.json')):
+            with _LOCK:
+                try:
+                    fingerprint = self._fingerprint(path)
+                    entry = _LIST.get(path, fingerprint)
+                    if entry is None:
+                        snapshot = self._read(project_id, path.stem)['snapshot']
+                        # No defensive snapshot copy or LRU admission for
+                        # off-page metadata. Only page reads need snapshots.
+                        if self._fingerprint(path) == fingerprint:
+                            _LIST.remember(path, fingerprint, snapshot)
+                            if snapshot['state'] in TERMINAL_STATES:
+                                _TERMINAL.remember(path, fingerprint)
+                        # Use this observed version even if an external replace
+                        # prevented caching its fingerprint during validation.
+                        entry = ListEntry(fingerprint, snapshot['created_at'],
+                                          snapshot['run_id'], snapshot['owner_session_id'])
+                except KeyError:
+                    _SNAPSHOTS.discard(path)
+                    _TERMINAL.discard(path)
+                    _LIST.discard(path)
+                    continue
+            if owner_session_id is None or entry.owner_session_id == owner_session_id:
+                entries.append(entry)
+        entries.sort(key=lambda e: (e.created_at, e.run_id), reverse=True)
+        snapshots = []
+        for entry in entries[offset:]:
+            with _LOCK:
+                try:
+                    snapshot = self._snapshot(project_id, entry.run_id)
+                except KeyError:
+                    path = folder / (entry.run_id + '.json')
+                    _SNAPSHOTS.discard(path)
+                    _TERMINAL.discard(path)
+                    _LIST.discard(path)
+                    continue
+            # An external replacement between indexing and page materialization
+            # must not return another owner's snapshot through a scoped list.
+            if owner_session_id is not None and snapshot['owner_session_id'] != owner_session_id:
+                continue
+            snapshots.append(snapshot)
+            if len(snapshots) == limit:
+                break
+        return snapshots
 
     def active_snapshots(self, project_id: str) -> list[dict[str, Any]]:
         """Floor-only view: unchanged terminal files require only a stat.
@@ -489,6 +547,7 @@ class TestRunStore:
                     # unreadable/corrupt records must still raise StoreError.
                     _SNAPSHOTS.discard(path)
                     _TERMINAL.discard(path)
+                    _LIST.discard(path)
                     continue
                 if not active_only or snapshot['state'] not in TERMINAL_STATES:
                     snapshots.append(snapshot)

@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Materialize only the requested test-run list page
+
+- List reads sort/filter fingerprint-keyed metadata independently of the bounded snapshot LRU, then read/copy only the requested page. Missing/changed metadata still rereads canonical files; off-page corruption still fails, vanished files are skipped, and response ordering/filtering/pagination stay unchanged.
+- Added parity against the old full-read implementation, coverage beyond snapshot capacity, page-only snapshot admission, write invalidation, external replacement and owner-filter race checks. No retention, deletion or pruning was added.
+- Preserved-corpus timings and a measured explanation of the earlier submit outlier are recorded in `docs/TEST_RUN_READ_PERFORMANCE.md`. Local branch candidate only; no merge, push, restart or live HTTP recovery claim.
+
 ## [2026-11-09] - Keep Floor test reads warm beyond snapshot cache capacity
 
 - Floor reads now skip unchanged terminal files using an independent fingerprint-only index and cache only active snapshots. Bulk history scans preserve resident entries beyond the 4096-entry/32 MiB budget instead of sequentially evicting the whole cache. Public list/get semantics remain unchanged; overflow history still validates.
