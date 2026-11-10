@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Seal local mail identities and fence enrollment generations (MC-1166 unit 7b)
+
+- Added a disabled local lifecycle with pending intent before remote work, resumable sealed mail identity files using only the existing unlocked passphrase-vault key, and durable manifest sequence/digest CAS. Locked, corrupt or replaced key material fails closed; supported secret/placeholder APIs never expose the seed.
+- Added a separate per-call human/passcode-gated blueprint through the existing Flask registry. Ownership remains delivery-pending until explicit enable with current tunnel, Claude extraction and machine-custody prerequisites; pinning and activation commit together.
+- Disable closes local authority and queues remote revocation atomically. Retries survive restart; owner/key/pin changes require old-generation revocation and a new ceremony, without adopting old threads or stale remote responses. Synthetic adapters only, no operational factory, UI, credentials or deployment.
+
 ## [2026-11-09] - Recheck mail enrollment trust and expire unproved reservations (MC-1166 unit 7a review)
 
 - New ownership commits revalidate the stored service pin against current trusted configuration, including after asynchronous evidence checks. Exact historical committed retries remain nonrenewing.

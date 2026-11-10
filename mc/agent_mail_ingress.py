@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from contextlib import nullcontext
 from typing import Any, Mapping
 
 from mc.agent_mail_envelope import MAX_REQUEST_BYTES, parse_envelope
@@ -29,14 +30,16 @@ class MailIngress:
         if reg is None or not reg['enabled'] or reg['generation'] != generation:
             raise IngressRefused('consent_required')
 
-    def pin_service(self, pin: ServicePin) -> bool:
+    def pin_service(self, pin: ServicePin, *, transaction: sqlite3.Connection | None = None) -> bool:
         """Trusted local enrollment only. A generation pin cannot be overwritten.
 
         Key/route changes require revocation + a new generation, never a request
         from the Worker. Only PUBLIC key material enters this database.
         """
         pin.validate()
-        with self.store._tx() as db:
+        # Enrollment shares its atomic activation commit with this pin write.
+        # Only trusted Python callers can supply the already-owned transaction.
+        with (nullcontext(transaction) if transaction is not None else self.store._tx()) as db:
             self._consent(db, pin.install_id, pin.generation)
             old = self._pin(db, pin.install_id, pin.generation)
             if old is not None:

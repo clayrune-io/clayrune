@@ -21,6 +21,10 @@ ROUTE = '/api/agent-mail/ingress'
 
 def create_blueprint(data_dir: Path, *, store_factory: Callable[[], MailStore] | None = None) -> Blueprint:
     bp = Blueprint('agent_mail_ingress', __name__)
+    # Flask's existing blueprint registry installs the separate lifecycle route
+    # family without adding another concern to server.py. No operational factory.
+    from mc.blueprints.agent_mail_enrollment_routes import create_blueprint as enrollment_blueprint
+    bp.register_blueprint(enrollment_blueprint())
 
     def enrolled_store() -> MailStore:
         path = default_path(data_dir)

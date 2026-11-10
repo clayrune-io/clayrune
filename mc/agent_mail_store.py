@@ -54,7 +54,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, NoReturn, Optional
@@ -405,11 +405,12 @@ class MailStore:
                              (registration_id,)).fetchone()
             return dict(row) if row else None
 
-    def revoke_registration(self, registration_id: str) -> int:
+    def revoke_registration(self, registration_id: str, *, transaction: sqlite3.Connection | None = None) -> int:
         """Disable, bump the generation and cancel every queued event. Returns
         the number cancelled. Bindings from older generations stay unusable
         after a later `enable_registration`."""
-        with self._tx() as db:
+        # Lifecycle queues remote revocation in the same local authority commit.
+        with (nullcontext(transaction) if transaction is not None else self._tx()) as db:
             row = db.execute('SELECT generation FROM registrations WHERE registration_id=?',
                              (registration_id,)).fetchone()
             if row is None:
