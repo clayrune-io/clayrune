@@ -164,6 +164,20 @@ def launch_cwd(session: dict, project: dict | None, project_path: str,
                   f'turn runs in an isolated tree again.')
 
 
+def peek_launch_cwd(session: dict, project_path: str) -> str:
+    """The directory an ISOLATED session's worktree is in right now, or
+    `LaunchRefused` -- and nothing else. `launch_cwd`'s read-only twin for a
+    caller that is not launching the session (a background-job request): it
+    never recreates the tree, never marks the session `error`, never writes a
+    log line. The session is exactly as it was found."""
+    cwd = (session or {}).get('_agent_cwd') or ''
+    if not _usable(cwd, project_path):
+        sid = (session or {}).get('session_id', '')
+        raise LaunchRefused(f'worktree {cwd or "(none recorded)"} of isolated session '
+                            f'{sid[:12]} is not usable')
+    return cwd
+
+
 def mark_refused(session: dict, message: str | None, reason: str, now: float) -> str:
     """Put a refused session into a visible, recoverable state. Call under the
     project lock. Returns the line written to the session log."""

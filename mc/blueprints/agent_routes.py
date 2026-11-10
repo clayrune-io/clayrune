@@ -1996,7 +1996,11 @@ def agent_job_start(project_id, session_id, *, job_data=None, completion_hook=No
                 'until jobs can be sandboxed the same way. Run the command '
                 'directly in this turn instead.'}), 403
         try:
-            default_cwd = _session_cwd(sess, pp)
+            # A job request is read-only with respect to session state: an
+            # isolated session whose worktree is gone is refused here, never
+            # recreated or flipped to 'error' (that is a launch's job).
+            default_cwd = (_isolated_launch.peek_launch_cwd(sess, pp)
+                           if sess.get('_worktree_isolated') else _session_cwd(sess, pp))
         except _isolated_launch.LaunchRefused as e:
             return jsonify({'error': f'job not started: {e}'}), 409
         fence_armed = job_data is None and _fence_parity.armed(sess, state.CONFIG)
