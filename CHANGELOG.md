@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Bind mail enrollment to purpose-specific ownership grants (MC-1166 unit 7a)
+
+- Added disabled Worker enrollment libraries with flow-bound 32-byte challenges, keyed single-use mailbox-code digests, dual-key canonical proofs and strict pinned ES256 grant verification. Dashboard tokens cannot authorize enrollment.
+- Added D1 migration triggers that consume the grant/challenge and advance the generation atomically, using database admission time and a five-minute lease anchored to the authority check. Ownership records always remain inactive with delivery unverified.
+- Added a separate control-plane issuer over injected read-only registry/Cloudflare adapters and an offline-root service-manifest verifier with durable rollback-floor CAS. Synthetic tests only; no deploy, key/JWKS provisioning, real account/mail calls, merge, push or restart.
+
 ## [2026-11-09] - Reserve inbound owner and shared allowances together (MC-1166 review)
 
 - Made install/global authenticated ingress reservations one transactional D1 batch. An owner past their install cap cannot drain global slots; a full global bucket leaves install capacity unchanged. Storage failure rolls back both charges.

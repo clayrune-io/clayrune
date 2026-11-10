@@ -76,6 +76,11 @@ remain separate launch gates. No merge, push, restart or deployment is authorize
 
 ## Unit 7a preflight: enrollment evidence and service pin (2026-11-09)
 
+**Later build record:** Dave selected authority **A**, superseding the
+unadopted B recommendation below. The disabled unit-7a implementation and its
+remaining delivery/deployment gates are in [AGENT_MAIL_UNIT7A_GRANTS.md](AGENT_MAIL_UNIT7A_GRANTS.md).
+The following preflight remains the historical alternatives/evidence record.
+
 **Design only; recommendation B below awaits Dave's decision.** Dave approved
 the five-unit split (option A of the earlier section), not an enrollment trust
 mechanism. The A/B/C labels below are new alternatives within 7a. No endpoint,
