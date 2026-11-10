@@ -5503,6 +5503,8 @@ def _start_prompt_delivery(write: Callable[[Callable[[Exception], None]], bool],
     the prompt was written and stdin closed; it may report why it did not
     through `on_error`. An exception it raises counts as a failed delivery."""
     delivery = _PromptDelivery()
+    from mc import agent_mail_continuation, agent_mail_pipe
+    mail_scope = agent_mail_continuation.current()
 
     def _note(exc: Exception) -> None:
         delivery.why = f'{type(exc).__name__}: {exc}'
@@ -5515,6 +5517,7 @@ def _start_prompt_delivery(write: Callable[[Callable[[Exception], None]], bool],
             _note(exc)    # type: ignore[arg-type]
         finally:
             delivery.done.set()
+            agent_mail_pipe.finish(mail_scope, delivery)
     threading.Thread(target=_run, daemon=True, name=name).start()
     return delivery
 
@@ -5554,6 +5557,9 @@ def _pending_prompt(delivery, session, proc, engine, attempt):
     session['_terminal_delivery_gate'] = (proc, gate)
 
     def acknowledge():
+        from mc.agent_mail_pipe import acknowledge as mail_acknowledge
+        if mail_acknowledge(delivery, session, gate):
+            return
         try:
             _require_prompt_delivered(delivery, session, proc, engine, gate.reject)
         except Exception as exc:

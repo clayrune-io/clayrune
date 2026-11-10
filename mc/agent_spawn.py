@@ -310,7 +310,11 @@ def _capture_prompt(deliver: Callable[[Any], None], session_id: str, engine: str
     return cap
 
 
+from mc.agent_mail_continuation import spawn_boundary as mail_spawn_boundary
+
+
 @_launch_transaction.spawn_boundary
+@mail_spawn_boundary
 def spawn_engine_proc(cmd: Sequence[Any], *, session_id: Optional[str], engine: str,
                       cwd: Any = None, env: Optional[Mapping[str, str]] = None,
                       deliver: Optional[Callable[[Any], None]] = None,

@@ -1,5 +1,17 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Isolate stale mail receipts and prove provider history (MC-1166 unit 6 review)
+
+- Receipt reconciliation retires stale project generations with a visible terminal reason, retains original delivery evidence, and logs other per-row errors while continuing other projects. Terminal events cannot be reopened by late receipts or repeatedly poison the wake pass.
+- Native history lookup uses the recorded execution cwd, fixing isolated Codex binding. Gemini mail wake is explicitly held as `gemini_mail_wake_unsupported` because its runtime cannot prove persistent history; prior synthetic Gemini success coverage is withdrawn.
+- Added regressions using real provider transcript methods and lifecycle generation transitions. Default-disabled local candidate; no merge, push, restart or live mail.
+
+## [2026-11-09] - Bind mail replies to their original conversation (MC-1166 unit 6)
+
+- Added a default-disabled local wake controller over the existing follow-up/revival paths. Immutable native-conversation/question snapshots and durable delivery-attempt receipts prevent fresh-session fallback, duplicate replay, and unrelated gate consumption.
+- Mail-only pipe acknowledgments wait 10 seconds, then retain uncertainty without killing/restarting or replaying the provider. Exact late receipts reconcile separately from matching lifecycle completion. Ordinary interactive revival keeps its existing wait policy.
+- Preserved scheduled execution metadata on mail-origin native revival; added synthetic alive/ended provider, restart, revocation, question and timeout coverage. Enrollment, outbound mail, status UI and live transport remain unit 7/pilot work. Local review candidate; no merge, push or restart.
+
 ## [2026-11-09] - Report model-choice snapshot failures (MC-1168 follow-up)
 
 - Model selection now logs and returns HTTP 503 when the ownership snapshot's strict read/reread or save fails, preserving the live model pin. Snapshot acquisition shares the existing persistence error handler with the later choice save.
