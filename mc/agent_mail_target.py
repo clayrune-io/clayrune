@@ -29,7 +29,9 @@ def snapshot(project: dict[str, Any], session: dict[str, Any],
              question: dict[str, Any] | None = None) -> dict[str, Any]:
     from mc.blueprints import agent_routes as ar
     provider = session.get('provider') or 'claude'
-    if provider not in ('claude', 'codex', 'qwen', 'gemini'):
+    if provider == 'gemini':
+        raise MailHeld('gemini_mail_wake_unsupported')
+    if provider not in ('claude', 'codex', 'qwen'):
         raise MailHeld('unsupported_provider')
     identity = native(session)
     if not identity or identity.lower() in ('last', 'latest'):
@@ -57,6 +59,10 @@ def validate(project: dict[str, Any], source: dict[str, Any], bound: dict[str, A
              *, busy: bool = True) -> None:
     from mc import agent_runtime
     from mc.blueprints import agent_routes as ar
+    # Older snapshots may predate the bind-time refusal. Gemini's runtime
+    # cannot locate native history, so an exact persistent resume is unproven.
+    if bound['provider'] == 'gemini':
+        raise MailHeld('gemini_mail_wake_unsupported')
     if source.get('incognito'):
         raise MailHeld('incognito_not_persistent')
     if (project.get('id') != bound['project_id']
@@ -102,7 +108,7 @@ def validate(project: dict[str, Any], source: dict[str, Any], bound: dict[str, A
     if str(Path(cwd).resolve()) != bound['cwd'] or not Path(bound['cwd']).is_dir():
         raise MailHeld('worktree_unavailable')
     runtime = agent_runtime.get_runtime(bound['provider'])
-    transcript = runtime.transcript_path(project['project_path'], bound['native_id'])
+    transcript = runtime.transcript_path(bound['cwd'], bound['native_id'])
     if transcript is None or not Path(transcript).is_file() or Path(transcript).stat().st_size == 0:
         raise MailHeld('native_history_missing')
     if bound['provider'] == 'claude':

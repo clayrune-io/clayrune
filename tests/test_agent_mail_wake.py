@@ -386,14 +386,15 @@ def test_postchild_factory_failure_cannot_roll_back_durable_admission(setup):
 @pytest.mark.parametrize('provider', ['codex', 'qwen', 'gemini'])
 @pytest.mark.parametrize('ended', [False, True])
 @pytest.mark.parametrize('trigger', ['manual', 'schedule'])
-def test_native_runtime_followup_receives_exact_resume_and_text(setup, monkeypatch, provider, ended, trigger):
+def test_native_runtime_followup_support_contract(setup, monkeypatch, provider, ended, trigger):
     from pathlib import Path
     from test_runtime_delivery_truth import _Stdin, _Proc
     from mc import session_mcp_launch
     runtime = {'codex': agent_runtime.CodexRuntime, 'qwen': agent_runtime.QwenRuntime,
                'gemini': agent_runtime.GeminiRuntime}[provider]()
     monkeypatch.setattr(runtime, 'resolve_binary', lambda: Path('fake-provider'))
-    monkeypatch.setattr(runtime, 'transcript_path', lambda *a: setup.transcript)
+    if provider != 'gemini':
+        monkeypatch.setattr(runtime, 'transcript_path', lambda *a: setup.transcript)
     monkeypatch.setattr(runtime, 'session_model', lambda handle: '')
     if provider == 'codex':
         monkeypatch.setattr(runtime, '_gate_model', lambda model: ('', ''))
@@ -406,8 +407,6 @@ def test_native_runtime_followup_receives_exact_resume_and_text(setup, monkeypat
     monkeypatch.setattr(session_mcp_launch, 'prepare', lambda n, cmd, **k: (cmd, {}))
     monkeypatch.setattr(agent_runtime, '_mode_a_reader', lambda *a: None)
     monkeypatch.setattr(agent_runtime, '_kill_pid', lambda *a: None)
-    if provider == 'gemini':
-        monkeypatch.setattr(runtime, '_read_stream', lambda *a: None)
     monkeypatch.setattr(setup.ar._native_followup_context, 'refresh_stash', lambda *a, **k: None)
     monkeypatch.setattr(setup.ar._native_followup_context, 'message_for_turn', lambda p, s, m: m)
     monkeypatch.setattr(setup.ar, '_bridge_images_for_blind_model', lambda m, *a, **k: m)
@@ -416,6 +415,12 @@ def test_native_runtime_followup_receives_exact_resume_and_text(setup, monkeypat
                          _system_prompt='', agent_model='', trigger_type=trigger,
                          trigger_id='schedule-one' if trigger == 'schedule' else '')
     setup.store.bind_thread('installation', 'native-token', 'proj1', 'mail-session')
+    if provider == 'gemini':
+        assert runtime.transcript_path(str(setup.tmp_path), 'native-thread') is None
+        with pytest.raises(MailHeld, match='^gemini_mail_wake_unsupported$'):
+            setup.wake.bind('native-token')
+        assert setup.session['proc'].stdin.getvalue() == ''
+        return
     setup.wake.bind('native-token')
     setup.store.insert_event(event_id='native-mail', registration_id='installation',
                              thread_token='native-token', message_id='<native@example.invalid>', body=TEXT)

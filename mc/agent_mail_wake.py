@@ -10,7 +10,7 @@ from typing import Any
 from mc.agent_mail_extract import WARNING
 from mc.agent_mail_questions import consume, matching
 from mc.agent_mail_screen import screen_text
-from mc.agent_mail_store import (MailStore, SUBMITTED, SUBMITTING, TURN_COMPLETED,
+from mc.agent_mail_store import (EXPIRED, REVOKED, MailStore, SUBMITTED, SUBMITTING, TURN_COMPLETED,
                                  UNCERTAIN, hash_thread_token)
 from mc.agent_mail_target import MailHeld, resolve, snapshot, validate
 from mc.core import _log
@@ -122,25 +122,53 @@ class MailWake:
         """Reconcile stored receipts; a terminal log row alone never accepts mail."""
         self.store.reconcile()
         with self.store._read() as db:
-            rows = db.execute('SELECT * FROM mail_turn_receipts WHERE accepted=1').fetchall()
+            rows = db.execute('SELECT r.* FROM mail_turn_receipts r JOIN events e '
+                              'ON e.event_id=r.event_id WHERE r.accepted=1 AND e.state IN (?,?,?)',
+                              (SUBMITTING, SUBMITTED, UNCERTAIN)).fetchall()
         for row in rows:
+            try:
+                self._reconcile_receipt(row)
+            except Exception as exc:
+                _log(f"[agent-mail] reconcile event {row['event_id']} failed: {exc}", flush=True)
+
+    def _retire_receipt(self, row: Any, reason: str) -> None:
+        """Keep delivery evidence, but never reconcile it into a new identity."""
+        with self.store._tx() as db:
+            event = db.execute('SELECT e.state FROM events e JOIN mail_turn_receipts r '
+                               'ON r.event_id=e.event_id WHERE e.event_id=? AND r.attempt_id=?',
+                               (row['event_id'], row['attempt_id'])).fetchone()
+            if event and event['state'] in (SUBMITTING, SUBMITTED, UNCERTAIN):
+                # Submitted means accepted, not completed. Expiry preserves that
+                # fact; the other states can be revoked without claiming success.
+                terminal = EXPIRED if event['state'] == SUBMITTED else REVOKED
+                self.store._move(db, row['event_id'], event['state'], terminal, reason=reason)
+        _log(f"[agent-mail] reconcile event {row['event_id']} retired: {reason}", flush=True)
+
+    def _reconcile_receipt(self, row: Any) -> None:
+        from mc.blueprints import agent_routes as ar
+        from mc.agent_mail_target import native
+        from mc.conversation_store import ConversationUnavailable
+        with ar.get_manager(row['project_id']).lock:
+            try:
+                ar._assert_runtime_project_generation(row['project_id'], row['project_generation'])
+            except ConversationUnavailable:
+                self._retire_receipt(row, 'project_generation_changed')
+                return
+            project = ar.load_project(row['project_id'])
+            if project is None:
+                self._retire_receipt(row, 'project_unavailable')
+                return
             if not row['completed']:
-                from mc.blueprints import agent_routes as ar
-                from mc.agent_mail_target import native
-                with ar.get_manager(row['project_id']).lock:
-                    project = ar.load_project(row['project_id'])
-                    if project is not None:
-                        ar._assert_runtime_project_generation(row['project_id'], row['project_generation'])
-                        logs = ar._load_agent_log(row['project_id'], strict=True)
-                        done = any(e.get('session_id') == row['session_id']
-                                   and e.get('delivery_attempt_id') == row['attempt_id']
-                                   and e.get('status') == 'completed'
-                                   and (e.get('provider') or 'claude') == row['provider']
-                                   and native(e) == row['native_id'] for e in logs)
-                        if done:
-                            with self.store._tx() as db:
-                                db.execute('UPDATE mail_turn_receipts SET completed=1 WHERE event_id=? AND attempt_id=?',
-                                           (row['event_id'], row['attempt_id']))
+                logs = ar._load_agent_log(row['project_id'], strict=True)
+                done = any(e.get('session_id') == row['session_id']
+                           and e.get('delivery_attempt_id') == row['attempt_id']
+                           and e.get('status') == 'completed'
+                           and (e.get('provider') or 'claude') == row['provider']
+                           and native(e) == row['native_id'] for e in logs)
+                if done:
+                    with self.store._tx() as db:
+                        db.execute('UPDATE mail_turn_receipts SET completed=1 WHERE event_id=? AND attempt_id=?',
+                                   (row['event_id'], row['attempt_id']))
             self.settle(row['event_id'])
 
     def hold(self, event: dict[str, Any], reason: str) -> None:

@@ -35,6 +35,13 @@ held/uncertain events are never delivered or automatically replayed. Missing
 history, changed identity/generation/permission context, closure, missing persona
 or worktree, quota and recovery holds refuse before provider submission.
 
+Supported mail-wake providers are Claude, Codex and Qwen. Gemini is explicitly
+held with `gemini_mail_wake_unsupported` at binding and when validating older
+snapshots: its runtime returns no transcript path, so persistent native history
+cannot be proven. Ordinary Gemini follow-up support does not prove mail-wake
+support. History lookup uses the validated snapshot's execution cwd, including
+an isolated worktree, rather than its parent project root.
+
 A live canonical owner must match provider/native identity and stored context;
 a matching character is insufficient. An explicit closed originating row remains
 held. Roster recovery stays held under its separate recovery-review contract.
@@ -77,6 +84,16 @@ native id/attempt. Positive receipt plus matching successful completion history
 can recover after restart. Terminal history/callback alone cannot accept mail.
 Late completion after store expiry remains refused. Revoked content is not rebuilt.
 
+Reconciliation isolates receipt errors per row and logs them, allowing other
+projects to continue. Stale/deleted project generations retire accepted incomplete
+deliveries with visible `project_generation_changed`: submitted events expire;
+submitting/uncertain events are revoked. Missing projects retire similarly with
+`project_unavailable`. Original accepted/completed evidence and generation stay
+unchanged; content is purged using existing terminal transitions. Terminal events
+are excluded from subsequent receipt passes, and late callbacks cannot reopen
+them. Other read/storage failures retain the receipt for a later reconciliation
+pass; they never authorize replay.
+
 ## Questions
 
 The full stored form is hashed to validate revision. Only a matching still-pending
@@ -96,14 +113,22 @@ question validation, wake/receipt handling and schema migration/cleanup. The rou
 monolith receives imports, decorators and helper call sites only.
 
 Synthetic tests use real SQLite and existing route/revival/runtime methods with
-fake transports/CLI processes. They cover alive/ended Claude A/B and Codex/Qwen/
-Gemini continuation, exact resume/cwd, scheduled sandbox posture, busy/replay/order,
+fake transports/CLI processes. They cover alive/ended Claude A/B and Codex/Qwen
+continuation, Gemini's named refusal using its real transcript method, exact
+resume/cwd, scheduled sandbox posture, busy/replay/order,
 legacy/missing identity refusal, revocation, questions and late receipts. Tests
 inspect the actual payload/argv handed to the resumed CLI double, not just HTTP
 success. No real provider/model or actual native-provider processing is claimed.
 
-The unchanged continuation-model test file has nine existing fixture failures,
-reproduced independently on exact base `9f73231f`. They remain out of scope;
+Cold-review regressions use the real Codex transcript locator against synthetic
+rollout metadata and real lifecycle SQLite generation changes. They prove isolated
+history binding, stale receipt retirement across submitted/revoked/uncertain
+cases, late-callback refusal, and progress for a healthy second project despite a
+stale generation or a logged history-read error. The prior mocked Gemini success
+cases did not establish mail-wake compatibility; that earlier claim is withdrawn.
+
+The earlier broader run had nine continuation-model failures, reproduced
+independently on exact base `9f73231f`. Their repair belongs to a separate branch;
 the separately reported scoped matrix excludes that file explicitly.
 
 Exact operator-specific argv, cwd, results and correction history live in the
