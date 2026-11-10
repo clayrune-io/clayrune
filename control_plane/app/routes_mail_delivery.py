@@ -9,8 +9,10 @@
 DEFAULT OFF: unless `CLAYRUNE_MAIL_DELIVERY_ENABLED` is `1`/`true`, every route
 here answers 404 and reads nothing. The POST routes authenticate with the mail
 Worker's Ed25519 service signature (`mail_service_auth`), never a dashboard
-credential. There is no default authority reader: until a reader is wired in a
-later unit, issue/lease answer 503 `authority_unavailable` (closed, not open).
+credential. The authority reader is the production Firestore + Cloudflare reader
+(`mail_authority_reader`), built only when `CLAYRUNE_MAIL_AUTHORITY_READ_ENABLED`
+and its config are present; otherwise, or when a backend read fails, issue/lease
+answer 503 `authority_unavailable` (closed, not open).
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from . import sessions
+from .mail_authority_reader import authority_reader_from_env
 from .mail_delivery_authority import DeliveryRefused, MailDeliveryAuthority
 from .mail_delivery_signing import DeliveryKeyError, DeliveryKeyring, parse_delivery_keys
 from .mail_delivery_store import DeliveryStore
@@ -87,10 +90,10 @@ def get_deps() -> DeliveryDeps:
     except (ValueError, AttributeError):
         grant_jwks = []
     if deps.keyring and deps.service_keys:
-        # No authority reader exists yet (contract file list has none): reader=None makes
-        # issue/lease refuse `authority_unavailable`. bind/revoke work without it.
+        # reader=None (read flag off or config incomplete) makes issue/lease refuse
+        # `authority_unavailable`. bind/revoke work without it.
         deps.authority = MailDeliveryAuthority(
-            reader=None, keyring=deps.keyring, store=_STORE, issuer=sessions.issuer(),
+            reader=authority_reader_from_env(), keyring=deps.keyring, store=_STORE, issuer=sessions.issuer(),
             service_keys=deps.service_keys, grant_jwks=grant_jwks if isinstance(grant_jwks, list) else [])
     return deps
 
