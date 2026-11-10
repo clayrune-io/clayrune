@@ -1,5 +1,19 @@
 # Runtime delivery acknowledgment (MC-1168)
 
+The continuation-model follow-up on base `9f73231f` puts model-choice ownership
+snapshot acquisition inside the route's existing persistence error handler.
+Failed strict read/reread, snapshot save or choice save logs the original error,
+returns HTTP 503 and leaves the live pin unchanged. The route change relocates
+four existing lines; strict reads, owner comparison and persist-before-pin order
+remain intact. `tests/test_model_choice_storage_failure.py` covers those three
+fault stages and the HTTP 200 control. The continuation suite's 43 original
+assertions remain, extending only its complete-row equality with the unchanged
+delivery owner. The requested continuation/storage/runtime-delivery/r14 selection
+passes 206 cases; route Pyright retains the same 15 baseline errors with no added
+or removed diagnostics. Details and historical reproduction:
+`docs/CONTINUATION_MODEL_FAILURE_AUDIT.md`. Local candidate only; no merge, push
+or restart.
+
 Round 14 (`fix/mc1168-r14`, base `7713c5a4`) closes the remaining leaf-read
 gap in reservation and owner-CAS rollback. `_update_agent_log` now consumes
 `_load_agent_log(strict=True)` while holding the existing leaf/shared-file

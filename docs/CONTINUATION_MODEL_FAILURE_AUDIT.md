@@ -1,5 +1,66 @@
 # Continuation-model failure audit
 
+## Repair follow-up
+
+Dave accepted the audit and authorized the source repair and fixture updates.
+The branch now relocates the four existing snapshot/owner-setup lines inside
+`agent_set_model`'s existing persistence `try` block. Snapshot read/reread and
+snapshot-save failures reach the same `_log` and HTTP 503 response as later
+choice-save failures; the live pin changes only after successful persistence.
+No helper or new concern was added to the routes monolith. Its owner comparison,
+strict mutation reads and bounded reread are unchanged.
+
+The four-case diagnostic is promoted to
+`tests/test_model_choice_storage_failure.py`. In addition to its original
+status/pin assertions, it checks the exact error body, visible persistence-error
+logging, the two strict read attempts for a persistent read fault, absence of a
+save after that fault, save counts at the other stages and the successful control.
+
+The eight stale cases are repaired exactly as classified below. The original
+storage-failure test now injects `PermissionError` through the strict loader
+instead of the unused readability precheck. Loader doubles accept the current
+keyword; reader/identity/failure fixtures carry matching nonempty delivery
+tokens; concurrent writers contend on the manager lock before the real leaf
+transaction. The pending and completed failure rows both have matching owners,
+so the completed-status protection is still exercised independently of ownership.
+
+An AST comparison against `9f73231f` confirms all **43 original assertions**
+remain. The only extension to an existing expectation adds the unchanged fixture
+owner to the late-INIT complete-row equality. The new strict-fault assertion is
+additional. The original per-test audit and reproduction below are retained as
+historical evidence; their stop/no-edit statements describe the first audit.
+
+Repair plan: preserve the existing error/logging boundary, promote the four
+controls, update only the diagnosed fixture contracts, run the exact requested
+suites and route typing, document and commit locally. A write to the requested
+global plan directory was refused by the unattended fence as an out-of-project
+`~/.claude` configuration edit; it was not retried. This project document retains
+the plan instead. No global configuration or permissions changed.
+
+### Repair validation
+
+Using the same installation launcher, absolute project interpreter, cwd and
+environment described below:
+
+| Selection | Result | Child exit |
+| --- | --- | ---: |
+| `tests/test_continuation_model.py tests/test_model_choice_storage_failure.py` | 35 passed (31 continuation + 4 storage cases) | 0 |
+| Both files, all ten runtime-delivery-truth files listed below, then `tests/mc1168_r14` | 206 passed (35 + 157 + 14) | 0 |
+| `pyright mc/blueprints/agent_routes.py --outputjson` before repair | 15 errors, 0 warnings | 1 |
+| Same route Pyright after repair | 15 errors, 0 warnings | 1 |
+
+The Pyright JSON diagnostic multisets match exactly by file, severity, rule,
+full message and multiplicity: zero additions and zero removals. The retained
+baseline was not regenerated. Launcher progress gaps included transport/parent/
+pytest enrollment failures, event flush/capture failures and an unfinalized run;
+all pytest child exits were 0 and framework output supplies the counts above.
+`git diff --check` passes. No frontend changed, so frontend smokes are inapplicable.
+The user guide needs no update: this restores existing error behavior and adds
+no control, workflow or discoverable feature. No agent-mail module changed.
+No live provider, merge, push, restart or deployment verification is claimed.
+
+## Original audit (before repair)
+
 Audited base: `9f73231fdf538fd543735ca042a71a5f870e9155` (MC-1168 r14 merge).
 Task: classify nine continuation-test failures before updating any fixtures.
 

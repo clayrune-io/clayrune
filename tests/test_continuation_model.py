@@ -113,8 +113,7 @@ def test_set_model_choice_is_durable_before_success(ar, monkeypatch, model):
     ar.agent_sessions['s1'] = session
     saved = {}
     monkeypatch.setattr(ar, 'get_manager', lambda _: SimpleNamespace(lock=RLock()))
-    monkeypatch.setattr(ar, '_agent_log_is_readable', lambda _: True)
-    monkeypatch.setattr(ar, '_load_agent_log', lambda _: [])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda _, *, strict=False: [])
     monkeypatch.setattr(ar, '_save_agent_log', lambda pid, rows: saved.update(pid=pid, rows=rows))
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *a: None)
     with Flask(__name__).test_request_context(json={'model': model}):
@@ -131,7 +130,10 @@ def test_set_model_storage_failure_is_not_acknowledged(ar, monkeypatch):
     session = dict(project_id='p1', provider='claude', pinned_model='sonnet')
     ar.agent_sessions['s1'] = session
     monkeypatch.setattr(ar, 'get_manager', lambda _: SimpleNamespace(lock=RLock()))
-    monkeypatch.setattr(ar, '_agent_log_is_readable', lambda _: False)
+    def unreadable(_, *, strict=False):
+        assert strict is True
+        raise PermissionError('storage unavailable')
+    monkeypatch.setattr(ar, '_load_agent_log', unreadable)
     with Flask(__name__).test_request_context(json={'model': 'opus'}):
         _, status = ar.agent_set_model('p1', 's1')
     assert status == 503
@@ -160,8 +162,7 @@ def test_explicit_clear_does_not_resurrect_old_pin(ar, monkeypatch):
 
 def test_manual_pending_preserves_engine_and_native_id(ar, monkeypatch):
     saved = []
-    monkeypatch.setattr(ar, '_agent_log_is_readable', lambda _: True)
-    monkeypatch.setattr(ar, '_load_agent_log', lambda _: [])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda _, *, strict=False: [])
     monkeypatch.setattr(ar, '_save_agent_log', lambda _, rows: saved.extend(rows))
     ar._log_agent_dispatch_pending(dict(project_id='p1', session_id='s1',
                                        trigger_type='manual', provider='codex',
@@ -195,11 +196,13 @@ def test_runtime_dispatch_passes_resume_model_without_reselection(ar, monkeypatc
 def test_native_reader_persists_id_before_process_exit(ar, monkeypatch):
     from tests.test_mode_a_tool_call_parity import _FakeProc
     from mc.agent_runtime import CodexRuntime, SessionHandle, _mode_a_reader
-    captured = [dict(session_id='s1', status='in_progress', usage={'input': 12})]
+    captured = [dict(session_id='s1', status='in_progress', usage={'input': 12},
+                     delivery_attempt_id='attempt1')]
     monkeypatch.setattr(ar, '_update_agent_log', lambda _, mutate: mutate(captured))
     proc = _FakeProc([json.dumps({'type': 'thread.started', 'thread_id': 'native1'})])
     session = dict(project_id='p1', session_id='s1', provider='codex',
-                   log_lines=[], proc=proc, provider_session_id='')
+                   log_lines=[], proc=proc, provider_session_id='',
+                   _delivery_attempt_id='attempt1')
     handle = SessionHandle(mc_session_id='s1', provider='codex', mode='A',
                            project_path='/p', project_id='p1', session_dict=session,
                            meta={'callbacks': {'on_init': ar._RUNTIME_CALLBACKS['on_init']}})
@@ -209,13 +212,13 @@ def test_native_reader_persists_id_before_process_exit(ar, monkeypatch):
 
 
 def test_manual_claude_init_backfills_native_id(ar, monkeypatch):
-    rows = [dict(session_id='s1', status='in_progress')]
+    rows = [dict(session_id='s1', status='in_progress', delivery_attempt_id='attempt1')]
     saved = []
     monkeypatch.setattr(ar, '_live_owner_of_csid', lambda *a, **kw: None)
-    monkeypatch.setattr(ar, '_agent_log_is_readable', lambda _: True)
-    monkeypatch.setattr(ar, '_load_agent_log', lambda _: rows)
+    monkeypatch.setattr(ar, '_load_agent_log', lambda _, *, strict=False: rows)
     monkeypatch.setattr(ar, '_save_agent_log', lambda _, records: saved.extend(records))
-    ar._note_claude_sid(dict(project_id='p1', session_id='s1', trigger_type='manual'), 'native1')
+    ar._note_claude_sid(dict(project_id='p1', session_id='s1', trigger_type='manual',
+                             _delivery_attempt_id='attempt1'), 'native1')
     assert saved[0]['claude_session_id'] == 'native1'
 
 
@@ -228,16 +231,17 @@ def test_incognito_pending_never_writes_durable_log(ar, monkeypatch):
 
 def test_late_claude_init_preserves_completed_row(ar, monkeypatch):
     rows = [dict(session_id='s1', status='completed', summary='finished',
-                 usage={'input': 42}, scribed=True)]
+                 usage={'input': 42}, scribed=True, delivery_attempt_id='attempt1')]
     monkeypatch.setattr(ar, '_live_owner_of_csid', lambda *a, **kw: None)
     monkeypatch.setattr(ar, '_update_agent_log', lambda _, mutate: mutate(rows))
-    ar._note_claude_sid(dict(project_id='p1', session_id='s1', trigger_type='manual'), 'native1')
+    ar._note_claude_sid(dict(project_id='p1', session_id='s1', trigger_type='manual',
+                             _delivery_attempt_id='attempt1'), 'native1')
     # MC-998 follow-up 5 (004fea16): the identity-only backfill also merges the
     # csid into the row's durable `claude_session_ids` history; everything the
     # completed row already had must still be there unchanged.
     assert rows == [dict(session_id='s1', status='completed', summary='finished',
                          usage={'input': 42}, scribed=True, claude_session_id='native1',
-                         claude_session_ids=['native1'])]
+                         claude_session_ids=['native1'], delivery_attempt_id='attempt1')]
 
 
 def test_parallel_pending_transactions_cannot_lose_another_session(ar, monkeypatch):
@@ -256,9 +260,10 @@ def test_parallel_pending_transactions_cannot_lose_another_session(ar, monkeypat
         def __exit__(self, *args):
             real_lock.release()
 
-    monkeypatch.setitem(ar._agent_log_mutation_locks, 'p1', InstrumentedLock())
-    monkeypatch.setattr(ar, '_agent_log_is_readable', lambda _: True)
-    def load(_):
+    # The manager serializes writers before they reach the leaf transaction.
+    manager = SimpleNamespace(lock=InstrumentedLock())
+    monkeypatch.setattr(ar, 'get_manager', lambda _: manager)
+    def load(_, *, strict=False):
         snapshot = deepcopy(storage)
         if not first_thread:
             first_thread.append(get_ident())
@@ -281,11 +286,13 @@ def test_parallel_pending_transactions_cannot_lose_another_session(ar, monkeypat
 
 
 def test_runtime_start_failure_updates_only_pending_state(ar, monkeypatch):
-    rows = [dict(session_id='s1', status='in_progress'),
-            dict(session_id='s2', status='completed')]
+    rows = [dict(session_id='s1', status='in_progress', delivery_attempt_id='attempt1'),
+            dict(session_id='s2', status='completed', delivery_attempt_id='attempt2')]
     monkeypatch.setattr(ar, '_update_agent_log', lambda _, mutate: mutate(rows))
-    ar._persist_runtime_start_failure(dict(project_id='p1', session_id='s1', log_lines=['missing CLI']))
+    ar._persist_runtime_start_failure(dict(project_id='p1', session_id='s1', log_lines=['missing CLI'],
+                                          _delivery_attempt_id='attempt1'))
     assert rows[0]['status'] == 'error'
     assert rows[0]['summary'] == 'missing CLI'
-    ar._persist_runtime_start_failure(dict(project_id='p1', session_id='s2', log_lines=['late failure']))
+    ar._persist_runtime_start_failure(dict(project_id='p1', session_id='s2', log_lines=['late failure'],
+                                          _delivery_attempt_id='attempt2'))
     assert rows[1]['status'] == 'completed'
