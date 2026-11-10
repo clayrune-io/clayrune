@@ -1,7 +1,9 @@
 # MC-1166 unit 7d: delivery authority and recovery preflight
 
-Status: **documentation only; decision requested from Dave**. No option below
-is adopted. Base `2f7ac7feaeb1d1770b684256cb3867d449665d0a` includes 7a/7b/7c;
+Status: **Dave chose A on 2026-11-10** (journal a841feef, DECIDED WITHOUT RON).
+7d splits: **7d-1** local recovery/supervisor/deletion/7c carries (no transport
+dependency) builds now; **7d-2** A capability + proof-mode contract follows.
+Keys, credentials, CP/edge deploy stay Ron-gated. Originally: no option was adopted. Base `2f7ac7feaeb1d1770b684256cb3867d449665d0a` includes 7a/7b/7c;
 branch `clayrune/mc1166-u7d-preflight`. No production code is changed.
 
 **Recommendation A:** specify a separate, narrowly scoped machine-delivery
