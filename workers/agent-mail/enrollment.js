@@ -1,7 +1,7 @@
 // Enrollment core, deliberately NOT a public HTTP handler. Unit 7b must supply
 // the authenticated originating human-flow guard. No dashboard token is a grant.
 import { bytes, randomId, sha256 } from './signing.js';
-import { canonicalR, fieldsR, FIELDS, ID, origin, verifyProof } from './enrollment-transcript.js';
+import { canonicalR, fieldsR, FIELDS, ID, HEX, origin, verifyProof } from './enrollment-transcript.js';
 import { CHALLENGE_TTL, randomHex, flowDigest, codeDigest } from './enrollment-challenge.js';
 import { verifyGrant, OWNERSHIP_LEASE_MS } from './enrollment-grant.js';
 import { parseMailbox } from './mailbox.js';
@@ -24,6 +24,9 @@ export class Enrollment {
       || ['manifest_sequence', 'service_key_id', 'service_public_key_sha256']
         .some((k) => value[k] !== this.servicePin[k])) throw new Error('service_pin_mismatch');
   }
+  async fenced(flowId) {
+    return !!await this.first('SELECT 1 AS x FROM mail_lifecycle_fences WHERE flow_id=?', flowId);
+  }
   async flow(flowId, secret) {
     if (!ID.test(flowId)) throw new Error('bad_flow');
     const f = await this.first('SELECT * FROM mail_enrollment_flows WHERE flow_id=?', flowId);
@@ -36,10 +39,15 @@ export class Enrollment {
     this.guard();
     const allowed = ['flow_id', 'owner_address', 'device_id', 'device_public_key', 'mail_key_id',
       'mail_public_key', 'tunnel_uuid', 'route_origin', 'manifest_sequence', 'service_key_id', 'service_public_key_sha256'];
-    if (!value || Object.keys(value).sort().join(',') !== [...allowed].sort().join(',')
-        || !ID.test(value.flow_id) || !ID.test(value.device_id)
+    // fence_digest is optional (7d-2d): SHA-256 of the install's local fence token, so a later
+    // lifecycle cancel/revoke can authenticate without the vault. Absent = a flow nobody can cancel.
+    const hasFence = !!value && typeof value === 'object' && 'fence_digest' in value;
+    if (!value || Object.keys(value).sort().join(',') !== (hasFence ? [...allowed, 'fence_digest'] : allowed).sort().join(',')
+        || (hasFence && !HEX.test(value.fence_digest)) || !ID.test(value.flow_id) || !ID.test(value.device_id)
         || parseMailbox(value.owner_address)?.address !== value.owner_address
         || value.owner_address.length > 254) throw new Error('bad_enrollment');
+    if (await this.fenced(value.flow_id)) throw new Error('flow_fenced');
+    const fenceDigest = hasFence ? value.fence_digest : '';
     const flowHash = await flowDigest(secret);
     const ownerHash = await sha256(bytes(value.owner_address));
     this.checkServicePin(value);
@@ -52,7 +60,7 @@ export class Enrollment {
     const previous = await this.first('SELECT * FROM mail_enrollment_flows WHERE flow_id=?', value.flow_id);
     if (previous) {
       const p = await this.flow(value.flow_id, secret); const m = fieldsR(JSON.parse(p.transcript));
-      if (p.owner_address !== value.owner_address || allowed.filter((k) => !['owner_address', 'flow_id'].includes(k))
+      if (p.fence_digest !== fenceDigest || p.owner_address !== value.owner_address || allowed.filter((k) => !['owner_address', 'flow_id'].includes(k))
         .some((k) => m[k] !== value[k])) throw new Error('flow_conflict');
       return { transcript: JSON.parse(p.transcript), state: p.state }; // No reissue of the code.
     }
@@ -66,20 +74,25 @@ export class Enrollment {
     const r = FIELDS.map((k) => m[k]); const input = canonicalR(r);
     const code = randomHex(16);
     const digest = await codeDigest(this.codeKey, value.flow_id, m.challenge_id, code);
-    await this.db.batch([
+    // The fence check is inside the INSERT: a cancel tombstone that lands after the check above still wins.
+    const inserted = await this.db.batch([
       this.stmt(`UPDATE mail_enrollment_flows SET state='invalidated',code_digest=''
         WHERE install_id=? AND state='pending' AND expires_at<=?`, install.install_id, now),
       this.stmt(`INSERT INTO mail_enrollment_flows(flow_id,flow_digest,install_id,expected_generation,
-        challenge_id,transcript,r_digest,owner_address,code_digest,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+        challenge_id,transcript,r_digest,owner_address,code_digest,expires_at,fence_digest)
+        SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM mail_lifecycle_fences WHERE flow_id=?)`,
       value.flow_id, flowHash, install.install_id, install.generation, m.challenge_id,
-      new TextDecoder().decode(input), await sha256(input), value.owner_address, digest, expiresAt),
+      new TextDecoder().decode(input), await sha256(input), value.owner_address, digest, expiresAt, fenceDigest,
+      value.flow_id),
     ]);
+    if (inserted[1].meta.changes !== 1) throw new Error('flow_fenced');
     // Adapter must send this code to ONLY the stored owner, under its own bounded
     // provisioning budget. Returning it here is not an agent-facing API.
     return { transcript: r, code, state: 'pending' };
   }
   async confirm(flowId, secret, code) {
     this.guard(); const f = await this.flow(flowId, secret);
+    if (await this.fenced(flowId)) throw new Error('flow_fenced');
     if (f.state !== 'pending' || f.expires_at <= this.clock()) throw new Error('challenge_unavailable');
     const candidate = typeof code === 'string' && /^[a-f0-9]{32}$/.test(code)
       ? await codeDigest(this.codeKey, flowId, f.challenge_id, code) : '';
@@ -110,6 +123,7 @@ export class Enrollment {
     // Historical exact retries above are nonrenewing. New commits must still
     // belong to CURRENT trusted service policy, including after a restart.
     this.checkServicePin(m);
+    if (await this.fenced(flowId)) throw new Error('flow_fenced');
     if (f.state !== 'pending' || !f.code_confirmed) throw new Error('mailbox_confirmation_required');
     const grant = await verifyGrant(token, r, this.trust, this.clock);
     // Read-only, injected provider confirmation for the exact stored address.
