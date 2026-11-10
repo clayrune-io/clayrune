@@ -9,6 +9,8 @@ from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.wsgi import get_input_stream
 
 from mc import state
+from mc.agent_mail_delivery_proof import PROOF_DIRECTION, DeliveryProof
+from mc.agent_mail_enrollment_keys import EnrollmentRefused
 from mc.agent_mail_envelope import MAX_REQUEST_BYTES
 from mc.agent_mail_ingress import MailIngress
 from mc.agent_mail_signing import IngressRefused
@@ -19,7 +21,8 @@ FLAG = 'agent_mail_ingress_enabled'
 ROUTE = '/api/agent-mail/ingress'
 
 
-def create_blueprint(data_dir: Path, *, store_factory: Callable[[], MailStore] | None = None) -> Blueprint:
+def create_blueprint(data_dir: Path, *, store_factory: Callable[[], MailStore] | None = None,
+                     proof_factory: Callable[[], DeliveryProof] | None = None) -> Blueprint:
     bp = Blueprint('agent_mail_ingress', __name__)
     # Flask's existing blueprint registry installs the separate lifecycle route
     # family without adding another concern to server.py. No operational factory.
@@ -41,6 +44,16 @@ def create_blueprint(data_dir: Path, *, store_factory: Callable[[], MailStore] |
         response.headers['Cache-Control'] = 'no-store'
         return response
 
+    def proof_receipt(headers, raw):
+        if proof_factory is None:
+            return jsonify({'error': 'proof_unavailable'}), 503
+        try:
+            return jsonify(proof_factory().receive_proof(headers, raw, method=request.method, path=request.path)), 200
+        except EnrollmentRefused:
+            # Only the closed vault-locked refusal escapes receive_proof as this class; never auto-unlock.
+            _log('[agent-mail] proof refused: vault locked', flush=True)
+            return jsonify({'error': 'vault_locked'}), 503
+
     @bp.route(ROUTE, methods=['POST'])
     def ingress():
         if state.CONFIG.get(FLAG) is not True:
@@ -60,6 +73,9 @@ def create_blueprint(data_dir: Path, *, store_factory: Callable[[], MailStore] |
             if len(raw) > MAX_REQUEST_BYTES:
                 return jsonify({'error': 'body_limit'}), 413
             headers = {key.lower(): value for key, value in request.headers.items()}
+            if headers.get('x-mail-direction') == PROOF_DIRECTION:
+                # Decided BEFORE any pin lookup: a proof can never be ingested as mail (7d-2c, section 4.1).
+                return proof_receipt(headers, raw)
             receipt = MailIngress(factory()).receive(headers, raw,
                                                      method=request.method, path=request.path)
             return jsonify(receipt), 200

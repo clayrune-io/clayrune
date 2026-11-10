@@ -1,0 +1,33 @@
+{
+ "_meta": "Python-built by tests/test_agent_mail_u7d2_proof.py; fixed fixture seeds; public material only.",
+ "body": {
+  "inputs": {
+   "challenge": "abababababababababababababababababababababababababababababababab",
+   "generation": "1",
+   "install_id": "install1",
+   "key_id": "mail_flow1",
+   "manifest_sequence": "1",
+   "owner_address_sha256": "b2096dbc5111b6305225657ffdfab205aaff1dfb30d71805aea56922b2cbb24f",
+   "route_origin": "https://device.example.test",
+   "service_key_id": "service1",
+   "service_nonce": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+   "service_public_key_sha256": "03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464"
+  },
+  "json": "{\"kind\":\"enrollment-proof\",\"version\":\"1\",\"challenge\":\"abababababababababababababababababababababababababababababababab\",\"install_id\":\"install1\",\"generation\":\"1\",\"manifest_sequence\":\"1\",\"service_key_id\":\"service1\",\"service_public_key_sha256\":\"03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464\",\"mail_key_id\":\"mail_flow1\",\"route_origin\":\"https://device.example.test\",\"owner_address_sha256\":\"b2096dbc5111b6305225657ffdfab205aaff1dfb30d71805aea56922b2cbb24f\",\"service_nonce\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\"}"
+ },
+ "mail_public_key": "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc",
+ "receipt": {
+  "array_json": "[\"clayrune-agent-mail-proof\",\"1\",\"install1\",\"1\",\"abababababababababababababababababababababababababababababababab\",\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"https://device.example.test\",\"1\",\"efefefefefefefefefefefefefefefef\"]",
+  "digest": "d8a395932e9a49824e5ee4f58638faeca27aa5fa13147abdbb096482bd452121",
+  "fields": {
+   "challenge": "abababababababababababababababababababababababababababababababab",
+   "generation": 1,
+   "install": "install1",
+   "manifest_sequence": 1,
+   "proof_id": "efefefefefefefefefefefefefefefef",
+   "route_origin": "https://device.example.test",
+   "service_nonce": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+  },
+  "signature": "5ITW2w3OUAxSk1OYyBSuiDf3orKDt_Gp_xye-duTis9hAa37bnAlcAEYUjQnED9JvoJjDL240cVQ94EUq5baDA"
+ }
+}
