@@ -36,7 +36,7 @@ def _fake_spawn(routes, monkeypatch, *, history=None):
     rows = [] if history is None else history
     monkeypatch.setattr(routes, 'DATA_DIR',
                         Path(routes.load_project('testproj')['project_path']) / '.git' / 'test-agent-history')
-    monkeypatch.setattr(routes, '_load_agent_log', lambda pid: rows)
+    monkeypatch.setattr(routes, '_load_agent_log', lambda pid, **kwargs: rows)
     from mc import launch_transaction
     monkeypatch.setattr(launch_transaction, '_strict_rows', lambda pid: deepcopy(rows))
     monkeypatch.setattr(routes, '_respawn_sysprompt_args', lambda *a: ([], None))

@@ -6871,10 +6871,12 @@ def _agent_log_is_readable(project_id):
 
     This is the distinction `_load_agent_log` cannot make — it returns []
     for both, and a caller that writes back over an empty read destroys the
-    history it failed to read. That is MC-946: a truncated log read as []
-    and the startup transcript backfill replaced 200 real rows, personas and
-    all, with synthesized ones. Any caller that REWRITES the log must gate on
-    this first. Read-only callers don't need it.
+    history it failed to read. Mutation transactions instead consume a strict
+    `_load_agent_log` read directly; this check is for legacy rewrite callers.
+    That is MC-946: a truncated log read as [] and the startup transcript
+    backfill replaced 200 real rows, personas and all, with synthesized ones.
+    Legacy rewrites that consume forgiving reads must gate on this first.
+    Read-only callers don't need it.
 
     Deliberately does not quarantine — it is a question, not an action, so it
     can be asked before deciding whether to touch the file at all.
@@ -6915,21 +6917,28 @@ def _quarantine_agent_log(filepath):
         _log(f"[agent-log] could not quarantine {filepath.name}: {e}", level='error')
 
 
-def _load_agent_log(project_id):
+def _load_agent_log(project_id, *, strict=False):
     """Load the agent summary log for a project.
 
-    Returns [] for both "no history yet" and "the file is corrupt" — callers
-    that write the log back must therefore ask `_agent_log_is_readable()`
-    FIRST (see its docstring). A parse failure here is real data loss, so it
-    is logged at error level and the file is quarantined rather than left in
-    place to be silently overwritten by the next save.
+    Display callers return [] for unreadable history. Mutation callers use
+    strict=True: only FileNotFoundError means no history, and every other
+    failure propagates without quarantine. A display parse failure is logged
+    and quarantined rather than left in place for legacy rewrite callers.
     """
     filepath = _agent_log_path(project_id)
-    if not filepath.exists():
+    if not strict and not filepath.exists():
         return []
     try:
-        return json.loads(read_text_with_retry(filepath))
+        rows = json.loads(read_text_with_retry(filepath))
+        if strict and (not isinstance(rows, list)
+                       or any(not isinstance(row, dict) for row in rows)):
+            raise ValueError('conversation log has invalid rows')
+        return rows
     except OSError as e:
+        if strict:
+            if isinstance(e, FileNotFoundError):
+                return []
+            raise
         # A read that never happened is not a parse failure, and must not be
         # quarantined as one. On Windows a concurrent writer's os.replace
         # leaves the target delete-pending for microseconds and a reader in
@@ -6944,6 +6953,8 @@ def _load_agent_log(project_id):
              level='error')
         return []
     except Exception as e:
+        if strict:
+            raise OSError('conversation log is unreadable') from e
         _log(f"[agent-log] {filepath.name} failed to parse ({e}) — treating as "
              f"EMPTY for this read, not as authority to overwrite", level='error')
         _quarantine_agent_log(filepath)
@@ -7388,9 +7399,14 @@ def _update_agent_log(project_id, mutate):
         lock = _agent_log_mutation_locks.setdefault(project_id, threading.RLock())
     from mc.agent_log_file import transaction
     with lock, transaction(_agent_log_path(project_id)):
-        if not _agent_log_is_readable(project_id):
-            raise OSError('conversation log is unreadable')
-        rows = _load_agent_log(project_id)
+        # Retry only the read, once, while holding both locks. No mutator,
+        # save or provider launch is replayed. A second failure propagates
+        # before either mutation or save; never consume a forgiving [] read.
+        try:
+            rows = _load_agent_log(project_id, strict=True)
+        except OSError as e:
+            _log(f'[agent-log] strict mutation read failed; rereading: {e}')
+            rows = _load_agent_log(project_id, strict=True)
         result = mutate(rows)
         _save_agent_log(project_id, rows)
         return result

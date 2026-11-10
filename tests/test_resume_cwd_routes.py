@@ -33,7 +33,7 @@ def setup(env, tmp_path, monkeypatch):
     logfile.write_text('[]', encoding='utf-8')
     monkeypatch.setattr(ar, '_agent_log_path', lambda pid: logfile)
     monkeypatch.setattr(ar, '_load_agent_log',
-                        lambda pid: json.loads(logfile.read_text(encoding='utf-8')))
+                        lambda pid, **kwargs: json.loads(logfile.read_text(encoding='utf-8')))
     monkeypatch.setattr(ar, '_allowance_refusal', lambda *a, **k: '')
     monkeypatch.setattr(ar, '_prior_character', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_resolve_character', lambda *a, **k: (None, ''))

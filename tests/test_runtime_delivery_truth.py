@@ -254,7 +254,7 @@ def app_env(tmp_path, monkeypatch):
     project_path.mkdir()
     project = {'id': 'p1', 'project_path': str(project_path), 'provider': 'claude'}
     monkeypatch.setattr(ar, 'load_project', lambda pid: project)
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **kwargs: [])
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *a, **k: None)
     snapshot = dict(mc_state.agent_sessions)
     mc_state.agent_sessions.clear()

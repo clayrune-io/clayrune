@@ -1,5 +1,45 @@
 # Runtime delivery acknowledgment (MC-1168)
 
+Round 14 (`fix/mc1168-r14`, base `7713c5a4`) closes the remaining leaf-read
+gap in reservation and owner-CAS rollback. `_update_agent_log` now consumes
+`_load_agent_log(strict=True)` while holding the existing leaf/shared-file
+transaction. Only FileNotFoundError means absent history; I/O failures,
+malformed JSON and invalid row containers cannot become empty mutation input
+and are never quarantined by this path. Default display/history reads keep
+their forgiving behavior.
+
+There is one bounded reread after a strict read failure, inside the same
+transaction and before invoking the mutator. A second failure propagates
+without mutation or save. This retries only storage reads: callbacks, saves
+and provider launches are never replayed. A successful reread supplies current
+rows, so rollback still compares the delivery owner and replaces only its
+addressed row; it cannot restore a whole old snapshot over intervening writes.
+
+`tests/mc1168_r14/test_nested_read.py` retains Fenn's three-case probe unchanged.
+The accompanying strict-mutation tests cover persistent read faults at both
+boundaries, malformed input, mutator/save refusal without replay, unrelated
+intervening results and successor takeover. Existing revival, callback,
+delivery, cwd and lifecycle loader doubles accept the strict-read keyword
+while retaining the same stores and all existing assertions.
+This remains a local review candidate; no merge, push or restart.
+
+Round-14 final verification: all 18 retained behavioral selections passed
+(each exit 0). Fenn's unchanged nested-read scratch probe passed 3/3, the
+unchanged r13 suite passed 16/16, and the unchanged r12 scratch probes passed
+4+4. The committed r14 suite passed 14 cases, including the same nested-read
+probe. Counts overlap. Core Pyright retained exactly 15 baseline diagnostics
+(exit 1), with zero additions/removals by normalized file, severity, rule,
+message and multiplicity; all seven narrower typing selections had zero errors
+(exit 0). All 31 final selections used the installation launcher, exact retained
+argv and frozen source/evidence hashes. All 287 existing assertions in the six
+fixture files are unchanged by AST comparison. Launcher progress/transport/
+enrollment gaps remain disclosed; framework summaries and child exits establish
+these results. The retained baseline was read, never regenerated.
+
+```text
+python <installation>/tools/test-run.py --project mission_control --port 5199 -- python -m pytest tests/mc1168_r14 -q -o addopts=
+```
+
 Round 13 (`fix/mc1168-r13`, base `51d0e400`) makes the rollback snapshot
 authoritative. `launch_transaction._strict_rows` treats only a missing file
 as absent history; exhausted I/O retries, malformed JSON and invalid row

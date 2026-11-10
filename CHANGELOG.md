@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Require strict mutation reads (MC-1168 round 14)
+
+- Reservation and owner-CAS rollback now consume a successful strict history read under the existing transaction. Read/parse failures cannot supply empty rows to mutation or save; default display/history reads retain their forgiving behavior.
+- A bounded reread handles a transient read fault before mutation. Mutators, saves and provider launches are never replayed; unrelated current rows and successor ownership remain protected.
+- Retained Fenn's nested-read probe unchanged and added persistent-fault, malformed-input, intervening-write and no-replay controls. Local review candidate only; no merge, push or restart.
+
 ## [2026-11-09] - Refuse unreadable launch snapshots (MC-1168 round 13)
 
 - Launch reservation now reads prior history strictly and checks durable unknown outcomes before mutation. I/O and parse failures cannot masquerade as absent history, erase a completed result on rollback, or permit cold scheduled reuse past the unknown-outcome barrier.

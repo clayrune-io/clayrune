@@ -99,7 +99,7 @@ def test_cold_parent_ack_waits_after_outer_project_lock(
              'agent_model': '', 'worktree_isolated': isolated,
              'claude_session_id': 'native' if provider == 'claude' else '',
              'provider_session_id': 'native' if provider == 'codex' else ''}
-    monkeypatch.setattr(ar, '_load_agent_log', lambda *a: [entry])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda *a, **kwargs: [entry])
     monkeypatch.setattr(ar, '_model_quota_blocked', lambda *a: '')
     monkeypatch.setattr(ar, '_allowance_refusal', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_dispatch_clock_task', lambda p, pid, task, sid: task)
