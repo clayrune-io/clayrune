@@ -5,12 +5,13 @@ Remote adapters must be reviewed before wiring: ownership never enables mail.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import json
 import re
 from typing import Callable, Protocol
 import uuid
 
+from mc.agent_mail_delivery_proof import DeliveryProof
 from mc.agent_mail_enrollment_keys import EnrollmentRefused, IdentitySeal
 from mc.agent_mail_enrollment_manifest import candidate_from_evidence, manifest_digest
 from mc.agent_mail_enrollment_revocations import RevocationAdapter, Revocations
@@ -69,8 +70,11 @@ class EnrollmentAdapter(RevocationAdapter, Protocol):
 class Enrollment:
     def __init__(self, store: MailStore, seal: IdentitySeal, *, adapter: EnrollmentAdapter,
                  material: Callable[[], tuple[bytes, bytes]], prerequisites: Callable[[], Prerequisites],
-                 install_id: str, root_public_key: str, service_origin: str, enabled: bool = False):
+                 install_id: str, root_public_key: str, service_origin: str, enabled: bool = False,
+                 delivery: DeliveryProof | None = None):
         self.store, self.seal, self.adapter = store, seal, adapter
+        # Optional proof of machine custody (7d-2c). None keeps machine_custody on the injected probe.
+        self.delivery = delivery
         self.material, self.prerequisites = material, prerequisites
         self.install_id, self.root, self.origin = install_id, root_public_key, service_origin
         self.enabled = enabled
@@ -317,9 +321,26 @@ class Enrollment:
             raise EnrollmentRefused('manifest_stale')
         return candidate
 
+    def arm_proof(self) -> dict:
+        """Human-gated, local. Writes one proof row; never pins, enables or changes stage."""
+        self._enabled()
+        if self.delivery is None:
+            raise EnrollmentRefused('delivery_proof_unavailable')
+        row = self._context()
+        with self.store._tx() as db:
+            current = self._current(db, row)
+            if not current['confirmed'] or not current['ownership'] or current['stage'] not in ('delivery_pending', 'active'):
+                raise EnrollmentRefused('ownership_required')
+            if int(self.store.clock() * 1000) >= current['ownership_expires_ms']:
+                raise EnrollmentRefused('ownership_expired')
+            candidate = self._fresh_candidate(current)
+            return self.delivery.arm_in_tx(db, current, candidate)
+
     def enable(self) -> dict:
         self._enabled()
         row = self._context()
+        # Cached, signature-verified Worker status, read BEFORE the transaction: no I/O inside it.
+        evidence = self.delivery.snapshot_evidence() if self.delivery is not None else None
         with self.store._tx() as db:
             current = self._current(db, row)
             if not current['confirmed'] or not current['ownership']:
@@ -328,7 +349,11 @@ class Enrollment:
                 raise EnrollmentRefused('ownership_expired')
             self._fresh_candidate(current)
             # Trusted current probes, never booleans from a request body.
-            if not self.prerequisites().ready():
+            prerequisites = self.prerequisites()
+            if self.delivery is not None:
+                # Proof REPLACES the injected machine_custody value: only local proof + Worker evidence count.
+                prerequisites = replace(prerequisites, machine_custody=self.delivery.custody_in_tx(db, current, evidence))
+            if not prerequisites.ready():
                 raise EnrollmentRefused('prerequisites_pending')
             candidate = self._candidate(current)
             db.execute('UPDATE registrations SET enabled=1,updated_at=? WHERE registration_id=?',
@@ -339,6 +364,8 @@ class Enrollment:
             if int(self.store.clock() * 1000) >= current['ownership_expires_ms']:
                 raise EnrollmentRefused('ownership_expired')
             self._fresh_candidate(current)
+            if self.delivery is not None:
+                self.delivery.consume_in_tx(db, current)
             db.execute("UPDATE mail_enrollment_flow SET stage='active' WHERE slot=1")
         return self.status()
 
@@ -354,6 +381,8 @@ class Enrollment:
                     self.store.revoke_registration(row['install'], transaction=db)
                 # A never-sent intent has no remote identity or local delivery
                 # authority. Its epoch fences stale work; generation is unused.
+                if self.delivery is not None:
+                    self.delivery.invalidate_in_tx(db, row['install'])
                 db.execute("UPDATE mail_enrollment_flow SET stage='disabled',epoch=epoch+1 WHERE slot=1")
         return self.status()
 

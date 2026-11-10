@@ -16,7 +16,7 @@ from mc.core import _log
 
 FLAG = 'agent_mail_enrollment_enabled'
 BASE = '/api/agent-mail/enrollment'
-ENABLE_ACTIONS = frozenset({'start', 'resume', 'review', 'confirm', 'verify', 'enable', 'owner', 'key', 'repin'})
+ENABLE_ACTIONS = frozenset({'start', 'resume', 'review', 'confirm', 'verify', 'enable', 'owner', 'key', 'repin', 'proof'})
 
 
 def blocking_sessions() -> list[dict[str, str]]:
@@ -78,9 +78,10 @@ def create_blueprint(*, factory: Callable[[], Enrollment] | None = None) -> Blue
                 if not isinstance(code, str):
                     return jsonify({'error': 'invalid_request'}), 400
                 result = core.verify(code)
-            elif action in {'resume', 'review', 'enable', 'disable', 'retry-revocations'}:
+            elif action in {'resume', 'review', 'enable', 'disable', 'retry-revocations', 'proof'}:
                 methods = {'resume': core.resume, 'review': core.review, 'enable': core.enable,
-                           'disable': core.disable, 'retry-revocations': core.retry_revocations}
+                           'disable': core.disable, 'retry-revocations': core.retry_revocations,
+                           'proof': core.arm_proof}
                 result = methods[action]()
             else:
                 return jsonify({'error': 'not_found'}), 404

@@ -2,6 +2,7 @@
 // event and bytes. Only an event+digest-bound durable custody receipt deletes text.
 import { bytes, sign } from './signing.js';
 import { readBounded } from './ingress.js';
+import { MACHINE_HEADER } from './edge-policy.js';
 export function provenRoute(reg) {
   if (reg.route_verified !== 1 || reg.route_generation !== reg.generation || !reg.route_origin
       || !/^\/[A-Za-z0-9/_-]{1,200}$/.test(reg.route_path ?? '')) return null;
@@ -14,7 +15,9 @@ export function provenRoute(reg) {
     return { url: reg.route_origin + reg.route_path, path: reg.route_path };
   } catch { return null; }
 }
-export async function replay({ ledger, config, fetcher, now, install = null, clock = () => now }) {
+// `cp` is an optional createCpClient() (7d-2c): when present every delivery carries a CP-issued mail-mode
+// capability for the edge branch. Absent (the default) the request is exactly what it was before.
+export async function replay({ ledger, config, fetcher, now, install = null, clock = () => now, cp = null }) {
   await ledger.reconcile(now);
   let delivered = 0;
   for (const { event_id } of await ledger.due(now, install)) {
@@ -31,6 +34,19 @@ export async function replay({ ledger, config, fetcher, now, install = null, clo
     const headers = await sign({ privateKey: config.privateKey, key_id: config.keyId,
       direction: 'service-to-install', install_id: reg.install_id, generation: reg.generation,
       path: route.path, body, now });
+    if (cp) {
+      // No capability, no request: the edge would refuse it anyway, and D1 keeps custody for retry.
+      let issued;
+      try {
+        issued = await cp.issue({ install_id: reg.install_id, generation: reg.generation, mode: 'mail',
+          req_digest: headers.get('x-mail-digest'), mail_nonce: headers.get('x-mail-nonce'), mail_key_id: reg.key_id });
+      } catch { issued = { ok: false }; }
+      const token = issued?.ok ? issued.body?.capability : null;
+      if (typeof token !== 'string' || token === '') {
+        await ledger.settle(event, false, clock(), 'capability_unavailable'); continue;
+      }
+      headers.set(MACHINE_HEADER, token);
+    }
     let custody = false;
     try {
       const response = await fetcher(route.url, { method: 'POST', headers, body, redirect: 'manual',
