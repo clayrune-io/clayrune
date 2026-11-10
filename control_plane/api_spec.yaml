@@ -484,6 +484,7 @@ components:
         result: { type: string, enum: [ok] }
         tunnel_token: { type: string }
         tunnel_token_id: { type: string, format: uuid }
+        tunnel_uuid: { type: string, nullable: true, description: Non-secret Cloudflare tunnel id of this device (null if the device row has none). }
         tunnel_token_expires_at: { type: string, format: date-time }
         next_attestation_after: { type: string, format: date-time }
         caps: { $ref: '#/components/schemas/AttestationCaps' }
