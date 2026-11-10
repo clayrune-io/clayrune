@@ -11,6 +11,7 @@
 - Moved the shared authenticated ingress allowance after owner/authentication/token/correlation acceptance. Refused traffic uses a separate global budget and cannot exhaust owner-mail capacity.
 - Saturated refusal accounting retains a capped daily marker, skips further audit/per-install writes, and still rejects every refused message with its original reason. The unverified-ingress gate stays first.
 - Retained both 10,000-stranger reviewer probes and the two-owner control; added accepted-limit, saturation, concurrency and next-day checks. Local disabled candidate only; no merge, push, restart or deployment.
+
 ## [2026-11-09] - Materialize only the requested test-run list page
 
 - List reads sort/filter fingerprint-keyed metadata independently of the bounded snapshot LRU, then read/copy only the requested page. Missing/changed metadata still rereads canonical files; off-page corruption still fails, vanished files are skipped, and response ordering/filtering/pagination stay unchanged.
