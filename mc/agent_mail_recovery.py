@@ -60,7 +60,7 @@ class Step:
 
 def _code(exc: BaseException, default: str = 'step_failed') -> str:
     reason = getattr(exc, 'reason', None) or (str(exc) if isinstance(exc, EnrollmentRefused) else '')
-    return reason if reason in REASONS else default
+    return reason if reason and reason in REASONS else default
 
 
 def _table(db: Any, name: str) -> bool:

@@ -58,7 +58,7 @@ class Supervisor:
         if not self._tick_lock.acquire(blocking=False):
             return {'ok': False, 'steps': [], 'skipped': 'tick_in_progress'}
         try:
-            self.last_attempt = self.clock()
+            attempted = self.clock()
             try:
                 report = self.recovery.run()
             except Exception as exc:  # defence in depth: run() already isolates steps
@@ -70,8 +70,11 @@ class Supervisor:
                 self.failures += 1
             else:
                 self.failures = 0
-                self.last_success = self.last_attempt
+                self.last_success = attempted
+            # report first, last_attempt last: status() reads them in that order
+            # and must never see an attempt whose report has not landed yet.
             self.report = report
+            self.last_attempt = attempted
             return report
         finally:
             self._tick_lock.release()
@@ -113,19 +116,21 @@ class Supervisor:
     def status(self) -> dict[str, Any]:
         """Bounded metadata only: counts and closed codes."""
         alive = self._thread is not None and self._thread.is_alive()
-        steps = self.report.get('steps', [])
+        attempted = self.last_attempt  # read BEFORE the report (see tick)
+        report = self.report
+        steps = report.get('steps', [])
         first_bad = next((s for s in steps if s['state'] not in ('ok', 'skipped')), None)
         if not alive and not self.enabled():
             overall = 'off'
-        elif self.last_attempt is None:
+        elif attempted is None:
             overall = 'starting' if alive else 'stopped'
         elif not alive and self.enabled():
             overall = 'dead'
         else:
-            overall = 'ok' if self.report.get('ok') else 'degraded'
+            overall = 'ok' if report.get('ok') else 'degraded'
         out: dict[str, Any] = {
             'state': overall, 'thread_alive': alive, 'enabled': self.enabled(),
-            'last_attempt': self.last_attempt, 'last_success': self.last_success,
+            'last_attempt': attempted, 'last_success': self.last_success,
             'consecutive_failures': self.failures, 'next_delay_s': self.delay(),
             'reason': first_bad['reason'] if first_bad else '', 'steps': steps,
             'holds': ownership.held(), 'retention': retention.snapshot()}
