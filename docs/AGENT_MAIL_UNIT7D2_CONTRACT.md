@@ -139,7 +139,8 @@ before and after (it is the regression gate for the extraction).
 accessed only through new `control_plane/app/mail_delivery_store.py`, not
 appended to `firestore.py`): `generation`, `state` (`bound|revoked`),
 `generation_floor`, `user_id`, `device_id`, `tunnel_uuid`, `route_origin`,
-`mail_key_id`, `service_key_id`, `service_public_key_sha256`, `grant_jti`,
+`mail_key_id`, `device_public_key` (needed by the device-key check; added in
+7d-2b), `service_key_id`, `service_public_key_sha256`, `grant_jti`,
 `r_sha256`, `bound_at_ms`, `revoked_at_ms`. Writes are compare-and-set on
 `generation`/`state`.
 
@@ -629,6 +630,12 @@ would live in the same Worker secret store, so it buys no compromise
 isolation; misuse separation is already given by the signed
 `direction = 'service-to-cp'` field. Build order: 7d-2b, 7d-2c, 7d-2d, then
 7d-2e before any live run.
+
+**Decided 2026-11-10 (Dave), after 7d-2b:** the production `AuthorityReader`
+(Firestore + Cloudflare read adapters) is unit **7d-2r**, shared by the 7a
+grant issuer and the delivery issuer. It is sequenced before 7d-2e, not before
+7d-2c: 2c and 2d test against injected readers, and nothing goes live before 2e.
+Until then issue/lease refuse 503 `authority_unavailable`.
 
 (D4 was settled in-document: separate table prefixes, forced by
 `agent_mail_enrollment_state.py:21-31`; it is not a choice.)
