@@ -1,0 +1,27 @@
+{
+ "_meta": "Python-built by tests/test_agent_mail_u7d2_lifecycle.py; fixed fixture seeds; public material only.",
+ "generation": 1,
+ "install_id": "install1",
+ "mail_public_key": "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc",
+ "now_ms": 1794249600000,
+ "path": "/v1/mail/lifecycle/renew",
+ "request": {
+  "body": "{\"install_id\":\"install1\",\"generation\":1}",
+  "digest": "eaf6cfd6534e070472aa4b99b3155e028a224bc10cb44ccf8c6c9f923b85e389",
+  "direction": "install-to-service-lifecycle",
+  "key_id": "mail_flow1",
+  "nonce": "abababababababababababababababab",
+  "signature": "n6_XjszL09A9GLPvwA4GzUaGRwwLGCBPEGYBy51rH5KXucoY3aiNEN05mYP8lanQ4KEKeRnS88neb0kkmRTZCA",
+  "timestamp": "1794249600000"
+ },
+ "response": {
+  "body": "{\"install_id\":\"install1\",\"generation\":1,\"expires_at_ms\":1794249900000}",
+  "digest": "53614ad1e831bbd7d90beb187296948b3593d4ec3ad2e2348483671e6aced3c8",
+  "direction": "service-to-install-response",
+  "key_id": "service1",
+  "nonce": "abababababababababababababababab",
+  "signature": "YaxujBpmJQ0wgGt9et7zVyedkim661ClGKshC2fpVp2YXJS7kQq5wPe4NIdjmapNeAE606oZvo0RbfsJk0hRCQ",
+  "timestamp": "1794249600000"
+ },
+ "service_public_key": "JUO5L_EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0"
+}

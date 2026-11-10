@@ -397,3 +397,30 @@ test('lifecycle traffic uses its own bucket: refusal never spends the send budge
   assert.equal(r.res.status, 429);
   assert.equal(row(w, 'SELECT COUNT(*) AS n FROM rate_limits WHERE bucket LIKE ?', `http:%`).n, 0, 'send/reconcile bucket untouched');
 });
+
+// Cross-language gate: every byte in lifecycle-vectors.json was produced by Python
+// (tests/test_agent_mail_u7d2_lifecycle.py). The Worker verifies the Python-signed request and
+// reproduces the Python-signed response byte for byte.
+const LV = JSON.parse(readFileSync(new URL('./fixtures/lifecycle-vectors.json', import.meta.url), 'utf8'));
+const lvRequest = (part) => new Request(`${BASE}${LV.path}`, { method: 'POST', body: part.body, headers: {
+  'x-mail-version': '1', 'x-mail-direction': part.direction, 'x-mail-key-id': part.key_id,
+  'x-mail-install-id': LV.install_id, 'x-mail-generation': String(LV.generation),
+  'x-mail-timestamp': part.timestamp, 'x-mail-nonce': part.nonce, 'x-mail-digest': part.digest,
+  'x-mail-signature': part.signature } });
+
+test('golden vectors: the Worker verifies the Python-signed request and response', async () => {
+  for (const [part, publicKey] of [[LV.request, LV.mail_public_key], [LV.response, LV.service_public_key]]) {
+    const ok = await verify({ request: lvRequest(part), body: bytes(part.body), publicKey, direction: part.direction,
+      install_id: LV.install_id, generation: LV.generation, key_id: part.key_id, now: LV.now_ms,
+      claimNonce: async () => true });
+    assert.equal(ok, true, part.direction);
+  }
+  // a flipped body byte or the other direction's key must not verify
+  const tampered = { ...LV.response, body: `${LV.response.body} ` };
+  assert.equal(await verify({ request: lvRequest(tampered), body: bytes(tampered.body), publicKey: LV.service_public_key,
+    direction: tampered.direction, install_id: LV.install_id, generation: LV.generation, key_id: tampered.key_id,
+    now: LV.now_ms, claimNonce: async () => true }), false);
+  assert.equal(await verify({ request: lvRequest(LV.response), body: bytes(LV.response.body), publicKey: LV.mail_public_key,
+    direction: LV.response.direction, install_id: LV.install_id, generation: LV.generation, key_id: LV.response.key_id,
+    now: LV.now_ms, claimNonce: async () => true }), false);
+});

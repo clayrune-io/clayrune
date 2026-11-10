@@ -29,16 +29,21 @@ from mc import agent_mail_ownership as ownership
 from mc import question_channel_retention as retention
 from mc.agent_mail_enrollment_keys import EnrollmentRefused
 from mc.agent_mail_enrollment_revocations import Revocations
+from mc.agent_mail_lifecycle_steps import Backoff, LifecycleSteps
 from mc.agent_mail_outbound import cleanup as outbound_cleanup
 from mc.agent_mail_remote import REMOTE_UNAVAILABLE, UnavailableRemote
 from mc.core import _log
 
-STEPS = ('store', 'deletion', 'revocations', 'flows', 'replay', 'inbound', 'cleanup', 'retention')
+STEPS = ('store', 'deletion', 'revocations', 'flows', 'renew', 'activation', 'replay', 'inbound', 'cleanup', 'retention')
 REASONS = frozenset({
     '', 'ok', 'not_enrolled', 'store_held', 'step_failed', 'remote_adapter_unavailable',
     'remote_cancel_retryable', 'remote_revoke_retryable', 'remote_cancel_scope_mismatch',
     'lifecycle_state_corrupt', 'ownership_expired', 'delivery_pending', 'backoff',
     'stage_disabled', 'vault_locked', 'deletion_pending', 'worker_reconcile_failed',
+    # 7d-2d lifecycle (closed codes only; remote text never reaches a report)
+    'remote_renew_retryable', 'remote_activation_retryable', 'remote_proof_retryable', 'renewal_cap',
+    'remote_unreachable', 'remote_not_acknowledged', 'remote_response_unsigned', 'remote_response_invalid',
+    'remote_scope_mismatch', 'fence_token_missing', 'manifest_stale', 'lifecycle_raced', 'ownership_expired',
     # store holds (see agent_mail_factory.StoreHeld)
     'store_missing', 'store_corrupt', 'store_version', 'store_unavailable', 'marker_missing',
     'marker_corrupt', 'marker_version', 'marker_inconsistent', 'seal_missing', 'not_configured',
@@ -73,10 +78,14 @@ class Recovery:
                  wake: Callable[[], dict[str, str]] | None = None,
                  wake_reconcile: Callable[[], None] | None = None,
                  replay: Callable[[], None] | None = None,
+                 lifecycle: LifecycleSteps | None = None,
                  retire: Callable[[], dict[str, int]] = retention.retire,
                  replay_interval_s: float = REPLAY_MIN_INTERVAL_S, max_passes: int = MAX_PASSES):
         self.factory, self.clock = factory, clock
         self.launder, self.wake, self.wake_reconcile, self.replay = launder, wake, wake_reconcile, replay
+        # Renewal / proof push / activation exist only when a lifecycle client was injected (default off).
+        self.lifecycle = lifecycle
+        self._backoff = Backoff(clock)
         self.retire, self.replay_interval_s, self.max_passes = retire, replay_interval_s, max_passes
         self._last_replay: float | None = None
 
@@ -95,6 +104,7 @@ class Recovery:
         # still retired when the store never existed (nothing to revoke).
         steps.append(self._safe('deletion', self._deletion))
         for name, fn in (('revocations', self._revocations), ('flows', self._flows),
+                         ('renew', self._renew), ('activation', self._activation),
                          ('replay', self._replay), ('inbound', self._inbound),
                          ('cleanup', self._cleanup)):
             steps.append(self._safe(name, fn, store) if healthy else Step(name, 'skipped', 'store_held'
@@ -131,10 +141,14 @@ class Recovery:
         if isinstance(remote, UnavailableRemote):
             # Retain the work; no ack exists. New-generation enable stays blocked.
             return Step('revocations', 'pending', REMOTE_UNAVAILABLE, pending)
+        if not self._backoff.ready('revocations'):
+            return Step('revocations', 'pending', 'backoff', pending)
         try:
             Revocations(store, remote).retry()
         except EnrollmentRefused as exc:
+            self._backoff.fail('revocations')
             return Step('revocations', 'pending', _code(exc, 'remote_cancel_retryable'), pending)
+        self._backoff.ok('revocations')
         return Step('revocations', 'ok', 'ok', pending)
 
     def _flows(self, store: Any) -> Step:
@@ -151,6 +165,20 @@ class Recovery:
         if row['stage'] == 'active' and type(expires) in (int, float) and self.clock() * 1000 >= expires:
             return Step('flows', 'pending', 'ownership_expired')
         return Step('flows', 'ok', 'ok')
+
+    def _renew(self, store: Any) -> Step:
+        """Ownership-lease renewal (5.4). Moves `ownership_expires_ms` forward only."""
+        if self.lifecycle is None:
+            return Step('renew', 'skipped', 'stage_disabled')
+        state, reason, count = self.lifecycle.renew(store)
+        return Step('renew', state, reason, count)
+
+    def _activation(self, store: Any) -> Step:
+        """Proof push and activation retry (4.8). Never enables; only re-sends what enable() committed."""
+        if self.lifecycle is None:
+            return Step('activation', 'skipped', 'stage_disabled')
+        state, reason, count = self.lifecycle.activation(store)
+        return Step('activation', state, reason, count)
 
     def _replay(self, *_: Any) -> Step:
         """Step 4: Worker replay reconcile through an injected, existing signed
