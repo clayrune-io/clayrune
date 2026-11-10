@@ -9,6 +9,7 @@ arrives after finds the tree already gone (the follow-up path recreates it,
 `mc/agent_worktree_followup.py`)."""
 from __future__ import annotations
 
+from copy import deepcopy
 import threading
 import time
 from pathlib import Path
@@ -30,11 +31,14 @@ GRACE = 0.6   # how long a blocked resume is watched before it is called blocked
 
 def _fake_spawn(routes, monkeypatch, *, history=None):
     """Real lifecycle locks, with process and history boundaries isolated."""
-    # These tests import routes without server.wire(), leaving DATA_DIR=None.
-    # Their mocked turn helper has no destination unless a composing revival
-    # fixture supplies one. Keep that supplied row visible to claim checks.
+    # Keep real log locking in a temporary directory, while both history
+    # readers see the supplied in-memory destination used by mocked writes.
     rows = [] if history is None else history
+    monkeypatch.setattr(routes, 'DATA_DIR',
+                        Path(routes.load_project('testproj')['project_path']) / '.git' / 'test-agent-history')
     monkeypatch.setattr(routes, '_load_agent_log', lambda pid: rows)
+    from mc import launch_transaction
+    monkeypatch.setattr(launch_transaction, '_strict_rows', lambda pid: deepcopy(rows))
     monkeypatch.setattr(routes, '_respawn_sysprompt_args', lambda *a: ([], None))
     monkeypatch.setattr(routes, '_continuation_model', lambda *a: '')
     monkeypatch.setattr(routes, '_continuation_effort', lambda *a: '')

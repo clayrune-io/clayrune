@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Refuse unreadable launch snapshots (MC-1168 round 13)
+
+- Launch reservation now reads prior history strictly and checks durable unknown outcomes before mutation. I/O and parse failures cannot masquerade as absent history, erase a completed result on rollback, or permit cold scheduled reuse past the unknown-outcome barrier.
+- Snapshot and reservation share the existing leaf/file transaction; launch ownership checks also refuse unreadable history. The forgiving general history loader, owner-CAS rollback and ambiguous-launch no-retry policy stay intact.
+- Retained both independent reviewer probes unchanged as permanent tests, with additional invalid-history and concurrent-writer controls. Local review candidate only; no merge, push or restart.
+
 ## [2026-11-09] - Share ownership across route launches (MC-1168 round 12)
 
 - Added one reservation/launch/settlement transaction for all eleven Claude route spawn sites, with an AST inventory guard and explicit exclusions for four auth/terminal processes. Cold reuse reserves existing history even without a spawner callback; fresh standalone/no-row behavior stays unchanged.

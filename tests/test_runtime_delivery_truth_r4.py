@@ -30,6 +30,10 @@ def scheduled(revive_env, monkeypatch, tmp_path):
     saved, dispatches = [], []
     monkeypatch.setattr(ar, '_load_agent_log', lambda *a: history)
     monkeypatch.setattr(ar, '_update_agent_log', lambda pid, update: update(history))
+    # This fixture intentionally stores rows in memory, including direct
+    # successor edits. The strict launch lookup must see that same store.
+    from mc import launch_transaction
+    monkeypatch.setattr(launch_transaction, '_strict_rows', lambda pid: deepcopy(history))
     monkeypatch.setattr(ar.get_manager('p1'), 'ensure_guardian', lambda: None)
     monkeypatch.setattr(sr, 'get_manager', ar.get_manager)
     monkeypatch.setattr(sr, 'agent_sessions', env['sessions'])

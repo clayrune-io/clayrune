@@ -1,5 +1,49 @@
 # Runtime delivery acknowledgment (MC-1168)
 
+Round 13 (`fix/mc1168-r13`, base `51d0e400`) makes the rollback snapshot
+authoritative. `launch_transaction._strict_rows` treats only a missing file
+as absent history; exhausted I/O retries, malformed JSON and invalid row
+containers refuse before the reservation action changes live or durable state.
+It never quarantines history. The general `_load_agent_log` contract remains
+unchanged for other callers.
+
+Snapshot, durable unknown-outcome check, reservation action and destination
+read share the existing manager -> log leaf -> shared file transaction lock
+order. Nested reservation writes reenter those locks; unrelated server leaf
+writers and offline tools using `agent_log_file.transaction` cannot interleave
+between snapshot and reservation. The locks release before provider spawn.
+Launch ownership also uses a strict read under that lock order, so a failed
+ownership read cannot authorize a child. Owner-CAS rollback and ambiguous
+launch refusal retain the round-12 policy below.
+
+`tests/mc1168_r13/test_snapshot_read.py` and `test_cold_unknown.py` retain
+Fenn's review probes byte-for-byte: queue preservation and helper guard
+(four cases), plus actual cold scheduled dispatch in Mode A/B with/without
+the snapshot I/O fault (four cases). `test_snapshot_authority.py` adds malformed
+history, launch-read refusal, and concurrent leaf/shared-file writer controls.
+The existing scheduled-delivery and lifecycle fixtures expose their intentional
+in-memory stores to the strict lookup too. Lifecycle fixtures use a temporary
+log directory and keep the real shared file locks; no behavioral assertion or
+reviewer probe is changed.
+This remains a local review candidate, without merge, push or restart.
+
+Round-13 final verification: all 18 retained behavioral selections passed
+(each exit 0), including 592 runtime tests, 211 isolation tests with 13 skips,
+222 writer/history tests and 95 factory tests. The new suite passed 16 cases
+(exit 0), comprising the unchanged 4+4 reviewer probes and eight authority/
+serialization controls. Counts overlap. All seven narrower typing selections
+had zero errors (exit 0); core Pyright retained exactly 15 baseline diagnostics
+(exit 1), with no additions or removals by normalized file, severity, rule,
+message and multiplicity. The retained baseline was read, never regenerated.
+All 27 selections ran through the installation test launcher with frozen
+source/evidence hashes and exact retained argv. Framework output and child
+exits establish results; launcher transport/enrollment/progress gaps remain
+disclosed in the handoff evidence. Reproduce the new suite from the branch:
+
+```text
+python <installation>/tools/test-run.py --project mission_control --port 5199 -- python -m pytest tests/mc1168_r13 -q -o addopts=
+```
+
 Round 12 introduces `mc/launch_transaction.py` on `fix/mc1168-r12`, continued
 from investigation checkpoint `10e13421`. This is a local review candidate;
 no merge, push, restart or live provider certification is implied.

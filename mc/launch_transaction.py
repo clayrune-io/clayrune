@@ -5,8 +5,11 @@ It marks every exception from an uncertain or post-child branch ambiguous.
 No failure in this module retries a launch.
 """
 from copy import deepcopy
+from contextlib import contextmanager
 from functools import wraps
-from typing import Any, Callable, ParamSpec, TypeVar
+import json
+import threading
+from typing import Any, Callable, Iterator, ParamSpec, TypeVar
 
 from mc.delivery_attempt import DeliveryAttempt
 
@@ -22,6 +25,38 @@ _TURN_KEYS = (
 
 class ReservationLost(RuntimeError):
     """No launch took place, but another owner prevents restoration or fallback."""
+
+
+def _strict_rows(project_id: str) -> list[dict[str, Any]]:
+    """Only a missing file means no history; never quarantine or mask failure.
+
+    The caller holds the shared log transaction across this read and its
+    reservation. The forgiving UI/history loader is deliberately unchanged.
+    """
+    from mc.blueprints import agent_routes as ar
+    try:
+        rows = json.loads(ar.read_text_with_retry(ar._agent_log_path(project_id)))
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError) as exc:
+        raise OSError('conversation log snapshot is unreadable') from exc
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise OSError('conversation log snapshot has invalid rows')
+    return rows
+
+
+@contextmanager
+def _history_transaction(project_id: str, enabled: bool) -> Iterator[None]:
+    """Match manager -> leaf -> shared-file lock order, including nested writes."""
+    if not enabled:
+        yield
+        return
+    from mc.blueprints import agent_routes as ar
+    from mc.agent_log_file import transaction
+    with ar._agent_log_mutation_locks_guard:
+        lock = ar._agent_log_mutation_locks.setdefault(project_id, threading.RLock())
+    with lock, transaction(ar._agent_log_path(project_id)):
+        yield
 
 
 class LaunchTransaction:
@@ -43,12 +78,12 @@ class LaunchTransaction:
 
     def reserve(self, action: Callable[[], Any], *, running: bool = False) -> Any:
         from mc.blueprints import agent_routes as ar
-        with ar.get_manager(self.project_id).lock:
+        with ar.get_manager(self.project_id).lock, _history_transaction(self.project_id, self.history):
             if self.session.get('_launch_uncertain'):
                 raise RuntimeError('previous launch outcome requires review; not retried')
             self.before = {k: deepcopy(self.session[k]) for k in _TURN_KEYS if k in self.session}
             if self.history:
-                row = next((r for r in ar._load_agent_log(self.project_id)
+                row = next((r for r in _strict_rows(self.project_id)
                             if r.get('session_id') == self.session_id), None)
                 self.prior_row = deepcopy(row)
                 if row and row.get('launch_outcome') == 'unknown':
@@ -69,6 +104,9 @@ class LaunchTransaction:
                 raise
             self.attempt = DeliveryAttempt(self.session.get('_delivery_attempt_id') or '')
             if self.history:
+                # Advisory only: launch rereads strictly and checks every
+                # existing row. A transient read here must not turn a saved
+                # reservation into a new post-action failure boundary.
                 self.destination = any(r.get('session_id') == self.session_id
                                        for r in ar._load_agent_log(self.project_id))
             self.launched = running
@@ -134,11 +172,11 @@ class LaunchTransaction:
 
     def launch(self, spawn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         from mc.blueprints import agent_routes as ar
-        with ar.get_manager(self.project_id).lock:
+        with ar.get_manager(self.project_id).lock, _history_transaction(self.project_id, self.history):
             if self.launched or not self._owns_live():
                 raise ReservationLost('launch reservation is no longer ours')
             if self.history:
-                row = next((r for r in ar._load_agent_log(self.project_id)
+                row = next((r for r in _strict_rows(self.project_id)
                             if r.get('session_id') == self.session_id), None)
                 if (self.destination or row is not None) and not self.attempt.owns_row(row or {}):
                     raise ReservationLost('durable launch reservation was superseded')
