@@ -41,48 +41,59 @@ class Revocations:
                     row['generation'] if row['assigned'] else None))
 
     def retry(self) -> None:
+        """Every unfinished row is attempted; the FIRST failure is raised after the rest ran, so one
+        failing item never blocks the others (7d-1 supervisor contract, 7d-2d contract 5.5)."""
         with self.store._read() as db:
             rows = [dict(r) for r in db.execute(
                 'SELECT * FROM mail_enrollment_revocations WHERE done=0').fetchall()]
+        first: EnrollmentRefused | None = None
         for row in rows:
-            if not row['resolved']:
-                try:
-                    assignment = self.adapter.cancel_flow(row['flow'])
-                except Exception:
-                    raise EnrollmentRefused('remote_cancel_retryable') from None
-                if assignment is not None and (
-                        not isinstance(assignment, CancelledAssignment)
-                        or not isinstance(assignment.install, str) or not ID.fullmatch(assignment.install)
-                        or type(assignment.generation) is not int or assignment.generation < 1):
-                    raise EnrollmentRefused('remote_cancel_scope_mismatch')
-                if row['install'] is not None and assignment != CancelledAssignment(row['install'], row['generation']):
-                    raise EnrollmentRefused('remote_cancel_scope_mismatch')
-                install = assignment.install if assignment is not None else None
-                generation = assignment.generation if assignment is not None else None
-                with self.store._tx() as db:
-                    current = db.execute('SELECT * FROM mail_enrollment_revocations WHERE flow=?',
-                                         (row['flow'],)).fetchone()
-                    if current is None:
-                        raise EnrollmentRefused('lifecycle_state_corrupt')
-                    if current['resolved']:
-                        if (current['install'], current['generation']) != (install, generation):
-                            raise EnrollmentRefused('remote_cancel_scope_mismatch')
-                    else:
-                        db.execute('UPDATE mail_enrollment_revocations SET install=?,generation=?,resolved=1 WHERE flow=?',
-                                   (install, generation, row['flow']))
-                row['install'], row['generation'] = install, generation
-            install, generation = row['install'], row['generation']
-            if install is None:
-                if generation is not None:
-                    raise EnrollmentRefused('lifecycle_state_corrupt')
-            else:
-                if (not isinstance(install, str) or not ID.fullmatch(install)
-                        or type(generation) is not int or generation < 1):
-                    raise EnrollmentRefused('lifecycle_state_corrupt')
-                try:
-                    self.adapter.revoke(install, generation)
-                except Exception:
-                    raise EnrollmentRefused('remote_revoke_retryable') from None
+            try:
+                self._retry_one(row)
+            except EnrollmentRefused as exc:
+                first = first or exc
+        if first is not None:
+            raise first
+
+    def _retry_one(self, row: dict) -> None:
+        if not row['resolved']:
+            try:
+                assignment = self.adapter.cancel_flow(row['flow'])
+            except Exception:
+                raise EnrollmentRefused('remote_cancel_retryable') from None
+            if assignment is not None and (
+                    not isinstance(assignment, CancelledAssignment)
+                    or not isinstance(assignment.install, str) or not ID.fullmatch(assignment.install)
+                    or type(assignment.generation) is not int or assignment.generation < 1):
+                raise EnrollmentRefused('remote_cancel_scope_mismatch')
+            if row['install'] is not None and assignment != CancelledAssignment(row['install'], row['generation']):
+                raise EnrollmentRefused('remote_cancel_scope_mismatch')
+            install = assignment.install if assignment is not None else None
+            generation = assignment.generation if assignment is not None else None
             with self.store._tx() as db:
-                db.execute('UPDATE mail_enrollment_revocations SET done=1 WHERE flow=? AND resolved=1',
-                           (row['flow'],))
+                current = db.execute('SELECT * FROM mail_enrollment_revocations WHERE flow=?',
+                                     (row['flow'],)).fetchone()
+                if current is None:
+                    raise EnrollmentRefused('lifecycle_state_corrupt')
+                if current['resolved']:
+                    if (current['install'], current['generation']) != (install, generation):
+                        raise EnrollmentRefused('remote_cancel_scope_mismatch')
+                else:
+                    db.execute('UPDATE mail_enrollment_revocations SET install=?,generation=?,resolved=1 WHERE flow=?',
+                               (install, generation, row['flow']))
+            row['install'], row['generation'] = install, generation
+        install, generation = row['install'], row['generation']
+        if install is None:
+            if generation is not None:
+                raise EnrollmentRefused('lifecycle_state_corrupt')
+        else:
+            if (not isinstance(install, str) or not ID.fullmatch(install)
+                    or type(generation) is not int or generation < 1):
+                raise EnrollmentRefused('lifecycle_state_corrupt')
+            try:
+                self.adapter.revoke(install, generation)
+            except Exception:
+                raise EnrollmentRefused('remote_revoke_retryable') from None
+        with self.store._tx() as db:
+            db.execute('UPDATE mail_enrollment_revocations SET done=1 WHERE flow=? AND resolved=1',
+                       (row['flow'],))

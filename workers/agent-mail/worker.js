@@ -5,8 +5,9 @@ import { ingress } from './ingress.js';
 import { readRequestBody, BODY_TIMEOUT_MS } from './request-body.js';
 import { outbound } from './outbound.js';
 import { replay } from './replay.js';
+import { lifecycle, isLifecyclePath, drainCpRevokes, cpFor } from './lifecycle.js';
 const reply = (status, value) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
-export function createWorker({ send, fetcher = fetch, clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS } = {}) {
+export function createWorker({ send, fetcher = fetch, clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS, cp } = {}) {
   const config = (env) => ({ domain: env.MAIL_DOMAIN, from: env.MAIL_FROM,
     ingressVerified: env.MAIL_INGRESS_VERIFIED === 'true', privateKey: env.MAIL_SERVICE_PRIVATE_KEY,
     keyId: env.MAIL_SERVICE_KEY_ID });
@@ -21,6 +22,16 @@ export function createWorker({ send, fetcher = fetch, clock = Date.now, bodyTime
     async fetch(request, env) {
       if (env.MAIL_ENABLED !== 'true') return reply(503, { code: 'mail_disabled' });
       const url = new URL(request.url);
+      // Lifecycle path table lives in lifecycle.js; it has its own flag (MAIL_LIFECYCLE_ENABLED).
+      if (request.method === 'POST' && !url.search && isLifecyclePath(url.pathname)) {
+        try {
+          return await lifecycle({ request, env, ledger: new Ledger(env.MAIL_DB), config: config(env),
+            cp: cpFor(env, { cp, fetcher, clock }), clock, bodyTimeoutMs });
+        } catch {
+          console.error('[agent-mail] lifecycle_storage_or_configuration_failure');
+          return reply(503, { code: 'storage_or_configuration_failure' });
+        }
+      }
       if (request.method !== 'POST' || !['/v1/mail/send', '/v1/mail/reconcile'].includes(url.pathname)
           || url.search) return reply(404, { code: 'not_found' });
       const ledger = new Ledger(env.MAIL_DB);
@@ -82,6 +93,11 @@ export function createWorker({ send, fetcher = fetch, clock = Date.now, bodyTime
     },
     async scheduled(_event, env) {
       if (env.MAIL_ENABLED !== 'true') return;
+      if (env.MAIL_LIFECYCLE_ENABLED === 'true') {
+        // Queued Worker -> CP revokes; failure is retried on the next tick and never blocks replay.
+        try { await drainCpRevokes({ ledger: new Ledger(env.MAIL_DB), cp: cpFor(env, { cp, fetcher, clock }) }); }
+        catch { console.error('[agent-mail] lifecycle_cp_revoke_drain_failure'); }
+      }
       try {
         return await replay({ ledger: new Ledger(env.MAIL_DB), config: config(env), fetcher, now: clock(), clock });
       } catch {

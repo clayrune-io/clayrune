@@ -17,6 +17,7 @@ from mc.agent_mail_enrollment_manifest import candidate_from_evidence, manifest_
 from mc.agent_mail_enrollment_revocations import RevocationAdapter, Revocations
 from mc.agent_mail_enrollment_state import ManifestCAS, initialize
 from mc.agent_mail_ingress import MailIngress
+from mc.agent_mail_lifecycle_fence import LifecycleFences
 from mc.agent_mail_service_manifest import ServiceKeyCandidate, verify_service_manifest
 from mc.agent_mail_signing import ID, ServicePin
 from mc.agent_mail_store import MailStore
@@ -71,8 +72,10 @@ class Enrollment:
     def __init__(self, store: MailStore, seal: IdentitySeal, *, adapter: EnrollmentAdapter,
                  material: Callable[[], tuple[bytes, bytes]], prerequisites: Callable[[], Prerequisites],
                  install_id: str, root_public_key: str, service_origin: str, enabled: bool = False,
-                 delivery: DeliveryProof | None = None):
+                 delivery: DeliveryProof | None = None, fences: LifecycleFences | None = None):
         self.store, self.seal, self.adapter = store, seal, adapter
+        # Optional fence tokens (7d-2d). None keeps flows token-less, exactly as before.
+        self.fences = fences
         # Optional proof of machine custody (7d-2c). None keeps machine_custody on the injected probe.
         self.delivery = delivery
         self.material, self.prerequisites = material, prerequisites
@@ -165,6 +168,9 @@ class Enrollment:
                            (flow, install, generation, owner, 'mail_' + flow,
                             'preparing', epoch, json.dumps(asdict(candidate), sort_keys=True), self.install_id,
                             generation, evidence, digest, int(self.store.clock() * 1000)))
+                # Same transaction as the flow row and before remote_started=1: any begin is cancellable.
+                if self.fences is not None:
+                    self.fences.create_in_tx(db, flow)
         return self.resume()
 
     def _context(self, *, prepare: bool = False) -> dict:

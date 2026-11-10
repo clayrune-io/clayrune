@@ -20,12 +20,15 @@ export class EnrollmentDB {
     if (init) {
       this.sql.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
       this.sql.exec(readFileSync(new URL('../migrations/0001_enrollment.sql', import.meta.url), 'utf8'));
+      // 0003 (fence_digest column, fences, fence-aware commit trigger) only needs 0001; 0002 stays opt-in.
+      this.sql.exec(readFileSync(new URL('../migrations/0003_lifecycle.sql', import.meta.url), 'utf8'));
     }
   }
   prepare(sql) {
     const db = this.sql;
     return { args: [], bind(...args) { this.args = args; return this; },
       async first() { return db.prepare(sql).get(...this.args) ?? null; },
+      async all() { return { results: db.prepare(sql).all(...this.args) }; },
       async run() { return this.runSync(); },
       runSync() { const r = db.prepare(sql).run(...this.args); return { meta: { changes: Number(r.changes) } }; } };
   }
@@ -51,6 +54,7 @@ export async function fixture(options = {}) {
     device_public_key: device.publicKey, mail_key_id: 'mail1', mail_public_key: mail.publicKey,
     tunnel_uuid: '12345678-1234-1234-1234-123456789abc', route_origin: 'https://device.example.com',
     manifest_sequence: '1', service_key_id: 'service1', service_public_key_sha256: 'b'.repeat(64) };
+  if (options.fenceDigest) value.fence_digest = options.fenceDigest; // 7d-2d: lifecycle cancel/revoke authority
   const config = { db, enabled: true, serviceOrigin: trust.serviceOrigin, trust, servicePin: { ...value },
     codeKey: new Uint8Array(32).fill(9), clock: () => time.now,
     provider: async (address) => ({ address, verified: true }), ...options };
