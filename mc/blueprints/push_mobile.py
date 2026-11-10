@@ -513,7 +513,9 @@ def _handle_push_signal(project_id: str, session_id: str, msg: dict) -> None:
 
     - assistant + tool_use(PushNotification) → fire `kind='agent'` push.
     - result                                  → fire `kind='turn_complete'`
-      push iff the project opted in.
+      push unless the project opted out (`notify_push_enabled` or
+      `notify_turn_complete` set to False; both default to True) or the
+      user is already watching the chat.
 
     Wrapped in a broad try so a delivery problem never breaks the reader.
     """

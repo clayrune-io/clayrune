@@ -272,6 +272,34 @@ def test_haiku_5_5_is_the_fast_head():
     assert es.is_stale_pin('claude', 'claude-haiku-5-5') is False
 
 
+def test_fable_5_2_listed_above_fable_5_1_and_moves_no_tier_head():
+    # Fable 5.2 is newest-first at the top of the Claude picker; 5.1 stays
+    # selectable. Fable has no tier_family, so no tier head may move for it.
+    from mc.agent_runtime import ClaudeRuntime, get_runtime
+    ids = [m for m, _ in ClaudeRuntime.MODEL_CHOICES]
+    assert ids[0] == 'claude-fable-5-2'
+    assert ids.index('claude-fable-5-2') < ids.index('claude-fable-5-1') < ids.index('claude-fable-5')
+    assert dict(ClaudeRuntime.MODEL_CHOICES)['claude-fable-5-2'] == 'Fable 5.2'
+    rt = get_runtime('claude')
+    assert rt.catalog_head_for('fast') == 'claude-haiku-5-5'
+    assert rt.catalog_head_for('balanced') == 'claude-sonnet-5-5'
+    assert rt.catalog_head_for('best') == 'claude-opus-5-5'
+    assert es.is_stale_pin('claude', 'claude-fable-5-2') is False
+
+
+def test_js_model_picker_matches_claude_runtime_choices():
+    # MC_MODEL_CHOICES (modal-manager.js) is a hand-kept copy of
+    # ClaudeRuntime.MODEL_CHOICES; a model missing from one is invisible there.
+    import re
+    from pathlib import Path
+    from mc.agent_runtime import ClaudeRuntime
+    src = (Path(__file__).resolve().parent.parent / 'static' / 'js' / 'modal-manager.js').read_text(encoding='utf-8')
+    m = re.search(r'const MC_MODEL_CHOICES = \[(.*?)\n\];', src, re.S)
+    assert m is not None
+    js = [(a, b) for a, b in re.findall(r"\['([^']*)', '([^']*)'\]", m.group(1)) if a]
+    assert js == list(ClaudeRuntime.MODEL_CHOICES)
+
+
 def test_stale_pin_false_for_tier_value():
     assert es.is_stale_pin('claude', 'tier:best') is False
 

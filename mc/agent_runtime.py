@@ -2033,6 +2033,7 @@ class ClaudeRuntime(AgentRuntime):
     # Mirrors MC_MODEL_CHOICES in static/js/modal-manager.js (the Agent-settings
     # + chat-pill picker). Keep the two in step when a model ships or retires.
     MODEL_CHOICES = [
+        ('claude-fable-5-2', 'Fable 5.2'),
         ('claude-fable-5-1', 'Fable 5.1'),
         ('claude-fable-5', 'Fable 5'),
         ('claude-sonnet-5-5', 'Sonnet 5.5'),
