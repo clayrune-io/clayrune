@@ -11,7 +11,7 @@
 const _reportWaitingExpanded = new Set();
 function _reportWaitingKey(reports) { return JSON.stringify(reports); }
 function _reportWaitingSummary(reports) {
-  return [['failed', 'not delivered'], ['check_failed', 'could not check'],
+  return [['failed', 'not delivered'], ['check_failed', 'could not check'], ['unchecked', 'unchecked'],
     ['delivering', 'delivering'], ['waiting', 'queued']]
     .map(([stage, word]) => [reports.filter(r => r.stage === stage).length, word])
     .filter(([count]) => count).map(([count, word]) => `${count} ${word}`).join(', ');
@@ -21,7 +21,13 @@ function _reportWaitingHTML(sessionId, reports) {
   const rows = reports.map(r =>
     `<div class="report-waiting-row" data-stage="${esc(r.stage)}" data-child="${esc(r.child_session_id || '')}">` +
     `<strong>${esc(r.label)}</strong> <span class="report-waiting-detail">${esc(r.detail)}</span>` +
-    (r.stage === 'failed' || r.stage === 'check_failed' ?
+    (r.stage === 'unchecked' ?
+      // Retry cannot change the outcome (nothing was recorded to check). Offer
+      // the child's own chat, where the full report lives, and Mark handled.
+      `<div class="report-waiting-actions">` +
+      (r.child_session_id ? `<button type="button" data-action="open-report" data-child="${esc(r.child_session_id)}">Open report</button>` : '') +
+      `<button type="button" data-action="mark-handled" data-event="${esc(r.event_id)}">Mark handled</button></div>` :
+    r.stage === 'failed' || r.stage === 'check_failed' ?
       `<div class="report-waiting-actions"><button type="button" data-action="retry" data-event="${esc(r.event_id)}">Retry</button>` +
       `<button type="button" data-action="mark-handled" data-event="${esc(r.event_id)}">Mark handled</button></div>` : '') +
     `</div>`).join('');
@@ -65,6 +71,11 @@ function paintReportsWaiting(sessionId, reports) {
       button.setAttribute('aria-expanded', String(expanded));
       fresh.querySelector('.report-waiting-rows').hidden = !expanded;
       resize();
+      return;
+    }
+    if (button.dataset.action === 'open-report') {
+      const pid = (agentStatusCache[sessionId] || {}).projectId;
+      if (pid && window.openProjectAtSession) window.openProjectAtSession(pid, button.dataset.child);
       return;
     }
     const report = reports.find(r => r.event_id === button.dataset.event);
