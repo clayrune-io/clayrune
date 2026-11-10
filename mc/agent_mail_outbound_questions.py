@@ -58,7 +58,7 @@ def deliver(session: dict, question: dict, project_name: str) -> dict[str, str]:
 
 def parsed(session: dict) -> None:
     """One narrow parser hook covers mc:question on every provider's reader."""
-    if state.CONFIG.get('agent_mail_outbound_enabled') is not True:
+    if state.CONFIG.get('agent_mail_outbound_enabled') is not True or factory is None:
         return
     try:
         from mc.question_channel import on_question_raised

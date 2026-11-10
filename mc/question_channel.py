@@ -245,9 +245,14 @@ def on_question_raised(session: dict) -> None:
         return
 
     from mc.agent_mail_questions import revision
-    from mc.agent_mail_outbound_questions import selected
-    form = json.loads(json.dumps(q))
-    delivery_key = qid + ':' + revision(form)
+    from mc import agent_mail_outbound_questions as mail_questions
+    # The disabled/uninstalled adapter leaves legacy qid ownership unchanged.
+    # Only a selected, available new channel owns revision-specific delivery.
+    eligible = (state.CONFIG.get('agent_mail_outbound_enabled') is True
+                and mail_questions.factory is not None)
+    form = json.loads(json.dumps(q)) if eligible else None
+    agent_mail = eligible and mail_questions.selected(session, form or {})
+    delivery_key = qid + ':' + revision(form or {}) if agent_mail else qid
     with _lock:
         if delivery_key in _delivered:
             return          # exactly-once, even if the turn scan runs twice
@@ -267,16 +272,17 @@ def on_question_raised(session: dict) -> None:
         return
 
     grace = grace_seconds(project)
-    # Each timer retains its own revision, even if a same-id form is replaced.
     _outbox[delivery_key] = {
         "project_id": project_id,
         "project_name": project.get("name") or project_id,
         "session_id": session.get("session_id") or "",
-        "questions": form.get("questions") or [],
+        "questions": q.get("questions") or [],
         "to": _cfg(project, "question_channel_to", None),
-        "form": form,
-        "agent_mail": selected(session, form),
     }
+    if agent_mail:
+        # Each new-channel timer retains its own immutable form/revision.
+        _outbox[delivery_key].update(form=form, agent_mail=True,
+                                     questions=(form or {}).get('questions') or [])
 
     t = threading.Timer(grace, _deliver_if_still_unattended, args=(delivery_key, session, grace))
     t.daemon = True

@@ -112,8 +112,12 @@ can replay it. A matching late positive result from the original attempt may
 settle uncertainty; late acceptance cannot undo revocation/expiry. Broader
 outbound receipt reconciliation/recovery UI remains later-unit work.
 
-Question selection is fixed per project/session/full form revision in SQLite
-whenever the installed factory has an initialized outbox. Selection alone grants
+New-channel selection is fixed per project/session/full form revision in SQLite
+when the outbound flag is literal true and the installed factory has an
+initialized outbox. With the flag off or factory absent, notification uses the
+base legacy qid-only deduplication and metadata, without a revision snapshot or
+additional parser callback; revising a same-id question cannot send another
+legacy email. Legacy reply matching is unchanged. Selection alone grants
 no mail authority. A future operational factory must remain available to read
 these receipts while enrollment/feature sending is off. Before any factory
 exists, the session holds only the existing runtime fallback choice; **do not
@@ -130,7 +134,7 @@ legacy reply matching and IMAP polling, so new mail cannot cause legacy
 credential reads. New replies enter only through signed ingress, screening,
 laundering and unit 6; no approval/human-only gate changes.
 
-## Verification
+## Initial build verification (9fa4dc48)
 
 Working directory: this branch's worktree. Inherited environment unchanged.
 Tests use the MAIN installation launcher/project interpreter; tests and
@@ -212,3 +216,68 @@ quoted documentation was also refused by that fence; the exact commands remain
 in this session's tool output, not the journal or public repository. The branch
 build did not require the optional UI artifact. This handoff and the journal
 preserve crash recovery context.
+
+## Review rework r1
+
+Dave selected base legacy behavior rather than a revision-aware legacy reply
+matcher. The notification entry point now uses qid-only ownership whenever
+the new flag is off or the factory is absent. A selected new-channel timer
+retains its own form/revision and cannot fall back to legacy if its factory
+later disappears. The new parser callback likewise requires both flag and
+factory; `handle_reply` was not changed in this rework. An existing adapter
+test now accepts base legacy metadata without a new-channel marker.
+
+Admission now resolves the trusted origin, completes signing and authority
+validation, then checks the current intent deadline and `_validate_target`
+under the same manager/store transaction immediately before recording sending.
+An expired intent or thread is durably marked expired and its sealed payload
+purged; no send attempt or external transport call starts. Other invalid
+targets refuse. This closes a gap where post-send status could previously
+report expired/accepted for mail sent with an already-expired reply token.
+
+`tests/test_agent_mail_outbound_review.py` adds seven permanent cases: three
+flag/factory combinations prove one SMTP send per legacy qid and a genuine
+reply still reaching `_answer`; three deadline cases cover intent, thread and
+both expiring inside the real fixture `prove()` (one-second TTL, fixture clock
+advanced 1.1 seconds); a final case proves target validity is checked again
+after signing. Baseline at `9fa4dc48`: all seven failed, exit 1. After the fix,
+the review/new-question/legacy selection passed 66 checks, exit 0.
+
+All application tests are under `tests/`, so the standard conftest runs before
+application imports. The new review module additionally refuses fixture
+imports unless remote access is disabled and both isolated state/vault roots
+are present. Inherited remote/state/vault/temp-root variables were checked and
+unset before testing. Legacy SMTP, credential resolution and resume are mocked;
+outbound keys, clocks and transports are fixtures. No scratch application probe,
+live control-plane/tunnel/attestation/SMTP call or real credential is used.
+Separate CP tests retain their in-memory authorities and HTTP mock transport.
+
+An attempted explicit environment-setting shell wrapper was rejected before
+execution by the unattended fence for variable/command substitution. It was
+not retried and no permission was changed. Fixed-argument launcher commands
+using standard conftest isolation then ran; the review module's pre-import
+guard passed. The rejected wrapper remains in the session's tool output.
+
+Using the same `$ProjectPython`, `$Launcher` and `$Pyright` resolution above,
+the exact final rework selections are:
+
+```powershell
+& $ProjectPython $Launcher --project mission_control --port 5199 -- $ProjectPython -m pytest tests/test_agent_mail_deadline_review.py tests/test_agent_mail_enrollment.py tests/test_agent_mail_enrollment_review.py tests/test_agent_mail_enrollment_routes.py tests/test_agent_mail_held.py tests/test_agent_mail_ingress.py tests/test_agent_mail_launder.py tests/test_agent_mail_outbound.py tests/test_agent_mail_outbound_questions.py tests/test_agent_mail_outbound_review.py tests/test_agent_mail_revival.py tests/test_agent_mail_service_manifest.py tests/test_agent_mail_store.py tests/test_agent_mail_wake.py tests/test_agent_mail_wake_contract.py tests/test_agent_mail_wake_review.py
+& $ProjectPython $Launcher --project mission_control --port 5199 -- $ProjectPython -m pytest tests/test_question_channel.py
+& $ProjectPython $Launcher --project mission_control --port 5199 -- $ProjectPython -m pytest control_plane/tests
+& $ProjectPython $Launcher --project mission_control --port 5199 -- $Pyright mc/agent_mail_outbound.py mc/agent_mail_outbound_state.py mc/agent_mail_outbound_signing.py mc/agent_mail_outbound_questions.py mc/question_channel.py mc/agent_runtime.py
+```
+
+Rework results: all 16 mail files **714 passed in 54.77s, exit 0**; legacy
+**41 passed in 1.62s, exit 0**; separate CP **98 passed/1 existing skip in
+1.23s, exit 0**; all six modules **Pyright 0 errors/0 warnings/0 informations,
+exit 0**. The seven new review cases are included in the 714.
+The CP skip and warning remain the same as in the initial build. Launcher
+transport/parent/pytest-enrollment progress capture is incomplete; child exits
+and pytest output remain the verification evidence. No dependency installation,
+frontend or Worker source change. The temporary existing-dependency junction
+was removed nonrecursively after the full run; worktree link absent and MAIN's
+existing `postal-mime/package.json` intact were verified.
+
+The original operational/live gates above remain. No merge, push, restart,
+deployment, real mail, credential change or human-gate edit; no new open choice.

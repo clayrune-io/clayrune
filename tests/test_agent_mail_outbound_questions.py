@@ -150,7 +150,7 @@ def test_new_flag_does_not_arm_legacy_without_explicit_existing_hook(channel, mo
     monkeypatch.setitem(state.CONFIG, 'agent_mail_outbound_enabled', True)
     # Selection is fixed at raise time, so a setting flip cannot add a second transport.
     key = next(iter(qc._outbox))
-    assert qc._outbox[key]['agent_mail'] is False
+    assert qc._outbox[key].get('agent_mail', False) is False
 
 
 def test_question_changed_between_prepare_and_send_is_held(channel):

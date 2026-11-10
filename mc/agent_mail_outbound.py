@@ -254,10 +254,22 @@ class Outbound:
                 signed = headers(self.enrollment.seal, auth, raw, now_ms=int(self.store.clock() * 1000),
                                  nonce=secrets.token_hex(16))
                 self._authority(db, row)
-                attempt = secrets.token_hex(16)
-                db.execute("UPDATE mail_outbound_intents SET state='sending',reason='',attempt=?,updated=? WHERE intent_id=?",
-                           (attempt, self.store.clock(), intent_id))
                 origin = self.enrollment._candidate(auth).origin
+                attempt = secrets.token_hex(16)
+                # Signing and trusted validation can outlive a short or nearly
+                # expired thread. Admission must use its CURRENT deadline and
+                # target under this same transaction, before any external write.
+                now = self.store.clock()
+                reason = self.store._validate_target(db, row['install'], row['thread_hash'], now)
+                if current['expires'] <= now or reason == 'thread_expired':
+                    db.execute("UPDATE mail_outbound_intents SET state='expired',payload=NULL,"
+                               "reason='thread_expired',updated=? WHERE intent_id=?", (now, intent_id))
+                    return metadata(db.execute('SELECT * FROM mail_outbound_intents WHERE intent_id=?',
+                                               (intent_id,)).fetchone())
+                if reason:
+                    raise EnrollmentRefused('outbound_binding_required')
+                db.execute("UPDATE mail_outbound_intents SET state='sending',reason='',attempt=?,updated=? WHERE intent_id=?",
+                           (attempt, now, intent_id))
         # The admission commit precedes any possible external write. A crash or
         # thrown/lost response can never make this row automatically send again.
         try:

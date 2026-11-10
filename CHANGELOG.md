@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-10] - Preserve legacy question deduplication and expire stale send admissions (MC-1166 unit 7c review)
+
+- Kept legacy mail keyed by question id when the new outbound flag is off or its factory is absent, including same-id revisions and existing reply matching. Revision snapshots apply only to the selected new channel; its parser hook also requires the factory.
+- Rechecked intent/thread expiry and target validity after signing under the existing admission transaction. Expired threads become expired before any transport call. Added isolated review regressions for legacy replies, independent deadlines and post-signing target refusal; default-disabled candidate only.
+
 ## [2026-11-10] - Bind outbound mail before sending and preserve question delivery ownership (MC-1166 unit 7c)
 
 - Added disabled outbound notes/questions with encrypted immutable intents, pre-send conversation snapshots and transport mappings, fresh mail-only signatures, and current enrollment/ownership/pin checks. Only a proven pre-write rate refusal retries; ambiguous sends remain visible and cannot resend automatically.
