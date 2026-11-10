@@ -1,5 +1,7 @@
 """Shared grace/channel selection and full question revision, no real mail."""
 import json
+import sqlite3
+import threading
 import time
 
 import pytest
@@ -52,6 +54,114 @@ def raise_form(out, form=FORM):
 def fire(timer):
     _, callback, args = timer
     callback(*args)
+
+
+def test_store_writer_must_not_block_unrelated_legacy_reply_poll(channel, monkeypatch):
+    out, _, legacy = channel
+    monkeypatch.setitem(state.CONFIG, 'agent_mail_outbound_enabled', False)
+    raise_form(out)
+    monkeypatch.setitem(state.CONFIG, 'agent_mail_outbound_enabled', True)
+    monkeypatch.setattr(qc, '_creds', lambda: None)
+    selecting, polled = threading.Event(), threading.Event()
+    errors = []
+    original = out.outbound.question_channel
+
+    def observed(*args):
+        selecting.set()
+        return original(*args)
+
+    monkeypatch.setattr(out.outbound, 'question_channel', observed)
+
+    def notify():
+        try:
+            qc.on_question_raised(out.session)
+        except BaseException as exc:
+            errors.append(exc)
+
+    def poll():
+        try:
+            qc.poll_replies()
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            polled.set()
+
+    blocker = sqlite3.connect(out.store.path, isolation_level=None)
+    blocker.execute('BEGIN IMMEDIATE')
+    notification = threading.Thread(target=notify)
+    polling = threading.Thread(target=poll)
+    notification.start()
+    poll_started = False
+    try:
+        assert selecting.wait(2), 'notification did not reach production selector'
+        polling.start()
+        poll_started = True
+        completed_without_database = polled.wait(0.75)
+    finally:
+        blocker.execute('ROLLBACK')
+        blocker.close()
+        notification.join(8)
+        if poll_started:
+            polling.join(8)
+    assert not notification.is_alive() and not polling.is_alive()
+    assert not errors
+    assert not legacy and not out.recording.calls
+    assert completed_without_database, 'SQLite contention stalls legacy reply polling'
+
+
+@pytest.mark.parametrize('owner', ['agent_mail', 'legacy'])
+def test_concurrent_same_question_selects_and_delivers_once(channel, monkeypatch, owner):
+    out, timers, legacy = channel
+    monkeypatch.setitem(state.CONFIG, 'agent_mail_outbound_enabled', False)
+    raise_form(out)  # parse without automatically notifying
+    monkeypatch.setitem(state.CONFIG, 'agent_mail_outbound_enabled', True)
+    selecting, release, second_started, duplicate_selection = (
+        threading.Event() for _ in range(4))
+    errors, selections = [], []
+    original = out.outbound.question_channel
+
+    def observed(*args):
+        selections.append(args)
+        if len(selections) > 1:
+            duplicate_selection.set()
+        selecting.set()
+        if not release.wait(5):
+            raise TimeoutError('test did not release selection')
+        return original(*args[:-1], owner)
+
+    monkeypatch.setattr(out.outbound, 'question_channel', observed)
+
+    def notify(second=False):
+        if second:
+            second_started.set()
+        try:
+            qc.on_question_raised(out.session)
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=notify)
+    second = threading.Thread(target=notify, args=(True,))
+    first.start()
+    second_launched = False
+    try:
+        assert selecting.wait(2)
+        second.start()
+        second_launched = True
+        assert second_started.wait(2)
+        # Give the competing notification a chance to reach selection while
+        # the first is stalled; a non-atomic selector would enter twice.
+        duplicate_selection.wait(0.25)
+    finally:
+        release.set()
+        first.join(8)
+        if second_launched:
+            second.join(8)
+    assert not first.is_alive() and not second.is_alive()
+    assert not errors
+    assert len(selections) == len(timers) == len(qc._outbox) == 1
+    fire(timers[0])
+    assert len(out.recording.calls) == (owner == 'agent_mail')
+    assert len(legacy) == (owner == 'legacy')
 
 
 def test_mc_question_parser_arms_shared_grace_once(channel):

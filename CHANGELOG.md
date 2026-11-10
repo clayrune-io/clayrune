@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-10] - Keep mail-store contention out of shared question handling (MC-1166 unit 7c review)
+
+- Serialized channel selection and ownership admission per question, with factory calls and durable receipt I/O outside the global notification mutex. A stalled mail store no longer blocks unrelated legacy reply polling; concurrent notifications retain one timer and delivery for either channel owner.
+- Added permanent SQLite contention and concurrent same-question regressions. Documented the deferred all-cache-loss/flag-off receipt-recovery limitation. Disabled branch candidate only; no operational factory, real mail, activation or deployment.
+
 ## [2026-11-10] - Keep question delivery ownership across adapter changes (MC-1166 unit 7c review round 2)
 
 - Checked existing legacy question-id and new-channel revision ownership before adapter eligibility under the notification lock. Repeated parser/turn-boundary notifications cannot arm another timer or switch transports when the flag/factory changes; existing session selections also survive notification-cache loss.

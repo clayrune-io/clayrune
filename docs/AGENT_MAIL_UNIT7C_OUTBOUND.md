@@ -113,7 +113,13 @@ settle uncertainty; late acceptance cannot undo revocation/expiry. Broader
 outbound receipt reconciliation/recovery UI remains later-unit work.
 
 Existing delivery ownership is checked under the shared notification lock before
-adapter eligibility: a legacy qid or an already selected new-channel full
+adapter eligibility, with a per-qid mutex serializing selection and admission.
+Factory calls and durable receipt I/O run outside the shared lock; a stalled
+mail store or factory no longer holds that global mutex. Same-qid notifications
+wait on their own mutex while legacy reply handling/polling remains available.
+Other new-channel selections may independently wait on the same mail store.
+After waiting for the per-qid mutex, ownership is checked again: a legacy qid
+or an already selected new-channel full
 revision wins on re-entry, before or after delivery, even if the flag/factory
 changes. A retained session selection also wins after notification-cache loss.
 For an unclaimed question, new-channel selection is fixed per
@@ -128,6 +134,17 @@ these receipts while enrollment/feature sending is off. Before any factory
 exists, the session holds only the existing runtime fallback choice; **do not
 import or activate old legacy pending questions on startup**. Legacy in-memory
 mail has no recoverable unit-6 binding. Unit 7d must preserve this boundary.
+
+Recovery limitation (deferred by Dave): if **all** volatile ownership caches
+are lost while the exact old form and its durable agent-mail receipt survive,
+the notification entry point with the outbound flag off bypasses receipt
+selection and may send legacy mail. With the flag on and factory available,
+receipt recovery works. This simulated flag-off gap also exists at `3708ecd8`;
+no live revival path retaining that exact old form was established. Revival
+currently builds sessions without pending forms and parsing assigns fresh
+question ids. Operational/recovery integration must address this gap; the
+direct `adapter.selected()` restart test does not establish notification-entry
+recovery with the flag off. Do not claim full cache-loss recovery coverage.
 
 The original grace timer and SSE attendance recheck remain authoritative.
 Answered/revised forms do not send. New mc:question forms use the same entry
@@ -294,8 +311,9 @@ before checking ownership. Disabling the flag or removing the factory changed
 the deduplication key from `qid:revision` to `qid`, creating a second legacy
 timer; enabling the adapter after legacy delivery created the inverse duplicate.
 
-`on_question_raised` now checks both ownership keys before eligibility, with
-selection and admission inside the same notification lock. Existing legacy
+At r2, `on_question_raised` checked both ownership keys before eligibility, with
+selection and admission inside the same notification lock (r3 below narrows
+that lock's scope). Existing legacy
 ownership covers the whole qid; existing new-channel ownership covers its full
 revision. Availability changes cannot create a second key, timer or message.
 Retained session selections also remain authoritative if notification caches
@@ -383,3 +401,88 @@ disabled branch candidate with no merge, push, restart, deployment, real mail
 or credential use. README, USER_GUIDE, AGENTS and rules need no update because
 there is no available user-facing feature or new conduct rule. Browser/boot,
 mobile and installer checks remain N/A; no frontend or Worker source changed.
+
+## Review rework r3
+
+Fenn's sole blocker was synchronous factory/receipt selection under the global
+question mutex. A second SQLite connection holding `BEGIN IMMEDIATE` stalled
+unrelated legacy `poll_replies()` until release. Selection now acquires a
+per-qid mutex without holding the global mutex, rechecks ownership under the
+global mutex, runs factory/receipt selection outside it, and commits the final
+delivery key under the global mutex. Same-qid notifications serialize even
+when their selected owner is legacy; different questions and legacy reply
+handling/polling do not wait on that selection. Per-qid mutexes have the same
+process lifetime as the existing notification caches. No selection I/O moved
+into reply handling or polling.
+
+Three permanent cases were added to the existing outbound-question suite:
+Fenn's real SQLite writer/poller contention case and concurrent same-question
+selection/timer/delivery for both new and legacy owners. All threads are joined
+after releasing the synthetic blocker. No real mail/credentials or timers.
+The five r2 ownership transitions and three base-contract checks are unchanged.
+
+Every pytest invocation used the installation launcher with a manifest and the
+same per-child five-variable JSON-null environment overlay described in r2.
+Normal app and control-plane tests stayed in separate children. Scratch review
+probes preload `-p tests.conftest`; their source was copied unchanged from
+Fenn's review. R2 SHA-256 remains
+`de4439d135a49ddb8bb530f6adafabb8c75e2b900ba1af1adfdabf91ae51da02`;
+r3 is `1c10ea29b8ba1962ad082a9467d2b9e94dff1c75e10b6142a99d40e43ebc6f00`.
+
+Portable equivalents of the launcher invocations (same path variables as above,
+branch worktree cwd; actual cmd.exe syntax with native redirection is retained
+in the operator-local journal and scratch report):
+
+```powershell
+& $ProjectPython $Launcher --project mission_control --port 5199 --manifest _scratch/u7c_r3_focus_manifest.json > _scratch/u7c_r3_focus_output.txt 2>&1
+& $ProjectPython $Launcher --project mission_control --port 5199 --manifest _scratch/u7c_r3_builder_manifest.json > _scratch/u7c_r3_builder_output.txt 2>&1
+& $ProjectPython $Launcher --project mission_control --port 5199 --manifest _scratch/u7c_r3_review_manifest.json > _scratch/u7c_r3_review_output.txt 2>&1
+```
+
+Focus child argv is `$ProjectPython -m pytest
+tests/test_agent_mail_outbound_questions.py -v`. Builder uses the identical
+ordered 16 mail files, legacy question file, separate `control_plane/tests`
+and six Pyright modules listed in r1/r2. Review manifest contains two ordered
+children, continuing after failure:
+
+```powershell
+& $ProjectPython -m pytest -p tests.conftest _scratch/test_u7c_fenn_r2.py -v -s
+& $ProjectPython -m pytest -p tests.conftest _scratch/test_u7c_fenn_r3.py -v -s
+```
+
+| Selection | Result | Exit |
+| --- | --- | --- |
+| Focused permanent outbound-question suite | 31 passed in 5.90s | 0 |
+| Same 16 ordered mail files | 727 passed in 54.27s | 0 |
+| Legacy question suite | 41 passed in 0.61s | 0 |
+| Separate control-plane suite | 98 passed, 1 existing skip, 1 warning in 1.04s | 0 |
+| Same six Pyright modules | 0 errors, 0 warnings, 0 informations | 0 |
+| Unchanged Fenn r2 ownership/base probes | 8 passed in 1.90s | 0 |
+| Unchanged Fenn r3 probes | 5 passed, 1 expected deferred failure in 2.19s | 1 |
+
+Focus and builder manifest aggregates exited 0; review aggregate exited 1.
+The r3 contention probe printed completion before database release with wait
+time rounded to 0.0 seconds. Its sole remaining failure is
+`test_durable_receipt_recovery_after_all_volatile_ownership_lost[False]`,
+the pre-existing simulated cache-loss/flag-off limitation explicitly deferred
+by Dave above. It still produced one synthetic new message and one synthetic
+legacy message; this failure was neither fixed, skipped nor marked xfail.
+No full recovery coverage or live revival failure is claimed. R1's obsolete
+second-legacy-timer probe was not part of this round's requested selection.
+
+The control-plane skip remains `test_edge_contract.py:86` (missing sibling
+repository), with the existing Starlette/httpx deprecation warning. Pyright's
+version notice is non-failing; nothing was upgraded. Launcher emitted
+`telemetry_queue_full_progress_incomplete` and
+`unfinalized_runs_progress_incomplete`; full dashboard capture is not claimed.
+Native exits and framework output are the evidence. Exact host-expanded
+commands, manifests and logs remain in the operator-local journal and scratch
+handoff report. The existing Worker dependency junction was removed
+nonrecursively after verification; the worktree link is absent and MAIN's
+`postal-mime/package.json` remains intact. No package installs.
+
+CHANGELOG is updated. USER_GUIDE, README, AGENTS and rules need no update:
+disabled internal correction only, no new user surface or conduct rule.
+No frontend/browser/boot, mobile or installer check applies. No new design
+question, operational integration, merge, push, restart, deployment, real mail
+or credential use. Dave owns review/integration and the existing pre-live gates.

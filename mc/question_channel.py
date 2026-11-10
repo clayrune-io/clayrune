@@ -84,6 +84,9 @@ from mc.core import _log
 _delivered: set[str] = set()
 _answered: set[str] = set()
 _lock = threading.Lock()
+# Same lifetime as the notification caches. Selection may block on the mail
+# store or factory; only notifications for this qid may wait for that work.
+_selection_locks: Dict[str, Any] = {}
 
 # qid -> everything poll_replies() needs to answer it without touching sessions.
 _outbox: Dict[str, Dict[str, Any]] = {}
@@ -247,15 +250,16 @@ def on_question_raised(session: dict) -> None:
     from mc.agent_mail_questions import revision
     from mc import agent_mail_outbound_questions as mail_questions
     with _lock:
-        # Ownership precedes availability: parser and turn-boundary hooks may
-        # notify the same question after a flag/factory change, even mid-grace.
-        # Legacy owns the whole qid; new mail owns only the exact revision.
-        if qid in _delivered:
-            return
+        selection_lock = _selection_locks.setdefault(qid, threading.Lock())
+    with selection_lock:
         form_revision = revision(q)
         revision_key = qid + ':' + form_revision
-        if revision_key in _delivered:
-            return
+        with _lock:
+            # Ownership precedes availability, including after waiting for
+            # another notification's selection. Legacy owns the whole qid;
+            # new mail owns only the exact revision.
+            if qid in _delivered or revision_key in _delivered:
+                return
         eligible = (state.CONFIG.get('agent_mail_outbound_enabled') is True
                     and mail_questions.factory is not None)
         previously_selected = form_revision in session.get('_offline_question_channels', {})
@@ -263,7 +267,8 @@ def on_question_raised(session: dict) -> None:
         agent_mail = (eligible or previously_selected) and mail_questions.selected(session, candidate or {})
         form = candidate if agent_mail else None
         delivery_key = revision_key if agent_mail else qid
-        _delivered.add(delivery_key)
+        with _lock:
+            _delivered.add(delivery_key)
 
     project_id = session.get("project_id") or ""
     try:
