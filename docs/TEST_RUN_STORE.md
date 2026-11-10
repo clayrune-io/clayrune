@@ -38,12 +38,14 @@ project-level run. A shared process-local reentrant lock prevents lost updates
 across threads and store instances; this is not a multi-server lock.
 
 `all_snapshots(project_id)` returns the same newest-first defensive copies in
-one directory pass, with no page cap. The Floor uses this internal API;
+one directory pass, with no page cap. The Floor uses `active_snapshots` instead;
 `list_runs` retains its public limit of 100 and its owner/offset semantics.
 Enumeration and sorting run outside the shared lock. Validation/cache access
 holds it for one file at a time, allowing submits between records, including
 on a cold cache. A list is a per-file observation, not a project-wide atomic
 snapshot; a newly created run may appear on the next poll.
+Files disappearing after enumeration/stat are skipped, including when they
+vanish during a read. Other unreadable/corrupt files still raise `StoreError`.
 
 `mc/test_run_snapshots.py` owns a process-local LRU shared by store instances.
 Only validated snapshot copies are retained, keyed by the checked absolute
@@ -62,6 +64,32 @@ files and rebuilds owner/privacy projections. As with any metadata cache,
 external edits preserving both nanosecond mtime and size cannot be detected;
 normal store writes invalidate explicitly. This is neither a route cache nor
 a project-record cache, and adds no on-disk index or retention policy.
+
+Bulk history scans admit snapshots only into free cache space; a miss cannot
+evict the previous scan's residents. Direct reads retain ordinary LRU eviction.
+Thus a directory larger than either budget keeps its resident hits rather
+than thrashing to zero hits every scan. Overflow still validates on each list;
+the 100-result public page limit does not bound the underlying history scan.
+
+`active_snapshots(project_id)` uses `mc/test_run_terminal.py`'s separate
+process-local `TerminalIndex`. Each validated terminal path retains only its
+`(mtime_ns, size)`, with no snapshot/event copy and no LRU/byte cap. Unchanged
+terminal files cost enumeration/stat, with no validation, snapshot copying or
+projection. Active files use the snapshot LRU and can evict history snapshots;
+Floor does not admit terminal snapshots into that cache. Changed terminal
+fingerprints invalidate markers and require canonical validation again.
+Creates/appends invalidate both structures before persistence, even if a
+fingerprint is reused. The global store lock guards both indexes.
+
+Terminal markers grow linearly with observed terminal paths over the process
+lifetime (one absolute path and two integers per path); this is an intentional
+metadata budget independent of the bounded snapshot heap. No retention limit
+is inferred and no run is deleted. Missing paths are forgotten on direct read;
+paths absent from subsequent enumerations may retain a small marker until
+restart. Cache state is rebuilt after restart. Warm Floor validation/copying
+and projection scale with active/changed files, but enumeration and stat still
+scale with all files. If active snapshots themselves exceed the LRU bounds,
+active validation may recur; terminal history still requires no replay.
 
 ## Events and reduction
 

@@ -96,16 +96,16 @@ def project(project_id: str, snapshots: Iterable[Mapping[str, Any]],
 
 
 def _all_runs(store: TestRunStore, project_id: str) -> Iterable[dict[str, Any]]:
-    return store.all_snapshots(project_id)
+    return store.active_snapshots(project_id)
 
 
 def read_projects(projects: Iterable[Mapping[str, Any]],
                   sessions: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]] | None:
     """Scan the canonical store once per room, without caching route projections.
 
-    The store caches only validated snapshot copies across requests, keyed by
-    file path/mtime_ns/size. Changed records replay before reuse; owner/privacy
-    classification and room summaries are rebuilt from current sessions.
+    The store skips unchanged terminal files using fingerprint-only markers.
+    Active snapshots use the bounded cache; changed records replay before reuse.
+    Owner/privacy classification and room summaries use current sessions.
 
     Disabled means no import of the routes/storage adapter and no added fields.
     A failed read is explicitly unavailable, never an invented empty success.

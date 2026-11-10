@@ -240,14 +240,14 @@ def test_private_projects_are_not_read(env, monkeypatch):
     env[2].extend([dict(id='_incognito', name='Private'),
                    dict(id='secret', _is_incognito_project=True)])
     called = []
-    original = env[0].all_snapshots
+    original = env[0].active_snapshots
 
     def listing(pid, **kw):
         called.append(pid)
         return original(pid, **kw)
 
-    monkeypatch.setattr(env[0], 'all_snapshots', listing)
-    board(env)
+    monkeypatch.setattr(env[0], 'active_snapshots', listing)
+    assert board(env)['rooms'] == [], 'empty rooms must not become unavailable on a read error'
     assert called == ['a', 'b']
 
 
@@ -288,14 +288,14 @@ def test_older_active_run_is_found_after_more_than_one_page_of_history(env):
 def test_floor_scans_each_project_once_without_paging(env, monkeypatch):
     for at in range(102):
         env[0].create('a', observed_at=at, owner_session_id=None)
-    original = env[0].all_snapshots
+    original = env[0].active_snapshots
     calls = []
 
     def read(pid):
         calls.append(pid)
         return original(pid)
 
-    monkeypatch.setattr(env[0], 'all_snapshots', read)
+    monkeypatch.setattr(env[0], 'active_snapshots', read)
     monkeypatch.setattr(env[0], 'list_runs', lambda *a, **kw: pytest.fail('Floor paged history'))
     assert room(env)['test_runs']['active_count'] == 102
     assert calls == ['a', 'b']

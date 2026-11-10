@@ -9,11 +9,13 @@ import pytest
 
 from mc import test_run_store as runs
 from mc.test_run_snapshots import SnapshotCache
+from mc.test_run_terminal import TerminalIndex
 
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(runs, '_SNAPSHOTS', SnapshotCache())
+    monkeypatch.setattr(runs, '_TERMINAL', TerminalIndex())
     return runs.TestRunStore(tmp_path)
 
 
@@ -235,13 +237,13 @@ def test_full_validation_holds_lock_for_only_one_file(store, monkeypatch):
     original = store._snapshot
     submits = []
 
-    def snapshot(pid, rid):
+    def snapshot(pid, rid, **kwargs):
         # A worker queues for the lock while this individual record is being
         # validated. The next record must allow that worker to finish first.
         if not submits:
             future = pool.submit(store.create, 'b', observed_at=10)
             submits.append(future)
-        return original(pid, rid)
+        return original(pid, rid, **kwargs)
 
     # Assert lock releases at each record boundary directly, without depending
     # on OS thread fairness or a timing threshold for a cold folder replay.

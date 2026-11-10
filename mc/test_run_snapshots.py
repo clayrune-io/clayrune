@@ -50,11 +50,17 @@ class SnapshotCache:
         self.entries.move_to_end(path)
         return copy.deepcopy(entry[1])
 
-    def put(self, path: Path, fingerprint: Fingerprint, snapshot: dict[str, Any]) -> None:
+    def put(self, path: Path, fingerprint: Fingerprint, snapshot: dict[str, Any],
+            *, evict: bool = True) -> None:
         self.discard(path)
         snapshot = copy.deepcopy(snapshot)
         size = _size(snapshot, set())
         if size > self.max_bytes or self.max_entries < 1:
+            return
+        # A bulk scan larger than the budget must not evict every resident in
+        # sequence. Admit misses only into free space; direct reads retain LRU.
+        if not evict and (self.bytes + size > self.max_bytes
+                          or len(self.entries) >= self.max_entries):
             return
         while self.entries and (self.bytes + size > self.max_bytes
                                 or len(self.entries) >= self.max_entries):

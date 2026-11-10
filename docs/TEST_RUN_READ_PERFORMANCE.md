@@ -1,119 +1,150 @@
-# Test-run snapshot read amplification fix (2026-11-09)
+# Test-run read performance: review round 2 (2026-11-09)
 
-Branch candidate only. No merge, push, server restart, configuration change,
-run deletion or pruning. These measurements exercise the store and Floor
-storage adapter against a scratch copy, not a deployed server modification.
+Branch candidate on `clayrune/agent/3ddb2652e060`, following `feef8bd7`.
+No merge, push, server restart, configuration change, run deletion or pruning.
+These are local store/Floor adapter measurements on copied data, not deployed
+HTTP endpoint measurements.
 
-## Cause and change
+## Review findings and changes
 
-The old `list_runs` held the global store lock while globbing, loading and
-replaying every record, then sliced its result. Floor's 100-record paging
-called that full scan 19 times for 1821 records. Submits queued behind those
-scans, exceeding the launcher's two-second telemetry request timeout.
+The first candidate removed Floor's repeated 100-record paging scans and
+released the store lock between records. Its 4096-entry / 32 MiB snapshot LRU
+still thrashed when a sequential history scan exceeded either budget.
 
-`mc/test_run_snapshots.py` now owns a bounded LRU of validated snapshot copies;
-`mc/test_run_store.py` checks each path's nanosecond mtime and size before reuse.
-Changed/new records retain full canonical validation and corruption errors.
-Create/append invalidate before persistence; failed writes cannot publish
-uncommitted state. Event access and write validation still replay full records.
-The cache retains no events and is capped at 4096 entries and 32 MiB of
-recursively measured snapshot objects. Path/entry metadata is entry-bounded.
+Bulk history reads now admit misses only into free cache space. A scan cannot
+evict the previous scan's resident snapshots; direct `get` reads retain normal
+LRU eviction. At 5100 files, repeated warm lists retain 4096 hits and validate
+the 1004 overflow files, rather than validating all 5100 again. This preserves
+public list/get ordering, filtering, pagination, defensive copies, validation
+and corruption semantics; it does not make full-history lists constant-time.
 
-`all_snapshots` enumerates each project once and locks one record at a time.
-Enumeration, sorting and Floor projections run outside the lock. Floor's
-`_all_runs` now calls this once rather than paging. Public `list_runs` keeps
-its limit of 1-100, offset, owner filtering and newest-first ordering. All
-outputs remain copies. Current sessions and privacy rules are projected anew
-on every request; there is no route or project-record cache.
+`mc/test_run_terminal.py` separately owns fingerprint-only terminal markers.
+The shared store lock protects one absolute path and `(mtime_ns, size)` per
+observed terminal file. There is no snapshot/event copy, entry limit or byte
+limit in this index. Its memory grows linearly with observed terminal paths;
+missing paths are forgotten on direct read, while markers for paths absent
+from later directory enumerations may remain until restart. No retention or
+run deletion is introduced. Snapshot heap remains bounded by the existing LRU.
 
-This is a per-file view rather than a project-wide atomic snapshot. A new run
-created during enumeration may appear on the next poll. Metadata-preserving
-external edits (same nanosecond mtime and size) are outside cache detection;
-normal store writes invalidate explicitly. A file replaced during validation
-is not cached under the replacement's fingerprint.
+Floor calls `active_snapshots` once per project. Unchanged terminal files cost
+only enumeration/stat. Terminal snapshots are not admitted into the Floor's
+snapshot cache; active snapshots can evict history snapshots. Thus replay,
+copying and projection concern active/changed files rather than terminal
+history. Directory enumeration/stat still scale with all files. If active
+snapshots themselves exceed the LRU budget, active validation can recur.
 
-## Copied-data timings
+Terminal immutability was checked before this change: `_append` returns the
+existing snapshot before appending events or writing once the state is terminal.
+All seven terminal states now have a regression asserting late events and
+repeated finish calls leave canonical event count, file bytes and mtime unchanged.
+Reporter-only finish events remain active until trusted process finalization.
 
-The benchmark copied the actual project directory into
-`_scratch/test-run-read-amplification/data/test_runs/<project-hash>/` and kept
-that copied project unchanged for both versions: **1821 JSON files,
-118456875 bytes**. It loaded the unmodified source saved before editing for
-the baseline and the working branch modules for the candidate, using the
-project virtual environment for both. No store call targeted the live source
-directory. Reported launcher telemetry remains the normal live reporting path.
+Changed fingerprints require full canonical validation before markers are
+reused. Create/append invalidate both indexes before persistence, including
+failed writes or reused fingerprints. Replacements during validation are not
+cached under a different fingerprint. Same-size external edits that preserve
+nanosecond mtime remain outside metadata detection. Owner/privacy projections
+still use current sessions every poll, with no route/project-record cache.
 
-Seconds, measured with `time.perf_counter` on the same copied files:
+`all_snapshots` now skips files disappearing between glob/stat/read. Permission,
+JSON, identity and replay failures still raise `StoreError`; Floor reports the
+room unavailable. Public single-run `get` still raises `KeyError` for missing
+runs. Enumeration and sorting stay outside the lock; each file's validation
+holds it independently.
 
-| Operation | Before | After, empty snapshot cache | After, warm reads |
-| --- | ---: | ---: | ---: |
-| `list_runs('mission_control')`, limit 100 | 4.728935 | 5.495832 | 0.454322 / 0.448178 |
-| `read_projects([project], {})`, complete Floor storage/projection read | 108.246729 | 6.605972 | 0.436427 / 0.424888 |
+## Copied-data benchmark
 
-"Empty cache" means a newly constructed snapshot cache, not a flushed OS file
-cache. Times are individual measurements under ordinary concurrent host load,
-not a controlled hardware benchmark. The first list read still validates every
-record and pays cache-copy/accounting overhead; its measured cold time is
-higher than the baseline. Repeated reads avoid replay. Floor's cold read also
-benefits immediately from replacing 19 scans with one.
+All **1909 real runs across two project directories** were copied into a new
+scratch tree at measurement preparation time. Mission Control contributed
+**1841 real files**. Added **3259 synthetic canonical terminal runs** to that
+copied project, giving **5100 files / 123704974 bytes** for the measured project.
+The other project's 68 real records were preserved. Live counts had increased
+from review's 1903; no source run was removed or pruned. Only this copied
+Mission Control project was projected for the measured Floor storage path.
 
-All 1821 validated snapshots fit in **9677127 bytes** of measured snapshot
-objects, below both bounds. An additional cold-scan contention probe used the
-same copied project and created/appended only to a separate scratch probe
-project. Its scan took **5.270103s**; five creates and five appends completed
-while it was scanning, with **8.285ms maximum** submit latency. The corresponding
-regressions verify directory enumeration never holds the shared lock and that
-validation releases it at every file boundary without relying on OS fairness.
+The copy contains **4732 terminal files and 368 active snapshots**, reducing to
+**334 active roots** after parent/privacy projection. No stale active run was
+finalized for the benchmark. The Floor snapshot cache after warmup holds only
+those 368 active snapshots, **1634333 bytes** of recursively measured objects;
+the 4732 fingerprint markers are independent of that LRU.
 
-Local scratch evidence (gitignored, not a runtime dependency): `benchmark.py`,
-`before_store.py`, `before_floor.py`, `before.json`, `after.json`,
-`submit_probe.py`, `submit.json`, and `plan.md` under the directory above.
-The original source base is `1878fa4f`; the saved modules preserve its exact
-store/Floor implementation for the comparison. The global plan path was
-refused by the unattended `.claude` write fence; scratch holds the recovery
-plan instead. No fence or permission change was attempted.
+Final measurements with `time.perf_counter`, project Python and the mandatory
+reported launcher, using the same preserved copied corpus:
+
+| Required operation | Seconds | Evidence |
+| --- | ---: | --- |
+| Floor cold | **7.240150** | 5100 canonical validations; both indexes initially empty |
+| Floor warm | **0.159355** | zero canonical validations |
+| `list_runs` warm, limit 100 | **4.470684** | separately primed list; 4096 hits / 1004 overflow validations |
+| Maximum submit during cold Floor scan | **0.341170** | maximum of 232 create/append samples |
+
+Two additional warm Floor reads took **0.163379 / 0.155065s**, both with zero
+validations. A second warm list took **4.101292s**, again 1004 validations.
+The history-list priming pass took 7.209921s and validated 4732 terminal files;
+it is excluded from the warm-list number. Floor intentionally does not retain
+terminal snapshots for later list calls.
+
+The contention probe cleared both indexes and scanned the same 5100-file
+project in **8.593957s**. It sampled creates/appends throughout that scan in a
+separate scratch project sharing the exact same process-global store lock.
+Reported submit latency is local store create/append wall time, including
+lock wait and atomic write; it is not an HTTP or large-history append benchmark.
+One very large record can still hold the lock for its own complete validation.
+
+Cold means empty process-local snapshot/terminal indexes, not a flushed OS
+file cache. These are individual observations under normal concurrent host
+load. An earlier preparation run measured 26.446062s cold and
+0.152168 / 0.161166 / 0.133008s warm on the same corpus. Its first list call
+was priming, despite its preliminary label of warm; the final measurements
+above explicitly separate priming from warm history reads. An earlier
+single-project-only scratch copy was preliminary and is not the final dataset.
+
+Evidence under `_scratch/test-run-read-amplification-r2/` (gitignored):
+`benchmark.py` prepares the fresh all-project copy and synthetic terminal data;
+`all-projects-data/` preserves that corpus; `measure-final.py` measures it
+without recopying; `final-results.json` includes every submit sample. Preliminary
+`data/`, `results.json` and `all-projects-results.json` remain intact. No
+benchmark operation targets the live run store; the launcher's normal live
+reporting remains a separate path.
 
 ## Verification
 
-All existing files under `tests/` containing `test_run_store`, `test_run_floor`
-or `test_run_routes` were selected, plus the new cache regressions, Floor route
-and subagent tests, and atomic JSON tests. The full run returned rc=0:
-**722 passed, 3 skipped in 142.34s**. Skips were two POSIX signal/cancellation
-tests on Windows and one unavailable-shell case.
-
-Exact selection, run from the worktree through the installation's reported
-launcher with its project Python as the child interpreter:
-
-```text
-python <installation>/tools/test-run.py --project mission_control --port 5199 -- <project-python> -m pytest tests/test_pytest_progress.py tests/test_test_run_anchor.py tests/test_test_run_capture.py tests/test_test_run_detection.py tests/test_test_run_finalize.py tests/test_test_run_floor.py tests/test_test_run_ingest.py tests/test_test_run_launcher.py tests/test_test_run_routes.py tests/test_test_run_store.py tests/test_test_run_snapshot_cache.py tests/test_floor_routes.py tests/test_floor_subagents.py tests/test_atomic_json.py
-```
-
-After adding final write-failure, stat-failure and create-invalidation cases,
-the same launcher ran `tests/test_test_run_snapshot_cache.py`: **22 passed in
-0.54s**, rc=0. No runtime implementation changed after the full suite.
-Coverage includes warm reuse across instances, changed mtime alone, changed
-size alone, external replacement during validation, malformed JSON and
-snapshot mismatch after cache hits, new/deleted files, defensive copies,
-project/root isolation, shared write invalidation, failed writes, stat errors,
-LRU/byte bounds, single-pass Floor reads, and live owner/privacy reprojection.
-
-Both benchmarks and the contention probe ran through that reported launcher
-with the same explicit project interpreter. Earlier preliminary invocations
-used bare `python` for the child, which Windows resolved to system Python;
-the broader test run then failed collection for missing `psutil`. All final
-numbers and suite results above replace those preliminary runs. No dependency
-was installed and no test selection was dropped to work around that failure.
-
-The required launcher emitted telemetry transport/enrollment/flush/capture
-warnings against the unchanged running server on some invocations; it still
-executed the requested children and preserved their exit codes. Thus these are
-verified local test/benchmark results, not a claim that live progress reporting
-has recovered. Integration and server restart remain the owner's next step.
+Final complete selection: **807 passed, 3 skipped in 195.05s**, rc=0. The
+preceding run before the final active-cache refinement/additional regression
+passed 806 with 3 skips; the final full run supersedes that runtime result.
+Focused Floor/active-scan/cache checks passed **98 tests in 7.57s**, rc=0.
+After correcting the Floor test spies to wrap `active_snapshots` and adding
+an explicit assertion against swallowed read failures, both affected Floor
+tests passed again: **2 passed in 1.88s**, rc=0. Runtime code was unchanged
+after the final complete run started. Three platform/shell skips remain;
+no selection was removed to work around a failure.
+Selection includes every `test_test_run_*.py` suite, pytest progress, Floor
+route/subagent and atomic JSON tests. Exact child selection:
 
 ```text
-pyright mc/test_run_snapshots.py mc/test_run_store.py mc/test_run_floor.py
+python <installation>/tools/test-run.py --project mission_control --port 5199 -- <project-python> -m pytest tests/test_pytest_progress.py tests/test_test_run_anchor.py tests/test_test_run_capture.py tests/test_test_run_detection.py tests/test_test_run_finalize.py tests/test_test_run_floor.py tests/test_test_run_ingest.py tests/test_test_run_launcher.py tests/test_test_run_routes.py tests/test_test_run_store.py tests/test_test_run_snapshot_cache.py tests/test_test_run_active_scan.py tests/test_test_run_transport.py tests/test_test_run_pytest.py tests/test_test_run_node.py tests/test_floor_routes.py tests/test_floor_subagents.py tests/test_atomic_json.py -o addopts= -q
 ```
 
-Basic type checking: **0 errors, 0 warnings, 0 informations**, rc=0 (only a
-non-failing tool-version notice). No new dependencies, UI, build assets or
-agent conduct changes: frontend smokes, README, user guide and agent-rule
-updates are inapplicable. No retention policy is required by this fix.
+New regressions cover repeated scans beyond entry and byte budgets, Floor
+history beyond the snapshot cap, disabled snapshot caching, active/terminal
+cache separation, late-event immutability, external terminal changes/corruption,
+reused-fingerprint create invalidation, disappearance at stat/read and
+unreadable-file errors. Existing cache/lock, ordering/pagination, owner/privacy,
+launcher, transport and reporter regressions remain selected.
+
+```text
+pyright mc/test_run_terminal.py mc/test_run_snapshots.py mc/test_run_store.py mc/test_run_floor.py
+```
+
+Basic type checking: **0 errors, 0 warnings, 0 informations**, rc=0.
+The installed pyright emits only a non-failing tool-version notice.
+The launcher against the unchanged live server emitted HTTP 403 progress,
+flush, capture and unfinalized-run warnings. Those are explicitly unverified
+live telemetry integration, not a test assertion failure or proof of recovery.
+Child exit codes are preserved.
+
+The global plan write was refused by the unattended `.claude` write fence;
+`_scratch/test-run-read-amplification-r2/plan.md` retains the recovery plan.
+No fence/permission change was made. No new dependency, UI, build asset or
+agent convention: frontend smokes, README, user guide and agent-rule edits
+are inapplicable. Integration/restart and live HTTP behavior remain unverified.

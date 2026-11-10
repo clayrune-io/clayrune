@@ -20,6 +20,7 @@ from typing import Any, Iterable
 
 from mc.atomic_json import read_text_with_retry, write_json_atomic
 from mc.test_run_snapshots import Fingerprint, SnapshotCache
+from mc.test_run_terminal import TerminalIndex
 
 SCHEMA = 1
 TERMINAL_STATES = frozenset({'passed', 'failed', 'error', 'cancelled', 'timeout',
@@ -31,6 +32,7 @@ MAX_EVENT_BYTES = 16384
 MAX_DETAILS = 100
 _LOCK = threading.RLock()
 _SNAPSHOTS = SnapshotCache()
+_TERMINAL = TerminalIndex()
 _PROCESS_PRODUCER = '_store_process'
 
 
@@ -329,24 +331,33 @@ class TestRunStore:
             stat = path.stat()
         except FileNotFoundError:
             _SNAPSHOTS.discard(path)
+            _TERMINAL.discard(path)
             raise KeyError(path.stem) from None
         except OSError as exc:
             _SNAPSHOTS.discard(path)
+            _TERMINAL.discard(path)
             raise StoreError(f'Unreadable test run {path.stem}') from exc
         return stat.st_mtime_ns, stat.st_size
 
-    def _snapshot(self, project_id: str, run_id: str) -> dict[str, Any]:
+    def _snapshot(self, project_id: str, run_id: str, *, evict: bool = True,
+                  cache_terminal: bool = True) -> dict[str, Any]:
         """Caller holds _LOCK for one file only, including the cache lookup."""
         path = self._path(project_id, run_id)
         fingerprint = self._fingerprint(path)
+        _TERMINAL.matches(path, fingerprint)
         cached = _SNAPSHOTS.get(path, fingerprint)
         if cached is not None:
+            if cached['state'] in TERMINAL_STATES:
+                _TERMINAL.remember(path, fingerprint)
             return cached
         snapshot = self._read(project_id, run_id)['snapshot']
         # An external atomic replacement during validation must not tag the old
         # snapshot with the new version's fingerprint. Recheck on the next read.
         if self._fingerprint(path) == fingerprint:
-            _SNAPSHOTS.put(path, fingerprint, snapshot)
+            if cache_terminal or snapshot['state'] not in TERMINAL_STATES:
+                _SNAPSHOTS.put(path, fingerprint, snapshot, evict=evict)
+            if snapshot['state'] in TERMINAL_STATES:
+                _TERMINAL.remember(path, fingerprint)
         return copy.deepcopy(snapshot)
 
     def create(self, project_id: str, *, observed_at: float,
@@ -378,6 +389,7 @@ class TestRunStore:
             snapshot = _initial(enrollment)
             path.parent.mkdir(parents=True, exist_ok=True)
             _SNAPSHOTS.discard(path)
+            _TERMINAL.discard(path)
             write_json_atomic(path, {'schema': SCHEMA, 'enrollment': enrollment,
                                     'events': [], 'snapshot': snapshot}, allow_nan=False)
             return copy.deepcopy(snapshot)
@@ -410,6 +422,7 @@ class TestRunStore:
             record['snapshot'] = replay(record['enrollment'], record['events'])
             path = self._path(project_id, run_id)
             _SNAPSHOTS.discard(path)
+            _TERMINAL.discard(path)
             write_json_atomic(path, record, allow_nan=False)
             return copy.deepcopy(record['snapshot'])
 
@@ -445,7 +458,16 @@ class TestRunStore:
             snapshots = [s for s in snapshots if s['owner_session_id'] == owner_session_id]
         return snapshots[offset:offset + limit]
 
-    def all_snapshots(self, project_id: str) -> list[dict[str, Any]]:
+    def active_snapshots(self, project_id: str) -> list[dict[str, Any]]:
+        """Floor-only view: unchanged terminal files require only a stat.
+
+        Fingerprint markers have no LRU cap and retain no snapshot copies.
+        Validation, copying and projection scale with active/changed files;
+        enumeration/stat still scale with history to detect external changes.
+        """
+        return self.all_snapshots(project_id, active_only=True)
+
+    def all_snapshots(self, project_id: str, *, active_only: bool = False) -> list[dict[str, Any]]:
         """Read every run once, newest first, without a whole-directory lock.
 
         Enumeration and sorting never hold _LOCK. Each file is observed under
@@ -457,6 +479,18 @@ class TestRunStore:
         snapshots = []
         for path in paths:
             with _LOCK:
-                snapshots.append(self._snapshot(project_id, path.stem))
+                try:
+                    if active_only and _TERMINAL.matches(path, self._fingerprint(path)):
+                        continue
+                    snapshot = self._snapshot(project_id, path.stem, evict=active_only,
+                                              cache_terminal=not active_only)
+                except KeyError:
+                    # The file may disappear after enumeration or stat. Other
+                    # unreadable/corrupt records must still raise StoreError.
+                    _SNAPSHOTS.discard(path)
+                    _TERMINAL.discard(path)
+                    continue
+                if not active_only or snapshot['state'] not in TERMINAL_STATES:
+                    snapshots.append(snapshot)
         snapshots.sort(key=lambda s: (s['created_at'], s['run_id']), reverse=True)
         return snapshots

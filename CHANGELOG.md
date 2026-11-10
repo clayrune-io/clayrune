@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Keep Floor test reads warm beyond snapshot cache capacity
+
+- Floor reads now skip unchanged terminal files using an independent fingerprint-only index and cache only active snapshots. Bulk history scans preserve resident entries beyond the 4096-entry/32 MiB budget instead of sequentially evicting the whole cache. Public list/get semantics remain unchanged; overflow history still validates.
+- Run listings skip files disappearing after enumeration/stat while retaining errors for other unreadable records. Terminal append immutability is covered for all seven states; no run deletion or pruning was added.
+- On a preserved all-project copy with Mission Control expanded to 5100 runs: Floor 7.240150s cold / 0.159355s warm (zero warm validations), list 4.470684s warm, maximum concurrent cold-scan submit 0.341170s. Local branch candidate only; no merge, push, restart or live telemetry recovery claim. Evidence: `docs/TEST_RUN_READ_PERFORMANCE.md`.
+
 ## [2026-11-09] - Stop repeated test-run replay from blocking submissions
 
 - Cached validated run snapshots by checked path, nanosecond mtime and size, with defensive copies and a 4096-entry/32 MiB snapshot budget. New/changed records still replay and corrupt records still fail; write paths invalidate before persistence. Canonical events are never cached.
