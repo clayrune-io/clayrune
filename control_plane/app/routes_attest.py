@@ -236,6 +236,10 @@ async def attest(
         "result": "ok",
         "tunnel_token": tunnel_token,
         "tunnel_token_id": f"tt_{uuid.uuid4().hex[:16]}",
+        # Non-secret CF tunnel id (the token above is the secret). The install needs it as the
+        # `tunnel_uuid` of the mail enrollment transcript (MC-1166 7d-2e, decision E1a); the CP
+        # cross-checks it against this same device row when it mints the grant.
+        "tunnel_uuid": result.device.get("cf_tunnel_uuid"),
         "tunnel_token_expires_at": _now_iso(15 * 60),
         "next_attestation_after": _now_iso(10 * 60),
         "caps": {
