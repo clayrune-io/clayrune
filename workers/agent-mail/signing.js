@@ -23,7 +23,7 @@ export function unbase64url(s) {
 }
 export function canonical(m) {
   if (Object.values(m).some((v) => typeof v !== 'string')
-      || m.version !== '1' || !['install-to-service', 'service-to-install'].includes(m.direction)
+      || m.version !== '1' || !['install-to-service', 'service-to-install', 'service-to-cp'].includes(m.direction)
       || !ID.test(m.key_id) || !ID.test(m.install_id) || !/^[1-9][0-9]{0,14}$/.test(m.generation)
       || m.method !== 'POST' || !/^\/[A-Za-z0-9/_-]{1,200}$/.test(m.path)
       || !/^[1-9][0-9]{12}$/.test(m.timestamp) || !NONCE.test(m.nonce) || !HEX.test(m.digest)) {

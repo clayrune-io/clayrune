@@ -42,6 +42,8 @@ tags:
     description: Device-signed (mc-tunnel)
   - name: admin
     description: Operator-only
+  - name: mail-delivery
+    description: Agent-mail delivery authority (default off; 404 unless CLAYRUNE_MAIL_DELIVERY_ENABLED)
 
 #───────────────────────────────────────────────────────────────────────────────
 # Security schemes
@@ -69,6 +71,18 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Operator JWT issued via Google IAP. Audience-bound.
+
+    MailServiceSignature:
+      type: apiKey
+      in: header
+      name: x-mail-signature
+      description: |
+        Ed25519 signature by the agent-mail Worker's service key over the
+        canonical array in `workers/agent-mail/signing.js` with
+        `x-mail-direction: service-to-cp`, the exact request path, a 300 s skew
+        and a durable nonce. Companion headers: `x-mail-{version,direction,
+        key-id,install-id,generation,timestamp,nonce,digest}`. Not a Firebase,
+        Access or device credential.
 
   parameters:
     IdempotencyKey:
@@ -1029,3 +1043,135 @@ paths:
             schema: { $ref: '#/components/schemas/MaintenanceBroadcast' }
       responses:
         '200': { description: Queued for next attestation cycle }
+
+  #─── Mail delivery authority (MC-1166 7d-2b; docs/AGENT_MAIL_UNIT7D2_CONTRACT.md) ───
+  # Every route answers 404 unless CLAYRUNE_MAIL_DELIVERY_ENABLED is 1/true.
+  /mail-delivery/jwks:
+    get:
+      tags: [mail-delivery]
+      summary: Public delivery-capability keys (separate from /jwks)
+      security: []
+      responses:
+        '200':
+          description: JWKS (ES256 P-256 public keys, kid `mail-delivery-*`); `Cache-Control public, max-age=600`
+        '404': { description: Feature disabled }
+        '503': { $ref: '#/components/responses/Error' }
+
+  /mail-delivery/bind:
+    post:
+      tags: [mail-delivery]
+      summary: Create the CP binding from an enrollment grant and transcript R (idempotent on grant jti)
+      security:
+        - MailServiceSignature: []
+      requestBody:
+        required: true
+        description: application/json, at most 16 KiB, no query string
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [grant, r]
+              additionalProperties: false
+              properties:
+                grant: { type: string, description: Enrollment grant JWT issued by this CP }
+                r: { type: array, items: { type: string }, description: Canonical transcript fields }
+      responses:
+        '200': { description: Bound (or already bound for the same grant) }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { description: Feature disabled }
+        '409': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Error' }
+
+  /mail-delivery/issue:
+    post:
+      tags: [mail-delivery]
+      summary: Mint a 60 s per-request delivery capability (one install, generation, nonce and digest)
+      security:
+        - MailServiceSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [install_id, generation, mode, req_digest, mail_nonce, mail_key_id]
+              additionalProperties: false
+              properties:
+                install_id: { type: string }
+                generation: { type: string, pattern: '^[1-9][0-9]{0,14}$' }
+                mode: { type: string, enum: [mail, proof] }
+                req_digest: { type: string, pattern: '^[a-f0-9]{64}$' }
+                mail_nonce: { type: string, pattern: '^[a-f0-9]{32}$' }
+                mail_key_id: { type: string }
+                worker_active: { type: boolean, description: Informational only; CP never trusts it for authority }
+      responses:
+        '200':
+          description: Capability issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  capability: { type: string }
+                  jti: { type: string }
+                  exp: { type: integer }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { description: Feature disabled }
+        '409': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Error' }
+
+  /mail-delivery/lease:
+    post:
+      tags: [mail-delivery]
+      summary: Fresh authority read for the five-minute ownership-lease renewal
+      security:
+        - MailServiceSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [install_id, generation]
+              additionalProperties: false
+              properties:
+                install_id: { type: string }
+                generation: { type: string, pattern: '^[1-9][0-9]{0,14}$' }
+      responses:
+        '200': { description: "checked_at_ms, record_version, lease_until_ms (checked_at_ms + 300000)" }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { description: Feature disabled }
+        '503': { $ref: '#/components/responses/Error' }
+
+  /mail-delivery/revoke:
+    post:
+      tags: [mail-delivery]
+      summary: Revoke a binding generation (idempotent; a newer generation is never touched)
+      security:
+        - MailServiceSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [install_id, generation]
+              additionalProperties: false
+              properties:
+                install_id: { type: string }
+                generation: { type: string, pattern: '^[1-9][0-9]{0,14}$' }
+      responses:
+        '200': { description: "state: revoked | fenced | already_superseded" }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { description: Feature disabled }
+        '503': { $ref: '#/components/responses/Error' }
