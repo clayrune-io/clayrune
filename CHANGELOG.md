@@ -1,5 +1,25 @@
 # Clayrune — Changelog
 
+## [2026-11-10] - Keep mail-store contention out of shared question handling (MC-1166 unit 7c review)
+
+- Serialized channel selection and ownership admission per question, with factory calls and durable receipt I/O outside the global notification mutex. A stalled mail store no longer blocks unrelated legacy reply polling; concurrent notifications retain one timer and delivery for either channel owner.
+- Added permanent SQLite contention and concurrent same-question regressions. Documented the deferred all-cache-loss/flag-off receipt-recovery limitation. Disabled branch candidate only; no operational factory, real mail, activation or deployment.
+
+## [2026-11-10] - Keep question delivery ownership across adapter changes (MC-1166 unit 7c review round 2)
+
+- Checked existing legacy question-id and new-channel revision ownership before adapter eligibility under the notification lock. Repeated parser/turn-boundary notifications cannot arm another timer or switch transports when the flag/factory changes; existing session selections also survive notification-cache loss.
+- Added ten isolated re-entry regressions covering both transition directions before/after delivery and retained session ownership. Fresh legacy questions keep base metadata and reply matching. Default-disabled candidate only.
+
+## [2026-11-10] - Preserve legacy question deduplication and expire stale send admissions (MC-1166 unit 7c review)
+
+- Kept legacy mail keyed by question id when the new outbound flag is off or its factory is absent, including same-id revisions and existing reply matching. Revision snapshots apply only to the selected new channel; its parser hook also requires the factory.
+- Rechecked intent/thread expiry and target validity after signing under the existing admission transaction. Expired threads become expired before any transport call. Added isolated review regressions for legacy replies, independent deadlines and post-signing target refusal; default-disabled candidate only.
+
+## [2026-11-10] - Bind outbound mail before sending and preserve question delivery ownership (MC-1166 unit 7c)
+
+- Added disabled outbound notes/questions with encrypted immutable intents, pre-send conversation snapshots and transport mappings, fresh mail-only signatures, and current enrollment/ownership/pin checks. Only a proven pre-write rate refusal retries; ambiguous sends remain visible and cannot resend automatically.
+- Added durable per-revision question channel selection behind the existing attendance grace. New mail never falls back to legacy SMTP or enters its IMAP reply poller; immediate signed replies use the recorded conversation and question form. Synthetic adapters only, no operational factory, network client, activation or deployment.
+
 ## [2026-11-09] - Bind mail consent to signed evidence and cancel actual assignments (MC-1166 unit 7b review)
 
 - Retained signed manifest evidence and the human-approved digest; revalidated signatures, candidate consistency and current sequence/digest before verify or enable. Corrupted or replaced candidates cannot become service pins.

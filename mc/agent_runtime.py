@@ -773,6 +773,8 @@ def apply_mc_tool_blocks(session: Dict[str, Any],
                 })
                 session['waiting_for_question'] = True
                 paused = True
+                from mc.agent_mail_outbound_questions import parsed as _mail_question_parsed
+                _mail_question_parsed(session)
             except Exception as e:
                 session.setdefault('log_lines', TimestampedLines()).append(
                     f'[mc:question ignored — malformed block: {e}]')
