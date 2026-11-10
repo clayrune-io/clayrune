@@ -116,5 +116,5 @@ test('unknown recipients cannot create per-install refusal buckets', async () =>
   const f = await fixture();
   const message = emailMessage(); message.to = message.to.replace('opaque1+', 'unknown+');
   assert.equal((await f.worker.email(message, f.env)).reason, 'owner_inactive');
-  assert.equal((await f.ledger.first("SELECT COUNT(*) AS n FROM rate_limits WHERE bucket LIKE 'ingress-refused:%'")).n, 0);
+  assert.equal((await f.ledger.first("SELECT COUNT(*) AS n FROM rate_limits WHERE bucket LIKE 'ingress-refused:%' AND bucket NOT LIKE 'ingress-refused:global:%'")).n, 0);
 });

@@ -1,5 +1,17 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Reserve inbound owner and shared allowances together (MC-1166 review)
+
+- Made install/global authenticated ingress reservations one transactional D1 batch. An owner past their install cap cannot drain global slots; a full global bucket leaves install capacity unchanged. Storage failure rolls back both charges.
+- Added a two-owner regression with 10,000 authentic over-install refusals, global-full controls, concurrent final-slot checks and rollback fault injection. Authenticated duplicates and later MIME refusals retain the admitted-attempt policy.
+- Updated the transport contract. Local disabled candidate only; no merge, push, restart or deployment.
+
+## [2026-11-09] - Protect owner mail from stranger quota exhaustion (MC-1166)
+
+- Moved the shared authenticated ingress allowance after owner/authentication/token/correlation acceptance. Refused traffic uses a separate global budget and cannot exhaust owner-mail capacity.
+- Saturated refusal accounting retains a capped daily marker, skips further audit/per-install writes, and still rejects every refused message with its original reason. The unverified-ingress gate stays first.
+- Retained both 10,000-stranger reviewer probes and the two-owner control; added accepted-limit, saturation, concurrency and next-day checks. Local disabled candidate only; no merge, push, restart or deployment.
+
 ## [2026-11-09] - Isolate stale mail receipts and prove provider history (MC-1166 unit 6 review)
 
 - Receipt reconciliation retires stale project generations with a visible terminal reason, retains original delivery evidence, and logs other per-row errors while continuing other projects. Terminal events cannot be reopened by late receipts or repeatedly poison the wake pass.
