@@ -25,6 +25,24 @@ export class Ledger {
       DO UPDATE SET count=count+1 WHERE count < ?`, key, now + window * 2, maximum);
     return r.meta.changes === 1;
   }
+  async reserveIngress(install, now) {
+    const day = Math.floor(now / DAY);
+    const ownerKey = `ingress:${install}:${day}`;
+    const globalKey = `ingress-accepted:global:${day}`;
+    // D1 batches serialize these statements in one transaction. Only charge the
+    // owner if global has room; changes() ties the global charge to that exact
+    // owner admission. A failed statement rolls both back, with no refund gap.
+    const result = await this.db.batch([
+      this.stmt(`INSERT INTO rate_limits SELECT ?,1,? WHERE ? > 0 AND
+        COALESCE((SELECT count FROM rate_limits WHERE bucket=?),0) < ?
+        ON CONFLICT(bucket) DO UPDATE SET count=count+1 WHERE count < ?`,
+        ownerKey, now + 2 * DAY, this.policy.ingressPerDay,
+        globalKey, this.policy.globalIngressPerDay, this.policy.ingressPerDay),
+      this.stmt(`INSERT INTO rate_limits SELECT ?,1,? WHERE changes()=1
+        ON CONFLICT(bucket) DO UPDATE SET count=count+1`, globalKey, now + 2 * DAY),
+    ]);
+    return result[0].meta.changes === 1;
+  }
   async reject(reason, now) {
     // Callers pass constant reason codes only. Never persist raw exception text.
     await this.db.batch([

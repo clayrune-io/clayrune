@@ -86,9 +86,9 @@ export async function ingress({ message, ledger, config, now }) {
   // SMTP authentication rejection. The email adapter reports sanitized custody failure.
   if (!decision.accept && decision.reason_code === 'lookup_error') throw new Error('thread_lookup_failed');
   if (!decision.accept) return drop(decision.reason_code);
-  // Reserve global and owner allowances only after owner/auth/token/correlation pass.
-  if (!await ledger.limit('ingress-accepted:global', ledger.policy.globalIngressPerDay, now)) return drop('ingress_limit');
-  if (!await ledger.limit(`ingress:${reg.install_id}`, ledger.policy.ingressPerDay, now)) return drop('ingress_limit');
+  // Reserve both allowances atomically after owner/auth/token/correlation pass.
+  // Either full bucket refuses without consuming capacity in the other.
+  if (!await ledger.reserveIngress(reg.install_id, now)) return drop('ingress_limit');
   const content = await strip(raw);
   if (!content.ok) return drop(content.reason_code);
   const ids = headers.filter((h) => h.key === 'message-id');

@@ -77,6 +77,78 @@ async function bucket(f, name) {
   return f.ledger.first('SELECT count FROM rate_limits WHERE bucket=?', `${name}:${Math.floor(f.clock.now / DAY)}`);
 }
 
+test('10000 authentic replies past owner A install cap cannot spend owner B global capacity', async () => {
+  const { f, replies } = await twoOwners();
+  // Use the same authenticated reply: duplicates consume admitted-attempt quota,
+  // but keep one queued event so queue capacity cannot hide the original bug.
+  for (let i = 0; i < f.ledger.policy.ingressPerDay; i++) {
+    assert.equal((await f.worker.email(replies()[0], f.env)).status, i === 0 ? 'queued' : 'duplicate');
+  }
+  assert.equal((await bucket(f, 'ingress:install1')).count, 200);
+  assert.equal((await bucket(f, 'ingress-accepted:global')).count, 200);
+  for (let i = 0; i < 10000; i++) {
+    const message = replies()[0];
+    assert.deepEqual(await f.worker.email(message, f.env), { status: 'rejected', reason: 'ingress_limit' });
+    assert.deepEqual(message.rejects, ['Agent mail refused']);
+  }
+  assert.equal((await bucket(f, 'ingress:install1')).count, 200);
+  assert.equal((await bucket(f, 'ingress-accepted:global')).count, 200);
+  const second = replies()[1];
+  assert.equal((await f.worker.email(second, f.env)).status, 'queued');
+  assert.deepEqual(second.rejects, []);
+  assert.equal((await bucket(f, 'ingress:install2')).count, 1);
+  assert.equal((await bucket(f, 'ingress-accepted:global')).count, 201);
+  assert.equal((await f.ledger.first('SELECT COUNT(*) AS n FROM events')).n, 2);
+});
+
+test('full global bucket leaves an existing owner allowance unchanged under concurrent replies', async () => {
+  const { f, replies } = await twoOwners();
+  assert.equal((await f.worker.email(replies()[0], f.env)).status, 'queued');
+  await f.ledger.run('UPDATE rate_limits SET count=? WHERE bucket=?',
+    f.ledger.policy.globalIngressPerDay, `ingress-accepted:global:${Math.floor(f.clock.now / DAY)}`);
+  const messages = Array.from({ length: 32 }, () => replies()[0]);
+  const results = await Promise.all(messages.map(m => f.worker.email(m, f.env)));
+  for (const result of results) assert.deepEqual(result, { status: 'rejected', reason: 'ingress_limit' });
+  for (const message of messages) assert.deepEqual(message.rejects, ['Agent mail refused']);
+  assert.equal((await bucket(f, 'ingress:install1')).count, 1);
+  assert.equal((await bucket(f, 'ingress-accepted:global')).count, 10000);
+  assert.equal((await f.ledger.first('SELECT COUNT(*) AS n FROM events')).n, 1);
+});
+
+for (const boundary of ['install', 'global']) {
+  test(`concurrent paired reservations share the final ${boundary} slot without partial charges`, async () => {
+    const f = await fixture();
+    const ownerCount = boundary === 'install' ? 199 : 5;
+    const globalCount = boundary === 'global' ? 9999 : 5;
+    for (const [name, count] of [['ingress:install1', ownerCount], ['ingress-accepted:global', globalCount]]) {
+      await f.ledger.run('INSERT INTO rate_limits VALUES(?,?,?)',
+        `${name}:${Math.floor(f.clock.now / DAY)}`, count, f.clock.now + 2 * DAY);
+    }
+    const results = await Promise.all(Array.from({ length: 32 }, (_, i) =>
+      f.ledger.reserveIngress(boundary === 'global' ? `install${i + 1}` : 'install1', f.clock.now)));
+    assert.equal(results.filter(Boolean).length, 1);
+    const owners = await f.ledger.first("SELECT SUM(count) AS n FROM rate_limits WHERE bucket LIKE 'ingress:install%'");
+    assert.equal(owners.n, ownerCount + 1);
+    assert.equal((await bucket(f, 'ingress-accepted:global')).count, globalCount + 1);
+  });
+}
+
+for (const existing of [false, true]) {
+  test(`failed global ${existing ? 'update' : 'insert'} rolls back the paired owner charge`, async () => {
+    const f = await fixture();
+    if (existing) {
+      assert.equal(await f.ledger.reserveIngress('install1', f.clock.now), true);
+    }
+    // Simulate failure of statement two after the owner has been incremented.
+    f.db.sql.exec(`CREATE TRIGGER fail_global BEFORE ${existing ? 'UPDATE' : 'INSERT'} ON rate_limits
+      WHEN NEW.bucket LIKE 'ingress-accepted:global:%'
+      BEGIN SELECT RAISE(ABORT, 'injected_global_failure'); END`);
+    await assert.rejects(f.ledger.reserveIngress('install1', f.clock.now), /injected_global_failure/);
+    assert.equal((await bucket(f, 'ingress:install1'))?.count ?? null, existing ? 1 : null);
+    assert.equal((await bucket(f, 'ingress-accepted:global'))?.count ?? null, existing ? 1 : null);
+  });
+}
+
 test('authenticated owner above accepted-global allowance is still refused', async () => {
   const { f, replies } = await twoOwners();
   // Pre-fill all but the last reservation, then exercise the boundary through

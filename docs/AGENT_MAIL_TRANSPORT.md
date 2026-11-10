@@ -532,13 +532,25 @@ review: 100 queued/held bodies per install, 10,000 globally; 20 sends/install/da
 200 authenticated-endpoint attempts/install/day, shared by send and reconcile.
 The inbound `ingress:<install_id>` allowance is reserved only after `decide()`
 accepts the owner, provider authentication, token and Message-ID correlation.
-The global authenticated allowance, `ingress-accepted:global`, is also reserved
-only after `decide()` accepts, immediately before the per-install allowance.
-It caps authenticated attempts across installs at 10,000/day; strangers cannot
-spend it. `ingress_not_verified` remains the first ingress gate. Authenticated
-attempts that later fail MIME/text or per-install quota checks still spend global
-allowance; duplicate authenticated deliveries do too. A failed global reservation
-returns `ingress_limit` and calls `setReject` without retaining an event.
+The global authenticated allowance, `ingress-accepted:global`, caps authenticated
+attempts across installs at 10,000/day. `reserveIngress()` reserves both counters
+in one transactional D1 batch after `decide()` accepts: the conditional install
+increment checks global capacity, then a dependent `changes()=1` statement charges
+global only if the install increment succeeded. Either full bucket leaves BOTH
+counts unchanged; a statement failure rolls back the whole batch. No asynchronous
+refund is needed. An owner past their install cap cannot drain other owners'
+global capacity, and a full global bucket cannot drain any install allowance.
+Strangers cannot spend either accepted counter. `ingress_not_verified` remains
+the first ingress gate. Admitted attempts that later fail MIME/text checks still
+spend both allowances; duplicate authenticated deliveries do too. A refused paired
+reservation returns `ingress_limit` and calls `setReject` without retaining an event.
+
+The batch uses [D1's transactional batch guarantee](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch)
+and [SQLite's preceding-statement changes count](https://www.sqlite.org/lang_corefunc.html#changes).
+Local regressions use the existing real-SQLite D1 facade to cover two-owner
+isolation after 10,000 authentic over-install refusals, global-full unchanged
+install counts, concurrent final-slot reservations, and second-statement rollback.
+These tests do not claim deployed Cloudflare verification.
 
 SMTP refusals use a separate `ingress-refused:global` counter, capped at
 10,000/day, consulted only inside `drop()`. Within that budget, refusals retain
