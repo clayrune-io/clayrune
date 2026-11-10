@@ -10,6 +10,7 @@ This supersedes the preflight's unadopted recommendation B, not its delivery gat
 - `enrollment-challenge.js`: random challenge/code and purpose-bound keyed digests.
 - `enrollment-transcript.js`: strict canonical R and dual Ed25519 proof verification.
 - `enrollment-grant.js`: pinned ES256 authority-grant verification, no network client.
+- `enrollment-reservations.js`: expiring provisional identity admission, separate from permanent proven identities.
 - `migrations/0001_enrollment.sql`: pending identities, challenges and atomic ownership commits.
 - `control_plane/app/mail_enrollment_transcript.py`: matching canonical R encoding.
 - `control_plane/app/mail_grant_signing.py`: explicitly provided mail-purpose P-256 signing key.
@@ -37,7 +38,7 @@ an unknown-key response cannot supply that configuration. The exact validated
 owner address is stored and hashed without mailbox alias equivalence. The input
 owner must already be in the existing parser's canonical mailbox encoding.
 
-The core reserves one opaque install/address for a provisioned device. It
+The core provisionally reserves one opaque install/address for a claimed device. It
 generates a 32-byte challenge, 15-minute expiry and 128-bit copying code, storing
 only HMAC-SHA256(code purpose/version/flow/challenge/code) under an explicitly
 provided, separate 32-byte secret. Five wrong answers atomically invalidate the
@@ -50,16 +51,31 @@ once. That adapter must send only to the stored owner, with provisioning abuse
 limits; it must never return the code to the requesting install/agent. This unit
 does not implement real mail or destination creation. Resume returns the same
 transcript/status, without reissuing the code. If that initial return was lost
-before delivery, start a fresh flow after expiry, retaining the install/address.
-The generation has at most one pending flow. Invalidated/expired challenges do
-not mint another install for the device.
+before delivery, start a fresh flow after expiry. An unproved reservation can
+expire and receive a new identity; a proven installation always retains its
+install/address. The generation has at most one pending flow.
 
-The library conservatively limits lifetime reserved identities to 200, adjustable
-downward by trusted configuration. This is a bounded synthetic service budget,
-not an observation of available Cloudflare destination capacity. No pending-row
-garbage collection or address reassignment is implemented. Provider account
-capacity, rate limits, durable code delivery and cleanup are integration gates,
-not claims inferred from the constructor's budget.
+The library limits permanent proven identities plus live provisional reservations
+to 200, adjustable downward by trusted configuration. `begin()` admits unproved
+device hints only to `mail_identity_reservations`, with a maximum 15-minute
+lifetime. Reusing that reservation cannot extend its deadline. A new flow's
+challenge cannot outlive its reservation. A new begin invalidates expired pending
+flows, erases their codes and deletes expired provisional reservations; historical
+flow ids/transcripts remain, so an expired flow cannot be recreated or revived.
+The conditional reservation INSERT serializes capacity admission.
+
+Only the successful ownership-commit trigger promotes a provisional identity to
+`mail_installations`, atomically with generation advancement, grant consumption
+and inactive registration. Database admission rechecks reservation expiry.
+Failure rolls promotion back. Proven identity/address tombstones remain counted
+after ownership expiry or transport revocation/removal, and are never reclaimed
+by provisional cleanup. Fresh retries for a proven device reuse that identity.
+This migration is a fresh disabled-candidate schema, not a tested upgrade of a
+database created by the superseded candidate.
+
+This is a synthetic service budget, not an observation of available Cloudflare
+destination capacity. Provider account capacity, rate limits, durable code delivery
+and historical-flow retention cleanup remain integration gates.
 
 R is compact ASCII JSON of exactly these 20 **string** fields, in order:
 
@@ -76,6 +92,14 @@ fingerprints/owner hash use lowercase SHA-256 hex. No callbacks, query strings,
 ports, Unicode, object-order dependence or floating-point numbers enter R.
 Both the provisioned device key and the separate mail key sign the **same R**.
 Device-key use is limited to this enrollment proof, never ordinary mail traffic.
+
+`complete()` revalidates all three stored service-pin fields and service origin
+against current trusted configuration before any new commit, and again after
+asynchronous provider/grant verification. Reconstructing the core with a replaced
+pin therefore rejects an old pending flow even if its proofs and grant are valid.
+The single configured pin allows no implicit historical overlap. An exact retry
+of an already committed flow remains a historical, nonrenewing result and does
+not need the old pin to remain current.
 
 ## Authority and verifier
 
@@ -203,16 +227,25 @@ plan-file write are in the MAIN checkout's ignored item journal. No frontend
 changed; boot/mobile smokes are inapplicable. README, USER_GUIDE and agent rules
 need no change for inaccessible, internal libraries. No new dependency was added.
 
-Final branch results: Worker **797 passed**, control plane **98 passed / 1
+Round-2 branch results: Worker **809 passed**, control plane **98 passed / 1
 skipped**, manifest **22 passed**; all three launcher invocations exited **0**.
 The CP skip is the existing edge-contract test requiring a sibling
 `clayrune-cloud` checkout. Pyright across all four new Python modules reported
-**0 errors / 0 warnings**, exit **0**. The CP run reported incomplete launcher
-progress telemetry (`telemetry_queue_full_progress_incomplete`); that is not
-presented as complete dashboard reporting. Framework counts come from the actual
-test output, not script-unit telemetry. SQLite trigger rollback, grant/challenge
-single use, active-generation replacement refusal, database-time expiry and
+**0 errors / 0 warnings**, exit **0** (also checking the touched manifest test).
+These are fresh round-2 executions, with the Python suites requested separately;
+the earlier combined invocation's collection failure is not a passing result.
+Framework counts come from actual test output, not script-unit telemetry. SQLite
+trigger rollback, grant/challenge single use, active-generation replacement refusal, database-time expiry and
 read-start lease anchoring have explicit tests.
+
+Round 2 adds fresh-instance replaced-pin regressions for each pin field and their replacement together, a
+historical exact-retry control, a pin replacement during provider I/O, the
+capacity-two invented-device/expiry/legitimate-enrollment reproduction, permanent
+address retention after transport removal, concurrent final-slot admission,
+invalidated-flow expiry, a nonextending reservation retry and database-time provisional expiry. The registration
+write-fault test also checks that promotion rolls back to the provisional table.
+The manifest CAS-write-failure case now reaches its callback exactly once and
+requires `OSError`; a prior rollback refusal cannot satisfy it.
 
 Still unverified: actual D1 trigger/JSON/time behavior and remote contention;
 deployed registry/Cloudflare schemas, clock alignment and read adapters; real

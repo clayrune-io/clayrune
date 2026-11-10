@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Recheck mail enrollment trust and expire unproved reservations (MC-1166 unit 7a review)
+
+- New ownership commits revalidate the stored service pin against current trusted configuration, including after asynchronous evidence checks. Exact historical committed retries remain nonrenewing.
+- Split expiring provisional identities from permanent proven installation tombstones. Expired unproved attempts release capacity; successful ownership commits promote atomically, while established addresses remain reserved through expiry and transport revocation.
+- Added the review reproductions and corrected the manifest storage-error test to reach CAS and require its write error. Default-disabled branch candidate only; no operational integration or deployment.
+
 ## [2026-11-09] - Bind mail enrollment to purpose-specific ownership grants (MC-1166 unit 7a)
 
 - Added disabled Worker enrollment libraries with flow-bound 32-byte challenges, keyed single-use mailbox-code digests, dual-key canonical proofs and strict pinned ES256 grant verification. Dashboard tokens cannot authorize enrollment.

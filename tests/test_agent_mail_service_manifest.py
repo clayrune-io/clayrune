@@ -91,9 +91,16 @@ def test_storage_error_does_not_reset_floor_or_return_candidate(fixture):
     def fail(*args): raise OSError("disk unavailable")
     store.load = fail
     with pytest.raises(OSError): verify()
-    store.load = lambda origin: ManifestState(1, "a" * 64)
-    store.compare_and_set = fail
-    with pytest.raises((OSError, ManifestRefused)): verify()
+    store.load = lambda origin: None
+    calls = []
+    def fail_cas(*args):
+        calls.append(args)
+        raise OSError("disk unavailable")
+    store.compare_and_set = fail_cas
+    with pytest.raises(OSError, match="disk unavailable"): verify()
+    assert len(calls) == 1
+    assert calls[0][0] == ORIGIN and calls[0][1] is None
+    assert store.value is None
 
 
 def test_concurrent_higher_sequence_refuses_stale_candidate(fixture):

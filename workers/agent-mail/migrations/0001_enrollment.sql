@@ -1,15 +1,22 @@
 -- Apply AFTER schema.sql. New concern, no positional changes to transport tables.
--- Never infer activation from these ownership records. Address/device reservations
--- survive expiry/revocation; retry uses the same install identity.
+-- Never infer activation from these ownership records. Only proven identities
+-- survive expiry/revocation. Unproved reservations have a bounded lifetime.
+CREATE TABLE mail_identity_reservations (
+  install_id TEXT PRIMARY KEY, device_id TEXT NOT NULL UNIQUE,
+  address_local TEXT NOT NULL UNIQUE CHECK(length(address_local)=30),
+  expires_at INTEGER NOT NULL
+);
 CREATE TABLE mail_installations (
   install_id TEXT PRIMARY KEY, device_id TEXT NOT NULL UNIQUE,
   address_local TEXT NOT NULL UNIQUE CHECK(length(address_local)=30),
-  generation INTEGER NOT NULL DEFAULT 0 CHECK(generation>=0),
+  generation INTEGER NOT NULL DEFAULT 1 CHECK(generation>0),
   ownership_checked_at INTEGER, ownership_lease_until INTEGER, record_version TEXT
 );
 CREATE TABLE mail_enrollment_flows (
   flow_id TEXT PRIMARY KEY, flow_digest TEXT NOT NULL,
-  install_id TEXT NOT NULL REFERENCES mail_installations(install_id),
+  -- Can name an expiring reservation or a permanent installation. Historical
+  -- flows remain after an unproved reservation expires; commit checks both.
+  install_id TEXT NOT NULL,
   expected_generation INTEGER NOT NULL, challenge_id TEXT NOT NULL UNIQUE,
   transcript TEXT NOT NULL, r_digest TEXT NOT NULL, owner_address TEXT NOT NULL,
   code_digest TEXT NOT NULL, code_failures INTEGER NOT NULL DEFAULT 0 CHECK(code_failures BETWEEN 0 AND 5),
@@ -29,9 +36,13 @@ CREATE TABLE mail_enrollment_commits (
 -- This deliberately does not depend on D1 batch changes() propagation.
 CREATE TRIGGER mail_enrollment_check BEFORE INSERT ON mail_enrollment_commits BEGIN
   SELECT CASE WHEN NOT EXISTS (
-    SELECT 1 FROM mail_enrollment_flows f JOIN mail_installations i ON i.install_id=f.install_id
+    SELECT 1 FROM mail_enrollment_flows f JOIN (
+      SELECT install_id,generation,NULL AS expires_at FROM mail_installations
+      UNION ALL SELECT install_id,0,expires_at FROM mail_identity_reservations
+    ) i ON i.install_id=f.install_id
     WHERE f.flow_id=NEW.flow_id AND f.r_digest=NEW.r_digest
       AND f.expected_generation=NEW.expected_generation AND i.generation=NEW.expected_generation
+      AND (i.generation>0 OR i.expires_at>NEW.admitted_at)
       AND f.state='pending' AND f.code_confirmed=1 AND f.code_failures<5
       AND f.expires_at>NEW.admitted_at AND f.provider_checked_at<=NEW.admitted_at
       AND f.provider_checked_at>NEW.admitted_at-60000
@@ -42,6 +53,13 @@ CREATE TRIGGER mail_enrollment_check BEFORE INSERT ON mail_enrollment_commits BE
   ) THEN RAISE(ABORT,'enrollment_cas_refused') END;
 END;
 CREATE TRIGGER mail_enrollment_apply AFTER INSERT ON mail_enrollment_commits BEGIN
+  -- This runs only after dual proofs, authority and mailbox checks. Promotion,
+  -- generation CAS, registration and consume roll back together on any fault.
+  INSERT INTO mail_installations(install_id,device_id,address_local)
+    SELECT p.install_id,p.device_id,p.address_local FROM mail_identity_reservations p
+    JOIN mail_enrollment_flows f ON f.install_id=p.install_id WHERE f.flow_id=NEW.flow_id;
+  DELETE FROM mail_identity_reservations
+    WHERE install_id=(SELECT install_id FROM mail_enrollment_flows WHERE flow_id=NEW.flow_id);
   UPDATE mail_installations SET generation=NEW.expected_generation+1,
     ownership_checked_at=NEW.checked_at, ownership_lease_until=NEW.lease_until, record_version=NEW.record_version
     WHERE install_id=(SELECT install_id FROM mail_enrollment_flows WHERE flow_id=NEW.flow_id);

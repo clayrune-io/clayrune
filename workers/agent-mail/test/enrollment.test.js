@@ -54,6 +54,7 @@ test('valid grant records ownership only, consumes once, exact retry stable afte
   assert.equal(reg.active, 0); assert.equal(reg.route_verified, 0); assert.equal(reg.owner_verified, 1);
   const i = f.db.sql.prepare('SELECT * FROM mail_installations').get();
   assert.equal(i.ownership_lease_until, NOW + 300_000); assert.equal(i.generation, 1);
+  assert.equal(f.db.sql.prepare('SELECT COUNT(*) n FROM mail_identity_reservations').get().n, 0);
   assert.equal((await f.enrollment.flow('flow1', f.secret)).state, 'consumed');
   f.time.now += 900_001;
   assert.deepEqual(await f.complete({ token }), result);
@@ -108,7 +109,7 @@ test('provider latency cannot extend grant or ownership lease', async () => {
   const f = await fixture(); await f.confirm();
   f.enrollment.provider = async (address) => { f.time.now += 60_000; return { address, verified: true }; };
   await assert.rejects(f.complete(), /bad_grant_claims/);
-  assert.equal(f.db.sql.prepare('SELECT generation FROM mail_installations').get().generation, 0);
+  assert.equal(f.db.sql.prepare('SELECT COUNT(*) n FROM mail_installations').get().n, 0);
 });
 test('SQL admission time rejects expiry after final JS verification', async () => {
   const f = await fixture(); await f.confirm();
@@ -122,7 +123,7 @@ test('SQL admission time rejects expiry after final JS verification', async () =
     return statement;
   };
   await assert.rejects(f.complete(), /enrollment_cas_refused/);
-  assert.equal(f.db.sql.prepare('SELECT generation FROM mail_installations').get().generation, 0);
+  assert.equal(f.db.sql.prepare('SELECT COUNT(*) n FROM mail_installations').get().n, 0);
 });
 test('lease is anchored to authority check, not delayed grant receipt', async () => {
   const f = await fixture(); await f.confirm(); const token = await f.token(); f.time.now += 45_000;
@@ -152,17 +153,23 @@ test('grant jti is single-use across different flows and installs', async () => 
   assert.equal((await f.enrollment.flow('flow2', f.secret)).state, 'pending');
 });
 test('generation race and active transport row refuse ownership commit', async () => {
-  const f = await fixture(); await f.confirm();
-  f.db.sql.exec('UPDATE mail_installations SET generation=1');
-  await assert.rejects(f.complete(), /enrollment_cas_refused/);
-  assert.equal((await f.enrollment.flow('flow1', f.secret)).state, 'pending');
+  const f = await fixture(); await f.confirm(); await f.complete();
+  const next = await f.enrollment.begin({ ...f.value, flow_id: 'flow2' }, f.secret);
+  await f.enrollment.confirm('flow2', f.secret, next.code);
+  f.db.sql.exec('UPDATE mail_installations SET generation=2');
+  await assert.rejects(f.enrollment.complete({ flowId: 'flow2', secret: f.secret,
+    token: await f.token({ jti: 'grant2' }, {}, next.transcript),
+    deviceSignature: await f.proof(f.device.privateKey, next.transcript),
+    mailSignature: await f.proof(f.mail.privateKey, next.transcript) }), /enrollment_cas_refused/);
+  assert.equal((await f.enrollment.flow('flow2', f.secret)).state, 'pending');
 });
 test('failure in registration write rolls back grant, generation, and challenge', async () => {
   const f = await fixture(); await f.confirm();
   f.db.sql.exec("CREATE TRIGGER fail_registration BEFORE INSERT ON registrations BEGIN SELECT RAISE(ABORT,'fault'); END");
   await assert.rejects(f.complete(), /fault/);
   assert.equal(f.db.sql.prepare('SELECT COUNT(*) n FROM mail_enrollment_commits').get().n, 0);
-  assert.equal(f.db.sql.prepare('SELECT generation FROM mail_installations').get().generation, 0);
+  assert.equal(f.db.sql.prepare('SELECT COUNT(*) n FROM mail_installations').get().n, 0);
+  assert.equal(f.db.sql.prepare('SELECT COUNT(*) n FROM mail_identity_reservations').get().n, 1);
   assert.equal((await f.enrollment.flow('flow1', f.secret)).state, 'pending');
   f.db.sql.exec('DROP TRIGGER fail_registration');
   assert.equal((await f.complete()).generation, 1);
@@ -178,12 +185,14 @@ test('restart retains pending challenge and successful consumption', async () =>
     assert.deepEqual(await f.complete({ token }), result);
   } finally { db.sql.close(); rmSync(folder, { recursive: true }); }
 });
-test('expired flow retries reserve the same device/install address with a fresh challenge', async () => {
+test('expired unproved flow releases its provisional identity and cannot be revived', async () => {
   const f = await fixture(); f.time.now += 900_000;
   const again = await f.enrollment.begin({ ...f.value, flow_id: 'flow2' }, f.secret);
-  assert.equal(again.transcript[7], f.m.install_id); assert.notEqual(again.transcript[5], f.m.challenge_nonce);
+  assert.notEqual(again.transcript[7], f.m.install_id); assert.notEqual(again.transcript[5], f.m.challenge_nonce);
   assert.equal((await f.enrollment.flow('flow1', f.secret)).state, 'invalidated');
-  assert.equal(f.db.sql.prepare('SELECT COUNT(*) n FROM mail_installations').get().n, 1);
+  await assert.rejects(f.confirm(), /challenge_unavailable/);
+  assert.equal(f.db.sql.prepare('SELECT COUNT(*) n FROM mail_installations').get().n, 0);
+  assert.equal(f.db.sql.prepare('SELECT COUNT(*) n FROM mail_identity_reservations').get().n, 1);
 });
 test('bounded reservations and strict transcript/owner/service pin before state mutation', async () => {
   const f = await fixture({ capacity: 1 });
