@@ -91,6 +91,11 @@ from flask import Blueprint, Flask, Response, has_request_context, jsonify, make
 
 from mc import media as _media
 from mc import obs, state
+from mc.terminal_delivery import TerminalDeliveryGate
+from mc import launch_transaction as _launch_transaction
+from mc import delivery_attempt as _delivery_attempt
+from mc.pending_delivery import after_publication, complete_or_defer, delivery_failure_handler, publication_boundary
+from mc.pending_delivery_http import delivery_response
 from mc import workflows as _workflows  # leaf module (no Flask import); see _notify_workflow_step
 from mc import state as _mc_state  # readers write _mc_state._LAST_SYSTEM_STATUS verbatim
 from mc.atomic_json import read_text_with_retry, write_json_atomic
@@ -6383,8 +6388,10 @@ def _read_agent_stream(proc, session):
                 if pending:
                     session['_dispatching_followup'] = True
                     followup_msg = pending.pop(0)
-                    _auto_dispatch_followup(session, followup_msg)
-                    session.pop('_dispatching_followup', None)
+                    try:
+                        _auto_dispatch_followup(session, followup_msg)
+                    finally:
+                        session.pop('_dispatching_followup', None)
 
         # Auto-recover failed resume (Mode A)
         if (not _credits_replayed and session.get('_resume_id')
@@ -6417,6 +6424,120 @@ def _read_agent_stream_b(proc, session):
     # Turns THIS process produced (num_turns itself is per turn; see
     # accumulate_result_turns). The failed-resume guard reads it.
     proc_cost, proc_turns = _agent_shim_adopt.reader_counters(session, proc)
+    pending_delivery = session.get('_terminal_delivery_gate')
+    delivery_gate = (pending_delivery[1] if pending_delivery is not None
+                     and pending_delivery[0] is my_proc else None)
+
+    def terminal(event):
+        if delivery_gate is None:
+            event()
+        else:
+            delivery_gate.submit(event)
+
+    billing_halted = False
+
+    def result(msg):
+        nonlocal billing_halted
+        if billing_halted or not _session_owned_by(session, my_proc):
+            return
+        if 'session_id' in msg:
+            _note_claude_sid(session, msg['session_id'])
+        if 'usage' in msg:
+            _accumulate_session_usage(session, msg['usage'])
+        if _credits_session.record_result(session, msg, proc_cost):
+            billing_halted = True
+            proc.terminate()
+            return
+        _agent_runtime.accumulate_result_turns(session, msg, proc_turns)
+        _record_permission_denials(session, msg)
+        _apply_mc_tool_blocks_for_turn(session)
+        _auto_snapshot_notes_on_turn(session)
+        _emit_coverage_advisory(session)
+        _scan_result_event_for_auth(msg)
+        _delegation_settlement.note_claude_turn(session, msg, _delivery_store, _midturn.note_turn_complete)
+        # Turn boundary — process stays alive
+        # MC-946: for a dispatched child this IS "done" — Mode B
+        # never exits on its own, so the exit-time hook would fire
+        # late or never. Latched, so the exit path can't repeat it.
+        # MC-958: unless a background job is still running — then
+        # this turn is "started it, waiting", the CLI will run a
+        # turn of its own when the job ends, and THAT turn's
+        # result is the answer the spawner is waiting for.
+        # MC-1150 P4: checkpoint past this result BEFORE it is announced, so a
+        # restart cannot replay it into a second completion, and stamp the
+        # checkpoint with the wake it now owes so a crash cannot lose it.
+        with get_manager(session['project_id']).lock:
+            if session.get('status') != 'stopped':
+                session['status'] = 'idle'
+                session['last_status_change_time'] = _time.time()
+            if not _limit_resume.hold_completion(
+                    session, state.CONFIG,
+                    completion_kind='turn' if not msg.get('is_error') else None):
+                _complete_agent_turn(session)
+        # Step 6: mid-session note-taker (default-off; fast-gated).
+        _maybe_checkpoint(session)
+        # MC-998 bugfix: this IS the turn boundary for a Mode B
+        # session (process stays alive) -- see
+        # _write_usage_breakdown_turn_checkpoint's docstring.
+        _write_usage_breakdown_turn_checkpoint(session)
+        _handle_push_signal(
+            session.get('project_id', ''), session.get('session_id', ''), msg)
+
+    def finish(rc):
+        _credits_replayed = _credits_session.replay_after_exit(session, proc, sys.modules[__name__])
+        # Acquire per-project lock to prevent race with agent_stop setting 'stopped'
+        with get_manager(session['project_id']).lock:
+            # Single-emit gate (see _session_owned_by). Skip when interrupt
+            # is in flight — the new reader will set process_alive=True/status
+            # legitimately and there's no point flipping it False between.
+            if not _credits_replayed and _session_owned_by(session, my_proc):
+                session['process_alive'] = False
+                _gone = _bg_tasks.drain(session)
+                if _gone:
+                    session['log_lines'].append(
+                        f"[process ended with {len(_gone)} background task(s) still "
+                        f"running — they were stopped with it: {'; '.join(_gone)}]")
+                # Never overwrite 'stopped' — that's a user-initiated terminal state
+                if session['status'] in ('running', 'idle'):
+                    if session.get('waiting_for_question'):
+                        # Process was intentionally killed after AskUserQuestion —
+                        # not an error, just waiting for user's answer
+                        session['status'] = 'idle'
+                        session['last_status_change_time'] = _time.time()
+                    else:
+                        # rc!=0 while 'idle' = the turn ALREADY ended cleanly
+                        # (the result event set 'idle' at the turn boundary);
+                        # the nonzero exit is post-turn teardown — e.g.
+                        # claude-fable-5 exits 1 after every turn under the
+                        # full Mode B flag set — not a task failure. Logging
+                        # it 'error' painted a red "Blocked" tile after each
+                        # successful turn (2026-06-10). Mid-turn deaths still
+                        # classify as error: they die with status 'running'.
+                        _post_turn = session['status'] == 'idle'
+                        session['status'] = 'completed' if (rc == 0 or _post_turn) else 'error'
+                        session['last_status_change_time'] = _time.time()
+                        if rc != 0:
+                            session['log_lines'].append(f"[exited with code {rc}]")
+                        if rc == 0 or _post_turn:
+                            session['recovery_attempts'] = 0
+                            session['guardian_state'] = None
+                            session['pending_recovery_message'] = None
+                            session['circuit_breaker_tripped'] = False
+                elif session['status'] == 'stopped':
+                    pass  # User stopped — don't change status regardless of rc
+                _log_agent_completion(session)
+                _run_runtime_callbacks(session)
+
+        # Auto-recover failed resume: if we tried to resume a prior session and
+        # it died quickly without producing meaningful output, restart fresh.
+        if (not _credits_replayed and _session_owned_by(session, my_proc)
+                and session.get('_resume_id')
+                and session.get('status') == 'error'
+                and not session.get('_resume_recovery_attempted')
+                and _time.time() - session.get('_dispatch_time', 0) < 60
+                and not proc_turns.get('num_turns')):
+            _auto_recover_failed_resume(session)
+
     try:
         for raw_line in proc.stdout:
             obs.heartbeat('stream-reader:b')  # Phase 2 loop observability (1.12)
@@ -6596,45 +6717,10 @@ def _read_agent_stream_b(proc, session):
                         if _midturn.note_tool_results(session, msg['message'].get('content')):
                             _maybe_midturn_roll(session, my_proc)
                 elif msg_type == 'result':
-                    if 'session_id' in msg:
-                        _note_claude_sid(session, msg['session_id'])
-                    if 'usage' in msg:
-                        _accumulate_session_usage(session, msg['usage'])
-                    if _credits_session.record_result(session, msg, proc_cost):
-                        proc.terminate()
+                    terminal(lambda msg=msg: result(msg))
+                    if billing_halted:
                         break
-                    _agent_runtime.accumulate_result_turns(session, msg, proc_turns)
-                    _record_permission_denials(session, msg)
-                    _apply_mc_tool_blocks_for_turn(session)
-                    _auto_snapshot_notes_on_turn(session)
-                    _emit_coverage_advisory(session)
-                    _scan_result_event_for_auth(msg)
-                    _delegation_settlement.note_claude_turn(session, msg, _delivery_store, _midturn.note_turn_complete)
-                    # Turn boundary — process stays alive
-                    # MC-946: for a dispatched child this IS "done" — Mode B
-                    # never exits on its own, so the exit-time hook would fire
-                    # late or never. Latched, so the exit path can't repeat it.
-                    # MC-958: unless a background job is still running — then
-                    # this turn is "started it, waiting", the CLI will run a
-                    # turn of its own when the job ends, and THAT turn's
-                    # result is the answer the spawner is waiting for.
-                    # MC-1150 P4: checkpoint past this result BEFORE it is announced, so a
-                    # restart cannot replay it into a second completion, and stamp the
-                    # checkpoint with the wake it now owes so a crash cannot lose it.
-                    with get_manager(session['project_id']).lock:
-                        if session.get('status') != 'stopped':
-                            session['status'] = 'idle'
-                            session['last_status_change_time'] = _time.time()
-                        if not _limit_resume.hold_completion(
-                                session, state.CONFIG,
-                                completion_kind='turn' if not msg.get('is_error') else None):
-                            _complete_agent_turn(session)
-                    # Step 6: mid-session note-taker (default-off; fast-gated).
-                    _maybe_checkpoint(session)
-                    # MC-998 bugfix: this IS the turn boundary for a Mode B
-                    # session (process stays alive) -- see
-                    # _write_usage_breakdown_turn_checkpoint's docstring.
-                    _write_usage_breakdown_turn_checkpoint(session)
+                    continue
                 # Web push hook: intercept PushNotification tool_use + turn results.
                 _handle_push_signal(
                     session.get('project_id', ''),
@@ -6664,58 +6750,7 @@ def _read_agent_stream_b(proc, session):
     finally:
         rc = proc.wait()
         _unregister_process(proc.pid)
-        _credits_replayed = _credits_session.replay_after_exit(session, proc, sys.modules[__name__])
-        # Acquire per-project lock to prevent race with agent_stop setting 'stopped'
-        with get_manager(session['project_id']).lock:
-            # Single-emit gate (see _session_owned_by). Skip when interrupt
-            # is in flight — the new reader will set process_alive=True/status
-            # legitimately and there's no point flipping it False between.
-            if not _credits_replayed and _session_owned_by(session, my_proc):
-                session['process_alive'] = False
-                _gone = _bg_tasks.drain(session)
-                if _gone:
-                    session['log_lines'].append(
-                        f"[process ended with {len(_gone)} background task(s) still "
-                        f"running — they were stopped with it: {'; '.join(_gone)}]")
-                # Never overwrite 'stopped' — that's a user-initiated terminal state
-                if session['status'] in ('running', 'idle'):
-                    if session.get('waiting_for_question'):
-                        # Process was intentionally killed after AskUserQuestion —
-                        # not an error, just waiting for user's answer
-                        session['status'] = 'idle'
-                        session['last_status_change_time'] = _time.time()
-                    else:
-                        # rc!=0 while 'idle' = the turn ALREADY ended cleanly
-                        # (the result event set 'idle' at the turn boundary);
-                        # the nonzero exit is post-turn teardown — e.g.
-                        # claude-fable-5 exits 1 after every turn under the
-                        # full Mode B flag set — not a task failure. Logging
-                        # it 'error' painted a red "Blocked" tile after each
-                        # successful turn (2026-06-10). Mid-turn deaths still
-                        # classify as error: they die with status 'running'.
-                        _post_turn = session['status'] == 'idle'
-                        session['status'] = 'completed' if (rc == 0 or _post_turn) else 'error'
-                        session['last_status_change_time'] = _time.time()
-                        if rc != 0:
-                            session['log_lines'].append(f"[exited with code {rc}]")
-                        if rc == 0 or _post_turn:
-                            session['recovery_attempts'] = 0
-                            session['guardian_state'] = None
-                            session['pending_recovery_message'] = None
-                            session['circuit_breaker_tripped'] = False
-                elif session['status'] == 'stopped':
-                    pass  # User stopped — don't change status regardless of rc
-                _log_agent_completion(session)
-                _run_runtime_callbacks(session)
-
-        # Auto-recover failed resume: if we tried to resume a prior session and
-        # it died quickly without producing meaningful output, restart fresh.
-        if (not _credits_replayed and session.get('_resume_id')
-                and session.get('status') == 'error'
-                and not session.get('_resume_recovery_attempted')
-                and _time.time() - session.get('_dispatch_time', 0) < 60
-                and not proc_turns.get('num_turns')):
-            _auto_recover_failed_resume(session)
+        terminal(lambda: finish(rc))
 
 
 def _auto_recover_failed_resume(session):
@@ -6756,6 +6791,7 @@ def _auto_recover_failed_resume(session):
     try:
         with _worktree_lifecycle.resuming(get_manager(project_id).lock, session.get('session_id', '')):
             _cwd = (_launch_cwd(session, p, pp, task) if session.get('_worktree_isolated') else pp)
+            _recovery_launch = _launch_transaction.claim(session)
             if mode == 'B':
                 _sp_args, _sp_path = _sysprompt_file_args(context)
                 cmd = [_resolve_claude(), *_build_claude_flags(p, streaming=True,
@@ -6764,7 +6800,7 @@ def _auto_recover_failed_resume(session):
                        character_skills=_session_skills(p, session)),
                        *_sp_args]
                 cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _cwd)
-                proc = spawn_engine_proc(
+                proc = _launch_transaction.launch(_recovery_launch, spawn_engine_proc,
                     cmd, session_id=session.get('session_id'), engine='claude', cwd=_cwd,
                     env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, interactive=True)
@@ -6795,7 +6831,7 @@ def _auto_recover_failed_resume(session):
                        character_skills=_session_skills(p, session)),
                        *_sp_args]
                 cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _cwd)
-                proc = spawn_engine_proc(
+                proc = _launch_transaction.launch(_recovery_launch, spawn_engine_proc,
                     cmd, session_id=session.get('session_id'), engine='claude', cwd=_cwd,
                     env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
@@ -6835,10 +6871,12 @@ def _agent_log_is_readable(project_id):
 
     This is the distinction `_load_agent_log` cannot make — it returns []
     for both, and a caller that writes back over an empty read destroys the
-    history it failed to read. That is MC-946: a truncated log read as []
-    and the startup transcript backfill replaced 200 real rows, personas and
-    all, with synthesized ones. Any caller that REWRITES the log must gate on
-    this first. Read-only callers don't need it.
+    history it failed to read. Mutation transactions instead consume a strict
+    `_load_agent_log` read directly; this check is for legacy rewrite callers.
+    That is MC-946: a truncated log read as [] and the startup transcript
+    backfill replaced 200 real rows, personas and all, with synthesized ones.
+    Legacy rewrites that consume forgiving reads must gate on this first.
+    Read-only callers don't need it.
 
     Deliberately does not quarantine — it is a question, not an action, so it
     can be asked before deciding whether to touch the file at all.
@@ -6879,21 +6917,28 @@ def _quarantine_agent_log(filepath):
         _log(f"[agent-log] could not quarantine {filepath.name}: {e}", level='error')
 
 
-def _load_agent_log(project_id):
+def _load_agent_log(project_id, *, strict=False):
     """Load the agent summary log for a project.
 
-    Returns [] for both "no history yet" and "the file is corrupt" — callers
-    that write the log back must therefore ask `_agent_log_is_readable()`
-    FIRST (see its docstring). A parse failure here is real data loss, so it
-    is logged at error level and the file is quarantined rather than left in
-    place to be silently overwritten by the next save.
+    Display callers return [] for unreadable history. Mutation callers use
+    strict=True: only FileNotFoundError means no history, and every other
+    failure propagates without quarantine. A display parse failure is logged
+    and quarantined rather than left in place for legacy rewrite callers.
     """
     filepath = _agent_log_path(project_id)
-    if not filepath.exists():
+    if not strict and not filepath.exists():
         return []
     try:
-        return json.loads(read_text_with_retry(filepath))
+        rows = json.loads(read_text_with_retry(filepath))
+        if strict and (not isinstance(rows, list)
+                       or any(not isinstance(row, dict) for row in rows)):
+            raise ValueError('conversation log has invalid rows')
+        return rows
     except OSError as e:
+        if strict:
+            if isinstance(e, FileNotFoundError):
+                return []
+            raise
         # A read that never happened is not a parse failure, and must not be
         # quarantined as one. On Windows a concurrent writer's os.replace
         # leaves the target delete-pending for microseconds and a reader in
@@ -6908,6 +6953,8 @@ def _load_agent_log(project_id):
              level='error')
         return []
     except Exception as e:
+        if strict:
+            raise OSError('conversation log is unreadable') from e
         _log(f"[agent-log] {filepath.name} failed to parse ({e}) — treating as "
              f"EMPTY for this read, not as authority to overwrite", level='error')
         _quarantine_agent_log(filepath)
@@ -7350,10 +7397,16 @@ def _update_agent_log(project_id, mutate):
     """
     with _agent_log_mutation_locks_guard:
         lock = _agent_log_mutation_locks.setdefault(project_id, threading.RLock())
-    with lock:
-        if not _agent_log_is_readable(project_id):
-            raise OSError('conversation log is unreadable')
-        rows = _load_agent_log(project_id)
+    from mc.agent_log_file import transaction
+    with lock, transaction(_agent_log_path(project_id)):
+        # Retry only the read, once, while holding both locks. No mutator,
+        # save or provider launch is replayed. A second failure propagates
+        # before either mutation or save; never consume a forgiving [] read.
+        try:
+            rows = _load_agent_log(project_id, strict=True)
+        except OSError as e:
+            _log(f'[agent-log] strict mutation read failed; rereading: {e}')
+            rows = _load_agent_log(project_id, strict=True)
         result = mutate(rows)
         _save_agent_log(project_id, rows)
         return result
@@ -7449,14 +7502,16 @@ def _mark_human_joined(project_id, session_id):
                     and (r.get('trigger_type') or 'manual') in _HUMAN_JOINABLE_TRIGGERS
                     and not r.get('human_joined'))
 
-        if not any(_wants(r) for r in _load_agent_log(project_id)):
+        from mc import agent_log_maintenance
+        from copy import deepcopy
+        before = agent_log_maintenance.snapshot(project_id)
+        if not any(_wants(r) for r in before):
             return
-
-        def stamp(rows):
-            for r in rows:
-                if _wants(r):
-                    r['human_joined'] = True
-        _update_agent_log(project_id, stamp)
+        after = deepcopy(before)
+        for r in after:
+            if _wants(r):
+                r['human_joined'] = True
+        agent_log_maintenance.commit(project_id, before, after)
     except Exception as e:
         _log(f'[human-joined] {project_id}/{session_id}: stamp failed: {e}')
 
@@ -7664,12 +7719,43 @@ def _transcript_buffer_lines_and_ts(project_path, claude_sid, user_label, max_me
         _log(f"[transcript-render] failed: {e}")
         return [], []
 
+class ReviveDeliveryError(RuntimeError):
+    """A Mode B revive spawned its process but the message never reached its
+    stdin (MC-1168). The process and the session registration are already torn
+    down. Raised, not returned as None: None means "nothing to revive", and the
+    callers answer that with a fresh dispatch of the same message under a new
+    session -- the wrong answer for a conversation that exists."""
+
+
+def _abort_failed_revive(mgr, session_id, session, proc, prior_session, was_listed):
+    """Undo a revive whose stdin write failed, to the state before it ran.
+
+    Clear only this process's ownership, and restore registration only if both
+    the process and the registered object still belong to this revive. A newer
+    process/object owns its membership and must survive the old write failure.
+    The terminal-delivery gate is rejected before calling this rollback."""
+    with mgr.lock:
+        owns_proc = session.get('proc') is proc
+        if owns_proc:
+            session['proc'] = None
+            session['process_alive'] = False
+        if owns_proc and agent_sessions.get(session_id) is session:
+            if prior_session is not None:
+                agent_sessions[session_id] = prior_session
+            else:
+                agent_sessions.pop(session_id, None)
+            if not was_listed:
+                mgr.session_ids.discard(session_id)
+    _kill_pid(proc.pid, tree=True)
+
+
 def _with_window_stack(fn):
     """Give `fn` an ExitStack as `_window` and close it on every return. An
     ISOLATED revival opens its session's `resuming` window mid-function (choose
     the launch directory, spawn, publish) and this is what lets it do that
     without re-indenting the whole body (MC-1165 r5)."""
     @functools.wraps(fn)
+    @after_publication
     def run(*args, **kwargs):
         with contextlib.ExitStack() as stack:
             return fn(*args, _window=stack, **kwargs)
@@ -7708,6 +7794,8 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
 
     Returns the new session dict on success, None if not revivable (no matching
     log entry, no claude_session_id, missing project_path, or spawn failure).
+    Raises ReviveDeliveryError when the process spawned but the message could
+    not be written to it (Mode B); the revive is rolled back first.
     """
     if not state.CONFIG.get('agent_revive_from_log', True):
         return None
@@ -7925,6 +8013,9 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             seed_lines.append(f"[{_revive_note}]")
             seed_ts.append(now_iso())
 
+    _revive_launch = _launch_transaction.claim({
+        'project_id': project_id, 'session_id': session_id, 'incognito': _revive_incognito})
+    delivery_attempt = _revive_launch.attempt
     if use_streaming:
         cmd = [_resolve_claude(), *resume_flags,
                *_build_claude_flags(p, streaming=True, model_override=revive_model,
@@ -7936,7 +8027,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             cmd.extend(_sp_args)
         try:
             cmd = _launch_marker.launch_cmd(cmd, entry.get('trigger_type'), _revive_cwd)
-            proc = spawn_engine_proc(
+            proc = _launch_transaction.launch(_revive_launch, spawn_engine_proc,
                 cmd, session_id=session_id, engine='claude', cwd=_revive_cwd,
                 env=_launch_marker.launch_env(entry.get('trigger_type'), session=entry),
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO, interactive=True)
@@ -7947,6 +8038,10 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                     os.unlink(_sp_path)
                 except OSError:
                     pass
+            if (getattr(e, '_mc_launch_ambiguous', False)
+                    or isinstance(e, _launch_transaction.ReservationLost)):
+                raise delivery_attempt.bind(ReviveDeliveryError(
+                    f'revive launch outcome unknown; not retried: {e}')) from e
             if _revive_isolated:
                 raise _isolated_launch.RevivalRefused(
                     f"conversation {session_id[:8]} could not be restarted in its worktree "
@@ -8028,6 +8123,9 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             '_turn_owner': 'spawner' if carry_notify else 'human',
         }
         with mgr.lock:
+            _prior_session = agent_sessions.get(session_id)
+            _was_listed = session_id in mgr.session_ids
+            delivery_attempt.stamp(session)
             session.update(_credits_session.snapshot(entry))
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
@@ -8035,6 +8133,9 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         # under an existing session_id without passing
         # `_log_agent_dispatch_pending`, so mark where it really begins.
         _write_usage_breakdown_turn_start_checkpoint(session)
+        delivery_gate = TerminalDeliveryGate(
+            lambda exc: _log(f"[revive] {project_id}: terminal processing failed: {exc}"))
+        session['_terminal_delivery_gate'] = (proc, delivery_gate)
         threading.Thread(target=_read_agent_stream_b, args=(proc, session), daemon=True).start()
         # MC-944 (§9.6): the revival context above already carries a read floor
         # keyed on `message` (via _build_agent_context's task=), even when
@@ -8046,22 +8147,48 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         stdin_msg = json.dumps({"type": "user", "message": {"role": "user", "content": revival_msg}}) + '\n'
         if role_context is not None:
             from mc.steward_role_dispatch import _append_ack
-            _append_ack(session, revival_msg)
+
+            def _acknowledge_role():
+                try:
+                    _append_ack(session, revival_msg)
+                except Exception:
+                    delivery_gate.reject()
+                    raise
+                delivery_gate.accept()
+
+            complete_or_defer(_acknowledge_role)
         else:
-            # Deferred to a daemon thread, as normal dispatch does: an ISOLATED
-            # revival holds the project lock (`resuming`) until this function
-            # returns, and a child that has not started reading stdin (rate-limited
-            # startup, the respawn-stdin hang) would pin it, and every send and
-            # dispatch on the project with it (MC-1165 r6). Follow-ups serialize on
-            # `stdin_lock`, so this message still lands first.
-            def _write_revival(_proc=proc, _msg=stdin_msg, _sess=session):
-                with _sess['stdin_lock']:
+            # Launch/publication stays guarded; the outermost caller owns
+            # acknowledgment after its project/lifecycle locks have exited.
+            from mc.agent_runtime import _start_prompt_delivery
+
+            def _write_revival(on_error):
+                with session['stdin_lock']:
                     try:
-                        _proc.stdin.write(_msg)  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
-                        _proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
-                    except Exception as e:
-                        _sess['log_lines'].append(f'[stdin write error on revive: {e}]')
-            threading.Thread(target=_write_revival, daemon=True).start()
+                        proc.stdin.write(stdin_msg)
+                        proc.stdin.flush()
+                        return True
+                    except Exception as exc:
+                        on_error(exc)
+                        return False
+
+            delivery = _start_prompt_delivery(_write_revival, f'revive-stdin-{session_id[:8]}')
+
+            def _acknowledge_revival():
+                # Preserve Claude revival's existing wait policy; moving the
+                # wait past publication must not add a new startup deadline.
+                delivery.done.wait()
+                if delivery.ok:
+                    delivery_gate.accept()
+                    return
+                why = delivery.why or 'prompt write failed'
+                delivery_gate.reject()
+                _abort_failed_revive(mgr, session_id, session, proc, _prior_session, _was_listed)
+                _log(f"[revive] {project_id}: stdin delivery failed for {session_id}: {why}")
+                raise delivery_attempt.bind(ReviveDeliveryError(
+                    f'revive spawned but the message was not written to the agent: {why}'))
+
+            complete_or_defer(_acknowledge_revival)
         _log(f"[revive] {project_id}: Mode B revived session {session_id} via -r {claude_sid[:12]}")
         return session
 
@@ -8073,7 +8200,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                                 character_skills=_revive_char_skills), *_sp_args]
     try:
         cmd = _launch_marker.launch_cmd(cmd, entry.get('trigger_type'), _revive_cwd)
-        proc = spawn_engine_proc(
+        proc = _launch_transaction.launch(_revive_launch, spawn_engine_proc,
             cmd, session_id=session_id, engine='claude', cwd=_revive_cwd,
             env=_launch_marker.launch_env(entry.get('trigger_type'), session=entry),
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
@@ -8084,6 +8211,10 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                 os.unlink(_sp_path)
             except OSError:
                 pass
+        if (getattr(e, '_mc_launch_ambiguous', False)
+                or isinstance(e, _launch_transaction.ReservationLost)):
+            raise delivery_attempt.bind(ReviveDeliveryError(
+                f'revive launch outcome unknown; not retried: {e}')) from e
         if _revive_isolated:
             raise _isolated_launch.RevivalRefused(
                 f"conversation {session_id[:8]} could not be restarted in its worktree "
@@ -8145,6 +8276,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         '_turn_owner': 'spawner' if carry_notify else 'human',
     }
     with mgr.lock:
+        delivery_attempt.stamp(session)
         session.update(_credits_session.snapshot(entry))
         agent_sessions[session_id] = session
         mgr.session_ids.add(session_id)
@@ -8284,7 +8416,8 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
 
     Returns the session_id on success, None if not revivable (no matching log
     entry, entry belongs to the Claude path, unknown provider, or dispatch
-    failure).
+    failure). Raises PromptDeliveryError if a spawned process rejected the
+    message; callers must report failure for this same conversation.
     """
     entries = [e for e in _load_agent_log(project_id) if e.get('session_id') == session_id]
     if not entries:
@@ -8364,7 +8497,9 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
                                  **({'prepared_context': role_context, 'preserve_model': True}
                                     if role_context is not None else {}))
     except _resume_cwd.ResumeCwdMissing:
-        raise
+        raise  # Provenance refusal must reach the route's HTTP 409 handler.
+    except _agent_runtime.PromptDeliveryError:
+        raise  # An existing conversation failed delivery; never fresh-dispatch.
     except Exception as e:
         _log(f"[revive-non-claude] {project_id}: dispatch failed: {e}")
         if _iso_kw:
@@ -8735,7 +8870,8 @@ def _session_cumulative_transcript_telemetry(project_id, session):
 
 
 def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
-                                write_turn_start=True):
+                                write_turn_start=True, attempt=None, self_started=False,
+                                postlaunch=False):
     """Write a placeholder agent_log row at dispatch time so trigger correlation
     survives a server restart that kills the session before _log_agent_completion
     can run.
@@ -8754,13 +8890,26 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
     `write_turn_start=False` is for callers whose turn already has (or is
     about to get) its own 'turn_start' row -- see the usage-breakdown block
     at the bottom.
+
+    `self_started=True` revalidates the observed idle attempt under the
+    manager lock, then claims and marks running in that same critical section.
+    Already-running work keeps its reader on storage failure; its live token
+    rolls back to the saved owner. False means another delivery won the claim.
+
+    `postlaunch=True` extends token rollback to callback-turn bookkeeping
+    after that claim. Strict errors still propagate to the rearm caller;
+    prelaunch callers retain their existing refusal policy.
     """
     project_id = session.get('project_id')
-    if not project_id or session.get('incognito') or session.get('housekeeping'):
+    skip_history = not project_id or session.get('incognito') or session.get('housekeeping')
+    if skip_history and not self_started:
         return
     sid = session.get('session_id', '')
     if not sid:
         return
+    callback_attempt = _delivery_attempt.DeliveryAttempt(session.get('_delivery_attempt_id') or '')
+    if self_started and (session.get('status') != 'idle' or session.get('waiting_for_question')):
+        return False
     entry = {
         'ts': now_iso(),
         'task': session.get('task', ''),
@@ -8831,7 +8980,9 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
     if session.get('human_joined'):
         entry['human_joined'] = True   # display-only, see _mark_human_joined
     entry.update(_resume_cwd.isolation_log_fields(session))
+    superseded = False
     def upsert(log):
+        nonlocal superseded
         # Upsert: a continued scheduled run reuses the prior run's session_id
         # (see _dispatch_agent_internal reuse_session_id). Refresh that row in
         # place — reset it to in_progress for this fire, preserve any csid
@@ -8841,7 +8992,12 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
                            if e.get('session_id') == sid), None)
         if existing_i is not None:
             prev = log[existing_i]
+            if self_started and not callback_attempt.owns_row(prev):
+                superseded = True
+                return
             if identity_only:
+                if not callback_attempt.owns_row(prev):
+                    return
                 prev.update(_resume_cwd.isolation_log_fields(session, prev))
                 for field in ('claude_session_id', 'provider_session_id'):
                     if entry[field]:
@@ -8853,6 +9009,13 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
                             merged.append(csid)
                     prev['claude_session_ids'] = merged
                 return
+            if attempt is not None:
+                if not attempt.owns_row(prev):
+                    raise RuntimeError('pending delivery attempt was superseded')
+                attempt.stamp(session)
+                entry.update(_delivery_attempt.completion_fields(session))
+            else:
+                entry.update(_delivery_attempt.pending_fields(session))
             entry['claude_session_id'] = entry['claude_session_id'] or prev.get('claude_session_id', '')
             entry['provider_session_id'] = entry['provider_session_id'] or prev.get('provider_session_id', '')
             entry['started_at'] = prev.get('started_at', '') or entry['started_at']
@@ -8875,13 +9038,40 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
             log.pop(existing_i)
             log.insert(0, entry)
         else:
+            if identity_only:
+                return
+            if attempt is not None:
+                attempt.stamp(session)
+                entry.update(_delivery_attempt.completion_fields(session))
+            else:
+                entry.update(_delivery_attempt.pending_fields(session))
             log.insert(0, entry)
-    try:
-        _update_agent_log(project_id, upsert)
-    except Exception as e:
-        _log(f"[dispatch-log] {project_id}: pending write failed: {e}")
-        if strict:
-            raise
+    with get_manager(project_id or '').lock:
+        if self_started and (session.get('status') != 'idle'
+                or session.get('waiting_for_question')
+                or (session.get('_delivery_attempt_id') or '') != callback_attempt.attempt_id):
+            return False
+        had_attempt = '_delivery_attempt_id' in session
+        prior_attempt = session.get('_delivery_attempt_id')
+        try:
+            if not skip_history:
+                _update_agent_log(project_id, upsert)
+        except Exception as e:
+            if self_started or postlaunch:
+                if had_attempt:
+                    session['_delivery_attempt_id'] = prior_attempt
+                else:
+                    session.pop('_delivery_attempt_id', None)
+            _log(f"[dispatch-log] {project_id}: pending write failed: {e}")
+            if strict and not self_started:
+                raise
+        if superseded:
+            return False
+        if self_started:
+            session['status'] = 'running'
+            session['last_status_change_time'] = _time.time()
+    if skip_history:
+        return True
 
     # P1-3 fix (docs/_journal/4668eafc-mc998-fenn-review.md finding 3): a
     # dispatch-time 'baseline' session_checkpoint row, zero cumulative tokens
@@ -8927,6 +9117,7 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
     else:
         if not identity_only and not _first_turn and write_turn_start:
             _write_usage_breakdown_turn_start_checkpoint(session)
+    return True
 
 def _last_reply_text(session):
     """The child's last real assistant text, for the spawner callback.
@@ -9145,16 +9336,11 @@ def _note_self_started_turn(session):
     8d17c1c423d8 on 2026-10-04) when neither wake re-armed. Only the spawner
     latch re-arms; `_notify_workflow_sent` stays permanent (a workflow step
     completes once)."""
-    if session.get('status') != 'idle' or session.get('waiting_for_question'):
+    if not _log_agent_dispatch_pending(session, write_turn_start=False, self_started=True):
         return
-    session['status'] = 'running'
-    session['last_status_change_time'] = _time.time()
     background_wake = bool(session.pop(_bg_tasks.RESUME_PENDING_KEY, None))
-    # MC-998 round 4: this turn never passes the dispatch-pending writer, so
-    # the usage store still held the previous turn's 'completed' fact (or a
-    # reconcile-closed one) while it ran -- every automatic wake, not only
-    # the INTERIM-latched one below, reopens it. Same exclusions as that
-    # writer, same best-effort write.
+    # Every automatic wake, not only the INTERIM-latched one below, records
+    # its turn_start even if its pending-history claim could not be saved.
     _record_usage_breakdown_turn_started(session)
     interim = session.pop(_bg_tasks.INTERIM_KEY, None)
     background_wake = background_wake or bool(interim)
@@ -9176,7 +9362,7 @@ def _note_self_started_turn(session):
         if lines is not None and not last.startswith('['):
             lines.append('[agent started a new turn on its own — not sent from Clayrune]')
         try:
-            _rearm_notify_for_new_turn(session)
+            _rearm_notify_for_new_turn(session, postlaunch=True)
         except Exception as e:
             _log(f"[bg-tasks] could not re-arm spawner callback for "
                  f"{session.get('session_id', '')}: {e}")
@@ -9317,7 +9503,7 @@ def _release_held_job_notify_if_expired(session, now):
     return True
 
 
-def _advance_delegation_turn(session, owner: "str | None" = _OWNER_HUMAN):
+def _advance_delegation_turn(session, owner: "str | None" = _OWNER_HUMAN, *, postlaunch=False):
     """Turn-bookkeeping for a new turn on an existing session, WITHOUT
     touching the `_notify_session_sent` latch.
 
@@ -9341,31 +9527,16 @@ def _advance_delegation_turn(session, owner: "str | None" = _OWNER_HUMAN):
     ... Continue the work' twice for a task already merged, and Ron read it
     as Clayrune having a cross-chat memory bug.
     """
-    _limit_internal = owner is None or bool(
-        has_request_context() and request.environ.get('clayrune.limit_resume'))
-    _limit_resume.new_turn(session, internal=_limit_internal)
-    if _limit_internal:
-        owner = None
-    if owner:
-        session[_TURN_OWNER_KEY] = owner
-    _empty_turn.begin_turn(session)
-    _allocate_delegation_turn(session)
-    # Turn identity must be durable before provider execution begins; a cold
-    # revive can then reconstruct the same child/session turn without collision.
-    # write_turn_start=False: every caller (agent_followup / agent_interrupt
-    # `_start_new_turn`, `_auto_dispatch_followup`) writes the usage-breakdown
-    # turn_start itself right after this returns -- a second row here would
-    # only add a duplicate.
-    _log_agent_dispatch_pending(session, strict=True, write_turn_start=False)
+    return _launch_transaction.start_turn(session, owner, running=postlaunch)
 
 
-def _rearm_notify_for_new_turn(session):
+def _rearm_notify_for_new_turn(session, *, postlaunch=False):
     """Re-arm the spawner-chat completion callback for a NEW turn.
 
-    Only call this when an AGENT (not a human) is explicitly sending the
+    Call this when an AGENT (not a human) is explicitly sending the
     dispatched child new work through the API `notify_session` again — a
-    followup/interrupt whose request body names `notify_session` (see the
-    call sites in `agent_followup`/`agent_interrupt`). Every other new turn
+    followup/interrupt whose request body names `notify_session` — or when
+    its self-started reader resumes spawner-owned work. Every other new turn
     on an existing session must go through `_advance_delegation_turn` instead,
     which does the same turn bookkeeping without re-arming — see MC-970.
 
@@ -9377,9 +9548,12 @@ def _rearm_notify_for_new_turn(session):
     Deliberately does not touch `_notify_workflow_sent` -- see
     `_maybe_notify_spawner`'s docstring for why that latch must stay
     permanent.
+
+    A self-started reader passes `postlaunch=True`: callback rearming is
+    bookkeeping for running work, so failed persistence rolls back its token.
     """
-    session.pop('_notify_session_sent', None)
-    _advance_delegation_turn(session, owner=_OWNER_SPAWNER)
+    return _launch_transaction.rearm(session, lambda: _advance_delegation_turn(
+        session, owner=_OWNER_SPAWNER, postlaunch=postlaunch), running=postlaunch)
 
 
 def _notify_workflow_step(wf_wait, session, summary, *, sync=False):
@@ -9485,22 +9659,34 @@ def _deliver_outbox(row):
 
 
 def _process_inbox(row):
+    # This boundary, outside _process_inbox_locked's OUTER manager.lock, also
+    # owns acknowledgments deferred by nested revival/runtime helpers.
+    try:
+        with publication_boundary():
+            handoff = _process_inbox_locked(row)
+        return handoff() if callable(handoff) else handoff
+    except (ReviveDeliveryError, _agent_runtime.PromptDeliveryError) as exc:
+        raise DeliveryUncertain(f'parent revival delivery failed: {exc}') from exc
+
+
+def _process_inbox_locked(row):
     """Process an accepted receipt through the guarded parent handoff.
 
     Failure leaves the inbox pending. It can therefore be quota-blocked or
     parent-unavailable without causing a child relaunch or losing its result.
     """
     import urllib.request
+    store = _delivery_store
     raw = json.loads(row['payload'])
     payload = raw['payload']
     token = row.get('fence_token') or ''
-    if not _delivery_store or not token or not _delivery_store.revalidate_claim('inbox', row['event_id'], token):
+    if not store or not token or not store.revalidate_claim('inbox', row['event_id'], token):
         raise DeliveryNotHandedOff('inbox claim expired or was fenced before action')
     # Revalidate before and after waiting for the manager lock. The second
     # fenced check closes the expired-lease/stale-sender window.
     manager = get_manager(row['project_id'])
     with manager.lock:
-        if not _delivery_store.revalidate_claim('inbox', row['event_id'], token):
+        if not store.revalidate_claim('inbox', row['event_id'], token):
             raise DeliveryNotHandedOff('inbox claim expired while waiting for parent lock')
         # Shutdown admission is separate from loop ownership. A timed-out
         # stop may leave this caller waiting on the manager lock; once the
@@ -9545,11 +9731,12 @@ def _process_inbox(row):
             # cleared by a callback delivery (no `notify_session` in the
             # followup), so this only matters if it was re-armed and unspent.
             parent['_notify_session_sent'] = True
-        _delivery_store.record_handoff(row, parent)
+        store.record_handoff(row, parent)
         with _delegation_app.test_request_context(
                 json={'message': payload['message'],
                       'session_id': row['parent_session_id'],
                       '_durable_delivery_ack': needs_write_ack}):
+            request.environ['clayrune.defer_delivery_ack'] = True
             try:
                 response = _delegation_app.make_response(
                     agent_followup(row['project_id']))
@@ -9559,7 +9746,17 @@ def _process_inbox(row):
                 raise DeliveryUncertain(f'guarded parent submission outcome unknown: {exc}')
             status_code = getattr(response, 'status_code', 200)
             body = response.get_json(silent=True) or {}
-            _delivery_store.record_handoff_response(row, body, needs_ack=needs_write_ack)
+            pending_ack = request.environ.get('clayrune.pending_delivery_ack')
+
+        def _finish_handoff():
+            final_status = status_code
+            if pending_ack is not None:
+                body['stdin_write_ack'] = pending_ack['ack']
+                body['ok'] = pending_ack['ack'] == 'written'
+                final_status = 200 if body['ok'] else 504
+                if pending_ack.get('error'):
+                    body['error'] = pending_ack['error']
+            store.record_handoff_response(row, body, needs_ack=needs_write_ack)
             write_ack = body.get('stdin_write_ack')
             if needs_write_ack and write_ack == 'failed':
                 raise DeliveryDeferred(body.get('error', 'parent stdin write failed'))
@@ -9567,18 +9764,19 @@ def _process_inbox(row):
                 # A timeout or process crash leaves the outcome unknowable;
                 # never replay implicitly across that boundary.
                 raise DeliveryUncertain('parent stdin write acknowledgment is unknown')
-            if status_code >= 500:
-                raise DeliveryUncertain(f'guarded parent submission returned HTTP {status_code}')
-            if status_code >= 400:
-                raise DeliveryBlocked(f'guarded parent submission rejected HTTP {status_code}')
+            if final_status >= 500:
+                raise DeliveryUncertain(f'guarded parent submission returned HTTP {final_status}')
+            if final_status >= 400:
+                raise DeliveryBlocked(f'guarded parent submission rejected HTTP {final_status}')
             if body.get('session_id') != row['parent_session_id']:
                 raise DeliveryUncertain('parent submission switched session identity')
             if body.get('queued'):
                 raise DeliveryUncertain('parent submission entered an in-memory queue')
-            return {'http_status': status_code, 'parent_session_id': row['parent_session_id'],
+            return {'http_status': final_status, 'parent_session_id': row['parent_session_id'],
                     'stdin_write_ack': ('written' if needs_write_ack else 'legacy'),
                     'provider': parent.get('provider', 'claude'),
                     'model': parent.get('pinned_model') or parent.get('agent_model') or parent.get('model') or ''}
+        return _finish_handoff
 
 
 def start_delegation_delivery(interval_s: float = 5.0):
@@ -10241,9 +10439,15 @@ def _log_agent_completion_body(session):
     entry.update(_resume_cwd.isolation_log_fields(session))
     if _ckey:
         entry['completion_key'] = _ckey
+    entry.update(_delivery_attempt.completion_fields(session))
+    completion_attempt = _delivery_attempt.DeliveryAttempt(entry.get('delivery_attempt_id') or '')
     def complete(log):
         sid = entry['session_id']
         if sid:
+            current = next((e for e in log if e.get('session_id') == sid), None)
+            if current is not None and not completion_attempt.owns_row(current):
+                _log(f'[agent-log] skipped superseded completion for {sid}: durable attempt changed')
+                return False
             for i, e in enumerate(log):
                 # A replay also takes the row boot's reconcile already flipped.
                 if e.get('session_id') == sid and (
@@ -10254,14 +10458,20 @@ def _log_agent_completion_body(session):
                     entry.update(_resume_cwd.isolation_log_fields(session, e))
                     log.pop(i)
                     break
+        if not entry.get('delivery_attempt_id'):
+            # New standalone/housekeeping history has no destination to own.
+            # Give the inserted row its identity; never adopt an existing row.
+            entry.update(_delivery_attempt.pending_fields(session))
         log.insert(0, entry)
+        return True
     if _done_row is not None:
         # Written by the run that died after this point: keep that row, whose ts
         # and scribed marker are what the steps below key on.
         entry['ts'] = _done_row.get('ts', entry['ts'])
         entry['scribed'] = bool(_done_row.get('scribed'))
     else:
-        _update_agent_log(project_id, complete)
+        if _update_agent_log(project_id, complete) is False:
+            return
 
     # MC-998 Phase 2: durable session_fact for the Usage Breakdown dashboard.
     # Written for every completed/errored/stopped session INCLUDING housekeeping
@@ -10344,9 +10554,12 @@ def _log_agent_completion_body(session):
                 # Persist the Fix B marker so the startup reconciler never
                 # re-scribes a session the completion path already captured.
                 entry['scribed'] = True
+                marker_attempt = _delivery_attempt.DeliveryAttempt(entry.get('delivery_attempt_id') or '')
                 def mark_scribed(rows):
                     for row in rows:
-                        if row.get('session_id') == entry['session_id'] and row.get('ts') == entry['ts']:
+                        if (row.get('session_id') == entry['session_id']
+                                and row.get('ts') == entry['ts']
+                                and marker_attempt.owns_row(row)):
                             row['scribed'] = True
                             break
                 _update_agent_log(project_id, mark_scribed)
@@ -10380,12 +10593,16 @@ def _runtime_log_completion(ev, session):
     agent_stop. Never raises — a completion hook must not kill the reader
     thread during teardown.
     """
+    attempt_id = session.get('_delivery_attempt_id')
     try:
         _delegation_settlement.note_runtime_exit(session, _delivery_store)
         project_id = session.get('project_id')
         if not project_id:
             return
         with get_manager(project_id).lock:
+            if session.get('_delivery_attempt_id') != attempt_id:
+                _log(f'[runtime-completion] skipped superseded callback for {session.get("session_id", "")}')
+                return
             # MC-935: this hook is the ONE place every non-claude provider's
             # process exit funnels through (Gemini's own `_read_stream` and
             # the shared `_mode_a_reader` used by codex/opencode/goose/aider/
@@ -10451,25 +10668,32 @@ def _runtime_note_init(_event, session):
     """Backfill identity without resetting prior turn usage, history or status."""
     if session.get('incognito') or session.get('housekeeping'):
         return
+    attempt = _delivery_attempt.DeliveryAttempt(session.get('_delivery_attempt_id') or '')
+    fields = {'provider_session_id': session.get('provider_session_id') or '',
+              'observed_model': session.get('observed_model') or '',
+              'agent_model': _requested_model_snapshot(session)}
     def backfill(rows):
         for row in rows:
-            if row.get('session_id') == session.get('session_id'):
-                row['provider_session_id'] = session.get('provider_session_id') or ''
-                row['observed_model'] = session.get('observed_model') or ''
-                row['agent_model'] = _requested_model_snapshot(session)
+            if (row.get('session_id') == session.get('session_id')
+                    and attempt.owns_row(row)):
+                row.update(fields)
                 return
     _update_agent_log(session['project_id'], backfill)
 
 
-def _persist_runtime_start_failure(session):
+def _persist_runtime_start_failure(session, attempt=None):
     if session.get('incognito') or session.get('housekeeping'):
         return
+    if not isinstance(attempt, _delivery_attempt.DeliveryAttempt):
+        attempt = _delivery_attempt.DeliveryAttempt(session.get('_delivery_attempt_id') or '')
+    summary = (session.get('log_lines') or ['Dispatch failed'])[-1]
     def failed(rows):
         for row in rows:
             if (row.get('session_id') == session.get('session_id')
+                    and attempt.owns_row(row)
                     and row.get('status') == 'in_progress'):
                 row['status'] = 'error'
-                row['summary'] = (session.get('log_lines') or ['Dispatch failed'])[-1]
+                row['summary'] = summary
                 return
     try:
         _update_agent_log(session['project_id'], failed)
@@ -10555,12 +10779,42 @@ def _auto_dispatch_followup_locked(session, message, p, pp, cmd, _sp_path):
     try:
         _cwd = _session_cwd(session, pp, message)
         cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _cwd)
-        proc = spawn_engine_proc(
+    except Exception as e:
+        session['log_lines'].append(f'[follow-up failed: {e}]')
+        if _sp_path:
+            try:
+                os.unlink(_sp_path)
+            except OSError:
+                pass
+        return
+    # Reserve before launch: a refused save must leave no live unread child.
+    # The shared transaction snapshots turn state and restores only our owner.
+    reserved = session
+    try:
+        transaction = _launch_transaction.reserve(
+            reserved, lambda: _advance_delegation_turn(reserved, owner=None))
+    except Exception as e:
+        session.setdefault('pending_followups', []).insert(0, message)
+        session['log_lines'].append(f'[follow-up reservation failed; message kept queued: {e}]')
+        if _sp_path:
+            try:
+                os.unlink(_sp_path)
+            except OSError as cleanup_error:
+                _log(f'[follow-up] sysprompt cleanup failed: {cleanup_error}')
+        return
+    try:
+        proc = _launch_transaction.launch(transaction, spawn_engine_proc,
             cmd, session_id=session.get('session_id'), engine='claude',
             cwd=_cwd,
             env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
     except Exception as e:
+        if not transaction.launched:
+            session.setdefault('pending_followups', []).insert(0, message)
+        elif reserved.get('_launch_uncertain'):
+            session['_launch_uncertain'] = True
+            session['_stdin_write_uncertain'] = True
+            session['pending_recovery_message'] = None
         session['log_lines'].append(f'[follow-up failed: {e}]')
         if _sp_path:
             try:
@@ -10575,10 +10829,6 @@ def _auto_dispatch_followup_locked(session, message, p, pp, cmd, _sp_path):
     if old_proc:
         _unregister_process(old_proc.pid)
     session['proc'] = proc
-    # Guardian/queue replay of an already-received message, not a fresh
-    # caller decision -- never re-arms (see _advance_delegation_turn). The
-    # queue does not record who sent the message, so the owner is kept.
-    _advance_delegation_turn(session, owner=None)
     # Backlog 4668eafc calibration fix, defect 2 (WAKE TURNS WITH NO
     # turn_start): this dispatches a fresh turn exactly like agent_followup's
     # own `_start_new_turn` does, but historically skipped the matching
@@ -10923,6 +11173,7 @@ def _resolve_runtime_model(runtime, p, model_override='', provider_name=''):
     return model
 
 
+@after_publication
 def _dispatch_via_runtime(p, task, *, provider_name,
                           incognito=False, trigger_type='manual',
                           trigger_id='', reuse_session_id='',
@@ -11328,12 +11579,18 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                 [str(UPLOADS_DIR)] if UPLOADS_DIR else []),
         )
 
-    try:
-        handle = bridge.launch(_spawn_runtime) if bridge is not None else _spawn_runtime()
-        if bridge is not None and (handle is None or not hasattr(handle, 'session_dict')
-                                   or not hasattr(handle, 'mc_session_id')):
-            raise TypeError('lifecycle bridge launch must return SessionHandle')
-    except Exception as e:
+    launched_proc = None
+
+    def _start_failed(e, *, deferred=False):
+        # Delivery may settle after this helper returned. Never overwrite a
+        # replacement owner; the runtime disowns only its own rejected proc.
+        attempt = getattr(e, 'delivery_attempt', None)
+        if ((isinstance(attempt, _delivery_attempt.DeliveryAttempt)
+                and session.get('_delivery_attempt_id') != attempt.attempt_id)
+                or agent_sessions.get(session_id) is not session
+                or (deferred and session.get('proc') is not None
+                    and session.get('proc') is not launched_proc)):
+            return
         session['status'] = 'error'
         # A missing CLI can never succeed by retrying — trip the circuit
         # breaker on the FIRST failure instead of leaving pending_recovery_message
@@ -11351,7 +11608,17 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             session['log_lines'].append(f"[{provider_name} dispatch failed: {e}]")
         session['process_alive'] = False
         session['last_status_change_time'] = _time.time()
-        _persist_runtime_start_failure(session)
+        _persist_runtime_start_failure(session, attempt)
+
+    try:
+        with delivery_failure_handler(lambda e: _start_failed(e, deferred=True)):
+            handle = bridge.launch(_spawn_runtime) if bridge is not None else _spawn_runtime()
+            launched_proc = session.get('proc')
+            if bridge is not None and (handle is None or not hasattr(handle, 'session_dict')
+                                       or not hasattr(handle, 'mc_session_id')):
+                raise TypeError('lifecycle bridge launch must return SessionHandle')
+    except Exception as e:
+        _start_failed(e)
         raise
 
     _log_agent_activity(project_id, f"Agent dispatched (provider={provider_name}): {task[:100]}")
@@ -12234,6 +12501,7 @@ def _pending_launch_scope():
             pending_launches.pop(sid, None)
 
 
+@after_publication
 def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              trigger_type='manual', trigger_id='',
                              reuse_session_id='', provider_override='',
@@ -12887,13 +13155,17 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         # The dispatch record is durable before Popen. If Popen or the reader
         # setup fails, reconciliation can see an in-progress launch and retain
         # the unknown outcome instead of leaving an untracked child process.
-        if notify_session and not incognito:
+        _initial_launch = None
+        _reserve_initial = not incognito and bool(
+            notify_session or any(row.get('session_id') == session_id
+                                  for row in _load_agent_log(project_id)))
+        if _reserve_initial:
             # Live to the usage-breakdown reconcile from here until this
             # `with` block exits -- by then the session is in agent_sessions,
             # or the launch failed (MC-998 round 4).
             _pending_launch.append(session_id)
             pending_launches[session_id] = _time.time()
-            _log_agent_dispatch_pending({
+            _pending_session = {
                 'project_id': project_id, 'session_id': session_id,
                 'task': task, 'provider': provider_name,
                 'model': routed_model, 'agent_model': routed_model,
@@ -12910,7 +13182,14 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 '_delegation_turn': _delegation_turn_reserved,
                 '_delivery_generation': _delivery_generation_reserved,
                 'project_generation': canonical_project_generation,
-            }, strict=True)
+            }
+            _initial_launch = _launch_transaction.reserve(
+                _pending_session, lambda: _log_agent_dispatch_pending(_pending_session, strict=True))
+
+        if _initial_launch is None:
+            _initial_launch = _launch_transaction.reserve(
+                {'project_id': project_id, 'session_id': session_id,
+                 'incognito': incognito, 'housekeeping': housekeeping}, lambda: None)
 
         if use_streaming:
             # Mode B: persistent process with stream-json stdin
@@ -12920,7 +13199,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 cmd = [_resolve_claude(), *base_flags, *_sp_args]
 
             cmd = _launch_marker.launch_cmd(cmd, trigger_type, _agent_cwd)
-            proc = spawn_engine_proc(
+            proc = _launch_transaction.launch(_initial_launch, spawn_engine_proc,
                 cmd, session_id=session_id, engine='claude',
                 cwd=_agent_cwd,  # worktree when isolated, else pp
                 env=_billing_env,
@@ -13030,13 +13309,13 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 session = session_dict_override
             if session_metadata:
                 session.update(session_metadata)
+            _initial_launch.publish(session)
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
 
             # A notify_session dispatch already called this before Popen (and
             # wrote this turn's turn_start there) -- don't write a second.
-            _log_agent_dispatch_pending(
-                session, write_turn_start=not (notify_session and not incognito))
+            _initial_launch.settle(session, write_turn_start=not _reserve_initial)
             t = threading.Thread(target=_read_agent_stream_b, args=(proc, session), daemon=True)
             t.start()
 
@@ -13076,7 +13355,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 cmd = [_resolve_claude(), '-p', _clock_task, *base_flags, *_sp_args]
 
             cmd = _launch_marker.launch_cmd(cmd, trigger_type, _agent_cwd)
-            proc = spawn_engine_proc(
+            proc = _launch_transaction.launch(_initial_launch, spawn_engine_proc,
                 cmd, session_id=session_id, engine='claude',
                 cwd=_agent_cwd,  # worktree when isolated, else pp
                 env=_billing_env,
@@ -13156,11 +13435,11 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 session = session_dict_override
             if session_metadata:
                 session.update(session_metadata)
+            _initial_launch.publish(session)
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
 
-            _log_agent_dispatch_pending(
-                session, write_turn_start=not (notify_session and not incognito))
+            _initial_launch.settle(session, write_turn_start=not _reserve_initial)
             t = threading.Thread(target=_read_agent_stream, args=(proc, session), daemon=True)
             t.start()
 
@@ -13349,8 +13628,15 @@ def agent_set_model(project_id, session_id):
         # Persist before acknowledging the choice, including an explicit clear.
         # Incognito sessions deliberately leave no durable conversation record.
         if not session.get('incognito') and not session.get('housekeeping'):
+            from mc import agent_log_maintenance
+            prior_row = next((r for r in agent_log_maintenance.snapshot(project_id)
+                              if r.get('session_id') == session_id), None)
+            choice_owner = (_delivery_attempt.DeliveryAttempt(prior_row['delivery_attempt_id'])
+                            if prior_row is not None else None)
             def save_choice(rows):
                 row = next((r for r in rows if r.get('session_id') == session_id), None)
+                if row is not None and (choice_owner is None or not choice_owner.owns_row(row)):
+                    raise RuntimeError('model choice attempt was superseded')
                 if row is None:
                     row = {
                         'session_id': session_id, 'provider': 'claude',
@@ -13359,6 +13645,7 @@ def agent_set_model(project_id, session_id):
                         'started_at': session.get('started_at', ''),
                         'ts': now_iso(),
                     }
+                    row.update(_delivery_attempt.pending_fields(session))
                     rows.insert(0, row)
                 row.update({
                     'claude_session_id': session.get('claude_session_id') or row.get('claude_session_id', ''),
@@ -13398,6 +13685,7 @@ def agent_set_model(project_id, session_id):
 
 
 @bp.route('/api/project/<project_id>/agent/send', methods=['POST'])
+@delivery_response
 def agent_send(project_id):
     """Single user-intent endpoint. The server reads live session state
     under the per-project lock and routes to the correct internal handler:
@@ -13593,7 +13881,7 @@ def agent_send(project_id):
                     resp = make_response(agent_followup(project_id))
                     decision = 'interrupt_to_followup'
             except Exception as e:
-                _log(f'[send] interrupt-to-followup reconciliation failed: {e}')
+                _log(f"[send] interrupt-to-followup routing failed: {e}", flush=True)
     elif decision == 'followup':
         # agent_followup has the same jsonify(...), status tuple pattern on
         # its error returns — normalize here too (see the interrupt branch
@@ -13621,6 +13909,12 @@ def agent_send(project_id):
                 return jsonify({'ok': False, 'error': str(e), 'refused': True}), 409
             except RosterRecoveryHeld as e:
                 return jsonify({'ok': False, 'error': str(e)}), 409
+            except ReviveDeliveryError as e:
+                # MC-1168: must not fall through to the fresh dispatch below --
+                # the conversation exists, the message just did not reach it.
+                _log_agent_activity(project_id, f"Revive delivery failed in /send: {e}")
+                return jsonify({'ok': False, 'delivered': False, 'error': str(e),
+                                'session_id': session_id}), 502
             except Exception as e:
                 revived = None
                 _log_agent_activity(project_id, f"Revive error in /send: {e}")
@@ -13649,6 +13943,10 @@ def agent_send(project_id):
                 return jsonify({'ok': False, 'error': str(e), 'refused': True}), 409
             except RosterRecoveryHeld as e:
                 return jsonify({'ok': False, 'error': str(e)}), 409
+            except _agent_runtime.PromptDeliveryError as e:
+                _log_agent_activity(project_id, f"Non-Claude revive delivery failed in /send: {e}")
+                return jsonify({'ok': False, 'delivered': False, 'error': str(e),
+                                'session_id': session_id}), 502
             except Exception as e:
                 fresh_sid = None
                 _log_agent_activity(project_id, f"Non-claude revive error in /send: {e}")
@@ -14016,6 +14314,7 @@ def agent_stream(project_id):
 
 
 @bp.route('/api/project/<project_id>/agent/followup', methods=['POST'])
+@delivery_response
 def agent_followup(project_id):
     p = load_project(project_id)
     if not p:
@@ -14045,15 +14344,21 @@ def agent_followup(project_id):
     # touching the latch. See `_rearm_notify_for_new_turn` / MC-970 journal.
     _explicit_notify_session = (data.get('notify_session') or '').strip()
 
+    _turn_launch = None
+
     def _start_new_turn(sess):
-        if request.environ.get('clayrune.api_credits_retry'):
-            return
-        if _explicit_notify_session:
-            sess['_notify_session'] = _explicit_notify_session
-            _rearm_notify_for_new_turn(sess)
-        else:
-            _advance_delegation_turn(sess, owner=None if request.environ.get('clayrune.limit_resume') else _OWNER_HUMAN)
-        _write_usage_breakdown_turn_start_checkpoint(sess)
+        nonlocal _turn_launch
+
+        def prepare():
+            if request.environ.get('clayrune.api_credits_retry'):
+                return
+            if _explicit_notify_session:
+                sess['_notify_session'] = _explicit_notify_session
+                _rearm_notify_for_new_turn(sess)
+            else:
+                _advance_delegation_turn(sess, owner=None if request.environ.get('clayrune.limit_resume') else _OWNER_HUMAN)
+            _write_usage_breakdown_turn_start_checkpoint(sess)
+        _turn_launch = _launch_transaction.reserve(sess, prepare)
 
     _respawn_b = None  # set if Mode B needs to respawn outside lock
     _model_route_state = None  # set when alive+auto_model_enabled; handled post-lock
@@ -14087,9 +14392,14 @@ def agent_followup(project_id):
         # against. `wait_for_ack` preserves durable-delivery callers'
         # synchronous outcome without letting a stuck write leak forever
         # once they've stopped waiting on it.
-        return _bounded_stdin_write(
+        deferred = durable_ack and request.environ.get('clayrune.defer_delivery_ack', False)
+        ack = _bounded_stdin_write(
             sess['proc'], _build, session=sess, lock=sess.get('stdin_lock'),
-            wait_for_ack=10.0 if durable_ack else None, context='followup-B')
+            wait_for_ack=10.0 if durable_ack else None, context='followup-B',
+            defer_ack=deferred)
+        if deferred:
+            request.environ['clayrune.pending_delivery_ack'] = ack
+        return ack
 
     # Pre-check: if session is gone from agent_sessions (server restart, tab close,
     # 24h purge), try reviving from agent_log via -r <claude_session_id>.
@@ -14124,6 +14434,12 @@ def agent_followup(project_id):
             return jsonify({'ok': False, 'error': str(e), 'refused': True}), 409
         except RosterRecoveryHeld as e:
             return jsonify({'ok': False, 'error': str(e)}), 409
+        except ReviveDeliveryError as e:
+            # MC-1168: the emailed-answer relay posts here and treats 2xx as
+            # delivered; the message did not reach the agent.
+            _log_agent_activity(project_id, f"Revive delivery failed in followup: {e}")
+            return jsonify({'ok': False, 'delivered': False, 'error': str(e),
+                            'session_id': session_id}), 502
         if revived:
             if _explicit_notify_session:
                 revived['_notify_session'] = _explicit_notify_session
@@ -14144,6 +14460,10 @@ def agent_followup(project_id):
             return jsonify({'ok': False, 'error': str(e), 'refused': True}), 409
         except RosterRecoveryHeld as e:
             return jsonify({'ok': False, 'error': str(e)}), 409
+        except _agent_runtime.PromptDeliveryError as e:
+            _log_agent_activity(project_id, f"Non-Claude revive delivery failed in followup: {e}")
+            return jsonify({'ok': False, 'delivered': False, 'error': str(e),
+                            'session_id': session_id}), 502
         if fresh_sid:
             if _explicit_notify_session:
                 _fresh_sess = agent_sessions.get(fresh_sid)
@@ -14236,6 +14556,11 @@ def agent_followup(project_id):
                 existing['last_status_change_time'] = _time.time()
                 if isinstance(e, _agent_runtime.vendor_fence.VendorFenceError):
                     return jsonify({'ok': False, 'error': str(e), 'session_id': session_id}), 409
+                if isinstance(e, _agent_runtime.PromptDeliveryError):
+                    # MC-1168: the engine never got the message. ok:True here is
+                    # what let the emailed-answer relay mark the question answered.
+                    return jsonify({'ok': False, 'delivered': False, 'error': str(e),
+                                    'session_id': session_id}), 502
             _log_agent_activity(project_id, f"Agent follow-up (provider={session_provider}): {message[:100]}")
             return jsonify({'ok': True, 'session_id': session_id})
 
@@ -14664,7 +14989,7 @@ def agent_followup(project_id):
                         return
                 _log(f"[respawn-B] {rb['project_id']}: spawning cmd={' '.join(rb['cmd'][:5])}...")
                 _rb_cwd = _session_cwd(rb['existing'], rb['pp'], rb['message'])
-                proc = spawn_engine_proc(
+                proc = _launch_transaction.launch(_turn_launch, spawn_engine_proc,
                     _launch_marker.launch_cmd(
                         rb['cmd'], rb['existing'].get('trigger_type'),
                         _rb_cwd),
@@ -14807,7 +15132,7 @@ def agent_followup(project_id):
             cmd.extend(_sp_args)
             _cwd = _session_cwd(existing, pp, message)
             cmd = _launch_marker.launch_cmd(cmd, existing.get('trigger_type'), _cwd)
-            proc = spawn_engine_proc(
+            proc = _launch_transaction.launch(_turn_launch, spawn_engine_proc,
                 cmd, session_id=session_id, engine='claude',
                 cwd=_cwd,
                 env=_launch_marker.launch_env(existing.get('trigger_type'), session=existing),
@@ -14898,7 +15223,8 @@ _STDIN_WRITE_KILL_TIMEOUT = 20.0
 
 
 def _bounded_stdin_write(proc, data, *, session=None, lock=None, close_after=False,
-                          timeout=_STDIN_WRITE_KILL_TIMEOUT, wait_for_ack=None, context=''):
+                          timeout=_STDIN_WRITE_KILL_TIMEOUT, wait_for_ack=None, context='',
+                          defer_ack=False):
     """Write `data` to `proc.stdin` (then flush, and optionally close) on a
     helper thread, so the calling thread is never blocked by it directly.
 
@@ -14955,7 +15281,7 @@ def _bounded_stdin_write(proc, data, *, session=None, lock=None, close_after=Fal
         except Exception as e:
             result['error'] = e
             result['write_started'] = write_started
-            if session is not None:
+            if session is not None and session.get('proc', proc) is proc:
                 if write_started:
                     session['_stdin_write_uncertain'] = True
                 session.setdefault('log_lines', TimestampedLines()).append(f'[stdin write error: {e}]')
@@ -14972,6 +15298,7 @@ def _bounded_stdin_write(proc, data, *, session=None, lock=None, close_after=Fal
             # Release acknowledgment waiters before taking the project lock:
             # a synchronous follow-up caller may still be holding that lock.
             if (result.get('error') and session is not None
+                    and session.get('proc', proc) is proc
                     and session.get('_limit_resume_attempt') is not None):
                 with get_manager(session['project_id']).lock:
                     _limit_resume.submission_failed(session, session.get('_limit_resume_attempt'))
@@ -14991,7 +15318,7 @@ def _bounded_stdin_write(proc, data, *, session=None, lock=None, close_after=Fal
         _log(f"[stdin-write] PID {proc.pid}{f' ({context})' if context else ''} "
              f"did not drain stdin within {timeout}s — child never read it; "
              f"killing the process so the pipe breaks")
-        if session is not None:
+        if session is not None and session.get('proc', proc) is proc:
             session['_stdin_write_uncertain'] = True
             session.setdefault('log_lines', TimestampedLines()).append(
                 '[Agent process stopped responding while receiving your '
@@ -15002,15 +15329,22 @@ def _bounded_stdin_write(proc, data, *, session=None, lock=None, close_after=Fal
 
     if wait_for_ack is None:
         return None
-    if not done.wait(wait_for_ack):
-        if session is not None:
-            session['_stdin_write_uncertain'] = True
-        return {'ack': 'unknown', 'error': 'stdin write did not complete before timeout'}
-    if result.get('ok'):
-        return {'ack': 'written'}
-    err = result.get('error')
-    return {'ack': 'unknown' if result.get('write_started') else 'failed',
-            'error': str(err) if err else 'stdin write failed'}
+    def _acknowledge():
+        if not done.wait(wait_for_ack):
+            if session is not None and session.get('proc', proc) is proc:
+                session['_stdin_write_uncertain'] = True
+            return {'ack': 'unknown', 'error': 'stdin write did not complete before timeout'}
+        if result.get('ok'):
+            return {'ack': 'written'}
+        err = result.get('error')
+        return {'ack': 'unknown' if result.get('write_started') else 'failed',
+                'error': str(err) if err else 'stdin write failed'}
+
+    if defer_ack:
+        pending = {'ack': 'pending'}
+        complete_or_defer(lambda: pending.update(_acknowledge()))
+        return pending
+    return _acknowledge()
 
 
 def _bounded_stdin_close(proc, timeout=_STDIN_WRITE_KILL_TIMEOUT, context=''):
@@ -15102,6 +15436,7 @@ def _finish_interrupt_respawn(session):
 
 
 @bp.route('/api/project/<project_id>/agent/interrupt', methods=['POST'])
+@delivery_response
 def agent_interrupt(project_id, *, _internal=None):
     """Atomic stop + immediate resume with a new prompt.
     Kills the current process and respawns with -r <session_id> in one operation.
@@ -15152,15 +15487,21 @@ def agent_interrupt(project_id, *, _internal=None):
     # `notify_session` in the request body re-arms it.
     _explicit_notify_session = (data.get('notify_session') or '').strip()
 
+    _turn_launch = None
+
     def _start_new_turn(sess):
-        if _explicit_notify_session:
-            sess['_notify_session'] = _explicit_notify_session
-            _rearm_notify_for_new_turn(sess)
-        else:
-            # A mid-turn rollover is the same chain continuing, not a human
-            # taking it over -- leave the owner alone.
-            _advance_delegation_turn(sess, owner=None if is_midturn else _OWNER_HUMAN)
-        _write_usage_breakdown_turn_start_checkpoint(sess)
+        nonlocal _turn_launch
+
+        def prepare():
+            if _explicit_notify_session:
+                sess['_notify_session'] = _explicit_notify_session
+                _rearm_notify_for_new_turn(sess)
+            else:
+                # A mid-turn rollover is the same chain continuing, not a human
+                # taking it over -- leave the owner alone.
+                _advance_delegation_turn(sess, owner=None if is_midturn else _OWNER_HUMAN)
+            _write_usage_breakdown_turn_start_checkpoint(sess)
+        _turn_launch = _launch_transaction.reserve(sess, prepare)
 
     with get_manager(project_id).lock:
         session = agent_sessions.get(session_id)
@@ -15228,6 +15569,9 @@ def agent_interrupt(project_id, *, _internal=None):
                 session['last_status_change_time'] = _time.time()
                 if isinstance(e, _agent_runtime.vendor_fence.VendorFenceError):
                     return _ret({'ok': False, 'error': str(e), 'session_id': session_id}, 409)
+                if isinstance(e, _agent_runtime.PromptDeliveryError):
+                    return _ret({'ok': False, 'delivered': False, 'error': str(e),
+                                 'session_id': session_id}, 502)
             _log_agent_activity(project_id, f"Agent interrupt (provider={session_provider}): {message[:80]}")
             return _ret({'ok': True, 'session_id': session_id})
 
@@ -15394,7 +15738,7 @@ def agent_interrupt(project_id, *, _internal=None):
                     cmd.extend(_sp_args)
                 _cwd = _session_cwd(session, pp, message)
                 cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _cwd)
-                proc = spawn_engine_proc(
+                proc = _launch_transaction.launch(_turn_launch, spawn_engine_proc,
                     cmd, session_id=session_id, engine='claude',
                     cwd=_cwd,
                     env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
@@ -15471,7 +15815,7 @@ def agent_interrupt(project_id, *, _internal=None):
                 cmd = _launch_marker.launch_cmd(cmd, session.get('trigger_type'), _cwd)
                 # A mid-turn roll's prompt goes down stdin after the reader starts, so
                 # it needs the interactive shim; the ordinary Mode A resume has no stdin.
-                proc = spawn_engine_proc(
+                proc = _launch_transaction.launch(_turn_launch, spawn_engine_proc,
                     cmd, session_id=session_id, engine='claude',
                     cwd=_cwd,
                     env=_launch_marker.launch_env(session.get('trigger_type'), session=session),
@@ -15676,32 +16020,38 @@ def delete_plans():
         try:
             if not p.resolve().is_relative_to(resolved_plans_dir):
                 continue
-        except Exception:
+        except Exception as e:
+            _log(f'[plans] could not resolve {p}: {e}', flush=True)
             continue
         if p.is_file():
             try:
                 p.unlink()
                 deleted += 1
-            except Exception:
-                pass
+            except Exception as e:
+                _log(f'[plans] could not delete {p}: {e}', flush=True)
         deleted_paths.add(str(p))
     # Scrub plan_file references from all agent logs
     if deleted_paths:
+        from mc import agent_log_maintenance
+        from copy import deepcopy
         for log_file in DATA_DIR.glob('*_agent_log.json'):
             try:
-                log = json.loads(log_file.read_text(encoding='utf-8'))
+                project_id = log_file.name[:-len('_agent_log.json')]
+                before = agent_log_maintenance.snapshot(project_id)
+                log = deepcopy(before)
                 changed = False
                 for entry in log:
                     if entry.get('plan_file', '') in deleted_paths:
                         entry['plan_file'] = ''
+                        changed = True
                     if entry.get('plan_files'):
                         entry['plan_files'] = [p for p in entry['plan_files']
                                                if p not in deleted_paths]
                         changed = True
                 if changed:
-                    write_json_atomic(log_file, log, indent=2, ensure_ascii=False)
-            except Exception:
-                pass
+                    agent_log_maintenance.commit(project_id, before, log)
+            except Exception as e:
+                _log(f'[plans] could not scrub {log_file}: {e}', flush=True)
     return jsonify({'ok': True, 'deleted': deleted})
 
 

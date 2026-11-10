@@ -612,6 +612,12 @@ Each schedule card has these actions:
   without disturbing the regular cadence. Updates `last_run` for visual
   feedback; doesn't touch `next_run`.
 
+If delivery to a schedule's existing conversation fails, the Runs panel shows
+an error with the delivery reason and Run Now reports the failure. Clayrune
+does not automatically resend that failed attempt: the agent may already
+have received part or all of the task. Review the conversation before choosing
+to run it again. Recurring schedules retain their regular next cadence.
+
 Schedules bound to a **Steward role** use the same guarded preparation for
 timer fires and **Run Now**. They require an enabled assignment and project
 steward mode. Missing cycle resources, lifecycle integration or a demonstrated

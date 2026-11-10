@@ -154,10 +154,12 @@ def refusal(error: ResumeCwdMissing, data: dict, project_id: str,
             if row and row.get('incognito'):
                 return False
             if row is None:
+                from mc.delivery_attempt import pending_fields
                 native_field = ('claude_session_id' if error.provider == 'claude'
                                 else 'provider_session_id')
                 row = {'session_id': session_id, native_field: error.native_id,
                        'provider': error.provider, 'status': 'error'}
+                row.update(pending_fields({}))
             else:
                 rows.remove(row)
             # A refused request is new activity: keep it inside the log's

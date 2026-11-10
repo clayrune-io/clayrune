@@ -45,7 +45,12 @@ ON = {FLAG: True}
 def _spawn_calls(path: str):
     tree = ast.parse((REPO / path).read_text(encoding='utf-8'))
     return [n for n in ast.walk(tree) if isinstance(n, ast.Call)
-            and getattr(n.func, 'id', getattr(n.func, 'attr', None)) == 'spawn_engine_proc']
+            and (getattr(n.func, 'id', getattr(n.func, 'attr', None)) == 'spawn_engine_proc'
+                 or (isinstance(n.func, ast.Attribute) and n.func.attr == 'launch'
+                     and isinstance(n.func.value, ast.Name)
+                     and n.func.value.id == '_launch_transaction'
+                     and len(n.args) >= 2 and isinstance(n.args[1], ast.Name)
+                     and n.args[1].id == 'spawn_engine_proc'))]
 
 
 def test_the_claude_route_sites_pass_the_routes_own_flags():

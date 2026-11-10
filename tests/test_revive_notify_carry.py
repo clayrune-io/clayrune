@@ -113,7 +113,7 @@ class TestReviveCarriesNotifySession:
     def test_revive_carries_notify_session_from_the_log_row(self, ar, tmp_path, monkeypatch):
         entries = [{'session_id': 's1', 'claude_session_id': CSID,
                     'spawned_by_session_id': 'parent-1', 'ts': '2026-09-15T00:00:00Z'}]
-        monkeypatch.setattr(ar, '_load_agent_log', lambda pid: entries)
+        monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **kwargs: entries)
 
         session = ar._revive_from_agent_log('p1', 's1', 'still there?', _project(tmp_path))
 
@@ -124,7 +124,7 @@ class TestReviveCarriesNotifySession:
         entries = [{'session_id': 's2', 'claude_session_id': CSID,
                     'trigger_type': 'workflow', 'trigger_id': 'run-x:us-stock-investor',
                     'ts': '2026-09-15T00:00:00Z'}]
-        monkeypatch.setattr(ar, '_load_agent_log', lambda pid: entries)
+        monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **kwargs: entries)
 
         session = ar._revive_from_agent_log('p2', 's2', 'go', _project(tmp_path))
 
@@ -135,7 +135,7 @@ class TestReviveCarriesNotifySession:
         """The overwhelming majority of revives are plain chats -- must stay silent."""
         entries = [{'session_id': 's3', 'claude_session_id': CSID,
                     'ts': '2026-09-15T00:00:00Z'}]
-        monkeypatch.setattr(ar, '_load_agent_log', lambda pid: entries)
+        monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **kwargs: entries)
 
         session = ar._revive_from_agent_log('p3', 's3', 'go', _project(tmp_path))
 
@@ -146,7 +146,7 @@ class TestReviveCarriesNotifySession:
     def test_non_claude_revive_passes_notify_session_to_dispatch(self, ar, monkeypatch):
         entries = [{'session_id': 's4', 'provider': 'gemini', 'claude_session_id': '',
                     'spawned_by_session_id': 'parent-4', 'ts': '2026-09-15T00:00:00Z'}]
-        monkeypatch.setattr(ar, '_load_agent_log', lambda pid: entries)
+        monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **kwargs: entries)
         captured = {}
         monkeypatch.setattr(ar, '_dispatch_agent_internal',
                             lambda pid, msg, **kw: captured.update(kw) or 's4')
@@ -173,7 +173,7 @@ class TestReviveDoesNotRearm:
     def test_carry_notify_false_drops_the_callback_on_claude_revive(self, ar, tmp_path, monkeypatch):
         entries = [{'session_id': 's5', 'claude_session_id': CSID,
                     'spawned_by_session_id': 'parent-1', 'ts': '2026-09-23T00:00:00Z'}]
-        monkeypatch.setattr(ar, '_load_agent_log', lambda pid: entries)
+        monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **kwargs: entries)
 
         session = ar._revive_from_agent_log(
             'p5', 's5', 'are you still there?', _project(tmp_path), carry_notify=False)
@@ -186,7 +186,7 @@ class TestReviveDoesNotRearm:
         entries = [{'session_id': 's6', 'claude_session_id': CSID,
                     'trigger_type': 'workflow', 'trigger_id': 'run-y:market-scout',
                     'ts': '2026-09-23T00:00:00Z'}]
-        monkeypatch.setattr(ar, '_load_agent_log', lambda pid: entries)
+        monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **kwargs: entries)
 
         session = ar._revive_from_agent_log(
             'p6', 's6', 'go', _project(tmp_path), carry_notify=False)
@@ -200,7 +200,7 @@ class TestReviveDoesNotRearm:
         a dead, nested parent silently breaks."""
         entries = [{'session_id': 's7', 'claude_session_id': CSID,
                     'spawned_by_session_id': 'grandparent-1', 'ts': '2026-09-23T00:00:00Z'}]
-        monkeypatch.setattr(ar, '_load_agent_log', lambda pid: entries)
+        monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **kwargs: entries)
 
         session = ar._revive_from_agent_log('p7', 's7', 'go', _project(tmp_path))
 
@@ -210,7 +210,7 @@ class TestReviveDoesNotRearm:
     def test_non_claude_carry_notify_false_drops_the_callback(self, ar, monkeypatch):
         entries = [{'session_id': 's8', 'provider': 'gemini', 'claude_session_id': '',
                     'spawned_by_session_id': 'parent-8', 'ts': '2026-09-23T00:00:00Z'}]
-        monkeypatch.setattr(ar, '_load_agent_log', lambda pid: entries)
+        monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **kwargs: entries)
         captured = {}
         monkeypatch.setattr(ar, '_dispatch_agent_internal',
                             lambda pid, msg, **kw: captured.update(kw) or 's8')

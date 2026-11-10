@@ -33,7 +33,7 @@ def setup(env, tmp_path, monkeypatch):
     logfile.write_text('[]', encoding='utf-8')
     monkeypatch.setattr(ar, '_agent_log_path', lambda pid: logfile)
     monkeypatch.setattr(ar, '_load_agent_log',
-                        lambda pid: json.loads(logfile.read_text(encoding='utf-8')))
+                        lambda pid, **kwargs: json.loads(logfile.read_text(encoding='utf-8')))
     monkeypatch.setattr(ar, '_allowance_refusal', lambda *a, **k: '')
     monkeypatch.setattr(ar, '_prior_character', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_resolve_character', lambda *a, **k: (None, ''))
@@ -109,8 +109,10 @@ def test_live_tree_revive_keeps_isolation_without_claiming_cleanup(setup, monkey
         'is_alive': lambda *a: False})
 
     def thread(*a, **k):
-        # Git's captured-pipe readers must run; provider/guardian work must not.
-        if getattr(k.get('target'), '__module__', '') == 'subprocess':
+        # Git readers and the acknowledged fake-stdin writer must run.
+        # Provider readers and guardian work stay inert.
+        if (getattr(k.get('target'), '__module__', '') == 'subprocess'
+                or k.get('name', '').startswith('revive-stdin-')):
             return REAL_THREAD(*a, **k)
         return inert_thread(*a, **k)
 

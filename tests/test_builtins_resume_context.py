@@ -183,14 +183,31 @@ def test_failed_context_delivery_is_retried(engine, spawns, monkeypatch):
         proc.stdin = BrokenStdin()
         return proc
 
-    monkeypatch.setattr(ar.subprocess, 'Popen', broken_popen)
-    handle = runtime.dispatch(project_path='.', task='first task', system_prompt='RULES')
-    session = handle.session_dict
-    assert '_ctx_delivered_sha' not in session
-    assert any('prompt delivery failed: BrokenPipeError' in line
-               for line in session['log_lines'])
-    monkeypatch.setattr(ar.subprocess, 'Popen', original_popen)
-    session['provider_session_id'] = 'native-thread'
+    if engine == 'codex':
+        # MC-1168: a codex turn whose prompt write fails now RAISES instead of
+        # returning a live-looking handle, so the failed delivery is exercised on
+        # the follow-up of an established session. The retry contract is unchanged:
+        # the fingerprint stays unstamped and the next turn re-sends the context.
+        handle = runtime.dispatch(project_path='.', task='first task', system_prompt='RULES')
+        session = handle.session_dict
+        session.pop('_ctx_delivered_sha', None)
+        session['provider_session_id'] = 'native-thread'
+        monkeypatch.setattr(ar.subprocess, 'Popen', broken_popen)
+        with pytest.raises(ar.PromptDeliveryError):
+            runtime.write_followup(handle, 'lost task')
+        assert '_ctx_delivered_sha' not in session
+        assert any('prompt delivery failed: BrokenPipeError' in line
+                   for line in session['log_lines'])
+        monkeypatch.setattr(ar.subprocess, 'Popen', original_popen)
+    else:
+        monkeypatch.setattr(ar.subprocess, 'Popen', broken_popen)
+        handle = runtime.dispatch(project_path='.', task='first task', system_prompt='RULES')
+        session = handle.session_dict
+        assert '_ctx_delivered_sha' not in session
+        assert any('prompt delivery failed: BrokenPipeError' in line
+                   for line in session['log_lines'])
+        monkeypatch.setattr(ar.subprocess, 'Popen', original_popen)
+        session['provider_session_id'] = 'native-thread'
     runtime.write_followup(handle, 'retry context')
     assert 'CURRENT CLAYRUNE CONTEXT' in spawns[-1][1].stdin.getvalue()
     assert session['_ctx_delivered_sha'] == context_sha(session['_system_prompt'])

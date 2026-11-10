@@ -58,9 +58,10 @@ def test_completion_row_keeps_the_flag(routes, monkeypatch):
     monkeypatch.setattr(routes, '_notify_agent_spawner', lambda *a, **k: None)
     sess = {'project_id': 'p', 'session_id': 's4', 'task': 't', 'status': 'completed',
             'log_lines': [], '_worktree_isolated': True}
-    routes._log_agent_dispatch_pending(dict(sess, status='running'), write_turn_start=False)
+    pending_session = dict(sess, status='running')
+    routes._log_agent_dispatch_pending(pending_session, write_turn_start=False)
     # The completing session dict is rebuilt after a restart and no longer knows.
-    routes._log_agent_completion(dict(sess, _worktree_isolated=False))
+    routes._log_agent_completion(dict(pending_session, status='completed', _worktree_isolated=False))
     done = [r for r in rows if r['session_id'] == 's4']
     assert len(done) == 1 and done[0]['status'] != 'in_progress'
     assert done[0]['worktree_isolated'] is True

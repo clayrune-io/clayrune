@@ -44,16 +44,23 @@ def boundary(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, 'run', run)
     class Proc:
         pid = 1234567
-        stdin = None
+        def __init__(self):
+            self.stdin = io.StringIO()
         stdout = iter(())
         def poll(self): return 0
     def popen(cmd, **kw):
         calls.append((list(cmd), kw))
         return Proc()
     monkeypatch.setattr(subprocess, 'Popen', popen)
+    real_thread = ar.threading.Thread
     class Thread:
-        def __init__(self, *args, **kw): pass
-        def start(self): pass
+        def __init__(self, *args, **kw):
+            self.worker = None
+            if kw.get('target') is not ar._mode_a_reader:
+                self.worker = real_thread(*args, **kw)
+        def start(self):
+            if self.worker is not None:
+                self.worker.start()
     monkeypatch.setattr(ar.threading, 'Thread', Thread)
     def runtime(vendor):
         rt = type(ar.get_runtime(vendor))()

@@ -7,7 +7,7 @@ send it when changed or when delivery has not yet been recorded for the session.
 from __future__ import annotations
 
 import hashlib
-from typing import IO, Any, Mapping, MutableMapping, Optional
+from typing import IO, Any, Callable, Mapping, MutableMapping, Optional
 
 CONTEXT_HEADER = '=== CURRENT CLAYRUNE CONTEXT ==='
 MESSAGE_HEADER = "=== THE USER'S MESSAGE ==="
@@ -26,16 +26,20 @@ def followup_prompt(session: Mapping[str, Any], context: str, message: str) -> s
 
 
 def write_context_prompt(stream: Optional[IO[Any]], prompt: str,
-                         session: MutableMapping[str, Any], context: str) -> None:
+                         session: MutableMapping[str, Any], context: str,
+                         *, on_error: Optional[Callable[[Exception], None]] = None) -> bool:
     """Stamp delivery only after the pipe accepts and flushes this context.
 
     Bare followups and retries of a different prompt must not advance the
     fingerprint. Failed writes remain eligible for context delivery next turn.
+
+    Never raises. Returns True only when the prompt was written and the stream
+    closed (MC-1168), so a caller that must not report a message delivered when
+    nothing was written can read the result; `on_error` receives the exception.
     """
     if '_steward_role_ack' in session:
         from mc.steward_role_dispatch import write_native_delivery
-        write_native_delivery(stream, prompt, session, context)
-        return
+        return write_native_delivery(stream, prompt, session, context)
     try:
         if stream is None:
             raise BrokenPipeError('prompt stdin unavailable')
@@ -44,10 +48,13 @@ def write_context_prompt(stream: Optional[IO[Any]], prompt: str,
     except Exception as exc:
         session.setdefault('log_lines', []).append(
             f'[prompt delivery failed: {type(exc).__name__}; context not recorded]')
-        return
+        if on_error is not None:
+            on_error(exc)
+        return False
     if context.strip() and (prompt.startswith(context)
                             or prompt.startswith(resume_prompt(context, ''))):
         session['_ctx_delivered_sha'] = context_sha(context)
+    return True
 
 
 def resume_prompt(context: str, message: str) -> str:

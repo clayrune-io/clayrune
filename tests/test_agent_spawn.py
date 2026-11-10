@@ -330,7 +330,13 @@ def _strip_bytes(lines):
 
 
 @pytest.mark.parametrize('eng', ENGINES)
-def test_runtime_outcome_is_identical_with_the_flag_off_and_on(eng, root, tracker, tmp_path):
+def test_runtime_outcome_is_identical_with_the_flag_off_and_on(eng, root, tracker, tmp_path, monkeypatch):
+    # Codex claims history before delivery; this standalone factory suite does
+    # not import server.wire(). Give its real writer a temporary destination.
+    from mc.blueprints import agent_routes
+    history = tmp_path / 'history'
+    history.mkdir()
+    monkeypatch.setattr(agent_routes, 'DATA_DIR', history)
     _on(False)
     off = _outcome(eng, tmp_path, False)
     _on(True)

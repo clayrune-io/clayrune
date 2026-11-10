@@ -40,6 +40,9 @@ from typing import (
     Any, Callable, cast, Dict, Iterable, Iterator, List, Literal, Mapping, Optional, Tuple,
 )
 
+from mc.pending_delivery import complete_or_defer
+from mc.terminal_delivery import TerminalDeliveryGate
+from mc.delivery_attempt import DeliveryAttempt
 from mc import vendor_fence
 from mc import test_run_detection as _test_run_detection
 from mc.core import TimestampedLines, _log
@@ -167,6 +170,14 @@ class CLINotInstalledError(RuntimeError):
     burn through its retry budget on a failure no retry can fix.
     """
     pass
+
+
+class PromptDeliveryError(RuntimeError):
+    """The engine's prompt was NOT written to its stdin (MC-1168): the pipe
+    broke, the write raised, or it had not finished within the bound. Raised by
+    a runtime's dispatch()/write_followup() so the caller never records a
+    message as delivered that the engine never received. Unlike
+    CLINotInstalledError this one can succeed on a retry."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5469,6 +5480,93 @@ def _compose_respawn_prompt(session: Dict[str, Any], message: str, *,
     return '\n\n---\n\n'.join(parts)
 
 
+# MC-1168: the Mode A prompt is written by a daemon thread the call site starts
+# inside `deliver`, so the spawn returned before a byte was written and a
+# BrokenPipe/OSError there was invisible to the caller. The thread's outcome is
+# held here and awaited (bounded) once the reader is draining stdout, so a full
+# stdout pipe cannot stall the write the wait is waiting on.
+_PROMPT_DELIVERY_WAIT_S = 15.0
+
+
+class _PromptDelivery:
+    """Outcome of one prompt write running on its own thread."""
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.ok = False
+        self.why = ''
+
+
+def _start_prompt_delivery(write: Callable[[Callable[[Exception], None]], bool],
+                           name: str) -> _PromptDelivery:
+    """Run `write(on_error)` on a daemon thread. `write` returns True only when
+    the prompt was written and stdin closed; it may report why it did not
+    through `on_error`. An exception it raises counts as a failed delivery."""
+    delivery = _PromptDelivery()
+
+    def _note(exc: Exception) -> None:
+        delivery.why = f'{type(exc).__name__}: {exc}'
+
+    def _run() -> None:
+        try:
+            delivery.ok = bool(write(_note))
+        except BaseException as exc:
+            delivery.ok = False
+            _note(exc)    # type: ignore[arg-type]
+        finally:
+            delivery.done.set()
+    threading.Thread(target=_run, daemon=True, name=name).start()
+    return delivery
+
+
+def _require_prompt_delivered(delivery: Optional[_PromptDelivery], session: Dict[str, Any],
+                              proc: Any, engine: str, reject: Optional[Callable[[], None]] = None) -> None:
+    """Return only once the prompt was written and stdin closed; otherwise
+    disown and kill `proc` and raise PromptDeliveryError. The proc is disowned
+    BEFORE the kill (`session['proc'] = None`) so its reader's exit handling
+    does not write a status for a turn the caller is about to report failed."""
+    if delivery is None:
+        why = 'prompt delivery was never started'
+    elif not delivery.done.wait(_PROMPT_DELIVERY_WAIT_S):
+        why = f'prompt write did not finish within {_PROMPT_DELIVERY_WAIT_S:g}s'
+    elif delivery.ok:
+        return
+    else:
+        why = delivery.why or 'prompt write failed'
+    if reject is not None:
+        reject()
+    if session.get('proc') is proc:
+        session['proc'] = None
+        session['process_alive'] = False
+        session['status'] = 'error'
+        session['last_status_change_time'] = _time.time()
+    try:
+        _kill_pid(proc.pid)
+    except Exception as exc:
+        _log(f'[runtime:{engine}] could not stop proc after failed prompt delivery: {exc}',
+             flush=True)
+    raise PromptDeliveryError(f'{engine} prompt was not delivered to the CLI ({why})')
+
+
+def _pending_prompt(delivery, session, proc, engine, attempt):
+    gate = TerminalDeliveryGate(
+        lambda exc: _log(f'[runtime:{engine}] terminal processing failed: {exc}', flush=True))
+    session['_terminal_delivery_gate'] = (proc, gate)
+
+    def acknowledge():
+        try:
+            _require_prompt_delivered(delivery, session, proc, engine, gate.reject)
+        except Exception as exc:
+            gate.reject()
+            raise attempt.bind(exc)
+        except BaseException:
+            gate.reject()
+            raise
+        gate.accept()
+
+    return acknowledge
+
+
 def _mode_a_dispatch(runtime: 'AgentRuntime',
                      cmd: List[str],
                      full_prompt: str,
@@ -5505,7 +5603,22 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
     vendor_fence.prepare_env(
         runtime.name, session_dict, env, binary=Path(cmd[0]), cwd=project_path)
     cmd = vendor_fence.prepare_command(runtime.name, session_dict, cmd, project_path, env)
+    # MC-1168: Codex's write is awaited below (`_require_prompt_delivered`) so a
+    # dispatch whose prompt never reached the CLI fails instead of returning a
+    # live-looking handle. Other engines keep the fire-and-forget thread.
+    _verify_delivery = runtime.name == 'codex' and prompt_via_stdin
+    _delivery: List[_PromptDelivery] = []
+    attempt = DeliveryAttempt.capture(session_dict) if _verify_delivery else None
+
     def _deliver(p: Any) -> None:
+        if _verify_delivery:
+            from mc.resume_context import write_context_prompt
+            _delivery.append(_start_prompt_delivery(
+                lambda on_error: write_context_prompt(
+                    p.stdin, full_prompt, session_dict, system_prompt, on_error=on_error),
+                name=f'{runtime.name}-stdin-{mc_session_id[:8]}'))
+            return
+
         def _send() -> None:
             if runtime.name in ('codex', 'qwen'):
                 from mc.resume_context import write_context_prompt
@@ -5561,11 +5674,16 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
         except Exception as exc:
             _log(f'[runtime:{runtime.name}] process registration failed: {exc}', flush=True)
 
+    acknowledge = (_pending_prompt(_delivery[0] if _delivery else None,
+                                   session_dict, proc, runtime.name, attempt)
+                   if _verify_delivery else None)
     t = threading.Thread(target=_mode_a_reader,
                          args=(proc, handle, runtime),
                          daemon=True,
                          name=f'{runtime.name}-reader-{mc_session_id[:8]}')
     t.start()
+    if acknowledge is not None:
+        complete_or_defer(acknowledge)
     return handle
 
 
@@ -6337,6 +6455,8 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
     failure is observable and prevents this reader from reporting success.
     """
     session = handle.session_dict
+    pending = session.get('_terminal_delivery_gate')
+    terminal_gate = pending[1] if pending is not None and pending[0] is proc else None
     cbs = handle.meta.get('callbacks', {})
     raw_record = _test_run_detection.compose_raw(cbs.get('on_raw_record'), runtime.name)
     raw_eof = cbs.get('on_raw_eof')
@@ -6376,6 +6496,42 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 fn(ev, session)
             except Exception as e:
                 session['log_lines'].append(f"[callback {name} error: {e}]")
+
+    def _finish_turn(event: AgentEvent) -> None:
+        if session.get('proc') is not proc:
+            return
+        # Capture the token counters the turn reports. Without this a
+        # runtime that declares emits_usage delivers nothing: the only
+        # callback wired is on_process_exit, so the payload was parsed
+        # and dropped, and the chat's token counter stayed at zero.
+        _usage = event.payload.get('usage')
+        if isinstance(_usage, dict):
+            # turn_context_tokens (Codex: codex_turn_context_tokens)
+            # matches _usage's raw figures against the rollout's
+            # per-request records — it must see the THREAD-only
+            # numbers the CLI actually reported, not the carry-merged
+            # total below, or the match against the rollout breaks.
+            _ctx = runtime.turn_context_tokens(handle, _usage, event.payload)
+            if _ctx is not None:
+                session['context_tokens'] = _ctx
+            stored_usage = _usage
+            if runtime.name == 'codex':
+                # Codex's usage is the THREAD's running total, reset
+                # to zero by a rollover's fresh thread — add back
+                # what earlier, now-abandoned threads already spent
+                # (_carry_codex_usage, set at rollover) so the
+                # session total keeps reflecting the whole session.
+                carry = session.get('_codex_usage_carry')
+                if isinstance(carry, dict) and carry:
+                    stored_usage = dict(_usage)
+                    for k, v in carry.items():
+                        stored_usage[k] = int(stored_usage.get(k) or 0) + int(v or 0)
+            session['usage'] = stored_usage
+        accumulate_result_cost(session, event.payload, proc_cost)
+        accumulate_result_turns(session, event.payload, proc_turns)
+        _allowance_state.clear_exhaustion(runtime.name)
+        session.pop('_limit_resume_exhaustion', None)
+        _cb('on_turn_end', event)
 
     try:
         # Mode-A launchers supply stdout=PIPE and text=True.
@@ -6492,38 +6648,10 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                     session['observed_model'] = native_model
                 _cb('on_init', ev)
             elif ev.type == EventType.TURN_END:
-                # Capture the token counters the turn reports. Without this a
-                # runtime that declares emits_usage delivers nothing: the only
-                # callback wired is on_process_exit, so the payload was parsed
-                # and dropped, and the chat's token counter stayed at zero.
-                _usage = ev.payload.get('usage')
-                if isinstance(_usage, dict):
-                    # turn_context_tokens (Codex: codex_turn_context_tokens)
-                    # matches _usage's raw figures against the rollout's
-                    # per-request records — it must see the THREAD-only
-                    # numbers the CLI actually reported, not the carry-merged
-                    # total below, or the match against the rollout breaks.
-                    _ctx = runtime.turn_context_tokens(handle, _usage, ev.payload)
-                    if _ctx is not None:
-                        session['context_tokens'] = _ctx
-                    stored_usage = _usage
-                    if runtime.name == 'codex':
-                        # Codex's usage is the THREAD's running total, reset
-                        # to zero by a rollover's fresh thread — add back
-                        # what earlier, now-abandoned threads already spent
-                        # (_carry_codex_usage, set at rollover) so the
-                        # session total keeps reflecting the whole session.
-                        carry = session.get('_codex_usage_carry')
-                        if isinstance(carry, dict) and carry:
-                            stored_usage = dict(_usage)
-                            for k, v in carry.items():
-                                stored_usage[k] = int(stored_usage.get(k) or 0) + int(v or 0)
-                    session['usage'] = stored_usage
-                accumulate_result_cost(session, ev.payload, proc_cost)
-                accumulate_result_turns(session, ev.payload, proc_turns)
-                _allowance_state.clear_exhaustion(runtime.name)
-                session.pop('_limit_resume_exhaustion', None)
-                _cb('on_turn_end', ev)
+                if terminal_gate is None:
+                    _finish_turn(ev)
+                else:
+                    terminal_gate.submit(lambda event=ev: _finish_turn(event))
             elif ev.type == EventType.ALLOWANCE_EXHAUSTED:
                 # A terminal failure is never content (Fenn #4): this is the
                 # normalized allowance shape, never the vendor's raw quota
@@ -6591,101 +6719,111 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
             rc = proc.wait()
         except Exception:
             rc = -1
-        if raw_eof:
-            try:
-                raw_eof(raw_sequence, rc, handle.mc_session_id, session)
-            except Exception as e:
-                capture_failed = True
-                session['_capture_error'] = str(e)
+        def _finish_terminal():
+            nonlocal capture_failed
+            if session.get('proc') is not proc:
+                return
+            if raw_eof:
+                try:
+                    raw_eof(raw_sequence, rc, handle.mc_session_id, session)
+                except Exception as e:
+                    capture_failed = True
+                    session['_capture_error'] = str(e)
+                    session['capture_status'] = 'incomplete'
+                    session.setdefault('log_lines', TimestampedLines()).append(f'[capture EOF error: {e}]')
+            if capture_failed:
                 session['capture_status'] = 'incomplete'
-                session.setdefault('log_lines', TimestampedLines()).append(f'[capture EOF error: {e}]')
-        if capture_failed:
-            session['capture_status'] = 'incomplete'
-        # Codex refused the model slug (400 "not supported ... ChatGPT
-        # account"): respawn THIS turn once without -m, so the CLI's own
-        # default applies. A launched retry swaps session['proc'], so the
-        # `session.get('proc') is proc` gate below skips this reader's status
-        # write and the retry's own reader owns the final status.
-        if (runtime.name == 'codex' and rc != 0 and session.get('proc') is proc
-                and session.get('_codex_model_refused')):
-            cast('CodexRuntime', runtime).retry_without_model(handle, proc)
-        # MC Tool Protocol: scan this turn's complete text for mc: blocks
-        # (e.g. an emulated AskUserQuestion) and apply them before deciding
-        # status — a question holds the turn in 'idle' awaiting the user's
-        # reply rather than completing. Mirrors GeminiRuntime._read_stream.
-        mc_res = {'blocks_found': False, 'paused': False}
-        try:
-            turn_text = ''.join(turn_text_parts)
-            # Module-level, not runtime.apply_mc_tool_blocks() — the method
-            # form exists only so Gemini's own reader (which lives on the
-            # runtime) can call `self.`; this shared reader is already in the
-            # same module as the real implementation.
-            # Stamp only when THIS reader produced text and still owns the
-            # session (a codex retry_without_model swap hands ownership to the
-            # retry's reader; an empty/crashed turn is not a reply).
-            if turn_text.strip() and session.get('proc') is proc:
-                _turn_clock.note_reply(session)
-            mc_res = apply_mc_tool_blocks(session, turn_text)
-            if _mc_suppressing and not mc_res['blocks_found']:
-                # A ```mc: fence appeared but no complete, valid block was
-                # parsed (turn ended mid-block, or it was malformed) — flush
-                # the suppressed text so it is not silently lost.
-                leftover = turn_text.strip()
-                if leftover:
-                    session['log_lines'].append(leftover)
-            if mc_res['paused']:
-                session['log_lines'].append(
-                    '[Waiting for your answer — choose above to continue]')
-        except Exception as e:
-            session.setdefault('log_lines', TimestampedLines()).append(
-                f'[mc-tool scan error: {e}]')
-        if session.get('proc') is proc:
-            if session.get('status') == 'running':
-                if session.get('_capture_error'):
-                    session['status'] = 'error'
-                elif mc_res['paused']:
-                    session['status'] = 'idle'
-                else:
-                    session['status'] = 'completed' if rc == 0 else 'error'
-                    if rc == 0 and not turn_error_seen:
-                        # A clean exit that said nothing and did nothing is a
-                        # failure, not a completion (backlog d37d0183).
-                        _empty_turn.mark(session, _empty_turn.empty_reason(
-                            visible_text=strip_mc_tool_blocks(''.join(turn_text_parts)),
-                            tool_calls=tool_calls, paused=False,
-                            had_control_blocks=mc_res['blocks_found'],
-                            other_output=other_output),
-                            set_error=True)
-                session['last_status_change_time'] = _time.time()
-                if not mc_res['paused'] and rc != 0:
-                    if runtime.name == 'codex':
-                        # `codex exec --json` may never deliver the failure
-                        # as a stream event; the rollout's task_complete.error
-                        # is the authoritative copy (MC-1147).
-                        _codex_run_error.capture(
-                            session,
-                            _codex_run_error.locate_rollout(
-                                runtime.transcript_path, handle.project_path, session),
-                            turn_started_at)
+            # Codex refused the model slug (400 "not supported ... ChatGPT
+            # account"): respawn THIS turn once without -m, so the CLI's own
+            # default applies. A launched retry swaps session['proc'], so the
+            # `session.get('proc') is proc` gate below skips this reader's status
+            # write and the retry's own reader owns the final status.
+            if (runtime.name == 'codex' and rc != 0 and session.get('proc') is proc
+                    and session.get('_codex_model_refused')):
+                if cast('CodexRuntime', runtime).retry_without_model(handle, proc):
+                    return
+            # MC Tool Protocol: scan this turn's complete text for mc: blocks
+            # (e.g. an emulated AskUserQuestion) and apply them before deciding
+            # status — a question holds the turn in 'idle' awaiting the user's
+            # reply rather than completing. Mirrors GeminiRuntime._read_stream.
+            mc_res = {'blocks_found': False, 'paused': False}
+            try:
+                turn_text = ''.join(turn_text_parts)
+                # Module-level, not runtime.apply_mc_tool_blocks() — the method
+                # form exists only so Gemini's own reader (which lives on the
+                # runtime) can call `self.`; this shared reader is already in the
+                # same module as the real implementation.
+                # Stamp only when THIS reader produced text and still owns the
+                # session (a codex retry_without_model swap hands ownership to the
+                # retry's reader; an empty/crashed turn is not a reply).
+                if turn_text.strip() and session.get('proc') is proc:
+                    _turn_clock.note_reply(session)
+                mc_res = apply_mc_tool_blocks(session, turn_text)
+                if _mc_suppressing and not mc_res['blocks_found']:
+                    # A ```mc: fence appeared but no complete, valid block was
+                    # parsed (turn ended mid-block, or it was malformed) — flush
+                    # the suppressed text so it is not silently lost.
+                    leftover = turn_text.strip()
+                    if leftover:
+                        session['log_lines'].append(leftover)
+                if mc_res['paused']:
                     session['log_lines'].append(
-                        f"[{runtime.name} exited with code {rc}]")
-                    try:
-                        tail = '\n'.join(session['log_lines'][-30:])
-                        hint = runtime.explain_exit_error(rc, tail)
-                    except Exception:
-                        hint = None
-                    if hint:
-                        session['log_lines'].append(f"[hint] {hint}")
-            session['process_alive'] = False
-            exit_ev = AgentEvent(
-                type=EventType.PROCESS_EXIT,
-                provider=runtime.name,
-                session_id=None,
-                mc_session_id=handle.mc_session_id,
-                timestamp=_now_iso(),
-                payload={'rc': rc},
-            )
-            _cb('on_process_exit', exit_ev)
+                        '[Waiting for your answer — choose above to continue]')
+            except Exception as e:
+                session.setdefault('log_lines', TimestampedLines()).append(
+                    f'[mc-tool scan error: {e}]')
+            if session.get('proc') is proc:
+                if session.get('status') == 'running':
+                    if session.get('_capture_error'):
+                        session['status'] = 'error'
+                    elif mc_res['paused']:
+                        session['status'] = 'idle'
+                    else:
+                        session['status'] = 'completed' if rc == 0 else 'error'
+                        if rc == 0 and not turn_error_seen:
+                            # A clean exit that said nothing and did nothing is a
+                            # failure, not a completion (backlog d37d0183).
+                            _empty_turn.mark(session, _empty_turn.empty_reason(
+                                visible_text=strip_mc_tool_blocks(''.join(turn_text_parts)),
+                                tool_calls=tool_calls, paused=False,
+                                had_control_blocks=mc_res['blocks_found'],
+                                other_output=other_output),
+                                set_error=True)
+                    session['last_status_change_time'] = _time.time()
+                    if not mc_res['paused'] and rc != 0:
+                        if runtime.name == 'codex':
+                            # `codex exec --json` may never deliver the failure
+                            # as a stream event; the rollout's task_complete.error
+                            # is the authoritative copy (MC-1147).
+                            _codex_run_error.capture(
+                                session,
+                                _codex_run_error.locate_rollout(
+                                    runtime.transcript_path, handle.project_path, session),
+                                turn_started_at)
+                        session['log_lines'].append(
+                            f"[{runtime.name} exited with code {rc}]")
+                        try:
+                            tail = '\n'.join(session['log_lines'][-30:])
+                            hint = runtime.explain_exit_error(rc, tail)
+                        except Exception:
+                            hint = None
+                        if hint:
+                            session['log_lines'].append(f"[hint] {hint}")
+                session['process_alive'] = False
+                exit_ev = AgentEvent(
+                    type=EventType.PROCESS_EXIT,
+                    provider=runtime.name,
+                    session_id=None,
+                    mc_session_id=handle.mc_session_id,
+                    timestamp=_now_iso(),
+                    payload={'rc': rc},
+                )
+                _cb('on_process_exit', exit_ev)
+
+        if terminal_gate is None:
+            _finish_terminal()
+        else:
+            terminal_gate.submit(_finish_terminal)
 
 
 def _mode_a_interrupt(handle: SessionHandle) -> None:
@@ -9417,6 +9555,10 @@ class CodexRuntime(AgentRuntime):
         except Exception as e:
             from mc.core import _log
             _log(f"[codex] model-refusal retry failed to launch: {e}", flush=True)
+            if isinstance(e, PromptDeliveryError) and session.get('proc') is None:
+                # _spawn_turn disowned the retry's proc; hand the session back to
+                # the caller's reader so it still writes this turn's final status.
+                session['proc'] = old_proc
             return False
 
     @staticmethod
@@ -9694,21 +9836,32 @@ class CodexRuntime(AgentRuntime):
         vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
         context = session.get('_system_prompt') or ''
 
-        def _send(p: Any) -> None:
+        # MC-1168: the write runs on its own thread (a CLI that fills stdout
+        # before reading a large prompt would otherwise block the spawn), but its
+        # outcome is awaited below once the reader drains stdout. Returning
+        # before that reported a turn delivered that never reached codex.
+        _delivery: List[_PromptDelivery] = []
+        attempt = DeliveryAttempt.capture(session)
+
+        def _deliver(p: Any) -> None:
             from mc.resume_context import write_context_prompt
-            write_context_prompt(p.stdin, full_prompt, session, context)
+            _delivery.append(_start_prompt_delivery(
+                lambda on_error: write_context_prompt(
+                    p.stdin, full_prompt, session, context, on_error=on_error),
+                name=f'codex-stdin-{mc_sid[:8]}'))
         proc = spawn_engine_proc(
             cmd, session_id=mc_sid, engine=self.name, cwd=handle.project_path, env=env,
-            deliver=lambda p: threading.Thread(
-                target=_send, args=(p,), daemon=True,
-                name=f'codex-stdin-{mc_sid[:8]}').start())
+            deliver=_deliver)
         session['proc'] = proc
         session['status'] = 'running'
         session['process_alive'] = True
         session['last_output_time'] = _time.time()
         session['last_status_change_time'] = _time.time()
+        acknowledge = _pending_prompt(_delivery[0] if _delivery else None,
+                                      session, proc, self.name, attempt)
         threading.Thread(target=_mode_a_reader, args=(proc, handle, self),
                          daemon=True, name=f'codex-reader-{mc_sid[:8]}').start()
+        complete_or_defer(acknowledge)
 
     def interrupt(self, handle: SessionHandle) -> None:
         _mode_a_interrupt(handle)

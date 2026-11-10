@@ -61,7 +61,10 @@ def revive_setup(routes, project, monkeypatch, streaming, removed=False):
     entry = {'session_id': sid, 'claude_session_id': 'prior-native-id',
              'provider': 'claude', 'source': 'agent', 'task': 'finish the change'}
     monkeypatch.setattr(routes, '_load_agent_log', lambda *a: [entry])
-    supplied._fake_spawn(routes, monkeypatch)
+    # Revival now claims durable delivery ownership before spawn. Keep writes
+    # paired with the same in-memory history as this fixture's mocked reads.
+    monkeypatch.setattr(routes, '_update_agent_log', lambda pid, mutate: mutate(routes._load_agent_log(pid)))
+    supplied._fake_spawn(routes, monkeypatch, history=[entry])
     for name in ('_assert_runtime_project_generation', '_refuse_duplicate_spawn',
                  '_prior_character', '_read_agent_stream_b'):
         monkeypatch.setattr(routes, name, lambda *a, **k: None)

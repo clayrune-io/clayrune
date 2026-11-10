@@ -483,7 +483,7 @@ def test_claude_cold_revival_uses_saved_native_identity_and_lineage(monkeypatch,
              'spawned_by_session_id': 'grandparent', 'trigger_type': 'workflow',
              'trigger_id': 'run:step', 'ts': '1'}
     monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'delivery.db'))
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [entry])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **kwargs: [entry])
     monkeypatch.setattr(ar, '_model_quota_blocked', lambda *args: '')
     monkeypatch.setattr(ar, '_build_agent_context', lambda *a, **k: 'CTX')
     monkeypatch.setattr(ar, '_session_too_large', lambda *a, **k: (False, 0))
@@ -504,6 +504,8 @@ def test_claude_cold_revival_uses_saved_native_identity_and_lineage(monkeypatch,
     class Proc:
         pid = 999
         stdout = iter([])
+        # MC-1168: a revive whose stdin write fails now raises, so the double needs one.
+        stdin = SimpleNamespace(write=lambda s: len(s), flush=lambda: None)
     argv = []
     def fake_popen(cmd, **kwargs):
         argv.append(cmd)
@@ -539,7 +541,7 @@ def test_interrupted_parent_status_is_revivable_not_ambiguous(monkeypatch):
     monkeypatch.setattr(ar, '_model_quota_blocked', lambda *args: '')
     entry = {'session_id': 'p', 'status': 'interrupted', 'provider': 'unknown',
              'agent_model': 'model', 'incognito': False, 'ts': '1'}
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [entry])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **kwargs: [entry])
     try:
         ar._revive_parent_for_delegation('p', 'p', 'message', {})
     except DeliveryUncertain:
@@ -564,7 +566,7 @@ def test_interrupted_claude_parent_is_fully_revived(monkeypatch, tmp_path):
              'spawned_by_session_id': 'grandparent', 'trigger_type': 'workflow',
              'trigger_id': 'run:step', 'ts': '1'}
     monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'delivery.db'))
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [entry])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **kwargs: [entry])
     monkeypatch.setattr(ar, '_model_quota_blocked', lambda *args: '')
     monkeypatch.setattr(ar, '_build_agent_context', lambda *a, **k: 'CTX')
     monkeypatch.setattr(ar, '_session_too_large', lambda *a, **k: (False, 0))
@@ -585,6 +587,8 @@ def test_interrupted_claude_parent_is_fully_revived(monkeypatch, tmp_path):
     class Proc:
         pid = 999
         stdout = iter([])
+        # MC-1168: a revive whose stdin write fails now raises, so the double needs one.
+        stdin = SimpleNamespace(write=lambda s: len(s), flush=lambda: None)
     argv = []
     def fake_popen(cmd, **kwargs):
         argv.append(cmd)

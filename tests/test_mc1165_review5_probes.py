@@ -175,17 +175,18 @@ def test_isolated_mode_b_revival_does_not_write_stdin_under_the_project_lock(rou
     t.start()
     try:
         assert in_write.wait(10), f'never reached stdin write; spawned={spawned}'
-        t.join(5)
-        assert not t.is_alive(), 'revival blocked on the stdin write'
+        assert t.is_alive(), 'revival returned success before stdin acknowledgment'
+        assert not result
         lock = routes.get_manager('testproj').lock
         got = lock.acquire(timeout=2)
         if got:
             lock.release()
         assert got, 'project lock held across a blocking stdin write during isolated revival'
-        assert result and result[0]['_worktree_isolated']
     finally:
         release.set()
         t.join(10)
+    assert not t.is_alive()
+    assert result and result[0]['_worktree_isolated']
 
 
 def test_mode_b_revival_still_delivers_the_message_first(routes, project, monkeypatch):

@@ -1,5 +1,81 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Require strict mutation reads (MC-1168 round 14)
+
+- Reservation and owner-CAS rollback now consume a successful strict history read under the existing transaction. Read/parse failures cannot supply empty rows to mutation or save; default display/history reads retain their forgiving behavior.
+- A bounded reread handles a transient read fault before mutation. Mutators, saves and provider launches are never replayed; unrelated current rows and successor ownership remain protected.
+- Retained Fenn's nested-read probe unchanged and added persistent-fault, malformed-input, intervening-write and no-replay controls. Local review candidate only; no merge, push or restart.
+
+## [2026-11-09] - Refuse unreadable launch snapshots (MC-1168 round 13)
+
+- Launch reservation now reads prior history strictly and checks durable unknown outcomes before mutation. I/O and parse failures cannot masquerade as absent history, erase a completed result on rollback, or permit cold scheduled reuse past the unknown-outcome barrier.
+- Snapshot and reservation share the existing leaf/file transaction; launch ownership checks also refuse unreadable history. The forgiving general history loader, owner-CAS rollback and ambiguous-launch no-retry policy stay intact.
+- Retained both independent reviewer probes unchanged as permanent tests, with additional invalid-history and concurrent-writer controls. Local review candidate only; no merge, push or restart.
+
+## [2026-11-09] - Share ownership across route launches (MC-1168 round 12)
+
+- Added one reservation/launch/settlement transaction for all eleven Claude route spawn sites, with an AST inventory guard and explicit exclusions for four auth/terminal processes. Cold reuse reserves existing history even without a spawner callback; fresh standalone/no-row behavior stays unchanged.
+- Proven pre-child refusal restores history only while both owners still match and retains queued input. Ambiguous launch keeps its reservation and refuses replay; post-child storage failure retains the reader's owner. Running self-start rearm preserves the callback while rolling back only a failed owner replacement.
+- Retained the original reviewer probes and parent control. The corrected cold-reuse copy changes only Dave's authorized save-order assertion to `[False, True]`; original bytes and SHA256s remain available. Local review candidate only; no merge, push or restart.
+
+## [2026-11-09] - Retain round-12 launch regression evidence (MC-1168)
+
+- Preserved Fenn's queue-spawn-refusal and cold-scheduled-reuse probes byte-for-byte, including the extracted queue parent control. Baseline remains 3 failed/3 passed; no runtime repair is claimed.
+- Documented an acceptance conflict: the unchanged cold-reuse probe requires only a postspawn save, while the requested shared launch transaction requires a prelaunch reservation. This historical checkpoint preceded Dave's option-1 authorization and the implementation above; no merge, push or restart.
+
+## [2026-11-09] - Reserve delivery ownership before queued launch (MC-1168 round 11)
+
+- Initial delegated Claude sessions keep their prelaunch reservation through both Mode A and Mode B history enrichment, so a failed second save no longer discards their eventual completion.
+- Queued replay saves its reservation before spawning. Storage refusal retains the message, prior live owner and turn state; reader cleanup clears the dispatch flag. Retained Fenn's two probes byte-for-byte and added refusal/single-token controls. Branch candidate only; no merge, push or restart.
+
+## [2026-11-09] - Preserve self-start ownership through callback rearm (MC-1168 round 10)
+
+- Self-start callback rearming now carries the postlaunch token-rollback policy through its second pending-history write. Failed saves restore the preceding owner, so recovered storage can record the running turn's completion; strict prelaunch refusal remains.
+- Retained Fenn's five-case rearm regression byte-for-byte, covering the second save alone failing and both saves failing. Branch candidate only; no merge, push or restart.
+
+## [2026-11-09] - Keep self-started readers on their current delivery (MC-1168 round 9)
+
+- Self-started Mode B turns recheck idle status and captured attempt ownership under the project lock before claiming history and marking running. Delayed wakes preserve newer scheduled or user deliveries, including their task and failure handling.
+- A history-write failure after execution starts logs the error, restores the saved attempt token and keeps draining stdout. Strict prelaunch refusal remains. Retained Fenn's two reproductions byte-for-byte, added ownership/failure controls and integrated master `5c5a4b9d`. Branch candidate only; no merge to master, push or restart.
+
+## [2026-11-09] - Require attempt ownership for run-history updates (MC-1168 round 8)
+
+- Missing or empty attempt IDs now refuse runtime updates. Completion, start failure and native-identity backfills compare the durable ID before changing a row; a late predecessor completion cannot replace or outrank a newer attempt.
+- Live scheduled appends and Hivemind pending writers claim fresh IDs. Startup log maintenance commits only changes to its still-owned, unchanged snapshot, preserving concurrent launches and completions. Restored untagged-row regressions and retained independent reviewer probes. Branch review candidate only; no merge, push or restart.
+
+## [2026-11-09] - Retain delivery ownership after successor tabs close (MC-1168 round 7)
+
+- Replaced registry/turn inference with a durable UUID per captured delivery attempt and pending-row takeover. Completion retains the UUID, so a delayed failure cannot overwrite a successful same-turn successor after its tab closes.
+- Failure recording compares the durable token inside the manager -> log-leaf transaction. Legacy rows and ordinary rollback still record failures; Run Now remains HTTP 502 and cadence records its error without replay. Added Fenn's unchanged closed-successor regression and durable-log/rollback controls. Branch review candidate only; no merge, push or restart.
+
+## [2026-11-09] - Preserve replacement runs after stale delivery failures (MC-1168 round 6)
+
+- Claude revival and Codex acknowledgment capture immutable process, registry and turn ownership before waiting. A failed scheduled attempt updates history only while that ownership matches and the durable turn has not advanced; superseded failures log a skip and preserve the replacement row.
+- Cadence and Run Now retain the original failure, with no fallback dispatch or retry. Added real-path replacement regressions for both entry points, including same-turn takeover and takeover after rollback. Integrated exact master `2ffe19ad`; local review candidate only, with no push, merge to master or restart.
+
+## [2026-11-09] - Preserve delivery, cwd and billing behavior together (MC-1168 round 5)
+
+- Integrated master MC-1167 and API credits phase 2 without dropping missing-cwd HTTP 409 refusals or failed-delivery handling. Mode B billing result accounting and exit replay retain the delivery acknowledgment gate; revival retains both billing state and rollback ownership.
+- Added combined request-path and deferred billing-hook regressions. Merge candidate only; no merge to master, push or restart.
+
+## [2026-11-09] - Keep failed scheduled deliveries failed (MC-1168 round 4)
+
+- Scheduled revival write/flush failures propagate through cadence and Run Now without fallback dispatch or retry. The schedule retains its delivery error and its Runs row becomes `error`; Run Now returns HTTP 502 for the addressed conversation. MC-1165 isolation refusals stay unchanged.
+- Deferred Codex delivery failures run launch cleanup when acknowledgment settles after publication locks exit, preserving replacement ownership. The durable pending row becomes `error` with the dispatch-failure summary.
+- Added permanent scheduler, durable-row, lock and ownership regressions. Contract: `docs/RUNTIME_DELIVERY_TRUTH.md`. Branch candidate only; no merge, push or restart.
+
+## [2026-11-09] - Acknowledge delivery after guarded publication (MC-1168 round 3)
+
+- Codex first-turn and follow-up readers drain stdout while delivery is pending; turn completion, EOF callbacks and model-refusal retry wait for the actual stdin write and close. A rejected write cannot launch a retry or mark a replacement process dead.
+- Revival and dispatch carry pending acknowledgments beyond the outer project/lifecycle locks, including cold-parent inbox delivery with or without a worktree. Retained MC-1165 isolation and HTTP 409 refusals; failed delivery stays on the original conversation.
+- Repaired the MCP launch fixture to run writer threads with writable stdin. Added real-reader races, accepted retry controls, lock-boundary and replacement-ownership regressions. Contract: `docs/RUNTIME_DELIVERY_TRUTH.md`. Branch candidate only; no push or restart.
+
+## [2026-11-09] - Hold revival completion until message delivery resolves (MC-1168 round 2)
+
+- Cold Codex `/send` and `/followup` return 502 for the original conversation when prompt delivery fails, without starting a fresh chat.
+- Mode B revival keeps draining stdout while result and EOF terminal handlers wait for stdin acknowledgment. Accepted handlers run in order; rejected deliveries emit no terminal callbacks or failed-resume recovery. Rollback preserves replacement process and registry ownership.
+- Added real-reader ordering, rejection, EOF-before-write and route regressions. Contract and validation: `docs/RUNTIME_DELIVERY_TRUTH.md`. Branch review candidate only; no merge, push or restart.
+
 ## [2026-11-09] - Contain Windows transforms before they execute (MC-1166 unit 5 round 5)
 
 - Deadline transforms now launch suspended, join a kill-on-close Job Object, then resume their primary thread through documented Toolhelp32/OpenThread/ResumeThread APIs. Failed job setup or resume terminates the original Popen handle, reaps the root and persists a hold without reclaim.
