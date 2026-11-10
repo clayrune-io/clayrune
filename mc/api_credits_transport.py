@@ -20,7 +20,17 @@ import requests
 
 API_URL = 'https://api.anthropic.com/v1/messages'
 API_VERSION = '2023-06-01'
-DEFAULT_MAX_TOKENS = 8192
+# max_tokens is a hard cap on thinking PLUS reply text, and thinking counts even
+# when its text is not returned (claude-api skill, shared/model-migration.md:
+# "Size max_tokens for the thinking as well as the reply"). Fable 5.x always
+# thinks, so the old 8192 cut replies off: the offload was billed, then the
+# call reran on the subscription. 16000 is that skill's stated default for a
+# NON-streaming request ("keeps responses under SDK HTTP timeouts", SKILL.md
+# Common Pitfalls: max_tokens defaults); send() does not stream, so this is the
+# ceiling that source endorses here. The models' own output limit is 128K
+# (shared/models.md) but that needs streaming. Raise past this only with a
+# streaming transport.
+DEFAULT_MAX_TOKENS = 16000
 
 # error_kind values
 CREDIT_LOW = 'credit_low'        # "Your credit balance is too low ..."

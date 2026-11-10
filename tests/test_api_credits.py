@@ -328,6 +328,19 @@ def test_transport_refusal_is_not_ok_and_keeps_usage():
     assert not r.ok and r.error_kind == 'refused' and '(' not in r.error_message
 
 
+def test_default_max_tokens_covers_fable_thinking():
+    # 8192 truncated Fable 5.2 replies (thinking counts toward max_tokens);
+    # the default must leave room, and be what send() actually puts on the wire.
+    assert transport.DEFAULT_MAX_TOKENS >= 16000
+    post = poster(Resp(200, ok_body('ok')))
+    send(post)
+    assert post.calls[0]['json']['max_tokens'] == transport.DEFAULT_MAX_TOKENS
+    # an explicit caller value still wins (the 1-token test call relies on it)
+    post = poster(Resp(200, ok_body('ok')))
+    send(post, max_tokens=1)
+    assert post.calls[0]['json']['max_tokens'] == 1
+
+
 def test_key_is_scrubbed_from_errors():
     r = send(poster(exc=RuntimeError(f'proxy rejected {KEY}')))
     assert KEY not in r.error_message and '[key]' in r.error_message
