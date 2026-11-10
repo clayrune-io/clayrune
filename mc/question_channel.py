@@ -246,16 +246,23 @@ def on_question_raised(session: dict) -> None:
 
     from mc.agent_mail_questions import revision
     from mc import agent_mail_outbound_questions as mail_questions
-    # The disabled/uninstalled adapter leaves legacy qid ownership unchanged.
-    # Only a selected, available new channel owns revision-specific delivery.
-    eligible = (state.CONFIG.get('agent_mail_outbound_enabled') is True
-                and mail_questions.factory is not None)
-    form = json.loads(json.dumps(q)) if eligible else None
-    agent_mail = eligible and mail_questions.selected(session, form or {})
-    delivery_key = qid + ':' + revision(form or {}) if agent_mail else qid
     with _lock:
-        if delivery_key in _delivered:
-            return          # exactly-once, even if the turn scan runs twice
+        # Ownership precedes availability: parser and turn-boundary hooks may
+        # notify the same question after a flag/factory change, even mid-grace.
+        # Legacy owns the whole qid; new mail owns only the exact revision.
+        if qid in _delivered:
+            return
+        form_revision = revision(q)
+        revision_key = qid + ':' + form_revision
+        if revision_key in _delivered:
+            return
+        eligible = (state.CONFIG.get('agent_mail_outbound_enabled') is True
+                    and mail_questions.factory is not None)
+        previously_selected = form_revision in session.get('_offline_question_channels', {})
+        candidate = json.loads(json.dumps(q)) if eligible or previously_selected else None
+        agent_mail = (eligible or previously_selected) and mail_questions.selected(session, candidate or {})
+        form = candidate if agent_mail else None
+        delivery_key = revision_key if agent_mail else qid
         _delivered.add(delivery_key)
 
     project_id = session.get("project_id") or ""

@@ -112,9 +112,14 @@ can replay it. A matching late positive result from the original attempt may
 settle uncertainty; late acceptance cannot undo revocation/expiry. Broader
 outbound receipt reconciliation/recovery UI remains later-unit work.
 
-New-channel selection is fixed per project/session/full form revision in SQLite
-when the outbound flag is literal true and the installed factory has an
-initialized outbox. With the flag off or factory absent, notification uses the
+Existing delivery ownership is checked under the shared notification lock before
+adapter eligibility: a legacy qid or an already selected new-channel full
+revision wins on re-entry, before or after delivery, even if the flag/factory
+changes. A retained session selection also wins after notification-cache loss.
+For an unclaimed question, new-channel selection is fixed per
+project/session/full form revision in SQLite when the outbound flag is literal
+true and the installed factory has an initialized outbox. With the flag off or
+factory absent, an unclaimed question uses the
 base legacy qid-only deduplication and metadata, without a revision snapshot or
 additional parser callback; revising a same-id question cannot send another
 legacy email. Legacy reply matching is unchanged. Selection alone grants
@@ -281,3 +286,100 @@ existing `postal-mime/package.json` intact were verified.
 
 The original operational/live gates above remain. No merge, push, restart,
 deployment, real mail, credential change or human-gate edit; no new open choice.
+
+## Review rework r2
+
+Fenn found that the parser/common turn-boundary re-entry recomputed eligibility
+before checking ownership. Disabling the flag or removing the factory changed
+the deduplication key from `qid:revision` to `qid`, creating a second legacy
+timer; enabling the adapter after legacy delivery created the inverse duplicate.
+
+`on_question_raised` now checks both ownership keys before eligibility, with
+selection and admission inside the same notification lock. Existing legacy
+ownership covers the whole qid; existing new-channel ownership covers its full
+revision. Availability changes cannot create a second key, timer or message.
+Retained session selections also remain authoritative if notification caches
+are lost. Never-selected legacy forms still have qid-only metadata, no form or
+agent-mail marker, and no adapter parser callback. `handle_reply` is unchanged.
+
+Ten permanent cases in `tests/test_agent_mail_outbound_questions.py` call the
+real entry point a second time: flag off/factory removed before and after new
+delivery (four), disabled/uninstalled adapter restored before and after legacy
+delivery (four), and session ownership retained after notification-cache loss
+(two). Existing full-revision and base-legacy reply tests remain unchanged.
+
+Verification uses the same interpreter, launcher, ordered 16-file mail suite,
+separate legacy/control-plane children and six-module Pyright selection listed
+in r1 above. All pytest children run through explicit manifests. Every child
+environment overlays these names with JSON `null`, removing only inherited
+credential variables from that child: `CLOUDFLARE_API_TOKEN`,
+`CLOUDFLARE_ACCOUNT_ID`, `CLAYRUNE_JWT_SIGNING_KEYS`,
+`CLAYRUNE_JWT_SIGNING_KEY_PEM`, `GOOGLE_APPLICATION_CREDENTIALS`.
+Probes explicitly preload `-p tests.conftest` before their application imports;
+normal app/control-plane children load their respective standard conftest.
+No credential values were inspected. Mail, timers, clocks, signing identities,
+resume and external transports remain synthetic fixture effects.
+
+The host-expanded exact commands, argv/env manifests and output logs are in
+the operator-local item journal and this worktree's `_scratch/u7c_r2_report.md`.
+Portable launcher invocations, using the path resolution above:
+
+```powershell
+& $ProjectPython $Launcher --project mission_control --port 5199 --manifest _scratch/u7c_r2_builder_manifest.json
+& $ProjectPython $Launcher --project mission_control --port 5199 --manifest _scratch/u7c_r2_probes_manifest.json
+```
+
+The probes manifest runs these separate children in order, continuing after
+the expected first-child failure:
+
+```powershell
+& $ProjectPython -m pytest -p tests.conftest _scratch/test_u7c_fenn_probes.py -v
+& $ProjectPython -m pytest -p tests.conftest _scratch/test_u7c_fenn_r2.py -v -s
+```
+
+Both Fenn sources were copied unchanged into `_scratch/`, never committed.
+The original r1 source SHA-256 remains
+`831f4a9b0a42e5324c426dca5b6e7544a22bdfa9586791c1d563d9549108cd0d`;
+r2 is `de4439d135a49ddb8bb530f6adafabb8c75e2b900ba1af1adfdabf91ae51da02`.
+The unchanged r1 revised-form probe still expects a second legacy timer and
+fails only at `timers[1]` with `IndexError`; it was deliberately not changed.
+The other three r1 checks pass. All five r2 transition probes and three
+base-contract probes pass.
+
+Final results:
+
+| Selection | Result | Exit |
+| --- | --- | --- |
+| All 16 mail files, same ordered selection as r1 | 724 passed in 44.10s, including ten new re-entry cases | 0 |
+| Legacy `tests/test_question_channel.py` | 41 passed in 0.58s | 0 |
+| Separate `control_plane/tests` | 98 passed / 1 existing skip / 1 warning in 0.72s | 0 |
+| Pyright, same six modules as r1 | 0 errors / 0 warnings / 0 informations | 0 |
+| Fenn r2 transition/base probes | 8 passed in 3.22s | 0 |
+| Unchanged Fenn r1 probes | 3 passed / 1 expected obsolete second-timer assumption, in 2.92s | 1 |
+
+Builder manifest aggregate exit is 0. Probes manifest aggregate exit is 1
+because it deliberately includes the unchanged r1 probe. The CP skip remains
+`test_edge_contract.py:86` (missing sibling repository), with the existing
+Starlette/httpx warning. The launcher printed
+`telemetry_queue_full_progress_incomplete`; full dashboard capture is not
+claimed. Actual child output and exits are the verification evidence.
+
+An earlier PowerShell builder run printed the same green framework results
+but the shell returned 1 and surfaced telemetry stderr as `NativeCommandError`.
+That invocation is not counted as a successful aggregate. Repeating the exact
+same manifest under `cmd.exe` with native output redirection established the
+final aggregate exit 0 above; no code, selection or environment overlay changed.
+
+The initial combined focused command failed before collecting tests because
+explicit conftest preloading collided with the normal app-test directory load.
+Separate children resolved that bootstrap issue: 28 adapter cases and eight
+r2 probes passed, aggregate exit 0. A combined PowerShell preparation command
+was rejected before execution for runtime variable substitution; it was not
+retried. Explicit manifest edits and fixed commands completed the preparation.
+No host configuration, permission or environment was changed.
+
+No new design choice. Operational/live gates remain as above; this is a local
+disabled branch candidate with no merge, push, restart, deployment, real mail
+or credential use. README, USER_GUIDE, AGENTS and rules need no update because
+there is no available user-facing feature or new conduct rule. Browser/boot,
+mobile and installer checks remain N/A; no frontend or Worker source changed.

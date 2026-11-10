@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-10] - Keep question delivery ownership across adapter changes (MC-1166 unit 7c review round 2)
+
+- Checked existing legacy question-id and new-channel revision ownership before adapter eligibility under the notification lock. Repeated parser/turn-boundary notifications cannot arm another timer or switch transports when the flag/factory changes; existing session selections also survive notification-cache loss.
+- Added ten isolated re-entry regressions covering both transition directions before/after delivery and retained session ownership. Fresh legacy questions keep base metadata and reply matching. Default-disabled candidate only.
+
 ## [2026-11-10] - Preserve legacy question deduplication and expire stale send admissions (MC-1166 unit 7c review)
 
 - Kept legacy mail keyed by question id when the new outbound flag is off or its factory is absent, including same-id revisions and existing reply matching. Revision snapshots apply only to the selected new channel; its parser hook also requires the factory.

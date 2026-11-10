@@ -140,6 +140,69 @@ def test_legacy_poll_cannot_resolve_new_question(channel):
     assert qc.poll_replies() == 0  # no legacy credential read or IMAP connection
 
 
+@pytest.mark.parametrize('change', ['disabled', 'uninstalled'])
+@pytest.mark.parametrize('already_sent', [False, True])
+def test_new_owner_reentry_after_adapter_unavailable(channel, monkeypatch, change, already_sent):
+    out, timers, legacy = channel
+    raise_form(out)
+    if already_sent:
+        fire(timers[0])
+    original_keys = set(qc._outbox)
+    if change == 'disabled':
+        monkeypatch.setitem(state.CONFIG, 'agent_mail_outbound_enabled', False)
+    else:
+        monkeypatch.setattr(adapter, 'factory', None)
+    qc.on_question_raised(out.session)  # repeat the real turn-boundary entry point
+    assert set(qc._outbox) == qc._delivered == original_keys
+    assert len(timers) == 1
+    fire(timers[0])
+    assert not legacy
+    assert len(out.recording.calls) == int(already_sent)
+
+
+@pytest.mark.parametrize('initial', ['disabled', 'uninstalled'])
+@pytest.mark.parametrize('already_sent', [False, True])
+def test_legacy_owner_reentry_after_adapter_available(channel, monkeypatch, initial, already_sent):
+    out, timers, legacy = channel
+    installed = adapter.factory
+    if initial == 'disabled':
+        monkeypatch.setitem(state.CONFIG, 'agent_mail_outbound_enabled', False)
+    else:
+        monkeypatch.setattr(adapter, 'factory', None)
+    raise_form(out)
+    qc.on_question_raised(out.session)
+    if already_sent:
+        fire(timers[0])
+    monkeypatch.setitem(state.CONFIG, 'agent_mail_outbound_enabled', True)
+    monkeypatch.setattr(adapter, 'factory', installed)
+    qc.on_question_raised(out.session)
+    qid = out.session['pending_questions'][0]['question_id']
+    assert set(qc._outbox) == qc._delivered == {qid}
+    assert 'form' not in qc._outbox[qid] and 'agent_mail' not in qc._outbox[qid]
+    assert '_offline_question_channels' not in out.session
+    assert len(timers) == 1
+    if not already_sent:
+        fire(timers[0])
+    assert len(legacy) == 1 and not out.recording.calls
+
+
+@pytest.mark.parametrize('change', ['disabled', 'uninstalled'])
+def test_session_owner_survives_notification_cache_loss(channel, monkeypatch, change):
+    out, timers, legacy = channel
+    raise_form(out)
+    qc._delivered.clear()
+    qc._outbox.clear()
+    if change == 'disabled':
+        monkeypatch.setitem(state.CONFIG, 'agent_mail_outbound_enabled', False)
+    else:
+        monkeypatch.setattr(adapter, 'factory', None)
+    qc.on_question_raised(out.session)
+    assert len(qc._outbox) == 1
+    assert next(iter(qc._outbox.values()))['agent_mail'] is True
+    fire(timers[-1])
+    assert not legacy and not out.recording.calls
+
+
 def test_new_flag_does_not_arm_legacy_without_explicit_existing_hook(channel, monkeypatch):
     out, timers, _ = channel
     monkeypatch.setitem(state.CONFIG, 'agent_mail_outbound_enabled', False)
