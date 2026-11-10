@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Report model-choice snapshot failures (MC-1168 follow-up)
+
+- Model selection now logs and returns HTTP 503 when the ownership snapshot's strict read/reread or save fails, preserving the live model pin. Snapshot acquisition shares the existing persistence error handler with the later choice save.
+- Added four storage-stage/success controls and updated continuation fixtures for strict reads, delivery ownership and manager-before-leaf serialization. All 43 original assertions remain, with the completed-row equality additionally retaining its owner token. Local candidate only; no merge, push or restart.
+
 ## [2026-11-09] - Require strict mutation reads (MC-1168 round 14)
 
 - Reservation and owner-CAS rollback now consume a successful strict history read under the existing transaction. Read/parse failures cannot supply empty rows to mutation or save; default display/history reads retain their forgiving behavior.

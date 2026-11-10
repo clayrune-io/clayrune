@@ -13629,10 +13629,6 @@ def agent_set_model(project_id, session_id):
         # Incognito sessions deliberately leave no durable conversation record.
         if not session.get('incognito') and not session.get('housekeeping'):
             from mc import agent_log_maintenance
-            prior_row = next((r for r in agent_log_maintenance.snapshot(project_id)
-                              if r.get('session_id') == session_id), None)
-            choice_owner = (_delivery_attempt.DeliveryAttempt(prior_row['delivery_attempt_id'])
-                            if prior_row is not None else None)
             def save_choice(rows):
                 row = next((r for r in rows if r.get('session_id') == session_id), None)
                 if row is not None and (choice_owner is None or not choice_owner.owns_row(row)):
@@ -13661,6 +13657,10 @@ def agent_set_model(project_id, session_id):
                     'trigger_id': session.get('trigger_id', ''),
                 })
             try:
+                prior_row = next((r for r in agent_log_maintenance.snapshot(project_id)
+                                  if r.get('session_id') == session_id), None)
+                choice_owner = (_delivery_attempt.DeliveryAttempt(prior_row['delivery_attempt_id'])
+                                if prior_row is not None else None)
                 _update_agent_log(project_id, save_choice)
             except Exception as e:
                 _log(f'[model-pin] {project_id}/{session_id}: persistence failed: {e}')
