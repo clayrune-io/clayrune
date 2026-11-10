@@ -47,6 +47,8 @@ ENTRIES_PER_CYCLE_CAP = 5000
 # because the skill says to check the live pricing page before budgeting.
 _HAIKU_LIMIT = 100_000
 PRICE_TABLE: Dict[str, List[Dict[str, Any]]] = {
+    'claude-fable-5-2': [{'up_to_prompt_tokens': None, 'input': 8.00, 'output': 40.00,
+                          'cache_read': 0.20, 'cache_write': 10.00}],
     'claude-fable-5-1': [{'up_to_prompt_tokens': None, 'input': 10.00, 'output': 50.00,
                           'cache_read': 0.25, 'cache_write': 12.50}],
     'claude-fable-5': [{'up_to_prompt_tokens': None, 'input': 10.00, 'output': 50.00,

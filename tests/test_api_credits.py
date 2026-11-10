@@ -159,6 +159,12 @@ def test_cost_uses_spec_table():
     # fable-5 cache read is 1.00, fable-5-1 is 0.25 (spec rows differ)
     assert budget.price_for('claude-fable-5', 1, {})['cache_read'] == 1.00
     assert budget.price_for('claude-fable-5-1', 1, {})['cache_read'] == 0.25
+    # fable-5-2 (platform.claude.com pricing page, read 2026-11-10): 8 / 40,
+    # cache write 5m 10, cache read 0.20 (0.025x input); 5.1 rates unchanged
+    p52 = budget.price_for('claude-fable-5-2', 1, {})
+    assert (p52['input'], p52['output'], p52['cache_read'], p52['cache_write']) == (8.00, 40.00, 0.20, 10.00)
+    assert budget.price_for('claude-fable-5-1', 1, {})['input'] == 10.00
+    assert budget.cost_usd('claude-fable-5-2', full, {}) == pytest.approx(8 + 40 + 0.20 + 10)
 
 
 def test_haiku_rate_card_switches_on_total_prompt_tokens():

@@ -114,6 +114,7 @@ rule for all models). Phase 1 writes 5-minute caches only.
 
 | Model id | Input | Output | Cache read | Cache write 5m | Note |
 |---|---|---|---|---|---|
+| `claude-fable-5-2` | 8.00 | 40.00 | 0.20 | 10.00 | read 2026-11-10 from platform.claude.com/docs/en/about-claude/pricing (1h write $16) |
 | `claude-fable-5-1` | 10.00 | 50.00 | 0.25 | 12.50 | |
 | `claude-fable-5` | 10.00 | 50.00 | 1.00 | 12.50 | |
 | `claude-opus-5-5` | 4.00 | 20.00 | 0.20 | 5.00 | |
