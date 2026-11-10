@@ -205,9 +205,8 @@ def test_agent_status_carries_the_queue_for_each_session(tmp_path, monkeypatch):
 
 
 # --- no_boundary: parked before any handoff was recorded (pre-MC-1106 rows) ---
-# 2026-11-10: 22 such rows showed "Could not check report ...: handoff boundary
-# was not recorded" with a Retry that can never succeed (evaluate() returns
-# 'no_boundary' every time). They now read as `unchecked`, with no Retry.
+# 2026-11-10: such rows can never be checked (evaluate() returns 'no_boundary'
+# every time) and offer no action, so Ron ruled they get no notice at all.
 
 def _park_unchecked(store, state, last_error, event='child1:turn:1'):
     _queue(store, event)
@@ -216,27 +215,23 @@ def _park_unchecked(store, state, last_error, event='child1:turn:1'):
                    (state, last_error, event))
 
 
-@pytest.mark.parametrize('state,last_error,words', [
-    ('blocked', 'parent status stopped cannot accept a delegated completion', 'was stopped when the agent finished'),
-    ('blocked', 'parent status error cannot accept a delegated completion', 'ended in an error'),
-    ('blocked', 'parent identity/privacy state changed; explicit recovery required', 'switched or reset'),
-    ('uncertain', 'parent durable outcome is ambiguous: stopped', 'not known whether the report arrived'),
-    ('uncertain', 'parent stdin write acknowledgment is unknown', 'never confirmed'),
-    ('uncertain', 'inbox claim expired while waiting for parent lock', 'timed out before it started'),
-    ('uncertain', 'something nobody has written yet', 'before report tracking existed'),
-    ('uncertain', '', 'before report tracking existed'),
+@pytest.mark.parametrize('state,last_error', [
+    ('blocked', 'parent status stopped cannot accept a delegated completion'),
+    ('uncertain', 'parent stdin write acknowledgment is unknown'),
+    ('uncertain', ''),
 ])
-def test_no_boundary_row_is_unchecked_with_plain_reason_and_no_retry(store, state, last_error, words):
+def test_no_boundary_row_is_hidden_and_left_untouched(store, state, last_error):
     _park_unchecked(store, state, last_error)
-    r = dw.waiting_by_parent('p')['parentA'][0]
-    assert r['stage'] == 'unchecked'
-    assert r['label'] == 'Report from Sol_Tobin may not have reached this chat'
-    assert words in r['detail']
-    assert r['retry_action'] == 'none'
-    assert r['child_session_id'] == 'child1'
-    shown = (r['label'] + ' ' + r['detail']).lower()
-    for jargon in ('boundary', 'fence', 'stdin', 'handoff', 'inbox', 'parent '):
-        assert jargon not in shown
+    assert dw.waiting_by_parent('p').get('parentA', []) == []
+    with sqlite3.connect(store.path) as db:
+        assert db.execute('SELECT state,check_status FROM inbox').fetchall() == [(state, 'no_boundary')]
+
+
+def test_no_boundary_row_does_not_hide_other_reports(store):
+    _park_unchecked(store, 'blocked', 'x', event='child1:turn:1')
+    _queue(store, 'child2:turn:1')
+    got = dw.waiting_by_parent('p').get('parentA', [])
+    assert [r['child_session_id'] for r in got] == ['child2']
 
 
 def test_other_check_failures_keep_their_retry(store):
@@ -245,13 +240,3 @@ def test_other_check_failures_keep_their_retry(store):
         db.execute("UPDATE inbox SET state='uncertain',check_status='unreadable'")
     r = dw.waiting_by_parent('p')['parentA'][0]
     assert r['stage'] == 'check_failed' and r['retry_action'] == 'check'
-
-
-def test_unchecked_figure_label_and_read_only(store):
-    _park_unchecked(store, 'blocked', 'parent status stopped cannot accept a delegated completion')
-    got = dw.waiting_by_parent('p')['parentA']
-    assert dw.figure_label(got) == 'Report from Sol_Tobin may not have reached this chat'
-    two = got + [{'stage': 'unchecked'}]
-    assert dw.figure_label(two) == '2 unchecked'
-    with sqlite3.connect(store.path) as db:
-        assert db.execute('SELECT state,check_status FROM inbox').fetchall() == [('blocked', 'no_boundary')]

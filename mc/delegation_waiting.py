@@ -18,8 +18,8 @@ its receipt is checked. Legacy submitted notifications retain their existing
 behavior. Check failures name the reason and offer a check-only Retry; only a
 second proven absence is shown as non-delivery. A parked row with no recorded
 handoff at all (check_status `no_boundary`, everything parked before MC-1106)
-can never be checked, so it is shown as `unchecked` with the stored reason in
-plain words and no Retry (`retry_action` 'none').
+can never be checked and offers no action, so it is not shown at all (Ron
+2026-11-10: a notice whose only button is Mark handled is noise).
 
 MC-1106: the delivery-loop reconciler can end a lost acknowledgment as
 `confirmed_in_transcript`; a person's Mark handled action ends it as `handled`.
@@ -34,7 +34,6 @@ from typing import Any, Optional
 
 from mc.core import _log
 from mc.delegation_settlement import CHECK_ERRORS
-from mc.delegation_unchecked_reason import unchecked_reason
 
 # inbox state -> what the reader needs to know. `dispatch_intent` is a claim in
 # flight, still "waiting" from the parent's side. Outbox rows (child finished,
@@ -75,14 +74,12 @@ _LABEL = {
     'delivering': 'Delivering report from {who}; confirming receipt',
     'failed': 'report from {who} was not delivered',
     'check_failed': 'Could not check report from {who}',
-    'unchecked': 'Report from {who} may not have reached this chat',
 }
 _DETAIL = {
     'waiting': 'Queued. It is delivered into this chat when the current turn ends.',
     'delivering': 'Checking the chat log to confirm receipt.',
     'failed': 'The completed chat log proves non-delivery after one automatic resend. Retry sends it again.',
     'check_failed': 'Retry checks the chat log again without resending the report.',
-    'unchecked': 'It cannot be checked.',
 }
 
 
@@ -130,7 +127,7 @@ def waiting_by_parent(project_id: str = '') -> dict[str, list[dict[str, Any]]]:
         if row[0] not in best or row[5] >= best[row[0]][5]:
             best[row[0]] = row
     out: dict[str, list[dict[str, Any]]] = {}
-    for event_id, parent, state, payload, created_at, _rank, check_status, last_error in sorted(
+    for event_id, parent, state, payload, created_at, _rank, check_status, _err in sorted(
             best.values(), key=lambda r: r[4]):
         who, child = _who(payload)
         stage = STAGE_BY_STATE[state]
@@ -141,11 +138,10 @@ def waiting_by_parent(project_id: str = '') -> dict[str, list[dict[str, Any]]]:
         if check_status == 'not_delivered':
             stage = 'failed'
         elif check_status == 'no_boundary':
-            # Parked before a handoff was recorded: a re-check has nothing to
-            # read and can never succeed, so say what happened instead.
-            stage, reason = 'unchecked', ''
-            sentence = unchecked_reason(last_error)
-            detail = f'{sentence[:1].upper()}{sentence[1:]} ' + _DETAIL['unchecked']
+            # Parked before a handoff was recorded: nothing to check, retry or
+            # open, so the reader gets no notice. Skipped after the dedup above
+            # so the matching outbox row cannot surface in its place.
+            continue
         elif reason:
             stage = 'check_failed'
         elif not _rank and state in ('blocked', 'uncertain', 'recovery_required'):
@@ -160,8 +156,7 @@ def waiting_by_parent(project_id: str = '') -> dict[str, list[dict[str, Any]]]:
             'label': _LABEL[stage].format(who=who) + (f': {reason}' if reason else ''),
             'detail': detail or ('Retry continues delivery of this queued report.'
                                  if stage == 'check_failed' and not _rank else _DETAIL[stage]),
-            'retry_action': ('none' if stage == 'unchecked'
-                             else 'check' if stage == 'check_failed' and _rank else 'retry'),
+            'retry_action': 'check' if stage == 'check_failed' and _rank else 'retry',
             'since': created_at,
         })
     return out
@@ -174,6 +169,6 @@ def figure_label(reports: Optional[list[dict[str, Any]]]) -> str:
     if len(reports) == 1:
         return reports[0]['label']
     words = [('failed', 'not delivered'), ('check_failed', 'could not check'),
-             ('unchecked', 'unchecked'), ('delivering', 'delivering'), ('waiting', 'queued')]
+             ('delivering', 'delivering'), ('waiting', 'queued')]
     return ', '.join(f'{n} {word}' for stage, word in words
                      if (n := sum(r.get('stage') == stage for r in reports)))

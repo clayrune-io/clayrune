@@ -58,14 +58,3 @@ test('changed details and action table invalidate the rendered key', () => {
     run(`_reportWaitingKey([{event_id:'e',stage:'review',table:'outbox'}])`));
 });
 
-test('an unchecked report has no Retry, keeps Mark handled, and opens the child chat', () => {
-  const run = fixture();
-  const html = run(`_reportWaitingHTML('parent', [{event_id:'e',stage:'unchecked',child_session_id:'kid',label:'Report from X may not have reached this chat',detail:'This chat was stopped.'}])`);
-  assert.doesNotMatch(html, /data-action="retry"/);
-  assert.match(html, /data-action="mark-handled"/);
-  assert.match(html, /data-action="open-report" data-child="kid"/);
-  assert.doesNotMatch(run(`_reportWaitingHTML('parent', [{event_id:'e',stage:'unchecked',label:'x',detail:'y'}])`),
-    /open-report/);
-  assert.equal(run(`_reportWaitingSummary([{stage:'unchecked'},{stage:'unchecked'},{stage:'waiting'}])`),
-    '2 unchecked, 1 queued');
-});
