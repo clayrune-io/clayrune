@@ -33,6 +33,7 @@ NETWORK = 'network'
 BAD_REQUEST = 'bad_request'      # other 4xx
 BAD_RESPONSE = 'bad_response'    # 200 but unusable body
 TRUNCATED = 'truncated'          # stop_reason max_tokens: output is cut short
+REFUSED = 'refused'              # stop_reason refusal: a safety classifier declined
 
 # Kinds that mean "this key/org cannot be billed right now": the caller flips the
 # budget state to stopped instead of retrying on every call.
@@ -142,5 +143,15 @@ def send(*, api_key: str, model: str, user_text: str, system_text: str = '',
                                model=str(data.get('model') or model),
                                error_kind=TRUNCATED,
                                error_message=f'output hit max_tokens={body["max_tokens"]}')
+    if data.get('stop_reason') == 'refusal':
+        # HTTP 200, but the reply is a decline (possibly partial), not an answer.
+        # Not ok, like TRUNCATED: usage is kept because the call was billed.
+        details = data.get('stop_details')
+        category = details.get('category') if isinstance(details, dict) else None
+        return TransportResult(False, text=text, usage=usage, status=status,
+                               model=str(data.get('model') or model),
+                               error_kind=REFUSED,
+                               error_message='request refused by safety classifier'
+                                             + (f' ({category})' if category else ''))
     return TransportResult(True, text=text, usage=usage, status=status,
                            model=str(data.get('model') or model))

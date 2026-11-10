@@ -314,6 +314,20 @@ def test_transport_timeout_network_and_truncation():
     assert not r.ok and r.error_kind == 'truncated' and r.usage['output_tokens'] == 200
 
 
+def test_transport_refusal_is_not_ok_and_keeps_usage():
+    body = ok_body('I cannot help with that', out=30)
+    body['stop_reason'] = 'refusal'
+    body['stop_details'] = {'type': 'refusal', 'category': 'cyber', 'explanation': 'x'}
+    r = send(poster(Resp(200, body)))
+    assert not r.ok and r.error_kind == transport.REFUSED == 'refused'
+    assert 'cyber' in r.error_message and r.usage['output_tokens'] == 30
+    assert r.text == 'I cannot help with that'
+    # no stop_details / odd shape: still a refusal, no crash
+    body['stop_details'] = None
+    r = send(poster(Resp(200, body)))
+    assert not r.ok and r.error_kind == 'refused' and '(' not in r.error_message
+
+
 def test_key_is_scrubbed_from_errors():
     r = send(poster(exc=RuntimeError(f'proxy rejected {KEY}')))
     assert KEY not in r.error_message and '[key]' in r.error_message
@@ -376,6 +390,15 @@ def test_truncated_reply_falls_back_but_is_still_billed():
     turn_on()
     body = ok_body('cut', inp=50_000, out=0)
     body['stop_reason'] = 'max_tokens'
+    assert offload.try_offload(user_text='u', model='haiku', timeout=5,
+                               post=poster(Resp(200, body))) is None
+    assert budget.status()['cycle']['spent_usd'] == pytest.approx(0.005)
+
+
+def test_refused_reply_falls_back_but_is_still_billed():
+    turn_on()
+    body = ok_body('no', inp=50_000, out=0)
+    body['stop_reason'] = 'refusal'
     assert offload.try_offload(user_text='u', model='haiku', timeout=5,
                                post=poster(Resp(200, body))) is None
     assert budget.status()['cycle']['spent_usd'] == pytest.approx(0.005)
