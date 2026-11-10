@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import sqlite3
 
-VERSION = 2
+VERSION = 3
 
 _STATEMENTS = (
     '''CREATE TABLE IF NOT EXISTS mail_service_pins (
@@ -33,7 +33,7 @@ def migrate(db: sqlite3.Connection) -> None:
     db.execute('BEGIN IMMEDIATE')
     try:
         version = db.execute('PRAGMA user_version').fetchone()[0]
-        if version not in (1, VERSION):
+        if version not in (1, 2, VERSION):
             raise sqlite3.DatabaseError('malformed agent mail ingress schema version')
         if version == 1:
             for statement in _STATEMENTS:
@@ -47,6 +47,8 @@ def migrate(db: sqlite3.Connection) -> None:
             row = db.execute('SELECT sql FROM sqlite_master WHERE name=?', (name[1],)).fetchone()
             if row is None or ' '.join(row[0].split()) != normalized:
                 raise sqlite3.DatabaseError('malformed agent mail ingress schema')
+        from mc.agent_mail_wake_schema import migrate as migrate_wake
+        migrate_wake(db, version)
         db.execute(f'PRAGMA user_version={VERSION}')
         db.execute('COMMIT')
     except BaseException:

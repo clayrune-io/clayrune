@@ -531,7 +531,10 @@ class MailStore:
             self._move(db, row['event_id'], row['state'], REVOKED, reason=reason)
         # `submitted` was already handed over, so the row stays (its turn may
         # still complete) but the raw and laundered bodies go now.
-        return len(rows) + self._purge_submitted_content(db, where, args, reason)
+        count = len(rows) + self._purge_submitted_content(db, where, args, reason)
+        from mc.agent_mail_wake_schema import cleanup
+        cleanup(db, self.clock())
+        return count
 
     def _purge_submitted_content(self, db: sqlite3.Connection, where: str, args: tuple,
                                  reason: str) -> int:
@@ -735,6 +738,8 @@ class MailStore:
             out['expired'] += 1
             _log(f"[agent-mail] event {row['event_id']} expired: submitted but no turn "
                  f"completion within the window; content purged, tombstone kept", flush=True)
+        from mc.agent_mail_wake_schema import cleanup
+        cleanup(db, now)
         return out
 
     def purge_terminal(self) -> int:
@@ -746,6 +751,8 @@ class MailStore:
             n = db.execute(f'DELETE FROM events WHERE state IN ({marks}) AND terminal_at<=?',
                            (*sorted(TERMINAL_STATES), cutoff)).rowcount
             db.execute('DELETE FROM rejections WHERE at<=?', (cutoff,))
+            from mc.agent_mail_wake_schema import cleanup
+            cleanup(db, self.clock())
             return n
 
     # --- claims -------------------------------------------------------------------

@@ -16,6 +16,8 @@ def pending_fields(session: dict[str, Any]) -> dict[str, str]:
     must not call this: they update metadata for the same delivery.
     """
     attempt_id = uuid4().hex
+    from mc.agent_mail_continuation import reserved
+    reserved(session, attempt_id)
     session[_SESSION_KEY] = attempt_id
     return {_ROW_KEY: attempt_id}
 
@@ -53,12 +55,16 @@ class DeliveryAttempt:
                 row[_ROW_KEY] = attempt.attempt_id
 
         with get_manager(project_id).lock:
+            from mc.agent_mail_continuation import reserved
+            reserved(session, attempt.attempt_id)
             _update_agent_log(project_id, claim)
             attempt.stamp(session)
         return attempt
 
     def stamp(self, session: dict[str, Any]) -> None:
         """Carry an already claimed token onto a newly constructed session."""
+        from mc.agent_mail_continuation import reserved
+        reserved(session, self.attempt_id)
         session[_SESSION_KEY] = self.attempt_id
 
     def owns_row(self, row: dict[str, Any]) -> bool:

@@ -383,7 +383,7 @@ def test_v1_migration_preserves_inbox_and_is_idempotent(setup):
     assert reopened.get_event(event.event_id, include_content=True)['body'] == 'legacy body'
     MailStore(ingress.store.path, clock=clock)
     with reopened._read() as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 2
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 3
         assert db.execute('SELECT COUNT(*) FROM mail_transport_threads').fetchone()[0] == 0
 
 

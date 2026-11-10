@@ -37,6 +37,10 @@ def write_context_prompt(stream: Optional[IO[Any]], prompt: str,
     closed (MC-1168), so a caller that must not report a message delivered when
     nothing was written can read the result; `on_error` receives the exception.
     """
+    from mc.agent_mail_pipe import native_write
+    mail_result = native_write(stream, prompt, session, context, on_error)
+    if mail_result is not None:
+        return mail_result
     if '_steward_role_ack' in session:
         from mc.steward_role_dispatch import write_native_delivery
         return write_native_delivery(stream, prompt, session, context)

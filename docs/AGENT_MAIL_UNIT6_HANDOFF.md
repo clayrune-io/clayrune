@@ -1,134 +1,120 @@
-# MC-1166 Unit 6: continuation acknowledgment policy
+# MC-1166 Unit 6: exact-conversation mail continuation
 
-Status: implementation paused for Dave's decision, per the dispatched ticket.
-Base: `9f73231fdf538fd543735ca042a71a5f870e9155`.
-Branch: `clayrune/mc1166-u6-wake`.
-This checkpoint adds a decision handoff and two store-contract cases only.
-Unit 6 is not implemented or enabled.
+Local review candidate, default disabled. No startup loop, enrollment, outbound
+mail, deployment or live configuration changes. Unit 7 must explicitly wire the
+controller after human enrollment. There is no fresh/successor fallback.
 
-## Decision needed
+## Trusted integration order
 
-What acknowledgment policy should **mail-origin** Claude revival use when the
-existing follow-up route waits for a slow or stuck stdin writer?
+Before outbound send:
+1. Create a local thread with `MailStore.bind_thread()`.
+2. Call `MailWake.bind(thread_token, question=stored_form_or_none)` while the
+   originating session exists. This snapshots project generation, provider/native
+   id, persona, cwd, execution/permission policy, trigger identity, job shape and
+   the complete pending question form/id.
+3. Bind the opaque transport id with `MailIngress.bind_transport()`.
+4. Persist outbound correlation and send through the separately gated transport.
 
-**A (recommended): bounded mail-origin acknowledgment.** Reuse the existing
-durable-follow-up 10-second acknowledgment window. If delivery may have started
-but acknowledgment is missing, retain the mail event as visible `uncertain`;
-never replay automatically, consume a question, or kill/restart a process just
-because the mail wait elapsed. Persist the event-to-delivery-attempt association
-before submission. A later positive acknowledgment may reconcile that exact
-attempt; a matching terminal callback alone is not proof of prompt delivery.
-Ordinary interactive follow-up/revival keeps its current wait policy.
+Bindings are immutable/idempotent. A missing snapshot cannot be added after an
+inbound event or transport mapping exists. Never infer legacy identity from
+current state, subjects, character names or sender-supplied session ids.
 
-Cost: a mail-scoped acknowledgment seam in the existing revive path, durable
-late-receipt reconciliation, and tests for timeout/late acceptance/revocation.
-Startup/context construction time needs to be distinguished from the pipe-write
-acknowledgment window; a 10-second acknowledgment window is not a total follow-up
-deadline. It must not be reported as one.
+After units 4/5 durably accept and launder an event, the local controller may call
+`MailWake(store, enabled=True).process_next(flask_app)`; enabled defaults False.
+It enters the existing `agent_followup` route under a private Python context.
+HTTP fields cannot construct that context. Returned status is metadata only.
 
-**B: retain indefinite revival acknowledgment and renew the mail lease while
-waiting.** Require a tracked lease owner/heartbeat and stop renewing on loss of
-consent or ownership. A possible write is still uncertain after a crash. No
-automatic replay is allowed.
+Unit 7 still owns polling/scheduling, human enablement, owner/key lifecycle,
+session/project deletion hooks, status/recovery UI and real transport integration.
+Wire deletion to the existing store revocation operations.
 
-Cost: a renewable waiting lifecycle, cleanup/ownership tests and a status surface
-for an indefinitely pending writer. This preserves slow startup behavior but
-can leave the mail delivery worker waiting without a completion bound.
+## Exact delivery and durable receipts
 
-These alternatives change the recovery and waiting behavior of a real provider
-submission. The builder has not selected either. The existing mail lease must
-not simply be increased to conceal the mismatch, and the ordinary route must
-not be changed globally as a side effect of this unit.
+The existing inbox claims preserve receipt order. Busy events remain durable;
+held/uncertain events are never delivered or automatically replayed. Missing
+history, changed identity/generation/permission context, closure, missing persona
+or worktree, quota and recovery holds refuse before provider submission.
 
-## Evidence on the exact base
+A live canonical owner must match provider/native identity and stored context;
+a matching character is insufficient. An explicit closed originating row remains
+held. Roster recovery stays held under its separate recovery-review contract.
+Every spawn checks exact native resume arguments and cwd before the factory.
+Auto-fresh is refused. Alive Mode B identity is checked under the manager lock.
+Process creation is serialized with mail-store consent revocation. Pipe turns
+have durable admission before starting their writer; blocked pipe I/O does not
+hold SQLite. Revocation prevents new admissions; an admitted operation may produce
+a later receipt and cannot be recalled.
 
-- `mc/blueprints/agent_routes.py:8180`: `_acknowledge_revival()` calls
-  `delivery.done.wait()` without a timeout. It is deferred through the existing
-  publication boundary, so returning from the inner handler is not acceptance.
-- `mc/blueprints/agent_routes.py:14398`: live Mode B durable follow-up already
-  uses `wait_for_ack=10.0`. This is the precedent for option A, not authorization
-  to change the distinct revival policy.
-- `mc/agent_mail_store.py:140`: the default submission lease is 30 seconds.
-- `mc/agent_mail_store.py:695`: reconciliation of an expired `submitting` lease
-  makes it `uncertain` and removes its fence; no automatic retry occurs.
-- `mc/agent_mail_store.py:861`: `mark_submitted()` requires `submitting` plus
-  its matching fence. After the transition above, late success needs the
-  dedicated `reconcile_uncertain()` path and positive evidence.
-- `mc/agent_runtime.py:5530`: non-Claude prompt acknowledgment has its own
-  existing bound. Its timeout behavior cannot be inferred from Claude revival.
+Mail-origin native revival preserves original trigger type/id, including a
+scheduled Codex session's sandbox/fence posture. Existing lifecycle code preserves
+persona, worktree, execution context, native history and duplicate-process guards.
+Mail does not re-arm spawner/workflow completion callbacks.
 
-The synthetic store probe exercises the actual SQLite store and fake time:
-claim a ready event, cross the lease boundary, reconcile, and attempt a late
-positive submission. Expected: `uncertain`, no reclaim, late `mark_submitted`
-refused, explicit positive-evidence reconciliation succeeds, and only the
-matching turn can complete. It does not call a provider, create a process,
-send mail, or establish a live hang or provider failure.
+Schema v3 adds `mail_continuations` and `mail_turn_receipts` to the existing inbox.
+V1/v2 migrations retain events without inventing identity snapshots. Missing v3
+tables fail closed. Revocation/expiry purge question snapshots; terminal retention
+also removes orphan receipt metadata.
 
-## Verification
+The real `delivery_attempt_id` is persisted against the event before submission.
+Prelaunch reservations may update it until admission; afterward another attempt
+cannot take it. Publication of the same attempt after fast acceptance is allowed.
+Pipe acceptance requires actual write/flush/close as appropriate; shim capture
+close waits for CLI delivery. Claude Mode A delivers via argv after an exact-resume
+spawn. HTTP 200, a queue or unrelated completion is never acceptance. The attached
+scope excludes the raw inbound body. Only the bounded unit-5 envelope is delivered,
+with a visible mail-source marker.
 
-From the assigned worktree, using the MAIN project interpreter and installation
-launcher:
+Approved policy A: mail-only pipe acknowledgment uses the existing 10-second
+window. Context/payload preparation is separate; this is **not a total startup or
+follow-up deadline**. Missing acknowledgment leaves visible `uncertain`, retains
+the reply, consumes no question and causes no timeout kill/restart or replay.
+Ordinary interactive revival retains its indefinite acknowledgment policy;
+ordinary provider writers retain their existing failure handling.
 
-```powershell
-C:/Users/levir/Documents/_claude/mission-control/.venv/Scripts/python.exe C:/Users/levir/Documents/_claude/mission-control/tools/test-run.py --project mission_control --port 5199 -- C:/Users/levir/Documents/_claude/mission-control/.venv/Scripts/python.exe -m pytest tests/test_agent_mail_wake_contract.py tests/test_agent_mail_store.py -q
+A matching late positive receipt reconciles with `reconcile_uncertain()`.
+Completion is a separate durable bit tied to project/session/generation/provider/
+native id/attempt. Positive receipt plus matching successful completion history
+can recover after restart. Terminal history/callback alone cannot accept mail.
+Late completion after store expiry remains refused. Revoked content is not rebuilt.
+
+## Questions
+
+The full stored form is hashed to validate revision. Only a matching still-pending
+form may be consumed after acceptance and current consent, under manager/store
+locks. Notes, late replies and invalid choices cannot clear another question or
+any plan-approval gate. Free text stays text; mail never becomes a product approval
+button action or an invented approved/declined result.
+
+Exact labels/positions are classified only when unambiguous. Multiple questions
+require Q1:/Q2: boundaries; multi-select values stay inside their question. Invalid
+or ambiguous choices remain clarification text. Late question replies are labeled.
+
+## Verification and boundaries
+
+Separate modules own target proof, private continuation scope, pipe acknowledgments,
+question validation, wake/receipt handling and schema migration/cleanup. The route
+monolith receives imports, decorators and helper call sites only.
+
+Synthetic tests use real SQLite and existing route/revival/runtime methods with
+fake transports/CLI processes. They cover alive/ended Claude A/B and Codex/Qwen/
+Gemini continuation, exact resume/cwd, scheduled sandbox posture, busy/replay/order,
+legacy/missing identity refusal, revocation, questions and late receipts. Tests
+inspect the actual payload/argv handed to the resumed CLI double, not just HTTP
+success. No real provider/model or actual native-provider processing is claimed.
+
+The unchanged continuation-model test file has nine existing fixture failures,
+reproduced independently on exact base `9f73231f`. They remain out of scope;
+the separately reported scoped matrix excludes that file explicitly.
+
+Exact operator-specific argv, cwd, results and correction history live in the
+ignored task journal/local verification report. Portable launcher form:
+
+```text
+<project-python> <installation>/tools/test-run.py --project mission_control --port 5199 -- <project-python> -m pytest <explicit selection> -o addopts= -q --tb=short
+<project-python> <installation>/tools/test-run.py --project mission_control --port 5199 -- <pyright> <explicit module selection>
 ```
 
-Exit 0: both new cases (ordinary/startup reconciliation) and the 59 existing
-store cases pass. The runner's quiet output is a complete 61-dot progress line
-and `[100%]`; it does not print a framework summary/count line in this setup.
-The initial launcher call used the relative `.venv/Scripts/python.exe` as child
-argv and failed before starting the child (`child_start_failed_FileNotFoundError`,
-`pytest_reporter_finish_missing_progress_incomplete`). The corrected call uses
-absolute interpreter paths, the same worktree cwd and the same test selection;
-no test assertions or permissions changed.
-
-No new production modules remain, so new-module pyright is not applicable.
-No static files changed, so frontend smoke is not applicable. No runtime change
-is claimed; route/provider continuation, resumed text consumption, callback/gate
-behavior, real mail, restart and live integration are not verified. This is a
-store-contract test and decision checkpoint, not a Unit 6 acceptance result.
-README, USER_GUIDE, CHANGELOG, AGENTS and rules need no changes for this
-unimplemented internal integration; the dedicated handoff and journal carry it.
-
-## Remaining implementation plan
-
-1. Add immutable local snapshots of project generation, provider/native
-   conversation identity, persona/worktree/continuation context, and the full
-   question plus revision. Units 1-5 currently bind only project/session and
-   owner generation. Missing pre-send snapshots must hold; do not backfill them
-   from current state or a message-supplied session id.
-2. Claim only an accepted laundered ready event. Enter the **existing** follow-up
-   route using an internal Python-authenticated envelope and exact-conversation
-   constraint. Check identity/current consent/holds before any provider action;
-   refuse cold, auto-fresh and unproven successor paths before submission.
-3. Keep the existing callback ownership semantics. Mail-origin calls must not
-   re-arm the spawner/workflow notification. Serialize busy replies in the
-   durable inbox rather than an in-memory route queue.
-4. Implement the selected acknowledgment policy and persist the real
-   `delivery_attempt_id` before starting the provider action. An HTTP success,
-   background-thread enqueue, process start or completion of an unrelated
-   attempt is insufficient. Reconcile matching positive receipts after crashes;
-   otherwise retain `uncertain`, with no blind retry.
-5. Preserve plan gates. Consume only a matching stored question/revision after
-   proven delivery; preserve multi-question boundaries and multi-select meaning.
-   Keep free text intact. Notes, invalid choices and late replies cannot consume
-   another pending question or relabel text as an approval.
-6. Test live/ended routes with fake transports for Claude and each affected
-   provider, exact history/identity, busy/replay/revocation races, late receipts,
-   held events and callbacks. Demonstrate the resumed turn reads the delivered
-   text. Use the installation test launcher and pyright on new modules.
-7. Update the internal contract/changelog and commit explicit session paths.
-   Keep disabled. No merge, push, restart, deployment, real mail or credentials.
-
-## Session notes
-
-Memory/API skills were read and the matching memory topics inspected. The first
-main-checkout journal read was truncated and was followed by targeted reads of
-the recent decisions and exact source; a complete journal read is not claimed.
-The plan-file write under the human-owned `.claude/plans` directory was rejected
-by the unattended fence and was not retried. The plan is preserved above and in
-the journal. No permission changes were made.
-
-Two exploratory new modules and the associated schema-version edit were removed
-before this checkpoint; the production-source diff from the base is empty. No
-partial continuation API or schema migration is being handed off as working code.
+Real mail, credentials, tunnel, Cloudflare deployment, restart and live end-to-end
+continuation remain unverified. Unit 7 and the separately approved pilot remain
+required. README, USER_GUIDE and rules are unchanged: disabled internal integration,
+no new user-facing surface. Frontend smoke is inapplicable: no static/UI changes.

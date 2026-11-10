@@ -663,3 +663,22 @@ Primary interfaces checked 2026-11-09:
 [raw EmailMessage support](https://developers.cloudflare.com/email-service/api/send-emails/workers-api/),
 [email handler / ingress results](https://developers.cloudflare.com/email-service/api/route-emails/email-handler/),
 [D1 atomic batches](https://developers.cloudflare.com/d1/worker-api/d1-database/).
+
+## Unit 6: local continuation integration (disabled review candidate)
+
+`MailWake` claims unit-5 envelopes and enters the existing follow-up route under
+a private exact-conversation scope. Before outbound send, local enrollment code
+must bind the thread, capture `MailWake.bind()` while its originating session
+exists, then bind the opaque ingress transport id. Existing events/transport
+bindings without a snapshot stay held; they cannot acquire a guessed identity.
+
+Schema v3 retains v1/v2 custody data and adds immutable continuation/question
+snapshots and actual delivery-attempt receipts. Mail-origin pipe acknowledgment
+uses 10 seconds after context/payload preparation, leaves missing acknowledgments
+uncertain without a timeout kill/restart, and reconciles only a matching positive
+receipt. Completion is separate. Default-disabled controller and full contract:
+[Unit 6 handoff](AGENT_MAIL_UNIT6_HANDOFF.md).
+
+Synthetic local route/runtime continuation is covered; the live exclusions above
+still apply. Unit 7 must wire human consent/enrollment, deletion/revocation,
+polling, status/recovery and outbound delivery before any live enablement.

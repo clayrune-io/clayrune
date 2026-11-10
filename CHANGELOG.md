@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Bind mail replies to their original conversation (MC-1166 unit 6)
+
+- Added a default-disabled local wake controller over the existing follow-up/revival paths. Immutable native-conversation/question snapshots and durable delivery-attempt receipts prevent fresh-session fallback, duplicate replay, and unrelated gate consumption.
+- Mail-only pipe acknowledgments wait 10 seconds, then retain uncertainty without killing/restarting or replaying the provider. Exact late receipts reconcile separately from matching lifecycle completion. Ordinary interactive revival keeps its existing wait policy.
+- Preserved scheduled execution metadata on mail-origin native revival; added synthetic alive/ended provider, restart, revocation, question and timeout coverage. Enrollment, outbound mail, status UI and live transport remain unit 7/pilot work. Local review candidate; no merge, push or restart.
+
 ## [2026-11-09] - Require strict mutation reads (MC-1168 round 14)
 
 - Reservation and owner-CAS rollback now consume a successful strict history read under the existing transaction. Read/parse failures cannot supply empty rows to mutation or save; default display/history reads retain their forgiving behavior.

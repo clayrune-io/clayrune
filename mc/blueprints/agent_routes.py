@@ -59,6 +59,8 @@ from mc import agent_shim_completion as _agent_shim_completion  # MC-1150 P4: cr
 from mc import mid_turn_send as _mid_turn_send  # MC-1086: steer / queue / interrupt routing
 from mc import triggered_turns as _triggered_turns  # seed-line label for non-human turns
 from mc import engine_selection
+from mc import agent_mail_continuation as _mail_continuation
+from mc import agent_mail_pipe as _mail_pipe
 from mc import resume_cwd as _resume_cwd
 from mc.hivemind_worker import RosterRecoveryHeld, revive_roster_worker
 from mc import provider_preferences as _provider_preferences
@@ -7897,6 +7899,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         _log(f"[revive] {project_id}: could not recover the persona for "
              f"{claude_sid[:12]}: {e}")
 
+    _mail_continuation.check_persona(_revive_character)
     # No live in-memory session survives a revive (that's the whole point of
     # this path — the process/server restarted), so there's no per-turn
     # context_tokens to read: the token trigger naturally sits out here and
@@ -8175,6 +8178,8 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             delivery = _start_prompt_delivery(_write_revival, f'revive-stdin-{session_id[:8]}')
 
             def _acknowledge_revival():
+                if _mail_pipe.acknowledge(delivery, session, delivery_gate):
+                    return
                 # Preserve Claude revival's existing wait policy; moving the
                 # wait past publication must not add a new startup deadline.
                 delivery.done.wait()
@@ -8493,6 +8498,7 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
                                  notify_workflow=_revive_notify_workflow,
                                  spawned_by=_revive_spawned_by,
                                  session_metadata={'_turn_owner': 'spawner' if carry_notify else 'human'},
+                                 **_mail_continuation.revival_metadata(),
                                  **_iso_kw,
                                  **({'prepared_context': role_context, 'preserve_model': True}
                                     if role_context is not None else {}))
@@ -9960,6 +9966,7 @@ def _write_usage_breakdown_turn_checkpoint(session):
     (round 3 fix) -- exactly designed for one row per turn; this is the
     first caller that actually writes more than one per session.
     Best-effort, same exception handling as the process-exit write."""
+    _mail_continuation.completed(session)
     project_id = session.get('project_id')
     sid = session.get('session_id')
     if not project_id or not sid or session.get('incognito'):
@@ -10140,6 +10147,7 @@ def _log_agent_completion(session):
     `_maybe_notify_spawner` is latched, so the normal path's own call inside
     the body makes this a no-op.
     """
+    _mail_continuation.completed(session)
     # MC-1150 P4: checkpoint (offset past the stream's end) before any completion
     # side effect, so a restart in the middle of them cannot run them twice, and
     # stamp it with the completion now owed so a crash in the middle cannot lose
@@ -12302,6 +12310,7 @@ def _auto_fresh_handoff(pp, provider, claude_sid, project_id, session_id,
 
     Returns (handoff_text, log_line, activity_line).
     """
+    _mail_continuation.reject_rollover()
     from mc.session_provenance import note_rollover
     note_rollover(project_id, session_id, claude_sid)
     _source_sid = claude_sid
@@ -14315,6 +14324,7 @@ def agent_stream(project_id):
 
 @bp.route('/api/project/<project_id>/agent/followup', methods=['POST'])
 @delivery_response
+@_mail_continuation.followup_route
 def agent_followup(project_id):
     p = load_project(project_id)
     if not p:
@@ -14478,15 +14488,11 @@ def agent_followup(project_id):
         if not existing or existing['project_id'] != project_id:
             return jsonify({'error': 'session not found'}), 404
 
+        _mail_continuation.guard_session(existing, p)
         _limit_attempt = existing.get('_limit_resume_attempt') if _limit_internal else None
 
         # Clear plan approval / question flags — user has responded
-        existing['waiting_for_plan_approval'] = False
-        existing['waiting_for_question'] = False
-        # Drop any persisted questions; the user's reply consumes them. (We
-        # keep `pending_questions` populated until this point so a late /
-        # reconnecting SSE client still sees the form — see the SSE generator.)
-        existing.pop('pending_questions', None)
+        _mail_continuation.clear_gates(existing)
 
         # ── Multi-provider followup ─────────────────────────────────────────
         # Non-claude providers route through the runtime; their write_followup
@@ -15069,7 +15075,7 @@ def agent_followup(project_id):
                     except OSError:
                         pass
 
-        threading.Thread(target=_do_respawn_b, daemon=True).start()
+        _mail_continuation.run_followup(_do_respawn_b)
         _log_agent_activity(project_id, f"Agent resumed: {message[:100]}")
         return jsonify({'ok': True, 'session_id': session_id, 'resumed': True,
                         **({'submission_pending': True} if _limit_internal else {})})
@@ -15169,7 +15175,7 @@ def agent_followup(project_id):
                 except OSError:
                     pass
 
-    threading.Thread(target=_start_followup, daemon=True).start()
+    _mail_continuation.run_followup(_start_followup)
 
     _log_agent_activity(project_id, f"Agent follow-up: {message[:100]}")
     return jsonify({'ok': True, 'session_id': session_id,
@@ -15261,6 +15267,8 @@ def _bounded_stdin_write(proc, data, *, session=None, lock=None, close_after=Fal
     real outcome. Otherwise returns None immediately (fire-and-forget, the
     normal interactive path).
     """
+    if _mail_continuation.current() is not None:
+        return _mail_pipe.write(proc, data, session, lock, close_after)
     done = threading.Event()
     result = {}
 
