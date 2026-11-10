@@ -2212,6 +2212,12 @@ class ClaudeRuntime(AgentRuntime):
         # reader that doesn't know the type simply ignores it.
         if partial_messages:
             cmd.append('--include-partial-messages')
+        # Never hand --model an id the installed CLI predates: it would run on
+        # an unknown model instead of refusing (mc/claude_cli_min_version.py).
+        from mc import claude_cli_min_version as _min_cli
+        model, _gate_warn = _min_cli.gate_model_for_binary(model, self.resolve_binary())
+        if _gate_warn:
+            _log(f"[claude] {_gate_warn}", flush=True)
         if model:
             cmd.extend(['--model', model])
         if effort and str(effort).strip().lower() in self.EFFORT_LEVELS:

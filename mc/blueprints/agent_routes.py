@@ -59,6 +59,7 @@ from mc import agent_shim_completion as _agent_shim_completion  # MC-1150 P4: cr
 from mc import mid_turn_send as _mid_turn_send  # MC-1086: steer / queue / interrupt routing
 from mc import triggered_turns as _triggered_turns  # seed-line label for non-human turns
 from mc import engine_selection
+from mc import claude_cli_min_version as _claude_cli_min_version  # Claude model -> minimum CLI guard
 from mc import agent_mail_continuation as _mail_continuation
 from mc import agent_mail_pipe as _mail_pipe
 from mc import resume_cwd as _resume_cwd
@@ -13062,6 +13063,13 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         # and let the runtime adapter deliver the combined prompt according to
         # its provider's context-injection capability.
         context = f"{context}\n\n{system_prompt_suffix}".strip()
+    # build_command() already dropped --model for an id the installed CLI
+    # predates; say so in the chat too, as the Codex path does.
+    if routed_model:
+        _cli_gate_warn = _claude_cli_min_version.gate_model_for_binary(
+            routed_model, _agent_runtime.get_runtime('claude').resolve_binary())[1]
+        if _cli_gate_warn:
+            _seed_log_lines.append(f'[claude warn] {_cli_gate_warn}')
     _sp_args, _sp_path = _sysprompt_file_args(context)
 
     # Per-dispatch telemetry — best-effort; never raises. requested = the
