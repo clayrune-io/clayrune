@@ -330,7 +330,8 @@ submission. Unit 7 owns human enrollment, route proof, key/consent lifecycle,
 outbound wiring and owner-facing status/recovery/deletion. Service pin/thread
 metadata retention/deletion and cleanup scheduling must be wired there; no
 enabled service is claimed by these internal Python seams. The Worker shared
-breaker P2, real Cloudflare ingress provenance and all live pilot gates remain.
+breaker P2 is addressed by the accepted/refused split below; real Cloudflare
+ingress provenance and all live pilot gates remain.
 
 ## Recorded-event laundering adapter (unit 5)
 
@@ -531,17 +532,30 @@ review: 100 queued/held bodies per install, 10,000 globally; 20 sends/install/da
 200 authenticated-endpoint attempts/install/day, shared by send and reconcile.
 The inbound `ingress:<install_id>` allowance is reserved only after `decide()`
 accepts the owner, provider authentication, token and Message-ID correlation.
-Every normal SMTP refusal after a known recipient lookup also charges the separate
-`ingress-refused:<install_id>` accounting bucket, capped at 200/day. A saturated
-refusal bucket never gates owner mail or changes the refusal reason; the existing
-rejection audit/overflow records still apply. Unknown recipients create no
-per-install accounting bucket. Authenticated attempts that later fail MIME/text
-checks still spend owner allowance; duplicate authenticated deliveries do too.
-The unchanged **provisional shared global ingress breaker** (`ingress:global`,
-10,000 attempts/day) runs before recipient lookup and authentication. Stranger
-and owner traffic share it: exhausting it can still refuse genuine owner mail.
-Separating the per-install buckets does not establish global abuse isolation or
-pilot capacity. This shared limit must be assessed before enabling real mail.
+The global authenticated allowance, `ingress-accepted:global`, is also reserved
+only after `decide()` accepts, immediately before the per-install allowance.
+It caps authenticated attempts across installs at 10,000/day; strangers cannot
+spend it. `ingress_not_verified` remains the first ingress gate. Authenticated
+attempts that later fail MIME/text or per-install quota checks still spend global
+allowance; duplicate authenticated deliveries do too. A failed global reservation
+returns `ingress_limit` and calls `setReject` without retaining an event.
+
+SMTP refusals use a separate `ingress-refused:global` counter, capped at
+10,000/day, consulted only inside `drop()`. Within that budget, refusals retain
+the existing rejection audit/overflow records and known recipients charge
+`ingress-refused:<install_id>`, capped at 200/day. Unknown recipients create no
+per-install bucket. Beyond the global refusal budget, `drop()` skips both the
+audit write and per-install counter, but still returns the original rejection
+reason and calls `setReject`. Neither refusal counter gates owner mail.
+The first over-budget refusal creates `ingress-refused-saturated:global`, a
+daily `rate_limits` marker capped atomically at count 1. Further refusals cannot
+grow it; it indicates omitted accounting, not an exact omitted-message count.
+Inspect these counters/marker through operational D1 tooling. Like other daily
+rate-limit rows, they use UTC-day keys and expire through reconciliation after
+up to two days; a new day restores the refusal audit budget. No schema migration
+is needed. The former pre-authentication `ingress:global` gate is no longer read
+or charged; old rows expire normally. These controls bound refusal storage, not
+pre-authentication parsing/D1 work or pilot capacity.
 
 For HTTP send/reconcile, only a verified signature with a successful durable nonce
 claim consumes the protected allowance. Invalid traffic uses a separate global 10,000-refusals/minute
@@ -616,7 +630,31 @@ Controls verify the owner's 201st authenticated attempt is refused, saturated
 refusal accounting cannot gate owner mail or suppress audit, and post-lookup
 authentication/correlation/header/loop/MIME/empty/malformed/inactive refusals
 are accounted separately. Unknown recipients create no per-install bucket.
-These are synthetic handler/SQLite tests; the shared global breaker is unchanged.
+These are synthetic handler/SQLite tests. The subsequent global-breaker repair
+below replaces the shared pre-authentication gate.
+
+Global-breaker candidate validation (2026-11-09): whole Worker suite **748 passed,
+0 failed/skipped/cancelled/todo, exit 0**. The supplied launcher invocation with
+bare `--shell` exited 2 before tests because that flag requires a shell name.
+The successful command kept the exact `npm test` shell text and used the
+installation's absolute launcher path. Equivalent portable invocation from
+`workers/agent-mail`:
+
+```powershell
+python ../../tools/test-run.py --project mission_control --port 5199 --shell powershell --command 'npm test'
+```
+
+`test/ingress-global-breaker.test.js` retains Fenn's four probes with only imports
+relocated: both-owner positive control, 10,000 known-recipient strangers, 10,000
+unknown-recipient strangers, and 250 concurrent strangers. Both owners queue
+after either attack. Three additional cases cover the accepted-global limit
+across two owners, saturated refusal accounting with concurrent `setReject`
+calls and genuine owner replies plus next-day recovery, and first-gate precedence
+for unverified ingress even when both global counters are full. The daily
+saturation marker stays at 1 while audit/per-install writes stop. The earlier
+unknown-recipient test now excludes the deliberate global refusal bucket when
+asserting that no per-install buckets exist. No live SMTP, deployed D1 or
+Cloudflare header provenance is verified; remaining live-pilot gates still apply.
 
 Historical round-2 candidate validation: 2026-11-09, whole suite **724 passed, 0 failed,
 0 skipped/cancelled/todo, exit 0** (707 baseline + 17 round-2 cases). Exact command,

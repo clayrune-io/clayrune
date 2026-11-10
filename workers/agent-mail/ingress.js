@@ -48,17 +48,21 @@ export function orderedHeaders(raw) {
 export async function ingress({ message, ledger, config, now }) {
   let reg;
   async function drop(reason) {
-    // Refusal accounting is bounded separately and never gates owner mail.
-    // Unknown recipients cannot choose an arbitrary per-install bucket.
-    if (reg) await ledger.limit(`ingress-refused:${reg.install_id}`, ledger.policy.ingressPerDay, now);
-    await ledger.reject(reason, now);
+    // Refusals never spend accepted capacity. Once their global audit budget
+    // fills, retain only a capped daily saturation marker, not per-message writes.
+    if (await ledger.limit('ingress-refused:global', ledger.policy.globalIngressPerDay, now)) {
+      // Unknown recipients cannot choose an arbitrary per-install bucket.
+      if (reg) await ledger.limit(`ingress-refused:${reg.install_id}`, ledger.policy.ingressPerDay, now);
+      await ledger.reject(reason, now);
+    } else {
+      await ledger.limit('ingress-refused-saturated:global', 1, now);
+    }
     message.setReject('Agent mail refused');
     return { status: 'rejected', reason };
   }
   // This is a launch gate, not evidence that Cloudflare's header provenance has
   // been verified. Real provider fixtures are still required before enabling it.
   if (config.ingressVerified !== true) return drop('ingress_not_verified');
-  if (!await ledger.limit('ingress:global', ledger.policy.globalIngressPerDay, now)) return drop('ingress_limit');
   if (!Number.isFinite(message.rawSize) || message.rawSize > 65_536) return drop('mime_too_large');
   const match = /^([a-z0-9][a-z0-9._-]{0,63})\+([a-z0-9]{26,64})@([a-z0-9.-]+)$/.exec(message.to ?? '');
   if (!match || match[3] !== config.domain) return drop('unknown_recipient');
@@ -82,7 +86,8 @@ export async function ingress({ message, ledger, config, now }) {
   // SMTP authentication rejection. The email adapter reports sanitized custody failure.
   if (!decision.accept && decision.reason_code === 'lookup_error') throw new Error('thread_lookup_failed');
   if (!decision.accept) return drop(decision.reason_code);
-  // Reserve the owner's allowance only after owner/auth/token/correlation pass.
+  // Reserve global and owner allowances only after owner/auth/token/correlation pass.
+  if (!await ledger.limit('ingress-accepted:global', ledger.policy.globalIngressPerDay, now)) return drop('ingress_limit');
   if (!await ledger.limit(`ingress:${reg.install_id}`, ledger.policy.ingressPerDay, now)) return drop('ingress_limit');
   const content = await strip(raw);
   if (!content.ok) return drop(content.reason_code);
