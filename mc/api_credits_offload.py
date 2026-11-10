@@ -117,7 +117,7 @@ def try_offload(*, user_text: str, model: str, timeout: float,
         res = transport.send(api_key=key, model=resolved, user_text=user_text,
                              timeout=timeout, post=post, **deadline_kw)
         cost: Optional[float] = None
-        if res.usage and (res.ok or res.error_kind == transport.TRUNCATED):
+        if res.usage and (res.ok or res.error_kind in (transport.TRUNCATED, transport.REFUSED)):
             cost = budget.cost_usd(resolved, res.usage, s.get('prices'))
             budget.record(caller=_caller_label(), model=resolved, usage=res.usage,
                           cost=cost, estimated=False, settings=s)

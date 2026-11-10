@@ -20,7 +20,17 @@ import requests
 
 API_URL = 'https://api.anthropic.com/v1/messages'
 API_VERSION = '2023-06-01'
-DEFAULT_MAX_TOKENS = 8192
+# max_tokens is a hard cap on thinking PLUS reply text, and thinking counts even
+# when its text is not returned (claude-api skill, shared/model-migration.md:
+# "Size max_tokens for the thinking as well as the reply"). Fable 5.x always
+# thinks, so the old 8192 cut replies off: the offload was billed, then the
+# call reran on the subscription. 16000 is that skill's stated default for a
+# NON-streaming request ("keeps responses under SDK HTTP timeouts", SKILL.md
+# Common Pitfalls: max_tokens defaults); send() does not stream, so this is the
+# ceiling that source endorses here. The models' own output limit is 128K
+# (shared/models.md) but that needs streaming. Raise past this only with a
+# streaming transport.
+DEFAULT_MAX_TOKENS = 16000
 
 # error_kind values
 CREDIT_LOW = 'credit_low'        # "Your credit balance is too low ..."
@@ -33,6 +43,7 @@ NETWORK = 'network'
 BAD_REQUEST = 'bad_request'      # other 4xx
 BAD_RESPONSE = 'bad_response'    # 200 but unusable body
 TRUNCATED = 'truncated'          # stop_reason max_tokens: output is cut short
+REFUSED = 'refused'              # stop_reason refusal: a safety classifier declined
 
 # Kinds that mean "this key/org cannot be billed right now": the caller flips the
 # budget state to stopped instead of retrying on every call.
@@ -142,5 +153,15 @@ def send(*, api_key: str, model: str, user_text: str, system_text: str = '',
                                model=str(data.get('model') or model),
                                error_kind=TRUNCATED,
                                error_message=f'output hit max_tokens={body["max_tokens"]}')
+    if data.get('stop_reason') == 'refusal':
+        # HTTP 200, but the reply is a decline (possibly partial), not an answer.
+        # Not ok, like TRUNCATED: usage is kept because the call was billed.
+        details = data.get('stop_details')
+        category = details.get('category') if isinstance(details, dict) else None
+        return TransportResult(False, text=text, usage=usage, status=status,
+                               model=str(data.get('model') or model),
+                               error_kind=REFUSED,
+                               error_message='request refused by safety classifier'
+                                             + (f' ({category})' if category else ''))
     return TransportResult(True, text=text, usage=usage, status=status,
                            model=str(data.get('model') or model))

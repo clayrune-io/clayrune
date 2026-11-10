@@ -511,11 +511,21 @@ def _notify_push(title: str, body: str, *, url: str = '',
 def _handle_push_signal(project_id: str, session_id: str, msg: dict) -> None:
     """Fired from stream readers on each parsed stream-json message.
 
-    - assistant + tool_use(PushNotification) → fire `kind='agent'` push.
-    - result                                  → fire `kind='turn_complete'`
-      push unless the project opted out (`notify_push_enabled` or
-      `notify_turn_complete` set to False; both default to True) or the
-      user is already watching the chat.
+    Skipped up front, for both kinds: a session flagged `housekeeping`
+    (scribe, condense, hivemind workers/orchestrator) or `incognito`. A
+    session id unknown to `agent_sessions` is not skipped.
+
+    - assistant + tool_use(PushNotification) -> fire `kind='agent'` push,
+      once per such block, unless: the block's `message` is empty/missing,
+      the project's `notify_push_enabled` is falsy, or the user is already
+      watching the chat (`_is_being_watched`). `notify_turn_complete` is NOT
+      consulted for this kind.
+    - result                                 -> fire `kind='turn_complete'`
+      push unless `notify_push_enabled` or `notify_turn_complete` is falsy, or
+      the user is already watching the chat.
+
+    Both flags default to True when the key is absent, and ANY falsy value
+    opts out (False, None, 0, ''), not only the literal False.
 
     Wrapped in a broad try so a delivery problem never breaks the reader.
     """
