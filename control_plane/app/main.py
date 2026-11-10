@@ -26,6 +26,7 @@ from .routes_auth import router as auth_router
 from .routes_attest import router as attest_router
 from .routes_account import router as account_router
 from .routes_admin import router as admin_router
+from .routes_mail_delivery import router as mail_delivery_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("control_plane")
@@ -70,6 +71,7 @@ app.include_router(auth_router, prefix="/v1")
 app.include_router(attest_router, prefix="/v1")
 app.include_router(account_router, prefix="/v1")
 app.include_router(admin_router, prefix="/v1/admin")
+app.include_router(mail_delivery_router, prefix="/v1/mail-delivery")  # default off: 404 unless CLAYRUNE_MAIL_DELIVERY_ENABLED
 
 
 # Flatten HTTPException(detail={"code": ..., "message": ..., ...}) into the

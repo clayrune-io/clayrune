@@ -1,0 +1,970 @@
+{
+ "_meta": "Python-signed by control_plane.tests.delivery_vectors; public material only; private key discarded.",
+ "issuer": "https://authority.example.com",
+ "jwks": {
+  "keys": [
+   {
+    "alg": "ES256",
+    "crv": "P-256",
+    "kid": "mail-delivery-test",
+    "kty": "EC",
+    "use": "sig",
+    "x": "oRQ-nCWbFAJzywAvJSjhroLWi0zbv68X9Uf3bcbwd_o",
+    "y": "XUZxNhJ0iqpgropqihIKpf-zzNR-YEwpAfyJptEMzLk"
+   }
+  ]
+ },
+ "jwks_url": "https://authority.example.com/v1/mail-delivery/jwks",
+ "vectors": [
+  {
+   "expect": "ok",
+   "name": "valid mail capability",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.6Cv7nGqoVsbs9ZeHN6YOE6VNlzg2LSmK7xd-gkr48vv--Ylf6J0BoOA-7lfWMtab3X76SSdQ1ptRya1tpPG8vg"
+  },
+  {
+   "expect": "ok",
+   "name": "valid proof capability",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install-proof",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6IjY0MzAzZGM0OTkzM2UxNjc4YTgyNjIwZTQ4ZmVmNDRjIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoicHJvb2YiLCJuYmYiOjE3OTQyNDk2MDEsInJlY29yZF92ZXJzaW9uIjoiZTM4ODc4ODNjNDIwZTM1NTJkM2I5MGIzOGNmN2NkMzc3MjZlNTMwMzMzNWUxNmRkZDczMjA2N2VjODFlMWMxOCIsInJlcV9kaWdlc3QiOiJjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkIiwicm91dGVfb3JpZ2luIjoiaHR0cHM6Ly9kZXZpY2UuZXhhbXBsZS5jb20iLCJyb3V0ZV9wYXRoIjoiL2FwaS9hZ2VudC1tYWlsL2luZ3Jlc3MiLCJzdWIiOiJhY2NvdW50MSIsInRva2VuX3VzZSI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkifQ.sZxA6m37NMLg5xxHLcVyWpIdF0sktAMTISSuhJhbXDWYUeh1BTL48PTQi3vHqCatYRpxYY5ei1fsyVHD59Eq0A"
+  },
+  {
+   "expect": "capability_request_mismatch",
+   "name": "wrong host",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "evil.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.6Cv7nGqoVsbs9ZeHN6YOE6VNlzg2LSmK7xd-gkr48vv--Ylf6J0BoOA-7lfWMtab3X76SSdQ1ptRya1tpPG8vg"
+  },
+  {
+   "expect": "capability_request_mismatch",
+   "name": "wrong method",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "PUT",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.6Cv7nGqoVsbs9ZeHN6YOE6VNlzg2LSmK7xd-gkr48vv--Ylf6J0BoOA-7lfWMtab3X76SSdQ1ptRya1tpPG8vg"
+  },
+  {
+   "expect": "capability_request_mismatch",
+   "name": "wrong path",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/other"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.6Cv7nGqoVsbs9ZeHN6YOE6VNlzg2LSmK7xd-gkr48vv--Ylf6J0BoOA-7lfWMtab3X76SSdQ1ptRya1tpPG8vg"
+  },
+  {
+   "expect": "capability_request_mismatch",
+   "name": "query smuggled in path",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress?x=1"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.6Cv7nGqoVsbs9ZeHN6YOE6VNlzg2LSmK7xd-gkr48vv--Ylf6J0BoOA-7lfWMtab3X76SSdQ1ptRya1tpPG8vg"
+  },
+  {
+   "expect": "capability_request_mismatch",
+   "name": "encoded path alias",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/%69ngress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.6Cv7nGqoVsbs9ZeHN6YOE6VNlzg2LSmK7xd-gkr48vv--Ylf6J0BoOA-7lfWMtab3X76SSdQ1ptRya1tpPG8vg"
+  },
+  {
+   "expect": "capability_request_mismatch",
+   "name": "wrong digest",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.6Cv7nGqoVsbs9ZeHN6YOE6VNlzg2LSmK7xd-gkr48vv--Ylf6J0BoOA-7lfWMtab3X76SSdQ1ptRya1tpPG8vg"
+  },
+  {
+   "expect": "capability_request_mismatch",
+   "name": "wrong nonce",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "00000000000000000000000000000000"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.6Cv7nGqoVsbs9ZeHN6YOE6VNlzg2LSmK7xd-gkr48vv--Ylf6J0BoOA-7lfWMtab3X76SSdQ1ptRya1tpPG8vg"
+  },
+  {
+   "expect": "capability_request_mismatch",
+   "name": "wrong generation",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "2",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.6Cv7nGqoVsbs9ZeHN6YOE6VNlzg2LSmK7xd-gkr48vv--Ylf6J0BoOA-7lfWMtab3X76SSdQ1ptRya1tpPG8vg"
+  },
+  {
+   "expect": "capability_request_mismatch",
+   "name": "wrong install",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "other",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.6Cv7nGqoVsbs9ZeHN6YOE6VNlzg2LSmK7xd-gkr48vv--Ylf6J0BoOA-7lfWMtab3X76SSdQ1ptRya1tpPG8vg"
+  },
+  {
+   "expect": "capability_request_mismatch",
+   "name": "wrong key id",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail2",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.6Cv7nGqoVsbs9ZeHN6YOE6VNlzg2LSmK7xd-gkr48vv--Ylf6J0BoOA-7lfWMtab3X76SSdQ1ptRya1tpPG8vg"
+  },
+  {
+   "expect": "capability_request_mismatch",
+   "name": "mail token on proof direction",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install-proof",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.6Cv7nGqoVsbs9ZeHN6YOE6VNlzg2LSmK7xd-gkr48vv--Ylf6J0BoOA-7lfWMtab3X76SSdQ1ptRya1tpPG8vg"
+  },
+  {
+   "expect": "capability_request_mismatch",
+   "name": "unknown direction",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "install-to-service",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.6Cv7nGqoVsbs9ZeHN6YOE6VNlzg2LSmK7xd-gkr48vv--Ylf6J0BoOA-7lfWMtab3X76SSdQ1ptRya1tpPG8vg"
+  },
+  {
+   "expect": "capability_request_mismatch",
+   "name": "proof token on mail direction",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6IjY0MzAzZGM0OTkzM2UxNjc4YTgyNjIwZTQ4ZmVmNDRjIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoicHJvb2YiLCJuYmYiOjE3OTQyNDk2MDEsInJlY29yZF92ZXJzaW9uIjoiZTM4ODc4ODNjNDIwZTM1NTJkM2I5MGIzOGNmN2NkMzc3MjZlNTMwMzMzNWUxNmRkZDczMjA2N2VjODFlMWMxOCIsInJlcV9kaWdlc3QiOiJjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkIiwicm91dGVfb3JpZ2luIjoiaHR0cHM6Ly9kZXZpY2UuZXhhbXBsZS5jb20iLCJyb3V0ZV9wYXRoIjoiL2FwaS9hZ2VudC1tYWlsL2luZ3Jlc3MiLCJzdWIiOiJhY2NvdW50MSIsInRva2VuX3VzZSI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkifQ.sZxA6m37NMLg5xxHLcVyWpIdF0sktAMTISSuhJhbXDWYUeh1BTL48PTQi3vHqCatYRpxYY5ei1fsyVHD59Eq0A"
+  },
+  {
+   "expect": "bad_capability_claims",
+   "name": "wrong issuer",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2V2aWwuZXhhbXBsZS5jb20iLCJqdGkiOiJjNWM4ZWIyNDNkZDg3OTQxZWIyYzMwM2Q4Njc0ZDUxMyIsIm1haWxfa2V5X2lkIjoibWFpbDEiLCJtYWlsX25vbmNlIjoiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWIiLCJtZXRob2QiOiJQT1NUIiwibW9kZSI6Im1haWwiLCJuYmYiOjE3OTQyNDk2MDEsInJlY29yZF92ZXJzaW9uIjoiZTM4ODc4ODNjNDIwZTM1NTJkM2I5MGIzOGNmN2NkMzc3MjZlNTMwMzMzNWUxNmRkZDczMjA2N2VjODFlMWMxOCIsInJlcV9kaWdlc3QiOiJjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkIiwicm91dGVfb3JpZ2luIjoiaHR0cHM6Ly9kZXZpY2UuZXhhbXBsZS5jb20iLCJyb3V0ZV9wYXRoIjoiL2FwaS9hZ2VudC1tYWlsL2luZ3Jlc3MiLCJzdWIiOiJhY2NvdW50MSIsInRva2VuX3VzZSI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkifQ.ft5lbimZQ2FRWhzI28rTc-6opY5j47z0LkFx-zUY69ctp3wA8mLaXkJe3ARK4eJD83p417rDbn0Y1ja82ParOg"
+  },
+  {
+   "expect": "bad_capability_claims",
+   "name": "wrong aud",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1kYXNoYm9hcmQiLCJiaW5kaW5nX2p0aSI6IjY0NTc5ZGQ5ODgyYmUwMTA1NGVlNDZiZmEzYzcxZjQzIiwiY2hlY2tlZF9hdF9tcyI6MTc5NDI0OTYwMTEyMywiZGV2aWNlX2lkIjoiZGV2aWNlMSIsImV4cCI6MTc5NDI0OTY2MSwiZ2VuZXJhdGlvbiI6IjEiLCJpYXQiOjE3OTQyNDk2MDEsImluc3RhbGxfaWQiOiJpbnN0YWxsMSIsImlzcyI6Imh0dHBzOi8vYXV0aG9yaXR5LmV4YW1wbGUuY29tIiwianRpIjoiYzVjOGViMjQzZGQ4Nzk0MWViMmMzMDNkODY3NGQ1MTMiLCJtYWlsX2tleV9pZCI6Im1haWwxIiwibWFpbF9ub25jZSI6ImFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiIiwibWV0aG9kIjoiUE9TVCIsIm1vZGUiOiJtYWlsIiwibmJmIjoxNzk0MjQ5NjAxLCJyZWNvcmRfdmVyc2lvbiI6ImUzODg3ODgzYzQyMGUzNTUyZDNiOTBiMzhjZjdjZDM3NzI2ZTUzMDMzMzVlMTZkZGQ3MzIwNjdlYzgxZTFjMTgiLCJyZXFfZGlnZXN0IjoiY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZCIsInJvdXRlX29yaWdpbiI6Imh0dHBzOi8vZGV2aWNlLmV4YW1wbGUuY29tIiwicm91dGVfcGF0aCI6Ii9hcGkvYWdlbnQtbWFpbC9pbmdyZXNzIiwic3ViIjoiYWNjb3VudDEiLCJ0b2tlbl91c2UiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5In0.YWghhnG1aerI-hD1acsxaqEsy3570PDJEoUL5GjUwuX2qonahONm9iVzn6bmmCXkKFauZdfEC2IvyHPLptJgDw"
+  },
+  {
+   "expect": "bad_capability_claims",
+   "name": "wrong token_use",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiYWNjZXNzIn0.QHPZgMNjOAsrnwmp1N3-Cje7VX682BmAtj0Yj-Me2l10J2VCzadYZO2e5NEJkayn84NLfRIxdZvvLjdg4yVNrA"
+  },
+  {
+   "expect": "bad_capability_claims",
+   "name": "61 s lifetime",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjIsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.vTTxKUk2fwOSfzALDGumxim7enZOVJE0nfnBQs6hi3TFMMt8CnDAD8gKq-a0PZDuQmmQyBnY-lwwWqnbUD-nHA"
+  },
+  {
+   "expect": "bad_capability_claims",
+   "name": "exp equals iat",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2MDEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.Z8hZ7uDtO63WFIQ8dQXFmBXuSROkKWT9RujhSAtMYLnWT-_N9WtFw1jdfy2dSNTV41gFRvhTKogukrChDi8yvw"
+  },
+  {
+   "expect": "bad_capability_claims",
+   "name": "iat != nbf",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMCwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.jNpIz0HrxAG9l1NLIHYeXDAVNGNH_ZOW_FO3CqKCrG3NNGyFt4NdtvTsLcojZUZlOcVV70NJDcshLpkpftKWPw"
+  },
+  {
+   "expect": "bad_capability_claims",
+   "name": "bad mode",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoiYWRtaW4iLCJuYmYiOjE3OTQyNDk2MDEsInJlY29yZF92ZXJzaW9uIjoiZTM4ODc4ODNjNDIwZTM1NTJkM2I5MGIzOGNmN2NkMzc3MjZlNTMwMzMzNWUxNmRkZDczMjA2N2VjODFlMWMxOCIsInJlcV9kaWdlc3QiOiJjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkIiwicm91dGVfb3JpZ2luIjoiaHR0cHM6Ly9kZXZpY2UuZXhhbXBsZS5jb20iLCJyb3V0ZV9wYXRoIjoiL2FwaS9hZ2VudC1tYWlsL2luZ3Jlc3MiLCJzdWIiOiJhY2NvdW50MSIsInRva2VuX3VzZSI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkifQ.0lMle-TIDbN0WerI9G9WqeSaYItFTYsUX65HZxoNWRTdgyNRToafh4XYCpQBcrx4Ha_m0nJFfMbRPOs0_a3pGw"
+  },
+  {
+   "expect": "bad_capability_claims",
+   "name": "wrong route_path",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvb3RoZXIiLCJzdWIiOiJhY2NvdW50MSIsInRva2VuX3VzZSI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkifQ.wziVglhOhYB40ZdlHu-2kX5iDqeAXvTFooYW5VIJUOxhuqEciBrPyNv1rzZQN4U181NMB4qicpPlPWz-DPKc_A"
+  },
+  {
+   "expect": "bad_capability_claims",
+   "name": "wrong method claim",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IkdFVCIsIm1vZGUiOiJtYWlsIiwibmJmIjoxNzk0MjQ5NjAxLCJyZWNvcmRfdmVyc2lvbiI6ImUzODg3ODgzYzQyMGUzNTUyZDNiOTBiMzhjZjdjZDM3NzI2ZTUzMDMzMzVlMTZkZGQ3MzIwNjdlYzgxZTFjMTgiLCJyZXFfZGlnZXN0IjoiY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZCIsInJvdXRlX29yaWdpbiI6Imh0dHBzOi8vZGV2aWNlLmV4YW1wbGUuY29tIiwicm91dGVfcGF0aCI6Ii9hcGkvYWdlbnQtbWFpbC9pbmdyZXNzIiwic3ViIjoiYWNjb3VudDEiLCJ0b2tlbl91c2UiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5In0.eM54QRNhLHgCCdZMVLDwJ6CVzLNHWKry982dzkeZHVHNTMnxr5Z9dNwB30I4c8tAIFvauuElfAXPNdozXnuchw"
+  },
+  {
+   "expect": "bad_capability_claims",
+   "name": "generation zero",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIwIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.XHVVfEbr2Z78-IAa4RoWZBv4UR1fJTBzdAHjnKPU-oCAetfywozWD6vLn_giofjzuMXVfIbWsoF9CHyX_NN6_w"
+  },
+  {
+   "expect": "bad_capability_claims",
+   "name": "route_origin not https",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwOi8vZGV2aWNlLmV4YW1wbGUuY29tIiwicm91dGVfcGF0aCI6Ii9hcGkvYWdlbnQtbWFpbC9pbmdyZXNzIiwic3ViIjoiYWNjb3VudDEiLCJ0b2tlbl91c2UiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5In0.F03RXKQvFh6R8EP2cAwqYe3aC1jliUn6Hp0ljOBGsSGrCYRMgYYgzeWsjC9d8zamgo-4fl1g81LLOHPR4Mq-Mw"
+  },
+  {
+   "expect": "bad_capability_claims",
+   "name": "bad sub",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImJhZCBzdWIhIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.hM_SUqqQ3IJtGSG04o36fpVlcOqJG2QdVqWy8m3KvvrEGCbJM-MMk8CuvvdHb_WeoYEYm6wjbXWCaM7AUb1Iew"
+  },
+  {
+   "expect": "bad_capability_claims",
+   "name": "short jti",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImFiYyIsIm1haWxfa2V5X2lkIjoibWFpbDEiLCJtYWlsX25vbmNlIjoiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWIiLCJtZXRob2QiOiJQT1NUIiwibW9kZSI6Im1haWwiLCJuYmYiOjE3OTQyNDk2MDEsInJlY29yZF92ZXJzaW9uIjoiZTM4ODc4ODNjNDIwZTM1NTJkM2I5MGIzOGNmN2NkMzc3MjZlNTMwMzMzNWUxNmRkZDczMjA2N2VjODFlMWMxOCIsInJlcV9kaWdlc3QiOiJjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkIiwicm91dGVfb3JpZ2luIjoiaHR0cHM6Ly9kZXZpY2UuZXhhbXBsZS5jb20iLCJyb3V0ZV9wYXRoIjoiL2FwaS9hZ2VudC1tYWlsL2luZ3Jlc3MiLCJzdWIiOiJhY2NvdW50MSIsInRva2VuX3VzZSI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkifQ.1Nq2lzUOt0fJy-two9tkHyrWiQfYVmrifHiVDk64kLhA5sJOx8Kc7tQmsejl-lfWPwNccmlttQGQEn76oqt8Hg"
+  },
+  {
+   "expect": "bad_capability_claims",
+   "name": "string timestamp",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOiIxNzk0MjQ5NjYxIiwiZ2VuZXJhdGlvbiI6IjEiLCJpYXQiOjE3OTQyNDk2MDEsImluc3RhbGxfaWQiOiJpbnN0YWxsMSIsImlzcyI6Imh0dHBzOi8vYXV0aG9yaXR5LmV4YW1wbGUuY29tIiwianRpIjoiYzVjOGViMjQzZGQ4Nzk0MWViMmMzMDNkODY3NGQ1MTMiLCJtYWlsX2tleV9pZCI6Im1haWwxIiwibWFpbF9ub25jZSI6ImFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiIiwibWV0aG9kIjoiUE9TVCIsIm1vZGUiOiJtYWlsIiwibmJmIjoxNzk0MjQ5NjAxLCJyZWNvcmRfdmVyc2lvbiI6ImUzODg3ODgzYzQyMGUzNTUyZDNiOTBiMzhjZjdjZDM3NzI2ZTUzMDMzMzVlMTZkZGQ3MzIwNjdlYzgxZTFjMTgiLCJyZXFfZGlnZXN0IjoiY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZCIsInJvdXRlX29yaWdpbiI6Imh0dHBzOi8vZGV2aWNlLmV4YW1wbGUuY29tIiwicm91dGVfcGF0aCI6Ii9hcGkvYWdlbnQtbWFpbC9pbmdyZXNzIiwic3ViIjoiYWNjb3VudDEiLCJ0b2tlbl91c2UiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5In0.C9Q2_tGaTW-LK7djmComZeEu5cwUBrL0FJVc10-lmjt2ujimZ4A-0yE9O3vcxjDT4WuLJl5_O4Do9bICRzspog"
+  },
+  {
+   "expect": "bad_capability_claims",
+   "name": "checked_at far from iat",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk1OTkxMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.GKxjbS_5lvNaFocVwXjHozh8gvD1kcE2-AGIzO8VmFFhzUUs7SgqQUHmEPRRBYSODZ7ax_6eXNUCtdcFUv8tEw"
+  },
+  {
+   "expect": "bad_capability_claims",
+   "name": "missing claim",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImV4cCI6MTc5NDI0OTY2MSwiZ2VuZXJhdGlvbiI6IjEiLCJpYXQiOjE3OTQyNDk2MDEsImluc3RhbGxfaWQiOiJpbnN0YWxsMSIsImlzcyI6Imh0dHBzOi8vYXV0aG9yaXR5LmV4YW1wbGUuY29tIiwianRpIjoiYzVjOGViMjQzZGQ4Nzk0MWViMmMzMDNkODY3NGQ1MTMiLCJtYWlsX2tleV9pZCI6Im1haWwxIiwibWFpbF9ub25jZSI6ImFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiIiwibWV0aG9kIjoiUE9TVCIsIm1vZGUiOiJtYWlsIiwibmJmIjoxNzk0MjQ5NjAxLCJyZWNvcmRfdmVyc2lvbiI6ImUzODg3ODgzYzQyMGUzNTUyZDNiOTBiMzhjZjdjZDM3NzI2ZTUzMDMzMzVlMTZkZGQ3MzIwNjdlYzgxZTFjMTgiLCJyZXFfZGlnZXN0IjoiY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZCIsInJvdXRlX29yaWdpbiI6Imh0dHBzOi8vZGV2aWNlLmV4YW1wbGUuY29tIiwicm91dGVfcGF0aCI6Ii9hcGkvYWdlbnQtbWFpbC9pbmdyZXNzIiwic3ViIjoiYWNjb3VudDEiLCJ0b2tlbl91c2UiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5In0.h7HH4p_b56ZWGHcuqsykN0u3aAxlAhgg2itJqcp8atVLZc5OgMHlofb3hm1Ac2PNg5jFkRwvjY7Cpz-88L_pvQ"
+  },
+  {
+   "expect": "bad_capability_claims",
+   "name": "extra claim",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhZG1pbiI6dHJ1ZSwiYXVkIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSIsImJpbmRpbmdfanRpIjoiNjQ1NzlkZDk4ODJiZTAxMDU0ZWU0NmJmYTNjNzFmNDMiLCJjaGVja2VkX2F0X21zIjoxNzk0MjQ5NjAxMTIzLCJkZXZpY2VfaWQiOiJkZXZpY2UxIiwiZXhwIjoxNzk0MjQ5NjYxLCJnZW5lcmF0aW9uIjoiMSIsImlhdCI6MTc5NDI0OTYwMSwiaW5zdGFsbF9pZCI6Imluc3RhbGwxIiwiaXNzIjoiaHR0cHM6Ly9hdXRob3JpdHkuZXhhbXBsZS5jb20iLCJqdGkiOiJjNWM4ZWIyNDNkZDg3OTQxZWIyYzMwM2Q4Njc0ZDUxMyIsIm1haWxfa2V5X2lkIjoibWFpbDEiLCJtYWlsX25vbmNlIjoiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWIiLCJtZXRob2QiOiJQT1NUIiwibW9kZSI6Im1haWwiLCJuYmYiOjE3OTQyNDk2MDEsInJlY29yZF92ZXJzaW9uIjoiZTM4ODc4ODNjNDIwZTM1NTJkM2I5MGIzOGNmN2NkMzc3MjZlNTMwMzMzNWUxNmRkZDczMjA2N2VjODFlMWMxOCIsInJlcV9kaWdlc3QiOiJjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkIiwicm91dGVfb3JpZ2luIjoiaHR0cHM6Ly9kZXZpY2UuZXhhbXBsZS5jb20iLCJyb3V0ZV9wYXRoIjoiL2FwaS9hZ2VudC1tYWlsL2luZ3Jlc3MiLCJzdWIiOiJhY2NvdW50MSIsInRva2VuX3VzZSI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkifQ.OEERC0Miww_p9ve-BC1RYk_1DT7P7BHBbjNx7N60tRloMfPwSYRo_-TQveGUZRSCjsSyU7aaqvj33As8tMLMAQ"
+  },
+  {
+   "expect": "capability_request_mismatch",
+   "name": "mismatched device-bound host",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL290aGVyLmV4YW1wbGUuY29tIiwicm91dGVfcGF0aCI6Ii9hcGkvYWdlbnQtbWFpbC9pbmdyZXNzIiwic3ViIjoiYWNjb3VudDEiLCJ0b2tlbl91c2UiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5In0.u_Fxk5W-oopczTx5zvGtj589t-ZafcVuNxeBBjHOTX7bkTPXA5Zr4yeI6J3l-faVExBQczKPbqJ77KQ9DeVFnQ"
+  },
+  {
+   "expect": "capability_not_yet_valid",
+   "name": "issued in the future",
+   "now_ms": 1794249600999,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.6Cv7nGqoVsbs9ZeHN6YOE6VNlzg2LSmK7xd-gkr48vv--Ylf6J0BoOA-7lfWMtab3X76SSdQ1ptRya1tpPG8vg"
+  },
+  {
+   "expect": "capability_expired",
+   "name": "expired",
+   "now_ms": 1794249661000,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.6Cv7nGqoVsbs9ZeHN6YOE6VNlzg2LSmK7xd-gkr48vv--Ylf6J0BoOA-7lfWMtab3X76SSdQ1ptRya1tpPG8vg"
+  },
+  {
+   "expect": "ok",
+   "name": "one ms before expiry",
+   "now_ms": 1794249660999,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.6Cv7nGqoVsbs9ZeHN6YOE6VNlzg2LSmK7xd-gkr48vv--Ylf6J0BoOA-7lfWMtab3X76SSdQ1ptRya1tpPG8vg"
+  },
+  {
+   "expect": "bad_capability_signature",
+   "name": "signature bit flipped",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.ACv7nGqoVsbs9ZeHN6YOE6VNlzg2LSmK7xd-gkr48vv--Ylf6J0BoOA-7lfWMtab3X76SSdQ1ptRya1tpPG8vg"
+  },
+  {
+   "expect": "bad_capability_signature",
+   "name": "signed by other key with same kid",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.z70x8pFvS5tvlZ2t1W3EDpA8WjrqlC8h9GWXLST2uvn7HmKy7Y_82gj9tsvvH8V_dbY-bqAyOVsCQ_TcoGbZPw"
+  },
+  {
+   "expect": "unknown_capability_key",
+   "name": "unknown kid",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdW5rbm93biIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.62Wh6asS6OkXiyqtdHYmIuDqSzr3lmUmn9RocFbcXKX_r_VQW6hiIFv2u-7oIvVDq9G6OpqYO_DjFa-WzIUs7w"
+  },
+  {
+   "expect": "bad_capability_header",
+   "name": "grant-style kid",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZ3JhbnQtdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.CWCvwHFIfGDag1PzZei-hG2fWv_gYscvfQ7384ZkGlK9otPyZQijsre_xTszNk85ju-fxBR1VrO3E46SYB9MzQ"
+  },
+  {
+   "expect": "bad_capability_header",
+   "name": "session-style kid",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImNwLTIwMjZhIiwidHlwIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeStqd3QifQ.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.5lGKD-f94IHG02orym4KnBkfsZMKKNM1zqTSrfcZKNGX6ZsKkcCSG14o1Q43T0sBy359e2kjU2YI5RxC4BszXQ"
+  },
+  {
+   "expect": "bad_capability_header",
+   "name": "wrong typ",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.Vv5AnfmHgmf0VeFudm5cXbnTH4Pwkmx6wb-XiXKWSupQMWiA_-Qx4-NENB1XVAmD8dDaSwI0z7ytPH7EcM6QvA"
+  },
+  {
+   "expect": "bad_capability_header",
+   "name": "enrollment grant typ",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZW5yb2xsbWVudCtqd3QifQ.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.fJIthCAK-bP5-7Ley2A1-9U3FbUn9VlcRTWlsSaYiL0IRP7TDf6oIFkBKHnbNapa70m_vlkK-S19MBa2H2s31w"
+  },
+  {
+   "expect": "bad_capability_header",
+   "name": "alg none",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJub25lIiwia2lkIjoibWFpbC1kZWxpdmVyeS10ZXN0IiwidHlwIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeStqd3QifQ.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.ViNK6TusOlX2INPP5hK6sI0a9UmWVSOW-i6EuT09OzFr5y4Z2R4H_P0wRwZ_vAlNZUXRVeHDU3iciBQ1SppwFw"
+  },
+  {
+   "expect": "bad_capability_header",
+   "name": "alg HS256",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJIUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.lAjFAzEx2nyD2ZqE9-m7pJYzdeNz_2_tMZW6UvEB9CWlqSZnZhjGOVhB7BECn9YFwWapvDmDR5ca6XKTp4eEgw"
+  },
+  {
+   "expect": "bad_capability_header",
+   "name": "extra header field",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImprdSI6Imh0dHBzOi8vZXZpbC5leGFtcGxlLmNvbS9qd2tzIiwia2lkIjoibWFpbC1kZWxpdmVyeS10ZXN0IiwidHlwIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeStqd3QifQ.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9.S5w0l9cQwJHEEZpmGznYfSqDBrnAqJLzrAC0b9XyOwFeIpxPkylc2p25UKpqfIop6oOBIJy9tT9nxcRxeVLisA"
+  },
+  {
+   "expect": "bad_capability",
+   "name": "two segments",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.eyJhdWQiOiJjbGF5cnVuZS1tYWlsLWRlbGl2ZXJ5IiwiYmluZGluZ19qdGkiOiI2NDU3OWRkOTg4MmJlMDEwNTRlZTQ2YmZhM2M3MWY0MyIsImNoZWNrZWRfYXRfbXMiOjE3OTQyNDk2MDExMjMsImRldmljZV9pZCI6ImRldmljZTEiLCJleHAiOjE3OTQyNDk2NjEsImdlbmVyYXRpb24iOiIxIiwiaWF0IjoxNzk0MjQ5NjAxLCJpbnN0YWxsX2lkIjoiaW5zdGFsbDEiLCJpc3MiOiJodHRwczovL2F1dGhvcml0eS5leGFtcGxlLmNvbSIsImp0aSI6ImM1YzhlYjI0M2RkODc5NDFlYjJjMzAzZDg2NzRkNTEzIiwibWFpbF9rZXlfaWQiOiJtYWlsMSIsIm1haWxfbm9uY2UiOiJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsIm1ldGhvZCI6IlBPU1QiLCJtb2RlIjoibWFpbCIsIm5iZiI6MTc5NDI0OTYwMSwicmVjb3JkX3ZlcnNpb24iOiJlMzg4Nzg4M2M0MjBlMzU1MmQzYjkwYjM4Y2Y3Y2QzNzcyNmU1MzAzMzM1ZTE2ZGRkNzMyMDY3ZWM4MWUxYzE4IiwicmVxX2RpZ2VzdCI6ImNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2RjZGNkY2QiLCJyb3V0ZV9vcmlnaW4iOiJodHRwczovL2RldmljZS5leGFtcGxlLmNvbSIsInJvdXRlX3BhdGgiOiIvYXBpL2FnZW50LW1haWwvaW5ncmVzcyIsInN1YiI6ImFjY291bnQxIiwidG9rZW5fdXNlIjoiY2xheXJ1bmUtbWFpbC1kZWxpdmVyeSJ9"
+  },
+  {
+   "expect": "bad_capability",
+   "name": "empty token",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": ""
+  },
+  {
+   "expect": "bad_capability",
+   "name": "oversize token",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  {
+   "expect": "bad_capability",
+   "name": "not base64 payload",
+   "now_ms": 1794249601500,
+   "request": {
+    "headers": {
+     "digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "direction": "service-to-install",
+     "generation": "1",
+     "install_id": "install1",
+     "key_id": "mail1",
+     "nonce": "abababababababababababababababab"
+    },
+    "host": "device.example.com",
+    "method": "POST",
+    "path": "/api/agent-mail/ingress"
+   },
+   "token": "eyJhbGciOiJFUzI1NiIsImtpZCI6Im1haWwtZGVsaXZlcnktdGVzdCIsInR5cCI6ImNsYXlydW5lLW1haWwtZGVsaXZlcnkrand0In0.!!!.6Cv7nGqoVsbs9ZeHN6YOE6VNlzg2LSmK7xd-gkr48vv--Ylf6J0BoOA-7lfWMtab3X76SSdQ1ptRya1tpPG8vg"
+  }
+ ]
+}
