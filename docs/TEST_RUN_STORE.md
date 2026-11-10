@@ -37,6 +37,32 @@ and accepts offset plus a limit of 1-100 (default 100). Null owner is a valid
 project-level run. A shared process-local reentrant lock prevents lost updates
 across threads and store instances; this is not a multi-server lock.
 
+`all_snapshots(project_id)` returns the same newest-first defensive copies in
+one directory pass, with no page cap. The Floor uses this internal API;
+`list_runs` retains its public limit of 100 and its owner/offset semantics.
+Enumeration and sorting run outside the shared lock. Validation/cache access
+holds it for one file at a time, allowing submits between records, including
+on a cold cache. A list is a per-file observation, not a project-wide atomic
+snapshot; a newly created run may appear on the next poll.
+
+`mc/test_run_snapshots.py` owns a process-local LRU shared by store instances.
+Only validated snapshot copies are retained, keyed by the checked absolute
+file path and `(st_mtime_ns, st_size)`. Unchanged files skip JSON reads and
+canonical replay. New/changed files still use the full existing `_read`
+validation; corruption still raises `StoreError`. Reads check the fingerprint
+again after validation and do not cache a record replaced during that read.
+Create/append invalidate before writing, including when a write fails. Event
+reads and write validation continue to read/replay canonical events.
+
+The cache holds at most 4096 entries and 32 MiB of recursively measured snapshot
+objects (entry/path metadata is separately entry-bounded). Oversized snapshots
+are returned after validation but not cached. Events are never cached; entries
+and returns are defensive copies. Every request still enumerates/stat-checks
+files and rebuilds owner/privacy projections. As with any metadata cache,
+external edits preserving both nanosecond mtime and size cannot be detected;
+normal store writes invalidate explicitly. This is neither a route cache nor
+a project-record cache, and adds no on-disk index or retention policy.
+
 ## Events and reduction
 
 `apply(project_id, run_id, event)` accepts this strict envelope:
@@ -132,11 +158,11 @@ there is no automatic pruning policy or deletion path. Failure totals count
 failing phases, whereas outcome counters count completed logical units.
 `events()` is an internal full-history accessor, not a bounded public route.
 
-Every access verifies replay; every accepted update rewrites one envelope.
-Replay is linear in retained events plus phase details. Whole-record I/O grows
-with history; batching/compaction and high-volume measurements remain an
-integration consideration before enabling capture for large suites. No
-throughput claim is established by the focused correctness tests. Phase 2's
+Cache misses, event reads and write validation verify replay; every accepted
+update rewrites one envelope. Replay is linear in retained events plus phase
+details. Whole-record write I/O still grows with history; batching/compaction
+remain separate integration considerations. The snapshot cache only removes
+repeated validation from unchanged snapshot reads. Phase 2's
 `TEST_RUN_CAPTURE.md` bounds log reads and coalesces output heartbeats before
 using this API; the store format and per-event append behavior remain unchanged.
 Structured reporter ingestion/batch persistence is still a later concern.

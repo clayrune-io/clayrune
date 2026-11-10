@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from mc.atomic_json import read_text_with_retry, write_json_atomic
+from mc.test_run_snapshots import Fingerprint, SnapshotCache
 
 SCHEMA = 1
 TERMINAL_STATES = frozenset({'passed', 'failed', 'error', 'cancelled', 'timeout',
@@ -29,6 +30,7 @@ EVENT_TYPES = frozenset({'run_started', 'collection', 'unit_started',
 MAX_EVENT_BYTES = 16384
 MAX_DETAILS = 100
 _LOCK = threading.RLock()
+_SNAPSHOTS = SnapshotCache()
 _PROCESS_PRODUCER = '_store_process'
 
 
@@ -280,7 +282,7 @@ def replay(enrollment: dict[str, Any], events: Iterable[dict[str, Any]]) -> dict
 
 
 class TestRunStore:
-    """Explicit data root is DATA_DIR.parent. No global state initialization."""
+    """Explicit data root is DATA_DIR.parent; construction performs no disk I/O."""
 
     __test__ = False
 
@@ -322,6 +324,31 @@ class TestRunStore:
             raise StoreError(f'Invalid test run {run_id}') from exc
         return record
 
+    def _fingerprint(self, path: Path) -> Fingerprint:
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            _SNAPSHOTS.discard(path)
+            raise KeyError(path.stem) from None
+        except OSError as exc:
+            _SNAPSHOTS.discard(path)
+            raise StoreError(f'Unreadable test run {path.stem}') from exc
+        return stat.st_mtime_ns, stat.st_size
+
+    def _snapshot(self, project_id: str, run_id: str) -> dict[str, Any]:
+        """Caller holds _LOCK for one file only, including the cache lookup."""
+        path = self._path(project_id, run_id)
+        fingerprint = self._fingerprint(path)
+        cached = _SNAPSHOTS.get(path, fingerprint)
+        if cached is not None:
+            return cached
+        snapshot = self._read(project_id, run_id)['snapshot']
+        # An external atomic replacement during validation must not tag the old
+        # snapshot with the new version's fingerprint. Recheck on the next read.
+        if self._fingerprint(path) == fingerprint:
+            _SNAPSHOTS.put(path, fingerprint, snapshot)
+        return copy.deepcopy(snapshot)
+
     def create(self, project_id: str, *, observed_at: float,
                owner_session_id: str | None = None, owner_turn_id: str | None = None,
                job_id: str | None = None, parent_run_id: str | None = None,
@@ -350,13 +377,14 @@ class TestRunStore:
             path = self._path(project_id, enrollment['run_id'])
             snapshot = _initial(enrollment)
             path.parent.mkdir(parents=True, exist_ok=True)
+            _SNAPSHOTS.discard(path)
             write_json_atomic(path, {'schema': SCHEMA, 'enrollment': enrollment,
                                     'events': [], 'snapshot': snapshot}, allow_nan=False)
             return copy.deepcopy(snapshot)
 
     def get(self, project_id: str, run_id: str) -> dict[str, Any]:
         with _LOCK:
-            return copy.deepcopy(self._read(project_id, run_id)['snapshot'])
+            return self._snapshot(project_id, run_id)
 
     def events(self, project_id: str, run_id: str) -> list[dict[str, Any]]:
         with _LOCK:
@@ -380,7 +408,9 @@ class TestRunStore:
                 return copy.deepcopy(record['snapshot'])
             record['events'].append(validated)
             record['snapshot'] = replay(record['enrollment'], record['events'])
-            write_json_atomic(self._path(project_id, run_id), record, allow_nan=False)
+            path = self._path(project_id, run_id)
+            _SNAPSHOTS.discard(path)
+            write_json_atomic(path, record, allow_nan=False)
             return copy.deepcopy(record['snapshot'])
 
     def finish(self, project_id: str, run_id: str, *, state: str,
@@ -410,10 +440,23 @@ class TestRunStore:
         _integer(offset, 'offset')
         if limit > 100:
             raise ValueError('List limit exceeds 100')
-        with _LOCK:
-            folder = self._path(project_id, '0' * 32).parent
-            snapshots = [self._read(project_id, p.stem)['snapshot'] for p in folder.glob('*.json')]
-            if owner_session_id is not None:
-                snapshots = [s for s in snapshots if s['owner_session_id'] == owner_session_id]
-            snapshots.sort(key=lambda s: (s['created_at'], s['run_id']), reverse=True)
-            return copy.deepcopy(snapshots[offset:offset + limit])
+        snapshots = self.all_snapshots(project_id)
+        if owner_session_id is not None:
+            snapshots = [s for s in snapshots if s['owner_session_id'] == owner_session_id]
+        return snapshots[offset:offset + limit]
+
+    def all_snapshots(self, project_id: str) -> list[dict[str, Any]]:
+        """Read every run once, newest first, without a whole-directory lock.
+
+        Enumeration and sorting never hold _LOCK. Each file is observed under
+        its own short critical section, so submits can interleave even during
+        cold validation. This is a per-file view, not a project-wide transaction.
+        """
+        folder = self._path(project_id, '0' * 32).parent
+        paths = list(folder.glob('*.json'))
+        snapshots = []
+        for path in paths:
+            with _LOCK:
+                snapshots.append(self._snapshot(project_id, path.stem))
+        snapshots.sort(key=lambda s: (s['created_at'], s['run_id']), reverse=True)
+        return snapshots

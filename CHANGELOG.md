@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Stop repeated test-run replay from blocking submissions
+
+- Cached validated run snapshots by checked path, nanosecond mtime and size, with defensive copies and a 4096-entry/32 MiB snapshot budget. New/changed records still replay and corrupt records still fail; write paths invalidate before persistence. Canonical events are never cached.
+- Floor projections now scan each project's runs once instead of rescanning every 100-record page. Directory enumeration/sorting run outside the shared lock; record reads release it between files so submissions can proceed during cold scans. Public list pagination remains capped at 100; no run retention/deletion changes.
+- Verified against an untouched scratch copy of 1821 records: Floor 108.25s before, 6.61s cold and 0.42-0.44s warm after; concurrent scratch submissions took at most 8.29ms during a 5.27s cold scan. Branch candidate only; no merge, push, restart or live deployment verification. Full evidence: `docs/TEST_RUN_READ_PERFORMANCE.md`.
+
 ## [2026-11-09] - Isolate stale mail receipts and prove provider history (MC-1166 unit 6 review)
 
 - Receipt reconciliation retires stale project generations with a visible terminal reason, retains original delivery evidence, and logs other per-row errors while continuing other projects. Terminal events cannot be reopened by late receipts or repeatedly poison the wake pass.
