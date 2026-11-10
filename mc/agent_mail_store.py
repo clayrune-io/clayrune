@@ -137,6 +137,10 @@ class MailStoreConfig:
     max_body_bytes: int = 64 * 1024                # inbound text kept in custody
     max_reply_bytes: int = 16 * 1024               # extracted reply_text
     max_active_events: int = 600                   # per registration (20/day x 30d)
+    # Compact durable question-ownership rows (unit 7d-1). Measured: 24,000 rows is
+    # 7.3 MiB at 32-char ids but 17.6 MiB at 128-char ids, so 2,400 (<2 MiB). At the
+    # cap new admissions are HELD, never evicted; override by config.
+    max_ownership_receipts: int = 2400
     lease_seconds: float = 30.0
     max_attempts: int = 8
     base_backoff_seconds: float = 1.0

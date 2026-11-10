@@ -3819,6 +3819,16 @@ def boot(check_port=True):
         )
     except Exception as e:
         _log(f"[wake-lock] not started: {e}")
+    # Agent mail (MC-1166 7d-1): installs the read-only question-ownership reader
+    # (reads only; works with every mail flag off) and starts the recovery
+    # supervisor ONLY if agent_mail_supervisor_enabled is true (default off).
+    # Roll back: delete this block.
+    try:
+        from mc import agent_mail_supervisor as _mail_supervisor
+        _mail_supervisor.start_default(app)
+        atexit.register(_mail_supervisor.stop_default)
+    except Exception as e:
+        _log(f"[agent-mail] supervisor not started: {e}")
     # Offline question channel: picks up emailed answers to questions raised by
     # unattended runs and resumes the agent through the normal follow-up path.
     # Self-disabling — the poller no-ops when nothing is outstanding or no mail

@@ -12,7 +12,7 @@ from mc import state
 from mc.agent_mail_envelope import MAX_REQUEST_BYTES
 from mc.agent_mail_ingress import MailIngress
 from mc.agent_mail_signing import IngressRefused
-from mc.agent_mail_store import MailStore, MailStoreError, default_path
+from mc.agent_mail_store import MailStore, MailStoreError
 from mc.core import _log
 
 FLAG = 'agent_mail_ingress_enabled'
@@ -27,12 +27,12 @@ def create_blueprint(data_dir: Path, *, store_factory: Callable[[], MailStore] |
     bp.register_blueprint(enrollment_blueprint())
 
     def enrolled_store() -> MailStore:
-        path = default_path(data_dir)
-        # Enrollment creates the database. A deleted inbox must never silently
-        # reset here; no store is opened at all while the feature is disabled.
-        if not path.is_file():
-            raise MailStoreError('agent mail store missing; enrollment/recovery required')
-        return MailStore(path)
+        # The one shared, outside-repo store (7b location, external marker). It is
+        # never created or recreated here, and the receiver's old data-dir default
+        # (`data/agent_mail.sqlite3`) is never read or migrated. A held store
+        # (missing/corrupt/version-mismatched) raises MailStoreError -> 503.
+        from mc import agent_mail_factory
+        return agent_mail_factory.get().require_store()
 
     factory = store_factory or enrolled_store
 

@@ -1037,6 +1037,13 @@ def delete_project(project_id):
         DeliveryStore(Path(DATA_DIR).parent / 'delegation_delivery.sqlite3').revoke_project(project_id)
         if _runtime_lifecycle_service is not None:
             _runtime_lifecycle_service.revoke_project(project_id)
+        # Agent mail: fence only this project's bindings/queue/tombstones, never
+        # the installation. Refuse deletion if it can be neither applied nor recorded.
+        from mc import agent_mail_deletion as _mail_deletion
+        try:
+            _mail_deletion.revoke_project(project_id)
+        except _mail_deletion.DeletionRefused as exc:
+            return jsonify({'error': 'agent_mail_revocation_failed', 'reason': exc.reason}), 503
 
     # Clean up attachment files
     p = load_project(project_id)
@@ -1064,6 +1071,10 @@ def delete_project(project_id):
                     pass
                 _unregister_process(session['proc'].pid)
             agent_sessions.pop(sid, None)
+    try:  # closes a bind that raced the first pass; the intent is durable on failure
+        _mail_deletion.revoke_project(project_id)
+    except _mail_deletion.DeletionRefused:
+        pass
 
     # Kill any running terminal sessions for this project
     with terminal_lock:
