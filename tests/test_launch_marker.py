@@ -96,8 +96,15 @@ def _popen_sites(path):
             # MC-1150 P2: the Claude `-p` Mode A sites spawn through
             # mc.agent_spawn.spawn_engine_proc (same env=/cwd= keywords, flag OFF
             # = the same Popen), so that call is a spawn site exactly as Popen is.
+            # MC-1165 r4: those sites now hand the factory to the launch
+            # transaction -- `_launch_transaction.launch(txn, spawn_engine_proc,
+            # cmd, env=..., cwd=...)` -- so the spawn is an ARGUMENT, not a call,
+            # and the env=/cwd= keywords sit on the launch(...) call itself.
             if ((isinstance(f, ast.Attribute) and f.attr == 'Popen')
-                    or (isinstance(f, ast.Name) and f.id == 'spawn_engine_proc')):
+                    or (isinstance(f, ast.Name) and f.id == 'spawn_engine_proc')
+                    or (isinstance(f, ast.Attribute) and f.attr == 'launch'
+                        and any(isinstance(a, ast.Name) and a.id == 'spawn_engine_proc'
+                                for a in n.args))):
                 env = next((k.value for k in n.keywords if k.arg == 'env'), None)
                 marked = (isinstance(env, ast.Call)
                           and isinstance(env.func, ast.Attribute)
@@ -160,7 +167,10 @@ def test_every_launch_cmd_gate_gets_the_cwd_its_popen_uses():
         gates = sorted(gate_cwds)
         assert len(gates) == len(claude), (rel, len(gates), len(claude))
         for (gl, gcwd), (pl, pcwd) in zip(gates, sorted(claude)):
-            assert gcwd == pcwd and abs(gl - pl) < 20, (rel, gl, gcwd, pl, pcwd)
+            # 40, not 20: the r4 launch transaction puts a reservation block (~15
+            # lines) between the gate and its launch(...); the identical-expression
+            # check is the load-bearing half, the distance only catches a mis-pairing.
+            assert gcwd == pcwd and abs(gl - pl) < 40, (rel, gl, gcwd, pl, pcwd)
 
 
 def test_server_followup_hook_passes_launch_env():
@@ -209,7 +219,7 @@ def env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ar, 'load_project', lambda pid: project)
     monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'delegation.db'))
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **k: [])
     monkeypatch.setattr(ar, '_pid_is_alive', lambda pid: True)
     monkeypatch.setattr(ar._memory_turn, 'refresh_for_turn', lambda *a, **k: {'block': ''})
     monkeypatch.setattr(ar._memory_turn, 'seed_delivered', lambda *a, **k: None)
@@ -334,7 +344,7 @@ def test_revive_from_agent_log_uses_the_logged_trigger_type(env, tmp_path, trigg
     entry = {'session_id': 'old-sid', 'claude_session_id': 'claude-old',
              'trigger_type': trigger_type, 'project_id': 'p1', 'task': 'earlier',
              'provider': 'claude'}
-    env['monkeypatch'].setattr(ar, '_load_agent_log', lambda pid: [entry])
+    env['monkeypatch'].setattr(ar, '_load_agent_log', lambda pid, **k: [entry])
     ar._revive_from_agent_log('p1', 'old-sid', 'hello again', env['project'])
     assert len(env['spawned']) == 1, 'revive did not reach Popen'
     assert _marked(env['spawned'][0]) is expected
