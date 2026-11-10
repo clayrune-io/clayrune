@@ -5,6 +5,7 @@ from typing import Callable
 
 from mc import state
 from mc.agent_mail_outbound import Outbound
+from mc.agent_mail_ownership import OwnershipHeld
 from mc.agent_mail_questions import revision
 from mc.core import _log
 
@@ -19,6 +20,8 @@ def selected(session: dict, question: dict) -> bool:
     if factory is not None:
         try:
             preferred = factory().question_channel(session['project_id'], session['session_id'], question, preferred)
+        except OwnershipHeld:
+            raise  # capacity: the notification is held, never routed anywhere
         except Exception:
             # A missing channel receipt cannot authorize switching to SMTP.
             _log('[agent-mail] question channel held: ownership_unavailable', flush=True)

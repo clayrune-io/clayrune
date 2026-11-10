@@ -10,10 +10,12 @@ import json
 import secrets
 from typing import Any, Callable, Protocol
 
+from mc import state
 from mc.agent_mail_enrollment import Enrollment, ROUTE
 from mc.agent_mail_enrollment_keys import EnrollmentRefused
 from mc.agent_mail_ingress import MailIngress
 from mc.agent_mail_outbound_signing import SEND_PATH, headers
+from mc.agent_mail_ownership import OwnershipHeld, capacity_from
 from mc.agent_mail_outbound_state import initialize, metadata, seal, unseal
 from mc.agent_mail_questions import matching, revision
 from mc.agent_mail_signing import ID
@@ -37,6 +39,24 @@ def validate_request(request: dict[str, Any]) -> None:
             or not isinstance(request['body'], str) or not request['body'].strip()
             or len(request['body'].encode()) > 16384 or '\0' in request['body']):
         raise EnrollmentRefused('invalid_send')
+
+
+def cleanup(store: Any) -> None:
+    """Enable-independent local cleanup: never sends, never enables. Channel
+    receipts are owner tombstones and are NOT deleted here (deletion path only)."""
+    with store._tx() as db:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='mail_outbound_intents'").fetchone():
+            return
+        now = store.clock()
+        db.execute("UPDATE mail_outbound_intents SET payload=NULL,state='revoked',reason='consent_required' "
+                   "WHERE NOT EXISTS (SELECT 1 FROM registrations r WHERE r.registration_id=install "
+                   "AND r.enabled=1 AND r.generation=mail_outbound_intents.generation)")
+        db.execute("UPDATE mail_outbound_intents SET payload=NULL,state='expired',reason='thread_expired' "
+                   "WHERE expires<=? AND state!='revoked'", (now,))
+        db.execute("UPDATE mail_outbound_intents SET state='uncertain',reason='receipt_missing' "
+                   "WHERE state='sending' AND updated+60<=?", (now,))
+        db.execute("DELETE FROM mail_outbound_intents WHERE payload IS NULL AND expires+?<=?",
+                   (store.config.terminal_retention_seconds, now))
 
 
 class Outbound:
@@ -75,6 +95,12 @@ class Outbound:
                              'AND session_id=? AND revision=?', key).fetchone()
             if old:
                 return old['channel']
+            # Compact durable owner tombstone: never evicted by age. At capacity a
+            # NEW admission is held (visible to the caller), existing owners above
+            # are unaffected. Released only by session/project deletion.
+            cap = capacity_from(state.CONFIG, self.store.config.max_ownership_receipts)
+            if db.execute('SELECT COUNT(*) FROM mail_outbound_question_channels').fetchone()[0] >= cap:
+                raise OwnershipHeld('ownership_capacity')
             db.execute('INSERT INTO mail_outbound_question_channels VALUES(?,?,?,?,?)',
                        (*key, preferred, self.store.clock() + self.store.config.thread_ttl_seconds))
             return preferred
@@ -185,19 +211,10 @@ class Outbound:
     def reconcile(self) -> None:
         """Local metadata/content cleanup; unit 7d owns recurring invocation."""
         self._enabled()
-        with self.store._tx() as db:
-            now = self.store.clock()
-            db.execute("UPDATE mail_outbound_intents SET payload=NULL,state='revoked',reason='consent_required' "
-                       "WHERE NOT EXISTS (SELECT 1 FROM registrations r WHERE r.registration_id=install "
-                       "AND r.enabled=1 AND r.generation=mail_outbound_intents.generation)")
-            db.execute("UPDATE mail_outbound_intents SET payload=NULL,state='expired',reason='thread_expired' "
-                       "WHERE expires<=? AND state!='revoked'", (now,))
-            db.execute("UPDATE mail_outbound_intents SET state='uncertain',reason='receipt_missing' "
-                       "WHERE state='sending' AND updated+60<=?", (now,))
-            db.execute("DELETE FROM mail_outbound_intents WHERE payload IS NULL AND expires+?<=?",
-                       (self.store.config.terminal_retention_seconds, now))
-            db.execute('DELETE FROM mail_outbound_question_channels WHERE expires+?<=?',
-                       (self.store.config.terminal_retention_seconds, now))
+        self.cleanup()
+
+    def cleanup(self) -> None:
+        cleanup(self.store)
 
     def status(self, intent_id: str) -> dict[str, str]:
         self._enabled()

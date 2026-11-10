@@ -76,6 +76,7 @@ from email.utils import make_msgid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from mc import question_channel_retention as retention
 from mc import state
 from mc.core import _log
 
@@ -247,10 +248,28 @@ def on_question_raised(session: dict) -> None:
     if not qid:
         return
 
-    from mc.agent_mail_questions import revision
-    from mc import agent_mail_outbound_questions as mail_questions
+    # A factory/ownership lookup must never re-enter selection for the qid this
+    # thread is already selecting (the per-qid lock is not reentrant). Defer such
+    # a call until the lock is released instead of deadlocking on it.
+    if retention.reentrant(qid):
+        retention.defer(session)
+        return
     with _lock:
         selection_lock = _selection_locks.setdefault(qid, threading.Lock())
+        # Counted from here to the end of the notification, so retirement can
+        # never replace a waiter's lock or run before the timer is published.
+        retention.acquire(qid, session.get("session_id") or "")
+    try:
+        _notify(session, q, qid, selection_lock)
+    finally:
+        retention.release(qid)
+    retention.drain(on_question_raised)
+
+
+def _notify(session: dict, q: dict, qid: str, selection_lock: Any) -> None:
+    from mc.agent_mail_questions import revision
+    from mc import agent_mail_outbound_questions as mail_questions
+    from mc import agent_mail_ownership as ownership
     with selection_lock:
         form_revision = revision(q)
         revision_key = qid + ':' + form_revision
@@ -260,11 +279,31 @@ def on_question_raised(session: dict) -> None:
             # new mail owns only the exact revision.
             if qid in _delivered or revision_key in _delivered:
                 return
-        eligible = (state.CONFIG.get('agent_mail_outbound_enabled') is True
-                    and mail_questions.factory is not None)
-        previously_selected = form_revision in session.get('_offline_question_channels', {})
-        candidate = json.loads(json.dumps(q)) if eligible or previously_selected else None
-        agent_mail = (eligible or previously_selected) and mail_questions.selected(session, candidate or {})
+        # Durable ownership is read BEFORE eligibility, with mail off or on, so
+        # losing every volatile cache can never re-select the other channel.
+        # Storage that cannot answer holds the notification; it never falls back.
+        try:
+            owner = ownership.recover(session.get("project_id") or "",
+                                      session.get("session_id") or "", form_revision)
+        except ownership.OwnershipUnavailable as exc:
+            ownership.record_hold(exc.reason)
+            _log(f"[question-channel] held: {exc.reason}", flush=True)
+            return
+        try:
+            if owner is not None:
+                session.setdefault('_offline_question_channels', {})[form_revision] = owner
+                agent_mail = owner == 'agent_mail'
+                candidate = json.loads(json.dumps(q)) if agent_mail else None
+            else:
+                eligible = (state.CONFIG.get('agent_mail_outbound_enabled') is True
+                            and mail_questions.factory is not None)
+                previously_selected = form_revision in session.get('_offline_question_channels', {})
+                candidate = json.loads(json.dumps(q)) if eligible or previously_selected else None
+                agent_mail = (eligible or previously_selected) and mail_questions.selected(session, candidate or {})
+        except ownership.OwnershipHeld as exc:
+            ownership.record_hold(exc.reason)
+            session.setdefault('log_lines', []).append(f'[question mail held: {exc.reason}]')
+            return
         form = candidate if agent_mail else None
         delivery_key = revision_key if agent_mail else qid
         with _lock:
@@ -298,7 +337,12 @@ def on_question_raised(session: dict) -> None:
 
     t = threading.Timer(grace, _deliver_if_still_unattended, args=(delivery_key, session, grace))
     t.daemon = True
-    t.start()
+    retention.timer_started(delivery_key)
+    try:
+        t.start()
+    except BaseException:
+        retention.timer_done(delivery_key)
+        raise
 
 
 def _deliver_if_still_unattended(qid: str, session: dict, grace: int) -> None:
@@ -348,6 +392,8 @@ def _deliver_if_still_unattended(qid: str, session: dict, grace: int) -> None:
                 f"(q:{qid[:8]}) and I'll pick it up]")
     except Exception as e:
         _log(f"[question-channel] delivery failed for {qid[:8]}: {e}", flush=True)
+    finally:
+        retention.timer_done(qid)
 
 
 # ─── Reply → answer ──────────────────────────────────────────────────────────
@@ -454,6 +500,15 @@ def _is_genuine_reply(meta: dict, message_id: str, in_reply_to: str, references:
 
 
 def handle_reply(subject: str, body: str, *, message_id: str = "",
+                  in_reply_to: str = "", references: str = "",
+                  from_header: str = "") -> bool:
+    # Retirement never runs while a reply handler holds a reference to _outbox.
+    with retention.reader():
+        return _handle_reply(subject, body, message_id=message_id, in_reply_to=in_reply_to,
+                             references=references, from_header=from_header)
+
+
+def _handle_reply(subject: str, body: str, *, message_id: str = "",
                   in_reply_to: str = "", references: str = "",
                   from_header: str = "") -> bool:
     """Given a reply's headers + body, answer the question it refers to.

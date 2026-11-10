@@ -15927,6 +15927,15 @@ def agent_session_delete(project_id):
     if not session_id:
         return jsonify({'error': 'session_id required'}), 400
 
+    # Agent mail: revoke this session and its native aliases BEFORE anything is
+    # removed, including when the runtime row is already gone. Refuse on failure.
+    from mc import agent_mail_deletion as _mail_deletion
+    _mail_aliases = _mail_deletion.session_aliases(session_id, agent_sessions.get(session_id))
+    try:
+        _mail_deletion.revoke_session(project_id, _mail_aliases)
+    except _mail_deletion.DeletionRefused as exc:
+        return jsonify({'error': 'agent_mail_revocation_failed', 'reason': exc.reason}), 503
+
     proc = None
     with get_manager(project_id).lock:
         _limit_resume_dispatch.close_session(project_id, session_id)
@@ -15960,6 +15969,10 @@ def agent_session_delete(project_id):
     with mgr.lock:
         agent_sessions.pop(session_id, None)
         mgr.session_ids.discard(session_id)
+    try:  # closes a bind that raced the first pass; the intent is durable on failure
+        _mail_deletion.revoke_session(project_id, _mail_aliases)
+    except _mail_deletion.DeletionRefused:
+        pass
 
     return jsonify({'ok': True})
 
