@@ -48,7 +48,10 @@ def test_subscription_replay_uses_real_followup_without_new_delegation_turn(mode
     s = session(billing='subscription', proc=old, mode=mode, status='running',
         log_lines=[], process_alive=False, claude_session_id='native-id',
         _resume_id='native-id', _delegation_turn=7, _turn_owner='spawner',
-        _api_credits_retry_pending=True, _api_credits_turn_message='exact same task')
+        _api_credits_retry_pending=True, _api_credits_turn_message='exact same task',
+        billing_oauth=True)  # what _subscription() stamps when credits run out
+    # An ambient key (a dev shell may export one) must still be stripped from the replay.
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'ambient-test-key')
     monkeypatch.setattr(routes, 'agent_sessions', {'sid': s})
     monkeypatch.setattr(routes, 'load_project', lambda pid: {'id': 'p', 'project_path': str(tmp_path)})
     monkeypatch.setattr(routes, 'get_manager', lambda pid: SimpleNamespace(lock=threading.RLock(), ensure_guardian=lambda: None))
@@ -75,7 +78,11 @@ def test_subscription_replay_uses_real_followup_without_new_delegation_turn(mode
         return {'ack': 'written'}
     monkeypatch.setattr(routes, '_bounded_stdin_write', write)
     # Run only the existing writer closures synchronously. Never run a reader,
-    # spawn a CLI, or launch a background test thread.
+    # spawn a CLI, or launch a background test thread. agent_followup/_do_respawn_b
+    # launch their closures through agent_mail_continuation.run_followup (a real
+    # daemon thread, not routes.threading), so run that seam inline too; the
+    # real-thread default made the spawn land after the assertion (MC-1170).
+    monkeypatch.setattr(routes._mail_continuation, 'run_followup', lambda fn: fn())
     class Thread:
         def __init__(self, target, args=(), **kwargs):
             self.target, self.args = target, args
