@@ -90,10 +90,12 @@ def get_deps() -> DeliveryDeps:
     except (ValueError, AttributeError):
         grant_jwks = []
     if deps.keyring and deps.service_keys:
+        # suspended_absent_is_false=True: /v1/enroll never writes `suspended`, and
+        # entitlement.py/verify.py already read absent as not suspended (Dave 2026-11-10).
         # reader=None (read flag off or config incomplete) makes issue/lease refuse
         # `authority_unavailable`. bind/revoke work without it.
         deps.authority = MailDeliveryAuthority(
-            reader=authority_reader_from_env(), keyring=deps.keyring, store=_STORE, issuer=sessions.issuer(),
+            reader=authority_reader_from_env(suspended_absent_is_false=True), keyring=deps.keyring, store=_STORE, issuer=sessions.issuer(),
             service_keys=deps.service_keys, grant_jwks=grant_jwks if isinstance(grant_jwks, list) else [])
     return deps
 
