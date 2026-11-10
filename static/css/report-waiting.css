@@ -6,6 +6,11 @@
   color: inherit; font-size: 13px; line-height: 1.45;
 }
 .report-waiting-row[data-stage="failed"], .report-waiting-row[data-stage="check_failed"] { color: #b45309; }
+/* Historical, nothing to retry: muted, not the amber of an active failure. */
+.report-waiting-notice:has(.report-waiting-row[data-stage="unchecked"]:only-child) {
+  border-color: rgba(128,128,128,.35); background: rgba(128,128,128,.08);
+}
+.report-waiting-row[data-stage="unchecked"] { color: inherit; opacity: .85; }
 .report-waiting-detail { opacity: .8; }
 .report-waiting-notice { min-width: 0; }
 .report-waiting-summary {
