@@ -244,10 +244,14 @@ def on_question_raised(session: dict) -> None:
     if not qid:
         return
 
+    from mc.agent_mail_questions import revision
+    from mc.agent_mail_outbound_questions import selected
+    form = json.loads(json.dumps(q))
+    delivery_key = qid + ':' + revision(form)
     with _lock:
-        if qid in _delivered:
+        if delivery_key in _delivered:
             return          # exactly-once, even if the turn scan runs twice
-        _delivered.add(qid)
+        _delivered.add(delivery_key)
 
     project_id = session.get("project_id") or ""
     try:
@@ -255,22 +259,26 @@ def on_question_raised(session: dict) -> None:
         # pulled in from inside a stream reader.
         from mc.blueprints.project_routes import load_project
         project = load_project(project_id) or {}
-    except Exception:
+    except Exception as exc:
+        _log(f"[question-channel] project load failed: {exc}", flush=True)
         project = {}
 
     if channel_for(project) == "off":
         return
 
     grace = grace_seconds(project)
-    _outbox[qid] = {
+    # Each timer retains its own revision, even if a same-id form is replaced.
+    _outbox[delivery_key] = {
         "project_id": project_id,
         "project_name": project.get("name") or project_id,
         "session_id": session.get("session_id") or "",
-        "questions": q.get("questions") or [],
+        "questions": form.get("questions") or [],
         "to": _cfg(project, "question_channel_to", None),
+        "form": form,
+        "agent_mail": selected(session, form),
     }
 
-    t = threading.Timer(grace, _deliver_if_still_unattended, args=(qid, session, grace))
+    t = threading.Timer(grace, _deliver_if_still_unattended, args=(delivery_key, session, grace))
     t.daemon = True
     t.start()
 
@@ -286,6 +294,20 @@ def _deliver_if_still_unattended(qid: str, session: dict, grace: int) -> None:
         meta = _outbox.get(qid)
         if not meta:
             return
+
+        form = meta.get('form')
+        if form:
+            from mc.agent_mail_questions import matching
+            if matching(session, form) is None:
+                return
+        if meta.get('agent_mail'):
+            from mc.agent_mail_outbound_questions import deliver
+            result = deliver(session, form or {}, meta['project_name'])
+            meta['agent_mail_status'] = result
+            session.setdefault('log_lines', []).append(
+                f"[question mail: {result['state']}" +
+                (f" ({result['reason']})" if result.get('reason') else '') + ']')
+            return  # selected channel owns failure/uncertainty too; never SMTP
 
         # Resolve the expected reply sender now, at send time, the same way
         # send_mail.py itself will resolve `to` (configured recipient, else
@@ -434,6 +456,8 @@ def handle_reply(subject: str, body: str, *, message_id: str = "",
         return False   # unknown or expired — ignore, never guess
 
     meta = _outbox[qid]
+    if meta.get('agent_mail'):
+        return False  # only the signed durable ingress may handle this channel
 
     if not _is_genuine_reply(meta, message_id, in_reply_to, references):
         _log(f"[question-channel] ignored non-reply mail for q:{short} "
@@ -536,7 +560,8 @@ def poll_replies() -> int:
     not sit there logging into a mailbox every minute for no reason.
     """
     with _lock:
-        outstanding = [q for q in _outbox if q not in _answered]
+        outstanding = [q for q, meta in _outbox.items()
+                       if q not in _answered and not meta.get('agent_mail')]
     if not outstanding:
         return 0
 

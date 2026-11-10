@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-10] - Bind outbound mail before sending and preserve question delivery ownership (MC-1166 unit 7c)
+
+- Added disabled outbound notes/questions with encrypted immutable intents, pre-send conversation snapshots and transport mappings, fresh mail-only signatures, and current enrollment/ownership/pin checks. Only a proven pre-write rate refusal retries; ambiguous sends remain visible and cannot resend automatically.
+- Added durable per-revision question channel selection behind the existing attendance grace. New mail never falls back to legacy SMTP or enters its IMAP reply poller; immediate signed replies use the recorded conversation and question form. Synthetic adapters only, no operational factory, network client, activation or deployment.
+
 ## [2026-11-09] - Bind mail consent to signed evidence and cancel actual assignments (MC-1166 unit 7b review)
 
 - Retained signed manifest evidence and the human-approved digest; revalidated signatures, candidate consistency and current sequence/digest before verify or enable. Corrupted or replaced candidates cannot become service pins.
