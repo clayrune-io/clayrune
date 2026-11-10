@@ -24,7 +24,7 @@ def initialize(store: MailStore) -> None:
         existing = db.execute("SELECT name FROM sqlite_master WHERE name LIKE 'mail_enrollment_%'").fetchall()
         if marker:
             rows = db.execute('SELECT version FROM mail_enrollment_version').fetchall()
-            if len(rows) != 1 or rows[0][0] != 1:
+            if len(rows) != 1 or rows[0][0] != 2:
                 raise EnrollmentRefused('lifecycle_schema_corrupt')
             required = {'mail_enrollment_version', 'mail_enrollment_flow', 'mail_enrollment_revocations',
                         'mail_enrollment_manifests'}
@@ -35,18 +35,21 @@ def initialize(store: MailStore) -> None:
             raise EnrollmentRefused('lifecycle_schema_corrupt')
         for sql in (
             'CREATE TABLE mail_enrollment_version(version INTEGER NOT NULL)',
-            'INSERT INTO mail_enrollment_version VALUES(1)',
+            'INSERT INTO mail_enrollment_version VALUES(2)',
             '''CREATE TABLE mail_enrollment_flow (
                 slot INTEGER PRIMARY KEY CHECK(slot=1), flow TEXT NOT NULL UNIQUE,
                 install TEXT NOT NULL, generation INTEGER NOT NULL, owner TEXT NOT NULL,
                 key_id TEXT NOT NULL, public_key TEXT NOT NULL DEFAULT '',
                 seal_identity TEXT NOT NULL, assigned INTEGER NOT NULL DEFAULT 0,
+                seal_generation INTEGER NOT NULL, remote_started INTEGER NOT NULL DEFAULT 0,
                 stage TEXT NOT NULL, epoch INTEGER NOT NULL, candidate TEXT NOT NULL DEFAULT '',
+                manifest TEXT NOT NULL, manifest_digest TEXT NOT NULL, manifest_checked_ms INTEGER NOT NULL,
+                confirmed_digest TEXT NOT NULL DEFAULT '',
                 confirmed INTEGER NOT NULL DEFAULT 0, ownership INTEGER NOT NULL DEFAULT 0,
                 ownership_expires_ms INTEGER NOT NULL DEFAULT 0)''',
             '''CREATE TABLE mail_enrollment_revocations (
-                install TEXT NOT NULL, generation INTEGER NOT NULL, done INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY(install,generation))''',
+                flow TEXT PRIMARY KEY, install TEXT, generation INTEGER,
+                resolved INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0)''',
             '''CREATE TABLE mail_enrollment_manifests (
                 origin TEXT PRIMARY KEY, sequence INTEGER NOT NULL, digest TEXT NOT NULL)''',
         ):

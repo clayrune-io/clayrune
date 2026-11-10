@@ -12,6 +12,8 @@ from typing import Callable, Protocol
 import uuid
 
 from mc.agent_mail_enrollment_keys import EnrollmentRefused, IdentitySeal
+from mc.agent_mail_enrollment_manifest import candidate_from_evidence, manifest_digest
+from mc.agent_mail_enrollment_revocations import RevocationAdapter, Revocations
 from mc.agent_mail_enrollment_state import ManifestCAS, initialize
 from mc.agent_mail_ingress import MailIngress
 from mc.agent_mail_service_manifest import ServiceKeyCandidate, verify_service_manifest
@@ -52,11 +54,11 @@ class OwnershipReceipt:
     expires_at_ms: int
 
 
-class EnrollmentAdapter(Protocol):
+class EnrollmentAdapter(RevocationAdapter, Protocol):
     """Synthetic in 7b. Real adapter must enforce 7a scopes/leases/idempotency.
 
-    Each remote call is keyed by flow+generation. revoke is idempotent and
-    prevents every delayed begin/verify from reviving that generation.
+    Each remote call is keyed by flow+generation. cancel_flow durably fences
+    delayed requests and resolves the actual assignment before revoke.
     OwnershipReceipt is authenticated evidence, never a caller JSON object.
     """
     def begin(self, context: dict, flow_secret: bytes) -> PendingIdentity: ...
@@ -78,6 +80,7 @@ class Enrollment:
         if enabled:
             initialize(store)
         self.manifests = ManifestCAS(store)
+        self.revocations = Revocations(store, adapter)
 
     def _enabled(self) -> None:
         if self.enabled is not True:
@@ -92,18 +95,14 @@ class Enrollment:
         if (value['stage'] not in {'preparing', 'pending', 'delivery_pending', 'active', 'disabled'}
                 or type(value['generation']) is not int or value['generation'] < 1
                 or type(value['epoch']) is not int or value['epoch'] < 1
+                or type(value['seal_generation']) is not int or value['seal_generation'] < 1
+                or value['assigned'] not in (0, 1) or value['remote_started'] not in (0, 1)
                 or value['confirmed'] not in (0, 1) or value['ownership'] not in (0, 1)):
             raise EnrollmentRefused('lifecycle_state_corrupt')
         return value
 
-    @staticmethod
-    def _candidate(row: dict) -> ServiceKeyCandidate:
-        try:
-            value = json.loads(row['candidate'])
-            value['retired_key_ids'] = tuple(value['retired_key_ids'])
-            return ServiceKeyCandidate(**value)
-        except (ValueError, TypeError, KeyError):
-            raise EnrollmentRefused('lifecycle_state_corrupt') from None
+    def _candidate(self, row: dict) -> ServiceKeyCandidate:
+        return candidate_from_evidence(row, root=self.root, origin=self.origin)
 
     def status(self) -> dict:
         self._enabled()
@@ -114,12 +113,14 @@ class Enrollment:
                              (row['install'] if row else self.install_id,)).fetchone()
         if not row:
             return {'stage': 'not_enrolled', 'enabled': False, 'revocations_pending': pending}
-        candidate = self._candidate(row)
+        # The kill switch must still acknowledge closure if old evidence is
+        # corrupt/expired. A disabled row discloses no trusted service pin.
+        fingerprint = '' if row['stage'] == 'disabled' else self._candidate(row).fingerprint
         # No flow id, owner mailbox, code, seed or flow secret in read status.
         return {'stage': row['stage'], 'enabled': bool(reg and reg['enabled'] and
                     reg['generation'] == row['generation'] and row['stage'] == 'active'),
                 'generation': row['generation'], 'public_key': row['public_key'],
-                'service_fingerprint': candidate.fingerprint, 'revocations_pending': pending}
+                'service_fingerprint': fingerprint, 'revocations_pending': pending}
 
     def start(self, owner: str, payload: list[object], signature: str) -> dict:
         self._enabled()
@@ -128,6 +129,8 @@ class Enrollment:
         candidate = verify_service_manifest(payload, signature, root_public_key=self.root,
                     service_origin=self.origin, store=self.manifests,
                     now_ms=int(self.store.clock() * 1000), enabled=True)
+        evidence = json.dumps({'payload': payload, 'signature': signature}, sort_keys=True)
+        digest = manifest_digest(payload)
         # Human start authorizes an intent, but never remotely publishes a key
         # until its seal AND its public identity have committed.
         with self.store._tx() as db:
@@ -152,10 +155,12 @@ class Enrollment:
                 flow = uuid.uuid4().hex
                 epoch = row['epoch'] + 1 if row else 1
                 db.execute('INSERT OR REPLACE INTO mail_enrollment_flow '
-                           '(slot,flow,install,generation,owner,key_id,stage,epoch,candidate,seal_identity) '
-                           'VALUES(1,?,?,?,?,?,?,?,?,?)',
+                           '(slot,flow,install,generation,owner,key_id,stage,epoch,candidate,seal_identity,'
+                           'seal_generation,manifest,manifest_digest,manifest_checked_ms) '
+                           'VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                            (flow, install, generation, owner, 'mail_' + flow,
-                            'preparing', epoch, json.dumps(asdict(candidate), sort_keys=True), self.install_id))
+                            'preparing', epoch, json.dumps(asdict(candidate), sort_keys=True), self.install_id,
+                            generation, evidence, digest, int(self.store.clock() * 1000)))
         return self.resume()
 
     def _context(self, *, prepare: bool = False) -> dict:
@@ -164,7 +169,7 @@ class Enrollment:
             if not row or row['stage'] == 'disabled':
                 raise EnrollmentRefused('enrollment_required')
             self._current(db, row)
-            args = (row['flow'], row['seal_identity'], row['generation'], row['key_id'])
+            args = (row['flow'], row['seal_identity'], row['seal_generation'], row['key_id'])
             if row['stage'] == 'preparing' and prepare:
                 public = self.seal.create(*args, self.material)
                 db.execute("UPDATE mail_enrollment_flow SET public_key=?,stage='pending' WHERE slot=1", (public,))
@@ -177,6 +182,9 @@ class Enrollment:
         row = self._row(db)
         if (not row or row['flow'] != expected['flow'] or row['epoch'] != expected['epoch']
                 or row['install'] != expected['install']
+                or row['generation'] != expected['generation']
+                or any(row[key] != expected[key] for key in
+                       ('manifest', 'manifest_digest', 'candidate', 'confirmed_digest'))
                 or row['stage'] != expected['stage'] or row['stage'] == 'disabled'):
             raise EnrollmentRefused('lifecycle_raced')
         reg = db.execute('SELECT * FROM registrations WHERE registration_id=?', (row['install'],)).fetchone()
@@ -187,25 +195,33 @@ class Enrollment:
     def _proof(self, row: dict) -> bytes:
         # Only the dedicated adapter receives the flow secret. Actual dual-key
         # transcript and machine-custody signing stay gated for 7c integration.
-        return self.seal.flow_secret(row['flow'], row['seal_identity'], row['generation'], row['key_id'])
+        return self.seal.flow_secret(row['flow'], row['seal_identity'], row['seal_generation'], row['key_id'])
 
     def resume(self) -> dict:
         self._enabled()
         row = self._context(prepare=True)
         if row['stage'] == 'pending':
+            proof = self._proof(row)
+            with self.store._tx() as db:
+                self._current(db, row)
+                self._fresh_candidate(row)
+                # Crash before/after the remote call remains cancellable by
+                # stable flow, without guessing a service install identity.
+                db.execute('UPDATE mail_enrollment_flow SET remote_started=1 WHERE slot=1')
             try:
-                pending = self.adapter.begin(dict(row), self._proof(row))
+                pending = self.adapter.begin(dict(row), proof)
             except Exception:
                 raise EnrollmentRefused('remote_begin_retryable') from None
             with self.store._tx() as db:
                 self._current(db, row)
                 candidate = self._candidate(row)
-                if (not isinstance(pending, PendingIdentity) or not ID.fullmatch(pending.install)
-                        or type(pending.generation) is not int or pending.generation != row['generation']
-                        or pending != PendingIdentity(row['flow'], pending.install, row['generation'],
+                if (not isinstance(pending, PendingIdentity) or not isinstance(pending.install, str)
+                        or not ID.fullmatch(pending.install)
+                        or type(pending.generation) is not int or pending.generation < 1
+                        or pending != PendingIdentity(row['flow'], pending.install, pending.generation,
                                 row['owner'], row['public_key'], candidate.fingerprint)):
                     raise EnrollmentRefused('pending_scope_mismatch')
-                if row['assigned'] and pending.install != row['install']:
+                if row['assigned'] and (pending.install, pending.generation) != (row['install'], row['generation']):
                     raise EnrollmentRefused('pending_identity_changed')
                 if pending.install != row['install']:
                     # Initial reservation is only a candidate; it grants no
@@ -215,8 +231,12 @@ class Enrollment:
                     if db.execute('SELECT 1 FROM registrations WHERE registration_id=?', (pending.install,)).fetchone():
                         raise EnrollmentRefused('registration_conflict')
                     db.execute('INSERT INTO registrations VALUES(?,?,0,?)',
-                               (pending.install, row['generation'], self.store.clock()))
-                db.execute('UPDATE mail_enrollment_flow SET install=?,assigned=1 WHERE slot=1', (pending.install,))
+                               (pending.install, pending.generation, self.store.clock()))
+                elif pending.generation != row['generation']:
+                    # Never lower/reuse a preexisting inbox's authority fence.
+                    raise EnrollmentRefused('pending_scope_mismatch')
+                db.execute('UPDATE mail_enrollment_flow SET install=?,generation=?,assigned=1 WHERE slot=1',
+                           (pending.install, pending.generation))
         return self.status()
 
     def confirm(self, confirmation: dict[str, object]) -> dict:
@@ -228,7 +248,7 @@ class Enrollment:
         with self.store._tx() as db:
             self._current(db, row)
             self._fresh_candidate(row)
-            db.execute('UPDATE mail_enrollment_flow SET confirmed=1 WHERE slot=1')
+            db.execute('UPDATE mail_enrollment_flow SET confirmed=1,confirmed_digest=manifest_digest WHERE slot=1')
         return self.status()
 
     def review(self) -> dict:
@@ -245,7 +265,8 @@ class Enrollment:
         candidate = self._candidate(row)
         return {'owner': row['owner'], 'install': row['install'], 'generation': row['generation'],
                  'public_key': row['public_key'], 'service_fingerprint': candidate.fingerprint,
-                 'service_origin': candidate.origin, 'manifest_sequence': candidate.sequence}
+                 'service_origin': candidate.origin, 'manifest_sequence': candidate.sequence,
+                 'manifest_digest': row['manifest_digest']}
 
     def change_identity(self, owner: str, payload: list[object], signature: str) -> dict:
         """Owner/key/repin all revoke first, then start a separate ceremony.
@@ -288,11 +309,13 @@ class Enrollment:
                        (receipt.expires_at_ms,))
         return self.status()
 
-    def _fresh_candidate(self, row: dict) -> None:
+    def _fresh_candidate(self, row: dict) -> ServiceKeyCandidate:
         candidate = self._candidate(row)
         floor = self.manifests.load(candidate.origin)
-        if floor is None or floor.sequence != candidate.sequence or int(self.store.clock() * 1000) >= candidate.expires_at_ms:
+        if (floor is None or floor.sequence != candidate.sequence or floor.digest != row['manifest_digest']
+                or int(self.store.clock() * 1000) >= candidate.expires_at_ms):
             raise EnrollmentRefused('manifest_stale')
+        return candidate
 
     def enable(self) -> dict:
         self._enabled()
@@ -326,24 +349,15 @@ class Enrollment:
             if row and row['stage'] != 'disabled':
                 # Queue remote revocation and cancel local send/follow-up in
                 # ONE transaction. Failure cannot acknowledge a partial disable.
-                db.execute('INSERT OR IGNORE INTO mail_enrollment_revocations VALUES(?,?,0)',
-                           (row['install'], row['generation']))
-                self.store.revoke_registration(row['install'], transaction=db)
+                if row['remote_started'] or row['assigned']:
+                    self.revocations.queue(db, row)
+                    self.store.revoke_registration(row['install'], transaction=db)
+                # A never-sent intent has no remote identity or local delivery
+                # authority. Its epoch fences stale work; generation is unused.
                 db.execute("UPDATE mail_enrollment_flow SET stage='disabled',epoch=epoch+1 WHERE slot=1")
         return self.status()
 
     def retry_revocations(self) -> dict:
         self._enabled()
-        with self.store._read() as db:
-            pending = db.execute('SELECT install,generation FROM mail_enrollment_revocations WHERE done=0').fetchall()
-        for install, generation in pending:
-            try:
-                self.adapter.revoke(install, generation)
-            except Exception:
-                # The durable item remains pending. Closed observable error,
-                # never the adapter's potentially secret-bearing message.
-                raise EnrollmentRefused('remote_revoke_retryable') from None
-            with self.store._tx() as db:
-                db.execute('UPDATE mail_enrollment_revocations SET done=1 WHERE install=? AND generation=?',
-                           (install, generation))
+        self.revocations.retry()
         return self.status()

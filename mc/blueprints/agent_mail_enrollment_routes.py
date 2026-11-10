@@ -13,10 +13,22 @@ from mc.agent_mail_service_manifest import ManifestRefused
 from mc.agent_mail_store import MailStoreError
 from mc.blueprints.secrets_routes import _require_human_passcode
 from mc.core import _log
-from mc.unattended import is_unattended_caller
 
 FLAG = 'agent_mail_enrollment_enabled'
 BASE = '/api/agent-mail/enrollment'
+ENABLE_ACTIONS = frozenset({'start', 'resume', 'review', 'confirm', 'verify', 'enable', 'owner', 'key', 'repin'})
+
+
+def blocking_sessions() -> list[dict[str, str]]:
+    """Mail-only conservative policy; no request-controlled attribution claims.
+
+    Dave accepted the human-dashboard false positive for this disabled unit.
+    Trusted per-request attribution is required before live mail (MC-948).
+    Disable/revocation retry are always open to a valid passcode-holder.
+    """
+    return [{'session_id': sid, 'trigger': str(session.get('trigger_type') or 'unknown')}
+            for sid, session in sorted(list(state.agent_sessions.items()))
+            if session.get('status') == 'running' and session.get('trigger_type') != 'manual']
 
 
 def create_blueprint(*, factory: Callable[[], Enrollment] | None = None) -> Blueprint:
@@ -33,14 +45,15 @@ def create_blueprint(*, factory: Callable[[], Enrollment] | None = None) -> Blue
         if state.CONFIG.get(FLAG) is not True:
             return jsonify({'error': 'not_found'}), 404
         if request.method == 'POST':
-            if is_unattended_caller():
-                return jsonify({'error': 'human_required'}), 403
             body = request.get_json(silent=True)
             if not isinstance(body, dict):
                 return jsonify({'error': 'invalid_request'}), 400
             refusal = _require_human_passcode(body)
             if refusal is not None:
                 return refusal
+            blockers = blocking_sessions() if action in ENABLE_ACTIONS else []
+            if blockers:
+                return jsonify({'error': 'human_required', 'blocking_sessions': blockers}), 403
         else:
             body = {}
         if factory is None:

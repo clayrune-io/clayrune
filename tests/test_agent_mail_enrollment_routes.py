@@ -15,7 +15,7 @@ ACTIONS = ['start', 'resume', 'review', 'confirm', 'verify', 'enable', 'disable'
 def web(monkeypatch):
     calls = []
     monkeypatch.setitem(state.CONFIG, routes.FLAG, True)
-    monkeypatch.setattr(routes, 'is_unattended_caller', lambda: False)
+    monkeypatch.setattr(state, 'agent_sessions', {})
     monkeypatch.setattr(local_auth, '_local_auth_is_configured', lambda: True)
     monkeypatch.setattr(local_auth, '_local_auth_try_passcode', lambda value: value == 'human-fixture')
     app = Flask(__name__)
@@ -36,10 +36,10 @@ def test_forged_origin_and_manual_session_never_replace_human_passcode(web, acti
     assert result.headers['Cache-Control'] == 'no-store'
 
 
-@pytest.mark.parametrize('action', ACTIONS)
+@pytest.mark.parametrize('action', sorted(routes.ENABLE_ACTIONS))
 def test_unattended_refused_even_with_valid_passcode(web, monkeypatch, action):
     client, calls = web
-    monkeypatch.setattr(routes, 'is_unattended_caller', lambda: True)
+    monkeypatch.setitem(state.agent_sessions, 'dispatched', {'status': 'running', 'trigger_type': 'dispatch'})
     result = client.post(routes.BASE + '/' + action, json={'passcode': 'human-fixture'})
     assert result.status_code == 403 and calls == []
 

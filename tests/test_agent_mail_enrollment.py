@@ -15,6 +15,7 @@ import pytest
 
 from mc.agent_mail_enrollment import Enrollment, OwnershipReceipt, PendingIdentity, Prerequisites
 from mc.agent_mail_enrollment_keys import EnrollmentRefused, IdentitySeal, b64
+from mc.agent_mail_enrollment_revocations import CancelledAssignment
 from mc.agent_mail_enrollment_state import ManifestCAS, initialize
 from mc.agent_mail_ingress import MailIngress
 from mc.agent_mail_service_manifest import ManifestRefused, ManifestState
@@ -45,15 +46,22 @@ class FakeAdapter:
         self.begin_hook = self.verify_hook = lambda: None
         self.receipt_hook = lambda value: value
         self.pending_hook = lambda value: value
+        self.assignments, self.cancelled, self.cancels = {}, set(), []
+        self.fail_cancel = False
 
     def begin(self, context, secret):
         self.begins.append((context.copy(), secret))
+        candidate = json.loads(context['candidate'])
+        pending = self.pending_hook(PendingIdentity(context['flow'], context['install'], context['generation'],
+                                    context['owner'], context['public_key'], candidate['fingerprint']))
+        if context['flow'] in self.cancelled:
+            raise OSError('flow cancelled')
+        if not self.fail_begin:
+            self.assignments[context['flow']] = CancelledAssignment(pending.install, pending.generation)
         self.begin_hook()
         if self.fail_begin:
             raise OSError('untrusted remote secret must never escape')
-        candidate = json.loads(context['candidate'])
-        return self.pending_hook(PendingIdentity(context['flow'], context['install'], context['generation'],
-                                context['owner'], context['public_key'], candidate['fingerprint']))
+        return pending
 
     def verify(self, context, secret, code):
         self.verifies.append((context.copy(), secret, code))
@@ -68,6 +76,13 @@ class FakeAdapter:
         self.revokes.append((install, generation))
         if self.fail_revoke:
             raise OSError('untrusted remote secret must never escape')
+
+    def cancel_flow(self, flow):
+        self.cancels.append(flow)
+        if self.fail_cancel:
+            raise OSError('untrusted remote secret must never escape')
+        self.cancelled.add(flow)
+        return self.assignments.get(flow)
 
 
 @pytest.fixture
@@ -605,7 +620,7 @@ def test_full_http_ceremony_uses_human_gate_and_never_returns_secrets(kit, monke
     from mc import state
     from mc.blueprints import agent_mail_enrollment_routes as routes, local_auth
     monkeypatch.setitem(state.CONFIG, routes.FLAG, True)
-    monkeypatch.setattr(routes, 'is_unattended_caller', lambda: False)
+    monkeypatch.setattr(state, 'agent_sessions', {})
     monkeypatch.setattr(local_auth, '_local_auth_is_configured', lambda: True)
     proofs = []
     def proof(value):

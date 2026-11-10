@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-09] - Bind mail consent to signed evidence and cancel actual assignments (MC-1166 unit 7b review)
+
+- Retained signed manifest evidence and the human-approved digest; revalidated signatures, candidate consistency and current sequence/digest before verify or enable. Corrupted or replaced candidates cannot become service pins.
+- Queued cancellation by stable flow identity, resolving the actual service assignment before durable revocation completes. Never-sent local cancellations advance only the epoch and preserve the first service generation; seal binding stays stable across service assignment.
+- Added a mail-only running-session gate with blocker IDs/triggers for enable-direction mutations, independent of caller headers. Disable and revocation retry remain available with the passcode while agents run; the shared unattended helper is unchanged. Permanent review regressions; disabled synthetic candidate only. Trusted caller attribution and real remote cancellation remain pre-live integration gates.
+
 ## [2026-11-09] - Seal local mail identities and fence enrollment generations (MC-1166 unit 7b)
 
 - Added a disabled local lifecycle with pending intent before remote work, resumable sealed mail identity files using only the existing unlocked passphrase-vault key, and durable manifest sequence/digest CAS. Locked, corrupt or replaced key material fails closed; supported secret/placeholder APIs never expose the seed.
