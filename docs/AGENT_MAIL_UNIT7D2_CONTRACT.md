@@ -623,6 +623,13 @@ of these units.
 | **D5** | G1: ceremony transport (CP grant route + `/v1/mail-enrollment/jwks`, Worker enrollment HTTP, Flask `begin/verify`) | **(a) A separate contract+build unit 7d-2e before any live run (recommended).** It has its own auth surface (flow-secret, human code) and its own review. (b) Fold into 7d-2d: one fewer unit, but 7d-2d exceeds the 5M budget and mixes human-ceremony auth with background lifecycle auth. | live activation only; 2b-2d proceed on synthetic transports |
 | **D6** | Proof receipt signing time | **(a) Sign in the request path with the vault unlocked, `503 vault_locked` otherwise (contracted):** the signature covers the Worker's fresh `service_nonce`. (b) Pre-sign at arm time: no vault in the request path, but the receipt proves custody only of Flask's own challenge, a weaker freshness proof. | 7d-2c |
 
+**Decided 2026-11-10 (Dave):** D1 (a), D2 (a), D3 (a), D5 (a), D6 (a), all as
+contracted. D1 note: a separate issuance key was considered and declined. It
+would live in the same Worker secret store, so it buys no compromise
+isolation; misuse separation is already given by the signed
+`direction = 'service-to-cp'` field. Build order: 7d-2b, 7d-2c, 7d-2d, then
+7d-2e before any live run.
+
 (D4 was settled in-document: separate table prefixes, forced by
 `agent_mail_enrollment_state.py:21-31`; it is not a choice.)
 
