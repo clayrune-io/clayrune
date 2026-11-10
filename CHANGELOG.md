@@ -11,6 +11,23 @@
 - Moved the shared authenticated ingress allowance after owner/authentication/token/correlation acceptance. Refused traffic uses a separate global budget and cannot exhaust owner-mail capacity.
 - Saturated refusal accounting retains a capped daily marker, skips further audit/per-install writes, and still rejects every refused message with its original reason. The unverified-ingress gate stays first.
 - Retained both 10,000-stranger reviewer probes and the two-owner control; added accepted-limit, saturation, concurrency and next-day checks. Local disabled candidate only; no merge, push, restart or deployment.
+## [2026-11-09] - Materialize only the requested test-run list page
+
+- List reads sort/filter fingerprint-keyed metadata independently of the bounded snapshot LRU, then read/copy only the requested page. Missing/changed metadata still rereads canonical files; off-page corruption still fails, vanished files are skipped, and response ordering/filtering/pagination stay unchanged.
+- Added parity against the old full-read implementation, coverage beyond snapshot capacity, page-only snapshot admission, write invalidation, external replacement and owner-filter race checks. No retention, deletion or pruning was added.
+- Preserved-corpus timings and a measured explanation of the earlier submit outlier are recorded in `docs/TEST_RUN_READ_PERFORMANCE.md`. Local branch candidate only; no merge, push, restart or live HTTP recovery claim.
+
+## [2026-11-09] - Keep Floor test reads warm beyond snapshot cache capacity
+
+- Floor reads now skip unchanged terminal files using an independent fingerprint-only index and cache only active snapshots. Bulk history scans preserve resident entries beyond the 4096-entry/32 MiB budget instead of sequentially evicting the whole cache. Public list/get semantics remain unchanged; overflow history still validates.
+- Run listings skip files disappearing after enumeration/stat while retaining errors for other unreadable records. Terminal append immutability is covered for all seven states; no run deletion or pruning was added.
+- On a preserved all-project copy with Mission Control expanded to 5100 runs: Floor 7.240150s cold / 0.159355s warm (zero warm validations), list 4.470684s warm, maximum concurrent cold-scan submit 0.341170s. Local branch candidate only; no merge, push, restart or live telemetry recovery claim. Evidence: `docs/TEST_RUN_READ_PERFORMANCE.md`.
+
+## [2026-11-09] - Stop repeated test-run replay from blocking submissions
+
+- Cached validated run snapshots by checked path, nanosecond mtime and size, with defensive copies and a 4096-entry/32 MiB snapshot budget. New/changed records still replay and corrupt records still fail; write paths invalidate before persistence. Canonical events are never cached.
+- Floor projections now scan each project's runs once instead of rescanning every 100-record page. Directory enumeration/sorting run outside the shared lock; record reads release it between files so submissions can proceed during cold scans. Public list pagination remains capped at 100; no run retention/deletion changes.
+- Verified against an untouched scratch copy of 1821 records: Floor 108.25s before, 6.61s cold and 0.42-0.44s warm after; concurrent scratch submissions took at most 8.29ms during a 5.27s cold scan. Branch candidate only; no merge, push, restart or live deployment verification. Full evidence: `docs/TEST_RUN_READ_PERFORMANCE.md`.
 
 ## [2026-11-09] - Isolate stale mail receipts and prove provider history (MC-1166 unit 6 review)
 

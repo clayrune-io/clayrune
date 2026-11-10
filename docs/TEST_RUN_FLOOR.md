@@ -71,10 +71,28 @@ nonterminal snapshot stays visible until canonical evidence changes its state.
 
 ## Reads and failure behavior
 
-The adapter pages the existing canonical list API in blocks of 100, including
-older active runs behind terminal history. No cross-request cache is introduced.
-The store currently replays records when listing and rescans for each page;
-this phase makes no large-history performance claim or store-index change.
+The adapter calls `active_snapshots` once per project, including older active runs
+behind terminal history, without paging/rescanning the public list API. The
+store keeps validated active snapshot copies across requests, keyed by checked
+absolute path, nanosecond mtime and size, bounded by 4096 entries and 32 MiB of
+snapshot objects. A separate uncapped index retains only terminal paths and
+fingerprints, so history beyond the snapshot budget does not force terminal
+replay or copying. Floor does not admit terminal snapshots to the LRU. Changed/
+new files still replay and corrupt records still fail. Create/append invalidate
+both structures; events are never cached. Terminal append immutability is
+covered for all seven terminal states, including unchanged file bytes/mtime.
+
+Directory enumeration and sorting do not hold the store lock; each individual
+record's stat/cache/validation holds it separately, so a submit need not wait
+for a full folder replay. The resulting per-file view may omit a run created
+during enumeration until the next poll. Files disappearing between enumeration
+and read are skipped; other unreadable files still fail the room. Stat/enumeration
+remain proportional to history; replay/copying/projection concern active/changed
+runs. Room summaries and current-session
+owner/privacy classification are rebuilt on every request; there is no route
+or project-record cache. See `TEST_RUN_STORE.md` for cache bounds and the
+metadata-preserving external-edit limitation, and `TEST_RUN_READ_PERFORMANCE.md`
+for copied-data timing and validation evidence.
 
 A read failure is logged, that room's summary is explicitly unavailable, and
 other rooms still render. An unavailable room remains visible so the failure

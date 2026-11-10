@@ -240,14 +240,14 @@ def test_private_projects_are_not_read(env, monkeypatch):
     env[2].extend([dict(id='_incognito', name='Private'),
                    dict(id='secret', _is_incognito_project=True)])
     called = []
-    original = env[0].list_runs
+    original = env[0].active_snapshots
 
     def listing(pid, **kw):
         called.append(pid)
         return original(pid, **kw)
 
-    monkeypatch.setattr(env[0], 'list_runs', listing)
-    board(env)
+    monkeypatch.setattr(env[0], 'active_snapshots', listing)
+    assert board(env)['rooms'] == [], 'empty rooms must not become unavailable on a read error'
     assert called == ['a', 'b']
 
 
@@ -283,6 +283,33 @@ def test_older_active_run_is_found_after_more_than_one_page_of_history(env):
         snapshot = run(env, sid=None, total=None, completed=0, at=at)
         env[0].finish('a', snapshot['run_id'], state='passed', exit_code=0, observed_at=200)
     assert room(env)['test_runs']['runs'][0]['run_id'] == old['run_id']
+
+
+def test_floor_scans_each_project_once_without_paging(env, monkeypatch):
+    for at in range(102):
+        env[0].create('a', observed_at=at, owner_session_id=None)
+    original = env[0].active_snapshots
+    calls = []
+
+    def read(pid):
+        calls.append(pid)
+        return original(pid)
+
+    monkeypatch.setattr(env[0], 'active_snapshots', read)
+    monkeypatch.setattr(env[0], 'list_runs', lambda *a, **kw: pytest.fail('Floor paged history'))
+    assert room(env)['test_runs']['active_count'] == 102
+    assert calls == ['a', 'b']
+
+
+def test_cached_snapshots_do_not_cache_owner_privacy_or_project_summary(env):
+    session = owner(env)
+    snapshot = run(env)
+    assert room(env)['test_runs']['active_count'] == 1
+    session['incognito'] = True
+    assert board(env)['rooms'] == []
+    session['incognito'] = False
+    env[0].finish('a', snapshot['run_id'], state='passed', exit_code=0, observed_at=100)
+    assert room(env)['test_runs']['active_count'] == 0
 
 
 def test_detail_cap_discloses_omissions_without_capping_totals(env):
