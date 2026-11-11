@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-11] - Keep slow chat revives from looking like failed sends
+
+- At 12 seconds, follow-up sends probe server status with a separate five-second deadline. A reachable server keeps the original send alive, shows `[waking session...]`, and retains a 120-second hard cap; dead sockets still fail visibly.
+- Failed sends and server rejections reconnect the conversation stream and reconcile server status. A newly recorded matching prompt clears the failure marker and keeps delivered text out of the retry composer, preventing accidental duplicate sends.
+- Added Playwright coverage for slow revival, dead probes, the hard cap, delivered network failures, repeated historical prompts and server refusals.
+
 ## [2026-11-10] - Keep mail-store contention out of shared question handling (MC-1166 unit 7c review)
 
 - Serialized channel selection and ownership admission per question, with factory calls and durable receipt I/O outside the global notification mutex. A stalled mail store no longer blocks unrelated legacy reply polling; concurrent notifications retain one timer and delivery for either channel owner.
