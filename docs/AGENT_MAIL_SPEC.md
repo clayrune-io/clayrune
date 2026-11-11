@@ -465,11 +465,18 @@ DECIDED WITHOUT RON; each is reversible until build starts.
 
 **Scale ceiling for Ron:** Cloudflare limits page (updated 2026-10-30,
 re-checked 2026-11-08) caps verified destination addresses at 200 per
-account. Owner-only free sending therefore tops out near 200 mail-enabled
-installs. Going past that means onboarding clayrune.io as a sending domain
+account. Automatic signup refuses new destination creates at **190 account
+addresses**, leaving ten slots of headroom; unrelated destinations count too.
+Durable unobserved create claims also reserve capacity. Existing addresses are
+never re-created. Signup therefore supports fewer than 190 new mail-enabled
+installs when the account has other destinations. Going past that means onboarding clayrune.io as a sending domain
 (paid monthly quota; owner-only still enforced in our Worker) or a limit
 increase. Both spend money or change providers, so both are Ron's call. The
-pilot fits under the cap; nothing is needed now.
+pilot still requires the real account-capacity check. Device-signed begin plus
+CP preflight precedes provisioning; pending attempts last seven days, address
+replacement waits 24 hours, and create budgets are 3/device and 20 globally per
+rolling day. Cloudflare verification precedes the Clayrune code. See the
+[automatic signup contract](AGENT_MAIL_AUTO_DESTINATION.md).
 
 ### Inbound hardening (Ron, 2026-11-08) - fixed requirements
 
@@ -519,8 +526,9 @@ not capture or disrupt established non-agent addresses. A namespacing prototype,
 actual account-capacity check, DKIM/SPF/DMARC setup, verification flow and
 authenticated tunnel delivery must precede a pilot. Do not claim arbitrary
 install scale or silently shard accounts/buy a different sending service.
-If the verified-destination cap binds, stop enrollment with an explicit capacity
-message; a limit increase or alternative infrastructure returns to Dave. The
+At 190 account destinations (pending or verified), refuse new creates with
+`destination_capacity` before code issuance; a limit increase or alternative
+infrastructure returns to Dave. The
 owner-only restriction remains fixed regardless of available sending products.
 
 ### Deferred question (do not resolve here)

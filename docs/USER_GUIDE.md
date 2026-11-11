@@ -998,6 +998,14 @@ owner mailbox. **Continue** fetches the signed service manifest and then asks fo
 your dashboard passcode before starting enrollment. If the service/manifest is
 unavailable or verification fails, setup stays on the form with a reason.
 
+When the service is configured for automatic destination signup, Cloudflare may
+send its own address-verification link first. A `destination_unverified` outcome
+means the Clayrune code has not been generated yet: follow Cloudflare's link,
+then choose **Resume setup**. The service reuses an already verified destination.
+Capacity or signup limits leave enrollment pending; retries do not send duplicate
+Cloudflare verification requests. This candidate's live provider flow still needs
+operator validation and launch approval.
+
 Enrollment shares your address, installation/public-key evidence and tunnel route
 with the Clayrune mail service and its enrollment authority. The controls guide
 you through **Resume**, **Review details**, **Confirm**, the verification code,

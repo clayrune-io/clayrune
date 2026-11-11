@@ -12,6 +12,7 @@ from typing import Callable, Protocol
 import uuid
 
 from mc.agent_mail_delivery_proof import DeliveryProof
+from mc.agent_mail_begin_proof import DestinationRefused
 from mc.agent_mail_enrollment_keys import EnrollmentRefused, IdentitySeal
 from mc.agent_mail_enrollment_manifest import candidate_from_evidence, manifest_digest
 from mc.agent_mail_enrollment_revocations import RevocationAdapter, Revocations
@@ -256,6 +257,8 @@ class Enrollment:
                 db.execute('UPDATE mail_enrollment_flow SET remote_started=1 WHERE slot=1')
             try:
                 pending = self.adapter.begin(dict(row), proof)
+            except DestinationRefused:
+                raise
             except Exception:
                 raise EnrollmentRefused('remote_begin_retryable') from None
             with self.store._tx() as db:

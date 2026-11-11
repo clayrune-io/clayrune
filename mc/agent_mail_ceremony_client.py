@@ -10,7 +10,8 @@ It talks to two places and trusts neither:
   is signed by the manifest-verified service key, bound to this path and this request's nonce, and
   carrying `install_id := flow` and `generation := 1` (the ceremony envelope, contract 2.3) counts.
   Every other status, an unsigned or mismatched body, silence or a timeout records nothing and raises
-  a closed code. `verify_response` is reused unchanged.
+  a closed code. Signed begin 409 provisioning hints retain pending local state without acknowledging
+  ownership. `verify_response` is reused unchanged for their signature/scope checks.
 * the control plane, `POST /v1/mail-enrollment/grant`, for the 60 s enrollment grant. The grant is a
   bearer for the Worker only; this client never inspects it beyond its shape.
 
@@ -31,6 +32,7 @@ import time
 from typing import Any, Callable, Mapping
 
 from mc.agent_mail_ceremony_device import DeviceIdentity
+from mc.agent_mail_begin_proof import canonical_begin, DestinationRefused, DESTINATION_FAILURES
 from mc.agent_mail_enrollment import OwnershipReceipt, PendingIdentity
 from mc.agent_mail_enrollment_keys import EnrollmentRefused, IdentitySeal, b64
 from mc.agent_mail_enrollment_manifest import candidate_from_evidence
@@ -145,7 +147,7 @@ class CeremonyClient:
         nonce = self._nonce(16)
         if not _NONCE.fullmatch(nonce):
             raise _refuse('ceremony_scope_mismatch')
-        # No install key exists yet: the only request header is the nonce that binds the REPLY to this call.
+        # The reply nonce is separate from the device-signed begin proof's replay nonce.
         headers = {'x-mail-nonce': nonce, 'Content-Type': 'application/json'}
         try:
             response = self.transport.post(self.origin, path, headers, raw)
@@ -154,6 +156,15 @@ class CeremonyClient:
         except Exception:
             raise _refuse('remote_unreachable') from None
         if not isinstance(response, Mapping):
+            raise _refuse('remote_response_invalid')
+        if name == 'begin' and response.get('status') == 409:
+            # Status is not in the signed envelope. Verify the body/path/nonce/scope first, then
+            # accept ONLY this closed hint shape. No pending identity is recorded on a refusal.
+            hint = verify_response({**response, 'status': 200}, candidate=candidate, install=flow,
+                                   generation=ENVELOPE_GENERATION, path=path, nonce=nonce, clock_ms=self._now_ms)
+            if (set(hint) == {'flow_id', 'code'} and hint['flow_id'] == flow
+                    and isinstance(hint['code'], str) and hint['code'] in DESTINATION_FAILURES):
+                raise DestinationRefused(hint['code'])
             raise _refuse('remote_response_invalid')
         return verify_response(response, candidate=candidate, install=flow, generation=ENVELOPE_GENERATION,
                                path=path, nonce=nonce, clock_ms=self._now_ms)
@@ -165,7 +176,13 @@ class CeremonyClient:
         verified transcript R and the reply body. Idempotent on the Worker: a repeat returns the same R."""
         value = self._value(context, device, candidate)
         flow = context['flow']
-        body = self._post('begin', {'value': value, 'flow_secret': secret}, flow=flow, candidate=candidate)
+        stamp, nonce = str(self._now_ms()), self._nonce(16)
+        if not _NONCE.fullmatch(nonce):
+            raise _refuse('ceremony_scope_mismatch')
+        signature = b64(device.sign(canonical_begin(value, secret, self.origin, stamp, nonce)))
+        body = self._post('begin', {'value': value, 'flow_secret': secret,
+                                  'proof': {'timestamp': stamp, 'nonce': nonce, 'signature': signature}},
+                          flow=flow, candidate=candidate)
         if set(body) != _BEGIN_KEYS or body['flow_id'] != flow or body['state'] != 'pending':
             raise _refuse('ceremony_scope_mismatch')
         r = body['transcript']

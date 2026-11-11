@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-11] - Provision owner mail destinations during authenticated signup (MC-1166)
+
+- Added device-signed begin plus existing CP preflight, with durable replay refusal before destination or code side effects. Cloudflare verification completes before the separate Clayrune code is generated; signed pending/error hints preserve the local flow for Resume.
+- Added bounded Cloudflare destination management and D1 attempt/create admission: seven-day pending lifetime, replacement after 24 hours, 3 creates/device and 20 globally per rolling day, 190-address account capacity, and durable duplicate/ambiguous-call protection.
+- Added migration 0004, provider/client interoperability and abuse/recovery tests, and operator token/account/binding instructions. Removed the static destination-list setup requirement; exact owner enforcement stays in application code. Branch candidate only; no deployment, live Cloudflare calls, credentials or activation.
+
 ## [2026-11-11] - Keep optional mail setup usable in short viewports (MC-1166 7e-3)
 
 - Kept Back/Next visible while the agent-mail wizard form scrolls, including at 390×400; raised the mobile status Refresh target to 40px. Changes apply to the disabled mail candidate.

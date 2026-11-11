@@ -13,6 +13,10 @@ MAIL_INGRESS_VERIFIED = "false"
 MAIL_DOMAIN = "mail.example.net"
 MAIL_FROM = "agent@mail.example.net"
 MAIL_SERVICE_KEY_ID = "mail-service-v1"
+# Set the 32-hex account id in your operator copy before enabling enrollment.
+# MAIL_DESTINATION_ACCOUNT_ID = "YOUR_ACCOUNT_ID"
+# MAIL_DESTINATION_TOKEN is a human-created Worker secret, account-scoped with
+# Email Routing Addresses Write + Read. Never store the token in TOML.
 # MAIL_SERVICE_PRIVATE_KEY is a Worker secret: base64url PKCS#8 Ed25519.
 # Never put a private key in this file or registration rows.
 # MAIL_SERVICE_MANIFEST is a plain var (public by design, NOT a secret): the one-line JSON
@@ -24,12 +28,12 @@ MAIL_SERVICE_KEY_ID = "mail-service-v1"
 binding = "MAIL_DB"
 database_name = "agent-mail"
 database_id = "REPLACE_ONLY_AFTER_DEPLOY_APPROVAL"
-# Apply schema.sql to this dedicated database before any enablement.
+# Apply schema.sql then migrations/0001 through 0004, in order, before enablement.
 
 [[send_email]]
 name = "MAIL_SEND"
-# Scope destinations/senders in the operator copy. Worker enforces each install's
-# verified owner even if the binding allows several verified destinations.
+# Do not set destination_address or allowed_destination_addresses: Cloudflare
+# permits the account's verified destinations; app code enforces the exact owner.
 
 [triggers]
 crons = ["* * * * *"]

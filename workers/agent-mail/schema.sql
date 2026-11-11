@@ -1,4 +1,6 @@
 -- Dedicated mail D1 database. Enrollment (unit 7) is the only registration writer.
+-- Bootstrap only: apply migrations/0001_enrollment.sql through 0004_destinations.sql
+-- afterward, in order. Existing databases receive only their unapplied migrations.
 -- Reply-To local budget: 31 opaque characters + '+' + 32 lowercase-hex token.
 -- Enrollment also validates syntax and the full mailbox (see transport contract).
 PRAGMA foreign_keys = ON;

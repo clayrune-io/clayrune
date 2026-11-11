@@ -35,6 +35,7 @@ from mc.agent_mail_lifecycle_fence import LifecycleFences
 from mc.agent_mail_remote import UnavailableRemote
 from mc.agent_mail_service_client import ServiceClient
 from mc.agent_mail_store import MailStore
+from mc.agent_mail_begin_proof import canonical_begin
 
 CP = 'https://authority.example.test'
 CONFIG = {'agent_mail_ceremony_enabled': True, 'agent_mail_enrollment_enabled': True, 'agent_mail_grant_origin': CP}
@@ -103,6 +104,9 @@ class World:
 
     def _begin(self, value, headers):
         v = value['value']
+        proof = value['proof']
+        assert verify_sig(v['device_public_key'], canonical_begin(v, value['flow_secret'], ORIGIN,
+                          proof['timestamp'], proof['nonce']), proof['signature'])
         flow = v['flow_id']
         state = self.flows.get(flow)
         sent = state is None
@@ -454,16 +458,16 @@ def test_unsigned_or_mis_scoped_replies_are_refused_on_every_ceremony_route(kit,
 
 @pytest.mark.parametrize('status', [403, 503, 409, 429, 500])
 def test_a_non_200_answer_never_surfaces_its_body_and_every_worker_code_collapses_to_not_acknowledged(kit, status):
-    """Contract 2.6 preflight_refused (403) and preflight_unavailable (503) share their status with other
-    Worker codes, a non-200 is never signed and HttpsTransport drops its body, so Flask can only say
-    remote_not_acknowledged: the closed Flask set (3.6) has no finer code that would be honest."""
+    """Ordinary refusals disclose no remote body. A provisioning 409 must verify a service
+    signature before its closed hint code can be used; this unsigned fake is refused."""
     kit.world.status = {'begin': status}
     with pytest.raises(EnrollmentRefused, match='^remote_begin_retryable$'):
         kit.start()
     row, secret = kit.ctx()
     with pytest.raises(EnrollmentRefused) as exc:
         kit.remote.ceremony.begin(row, secret)
-    assert str(exc.value) == 'remote_not_acknowledged' and 'remote text' not in repr(exc.value.args)
+    expected = 'remote_response_unsigned' if status == 409 else 'remote_not_acknowledged'
+    assert str(exc.value) == expected and 'remote text' not in repr(exc.value.args)
     assert kit.flow()['assigned'] == 0 and kit.world.mails == 0
 
 

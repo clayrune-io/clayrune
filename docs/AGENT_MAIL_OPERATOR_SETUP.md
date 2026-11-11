@@ -202,9 +202,15 @@ the offline machine as needed. All variables below are public values or file pat
 
     ```bash
     wrangler d1 execute agent-mail --remote --file=./schema.sql
+    wrangler d1 execute agent-mail --remote --file=./migrations/0001_enrollment.sql
+    wrangler d1 execute agent-mail --remote --file=./migrations/0002_delivery_proof.sql
+    wrangler d1 execute agent-mail --remote --file=./migrations/0003_lifecycle.sql
+    wrangler d1 execute agent-mail --remote --file=./migrations/0004_destinations.sql
     ```
 
-    See successful execution of the schema, not a local-only database result.
+    See successful execution of the schema and all four migrations, not a local-only
+    result. For an existing database, inspect its schema and apply only missing
+    migrations with the operator's approval; never replay bootstrap over its data.
 
 21. Bootstrap the disabled Worker (**unverified**, network/deploy; requires your explicit approval):
 
@@ -376,23 +382,42 @@ Worker disabled; no test email is sent by these preparation instructions.
     This does not prove the sender's DNS/DKIM is correct;
     provider verification and a later authorized real-delivery pilot must prove it.
 
-36. In **Email Routing > Destination addresses > Add destination address**, enter
-    the approved owner mailbox and request verification. See a pending destination;
-    this sends provider verification mail and therefore needs human authorization.
+36. A human creates an account-scoped Cloudflare API token with **Email Routing
+    Addresses Write + Read** (the dashboard may label Write as Edit), restricted
+    to the mail service's account. No DNS, Workers or zone-wide write permission
+    is needed by this client. Save it through **Workers & Pages > clayrune-agent-mail
+    > Settings > Variables and Secrets > Add > Secret**, named
+    **`MAIL_DESTINATION_TOKEN`**. This credential step requires human approval;
+    never paste its value into chat, argv, TOML or this repo. In the operator
+    TOML's `[vars]`, set **`MAIL_DESTINATION_ACCOUNT_ID`** to that account's
+    32-character lowercase hex id. See the secret name (masked) and correct public
+    account id; the old `MAIL_DESTINATION_READ_TOKEN` is no longer used.
 
-37. In that mailbox, open the Cloudflare verification message and click **Verify
-    email address**. See the chosen address marked verified in Cloudflare. Verify
-    the sender/domain through the provider's current sender setup too; a verified
-    destination alone is not sender authentication or owner enrollment.
+37. After the remaining launch gates and an approved deployment/enablement,
+    starting enrollment proves device possession and passes CP preflight before
+    the service ensures the exact owner destination. An existing address is never
+    re-created. A new or pending address returns `destination_unverified` before
+    the Clayrune code is generated. The owner opens Cloudflare's verification
+    message and clicks **Verify email address**, then chooses **Resume setup**.
+    Only after provider verification does the separate Clayrune code ceremony run.
+    A pending address lives seven days and can be replaced only after 24 hours;
+    creates are capped at 3/device and 20/account per rolling 24 hours. New creates
+    stop at 190 account addresses (including unrelated addresses and unresolved
+    create claims). A capacity/budget refusal stays pending. An ambiguous create
+    is reconciled by listing, never blindly re-sent; see
+    [recovery details](AGENT_MAIL_AUTO_DESTINATION.md). Verify the sender/domain
+    through the provider's setup too; destination verification is not sender
+    authentication or owner enrollment. This candidate's live signup is unverified.
 
-38. In the operator TOML's `[[send_email]]` block, add
-    `allowed_destination_addresses = ["YOUR_VERIFIED_OWNER_ADDRESS"]` and save.
-    See `name = "MAIL_SEND"` unchanged and destinations restricted to the approved
-    mailbox(es). The field is **unverified** against Wrangler here; verify its
-    current schema before deployment. Do not put this operator file in Git. The
-    Worker still derives each recipient from its own verified owner registration;
-    this binding does not supply consent or owner enrollment. Apply the change
-    with the next approved deployment, not an unrecorded dashboard-only edit.
+38. In the operator TOML's `[[send_email]]` block, retain `name = "MAIL_SEND"`
+    and omit both `destination_address` and `allowed_destination_addresses`.
+    Remove an old static destination restriction only as part of the next
+    approved deployment. [Cloudflare's binding documentation](https://developers.cloudflare.com/email-service/configuration/send-bindings/)
+    specifies that an unrestricted binding reaches verified destinations in the
+    account. Application code still derives each recipient from the install's
+    exact verified owner registration; other account destinations cannot be
+    selected by a send request. No per-user TOML edit/redeploy is needed. Do not
+    commit the operator file. Live binding/provider behavior remains a pilot gate.
 
 39. After verifying exact-rule precedence, in **clayrune.io > Email Routing >
     Routing rules > Catch-all address > Edit**, select **Send to a Worker >

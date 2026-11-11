@@ -27,6 +27,9 @@ text ever reaches custody. A failed check is a **drop**, not a hold.
 | `replay.js` | Scheduled or authenticated recovery replay; proven routes only, fresh signing nonce, manual redirects, exact durable-custody receipts. |
 | `worker.js` | Thin fetch/email/scheduled entry and synthetic dependency injection factory; no enrollment or dashboard-auth bypass. |
 | `manifest-http.js` | `GET /v1/mail/manifest`: serves the PRE-SIGNED service manifest from the `MAIL_SERVICE_MANIFEST` var, verbatim. Never signs, never holds the root key; a missing or malformed var is a 503 with a closed code. |
+| `enrollment-begin-proof.js` | Device possession over every begin field, service, flow-secret digest and freshness; durable D1 nonce claim before provisioning. |
+| `destination-cloudflare.js` | Account-scoped, bounded Cloudflare destination list/create client, no redirects; timestamp/null verification semantics. |
+| `destination-provisioning.js`, `migrations/0004_destinations.sql` | Durable per-device pending attempt, rolling create budgets, account capacity and create tombstones; provider seam wiring. See [signup contract](../../docs/AGENT_MAIL_AUTO_DESTINATION.md). |
 | `auth.js` | `decide(meta, ownerRecord, tokenLookup)` -> `{accept:true, thread, evidence}` or `{accept:false, reason_code}`. `rejectionRecord()` is the only thing kept about a drop: time, reason code, auth result words. |
 | `mailbox.js` | Strict one-mailbox From parsing. Domain case-insensitive, local part exact. No substring or display-name matching. |
 | `authres.js` | Cloudflare `Authentication-Results` (authserv-id `mx.cloudflare.net` only) and the D6=A rule: DMARC pass with aligned SPF **or** DKIM. |

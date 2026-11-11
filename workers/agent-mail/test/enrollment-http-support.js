@@ -6,6 +6,8 @@ import { keys } from './transport-support.js';
 import { base64url, verify } from '../signing.js';
 import { createWorker } from '../worker.js';
 import { Ledger } from '../ledger.js';
+import { canonicalBegin } from '../enrollment-begin-proof.js';
+import { randomId } from '../signing.js';
 
 export const BASE = 'https://service.example.net';
 export const SECRET = 'a'.repeat(64);
@@ -42,14 +44,24 @@ export async function world({ send, preflight, provider, flags = {}, envOver = {
     ...flags, ...envOver };
   // `fetcher` given -> the REAL preflight client runs against it (a fake CP); otherwise a stub function is injected.
   const inject = fetcher ? {} : { preflight: async (v) => { preflights.push(v); return (preflight ?? (async () => ({ ok: true })))(v); } };
-  if (!noProvider) inject.provider = provider ?? (async (address) => ({ address, verified: true }));
+  if (!noProvider) {
+    inject.provider = provider ?? (async (address) => ({ address, verified: true }));
+    // Legacy core/complete tests exercise provider refusal at complete; provisioning has its own tests.
+    if (!inject.provider.ensure) inject.provider.ensure = async ({ address }) => ({ address, verified: true });
+  }
   const worker = createWorker({ clock: () => time.now, fetcher: fetcher ?? (async () => { throw new Error('no_network'); }),
     send: send ?? (async (mail) => { sent.push(mail); }), enrollment: inject });
   const w = { scratch, db, spy, env, worker, service, sent, preflights, log, time, ledger: new Ledger(db),
     restore() { Object.assign(console, real); } };
   w.call = (name, value, over = {}) => call(w, name, value, over);
-  w.begin = (over = {}, secret = SECRET, callOver = {}) => w.call('begin',
-    { value: { ...scratch.value, ...over }, flow_secret: secret }, callOver);
+  w.begin = async (over = {}, secret = SECRET, callOver = {}) => {
+    const value = { ...scratch.value, ...over };
+    const proof = { timestamp: String(time.now), nonce: randomId() };
+    let signature = '';
+    try { signature = base64url(await crypto.subtle.sign('Ed25519', scratch.device.privateKey,
+      await canonicalBegin(value, secret, env.MAIL_SERVICE_ORIGIN, proof.timestamp, proof.nonce))); } catch { /* malformed-input tests */ }
+    return w.call('begin', { value, flow_secret: secret, proof: { ...proof, signature } }, callOver);
+  };
   return w;
 }
 

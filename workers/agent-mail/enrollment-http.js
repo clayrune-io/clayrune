@@ -7,14 +7,15 @@
 // DEFAULT OFF: MAIL_ENROLLMENT_ENABLED must be exactly 'true' (and MAIL_ENABLED, checked by the caller).
 // Off, or any reviewed config absent, answers 503 before one D1 call or one send.
 //
-// AUTH. There is no install key yet, so there is no install signature. `begin` is unauthenticated at the
-// HTTP layer and is gated by the CP preflight (decision E2a: a real, active device first, fail closed).
+// AUTH. Begin proves device possession over its full payload, service, secret digest and freshness.
+// CP preflight still checks active authority; D1 rejects replay before provisioning or code issuance.
 // `confirm` and `complete` need the flow secret (only its SHA-256 is stored); wrong or missing -> 401,
 // charged to the shared unauthenticated bucket, never to an install.
 //
 // REPLIES. Every 200 is service-signed (response-signing.js) with install_id := flow_id and
-// generation := "1"; the true scope rides in the signed body. Every other status is an unsigned closed
-// code and is never an acknowledgment. The one-time code is NEVER in a reply: it leaves only in the mail.
+// generation := "1"; the true scope rides in the signed body. Provisioning's signed 409 hints have
+// only {flow_id,code}, never an acknowledgment. Other refusals stay unsigned closed codes.
+// The one-time code is NEVER in a reply: it leaves only in the mail.
 import { Enrollment } from './enrollment.js';
 import { fieldsR, origin, ID, HEX } from './enrollment-transcript.js';
 import { unbase64url } from './signing.js';
@@ -24,6 +25,8 @@ import { sendEnrollmentCode } from './code-mail.js';
 import { destinationProviderFor } from './enrollment-provider.js';
 import { createPreflightClient } from './enrollment-preflight.js';
 import { parseAddrSpec } from './mailbox.js';
+import { verifyBegin, claimBegin } from './enrollment-begin-proof.js';
+import { DESTINATION_FAILURES } from './destination-provisioning.js';
 
 export const ENROLLMENT_PREFIX = '/v1/mail/enrollment';
 export const ENROLLMENT_ROUTES = Object.freeze(['begin', 'confirm', 'complete']);
@@ -91,7 +94,7 @@ export function enrollmentConfig(env, { config, provider, reader, preflight, fet
         || !ID.test(config.keyId ?? '') || typeof config.privateKey !== 'string' || !config.privateKey) return null;
     const codeKey = unbase64url(env.MAIL_CODE_KEY);
     if (codeKey.length !== 32) return null;
-    const resolved = destinationProviderFor(env, { provider, reader });
+    const resolved = destinationProviderFor(env, { provider, reader, fetcher, clock });
     if (!resolved) return null;
     const pf = preflight ?? createPreflightClient({ issuer: env.MAIL_CP_ISSUER, key_id: config.keyId,
       privateKey: config.privateKey, fetcher, clock });
@@ -106,17 +109,37 @@ export function enrollmentConfig(env, { config, provider, reader, preflight, fet
 
 async function begin(c) {
   const { value } = c;
-  if (!keysOf(value, ['value', 'flow_secret']) || typeof value.flow_secret !== 'string'
+  if (!keysOf(value, ['value', 'flow_secret'], ['proof']) || typeof value.flow_secret !== 'string'
       || !SECRET.test(value.flow_secret)) return reply(400, { code: 'invalid_request' });
   const v = value.value;
   if (!v || typeof v !== 'object' || Array.isArray(v)
       || !['flow_id', 'device_id', 'device_public_key', 'tunnel_uuid', 'route_origin'].every((k) => typeof v[k] === 'string')
       || !ID.test(v.flow_id) || !ID.test(v.device_id)) return reply(400, { code: 'bad_enrollment' });
+  if (!await verifyBegin(value, c.cfg.serviceOrigin, c.now)) throw new Error('human_flow_required');
+  c.core.checkServicePin(v);
   // E2a: ask the CP first. Nothing below runs (no D1 write, no reservation, no mail) unless it says ok.
   const checked = await c.cfg.preflight({ flow_id: v.flow_id, device_id: v.device_id,
     device_public_key: v.device_public_key, tunnel_uuid: v.tunnel_uuid, route_origin: v.route_origin });
   if (checked?.ok !== true) {
     return checked?.refused === true ? reply(403, { code: 'preflight_refused' }) : reply(503, { code: 'preflight_unavailable' });
+  }
+  if (!await claimBegin(c.db, v.device_id, value.proof, c.clock())) throw new Error('human_flow_required');
+  // Recover an existing ceremony without provisioning again; core.begin checks secret/scope/fences.
+  const existing = await c.db.prepare('SELECT 1 AS x FROM mail_enrollment_flows WHERE flow_id=?').bind(v.flow_id).first();
+  if (!existing) {
+    if (await c.core.fenced(v.flow_id)) throw new Error('flow_fenced');
+    try {
+      const destination = c.cfg.provider.ensure
+        ? await c.cfg.provider.ensure({ device_id: v.device_id, address: v.owner_address })
+        : await c.cfg.provider(v.owner_address);
+      if (destination?.address !== v.owner_address || destination.verified !== true) throw new Error('destination_unverified');
+    } catch (error) {
+      if (!DESTINATION_FAILURES.has(error?.message)) console.error('[agent-mail] destination_provisioning_failed');
+      const code = DESTINATION_FAILURES.has(error?.message) ? error.message : 'destination_unavailable';
+      // Signed refusal is a retry hint only: no transcript, code or ownership acknowledgment.
+      const signed = await c.ok(v.flow_id, { flow_id: v.flow_id, code });
+      return new Response(signed.body, { status: 409, headers: signed.headers });
+    }
   }
   const out = await c.core.begin(v, value.flow_secret);
   const m = fieldsR(out.transcript);
@@ -183,7 +206,7 @@ export async function enrollmentHttp({ request, env, ledger, config, send, fetch
     ? reply(401, { code: 'unauthorized' }) : reply(429, { code: 'abuse_limit' });
   const core = new Enrollment({ db: env.MAIL_DB, enabled: true, serviceOrigin: cfg.serviceOrigin,
     servicePin: cfg.servicePin, trust: cfg.trust, codeKey: cfg.codeKey, provider: cfg.provider, clock });
-  const ctx = { value, cfg, core, ledger, config, send, now,
+  const ctx = { value, cfg, core, ledger, config, send, now, db: env.MAIL_DB, clock,
     ok: (flowId, body) => signedReply({ config, install_id: flowId, generation: 1, path: url.pathname, nonce, value: body, clock }) };
   try {
     return await HANDLERS[url.pathname.slice(ENROLLMENT_PREFIX.length + 1)](ctx);
