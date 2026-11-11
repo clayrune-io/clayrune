@@ -23,11 +23,50 @@ def snapshot(session: dict) -> dict:
     return {k: session[k] for k in FIELDS if k in session}
 
 
+def _eligible_parts(provider: Any, trigger_type: Any, spawned_by: Any,
+                    notify_session: Any) -> bool:
+    """The one eligibility rule: eligible() and would_bill_credits() share it."""
+    return ((provider or 'claude') == 'claude'
+            and trigger_type != 'manual'
+            and (trigger_type in UNATTENDED
+                 or bool(spawned_by or notify_session)))
+
+
 def eligible(session: dict) -> bool:
-    return ((session.get('provider') or 'claude') == 'claude'
-            and session.get('trigger_type') != 'manual'
-            and (session.get('trigger_type') in UNATTENDED
-                 or bool(session.get('_spawned_by') or session.get('_notify_session'))))
+    return _eligible_parts(session.get('provider'), session.get('trigger_type'),
+                           session.get('_spawned_by'), session.get('_notify_session'))
+
+
+def would_bill_credits(trigger_type: Any, spawned_by: Any, notify_session: Any,
+                       model: str = '', *, billing: str = '',
+                       billing_preference: str = 'auto') -> bool:
+    """Would env_for_session put a Claude session with these facts on credits?
+
+    Pre-spawn mirror of env_for_session's decision, read-only (no vault read,
+    no session mutation). Used by the allowance gate so a dispatch that would
+    bill the API key is not refused for an exhausted subscription. `billing`
+    / `billing_preference` carry an existing session's sticky choice: a
+    session already on subscription, or scheduled subscription-only, stays on
+    the subscription and is still refused. Any failure answers False (the
+    refusal stands), never a guess.
+    """
+    try:
+        if not _eligible_parts('claude', trigger_type, spawned_by, notify_session):
+            return False
+        if billing == 'subscription' or (billing_preference or 'auto') != 'auto':
+            return False
+        settings = budget.load_settings()
+        ok, _reason = budget.can_spend(offload.resolve_model(model or '', settings), settings)
+        if not ok:
+            return False
+        if billing != 'credits':
+            stop = settings['budget_usd'] * settings['stop_pct'] / 100
+            if stop - budget.spent_this_cycle(settings) < settings['session_reserve_usd']:
+                return False
+        return True
+    except Exception as exc:
+        _log(f'[api-credits-session] would_bill_credits failed: {type(exc).__name__}', flush=True)
+        return False
 
 
 def _subscription(session: dict, reason: str) -> None:
