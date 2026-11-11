@@ -25,5 +25,5 @@
 @media (max-width: 960px) {
   .am-card { padding: 10px 12px; }
   .am-row { grid-template-columns: minmax(0, 1fr); gap: 1px; padding: 8px 0; }
-  .am-refresh { min-height: 36px; }
+  .am-refresh { min-height: 40px; }
 }

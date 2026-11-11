@@ -9,7 +9,7 @@
  * static/ files. Each state is checked at 1000px (desktop) and 390px (mobile).
  *
  * Pins, per state: the headline, the state/tone attributes, the rows that state
- * must show, no horizontal overflow, a screenshot saved under _scratch/7e1/.
+ * must show, no clipping, reachable controls, and viewport screenshots under _scratch/7e3/.
  * Across the whole run:
  *   - the page made ONLY GET requests to /api/agent-mail/* (no POST/PUT/DELETE);
  *   - the card holds no input, select, textarea or form, and its only button is
@@ -24,11 +24,12 @@ import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join, normalize } from 'node:path';
 import { chromium } from 'playwright';
+import { mailLayout } from './_agent-mail-layout.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const STATIC_ROOT = resolve(REPO_ROOT, 'static');
-const SHOTS = resolve(REPO_ROOT, '_scratch', '7e1');
+const SHOTS = resolve(REPO_ROOT, '_scratch', '7e3', 'status');
 mkdirSync(SHOTS, { recursive: true });
 const ORIGIN = 'http://mc.smoke.test';
 
@@ -213,9 +214,7 @@ try {
       });
       check(reach.inside && reach.top >= 0 && reach.bottom <= reach.vh,
         `${tag}: last line scrolls into view and is not covered`, `${tag}: last line unreachable ${JSON.stringify(reach)}`);
-      // Capture the whole card: tall viewport for the picture only, after the checks above.
-      await page.setViewportSize({ width, height: 2400 });
-      await page.locator('#agent-mail-status').screenshot({ path: join(SHOTS, `${name}-${width}.png`) });
+      await mailLayout(page, '#agent-mail-status', tag, check, SHOTS);
     }
   }
 
