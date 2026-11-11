@@ -11,10 +11,11 @@
 // computer's own server (agent-mail-actions.js `act`), and only after the human
 // typed an address and pressed Continue.
 //
-// `start` needs a root-signed service manifest. Nothing in this install produces
-// or fetches one, so Continue reads window.AgentMailManifestSource.get() if a
-// later unit provides it, and until then says plainly that setup cannot begin.
-// No signing path lives here.
+// `start` needs a root-signed service manifest. Continue reads it from
+// window.AgentMailManifestSource.get() (agent-mail-manifest-source.js, which asks
+// this computer's server for one it already verified against the pinned root) and
+// shows that source's plain-words reason when it fails. Without a source at all the
+// form says plainly that setup cannot begin. No signing path lives here.
 //
 // The step only appears in the first-run wizard when the enrollment route answers
 // "not enrolled" (it 404s while agent_mail_enrollment_enabled is off). Escaped
@@ -90,7 +91,9 @@
     let signed = null;
     try { signed = sourceReady() ? await window.AgentMailManifestSource.get() : null; } catch (_) { signed = null; }
     if (!signed || !Array.isArray(signed.manifest) || typeof signed.signature !== 'string') {
-      S.error = 'The signed service manifest could not be obtained, so nothing was sent.'; render(); return;
+      S.error = (signed && typeof signed.message === 'string' && signed.message) ||
+        'The signed service manifest could not be obtained, so nothing was sent.';
+      render(); return;
     }
     S.working = true; render();
     const r = await window.AgentMailActions.act('start', { owner, manifest: signed.manifest, signature: signed.signature });

@@ -28,6 +28,8 @@ def create_blueprint(data_dir: Path, *, store_factory: Callable[[], MailStore] |
     # family without adding another concern to server.py. No operational factory.
     from mc.blueprints.agent_mail_enrollment_routes import create_blueprint as enrollment_blueprint
     bp.register_blueprint(enrollment_blueprint())
+    from mc.blueprints.agent_mail_manifest_routes import create_blueprint as manifest_blueprint
+    bp.register_blueprint(manifest_blueprint())  # 7e-2m: read-only verified-manifest GET
 
     def enrolled_store() -> MailStore:
         # The one shared, outside-repo store (7b location, external marker). It is

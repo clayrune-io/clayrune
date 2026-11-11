@@ -68,6 +68,8 @@ const SIGNATURE = 'c2lnbmF0dXJl';
 // ── the fake server (shared by every scenario; reset between them) ───────────
 let enr = { status: 404, body: { error: 'not_found' } };   // GET /api/agent-mail/enrollment
 let startReply = { status: 200, body: { ok: true }, next: STARTED };
+const GOOD_MANIFEST = { status: 200, body: { manifest: MANIFEST, signature: SIGNATURE, sequence: 1, expires_at_ms: NOW + 100000 } };
+let manifestReply = GOOD_MANIFEST;                         // GET /api/agent-mail/enrollment/manifest (the server's verified fetch)
 let wizard = true;                                         // config.setup_completed is false while true
 let reqs = [];                                             // every non-static request: { method, path, body }
 let pageErrors = [];
@@ -89,6 +91,10 @@ const fresh = async (width, settingsOnly) => {
     if (path === '/api/agent-mail/enrollment') {
       if (req.method() === 'GET') return json(enr.body, enr.status);
       return route.abort();
+    }
+    if (path === '/api/agent-mail/enrollment/manifest') {
+      if (manifestReply === 'abort') return route.abort();
+      return json(manifestReply.body, manifestReply.status);
     }
     if (path === '/api/agent-mail/enrollment/start') {
       if (startReply === 'abort') return route.abort();
@@ -118,7 +124,12 @@ const typePrompt = async (page, pw = PASS) => {
   await input.fill(pw);
   await page.locator('[data-modal-id^="__human-proof-"] .btn-add').click();
 };
-const useSource = (page) => page.evaluate(([m, s]) => { window.AgentMailManifestSource = { get: async () => ({ manifest: m, signature: s }) }; }, [MANIFEST, SIGNATURE]);
+// 7e-2m: the REAL static/js/agent-mail-manifest-source.js loads with the page and asks the (mocked)
+// /api/agent-mail/enrollment/manifest route. dropSource/useSource take it away and put it back so the
+// "no source at all" fail-closed branch of the setup step stays covered.
+const dropSource = (page) => page.evaluate(() => { window._amSrc = window.AgentMailManifestSource; delete window.AgentMailManifestSource; });
+const useSource = (page) => page.evaluate(() => { window.AgentMailManifestSource = window._amSrc; });
+const manifestGets = () => reqs.filter((r) => r.method === 'GET' && r.path === '/api/agent-mail/enrollment/manifest');
 
 // Boots the wizard and walks to the step after the update-ping one.
 async function toAgentMailStep(page) {
@@ -188,6 +199,9 @@ try {
       check(st.ph === 'declined' && st.b.includes('begin'), `decline ${W}: coming back shows it stayed declined, with a way in`, `decline ${W}: ${JSON.stringify(st)}`);
 
       // ── 4. form: no source -> blocked; typing sends nothing ──
+      check(manifestGets().length === 0, `decline ${W}: showing and declining the step never asked for the manifest`, `decline ${W}: ${JSON.stringify(manifestGets())}`);
+      check(await page.evaluate(() => typeof window.AgentMailManifestSource?.get === 'function'), `form ${W}: the real manifest source is installed by index.html`, `form ${W}: no AgentMailManifestSource on window`);
+      await dropSource(page);
       await page.click('#setup-overlay [data-am-setup="begin"]');
       await page.fill('#setup-overlay [data-am-setup-input="owner"]', OWNER);
       await page.waitForTimeout(150);
@@ -206,9 +220,14 @@ try {
       // ── 5. with a manifest source ──
       await useSource(page);
       await page.click('#setup-overlay [data-am-setup="back"]'); await page.click('#setup-overlay [data-am-setup="begin"]');
+      const cont = await page.evaluate(() => ({ off: document.querySelector('#setup-overlay [data-am-setup="continue"]')?.disabled,
+        blocked: !!document.querySelector('#setup-overlay [data-am-setup="blocked"]') }));
+      check(cont.off === false && !cont.blocked, `form ${W}: with the manifest source Continue is enabled`, `form ${W}: ${JSON.stringify(cont)}`);
       await page.fill('#setup-overlay [data-am-setup-input="owner"]', 'not an address');
       await page.click('#setup-overlay [data-am-setup="continue"]');
-      const e2 = await page.evaluate(() => document.querySelector('#setup-overlay [data-am-setup="error"]')?.textContent || '');
+      await page.waitForTimeout(150);
+      check(manifestGets().length === 0, `form ${W}: a bad address is refused before the manifest is asked for`, `form ${W}: ${JSON.stringify(manifestGets())}`);
+      const e2 =await page.evaluate(() => document.querySelector('#setup-overlay [data-am-setup="error"]')?.textContent || '');
       check(/valid email/.test(e2) && !(await page.locator('input[id^="hp-passcode-"]').count()) && !posts().some((r) => r.path.startsWith('/api/agent-mail')),
         `form ${W}: a bad address is refused locally, no prompt, no request`, `form ${W}: "${e2}"`);
 
@@ -219,6 +238,33 @@ try {
       await page.waitForTimeout(200);
       check(!posts().some((r) => r.path.startsWith('/api/agent-mail')), `form ${W}: closing the passcode prompt sent nothing`, `form ${W}: ${JSON.stringify(posts())}`);
       check(await page.evaluate(() => !!document.querySelector('#setup-overlay [data-am-setup-input="owner"]')), `form ${W}: still on the form`, `form ${W}: form gone`);
+
+      // 7e-2m: every way the server's verified manifest fetch can fail ends in plain words, with no
+      // passcode prompt and no POST (nothing is ever sent without a verified manifest)
+      for (const [label, reply, has] of [
+        ['bad_signature (409)', { status: 409, body: { error: 'bad_signature', detail: 'manifest_signature' } }, 'signature did not verify'],
+        ['stale (409)', { status: 409, body: { error: 'stale', detail: 'manifest_time' } }, 'out of date or not valid yet'],
+        ['refused (409)', { status: 409, body: { error: 'refused', detail: 'oversize' } }, 'not in the expected form'],
+        ['not_configured (409)', { status: 409, body: { error: 'not_configured' } }, 'no agent mail service address'],
+        ['unreachable (502)', { status: 502, body: { error: 'unreachable', detail: 'http_404' } }, 'could not be reached'],
+        ['feature off (404)', { status: 404, body: { error: 'not_found' } }, 'not turned on'],
+        ['unreadable answer (200)', { status: 200, body: { nonsense: true } }, 'could not be read'],
+        ['server unreachable', 'abort', 'Could not reach this computer'],
+      ]) {
+        manifestReply = reply; reqs.length = 0;
+        // drop the previous case's message so the wait below can only see this click's answer
+        await page.evaluate(() => document.querySelector('#setup-overlay [data-am-setup="error"]')?.remove());
+        await page.click('#setup-overlay [data-am-setup="continue"]');
+        await page.waitForFunction(() => !!document.querySelector('#setup-overlay [data-am-setup="error"]'), { timeout: 5000 });
+        const t = await page.evaluate(() => document.querySelector('#setup-overlay [data-am-setup="error"]').textContent);
+        check(t.includes(has) && /Nothing was sent/.test(t) && manifestGets().length === 1
+          && !posts().length && !(await page.locator('input[id^="hp-passcode-"]').count()),
+          `manifest ${W}: ${label} -> plain words, one GET, no prompt, no POST`, `manifest ${W}: ${label}: "${t}" gets=${manifestGets().length} posts=${JSON.stringify(posts())}`);
+        check(!/bad_signature|manifest_|http_404|oversize/.test(t), `manifest ${W}: ${label} shows words, not codes`, `manifest ${W}: ${label} leaked a code: "${t}"`);
+        check(await page.evaluate(() => !document.querySelector('#setup-overlay [data-am-setup="continue"]').disabled), `manifest ${W}: ${label} leaves Continue available to retry`, `manifest ${W}: ${label}: Continue stuck disabled`);
+      }
+      await page.screenshot({ path: join(SHOTS, `setup-firstrun-manifest-error-${width}.png`) });
+      manifestReply = GOOD_MANIFEST;
 
       // refusals stay on the form with a clear message
       for (const [label, reply, has] of [
@@ -279,6 +325,7 @@ try {
       await page.click('#agent-mail-setup-slot [data-am-setup="decline"]');
       await page.waitForSelector('#agent-mail-setup-slot [data-am-setup="declined"]');
       check(reqs.length === before && !posts().length, `settings ${W}: No thanks sent nothing`, `settings ${W}: ${JSON.stringify(reqs.slice(before))}`);
+      await dropSource(page);
       await page.click('#agent-mail-setup-slot [data-am-setup="begin"]');
       await page.fill('#agent-mail-setup-slot [data-am-setup-input="owner"]', OWNER);
       check(!reqs.some((r) => (r.body + r.path + r.search).toLowerCase().includes(OWNER_SENT)), `settings ${W}: typing the address sent nothing`, `settings ${W}: leaked`);
