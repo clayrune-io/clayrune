@@ -87,6 +87,8 @@ const fresh = async (width, settingsOnly) => {
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
     if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
     if (STATIC[path]) return route.fulfill({ status: 200, contentType: STATIC[path][0], body: STATIC[path][1] });
+    // mobile.js posts /api/diag/viewport on its own timer; it is not part of the flow under test
+    if (path.startsWith('/api/diag/')) return json({ ok: true });
     reqs.push({ method: req.method(), path, search: url.search, body: req.postData() || '' });
     if (path === '/api/agent-mail/enrollment') {
       if (req.method() === 'GET') return json(enr.body, enr.status);
