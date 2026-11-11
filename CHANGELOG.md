@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-11] - Prepare an offline agent-mail operator setup kit (MC-1166)
+
+- Added human-run root/service Ed25519 key generation outside every Git checkout, exclusive private files, public-only output and stdin-based secret-upload instructions. The manifest signer shares the checkout guard.
+- Added a Windows Git Bash operator guide covering Cloudflare/D1 preparation, signed manifest publication and renewal. It identifies the missing writable Clayrune deployment-settings surface, disabled manifest-route behavior and unverified live launch gates; no credentials, configuration or deployment changed.
+
 ## [2026-11-11] - Keep slow chat revives from looking like failed sends
 
 - At 12 seconds, follow-up sends probe server status with a separate five-second deadline. A reachable server keeps the original send alive, shows `[waking session...]`, and retains a 120-second hard cap; dead sockets still fail visibly.
