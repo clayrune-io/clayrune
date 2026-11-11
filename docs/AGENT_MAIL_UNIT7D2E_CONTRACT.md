@@ -1,5 +1,14 @@
 # MC-1166 unit 7d-2e: human-ceremony transport (implementation contract)
 
+**Begin/provider amendment (2026-11-11):**
+The implemented option A addendum in [AGENT_MAIL_AUTO_DESTINATION.md](AGENT_MAIL_AUTO_DESTINATION.md)
+supersedes this document's metadata-only begin, seam-only destination provider,
+and unsigned-only refusal descriptions for provisioning outcomes. Begin now
+requires device possession proof plus CP preflight; six signed 409 retry hints
+can precede core.begin and code generation. Confirm/grant/complete retain their
+existing requirements. Client and Worker must update together. This remains a
+disabled branch candidate with separate provider/launch gates.
+
 Status: **draft contract, doc only.** Nothing here is built. Dave picked option (a) for D5
 in `docs/AGENT_MAIL_UNIT7D2_CONTRACT.md` (separate unit before any live run). Author: Tobin,
 2026-11-10, on `clayrune/mc1166-u7d2e-contract` (off `f6f67a20`, which contains 7d-2r `8753e45f`).

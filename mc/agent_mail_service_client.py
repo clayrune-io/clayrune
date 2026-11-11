@@ -124,7 +124,11 @@ class HttpsTransport:
                 return {'status': reply.status, 'headers': dict(reply.headers.items()),
                         'body': reply.read(RESPONSE_LIMIT + 1)}
         except urllib.error.HTTPError as exc:
-            return {'status': exc.code, 'headers': {}, 'body': b''}
+            # Begin may return a signed 409 provisioning hint. Clients still verify every byte
+            # and accept no non-200 as a lifecycle/ownership acknowledgment.
+            with exc:
+                return {'status': exc.code, 'headers': dict(exc.headers.items()),
+                        'body': exc.read(RESPONSE_LIMIT + 1)}
 
 
 # --- the client --------------------------------------------------------------------------------------

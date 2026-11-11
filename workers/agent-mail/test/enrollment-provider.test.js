@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createDestinationProvider, fakeDestinationReader, destinationProviderFor, DESTINATION_TOKEN_ENV } from '../enrollment-provider.js';
 
-test('the seam names a read-only token secret and nothing else', () => {
-  assert.equal(DESTINATION_TOKEN_ENV, 'MAIL_DESTINATION_READ_TOKEN');
+test('the seam names the scoped destination management secret', () => {
+  assert.equal(DESTINATION_TOKEN_ENV, 'MAIL_DESTINATION_TOKEN');
 });
 
 test('no network, no fetch and no credential live in the provider module', () => {

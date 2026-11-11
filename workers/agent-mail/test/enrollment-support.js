@@ -22,6 +22,7 @@ export class EnrollmentDB {
       this.sql.exec(readFileSync(new URL('../migrations/0001_enrollment.sql', import.meta.url), 'utf8'));
       // 0003 (fence_digest column, fences, fence-aware commit trigger) only needs 0001; 0002 stays opt-in.
       this.sql.exec(readFileSync(new URL('../migrations/0003_lifecycle.sql', import.meta.url), 'utf8'));
+      this.sql.exec(readFileSync(new URL('../migrations/0004_destinations.sql', import.meta.url), 'utf8'));
     }
   }
   prepare(sql) {
