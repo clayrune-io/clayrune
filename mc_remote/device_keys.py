@@ -210,6 +210,18 @@ def load_identity() -> Optional[DeviceIdentity]:
     )
 
 
+def store_tunnel_uuid(value: str) -> None:
+    """Record the non-secret Cloudflare tunnel id carried by the attestation reply (MC-1166 7d-2e,
+    decision E1). It sits beside `hostname` but is NOT part of the required identity, so an install
+    enrolled before this existed still loads as enrolled and simply has no id until its next attest."""
+    _set("tunnel_uuid", value)
+
+
+def load_tunnel_uuid() -> Optional[str]:
+    """The recorded tunnel id, or None. A keystore failure propagates (KeystoreUnavailable)."""
+    return _get("tunnel_uuid") or None
+
+
 def _restore_from_mirror() -> Optional[DeviceIdentity]:
     """One or more keystore fields are genuinely absent. Check the vault
     mirror; if it has a complete identity, restore it INTO the keystore
@@ -288,7 +300,7 @@ def clear_identity() -> None:
     """
     last_err: Optional[Exception] = None
     for logical in ("device_priv", "enrollment_token", "hostname",
-                    "username", "device_id", "device_pub"):
+                    "username", "device_id", "device_pub", "tunnel_uuid"):
         try:
             _del(logical)
         except Exception as e:

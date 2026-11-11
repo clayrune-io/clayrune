@@ -28,10 +28,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from mc import state
+from mc.agent_mail_ceremony_device import keystore_identity
+from mc.agent_mail_ceremony_remote import ceremony_enabled, select_ceremony
 from mc.agent_mail_enrollment import Enrollment, Prerequisites
 from mc.agent_mail_enrollment_keys import IdentitySeal
+from mc.agent_mail_lifecycle_fence import LifecycleFences
 from mc.agent_mail_outbound import Outbound
 from mc.agent_mail_remote import UnavailableRemote, UnavailableTransport, unavailable_material
+from mc.agent_mail_service_client import HttpsTransport
 from mc.agent_mail_store import DB_FILENAME, MailStore, MailStoreConfig, MailStoreCorrupt, MailStoreError
 from mc.atomic_json import write_json_atomic
 from mc.core import _log
@@ -100,11 +104,15 @@ class MailFactory:
                  config: dict[str, Any] | None = None,
                  store_config: MailStoreConfig | None = None,
                  remote: Any = None, transport: Any = None,
-                 prerequisites: Callable[[], Prerequisites] | None = None):
+                 prerequisites: Callable[[], Prerequisites] | None = None,
+                 ceremony_transport: Any = None, ceremony_device: Callable[[], Any] | None = None):
         self.paths = MailPaths(Path(root) if root is not None else default_root())
         self.clock, self.key, self._config, self.store_config = clock, key, config, store_config
         self.remote = remote if remote is not None else UnavailableRemote()
         self.transport = transport if transport is not None else UnavailableTransport()
+        # Ceremony seams (7d-2e-3). None = the real HTTPS transport / keystore identity, built only
+        # when both ceremony flags are on; tests inject fakes.
+        self._ceremony_transport, self._ceremony_device = ceremony_transport, ceremony_device
         self.prerequisites = prerequisites or Prerequisites
         self._lock = threading.RLock()
         self._store: MailStore | None = None
@@ -235,9 +243,18 @@ class MailFactory:
     def enrollment(self) -> Enrollment:
         store = self.require_store()
         install, root, origin = self._deployment()
-        return Enrollment(store, self.seal(), adapter=self.remote, material=unavailable_material,
+        adapter, fences = self.remote, None
+        if ceremony_enabled(self.config):
+            # Default off. Flow tokens exist only on this path, so every ceremony flow can be cancelled.
+            fences = LifecycleFences(store, enabled=True)
+            adapter = select_ceremony(self.config, store=store, seal=self.seal(), fences=fences,
+                                      transport=self._ceremony_transport or HttpsTransport(),
+                                      root_public_key=root, service_origin=origin,
+                                      device=self._ceremony_device or keystore_identity,
+                                      clock=self.clock) or self.remote
+        return Enrollment(store, self.seal(), adapter=adapter, material=unavailable_material,
                           prerequisites=self.prerequisites, install_id=install, root_public_key=root,
-                          service_origin=origin,
+                          service_origin=origin, fences=fences,
                           enabled=self.config.get('agent_mail_enrollment_enabled') is True)
 
     def outbound(self) -> Outbound:

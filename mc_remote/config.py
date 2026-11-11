@@ -105,6 +105,10 @@ KEYSTORE_KEYS = {
     "username":         "username",          # user's chosen handle
     "enrollment_token": "enrollment_token",  # opaque server-issued credential
     "hostname":         "hostname",          # <username>.PLATFORM_DOMAIN
+    # Non-secret CF tunnel id, written from the attestation reply (MC-1166 7d-2e, decision E1a). Not part
+    # of the required identity: an install enrolled before this field existed has none until its next
+    # attestation, and must still load as enrolled.
+    "tunnel_uuid":      "tunnel_uuid",
 }
 
 # ─── mc-tunnel subprocess ────────────────────────────────────────────────────

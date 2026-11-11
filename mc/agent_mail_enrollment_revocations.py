@@ -66,7 +66,11 @@ class Revocations:
                     or not isinstance(assignment.install, str) or not ID.fullmatch(assignment.install)
                     or type(assignment.generation) is not int or assignment.generation < 1):
                 raise EnrollmentRefused('remote_cancel_scope_mismatch')
-            if row['install'] is not None and assignment != CancelledAssignment(row['install'], row['generation']):
+            # `assignment is None` is the Worker saying no commit exists for this flow, and the fence the
+            # cancel just wrote makes a later commit impossible (7d-2e decision E6): resolve the row with
+            # no remote revoke. A NON-null assignment must still equal what was queued, exactly.
+            if (assignment is not None and row['install'] is not None
+                    and assignment != CancelledAssignment(row['install'], row['generation'])):
                 raise EnrollmentRefused('remote_cancel_scope_mismatch')
             install = assignment.install if assignment is not None else None
             generation = assignment.generation if assignment is not None else None

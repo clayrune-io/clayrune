@@ -32,6 +32,7 @@ import datetime as _dt
 import hashlib
 import logging
 import platform
+import re
 import threading
 from dataclasses import dataclass
 from typing import Optional
@@ -156,6 +157,8 @@ class AttestationOk:
     caps: ProviderCaps
     directives: list[dict]
     received_at: _dt.datetime
+    # Non-secret CF tunnel id from the reply (MC-1166 7d-2e, E1); None when the CP sent none.
+    tunnel_uuid: Optional[str] = None
 
 
 @dataclass
@@ -278,15 +281,36 @@ def attest_once(
             ),
             directives=rsp.get("directives", []),
             received_at=_dt.datetime.now(_dt.timezone.utc),
+            tunnel_uuid=_valid_tunnel_uuid(rsp.get("tunnel_uuid")),
         )
     except (KeyError, ValueError) as e:
         return _fail("internal_error", f"Malformed attestation response: {e}", 0)
 
+    _record_tunnel_uuid(result.tunnel_uuid)
     _set_last_result(result)
     return result
 
 
 # ─── Internals ───────────────────────────────────────────────────────────────
+
+
+_TUNNEL_UUID = re.compile(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}")
+
+
+def _valid_tunnel_uuid(value: object) -> Optional[str]:
+    """The CF tunnel id when the reply carries a well-formed one; anything else is treated as absent."""
+    return value if isinstance(value, str) and _TUNNEL_UUID.fullmatch(value) else None
+
+
+def _record_tunnel_uuid(value: Optional[str]) -> None:
+    """Persist the tunnel id next to hostname so the mail enrollment ceremony can read it (E1).
+    Best-effort: a keystore failure must never fail the attestation that carried it."""
+    if value is None:
+        return
+    try:
+        device_keys.store_tunnel_uuid(value)
+    except Exception as e:
+        log.warning("could not record tunnel_uuid: %s", e)
 
 
 def _build_envelope(
