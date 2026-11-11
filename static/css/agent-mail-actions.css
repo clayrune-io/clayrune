@@ -1,0 +1,39 @@
+/* Settings > Connectivity > Agent mail: mutating controls (MC-1166 unit 7e-2). Sits under the 7e-1 status card. */
+.am-actions-host { margin-top: 10px; min-width: 0; max-width: 100%; }
+.am-actions { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; background: var(--surface2, transparent);
+  min-width: 0; max-width: 100%; box-sizing: border-box; }
+.am-actions-title { font-size: 12px; font-weight: 600; color: var(--text); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 8px; }
+.am-act { padding: 10px 0; border-top: 1px solid var(--border); min-width: 0; }
+.am-actions-title + .am-act, .am-outcome + .am-act { border-top: 0; padding-top: 2px; }
+.am-act-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.am-act-hint { margin-top: 3px; font-size: 11px; line-height: 1.5; color: var(--text-dim); overflow-wrap: anywhere; }
+.am-act-body { margin-top: 8px; min-width: 0; }
+.am-act-btn { padding: 6px 14px; font-size: 12px; background: var(--surface2, transparent); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+.am-act-btn.am-primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+.am-act-btn.am-danger { border-color: var(--red, #c0392b); color: var(--red-text, #c0392b); }
+.am-act-btn:disabled { opacity: .55; cursor: default; }
+.am-code-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
+.am-input { padding: 6px 10px; font-size: 13px; background: var(--surface2, transparent); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px; min-width: 0; max-width: 100%; box-sizing: border-box; }
+.am-mono { font-family: var(--mono, monospace); }
+.am-outcome { margin: 0 0 8px; padding: 8px 10px; border-radius: 6px; font-size: 12px; line-height: 1.5; color: var(--text);
+  border: 1px solid var(--border); overflow-wrap: anywhere; }
+.am-outcome[data-tone="good"] { border-color: var(--green, #2e9d5b); }
+.am-outcome[data-tone="warn"] { border-color: var(--yellow, #d29a1f); }
+.am-outcome[data-tone="bad"] { border-color: var(--red, #c0392b); }
+.am-blockers { margin: 6px 0 0; padding-left: 18px; font-size: 11px; color: var(--text-dim); }
+.am-trigger { opacity: .8; }
+.am-review { border: 1px solid var(--border); border-radius: 6px; padding: 2px 10px; margin-bottom: 10px; }
+.am-rv-row { display: grid; grid-template-columns: minmax(120px, 34%) minmax(0, 1fr); gap: 4px 12px; padding: 6px 0;
+  border-bottom: 1px solid var(--border); font-size: 12px; }
+.am-rv-row:last-child { border-bottom: 0; }
+.am-rv-row .am-value { overflow-wrap: anywhere; }
+@media (max-width: 960px) {
+  .am-actions { padding: 10px 12px; }
+  .am-act-btn { min-height: 40px; }
+  .am-act-body .am-act-btn, .am-code-row .am-act-btn { width: 100%; }
+  .am-code-row { flex-direction: column; align-items: stretch; }
+  .am-input { font-size: 16px; min-height: 40px; width: 100%; }
+  .am-rv-row { grid-template-columns: minmax(0, 1fr); gap: 1px; }
+}

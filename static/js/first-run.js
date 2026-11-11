@@ -126,6 +126,7 @@ const SETUP_STEPS = [
     },
   },
   UPDATE_PING_SETUP_STEP,     // static/js/setup-update-ping-step.js
+  ...(window.AgentMailSetupStep ? [window.AgentMailSetupStep] : []),  // static/js/agent-mail-setup.js (skips itself unless enrollable)
   {
     id: 'essentials-yours',
     title: 'Make it yours',
@@ -840,6 +841,7 @@ function startFirstRun(opts) {
   _setupPhoneRevealed = false;
   _setupAdvExpanded = false;
   resetUpdatePingStep();
+  if (window.AgentMailSetupStep) window.AgentMailSetupStep.reset();
   _setupOpenedTerminalIds = new Set();
   _setupBackupDest = { loaded: false, configured: null, effective: null, override: '', saving: false, saveError: null };
   // Reflect what is already saved, same rule as setupModelTier above — an
