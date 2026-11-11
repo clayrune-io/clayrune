@@ -18,6 +18,8 @@
  *    { owner, manifest, signature, passcode }, and a 409/503 is a clear state;
  *  - in Settings the same step mounts under Controls, declines for free, and a started
  *    enrollment hands over to the status and its next control.
+ *  - layout/reachability for each state, including every manifest failure; short-height
+ *    wizard Back/Next stay pinned while the form scrolls. Screenshots: _scratch/7e3/.
  *
  * RUN: node tools/smoke/agent-mail-setup.mjs
  */
@@ -26,12 +28,13 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
 import { chromium } from 'playwright';
 import { loadStaticJsCss } from './_static.mjs';
+import { mailLayout, mailWizardFooter } from './_agent-mail-layout.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
 const STATIC = loadStaticJsCss(REPO_ROOT);
-const SHOTS = resolve(REPO_ROOT, '_scratch', '7e2');
+const SHOTS = resolve(REPO_ROOT, '_scratch', '7e3', 'setup');
 mkdirSync(SHOTS, { recursive: true });
 const ORIGIN = 'http://mc.smoke.test';
 const PASS = 'correct horse 42';
@@ -124,6 +127,8 @@ const typePrompt = async (page, pw = PASS) => {
   const input = page.locator('input[id^="hp-passcode-"]');
   await input.waitFor({ state: 'visible', timeout: 5000 });
   await input.fill(pw);
+  // Shared passcode styling is outside this unit; still assert every control is reachable.
+  await mailLayout(page, '[data-modal-id^="__human-proof-"] .modal-content', `passcode-${page.viewportSize().width}-${reqs.length}`, check, SHOTS, false);
   await page.locator('[data-modal-id^="__human-proof-"] .btn-add').click();
 };
 // 7e-2m: the REAL static/js/agent-mail-manifest-source.js loads with the page and asks the (mocked)
@@ -182,6 +187,8 @@ try {
         text: document.querySelector('#setup-overlay .wt-card')?.textContent.includes('—') }));
       check(prim.accent === 1 && !prim.text, `decline ${W}: exactly one accent button on the step and no em-dash`, `decline ${W}: ${JSON.stringify(prim)}`);
       await page.screenshot({ path: join(SHOTS, `setup-firstrun-intro-${width}.png`) });
+      await mailLayout(page, '#setup-overlay .am-setup', `intro ${W}`, check, SHOTS);
+      await mailWizardFooter(page, `intro ${W}`, check);
       const before = reqs.length;
       const pingBefore = reqs.filter((r) => r.path === '/api/update-ping/choice').length;
       await page.click('#setup-overlay [data-am-setup="decline"]');
@@ -199,6 +206,8 @@ try {
       const st = await page.evaluate(() => ({ ph: document.querySelector('#setup-overlay .am-setup')?.dataset.amSetupPhase,
         b: [...document.querySelectorAll('#setup-overlay .am-setup [data-am-setup]')].map((x) => x.dataset.amSetup) }));
       check(st.ph === 'declined' && st.b.includes('begin'), `decline ${W}: coming back shows it stayed declined, with a way in`, `decline ${W}: ${JSON.stringify(st)}`);
+      await mailLayout(page, '#setup-overlay .am-setup', `declined ${W}`, check, SHOTS);
+      await mailWizardFooter(page, `declined ${W}`, check);
 
       // ── 4. form: no source -> blocked; typing sends nothing ──
       check(manifestGets().length === 0, `decline ${W}: showing and declining the step never asked for the manifest`, `decline ${W}: ${JSON.stringify(manifestGets())}`);
@@ -212,6 +221,8 @@ try {
       check(f.cont === true && /Setup cannot begin yet/.test(f.blocked), `form ${W}: no manifest source -> Continue disabled and says why`, `form ${W}: ${JSON.stringify(f)}`);
       check(!reqs.some((r) => (r.body + r.path + r.search).toLowerCase().includes(OWNER_SENT)), `form ${W}: the typed address went nowhere`, `form ${W}: leaked in ${JSON.stringify(reqs.filter((r) => (r.body + r.path).toLowerCase().includes(OWNER_SENT)))}`);
       await page.screenshot({ path: join(SHOTS, `setup-firstrun-blocked-${width}.png`) });
+      await mailLayout(page, '#setup-overlay .am-setup', `blocked ${W}`, check, SHOTS);
+      await mailWizardFooter(page, `blocked ${W}`, check);
       await page.evaluate(() => document.querySelector('#setup-overlay [data-am-setup="continue"]').removeAttribute('disabled'));
       await page.click('#setup-overlay [data-am-setup="continue"]');
       await page.waitForTimeout(150);
@@ -230,6 +241,8 @@ try {
       await page.waitForTimeout(150);
       check(manifestGets().length === 0, `form ${W}: a bad address is refused before the manifest is asked for`, `form ${W}: ${JSON.stringify(manifestGets())}`);
       const e2 =await page.evaluate(() => document.querySelector('#setup-overlay [data-am-setup="error"]')?.textContent || '');
+      await mailLayout(page, '#setup-overlay .am-setup', `invalid-address ${W}`, check, SHOTS);
+      await mailWizardFooter(page, `invalid-address ${W}`, check);
       check(/valid email/.test(e2) && !(await page.locator('input[id^="hp-passcode-"]').count()) && !posts().some((r) => r.path.startsWith('/api/agent-mail')),
         `form ${W}: a bad address is refused locally, no prompt, no request`, `form ${W}: "${e2}"`);
 
@@ -259,6 +272,8 @@ try {
         await page.click('#setup-overlay [data-am-setup="continue"]');
         await page.waitForFunction(() => !!document.querySelector('#setup-overlay [data-am-setup="error"]'), { timeout: 5000 });
         const t = await page.evaluate(() => document.querySelector('#setup-overlay [data-am-setup="error"]').textContent);
+        await mailLayout(page, '#setup-overlay .am-setup', `manifest-${label} ${W}`, check, SHOTS);
+        await mailWizardFooter(page, `manifest-${label} ${W}`, check);
         check(t.includes(has) && /Nothing was sent/.test(t) && manifestGets().length === 1
           && !posts().length && !(await page.locator('input[id^="hp-passcode-"]').count()),
           `manifest ${W}: ${label} -> plain words, one GET, no prompt, no POST`, `manifest ${W}: ${label}: "${t}" gets=${manifestGets().length} posts=${JSON.stringify(posts())}`);
@@ -266,6 +281,11 @@ try {
         check(await page.evaluate(() => !document.querySelector('#setup-overlay [data-am-setup="continue"]').disabled), `manifest ${W}: ${label} leaves Continue available to retry`, `manifest ${W}: ${label}: Continue stuck disabled`);
       }
       await page.screenshot({ path: join(SHOTS, `setup-firstrun-manifest-error-${width}.png`) });
+      // Short phone/desktop height (including room lost to a software keyboard).
+      await page.setViewportSize({ width, height: 400 });
+      await mailWizardFooter(page, `short-height ${W}`, check);
+      await mailLayout(page, '#setup-overlay .am-setup', `short-height ${W}`, check, SHOTS);
+      await page.setViewportSize({ width, height: width === 390 ? 800 : 900 });
       manifestReply = GOOD_MANIFEST;
 
       // refusals stay on the form with a clear message
@@ -280,6 +300,8 @@ try {
         await typePrompt(page);
         await page.waitForFunction(() => !!document.querySelector('#setup-overlay [data-am-setup="message"]'), { timeout: 8000 });
         const m = await page.evaluate(() => document.querySelector('#setup-overlay [data-am-setup="message"]').textContent);
+        await mailLayout(page, '#setup-overlay .am-setup', `start-${label} ${W}`, check, SHOTS);
+        await mailWizardFooter(page, `start-${label} ${W}`, check);
         check(m.includes(has) && (await title(page)) === 'Agent mail (optional)', `start ${W}: ${label} is shown and the step stays put`, `start ${W}: ${label}: "${m}"`);
       }
 
@@ -299,6 +321,8 @@ try {
       const o2 = await overflow(page);
       check(o2.doc <= 1 && o2.card <= 1, `start ${W}: no horizontal overflow`, `start ${W}: overflow ${JSON.stringify(o2)}`);
       await page.screenshot({ path: join(SHOTS, `setup-firstrun-started-${width}.png`) });
+      await mailLayout(page, '#setup-overlay .am-setup', `started ${W}`, check, SHOTS);
+      await mailWizardFooter(page, `started ${W}`, check);
       await page.click('#setup-overlay .wt-btn-primary');
       await page.waitForFunction(() => document.querySelector('#setup-overlay .wt-title')?.textContent === 'Make it yours', { timeout: 5000 });
       ok(`start ${W}: Next moves on to "Make it yours"`);
@@ -338,9 +362,7 @@ try {
       await page.fill('#agent-mail-setup-slot [data-am-setup-input="owner"]', OWNER);
       const l0 = await page.evaluate(() => ({ over: document.documentElement.scrollWidth - document.documentElement.clientWidth }));
       check(l0.over <= 1, `settings ${W}: form has no horizontal overflow`, `settings ${W}: overflow ${l0.over}`);
-      await page.setViewportSize({ width, height: 2000 });
-      await page.locator('#agent-mail-controls-host').screenshot({ path: join(SHOTS, `setup-settings-form-${width}.png`) });
-      await page.setViewportSize({ width, height: width === 390 ? 800 : 900 });
+      await mailLayout(page, '#agent-mail-controls-host', `settings-form ${W}`, check, SHOTS);
       reqs.length = 0;
       await page.click('#agent-mail-setup-slot [data-am-setup="continue"]');
       await typePrompt(page);

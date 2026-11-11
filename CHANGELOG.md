@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-11] - Keep optional mail setup usable in short viewports (MC-1166 7e-3)
+
+- Kept Back/Next visible while the agent-mail wizard form scrolls, including at 390×400; raised the mobile status Refresh target to 40px. Changes apply to the disabled mail candidate.
+- Extended every synthetic mail status/action/setup state with clipping and control-reachability checks at 390px and 1000px, plus short-height wizard checks and viewport screenshots. Added installer coverage for the app import graph, macOS static data and source-install archives.
+- Added clearly marked DRAFT privacy, README and user-guide disclosures covering recipients, extraction, provisional retention and local disable versus remote revocation/erasure. No policy publication, service activation or deployment.
+
 ## [2026-11-11] - Prepare an offline agent-mail operator setup kit (MC-1166)
 
 - Added human-run root/service Ed25519 key generation outside every Git checkout, exclusive private files, public-only output and stdin-based secret-upload instructions. The manifest signer shares the checkout guard.

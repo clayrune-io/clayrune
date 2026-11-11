@@ -12,7 +12,18 @@
   border: 1px solid var(--yellow, #d29a1f); color: var(--text); overflow-wrap: anywhere; }
 .am-setup-error { border-color: var(--red, #c0392b); }
 .am-setup-actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+/* Only this wizard step: scroll the disclosure/form, keep Back/Next in view
+   when a short viewport (including the software keyboard) reduces its height. */
+#setup-overlay .wt-card.wt-card-wide:has(#agent-mail-setup-step-host) {
+  display: flex; flex-direction: column; overflow: hidden;
+  max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px);
+}
+#setup-overlay .wt-card:has(#agent-mail-setup-step-host) > .wt-body {
+  min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+}
+#setup-overlay .wt-card:has(#agent-mail-setup-step-host) > :not(.wt-body) { flex-shrink: 0; }
 @media (max-width: 960px) {
   .am-setup-actions { flex-direction: column; }
   .am-setup-actions .am-act-btn { width: 100%; min-height: 40px; }
+  #setup-overlay .wt-card:has(#agent-mail-setup-step-host) > .wt-actions button { min-height: 40px; }
 }

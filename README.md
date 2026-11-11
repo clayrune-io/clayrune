@@ -177,6 +177,25 @@ or `CLAYRUNE_NO_PING=1` in the environment, which overrides the setting. The
 sending code is [`mc/update_ping.py`](mc/update_ping.py); the receiving Worker is
 [`workers/update-ping`](workers/update-ping).
 
+**DRAFT: optional agent mail (disabled implementation candidate).** Agent mail
+has separate, identified data processing: opting in sends your owner email,
+installation/public-key and tunnel evidence to the Clayrune mail service on
+Cloudflare. Sending a note or question shares its subject/body, project name and
+conversation label with the service and email providers. Replies pass through
+Cloudflare and local tool-free Claude extraction before an accepted reply reaches
+the recorded agent conversation and its provider. Session history and normal
+project memory may retain that reply. Viewing or declining setup sends no owner
+address and leaves the anonymous ping choice unchanged.
+
+To turn an enrolled installation off, use **Settings > Connectivity > Agent mail
+> Disable** and confirm with your dashboard passcode. Local mail stops on a
+successful disable; remote revocation may remain pending and can be retried.
+Disable does not erase prior mail or conversation history. This is draft
+disclosure text, not a service launch or an effective privacy policy; retention
+and deletion commitments still need approval. See the
+[draft privacy disclosure](docs/AGENT_MAIL_PRIVACY_DRAFT.md) and
+[draft user-guide section](docs/USER_GUIDE.md#draft-agent-mail-disabled-candidate).
+
 </details>
 
 <details>

@@ -20,7 +20,9 @@
  *  - Disable (and Retry revocation) stay reachable: in every enrolled state, while Enable is
  *    blocked, and when the status itself cannot be read (503 / 500);
  *  - a closed prompt or a malformed code sends nothing;
- *  - no horizontal overflow; the status card itself still has only its Refresh button.
+ *  - no clipping, all controls scroll into view, and mobile targets >=40px;
+ *    real-height screenshots under _scratch/7e3/ (no tall viewport workaround).
+ *    The status card itself still has only its Refresh button.
  *
  * RUN: node tools/smoke/agent-mail-actions.mjs
  */
@@ -28,11 +30,12 @@ import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join, normalize } from 'node:path';
 import { chromium } from 'playwright';
+import { mailLayout } from './_agent-mail-layout.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const STATIC_ROOT = resolve(REPO_ROOT, 'static');
-const SHOTS = resolve(REPO_ROOT, '_scratch', '7e2');
+const SHOTS = resolve(REPO_ROOT, '_scratch', '7e3', 'actions');
 mkdirSync(SHOTS, { recursive: true });
 const ORIGIN = 'http://mc.smoke.test';
 const PASS = 'correct horse 42';
@@ -136,10 +139,13 @@ const prompt = async (pw = PASS) => {
   const input = page.locator('input[id^="hp-passcode-"]');
   await input.waitFor({ state: 'visible', timeout: 5000 });
   await input.fill(pw);
+  await mailLayout(page, '[data-modal-id^="__human-proof-"] .modal-content',
+    `passcode-${page.viewportSize().width}-${getCount}-${posts.length}`, check, SHOTS, false);
   await page.locator('[data-modal-id^="__human-proof-"] .btn-add').click();
 };
 const outcome = async (action) => {
   await page.waitForSelector(`#agent-mail-actions [data-am="outcome"][data-action="${action}"]`, { timeout: 8000 });
+  await mailLayout(page, '#agent-mail-actions', `${action}-outcome-${page.viewportSize().width}-${posts.length}-${getCount}`, check, SHOTS);
   return page.evaluate(() => { const o = document.querySelector('#agent-mail-actions [data-am="outcome"]');
     return { tone: o.dataset.tone, code: o.dataset.code, text: o.textContent, blockers: [...o.querySelectorAll('li')].map((l) => l.textContent.trim()),
       injected: o.querySelectorAll('img, script, iframe, b, i, a, svg').length, html: o.innerHTML }; });
@@ -214,11 +220,6 @@ try {
         dom: document.documentElement.innerHTML.includes(p) || [...document.querySelectorAll('input')].some((i) => i.value.includes(p)),
         store: JSON.stringify(localStorage).includes(p) + JSON.stringify(sessionStorage).includes(p) }), PASS);
       check(!leak.dom && !leak.store, `${tag}: the passcode is not in the DOM or storage`, `${tag}: leak ${JSON.stringify(leak)}`);
-      if (width === 1000 || f.name === 'enable') {
-        await page.setViewportSize({ width, height: 2000 });
-        await page.locator('#agent-mail-actions').screenshot({ path: join(SHOTS, `${f.name}-${width}.png`) });
-        await page.setViewportSize({ width, height: width === 390 ? 800 : 900 });
-      }
     }
 
     // ── a wrong passcode re-prompts; the second try goes through ──
@@ -233,6 +234,7 @@ try {
       await prompt('nope');
       await page.locator('input[id^="hp-passcode-"]').waitFor({ state: 'visible' });
       await page.waitForFunction(() => /Wrong dashboard passcode/.test(document.querySelector('[data-modal-id^="__human-proof-"]')?.textContent || ''));
+      await mailLayout(page, '[data-modal-id^="__human-proof-"] .modal-content', `wrong-passcode ${W}`, check, SHOTS, false);
       await prompt(PASS);
       const o = await outcome('enable');
       check(posts.length === 2 && posts[0].body.passcode === 'nope' && posts[1].body.passcode === PASS && o.tone === 'good',
@@ -274,11 +276,6 @@ try {
       check(await enabledBtn('disable') && await enabledBtn('enable'), `${tag}: Disable and Enable are usable again`, `${tag}: buttons stuck`);
       const l = await layoutOk();
       check(l.over <= 1 && l.hostOver <= 1 && l.right <= l.vw + 1, `${tag}: no horizontal overflow`, `${tag}: overflow ${JSON.stringify(l)}`);
-      if (e.name === 'human_required' || e.name === 'storage_unavailable') {
-        await page.setViewportSize({ width, height: 2000 });
-        await page.locator('#agent-mail-actions').screenshot({ path: join(SHOTS, `err-${e.name}-${width}.png`) });
-        await page.setViewportSize({ width, height: width === 390 ? 800 : 900 });
-      }
     }
 
     // ── network failure: the shared prompt stays open with its own message; closing it sends nothing ──
@@ -289,6 +286,7 @@ try {
       await page.click('#agent-mail-actions [data-am-action="enable"]');
       await prompt();
       await page.waitForFunction(() => /Could not reach the server/.test(document.querySelector('[data-modal-id^="__human-proof-"]')?.textContent || ''), { timeout: 8000 });
+      await mailLayout(page, '[data-modal-id^="__human-proof-"] .modal-content', `network-failure ${W}`, check, SHOTS, false);
       ok(`${tag}: the prompt stays open and says it could not reach the server`);
       await page.evaluate(() => document.querySelector('[data-modal-id^="__human-proof-"] .modal-close').click());
       const o = await outcome('enable');
@@ -396,6 +394,7 @@ try {
       get = { status: 200, body: st }; replies = {};
       await openPanel();
       const c = await controls();
+      await mailLayout(page, '#agent-mail-controls-host', `${name} ${W}`, check, SHOTS);
       check(same(c, want), `${name} ${W}: controls ${JSON.stringify(want)}`, `${name} ${W}: controls ${JSON.stringify(c)}, wanted ${JSON.stringify(want)}`);
     }
     for (const [name, g, wantDisable, tone] of [['status 503', { status: 503, body: { error: 'operational_adapter_unavailable' } }, true],
@@ -403,6 +402,7 @@ try {
       get = g; replies = { disable: { status: 200, body: {} } };
       await openPanel();
       const c = await controls();
+      await mailLayout(page, '#agent-mail-controls-host', `${name} ${W}`, check, SHOTS);
       check(wantDisable ? same(c, ['disable']) && await enabledBtn('disable') : c.length === 0,
         `${name} ${W}: ${wantDisable ? 'only the off switch is offered' : 'no controls at all'}`, `${name} ${W}: controls ${JSON.stringify(c)}`);
     }

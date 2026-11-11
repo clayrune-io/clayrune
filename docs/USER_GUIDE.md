@@ -983,6 +983,55 @@ The categories are **Providers**, **Memory**, **Appearance**, **Connectivity**,
 timezone**. The old Agent category is retired; searching its former labels
 links to their current homes.
 
+### DRAFT: agent mail (disabled candidate)
+
+**DRAFT ONLY. This feature is a disabled implementation candidate; this section
+does not mean the service is available or authorize turning it on.** Do not
+recommend changing feature flags to enable it. Deployment, live acceptance and
+privacy publication remain separate gates.
+
+When available, optional setup appears in first-run setup and under **Settings >
+Connectivity > Agent mail**. **No thanks** completes the step with no owner-address
+transmission or registration and no change to the anonymous update ping. It does
+not disable an enrollment that already exists. **Set up agent mail** asks for an
+owner mailbox. **Continue** fetches the signed service manifest and then asks for
+your dashboard passcode before starting enrollment. If the service/manifest is
+unavailable or verification fails, setup stays on the form with a reason.
+
+Enrollment shares your address, installation/public-key evidence and tunnel route
+with the Clayrune mail service and its enrollment authority. The controls guide
+you through **Resume**, **Review details**, **Confirm**, the verification code,
+delivery proof and **Enable** as each becomes applicable. A working compatible
+tunnel, Claude extraction and machine delivery proof are prerequisites; pending
+verification can be resumed after a restart. Passcode confirmation protects each
+mutation. Email replies cannot approve protected actions or unlock human gates.
+
+The service on Cloudflare and email providers process sent notes/questions,
+including project name and conversation label. Incoming supported reply text
+passes through Cloudflare and a tool-free Claude extraction call, then through
+the selected provider for the recorded conversation. Accepted replies may remain
+in that conversation's local history and normal project memory. Read the
+[DRAFT privacy disclosure](AGENT_MAIL_PRIVACY_DRAFT.md) for data recipients,
+provisional retention and unresolved deletion commitments.
+
+The status card shows the owner hint, on/off state, prerequisites, held or
+uncertain work, recovery health and pending revocations/deletions. **Refresh**
+reads it again. Uncertain delivery is not proof of a completed turn; it must not
+be blindly resent. This panel does not render raw replies or offer account-wide
+data erasure, owner changes or key/pin replacement.
+
+To stop mail, choose **Disable** and confirm with your dashboard passcode. A
+successful local disable blocks new local sends and mail continuations at once.
+**Disabled here, revocation pending** means remote revocation still needs an
+acknowledgment; **Retry revocation** asks the service again. Disable is offered
+even if status cannot be read and while unattended agents run. If the disable
+request itself fails, mail may still be on: read the outcome and retry.
+Turning mail off does not erase earlier messages or transcripts. Session/project
+deletion revokes its local bindings and cancels queued local mail work, retrying
+that local cleanup if necessary. It does not erase the service registration or
+all remote copies. Service-wide erasure and processor/backup deletion timelines
+still need a published process.
+
 ### Provider defaults and project overrides
 
 **Settings > Providers > Connections** manages installation, sign-in, the
