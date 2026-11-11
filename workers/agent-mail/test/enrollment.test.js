@@ -49,7 +49,8 @@ test('valid grant records ownership only, consumes once, exact retry stable afte
   const f = await fixture(); assert.equal(await f.confirm(), true);
   const token = await f.token(); const result = await f.complete({ token });
   assert.deepEqual(result, { install_id: f.m.install_id, generation: 1,
-    state: 'ownership_recorded_delivery_pending', active: false, route_verified: false });
+    state: 'ownership_recorded_delivery_pending', active: false, route_verified: false,
+    ownership_expires_ms: NOW + 300_000 }); // 7d-2e 2.5: the committed lease end rides in the result
   const reg = f.db.sql.prepare('SELECT * FROM registrations').get();
   assert.equal(reg.active, 0); assert.equal(reg.route_verified, 0); assert.equal(reg.owner_verified, 1);
   const i = f.db.sql.prepare('SELECT * FROM mail_installations').get();

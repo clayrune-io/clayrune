@@ -1,0 +1,66 @@
+{
+ "_meta": "Python-built by tests/test_agent_mail_u7d2e_ceremony_vectors.py; fixed seeds; public material only.",
+ "canonical_sha256": "90695811372dd9e63fe83dfb3cc224d27e99807e4a4bdc4fb0d21f223c7ab20d",
+ "device_public_key": "F0VTtFbd38aQjsqxwQH-arIeK6oGF3lbfUOmNIKZP9U",
+ "device_signature": "jB6JLwCKo2j6RGnLSNXsmKiaEEIVsf-yG8DANCyw0ih8w7YSzhFSY46JHiLFO9RXnuNmklzP5IgpIfwIeOxUAw",
+ "flow_id": "flow1",
+ "generation": 1,
+ "mail_public_key": "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc",
+ "mail_signature": "3HZjViYq65i9QTqlotwMWLXmQ5uv5q2AkvDpvGrmRIdN2zNgTv9e3np5q_4-kODejSuCcyg7hQ4LRA5GtGBPAw",
+ "now_ms": 1794249600000,
+ "r": [
+  "clayrune-mail-enrollment",
+  "1",
+  "https://mail.example.test",
+  "flow1",
+  "challenge1",
+  "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+  "1794250500000",
+  "install1",
+  "0",
+  "device1",
+  "F0VTtFbd38aQjsqxwQH-arIeK6oGF3lbfUOmNIKZP9U",
+  "mail_flow1",
+  "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc",
+  "b2096dbc5111b6305225657ffdfab205aaff1dfb30d71805aea56922b2cbb24f",
+  "12345678-1234-1234-1234-123456789abc",
+  "https://device.example.test",
+  "/api/agent-mail/ingress",
+  "1",
+  "service1",
+  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+ ],
+ "replies": {
+  "begin": {
+   "body": "{\"flow_id\":\"flow1\",\"install_id\":\"install1\",\"expected_generation\":0,\"transcript\":[\"clayrune-mail-enrollment\",\"1\",\"https://mail.example.test\",\"flow1\",\"challenge1\",\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"1794250500000\",\"install1\",\"0\",\"device1\",\"F0VTtFbd38aQjsqxwQH-arIeK6oGF3lbfUOmNIKZP9U\",\"mail_flow1\",\"Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc\",\"b2096dbc5111b6305225657ffdfab205aaff1dfb30d71805aea56922b2cbb24f\",\"12345678-1234-1234-1234-123456789abc\",\"https://device.example.test\",\"/api/agent-mail/ingress\",\"1\",\"service1\",\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"],\"state\":\"pending\",\"code_sent\":true}",
+   "digest": "582b7f8a2002492446fe49aff4095a9ada6b7c5e111e3399ad69bea169560251",
+   "direction": "service-to-install-response",
+   "key_id": "service1",
+   "nonce": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+   "path": "/v1/mail/enrollment/begin",
+   "signature": "duN90677hDWcMhRlMVj_CiEy5lAjEY5skkHZ5R_Fn9Qnd23qOqdBXaio9r2ToX6jUDro9_O9iOiECVJzB0-QDQ",
+   "timestamp": "1794249600000"
+  },
+  "complete": {
+   "body": "{\"flow_id\":\"flow1\",\"install_id\":\"install1\",\"generation\":1,\"state\":\"ownership_recorded_delivery_pending\",\"active\":false,\"route_verified\":false,\"ownership_expires_ms\":1794249900000}",
+   "digest": "0b2c8447ec5c04351676cd47617974d8beee7dc04ef694c68cfa8ea8df904252",
+   "direction": "service-to-install-response",
+   "key_id": "service1",
+   "nonce": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+   "path": "/v1/mail/enrollment/complete",
+   "signature": "VvIgI8pfJ_8LlR0nlrdjZc75RD5QPj318Rr3U2rFewkSMi9BIbnvoQRPaiHMqulmrBPjE9WyqoJogRMLUpq9Bw",
+   "timestamp": "1794249600000"
+  },
+  "confirm": {
+   "body": "{\"flow_id\":\"flow1\",\"confirmed\":true,\"state\":\"pending\"}",
+   "digest": "a1a456a39c76cd3e6e99e8e6cfaef941cd4b2e8f55a43c5d24c8d502f8507a27",
+   "direction": "service-to-install-response",
+   "key_id": "service1",
+   "nonce": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+   "path": "/v1/mail/enrollment/confirm",
+   "signature": "ly3fl_TjDdDvdKZ5yFbK3KqGiuJ8MdLCcOcy1HCvQTm1q2L2ozseSsKuXReS9FgYi3ts8gmLNZ4AXeqEel1DDA",
+   "timestamp": "1794249600000"
+  }
+ },
+ "service_public_key": "JUO5L_EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0"
+}
