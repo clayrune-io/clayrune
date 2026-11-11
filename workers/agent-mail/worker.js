@@ -7,6 +7,7 @@ import { outbound } from './outbound.js';
 import { replay } from './replay.js';
 import { lifecycle, isLifecyclePath, drainCpRevokes, cpFor } from './lifecycle.js';
 import { enrollmentHttp, isEnrollmentPath } from './enrollment-http.js';
+import { manifestHttp, isManifestRequest } from './manifest-http.js';
 const reply = (status, value) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
 export function createWorker({ send, fetcher = fetch, clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS, cp, enrollment } = {}) {
   const config = (env) => ({ domain: env.MAIL_DOMAIN, from: env.MAIL_FROM,
@@ -44,6 +45,8 @@ export function createWorker({ send, fetcher = fetch, clock = Date.now, bodyTime
           return reply(503, { code: 'storage_or_configuration_failure' });
         }
       }
+      // Pre-signed service manifest (7e-2p): own module; serves operator config only, never signs.
+      if (isManifestRequest(request, url)) return manifestHttp({ env });
       if (request.method !== 'POST' || !['/v1/mail/send', '/v1/mail/reconcile'].includes(url.pathname)
           || url.search) return reply(404, { code: 'not_found' });
       const ledger = new Ledger(env.MAIL_DB);

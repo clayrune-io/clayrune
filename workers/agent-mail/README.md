@@ -26,6 +26,7 @@ text ever reaches custody. A failed check is a **drop**, not a hold.
 | `ledger.js`, `schema.sql` | Dedicated D1 state, transactional send/correlation reservation, queue bounds, leased claims, generation revocation and retention. |
 | `replay.js` | Scheduled or authenticated recovery replay; proven routes only, fresh signing nonce, manual redirects, exact durable-custody receipts. |
 | `worker.js` | Thin fetch/email/scheduled entry and synthetic dependency injection factory; no enrollment or dashboard-auth bypass. |
+| `manifest-http.js` | `GET /v1/mail/manifest`: serves the PRE-SIGNED service manifest from the `MAIL_SERVICE_MANIFEST` var, verbatim. Never signs, never holds the root key; a missing or malformed var is a 503 with a closed code. |
 | `auth.js` | `decide(meta, ownerRecord, tokenLookup)` -> `{accept:true, thread, evidence}` or `{accept:false, reason_code}`. `rejectionRecord()` is the only thing kept about a drop: time, reason code, auth result words. |
 | `mailbox.js` | Strict one-mailbox From parsing. Domain case-insensitive, local part exact. No substring or display-name matching. |
 | `authres.js` | Cloudflare `Authentication-Results` (authserv-id `mx.cloudflare.net` only) and the D6=A rule: DMARC pass with aligned SPF **or** DKIM. |
@@ -175,6 +176,21 @@ text and no counts:
 a visible reason, no text. (Dave's call 2026-11-08: deciding what HTML hides is
 an arms race; every mainstream client sends a plain alternative.) `html_parts`
 and `remote_image_refs` are counts only.
+
+## Publishing the signed service manifest
+
+`GET /v1/mail/manifest` (no query string, GET only) returns the root-signed manifest the dashboard
+verifies against its pinned root (`mc/agent_mail_manifest_fetch.py`). The Worker does **not** sign:
+it serves the JSON in the plain var `MAIL_SERVICE_MANIFEST` byte for byte, `cache-control: no-store`.
+The var is public by design (only the root key can produce a document the dashboard accepts), so it
+is not a secret; the root PRIVATE key never goes near Cloudflare.
+
+- Unset var: `503 {"code":"manifest_not_configured"}`. Wrong shape, bad signature encoding or over
+  32 KiB: `503 {"code":"manifest_malformed"}`. The shape check is not a signature check.
+- Sign offline with `tools/agent-mail-manifest-sign.py` (the key is read from a file path outside
+  every git checkout, never from argv or env), then set the output as `MAIL_SERVICE_MANIFEST` in your
+  own `wrangler.toml` or the dashboard and deploy. The signed `sequence` must exceed the previous one,
+  and a new manifest must be published before the old one expires: the dashboard refuses a stale one.
 
 ## Known limits
 

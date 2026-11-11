@@ -15,6 +15,10 @@ MAIL_FROM = "agent@mail.example.net"
 MAIL_SERVICE_KEY_ID = "mail-service-v1"
 # MAIL_SERVICE_PRIVATE_KEY is a Worker secret: base64url PKCS#8 Ed25519.
 # Never put a private key in this file or registration rows.
+# MAIL_SERVICE_MANIFEST is a plain var (public by design, NOT a secret): the one-line JSON
+# {"manifest":[...],"signature":"..."} printed by tools/agent-mail-manifest-sign.py, signed OFFLINE
+# with the root key. Set it in your own copy or the dashboard; the Worker only serves it.
+# Unset, it answers 503 manifest_not_configured. Never put the root key anywhere near this file.
 
 [[d1_databases]]
 binding = "MAIL_DB"
