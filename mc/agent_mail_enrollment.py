@@ -20,7 +20,9 @@ from mc.agent_mail_ingress import MailIngress
 from mc.agent_mail_lifecycle_fence import LifecycleFences
 from mc.agent_mail_service_manifest import ServiceKeyCandidate, verify_service_manifest
 from mc.agent_mail_signing import ID, ServicePin
+from mc import agent_mail_status_view as status_view
 from mc.agent_mail_store import MailStore
+from mc.core import _log
 
 ROUTE = '/api/agent-mail/ingress'
 
@@ -113,13 +115,21 @@ class Enrollment:
 
     def status(self) -> dict:
         self._enabled()
+        # Cached worker evidence is read BEFORE the read transaction, like enable().
+        evidence = None
+        if self.delivery is not None:
+            try:
+                evidence = self.delivery.snapshot_evidence()
+            except Exception as exc:
+                _log(f'[agent-mail] status evidence read failed: {type(exc).__name__}', flush=True)
         with self.store._read() as db:
             row = self._row(db)
             pending = db.execute('SELECT COUNT(*) FROM mail_enrollment_revocations WHERE done=0').fetchone()[0]
             reg = db.execute('SELECT * FROM registrations WHERE registration_id=?',
                              (row['install'] if row else self.install_id,)).fetchone()
+            extra = self._status_extra(db, row, evidence)
         if not row:
-            return {'stage': 'not_enrolled', 'enabled': False, 'revocations_pending': pending}
+            return {'stage': 'not_enrolled', 'enabled': False, 'revocations_pending': pending, **extra}
         # The kill switch must still acknowledge closure if old evidence is
         # corrupt/expired. A disabled row discloses no trusted service pin.
         fingerprint = '' if row['stage'] == 'disabled' else self._candidate(row).fingerprint
@@ -127,7 +137,33 @@ class Enrollment:
         return {'stage': row['stage'], 'enabled': bool(reg and reg['enabled'] and
                     reg['generation'] == row['generation'] and row['stage'] == 'active'),
                 'generation': row['generation'], 'public_key': row['public_key'],
-                'service_fingerprint': fingerprint, 'revocations_pending': pending}
+                'service_fingerprint': fingerprint, 'revocations_pending': pending, **extra}
+
+    def _status_extra(self, db, row: dict | None, evidence: dict | None) -> dict:
+        """Bounded 7e panel metadata (see agent_mail_status_view). Never raises."""
+        now_ms = int(self.store.clock() * 1000)
+        try:
+            prerequisites = self.prerequisites()
+        except Exception as exc:
+            _log(f'[agent-mail] status prerequisite probe failed: {type(exc).__name__}', flush=True)
+            prerequisites = Prerequisites()
+        if self.delivery is not None and row is not None and row['stage'] != 'disabled':
+            # Same rule as enable(): only local proof + Worker evidence count. Unreadable = not ready.
+            try:
+                custody = self.delivery.custody_in_tx(db, row, evidence)
+            except Exception as exc:
+                _log(f'[agent-mail] status custody read failed: {type(exc).__name__}', flush=True)
+                custody = False
+            prerequisites = replace(prerequisites, machine_custody=custody)
+        probes = status_view.prerequisite_view(prerequisites)
+        out: dict = {'now_ms': now_ms, 'prerequisites': probes, 'mail': status_view.mail_counts(db)}
+        if row is not None:
+            out.update({'owner_hint': status_view.owner_hint(row['owner']), 'assigned': bool(row['assigned']),
+                        'remote_started': bool(row['remote_started']), 'confirmed': bool(row['confirmed']),
+                        'ownership': bool(row['ownership']),
+                        'ownership_expires_ms': row['ownership_expires_ms'] if row['ownership'] else 0,
+                        'proof': status_view.proof_view(db, row['install'], row['generation'])})
+        return out
 
     def start(self, owner: str, payload: list[object], signature: str) -> dict:
         self._enabled()
