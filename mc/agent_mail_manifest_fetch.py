@@ -46,6 +46,11 @@ _DETAIL = re.compile(r'[a-z0-9_]{1,40}')
 _STALE_REASONS = frozenset({'manifest_time', 'manifest_rollback'})
 
 
+def valid_service_origin(origin: Any) -> bool:
+    """The fetcher's exact HTTPS hostname policy, also used at configuration write time."""
+    return isinstance(origin, str) and _ORIGIN.fullmatch(origin) is not None
+
+
 class ManifestFetchError(Exception):
     """``code`` is one of CODES; ``detail`` is a closed local token (a verifier reason or a
     transport tag), never remote text."""
@@ -97,7 +102,7 @@ def fetch_verified_manifest(*, origin: Any, root_public_key: Any,
                             transport: Any = None, now_ms: Callable[[], int] | None = None) -> dict[str, Any]:
     """Return ``{'manifest', 'signature', 'sequence', 'expires_at_ms'}`` for a manifest the pinned
     root signed and that is current. Raises ManifestFetchError with a closed code otherwise."""
-    if not isinstance(origin, str) or not _ORIGIN.fullmatch(origin) \
+    if not valid_service_origin(origin) \
             or not isinstance(root_public_key, str) or not root_public_key:
         raise ManifestFetchError(NOT_CONFIGURED)
     reply = (transport or HttpsGetTransport()).get(origin + MANIFEST_PATH)

@@ -57,20 +57,18 @@ and synthetic tests exist. These are the launch gates from
 - Published privacy disclosures, real destination verification, real mail and a
   supervised pilot, each separately human-approved. Draft disclosures are not publication.
 
-There are also two concrete product/configuration blockers:
+The two public deployment values now have a supported human/passcode-gated
+surface: **Settings > Connectivity > Agent mail deployment**, with
+`GET`/`PUT /api/agent-mail/deployment` (step 40). The generic `/api/config`
+allowlist still excludes these trust settings; use the dedicated surface.
 
-1. The two public deployment settings have **no writable UI/API** in this source.
-   `mc/agent_mail_factory.py` reads `agent_mail_root_public_key` and
-   `agent_mail_service_origin`, but `mc/blueprints/settings_routes.py` omits both
-   from `_CONFIG_EDITABLE_KEYS`. `PUT /api/config` ignores unknown keys, potentially
-   returning HTTP 200 with `updated: []`; GET omits them too. No guessed curl or
-   Settings path appears in this guide. The Clayrune configuration step stops at this gap.
-2. Publishing a manifest is not enrollment configuration. The template lacks
-   reviewed control-plane/enrollment settings; the local factory also requires
-   `agent_mail_install_id`, real adapters/prerequisites and human enablement.
-   These must be supplied by the owning integration/release work, not invented
-   here. See `workers/agent-mail/enrollment-http.js`, `lifecycle.js`,
-   `mc/agent_mail_factory.py` and [the enrollment contract](AGENT_MAIL_UNIT7D2E_CONTRACT.md).
+**Remaining configuration blocker:** publishing a manifest is not enrollment
+configuration. The template lacks reviewed control-plane/enrollment settings;
+the local factory also requires `agent_mail_install_id`, real
+adapters/prerequisites and human enablement. These must be supplied by the owning
+integration/release work, not invented here. See
+`workers/agent-mail/enrollment-http.js`, `lifecycle.js`, `mc/agent_mail_factory.py`
+and [the enrollment contract](AGENT_MAIL_UNIT7D2E_CONTRACT.md).
 
 Keep both `MAIL_ENABLED` and `MAIL_INGRESS_VERIFIED` at `"false"` throughout
 preparation. Even `/v1/mail/manifest` returns `503 mail_disabled` while
@@ -412,19 +410,53 @@ Worker disabled; no test email is sent by these preparation instructions.
 
 ## Configure Clayrune and enable only after evidence
 
-40. **BLOCKED: set the two Clayrune public deployment values.** No supported click
-    path or writable API exists in this source; stop here and request the missing
-    human/passcode-gated configuration surface. Required values are exactly:
+40. Open **Clayrune > Settings > Connectivity > Agent mail deployment**. Paste
+    the contents of `root.pub` into **Root public key**, and the exact origin
+    signed in `manifest[2]` into **Service origin**. Click **Save deployment
+    settings**, then re-enter your dashboard passcode in the shared confirmation
+    prompt. A dashboard passcode must be configured first (the existing prompt
+    offers setup on the host). Required values are exactly:
 
     ```text
     agent_mail_root_public_key = contents of root.pub (43-character base64url public key)
     agent_mail_service_origin = exact origin signed in manifest[2]
     ```
 
-    Expected result after that separate work: readback of both persisted values,
-    not merely HTTP 200. Do not put `root.key` or `service.key` into Clayrune config.
-    Do not use `PUT /api/config` for these keys: it ignores them today. Do not
-    manually bypass the settings gate or turn feature flags on to hide this gap.
+    Expected result: both values are read back into their inputs with **Set**
+    indicators and a saved confirmation. Mail remains disabled. The key must be
+    canonical unpadded base64url encoding of exactly 32 Ed25519 public bytes; the
+    origin must be a lowercase HTTPS DNS hostname with no path, port, query or
+    trailing slash. Do not put `root.key` or `service.key` into Clayrune config.
+    Changing the root changes the trust anchor; use only an explicitly reviewed
+    replacement. Saving never resets existing pins or rollback floors.
+
+    The equivalent human-run API call uses the same gate. From Git Bash, pipe
+    JSON to curl so the retyped passcode never appears in argv, history or a file
+    (the public inputs are read from your publishing directory and the prompt):
+
+    ```bash
+    read -r -p 'Exact service origin: ' MAIL_ORIGIN
+    "$REPO/.venv/Scripts/python.exe" - "$MAIL_ORIGIN" <<'PY' | curl --fail-with-body --silent --show-error --request PUT http://localhost:5199/api/agent-mail/deployment --header 'Content-Type: application/json' --data-binary @-
+    import getpass, json, pathlib, sys
+    root = (pathlib.Path.home() / '.clayrune/agent-mail-publish/root.pub').read_text(encoding='ascii').strip()
+    origin = sys.argv[1]
+    passcode = getpass.getpass('Dashboard passcode: ')
+    print(json.dumps({'agent_mail_root_public_key': root, 'agent_mail_service_origin': origin, 'passcode': passcode}))
+    PY
+    ```
+
+    Readback (public data, no passcode required):
+
+    ```bash
+    curl --fail-with-body --silent --show-error http://localhost:5199/api/agent-mail/deployment
+    ```
+
+    See both exact values and `set` booleans for each. PUT requires both values,
+    rejects extra fields and refuses invalid inputs without changing either value.
+    `403` means human proof is missing/refused, `429` is the shared passcode guess
+    limit, `400` is validation failure, and `503` means persistence failed. The
+    generic `PUT /api/config` does not write these keys. No enrollment flag is
+    needed to configure deployment, and saving does not enable any flag.
 
 41. **BLOCKED until launch gates are signed off:** have the integration owner
     supply/review all CP, service enrollment and local prerequisites described
@@ -492,8 +524,10 @@ database and tombstones for investigation/recovery rather than deleting them.
 - Keygen flags: `tools/agent-mail-keygen.py::_parser`; signer flags/time parsing:
   `tools/agent-mail-manifest-sign.py::_parser/parse_time_ms`; payload/freshness/
   rollback: `mc/agent_mail_service_manifest.py::verify_service_manifest`.
-- Origin/root names: `mc/agent_mail_factory.py::ROOT_KEY/ORIGIN_KEY`; write-path
-  blocker: `mc/blueprints/settings_routes.py::_CONFIG_EDITABLE_KEYS/update_config`.
+- Origin/root names: `mc/agent_mail_factory.py::ROOT_KEY/ORIGIN_KEY`; human-only
+  read/write: `mc/blueprints/agent_mail_deployment_routes.py`; UI:
+  `static/js/agent-mail-deployment.js`. The fetcher shares its origin validator
+  with the write route; the root uses the manifest verifier's canonical decoder.
 - GET path/errors/size/redirect policy: `mc/agent_mail_manifest_fetch.py`,
   `workers/agent-mail/manifest-http.js`; global gate: `worker.js::fetch`.
 - D1 binding/schema, service key ID/domain/from, send binding and replay cron:
