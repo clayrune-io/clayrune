@@ -122,13 +122,22 @@ def prove(kit, core, **kwargs):
 
 
 # --- arm -----------------------------------------------------------------------------------------
+# 7e-1 added bounded panel metadata to status(); these keys legitimately track the proof/clock, so the
+# "arm/prove never moves enrollment state" comparisons look at the enrollment fields only.
+PANEL_KEYS = ('now_ms', 'prerequisites', 'mail', 'proof')
+
+
+def enrollment_status(core):
+    return {k: v for k, v in core.status().items() if k not in PANEL_KEYS}
+
+
 def test_arm_writes_one_row_and_never_pins_enables_or_moves_stage(kit):
     core = kit.pending()
-    before = core.status()
+    before = enrollment_status(core)
     result = core.arm_proof()
     proof = row(core)
     assert result['state'] == 'armed' and proof['state'] == 'armed'
-    assert core.status() == before and core.status()['stage'] == 'delivery_pending'
+    assert enrollment_status(core) == before and before['stage'] == 'delivery_pending'
     assert count(core, 'mail_service_pins') == 0
     assert core.store.registration_state('install1')['enabled'] == 0
     assert len(proof['challenge']) == 64 and len(proof['proof_id']) == 32
@@ -212,11 +221,11 @@ def test_proof_cannot_create_mail_thread_wake_pin_or_consent(kit):
     tables = ['events', 'mail_service_pins', 'mail_transport_threads', 'mail_ingress_receipts', 'thread_bindings']
     before = {t: count(core, t) for t in tables}
     registration = dict(core.store.registration_state('install1'))
-    stage = core.status()
+    stage = enrollment_status(core)
     prove(kit, core)
     assert {t: count(core, t) for t in tables} == before == {t: 0 for t in tables}
     assert dict(core.store.registration_state('install1')) == registration and registration['enabled'] == 0
-    assert core.status() == stage and stage['stage'] == 'delivery_pending'
+    assert enrollment_status(core) == stage and stage['stage'] == 'delivery_pending'
 
 
 def test_http_nonce_replay_is_refused_and_second_receipt_commits_nothing_new(kit):
@@ -490,7 +499,8 @@ def test_enable_reads_worker_evidence_outside_its_transaction(kit):
         return kit.evidence
     core.delivery.worker_evidence = reader
     assert core.enable()['enabled'] is True
-    assert probes == ['free']
+    # enable() reads once itself; the status() it returns reads the cached evidence once more (7e-1).
+    assert probes and set(probes) == {'free'}
 
 
 def test_without_delivery_enable_is_unchanged_and_never_reads_evidence(kit):

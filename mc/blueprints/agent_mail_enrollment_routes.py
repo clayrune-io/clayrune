@@ -6,7 +6,8 @@ from typing import Callable
 
 from flask import Blueprint, jsonify, request
 
-from mc import state
+from mc import agent_mail_supervisor as _supervisor, state
+from mc.agent_mail_status_view import recovery_snapshot
 from mc.agent_mail_enrollment import Enrollment
 from mc.agent_mail_enrollment_keys import EnrollmentRefused
 from mc.agent_mail_service_manifest import ManifestRefused
@@ -62,6 +63,8 @@ def create_blueprint(*, factory: Callable[[], Enrollment] | None = None) -> Blue
             core = factory()
             if request.method == 'GET':
                 result = core.status()
+                # 7e-1: bounded recovery/worker metadata; read-only, allow-listed.
+                result['recovery'] = recovery_snapshot(_supervisor.get())
             elif action in {'start', 'owner', 'key', 'repin'}:
                 owner, payload, signature = body.get('owner'), body.get('manifest'), body.get('signature')
                 if not isinstance(owner, str) or not isinstance(payload, list) or not isinstance(signature, str):

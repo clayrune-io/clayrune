@@ -1,0 +1,29 @@
+/* Settings > Connectivity > Agent mail (MC-1166 unit 7e-1). Read-only status card. */
+.am-hint { margin-bottom: 10px; line-height: 1.45; }
+.am-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; background: var(--surface2, transparent);
+  min-width: 0; max-width: 100%; box-sizing: border-box; }
+.am-head { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--text); }
+.am-headline { min-width: 0; overflow-wrap: anywhere; }
+.am-dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--text-dim); }
+.am-card[data-tone="good"] .am-dot { background: var(--green, #2e9d5b); }
+.am-card[data-tone="warn"] .am-dot { background: var(--yellow, #d29a1f); }
+.am-card[data-tone="bad"] .am-dot { background: var(--red, #c0392b); }
+.am-detail { margin-top: 6px; font-size: 12px; line-height: 1.5; color: var(--text-dim); overflow-wrap: anywhere; }
+.am-rows { margin-top: 10px; border-top: 1px solid var(--border); }
+.am-row { display: grid; grid-template-columns: minmax(120px, 34%) minmax(0, 1fr); gap: 4px 12px; padding: 7px 0;
+  border-bottom: 1px solid var(--border); font-size: 12px; line-height: 1.45; }
+.am-row:last-child { border-bottom: 0; }
+.am-label { color: var(--text-dim); }
+.am-value { color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+.am-row[data-tone="good"] .am-value { color: var(--green, #2e9d5b); }
+.am-row[data-tone="warn"] .am-value { color: var(--yellow, #d29a1f); }
+.am-row[data-tone="bad"] .am-value { color: var(--red, #c0392b); }
+.am-foot { margin-top: 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.am-note { font-size: 11px; color: var(--text-dim); min-width: 0; flex: 1 1 180px; }
+.am-refresh { padding: 5px 12px; font-size: 12px; background: var(--surface2, transparent); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+@media (max-width: 960px) {
+  .am-card { padding: 10px 12px; }
+  .am-row { grid-template-columns: minmax(0, 1fr); gap: 1px; padding: 8px 0; }
+  .am-refresh { min-height: 36px; }
+}
