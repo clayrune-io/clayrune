@@ -659,6 +659,7 @@ async function _renderSettings() {
     ${window.passkeysSettingsHTML ? window.passkeysSettingsHTML() : ''}
 
     ${window.agentMailStatusSettingsHTML ? window.agentMailStatusSettingsHTML() : ''}
+    ${window.agentMailDeploymentSettingsHTML ? window.agentMailDeploymentSettingsHTML() : ''}
       </div>
 
       <div class="settings-detail-pane settings-hidden" data-cat="addons">
@@ -798,6 +799,7 @@ async function _renderSettings() {
   try { if (window.refreshAddonsSection) window.refreshAddonsSection(); } catch (_) {}
   try { if (window.refreshPasskeysSection) window.refreshPasskeysSection(); } catch (_) {}
   try { if (window.refreshAgentMailStatus) window.refreshAgentMailStatus(); } catch (_) {}
+  if (window.refreshAgentMailDeployment) window.refreshAgentMailDeployment();
 
   // Restore the master/detail/search view (persisted across re-renders so that
   // setTone/setAccent/etc. don't bounce you back to the list mid-edit).

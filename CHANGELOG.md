@@ -6,6 +6,12 @@
 - Extended every synthetic mail status/action/setup state with clipping and control-reachability checks at 390px and 1000px, plus short-height wizard checks and viewport screenshots. Added installer coverage for the app import graph, macOS static data and source-install archives.
 - Added clearly marked DRAFT privacy, README and user-guide disclosures covering recipients, extraction, provisional retention and local disable versus remote revocation/erasure. No policy publication, service activation or deployment.
 
+## [2026-11-11] - Configure agent-mail deployment through human-gated Settings (MC-1166)
+
+- Added **Settings > Connectivity > Agent mail deployment** and public `GET /api/agent-mail/deployment` readback. Saving both public deployment values requires the existing retyped dashboard passcode and never enables mail.
+- Reused the manifest verifier's canonical Ed25519 public-key decoder and fetcher's strict HTTPS-origin validator; invalid values and failed writes preserve prior configuration. Added refusal, persistence/factory and desktop/mobile Settings coverage.
+- Updated the operator setup and user guides with the click path, human-run stdin API call and remaining launch gates.
+
 ## [2026-11-11] - Prepare an offline agent-mail operator setup kit (MC-1166)
 
 - Added human-run root/service Ed25519 key generation outside every Git checkout, exclusive private files, public-only output and stdin-based secret-upload instructions. The manifest signer shares the checkout guard.

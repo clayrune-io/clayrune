@@ -1032,6 +1032,21 @@ that local cleanup if necessary. It does not erase the service registration or
 all remote copies. Service-wide erasure and processor/backup deletion timelines
 still need a published process.
 
+### Agent mail deployment
+
+**Settings > Connectivity > Agent mail deployment** lets the service operator
+set the root public key and the HTTPS service origin from the signed manifest.
+Paste only the public `root.pub` contents (43-character base64url), never a
+private key. The origin must have no path, port, query or trailing slash.
+**Save deployment settings** requires your freshly retyped dashboard passcode;
+the saved public values are read back with a **Set** indicator for each.
+This entry is available while agent mail is disabled. Saving does not enable
+mail, enroll an owner, reset pins or clear rollback protection. Changing the
+root changes which service manifests are trusted; use an approved signing kit.
+The separate **Connectivity > Agent mail** entry holds enrollment and status.
+Service operators should follow [the setup guide](AGENT_MAIL_OPERATOR_SETUP.md)
+and its remaining launch gates before enabling mail.
+
 ### Provider defaults and project overrides
 
 **Settings > Providers > Connections** manages installation, sign-in, the
