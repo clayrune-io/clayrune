@@ -5,6 +5,7 @@ import { historySpawner } from './conversation-lineage.js';
 import { hideSkillAnnouncement } from './skill-announcement.js';
 import { deferChatRefresh } from './chat-selection.js';
 import { agentTimeAttrs, agentTimeTagsHTML, stampAgentNarration } from './agent-time-tag.js';
+import './send-timeout.js';
 
 // Tag agent-bound POST bodies with client="mobile" when the viewport is
 // phone-sized. The backend then decides — based on mobile_brief_replies_enabled
@@ -5617,6 +5618,8 @@ async function sendFollowup(projectId, sessionId, sendMode) {
   const input = document.getElementById(`agent-followup-${sessionId}`);
   const message = input.value.trim();
   if (!message) { input.focus(); return; }
+  const sendLinesBefore = (agentOutputBuffers[sessionId] || []).slice();
+  let sendEcho;
 
   // Guardian guards — prevent piling on during recovery
   const guardCached = agentStatusCache[sessionId];
@@ -5667,6 +5670,7 @@ async function sendFollowup(projectId, sessionId, sendMode) {
     div.insertAdjacentHTML('beforeend', window.promptTimeTagHTML(new Date()));
     div.style.whiteSpace = 'pre-wrap';
     echoEl.appendChild(div);
+    sendEcho = div;
     echoEl.scrollTop = echoEl.scrollHeight;
   }
 
@@ -5806,21 +5810,42 @@ async function sendFollowup(projectId, sessionId, sendMode) {
   // control asks for the old kill-and-resume.
   if (sendMode === 'interrupt') sendBody.send_mode = 'interrupt';
   _maybeTagMobileClient(sendBody);
-  // Fail-fast timeout: on Android after a Doze cycle the WebView fetch can
-  // hang forever on dead sockets — the user sees their prompt cleared, the
-  // echo briefly appear and then vanish (reconcile sees no recovered line),
-  // and no error toast. Surface the failure within 12s so the user knows to
-  // retry instead of staring at a frozen "Completed" pill. The local echo
-  // line carries `agent-echo-failed` so it stays visible (as a retry cue)
-  // instead of being silently wiped by the next reconcile pass.
-  const _sendAC = new AbortController();
-  const _sendTID = setTimeout(() => _sendAC.abort(), 12000);
+  // Preserve a slow revive when the network is alive, while still bounding
+  // dead Android Doze sockets and the complete POST (including its body).
+  const sendTimeout = window.mcSendTimeout.watchSend(
+    API_BASE + `/api/project/${projectId}/agent/status`, () => {
+      if (!sendEcho?.isConnected) return;
+      sendEcho.classList.add('agent-echo-pending');
+      sendEcho.firstChild.textContent = `> [waking session...] ${message}`;
+    });
+  const recoverSend = async () => {
+    if (agentEventSources[sessionId]) {
+      agentEventSources[sessionId].close();
+      delete agentEventSources[sessionId];
+    }
+    if (agentSSEWatchdogs[sessionId]) {
+      clearInterval(agentSSEWatchdogs[sessionId]);
+      delete agentSSEWatchdogs[sessionId];
+    }
+    connectAgentStream(projectId, sessionId);
+    const sess = await _reconcileAgentBuffer(projectId, sessionId);
+    // The optimistic DOM paint may differ even when cached/server status agree.
+    if (sess?.status) updateAgentStatusUI(sessionId, sess.status);
+    const delivered = window.mcSendTimeout.hasNewPrompt(sendLinesBefore, sess?.log_lines, fullMessage);
+    if (delivered) sendEcho?.remove();
+    return delivered;
+  };
   fetch(API_BASE + `/api/project/${projectId}/agent/send`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(sendBody),
-    signal: _sendAC.signal
-  }).then(r => { clearTimeout(_sendTID); return r.json(); }).then(data => {
+    signal: sendTimeout.signal
+  }).then(r => r.json()).then(async data => {
+    sendTimeout.finish();
+    if (sendEcho?.classList.contains('agent-echo-pending')) {
+      sendEcho.classList.remove('agent-echo-pending');
+      sendEcho.firstChild.textContent = `> ${message}`;
+    }
     if (!data.ok && !data.queued) {
       console.error('Send failed:', data.error);
       // The eager dots painted above have nothing left to wait for — no
@@ -5828,6 +5853,7 @@ async function sendFollowup(projectId, sessionId, sendMode) {
       hideTypingIndicator(sessionId);
       delete _sendInFlight[sessionId];
       delete _preSendStatus[sessionId];
+      const delivered = await recoverSend();
       // MC-961 item 4: no fallback configured (or every entry exhausted) —
       // the dispatch never started, so there's no session/turn to hang this
       // off. Render the same actionable card a scheduled/workflow run's
@@ -5837,7 +5863,7 @@ async function sendFollowup(projectId, sessionId, sendMode) {
       if (data.allowance_blocked) {
         const el = document.getElementById(`agent-output-${sessionId}`);
         if (el) {
-          const echo = el.querySelector('.agent-echo');
+          const echo = sendEcho?.isConnected ? sendEcho : null;
           if (echo) {
             echo.classList.remove('agent-echo');
             echo.classList.add('agent-echo-failed');
@@ -5851,7 +5877,7 @@ async function sendFollowup(projectId, sessionId, sendMode) {
           el.appendChild(card);
         }
         const inp = document.getElementById(`agent-followup-${sessionId}`);
-        if (inp && !inp.value) inp.value = message;
+        if (inp && !inp.value && !delivered) inp.value = message;
         delete _sendInFlight[sessionId];
         delete _preSendStatus[sessionId];
         return;
@@ -5877,7 +5903,7 @@ async function sendFollowup(projectId, sessionId, sendMode) {
     if (data.queued) {
       const el = document.getElementById(`agent-output-${sessionId}`);
       if (el) {
-        const echo = el.querySelector('.agent-echo');
+        const echo = sendEcho?.isConnected ? sendEcho : null;
         if (echo) {
           echo.classList.add('agent-echo-queued');
           echo.textContent = `> [queued] ${message}`;
@@ -5948,8 +5974,8 @@ async function sendFollowup(projectId, sessionId, sendMode) {
       connectAgentStream(projectId, targetSessionId);
       _reconcileAgentBuffer(projectId, targetSessionId);
     }, 4000);
-  }).catch(e => {
-    clearTimeout(_sendTID);
+  }).catch(async e => {
+    sendTimeout.finish();
     console.error('Send error:', e);
     delete _sendInFlight[sessionId];
     delete _preSendStatus[sessionId];
@@ -5963,21 +5989,22 @@ async function sendFollowup(projectId, sessionId, sendMode) {
     // they typed). Also restore the input so they can retry without retyping.
     const el = document.getElementById(`agent-output-${sessionId}`);
     if (el) {
-      const echo = el.querySelector('.agent-echo');
+      const echo = sendEcho?.isConnected ? sendEcho : null;
       if (echo) {
-        echo.classList.remove('agent-echo');
+        echo.classList.remove('agent-echo', 'agent-echo-pending');
         echo.classList.add('agent-echo-failed');
         echo.style.opacity = '0.6';
         echo.textContent = `> [failed to send] ${message}`;
       }
     }
+    const delivered = await recoverSend();
     const inp = document.getElementById(`agent-followup-${sessionId}`);
     // Only restore the textarea if the server never acknowledged the message
     // (turn_start never arrived). If turn_start DID arrive, the agent received
     // the message and is/was running — restoring would show stale text that the
     // user already sent, which is the "text jumps back" bug.
-    if (inp && !inp.value && !_turnStartAcked[sessionId]) inp.value = message;
-    showToast(aborted
+    if (inp && !inp.value && !_turnStartAcked[sessionId] && !delivered) inp.value = message;
+    if (!delivered) showToast(aborted
       ? 'Send timed out — network may be paused. Try again.'
       : `Send failed: ${e && e.message ? e.message : 'network error'}`, 4500);
   });

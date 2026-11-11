@@ -519,8 +519,13 @@ let _reconcileBusy = {};
 // moments a hole is most likely to have just opened.
 async function _reconcileAgentBuffer(projectId, sessionId) {
   if (!projectId || !sessionId) return;
-  if (_reconcileBusy[sessionId]) return;
-  _reconcileBusy[sessionId] = true;
+  if (_reconcileBusy[sessionId]) return _reconcileBusy[sessionId];
+  const pending = _readAgentBuffer(projectId, sessionId);
+  _reconcileBusy[sessionId] = pending;
+  return pending;
+}
+
+async function _readAgentBuffer(projectId, sessionId) {
   try {
     const r = await fetchFailFast(API_BASE + `/api/project/${projectId}/agent/status`);
     if (!r.ok) return;
@@ -601,9 +606,9 @@ async function _reconcileAgentBuffer(projectId, sessionId) {
         _repaintAgentOutput(sessionId);
       }
       _advanceAgentServerCursor(sessionId, serverLines.length);
-      return;
+      return sess;
     }
-    if (serverLines.length === have) return;  // buffer in sync — nothing more to recover
+    if (serverLines.length === have) return sess;  // buffer in sync — nothing more to recover
     const missing = serverLines.slice(have);
     const missingTs = serverTs.slice(have);
     for (const text of missing) {
@@ -629,8 +634,9 @@ async function _reconcileAgentBuffer(projectId, sessionId) {
       // a reconciled historical line).
       appendAgentLine(sessionId, text, missingTs[_mi] || false);
     }
-  } catch (_) {
-    // silent — reconciliation is best-effort
+    return sess;
+  } catch (e) {
+    console.warn('[agent-reconcile] Status recovery failed:', e);
   } finally {
     _reconcileBusy[sessionId] = false;
   }

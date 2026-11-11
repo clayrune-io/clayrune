@@ -280,6 +280,13 @@ strip is hidden.
 
 ## Agent dispatch
 
+**Waking a parked chat:** a slow follow-up shows `[waking session...]` after
+the dashboard confirms the server is reachable. The original send can wait up
+to two minutes. If the connection fails, the dashboard reconnects and checks
+the chat's actual status; a message confirmed in the server log is not put back
+in the composer for retry. An unconfirmed network failure shows
+`[failed to send]` and restores the text when the chat has not acknowledged it.
+
 **Prompt times:** your messages show a small local time in the bubble. Hover
 over the time for the full local date and time. A just-sent message uses your
 device's clock until the server echo arrives. Older messages without a valid
