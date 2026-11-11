@@ -4,6 +4,7 @@
 
 - Added human-run root/service Ed25519 key generation outside every Git checkout, exclusive private files, public-only output and stdin-based secret-upload instructions. The manifest signer shares the checkout guard.
 - Added a Windows Git Bash operator guide covering Cloudflare/D1 preparation, signed manifest publication and renewal. It identifies the missing writable Clayrune deployment-settings surface, disabled manifest-route behavior and unverified live launch gates; no credentials, configuration or deployment changed.
+- Fixed the operator guide's mail domain to the approved apex `clayrune.io`, preserving the existing `hello@clayrune.io` exact-address rule alongside the proposed Worker catch-all. Exact-rule precedence remains explicitly unverified.
 
 ## [2026-11-11] - Keep slow chat revives from looking like failed sends
 

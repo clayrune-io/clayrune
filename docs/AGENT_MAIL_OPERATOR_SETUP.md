@@ -14,12 +14,21 @@ agent mail.
 
 ## Before you start
 
+**Mail domain is decided: `MAIL_DOMAIN = "clayrune.io"` (Ron, 2026-11-11).**
+Each install receives `<address_local>@clayrune.io`; reply addresses include the
+thread token as `<address_local>+<token>@clayrune.io`. Keep the existing
+`hello@clayrune.io` exact-address Cloudflare Email Routing rule in place and add
+the Worker as the catch-all. **Unverified:** exact-address rules taking precedence
+over the catch-all has not been checked against Cloudflare documentation or a
+live account in this kit. The operator must verify that behavior before enabling
+the catch-all; do not remove the `hello@` rule or silently switch domains.
+
 Decide and record these before step 1 (public information only):
 
 | Decision | What you need |
 | --- | --- |
-| Cloudflare account and zone | Account you administer, its account ID, and the DNS zone you may change. Confirm capacity/costs before creating resources. |
-| Mail domain and sender | Dedicated mail domain/subdomain, sender such as `agent@YOUR_MAIL_DOMAIN`, approved owner destination(s). Changing existing MX can interrupt other mail; do not replace working mail routing casually. |
+| Cloudflare account and access | Account you administer, its account ID, and permission to manage the `clayrune.io` zone. Confirm capacity/costs before creating resources. |
+| Sender and destinations | Approved sender under `clayrune.io` and owner destination(s). The mail domain is already decided; preserve the existing `hello@clayrune.io` rule and mail routing. |
 | Service identity | Worker name (template: `clayrune-agent-mail`); canonical public HTTPS origin, either its workers.dev origin or a custom hostname you control. No path, port, trailing slash, query or redirect. This is separate from the reply mail domain and from the control-plane origin. |
 | Root custody | Offline machine/removable storage and backup/recovery custody. Only the root PUBLIC half leaves the offline signing environment; do not sync the root private file or upload it to Cloudflare. |
 | Service key | Unique key ID (template: `mail-service-v1`); service private file may be transferred to the online publishing machine, public half to the offline signer. The root and service are separate keys. |
@@ -174,7 +183,7 @@ the offline machine as needed. All variables below are public values or file pat
 
 14. In Notepad, add `account_id = "YOUR_ACCOUNT_ID"` **above `[vars]`**, then save. See a top-level account ID, not a var. Cloudflare interpretation **unverified**.
 
-15. In Notepad, replace `MAIL_DOMAIN` with your chosen mail domain, then save. See the domain only, without `https://`.
+15. In Notepad, set `MAIL_DOMAIN = "clayrune.io"`, then save. See the concrete apex domain, without `https://`; this value is already decided.
 
 16. In Notepad, replace `MAIL_FROM` with your approved sender address, then save. See the sender under that domain.
 
@@ -355,17 +364,18 @@ The service origin is the Worker HTTP origin, not `MAIL_DOMAIN` and not the CP o
 ## Configure the provider (human-approved DNS/mail actions only)
 
 These Cloudflare click paths and binding fields are **unverified** against a live
-account/current Wrangler. Use the domain/account recorded before starting. If a
+account/current Wrangler. Use `clayrune.io` and the account recorded before starting. If a
 label or entitlement differs, stop and verify the provider procedure; do not
 change another domain or substitute a different mail service silently. Keep the
 Worker disabled; no test email is sent by these preparation instructions.
 
-35. In **Cloudflare dashboard > chosen zone > Email > Email Routing > Settings >
-    Enable Email Routing**, review/apply the provider's required DNS records only
-    after approving the MX impact. See the chosen mail domain/subdomain reported
-    active with required mail-authentication/DNS records. If subdomain routing is
-    unavailable in your account, stop for a domain decision. Do not replace
-    unrelated working MX. This does not prove the sender's DNS/DKIM is correct;
+35. In **Cloudflare dashboard > clayrune.io zone > Email > Email Routing > Settings**,
+    review existing routing and required DNS records. The existing
+    `hello@clayrune.io` exact-address rule stays in place. If the provider requires
+    activation or missing records, approve their MX impact before applying them;
+    do not replace working MX or recreate/remove the existing rule. See
+    `clayrune.io` reported active with the required mail-authentication/DNS records.
+    This does not prove the sender's DNS/DKIM is correct;
     provider verification and a later authorized real-delivery pilot must prove it.
 
 36. In **Email Routing > Destination addresses > Add destination address**, enter
@@ -386,11 +396,17 @@ Worker disabled; no test email is sent by these preparation instructions.
     this binding does not supply consent or owner enrollment. Apply the change
     with the next approved deployment, not an unrecorded dashboard-only edit.
 
-39. In **Email Routing > Routing rules > Catch-all address > Edit**, select
-    **Send to a Worker > clayrune-agent-mail > Save** for the chosen dedicated mail
-    namespace. See the Worker as that namespace's catch-all destination, so
-    `install+token@MAIL_DOMAIN` addresses route there. Do not route an unrelated
-    mailbox namespace or send a real pilot reply yet. The disabled Worker rejects
+39. After verifying exact-rule precedence, in **clayrune.io > Email Routing >
+    Routing rules > Catch-all address > Edit**, select **Send to a Worker >
+    clayrune-agent-mail > Save**. Leave the existing `hello@clayrune.io`
+    exact-address rule unchanged. See the Worker as the apex domain's catch-all
+    destination, with install addresses `<address_local>@clayrune.io` and reply
+    addresses `<address_local>+<token>@clayrune.io` routed there. **Unverified:**
+    the claim that exact-address rules take precedence over catch-all needs
+    Cloudflare documentation and operator validation before this action; this kit
+    supplies neither. If it cannot be confirmed, stop and report the routing
+    blocker without changing the agreed domain or the `hello@` rule.
+    Do not send a real pilot reply yet. The disabled Worker rejects
     inbound mail, and the ingress provenance/pilot gates must pass before normal
     mail may be routed to an enabled handler.
 
