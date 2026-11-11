@@ -487,6 +487,10 @@ Worker disabled; no test email is sent by these preparation instructions.
     supply/review all CP, service enrollment and local prerequisites described
     above. Expected result: recorded evidence for every gate, including a
     controlled pilot plan. The two config values alone are insufficient.
+    The [signup integration readiness checklist](AGENT_MAIL_SIGNUP_READINESS.md)
+    traces the remaining factory, first-store, identity, proof and recovery
+    wiring, and the separate CP enrollment/deployment decision. A healthy CP
+    or a successful Worker manifest GET does not establish signup readiness.
 
 42. **Only after explicit approval of those gates**, use Notepad to change
     `MAIL_ENABLED = "false"` to `MAIL_ENABLED = "true"` in the operator TOML and
