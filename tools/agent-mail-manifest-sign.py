@@ -37,6 +37,10 @@ from typing import Any, Sequence
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+if str(_REPO_ROOT / 'tools') not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / 'tools'))
+
+from agent_mail_key_files import key_path_in_checkout as _key_path_in_checkout  # noqa: E402
 
 from cryptography.hazmat.primitives import serialization  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: E402
@@ -60,17 +64,8 @@ def _b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
-def _key_path_in_checkout(path: Path) -> bool:
-    resolved = path.resolve()
-    roots = [_REPO_ROOT.resolve()]
-    if any(root == resolved or root in resolved.parents for root in roots):
-        return True
-    # A worktree or the main checkout: any ancestor holding a `.git` entry (dir or file) is a checkout.
-    return any((parent / ".git").exists() for parent in resolved.parents)
-
-
 def load_root_key(path_text: str) -> Ed25519PrivateKey:
-    path = Path(path_text)
+    path = Path(path_text).expanduser()
     if _key_path_in_checkout(path):
         raise SignerError("refused: the root key file is inside a git checkout; keep it outside every repo")
     try:

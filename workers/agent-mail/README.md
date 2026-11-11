@@ -179,6 +179,10 @@ and `remote_image_refs` are counts only.
 
 ## Publishing the signed service manifest
 
+For Windows Git Bash steps, offline key generation, D1/binding setup, manifest
+renewal, and the explicit configuration/launch blockers, use the
+[operator setup guide](../../docs/AGENT_MAIL_OPERATOR_SETUP.md).
+
 `GET /v1/mail/manifest` (no query string, GET only) returns the root-signed manifest the dashboard
 verifies against its pinned root (`mc/agent_mail_manifest_fetch.py`). The Worker does **not** sign:
 it serves the JSON in the plain var `MAIL_SERVICE_MANIFEST` byte for byte, `cache-control: no-store`.
