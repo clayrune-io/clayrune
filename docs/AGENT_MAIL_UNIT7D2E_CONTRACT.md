@@ -194,6 +194,8 @@ Ordering and failure (**pinned**):
 | `enrollment_capacity` | 503 | reservations full |
 | `request_limit`, `mail_limit`, `abuse_limit` | 429 | budgets |
 | `code_mail_failed`, `storage_or_configuration_failure` | 503 | send / D1 |
+| `preflight_refused` | 403 | CP `/preflight` says the install is not real/active (added 7d-2e-2) |
+| `preflight_unavailable` | 503 | CP `/preflight` unreachable or malformed (added 7d-2e-2) |
 | `body_timeout` 408, `body_limit` 413 | | `readRequestBody` |
 
 Core error messages are mapped to this closed table; an exception string is never put in a reply.
