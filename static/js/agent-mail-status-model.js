@@ -208,7 +208,7 @@
       : 'none', bad || failCode ? 'bad' : 'good'));
 
     return { state: stage, tone, headline, detail, rows,
-      notes: ['This panel only shows status. It cannot change anything.'] };
+      notes: ['This card only shows status. Changes are made with the controls below it.'] };
   }
 
   window.AgentMailStatusModel = { describe, why, span };

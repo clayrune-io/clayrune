@@ -1,9 +1,12 @@
 // ── Settings > Connectivity > Agent mail (MC-1166 unit 7e-1) ───────────────────
-// READ-ONLY status and recovery panel. It performs exactly one request, a GET of
+// READ-ONLY status and recovery card. It performs exactly one request, a GET of
 // /api/agent-mail/enrollment, and draws what static/js/agent-mail-status-model.js
-// makes of the answer. There is no start / verify / enable / disable control here
-// (unit 7e-2 owns those, behind the dashboard passcode), no form field and no
-// POST, not even a disabled one. "Refresh" is the same GET again.
+// makes of the answer. There is no start / verify / enable / disable control, no
+// form field and no POST in THIS file, not even a disabled one. "Refresh" is the
+// same GET again. The mutating controls (unit 7e-2) live in their own host under
+// this card (agent-mail-actions.js); the only link between them is the
+// `agent-mail-status` event dispatched below after each paint, carrying the raw
+// { status, body } of the GET so the controls can follow the same answer.
 //
 // Every value is escaped, and the model only passes booleans, integers, a masked
 // owner hint and closed reason codes, so no mail or reply text can reach this
@@ -62,7 +65,10 @@
     }
     busy = false;
     const live = document.getElementById('agent-mail-status-host');
-    if (live) paint(live, window.AgentMailStatusModel.describe(result));
+    if (live) {
+      paint(live, window.AgentMailStatusModel.describe(result));
+      try { document.dispatchEvent(new CustomEvent('agent-mail-status', { detail: result })); } catch (_) { /* cosmetic */ }
+    }
   }
 
   window.agentMailStatusSettingsHTML = settingsHTML;   // interop: settings template (_renderSettings)

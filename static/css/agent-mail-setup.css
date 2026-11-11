@@ -1,0 +1,18 @@
+/* Agent mail setup step (MC-1166 unit 7e-2): first-run wizard card and Settings > Agent mail. */
+.am-setup { text-align: left; min-width: 0; max-width: 100%; }
+#agent-mail-setup-slot { padding: 2px 0; }
+.am-setup-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.am-optional { margin-left: 6px; font-size: 10px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--text-dim); }
+.am-setup-lead { font-size: 12px; line-height: 1.55; color: var(--text-dim); overflow-wrap: anywhere; }
+.am-setup-facts { margin: 8px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.55; color: var(--text-dim); }
+.am-setup-facts li { margin-bottom: 4px; overflow-wrap: anywhere; }
+.am-setup-field { margin: 8px 0; }
+.am-setup-field .am-input { width: 100%; margin-top: 4px; }
+.am-setup-blocked, .am-setup-error { margin: 8px 0; padding: 8px 10px; border-radius: 6px; font-size: 12px; line-height: 1.5;
+  border: 1px solid var(--yellow, #d29a1f); color: var(--text); overflow-wrap: anywhere; }
+.am-setup-error { border-color: var(--red, #c0392b); }
+.am-setup-actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 960px) {
+  .am-setup-actions { flex-direction: column; }
+  .am-setup-actions .am-act-btn { width: 100%; min-height: 40px; }
+}
