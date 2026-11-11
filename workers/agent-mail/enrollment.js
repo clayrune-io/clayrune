@@ -113,13 +113,20 @@ export class Enrollment {
     const m = fieldsR(r); const input = canonicalR(r);
     if (!await verifyProof(m.device_public_key, deviceSignature, input)
       || !await verifyProof(m.mail_public_key, mailSignature, input)) throw new Error('key_proof_required');
-    if (typeof token !== 'string' || token.length > 8192) throw new Error('bad_grant');
-    const tokenDigest = await sha256(bytes(token));
     const prior = await this.first('SELECT * FROM mail_enrollment_commits WHERE flow_id=?', flowId);
     if (prior) {
-      if (prior.token_digest !== tokenDigest || prior.r_digest !== f.r_digest) throw new Error('grant_conflict');
+      // 7d-2e E3: the CP mints a new token on every call, so a lost-reply retry can never present the
+      // original one. When a commit exists the token is optional; the flow secret and both proofs (checked
+      // above) are the authority. A token that IS supplied must still be the committed one.
+      if (prior.r_digest !== f.r_digest) throw new Error('grant_conflict');
+      if (token !== undefined) {
+        if (typeof token !== 'string' || token.length > 8192) throw new Error('bad_grant');
+        if (prior.token_digest !== await sha256(bytes(token))) throw new Error('grant_conflict');
+      }
       return this.result(f); // Exact retry reports the original generation, never a newer one.
     }
+    if (typeof token !== 'string' || token.length > 8192) throw new Error('bad_grant');
+    const tokenDigest = await sha256(bytes(token));
     // Historical exact retries above are nonrenewing. New commits must still
     // belong to CURRENT trusted service policy, including after a restart.
     this.checkServicePin(m);
@@ -150,6 +157,12 @@ export class Enrollment {
     }
     return this.result(f);
   }
-  result(f) { return { install_id: f.install_id, generation: f.expected_generation + 1,
-    state: 'ownership_recorded_delivery_pending', active: false, route_verified: false }; }
+  // ownership_expires_ms (7d-2e 2.5) is the committed lease end, the only authentic source for the
+  // local OwnershipReceipt expiry.
+  async result(f) {
+    const k = await this.first('SELECT lease_until FROM mail_enrollment_commits WHERE flow_id=?', f.flow_id);
+    return { install_id: f.install_id, generation: f.expected_generation + 1,
+      state: 'ownership_recorded_delivery_pending', active: false, route_verified: false,
+      ownership_expires_ms: k.lease_until };
+  }
 }

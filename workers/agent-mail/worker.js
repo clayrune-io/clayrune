@@ -6,8 +6,9 @@ import { readRequestBody, BODY_TIMEOUT_MS } from './request-body.js';
 import { outbound } from './outbound.js';
 import { replay } from './replay.js';
 import { lifecycle, isLifecyclePath, drainCpRevokes, cpFor } from './lifecycle.js';
+import { enrollmentHttp, isEnrollmentPath } from './enrollment-http.js';
 const reply = (status, value) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
-export function createWorker({ send, fetcher = fetch, clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS, cp } = {}) {
+export function createWorker({ send, fetcher = fetch, clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS, cp, enrollment } = {}) {
   const config = (env) => ({ domain: env.MAIL_DOMAIN, from: env.MAIL_FROM,
     ingressVerified: env.MAIL_INGRESS_VERIFIED === 'true', privateKey: env.MAIL_SERVICE_PRIVATE_KEY,
     keyId: env.MAIL_SERVICE_KEY_ID });
@@ -29,6 +30,17 @@ export function createWorker({ send, fetcher = fetch, clock = Date.now, bodyTime
             cp: cpFor(env, { cp, fetcher, clock }), clock, bodyTimeoutMs });
         } catch {
           console.error('[agent-mail] lifecycle_storage_or_configuration_failure');
+          return reply(503, { code: 'storage_or_configuration_failure' });
+        }
+      }
+      // Enrollment ceremony (7d-2e-2): own module, own flag (MAIL_ENROLLMENT_ENABLED), default off.
+      // `enrollment` carries test doubles only (provider/reader/preflight); production passes none.
+      if (request.method === 'POST' && !url.search && isEnrollmentPath(url.pathname)) {
+        try {
+          return await enrollmentHttp({ request, env, ledger: new Ledger(env.MAIL_DB), config: config(env),
+            send: (mail) => sender(env, mail), fetcher, clock, bodyTimeoutMs, inject: enrollment });
+        } catch {
+          console.error('[agent-mail] enrollment_storage_or_configuration_failure');
           return reply(503, { code: 'storage_or_configuration_failure' });
         }
       }
