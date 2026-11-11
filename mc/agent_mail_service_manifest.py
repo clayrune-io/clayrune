@@ -55,6 +55,11 @@ def _decode(value: str, size: int) -> bytes:
     return raw
 
 
+def canonical_manifest_bytes(payload: list[object]) -> bytes:
+    """The exact bytes the root signs: compact JSON, ASCII-escaped. Verifier and offline signer share this."""
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+
+
 def verify_service_manifest(payload: list[object], signature: str, *, root_public_key: str,
                             service_origin: str, store: ManifestStateStore, now_ms: int,
                             enabled: bool = False) -> ServiceKeyCandidate:
@@ -92,7 +97,7 @@ def verify_service_manifest(payload: list[object], signature: str, *, root_publi
             and int(issued) <= int(activate) <= now_ms < int(retire)):
         raise ManifestRefused("manifest_time")
     public_bytes = _decode(public, 32)
-    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    raw = canonical_manifest_bytes(payload)
     if len(raw) > 16384:
         raise ManifestRefused("manifest_size")
     try:
