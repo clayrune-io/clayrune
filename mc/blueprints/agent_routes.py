@@ -12694,6 +12694,15 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # `project` lets the gate find that with nobody waiting on the result.
     _allowance_block = _allowance_refusal(
         provider_name, user_initiated=(trigger_type == 'manual'), project=p)
+    # An exhausted Claude SUBSCRIPTION does not block a run that bills the API
+    # key (api_credits_session). Manual/attended runs keep the refusal.
+    if (_allowance_block and provider_name == 'claude'
+            and _credits_session.would_bill_credits(
+                trigger_type, spawned_by, notify_session, model_override,
+                billing_preference=(session_metadata or {}).get('billing_preference', 'auto'))):
+        _log(f"[allowance] claude subscription exhausted; dispatch ({trigger_type}) "
+             "bills API credits, refusal bypassed", flush=True)
+        _allowance_block = ''
     _engine_fallback_record = None
     if _allowance_block:
         if prepared_context is not None:
@@ -14518,6 +14527,16 @@ def agent_followup(project_id):
         # provider, nothing re-resolves one here).
         _allowance_block = _allowance_refusal(session_provider,
                                               user_initiated=True)
+        if (_allowance_block and session_provider == 'claude'
+                and _credits_session.would_bill_credits(
+                    existing.get('trigger_type'), existing.get('_spawned_by'),
+                    existing.get('_notify_session'),
+                    existing.get('model') or existing.get('agent_model') or '',
+                    billing=existing.get('billing') or '',
+                    billing_preference=existing.get('billing_preference') or 'auto')):
+            _log(f"[allowance] claude subscription exhausted; followup {session_id[:12]} "
+                 "bills API credits, refusal bypassed", flush=True)
+            _allowance_block = ''
         if _allowance_block:
             return jsonify({'error': _allowance_block,
                             'allowance_exhausted': True,
