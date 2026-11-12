@@ -149,6 +149,155 @@ async function manage(f, b) {
   return { response, text, b: { ...b, csrf: /name="csrf" value="([a-f0-9]{64})"/.exec(text)?.[1] } };
 }
 
+function revoke(f, { flow = id(2), at = f.time - 1, n = 90, mode = 'revoke' } = {}) {
+  f.db.sql.prepare('INSERT INTO pull_fences VALUES(?,?,7,?,?,?,?,?,?)')
+    .run(id(1), flow, 'a'.repeat(64), mode, id(n), id(n + 1), 'b'.repeat(64), at);
+  if (mode === 'revoke') {
+    f.db.sql.prepare("UPDATE pull_installs SET state='disabled',updated_ms=?").run(at);
+    f.db.sql.prepare("UPDATE pull_generations SET state='fenced',fenced_ms=?").run(at);
+  }
+}
+
+for (const purpose of ['resume', 'key_recovery']) {
+  test(`disabled ${purpose}: current-owner approval exposes guarded unit 05 seam, never g or active authority`, async (t) => {
+    const f = await fixture(t, purpose); revoke(f);
+    const before = ['pull_installs', 'pull_generations', 'pull_fences'].map((name) => rows(f, name));
+    const b = await approved(f); const m = await manage(f, b); assert.equal(m.response.status, 200);
+    const scope = await f.http.authorizeSession(post(m.b), m.b.csrf, purpose);
+    assert.equal(scope.install.state, 'disabled'); assert.equal(scope.install.generation, 7);
+    assert.equal(scope.flow.purpose, purpose); assert.equal(scope.flow.candidate_public_key, f.candidate.publicKey);
+    await f.db.batch(scope.statements);
+    assert.deepEqual(['pull_installs', 'pull_generations', 'pull_fences'].map((name) => rows(f, name)), before);
+    assert.equal(f.db.sql.prepare("SELECT count(*) AS n FROM pull_generations WHERE state='current'").get().n, 0);
+    const status = await call(f, STATUS, { flow_id: f.value.flow_id, flow_secret: SECRET });
+    assert.equal(status.result.state, 'approved'); assert.equal(status.result.result, null);
+    const token = one(f, 'pull_tokens'); const session = one(f, 'pull_browser_sessions');
+    const replay = await run(f, post(m.b)); assert.equal(replay.status, 200); assert.equal(replay.headers.has('set-cookie'), false);
+    assert.deepEqual(one(f, 'pull_tokens'), token); assert.deepEqual(one(f, 'pull_browser_sessions'), session);
+  });
+}
+
+for (const purpose of ['owner_change', 'rotate', 'delete']) {
+  test(`disabled revoke never admits an ordinary ${purpose} management start`, async (t) => {
+    const f = await fixture(t, purpose); revoke(f);
+    const r = await call(f); assert.equal(r.response.status, 409); assert.equal(r.result.code, 'registration_inactive');
+    assert.equal(rows(f, 'pull_tokens').length, 0); assert.equal(rows(f, 'pull_operations').length, 0);
+  });
+}
+
+test('revoke supersedes a pending recovery; a fresh flow may replace it without reviving its token', async (t) => {
+  const f = await fixture(t, 'key_recovery'); await call(f); const old = f.value; const b = await browser(f);
+  revoke(f, { at: f.time + 1 }); f.time += 2;
+  assert.notEqual((await run(f, post(b))).status, 200);
+  const status = await call(f, STATUS, { flow_id: old.flow_id, flow_secret: SECRET }); assert.equal(status.result.state, 'cancelled');
+  f.value = await candidate(f, { op_id: id(20), flow_id: id(21) });
+  const fresh = await approved(f);
+  assert.equal(rows(f, 'pull_flows').find((r) => r.flow_id === old.flow_id).state, 'cancelled');
+  assert.equal(rows(f, 'pull_tokens').find((r) => r.flow_id === old.flow_id).state, 'pending');
+  const before = snapshot(f);
+  assert.notEqual((await run(f, post(b))).status, 200); assert.deepEqual(snapshot(f), before);
+  const scope = await f.http.authorizeSession(post(fresh), fresh.csrf, 'key_recovery'); await f.db.batch(scope.statements);
+});
+
+for (const at of [NOW, NOW + 1]) {
+  test(`start prepared before concurrent revoke at ${at - NOW}ms commits no prefix`, async (t) => {
+    const f = await fixture(t, 'key_recovery');
+    f.db.beforeBatch = async () => { f.db.beforeBatch = null; revoke(f, { at }); };
+    const r = await call(f); assert.equal(r.response.status, 409); assert.equal(r.result.code, 'fenced');
+    for (const name of ['pull_operations', 'pull_nonces', 'pull_tokens', 'pull_control_outbox', 'pull_budgets']) {
+      assert.equal(rows(f, name).length, 0, name);
+    }
+    assert.equal(rows(f, 'pull_flows').length, 1);
+  });
+}
+
+test('same-millisecond prior revoke refuses start; next millisecond allows a fresh step-up', async (t) => {
+  const f = await fixture(t, 'resume'); revoke(f, { at: NOW });
+  assert.equal((await call(f)).result.code, 'fenced'); f.time++;
+  const b = await approved(f); assert.equal((await manage(f, b)).response.status, 200);
+});
+
+test('delayed revoke with an earlier sampled timestamp still cancels via required atomic lifecycle invalidation', async (t) => {
+  const f = await fixture(t, 'key_recovery'); revoke(f); const b = await approved(f);
+  const scope = await f.http.authorizeSession(post(b), b.csrf, 'key_recovery');
+  // Contract 8.1 caller simulation, not an implementation of the lifecycle
+  // route: revocation invalidates ALL existing g-bound authority in its batch.
+  // A writer may have sampled its time before this new flow was committed.
+  f.db.sql.exec('BEGIN IMMEDIATE');
+  revoke(f, { flow: id(92), n: 92, at: NOW - 2 });
+  f.db.sql.exec("UPDATE pull_flows SET state='cancelled' WHERE purpose='key_recovery';"
+    + "UPDATE pull_tokens SET state='invalidated'; UPDATE pull_browser_sessions SET state='invalidated'; COMMIT");
+  await assert.rejects(f.db.batch(scope.statements));
+  await assert.rejects(f.http.authorizeSession(post(b), b.csrf, 'key_recovery'), /session_required/);
+  assert.equal((await manage(f, b)).response.status, 401);
+  assert.notEqual((await run(f, post(b))).status, 200);
+  assert.equal((await call(f, STATUS, { flow_id: f.value.flow_id, flow_secret: SECRET })).result.state, 'cancelled');
+});
+
+for (const stage of ['get', 'confirm', 'session']) {
+  for (const mode of ['cancel', 'revoke']) {
+    test(`fresh revoked-generation recovery: ${mode} between ${stage} read/commit rolls back authority`, async (t) => {
+      const f = await fixture(t, 'key_recovery'); revoke(f); await call(f);
+      const token = await link(f); let b;
+      if (stage !== 'get') b = await browser(f, token);
+      if (stage === 'session') assert.equal((await run(f, post(b))).status, 200);
+      const before = ['pull_tokens', 'pull_browser_sessions'].map((name) => rows(f, name));
+      if (stage === 'session') {
+        const scope = await f.http.authorizeSession(post(b), b.csrf, 'key_recovery');
+        revoke(f, { flow: f.value.flow_id, n: 92, at: f.time + 1, mode });
+        await assert.rejects(f.db.batch([...scope.statements,
+          f.http.stmt("INSERT INTO pull_budgets VALUES('unit05-probe',1,?)", NOW + VERIFICATION_TTL)]));
+        assert.equal(f.db.sql.prepare("SELECT count(*) AS n FROM pull_budgets WHERE bucket='unit05-probe'").get().n, 0);
+        await assert.rejects(f.http.authorizeSession(post(b), b.csrf, 'key_recovery'), /session_required/);
+      } else {
+        f.db.beforeBatch = async () => {
+          f.db.beforeBatch = null; revoke(f, { flow: f.value.flow_id, n: 92, at: f.time + 1, mode });
+        };
+        const response = stage === 'get' ? (await browser(f, token)).response : await run(f, post(b));
+        assert.equal(response.status, 503);
+      }
+      assert.deepEqual(['pull_tokens', 'pull_browser_sessions'].map((name) => rows(f, name)), before);
+    });
+  }
+}
+
+test('original revoke receipt replay preserves new recovery; newly committed different revoke cancels it', async (t) => {
+  const f = await fixture(t, 'key_recovery'); revoke(f); const b = await approved(f);
+  const original = one(f, 'pull_fences');
+  f.db.sql.prepare('INSERT OR IGNORE INTO pull_fences VALUES(?,?,7,?,?,?,?,?,?)')
+    .run(id(1), id(2), original.fence_hash, 'revoke', original.receipt_id, original.op_id, original.input_digest, NOW + 1);
+  assert.deepEqual(one(f, 'pull_fences'), original);
+  const m = await manage(f, b); assert.equal(m.response.status, 200);
+  revoke(f, { flow: id(92), n: 92, at: NOW + 1 });
+  assert.equal((await manage(f, b)).response.status, 401);
+  assert.equal((await call(f, STATUS, { flow_id: f.value.flow_id, flow_secret: SECRET })).result.state, 'cancelled');
+  const before = snapshot(f); const receipt = await run(f, post(m.b));
+  assert.equal(receipt.status, 200); assert.equal(receipt.headers.has('set-cookie'), false); assert.deepEqual(snapshot(f), before);
+});
+
+for (const change of ["UPDATE pull_installs SET generation=8", 'UPDATE pull_installs SET owner_generation=4',
+  "UPDATE pull_installs SET owner_hash='" + 'a'.repeat(64) + "'", "UPDATE pull_installs SET key_id='other'",
+  "UPDATE pull_generations SET state='current'", "UPDATE pull_flows SET candidate_key_id='other' WHERE purpose='key_recovery'",
+  "UPDATE pull_flows SET state='cancelled' WHERE purpose='key_recovery'"]) {
+  test(`disabled recovery approved session cannot survive stale binding: ${change}`, async (t) => {
+    const f = await fixture(t, 'key_recovery'); revoke(f); const b = await approved(f);
+    const scope = await f.http.authorizeSession(post(b), b.csrf, 'key_recovery');
+    f.db.sql.exec(change); await assert.rejects(f.db.batch(scope.statements));
+    await assert.rejects(f.http.authorizeSession(post(b), b.csrf, 'key_recovery'), /session_required/);
+  });
+}
+
+test('disabled recovery browser/session/token deadlines stay absolute and operation replay never reissues', async (t) => {
+  const f = await fixture(t, 'key_recovery'); revoke(f); const b = await approved(f);
+  const original = one(f, 'pull_browser_sessions'); f.time = original.expires_ms;
+  assert.equal((await manage(f, b)).response.status, 401);
+  f.time = NOW + VERIFICATION_TTL;
+  assert.equal((await browser(f, b.token)).response.status, 410);
+  assert.equal((await call(f)).response.status, 200);
+  assert.equal(rows(f, 'pull_tokens').length, 1); assert.equal(rows(f, 'pull_control_outbox').length, 1);
+  assert.deepEqual(one(f, 'pull_browser_sessions'), original);
+});
+
 for (const purpose of ['owner_change', 'key_recovery', 'resume', 'rotate', 'delete']) {
   test(`${purpose}: start, inert link, exact approval and scoped management form; no install mutation`, async (t) => {
     const f = await fixture(t, purpose); const install = rows(f, 'pull_installs'); const generations = rows(f, 'pull_generations');
