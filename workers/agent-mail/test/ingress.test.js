@@ -9,8 +9,14 @@ test('only authenticated stripped text enters D1; no raw MIME retained', async (
   assert.equal(JSON.parse(event.payload).text, 'A fresh reply');
   assert.equal(event.state, 'pending'); assert.doesNotMatch(event.payload, /Authentication-Results|owner@example.com/);
 });
+test('wrong outbound Message-ID still enters custody with valid owner proof', async () => {
+  const f = await fixture(); const { result, message } = await sendAndReceive(f, { outId: 'wrong@example.com' });
+  assert.equal(result.status, 'queued'); assert.deepEqual(message.rejects, []);
+  const event = await f.ledger.first('SELECT * FROM events');
+  assert.equal(event.thread_id, 'thread1'); assert.equal(JSON.parse(event.payload).text, 'A fresh reply');
+});
 for (const over of [ { from: 'stranger@example.com' }, { ar: cfAr({ dmarc: 'fail' }) }, { ar: null },
-  { token: 'z'.repeat(32) }, { outId: 'wrong@example.com' }, { type: 'text/html', text: '<b>hidden</b>' },
+  { token: 'z'.repeat(32) }, { type: 'text/html', text: '<b>hidden</b>' },
   { extra: ['Auto-Submitted: auto-replied'] }, { extra: ['X-Clayrune-Agent-Mail: 1'] }, { envelope: '' },
   { extra: ['Authentication-Results: mx.cloudflare.net; dmarc=pass'] } ]) {
   test(`ingress drop never reaches custody: ${JSON.stringify(over).slice(0, 90)}`, async () => {

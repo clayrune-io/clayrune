@@ -17,7 +17,7 @@
 // tokenLookup  (token: string) => thread | null  (sync or async). The caller
 //              owns hashing/verifier storage; this module never sees a verifier.
 // thread       { thread_id, install_id, owner_generation, expires_at (epoch ms),
-//                revoked: boolean, message_ids: string[] }  -- outbound Message-IDs
+//                revoked: boolean, message_ids?: string[] }  -- ignored legacy field
 //
 // decide never throws; any internal failure is a drop (fail closed).
 
@@ -30,7 +30,9 @@ export const REASONS = Object.freeze([
   'from_not_owner', 'untrusted_ingress', 'ingress_ambiguous', 'dmarc_not_pass',
   'auth_domain_mismatch', 'dmarc_unaligned', 'lookup_error', 'token_unknown',
   'thread_invalid', 'token_revoked', 'token_expired', 'thread_owner_mismatch',
-  'owner_generation_mismatch', 'message_id_missing', 'message_id_mismatch',
+  'owner_generation_mismatch',
+  // Historical records may still carry these; decide() no longer emits them.
+  'message_id_missing', 'message_id_mismatch',
   'internal_error',
 ]);
 
@@ -38,7 +40,6 @@ export const REASONS = Object.freeze([
 //   <install>+<token>@<domain>   token = 26-64 chars of [a-z0-9]
 // 26 base32 chars = 130 bits. The lookup is the real check; this only bounds work.
 const TOKEN_LOCAL_RE = /^[a-z0-9][a-z0-9._-]{0,63}\+([a-z0-9]{26,64})$/;
-const MAX_REF_IDS = 50;
 
 function reject(reason_code, evidence) {
   return evidence ? { accept: false, reason_code, evidence } : { accept: false, reason_code };
@@ -50,21 +51,6 @@ function extractToken(rcptTo) {
   if (!addr) return null;
   const m = TOKEN_LOCAL_RE.exec(addr.local.toLowerCase());
   return m ? m[1] : null;
-}
-
-// In-Reply-To / References -> the <msg-id> values, capped. Compared exactly
-// (msg-ids are case-sensitive), angle brackets stripped.
-function referencedIds(headers) {
-  const ids = [];
-  for (const key of ['in-reply-to', 'references']) {
-    for (const h of allOf(headers, key)) {
-      for (const m of h.value.matchAll(/<([^<>\s]{1,255})>/g)) {
-        ids.push(m[1]);
-        if (ids.length >= MAX_REF_IDS) return ids;
-      }
-    }
-  }
-  return ids;
 }
 
 async function run(meta, ownerRecord, tokenLookup) {
@@ -102,7 +88,7 @@ async function run(meta, ownerRecord, tokenLookup) {
     return reject('lookup_error', ingress.evidence);
   }
   if (!thread) return reject('token_unknown', ingress.evidence);
-  if (typeof thread !== 'object' || typeof thread.install_id !== 'string' || !Array.isArray(thread.message_ids)) {
+  if (typeof thread !== 'object' || typeof thread.install_id !== 'string') {
     return reject('thread_invalid', ingress.evidence);
   }
   if (thread.revoked !== false) return reject('token_revoked', ingress.evidence); // missing flag = revoked
@@ -110,12 +96,8 @@ async function run(meta, ownerRecord, tokenLookup) {
   if (thread.install_id !== ownerRecord.install_id) return reject('thread_owner_mismatch', ingress.evidence);
   if (thread.owner_generation !== ownerRecord.generation) return reject('owner_generation_mismatch', ingress.evidence);
 
-  // Independent correlation: the reply must reference one of THIS thread's
-  // outbound Message-IDs. A token alone, or a subject, never routes.
-  const refs = referencedIds(headers);
-  if (refs.length === 0) return reject('message_id_missing', ingress.evidence);
-  const known = new Set(thread.message_ids.map((id) => String(id).replace(/^<|>$/g, '')));
-  if (!refs.some((id) => known.has(id))) return reject('message_id_mismatch', ingress.evidence);
+  // Verified owner From + trusted aligned DMARC + the secret thread token are
+  // the proof. Provider-assigned Message-IDs and reply headers are only hints.
 
   return { accept: true, thread, evidence: ingress.evidence };
 }
