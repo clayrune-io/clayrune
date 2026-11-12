@@ -23,6 +23,74 @@ SECRET = b'F' * 32
 CURRENT = SealReference('a' * 32, 'b' * 32, 1, 'old-key')
 CANDIDATE = SealReference('c' * 32, 'b' * 32, 2, 'new-key')
 TRANSCRIPT = b'fixture pull request with exact origin and generation'
+MANAGEMENT = SealReference('d' * 32, CURRENT.install, CURRENT.generation, CURRENT.key_id)
+
+
+def test_management_same_key_independent_secret_and_orphan_reopen(seal):
+    legacy_fixture(seal)
+    value = seal.prepare_management(CURRENT, MANAGEMENT, authorize=lambda: True, expected_public_key=None)
+    assert value == public(seal, CURRENT) == public(seal, MANAGEMENT)
+    verify(value, seal.sign_pull(MANAGEMENT, TRANSCRIPT))
+    secret = seal.flow_secret(MANAGEMENT.flow, MANAGEMENT.install, MANAGEMENT.generation, MANAGEMENT.key_id)
+    assert len(secret) == 32 and secret != SECRET
+    path = seal.folder / (MANAGEMENT.flow + '.sealed')
+    before = path.read_bytes()
+    reopened = IdentitySeal(seal.folder, key=lambda: MASTER)
+    for expected in (None, value):
+        assert reopened.prepare_management(CURRENT, MANAGEMENT, authorize=lambda: True,
+                                           expected_public_key=expected) == value
+        assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize('changed', [dict(flow=CURRENT.flow), dict(install='e' * 32),
+                                     dict(generation=2), dict(key_id='other-key')])
+def test_management_ref_cannot_change_key_generation_install_or_overwrite_current(seal, changed):
+    legacy_fixture(seal)
+    with pytest.raises(EnrollmentRefused, match='^invalid_request$'):
+        seal.prepare_management(CURRENT, replace(MANAGEMENT, **changed), authorize=lambda: True,
+                                expected_public_key=None)
+    assert len(list(seal.folder.glob('*.sealed'))) == 1
+
+
+@pytest.mark.parametrize('allowed', [False, None, 1, 'true'])
+def test_management_requires_human_before_creating_material(seal, allowed):
+    legacy_fixture(seal)
+    with pytest.raises(EnrollmentRefused, match='^human_required$'):
+        seal.prepare_management(CURRENT, MANAGEMENT, authorize=lambda: allowed, expected_public_key=None)
+    assert not (seal.folder / (MANAGEMENT.flow + '.sealed')).exists()
+
+
+@pytest.mark.parametrize('target', ['current', 'management'])
+@pytest.mark.parametrize('damage', ['missing', 'corrupt', 'unknown-version', 'wrong-key', 'lock'])
+def test_management_refuses_lost_corrupt_or_mismatched_committed_seals(seal, target, damage):
+    legacy_fixture(seal)
+    value = seal.prepare_management(CURRENT, MANAGEMENT, authorize=lambda: True, expected_public_key=None)
+    ref = CURRENT if target == 'current' else MANAGEMENT
+    path = seal.folder / (ref.flow + '.sealed')
+    if damage == 'missing':
+        path.unlink()
+    elif damage == 'corrupt':
+        path.write_bytes(b'broken')
+    elif damage == 'unknown-version':
+        content = json.loads(path.read_text())
+        content['version'] = 2
+        path.write_text(json.dumps(content))
+    elif damage == 'wrong-key':
+        path.unlink()
+        seal.create(ref.flow, ref.install, ref.generation, ref.key_id, lambda: (b'X' * 32, b'Y' * 32))
+    else:
+        seal = IdentitySeal(seal.folder, key=lambda: None)
+    before = path.read_bytes() if path.exists() else None
+    with pytest.raises(EnrollmentRefused):
+        seal.prepare_management(CURRENT, MANAGEMENT, authorize=lambda: True, expected_public_key=value)
+    assert (path.read_bytes() if path.exists() else None) == before
+
+
+def test_management_wrong_orphan_seed_cannot_be_adopted(seal):
+    legacy_fixture(seal)
+    seal.generate_pull(MANAGEMENT, authorize=lambda: True, expected_public_key=None)
+    with pytest.raises(EnrollmentRefused, match='^operation_conflict$'):
+        seal.prepare_management(CURRENT, MANAGEMENT, authorize=lambda: True, expected_public_key=None)
 
 
 @pytest.fixture

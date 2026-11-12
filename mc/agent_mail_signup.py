@@ -123,6 +123,16 @@ class Signup:
         _need(type(now) is int and 0 < now <= MAX_INT - TTL, 'invalid_request')
         return now
 
+    def owner_change(self, *, install_id: str):
+        """Compose the separate human adapter with the same custody/trust gates.
+
+        No action or network here. This static import also makes the unwired
+        module reachable to frozen-app packaging until HTTP composition lands.
+        """
+        from mc.agent_mail_owner_change import OwnerChange
+        return OwnerChange(self.store, self.seal, self.transport, install_id=install_id,
+                           reviewed_service=self.reviewed_service, authorize=self.authorize, clock_ms=self.clock_ms)
+
     def _service(self, row: dict[str, Any] | None = None) -> tuple[ServiceKeyCandidate, str]:
         try:
             pin, digest = self.reviewed_service()

@@ -222,6 +222,42 @@ class IdentitySeal:
                 raise EnrollmentRefused('vault_locked') from None
             raise
 
+    def prepare_management(self, current: SealReference, flow: SealReference, *,
+                           authorize: Callable[[], bool], expected_public_key: str | None) -> str:
+        """Same key, independent secret, immutable management-flow seal.
+
+        Caller serializes with its lifecycle transaction and persists the new
+        reference before network activity. None is allowed only before the
+        flow's public key is committed. An orphan is checked and reopened;
+        committed missing/corrupt material is never regenerated. The seed is
+        copied only here, never returned to the lifecycle adapter.
+        """
+        self._reference(current)
+        self._reference(flow)
+        self._authorize(authorize)
+        if (flow.flow == current.flow or flow.install != current.install
+                or flow.generation != current.generation or flow.key_id != current.key_id):
+            raise EnrollmentRefused('invalid_request')
+        raw = self._pull_read(current)
+        public = b64(Ed25519PrivateKey.from_private_bytes(raw[:32]).public_key().public_bytes_raw())
+        if expected_public_key is not None and expected_public_key != public:
+            raise EnrollmentRefused('operation_conflict')
+        if expected_public_key is not None or self._path(flow.flow).exists():
+            staged = self._pull_read(flow)
+            if staged[:32] != raw[:32] or staged[32:] == raw[32:]:
+                raise EnrollmentRefused('operation_conflict')
+            return public
+        try:
+            created = self.create(flow.flow, flow.install, flow.generation, flow.key_id,
+                                  lambda: (raw[:32], os.urandom(32)))
+        except EnrollmentRefused as exc:
+            if str(exc) == 'vault_locked_or_unconfigured':
+                raise EnrollmentRefused('vault_locked') from None
+            raise
+        if created != public or self._pull_read(flow)[32:] == raw[32:]:
+            raise EnrollmentRefused('operation_conflict')
+        return public
+
     @staticmethod
     def _rotation(current: SealReference, candidate: SealReference) -> None:
         IdentitySeal._reference(current)
