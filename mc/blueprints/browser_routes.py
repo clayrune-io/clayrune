@@ -35,7 +35,10 @@ prompt, and an anti-bot challenge) on every single run.
 
 So a launch may name a profile: `{"profile": "reddit"}` reuses
 `~/.clayrune/browser_profiles_named/reddit`, which survives teardown and keeps
-its cookies. Unnamed launches behave exactly as before.
+its cookies. Only non-packaged sandbox instances with MC_DATA_DIR set store
+browser profiles and downloads under `<MC_DATA_DIR>/.clayrune`. Packaged apps
+keep the legacy `~/.clayrune` roots even with MC_DATA_DIR set. Unnamed launches
+behave as before.
 
 Set `browser_default_profile` in config.json to make UNNAMED launches use a
 named profile too, so the plain 🌐 Browser button keeps logins instead of
@@ -89,6 +92,8 @@ from mc.core import _log
 from mc.state import browser_sessions, browser_lock
 from mc import browser_auth_diagnostics as _auth_diagnostics
 from mc import browser_frame_guard as _frame_guard
+from mc.browser_profile_owner import profile_owner as _profile_owner
+from mc.browser_paths import browser_home
 
 bp = Blueprint('browser_routes', __name__)
 _auth_diagnostics.register_routes(bp)
@@ -305,23 +310,23 @@ def _is_clayrune_own_origin(url: str) -> bool:
 
 def _profiles_root():
     """Throwaway per-session profiles. Everything here is deletable."""
-    return os.path.join(os.path.expanduser('~'), '.clayrune', 'browser_profiles')
+    return os.path.join(browser_home(), 'browser_profiles')
 
 
 def _named_profiles_root():
     """Saved, signed-in profiles. A SIBLING of the throwaway root by design —
     see the module docstring: the orphan sweep walks the throwaway root, and
     nothing that walk can reach may hold a login."""
-    return os.path.join(os.path.expanduser('~'), '.clayrune',
-                        'browser_profiles_named')
+    return os.path.join(browser_home(), 'browser_profiles_named')
 
 
 def _downloads_root():
-    """Landing dir for files a page inside the pane downloads. OUTSIDE the
-    repo and outside DATA_DIR on purpose — same reasoning as the profile
-    roots above: nothing under here is a Clayrune project record, and a
-    project-record scan (load_projects()) must never trip over it."""
-    return os.path.join(os.path.expanduser('~'), '.clayrune', 'browser_downloads')
+    """Download landing dir, alongside profiles in this instance's home.
+
+    Outside the project-record DATA_DIR even when MC_DATA_DIR is set, so
+    load_projects() can never mistake a downloaded file for a project.
+    """
+    return os.path.join(browser_home(), 'browser_downloads')
 
 
 # A page a pane visits has no other say in how much disk a download burns —
@@ -568,10 +573,10 @@ def sweep_leaked_pane_chromiums():
     """Close headless pane Chromiums that a server restart orphaned and that
     nothing ever relaunches (MC-997, Dave 2026-09-28): 9 leaked trees / ~35
     processes found, none in `/browser/status` for any project. Cause: the
-    restart path `os._exit()`s past the atexit browser cleanup, and
-    `_release_held_profile` only recovers a leaked profile's Chromium when a
-    launch names that SAME profile again — a throwaway profile (a random
-    session-id dir under `_profiles_root()`) is never relaunched by name, so
+    restart path `os._exit()`s past the atexit browser cleanup.
+    A named holder surfaces in a launch-time refusal when that SAME profile
+    is requested again; a throwaway profile (a random session-id dir under
+    `_profiles_root()`) is never relaunched by name, so without this sweep
     it stays running forever with its profile dir locked.
 
     A candidate is a Chromium BROWSER process (never a `--type=` child) that
@@ -581,8 +586,7 @@ def sweep_leaked_pane_chromiums():
     user-data-dir lives:
 
       - under `_profiles_root()` (throwaway) or `_named_profiles_root()`
-        (saved login) → close it, via the same `_cdp_browser_close` the
-        launch-time `_release_held_profile` path already uses. A NAMED
+        (saved login) → close it via `_cdp_browser_close`. A NAMED
         profile is never hard-killed if Browser.close doesn't make it exit —
         only Browser.close flushes cookies (see `_graceful_close`'s
         measurements), so a stuck one is left running and reported, same as
@@ -2506,20 +2510,12 @@ def _profile_holder(udd):
 
 
 def _release_held_profile(profile, udd, timeout=10):
-    """Free a named profile's dir held by a Chromium we are not tracking, or
-    return an error string saying why it cannot be.
+    """Clean up our own stale sessions, then refuse any untracked holder.
 
-    What holds it in practice is a pane Chromium orphaned by a server restart
-    (the restart path os._exit()s past the atexit browser cleanup). Chromium
-    allows one process per user-data-dir: a second launch hands its command
-    line to the holder and exits rc=21 in ~0.1s, so the new session's port
-    never opened and the pane stayed black until the reader gave up 15s
-    later (MC-976, 2026-09-25: Ron's 'main' sessions cfc90fe9ab84/f53c7f773b99
-    against an orphan whose parent server was already gone). A holder that
-    is a headless Chromium with a debugging port is one of ours: close it
-    over CDP (Browser.close flushes cookies — never a kill, see
-    _graceful_close) and wait for the dir to free. Anything else is left
-    alone and the launch is refused with the holder's pid.
+    A debugging port is not proof of ownership: another Clayrune server
+    may have launched that Chromium. Report its owner without closing it,
+    for pipe and legacy port transports alike. Keep timeout for callers
+    that passed it before recovery was restricted to owned sessions.
     """
     with browser_lock:
         stale = [s for s in browser_sessions.values()
@@ -2533,22 +2529,9 @@ def _release_held_profile(profile, udd, timeout=10):
     if not holder:
         return (f"profile '{profile}' is in use by another browser process "
                 f"(could not identify it) — close it and try again")
-    pid, cmd = holder
-    m = re.search(r'--remote-debugging-port=(\d+)', cmd)
-    port = int(m.group(1)) if (m and '--headless' in cmd) else None
-    if port is None:
-        return (f"profile '{profile}' is in use by another browser process "
-                f"(pid {pid}) — close it and try again")
-    ok, err = _cdp_browser_close(port)
-    if not ok:
-        return f"profile '{profile}' is held by a leftover pane browser (pid {pid}) that did not respond: {err}"
-    deadline = _time.time() + timeout
-    while _time.time() < deadline:
-        if not _profile_dir_locked(udd):
-            print(f'[browser] closed leftover pane Chromium pid {pid} holding profile {profile!r}', flush=True)
-            return None
-        _time.sleep(0.2)
-    return f"profile '{profile}' is still held by pid {pid} {timeout}s after asking it to close"
+    pid, _cmd = holder
+    return (f"profile '{profile}' is in use by another browser process "
+            f"({_profile_owner(pid)}) — close it in the owning instance and try again")
 
 
 def _browser_ws_url(port, timeout=2):
@@ -2570,11 +2553,9 @@ def _cdp_browser_close(port, timeout=3):
     process has actually exited yet (the caller polls for that separately,
     e.g. `_profile_dir_locked` or `proc.wait`).
 
-    The ONE place this module asks a Chromium to close itself over CDP —
-    `_release_held_profile` (freeing a named profile a launch wants) and
-    `sweep_leaked_pane_chromiums` (MC-997) both call this rather than each
-    opening their own websocket, so there is exactly one Browser.close call
-    site to reason about."""
+    Shared port-transport close helper used by owned-session teardown and
+    `sweep_leaked_pane_chromiums` (MC-997). Untracked launch-time holders
+    are refused rather than closed by `_release_held_profile`."""
     websocket = _import_ws()
     if websocket is None:
         return False, 'websocket-client not installed'
