@@ -82,8 +82,11 @@ export async function outbound({ ledger, reg, value, body, config, send, now }) 
 /** Pull-only entry for unit14. ledger is Ledger.pull(), binding is the reviewed
  * structured Email Sending binding. value includes op_id; body is the exact
  * authenticated request bytes. The legacy entry above remains until route cutover.
+ * Optional requestGuards join only the first reservation or replay transaction;
+ * never pass the same nonce guards again to the later provider authorization.
  */
-export async function pullOutbound({ ledger, reg, value, body, config, binding, clock = Date.now, timers = globalThis }) {
+export async function pullOutbound({ ledger, reg, value, body, config, binding, clock = Date.now, timers = globalThis,
+  requestGuards = [] }) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { status: 400, code: 'invalid_send' };
   const { op_id, ...payload } = value;
   if (typeof op_id !== 'string' || !/^[a-f0-9]{32}$/.test(op_id) || !validateSend(payload)
@@ -101,12 +104,15 @@ export async function pullOutbound({ ledger, reg, value, body, config, binding, 
     state: row.state, provider_id: row.provider_id });
   try {
     const prior = await ledger.intent(reg, value.intent_id);
-    if (prior) return prior.digest === digest ? receipt(prior) : { status: 409, code: 'intent_conflict' };
+    if (prior) {
+      if (prior.digest !== digest) return { status: 409, code: 'intent_conflict' };
+      return receipt(requestGuards.length ? await ledger.replaySend(reg, value.intent_id, clock(), requestGuards) : prior);
+    }
     // Validate provider configuration before durable reservation/authorization.
     const provider = cloudflareEmailSending({ ...config, binding, clock, timers });
     const message_id = `${await sha256(bytes(`${reg.install_id}:${reg.generation}:${value.intent_id}`))}@${config.domain}`;
     const reserved = await ledger.reserveSend(reg, { ...value, digest, message_id,
-      token_hash: await sha256(bytes(value.reply_token)) }, clock());
+      token_hash: await sha256(bytes(value.reply_token)) }, clock(), requestGuards);
     if (reserved.duplicate) return receipt(reserved);
     // This CAS is the only authorization point. No fresh lookup can replace the
     // recipient with a later owner after it commits, even across a switch/revert.
