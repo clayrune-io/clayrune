@@ -1,5 +1,11 @@
 # Agent mail: owner signup integration readiness
 
+> **Superseded blocker, 2026-11-11:** Ron selected outbound-connection pull mail,
+> with no tunnel or remote-access control plane. The CP deployment-choice blocker
+> below is historical. See [the pull design](AGENT_MAIL_PULL_DESIGN.md) for the
+> replacement architecture, remaining decisions and build gates; it is not yet
+> implemented, and the old configuration checklist is not a pull setup recipe.
+
 MC-1166 integration checkpoint, 2026-11-11. This is a diagnosis, not a shipped
 signup implementation. No runtime code, settings, credentials or deployment
 changed. Operator-specific observations and the dispatch decision request are
