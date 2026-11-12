@@ -6,6 +6,7 @@ import { CHALLENGE_TTL, randomHex, flowDigest, codeDigest } from './enrollment-c
 import { verifyGrant, OWNERSHIP_LEASE_MS } from './enrollment-grant.js';
 import { parseMailbox } from './mailbox.js';
 import { reserveIdentity } from './enrollment-reservations.js';
+import { SQL_NOW } from './sql-clock.js';
 
 export class Enrollment {
   constructor({ db, enabled = false, serviceOrigin, servicePin, trust, codeKey, provider,
@@ -148,7 +149,7 @@ export class Enrollment {
       // D1 supplies admission time inside the INSERT, not from a JS clock read
       // before asynchronous crypto/SQL scheduling. All trigger checks use it.
       await this.stmt(`INSERT INTO mail_enrollment_commits VALUES(?,?,?,?,?,?,?,?,
-        CAST(strftime('%s','now') AS INTEGER)*1000+CAST(substr(strftime('%f','now'),4,3) AS INTEGER),?)`,
+        ${SQL_NOW},?)`,
         grant.jti, flowId, f.r_digest, tokenDigest, Number(m.expected_generation), grant.checked_at_ms,
         grant.checked_at_ms + OWNERSHIP_LEASE_MS, grant.record_version, grant.exp * 1000).run();
     } catch (error) {
