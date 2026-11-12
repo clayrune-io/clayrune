@@ -1,70 +1,511 @@
-"""Fixed-origin client for the mail service lifecycle routes (MC-1166 unit 7d-2d, contract 5.1-5.5).
+"""Bounded same-origin pull HTTP transport (MC-1166 unit 21), no import I/O.
 
-Two authority classes, matching `workers/agent-mail/lifecycle.js`:
+HttpsTransport(origin=...) implements SignupTransport for signup/owner/socket
+composition. It returns bounded raw bytes, never authority. ServiceClient adds
+reviewed root-manifest trust and v2 verification before returning any response.
+Its reviewed_service callback MUST revalidate signed evidence, durable rollback
+floor and human pin approval on every call, as in Signup/PullClient. No repinning.
 
-* fence-auth (`cancel_flow`, `revoke`): the flow's fence token from the local plain store. No vault,
-  no key: works with a locked or lost vault (decision D2).
-* install-auth (`status`, `renew`, `proof_arm`, `activate`): the install MAIL key through the
-  sealed identity, direction `install-to-service-lifecycle`. Never the device key.
+The pre-signed callable seam validates the common response envelope; individual
+route owners still validate their closed result shapes before changing state.
+status() and fence() below own those two shapes. Neither changes local consent,
+account authority or queue state. Future lifecycle composition owns fence ACK
+commit and races. Fence calls read only durable cancellation secrets, not seals.
 
-The ONLY thing that counts as an acknowledgment is a 200 whose body digest is signed by the
-manifest-verified service key under `service-to-install-response`, bound to this request's path
-and nonce, and whose fields equal the request scope. An HTTP status, silence, a timeout, an
-unsigned or mismatched body records nothing and raises a closed code (5.5). Remote text never
-reaches an exception or a log.
-
-The origin comes from the constructor (the manifest-verified deployment), never from a request,
-an agent or a response. No key is generated here and nothing starts on import.
+Legacy constructor/import names remain for units 22/23/26. Retired lifecycle
+operations refuse without network; verify_response remains v1 ONLY for the
+existing ceremony importer until its replacement. Never use it for pull proof.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import secrets
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, cast
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from mc.agent_mail_delivery_proof import DeliveryProof
 from mc.agent_mail_enrollment import OwnershipReceipt, PendingIdentity
-from mc.agent_mail_enrollment_keys import EnrollmentRefused, IdentitySeal
-from mc.agent_mail_enrollment_manifest import candidate_from_evidence
+from mc.agent_mail_enrollment_keys import EnrollmentRefused, IdentitySeal, SealReference
 from mc.agent_mail_enrollment_revocations import CancelledAssignment
-from mc.agent_mail_enrollment_state import ManifestCAS
 from mc.agent_mail_lifecycle_fence import LifecycleFences
-from mc.agent_mail_outbound_signing import headers as signed_headers
+from mc.agent_mail_pull_schema import _validate
 from mc.agent_mail_remote import REMOTE_UNAVAILABLE, RemoteUnavailable
 from mc.agent_mail_service_manifest import ServiceKeyCandidate
 from mc.agent_mail_signing import HEX, ID, SKEW_MS, IngressRefused, unbase64url
+from mc.agent_mail_signup import H, I, MAX_INT, ORIGIN, _json, _mailbox
 from mc.agent_mail_store import MailStore
+from mc.core import _log
 
+# Compatibility constants for the retiring ceremony/lifecycle importers.
 PREFIX = '/v1/mail/lifecycle'
 LIFECYCLE_DIRECTION = 'install-to-service-lifecycle'
 RESPONSE_DIRECTION = 'service-to-install-response'
-REQUEST_LIMIT = 2048          # contract 5.1: bounded JSON
-RESPONSE_LIMIT = 16 * 1024
+_ORIGIN = ORIGIN
+REQUEST_LIMIT = 8192
+SEND_LIMIT = 128 * 1024
+RESPONSE_LIMIT = 32 * 1024
+HEADER_LIMIT = 8192
 HTTP_TIMEOUT_S = 10.0
-EVIDENCE_MAX_AGE_MS = 120_000  # a cached Worker status older than this is never evidence
+EVIDENCE_MAX_AGE_MS = 120_000
 LEASE_MS = 300_000
-_NONCE = re.compile(r'[a-f0-9]{32}')
-_ORIGIN = re.compile(r'https://(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?')
-_REVOKE_STATES = frozenset({'revoked', 'already_superseded', 'fenced'})
+PULL_PREFIX = '/v1/pull'
+STATUS = PULL_PREFIX + '/status'
+FENCE = PULL_PREFIX + '/fence'
+ROUTES = frozenset(PULL_PREFIX + s for s in (
+    '/signup/start', '/signup/status', '/activate', '/status', '/ticket', '/send',
+    '/send/status', '/fence', '/management/start', '/management/status', '/key/rotate'))
+ERRORS = {
+    400: {'invalid_request', 'invalid_json', 'invalid_send', 'invalid_message_id', 'invalid_text',
+          'invalid_hold', 'auth_evidence', 'event_identity', 'text_digest', 'unsupported_frame'},
+    401: {'unauthorized', 'ticket_invalid', 'session_required', 'csrf_failed'},
+    403: {'human_required', 'passcode_required', 'old_mailbox_required', 'consent_required'},
+    404: {'not_found', 'unknown_thread', 'unknown_intent'}, 408: {'body_timeout'},
+    409: {'operation_conflict', 'intent_conflict', 'message_id_conflict', 'ack_conflict', 'nonce_replayed',
+          'stale_generation', 'connection_superseded', 'lease_unknown', 'registration_inactive',
+          'registration_frozen', 'verification_pending', 'owner_limit', 'change_limit', 'change_superseded',
+          'revocation_pending', 'uncertain', 'fenced', 'revoked', 'already_sent', 'same_owner'},
+    410: {'flow_expired', 'event_expired', 'token_expired', 'legacy_retired'},
+    413: {'body_limit', 'frame_limit'}, 426: {'version_unsupported'},
+    429: {'request_limit', 'send_limit', 'ingress_limit', 'verification_limit', 'queue_full', 'abuse_limit'},
+    503: {'mail_disabled', 'manifest_not_configured', 'manifest_malformed', 'storage_unavailable',
+          'provider_unavailable', 'provider_suppressed', 'provider_quota', 'service_unavailable'},
+}
+REASONS = frozenset().union(*ERRORS.values(), {
+    'response_unverified', 'vault_locked', 'store_missing', 'store_corrupt', 'marker_missing',
+    'marker_corrupt', 'seal_missing', 'schema_corrupt', 'local_disabled', 'conversation_busy',
+    'reauth_due', 'service_key_changed', 'empty_body', 'queue_expired', 'connection_lost',
+    'extraction_unavailable', 'extraction_ambiguous', 'history_missing', 'target_closed',
+    'provider_uncertain', 'notice_pending', 'notice_failed', 'notice_uncertain', 'old_mailbox_lost', ''})
 
 
 class ServiceRefused(EnrollmentRefused):
-    """Closed code only. Never carries a remote body, header or exception text."""
+    """Code-owned closed reason only; never remote text or exception detail."""
 
 
-def _gen_ok(value: Any) -> bool:
-    return type(value) is int and 1 <= value < 10 ** 15
+def _need(ok: object, reason: str = 'response_unverified') -> None:
+    if not ok:
+        raise ServiceRefused(reason)
 
 
-# --- response verification ---------------------------------------------------------------------------
+def _match(pattern: re.Pattern[str], value: Any) -> bool:
+    return isinstance(value, str) and pattern.fullmatch(value) is not None
+
+
+def _integer(value: Any, low: int = 0, high: int = MAX_INT) -> bool:
+    return type(value) is int and low <= value <= high
+
+
+def _headers(supplied: Mapping[str, str]) -> dict[str, str]:
+    _need(isinstance(supplied, Mapping))
+    headers: dict[str, str] = {}
+    for k, v in supplied.items():
+        _need(isinstance(k, str) and isinstance(v, str) and k.isascii() and v.isascii()
+              and k.lower() not in headers and not any(c in k + v for c in '\r\n\x00'))
+        headers[k.lower()] = v
+    _need(sum(len(k) + len(v) + 4 for k, v in headers.items()) <= HEADER_LIMIT
+          and 'content-encoding' not in headers)
+    return headers
+
+
+def _object(raw: bytes) -> dict[str, Any]:
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        value = dict(items)
+        _need(len(value) == len(items))
+        return value
+
+    def invalid(_: str) -> None:
+        raise ServiceRefused('response_unverified')
+
+    def integer(s: str) -> int:
+        _need(s != '-0' and _integer(int(s)))
+        return int(s)
+
+    def check(v: Any, depth: int = 0) -> None:
+        _need(depth <= 5)
+        if type(v) is dict:
+            for k, item in v.items():
+                k.encode('utf-8')
+                check(item, depth + 1)
+        elif type(v) is str:
+            v.encode('utf-8')
+        else:
+            _need(v is None or _integer(v))
+
+    value = json.loads(raw.decode('utf-8'), object_pairs_hook=pairs, parse_int=integer,
+                       parse_float=invalid, parse_constant=invalid)
+    _need(type(value) is dict)
+    check(value)
+    return value
+
+
+def verify_pull_response(response: tuple[int, Mapping[str, str], bytes], *, candidate: ServiceKeyCandidate,
+                         install: str, generation: int, owner_generation: int, path: str,
+                         nonce: str, request_id: str, clock_ms: Callable[[], int]) -> dict[str, Any]:
+    """Verify v2 before parsing. Signed errors prove failure only; caller owns result shape."""
+    try:
+        status, supplied, raw = response
+        _need(type(status) is int and (status == 200 or status in ERRORS)
+              and isinstance(raw, bytes) and len(raw) <= RESPONSE_LIMIT)
+        h = _headers(supplied)
+        _need(re.fullmatch(r'application/json(?:;\s*charset=utf-8)?', h.get('content-type', ''), re.I))
+        expected = {'version': '2', 'direction': 'pull-to-install', 'key-id': candidate.key_id,
+                    'install-id': install, 'generation': str(generation),
+                    'owner-generation': str(owner_generation), 'nonce': nonce,
+                    'digest': hashlib.sha256(raw).hexdigest()}
+        _need(all(h.get('x-mail-' + k) == v for k, v in expected.items()))
+        stamp = h.get('x-mail-timestamp', '')
+        _need(re.fullmatch(r'0|[1-9][0-9]{0,15}', stamp) and _integer(int(stamp))
+              and abs(clock_ms() - int(stamp)) <= SKEW_MS and clock_ms() < candidate.expires_at_ms)
+        transcript = _json(['clayrune-agent-mail-pull-http', '1', 'pull-to-install', candidate.origin,
+            'POST', path, candidate.key_id, install, str(generation), str(owner_generation),
+            stamp, nonce, str(status), expected['digest']])
+        Ed25519PublicKey.from_public_bytes(unbase64url(candidate.public_key, 32)).verify(
+            unbase64url(h.get('x-mail-signature', ''), 64), transcript)
+        _need(abs(clock_ms() - int(stamp)) <= SKEW_MS and clock_ms() < candidate.expires_at_ms)
+        value = _object(raw)
+        _need(type(value.get('v')) is int and value['v'] == 1 and value.get('request_id') == request_id)
+        if status == 200:
+            _need(value.get('code') == ('accepted' if path == PULL_PREFIX + '/send' else
+                                      'fenced' if path == FENCE else 'ok'))
+        else:
+            _need(isinstance(value.get('code'), str) and value['code'] in ERRORS[status]
+                  and value.keys() in ({'v', 'code', 'request_id'},
+                                       {'v', 'code', 'request_id', 'retry_after_ms'})
+                  and ('retry_after_ms' not in value or status in (429, 503)
+                       and _integer(value['retry_after_ms'])))
+        return value
+    except (ValueError, TypeError, KeyError, AttributeError, InvalidSignature, IngressRefused, RecursionError):
+        raise ServiceRefused('response_unverified') from None
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+class HttpsTransport:
+    """Raw bounded POSTs. origin-bound __call__ satisfies SignupTransport.
+
+    post retains the explicit-origin legacy factory seam; responses here are
+    untrusted bytes. Client/ceremony verifiers must run before interpreting them.
+    The opener seam is for fake transports/tests only; production builds no-redirect
+    urllib with default certificate verification. Construction does no network.
+    """
+
+    def __init__(self, *, origin: str | None = None, timeout_s: float = HTTP_TIMEOUT_S, opener: Any = None):
+        _need(type(timeout_s) in (int, float) and math.isfinite(timeout_s)
+              and 0 < timeout_s <= HTTP_TIMEOUT_S, 'invalid_timeout')
+        _need(origin is None or _match(ORIGIN, origin) and len(origin) <= 261, 'service_origin_invalid')
+        self.origin, self.timeout_s = origin, timeout_s
+        self._opener = opener or urllib.request.build_opener(_NoRedirect)
+
+    def __call__(self, method: str, path: str, headers: Mapping[str, str], body: bytes, /
+                 ) -> tuple[int, Mapping[str, str], bytes]:
+        _need(method == 'POST' and path in ROUTES and self.origin is not None, 'invalid_request')
+        assert self.origin is not None
+        r = self.post(self.origin, path, headers, body)
+        return r['status'], r['headers'], r['body']
+
+    def post(self, origin: str, path: str, headers: Mapping[str, str], body: bytes) -> dict[str, Any]:
+        _need(_match(ORIGIN, origin) and len(origin) <= 261 and (self.origin is None or origin == self.origin)
+              and isinstance(path, str) and re.fullmatch(r'/[A-Za-z0-9/_-]{1,200}', path), 'invalid_request')
+        _need(isinstance(body, bytes) and len(body) <= (SEND_LIMIT if path == PULL_PREFIX + '/send'
+                                                     else REQUEST_LIMIT), 'body_limit')
+        h = _headers(headers)
+        _need(not any(k in h for k in ('host', 'cookie', 'authorization', 'origin', 'transfer-encoding',
+                                      'content-length', 'accept-encoding')), 'invalid_request')
+        h.update({'content-type': 'application/json', 'accept-encoding': 'identity',
+                  'cache-control': 'no-store', 'x-content-type-options': 'nosniff'})
+        request = urllib.request.Request(origin + path, data=body, method='POST', headers=h)
+        try:
+            with self._opener.open(request, timeout=self.timeout_s) as reply:
+                _need(reply.status not in range(300, 400), 'response_unverified')
+                if callable(getattr(reply, 'geturl', None)):
+                    _need(reply.geturl() == origin + path, 'response_unverified')
+                return self._read(reply, reply.status)
+        except urllib.error.HTTPError as exc:
+            with exc:
+                _need(exc.code not in range(300, 400), 'response_unverified')
+                return self._read(exc, exc.code)
+        except ServiceRefused:
+            raise
+        except Exception:
+            _log('[agent-mail] service_client connection_lost', flush=True)
+            raise ServiceRefused('connection_lost') from None
+
+    @staticmethod
+    def _read(reply: Any, status: int) -> dict[str, Any]:
+        # Check the original header pairs before dict() can erase duplicates.
+        pairs = list(reply.headers.items())
+        _need(len({k.lower() for k, _ in pairs}) == len(pairs))
+        h = _headers(dict(pairs))
+        raw = reply.read(RESPONSE_LIMIT + 1)
+        _need(isinstance(raw, bytes) and len(raw) <= RESPONSE_LIMIT)
+        return {'status': status, 'headers': h, 'body': raw}
+
+
+class ServiceClient:
+    """Verified pull adapter; old constructor accepted until importer cutover.
+
+    Composition supplies install_id and reviewed_service. Missing review refuses
+    with legacy_retired, without trying old routes or generating trust material.
+    __call__ accepts already sealed-key-signed bytes from SignupTransport callers;
+    they own human intent/consent and their route-specific response schema.
+    """
+
+    def __init__(self, store: MailStore, seal: IdentitySeal, *, fences: LifecycleFences | None = None,
+                 transport: Any, root_public_key: str = '', service_origin: str,
+                 delivery: DeliveryProof | None = None, nonce: Callable[[int], str] = secrets.token_hex,
+                 clock: Callable[[], float] = time.time, install_id: str | None = None,
+                 reviewed_service: Callable[[], tuple[ServiceKeyCandidate, str]] | None = None):
+        _need(_match(ORIGIN, service_origin) and len(service_origin) <= 261, 'service_origin_invalid')
+        _need(install_id is None or _match(I, install_id), 'invalid_request')
+        _need(not isinstance(transport, HttpsTransport) or transport.origin in (None, service_origin),
+              'service_origin_invalid')
+        self.store, self.seal, self.fences, self.transport = store, seal, fences, transport
+        self.root, self.origin, self.delivery = root_public_key, service_origin, delivery
+        self._nonce, self.clock = nonce, clock
+        self.install_id, self.reviewed_service = install_id, reviewed_service
+
+    def _now_ms(self) -> int:
+        now = int(self.clock() * 1000)
+        _need(_integer(now, 1), 'invalid_request')
+        return now
+
+    def _service(self) -> tuple[ServiceKeyCandidate, str]:
+        _need(self.reviewed_service is not None, 'legacy_retired')
+        assert self.reviewed_service is not None
+        try:
+            pin, digest = self.reviewed_service()
+            _need(pin.origin == self.origin and _match(ID, pin.key_id) and _match(H, digest)
+                  and _integer(pin.sequence, 1, 10**15 - 1) and self._now_ms() < pin.expires_at_ms,
+                  'service_key_changed')
+            unbase64url(pin.public_key, 32)
+            return pin, digest
+        except EnrollmentRefused:
+            raise
+        except Exception:
+            _log('[agent-mail] service_client service_key_changed', flush=True)
+            raise ServiceRefused('service_key_changed') from None
+
+    def _exchange(self, path: str, h: Mapping[str, str], raw: bytes, *, pin: ServiceKeyCandidate,
+                  generation: int, owner_generation: int, install: str, nonce: str,
+                  request_id: str) -> tuple[tuple[int, Mapping[str, str], bytes], dict[str, Any]]:
+        before = self._service()
+        _need(before[0] == pin, 'service_key_changed')
+        try:
+            if isinstance(self.transport, HttpsTransport):
+                reply = self.transport.post(self.origin, path, h, raw)
+                response = reply['status'], reply['headers'], reply['body']
+            elif callable(self.transport):
+                response = cast(tuple[int, Mapping[str, str], bytes], self.transport('POST', path, h, raw))
+            else:
+                reply = self.transport.post(self.origin, path, h, raw)
+                response = reply['status'], reply['headers'], reply['body']
+        except (ServiceRefused, RemoteUnavailable):
+            raise
+        except Exception:
+            _log('[agent-mail] service_client connection_lost', flush=True)
+            raise ServiceRefused('connection_lost') from None
+        value = verify_pull_response(response, candidate=pin, install=install, generation=generation,
+            owner_generation=owner_generation, path=path, nonce=nonce, request_id=request_id, clock_ms=self._now_ms)
+        _need(self._service() == before, 'service_key_changed')
+        return response, value
+
+    def __call__(self, method: str, path: str, headers: Mapping[str, str], body: bytes, /
+                 ) -> tuple[int, Mapping[str, str], bytes]:
+        """SignupTransport: verify the common signed envelope, including signed errors.
+
+        Request bytes/signature are supplied by the route owner through IdentitySeal.
+        Fence authority is available ONLY through fence(), not this signing seam.
+        """
+        try:
+            _need(method == 'POST' and path in ROUTES and path != FENCE, 'invalid_request')
+            _need(isinstance(body, bytes) and len(body) <= (SEND_LIMIT if path == PULL_PREFIX + '/send'
+                                                         else REQUEST_LIMIT), 'body_limit')
+            h = _headers(headers)
+            _need(not any(k in h for k in ('host', 'cookie', 'authorization', 'origin', 'transfer-encoding',
+                                          'content-length', 'accept-encoding')), 'invalid_request')
+            _need(h.get('x-mail-version') == '2' and h.get('x-mail-direction') == 'install-to-pull'
+                  and _match(ID, h.get('x-mail-key-id')) and _match(I, h.get('x-mail-install-id'))
+                  and _match(I, h.get('x-mail-nonce')) and h.get('x-mail-digest') == hashlib.sha256(body).hexdigest(),
+                  'invalid_request')
+            install, nonce = h['x-mail-install-id'], h['x-mail-nonce']
+            _need(self.install_id is None or install == self.install_id, 'invalid_request')
+            nums = [h.get('x-mail-' + f, '') for f in ('generation', 'owner-generation', 'timestamp')]
+            _need(all(re.fullmatch(r'[1-9][0-9]{0,15}', n) and _integer(int(n), 1) for n in nums), 'invalid_request')
+            gen, owner, stamp = map(int, nums)
+            _need(gen < 10**15 and owner < 10**15 and abs(self._now_ms() - stamp) <= SKEW_MS, 'invalid_request')
+            unbase64url(h.get('x-mail-signature', ''), 64)
+            value = _object(body)
+            read = path in {STATUS, PULL_PREFIX + '/signup/status', PULL_PREFIX + '/send/status',
+                            PULL_PREFIX + '/management/status'}
+            request_id = nonce if read else value.get('op_id')
+            _need(_match(I, request_id), 'invalid_request')
+            pin, _ = self._service()
+            response, _ = self._exchange(path, h, body, pin=pin, generation=gen, owner_generation=owner,
+                                         install=install, nonce=nonce, request_id=cast(str, request_id))
+            return response
+        except ServiceRefused:
+            raise
+        except (ValueError, TypeError, KeyError, AttributeError, IngressRefused, RecursionError):
+            raise ServiceRefused('invalid_request') from None
+
+    def _account(self) -> dict[str, Any]:
+        _need(self.reviewed_service is not None, 'legacy_retired')
+        with self.store._read() as db:
+            _validate(db)
+            rows = db.execute('''SELECT a.*,g.service_key_id,g.service_public_key,g.manifest_sequence,
+                g.manifest_digest,g.key_id AS generation_key,g.seal_flow_id AS generation_seal,
+                g.owner_generation AS generation_owner,g.state AS generation_state
+                FROM mail_pull_accounts a JOIN mail_pull_generations g ON g.install_id=a.install_id
+                AND g.generation=a.generation WHERE (? IS NULL OR a.install_id=?)''',
+                (self.install_id, self.install_id)).fetchall()
+        _need(len(rows) == 1, 'registration_inactive')
+        row = dict(rows[0])
+        _need(_match(I, row['install_id']) and _match(ID, row['key_id']) and _match(I, row['seal_flow_id'])
+              and _integer(row['generation'], 1, 10**15 - 1) and _integer(row['owner_generation'], 1, 10**15 - 1)
+              and row['generation_key'] == row['key_id'] and row['generation_seal'] == row['seal_flow_id']
+              and row['generation_owner'] == row['owner_generation'] and row['generation_state'] == 'current',
+              'schema_corrupt')
+        pin, digest = self._service()
+        _need((row['service_origin'], row['service_key_id'], row['service_public_key'],
+               row['manifest_sequence'], row['manifest_digest']) ==
+              (pin.origin, pin.key_id, pin.public_key, pin.sequence, digest), 'service_key_changed')
+        return row
+
+    def status(self) -> dict[str, Any]:
+        row = self._account()
+        nonce, stamp, body = self._nonce(16), str(self._now_ms()), b'{}'
+        _need(_match(I, nonce), 'invalid_request')
+        h = {'x-mail-version': '2', 'x-mail-direction': 'install-to-pull', 'x-mail-key-id': row['key_id'],
+             'x-mail-install-id': row['install_id'], 'x-mail-generation': str(row['generation']),
+             'x-mail-owner-generation': str(row['owner_generation']), 'x-mail-timestamp': stamp,
+             'x-mail-nonce': nonce, 'x-mail-digest': hashlib.sha256(body).hexdigest(),
+             'content-type': 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff'}
+        ref = SealReference(row['seal_flow_id'], row['install_id'], row['generation'], row['key_id'])
+        h['x-mail-signature'] = self.seal.sign_pull(ref, _json(['clayrune-agent-mail-pull-http', '1',
+            'install-to-pull', self.origin, 'POST', STATUS, row['key_id'], row['install_id'],
+            str(row['generation']), str(row['owner_generation']), stamp, nonce, h['x-mail-digest']]))
+        response = self('POST', STATUS, h, body)
+        value = _object(response[2])
+        if response[0] != 200:
+            raise ServiceRefused(value['code'])
+        try:
+            self._status_shape(value, row)
+        except (ValueError, TypeError, KeyError, AttributeError):
+            raise ServiceRefused('response_unverified') from None
+        _need(self._account() == row, 'stale_generation')
+        return value
+
+    @staticmethod
+    def _status_shape(v: dict[str, Any], row: dict[str, Any]) -> None:
+        _need(v.keys() == {'v', 'code', 'request_id', 'install_id', 'generation', 'owner_generation', 'state',
+            'address', 'owner', 'key_id', 'queue_count', 'queue_bytes', 'oldest_received_ms', 'oldest_expires_ms',
+            'invalid_message_id_holds', 'current_epoch', 'owner_change', 'last_notice_state', 'reason'})
+        _need(all(v[k] == row[k] for k in ('install_id', 'generation', 'owner_generation', 'key_id'))
+              and _integer(v['generation'], 1) and _integer(v['owner_generation'], 1)
+              and v['state'] in {'pending', 'verified', 'active', 'disabled', 'frozen', 'deleted'}
+              and isinstance(v['reason'], str) and v['reason'] in REASONS
+              and (v['last_notice_state'] is None or v['last_notice_state'] in {'queued', 'accepted', 'uncertain', 'failed'}))
+        for k in ('queue_count', 'queue_bytes', 'invalid_message_id_holds', 'current_epoch'):
+            _need(_integer(v[k]))
+        _need(v['queue_count'] <= 100 and v['queue_bytes'] <= 2 * 1024 * 1024)
+        for k in ('oldest_received_ms', 'oldest_expires_ms'):
+            _need(v[k] is None or _integer(v[k]))
+        for k in ('address', 'owner'):
+            _need(v[k] is None or isinstance(v[k], str) and _mailbox(v[k]) == v[k])
+        c = v['owner_change']
+        if c is not None:
+            _need(type(c) is dict and c.keys() == {'change_id', 'state', 'created_ms', 'revert_until_ms'}
+                  and _match(I, c['change_id']) and c['state'] in {'pending', 'completed', 'reverted', 'expired'}
+                  and _integer(c['created_ms']) and (c['revert_until_ms'] is None or _integer(c['revert_until_ms'])))
+
+    def fence(self, op_id: str) -> dict[str, Any]:
+        """Retry one durable pull fence; no vault read and no local ACK mutation."""
+        _need(_match(I, op_id), 'invalid_request')
+        pin, _ = self._service()
+        with self.store._read() as db:
+            _validate(db)
+            r = db.execute('SELECT * FROM mail_pull_fences WHERE op_id=?', (op_id,)).fetchone()
+        _need(r is not None, 'fence_token_missing')
+        assert r is not None
+        row = dict(r)
+        _need(_match(I, row['install_id']) and _match(I, row['flow_id']) and _match(H, row['fence_token'])
+              and _integer(row['generation'], 1, 10**15 - 1) and row['mode'] in {'cancel', 'revoke'}
+              and (self.install_id is None or row['install_id'] == self.install_id), 'schema_corrupt')
+        nonce, stamp = self._nonce(16), self._now_ms()
+        _need(_match(I, nonce), 'invalid_request')
+        raw = _json({k: row[k] for k in ('op_id', 'install_id', 'generation', 'flow_id', 'fence_token', 'mode')}
+                    | {'nonce': nonce, 'timestamp': stamp})
+        response, value = self._exchange(FENCE, {'content-type': 'application/json', 'cache-control': 'no-store',
+            'x-content-type-options': 'nosniff'}, raw, pin=pin, generation=row['generation'], owner_generation=0,
+            install=row['install_id'], nonce=nonce, request_id=op_id)
+        if response[0] != 200:
+            raise ServiceRefused(value['code'])
+        _need(value.keys() == {'v', 'code', 'request_id', 'install_id', 'generation', 'state', 'fence_receipt'}
+              and value['install_id'] == row['install_id'] and type(value['generation']) is int
+              and value['generation'] == row['generation'] and _match(I, value['fence_receipt'])
+              and value['state'] in {'fenced', 'already_fenced', 'already_superseded'})
+        with self.store._read() as db:
+            current = db.execute('SELECT * FROM mail_pull_fences WHERE op_id=?', (op_id,)).fetchone()
+        _need(current is not None and all(current[k] == row[k] for k in
+              ('install_id', 'generation', 'flow_id', 'fence_token', 'mode')), 'stale_generation')
+        return value
+
+    def cancel_flow(self, flow: str) -> CancelledAssignment | None:
+        _need(_match(I, flow), 'invalid_request')
+        self._service()
+        with self.store._read() as db:
+            _validate(db)
+            rows = db.execute("SELECT op_id,install_id,generation FROM mail_pull_fences WHERE flow_id=? "
+                "AND mode='cancel' AND (? IS NULL OR install_id=?)", (flow, self.install_id, self.install_id)).fetchall()
+        _need(len(rows) == 1, 'fence_token_missing')
+        self.fence(rows[0]['op_id'])
+        return CancelledAssignment(rows[0]['install_id'], rows[0]['generation'])
+
+    def revoke(self, install: str, generation: int) -> None:
+        _need(_match(I, install) and _integer(generation, 1, 10**15 - 1)
+              and (self.install_id is None or install == self.install_id), 'invalid_request')
+        self._service()
+        with self.store._read() as db:
+            _validate(db)
+            rows = db.execute("SELECT op_id FROM mail_pull_fences WHERE install_id=? AND generation=? "
+                              "AND mode='revoke' ORDER BY op_id", (install, generation)).fetchall()
+        _need(rows, 'fence_token_missing')
+        # No unsigned 401 fallback: it cannot identify which capability failed.
+        for row in rows:
+            self.fence(row['op_id'])
+
+    def cached_evidence(self) -> dict[str, Any] | None:
+        """Retired push proof is never synthesized from a pull status response."""
+        return None
+
+    def proof_arm(self) -> bool:
+        raise ServiceRefused('legacy_retired')
+
+    def activate(self, receipt_digest: str) -> None:
+        raise ServiceRefused('legacy_retired')
+
+    def renew(self) -> int:
+        raise ServiceRefused('legacy_retired')
+
+    def begin(self, context: dict, flow_secret: bytes) -> PendingIdentity:
+        raise RemoteUnavailable(REMOTE_UNAVAILABLE)
+
+    def verify(self, context: dict, flow_secret: bytes, code: str) -> OwnershipReceipt:
+        raise RemoteUnavailable(REMOTE_UNAVAILABLE)
+
+
+# Retiring v1 ceremony compatibility only; pull always uses verify_pull_response.
 def verify_response(response: Mapping[str, Any], *, candidate: ServiceKeyCandidate, install: str,
                     generation: int, path: str, nonce: str, clock_ms: Callable[[], int]) -> dict[str, Any]:
     """Return the parsed JSON body of a verified, scope-bound, service-signed 200. Raises ServiceRefused."""
@@ -99,240 +540,3 @@ def verify_response(response: Mapping[str, Any], *, candidate: ServiceKeyCandida
     if not isinstance(value, dict):
         raise ServiceRefused('remote_response_invalid')
     return value
-
-
-# --- real HTTPS transport (never wired by default) ---------------------------------------------------
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
-        return None  # a redirect is a refusal, never followed (contract 5.1: manual redirects)
-
-
-class HttpsTransport:
-    """POST-only, no query, redirects refused, 10 s timeout, bounded response. A non-200 status is
-    returned (so a 401 can be told from a failure) but never treated as an acknowledgment."""
-
-    def __init__(self, *, timeout_s: float = HTTP_TIMEOUT_S, opener: Any = None):
-        self.timeout_s = timeout_s
-        self._opener = opener or urllib.request.build_opener(_NoRedirect)
-
-    def post(self, origin: str, path: str, headers: Mapping[str, str], body: bytes) -> dict[str, Any]:
-        if not _ORIGIN.fullmatch(origin) or not re.fullmatch(r'/[A-Za-z0-9/_-]{1,200}', path):
-            raise RemoteUnavailable(REMOTE_UNAVAILABLE)
-        request = urllib.request.Request(origin + path, data=body, method='POST', headers=dict(headers))
-        try:
-            with self._opener.open(request, timeout=self.timeout_s) as reply:
-                return {'status': reply.status, 'headers': dict(reply.headers.items()),
-                        'body': reply.read(RESPONSE_LIMIT + 1)}
-        except urllib.error.HTTPError as exc:
-            # Begin may return a signed 409 provisioning hint. Clients still verify every byte
-            # and accept no non-200 as a lifecycle/ownership acknowledgment.
-            with exc:
-                return {'status': exc.code, 'headers': dict(exc.headers.items()),
-                        'body': exc.read(RESPONSE_LIMIT + 1)}
-
-
-# --- the client --------------------------------------------------------------------------------------
-class ServiceClient:
-    """Implements the lifecycle RevocationAdapter (`cancel_flow`, `revoke`) plus the install-auth
-    calls. `begin`/`verify` (the human ceremony transport) are unit 7d-2e and refuse here."""
-
-    def __init__(self, store: MailStore, seal: IdentitySeal, *, fences: LifecycleFences, transport: Any,
-                 root_public_key: str, service_origin: str, delivery: DeliveryProof | None = None,
-                 nonce: Callable[[int], str] = secrets.token_hex,
-                 clock: Callable[[], float] = time.time):
-        if not _ORIGIN.fullmatch(service_origin):
-            raise ServiceRefused('service_origin_invalid')
-        self.store, self.seal, self.fences, self.transport = store, seal, fences, transport
-        self.root, self.origin, self.delivery, self._nonce, self.clock = (
-            root_public_key, service_origin, delivery, nonce, clock)
-        self.manifests = ManifestCAS(store)
-        self._evidence: tuple[dict[str, Any], int] | None = None
-
-    # -- helpers ----------------------------------------------------------------------------------
-    def _now_ms(self) -> int:
-        return int(self.clock() * 1000)
-
-    def _row(self) -> dict[str, Any]:
-        with self.store._read() as db:
-            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='mail_enrollment_flow'").fetchone():
-                raise ServiceRefused('enrollment_required')
-            row = db.execute('SELECT * FROM mail_enrollment_flow WHERE slot=1').fetchone()
-        if row is None:
-            raise ServiceRefused('enrollment_required')
-        return dict(row)
-
-    def _candidate(self, row: dict[str, Any], *, fresh: bool) -> ServiceKeyCandidate:
-        candidate = candidate_from_evidence(row, root=self.root, origin=self.origin)
-        if candidate.origin != self.origin:
-            raise ServiceRefused('service_origin_invalid')
-        if fresh:
-            floor = self.manifests.load(candidate.origin)
-            if (floor is None or floor.sequence != candidate.sequence or floor.digest != row['manifest_digest']
-                    or self._now_ms() >= candidate.expires_at_ms):
-                raise ServiceRefused('manifest_stale')
-        return candidate
-
-    def _call(self, name: str, value: dict[str, Any], *, row: dict[str, Any], install: str, generation: int,
-              install_auth: bool) -> tuple[dict[str, Any] | None, int]:
-        """One POST. Returns (verified body, status). Body is None unless a verified 200; transport
-        failure raises. 401 is returned (not raised) so revoke can try the next flow's token."""
-        path = f'{PREFIX}/{name}'
-        raw = json.dumps(value, separators=(',', ':')).encode('ascii')
-        if len(raw) > REQUEST_LIMIT:
-            raise ServiceRefused('request_too_large')
-        nonce = self._nonce(16)
-        if not _NONCE.fullmatch(nonce):
-            raise ServiceRefused('invalid_signature_fields')
-        candidate = self._candidate(row, fresh=install_auth)
-        if install_auth:
-            # Vault locked raises EnrollmentRefused('vault_locked_or_unconfigured') here: nothing was sent.
-            headers = signed_headers(self.seal, {**row, 'install': install, 'generation': generation}, raw,
-                                     now_ms=self._now_ms(), nonce=nonce, direction=LIFECYCLE_DIRECTION, path=path)
-        else:
-            headers = {'x-mail-install-id': install, 'x-mail-generation': str(generation),
-                       'x-mail-nonce': nonce, 'Content-Type': 'application/json'}
-        try:
-            response = self.transport.post(self.origin, path, headers, raw)
-        except RemoteUnavailable:
-            raise
-        except Exception:
-            raise ServiceRefused('remote_unreachable') from None
-        if not isinstance(response, Mapping):
-            raise ServiceRefused('remote_response_invalid')
-        if response.get('status') == 401:
-            return None, 401
-        return verify_response(response, candidate=candidate, install=install, generation=generation,
-                               path=path, nonce=nonce, clock_ms=self._now_ms), 200
-
-    @staticmethod
-    def _exact(value: Mapping[str, Any], keys: tuple[str, ...]) -> None:
-        if set(value) != set(keys):
-            raise ServiceRefused('remote_scope_mismatch')
-
-    # -- fence-auth: the RevocationAdapter ---------------------------------------------------------
-    def cancel_flow(self, flow: str) -> CancelledAssignment | None:
-        token = self.fences.token_for(flow)
-        if token is None:
-            raise ServiceRefused('fence_token_missing')
-        row = self._row()
-        body, _ = self._call('cancel', {'flow_id': flow, 'fence_token': token}, row=row,
-                             install=row['install'], generation=row['generation'], install_auth=False)
-        if body is None:
-            raise ServiceRefused('remote_not_acknowledged')
-        self._exact(body, ('flow_id', 'state', 'assignment'))
-        if body['flow_id'] != flow or body['state'] != 'cancelled':
-            raise ServiceRefused('remote_scope_mismatch')
-        assignment = body['assignment']
-        if assignment is None:
-            return None
-        if (not isinstance(assignment, dict) or set(assignment) != {'install_id', 'generation'}
-                or not isinstance(assignment['install_id'], str) or not ID.fullmatch(assignment['install_id'])
-                or not _gen_ok(assignment['generation'])):
-            raise ServiceRefused('remote_scope_mismatch')
-        return CancelledAssignment(assignment['install_id'], assignment['generation'])
-
-    def revoke(self, install: str, generation: int) -> None:
-        candidates = self.fences.tokens_for_assignment(install, generation)
-        if not candidates:
-            raise ServiceRefused('fence_token_missing')
-        row = self._row()
-        for _flow, token in candidates:
-            body, status = self._call('revoke', {'install_id': install, 'generation': generation,
-                                                 'fence_token': token}, row=row, install=install,
-                                      generation=generation, install_auth=False)
-            if body is None:
-                continue  # the Worker stored another flow's digest: try the next token
-            self._exact(body, ('install_id', 'generation', 'state'))
-            if (body['install_id'] != install or body['generation'] != generation
-                    or body['state'] not in _REVOKE_STATES):
-                raise ServiceRefused('remote_scope_mismatch')
-            return
-        raise ServiceRefused('remote_not_acknowledged')
-
-    # -- install-auth -------------------------------------------------------------------------------
-    def _install_call(self, name: str, extra: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-        row = self._row()
-        if row['stage'] not in ('delivery_pending', 'active'):
-            raise ServiceRefused('enrollment_required')
-        value = {'install_id': row['install'], 'generation': row['generation'], **extra}
-        body, _ = self._call(name, value, row=row, install=row['install'], generation=row['generation'],
-                             install_auth=True)
-        if body is None:
-            raise ServiceRefused('remote_not_acknowledged')
-        return row, body
-
-    def status(self) -> dict[str, Any]:
-        row, body = self._install_call('status', {})
-        self._exact(body, ('install_id', 'generation', 'registration', 'lease_until_ms', 'proof', 'fences',
-                           'cp_revoke_pending'))
-        if body['install_id'] != row['install'] or body['generation'] != row['generation']:
-            raise ServiceRefused('remote_scope_mismatch')
-        proof = body['proof']
-        evidence = None
-        if (isinstance(proof, dict) and proof.get('state') == 'verified' and isinstance(proof.get('receipt_digest'), str)
-                and type(proof.get('expires_ms')) is int):
-            evidence = {'install_id': row['install'], 'generation': row['generation'], 'state': 'verified',
-                        'receipt_digest': proof['receipt_digest'], 'expires_ms': proof['expires_ms']}
-        self._evidence = (evidence, self._now_ms()) if evidence else None
-        return body
-
-    def cached_evidence(self) -> dict[str, Any] | None:
-        """`DeliveryProof(worker_evidence=...)`: the LAST signature-verified status only. Never
-        fetches, never survives EVIDENCE_MAX_AGE_MS, never exists for an unsigned answer."""
-        if self._evidence is None:
-            return None
-        evidence, at = self._evidence
-        return dict(evidence) if self._now_ms() - at <= EVIDENCE_MAX_AGE_MS else None
-
-    def proof_arm(self) -> bool:
-        """Push the locally armed challenge. Returns False when there is nothing armed."""
-        if self.delivery is None:
-            raise ServiceRefused('delivery_proof_unavailable')
-        row = self._row()
-        armed = self.delivery.armed(row['install'], row['generation'])
-        if armed is None:
-            return False
-        _, body = self._install_call('proof-arm', {'challenge': armed['challenge'], 'expires_ms': armed['expires_ms']})
-        self._exact(body, ('install_id', 'generation', 'state', 'expires_ms'))
-        if (body['install_id'] != row['install'] or body['generation'] != row['generation']
-                or body['state'] != 'armed' or body['expires_ms'] != armed['expires_ms']):
-            raise ServiceRefused('remote_scope_mismatch')
-        return True
-
-    def activate(self, receipt_digest: str) -> None:
-        if not isinstance(receipt_digest, str) or not HEX.fullmatch(receipt_digest):
-            raise ServiceRefused('invalid_receipt_digest')
-        row, body = self._install_call('activate', {'receipt_digest': receipt_digest})
-        self._exact(body, ('install_id', 'generation', 'state', 'receipt_digest'))
-        if (body['install_id'] != row['install'] or body['generation'] != row['generation']
-                or body['state'] != 'activated' or body['receipt_digest'] != receipt_digest):
-            raise ServiceRefused('remote_scope_mismatch')
-
-    def renew(self) -> int:
-        """One lease renewal; returns the new `ownership_expires_ms`. Forward-only, stage-preserving:
-        it never changes stage, flow, key, owner or consent, and a failure leaves the old lease."""
-        row, body = self._install_call('renew', {})
-        self._exact(body, ('install_id', 'generation', 'expires_at_ms'))
-        expires = body['expires_at_ms']
-        now = self._now_ms()
-        if (body['install_id'] != row['install'] or body['generation'] != row['generation']
-                or type(expires) is not int or not now < expires <= now + LEASE_MS):
-            raise ServiceRefused('remote_scope_mismatch')
-        with self.store._tx() as db:
-            current = db.execute('SELECT * FROM mail_enrollment_flow WHERE slot=1').fetchone()
-            if (current is None or any(current[k] != row[k] for k in (
-                    'flow', 'epoch', 'stage', 'install', 'generation', 'manifest_digest', 'confirmed'))
-                    or current['stage'] == 'disabled'):
-                raise ServiceRefused('lifecycle_raced')
-            if now >= expires:
-                raise ServiceRefused('ownership_expired')
-            db.execute('UPDATE mail_enrollment_flow SET ownership_expires_ms=? WHERE slot=1 '
-                       'AND ownership_expires_ms<?', (expires, expires))
-            return max(expires, current['ownership_expires_ms'])
-
-    # -- ceremony transport: unit 7d-2e -------------------------------------------------------------
-    def begin(self, context: dict, flow_secret: bytes) -> PendingIdentity:
-        raise RemoteUnavailable(REMOTE_UNAVAILABLE)
-
-    def verify(self, context: dict, flow_secret: bytes, code: str) -> OwnershipReceipt:
-        raise RemoteUnavailable(REMOTE_UNAVAILABLE)
