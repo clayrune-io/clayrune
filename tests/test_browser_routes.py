@@ -1101,6 +1101,7 @@ def test_release_held_profile_refuses_a_foreign_holder(monkeypatch):
     # Chrome pointed at the dir) is never touched — the launch is refused.
     monkeypatch.setattr(br, '_profile_dir_locked', lambda udd: True)
     monkeypatch.setattr(br, '_profile_holder', lambda udd: (4242, 'chrome.exe --user-data-dir=/p/main'))
+    monkeypatch.setattr(br, '_profile_owner', lambda pid: f'pid {pid}, parent unknown')
     monkeypatch.setattr(br, '_browser_ws_url', lambda *a, **k: (_ for _ in ()).throw(AssertionError('no CDP')))
     err = br._release_held_profile('main', '/p/main')
     assert 'pid 4242' in err
