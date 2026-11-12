@@ -135,6 +135,28 @@ status. Changes of owner require verification of the replacement and revocation
 of the previous binding; existing threads cannot be reassigned to a new owner.
 The old recipient must not remain an allowed recipient after the switch.
 
+### Owner and address change: abuse controls (Ron 2026-11-11, binding)
+
+Ron: "make sure no one can abuse this service by changing emails somehow." An
+owner change is the one action that redirects every future agent email, so it
+is treated as a credential change. Each rule below closes a named abuse:
+
+| Abuse | Control |
+|---|---|
+| Someone with the dashboard (stolen phone, open tunnel session) redirects mail to themselves | Change is human-only and passcode-gated, same gate as publish. Agent-facing mail operations cannot start, confirm or cancel a change (no route, no tool). |
+| Silent takeover | The new address activates only after its own single-use link is clicked. At the same moment the OLD address gets a fixed-text notice with a "this wasn't me" link that freezes mail and reverts to the old owner. Revert stays valid 7 days. |
+| Using verification mail to spam strangers | Verification and notice emails are fixed templates; no user- or agent-supplied text, subject or links. Limits per install: 3 verification emails per day, 1 completed owner change per 7 days, 5 per year. Per target address: 3 verification emails per day across all installs. |
+| Hijack by a scanner or forwarded link | Links are single-use, expire in 30 minutes, are bound to the pending request, and need a click on a confirm page (POST), so a link prefetch cannot confirm. Confirming twice is a no-op. |
+| Old threads leaking to the new owner, or old owner still replying | Each thread is bound to the owner at send time. After a switch, replies from the old address are rejected as unverified, and old threads are never reassigned. |
+| Grabbing a released @clayrune.io name to receive someone's mail | A renamed or deleted name is held 90 days and cannot be claimed by anyone else. A reused name never inherits old threads. |
+| One victim address enrolled on many installs | One owner address may own at most 3 active installs; each needs its own confirmation click from that mailbox. |
+
+While a change is pending, mail keeps going to the current verified owner; the
+pending address has no sending or reply privileges. All limits are enforced by
+the mail service, not only in the local UI, so a modified install cannot skip
+them. Every change, revert and rate-limit hit is logged on the service and shown
+in Settings.
+
 Turning mail off immediately blocks local sends and automatic mail follow-ups.
 Worker revocation is retried durably if offline; the UI must distinguish local
 off from completed server revocation. The Worker rechecks enrollment at both
