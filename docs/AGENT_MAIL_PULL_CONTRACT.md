@@ -586,6 +586,13 @@ epoch/24h reauth; no tunnel heartbeat or periodic ownership-renew endpoint.
    back and enqueues fixed revert notices to both affected owners. Never replay
    pre-switch mail. Reserve the old owner's slot through revert deadline so a
    valid security revert cannot fail because that owner added other installations.
+   **Exception after deletion (Dave 2026-11-11, unit 05):** if the registration
+   was explicitly deleted during the open revert window, the new owner's address
+   is already purged (6.3, 8.1) and is NOT retained to address a notice. The revert
+   still succeeds; the old-owner notice is queued normally; the new-owner notice
+   is recorded as a stable, hash-only intent with NULL envelope in visible
+   `failed` state (reason `recipient_deleted`), never silently skipped and never
+   retried. No new private retention is introduced for it.
 6. Freeze does not automatically thaw when seven days pass. Seven days is the
    revert-link lifetime; frozen mail stays stopped until current restored owner
    proves a fresh hosted `resume` session and local human consent. Resume bumps
