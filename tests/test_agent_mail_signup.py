@@ -11,7 +11,6 @@ import base64
 import hashlib
 import json
 from pathlib import Path
-import sqlite3
 import subprocess
 
 import pytest
@@ -380,6 +379,21 @@ def test_pin_change_never_repins_existing_operation(h):
     h.pin = replace(h.pin, key_id='new-key')
     assert h.restart().resume()['reason'] == 'service_key_changed'
     assert len(h.calls) == 1
+
+
+def test_reviewed_manifest_floor_can_transact_on_same_store_without_deadlock(h):
+    client = h.client()
+    checked = []
+
+    def review():
+        with h.store._tx() as db:
+            checked.append(db.execute('SELECT version FROM mail_pull_version').fetchone()[0])
+        return h.pin, h.manifest_digest
+
+    client.reviewed_service = review
+    assert client.start(OWNER, 'v1')['state'] == 'pending'
+    assert client.resume()['state'] == 'pending'
+    assert len(checked) >= 4
 
 
 def test_missing_extension_refused_without_creating_schema(tmp_path):

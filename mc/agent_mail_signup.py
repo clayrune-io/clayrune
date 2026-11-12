@@ -303,16 +303,22 @@ class Signup:
         return self._run(self._resume)
 
     def _resume(self) -> dict[str, Any]:
+        with self.store._read() as db:
+            observed = self._row(db)
+        if observed is None:
+            return self._view(None)
+        if observed['state'] in {'expired', 'cancelled', 'completed'}:
+            return {**self._view(observed), 'reason': 'flow_expired' if observed['state'] == 'expired' else ''}
+        # The manifest verifier may CAS its floor in this SAME database. Never
+        # invoke it inside a lifecycle transaction (or retain a read connection).
+        pin = self._service(observed)[0] if self._now() < observed['expires_ms'] else None
         with self.store._tx() as db:
-            row = self._row(db)
-            if row is None:
-                return self._view(None)
-            if row['state'] in {'expired', 'cancelled', 'completed'}:
-                return {**self._view(row), 'reason': 'flow_expired' if row['state'] == 'expired' else ''}
+            row = self._current(db, observed, _json(observed['meta']))
             if self._now() >= row['expires_ms']:
                 db.execute("UPDATE mail_pull_flows SET state='expired',reason='flow_expired' WHERE flow_id=?", (row['flow_id'],))
                 return {**self._view(row), 'state': 'expired', 'reason': 'flow_expired'}
-            pin, _ = self._service(row)
+            _need(pin is not None, 'service_key_changed')
+            assert pin is not None
             meta = row['meta']
             if not meta['public_key']:
                 # Authorization is the durable human intent, not a remote flag.
