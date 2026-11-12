@@ -312,15 +312,33 @@ operation cannot modify old generation before that proof and explicit POST.
 
 `/send` is not idempotent based on text: `(install,g,intent_id)` is the authority.
 Hash the exact body for conflict checks. Store outgoing body only locally in
-EXISTING sealed outbox; service reserves thread/MID/intent before provider work,
+EXISTING sealed outbox; service reserves thread/internal intent key before provider work,
 keeps no outgoing body after the request. Lost response after possible provider
 acceptance ->`uncertain`; `/send/status` never resubmits. Same intent retry is a
 lookup, never another provider call. Service constructs To from current owner,
-From from reviewed service sender, Reply-To from address+token, stable MID
-`SHA256(UTF8(install_id+":"+generation+":"+intent_id))+"@"+mail_domain`.
+From from reviewed service sender and structured `replyTo` from address+32hex
+reply token. The derived value
+`SHA256(UTF8(install_id+":"+generation+":"+intent_id))+"@"+mail_domain`
+remains an internal intent/dedupe key (the historical `message_id` field), never
+an outbound header or evidence of the delivered RFC Message-ID. Paid structured
+Workers `binding.send()` assigns Message-ID; never set `headers.Message-ID`,
+put Reply-To in `headers`, or fall back to raw MIME/legacy `EmailMessage`.
 No raw MIME/header, `to`, cc/bcc, callback, host or target-selection field.
 Keep token only in request/local sealed payload; D1 stores its SHA-256 verifier.
+Return the provider's `messageId` unchanged as opaque `provider_id` (nonblank
+printable ASCII, <=256 bytes), never assume it equals an RFC Message-ID.
 Successful provider id/acceptance means transport acceptance, not inbox delivery.
+One provider call, bounded to a 10s wait, with no adapter retry. The structured
+binding has no documented abort parameter: timeout cannot establish cancellation.
+Known rate/daily quota refusal is retryable `provider_quota`; suppression is
+permanent `provider_suppressed`; payload/header/sender/account/recipient policy
+refusal is permanent `provider_unavailable`. These are internal adapter outcomes,
+not new wire states/codes. Unknown/internal/delivery/transport errors, timeout
+after call start or missing/invalid provider id mean `uncertain`, never a second
+call. Use thrown `Error.code`, never parse or expose provider exception text.
+This amendment follows Dave's 2026-11-12 Message-ID decision and the
+[Workers API](https://developers.cloudflare.com/email-service/api/send-emails/workers-api/)
+and [header restrictions](https://developers.cloudflare.com/email-service/reference/headers/).
 
 ### 4.1 Hosted human-only routes (all NEW)
 
@@ -372,9 +390,13 @@ replays contain no new token or side effect.
 ### 4.2 SMTP ingress (EXISTING entry, NEW registry/custody adapter)
 
 Preserve ordered headers and the EXISTING authentication/strip boundary:
-exact canonical verified From + secret thread-token verifier + thread's registered
-outbound Message-ID in In-Reply-To/References + trusted Cloudflare DMARC pass and
-aligned SPF or DKIM. Sender-submitted Authentication-Results, display names,
+exact canonical verified From + secret 32hex reply-token verifier + trusted
+Cloudflare DMARC pass and aligned SPF or DKIM. In-Reply-To/References are
+non-authoritative threading hints; an outbound MID match is not a possession
+proof requirement. Provider id is opaque, not the RFC Message-ID. **Implementation
+gap:** `auth.js` still requires the old MID match; removing that gate and testing
+the revised ingress proof belongs to separate unit 11b, not the unit 11 adapter.
+Sender-submitted Authentication-Results, display names,
 Reply-To, subject and envelope claims alone prove nothing. Unknown recipient,
 missing/untrusted/failed sender proof, stale generation, loops, bounces and
 auto-replies are dropped at edge with bounded content-free rejection metadata,
@@ -399,8 +421,9 @@ SMTP handler returns success only after its queue/hold commit, not after merely
 launching an asynchronous notification. Same-auth/body SMTP redelivery resolves
 the original event's auth/times; changed signed event fields on WSS are a conflict,
 not permission to replace the durable original. Paid Email Sending adapter is
-NEW; maintain fixed service From, owner-only recipient, stable Message-ID and
-opaque tokenized Reply-To. Actual Cloudflare auth provenance and provider support
+NEW; maintain fixed service From, owner-only recipient and structured tokenized
+`replyTo`; Cloudflare assigns Message-ID. Never send the derived internal intent
+key as a header. Actual Cloudflare auth provenance and provider support
 remain integration/launch gates, never inferred from synthetic input.
 
 ## 5. Complete NEW WebSocket frame registry
@@ -1394,8 +1417,13 @@ runtime behavior from this document:
 9. Offline disable, revoke/ack/send/owner-switch races, scoped fence with lost
    vault, cancel-before-start, delete quarantine and data purges, no physical
    backup-erasure claim. Existing human-only gates and toolless runtime remain.
-10. Synthetic paid provider adapter preserves stable Message-ID/Reply-To, exact
-    registered recipient, suppression/quota/uncertainty. Real sender-provenance
+10. Synthetic paid provider adapter asserts the exact structured field set, fixed
+    From, sole current registered owner recipient, `replyTo` with a 32hex token,
+    no caller headers/Message-ID/raw MIME, opaque validated provider id,
+    `Error.code` suppression/quota/permanent/uncertain mapping, 10s timeout and
+    no retry. Unit 11b separately tests From+token+Cloudflare DMARC/alignment
+    proof with absent/mismatched In-Reply-To/References as non-authoritative hints.
+    Real sender-provenance
     fixtures and DO hibernation/duration need separately authorized integration
     testing; mocked Node/SQLite tests do not prove those Cloudflare properties.
 
