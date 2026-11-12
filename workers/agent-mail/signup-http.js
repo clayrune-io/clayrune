@@ -3,7 +3,8 @@
 // Caller supplies reviewed service signing material and trusted edge source;
 // NEVER derive trustedSource from a caller-selected forwarding header.
 import { bytes, randomId, sha256, base64url, unbase64url } from './signing.js';
-import { origin, verifyProof } from './enrollment-transcript.js';
+import { origin } from './enrollment-transcript.js';
+import { verifySignedV2 } from './signed-v2-verifier.js';
 import { OwnerRegistry, ownerIdentity, newAddressLocal } from './owner-registry.js';
 import { VERIFICATION_TTL, confirmationPage } from './verification-mail.js';
 import { readRequestBody } from './request-body.js';
@@ -22,8 +23,6 @@ const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DEC = /^(0|[1-9][0-9]*)$/;
 const START_FIELDS = ['op_id', 'flow_id', 'public_key', 'key_id', 'owner', 'flow_secret_hash',
   'fence_hash', 'consent_version', 'manifest_sequence', 'manifest_digest'];
-const HEADERS = ['version', 'direction', 'key_id', 'install_id', 'generation', 'owner_generation',
-  'timestamp', 'nonce', 'digest', 'signature'];
 const STATUS = new Map([[400, ['invalid_request', 'invalid_json']], [401, ['unauthorized', 'csrf_failed', 'session_required']],
   [404, ['not_found']], [408, ['body_timeout']],
   [409, ['operation_conflict', 'nonce_replayed', 'stale_generation', 'owner_limit', 'fenced', 'already_sent']],
@@ -146,31 +145,21 @@ export class SignupHTTP {
   }
 
   async authenticate(request, raw, value, path) {
-    const m = Object.fromEntries(HEADERS.map((k) => [k, request.headers.get(`x-mail-${k.replaceAll('_', '-')}`)]));
-    requireValue(m.version === '2' && m.direction === 'install-to-pull'
-      && matches(ID, m.key_id) && matches(I, m.install_id) && m.generation === '1' && m.owner_generation === '1'
-      && matches(DEC, m.timestamp) && safe(Number(m.timestamp)) && matches(I, m.nonce)
-      && matches(H, m.digest) && typeof m.signature === 'string', 'unauthorized');
-    requireValue(Math.abs(this.now() - Number(m.timestamp)) <= SKEW && m.digest === await sha256(raw), 'unauthorized');
-    let publicKey;
-    if (path === START) {
-      requireValue(typeof value.public_key === 'string' && value.key_id === m.key_id, 'unauthorized');
-      publicKey = value.public_key;
-    } else {
-      requireValue(matches(I, value.flow_id) && matches(H, value.flow_secret), 'unauthorized');
-      const f = await this.first(`SELECT * FROM pull_flows WHERE flow_id=? AND install_id=? AND purpose='signup'`, value.flow_id, m.install_id);
-      requireValue(f && f.candidate_key_id === m.key_id && f.expected_generation === 1
-        && f.expected_owner_generation === 1 && matches(H, value.flow_secret)
-        && f.flow_secret_hash === await hash(value.flow_secret), 'unauthorized');
-      publicKey = f.candidate_public_key;
-      m.flow = f;
-    }
-    const transcript = bytes(JSON.stringify(['clayrune-agent-mail-pull-http', '1', m.direction,
-      this.serviceOrigin, 'POST', path, m.key_id, m.install_id, m.generation, m.owner_generation,
-      m.timestamp, m.nonce, m.digest]));
-    requireValue(await verifyProof(publicKey, m.signature, transcript), 'unauthorized');
-    requireValue(Math.abs(this.now() - Number(m.timestamp)) <= SKEW, 'unauthorized');
-    return m;
+    return verifySignedV2({ request, raw, body: value, path, serviceOrigin: this.serviceOrigin,
+      clock: () => this.now(), resolveKey: async (m) => {
+        requireValue(m.generation === '1' && m.owner_generation === '1', 'unauthorized');
+        if (path === START) {
+          requireValue(typeof value.public_key === 'string' && value.key_id === m.key_id, 'unauthorized');
+          return value.public_key;
+        }
+        requireValue(matches(I, value.flow_id) && matches(H, value.flow_secret), 'unauthorized');
+        const f = await this.first(`SELECT * FROM pull_flows WHERE flow_id=? AND install_id=? AND purpose='signup'`, value.flow_id, m.install_id);
+        requireValue(f && f.candidate_key_id === m.key_id && f.expected_generation === 1
+          && f.expected_owner_generation === 1 && matches(H, value.flow_secret)
+          && f.flow_secret_hash === await hash(value.flow_secret), 'unauthorized');
+        m.flow = f;
+        return f.candidate_public_key;
+      } });
   }
 
   async accounting(auth, now) {
