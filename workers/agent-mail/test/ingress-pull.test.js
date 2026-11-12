@@ -132,8 +132,16 @@ test('empty stripped body with valid MID is a held event with notification, zero
   assert.equal(rows(f, 'pull_ingress_holds').length, 0);
 });
 
+test('wrong outbound Message-ID still commits pull custody with valid owner proof', async (t) => {
+  const f = await fixture(t); const { result, m } = await receive(f, { outId: 'wrong@example.com' });
+  assert.equal(result.status, 'queued'); assert.deepEqual(m.rejects, []);
+  const event = one(f, 'pull_events'); assert.equal(event.thread_id, 'thread'); assert.equal(event.text, 'A fresh reply');
+  assert.ok(one(f, 'pull_notifications')); assert.deepEqual(f.wakes, [INSTALL]);
+  assert.equal(rows(f, 'pull_audit').length, 0);
+});
+
 for (const change of [{ from: 'stranger@example.com' }, { from: 'Owner@example.com' }, { ar: cfAr({ dmarc: 'fail' }) },
-  { ar: null }, { token: 'z'.repeat(32) }, { outId: 'wrong@example.com' }, { type: 'text/html', text: '<b>hidden</b>' },
+  { ar: null }, { token: 'z'.repeat(32) }, { type: 'text/html', text: '<b>hidden</b>' },
   { extra: ['Auto-Submitted: auto-replied'] }, { extra: ['Precedence: bulk'] }, { extra: ['X-Clayrune-Agent-Mail: 1'] },
   { envelope: '' }, { extra: ['Authentication-Results: mx.cloudflare.net; dmarc=pass'] },
   { text: 'x'.repeat(16385) }, { text: 'x'.repeat(70000) }]) {

@@ -184,13 +184,54 @@ test('inactive / revoked owner record is dropped', async () => {
   dropped(await run(meta(), { ...OWNER, owner_address: 'not an address' }), 'owner_invalid');
 });
 
-test('valid token but the reply names no / the wrong outbound Message-ID', async () => {
-  dropped(await run(meta({ headers: headers({ inReplyTo: null }) })), 'message_id_missing');
-  dropped(await run(meta({ headers: headers({ inReplyTo: '<someone-else@mail.example.net>' }) })), 'message_id_mismatch');
-  const viaRefs = headers({ inReplyTo: null });
-  viaRefs.push({ key: 'references', value: `<a@x> <${OUTBOUND_ID}>` });
-  assert.equal((await run(meta({ headers: viaRefs }))).accept, true);
+for (const [name, inReplyTo, references] of [
+  ['absent', null, null],
+  ['mismatched In-Reply-To', '<someone-else@mail.example.net>', null],
+  ['mismatched References', null, '<another-thread@mail.example.net>'],
+  ['both mismatched', '<someone-else@mail.example.net>', '<another-thread@mail.example.net>'],
+  ['garbage', 'not a message id <> <broken', 'garbage <> >>>'],
+  ['matching References only', null, `<a@x> <${OUTBOUND_ID}>`],
+  ['conflicting hints', '<someone-else@mail.example.net>', `<${OUTBOUND_ID}>`],
+]) {
+  test(`owner + token + aligned DMARC accepts ${name} threading hints`, async () => {
+    const h = headers({ inReplyTo });
+    if (references !== null) h.push({ key: 'references', value: references });
+    const token = 'abcdef0123456789abcdef0123456789';
+    const t = thread();
+    const d = await run(meta({ rcptTo: `inst1a2b+${token}@mail.example.net`, headers: h }),
+      OWNER, (candidate) => candidate === token ? t : null);
+    assert.equal(d.accept, true);
+    assert.equal(d.thread, t);
+    assert.equal(d.evidence.aligned, 'spf+dkim');
+  });
+}
+
+test('legacy message_ids is optional and unused', async () => {
+  const absent = thread();
+  delete absent.message_ids;
+  for (const t of [absent, thread({ message_ids: [] }), thread({ message_ids: null }),
+    thread({ message_ids: ['unrelated@example.net'] })]) {
+    const d = await run(meta({ headers: headers({ inReplyTo: null }) }), OWNER, lookupOk(t));
+    assert.equal(d.accept, true);
+    assert.equal(d.thread, t);
+  }
 });
+
+for (const [name, overrides, reason] of [
+  ['wrong token', { rcptTo: `inst1a2b+${'0'.repeat(32)}@mail.example.net` }, 'token_unknown'],
+  ['wrong From', { headers: headers({ from: 'stranger@example.com' }) }, 'from_not_owner'],
+  ['failed DMARC', { headers: headers({ ar: cfAr({ dmarc: 'fail' }) }) }, 'dmarc_not_pass'],
+  ['unaligned SPF and DKIM', { headers: headers({
+    ar: cfAr({ mailfrom: 'bounce@esp.example', d: 'esp.example' }),
+  }) }, 'dmarc_unaligned'],
+]) {
+  test(`matching Message-IDs cannot rescue ${name}`, async () => {
+    const m = meta(overrides);
+    m.headers.push({ key: 'references', value: `<${OUTBOUND_ID}>` });
+    assert.equal(m.headers.find((h) => h.key === 'in-reply-to').value, `<${OUTBOUND_ID}>`);
+    dropped(await run(m), reason);
+  });
+}
 
 test('lookup is not reached for a stranger (cheap checks first)', async () => {
   let calls = 0;
@@ -221,6 +262,9 @@ test('rejection record is metadata only', async () => {
   assert.equal(rejectionRecord({ reason_code: 'made-up-code', evidence: { dmarc: 'a@b.c' } }, NOW).reason_code, 'internal_error');
   // evidence values that are not result words are dropped, not copied
   assert.deepEqual(rejectionRecord({ reason_code: 'token_unknown', evidence: { dmarc: 'a@b.c' } }, NOW).evidence, {});
+  for (const reason_code of ['message_id_missing', 'message_id_mismatch']) {
+    assert.equal(rejectionRecord({ reason_code }, NOW).reason_code, reason_code);
+  }
 });
 
 test('every reason code decide can emit is registered', () => {

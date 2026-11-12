@@ -74,10 +74,22 @@ test('saturated refusal accounting neither changes refusal reasons nor gates the
   assert.equal((await f.ledger.first("SELECT count FROM rate_limits WHERE bucket LIKE 'ingress-refused:install1:%'")).count, 200);
 });
 
+test('mismatched outbound Message-ID queues the token-authenticated owner reply', async () => {
+  const f = await fixture();
+  const sent = await (await f.worker.fetch(await f.request(), f.env)).json();
+  assert.notEqual(sent.message_id, 'unknown@example.org');
+  const message = emailMessage({ outId: 'unknown@example.org' });
+  assert.equal((await f.worker.email(message, f.env)).status, 'queued');
+  assert.deepEqual(message.rejects, []);
+  const event = await f.ledger.first('SELECT thread_id FROM events');
+  assert.equal(event.thread_id, 'thread1');
+  assert.equal(await f.ledger.first("SELECT count FROM rate_limits WHERE bucket LIKE 'ingress-refused:install1:%'"), null);
+  assert.equal((await f.ledger.first("SELECT count FROM rate_limits WHERE bucket LIKE 'ingress:install1:%'")).count, 1);
+});
+
 for (const [over, reason, protectedCount] of [
   [{ ar: cfAr({ dmarc: 'fail' }) }, 'dmarc_not_pass', 0],
   [{ token: '0'.repeat(32) }, 'token_unknown', 0],
-  [{ outId: 'unknown@example.org' }, 'message_id_mismatch', 0],
   [{ ar: null }, 'ingress_header_mismatch', 0],
   [{ extra: ['Auto-Submitted: auto-replied'] }, 'loop_or_bounce', 0],
   [{ type: 'text/html', text: '<b>hidden</b>' }, 'html_only', 1],
