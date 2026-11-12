@@ -272,6 +272,11 @@ class _Scanner(ast.NodeVisitor):
             self.tainted_names.add(node.target.id)
         self.generic_visit(node)
 
+    def _is_spawn_reference(self, node: ast.AST) -> bool:
+        return (isinstance(node, ast.Name) and node.id in self.spawn_functions) or (
+                isinstance(node, ast.Attribute) and node.attr == 'spawn_engine_proc'
+                and ast.unparse(node.value) in (self.spawn_modules | {'mc.agent_spawn'}))
+
     def visit_Call(self, node: ast.Call) -> None:
         is_subprocess = (isinstance(node.func, ast.Attribute)
                 and isinstance(node.func.value, ast.Name)
@@ -279,9 +284,11 @@ class _Scanner(ast.NodeVisitor):
                 and node.func.attr in {"Popen", "run", "call", "check_output", "check_call"})
         is_subprocess = is_subprocess or (isinstance(node.func, ast.Name)
                 and node.func.id in self.subprocess_functions)
-        is_spawn = (isinstance(node.func, ast.Name) and node.func.id in self.spawn_functions) or (
-                isinstance(node.func, ast.Attribute) and node.func.attr == 'spawn_engine_proc'
-                and ast.unparse(node.func.value) in (self.spawn_modules | {'mc.agent_spawn'}))
+        # A launch transaction receives the factory rather than calling it here.
+        # Only direct call arguments count; an unused reference is not a launch.
+        is_spawn = self._is_spawn_reference(node.func) or any(
+            self._is_spawn_reference(arg)
+            for arg in list(node.args) + [kw.value for kw in node.keywords])
         if is_subprocess or is_spawn:
             provider_args = any(
                 (isinstance(arg, ast.Name) and arg.id in self.tainted_names)
@@ -400,6 +407,29 @@ def test_fenn_escape_shapes_are_detected(tmp_path: Path, source: str, kind: str)
     "sp.spawn_engine_proc(['gemini'], session_id='s', engine='gemini')\n",
     "import mc.agent_spawn\n"
     "mc.agent_spawn.spawn_engine_proc(['claude'], session_id='s', engine='claude')\n",
+    "from mc.agent_spawn import spawn_engine_proc\n"
+    "cmd = ['claude', '-p', 'x']\n"
+    "_launch_transaction.launch(txn, spawn_engine_proc, cmd)\n",
+    "from mc.agent_spawn import spawn_engine_proc as spawn\n"
+    "_launch_transaction.launch(txn, spawn, ['codex', 'exec'])\n",
+    "from mc import agent_spawn as sp\n"
+    "_launch_transaction.launch(txn, sp.spawn_engine_proc, ['qwen'])\n",
+    "import mc.agent_spawn as sp\n"
+    "_launch_transaction.launch(txn, sp.spawn_engine_proc, ['gemini'])\n",
+    "import mc.agent_spawn\n"
+    "_launch_transaction.launch(txn, mc.agent_spawn.spawn_engine_proc, ['claude'])\n",
+    "from mc.agent_spawn import spawn_engine_proc\n"
+    "_launch_transaction.launch(txn, factory=spawn_engine_proc, cmd=['claude'])\n",
+    "from mc.agent_spawn import spawn_engine_proc as spawn\n"
+    "_launch_transaction.launch(txn, factory=spawn, args=['codex'])\n",
+    "from mc import agent_spawn\n"
+    "_launch_transaction.launch(txn, factory=agent_spawn.spawn_engine_proc, cmd=['qwen'])\n",
+    "import mc.agent_spawn as sp\n"
+    "_launch_transaction.launch(txn, factory=sp.spawn_engine_proc, cmd=['gemini'])\n",
+    "import mc.agent_spawn\n"
+    "_launch_transaction.launch(txn, factory=mc.agent_spawn.spawn_engine_proc, cmd=['claude'])\n",
+    "from mc.agent_spawn import spawn_engine_proc\n"
+    "consume(spawn_engine_proc(['claude']))\n",
 ])
 def test_spawn_engine_proc_is_a_provider_launch(tmp_path: Path, source: str) -> None:
     path = tmp_path / 'mc' / 'blueprints' / 'feature.py'
@@ -409,12 +439,31 @@ def test_spawn_engine_proc_is_a_provider_launch(tmp_path: Path, source: str) -> 
     assert [f.kind for f in findings] == ['inference-subprocess']
 
 
-def test_spawn_engine_proc_with_a_neutral_command_is_not_flagged(tmp_path: Path) -> None:
+@pytest.mark.parametrize('call', [
+    "spawn_engine_proc(['git', 'status'], session_id='s', engine='x')",
+    "_launch_transaction.launch(txn, spawn_engine_proc, ['git', 'status'], engine='x')",
+    "_launch_transaction.launch(txn, factory=spawn_engine_proc, cmd=['git', 'status'], engine='x')",
+])
+def test_spawn_engine_proc_with_a_neutral_command_is_not_flagged(tmp_path: Path, call: str) -> None:
     path = tmp_path / 'mc' / 'blueprints' / 'feature.py'
     path.parent.mkdir(parents=True)
     path.write_text("from mc.agent_spawn import spawn_engine_proc\n"
-                    "spawn_engine_proc(['git', 'status'], session_id='s', engine='x')\n",
+                    f"{call}\n",
                     encoding='utf-8')
+    assert scan_modules((path,), root=tmp_path) == ()
+
+
+@pytest.mark.parametrize('source', [
+    "from mc.agent_spawn import spawn_engine_proc\nspawn_engine_proc\n",
+    "from mc.agent_spawn import spawn_engine_proc as spawn\nfactory = spawn\n",
+    "from mc import agent_spawn\nagent_spawn.spawn_engine_proc\n",
+    "import mc.agent_spawn as sp\nfactory = sp.spawn_engine_proc\n",
+    "import mc.agent_spawn\nmc.agent_spawn.spawn_engine_proc\n",
+])
+def test_unused_spawn_reference_is_not_a_launch(tmp_path: Path, source: str) -> None:
+    path = tmp_path / 'mc' / 'blueprints' / 'feature.py'
+    path.parent.mkdir(parents=True)
+    path.write_text(source + "cmd = ['claude']\nconsume(cmd)\n", encoding='utf-8')
     assert scan_modules((path,), root=tmp_path) == ()
 
 
