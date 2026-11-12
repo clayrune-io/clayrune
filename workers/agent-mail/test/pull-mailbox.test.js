@@ -114,6 +114,14 @@ async function fixture(t, count = 0, body = 'reply', fixedClock = 0) {
   for (let n = 0; n < count; n++) await enqueue(f);
   return f;
 }
+// The Worker's SQL guards compare against workerd's REAL clock in minute buckets
+// (session-auth.js mint), so a frozen TEST_CLOCK taken in a minute's last
+// seconds fails the guard once the real clock rolls over. Freeze only early in a minute.
+async function frozenNow() {
+  const left = 60_000 - (Date.now() % 60_000);
+  if (left < 15_000) await new Promise((r) => setTimeout(r, left + 50));
+  return Date.now();
+}
 async function call(f, path, options) { return f.mf.dispatchFetch(ORIGIN + path, options); }
 async function diagnostic(f) { return (await call(f, '/diagnostic')).json(); }
 async function configure(f, value) {
@@ -355,7 +363,7 @@ for (const [name,wire,code,reason] of [
 });
 
 test('over-count resumes refuse with request_limit, including after actual eviction',async(t)=>{
-  const f=await fixture(t,0,'reply',Date.now());const box=await connect(f);
+  const f=await fixture(t,0,'reply',await frozenNow());const box=await connect(f);
   for(let n=0;n<60;n++) {const p=await page(f,box);assert.equal(p.events.length,0);}
   await f.mf.unsafeEvictDurableObject('mailbox-test','TestMailbox',{name:INSTALL,webSockets:'hibernate'});
   send(f,box,'resume',{after_seq:0,limit:10,available_bytes:524288});
@@ -413,7 +421,7 @@ test('thread head blocks its later event across pages while another thread can b
 });
 
 test('120 total client frames count failed ack operations and survive eviction',async(t)=>{
-  const f=await fixture(t,0,'reply',Date.now());const box=await connect(f);await page(f,box);
+  const f=await fixture(t,0,'reply',await frozenNow());const box=await connect(f);await page(f,box);
   const value={event_id:'f'.repeat(64),event_digest:'f'.repeat(64),body_digest:'f'.repeat(64),lease_id:id(1),local_receipt_id:id(9)};
   for(let n=0;n<119;n++){
     send(f,box,'custody_ack',value);const e=await box.next();assert.equal(e.type,'error');assert.equal((await verified(f,e)).code,'not_found');
