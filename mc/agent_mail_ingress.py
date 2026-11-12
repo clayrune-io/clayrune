@@ -14,8 +14,7 @@ from typing import Any, Mapping
 from mc.agent_mail_envelope import MAX_REQUEST_BYTES, parse_envelope
 from mc.agent_mail_signing import (ID, IngressRefused, ServicePin, SKEW_MS,
                                    VerifiedRequest, verify)
-from mc.agent_mail_store import (BLOCKED, LOCAL_RECEIVED, SUBMITTED, TERMINAL_STATES, MailStore,
-                                 _bounded_digest, hash_thread_token)
+from mc.agent_mail_store import MailStore, hash_thread_token
 
 
 class MailIngress:
@@ -147,43 +146,5 @@ class MailIngress:
 
     def _ingest(self, db: sqlite3.Connection, env: dict[str, Any], thash: str,
                 envelope_digest: str) -> None:
-        now = self.store.clock()
-        # Expired receipts cannot authorize a fresh delivery; their content-free
-        # tombstones need not outlive the signed event's own replay lifetime.
-        db.execute('DELETE FROM mail_ingress_receipts WHERE expires_at<=?', (self.clock_ms(),))
-        old = db.execute('SELECT envelope_digest FROM mail_ingress_receipts WHERE event_id=?',
-                         (env['event_id'],)).fetchone()
-        if old:
-            if old['envelope_digest'] != envelope_digest:
-                raise IngressRefused('event_conflict')
-            return
-        if db.execute('SELECT 1 FROM events WHERE event_id=?', (env['event_id'],)).fetchone():
-            raise IngressRefused('event_conflict')
-        cfg = self.store.config
-        held = env['version'] == 2
-        body = None if held else env['text']
-        digest, blen = _bounded_digest(body or '', cfg.max_body_bytes)
-        if blen > cfg.max_body_bytes:
-            raise IngressRefused('body_limit')
-        excluded = sorted(TERMINAL_STATES | {SUBMITTED})
-        active = db.execute('SELECT COUNT(*) FROM events WHERE registration_id=? AND state NOT IN ('
-                            + ','.join('?' * len(excluded)) + ')',
-                            (env['install_id'], *excluded)).fetchone()[0]
-        if active >= cfg.max_active_events:
-            raise IngressRefused('queue_full')
-        binding = db.execute('SELECT * FROM thread_bindings WHERE thread_hash=?', (thash,)).fetchone()
-        mid = env['incoming_message_id']
-        dedupe = hashlib.sha256(f"{env['install_id']}\x1f{thash}\x1f{mid}".encode()).hexdigest()
-        # A legacy unit-1 event cannot be silently adopted without its full
-        # authenticated transport receipt; unit 7 must never migrate guesses.
-        if db.execute('SELECT 1 FROM events WHERE dedupe_key=?', (dedupe,)).fetchone():
-            raise IngressRefused('event_conflict')
-        db.execute('INSERT INTO events(event_id,registration_id,thread_hash,project_id,session_id,'
-                   'generation,message_id,dedupe_key,body_digest,body_len,state,body,reason,'
-                   'received_at,state_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                   (env['event_id'], env['install_id'], thash, binding['project_id'],
-                    binding['session_id'], env['generation'], mid, dedupe, digest, blen,
-                    BLOCKED if held else LOCAL_RECEIVED, body, env['reason'] if held else '', now, now,
-                    min(env['expires_at'] / 1000, now + cfg.queue_ttl_seconds)))
-        db.execute('INSERT INTO mail_ingress_receipts VALUES(?,?,?,?)',
-                   (env['event_id'], envelope_digest, env['body_digest'], env['expires_at']))
+        from mc.agent_mail_pull_receiver import _ingest_custody
+        _ingest_custody(self.store, db, env, thash, envelope_digest)
