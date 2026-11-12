@@ -6,6 +6,7 @@ import { ownerIdentity } from './owner-registry.js';
 import { VERIFICATION_TTL, confirmationPage, verificationBinding } from './verification-mail.js';
 import { bytes, randomId, sha256, unbase64url } from './signing.js';
 import { readRequestBody } from './request-body.js';
+import { SQL_NOW, sqlClockAtOrAfter } from './sql-clock.js';
 
 export const OWNER_CHANGE_PATHS = Object.freeze(['/mail/owner-change', '/mail/change/cancel',
   '/mail/link', '/mail/link/confirm', '/mail/revert', '/mail/resume']);
@@ -13,7 +14,6 @@ const DAY = 86_400_000;
 const WEEK = 7 * DAY;
 const TTL = 600_000;
 const MAX_G = 999_999_999_999_999;
-const SQL_NOW = `(CAST(strftime('%s','now') AS INTEGER)*1000+CAST(substr(strftime('%f','now'),4,3) AS INTEGER))`;
 const H = /^[a-f0-9]{64}$/;
 const I = /^[a-f0-9]{32}$/;
 const COOKIE = '__Secure-clayrune-mail';
@@ -66,7 +66,7 @@ export class OwnerChangeHTTP extends OwnerManagementHTTP {
   // Wall-time guards belong at BOTH ends of each batch: queued D1 writes must
   // not commit an expired browser/token or charge yesterday's verification cap.
   timeGuard(now, end, sameDay = false) {
-    return this.registry.guard(`${SQL_NOW}>=? AND ${SQL_NOW}<?${sameDay ? ` AND CAST(${SQL_NOW}/86400000 AS INTEGER)=?` : ''}`,
+    return this.registry.guard(`${sqlClockAtOrAfter()} AND ${SQL_NOW}<?${sameDay ? ` AND CAST(${SQL_NOW}/86400000 AS INTEGER)=?` : ''}`,
       now, end, ...(sameDay ? [Math.floor(now / DAY)] : []));
   }
   currentGuard(i, state = 'current') {

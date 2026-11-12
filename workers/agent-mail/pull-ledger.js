@@ -2,13 +2,13 @@
 import { bytes, randomId, sha256 } from './signing.js';
 import { OwnerRegistry } from './owner-registry.js';
 import { strictMsgId } from './content-id.js';
+import { SQL_NOW, sqlClockAtOrAfter } from './sql-clock.js';
 
 const DAY = 86_400_000;
 const MONTH = 30 * DAY;
 const LEASE = 60_000;
 const MAX = Number.MAX_SAFE_INTEGER;
 const GMAX = 999_999_999_999_999;
-const SQL_NOW = `(CAST(strftime('%s','now') AS INTEGER)*1000+CAST(substr(strftime('%f','now'),4,3) AS INTEGER))`;
 const LIVE = "('pending','offered','held')";
 const I = /^[a-f0-9]{32}$/;
 const H = /^[a-f0-9]{64}$/;
@@ -110,7 +110,7 @@ export class PullLedger {
       s.install_id, s.generation, i.flow_id), 'fenced'); return i;
   }
   timeGuard(now, end = MAX, day = false) {
-    return this.guard(`${SQL_NOW}>=? AND ${SQL_NOW}<?${day ? ` AND CAST(${SQL_NOW}/${DAY} AS INTEGER)=?` : ''}`,
+    return this.guard(`${sqlClockAtOrAfter()} AND ${SQL_NOW}<?${day ? ` AND CAST(${SQL_NOW}/${DAY} AS INTEGER)=?` : ''}`,
       ...[now, end, ...(day ? [Math.floor(now / DAY)] : [])]);
   }
   async atomic(s, statements) {

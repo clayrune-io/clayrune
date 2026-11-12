@@ -7,16 +7,13 @@ import { verifySignedV2, PULL_SKEW_MS } from './signed-v2-verifier.js';
 import { OwnerRegistry } from './owner-registry.js';
 import { Ledger } from './ledger.js';
 import { readRequestBody } from './request-body.js';
+import { SQL_NOW, sqlClockAtOrAfter } from './sql-clock.js';
 
 export const TICKET_PATH = '/v1/pull/ticket';
 export const SOCKET_PATH = '/v1/pull/socket';
 export const PULL_PROTOCOL = 'clayrune-mail-pull.v1';
 const DAY = 86_400_000;
 const G_MAX = 999_999_999_999_999;
-// SQLite/D1 wall time is evaluated IN the transaction, including its last
-// statement. A queued batch cannot commit a proof/ticket whose window elapsed
-// after the Worker prepared its bindings. Milliseconds, without REAL rounding.
-const SQL_NOW = `(CAST(strftime('%s','now') AS INTEGER)*1000+CAST(substr(strftime('%f','now'),4,3) AS INTEGER))`;
 const I = /^[a-f0-9]{32}$/;
 const valid = (ok, code = 'invalid_request') => { if (!ok) throw new Error(code); };
 const match = (re, s) => typeof s === 'string' && re.test(s);
@@ -235,7 +232,7 @@ export class SessionAuth {
       const i = await this.active(ticket);
       valid(i && Number.isSafeInteger(i.epoch) && i.epoch >= 0 && i.epoch < G_MAX, 'ticket_invalid');
       const connection = randomId();
-      const fresh = () => this.registry.guard(`?>${SQL_NOW} AND ?<=${SQL_NOW}`, ticket.expires_ms, ticket.created_ms);
+      const fresh = () => this.registry.guard(`?>${SQL_NOW} AND ${sqlClockAtOrAfter()}`, ticket.expires_ms, ticket.created_ms);
       const statements = [fresh(), this.scopeGuard(i),
         this.stmt(`UPDATE pull_tickets SET state='consumed',consumed_ms=? WHERE ticket_hash=? AND state='issued'
           AND install_id=? AND generation=? AND owner_generation=? AND key_id=? AND expires_ms>? AND created_ms<=?`,
@@ -245,7 +242,16 @@ export class SessionAuth {
         connection, now, i.install_id, i.epoch, i.generation, i.owner_generation, i.key_id), this.registry.changed(), fresh()];
       valid(this.now() < ticket.expires_ms, 'ticket_invalid');
       try { await this.db.batch(statements); }
-      catch (error) { if (attempt) throw error; continue; }
+      catch (error) {
+        if (attempt) {
+          // Classify a refused SQL time window after the entire batch rolled
+          // back. A failed read still propagates as storage_unavailable.
+          valid(await this.first(`SELECT 1 WHERE ?>${SQL_NOW} AND ${sqlClockAtOrAfter()}`,
+            ticket.expires_ms, ticket.created_ms), 'ticket_invalid');
+          throw error;
+        }
+        continue;
+      }
       valid(this.now() < ticket.expires_ms, 'ticket_invalid');
       return { v: 1, install_id: i.install_id, generation: i.generation, owner_generation: i.owner_generation,
         key_id: i.key_id, epoch: i.epoch + 1, connection_id: connection, authenticated_ms: now, reauth_ms: now + DAY };

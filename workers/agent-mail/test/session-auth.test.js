@@ -290,14 +290,33 @@ test('expired ticket at exact deadline is rejected without epoch/consume', async
   const before = snapshot(f); await assert.rejects(admit(f, socket(result.ticket)), /ticket_invalid/);
   assert.deepEqual(snapshot(f), before);
 });
-test('future-dated ticket, invalidated ticket and unknown ticket cannot admit', async (t) => {
+test('ticket ahead of Worker time, invalidated ticket and unknown ticket cannot admit', async (t) => {
   const f = await fixture(t); const { result } = await mint(f);
-  f.db.sql.exec(`UPDATE pull_tickets SET created_ms=${NOW + 1}`);
+  // SQL's cross-clock tolerance never relaxes the Worker-vs-Worker preflight.
+  f.db.sql.exec(`UPDATE pull_tickets SET created_ms=${NOW + 6000}`);
   await assert.rejects(admit(f, socket(result.ticket)), /ticket_invalid/);
   f.db.sql.exec(`UPDATE pull_tickets SET created_ms=${NOW},state='invalidated'`);
   await assert.rejects(admit(f, socket(result.ticket)), /ticket_invalid/);
   await assert.rejects(admit(f, socket('a'.repeat(64))), /ticket_invalid/);
   assert.equal(one(f, 'pull_installs').epoch, 0);
+});
+for (const ahead of [4000, 5000, 6000]) test(`ticket minted ${ahead}ms ahead of SQLite uses only SQL consistency tolerance`, async (t) => {
+  const f = await fixture(t);
+  // The existing deterministic SQLite clock stays fixed. Advance ONLY the
+  // injected Worker clock to model independent hosts, never the SQL predicate.
+  f.http = new SessionAuth({ ...f.config, clock: () => f.time + ahead });
+  const { result, response } = await mint(f);
+  assert.equal(response.status, 200);
+  const issued = one(f, 'pull_tickets');
+  assert.equal(issued.created_ms, NOW + ahead);
+  if (ahead <= 5000) {
+    assert.equal((await admit(f, socket(result.ticket))).epoch, 1);
+    assert.equal(one(f, 'pull_tickets').state, 'consumed');
+  } else {
+    await assert.rejects(admit(f, socket(result.ticket)), /ticket_invalid/);
+    assert.equal(one(f, 'pull_installs').epoch, 0);
+    assert.deepEqual(one(f, 'pull_tickets'), issued);
+  }
 });
 test('foreign DO scope never burns a valid ticket', async (t) => {
   const f = await fixture(t); const { result } = await mint(f);
@@ -462,6 +481,17 @@ test('socket admission storage outage never masquerades as invalid ticket or lea
   await assert.rejects(admit(f, socket(result.ticket)), /^Error: storage_unavailable$/);
   f.http.first = original; assert.equal(one(f, 'pull_tickets').state, 'issued');
 });
+test('failed SQL ticket-time classification stays a storage outage and cannot consume a ticket', async (t) => {
+  const f = await fixture(t); const { result } = await mint(f); const before = snapshot(f);
+  f.db.beforeBatch = async () => { throw new Error('private database outage'); };
+  const first = f.http.first.bind(f.http);
+  f.http.first = async (sql, ...args) => {
+    if (sql.startsWith('SELECT 1 WHERE')) throw new Error('private clock read failure');
+    return first(sql, ...args);
+  };
+  await assert.rejects(admit(f, socket(result.ticket)), /^Error: storage_unavailable$/);
+  assert.deepEqual(snapshot(f), before);
+});
 test('mint/admission also execute against unmodified SQLite wall clock functions', async (t) => {
   const f = await fixture(t, 7, 3, true);
   const m = await mint(f); assert.equal(m.response.status, 200);
@@ -473,6 +503,15 @@ for (const offset of [-300000,300000]) test(`accepted timestamp boundary ${offse
   const m = await mint(f, undefined, { fields: { timestamp: String(f.time + offset) } });
   assert.equal(m.response.status, 200);
   assert.equal(one(f, 'pull_nonces').expires_ms, NOW + offset + 300001);
+});
+for (const offset of [300000,300001]) test(`D1 signed-proof boundary ${offset} stays strict even with a Worker clock ahead`, async (t) => {
+  const f = await fixture(t);
+  f.http = new SessionAuth({ ...f.config, clock: () => f.time + 4000 });
+  // Both proofs are within 300s of Worker time; only D1 can distinguish them.
+  const m = await mint(f, undefined, { fields: { timestamp: String(NOW + offset) } });
+  assert.equal(m.response.status, offset === 300000 ? 200 : 503);
+  assert.equal(rows(f, 'pull_tickets').length, offset === 300000 ? 1 : 0);
+  assert.equal(rows(f, 'pull_nonces').length, offset === 300000 ? 1 : 0);
 });
 test('refusal accounting outages are fixed failures for both public seams', async (t) => {
   const f = await fixture(t); let calls = 0;

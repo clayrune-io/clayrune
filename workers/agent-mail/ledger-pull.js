@@ -2,9 +2,9 @@
 import { OwnerRegistry } from './owner-registry.js';
 import { PullLedger } from './pull-ledger.js';
 import { strictMsgId } from './content-id.js';
+import { SQL_NOW, sqlClockAtOrAfter } from './sql-clock.js';
 
 const DAY = 86_400_000, MAX = Number.MAX_SAFE_INTEGER, GMAX = 999_999_999_999_999;
-const SQL_NOW = `(CAST(strftime('%s','now') AS INTEGER)*1000+CAST(substr(strftime('%f','now'),4,3) AS INTEGER))`;
 const I = /^[a-f0-9]{32}$/, H = /^[a-f0-9]{64}$/, ID = /^[A-Za-z0-9_-]{1,128}$/;
 const valid = (ok, code = 'invalid_request') => { if (!ok) throw new Error(code); };
 const match = (re, s) => typeof s === 'string' && re.test(s);
@@ -81,7 +81,7 @@ export class PullTransportLedger {
     }
   }
   timeGuard(now, day = false) {
-    return this.registry.guard(`${SQL_NOW}>=?${day ? ` AND CAST(${SQL_NOW}/${DAY} AS INTEGER)=?` : ''}`,
+    return this.registry.guard(`${sqlClockAtOrAfter()}${day ? ` AND CAST(${SQL_NOW}/${DAY} AS INTEGER)=?` : ''}`,
       now, ...(day ? [Math.floor(now / DAY)] : []));
   }
   async registration(id, generation = null, ownerGeneration = null) {
