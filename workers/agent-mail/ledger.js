@@ -1,6 +1,7 @@
 // D1 state ownership. Every claim/limit/custody transition is SQL-atomic;
 // multi-statement invariants use D1's transactional batch, never JS locks.
 import { randomId } from './signing.js';
+import { PullTransportLedger } from './ledger-pull.js';
 export const DAY = 86_400_000;
 export const POLICY = Object.freeze({ queueTTL: 30 * DAY, threadTTL: 90 * DAY,
   metadataTTL: 30 * DAY, lease: 60_000, queueLimit: 100, globalQueueLimit: 10_000,
@@ -9,6 +10,8 @@ const ACTIVE = `EXISTS (SELECT 1 FROM registrations r WHERE r.install_id=? AND r
   AND r.active=1 AND r.owner_verified=1)`;
 export class Ledger {
   constructor(db, policy = {}) { this.db = db; this.policy = { ...POLICY, ...policy }; }
+  // Explicit selection only: legacy registrations never confer pull authority.
+  pull(options = {}) { return new PullTransportLedger({ ...options, ledger: this }); }
   stmt(sql, ...args) { return this.db.prepare(sql).bind(...args); }
   async first(sql, ...args) { return this.stmt(sql, ...args).first(); }
   async run(sql, ...args) { return this.stmt(sql, ...args).run(); }
