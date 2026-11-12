@@ -5,6 +5,8 @@ import { strip } from './strip.js';
 import { strictMsgId } from './content-id.js';
 import { bytes, sha256 } from './signing.js';
 import { heldEnvelope } from './held-envelope.js';
+import { PullTransportLedger } from './ledger-pull.js';
+import { persistPullIngress } from './ingress-pull.js';
 export async function readBounded(stream, limit) {
   const reader = stream.getReader(); const chunks = []; let size = 0;
   try {
@@ -45,7 +47,8 @@ export function orderedHeaders(raw) {
   }
   return result;
 }
-export async function ingress({ message, ledger, config, now }) {
+export async function ingress({ message, ledger, config, now, wake }) {
+  const pull = ledger instanceof PullTransportLedger;
   let reg;
   async function drop(reason) {
     // Refusals never spend accepted capacity. Once their global audit budget
@@ -66,6 +69,7 @@ export async function ingress({ message, ledger, config, now }) {
   if (!Number.isFinite(message.rawSize) || message.rawSize > 65_536) return drop('mime_too_large');
   const match = /^([a-z0-9][a-z0-9._-]{0,63})\+([a-z0-9]{26,64})@([a-z0-9.-]+)$/.exec(message.to ?? '');
   if (!match || match[3] !== config.domain) return drop('unknown_recipient');
+  if (pull && !/^m[a-f0-9]{29}$/.test(match[1])) return drop('unknown_recipient');
   reg = await ledger.recipient(match[1]);
   if (!reg?.active || !reg.owner_verified) return drop('owner_inactive');
   let raw, headers;
@@ -80,7 +84,8 @@ export async function ingress({ message, ledger, config, now }) {
   if (headers.some((h) => h.key === 'x-clayrune-agent-mail'
       || (h.key === 'auto-submitted' && h.value.toLowerCase() !== 'no')
       || (h.key === 'precedence' && /^(bulk|list|junk)$/i.test(h.value))) || !message.from) return drop('loop_or_bounce');
-  const decision = await decide({ rcptTo: message.to, headers, now }, { ...reg, active: true },
+  const decision = await decide({ rcptTo: message.to, headers, now },
+    { ...reg, active: true, generation: pull ? reg.owner_generation : reg.generation },
     async (token) => ledger.thread(await sha256(bytes(token))));
   // Unit 3 still refuses identity on lookup failure; storage failure is not an
   // SMTP authentication rejection. The email adapter reports sanitized custody failure.
@@ -88,11 +93,12 @@ export async function ingress({ message, ledger, config, now }) {
   if (!decision.accept) return drop(decision.reason_code);
   // Reserve both allowances atomically after owner/auth/token/correlation pass.
   // Either full bucket refuses without consuming capacity in the other.
-  if (!await ledger.reserveIngress(reg.install_id, now)) return drop('ingress_limit');
+  if (!pull && !await ledger.reserveIngress(reg.install_id, now)) return drop('ingress_limit');
   const content = await strip(raw);
   if (!content.ok) return drop(content.reason_code);
   const ids = headers.filter((h) => h.key === 'message-id');
   const incoming_id = ids.length === 1 ? strictMsgId(ids[0].value) : null;
+  if (pull) return persistPullIngress({ ledger, reg, decision, content, incoming_id, raw, wake });
   const digest = await sha256(bytes(content.text));
   // An invalid identifier is retained as a visible, non-deliverable hold. No
   // untrusted identifier is permitted to shadow a real owner's later Message-ID.
