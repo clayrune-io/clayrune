@@ -1,5 +1,10 @@
 # Per-install agent email
 
+> **2026-11-11 transport update:** Ron selected outbound-connection pull mail.
+> See [AGENT_MAIL_PULL_DESIGN.md](AGENT_MAIL_PULL_DESIGN.md) for the proposed
+> replacement of tunnel/CP delivery and signup; the binding owner/address-change
+> abuse controls below remain in force.
+
 Status: **Draft for Dave's decisions; not approved for implementation or deployment.**
 Author: Marlow. Date: 2026-11-08.
 
