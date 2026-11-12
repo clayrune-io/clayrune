@@ -22,13 +22,18 @@ const config = e => ({db:e.DB,serviceOrigin:'${ORIGIN}',serviceKeyId:'service',s
   serviceKeyExpiresMs:Number(e.KEY_EXPIRES),clock:()=>Number(e.TEST_CLOCK)||Date.now()});
 export class TestMailbox extends PullMailbox {
   constructor(s,e){super(s,config(e));this.instance=crypto.randomUUID();}
+  async close(ws,code,reason){
+    if(code===4004)await this.state.storage.put('test:reauth-close',{at:this.config.clock(),code});
+    return super.close(ws,code,reason);
+  }
   async fetch(r){
     const u=new URL(r.url);
     if(u.pathname==='/v1/pull/socket')return this.admit(r,{trustedSource:'trusted-edge',install_id:'${INSTALL}'});
     if(u.pathname==='/wake')return Response.json(await this.wake('${INSTALL}'));
     if(u.pathname==='/diagnostic')return this.exclusive(async()=>Response.json({instance:this.instance,
       attachments:this.sockets().map(w=>w.deserializeAttachment()),
-      meta: Object.fromEntries(await this.state.storage.list({prefix:'socket:'})),alarm:await this.state.storage.getAlarm()}));
+      meta: Object.fromEntries(await this.state.storage.list({prefix:'socket:'})),alarm:await this.state.storage.getAlarm(),
+      reauthClose:await this.state.storage.get('test:reauth-close')}));
     if(u.pathname==='/test-config')return this.exclusive(async()=>{
       Object.assign(this.config,await r.json());await this.deadlines();return new Response('ok');});
     if(u.pathname==='/peer-error'){
@@ -471,7 +476,11 @@ test('service-key retirement sends signed reauth notice, stops offers and closes
   assert.deepEqual(notice,{reason:'service_key_changed',close_at_ms:expiry});
   send(f,box,'resume',{after_seq:0,limit:10,available_bytes:524288});
   assert.equal((await f.db.prepare('SELECT COUNT(*) AS n FROM pull_offers').first()).n,0);
-  const result=await controlClose(box);assert.equal(result.code,4004);assert.ok(result.at>=expiry);
+  const result=await controlClose(box);assert.equal(result.code,4004);
+  // Compare the deadline to the clock used by the Worker enforcing it. Node's
+  // WebSocket callback clock can differ slightly from workerd's wall clock.
+  const observed=(await diagnostic(f)).reauthClose;
+  assert.equal(observed.code,4004);assert.ok(observed.at>=expiry,JSON.stringify({observed,expiry,clientAt:result.at}));
   assert.equal(box.messages.length,0);
   await f.mf.unsafeEvictDurableObject('mailbox-test','TestMailbox',{name:INSTALL,webSockets:'hibernate'});
   assert.equal((await closed(box)).code,4004);
