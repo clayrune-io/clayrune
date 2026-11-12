@@ -48,7 +48,17 @@ def test_packaged_browser_storage_ignores_instance_data_root(tmp_path, monkeypat
 
 
 def test_import_keeps_sweep_disabled():
-    assert br.SWEEP_ENABLED is False
+    # Fresh interpreter: an earlier test in the same pytest process may have
+    # imported server.py, which deliberately flips SWEEP_ENABLED on.
+    import subprocess
+    repo = Path(__file__).resolve().parents[1]
+    out = subprocess.run(
+        [sys.executable, '-c',
+         'from mc.blueprints import browser_routes as b; print(b.SWEEP_ENABLED)'],
+        cwd=str(repo), capture_output=True, text=True, timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().splitlines()[-1] == 'False'
 
 
 @pytest.fixture
