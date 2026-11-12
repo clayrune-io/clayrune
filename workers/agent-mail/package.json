@@ -9,5 +9,8 @@
   },
   "dependencies": {
     "postal-mime": "4.2.0"
+  },
+  "devDependencies": {
+    "miniflare": "4.20260730.0"
   }
 }
