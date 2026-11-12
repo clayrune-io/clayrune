@@ -158,8 +158,7 @@ export class OwnerManagementHTTP extends SignupHTTP {
     i.install_id, i.generation, i.owner_generation, i.owner_hash, i.key_id, i.public_key, i.state, i.consent_version);
   }
   fenceGuard(flow) {
-    return this.registry.guard(`NOT EXISTS (SELECT 1 FROM pull_fences WHERE install_id=? AND generation=?
-      AND (mode='revoke' OR flow_id=?))`, flow.install_id, flow.expected_generation, flow.flow_id);
+    return this.mail.fenceGuard(flow, 'stepup');
   }
   flowGuard(f) {
     return this.registry.guard(`EXISTS (SELECT 1 FROM pull_flows WHERE flow_id=? AND install_id=? AND purpose=?
@@ -191,37 +190,49 @@ export class OwnerManagementHTTP extends SignupHTTP {
       const i = await r.installation(auth.install_id);
       valid(i && i.generation === Number(auth.generation) && i.owner_generation === Number(auth.owner_generation), 'stale_generation');
       valid(!['pending', 'deleted'].includes(i.state), 'registration_inactive');
+      valid(i.state !== 'disabled' || ['resume', 'key_recovery'].includes(v.purpose), 'registration_inactive');
       valid(i.state !== 'frozen' || ['resume', 'key_recovery', 'delete'].includes(v.purpose), 'registration_frozen');
-      valid(v.purpose !== 'resume' || i.state === 'frozen', 'registration_inactive');
+      valid(v.purpose !== 'resume' || ['frozen', 'disabled'].includes(i.state), 'registration_inactive');
       valid(v.purpose === 'key_recovery' ? auth.key_id === v.candidate_key_id : auth.key_id === i.key_id, 'unauthorized');
       valid(!['owner_change', 'resume', 'delete'].includes(v.purpose)
         || v.candidate_key_id === i.key_id && v.candidate_public_key === i.public_key, 'unauthorized');
       valid(!await this.first('SELECT 1 FROM pull_flows WHERE flow_id=?', v.flow_id), 'operation_conflict');
+      const generationState = i.state === 'disabled' ? 'fenced' : 'current';
       const parent = await this.first(`SELECT f.* FROM pull_generations g JOIN pull_flows f ON f.flow_id=g.flow_id
-        WHERE g.install_id=? AND g.generation=? AND g.state='current' AND g.owner_hash=? AND g.key_id=? AND g.public_key=?`,
-      i.install_id, i.generation, i.owner_hash, i.key_id, i.public_key);
+        WHERE g.install_id=? AND g.generation=? AND g.state=? AND g.owner_hash=? AND g.key_id=? AND g.public_key=?`,
+      i.install_id, i.generation, generationState, i.owner_hash, i.key_id, i.public_key);
       valid(parent, 'stale_generation');
-      const fenced = await this.first(`SELECT 1 FROM pull_fences WHERE install_id=? AND generation=? AND (mode='revoke' OR flow_id=?)`,
-        i.install_id, i.generation, v.flow_id);
-      valid(!fenced, 'fenced');
-      const active = await this.first(`SELECT 1 FROM pull_flows WHERE install_id=? AND purpose=? AND state IN ('pending','verified','approved') AND expires_ms>?`,
+      const end = now + VERIFICATION_TTL;
+      const f = { ...v, install_id: i.install_id, expected_generation: i.generation, expected_owner_generation: i.owner_generation,
+        owner_hash: i.owner_hash, consent_version: i.consent_version, manifest_sequence: parent.manifest_sequence,
+        manifest_digest: parent.manifest_digest, created_ms: now, expires_ms: end };
+      valid(!await this.mail.fenced(f, 'stepup'), 'fenced');
+      const reentry = this.mail.reentryQuery(f);
+      valid(i.state !== 'disabled' || await this.first(reentry.sql, ...reentry.args), 'fenced');
+      const active = await this.first(`SELECT * FROM pull_flows WHERE install_id=? AND purpose=? AND state IN ('pending','verified','approved') AND expires_ms>?`,
         i.install_id, v.purpose, now);
-      valid(!active, 'operation_conflict');
+      const supersede = [];
+      if (active) {
+        // A pre-revoke flow cannot hold the unique open-purpose slot forever.
+        // Retire only that demonstrably fenced snapshot in this same batch.
+        valid(await this.mail.fenced(active, 'stepup'), 'operation_conflict');
+        const q = this.mail.fenceQuery(active, 'stepup');
+        supersede.push(this.flowGuard(active), r.guard(`EXISTS (${q.sql})`, ...q.args),
+          this.stmt(`UPDATE pull_flows SET state='cancelled' WHERE flow_id=?`, active.flow_id), r.changed());
+      }
       for (const [bucket, cap] of [[`pull:verify:install:${i.install_id}:${Math.floor(now / DAY)}`, 3],
         [`pull:verify:target:${i.owner_hash}:${Math.floor(now / DAY)}`, 3], [`pull:send:global:${Math.floor(now / DAY)}`, 1000]]) {
         const row = await this.first('SELECT count FROM pull_budgets WHERE bucket=?', bucket);
         valid(!row || row.count < cap, 'verification_limit');
       }
-      const end = now + VERIFICATION_TTL;
-      const f = { ...v, install_id: i.install_id, expected_generation: i.generation, expected_owner_generation: i.owner_generation,
-        owner_hash: i.owner_hash, consent_version: i.consent_version, manifest_sequence: parent.manifest_sequence,
-        manifest_digest: parent.manifest_digest, created_ms: now, expires_ms: end };
       const result = { flow_id: f.flow_id, state: 'pending', expires_ms: end, verification_state: 'queued' };
       const issued = await this.mail.issueStatements({ outbox_id: randomId(), template: 'stepup', to: i.owner_address, flow: f }, now);
       const statements = [...accounting, this.installGuard(i), this.fenceGuard(f),
-        r.guard(`EXISTS (SELECT 1 FROM pull_generations WHERE install_id=? AND generation=? AND state='current'
+        ...(i.state === 'disabled' ? [r.guard(`EXISTS (${reentry.sql})`, ...reentry.args)] : []),
+        r.guard(`EXISTS (SELECT 1 FROM pull_generations WHERE install_id=? AND generation=? AND state=?
           AND owner_generation=? AND owner_hash=? AND key_id=? AND public_key=? AND flow_id=?)`,
-        i.install_id, i.generation, i.owner_generation, i.owner_hash, i.key_id, i.public_key, parent.flow_id), this.flowGuard(parent),
+        i.install_id, i.generation, generationState, i.owner_generation, i.owner_hash, i.key_id, i.public_key, parent.flow_id), this.flowGuard(parent),
+        ...supersede,
         this.stmt(`UPDATE pull_flows SET state='expired' WHERE install_id=? AND purpose=?
           AND state IN ('pending','verified','approved') AND expires_ms<=?`, i.install_id, v.purpose, now),
         this.stmt(`INSERT INTO pull_flows(flow_id,install_id,purpose,expected_generation,expected_owner_generation,
@@ -242,8 +253,7 @@ export class OwnerManagementHTTP extends SignupHTTP {
   async status(auth, v) {
     valid(exact(v, ['flow_id', 'flow_secret']));
     const f = auth.flow; const now = this.now();
-    const fenced = Boolean(await this.first(`SELECT 1 FROM pull_fences WHERE install_id=? AND generation=? AND (mode='revoke' OR flow_id=?)`,
-      f.install_id, f.expected_generation, f.flow_id));
+    const fenced = await this.mail.fenced(f, 'stepup');
     const terminal = ['completed', 'cancelled', 'reverted'].includes(f.state);
     const state = terminal ? f.state : fenced ? 'cancelled' : f.expires_ms <= now ? 'expired' : f.state;
     valid(['pending', 'approved', 'completed', 'expired', 'cancelled', 'reverted'].includes(state), 'storage_unavailable');
@@ -259,9 +269,9 @@ export class OwnerManagementHTTP extends SignupHTTP {
       valid(f.expires_ms + 30 * DAY > now, 'flow_expired');
     }
     // No current-owner/key fields are read or exposed to a retired starting key.
+    const q = this.mail.fenceQuery(f, 'stepup');
     await this.db.batch([...await this.accounting(auth, now), this.flowGuard(f),
-      this.registry.guard(`EXISTS (SELECT 1 FROM pull_fences WHERE install_id=? AND generation=? AND (mode='revoke' OR flow_id=?))=?`,
-        f.install_id, f.expected_generation, f.flow_id, Number(fenced))]);
+      this.registry.guard(`EXISTS (${q.sql})=?`, ...q.args, Number(fenced))]);
     return { flow_id: f.flow_id, state, expires_ms: f.expires_ms, result };
   }
 
@@ -364,8 +374,7 @@ export class OwnerManagementHTTP extends SignupHTTP {
         AND install_id=? AND flow_id=? AND generation=? AND owner_generation=? AND owner_hash=?
         AND binding_digest=? AND expires_ms=? AND change_id IS NULL)`,
       s.token_hash, s.install_id, s.flow_id, s.generation, s.owner_generation, f.owner_hash, token.binding_digest, token.expires_ms)];
-    valid(!await this.first(`SELECT 1 FROM pull_fences WHERE install_id=? AND generation=? AND (mode='revoke' OR flow_id=?)`,
-      s.install_id, s.generation, s.flow_id), 'session_required');
+    valid(!await this.mail.fenced(f, 'stepup'), 'session_required');
     return { session: s, flow: f, install: i, statements };
   }
 

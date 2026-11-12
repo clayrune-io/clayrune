@@ -128,6 +128,43 @@ export class VerificationMail {
   }
   stmt(sql, ...args) { return this.registry.stmt(sql, ...args); }
 
+  // Denial-only fences never expire. Only a NEW resume/recovery step-up may
+  // cross a prior revoke at the disabled high-water generation. Equal-ms order
+  // is ambiguous and fails closed. Replaying the original fence receipt does
+  // not change its timestamp; a newly committed revoke cancels older flows.
+  // The lifecycle writer MUST also atomically invalidate existing flows/tokens/
+  // sessions (contract 8.1), even if its timestamp was sampled before a delayed
+  // commit. Timestamp comparison alone cannot serialize delayed writers.
+  reentryQuery(f) {
+    return { sql: `SELECT 1 FROM pull_installs i JOIN pull_generations g
+      ON g.install_id=i.install_id AND g.generation=i.generation
+      WHERE i.install_id=? AND i.generation=? AND i.owner_generation=? AND i.owner_hash=?
+      AND i.state='disabled' AND ? IN ('resume','key_recovery') AND g.state='fenced'
+      AND g.owner_generation=i.owner_generation AND g.owner_hash=i.owner_hash
+      AND g.key_id=i.key_id AND g.public_key=i.public_key
+      AND (?='key_recovery' OR (i.key_id=? AND i.public_key=?))
+      AND EXISTS (SELECT 1 FROM pull_fences z WHERE z.install_id=i.install_id
+        AND z.generation=i.generation AND z.mode='revoke' AND z.created_ms<?)`,
+    args: [f.install_id, f.expected_generation, f.expected_owner_generation, f.owner_hash,
+      f.purpose, f.purpose, f.candidate_key_id, f.candidate_public_key, f.created_ms] };
+  }
+
+  fenceQuery(f, purpose = '') {
+    const reentry = this.reentryQuery(f);
+    return { sql: `SELECT 1 FROM pull_fences WHERE install_id=? AND generation=?
+      AND (flow_id=? OR (mode='revoke' AND (?!='stepup' OR created_ms>=?
+        OR NOT EXISTS (${reentry.sql}))))`,
+    args: [f.install_id, f.expected_generation, f.flow_id, purpose, f.created_ms, ...reentry.args] };
+  }
+  async fenced(flow, purpose = '') {
+    const q = this.fenceQuery(flow, purpose);
+    return Boolean(await this.stmt(q.sql, ...q.args).first());
+  }
+  fenceGuard(flow, purpose = '') {
+    const q = this.fenceQuery(flow, purpose);
+    return this.registry.guard(`NOT EXISTS (${q.sql})`, ...q.args);
+  }
+
   async sealEnvelope(row, envelope) {
     const target = await ownerIdentity(envelope.to);
     valid(target.owner_address === envelope.to && target.owner_hash === row.target_hash
@@ -160,17 +197,18 @@ export class VerificationMail {
   scopeStatements(s, flow) {
     const r = this.registry;
     const newOwner = s.purpose === 'new_owner';
+    const reentry = this.reentryQuery(flow);
     return [r.guard(`EXISTS (SELECT 1 FROM pull_flows f JOIN pull_installs i ON i.install_id=f.install_id
       WHERE f.flow_id=? AND f.install_id=? AND f.purpose=? AND f.state=? AND f.owner_hash=?
       AND f.expected_generation=? AND f.expected_owner_generation=? AND f.candidate_key_id=?
-      AND f.candidate_public_key=? AND f.expires_ms=? AND i.generation=f.expected_generation
+      AND f.candidate_public_key=? AND f.expires_ms=? AND f.created_ms=? AND i.generation=f.expected_generation
       AND i.owner_generation=f.expected_owner_generation AND i.owner_hash=f.owner_hash
       AND i.state!='deleted' AND (?='stepup' OR i.state!='frozen')
       AND (?!='signup' OR i.state='pending')
-      AND NOT EXISTS (SELECT 1 FROM pull_fences z WHERE z.install_id=f.install_id
-        AND z.generation=f.expected_generation AND (z.mode='revoke' OR z.flow_id=f.flow_id)))`,
+      AND (?!='stepup' OR i.state!='disabled' OR EXISTS (${reentry.sql})))`,
     s.flow_id, s.install_id, flow.purpose, newOwner ? 'approved' : 'pending', flow.owner_hash,
-    s.generation, s.owner_generation, s.candidate_key_id, s.candidate_public_key, s.expires_ms, s.purpose, s.purpose),
+    s.generation, s.owner_generation, s.candidate_key_id, s.candidate_public_key, s.expires_ms, flow.created_ms,
+    s.purpose, s.purpose, s.purpose, ...reentry.args), this.fenceGuard(flow, s.purpose),
     ...(newOwner ? [r.guard(`EXISTS (SELECT 1 FROM pull_owner_changes WHERE change_id=? AND flow_id=?
       AND install_id=? AND state='pending' AND old_owner_hash=? AND new_owner_hash=?
       AND expected_generation=? AND expected_owner_generation=? AND expires_ms=?)`,

@@ -42,6 +42,17 @@ class D1 {
 const rows = (db, table) => db.sql.prepare(`SELECT * FROM ${table} ORDER BY 1`).all();
 const one = (db, table) => rows(db, table)[0];
 
+function fence(f, { flow = id(90), mode = 'revoke', at = NOW - 1, n = 90 } = {}) {
+  f.db.sql.prepare('INSERT INTO pull_fences VALUES(?,?,1,?,?,?,?,?,?)')
+    .run(id(1), flow, H, mode, id(n), id(n + 1), H, at);
+}
+function disabled(f) {
+  f.db.sql.exec("UPDATE pull_installs SET state='disabled'");
+  f.db.sql.prepare(`INSERT INTO pull_generations VALUES(?,1,1,?,'candidate',?,?,?,'fenced',?,?)`)
+    .run(id(1), f.flow.owner_hash, publicKey, H, id(90), NOW - 1000, NOW - 1);
+  fence(f);
+}
+
 async function fixture(t, template = 'signup', managementPurpose = 'owner_change') {
   const db = new D1(); t.after(() => db.sql.close());
   const mail = new VerificationMail({ db, serviceOrigin: ORIGIN, sealKeyId: 'test-key', sealKey });
@@ -249,6 +260,95 @@ test('cancellation fence invalidates a prepared confirmation and issuance batch'
   await assert.rejects(f.db.batch(prepared.statements), /CHECK/);
   await assert.rejects(f.db.batch(preparedIssue.statements), /CHECK/);
   assert.equal(one(f.db, 'pull_tokens').state, 'pending');
+});
+
+for (const purpose of ['resume', 'key_recovery']) {
+  test(`disabled high-water ${purpose}: exact step-up issues and consumes without restoring old authority`, async (t) => {
+    const f = await fixture(t, 'stepup', purpose); disabled(f);
+    const before = ['pull_installs', 'pull_generations', 'pull_fences'].map((table) => rows(f.db, table));
+    const { token } = await issue(f); await consume(f, await browser(f, token));
+    assert.equal(one(f.db, 'pull_tokens').state, 'consumed');
+    assert.deepEqual(['pull_installs', 'pull_generations', 'pull_fences'].map((table) => rows(f.db, table)), before);
+    assert.equal(f.db.sql.prepare("SELECT count(*) AS n FROM pull_generations WHERE state='current'").get().n, 0);
+  });
+}
+
+test('re-entry exception is opt-in for stepup only; send/socket/activation and default guards remain fenced', async (t) => {
+  const f = await fixture(t, 'stepup', 'key_recovery'); disabled(f);
+  for (const purpose of [undefined, 'signup', 'new_owner', 'send', 'socket', 'activation']) {
+    assert.equal(await f.mail.fenced(f.flow, purpose), true);
+    await assert.rejects(f.db.batch([f.mail.fenceGuard(f.flow, purpose)]), /CHECK/);
+  }
+  assert.equal(await f.mail.fenced(f.flow, 'stepup'), false);
+});
+
+for (const [template, purpose] of [['signup', 'signup'], ['new_owner', 'owner_change'],
+  ['stepup', 'owner_change'], ['stepup', 'rotate'], ['stepup', 'delete']]) {
+  test(`prior revoke never permits ${template}/${purpose} issuance`, async (t) => {
+    const f = await fixture(t, template, purpose); disabled(f);
+    const prepared = await f.mail.issueStatements(f.input, NOW);
+    await assert.rejects(f.db.batch(prepared.statements), /CHECK/);
+    for (const table of ['pull_tokens', 'pull_control_outbox', 'pull_budgets']) assert.equal(rows(f.db, table).length, 0);
+  });
+}
+
+for (const at of [NOW, NOW + 1]) {
+  test(`revoke at ${at - NOW}ms relative to flow cancels prepared issue and consume`, async (t) => {
+    const f = await fixture(t, 'stepup', 'key_recovery'); disabled(f);
+    const preparedIssue = await f.mail.issueStatements(f.input, NOW);
+    const { token } = await issue(f); const preparedConsume = await f.mail.consumeStatements(await browser(f, token), NOW);
+    fence(f, { flow: id(92), n: 92, at });
+    const before = ['pull_tokens', 'pull_budgets', 'pull_control_outbox'].map((table) => rows(f.db, table));
+    await assert.rejects(f.db.batch(preparedConsume.statements), /CHECK/);
+    await assert.rejects(f.db.batch(preparedIssue.statements), /CHECK/);
+    assert.deepEqual(['pull_tokens', 'pull_budgets', 'pull_control_outbox'].map((table) => rows(f.db, table)), before);
+  });
+}
+
+for (const mode of ['cancel', 'revoke']) {
+  test(`same-flow ${mode} always blocks step-up even when older than flow`, async (t) => {
+    const f = await fixture(t, 'stepup', 'resume'); disabled(f);
+    const { token } = await issue(f); const consumeRequest = await browser(f, token);
+    const prepared = await f.mail.consumeStatements(consumeRequest, NOW);
+    fence(f, { mode, flow: f.flow.flow_id, n: 92, at: NOW - 1 });
+    await assert.rejects(f.db.batch(prepared.statements), /CHECK/);
+    assert.equal(one(f.db, 'pull_tokens').state, 'pending');
+  });
+}
+
+test('idempotent original revoke receipt and unrelated cancellation do not cancel a fresh recovery', async (t) => {
+  const f = await fixture(t, 'stepup', 'key_recovery'); disabled(f);
+  const { token } = await issue(f);
+  f.db.sql.prepare('INSERT OR IGNORE INTO pull_fences VALUES(?,?,1,?,?,?,?,?,?)')
+    .run(id(1), id(90), H, 'revoke', id(90), id(91), H, NOW + 1);
+  assert.equal(one(f.db, 'pull_fences').created_ms, NOW - 1);
+  fence(f, { mode: 'cancel', flow: id(92), n: 92, at: NOW + 1 });
+  await consume(f, await browser(f, token));
+  await assert.rejects(consume(f, await browser(f, token, { session_hash: 'd'.repeat(64) })), /already_sent/);
+});
+
+for (const mutation of ["UPDATE pull_flows SET created_ms=created_ms+1",
+  "UPDATE pull_flows SET purpose='rotate'", "UPDATE pull_flows SET candidate_key_id='other'",
+  "UPDATE pull_flows SET state='cancelled'", "UPDATE pull_installs SET state='active'",
+  'UPDATE pull_installs SET generation=2', 'UPDATE pull_installs SET owner_generation=2',
+  "UPDATE pull_installs SET owner_hash='" + 'f'.repeat(64) + "'",
+  "UPDATE pull_generations SET state='current'", "UPDATE pull_generations SET key_id='other'",
+  'UPDATE pull_generations SET owner_generation=2']) {
+  test(`recovery scope race refuses changed durable binding: ${mutation}`, async (t) => {
+    const f = await fixture(t, 'stepup', 'key_recovery'); disabled(f);
+    const { token } = await issue(f); const prepared = await f.mail.consumeStatements(await browser(f, token), NOW);
+    f.db.sql.exec(mutation);
+    await assert.rejects(f.db.batch(prepared.statements), /CHECK/);
+    assert.equal(one(f.db, 'pull_tokens').state, 'pending');
+  });
+}
+
+test('revoked recovery token expires at original deadline and cannot revive the old generation', async (t) => {
+  const f = await fixture(t, 'stepup', 'key_recovery'); disabled(f);
+  const { token } = await issue(f); const request = await browser(f, token);
+  await assert.rejects(consume(f, request, NOW + VERIFICATION_TTL), /token_expired/);
+  assert.equal(one(f.db, 'pull_tokens').state, 'pending');
+  assert.equal(one(f.db, 'pull_installs').state, 'disabled');
 });
 
 for (const bucket of ['install', 'target', 'global']) {
