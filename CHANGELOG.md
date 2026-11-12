@@ -2,7 +2,7 @@
 
 ## [2026-11-11] - Isolate sandbox browser profiles and identify profile owners (MC-1172)
 
-- Browser profiles and downloads now use `<MC_DATA_DIR>/.clayrune` when an instance has a separate data root, reusing the existing home resolver. With no override, the existing `~/.clayrune` paths and saved sign-ins are unchanged.
+- Browser profiles and downloads use `<MC_DATA_DIR>/.clayrune` only for non-packaged sandbox instances with a separate data root. Packaged apps (which automatically set `MC_DATA_DIR`) and servers without an override keep the existing `~/.clayrune` paths and saved sign-ins.
 - Profile-in-use refusals identify the browser PID, parent PID and owning Clayrune server's listening port when accessible. Untracked holders are refused across pipe and legacy port transports; launch-time cleanup remains limited to this instance's own stale sessions.
 - Added isolated path, ownership and lookup-failure tests. No browser profile migration or live process changes.
 

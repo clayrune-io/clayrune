@@ -1622,10 +1622,12 @@ instance, then try again. Clayrune does not close an untracked browser just
 because it has remote debugging enabled. If process inspection is unavailable,
 the refusal keeps the browser PID and reports that its parent is unknown.
 
-An instance using `MC_DATA_DIR` stores browser profiles and downloads under
-`<MC_DATA_DIR>/.clayrune`, separate from the default `~/.clayrune` location.
-An instance without that override keeps its existing saved sign-ins. No
-profiles are copied or moved between instances.
+Only a non-packaged sandbox instance using `MC_DATA_DIR` stores browser profiles
+and downloads under `<MC_DATA_DIR>/.clayrune`, separate from the default
+`~/.clayrune` location. Packaged apps keep their existing saved sign-ins at
+`~/.clayrune` even though they automatically set `MC_DATA_DIR`. Servers without
+that override also keep the legacy location. No profiles are copied or moved
+between instances.
 
 ### Browser doesn't open after install
 Some Linux installs lack `xdg-open` and WSL doesn't always have a

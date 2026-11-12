@@ -1,4 +1,4 @@
-"""Instance storage and read-only profile-owner refusal regressions (MC-1172)."""
+"""Sandbox-only storage and read-only profile-owner refusal regressions (MC-1172)."""
 import os
 import sys
 from pathlib import Path
@@ -14,6 +14,7 @@ from mc.blueprints import browser_routes as br
 def test_browser_storage_uses_instance_home(root, tmp_path, monkeypatch):
     sandbox = tmp_path / 'sandbox with spaces'
     monkeypatch.setenv('MC_DATA_DIR', str(sandbox))
+    monkeypatch.setattr(sys, 'frozen', False, raising=False)
     resolver = {'browser_profiles': br._profiles_root,
                 'browser_profiles_named': br._named_profiles_root,
                 'browser_downloads': br._downloads_root}[root]
@@ -22,7 +23,9 @@ def test_browser_storage_uses_instance_home(root, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('override', [None, ''])
-def test_default_browser_storage_paths_are_unchanged(override, monkeypatch):
+@pytest.mark.parametrize('frozen', [False, True])
+def test_default_browser_storage_paths_are_unchanged(override, frozen, monkeypatch):
+    monkeypatch.setattr(sys, 'frozen', frozen, raising=False)
     if override is None:
         monkeypatch.delenv('MC_DATA_DIR', raising=False)
     else:
@@ -31,6 +34,17 @@ def test_default_browser_storage_paths_are_unchanged(override, monkeypatch):
     assert br._profiles_root() == os.path.join(home, '.clayrune', 'browser_profiles')
     assert br._named_profiles_root() == os.path.join(home, '.clayrune', 'browser_profiles_named')
     assert br._downloads_root() == os.path.join(home, '.clayrune', 'browser_downloads')
+
+
+def test_packaged_browser_storage_ignores_instance_data_root(tmp_path, monkeypatch):
+    data_root = tmp_path / 'packaged app data'
+    monkeypatch.setenv('MC_DATA_DIR', str(data_root))
+    monkeypatch.setattr(sys, 'frozen', True, raising=False)
+    home = os.path.expanduser('~')
+    assert br._profiles_root() == os.path.join(home, '.clayrune', 'browser_profiles')
+    assert br._named_profiles_root() == os.path.join(home, '.clayrune', 'browser_profiles_named')
+    assert br._downloads_root() == os.path.join(home, '.clayrune', 'browser_downloads')
+    assert not data_root.exists(), 'resolving paths must not create or migrate anything'
 
 
 def test_import_keeps_sweep_disabled():

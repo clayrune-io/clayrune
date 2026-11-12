@@ -35,8 +35,10 @@ prompt, and an anti-bot challenge) on every single run.
 
 So a launch may name a profile: `{"profile": "reddit"}` reuses
 `~/.clayrune/browser_profiles_named/reddit`, which survives teardown and keeps
-its cookies. With MC_DATA_DIR set, browser profiles and downloads instead
-live under `<MC_DATA_DIR>/.clayrune`. Unnamed launches behave as before.
+its cookies. Only non-packaged sandbox instances with MC_DATA_DIR set store
+browser profiles and downloads under `<MC_DATA_DIR>/.clayrune`. Packaged apps
+keep the legacy `~/.clayrune` roots even with MC_DATA_DIR set. Unnamed launches
+behave as before.
 
 Set `browser_default_profile` in config.json to make UNNAMED launches use a
 named profile too, so the plain 🌐 Browser button keeps logins instead of
@@ -91,7 +93,7 @@ from mc.state import browser_sessions, browser_lock
 from mc import browser_auth_diagnostics as _auth_diagnostics
 from mc import browser_frame_guard as _frame_guard
 from mc.browser_profile_owner import profile_owner as _profile_owner
-from mc.guardrail_hooks import clayrune_home
+from mc.browser_paths import browser_home
 
 bp = Blueprint('browser_routes', __name__)
 _auth_diagnostics.register_routes(bp)
@@ -308,14 +310,14 @@ def _is_clayrune_own_origin(url: str) -> bool:
 
 def _profiles_root():
     """Throwaway per-session profiles. Everything here is deletable."""
-    return os.path.join(clayrune_home(), 'browser_profiles')
+    return os.path.join(browser_home(), 'browser_profiles')
 
 
 def _named_profiles_root():
     """Saved, signed-in profiles. A SIBLING of the throwaway root by design —
     see the module docstring: the orphan sweep walks the throwaway root, and
     nothing that walk can reach may hold a login."""
-    return os.path.join(clayrune_home(), 'browser_profiles_named')
+    return os.path.join(browser_home(), 'browser_profiles_named')
 
 
 def _downloads_root():
@@ -324,7 +326,7 @@ def _downloads_root():
     Outside the project-record DATA_DIR even when MC_DATA_DIR is set, so
     load_projects() can never mistake a downloaded file for a project.
     """
-    return os.path.join(clayrune_home(), 'browser_downloads')
+    return os.path.join(browser_home(), 'browser_downloads')
 
 
 # A page a pane visits has no other say in how much disk a download burns —
