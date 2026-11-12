@@ -38,6 +38,9 @@ const intentSQL = `SELECT *,input_digest AS digest,(SELECT token_hash FROM pull_
  * uncertain, never failed; failed asserts the provider positively did not accept.
  * Owner/generation changes refuse all old-scope transitions, even after revert;
  * owner-change retirement already turns in-flight sending into uncertain.
+ * recordSendAcceptance(authorization,provider_id,now) retains late positive
+ * evidence on an exact retired, already-authorized intent. It changes ONLY
+ * provider_id/finished_ms (acceptance observation time), never state/authority.
  * Queue operations delegate directly to unit07, with its scope/epoch/input API.
  * queue exposes that PullLedger for page/offer/ack/hold and sweep methods.
  * Queue admission includes atomic ingress budgets: do not separately reserveIngress.
@@ -49,6 +52,9 @@ const intentSQL = `SELECT *,input_digest AS digest,(SELECT token_hash FROM pull_
  * No due/claim/settle/reconcile legacy-push methods are exposed here.
  */
 export class PullTransportLedger {
+  // Only the actual successful CAS return may supply in-flight provider proof;
+  // a copied/HTTP-supplied scope cannot manufacture an authorization receipt.
+  #sendAuthorizations = new WeakSet();
   constructor({ ledger, clock = Date.now }) {
     valid(ledger?.db && typeof clock === 'function');
     this.db = ledger.db; this.policy = ledger.policy; this.clock = clock; this.shared = ledger;
@@ -204,7 +210,39 @@ export class PullTransportLedger {
       }
       throw error;
     }
-    return { ...reg, ...result.at(-2).results[0], authorized: true };
+    const authorized = Object.freeze({ ...reg, ...result.at(-2).results[0], authorized: true, authorized_ms: now });
+    this.#sendAuthorizations.add(authorized);
+    return authorized;
+  }
+  async recordSendAcceptance(authorization, providerId, now) {
+    const a = { ...authorization };
+    this.scope(a); this.time(now);
+    valid(this.#sendAuthorizations.has(authorization) && a.authorized === true
+      && integer(a.authorized_ms) && a.authorized_ms <= now
+      && match(ID, a.intent_id) && match(ID, a.thread_id) && match(H, a.input_digest)
+      && strictMsgId(a.message_id) === a.message_id
+      && typeof providerId === 'string' && /^[\x20-\x7e]{1,256}$/.test(providerId) && providerId.trim());
+    // No current-owner predicate: this is inert evidence for a fenced scope.
+    // Every immutable intent/generation binding still participates in the CAS.
+    const where = `install_id=? AND generation=? AND owner_generation=? AND owner_hash=? AND intent_id=?
+      AND input_digest=? AND thread_id=? AND message_id=? AND state='uncertain' AND created_ms<=?
+      AND (provider_id='' OR provider_id=?) AND EXISTS(SELECT 1 FROM pull_generations g
+        WHERE g.install_id=pull_intents.install_id AND g.generation=pull_intents.generation
+        AND g.owner_generation=pull_intents.owner_generation AND g.owner_hash=pull_intents.owner_hash
+        AND g.key_id=? AND g.public_key=? AND g.flow_id=? AND g.state='fenced')`;
+    const args = [a.install_id, a.generation, a.owner_generation, a.owner_hash, a.intent_id,
+      a.input_digest, a.thread_id, a.message_id, a.authorized_ms, providerId, a.key_id, a.public_key, a.flow_id];
+    try {
+      const result = await this.db.batch([this.timeGuard(now),
+        this.stmt(`UPDATE pull_intents SET finished_ms=CASE WHEN provider_id='' THEN ? ELSE finished_ms END,
+          provider_id=? WHERE ${where}`, now, providerId, ...args), this.registry.changed(),
+        this.timeGuard(now), this.stmt(`SELECT * FROM pull_intents WHERE ${where}`, ...args),
+      ]);
+      return result.at(-1).results[0];
+    } catch {
+      console.error('[agent-mail] pull_send_evidence_refused');
+      throw new Error('storage_unavailable');
+    }
   }
   async finishSend(reg, id, state, now, providerId = '') {
     reg = { ...reg };

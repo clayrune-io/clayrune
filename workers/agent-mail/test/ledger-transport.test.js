@@ -4,6 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { Ledger, DAY } from '../ledger.js';
 import { PullLedger } from '../pull-ledger.js';
+import { OwnerChangeHTTP } from '../owner-change.js';
 
 const NOW = 1_794_249_600_000;
 const id = (n) => n.toString(16).padStart(32,'0');
@@ -39,6 +40,97 @@ class D1 {
     } catch(e) { this.sql.exec('ROLLBACK');throw e; }
   }
 }
+
+for (const revert of [false, true]) {
+  test(`late acceptance evidence preserves retired intent/state after ${revert ? 'revert' : 'switch'}`, async (t) => {
+    const f = await fixture(t); await reserve(f); const a = await authorize(f);
+    await retireOwner(f); if (revert) await retireOwner(f, true);
+    const before = snapshot(f), old = one(f, 'pull_intents'); f.time += 20;
+    const r = await f.pull.recordSendAcceptance(a, 'opaque-provider-id', f.time);
+    assert.equal(r.state, 'uncertain'); assert.equal(r.provider_id, 'opaque-provider-id');
+    assert.equal(r.finished_ms, f.time);
+    assert.deepEqual({ ...r }, { ...old, provider_id: 'opaque-provider-id', finished_ms: f.time });
+    // No table except the exact intent row changes; current owner remains inert.
+    const expected = before.map(([name, data]) => [name, name === 'pull_intents' ? [{ ...r }] : data]);
+    assert.deepEqual(snapshot(f), expected);
+    assert.equal(await f.pull.thread(value().token_hash), null);
+    await assert.rejects(finish(f, 'accepted', 'opaque-provider-id'), { message: 'stale_generation' });
+    const recorded = snapshot(f); f.time += 50;
+    assert.deepEqual(await f.pull.recordSendAcceptance(a, 'opaque-provider-id', f.time), r);
+    assert.deepEqual(snapshot(f), recorded); // Duplicate proof keeps its original time.
+    await assert.rejects(f.pull.recordSendAcceptance(a, 'another-provider', f.time), { message: 'storage_unavailable' });
+    assert.deepEqual(snapshot(f), recorded);
+  });
+}
+
+for (const [field, replacement] of [['install_id', id(9)], ['generation', 8], ['owner_generation', 4],
+  ['owner_hash', hex(9)], ['intent_id', 'other'], ['input_digest', hex(9)], ['thread_id', 'other'],
+  ['message_id', 'other@example.com']]) {
+  test(`late acceptance refuses changed durable intent binding ${field}`, async (t) => {
+    const f = await fixture(t); await reserve(f); const a = await authorize(f); await retireOwner(f);
+    // A still-valid process-local handoff cannot write through changed storage.
+    // Disable FKs only for impossible-corruption probes, never production code.
+    f.db.sql.exec('PRAGMA foreign_keys=OFF');
+    f.db.sql.prepare(`UPDATE pull_intents SET ${field}=?`).run(replacement);
+    const before = snapshot(f);
+    await assert.rejects(f.pull.recordSendAcceptance(a, 'receipt', f.time), { message: 'storage_unavailable' });
+    assert.deepEqual(snapshot(f), before);
+  });
+}
+
+for (const field of ['owner_hash', 'owner_generation', 'key_id', 'public_key', 'flow_id']) {
+  test(`late acceptance refuses changed immutable generation binding ${field}`, async (t) => {
+    const f = await fixture(t); await reserve(f); const a = await authorize(f); await retireOwner(f);
+    const v = field === 'owner_generation' ? 99 : field === 'owner_hash' ? hex(9)
+      : field === 'public_key' ? 'j'.repeat(43) : id(99);
+    f.db.sql.prepare(`UPDATE pull_generations SET ${field}=? WHERE generation=7`).run(v);
+    const before = snapshot(f);
+    await assert.rejects(f.pull.recordSendAcceptance(a, 'receipt', f.time), { message: 'storage_unavailable' });
+    assert.deepEqual(snapshot(f), before);
+  });
+}
+
+test('acceptance evidence requires an original authorized handoff, retired uncertain state and valid provider id', async (t) => {
+  const f = await fixture(t); const reserved = await reserve(f);
+  await assert.rejects(f.pull.recordSendAcceptance({ ...f.reg, ...reserved, authorized: true, authorized_ms: f.time }, 'id', f.time),
+    { message: 'invalid_request' });
+  const a = await authorize(f);
+  await assert.rejects(f.pull.recordSendAcceptance(a, 'id', f.time), { message: 'storage_unavailable' });
+  await retireOwner(f);
+  for (const fake of [{ ...a }, { ...a, owner_generation: 99 }]) {
+    await assert.rejects(f.pull.recordSendAcceptance(fake, 'id', f.time), { message: 'invalid_request' });
+  }
+  for (const p of ['', ' ', 'x'.repeat(257), 'id\n', 'é', null]) {
+    await assert.rejects(f.pull.recordSendAcceptance(a, p, f.time), { message: 'invalid_request' });
+  }
+  await assert.rejects(f.pull.recordSendAcceptance(a, 'id', f.time - 1), { message: 'invalid_request' });
+  f.db.sql.prepare("UPDATE pull_intents SET state='revoked'").run();
+  const before = snapshot(f);
+  await assert.rejects(f.pull.recordSendAcceptance(a, 'id', f.time), { message: 'storage_unavailable' });
+  assert.deepEqual(snapshot(f), before);
+});
+
+for (const revert of [false, true]) {
+  test(`receipt evidence faults at every batch statement roll back after ${revert ? 'revert' : 'switch'}`, async (t) => {
+    for (let n = 0; n < 5; n++) await t.test(`statement ${n + 1}/5`, async (st) => {
+      const f = await fixture(st); await reserve(f); const a = await authorize(f);
+      await retireOwner(f); if (revert) await retireOwner(f, true);
+      const before = snapshot(f);
+      f.db.inBatch = (_s, index) => { if (index === n) throw new Error('private synthetic storage failure'); };
+      await assert.rejects(f.pull.recordSendAcceptance(a, 'receipt', f.time), { message: 'storage_unavailable' });
+      assert.deepEqual(snapshot(f), before); f.db.inBatch = null;
+      assert.equal((await f.pull.recordSendAcceptance(a, 'receipt', f.time)).state, 'uncertain');
+    });
+  });
+}
+
+test('receipt queued across another owner change stays on the originally authorized intent', async (t) => {
+  const f = await fixture(t); await reserve(f); const a = await authorize(f); await retireOwner(f);
+  f.db.beforeBatch = async () => { f.db.beforeBatch = null; await retireOwner(f, true); };
+  const r = await f.pull.recordSendAcceptance(a, 'receipt', f.time);
+  assert.equal(r.generation, 7); assert.equal(r.owner_generation, 3); assert.equal(r.state, 'uncertain');
+  assert.equal(one(f, 'pull_installs').generation, 9);
+});
 const rows = (f,t) => f.db.sql.prepare(`SELECT * FROM ${t} ORDER BY 1,2`).all().map((r)=>({...r}));
 const one = (f,t) => rows(f,t)[0];
 const snapshot = (f) => f.db.sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -66,6 +158,18 @@ const value = (n=1,extra={}) => ({intent_id:`intent-${n}`,thread_id:`thread-${n}
 const reserve = (f,n=1,extra={}) => f.pull.reserveSend(f.reg,value(n,extra),f.time);
 const authorize = (f,n=1) => f.pull.authorizeSend(f.reg,`intent-${n}`,f.time);
 const finish = (f,state='uncertain',provider='',n=1) => f.pull.finishSend(f.reg,`intent-${n}`,state,f.time,provider);
+
+// Execute the production unit05 retirement/next-generation statements. The
+// hosted browser proof is covered by owner-change.test.js; these are SQL races.
+async function retireOwner(f, restore = false) {
+  const i = one(f, 'pull_installs'), http = {
+    stmt: f.pull.stmt.bind(f.pull), registry: f.pull.registry,
+  };
+  await f.db.batch([...OwnerChangeHTTP.prototype.retire.call(http, i, f.time),
+    ...OwnerChangeHTTP.prototype.nextGeneration.call(http, i, { fence_hash: hex(2), flow_id: id(i.generation + 1) },
+      { owner_hash: restore ? hex(1) : hex(9), owner_address: restore ? 'owner@example.com' : 'next@example.com' },
+      restore ? 'frozen' : 'verified', f.time, true)]);
+}
 function fence(f,flow=id(2),mode='revoke') {
   f.db.sql.prepare('INSERT INTO pull_fences VALUES(?,?,7,?,?,?,?,?,?)').run(id(1),flow,hex(2),mode,id(3),id(4),hex(3),f.time);
 }
