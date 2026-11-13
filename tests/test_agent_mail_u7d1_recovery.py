@@ -64,103 +64,63 @@ def test_held_store_is_reported_not_repaired_and_later_steps_are_skipped(tmp_pat
     by = steps(report)
     assert by['store']['state'] == 'held' and by['store']['reason'] == 'store_missing'
     assert all(by[n]['state'] == 'skipped' and by[n]['reason'] == 'store_held'
-               for n in ('revocations', 'flows', 'replay', 'inbound', 'cleanup'))
+               for n in ('revocations', 'flows', 'pull', 'acks', 'inbound', 'cleanup'))
     assert by['retention']['state'] == 'ok', 'cache retirement is independent of the store'
     assert report['ok'] is False and not f.paths.store.exists()
 
 
-def test_unresolved_cancellations_are_retained_with_no_fake_ack(tmp_path):
+def test_legacy_cancellations_are_retained_while_pull_store_is_held(tmp_path):
+    # Retired v1 cancellation retry: recovery must not adopt a legacy store.
     f = factory(tmp_path)
-    core = enroll(f)
-    queue_revocation(core)
-    for _ in range(3):
-        report = run(f)
-    revocations = steps(report)['revocations']
-    assert (revocations['state'], revocations['reason'], revocations['count']) == (
-        'pending', 'remote_adapter_unavailable', 1)
-    assert revocation_done(core) == [('flow-lost', 0, 0)], 'no acknowledgment may be recorded'
-    assert report['ok'] is False
-
-
-def test_a_real_remote_that_acknowledges_clears_the_queue(tmp_path):
-    class Remote:
-        calls = []
-
-        def cancel_flow(self, flow):
-            self.calls.append(flow)
-            return None
-
-        def revoke(self, install, generation):
-            raise AssertionError('an unassigned flow has no remote identity to revoke')
-    f = factory(tmp_path)
-    f.remote = Remote()
     core = enroll(f)
     queue_revocation(core)
     report = run(f)
-    assert steps(report)['revocations']['state'] == 'ok' and Remote.calls == ['flow-lost']
-    assert revocation_done(core) == [('flow-lost', 1, 1)]
+    assert steps(report)['store']['reason'] == 'schema_corrupt'
+    assert revocation_done(core) == [('flow-lost', 0, 0)]
+    assert not report['ok']
 
 
-def test_a_remote_that_fails_keeps_the_work_with_a_closed_code(tmp_path):
-    class Remote:
-        def cancel_flow(self, flow):
-            raise OSError('SECRET-remote-text token=abc')
-
-        def revoke(self, *args):
-            raise AssertionError
-
+def test_legacy_remote_ack_cannot_clear_pull_recovery_work(tmp_path):
     f = factory(tmp_path)
-    f.remote = Remote()
+    calls = []
+    f.remote = type('Remote', (), {'cancel_flow': lambda self, flow: calls.append(flow)})()
+    core = enroll(f)
+    queue_revocation(core)
+    assert steps(run(f))['store']['reason'] == 'schema_corrupt'
+    assert calls == [] and revocation_done(core) == [('flow-lost', 0, 0)]
+
+
+def test_legacy_remote_is_never_called_by_pull_recovery(tmp_path):
+    f = factory(tmp_path)
+    def forbidden(*args):
+        pytest.fail('retired v1 remote must not be called')
+    f.remote = type('Remote', (), {'cancel_flow': forbidden, 'revoke': forbidden})()
     core = enroll(f)
     queue_revocation(core)
     report = run(f)
-    assert steps(report)['revocations']['reason'] == 'remote_cancel_retryable'
-    assert 'SECRET' not in repr(report) and revocation_done(core) == [('flow-lost', 0, 0)]
+    assert steps(report)['store']['reason'] == 'schema_corrupt'
+    assert revocation_done(core) == [('flow-lost', 0, 0)]
 
 
-def test_flow_stages_are_reported_never_advanced(tmp_path):
+def test_legacy_flow_is_held_and_never_advanced_or_renewed(tmp_path):
     f = factory(tmp_path)
     core = enroll(f)
-    clock = Clock()
     before = core.status()
-    assert steps(run(f, clock=clock))['flows']['state'] == 'ok'
-    assert steps(run(f, clock=clock))['flows']['state'] == 'ok'
-    with core.store._tx() as db:
-        db.execute("UPDATE mail_enrollment_flow SET stage='delivery_pending'")
-    assert steps(run(f, clock=clock))['flows'] == dict(
-        name='flows', state='pending', reason='delivery_pending', count=0)
-    with core.store._tx() as db:
-        db.execute("UPDATE mail_enrollment_flow SET stage='active',ownership_expires_ms=?", (NOW - 1,))
-    assert steps(run(f, clock=clock))['flows']['reason'] == 'ownership_expired'
-    with core.store._tx() as db:
-        db.execute("UPDATE mail_enrollment_flow SET ownership_expires_ms=?", (NOW + 10_000,))
-    assert steps(run(f, clock=clock))['flows']['state'] == 'ok'
-    after = core.status()
-    assert (after['stage'], after['enabled']) == ('active', before['enabled']) and not after['enabled']
+    report = run(f)
+    assert steps(report)['store']['reason'] == 'schema_corrupt'
+    assert steps(report)['flows']['reason'] == 'store_held'
+    assert core.status() == before
 
 
-def test_replay_is_rate_limited_and_failures_carry_only_a_closed_code(tmp_path):
-    f = factory(tmp_path)
-    enroll(f)
-    clock, calls = Clock(), []
-    rec = Recovery(f, clock=clock, retire=lambda: {}, replay=lambda: calls.append(clock()))
-    assert steps(rec.run())['replay']['state'] == 'ok'
-    assert steps(rec.run())['replay'] == dict(name='replay', state='skipped', reason='backoff', count=0)
-    clock.value += rec.replay_interval_s
-    assert steps(rec.run())['replay']['state'] == 'ok' and len(calls) == 2
-
-    def boom():
-        raise OSError('SECRET worker error body')
-    clock.value += rec.replay_interval_s
-    failing = Recovery(f, clock=clock, retire=lambda: {}, replay=boom)
-    result = steps(failing.run())['replay']
-    assert result['state'] == 'failed' and result['reason'] == 'worker_reconcile_failed'
-    assert steps(run(f))['replay']['reason'] == 'remote_adapter_unavailable', 'no replay hook means no call'
+def test_retired_push_replay_hook_is_rejected(tmp_path):
+    with pytest.raises(TypeError):
+        Recovery(factory(tmp_path), replay=lambda: pytest.fail('retired push path'))
 
 
 def test_a_failing_step_never_stops_the_next_and_reports_only_a_closed_code(tmp_path, capsys):
     f = factory(tmp_path)
     enroll(f)
+    f.bootstrap(authorize=lambda: True)
 
     def explode(*args):
         raise RuntimeError('SECRET body text and a mailbox code 123-456')
@@ -201,6 +161,7 @@ def test_deletion_intents_stay_pending_while_the_store_is_held(tmp_path):
 def test_inbound_calls_are_bounded_and_idle_ends_them(tmp_path):
     f = factory(tmp_path)
     enroll(f)
+    f.bootstrap(authorize=lambda: True)
     launder, wake = [], []
 
     def busy(log):
@@ -220,6 +181,7 @@ def test_cleanup_purges_expired_work_but_keeps_ownership_tombstones(tmp_path):
     from mc.agent_mail_outbound_state import initialize
     f = factory(tmp_path)
     core = enroll(f)
+    f.bootstrap(authorize=lambda: True)
     initialize(core.store)
     with core.store._tx() as db:
         db.execute("INSERT INTO mail_outbound_question_channels VALUES('p','s','old','agent_mail',1)")
@@ -386,7 +348,7 @@ def test_status_is_bounded_metadata_with_store_and_ownership_counts(tmp_path):
     assert status['store'] == {'state': 'ok', 'reason': ''}
     assert status['ownership'] == {'rows': 0, 'capacity': ownership.DEFAULT_CAPACITY} \
         or status['ownership'] == {'rows': 0}
-    assert 'steps' in status and all(set(x) == {'name', 'state', 'reason', 'count'} for x in status['steps'])
+    assert 'steps' in status and all({'name', 'state', 'reason', 'count'} <= set(x) <= {'name', 'state', 'reason', 'count', 'details'} for x in status['steps'])
 
 
 def test_boot_hook_installs_the_reader_with_the_flag_off_and_starts_no_thread(monkeypatch, tmp_path):
