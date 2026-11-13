@@ -32,6 +32,8 @@ def create_blueprint(data_dir: Path, *, store_factory: Callable[[], MailStore] |
     bp.register_blueprint(manifest_blueprint())  # 7e-2m: read-only verified-manifest GET
     from mc.blueprints.agent_mail_deployment_routes import create_blueprint as deployment_blueprint
     bp.register_blueprint(deployment_blueprint())
+    from mc.blueprints.agent_mail_note_routes import create_blueprint as note_blueprint
+    bp.register_blueprint(note_blueprint())  # W3: outbound note POST (U3), 404 unless outbound enabled
 
     def enrolled_store() -> MailStore:
         # The one shared, outside-repo store (7b location, external marker). It is
