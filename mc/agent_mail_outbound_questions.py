@@ -9,8 +9,15 @@ from mc.agent_mail_ownership import OwnershipHeld
 from mc.agent_mail_questions import revision
 from mc.core import _log
 
-# Unit 7d owns a reviewed operational factory. No HTTP/config object can supply it.
-factory: Callable[[], Outbound] | None = None
+def _default_factory() -> Outbound:
+    from mc import agent_mail_factory  # lazy: importing this module touches nothing
+    return agent_mail_factory.get().outbound()
+
+
+# Python-only seam: no HTTP/config object can supply it. The default is the
+# process MailFactory's outbound(); every send is still gated by
+# agent_mail_outbound_enabled below and in question_channel._notify.
+factory: Callable[[], Outbound] | None = _default_factory
 
 
 def selected(session: dict, question: dict) -> bool:
