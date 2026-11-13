@@ -437,18 +437,50 @@ class PullClient:
               and p['request_id'] == p['local_receipt_id'] and _integer(p['committed_ms'])
               and p['committed_ms'] <= self._now() + SKEW_MS, 'protocol_failure')
         with self.store._tx() as db:
-            self._current(db)
+            self._settlement_scope(db)
             r = db.execute('SELECT * FROM mail_pull_receipts WHERE event_id=?', (p['event_id'],)).fetchone()
             _need(r is not None and (r['install_id'], r['generation'], r['owner_generation']) ==
                   (self.install_id, self._row['generation'], self._row['owner_generation']) and
                   all(r[k] == p[k] for k in ('event_digest', 'body_digest', 'local_receipt_id'))
                   and r['committed_ms'] <= p['committed_ms'] + SKEW_MS
-                  and (r['cloud_receipt_id'] is None or (r['cloud_receipt_id'], r['cloud_committed_ms']) ==
+                  and ((r['cloud_receipt_id'] is None and r['cloud_committed_ms'] is None)
+                       or (r['cloud_receipt_id'], r['cloud_committed_ms']) ==
                        (p['receipt_id'], p['committed_ms'])), 'ack_conflict')
+            assert r is not None
+            o = db.execute('SELECT * FROM mail_pull_ack_outbox WHERE event_id=?', (p['event_id'],)).fetchone()
+            # A first proof needs durable ack intent. Exact settled duplicates
+            # remain idempotent after that intent has been retired.
+            _need((o is not None and all(o[k] == p[k] for k in
+                  ('event_digest', 'body_digest', 'local_receipt_id')))
+                  or (o is None and r['cloud_receipt_id'] == p['receipt_id']
+                      and r['cloud_committed_ms'] == p['committed_ms']), 'ack_conflict')
             db.execute('UPDATE mail_pull_receipts SET cloud_receipt_id=?,cloud_committed_ms=? WHERE event_id=?',
                        (p['receipt_id'], p['committed_ms'], p['event_id']))
             db.execute('DELETE FROM mail_pull_ack_outbox WHERE event_id=?', (p['event_id'],))
         self._sent_acks.discard(p['event_id'])
+
+    def _settlement_scope(self, db: Any) -> None:
+        """Bind positive evidence to the original scope, never grant authority.
+
+        Only _committed uses this gate, after _verified authenticates the frame.
+        Local denial, a changed consent epoch or a fence cannot erase positive
+        in-flight evidence. All new custody and sends still require _current.
+        """
+        _base(db)
+        _validate(db)
+        a = db.execute('''SELECT a.generation,a.owner_generation,a.key_id,a.seal_flow_id,
+            a.service_origin,g.manifest_sequence,g.manifest_digest,g.service_key_id,g.service_public_key
+            FROM mail_pull_accounts a JOIN mail_pull_generations g
+            ON g.install_id=a.install_id AND g.generation=a.generation
+            AND g.owner_generation=a.owner_generation AND g.key_id=a.key_id AND g.seal_flow_id=a.seal_flow_id
+            WHERE a.install_id=?''', (self.install_id,)).fetchone()
+        _need(a is not None and all(a[k] == self._row[k] for k in
+              ('generation', 'owner_generation', 'key_id', 'seal_flow_id', 'service_origin',
+               'manifest_sequence', 'manifest_digest', 'service_key_id', 'service_public_key')), 'stale_generation')
+        c = db.execute('SELECT * FROM mail_pull_connections WHERE install_id=?', (self.install_id,)).fetchone()
+        _need(c is not None and c['epoch'] == self._epoch and c['connection_id'] == self._connection
+              and c['generation'] == self._row['generation'] and c['owner_generation'] == self._row['owner_generation']
+              and self._now() < c['reauth_ms'], 'stale_generation')
 
     def _handle(self, raw: bytes, pin: ServiceKeyCandidate) -> None:
         f, p = self._verified(raw, pin)
