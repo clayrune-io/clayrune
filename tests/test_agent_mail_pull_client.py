@@ -694,8 +694,14 @@ def test_client_ping_and_missing_pong_deadline(w):
 def test_hello_timeout_sends_no_resume(w):
     ticks = [0.0]
     with running(w, monotonic=lambda: ticks[0]) as (client, peer):
-        ticks[0] = 11
-        eventually(lambda: client.reason == 'hello_timeout')
+        # The client computes hello_deadline only after ws.connect returns,
+        # which can be after peer.connections == 1. A single jump to 11 could
+        # land before that, leaving the deadline at 21 on a frozen clock.
+        # Advance on every poll so the deadline is crossed whenever it was set.
+        def timed_out():
+            ticks[0] += 11
+            return client.reason == 'hello_timeout'
+        eventually(timed_out)
         assert peer.incoming.empty()
 
 
