@@ -1486,3 +1486,603 @@ back to legacy CP/tunnel delivery or recreate state. Reverting this document
 commit changes no running system. Later migrations must be additive and reviewed;
 dropping tables, clearing queues or reassigning addresses requires explicit
 authorization independent of deploying code.
+
+## 13. W04 residual addendum (2026-11-13; normative, not shipped behavior)
+
+This addendum freezes Dave's **Q1-A, Q3-A and Q4-A** decisions recorded in the
+main MC-1166 journal at 00:10 PST. Q2-A remains an operational evidence gate:
+paid structured sending to a previously provider-unverified owner must be proved
+in a separately authorized owner-only pilot; no verified-destination fallback.
+**P1-P7 and R1 in sections 1 and 6.3 are unchanged.** Sections 13.1-13.5 refine
+the residual local interfaces, persistence and ownership of sections 3.2, 9-11;
+they do not change the service wire version, mailbox authority or human gates.
+
+Source baseline: **6a7f6949**, not deployed-state evidence. An **EXISTING** name
+below was found in that source. **NEW** means required future implementation,
+even when an earlier section already specifies its desired behavior. In
+particular, the original section 1.1's "no current handler" inventory is a
+historical Unit 00 snapshot, not today's inventory: section 13.5 identifies
+implemented hosted handlers and the two still missing. None of this document
+authorizes a flag flip, credential creation, deploy, real email or data deletion.
+
+### 13.1 Q1-A: durable service review, separate from account consent
+
+EXISTING `mc/agent_mail_manifest_fetch.py:fetch_verified_manifest` returns
+`{manifest,signature,sequence,expires_at_ms}` after advisory verification;
+EXISTING `mc/blueprints/agent_mail_manifest_routes.py:_production_floor` reads
+EXISTING `mc/agent_mail_enrollment_state.py:ManifestCAS`. GET neither accepts a
+pin nor creates a store. Its present fetcher's floor-read exception fallback
+must not be used as authority: an unreadable existing floor is a refusal in
+the production review/callback, never equivalent to no floor. EXISTING
+`mc/agent_mail_factory.py:MailFactory.reviewed_service` requires an injected
+callback and the default factory supplies none. W05/W06 must supply durable
+evidence; a test lambda or a generation's cached public key is insufficient.
+
+**NEW checked review extension**, owned by W05
+(`mc/agent_mail_service_review_schema.py`, NEW), uses the SAME guarded outside-repo
+inbox DB and base transaction lock. Its namespace is separate from
+`mail_pull_*` and the legacy enrollment-flow tables. The following is exact
+additive DDL; `I/H/B32/B64/G/T/origin` retain section 2 validation in code in
+addition to these SQL checks. Public signed evidence only; no passcode,
+mailbox, seed, session, flow secret or bearer capability is stored here.
+
+```sql
+CREATE TABLE mail_service_review_version (
+  slot INTEGER PRIMARY KEY CHECK(slot=1),
+  version INTEGER NOT NULL CHECK(version=1)
+);
+INSERT INTO mail_service_review_version VALUES(1,1);
+CREATE TABLE mail_service_review_acceptance (
+  slot INTEGER PRIMARY KEY CHECK(slot=1),
+  op_id TEXT NOT NULL UNIQUE CHECK(length(op_id)=32),
+  trust_revision INTEGER NOT NULL CHECK(trust_revision>0),
+  service_origin TEXT NOT NULL, root_public_key TEXT NOT NULL,
+  manifest_json TEXT NOT NULL CHECK(length(manifest_json)<=16384),
+  signature TEXT NOT NULL, manifest_sequence INTEGER NOT NULL CHECK(manifest_sequence>0),
+  manifest_digest TEXT NOT NULL CHECK(length(manifest_digest)=64),
+  service_key_id TEXT NOT NULL, service_public_key TEXT NOT NULL,
+  service_fingerprint TEXT NOT NULL CHECK(length(service_fingerprint)=64),
+  accepted_ms INTEGER NOT NULL CHECK(accepted_ms>0),
+  expires_ms INTEGER NOT NULL CHECK(expires_ms>accepted_ms)
+);
+CREATE TABLE mail_service_review_operations (
+  op_id TEXT NOT NULL PRIMARY KEY CHECK(length(op_id)=32),
+  input_digest TEXT NOT NULL CHECK(length(input_digest)=64),
+  trust_revision INTEGER NOT NULL CHECK(trust_revision>0),
+  manifest_digest TEXT NOT NULL CHECK(length(manifest_digest)=64),
+  service_origin TEXT NOT NULL, root_public_key TEXT NOT NULL,
+  service_fingerprint TEXT NOT NULL CHECK(length(service_fingerprint)=64),
+  accepted_ms INTEGER NOT NULL CHECK(accepted_ms>0),
+  expires_ms INTEGER NOT NULL CHECK(expires_ms>accepted_ms)
+);
+```
+
+No row in acceptance before the first confirmation; thereafter exactly one
+latest acceptance, not one automatically selectable acceptance per old origin.
+Operation rows are content-free replay tombstones; do not expire/recycle an
+op id or infer current acceptance from an older operation. Capacity failure
+refuses a new review; it never evicts acceptance/floors/replay evidence. Version,
+SQL objects, constraints, indexes (including implicit unique indexes), row
+shapes, duplicate singleton/partial-state conditions and integrity are checked.
+All absent review objects may be installed only by authorized bootstrap; any
+partial/wrong/newer extension holds. Runtime/read/startup never creates,
+repairs or resets it. Presence of review rows makes a store non-pristine for
+EXISTING `mc/agent_mail_factory.py:MailFactory._require_pristine` too.
+
+`manifest_json` is the ASCII text of EXISTING
+`mc/agent_mail_service_manifest.py:canonical_manifest_bytes`; digest is SHA-256
+of those exact bytes. Fingerprint is SHA-256 of the decoded 32-byte service
+public key, as EXISTING `verify_service_manifest` computes. Root fingerprint
+display uses the same algorithm on the root public key. Recompute all derived
+columns on read and reject disagreement. `expires_ms` is the verified
+candidate's `expires_at_ms`; it is not a user-selected extension to validity.
+Validate the manifest's activation/retirement/time rules on EVERY callback.
+
+Retain the EXISTING `mail_enrollment_manifests(origin,sequence,digest)` floor
+and `ManifestCAS` semantics. W05 must ensure this floor table is present and
+checked on explicit bootstrap, preserving any existing floor and legacy table
+contents; it must not initialize a dormant Enrollment or overwrite its flow.
+An equal sequence with different digest, lower sequence, corrupt floor or
+concurrent higher floor refuses. The verifier's current CAS owns a separate
+transaction: W06 must use a transaction-bound equivalent of the SAME floor
+CAS inside the review commit, rather than nesting `ManifestCAS.compare_and_set`
+and accidentally committing a prefix. Verification/transport is outside the
+write transaction; recheck config revision, floor and time inside it. Commit
+floor CAS + acceptance + operation together or none. Ordinary manifest GET
+continues to read the floor, never advances it. The trust revision below never
+keys, deletes or resets the origin-keyed rollback floor, even on root change.
+
+**NEW local review action** (W19 routes to W06
+`mc/agent_mail_service_review.py`, NEW):
+
+| Method/path | Exact JSON body | Successful readback |
+| --- | --- | --- |
+| `POST /api/agent-mail/enrollment/service-review` (NEW action) | `{passcode:string,op_id:I,trust_revision:G,manifest:[existing 11-item array],signature:B64,manifest_digest:H,service_fingerprint:H}` | `200 {v:1,op_id:I,accepted:true,current:boolean,trust_revision:G,service_origin:origin,manifest_digest:H,service_fingerprint:H,expires_ms:T}` |
+
+The candidate UI (W28) combines the EXISTING verified manifest GET and
+deployment GET revision; it displays exact origin, root fingerprint, service
+key id/fingerprint, sequence, digest and expiry. The POST takes no root, origin,
+URL, claimed human boolean or requested expiry from the caller. Resolve root,
+origin and revision from serialized server configuration, verify supplied
+signed evidence again, and compare the displayed digest/fingerprint exactly.
+No hidden refetch may substitute different evidence for the candidate the
+human accepted. W06 may validate a supplied signed candidate without fetching
+it again; HTTPS discovery alone is never acceptance.
+
+`input_digest = SHA256(A("clayrune-mail-service-review","1",op_id,
+str(trust_revision),configured_origin,configured_root,manifest_digest,
+signature,service_fingerprint))`. The manifest is bound through its verified
+canonical digest. Passcode is excluded. Unknown/duplicate fields, wrong types,
+bad encodings or supplied digest/fingerprint mismatch: `400 invalid_request`;
+body >32 KiB: `413 body_limit`; untrusted attribution: `403 human_required`.
+EXISTING `_require_human_passcode` errors remain `403 passcode_required`,
+`403 bad_passcode`, `429 too_many_attempts`; never expose its secret input.
+Validly shaped but invalid/expired/rolled-back manifest: `409 service_key_changed`;
+config revision race: `409 trust_changed`; changed input under same op:
+`409 operation_conflict`; unavailable adapter: `503 service_unavailable`;
+checked-store/floor/read/write failure: `503 storage_unavailable`, no acceptance.
+These action error codes/readback fields are **NEW local contract**, not claims
+that all already exist in a Python reason enum.
+
+Replay requires human proof again. Same op/digest returns its original public
+receipt without writing/advancing a floor, refreshing time, reaccepting or
+replacing the latest acceptance. `current` is computed NOW: true only if that
+receipt is still the latest accepted op under the current config revision,
+root/origin, exact floor and validity window; otherwise false. The original
+accepted expiry/revision/origin/fingerprint remain in the operation receipt;
+the operations table carries those public fields even after acceptance changes.
+Do not return an old receipt as current authority. A new op is required for
+re-review after supersession or expiry.
+
+Replay lookup follows shape/passcode/attribution checks and precedes NEW
+acceptance verification. For an existing op, recompute the supplied canonical
+manifest digest/fingerprint and input digest against that operation's STORED
+origin/root/revision; mismatched input is `409 operation_conflict`. No fresh
+validity/rollback acceptance is attempted just to return an inert historical
+receipt. Check current acceptance separately to compute `current`; an old
+root/origin/revision or expiry can only yield false, never restore approval.
+For an absent op, require current config revision and current signature/time/
+floor verification before creating any row. Thus an expired or old-root replay
+can acknowledge history while a new acceptance of those bytes is refused.
+
+**Trust changes (NEW revision protocol, W43):** server-managed config key
+`agent_mail_trust_revision` is `G`, absent legacy value means zero/unreviewed.
+EXISTING deployment PUT still accepts ONLY root+origin+passcode. On an actual
+root/origin change it increments revision in the SAME durable config write;
+unchanged values keep revision. Caller cannot set revision; overflow refuses
+`409 trust_changed`. Deployment GET/PUT readback add `trust_revision:N` (NEW,
+zero allowed only before configuration). A legacy nonempty root/origin pair
+gets revision 1 only in an explicit human save, never at startup/GET. A missing
+or invalid revision cannot validate acceptance. Returning A -> B -> A therefore
+does not revive A's old approval. Failed config writes change neither values
+nor revision. Before saving a changed trust pair when an account exists,
+require serialized local off and no executing admission; otherwise
+`409 trust_change_requires_disable`. Disable itself remains reachable under
+failed trust. Saving trust never enables flags, owner consent, socket or mail.
+
+W06's production callback returns ONLY `(ServiceKeyCandidate,manifest_digest)`
+reconstructed from latest exact accepted evidence after current root signature,
+revision, floor and time checks. No TLS-only path, cache-only pin or automatic
+renewal: even a higher sequence with the same public key has a different digest
+and needs explicit acceptance. Revoked/retired key, expiry, root/origin change
+or higher durable floor invalidates old acceptance immediately and stops live
+authority. Re-review never rewrites any account's immutable generation evidence,
+rebases an in-flight flow, transfers a thread or grants activation. A generation
+whose evidence no longer matches stays held until its applicable human lifecycle
+flow establishes a fresh binding and consent under sections 6/9.1. To avoid a
+renewal deadlock, an explicitly authorized management rotation/recovery/resume
+may verify the NEW flow's responses with the current accepted service evidence
+while proving the selected OLD install-key/generation (or the mailbox-bound
+recovery candidate). Its durable intent must bind both the unchanged old
+identity scope and new accepted digest; this exception admits only the human
+management flow, never old sends/offers/threads or active consent. W09-W11/W14
+own that transition; a changed root/origin supplies no mailbox continuity and
+cannot authorize it by itself. No new repin
+shortcut or recovery-code policy is introduced by service-review.
+
+### 13.2 Q3-A: one selected identity, inert retained identities
+
+One custody DB, one identity directory, one selected account; no archive DB,
+directory move, seal deletion, first-row heuristic or config install-id selector.
+The EXISTING unique `mail_pull_one_enabled` index alone cannot select a disabled
+or pending account. The EXISTING generation enum `current|fenced|held` is per
+install, not a cross-install selection marker.
+
+**NEW local pull schema v2**, a separately reviewed additive migration owned by
+an explicitly allocated selection-schema unit before W13/W18 cutover; W04 does
+not grant extra source-file ownership to W05 or W13. Keep all section 9 v1
+table columns/positional INSERT order and base schema version unchanged. Add:
+
+```sql
+CREATE TABLE mail_pull_selection (
+  slot INTEGER PRIMARY KEY CHECK(slot=1),
+  install_id TEXT REFERENCES mail_pull_accounts(install_id),
+  selection_epoch INTEGER NOT NULL CHECK(selection_epoch>0)
+);
+INSERT INTO mail_pull_selection VALUES(1,NULL,1);
+CREATE TABLE mail_pull_retained (
+  install_id TEXT NOT NULL PRIMARY KEY REFERENCES mail_pull_accounts(install_id),
+  retained_ms INTEGER NOT NULL CHECK(retained_ms>0),
+  reason TEXT NOT NULL CHECK(reason='fresh_signup')
+);
+```
+
+Rebuild ONLY the version marker's CHECK as `version=2` and replace marker value
+with 2, in the same checked migration transaction. Validate complete exact v1
+before migration and complete exact v2 afterward; never create these tables
+next to a v1 marker and consider that valid. Roll back on any partial state;
+old v1 runtime must refuse v2. No runtime/startup upgrade. Explicit authorized
+upgrade may adopt a sole fully consistent preexisting v1 account as selected,
+regardless of whether pending/off; it never enables it. Empty v1 => null selector.
+Multiple preexisting accounts, orphan/missing generation/flow/reference/seal,
+or inconsistent base registration => hold, never choose the newest/enabled row.
+
+At v2, selector row must exist exactly once. Null selection is valid ONLY if
+there are no account or retained rows. For non-null selection exactly one account
+matches, it is absent from retained, and EVERY other account appears exactly once
+in retained; every retained id resolves to its unchanged account. Selected may
+be disabled/frozen/deleted: lifecycle state is not selection. Retained accounts
+have `local_enabled=0`, state `disabled|frozen|deleted|held`, no generation with
+state `current`, no live connection and no enabled base registration. Preserve
+generation high-water marks, original seal refs/files, flows, receipts, held/
+uncertain work, snapshots and question-channel tombstones. Validate all retained
+metadata and expected seal presence without unlocking; a committed missing seal
+remains held, not permission to generate new material. Unreferenced sealed files
+also hold; known retained seals are not unexpected orphans.
+
+Selected authority means selector install + `selection_epoch`, exact g/og,
+key/seal, consent epoch, origin and reviewed evidence all agree in one snapshot.
+Checking a caller-supplied install id alone is insufficient. Capture selection
+epoch at intent/client/continuation creation and recheck at EACH admission and
+result commit. Never consume HTTP-supplied selector/epoch as authority. Stale
+objects fail `stale_generation` (NEW application of EXISTING reason) and the
+supervisor stops/joins its own old client before recomposition; no second socket.
+Unhealthy selection returns held `schema_corrupt`; a healthy empty selector is
+`not_enrolled`. Reads, pollers and recovery do not repair selection.
+
+W13 fresh-signup, after fresh human authorization, serializes local disable
+with send/claim/submit and settles ALL applicable pending denial holds across
+the store before creating a new identity. Missing usable old fence is held,
+not success. Under one transaction: recheck old selected scope and zero pending
+fences; disable base registration and execution; fence/hold old generations,
+revoke old threads, cancel unfinished positive flows, drop old connection
+authority while preserving receipts and positive in-flight outcomes; add old
+install to retained; insert unrelated pending account/generation/signup intent;
+switch selector and increment selection_epoch. Do not increment/reassign an old
+registration merely to manufacture the new one. Generate/reopen ONLY the new
+flow's seal under the EXISTING durable-preparation/orphan-reopen protocol; its
+public-key commit precedes network. Failed transaction leaves old selection;
+an orphan seal after a crash is held/reopened by exact reference, never swept.
+No hosted request before durable selection/intent. New signup still needs its
+own mailbox link and explicit enable. Retry exact local op finds that new
+intent even across restart, never creates another identity/selector increment.
+Retained accounts cannot be selected again by a UI dropdown, resume, status,
+old op replay or background repair. R1 transfers no address, thread or consent.
+
+**Source-enumerated caller checklist (EXISTING symbols at baseline).** Each
+number is one distinct `file:function` audit entry, not a count of SQL statements
+or new files. "Gate" means add/join selected-scope verification at that existing
+boundary or use its shared checked gate; it does not require copying SQL into
+every wrapper. Explicit install parameters must still be compared to selection.
+The list includes indirect calls and base queues which do not yet query a pull
+table; otherwise a stale base registration could bypass selection. The global
+denial/retention/custody exceptions following the table are intentional.
+
+| # | EXISTING file:function | Required selected-scope boundary |
+| --- | --- | --- |
+| 1 | `mc/agent_mail_factory.py:MailFactory._pull_install` | Resolve selector, never count all account rows as current. |
+| 2 | `mc/agent_mail_factory.py:MailFactory.signup` | Supply selected signup scope; empty selector allowed only for initial start. |
+| 3 | `mc/agent_mail_factory.py:MailFactory.owner_change` | Bind selected install and epoch. |
+| 4 | `mc/agent_mail_factory.py:MailFactory.service_client` | Bind selected install and epoch, not legacy config install. |
+| 5 | `mc/agent_mail_factory.py:MailFactory.pull_receiver` | Require selected install/epoch before authenticated g/og composition. |
+| 6 | `mc/agent_mail_factory.py:MailFactory.pull_client` | Cache key includes selection epoch; old owner must stop before replacement. |
+| 7 | `mc/agent_mail_factory.py:MailFactory.outbound` | Cached composer must recheck selected authority on each operation. |
+| 8 | `mc/agent_mail_factory.py:MailFactory.require_pull_store` | Validate complete selection/membership before runtime composition. |
+| 9 | `mc/agent_mail_signup.py:Signup._row` | Filter selected signup flow/account/generation; retained rows are not extra current rows. |
+| 10 | `mc/agent_mail_signup.py:Signup.start` | Selected empty or exact existing intent; known retained seals do not trip all-seals test. |
+| 11 | `mc/agent_mail_signup.py:Signup.status` | Project selected flow only, without mutation. |
+| 12 | `mc/agent_mail_signup.py:Signup._resume` | Capture selected epoch; compare before key work/network/result commit. |
+| 13 | `mc/agent_mail_signup.py:Signup._current` | CAS includes selected epoch/install, not only flow metadata. |
+| 14 | `mc/agent_mail_signup.py:Signup._expire` | Expire only the captured selected flow; stale object cannot update another identity. |
+| 15 | `mc/agent_mail_signup.py:Signup.enable` | Forward explicit selected op/flow/epoch to activation. |
+| 16 | `mc/agent_mail_signup.py:Signup.owner_change` | Explicit install argument must equal selection. |
+| 17 | `mc/agent_mail_activation.py:Activation.enable` | Human op/flow + selected epoch at intent and active receipt commits. |
+| 18 | `mc/agent_mail_activation.py:Activation._current` | Selected epoch/install plus existing consent snapshot. |
+| 19 | `mc/agent_mail_activation.py:Activation._registration` | Selected base registration at exact current g, not hardcoded generation 1. |
+| 20 | `mc/agent_mail_activation.py:validate_registration` | Selected base enabled/generation check for active replay. |
+| 21 | `mc/agent_mail_owner_change.py:OwnerChange._account` | Explicit install AND selected epoch/current generation. |
+| 22 | `mc/agent_mail_owner_change.py:OwnerChange._row` | Selected install/expected g/og, never a retained management flow. |
+| 23 | `mc/agent_mail_owner_change.py:OwnerChange.start` | Selected human management intent; fence checks remain exact scope. |
+| 24 | `mc/agent_mail_owner_change.py:OwnerChange._current` | Recheck selected epoch at management CAS. |
+| 25 | `mc/agent_mail_owner_change.py:OwnerChange._refresh` | Selected snapshot before request and before any local rebind/hold. |
+| 26 | `mc/agent_mail_owner_change.py:OwnerChange._account_status` | Selected status projection only; old signed result cannot overwrite current status. |
+| 27 | `mc/agent_mail_service_client.py:ServiceClient._account` | Replace optional all-account selection with checked selected scope. |
+| 28 | `mc/agent_mail_service_client.py:ServiceClient.__call__` | Positive request headers match selected intent/epoch; denial uses separate fence path. |
+| 29 | `mc/agent_mail_service_client.py:ServiceClient.status` | Selected signed scope before and after exchange. |
+| 30 | `mc/agent_mail_outbound.py:Outbound._authority` | Join selector + account/generation; retain full base/consent/trust checks. |
+| 31 | `mc/agent_mail_outbound.py:Outbound.prepare` | Bind immutable intent/thread to selected scope and epoch. |
+| 32 | `mc/agent_mail_outbound.py:Outbound.send` | Recheck same selected scope at claim, pre-I/O and response commit. |
+| 33 | `mc/agent_mail_outbound.py:Outbound.status` | Old intent metadata cannot supply selected authority or ready state. |
+| 34 | `mc/agent_mail_outbound.py:Outbound.question_channel` | Global ownership lookup first; new admission through selected prepare/send only. |
+| 35 | `mc/agent_mail_outbound.py:cleanup` | Invalidate positive non-selected intents; retain uncertain/accepted evidence as noted below. |
+| 36 | `mc/agent_mail_pull_client.py:PullClient._account` | Explicit install is still required to equal selector/current epoch. |
+| 37 | `mc/agent_mail_pull_client.py:PullClient._authority` | Selected scope + current human-reviewed trust. |
+| 38 | `mc/agent_mail_pull_client.py:PullClient._ticket` | Ticket only for selected current scope. |
+| 39 | `mc/agent_mail_pull_client.py:PullClient._current` | Connection epoch check also requires selected epoch/install. |
+| 40 | `mc/agent_mail_pull_client.py:PullClient._hello` | Do not install connection authority after selection changed. |
+| 41 | `mc/agent_mail_pull_client.py:PullClient._replay` | Ack outbox joined to selected current receipt scope. |
+| 42 | `mc/agent_mail_pull_client.py:PullClient._committed` | Receipt id and original selected connection scope before ack settlement. |
+| 43 | `mc/agent_mail_pull_client.py:PullClient._handle` | Current selector on each frame/scan update. |
+| 44 | `mc/agent_mail_pull_client.py:PullClient._session` | Reject stale cached client before ticket/socket and at final connection update. |
+| 45 | `mc/agent_mail_pull_client.py:PullClient._record` | A stale client may not publish new selected status/backoff. |
+| 46 | `mc/agent_mail_pull_receiver.py:PullReceiver._scope` | Join selector with account/generation/connection in receiver transaction. |
+| 47 | `mc/agent_mail_pull_receiver.py:PullReceiver._thread` | Selected install/g/og and unchanged base binding/snapshot. |
+| 48 | `mc/agent_mail_pull_receiver.py:PullReceiver.receive` | Selected scope at receipt/base-event/ack-outbox atomic commit and replay. |
+| 49 | `mc/agent_mail_recovery.py:Recovery._flows` | Selected flow projection; retained unfinished flow is inert evidence. |
+| 50 | `mc/agent_mail_recovery.py:Recovery._pull` | Replace LIMIT 2 account heuristic with checked selector. |
+| 51 | `mc/agent_mail_recovery.py:Recovery._acks` | All-row integrity audit; selected-only executable pending classification, as below. |
+| 52 | `mc/agent_mail_status_view.py:pull_status` | Selected account/status/connection/flow; retain separately global revoke hold. |
+| 53 | `mc/agent_mail_supervisor.py:Supervisor._drive_client` | Selected epoch in owner scope, stop old client before replacement. |
+| 54 | `mc/agent_mail_supervisor.py:Supervisor._sample_client` | Old client observations cannot report current selected connected state. |
+| 55 | `mc/agent_mail_supervisor.py:_default_recovery` | Launder/wake callbacks receive the same checked selected execution gate. |
+| 56 | `mc/agent_mail_store.py:MailStore.register` | Pull caller may not create/re-enable a retained registration through base helper. |
+| 57 | `mc/agent_mail_store.py:MailStore.enable_registration` | Pull enable uses exact selected verified g, never bypass consent/selector. |
+| 58 | `mc/agent_mail_store.py:MailStore.bind_thread` | New pull binding requires selected registration/g and active consent. |
+| 59 | `mc/agent_mail_store.py:MailStore.insert_event` | Pull event insertion/replay remains scoped to selected receipt and registration. |
+| 60 | `mc/agent_mail_store.py:MailStore._validate_target` | Shared execution gate must include selected pull scope, not base enabled alone. |
+| 61 | `mc/agent_mail_store.py:MailStore._reconcile_locked` | Retire invalid scopes without admitting retained work; preserve positive evidence. |
+| 62 | `mc/agent_mail_store.py:MailStore.claim_for_laundering` | Selected receipt/g/og/connection ordering before choosing eligible event. |
+| 63 | `mc/agent_mail_store.py:MailStore.claim_for_submission` | Selected receipt/g/og + cloud-seq scan/custody barriers before claim. |
+| 64 | `mc/agent_mail_store.py:MailStore.revalidate_claim` | Recheck selected epoch and target under admission lock. |
+| 65 | `mc/agent_mail_store.py:MailStore.complete_laundering` | Late extraction cannot make retained work ready. |
+| 66 | `mc/agent_mail_store.py:MailStore.retry_uncertain` | Human retry cannot restore retained admission or reset positive evidence. |
+| 67 | `mc/agent_mail_store.py:MailStore.release_hold` | Explicit release still refuses retained scope. |
+| 68 | `mc/agent_mail_launder.py:MailLaunder._live` | Selected scope at pre-extraction and finalization; late result stays inert. |
+| 69 | `mc/agent_mail_launder.py:MailLaunder.process_next` | Only selected claim may reach toolless extraction. |
+| 70 | `mc/agent_mail_wake.py:MailWake.bind` | Continuation snapshot only for selected active binding. |
+| 71 | `mc/agent_mail_wake.py:MailWake.process_next` | Claim/follow-up uses same selected scope throughout. |
+| 72 | `mc/agent_mail_wake.py:MailWake.consume_question` | Selected scope before consuming current question; no retained replay. |
+| 73 | `mc/agent_mail_continuation.py:Continuation.reserve` | Persist selected epoch with exact event/attempt; reject stale reservation. |
+| 74 | `mc/agent_mail_continuation.py:Continuation.check_claim` | Shared selected admission check at final pipe/process boundary. |
+| 75 | `mc/agent_mail_continuation.py:Continuation.admission` | Serialize selection/consent switch with process creation. |
+| 76 | `mc/agent_mail_continuation.py:Continuation.begin` | Selected epoch before durable started receipt/pipe write. |
+
+**Caller checklist count: 76 distinct existing file:function entries.**
+
+
+Denial and custody exceptions are **not** alternative positive-authority selectors:
+
+- EXISTING `mc/agent_mail_factory.py:MailFactory._check_pull_seals` must validate
+  ALL selected and retained references; `_require_pristine` checks ALL rows.
+  EXISTING `mc/agent_mail_pull_schema.py:initialize`, `validate` and `_validate`
+  must check full v2 membership/integrity. Structural checks never filter away
+  evidence of corruption just because it is not selected.
+- EXISTING `mc/agent_mail_recovery.py:Recovery._revocations`, `_claim_fence`,
+  `_settle_fence` and EXISTING `mc/agent_mail_service_client.py:ServiceClient.fence`,
+  `cancel_flow`, `revoke` may replay exact durable denial-only intents for
+  retained installs, scoped to the stored install/generation/flow/op. Do not
+  accidentally make remote revocation depend on positive selected-key authority.
+  Store-wide pending fences block fresh-signup. Signed settlement changes only
+  that fence receipt; no retained account/key/socket/consent revival.
+- EXISTING `mc/agent_mail_recovery.py:Recovery._acks` validates ALL ack/receipt
+  consistency, but operational pending counts/acks belong ONLY to selected
+  current g/og. Retained pending acks are held/terminal, never re-sent under the
+  new install. `Recovery._flows` projects only selected flows; retained unfinished
+  flows remain inert evidence. EXISTING `mc/agent_mail_outbound.py:cleanup`
+  explicitly invalidates non-selected positive intents, preserves accepted/
+  uncertain evidence and never turns retained work ready. Base reconciliation
+  and expiry can retire ALL old work under existing deadlines without admission.
+- EXISTING `mc/agent_mail_ownership.py:lookup`, `count` and its `recover` /
+  `factory_reader` callers intentionally remain store-wide: old question-revision
+  ownership is a durable routing tombstone, not new mail authority. Filtering
+  it to the selected account could reassign an old question to another channel.
+  EXISTING `mc/agent_mail_outbound.py:Outbound.question_channel` must check that
+  tombstone first, but may prepare/send new mail ONLY through selected authority.
+- EXISTING `mc/agent_mail_wake.py:MailWake.settle`, `accepted`, `reconcile`,
+  `_reconcile_receipt` and EXISTING
+  `mc/agent_mail_continuation.py:Continuation.accept`, `unknown` may settle
+  positive already-started receipt evidence under its ORIGINAL identity after
+  a switch. They cannot admit another turn, reopen a retained event, or consume
+  a new question. `MailWake.consume_question` requires current selected scope.
+  Read-only old event/intent metadata and deletion/retention scans remain scoped
+  to their explicit original ids; they never act as current status or send proof.
+
+No hosted D1 table/query chooses between local identities: hosted routes already
+scope to authenticated install/g/og. The v2 selector is local only and never
+sent as proof. Legacy Enrollment/CP authority remains retired under sections
+10/11; its dormant queries do not become an additional selected identity.
+
+### 13.3 Q4-A: deliberate operator controls, not root-save side effects
+
+W43 owns NEW `GET` and `PUT /api/agent-mail/deployment/controls`, registered in
+EXISTING `mc/blueprints/agent_mail_deployment_routes.py:create_blueprint`. Both
+remain reachable with enrollment off; use dashboard auth/CSRF/no-store as the
+existing deployment surface. The allowlist is EXACTLY these four EXISTING flag
+names, all default false and strict JSON booleans:
+
+```json
+{
+  "agent_mail_enrollment_enabled": false,
+  "agent_mail_outbound_enabled": false,
+  "agent_mail_ingress_enabled": false,
+  "agent_mail_supervisor_enabled": false
+}
+```
+
+`GET` has no body, network, store creation or lifecycle side effect. Exact
+response is `{v:1,flags:{the four booleans},supervisor:{running:boolean,
+reason:reason}}`. `running` is current server-owned thread observation, not
+delivery, account activation or connectivity. Existing missing config flags
+read as false; malformed non-boolean existing values fail `503 storage_unavailable`,
+never truthiness coercion. NEW `reason` values for this readback are empty,
+`start_failed`, `stop_pending`, `stopped`, `not_started` or `worker_failed`.
+Unknown observation cannot be called running/success; adapter failure is 503.
+
+`PUT` exact body is `{passcode:string,flags:{all four booleans}}`; no partial
+patch, op id, root, origin, install id, arbitrary config key or legacy
+`agent_mail_lifecycle_enabled` / `agent_mail_ceremony_enabled`. Reject extras,
+missing fields, duplicate keys, numbers/strings/null as booleans with
+`400 invalid_request`; >32 KiB => `413 body_limit`. Require trusted human
+attribution plus EXISTING `_require_human_passcode`; their 403/429 errors match
+13.1. An Origin header/manual agent label is not trusted attribution. Retain
+EXISTING enrollment `blocking_sessions` conservative gate until a production
+trusted request context is wired; unresolved context fails closed. An all-off
+request and local disable/retry-denial remain reachable to a valid passcode
+holder; unknown/unattended attribution cannot turn anything on.
+
+Allowed combinations: outbound or ingress true requires enrollment AND
+supervisor true; supervisor true requires enrollment true. Enrollment true with
+the other three false is allowed for setup/review. Denial-only manual retry
+remains reachable while all flags are off. Invalid
+combination => `409 flag_dependency`. These flags are local availability, not
+Worker `MAIL_ENABLED` / `MAIL_INGRESS_VERIFIED`, mailbox proof or owner consent.
+No flag change writes `local_enabled`, generates/unlocks identity material,
+starts signup or calls an activation/provider API.
+
+Under EXISTING `mc/provider_preferences.py:serialized_write`, merge only the
+four values into server config and durably commit through EXISTING
+`mc/atomic_json.py:write_json_atomic` BEFORE publishing in-memory values. Save
+failure => `503 storage_unavailable` with no in-memory flip or lifecycle call.
+Invoke EXISTING `mc/agent_mail_supervisor.py:start_default` or `stop_default`
+through the server's app-owned composition once after commit, according to the
+requested supervisor flag. Repeated identical PUT is idempotent configuration;
+it may reconcile an observed failed/stopping lifecycle using those same
+singleton methods, never spawn another owner. Do not call a separate new
+thread/server startup path or implicitly restart :5199.
+
+Successful response: `200 {ok:true,v:1,flags:{...},supervisor:{...}}` after
+durable readback. A post-commit lifecycle failure returns
+`503 {error:"supervisor_unavailable",saved:true,v:1,flags:{...},supervisor:{...}}`
+with `start_failed|stop_pending|worker_failed`, observable log and unchanged
+durable requested flags. Do not lie that the save rolled back or silently flip
+back; GET reveals requested values and actual observation. Off gates new work
+immediately even while a socket/thread is stopping. UI must show pending stop,
+not stopped from flags alone. Existing `stop_default` returns no success value:
+observe the singleton through EXISTING `get` / `Supervisor.status` after the
+call (W43 adapter), not a fabricated boolean return.
+
+W44 adds separate deliberate controls using EXISTING
+`static/js/agent-mail-deployment.js` and shared passcode transport; cancelling
+the prompt writes nothing. EXISTING `PUT /api/agent-mail/deployment` public
+root/origin save keeps its exact input allowlist and remains non-enabling;
+only the trust revision/readback refinement in 13.1 is added. Generic settings
+allowlist is not extended. Config/root save, GET, manifest discovery, supervisor
+boot and store migration must never call the new controls PUT themselves.
+
+### 13.4 Exact local action and replay bridge (W14/W15/W18/W19)
+
+Section 10 local methods/bodies remain exact; `service-review` is the sole NEW
+action added by 13.1. All mutations are JSON POST (not GET or inferred action),
+32-KiB bound, duplicate/extra fields refused, local passcode removed before any
+remote request. No new success URL/token is exposed. Read-only local enrollment
+GET returns section 10 status from EXISTING
+`mc/agent_mail_status_view.py:pull_status`, no bootstrap or HTTP mutation. Its
+state/connection enums remain section 10's; operator/review state never means
+account active. Current blueprint's `operational_adapter_unavailable` is an
+EXISTING unwired error, not a production success; W19 maps missing adapters to
+the contract's `503 service_unavailable` without a legacy fallback.
+
+| Local POST suffix and exact fields BESIDES passcode (all NEW pull dispatch behavior) | EXISTING bridge and required residual behavior / owner |
+| --- | --- |
+| `start`: `{op_id:I,owner:mailbox,consent_version:ID,manifest:[11 items],signature:B64}` | W15 calls `mc/agent_mail_signup.py:Signup.start(owner,consent_version,op_id=op_id)` after W06 verifies request manifest/signature equal current accepted evidence. The start input is not a second review. Bootstrap only after valid human gate; selected empty or matching pending op only. |
+| `review`: `{}` | W15 uses `Signup.status` plus selected pending management status; local read only, no `Signup.resume` and no enable. Preserve section 10 local status + flow_id. This is distinct from `service-review`. |
+| `enable`: `{op_id:I,flow_id:I}` | W14 extends EXISTING `mc/agent_mail_activation.py:Activation.enable` / `Signup.enable`, currently argumentless and generation-1 only, to persist this EXACT human op/flow and current g/og/selection epoch. Never generate a different remote activation op behind an explicit local op. |
+| `disable`: `{op_id:I}` | W02 NEW `mc/agent_mail_disable.py`; serialized local off and durable denial before remote attempt, vault/trust-independent local denial. Duplicate op cannot cancel another scope. |
+| `retry-revocations`: `{}` | W02/W17 replay ONLY existing durable `mail_pull_fences` through `mc/agent_mail_service_client.py:ServiceClient.fence`; no new key/consent/positive management start. |
+| `owner`: `{op_id:I}` | EXISTING `mc/agent_mail_owner_change.py:OwnerChange.start(op_id)` through selected factory; human-start only. No new mailbox field accepted locally; it is typed into hosted old-owner-approved form. |
+| `key`: `{op_id:I,mode:"rotate"\|"recover"}` | W09 NEW `mc/agent_mail_key_rotation.py` / W10 NEW `mc/agent_mail_key_recovery.py`; staged exact candidate + management/start, not Signup.enable or old Enrollment.change_identity. |
+| `resume`: `{op_id:I}` | W11 NEW `mc/agent_mail_resume.py`; frozen-owner management/start -> existing hosted resume -> status, never alias EXISTING `Signup.resume` (poll/retry only). |
+| `fresh-signup`: `{op_id:I,owner:mailbox,consent_version:ID,manifest:[11 items],signature:B64}` | W13 NEW `mc/agent_mail_fresh_signup.py`; 13.2 selection transaction then exact new signup intent, pending revoke refusal; manifest equals accepted evidence as for start. |
+| `delete`: `{op_id:I}` | W12 NEW `mc/agent_mail_account_delete.py`; local off via W02, begin mailbox-approved delete, finish only on verified hosted status. No new selection, silent purge or address-release assertion. |
+
+The flags/passcode/attribution gates precede adapter invocation. Unknown actions
+=> `404 not_found`; legacy `confirm|verify|repin|proof` => `410 legacy_retired`
+in pull dispatch, never accepted as review or activation. Human-only routes
+cannot be invoked by agent intent tools. Known business refusal is a closed
+409/410/429 code under section 7; malformed body 400, unavailable adapter 503.
+Local disable returns section 10 state even if remote denial is pending;
+it must not claim remote success. A 200 status projection with state held is
+not a completed positive operation.
+
+Durable bridge identity = local action + op id + selected install/epoch +
+flow + expected g/og + exact non-passcode input digest. W15/W14 and each new
+lifecycle adapter persist it in checked versioned metadata before I/O; no
+unversioned optional keys silently added to current strict `result_json`.
+EXISTING signup metadata v1 has `op_id,public_key,start_body,started,
+notice_state,fence_token`; EXISTING Activation.FIELDS adds its checked
+activation metadata. W14/W15 must version their readers for selection/bound
+ops/generalized generations, preserving existing rows through an explicit
+checked transition. Unsupported/partial metadata holds. This addendum freezes
+semantics, not permission to change someone else's schema file in W14/W15.
+
+Same op + same action/input/scope reopens its durable operation; changed input
+=> `409 operation_conflict`; stale selection/flow/generation never rebinds an
+old op. Preserve exact outbound JSON bytes or reproduce them from checked
+immutable metadata + original sealed secret and compare saved digest BEFORE
+retry. New timestamps/nonces/signatures per transport attempt are allowed;
+mutation op/body identity is not. Passcode, plaintext secret or browser token
+is never persisted for replay. EXISTING `Signup._resume` already stores exact
+start bytes and `Activation._body` reconstructs secret-bearing bytes; retain
+those patterns, not raw HTTP-body logging. Signed receipts are verified with
+the original request-id/path/scope before any local commit, then local current
+selection/consent/fences/time are rechecked in that commit. A replayed hosted
+active receipt cannot resurrect later local disable.
+
+Background recovery may poll bounded existing signup/management/status or settle
+already-authorized denial/receipts; it must not originate owner/key/resume/delete,
+fresh-signup, review or human enable consent. Activation reconciliation can
+adopt a verified outcome for the SAME still-valid durable human-authorized
+activation op, not invent another enable op or authorization after revocation.
+W17 must not turn current `Signup.resume` into a management start or automatic
+activation. Existing human retry/attempt bounds and service idempotency remain.
+
+### 13.5 Hosted handler ownership and implementation acceptance
+
+Source audit at 6a7f6949 (comments saying "Unwired" are not runtime evidence;
+EXISTING `workers/agent-mail/worker.js:createWorker` imports the registries):
+
+| Hosted/local concern | Source-confirmed owner / residual unit |
+| --- | --- |
+| `/mail/link`, `/mail/link/confirm` (EXISTING GET/POST) | EXISTING `workers/agent-mail/link-router.js:LinkRouter` dispatches the ORIGINAL request by persisted purpose to EXISTING `signup-http.js:SignupHTTP`, `owner-management.js:OwnerManagementHTTP` or `owner-change.js:OwnerChangeHTTP`. W30 preserves this sole dispatch. |
+| `/mail/manage` GET, `/mail/logout` POST; management start/status (EXISTING) | EXISTING `workers/agent-mail/owner-management.js:MANAGEMENT_PATHS`, `OwnerManagementHTTP.manage`, `authorizeSession`, `sessionScope`, `handle`. It renders key-recovery/delete forms but its registry has NO handlers for their POST targets. Do not mistake rendered HTML for an implemented action. |
+| `/mail/owner-change`, `/mail/change/cancel`, `/mail/revert`, `/mail/resume` POST (EXISTING) | EXISTING `workers/agent-mail/owner-change.js:OWNER_CHANGE_PATHS`, `OwnerChangeHTTP.resume`, `handle`. W11 consumes existing resume; W30 does NOT create a second resume owner in W07/W08. |
+| `/mail/key-recovery` POST (NEW implementation of section 4.1 route) | W07 NEW `workers/agent-mail/key-recovery-http.js`; W30 adds its NEW path registry to worker glue. Exact form `{csrf:S,op_id:I}`, approved purpose `key_recovery`, candidate-key binding. Old mailbox POST, fresh g/key/fence, verified/off, explicit local enable. |
+| `/mail/delete` POST (NEW implementation of section 4.1 route) | W08 NEW `workers/agent-mail/account-delete-http.js`; W30 adds its NEW path registry. Exact form `{csrf:S,op_id:I}`, purpose `delete`, deliberate hosted deletion form. Logical delete/quarantine/privacy purge; preserve section 6.3 revert recovery until deadline. No physical resource deletion. |
+| `/v1/pull/key/rotate` POST (EXISTING) | EXISTING `workers/agent-mail/pull-key-rotate-http.js:PullKeyRotateHTTP`, `KEY_ROTATE_PATH`. W09 local adapter consumes it after current-key + candidate + mailbox proof; not a browser recovery endpoint. |
+| Control mail dispatch and retention (NEW runtime consumers) | W01 NEW `workers/agent-mail/control-mail-delivery.js`; W03 NEW `workers/agent-mail/pull-retention.js`; W30 scheduled glue only. EXISTING `workers/agent-mail/verification-mail.js:VerificationMail` enqueues fixed control messages, not provider delivery. |
+
+W07/W08 reuse the EXISTING `OwnerManagementHTTP.authorizeSession` /
+`sessionScope` returned guards in the SAME atomic batch as mutation and
+operation receipt, with database-clock deadline/generation/fence rechecks.
+GET/scanner requests cannot recover/delete, and wrong methods refuse. Browser
+POST is exact bounded `application/x-www-form-urlencoded`, same-origin,
+Secure/HttpOnly/SameSite session + CSRF, no install-key/passcode alternative.
+Identical op is an inert receipt under its original scoped session; changed
+purpose/body/candidate/scope refuses. Replay never refreshes a session, reads
+a later owner's private mailbox, activates, releases an address twice or sends
+another link. Session/CSRF/token errors, operation conflicts, expiry, body and
+service failures retain sections 4.1/7; no raw exception/provider text returned.
+W07/W08 add no machine HTTP recovery/delete bypass to section 4's registry.
+
+W04 acceptance is documentary: original document prefix/P1-P7/R1 unchanged;
+each EXISTING source path/function/registry present; each NEW target and route
+clearly distinguished; SQL compiles in disposable SQLite; selected-scope
+checklist reconciles direct SQL and queue/continuation consumers; whitespace
+clean. Source consistency is not a passing runtime suite, provider entitlement,
+end-to-end proof or deployment. Downstream units must test review restart/
+expiry/CAS/config-race/replay, v1->v2 atomic upgrade and partial-state refusal,
+retained seal/orphan/multiple-account scenarios, stale callbacks/admissions,
+global denial/tombstone exceptions, exact local bodies/op persistence and
+operator failed-save/post-save-lifecycle readback. More implementation ownership
+may be required for the selection-schema/shared execution gates; Dave assigns
+it before those files change. Reverting W04 changes no running authority or
+data. No rollback may clear floors, retained rows, denial or custody evidence.
+
+W04 validation performed on the source baseline: original 107,344-byte prefix
+preserved byte-for-byte; 31 full existing source paths, 12 explicitly NEW absent
+paths, all 76 checklist symbols and 93 explicit Python citations checked against
+source, with contextual Python/JS handler registries checked separately. Both
+SQL blocks compiled against the literal v1 local schema in disposable SQLite;
+marker-v2 recipe, FK/integrity and representative constraint refusals passed.
+`git diff --check` passed. The scratch document validator ran through the
+installation's test-reporting launcher; no product/runtime tests or live mail.
