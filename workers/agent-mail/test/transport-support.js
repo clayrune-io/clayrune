@@ -5,6 +5,7 @@ import { base64url, bytes, sign } from '../signing.js';
 import { Ledger } from '../ledger.js';
 import { createWorker } from '../worker.js';
 import { legacyTransportHttp } from '../legacy-transport-http.js';
+import { legacyTransportHooks } from '../legacy-transport-hooks.js';
 import { cfAr } from './fixtures.js';
 export const NOW = 1_794_249_600_000;
 export class D1 {
@@ -35,7 +36,7 @@ export function sendValue(over = {}) {
   return { intent_id: 'intent1', thread_id: 'thread1', reply_token: 'abcdef0123456789abcdef0123456789',
     subject: 'Project / conversation', body: 'A note. Reply to continue this conversation.', kind: 'note', ...over };
 }
-// Direct production HTTP boundary; gates/routing and email/scheduled remain on createWorker.
+// Direct retained boundaries; only explicit public-entry checks use createWorker.
 export function transportHttp(options = {}) {
   return { fetch(request, env) {
     return legacyTransportHttp({ ...options, request, env,
@@ -65,6 +66,10 @@ export async function fixture(options = {}) {
         install_id: p.install_id, generation: p.generation });
     }) };
   const worker = createWorker(workerOptions);
+  const legacy = legacyTransportHooks({ ...workerOptions,
+    config: (env) => ({ domain: env.MAIL_DOMAIN, from: env.MAIL_FROM,
+      ingressVerified: env.MAIL_INGRESS_VERIFIED === 'true', privateKey: env.MAIL_SERVICE_PRIVATE_KEY,
+      keyId: env.MAIL_SERVICE_KEY_ID }) });
   const http = options.publicEntry ? worker : transportHttp(workerOptions);
   async function request(path = '/v1/mail/send', value = sendValue(), over = {}) {
     const body = typeof value === 'string' ? bytes(value) : bytes(JSON.stringify(value));
@@ -72,7 +77,7 @@ export async function fixture(options = {}) {
       generation: reg.generation, direction: 'install-to-service', path, body, now: clock.now, ...over });
     return new Request(`https://service.example.net${path}`, { method: 'POST', headers, body });
   }
-  return { db, ledger, reg, installKeys, serviceKeys, env, config, sent, delivered, worker, http, request, clock };
+  return { db, ledger, reg, installKeys, serviceKeys, env, config, sent, delivered, worker, legacy, http, request, clock };
 }
 export function emailMessage({ text = 'A fresh reply', token = sendValue().reply_token,
   id = 'reply1@example.com', outId, from = 'owner@example.com', ar = cfAr(), extra = [],
@@ -91,6 +96,6 @@ export async function sendAndReceive(f, options = {}) {
   const res = await f.http.fetch(await f.request(), f.env); const sent = await res.json();
   if (res.status !== 200) throw new Error(JSON.stringify(sent));
   const message = emailMessage({ outId: sent.message_id, ...options });
-  const result = await f.worker.email(message, f.env);
+  const result = await f.legacy.email(message, f.env);
   return { message, result, outId: sent.message_id };
 }

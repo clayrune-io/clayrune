@@ -20,7 +20,7 @@ for (const options of [
     assert.equal(Object.hasOwn(p, 'text'), false);
     assert.doesNotMatch(e.payload, /DO-NOT-KEEP|pgp-signature|filename/);
     assert.equal(e.state, 'pending');
-    assert.equal((await f.worker.scheduled({}, f.env)).delivered, 1);
+    assert.equal((await f.legacy.scheduled({}, f.env)).delivered, 1);
     const d = f.delivered[0];
     assert.equal(new TextDecoder().decode(d.body), e.payload);
     const request = new Request(d.url, { method: d.method, headers: d.headers, body: d.body });
@@ -38,7 +38,7 @@ test('body-free holds retry without payload loss until matching custody', async 
   const f = await fixture({ fetcher: async () => Response.json({ custody: 'durable' }) });
   await sendAndReceive(f, { text: '' });
   const e = await f.ledger.first('SELECT * FROM events');
-  assert.equal((await f.worker.scheduled({}, f.env)).delivered, 0);
+  assert.equal((await f.legacy.scheduled({}, f.env)).delivered, 0);
   const pending = await f.ledger.first('SELECT * FROM events');
   assert.equal(pending.state, 'pending'); assert.equal(pending.payload, e.payload);
 });

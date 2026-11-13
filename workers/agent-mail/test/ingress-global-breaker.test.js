@@ -30,7 +30,7 @@ async function twoOwners() {
 test('control: independent owners both queue before stranger traffic', async () => {
   const { f, replies } = await twoOwners();
   for (const m of replies()) {
-    assert.equal((await f.worker.email(m, f.env)).status, 'queued');
+    assert.equal((await f.legacy.email(m, f.env)).status, 'queued');
     assert.deepEqual(m.rejects, []);
   }
   assert.equal((await f.ledger.first('SELECT COUNT(*) AS n FROM events')).n, 2);
@@ -45,11 +45,11 @@ for (const target of ['known', 'unknown']) {
         ar: cfAr({ from: 'example.org', mailfrom: 'stranger@example.org', d: 'example.org' }),
         id: `spam${i}@example.org` });
       if (target === 'unknown') m.to = m.to.replace('opaque1+', 'unregistered+');
-      assert.equal((await f.worker.email(m, f.env)).reason,
+      assert.equal((await f.legacy.email(m, f.env)).reason,
         target === 'known' ? 'from_not_owner' : 'owner_inactive');
     }
     const observations = [];
-    for (const m of replies()) observations.push({ result: await f.worker.email(m, f.env), rejects: m.rejects });
+    for (const m of replies()) observations.push({ result: await f.legacy.email(m, f.env), rejects: m.rejects });
     const counts = (await f.ledger.stmt('SELECT bucket,count FROM rate_limits WHERE bucket LIKE ?', 'ingress%').all()).results;
     const events = (await f.ledger.first('SELECT COUNT(*) AS n FROM events')).n;
     console.log(JSON.stringify({ target, observations, counts, events }));
@@ -60,7 +60,7 @@ for (const target of ['known', 'unknown']) {
 test('concurrent strangers do not spend protected quota below global limit', async () => {
   const f = await fixture();
   const sent = await (await f.http.fetch(await f.request(), f.env)).json();
-  const results = await Promise.all(Array.from({ length: 250 }, (_, i) => f.worker.email(emailMessage({
+  const results = await Promise.all(Array.from({ length: 250 }, (_, i) => f.legacy.email(emailMessage({
     from: 'stranger@example.org', envelope: 'stranger@example.org', token: '0'.repeat(32),
     outId: 'unknown@example.org', id: `race${i}@example.org`,
     ar: cfAr({ from: 'example.org', mailfrom: 'stranger@example.org', d: 'example.org' }),
@@ -69,7 +69,7 @@ test('concurrent strangers do not spend protected quota below global limit', asy
   assert.equal(await f.ledger.first("SELECT count FROM rate_limits WHERE bucket LIKE 'ingress:install1:%'"), null);
   assert.equal((await f.ledger.first("SELECT count FROM rate_limits WHERE bucket LIKE 'ingress-refused:install1:%'")).count, 200);
   const message = emailMessage({ outId: sent.message_id });
-  assert.equal((await f.worker.email(message, f.env)).status, 'queued');
+  assert.equal((await f.legacy.email(message, f.env)).status, 'queued');
   assert.deepEqual(message.rejects, []);
 });
 
@@ -82,19 +82,19 @@ test('10000 authentic replies past owner A install cap cannot spend owner B glob
   // Use the same authenticated reply: duplicates consume admitted-attempt quota,
   // but keep one queued event so queue capacity cannot hide the original bug.
   for (let i = 0; i < f.ledger.policy.ingressPerDay; i++) {
-    assert.equal((await f.worker.email(replies()[0], f.env)).status, i === 0 ? 'queued' : 'duplicate');
+    assert.equal((await f.legacy.email(replies()[0], f.env)).status, i === 0 ? 'queued' : 'duplicate');
   }
   assert.equal((await bucket(f, 'ingress:install1')).count, 200);
   assert.equal((await bucket(f, 'ingress-accepted:global')).count, 200);
   for (let i = 0; i < 10000; i++) {
     const message = replies()[0];
-    assert.deepEqual(await f.worker.email(message, f.env), { status: 'rejected', reason: 'ingress_limit' });
+    assert.deepEqual(await f.legacy.email(message, f.env), { status: 'rejected', reason: 'ingress_limit' });
     assert.deepEqual(message.rejects, ['Agent mail refused']);
   }
   assert.equal((await bucket(f, 'ingress:install1')).count, 200);
   assert.equal((await bucket(f, 'ingress-accepted:global')).count, 200);
   const second = replies()[1];
-  assert.equal((await f.worker.email(second, f.env)).status, 'queued');
+  assert.equal((await f.legacy.email(second, f.env)).status, 'queued');
   assert.deepEqual(second.rejects, []);
   assert.equal((await bucket(f, 'ingress:install2')).count, 1);
   assert.equal((await bucket(f, 'ingress-accepted:global')).count, 201);
@@ -103,11 +103,11 @@ test('10000 authentic replies past owner A install cap cannot spend owner B glob
 
 test('full global bucket leaves an existing owner allowance unchanged under concurrent replies', async () => {
   const { f, replies } = await twoOwners();
-  assert.equal((await f.worker.email(replies()[0], f.env)).status, 'queued');
+  assert.equal((await f.legacy.email(replies()[0], f.env)).status, 'queued');
   await f.ledger.run('UPDATE rate_limits SET count=? WHERE bucket=?',
     f.ledger.policy.globalIngressPerDay, `ingress-accepted:global:${Math.floor(f.clock.now / DAY)}`);
   const messages = Array.from({ length: 32 }, () => replies()[0]);
-  const results = await Promise.all(messages.map(m => f.worker.email(m, f.env)));
+  const results = await Promise.all(messages.map(m => f.legacy.email(m, f.env)));
   for (const result of results) assert.deepEqual(result, { status: 'rejected', reason: 'ingress_limit' });
   for (const message of messages) assert.deepEqual(message.rejects, ['Agent mail refused']);
   assert.equal((await bucket(f, 'ingress:install1')).count, 1);
@@ -157,9 +157,9 @@ test('authenticated owner above accepted-global allowance is still refused', asy
     `ingress-accepted:global:${Math.floor(f.clock.now / DAY)}`,
     f.ledger.policy.globalIngressPerDay - 1, f.clock.now + 2 * DAY);
   const [one, two] = replies();
-  assert.equal((await f.worker.email(one, f.env)).status, 'queued');
+  assert.equal((await f.legacy.email(one, f.env)).status, 'queued');
   assert.deepEqual(one.rejects, []);
-  assert.deepEqual(await f.worker.email(two, f.env), { status: 'rejected', reason: 'ingress_limit' });
+  assert.deepEqual(await f.legacy.email(two, f.env), { status: 'rejected', reason: 'ingress_limit' });
   assert.deepEqual(two.rejects, ['Agent mail refused']);
   assert.equal((await bucket(f, 'ingress-accepted:global')).count, 10000);
   assert.equal(await bucket(f, 'ingress:install2'), null);
@@ -173,10 +173,10 @@ test('saturated global refusals skip audit and install counts, still reject, and
     f.ledger.policy.globalIngressPerDay - 1, f.clock.now + 2 * DAY);
   // The last audited refusal, then multiple concurrent over-budget refusals.
   const last = emailMessage({ from: 'stranger@example.com' });
-  assert.equal((await f.worker.email(last, f.env)).reason, 'from_not_owner');
+  assert.equal((await f.legacy.email(last, f.env)).reason, 'from_not_owner');
   assert.deepEqual(last.rejects, ['Agent mail refused']);
   const messages = Array.from({ length: 25 }, () => emailMessage({ from: 'stranger@example.com' }));
-  const results = await Promise.all(messages.map(m => f.worker.email(m, f.env)));
+  const results = await Promise.all(messages.map(m => f.legacy.email(m, f.env)));
   assert.ok(results.every(r => r.status === 'rejected' && r.reason === 'from_not_owner'));
   for (const m of messages) assert.deepEqual(m.rejects, ['Agent mail refused']);
   assert.equal((await bucket(f, 'ingress-refused:global')).count, 10000);
@@ -185,14 +185,14 @@ test('saturated global refusals skip audit and install counts, still reject, and
   assert.equal((await f.ledger.first('SELECT COUNT(*) AS n FROM rejections')).n, 1);
   assert.equal((await f.ledger.first('SELECT COUNT(*) AS n FROM rejection_overflow')).n, 0);
   for (const m of replies()) {
-    assert.equal((await f.worker.email(m, f.env)).status, 'queued');
+    assert.equal((await f.legacy.email(m, f.env)).status, 'queued');
     assert.deepEqual(m.rejects, []);
   }
   assert.equal((await bucket(f, 'ingress-accepted:global')).count, 2);
   assert.equal((await f.ledger.first('SELECT COUNT(*) AS n FROM events')).n, 2);
   f.clock.now += DAY;
   const nextDay = emailMessage({ from: 'stranger@example.com' });
-  assert.equal((await f.worker.email(nextDay, f.env)).reason, 'from_not_owner');
+  assert.equal((await f.legacy.email(nextDay, f.env)).reason, 'from_not_owner');
   assert.deepEqual(nextDay.rejects, ['Agent mail refused']);
   assert.equal((await bucket(f, 'ingress-refused:global')).count, 1);
   assert.equal(await bucket(f, 'ingress-refused-saturated:global'), null);
@@ -210,7 +210,7 @@ test('unverified ingress remains the first gate even when both global buckets ar
   const message = { rejects: [], get to() { throw new Error('recipient_read'); },
     get rawSize() { throw new Error('raw_size_read'); },
     setReject(value) { this.rejects.push(value); } };
-  assert.deepEqual(await f.worker.email(message, f.env), { status: 'rejected', reason: 'ingress_not_verified' });
+  assert.deepEqual(await f.legacy.email(message, f.env), { status: 'rejected', reason: 'ingress_not_verified' });
   assert.deepEqual(message.rejects, ['Agent mail refused']);
   assert.equal((await bucket(f, 'ingress-refused-saturated:global')).count, 1);
   assert.equal((await f.ledger.first('SELECT COUNT(*) AS n FROM rejections')).n, 0);

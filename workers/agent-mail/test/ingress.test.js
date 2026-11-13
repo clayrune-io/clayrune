@@ -22,7 +22,7 @@ for (const over of [ { from: 'stranger@example.com' }, { ar: cfAr({ dmarc: 'fail
   test(`ingress drop never reaches custody: ${JSON.stringify(over).slice(0, 90)}`, async () => {
     const f = await fixture(); const r = await f.http.fetch(await f.request(), f.env); const out = await r.json();
     const message = emailMessage({ outId: out.message_id, ...over });
-    assert.equal((await f.worker.email(message, f.env)).status, 'rejected');
+    assert.equal((await f.legacy.email(message, f.env)).status, 'rejected');
     assert.equal((await f.ledger.first('SELECT COUNT(*) AS n FROM events')).n, 0);
     assert.equal(message.rejects.length, 1);
     assert.doesNotMatch(JSON.stringify((await f.ledger.stmt('SELECT * FROM rejections').all()).results), /INJECTED|stranger|owner@/);
@@ -30,19 +30,19 @@ for (const over of [ { from: 'stranger@example.com' }, { ar: cfAr({ dmarc: 'fail
 }
 test('spoof drop does not consume a genuine owner reply Message-ID', async () => {
   const f = await fixture(); const { outId } = await sendAndReceive(f, { from: 'stranger@example.com' });
-  const r = await f.worker.email(emailMessage({ outId }), f.env); assert.equal(r.status, 'queued');
+  const r = await f.legacy.email(emailMessage({ outId }), f.env); assert.equal(r.status, 'queued');
 });
 test('redelivery deduplicates; conflicting reuse is visible without replacing body', async () => {
   const f = await fixture(); const { outId, result } = await sendAndReceive(f);
-  const same = await f.worker.email(emailMessage({ outId }), f.env);
+  const same = await f.legacy.email(emailMessage({ outId }), f.env);
   assert.equal(same.status, 'duplicate'); assert.equal(same.event_id, result.event_id);
-  const conflict = await f.worker.email(emailMessage({ outId, text: 'different' }), f.env);
+  const conflict = await f.legacy.email(emailMessage({ outId, text: 'different' }), f.env);
   assert.equal(conflict.status, 'conflict');
   assert.equal(JSON.parse((await f.ledger.first('SELECT * FROM events')).payload).text, 'A fresh reply');
 });
 test('equal text with distinct message ids creates separate ordered events', async () => {
   const f = await fixture(); const { outId } = await sendAndReceive(f);
-  const second = await f.worker.email(emailMessage({ outId, id: 'reply2@example.com' }), f.env);
+  const second = await f.legacy.email(emailMessage({ outId, id: 'reply2@example.com' }), f.env);
   assert.equal(second.status, 'queued');
   assert.equal((await f.ledger.first('SELECT COUNT(*) AS n FROM events')).n, 2);
 });
@@ -56,16 +56,16 @@ test('missing incoming Message-ID holds visibly and cannot deliver', async () =>
 test('header provenance disagreement refuses even a valid-looking raw result', async () => {
   const f = await fixture(); const r = await f.http.fetch(await f.request(), f.env); const out = await r.json();
   const m = emailMessage({ outId: out.message_id }); m.headers.set('authentication-results', cfAr({ dmarc: 'fail' }));
-  assert.equal((await f.worker.email(m, f.env)).reason, 'ingress_header_mismatch');
+  assert.equal((await f.legacy.email(m, f.env)).reason, 'ingress_header_mismatch');
 });
 test('launch gate refuses ingress until provider fixtures verified', async () => {
   const f = await fixture(); f.env.MAIL_INGRESS_VERIFIED = 'false';
-  assert.equal((await f.worker.email(emailMessage(), f.env)).reason, 'ingress_not_verified');
+  assert.equal((await f.legacy.email(emailMessage(), f.env)).reason, 'ingress_not_verified');
 });
 test('rawSize lie is caught by bounded stream reader', async () => {
   const f = await fixture(); const r = await f.http.fetch(await f.request(), f.env); const out = await r.json();
   const m = emailMessage({ outId: out.message_id, text: 'x'.repeat(70_000) }); m.rawSize = 10;
-  assert.equal((await f.worker.email(m, f.env)).reason, 'malformed_or_oversize');
+  assert.equal((await f.legacy.email(m, f.env)).reason, 'malformed_or_oversize');
 });
 test('queue capacity refuses custody instead of acknowledging or truncating', async () => {
   const f = await fixture(); await sendAndReceive(f);
@@ -80,7 +80,7 @@ test('revoked and expired threads refuse ingress', async () => {
   for (const update of ['revoked=1', `expires_at=${NOW}`]) {
     const f = await fixture(); const { outId } = await sendAndReceive(f);
     await f.ledger.run(`UPDATE threads SET ${update}`);
-    const result = await f.worker.email(emailMessage({ outId, id: 'next@example.com' }), f.env);
+    const result = await f.legacy.email(emailMessage({ outId, id: 'next@example.com' }), f.env);
     assert.equal(result.status, 'rejected');
   }
 });
@@ -92,6 +92,6 @@ test('8bit legacy-charset body is decoded by MIME parser after header gate', asy
     'Content-Transfer-Encoding: 8bit\r\n\r\ncaf');
   const raw = new Uint8Array(h.length + 1); raw.set(h); raw[h.length] = 0xe9;
   m.raw = new Blob([raw]).stream(); m.rawSize = raw.length;
-  assert.equal((await f.worker.email(m, f.env)).status, 'queued');
+  assert.equal((await f.legacy.email(m, f.env)).status, 'queued');
   assert.equal(JSON.parse((await f.ledger.first('SELECT * FROM events')).payload).text, 'café');
 });

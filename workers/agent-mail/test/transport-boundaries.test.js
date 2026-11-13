@@ -95,7 +95,7 @@ test('held queue head cannot starve a different installation replay', async () =
     state,received_at,expires_at,next_attempt) VALUES('other','install2',1,'thread2','otherid',?,?,'pending',?,?,?)`,
     first.digest, JSON.stringify(p), NOW, NOW + 86400000, NOW);
   const due = await f.ledger.due(NOW); assert.deepEqual(due.map((e) => e.event_id), ['other']);
-  await f.worker.scheduled({}, f.env); assert.equal(f.delivered.length, 1);
+  await f.legacy.scheduled({}, f.env); assert.equal(f.delivered.length, 1);
   assert.equal(f.delivered[0].headers.get('x-mail-install-id'), 'install2');
 });
 test('MIME attachments and hidden HTML never survive worker custody', async () => {
@@ -106,13 +106,13 @@ test('MIME attachments and hidden HTML never survive worker custody', async () =
     htmlPart('<div hidden>HIDDEN-INJECTED</div>') ]);
   const raw = bytes(`Authentication-Results: ${cfAr()}\r\nMessage-ID: <reply1@example.com>\r\nIn-Reply-To: <${out.message_id}>\r\n${mime}`);
   m.raw = new Blob([raw]).stream(); m.rawSize = raw.length;
-  const result = await f.worker.email(m, f.env); assert.equal(result.status, 'queued');
+  const result = await f.legacy.email(m, f.env); assert.equal(result.status, 'queued');
   const payload = (await f.ledger.first('SELECT * FROM events')).payload;
   assert.match(payload, /Visible text/); assert.doesNotMatch(payload, /INJECTED/);
 });
 test('thread revocation purges a queued event before replay', async () => {
   const f = await fixture(); await sendAndReceive(f); await f.ledger.run('UPDATE threads SET revoked=1');
-  await f.worker.scheduled({}, f.env); const event = await f.ledger.first('SELECT * FROM events');
+  await f.legacy.scheduled({}, f.env); const event = await f.ledger.first('SELECT * FROM events');
   assert.equal(event.state, 'revoked'); assert.equal(event.payload, null); assert.equal(f.delivered.length, 0);
 });
 test('bounded rejection ledger exposes overflow as a durable count', async () => {
@@ -137,6 +137,6 @@ test('a late receipt after remote revocation cannot count as settled custody', a
     return Response.json({ custody: 'durable', event_id: p.event_id, body_digest: p.body_digest,
       install_id: p.install_id, generation: p.generation });
   } });
-  await sendAndReceive(f); const result = await f.worker.scheduled({}, f.env);
+  await sendAndReceive(f); const result = await f.legacy.scheduled({}, f.env);
   assert.equal(result.delivered, 0); assert.equal((await f.ledger.first('SELECT * FROM events')).state, 'revoked');
 });
