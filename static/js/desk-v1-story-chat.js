@@ -144,7 +144,7 @@
       const scene = t.scene ? t.n : null;
       const body = {
         owner, message: text, scene, story: t.ctx.detail.story || '',
-        scenes: sentScenes.map((s) => ({ label: s.label, line: s.line, duration_sec: s.durationSec })),
+        scenes: sentScenes.map((s) => ({ id: s.id, label: s.label, line: s.line, duration_sec: s.durationSec })),
       };
       const agent = bridge.agentRef();
       if (agent) body.agent = agent;
