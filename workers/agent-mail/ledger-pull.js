@@ -150,18 +150,35 @@ export class PullTransportLedger {
       && prior.token_hash === value.token_hash, 'intent_conflict');
     return { ...prior, duplicate: true };
   }
-  async reserveSend(reg, value, now) {
+  // HTTP callers supply already-built nonce/accounting/operation guards. They
+  // execute only in the first batch, and roll back with its owner/time checks.
+  // Existing-intent lookups need the same transaction, without send authority.
+  async replaySend(reg, id, now, requestGuards) {
+    reg = { ...reg }; this.time(now);
+    valid(Array.isArray(requestGuards));
+    const result = await this.atomic(reg, [this.timeGuard(now), ...requestGuards,
+      this.registry.guard(`EXISTS(SELECT 1 FROM pull_intents WHERE install_id=? AND generation=?
+        AND owner_generation=? AND owner_hash=? AND intent_id=?)`,
+      reg.install_id, reg.generation, reg.owner_generation, reg.owner_hash, id),
+      this.timeGuard(now), this.intentStatement(reg, id)]);
+    return result.at(-2).results[0] ?? null;
+  }
+  async reserveSend(reg, value, now, requestGuards = []) {
     reg = { ...reg }; value = { ...value };
     this.scope(reg); this.time(now);
     valid(value && match(ID, value.intent_id) && match(ID, value.thread_id) && match(H, value.digest)
       && match(H, value.token_hash) && strictMsgId(value.message_id) === value.message_id);
     await this.active(reg);
     const prior = await this.intent(reg, value.intent_id);
-    if (prior) return this.same(prior, value);
+    if (prior) {
+      const duplicate = this.same(prior, value);
+      if (!requestGuards.length) return duplicate;
+      return this.same(await this.replaySend(reg, value.intent_id, now, requestGuards), value);
+    }
     const expires = now + this.policy.threadTTL;
     valid(integer(expires, now + 1, MAX - 30 * DAY));
     try {
-      const result = await this.atomic(reg, [this.timeGuard(now),
+      const result = await this.atomic(reg, [this.timeGuard(now), ...requestGuards,
         this.stmt(`INSERT INTO pull_intents(install_id,generation,intent_id,owner_generation,owner_hash,input_digest,
           thread_id,message_id,state,created_ms) VALUES(?,?,?,?,?,?,?,?,'reserved',?)`,
         reg.install_id, reg.generation, value.intent_id, reg.owner_generation, reg.owner_hash, value.digest,
@@ -172,12 +189,15 @@ export class PullTransportLedger {
       ]);
       return { ...result.at(-2).results[0], duplicate: false };
     } catch (error) {
+      // A nonce/operation refusal must never become a successful duplicate.
+      // HTTP glue classifies a raced/refused guarded batch after full rollback.
+      if (requestGuards.length) throw error;
       const raced = await this.intent(reg, value.intent_id);
       if (raced) return this.same(raced, value);
       throw error;
     }
   }
-  async authorizeSend(reg, id, now) {
+  async authorizeSend(reg, id, now, requestGuards = []) {
     reg = { ...reg };
     this.scope(reg); this.time(now); valid(match(ID, id));
     const prior = await this.intent(reg, id); valid(prior?.state === 'reserved', 'intent_conflict');
@@ -192,7 +212,7 @@ export class PullTransportLedger {
         DO UPDATE SET count=count+1 WHERE count<?`, bucket, (day + 2) * DAY, cap), this.registry.changed());
     }
     let result;
-    try { result = await this.atomic(reg, [this.timeGuard(now, true),
+    try { result = await this.atomic(reg, [this.timeGuard(now, true), ...requestGuards,
       this.stmt(`UPDATE pull_intents SET state='sending' WHERE install_id=? AND generation=? AND owner_generation=?
         AND owner_hash=? AND intent_id=? AND state='reserved' AND EXISTS(SELECT 1 FROM pull_threads t
           WHERE t.install_id=pull_intents.install_id AND t.generation=pull_intents.generation

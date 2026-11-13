@@ -245,3 +245,66 @@ test('caller mutation during awaits cannot select another owner, body or reply t
   assert.equal(f.calls[0].to, 'Owner+tag@example.com'); assert.equal(f.calls[0].text, value().body);
   assert.equal(f.calls[0].replyTo, `${LOCAL}+${id(3)}@mail.example.net`);
 });
+
+// The HTTP caller's statements join the first transaction on new AND replay
+// paths. The mock nonce here uses the real UNIQUE constraint and rollback.
+function requestGuards(f, nonce = id(90)) {
+  return [f.ledger.stmt("INSERT INTO pull_nonces VALUES('install-to-pull',?,7,'key',?,?)", id(1), nonce, NOW + 300001),
+    f.ledger.stmt("INSERT INTO pull_budgets VALUES('http-test',1,?) ON CONFLICT(bucket) DO UPDATE SET count=count+1", NOW + 86400000)];
+}
+for (const existing of [false, true]) {
+  test(`request guard nonce replay refuses ${existing ? 'existing' : 'new'} intent atomically`, async (t) => {
+    const f = await fixture(t);
+    if (existing) await f.send();
+    await f.db.batch(requestGuards(f));
+    const before = ['pull_intents','pull_threads','pull_budgets','pull_nonces'].map((s) => all(f, s));
+    await assert.rejects(f.send(value(), { requestGuards: requestGuards(f) }), { message: 'storage_unavailable' });
+    assert.deepEqual(['pull_intents','pull_threads','pull_budgets','pull_nonces'].map((s) => all(f, s)), before);
+    assert.equal(f.calls.length, existing ? 1 : 0);
+  });
+  test(`request accounting commits exactly once on ${existing ? 'existing' : 'new'} intent`, async (t) => {
+    const f = await fixture(t); if (existing) await f.send();
+    assert.equal((await f.send(value(), { requestGuards: requestGuards(f) })).state, 'accepted');
+    assert.equal(f.sql.prepare("SELECT count FROM pull_budgets WHERE bucket='http-test'").get().count, 1);
+    assert.equal(all(f, 'pull_nonces').length, 1); assert.equal(f.calls.length, 1);
+    assert.ok(all(f, 'pull_budgets').every((r) => r.count === 1));
+  });
+}
+test('operation failure rolls back nonce and HTTP accounting with the reservation', async (t) => {
+  const f = await fixture(t); await f.send(); // Reserve a token/thread collision.
+  await assert.rejects(f.send(value({ intent_id: 'another-intent' }), { requestGuards: requestGuards(f) }),
+    { message: 'storage_unavailable' });
+  assert.equal(all(f, 'pull_nonces').length, 0);
+  assert.equal(f.sql.prepare("SELECT count(*) AS n FROM pull_budgets WHERE bucket='http-test'").get().n, 0);
+  assert.equal(all(f, 'pull_intents').length, 1); assert.equal(f.calls.length, 1);
+});
+test('guard failure racing an initial reservation never becomes a duplicate receipt', async (t) => {
+  const f = await fixture(t); let injected = false;
+  f.db.beforeBatch = async (statements) => {
+    if (!injected && statements.some((s) => s.sql.includes('INSERT INTO pull_intents'))) {
+      injected = true; await f.send(); await f.db.batch(requestGuards(f));
+    }
+  };
+  await assert.rejects(f.send(value(), { requestGuards: requestGuards(f) }), { message: 'storage_unavailable' });
+  assert.equal(f.calls.length, 1); assert.equal(all(f, 'pull_nonces').length, 1);
+});
+test('direct authorization guards roll back nonce, HTTP count, CAS and send budgets together', async (t) => {
+  const f = await fixture(t), v = value();
+  await f.ledger.reserveSend(f.reg, { ...v, digest: await sha256(bytes(JSON.stringify(v))),
+    token_hash: await sha256(bytes(v.reply_token)), message_id: 'internal@mail.example.net' }, f.time);
+  await assert.rejects(f.ledger.authorizeSend(f.reg, v.intent_id, f.time,
+    [...requestGuards(f), f.ledger.registry.guard('0')]), { message: 'storage_unavailable' });
+  assert.equal(row(f).state, 'reserved'); assert.equal(all(f, 'pull_nonces').length, 0);
+  assert.equal(all(f, 'pull_budgets').length, 0);
+  const authorized = await f.ledger.authorizeSend(f.reg, v.intent_id, f.time, requestGuards(f));
+  assert.equal(Object.isFrozen(authorized), true); assert.equal(authorized.authorized, true);
+  assert.equal(row(f).state, 'sending'); assert.equal(all(f, 'pull_nonces').length, 1);
+  assert.equal(all(f, 'pull_budgets').length, 3);
+  await assert.rejects(f.ledger.authorizeSend(f.reg, v.intent_id, f.time, requestGuards(f)), { message: 'intent_conflict' });
+  assert.ok(all(f, 'pull_budgets').every((r) => r.count === 1));
+});
+test('guarded replay of a missing intent rolls back its nonce and accounting', async (t) => {
+  const f = await fixture(t);
+  await assert.rejects(f.ledger.replaySend(f.reg, 'missing', f.time, requestGuards(f)), { message: 'storage_unavailable' });
+  assert.equal(all(f, 'pull_nonces').length, 0); assert.equal(all(f, 'pull_budgets').length, 0);
+});
