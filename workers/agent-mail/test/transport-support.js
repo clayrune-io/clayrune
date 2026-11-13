@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { base64url, bytes, sign } from '../signing.js';
 import { Ledger } from '../ledger.js';
 import { createWorker } from '../worker.js';
+import { legacyTransportHttp } from '../legacy-transport-http.js';
 import { cfAr } from './fixtures.js';
 export const NOW = 1_794_249_600_000;
 export class D1 {
@@ -34,6 +35,15 @@ export function sendValue(over = {}) {
   return { intent_id: 'intent1', thread_id: 'thread1', reply_token: 'abcdef0123456789abcdef0123456789',
     subject: 'Project / conversation', body: 'A note. Reply to continue this conversation.', kind: 'note', ...over };
 }
+// Direct production HTTP boundary; gates/routing and email/scheduled remain on createWorker.
+export function transportHttp(options = {}) {
+  return { fetch(request, env) {
+    return legacyTransportHttp({ ...options, request, env,
+      config: () => ({ domain: env.MAIL_DOMAIN, from: env.MAIL_FROM,
+        ingressVerified: env.MAIL_INGRESS_VERIFIED === 'true', privateKey: env.MAIL_SERVICE_PRIVATE_KEY,
+        keyId: env.MAIL_SERVICE_KEY_ID }) });
+  } };
+}
 export async function fixture(options = {}) {
   const db = options.db ?? new D1(); const installKeys = await keys(); const serviceKeys = await keys();
   const ledger = new Ledger(db, options.policy);
@@ -48,19 +58,21 @@ export async function fixture(options = {}) {
     privateKey: serviceKeys.privateKey, ingressVerified: true };
   const sent = []; const delivered = [];
   const clock = { now: NOW };
-  const worker = createWorker({ clock: () => clock.now, send: options.send ?? (async (m) => sent.push(m)),
+  const workerOptions = { clock: () => clock.now, send: options.send ?? (async (m) => sent.push(m)),
     fetcher: options.fetcher ?? (async (url, init) => {
       delivered.push({ url, ...init }); const p = JSON.parse(new TextDecoder().decode(init.body));
       return Response.json({ custody: 'durable', event_id: p.event_id, body_digest: p.body_digest,
         install_id: p.install_id, generation: p.generation });
-    }) });
+    }) };
+  const worker = createWorker(workerOptions);
+  const http = options.publicEntry ? worker : transportHttp(workerOptions);
   async function request(path = '/v1/mail/send', value = sendValue(), over = {}) {
     const body = typeof value === 'string' ? bytes(value) : bytes(JSON.stringify(value));
     const headers = await sign({ ...installKeys, key_id: reg.key_id, install_id: reg.install_id,
       generation: reg.generation, direction: 'install-to-service', path, body, now: clock.now, ...over });
     return new Request(`https://service.example.net${path}`, { method: 'POST', headers, body });
   }
-  return { db, ledger, reg, installKeys, serviceKeys, env, config, sent, delivered, worker, request, clock };
+  return { db, ledger, reg, installKeys, serviceKeys, env, config, sent, delivered, worker, http, request, clock };
 }
 export function emailMessage({ text = 'A fresh reply', token = sendValue().reply_token,
   id = 'reply1@example.com', outId, from = 'owner@example.com', ar = cfAr(), extra = [],
@@ -76,7 +88,7 @@ export function emailMessage({ text = 'A fresh reply', token = sendValue().reply
     setReject: (s) => rejects.push(s), rejects };
 }
 export async function sendAndReceive(f, options = {}) {
-  const res = await f.worker.fetch(await f.request(), f.env); const sent = await res.json();
+  const res = await f.http.fetch(await f.request(), f.env); const sent = await res.json();
   if (res.status !== 200) throw new Error(JSON.stringify(sent));
   const message = emailMessage({ outId: sent.message_id, ...options });
   const result = await f.worker.email(message, f.env);

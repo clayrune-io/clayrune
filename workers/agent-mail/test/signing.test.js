@@ -20,7 +20,7 @@ for (const [header, value] of Object.entries({ version: '2', direction: 'service
   nonce: 'b'.repeat(32), digest: '0'.repeat(64), signature: 'A'.repeat(86) })) {
   test(`signature binds ${header}`, async () => {
     const f = await fixture(); const r = await f.request(); r.headers.set(`x-mail-${header}`, value);
-    assert.equal((await f.worker.fetch(r, f.env)).status, 401);
+    assert.equal((await f.http.fetch(r, f.env)).status, 401);
     assert.equal((await f.ledger.first('SELECT COUNT(*) AS n FROM nonces')).n, 0);
     assert.equal(f.sent.length, 0);
   });
@@ -42,7 +42,7 @@ for (const change of ['body', 'method', 'path', 'query', 'public-key']) {
 for (const offset of [-SKEW_MS, SKEW_MS, -SKEW_MS - 1, SKEW_MS + 1]) {
   test(`signature timestamp boundary ${offset}`, async () => {
     const f = await fixture(); const r = await f.request('/v1/mail/reconcile', {}, { now: NOW + offset });
-    assert.equal((await f.worker.fetch(r, f.env)).status, Math.abs(offset) <= SKEW_MS ? 200 : 401);
+    assert.equal((await f.http.fetch(r, f.env)).status, Math.abs(offset) <= SKEW_MS ? 200 : 401);
   });
 }
 test('concurrent identical nonce has one winner across ledger instances', async () => {

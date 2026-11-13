@@ -9,13 +9,13 @@ test('dashboard cookies and bearer credentials cannot authenticate send', async 
   for (const headers of [ { cookie: 'session=dashboard' }, { authorization: 'Bearer dashboard' }, {} ]) {
     const r = new Request('https://service.example.net/v1/mail/send', { method: 'POST', headers,
       body: JSON.stringify(sendValue()) });
-    assert.equal((await f.worker.fetch(r, f.env)).status, 401);
+    assert.equal((await f.http.fetch(r, f.env)).status, 401);
   }
   assert.equal(f.sent.length, 0);
 });
 test('disabled feature does no storage or send work', async () => {
-  const f = await fixture(); f.env.MAIL_ENABLED = 'false'; f.env.MAIL_DB = null;
-  assert.equal((await f.worker.fetch(await f.request(), f.env)).status, 503);
+  const f = await fixture({ publicEntry: true }); f.env.MAIL_ENABLED = 'false'; f.env.MAIL_DB = null;
+  assert.equal((await f.http.fetch(await f.request(), f.env)).status, 503);
   const m = emailMessage(); await f.worker.email(m, f.env); assert.equal(m.rejects.length, 1);
   assert.equal(await f.worker.scheduled({}, f.env), undefined); assert.equal(f.sent.length, 0);
 });
@@ -26,10 +26,10 @@ test('old generation and wrong install key cannot sign as a different install', 
   const body = bytes(JSON.stringify(sendValue()));
   const forged = await sign({ ...f.installKeys, key_id: 'ik1', install_id: 'install2', generation: 1,
     direction: 'install-to-service', path: '/v1/mail/send', body, now: NOW });
-  assert.equal((await f.worker.fetch(new Request('https://service.example.net/v1/mail/send',
+  assert.equal((await f.http.fetch(new Request('https://service.example.net/v1/mail/send',
     { method: 'POST', headers: forged, body }), f.env)).status, 401);
   await f.ledger.run('UPDATE registrations SET generation=2 WHERE install_id=?', 'install1');
-  assert.equal((await f.worker.fetch(await f.request(), f.env)).status, 401); assert.equal(f.sent.length, 0);
+  assert.equal((await f.http.fetch(await f.request(), f.env)).status, 401); assert.equal(f.sent.length, 0);
 });
 test('nonce claim store failure propagates instead of becoming an authentication refusal', async () => {
   const f = await fixture(); const request = await f.request(); const body = new Uint8Array(await request.arrayBuffer());
@@ -56,16 +56,16 @@ test('outbound failure after provider write but before D1 receipt remains unrepl
     }
     return original(sql);
   };
-  const first = await f.worker.fetch(await f.request(), f.env); assert.equal(first.status, 503);
+  const first = await f.http.fetch(await f.request(), f.env); assert.equal(first.status, 503);
   assert.equal(f.sent.length, 1);
-  const second = await f.worker.fetch(await f.request(), f.env); assert.equal((await second.json()).code, 'sending');
+  const second = await f.http.fetch(await f.request(), f.env); assert.equal((await second.json()).code, 'sending');
   assert.equal(f.sent.length, 1); await f.ledger.reconcile(NOW + 60_000);
   assert.equal((await f.ledger.first('SELECT * FROM intents')).state, 'uncertain');
 });
 test('immutable thread/token collision cannot attach another outbound intent', async () => {
-  const f = await fixture(); await f.worker.fetch(await f.request(), f.env);
+  const f = await fixture(); await f.http.fetch(await f.request(), f.env);
   const second = sendValue({ intent_id: 'i2', thread_id: 't2' });
-  assert.equal((await f.worker.fetch(await f.request('/v1/mail/send', second), f.env)).status, 503);
+  assert.equal((await f.http.fetch(await f.request('/v1/mail/send', second), f.env)).status, 503);
   assert.equal((await f.ledger.first('SELECT COUNT(*) AS n FROM threads')).n, 1); assert.equal(f.sent.length, 1);
 });
 test('D1 generation check closes revocation between authentication and reservation', async () => {
@@ -77,7 +77,7 @@ test('D1 generation check closes revocation between authentication and reservati
 test('global send quota is enforced even below the install quota', async () => {
   const f = await fixture();
   await f.ledger.run('INSERT INTO rate_limits VALUES(?,?,?)', `send:global:${Math.floor(NOW / 86400000)}`, 1000, NOW + 86400000);
-  const res = await f.worker.fetch(await f.request(), f.env); assert.equal(res.status, 429); assert.equal(f.sent.length, 0);
+  const res = await f.http.fetch(await f.request(), f.env); assert.equal(res.status, 429); assert.equal(f.sent.length, 0);
 });
 test('held queue head cannot starve a different installation replay', async () => {
   const f = await fixture(); await sendAndReceive(f, { id: null });
@@ -99,7 +99,7 @@ test('held queue head cannot starve a different installation replay', async () =
   assert.equal(f.delivered[0].headers.get('x-mail-install-id'), 'install2');
 });
 test('MIME attachments and hidden HTML never survive worker custody', async () => {
-  const f = await fixture(); const res = await f.worker.fetch(await f.request(), f.env); const out = await res.json();
+  const f = await fixture(); const res = await f.http.fetch(await f.request(), f.env); const out = await res.json();
   const m = emailMessage({ outId: out.message_id });
   const mime = multipart('mixed', [ plainPart('Visible text'),
     { headers: ['Content-Type: text/plain', 'Content-Disposition: attachment; filename=x.txt'], body: 'INJECTED' },
@@ -125,7 +125,7 @@ test('bounded rejection ledger exposes overflow as a durable count', async () =>
 });
 for (const value of [null, true, 1, [], { install_id: 'other' }]) {
   test(`reconciliation accepts an empty object only: ${JSON.stringify(value)}`, async () => {
-    const f = await fixture(); const r = await f.worker.fetch(await f.request('/v1/mail/reconcile', value), f.env);
+    const f = await fixture(); const r = await f.http.fetch(await f.request('/v1/mail/reconcile', value), f.env);
     assert.equal(r.status, 400); assert.equal((await r.json()).code, 'invalid_reconcile');
   });
 }

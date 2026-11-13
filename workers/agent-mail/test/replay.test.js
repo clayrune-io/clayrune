@@ -99,9 +99,9 @@ test('a fresh D1 connection recovers queue and nonce claims after restart', asyn
   try {
     const f = await fixture({ db: new D1(path) }); db = f.db;
     const { result } = await sendAndReceive(f); const request = await f.request();
-    const copy = request.clone(); await f.worker.fetch(request, f.env); db.sql.close();
+    const copy = request.clone(); await f.http.fetch(request, f.env); db.sql.close();
     db = new D1(path, false); f.env.MAIL_DB = db;
-    assert.equal((await f.worker.fetch(copy, f.env)).status, 401);
+    assert.equal((await f.http.fetch(copy, f.env)).status, 401);
     const ledger = new Ledger(db); assert.equal((await ledger.first('SELECT * FROM events WHERE event_id=?', result.event_id)).state, 'pending');
     await f.worker.scheduled({}, f.env);
     assert.equal((await ledger.first('SELECT * FROM events WHERE event_id=?', result.event_id)).state, 'local_received');
