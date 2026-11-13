@@ -315,7 +315,7 @@ def wired(fixture, monkeypatch, tmp_path):
     memory = tmp_path / 'MEMORY.md'
     memory.write_text('fixture memory')
     monkeypatch.setattr(ar, '_get_memory_path', lambda p: memory)
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [])
     monkeypatch.setattr(ar, '_session_character_parts', lambda p, s: ('PERSONA SENTINEL', 'Sol_Tobin', ['test-skill']))
     return ar
 

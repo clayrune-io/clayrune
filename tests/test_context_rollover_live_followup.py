@@ -92,7 +92,7 @@ def env(tmp_path, monkeypatch):
     project = {'id': 'p1', 'project_path': str(project_path), 'provider': 'claude'}
     monkeypatch.setattr(ar, 'load_project', lambda pid: project)
     monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'delegation.db'))
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [])
     monkeypatch.setattr(ar, '_pid_is_alive', lambda pid: True)
     monkeypatch.setattr(ar._memory_turn, 'refresh_for_turn', lambda *a, **k: {'block': ''})
     monkeypatch.setattr(ar._behavior_tail, 'render', lambda *a, **k: '')
@@ -232,7 +232,13 @@ def test_in_flight_child_survives_the_token_triggered_roll(env, monkeypatch):
     }
 
     new_proc = _Proc(alive=True, pid=888888)
-    monkeypatch.setattr(ar.subprocess, 'Popen', lambda cmd, **kwargs: new_proc)
+    spawned = []
+
+    def _popen(cmd, **kwargs):
+        spawned.append(cmd)
+        return new_proc
+
+    monkeypatch.setattr(ar.subprocess, 'Popen', _popen)
 
     before_kids = ar._in_flight_children('p1', 'parent-1')
     assert len(before_kids) == 1
@@ -243,6 +249,10 @@ def test_in_flight_child_survives_the_token_triggered_roll(env, monkeypatch):
     assert _wait(lambda: env['sessions']['parent-1'].get('proc') is new_proc
                 or env['sessions']['parent-1'].get('process_alive') is False), \
         'parent session never processed the roll'
+    # Wait for the respawn thread to actually reach Popen. Returning on
+    # process_alive=False alone let the thread outlive the test and call the
+    # REAL Popen after monkeypatch teardown, blocked inside the next test.
+    assert _wait(lambda: bool(spawned)), 'fresh process was never spawned'
 
     # The dict object identity for 'parent-1' is the same key in agent_sessions
     # -- never deleted and re-inserted under a new id.

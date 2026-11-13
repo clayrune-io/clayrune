@@ -153,7 +153,7 @@ def test_revive_launch_env_follows_the_rows_trigger_type(
     monkeypatch.delenv(VAR, raising=False)
     monkeypatch.setitem(ar.state.CONFIG, 'use_streaming_agent', streaming)
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *a, **kw: None)
-    monkeypatch.setattr(ar, '_load_agent_log', lambda _: [dict(
+    monkeypatch.setattr(ar, '_load_agent_log', lambda _, **_kw: [dict(
         session_id='s1', claude_session_id=CSID, trigger_type=trigger_type,
         trigger_id='t1')])
     seen = _record_popen(ar, monkeypatch)

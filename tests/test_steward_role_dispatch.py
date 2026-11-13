@@ -570,7 +570,7 @@ def test_actual_claude_auto_fresh_revival_marker_and_ack(revive_env, monkeypatch
     monkeypatch.setattr(ar, '_build_claude_flags', lambda *a, **k: [])
     monkeypatch.setattr(launch_marker, 'launch_cmd', lambda cmd, *a: cmd)
     monkeypatch.setattr(ar._memory_turn, 'seed_delivered', lambda *a: None)
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [{
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [{
         'session_id': 'prior', 'claude_session_id': 'aaaaaaaa-1111-2222-3333-444444444444',
         'trigger_type': 'schedule', 'trigger_id': 'wake', 'provider': 'claude'}])
     monkeypatch.setattr(ar, 'get_manager', lambda pid: SimpleNamespace(

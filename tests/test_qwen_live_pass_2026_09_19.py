@@ -386,7 +386,7 @@ def env(tmp_path, monkeypatch):
     project = {'id': 'p1', 'project_path': str(pp), 'provider': 'qwen'}
     monkeypatch.setattr(ar, 'load_project', lambda pid: project)
     monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'd.db'))
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [])
     monkeypatch.setattr(ar._memory_turn, 'refresh_for_turn', lambda *a, **k: {'block': ''})
     monkeypatch.setattr(ar._behavior_tail, 'render', lambda *a, **k: '')
     monkeypatch.setattr(ar, '_clock_wrap', lambda project, session, content, message=None: content)  # exact-bytes tests; stamp covered in test_turn_clock.py

@@ -122,7 +122,7 @@ class TestPriorCharacter:
     conversation was."""
 
     def _log(self, monkeypatch, entries):
-        monkeypatch.setattr(agent_routes, '_load_agent_log', lambda pid: entries)
+        monkeypatch.setattr(agent_routes, '_load_agent_log', lambda pid, **_kw: entries)
 
     def test_it_finds_the_persona_by_claude_session_id(self, monkeypatch):
         self._log(monkeypatch, [{'claude_session_id': 'abc', 'character': DAVE}])

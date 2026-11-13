@@ -22,7 +22,7 @@ def test_cold_codex_delivery_error_stays_on_original_conversation(app_env, monke
     sid = 'coldcodex001'
     entry = {'session_id': sid, 'provider': 'codex',
              'provider_session_id': 'native-thread', 'task': 'old chat'}
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [entry])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [entry])
     monkeypatch.setattr(ar, '_assert_runtime_project_generation', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_find_transcript_file', lambda *a: None)
     calls = []

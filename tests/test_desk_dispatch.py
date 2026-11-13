@@ -254,7 +254,7 @@ def test_guard_and_frozen_mcp_entry(monkeypatch, capsys):
 def test_return_survives_thread_trim_question_pause_and_missing_card_after_launch(rig, monkeypatch):
     sink = dispatch.SINK_PREFIX + CID
     monkeypatch.setattr(ar, 'agent_sessions', {})
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [{
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [{
         'session_id': 'child-1', 'spawned_by_session_id': sink,
         'task': f'Origin: Desk campaign {CID}, agent Posy\n\nReview',
         'character': {'scope': 'global', 'name': 'dave'}}])

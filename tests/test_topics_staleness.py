@@ -109,7 +109,7 @@ def test_automation_prompt_is_not_used_as_the_clustering_seed(monkeypatch):
         'last_user': 'is this what you were asking for?',
         'mtime': NOW.timestamp(),
     }])
-    monkeypatch.setattr(tr, '_load_agent_log', lambda pid: [
+    monkeypatch.setattr(tr, '_load_agent_log', lambda pid, **_kw: [
         {'claude_session_id': 'sc', 'summary': 'Investigated page load time'}])
     sig = tr._gather_signals('p')[0]
     assert sig['ask'] == 'Investigated page load time'
@@ -124,7 +124,7 @@ def test_falls_back_to_user_text_when_no_summary(monkeypatch):
         'last_user': 'fix the header spacing please',
         'mtime': NOW.timestamp(),
     }])
-    monkeypatch.setattr(tr, '_load_agent_log', lambda pid: [])
+    monkeypatch.setattr(tr, '_load_agent_log', lambda pid, **_kw: [])
     assert tr._gather_signals('p')[0]['ask'] == 'fix the header spacing please'
 
 
@@ -136,7 +136,7 @@ def test_ordinary_openers_are_left_alone(monkeypatch):
         'first_user': '[note] the browser pane is not discoverable to agents',
         'last_user': 'thanks', 'mtime': NOW.timestamp(),
     }])
-    monkeypatch.setattr(tr, '_load_agent_log', lambda pid: [
+    monkeypatch.setattr(tr, '_load_agent_log', lambda pid, **_kw: [
         {'claude_session_id': 'u', 'summary': 'a summary'}])
     assert tr._gather_signals('p')[0]['ask'].startswith('[note]')
 

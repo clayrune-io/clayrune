@@ -161,7 +161,7 @@ def test_claude_revive_with_no_transcript_uses_agent_log_gap(
     last-reply time comes from the durable agent_log row."""
     monkeypatch.setitem(ar.state.CONFIG, 'use_streaming_agent', streaming)
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *a, **k: None)
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: _row_nine_hours_ago())
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: _row_nine_hours_ago())
     seen = _capture_popen(ar, monkeypatch)
 
     session = ar._revive_from_agent_log('p1', 's1', 'still there?', _project(tmp_path))
@@ -190,7 +190,7 @@ def test_dispatch_clock_task_fresh_session_is_stamp_only(ar, tmp_path):
 
 def test_dispatch_clock_task_reattached_conversation_gets_the_gap(
         ar, tmp_path, monkeypatch):
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: _row_nine_hours_ago())
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: _row_nine_hours_ago())
     monkeypatch.setattr(ar._turn_clock, 'gap_briefing', lambda *a, **k: '')
     out = ar._dispatch_clock_task(_project(tmp_path), 'p1', 'carry on',
                                   reuse_session_id='s1')
@@ -276,7 +276,7 @@ def test_initial_claude_dispatch_is_stamped(ar, tmp_path, monkeypatch, streaming
     monkeypatch.setitem(ar.state.CONFIG, 'use_streaming_agent', streaming)
     monkeypatch.setattr(ar, 'load_project', lambda _: project)
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *a, **k: None)
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [])
     monkeypatch.setattr(ar, '_resolve_claude', lambda: 'claude')
     monkeypatch.setattr(ar, '_build_claude_flags', lambda *a, **k: [])
     seen = _capture_popen(ar, monkeypatch)

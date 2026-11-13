@@ -69,13 +69,13 @@ def test_non_claude_revival_fences_old_log_and_forwards_current_generation(env, 
     calls = []
     monkeypatch.setattr(ar, '_dispatch_agent_internal',
                         lambda *args, **kwargs: calls.append((args, kwargs)))
-    monkeypatch.setattr(ar, '_load_agent_log', lambda project_id: [
+    monkeypatch.setattr(ar, '_load_agent_log', lambda project_id, **_kw: [
         {**common, 'project_generation': 1}])
     assert ar._revive_non_claude_from_agent_log(
         'p', 'mc-session', 'stale', {'project_path': str(tmp)}) is None
     assert calls == []
 
-    monkeypatch.setattr(ar, '_load_agent_log', lambda project_id: [
+    monkeypatch.setattr(ar, '_load_agent_log', lambda project_id, **_kw: [
         {**common, 'project_generation': 3}])
     assert ar._revive_non_claude_from_agent_log(
         'p', 'mc-session', 'current', {'project_path': str(tmp)}) == 'mc-session'

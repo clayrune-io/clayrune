@@ -199,7 +199,7 @@ def test_reconciler_session_carries_trigger_type(monkeypatch):
     # `first_encounter` is false once any row carries a 'scribed' key.
     log = [{'session_id': 'old', 'scribed': True}, row]
     monkeypatch.setattr(srv, 'load_projects', lambda: [{'id': 'pX', 'project_path': ''}])
-    monkeypatch.setattr(srv, '_load_agent_log', lambda pid: log)
+    monkeypatch.setattr(srv, '_load_agent_log', lambda pid, **_kw: log)
     monkeypatch.setattr(srv, '_save_agent_log', lambda pid, l: None)
     monkeypatch.setattr(srv._bp_agent, '_update_agent_log', lambda pid, mutate: mutate(log))
     monkeypatch.setattr(srv, '_has_running_agent', lambda pid: False)
@@ -220,7 +220,7 @@ def test_reconciler_session_without_trigger_type_stays_unattended(monkeypatch):
            'status': 'completed', 'ts': '2026-10-15T00:00:00Z'}
     log = [{'session_id': 'old', 'scribed': True}, row]
     monkeypatch.setattr(srv, 'load_projects', lambda: [{'id': 'pX', 'project_path': ''}])
-    monkeypatch.setattr(srv, '_load_agent_log', lambda pid: log)
+    monkeypatch.setattr(srv, '_load_agent_log', lambda pid, **_kw: log)
     monkeypatch.setattr(srv, '_save_agent_log', lambda pid, l: None)
     monkeypatch.setattr(srv._bp_agent, '_update_agent_log', lambda pid, mutate: mutate(log))
     monkeypatch.setattr(srv, '_has_running_agent', lambda pid: False)

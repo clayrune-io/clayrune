@@ -148,7 +148,7 @@ def client(tmp_path, monkeypatch):
 
     # Run-history stubs (straggler route deps).
     agent_log = []
-    monkeypatch.setattr(hm, '_load_agent_log', lambda pid: list(agent_log))
+    monkeypatch.setattr(hm, '_load_agent_log', lambda pid, **_kw: list(agent_log))
     monkeypatch.setattr(hm, '_enrich_run_entries', lambda page: page)
 
     # Recorder namespaces ON THE MODULE — nothing real may spawn/run.

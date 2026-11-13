@@ -287,7 +287,7 @@ class TestResumeKeepsItsPersona:
     """
 
     def _log(self, monkeypatch, env, entries):
-        monkeypatch.setattr(env['ar'], '_load_agent_log', lambda pid: entries)
+        monkeypatch.setattr(env['ar'], '_load_agent_log', lambda pid, **_kw: entries)
 
     def test_the_spawn_persona_is_read_back_off_the_log(self, env, monkeypatch):
         self._log(monkeypatch, env, [

@@ -31,7 +31,7 @@ def _run_now_setup(ctx, project, monkeypatch, sid, *, flagged):
     if flagged:
         row['worktree_isolated'] = True
     monkeypatch.setattr(sr, 'load_project', lambda pid: project)
-    monkeypatch.setattr(sr, '_load_agent_log', lambda pid: [row])
+    monkeypatch.setattr(sr, '_load_agent_log', lambda pid, **_kw: [row])
     monkeypatch.setattr(sr, '_latest_session_id_for_schedule', lambda pid, s: sid)
     monkeypatch.setattr(sr, '_scheduled_continue', lambda *a, **k: None)
     monkeypatch.setattr(sr, '_latest_claude_sid_for_schedule', lambda pid, s: 'csid-1')

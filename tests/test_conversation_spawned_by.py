@@ -58,7 +58,7 @@ def _wire(monkeypatch, tmp_path, *, session_notify=None, log_spawner=None):
     log_row = {'claude_session_id': CSID, 'session_id': 'mc1', 'status': 'running'}
     if log_spawner is not None:
         log_row['dispatched_by_session_id'] = log_spawner
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [log_row])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [log_row])
     monkeypatch.setattr(ar, '_non_claude_conversation_rows', lambda *a, **k: [])
     sess = {'project_id': 'p1', 'claude_session_id': CSID, 'session_id': 'mc1',
             'status': 'running'}

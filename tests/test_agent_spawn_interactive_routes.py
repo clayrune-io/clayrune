@@ -78,7 +78,7 @@ def renv(tmp_path, monkeypatch, tracker):
     monkeypatch.setitem(state.CONFIG, 'context_rollover_tokens', 200_000)
     monkeypatch.setattr(ar, 'load_project', lambda pid: project)
     monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'delegation.db'))
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [])
     monkeypatch.setattr(ar._memory_turn, 'refresh_for_turn', lambda *a, **k: {'block': ''})
     monkeypatch.setattr(ar._behavior_tail, 'render', lambda *a, **k: '')
     monkeypatch.setattr(ar, '_session_too_large', lambda pp, sid: (False, 4096))

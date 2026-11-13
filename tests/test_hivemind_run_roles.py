@@ -429,7 +429,7 @@ def hm_app(tmp_path, monkeypatch):
     monkeypatch.setattr(hm, 'HIVEMIND_DIR', tmp_path / 'hiveminds')
     (tmp_path / 'hiveminds').mkdir()
     log: list[dict] = []
-    monkeypatch.setattr(hm, '_load_agent_log', lambda pid: list(log))
+    monkeypatch.setattr(hm, '_load_agent_log', lambda pid, **_kw: list(log))
     monkeypatch.setattr(hm, '_enrich_run_entries', lambda page: page)
     app = Flask('t')
     app.register_blueprint(hm.bp)

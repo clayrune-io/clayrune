@@ -173,7 +173,7 @@ class TestBuildHandoffContext:
 
         gemini_rt = agent_runtime.get_runtime('gemini')
         assert gemini_rt.transcript_path('/tmp/proj', 'native-abc') is None
-        monkeypatch.setattr(ar_mod, '_load_agent_log', lambda pid: [])
+        monkeypatch.setattr(ar_mod, '_load_agent_log', lambda pid, **_kw: [])
 
         with pytest.raises(ValueError) as exc:
             ar_mod._build_handoff_context('/tmp/proj', 'gemini', 'native-abc',
@@ -210,7 +210,7 @@ class TestGeminiHandoffViaOwnTurnLog:
             ],
         }
         monkeypatch.setattr(ar_mod, 'agent_sessions', {'sess1': live_session})
-        monkeypatch.setattr(ar_mod, '_load_agent_log', lambda pid: [])
+        monkeypatch.setattr(ar_mod, '_load_agent_log', lambda pid, **_kw: [])
 
         text, meta = ar_mod._build_handoff_context(
             '/tmp/proj', 'gemini', 'native-abc', project_id='p1')
@@ -233,7 +233,7 @@ class TestGeminiHandoffViaOwnTurnLog:
         from mc.blueprints import agent_routes as ar_mod
 
         monkeypatch.setattr(ar_mod, 'agent_sessions', {})
-        monkeypatch.setattr(ar_mod, '_load_agent_log', lambda pid: [
+        monkeypatch.setattr(ar_mod, '_load_agent_log', lambda pid, **_kw: [
             {'project_id': pid, 'provider': 'gemini',
              'provider_session_id': 'native-abc', 'ts': '2026-09-18T00:00:00Z',
              'task': 'summarize this repo', 'summary': 'It is Clayrune.'},

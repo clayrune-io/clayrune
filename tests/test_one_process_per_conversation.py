@@ -20,6 +20,11 @@ from pathlib import Path
 
 import pytest
 
+# Imported at collection time, before the env fixture patches Popen:
+# make_tree captures REAL_POPEN on first import, so a late import
+# would capture the guard instead and its own git calls would fail.
+from resume_cwd_fixtures import make_tree
+
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -90,7 +95,7 @@ def env(tmp_path, monkeypatch):
     project = {'id': 'p1', 'project_path': str(project_path), 'provider': 'claude'}
     monkeypatch.setattr(ar, 'load_project', lambda pid: project)
     monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'delegation.db'))
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [])
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_pid_is_alive', lambda pid: True)
     monkeypatch.setattr(ar._memory_turn, 'refresh_for_turn', lambda *a, **k: {'block': ''})
@@ -136,7 +141,7 @@ def test_send_from_stale_mc_tab_goes_to_owner(env, monkeypatch):
     ar = env['ar']
     owner = _session('0be6a5d88147')
     env['sessions']['0be6a5d88147'] = owner
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [
         {'session_id': '28aff8341987', 'claude_session_id': CSID}])
     monkeypatch.setattr(ar, '_dispatch_agent_internal', _fail('dispatch'))
     monkeypatch.setattr(ar, '_revive_from_agent_log', _fail('revive'))
@@ -193,7 +198,7 @@ def test_revive_refuses_when_conversation_live_elsewhere(env, monkeypatch):
     None, so a raising Popen alone would pass on the unfixed code too."""
     ar = env['ar']
     env['sessions']['5f399332c751'] = _session('5f399332c751')
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [
         {'session_id': '28aff8341987', 'claude_session_id': CSID}])
     monkeypatch.setattr(ar, '_build_agent_context', lambda *a, **k: '')
     monkeypatch.setattr(ar, '_session_too_large', lambda *a, **k: (False, 0))
@@ -358,8 +363,6 @@ def test_interrupt_with_explicit_notify_session_rearms_the_latch(env, monkeypatc
 
 
 def test_resume_cwd_is_the_transcript_tree(env, monkeypatch):
-    from resume_cwd_fixtures import make_tree
-
     ar = env['ar']
     pp = env['pp']
     wt = pp / '.clayrune' / 'agents' / '28aff8341987'

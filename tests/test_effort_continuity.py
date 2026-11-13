@@ -54,7 +54,7 @@ def test_cold_revival_preserves_snapshot_or_native_default(ar, monkeypatch, tmp_
     monkeypatch.setitem(ar.state.CONFIG, 'agent_effort', 'low')
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *a, **kw: None)
     row = dict(session_id='s1', claude_session_id=CSID, model='sonnet', **record)
-    monkeypatch.setattr(ar, '_load_agent_log', lambda _: [row])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda _, **_kw: [row])
     session = ar._revive_from_agent_log('p1', 's1', 'continue', _project(tmp_path))
     assert session is not None
     assert session['requested_effort'] == record.get('requested_effort', '')
@@ -92,7 +92,7 @@ def test_every_respawn_flag_site_supplies_effort_snapshot(ar, name):
 
 def test_non_claude_revival_carries_requested_effort_without_claiming_support(ar, monkeypatch, tmp_path):
     captured = {}
-    monkeypatch.setattr(ar, '_load_agent_log', lambda _: [dict(
+    monkeypatch.setattr(ar, '_load_agent_log', lambda _, **_kw: [dict(
         session_id='s1', provider='codex', provider_session_id='native1', requested_effort='high')])
     monkeypatch.setattr(ar, '_dispatch_agent_internal', lambda *a, **kw: captured.update(kw) or 's1')
     ar._revive_non_claude_from_agent_log('p1', 's1', 'continue', _project(tmp_path))
@@ -167,7 +167,7 @@ def test_completion_roundtrip_never_promotes_observed_model(env, monkeypatch, re
 
 
 def test_latest_explicit_native_default_stops_older_pin_lookup(ar, monkeypatch):
-    monkeypatch.setattr(ar, '_load_agent_log', lambda _: [
+    monkeypatch.setattr(ar, '_load_agent_log', lambda _, **_kw: [
         dict(provider='codex', provider_session_id='native1', agent_model=''),
         dict(provider='codex', provider_session_id='native1', agent_model='old-model'),
     ])

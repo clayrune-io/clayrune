@@ -137,7 +137,7 @@ def test_cleanup_retains_receipt_until_durable_effects_are_readable(
     dispatch.confirm_submission(env.live, 1)
     with monkeypatch.context() as patch:
         if missing == 'log':
-            patch.setattr(env.ar, '_load_agent_log', lambda pid: [])
+            patch.setattr(env.ar, '_load_agent_log', lambda pid, **_kw: [])
         elif missing == 'workflow':
             patch.setattr(env.workflows, 'get_run', lambda run_id: None)
         else:

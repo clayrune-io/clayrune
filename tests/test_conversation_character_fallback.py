@@ -47,7 +47,7 @@ def _wire(monkeypatch, tmp_path, *, session_char, log_char):
     monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda path, limit=20, must_include_csids=None, **kw: [
         {'session_id': CSID, 'first_user': 'hi', 'last_user': 'hi',
          'turns': 2, 'size': 10, 'mtime': 1_760_000_000.0}])
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: (
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: (
         [{'claude_session_id': CSID, 'session_id': 'mc1', 'status': 'running',
           'character': log_char}] if log_char is not None else []))
     monkeypatch.setattr(ar, '_non_claude_conversation_rows', lambda *a, **k: [])

@@ -431,7 +431,7 @@ def test_delegation_parent_revive_fails_closed_on_a_failed_delivery(app_env, mon
     ar = app_env['ar']
     entry = {'session_id': 'parent000001', 'status': 'completed', 'provider': 'claude',
              'claude_session_id': CSID, 'agent_model': 'sonnet', 'ts': '2026-11-09T00:00:00Z'}
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [entry])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [entry])
     monkeypatch.setattr(ar, '_assert_runtime_project_generation', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_model_quota_blocked', lambda *a, **k: None)
 

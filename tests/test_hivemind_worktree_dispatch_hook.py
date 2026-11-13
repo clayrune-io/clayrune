@@ -146,7 +146,7 @@ def env(repo, tmp_path, monkeypatch):
     # `_maybe_isolate_worktree` create a tree instead of taking the shared one.
     monkeypatch.setattr(ar, '_live_agent_count', lambda pid: 1)
     monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'delegation.db'))
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [])
     monkeypatch.setattr(ar, '_pid_is_alive', lambda pid: True)
     monkeypatch.setattr(ar._memory_turn, 'refresh_for_turn', lambda *a, **k: {'block': ''})
     monkeypatch.setattr(ar._memory_turn, 'seed_delivered', lambda *a, **k: None)

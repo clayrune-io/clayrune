@@ -4,7 +4,7 @@
 def test_authoritative_provider_comes_from_exact_agent_log_session(monkeypatch):
     from mc import distiller
 
-    monkeypatch.setattr(distiller, '_load_agent_log', lambda project_id: [
+    monkeypatch.setattr(distiller, '_load_agent_log', lambda project_id, **_kw: [
         {'session_id': 'other', 'provider': 'claude'},
         {'session_id': 'target', 'provider': 'codex'},
     ])
@@ -35,7 +35,7 @@ def test_missing_provider_context_fails_closed_before_model_call(monkeypatch):
     from mc import distiller
 
     called = []
-    monkeypatch.setattr(distiller, '_load_agent_log', lambda project_id: [])
+    monkeypatch.setattr(distiller, '_load_agent_log', lambda project_id, **_kw: [])
     monkeypatch.setattr(distiller, '_text_transform', lambda *a, **k: called.append(a))
 
     assert distiller._authoritative_session_provider('p', 'missing') is None

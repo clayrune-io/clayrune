@@ -6,7 +6,7 @@ from tests.test_agent_routes import client  # noqa: F401
 def test_agent_log_keeps_legacy_inventory_with_one_canonical_row(client, monkeypatch):
     from mc.blueprints import agent_routes as ar
     legacy = [{'session_id': f'legacy-{n}', 'task': 'retained'} for n in range(100)]
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: legacy)
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: legacy)
     monkeypatch.setattr(ar, '_conversation_cutover', SimpleNamespace(
         agent_log=lambda pid: [SimpleNamespace(as_dict=lambda: {'session_id': 'canonical-new'})]))
     response = client.get('/api/project/p/agent/log')
@@ -18,7 +18,7 @@ def test_agent_log_keeps_legacy_inventory_with_one_canonical_row(client, monkeyp
 def test_rail_keeps_legacy_and_live_metadata_during_partial_adoption(client, monkeypatch):
     from mc.blueprints import agent_routes as ar
     monkeypatch.setattr(ar, 'load_project', lambda pid: {'id': pid, 'project_path': '/unused'})
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [])
     monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda *a, **kw: [])
     monkeypatch.setattr(ar, '_recent_codex_conversation_rows', lambda *a, **kw: ([], set()))
     legacy = [{'mc_session_id': 'old', 'mtime': 5, 'live': True, 'provider': 'codex', 'resumable': True}]

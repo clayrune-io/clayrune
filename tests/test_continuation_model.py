@@ -13,7 +13,7 @@ from tests.test_revive_non_claude_character_ref import ar, PROJECT
 @pytest.mark.parametrize('provider', ['codex', 'qwen'])
 @pytest.mark.parametrize('field', ['pinned_model', 'agent_model', 'model'])
 def test_cold_revive_keeps_recorded_model(ar, monkeypatch, provider, field):
-    monkeypatch.setattr(ar, '_load_agent_log', lambda _: [{
+    monkeypatch.setattr(ar, '_load_agent_log', lambda _, **_kw: [{
         'session_id': 's1', 'provider': provider,
         'provider_session_id': 'native1', field: 'original-model',
     }])
@@ -31,7 +31,7 @@ def test_model_lookup_prefers_live_choice_and_is_provider_scoped(ar, monkeypatch
         'project_id': 'p1', 'provider': 'codex',
         'provider_session_id': 'native1', 'pinned_model': 'sol',
     }
-    monkeypatch.setattr(ar, '_load_agent_log', lambda _: [{
+    monkeypatch.setattr(ar, '_load_agent_log', lambda _, **_kw: [{
         'provider': 'codex', 'provider_session_id': 'native1', 'model': 'astra',
     }])
     assert ar._prior_conversation_model('p1', 'native1', 'codex') == 'sol'
@@ -76,7 +76,7 @@ def test_log_persists_model_before_completion(ar):
 @pytest.mark.parametrize('provider', ['claude', 'codex', 'qwen'])
 def test_prior_provider_survives_changed_project_default(ar, monkeypatch, provider):
     key = 'claude_session_id' if provider == 'claude' else 'provider_session_id'
-    monkeypatch.setattr(ar, '_load_agent_log', lambda _: [
+    monkeypatch.setattr(ar, '_load_agent_log', lambda _, **_kw: [
         {'provider': provider, key: 'native1'},
     ])
     assert ar._prior_conversation_provider('p1', 'native1') == provider
@@ -85,7 +85,7 @@ def test_prior_provider_survives_changed_project_default(ar, monkeypatch, provid
 
 
 def test_prior_provider_rejects_ambiguous_native_id(ar, monkeypatch):
-    monkeypatch.setattr(ar, '_load_agent_log', lambda _: [
+    monkeypatch.setattr(ar, '_load_agent_log', lambda _, **_kw: [
         {'provider': p, 'provider_session_id': 'native1'} for p in ['codex', 'qwen']
     ])
     with pytest.raises(ValueError, match='ambiguous'):
@@ -102,7 +102,7 @@ def test_latest_live_model_wins_and_other_project_is_excluded(ar, monkeypatch):
         ar.agent_sessions[sid] = dict(project_id=project, provider='codex',
                                      provider_session_id='native1', started_at=date,
                                      model=model)
-    monkeypatch.setattr(ar, '_load_agent_log', lambda _: [])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda _, **_kw: [])
     assert ar._prior_conversation_model('p1', 'native1', 'codex') == 'astra'
 
 
@@ -150,7 +150,7 @@ def test_model_switch_cannot_mutate_another_project(ar, monkeypatch):
 
 
 def test_explicit_clear_does_not_resurrect_old_pin(ar, monkeypatch):
-    monkeypatch.setattr(ar, '_load_agent_log', lambda _: [
+    monkeypatch.setattr(ar, '_load_agent_log', lambda _, **_kw: [
         dict(provider='claude', claude_session_id='native1',
              model='opus', model_auto_requested=True),
         dict(provider='claude', claude_session_id='native1', pinned_model='opus'),

@@ -38,7 +38,7 @@ def _claude_revive_rig(monkeypatch, tmp_path):
              'spawned_by_session_id': 'sol', 'dispatched_by_session_id': 'sol',
              'trigger_type': 'schedule', 'ts': '1'}
     monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'delivery.db'))
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [entry])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [entry])
     monkeypatch.setattr(ar, '_model_quota_blocked', lambda *a: '')
     monkeypatch.setattr(ar, '_build_agent_context', lambda *a, **k: 'CTX')
     monkeypatch.setattr(ar, '_session_too_large', lambda *a, **k: (False, 0))
@@ -56,9 +56,19 @@ def _claude_revive_rig(monkeypatch, tmp_path):
     monkeypatch.setattr(ar, '_read_agent_stream_b', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_memory_turn', SimpleNamespace(seed_delivered=lambda *a: None))
 
+    class _Stdin:
+        def write(self, _data):
+            return None
+
+        def flush(self):
+            return None
+
     class Proc:
         pid = 999
         stdout = iter([])
+        # MC-1168 (9f73231f): revival writes its first turn to stdin and waits
+        # for that write before acknowledging, so the stub needs a stdin.
+        stdin = _Stdin()
     monkeypatch.setattr(ar.subprocess, 'Popen', lambda cmd, **kw: Proc())
     monkeypatch.setattr(ar, 'get_manager', lambda pid: SimpleNamespace(
         lock=threading.RLock(), session_ids=set(), ensure_guardian=lambda: None))
@@ -91,7 +101,7 @@ def _codex_revive_rig(monkeypatch):
              'provider_session_id': 'native-sol-1', 'agent_model': 'gpt-6.1-sol',
              'requested_effort': 'high', 'incognito': False, 'source': 'agent',
              'spawned_by_session_id': 'dave', 'trigger_type': 'dispatch', 'ts': '1'}
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [entry])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [entry])
     monkeypatch.setattr(ar, '_model_quota_blocked', lambda *a: '')
     monkeypatch.setattr(ar, '_assert_runtime_project_generation', lambda *a, **k: None)
     calls = []

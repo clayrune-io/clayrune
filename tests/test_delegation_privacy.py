@@ -350,7 +350,7 @@ def test_real_conversation_delete_revokes_native_and_mc_aliases(tmp_path, monkey
     monkeypatch.setattr(ar, '_find_transcript_file', lambda _path, _sid: str(transcript))
     monkeypatch.setattr(ar, 'agent_sessions', {})
     monkeypatch.setattr(ar, 'get_manager', lambda _pid: type('M', (), {'lock': __import__('threading').RLock()})())
-    monkeypatch.setattr(ar, '_load_agent_log', lambda _pid: [
+    monkeypatch.setattr(ar, '_load_agent_log', lambda _pid, **_kw: [
         {'session_id': mc_id, 'claude_session_id': native_id}])
     lifecycle_calls = []
     monkeypatch.setattr(ar, '_runtime_lifecycle_service', type('Lifecycle', (), {
@@ -381,7 +381,7 @@ def test_conversation_rename_failure_reports_partial_and_keeps_delivery_revoked(
     monkeypatch.setattr(ar, '_find_transcript_file', lambda *_args: str(transcript))
     monkeypatch.setattr(ar, 'agent_sessions', {})
     monkeypatch.setattr(ar, 'get_manager', lambda _pid: type('M', (), {'lock': __import__('threading').RLock()})())
-    monkeypatch.setattr(ar, '_load_agent_log', lambda _pid: [
+    monkeypatch.setattr(ar, '_load_agent_log', lambda _pid, **_kw: [
         {'session_id': 'mc-failure', 'claude_session_id': native_id}])
     monkeypatch.setattr(ar, '_runtime_lifecycle_service', type('Lifecycle', (), {
         'revoke_conversations': lambda _self, _pid, _aliases: ('mc-failure',)})())

@@ -109,7 +109,7 @@ def wf(tmp_path, monkeypatch):
     dispatch = _DispatchRecorder()
     monkeypatch.setattr(m, '_dispatch_agent_internal', dispatch)
     agent_logs = {}  # project_id -> list of entries
-    monkeypatch.setattr(m, '_load_agent_log', lambda pid: agent_logs.get(pid, []))
+    monkeypatch.setattr(m, '_load_agent_log', lambda pid, **_kw: agent_logs.get(pid, []))
     # MC-995: workflow CRUD/decision/cancel also require the retyped dashboard
     # passcode (_require_human_passcode) on top of the Origin check this file
     # already exercises. This file's tests are about workflow CRUD/run

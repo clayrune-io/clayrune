@@ -162,7 +162,7 @@ def env(tmp_path, monkeypatch):
         ar, '_recent_claude_transcripts',
         lambda *a, **k: [{'session_id': 'abc123def456', 'turns': 3,
                           'last_user': 'do the thing', 'first_user': 'hi'}])
-    monkeypatch.setattr(ar, '_load_agent_log', lambda project_id: [])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda project_id, **_kw: [])
 
     project = {
         'id': 'tc', 'name': 'TC', 'project_path': str(proj_path),

@@ -37,7 +37,7 @@ def test_override_with_retained_reuse_sid_keeps_the_session_id(ar, tmp_path, mon
     p = _project(tmp_path)
     monkeypatch.setattr(ar, 'load_project', lambda _: p)
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *a, **k: None)
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [])
     monkeypatch.setattr(ar, '_resolve_claude', lambda: 'claude')
     monkeypatch.setattr(ar, '_build_claude_flags', lambda *a, **k: [])
     _capture(ar, monkeypatch)
@@ -70,7 +70,7 @@ def test_scheduler_flag_read_for_the_row_that_owns_resume_id(ctx, routes, projec
         {'session_id': A, 'trigger_type': 'schedule', 'trigger_id': 's1', 'provider': 'claude',
          'claude_session_id': 'csid-1', 'worktree_isolated': True, 'ts': '2026-11-08T00:00:00Z'},
     ]
-    monkeypatch.setattr(sr, '_load_agent_log', lambda pid: rows)
+    monkeypatch.setattr(sr, '_load_agent_log', lambda pid, **_kw: rows)
     monkeypatch.setattr(sr, '_latest_claude_sid_for_schedule',
                         lambda pid, s: sr._latest_resume_for_schedule(pid, s)[0])
     # real helper body (scheduler_routes.py:1114): first schedule row with a session_id
@@ -87,7 +87,7 @@ def test_vendor_override_with_retained_reuse_sid_keeps_the_session_id(ar, tmp_pa
     p = _project(tmp_path)
     monkeypatch.setattr(ar, 'load_project', lambda _: p)
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *a, **k: None)
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [])
     monkeypatch.setattr(ar, '_model_quota_blocked', lambda *a, **k: '')
     seen = {}
 
@@ -124,7 +124,7 @@ def test_resume_is_keyed_on_the_row_that_owns_it_and_dispatches_under_that_row(
         {'session_id': A, 'trigger_type': 'schedule', 'trigger_id': 's1', 'provider': 'claude',
          'claude_session_id': 'csid-1', 'worktree_isolated': True, 'ts': '2026-11-08T00:00:00Z'},
     ]
-    monkeypatch.setattr(sr, '_load_agent_log', lambda pid: rows)
+    monkeypatch.setattr(sr, '_load_agent_log', lambda pid, **_kw: rows)
     monkeypatch.setattr(sr, '_latest_claude_sid_for_schedule',
                         lambda pid, s: sr._latest_resume_for_schedule(pid, s)[0])
     monkeypatch.setattr(sr, '_newest_run_session_id_for_schedule', lambda pid, s: B)
@@ -149,7 +149,7 @@ def test_run_now_keys_isolation_on_the_row_that_owns_the_resume(
         {'session_id': A, 'trigger_type': 'schedule', 'trigger_id': 's1', 'provider': 'claude',
          'claude_session_id': 'csid-1', 'worktree_isolated': True, 'ts': '2026-11-08T00:00:00Z'},
     ]
-    monkeypatch.setattr(sr, '_load_agent_log', lambda pid: rows)
+    monkeypatch.setattr(sr, '_load_agent_log', lambda pid, **_kw: rows)
     monkeypatch.setattr(sr, '_newest_run_session_id_for_schedule', lambda pid, s: B)
     resp = ctx.client.post('/api/schedule/s1/run-now')
     assert resp.status_code == 200
@@ -160,7 +160,7 @@ def test_run_now_keys_isolation_on_the_row_that_owns_the_resume(
 
 def test_owner_lookup_falls_back_to_newest_row_when_no_row_owns_the_id(ctx, routes, monkeypatch):
     sr = ctx.sr
-    monkeypatch.setattr(sr, '_load_agent_log', lambda pid: [
+    monkeypatch.setattr(sr, '_load_agent_log', lambda pid, **_kw: [
         {'session_id': 'x1', 'trigger_type': 'schedule', 'trigger_id': 's1', 'provider': 'claude'}])
     assert sr._session_owning_resume('p', 's1', 'csid-9') == ''
     assert sr._session_owning_resume('p', 's1', '') == ''
@@ -218,7 +218,7 @@ def _claude_setup(ar, tmp_path, monkeypatch):
     p = _project(tmp_path)
     monkeypatch.setattr(ar, 'load_project', lambda _: p)
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *a, **k: None)
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [])
     monkeypatch.setattr(ar, '_resolve_claude', lambda: 'claude')
     monkeypatch.setattr(ar, '_build_claude_flags', lambda *a, **k: [])
     spawned = []
@@ -269,7 +269,7 @@ def test_vendor_live_retained_session_is_refused(ar, tmp_path, monkeypatch):
     p = _project(tmp_path)
     monkeypatch.setattr(ar, 'load_project', lambda _: p)
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *a, **k: None)
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [])
     monkeypatch.setattr(ar, '_model_quota_blocked', lambda *a, **k: '')
     ran = []
     monkeypatch.setattr(ar, '_dispatch_via_runtime', lambda *a, **k: ran.append(k))

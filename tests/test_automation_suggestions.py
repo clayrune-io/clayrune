@@ -66,7 +66,7 @@ def ctx(tmp_path, monkeypatch):
 
     log = {'p1': _log_entries('Run the nightly ledger reconciliation and '
                               'report anything unmatched.', 6)}
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: list(log.get(pid, [])))
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: list(log.get(pid, [])))
 
     server.app.config['TESTING'] = True
 

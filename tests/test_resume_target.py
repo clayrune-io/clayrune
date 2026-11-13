@@ -239,7 +239,7 @@ def env(tmp_path, monkeypatch):
     fresh_calls = []
     monkeypatch.setattr(ar, 'load_project', lambda pid: project)
     monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'delegation.db'))
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [
         {'session_id': 'c1a2b3', 'claude_session_ids': [OLDER, GOOD, POISON],
          'claude_session_id': POISON}])
     monkeypatch.setattr(ar, '_find_transcript_file',

@@ -99,7 +99,7 @@ def _steward_setup(ctx, project, monkeypatch, sid, *, flagged, respawn=True):
         row['worktree_isolated'] = True
     activity = []
     monkeypatch.setattr(sr, 'load_project', lambda pid: project)
-    monkeypatch.setattr(sr, '_load_agent_log', lambda pid: [row])
+    monkeypatch.setattr(sr, '_load_agent_log', lambda pid, **_kw: [row])
     monkeypatch.setattr(sr, '_log_agent_activity', lambda pid, msg: activity.append(msg))
     monkeypatch.setattr(sr, '_steward_cycle_task', lambda pid: ('refreshed task', respawn))
     monkeypatch.setattr(sr, '_steward_cycle_running', lambda pid: False)

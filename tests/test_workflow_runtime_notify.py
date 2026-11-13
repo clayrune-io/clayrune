@@ -62,7 +62,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(wf, 'WORKFLOWS_PATH', tmp_path / 'workflows.json')
     monkeypatch.setattr(wf, 'WORKFLOW_RUNS_DIR', tmp_path / 'workflow_runs')
     monkeypatch.setattr(wf, '_dispatch_agent_internal', ar._dispatch_agent_internal)
-    monkeypatch.setattr(wf, '_load_agent_log', lambda pid: [])
+    monkeypatch.setattr(wf, '_load_agent_log', lambda pid, **_kw: [])
 
     runtime = _FakeRuntime()
     saved = dict(agent_runtime_mod._RUNTIMES)

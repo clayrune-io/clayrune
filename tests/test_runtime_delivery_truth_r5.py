@@ -16,7 +16,7 @@ def test_same_cold_request_preserves_cwd_refusal_then_delivery_failure(
     sid, native = 'mergedcodex1', 'original-native-thread'
     entry = {'session_id': sid, 'provider': 'codex',
              'provider_session_id': native, 'task': 'original conversation'}
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [entry])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [entry])
     monkeypatch.setattr(ar, '_assert_runtime_project_generation', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_find_transcript_file', lambda *a: None)
     retained = []

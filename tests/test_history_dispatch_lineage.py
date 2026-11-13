@@ -27,7 +27,7 @@ def client(monkeypatch):
 @pytest.mark.parametrize('path', ['session/child', 'transcript/transcript1'])
 def test_reconstruct_preserves_only_recorded_lineage(client, monkeypatch, metadata, expected, path):
     rows = [{'session_id': 'child', 'claude_session_id': 'transcript1', 'task': 'build', 'ts': '1', **metadata}]
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: rows)
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: rows)
     result = client.get(f'/api/project/fixture/{path}/reconstruct')
     assert result.status_code == 200
     assert result.json['spawned_by_session_id'] == expected
@@ -37,12 +37,12 @@ def test_legacy_cycle_is_not_reintroduced_by_reconstruction(client, monkeypatch)
     rows = [{'session_id': 'child', 'claude_session_id': 'csid', 'ts': '1',
              'trigger_type': 'dispatch', 'spawned_by_session_id': 'parent'},
             {'session_id': 'parent', 'ts': '1', 'trigger_type': 'dispatch', 'spawned_by_session_id': 'child'}]
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: rows)
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: rows)
     assert client.get('/api/project/fixture/session/child/reconstruct').json['spawned_by_session_id'] == ''
 
 
 def test_non_claude_log_only_history_also_preserves_parent(client, monkeypatch):
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [
         {'session_id': 'child', 'task': 'build', 'summary': 'done', 'provider': 'gemini',
          'dispatched_by_session_id': 'recorded-parent'}])
     result = client.get('/api/project/fixture/session/child/reconstruct')
@@ -51,7 +51,7 @@ def test_non_claude_log_only_history_also_preserves_parent(client, monkeypatch):
 
 
 def test_codex_transcript_history_preserves_parent(client, monkeypatch):
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [
         {'session_id': 'child', 'task': 'build', 'provider': 'codex', 'provider_session_id': 'rollout1',
          'dispatched_by_session_id': 'recorded-parent'}])
     runtime = SimpleNamespace(transcript_path=lambda *a: '/fixture/rollout',
@@ -64,7 +64,7 @@ def test_codex_transcript_history_preserves_parent(client, monkeypatch):
 
 
 def test_canonical_history_preserves_parent(client, monkeypatch):
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [
         {'session_id': 'child', 'dispatched_by_session_id': 'recorded-parent'}])
     monkeypatch.setattr(ar, '_conversation_cutover', SimpleNamespace(display_lines=lambda *a: ['answer']))
     result = client.get('/api/project/fixture/session/child/reconstruct')

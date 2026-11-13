@@ -62,9 +62,9 @@ def test_revival_seeds_before_its_stdin_write():
     fn_end = src.find('\ndef ', fn_start + 10)
     body = src[fn_start:fn_end]
     seed_idx = body.find('_memory_turn.seed_delivered(')
-    # MC-1165 r6: the write moved into a daemon-thread closure (it must not run
-    # under the project lock an isolated revival holds); seeding stays above it.
-    write_idx = body.find('_proc.stdin.write(_msg)')
+    # MC-1165 r6 moved the write into a daemon-thread closure; MC-1168
+    # (9f73231f) renamed it to the _write_revival delivery. Seeding stays above it.
+    write_idx = body.find('proc.stdin.write(stdin_msg)')
     assert seed_idx != -1, 'revival no longer seeds the delivered-set'
     assert write_idx != -1, 'revival stdin write site moved — update this test'
     assert seed_idx < write_idx, 'seed_delivered must run BEFORE the stdin write'

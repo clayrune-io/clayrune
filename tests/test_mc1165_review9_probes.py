@@ -59,8 +59,8 @@ def test_run_now_real_dispatch_live_owner_returns_409_and_records_error(ar, ctx,
                  provider='claude', status='error'),
             dict(session_id=sid, trigger_type='schedule', trigger_id='s1',
                  provider='claude', claude_session_id=CSID, worktree_isolated=True)]
-    monkeypatch.setattr(ctx.sr, '_load_agent_log', lambda _: rows)
-    monkeypatch.setattr(ar, '_load_agent_log', lambda _: rows)
+    monkeypatch.setattr(ctx.sr, '_load_agent_log', lambda _, **_kw: rows)
+    monkeypatch.setattr(ar, '_load_agent_log', lambda _, **_kw: rows)
     monkeypatch.setattr(ctx.sr, '_latest_session_id_for_schedule', lambda *a: newest)
     # Use the real continuation path: the newest row has no native id to revive.
     monkeypatch.setattr(ctx.sr, '_scheduled_continue', REAL_CONTINUE)

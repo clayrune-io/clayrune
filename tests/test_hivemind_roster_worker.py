@@ -354,7 +354,7 @@ def test_cold_recovery_refuses_unknown_or_replaced_attempt(rig, damage):
 def route_rig(rig, monkeypatch):
     monkeypatch.setattr(ar, 'load_project', lambda pid: rig.project)
     monkeypatch.setattr(ar, 'get_manager', hm.get_manager)
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: rig.rows)
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: rig.rows)
     monkeypatch.setattr(ar, '_mark_human_joined', lambda *a: None)
     monkeypatch.setattr(ar, '_observe_habit_cue', lambda *a: None)
     monkeypatch.setattr(ar, '_assert_runtime_project_generation', lambda *a, **kw: 7)

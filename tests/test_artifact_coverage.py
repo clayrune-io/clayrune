@@ -135,10 +135,12 @@ def test_never_raises_on_junk_input():
 # catch, applied to itself.
 
 def test_wired_at_both_tool_use_sites_and_both_turn_ends():
+    import re
     src = open('mc/blueprints/agent_routes.py', encoding='utf-8').read()
-    # Leading-newline anchored so the `def` line is not counted as a site.
-    assert src.count('\n                            _coverage_note_tool(') == 2
-    assert src.count('\n                    _emit_coverage_advisory(') == 2
+    # Indented call sites at any depth: excludes the `def` line, and a re-indent
+    # (one turn-end site now sits at 8 spaces) no longer reads as unwired.
+    assert len(re.findall(r'\n[ ]+_coverage_note_tool\(', src)) == 2
+    assert len(re.findall(r'\n[ ]+_emit_coverage_advisory\(', src)) == 2
 
 
 def test_last_user_message_is_read_off_the_transcript():

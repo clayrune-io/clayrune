@@ -25,7 +25,7 @@ def test_success_completion_survives_restart(claude_followup, monkeypatch, tmp_p
     env.sessions['child'] = s
     env.store.park(s)
     monkeypatch.setattr(workflows.state, 'agent_sessions', env.sessions)
-    monkeypatch.setattr(workflows, '_load_agent_log', lambda pid: [])
+    monkeypatch.setattr(workflows, '_load_agent_log', lambda pid, **_kw: [])
     monkeypatch.setattr(workflows, '_session_summary', lambda live: 'finished task')
     monkeypatch.setattr(workflows, 'WORKFLOWS_PATH', tmp_path / 'workflows.json')
     monkeypatch.setattr(workflows, 'WORKFLOW_RUNS_DIR', tmp_path / 'workflow_runs')

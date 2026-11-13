@@ -50,7 +50,7 @@ class TestReviveNonClaudeCharacterReference:
         entries = [{'session_id': 's1', 'provider': 'gemini', 'claude_session_id': '',
                    'character': {'name': 'dave', 'scope': 'global',
                                  'display_name': 'dave'}, 'ts': '2026-09-01T00:00:00Z'}]
-        monkeypatch.setattr(ar, '_load_agent_log', lambda pid: entries)
+        monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: entries)
         captured = {}
 
         def _fake_dispatch(project_id, message, **kw):
@@ -67,7 +67,7 @@ class TestReviveNonClaudeCharacterReference:
         entries = [{'session_id': 's2', 'provider': 'codex', 'claude_session_id': '',
                    'character': {'name': 'builder', 'scope': 'project'},
                    'ts': '2026-09-01T00:00:00Z'}]
-        monkeypatch.setattr(ar, '_load_agent_log', lambda pid: entries)
+        monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: entries)
         captured = {}
         monkeypatch.setattr(ar, '_dispatch_agent_internal',
                             lambda pid, msg, **kw: captured.update(kw) or 's2')
@@ -80,7 +80,7 @@ class TestReviveNonClaudeCharacterReference:
         never a bare name that would coincidentally resolve to something."""
         entries = [{'session_id': 's3', 'provider': 'gemini', 'claude_session_id': '',
                    'character': None, 'ts': '2026-09-01T00:00:00Z'}]
-        monkeypatch.setattr(ar, '_load_agent_log', lambda pid: entries)
+        monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: entries)
         captured = {}
         monkeypatch.setattr(ar, '_dispatch_agent_internal',
                             lambda pid, msg, **kw: captured.update(kw) or 's3')
@@ -92,7 +92,7 @@ class TestReviveNonClaudeCharacterReference:
                    'character': {'name': 'dave', 'scope': 'global'},
                    'source': 'agent', 'incognito': False,
                    'ts': '2026-09-01T00:00:00Z'}]
-        monkeypatch.setattr(ar, '_load_agent_log', lambda pid: entries)
+        monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: entries)
         captured = {}
         monkeypatch.setattr(ar, '_dispatch_agent_internal',
                             lambda pid, msg, **kw: captured.update(kw) or 's4')

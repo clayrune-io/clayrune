@@ -163,7 +163,7 @@ def test_revive_non_claude_does_not_repollute_from_manual_row(monkeypatch):
         'provider': 'codex', 'project_generation': 1,
         'spawned_by_session_id': 'b35bf09c440e', 'dispatched_by_session_id': None,
     }
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [entry])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [entry])
     monkeypatch.setattr(ar, '_assert_runtime_project_generation', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_continuation_effort', lambda *a, **k: '')
     monkeypatch.setattr(ar, '_requested_model_snapshot', lambda *a, **k: '')
@@ -189,7 +189,7 @@ def test_revive_non_claude_carries_legacy_spawner_for_dispatch_marked_row(monkey
         'provider': 'codex', 'project_generation': 1,
         'spawned_by_session_id': '5edd10858aec', 'dispatched_by_session_id': None,
     }
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [entry])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [entry])
     monkeypatch.setattr(ar, '_assert_runtime_project_generation', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_continuation_effort', lambda *a, **k: '')
     monkeypatch.setattr(ar, '_requested_model_snapshot', lambda *a, **k: '')

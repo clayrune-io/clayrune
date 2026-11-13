@@ -131,7 +131,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(ar, 'load_project', lambda pid: (
         {'id': pid, 'project_path': str(project_path)} if pid == 'proj1' else None))
     log = []
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [dict(e) for e in log])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [dict(e) for e in log])
     sess_snapshot = dict(mc_state.agent_sessions)
     mc_state.agent_sessions.clear()
     server.app.config['TESTING'] = True

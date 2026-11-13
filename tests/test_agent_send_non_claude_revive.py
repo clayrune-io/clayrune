@@ -72,7 +72,7 @@ def test_agent_send_revives_dead_non_claude_conversation(client, tmp_path, monke
         'character': {'name': 'market-scout', 'scope': 'global'},
         'ts': '2026-09-08T01:20:00Z',
     }
-    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [log_entry])
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [log_entry])
 
     captured = {}
 
