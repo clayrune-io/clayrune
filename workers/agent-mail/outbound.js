@@ -84,9 +84,11 @@ export async function outbound({ ledger, reg, value, body, config, send, now }) 
  * authenticated request bytes. The legacy entry above remains until route cutover.
  * Optional requestGuards join only the first reservation or replay transaction;
  * never pass the same nonce guards again to the later provider authorization.
+ * onRequestCommitted marks that first commit for HTTP refusal classification;
+ * a later storage failure must not be reported as replay of our own nonce.
  */
 export async function pullOutbound({ ledger, reg, value, body, config, binding, clock = Date.now, timers = globalThis,
-  requestGuards = [] }) {
+  requestGuards = [], onRequestCommitted }) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { status: 400, code: 'invalid_send' };
   const { op_id, ...payload } = value;
   if (typeof op_id !== 'string' || !/^[a-f0-9]{32}$/.test(op_id) || !validateSend(payload)
@@ -106,13 +108,16 @@ export async function pullOutbound({ ledger, reg, value, body, config, binding, 
     const prior = await ledger.intent(reg, value.intent_id);
     if (prior) {
       if (prior.digest !== digest) return { status: 409, code: 'intent_conflict' };
-      return receipt(requestGuards.length ? await ledger.replaySend(reg, value.intent_id, clock(), requestGuards) : prior);
+      const replay = requestGuards.length ? await ledger.replaySend(reg, value.intent_id, clock(), requestGuards) : prior;
+      onRequestCommitted?.();
+      return receipt(replay);
     }
     // Validate provider configuration before durable reservation/authorization.
     const provider = cloudflareEmailSending({ ...config, binding, clock, timers });
     const message_id = `${await sha256(bytes(`${reg.install_id}:${reg.generation}:${value.intent_id}`))}@${config.domain}`;
     const reserved = await ledger.reserveSend(reg, { ...value, digest, message_id,
       token_hash: await sha256(bytes(value.reply_token)) }, clock(), requestGuards);
+    onRequestCommitted?.();
     if (reserved.duplicate) return receipt(reserved);
     // This CAS is the only authorization point. No fresh lookup can replace the
     // recipient with a later owner after it commits, even across a switch/revert.

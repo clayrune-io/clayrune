@@ -1,0 +1,491 @@
+{
+  "schema": 1,
+  "path": "/v1/pull/send",
+  "request": {
+    "intent_id": "intent-1",
+    "thread_id": "thread-1"
+  },
+  "vectors": [
+    {
+      "name": "reserved",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "reserved",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "reserved",
+        "provider_id": ""
+      },
+      "valid": true
+    },
+    {
+      "name": "sending",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "sending",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "sending",
+        "provider_id": ""
+      },
+      "valid": true
+    },
+    {
+      "name": "uncertain",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "uncertain",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": true
+    },
+    {
+      "name": "failed",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "failed",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "failed",
+        "provider_id": ""
+      },
+      "valid": true
+    },
+    {
+      "name": "revoked",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "revoked",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "revoked",
+        "provider_id": ""
+      },
+      "valid": true
+    },
+    {
+      "name": "accepted",
+      "status": 200,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "accepted",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "accepted",
+        "provider_id": "opaque-id"
+      },
+      "valid": true
+    },
+    {
+      "name": "uncertain retained evidence",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "uncertain",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "uncertain",
+        "provider_id": " opaque-id "
+      },
+      "valid": true
+    },
+    {
+      "name": "revoked retained evidence",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "revoked",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "revoked",
+        "provider_id": " opaque-id "
+      },
+      "valid": true
+    },
+    {
+      "name": "missing intent_id",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "failed",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "failed",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "missing thread_id",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "failed",
+        "intent_id": "intent-1",
+        "message_id": "internal@mail.example.net",
+        "state": "failed",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "missing message_id",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "failed",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "state": "failed",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "missing state",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "failed",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "missing provider_id",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "failed",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "failed"
+      },
+      "valid": false
+    },
+    {
+      "name": "extra field",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "failed",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "failed",
+        "provider_id": "",
+        "extra": "ignored?"
+      },
+      "valid": false
+    },
+    {
+      "name": "code differs from state",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "uncertain",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "failed",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "wrong intent",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "failed",
+        "intent_id": "other-intent",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "failed",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "wrong thread",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "failed",
+        "intent_id": "intent-1",
+        "thread_id": "other-thread",
+        "message_id": "internal@mail.example.net",
+        "state": "failed",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "reserved with provider evidence",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "reserved",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "reserved",
+        "provider_id": "unexpected-id"
+      },
+      "valid": false
+    },
+    {
+      "name": "sending with provider evidence",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "sending",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "sending",
+        "provider_id": "unexpected-id"
+      },
+      "valid": false
+    },
+    {
+      "name": "failed with provider evidence",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "failed",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "failed",
+        "provider_id": "unexpected-id"
+      },
+      "valid": false
+    },
+    {
+      "name": "bad provider nonascii",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "uncertain",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "uncertain",
+        "provider_id": "caf\u00e9"
+      },
+      "valid": false
+    },
+    {
+      "name": "bad provider control",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "uncertain",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "uncertain",
+        "provider_id": "id\n"
+      },
+      "valid": false
+    },
+    {
+      "name": "bad provider blank",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "uncertain",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "uncertain",
+        "provider_id": " "
+      },
+      "valid": false
+    },
+    {
+      "name": "bad provider too long",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "uncertain",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "uncertain",
+        "provider_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "valid": false
+    },
+    {
+      "name": "empty accepted evidence",
+      "status": 200,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "accepted",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "internal@mail.example.net",
+        "state": "accepted",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "invalid internal message id",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "failed",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "bad\r\nHeader:x",
+        "state": "failed",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "empty allocated message id",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "failed",
+        "intent_id": "intent-1",
+        "thread_id": "thread-1",
+        "message_id": "",
+        "state": "failed",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "common revoked",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "revoked"
+      },
+      "valid": true
+    },
+    {
+      "name": "common stale_generation",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "stale_generation"
+      },
+      "valid": true
+    },
+    {
+      "name": "common nonce_replayed",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "nonce_replayed"
+      },
+      "valid": true
+    },
+    {
+      "name": "common intent_conflict",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "intent_conflict"
+      },
+      "valid": true
+    },
+    {
+      "name": "receipt code missing all fields reserved",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "reserved"
+      },
+      "valid": false
+    },
+    {
+      "name": "receipt code missing all fields sending",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "sending"
+      },
+      "valid": false
+    },
+    {
+      "name": "receipt code missing all fields uncertain",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "uncertain"
+      },
+      "valid": false
+    },
+    {
+      "name": "receipt code missing all fields failed",
+      "status": 409,
+      "body": {
+        "v": 1,
+        "request_id": "0000000000000000000000000000000a",
+        "code": "failed"
+      },
+      "valid": false
+    }
+  ]
+}
