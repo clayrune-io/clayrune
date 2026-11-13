@@ -103,10 +103,10 @@ def test_owner_hint_refuses_anything_that_is_not_one_address():
 HOSTILE = {
     'state': 'degraded', 'enabled': True, 'thread_alive': True, 'last_attempt': 10.5, 'last_success': None,
     'consecutive_failures': 2, 'reason': 'remote_unreachable',
-    'steps': [{'name': 'replay', 'state': 'failed', 'reason': 'worker_reconcile_failed', 'count': 1},
+    'steps': [{'name': 'pull', 'state': 'failed', 'reason': 'storage_unavailable', 'count': 1},
               {'name': 'deletion', 'state': 'pending', 'reason': 'deletion_pending', 'count': 3},
               {'name': 'rm -rf', 'state': 'failed', 'reason': 'ok', 'count': 1},
-              {'name': 'renew', 'state': 'weird', 'reason': 'Traceback: token=abc', 'count': -4}, 'junk'],
+              {'name': 'acks', 'state': 'weird', 'reason': 'Traceback: token=abc', 'count': -4}, 'junk'],
     'holds': {'vault_locked': 2, 'Bad Key!': 1}, 'store': {'path': 'C:/secret/path'},
     'retention': {'x': 1}, 'ownership': {'rows': 3}}
 
@@ -124,8 +124,8 @@ class FakeSupervisor:
 def test_recovery_snapshot_allow_lists_and_bounds_everything():
     snap = view.recovery_snapshot(FakeSupervisor(HOSTILE))
     assert snap['state'] == 'degraded' and snap['reason'] == 'remote_unreachable'
-    assert [s['name'] for s in snap['steps']] == ['replay', 'deletion', 'renew']
-    assert snap['steps'][2] == {'name': 'renew', 'state': 'failed', 'reason': 'step_failed', 'count': 0}
+    assert [s['name'] for s in snap['steps']] == ['pull', 'deletion', 'acks']
+    assert snap['steps'][2] == {'name': 'acks', 'state': 'failed', 'reason': 'step_failed', 'count': 0}
     assert snap['holds'] == {'vault_locked': 2}
     assert snap['last_attempt'] == 10.5 and snap['last_success'] is None
     blob = json.dumps(snap)

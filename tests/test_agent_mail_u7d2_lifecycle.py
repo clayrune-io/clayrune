@@ -171,7 +171,7 @@ def kit(tmp_path):
         def recovery(self, lifecycle=True, **kw):
             self.factory.remote = self.client
             return Recovery(self.factory, clock=self.clock, retire=lambda: {'retired': 0},
-                            lifecycle=self.steps() if lifecycle is True else lifecycle, **kw)
+                            **kw)
     return Kit()
 
 
@@ -703,40 +703,35 @@ def test_a_failing_proof_push_reports_a_closed_code(kit):
 
 
 # --- recovery wiring -----------------------------------------------------------------------------------
-def test_recovery_without_a_lifecycle_client_skips_the_new_steps(kit):
+def test_pull_recovery_holds_legacy_store_without_renew_or_activation(kit):
     kit.pending()
     report = kit.recovery(lifecycle=None).run()
     by = by_name(report)
-    assert by['renew'] == dict(name='renew', state='skipped', reason='stage_disabled', count=0)
-    assert by['activation']['state'] == 'skipped' and kit.worker.calls == []
-    assert {s['reason'] for s in report['steps']} <= REASONS
-
-
-def test_legacy_recovery_drives_revocations_through_the_real_client_with_backoff(kit):
-    kit.started()
-    kit.core.disable()
-    rec = kit.recovery()
-    assert by_name(rec.run())['revocations']['reason'] == 'remote_cancel_retryable'
-    assert by_name(rec.run())['revocations']['reason'] == 'backoff'
-    kit.now += 31000
-    assert by_name(rec.run())['revocations']['reason'] == 'remote_cancel_retryable'
-    assert acked(kit)[0][1:] == (0, 0) and kit.worker.calls == []
-
-
-def test_legacy_recovery_step_order_is_unchanged_for_the_old_steps_and_reasons_stay_closed(kit):
-    kit.pending()
-    kit.now += 200000
-    report = kit.recovery().run()
-    names = [s['name'] for s in report['steps']]
-    old = ['store', 'deletion', 'revocations', 'flows', 'replay', 'inbound', 'cleanup', 'retention']
-    assert [n for n in names if n in old] == old
-    assert by_name(report)['renew']['count'] == 0
-    assert by_name(report)['renew']['reason'] == 'remote_renew_retryable'
+    assert by['store']['reason'] == 'schema_corrupt'
+    assert 'renew' not in by and 'activation' not in by and 'replay' not in by
     assert {s['reason'] for s in report['steps']} <= REASONS
     assert kit.worker.calls == []
 
 
-# --- selector and transports ---------------------------------------------------------------------------
+def test_pull_recovery_never_drives_legacy_revocations(kit):
+    kit.started()
+    kit.core.disable()
+    rec = kit.recovery()
+    for _ in range(3):
+        assert by_name(rec.run())['store']['reason'] == 'schema_corrupt'
+        kit.now += 31000
+    assert acked(kit)[0][1:] == (0, 0) and kit.worker.calls == []
+
+
+def test_pull_recovery_order_replaces_legacy_steps_and_reasons_stay_closed(kit):
+    from mc.agent_mail_recovery import STEPS
+    kit.pending()
+    report = kit.recovery().run()
+    assert tuple(s['name'] for s in report['steps']) == STEPS
+    assert {s['reason'] for s in report['steps']} <= REASONS
+    assert kit.worker.calls == []
+
+
 def test_select_remote_defaults_to_unavailable_and_needs_flag_client_and_evidence(kit):
     yes = lambda: True
     assert isinstance(select_remote({}, client=kit.client, lifecycle_evidence=yes), UnavailableRemote)
