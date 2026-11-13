@@ -62,7 +62,7 @@ hidden += ['mc.hook_entry', 'steward.fence', 'mc.process_guard']
 hidden += ['psutil']
 # MC-1166 pull sign-up (unit 19), pull schema (unit 15), pull client (unit 18) and local kill switch (W02) have no importer until the wiring unit lands;
 # name it so the frozen app carries it (tests/test_agent_mail_installer_assets.py).
-hidden += ['mc.agent_mail_signup', 'mc.agent_mail_pull_schema', 'mc.agent_mail_pull_client', 'mc.agent_mail_disable']
+hidden += ['mc.agent_mail_signup', 'mc.agent_mail_pull_schema', 'mc.agent_mail_pull_client', 'mc.agent_mail_disable', 'mc.agent_mail_service_review_schema']
 # py_webauthn (mc/passkeys/ceremony.py) is imported lazily so a build without it
 # degrades to "passkeys unavailable"; name its package so a build that has it
 # bundles every submodule (docs/PASSKEYS_SPEC.md: verify frozen builds).
