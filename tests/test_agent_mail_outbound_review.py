@@ -50,12 +50,12 @@ def test_thread_expiring_during_signing_must_not_send(out, monkeypatch, deadline
         with out.store._tx() as db:
             db.execute('UPDATE thread_bindings SET expires_at=?',
                        (out.store.clock() + (100 if deadline == 'intent' else 1),))
-    original = out.core.seal.prove
+    original = out.core.seal.sign_pull
     def slow_sign(*args, **kwargs):
         result = original(*args, **kwargs)
         out.kit.now += 1100
         return result
-    monkeypatch.setattr(out.core.seal, 'prove', slow_sign)
+    monkeypatch.setattr(out.core.seal, 'sign_pull', slow_sign)
     result = out.outbound.send(intent['intent_id'])
     assert not out.recording.calls
     assert result['state'] == result['transport_state'] == 'expired'
@@ -68,14 +68,14 @@ def test_thread_expiring_during_signing_must_not_send(out, monkeypatch, deadline
 def test_target_validity_is_rechecked_after_signing(out, monkeypatch):
     intent = prepare(out)
     original, proved = out.store._validate_target, []
-    prove = out.core.seal.prove
+    prove = out.core.seal.sign_pull
     def sign(*args, **kwargs):
         result = prove(*args, **kwargs)
         proved.append(True)
         return result
     def target(*args, **kwargs):
         return 'thread_revoked' if proved else original(*args, **kwargs)
-    monkeypatch.setattr(out.core.seal, 'prove', sign)
+    monkeypatch.setattr(out.core.seal, 'sign_pull', sign)
     monkeypatch.setattr(out.store, '_validate_target', target)
     with pytest.raises(EnrollmentRefused):
         out.outbound.send(intent['intent_id'])

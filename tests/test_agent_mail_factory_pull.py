@@ -323,3 +323,55 @@ def test_runtime_rechecks_cached_schema_and_origin_before_returning_client(tmp_p
     with pytest.raises(fac.StoreHeld, match='schema_corrupt'):
         f.pull_client()
     assert f._pull_client is client
+
+
+def test_outbound_uses_lazy_pull_composition_and_cached_object_has_live_gates(tmp_path, monkeypatch):
+    f, h, _ = populated(tmp_path)
+    def forbidden(*args, **kwargs):
+        pytest.fail('outbound selected legacy enrollment/transport')
+    monkeypatch.setattr(f, 'enrollment', forbidden)
+    monkeypatch.setattr(f.transport, 'send', forbidden)
+    before = list(h.calls)
+    obj = f.outbound()
+    assert obj is f.outbound() and h.calls == before
+    assert obj.client().store is f.require_pull_store()
+    assert obj.client().seal is f.seal()
+    assert obj.client().origin == ORIGIN
+    with pytest.raises(EnrollmentRefused, match='outbound_disabled'):
+        obj.prepare('p', 's', dict(request_id='r', kind='note', subject='s', body='b'))
+    f.config.update(agent_mail_enrollment_enabled=True, agent_mail_outbound_enabled=True)
+    active = f.outbound()
+    assert active is not obj
+    with pytest.raises(EnrollmentRefused, match='consent_required'):
+        active.prepare('p', 's', dict(request_id='r', kind='note', subject='s', body='b'))
+    f.config['agent_mail_outbound_enabled'] = False
+    with pytest.raises(EnrollmentRefused, match='outbound_disabled'):
+        active.prepare('p', 's', dict(request_id='r', kind='note', subject='s', body='b'))
+    assert h.calls == before
+
+
+def test_outbound_ownership_reads_work_without_pull_signup_or_legacy_deployment(tmp_path, monkeypatch):
+    from mc.agent_mail_outbound_state import initialize
+    from mc.agent_mail_questions import revision
+    f = factory(tmp_path)
+    store = f.open_store(create=True)
+    initialize(store)
+    question = {'questions': [{'question': 'Which day?'}]}
+    with store._tx() as db:
+        db.execute('INSERT INTO mail_outbound_question_channels VALUES(?,?,?,?,?)',
+                   ('p', 's', revision(question), 'agent_mail', 1))
+    monkeypatch.setattr(f, 'enrollment', lambda: pytest.fail('legacy enrollment consulted'))
+    obj = f.outbound()
+    assert obj.question_channel('p', 's', question, 'legacy') == 'agent_mail'
+    assert not store.path.parent.joinpath('identities').exists()
+
+
+@pytest.mark.parametrize('flag', ['agent_mail_enrollment_enabled', 'agent_mail_outbound_enabled'])
+def test_cached_outbound_requires_both_flags_at_use_time(tmp_path, flag):
+    f = factory(tmp_path)
+    f.open_store(create=True)
+    f.config.update(agent_mail_enrollment_enabled=True, agent_mail_outbound_enabled=True)
+    obj = f.outbound()
+    f.config[flag] = False
+    with pytest.raises(EnrollmentRefused, match='outbound_disabled'):
+        obj.prepare('p', 's', dict(request_id='r', kind='note', subject='s', body='b'))

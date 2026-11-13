@@ -22,8 +22,8 @@ validates but never creates/upgrades a store, and never starts a socket. The
 trusted reviewed_service callback must revalidate root-signed evidence, durable
 manifest floor and human pin approval on EVERY call; absent wiring refuses.
 Human authorization is supplied per signup/owner-change adapter, never cached
-as a factory-wide grant. Legacy enrollment/outbound remain compatibility seams
-until their separately scoped retirement; pull never selects a ceremony.
+as a factory-wide grant. Legacy enrollment remains a compatibility seam;
+outbound uses pull authority and retains enable-independent ownership reads.
 """
 from __future__ import annotations
 
@@ -441,7 +441,11 @@ class MailFactory:
             if self._outbound is not None and self._outbound[0] == flags \
                     and self._outbound[1].store is store:
                 return self._outbound[1]
-            built = Outbound(self.enrollment(), transport=self.transport, enabled=flags[1], key=self.key)
+            # Lazy client composition keeps disabled ownership reads available
+            # before pull signup, while every actual send checks current trust.
+            built = Outbound(store, client=self.service_client, reviewed_service=self.reviewed_service,
+                             enabled=lambda: self.config.get('agent_mail_enrollment_enabled') is True
+                             and self.config.get('agent_mail_outbound_enabled') is True, key=self.key)
             self._outbound = (flags, built)
             return built
 
