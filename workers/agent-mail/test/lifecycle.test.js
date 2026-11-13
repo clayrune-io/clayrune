@@ -1,4 +1,4 @@
-// Unit 7d-2d: Worker lifecycle routes (contract section 5). Real SQLite behind the D1 facade, injected CP
+// Unit 7d-2d: legacy lifecycle adapter (contract section 5). Real SQLite behind the D1 facade, injected CP
 // stub, fixed clock. The fixture drives the REAL enrollment core, so the fence/commit interplay is the
 // production SQL, not a model of it.
 import test from 'node:test';
@@ -9,7 +9,7 @@ import { keys } from './transport-support.js';
 import { base64url, bytes, sha256, sign, verify, randomId } from '../signing.js';
 import { createWorker } from '../worker.js';
 import { Ledger } from '../ledger.js';
-import { drainCpRevokes, LIFECYCLE_BODY_LIMIT } from '../lifecycle.js';
+import { lifecycle, drainCpRevokes, LIFECYCLE_BODY_LIMIT } from '../lifecycle.js';
 
 const TOKEN = 'ab'.repeat(32);
 const OTHER = 'cd'.repeat(32);
@@ -21,6 +21,15 @@ const cpStub = (over = {}) => ({ leases: [], revokes: [],
   async lease(v) { this.leases.push(v); return this.next ? this.next(v) : { ok: false, code: 'cp_unavailable' }; },
   async revoke(v) { this.revokes.push(v); return this.revokeResult ?? { ok: true, body: {} }; }, ...over });
 
+// Exercise the retained legacy module without exposing its routes in the public Worker.
+const legacyLifecycle = ({ clock, cp }) => ({
+  fetch(request, env) {
+    return lifecycle({ request, env, ledger: new Ledger(env.MAIL_DB), clock, cp,
+      config: { domain: env.MAIL_DOMAIN, from: env.MAIL_FROM, ingressVerified: env.MAIL_INGRESS_VERIFIED === 'true',
+        privateKey: env.MAIL_SERVICE_PRIVATE_KEY, keyId: env.MAIL_SERVICE_KEY_ID } });
+  },
+});
+
 async function world({ provider, fence = TOKEN, cp = cpStub(), commit = true } = {}) {
   const db = new EnrollmentDB();
   db.sql.exec(readFileSync(new URL('../migrations/0002_delivery_proof.sql', import.meta.url), 'utf8'));
@@ -30,8 +39,8 @@ async function world({ provider, fence = TOKEN, cp = cpStub(), commit = true } =
   const service = await keys();
   const env = { MAIL_ENABLED: 'true', MAIL_LIFECYCLE_ENABLED: 'true', MAIL_DB: db, MAIL_DOMAIN: 'mail.example.net',
     MAIL_FROM: 'agent@mail.example.net', MAIL_SERVICE_KEY_ID: 'sk1', MAIL_SERVICE_PRIVATE_KEY: service.privateKey };
-  const worker = createWorker({ clock: () => f.time.now, cp, send: async () => {}, fetcher: async () => Response.json({}) });
-  const w = { f, db, env, worker, cp, service, hooks, time: f.time, ledger: new Ledger(db),
+  const http = legacyLifecycle({ clock: () => f.time.now, cp });
+  const w = { f, db, env, http, cp, service, hooks, time: f.time, ledger: new Ledger(db),
     mailPriv: base64url(await crypto.subtle.exportKey('pkcs8', f.mail.privateKey)), install: null };
   if (commit) { await f.confirm(); w.install = (await f.complete()).install_id; }
   return w;
@@ -41,13 +50,13 @@ const j = (v) => bytes(JSON.stringify(v));
 async function fenceCall(w, name, value, { id = w.install ?? 'install1', generation = 1, nonce = randomId() } = {}) {
   const req = new Request(BASE + path(name), { method: 'POST', body: j(value), headers: { 'content-type': 'application/json',
     'x-mail-install-id': id, 'x-mail-generation': String(generation), 'x-mail-nonce': nonce } });
-  return { res: await w.worker.fetch(req, w.env), nonce, path: path(name), id, generation };
+  return { res: await w.http.fetch(req, w.env), nonce, path: path(name), id, generation };
 }
 async function installCall(w, name, value, over = {}) {
   const body = typeof value === 'string' ? bytes(value) : j(value);
   const headers = await sign({ privateKey: w.mailPriv, key_id: 'mail1', install_id: w.install, generation: 1,
     direction: 'install-to-service-lifecycle', path: path(name), body, now: w.time.now, ...over });
-  const res = await w.worker.fetch(new Request(BASE + path(name), { method: 'POST', body, headers }), w.env);
+  const res = await w.http.fetch(new Request(BASE + path(name), { method: 'POST', body, headers }), w.env);
   return { res, nonce: headers.get('x-mail-nonce'), path: path(name), id: w.install, generation: 1 };
 }
 async function signedOk(w, r) {
@@ -88,7 +97,7 @@ test('cancel before begin tombstones the flow; a later begin refuses; replay is 
   const service = await keys(); const time = { now: 1_794_249_600_000 };
   const w = { db, time, service, env: { MAIL_ENABLED: 'true', MAIL_LIFECYCLE_ENABLED: 'true', MAIL_DB: db,
     MAIL_SERVICE_KEY_ID: 'sk1', MAIL_SERVICE_PRIVATE_KEY: service.privateKey },
-  worker: createWorker({ clock: () => time.now, cp: cpStub() }) };
+  http: legacyLifecycle({ clock: () => time.now, cp: cpStub() }) };
   const first = await fenceCall(w, 'cancel', { flow_id: 'flow1', fence_token: TOKEN }, { id: 'install1' });
   assert.deepEqual(await ok(w, first), { flow_id: 'flow1', state: 'cancelled', assignment: null });
   const again = await fenceCall(w, 'cancel', { flow_id: 'flow1', fence_token: TOKEN }, { id: 'install1' });
@@ -233,7 +242,7 @@ test('status is a signed read-only snapshot and works while not yet active', asy
 test('install-auth refuses unsigned, wrong-direction, replayed, wrong-generation and foreign-key requests', async () => {
   const w = await world();
   const value = { install_id: w.install, generation: 1 };
-  const unsigned = await w.worker.fetch(new Request(BASE + path('status'), { method: 'POST', body: j(value),
+  const unsigned = await w.http.fetch(new Request(BASE + path('status'), { method: 'POST', body: j(value),
     headers: { 'x-mail-install-id': w.install, 'x-mail-generation': '1', 'x-mail-nonce': randomId() } }), w.env);
   assert.equal(unsigned.status, 401);
   assert.equal((await installCall(w, 'status', value, { direction: 'install-to-service' })).res.status, 401);
@@ -259,13 +268,15 @@ test('error responses are never signed; a flag-off Worker answers 503; bounds an
   assert.equal(bad.res.headers.get('x-mail-signature'), null);
   const big = await fenceCall(w, 'cancel', { flow_id: 'flow1', fence_token: TOKEN, pad: 'x'.repeat(LIFECYCLE_BODY_LIMIT) });
   assert.equal(big.res.status, 413);
-  const off = await w.worker.fetch(new Request(BASE + path('status'), { method: 'POST', body: j({}) }), { ...w.env, MAIL_LIFECYCLE_ENABLED: 'false' });
+  const off = await w.http.fetch(new Request(BASE + path('status'), { method: 'POST', body: j({}) }), { ...w.env, MAIL_LIFECYCLE_ENABLED: 'false' });
   assert.equal(off.status, 503); assert.equal((await off.json()).code, 'lifecycle_disabled');
-  const mailOff = await w.worker.fetch(new Request(BASE + path('status'), { method: 'POST', body: j({}) }), { ...w.env, MAIL_ENABLED: 'false' });
+  // These assertions belong to public routing, so unit 14 can change them to refusals.
+  const worker = createWorker({ clock: () => w.time.now, cp: w.cp, send: async () => {}, fetcher: async () => Response.json({}) });
+  const mailOff = await worker.fetch(new Request(BASE + path('status'), { method: 'POST', body: j({}) }), { ...w.env, MAIL_ENABLED: 'false' });
   assert.equal(mailOff.status, 503);
   for (const [method, p] of [['GET', path('status')], ['POST', `${path('status')}?x=1`], ['POST', '/v1/mail/lifecycle/other'],
     ['POST', '/v1/mail/lifecycle/status/'], ['POST', '/v1/mail/lifecycle']]) {
-    const r = await w.worker.fetch(new Request(BASE + p, { method, ...(method === 'POST' ? { body: j({}) } : {}) }), w.env);
+    const r = await worker.fetch(new Request(BASE + p, { method, ...(method === 'POST' ? { body: j({}) } : {}) }), w.env);
     assert.equal(r.status, 404, `${method} ${p}`);
   }
 });

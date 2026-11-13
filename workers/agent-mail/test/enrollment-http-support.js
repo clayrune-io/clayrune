@@ -1,10 +1,11 @@
 // Harness for the enrollment ceremony HTTP tests (7d-2e-2). The shared `fixture()` only supplies keys,
-// the grant trust and token/proof builders (its own DB is a scratch one); the Worker under test gets a
+// the grant trust and token/proof builders (its own DB is a scratch one); the legacy adapter gets a
 // separate D1 with a call counter, so "no D1 call" is a measurable claim.
 import { EnrollmentDB, fixture } from './enrollment-support.js';
 import { keys } from './transport-support.js';
 import { base64url, verify } from '../signing.js';
 import { createWorker } from '../worker.js';
+import { enrollmentHttp } from '../enrollment-http.js';
 import { Ledger } from '../ledger.js';
 import { canonicalBegin } from '../enrollment-begin-proof.js';
 import { randomId } from '../signing.js';
@@ -27,7 +28,7 @@ export function mailText(mail) {
 }
 export const codeOf = (mail) => mailText(mail).match(/\b[a-f0-9]{32}\b/g);
 
-export async function world({ send, preflight, provider, flags = {}, envOver = {}, noProvider = false, fetcher } = {}) {
+export async function world({ send, preflight, provider, flags = {}, envOver = {}, noProvider = false, fetcher, publicEntry = false } = {}) {
   const scratch = await fixture();
   const db = new EnrollmentDB(); const time = scratch.time; db.clock = () => time.now;
   const spy = spyDb(db); const service = await keys();
@@ -49,9 +50,18 @@ export async function world({ send, preflight, provider, flags = {}, envOver = {
     // Legacy core/complete tests exercise provider refusal at complete; provisioning has its own tests.
     if (!inject.provider.ensure) inject.provider.ensure = async ({ address }) => ({ address, verified: true });
   }
-  const worker = createWorker({ clock: () => time.now, fetcher: fetcher ?? (async () => { throw new Error('no_network'); }),
-    send: send ?? (async (mail) => { sent.push(mail); }), enrollment: inject });
-  const w = { scratch, db, spy, env, worker, service, sent, preflights, log, time, ledger: new Ledger(db),
+  const options = { clock: () => time.now, fetcher: fetcher ?? (async () => { throw new Error('no_network'); }),
+    send: send ?? (async (mail) => { sent.push(mail); }) };
+  // Module behavior goes straight to the retained legacy adapter. Only tests of the
+  // public entry's gates, routing and exception boundary opt back into createWorker.
+  const http = publicEntry ? createWorker({ ...options, enrollment: inject }) : {
+    fetch(request, env) {
+      return enrollmentHttp({ ...options, request, env, ledger: new Ledger(env.MAIL_DB),
+        config: { domain: env.MAIL_DOMAIN, from: env.MAIL_FROM, ingressVerified: env.MAIL_INGRESS_VERIFIED === 'true',
+          privateKey: env.MAIL_SERVICE_PRIVATE_KEY, keyId: env.MAIL_SERVICE_KEY_ID }, inject });
+    },
+  };
+  const w = { scratch, db, spy, env, http, service, sent, preflights, log, time, ledger: new Ledger(db),
     restore() { Object.assign(console, real); } };
   w.call = (name, value, over = {}) => call(w, name, value, over);
   w.begin = async (over = {}, secret = SECRET, callOver = {}) => {
@@ -67,7 +77,7 @@ export async function world({ send, preflight, provider, flags = {}, envOver = {
 
 export async function call(w, name, value, { nonce = NONCE, method = 'POST', query = '', raw, headers = {} } = {}) {
   const body = method === 'GET' ? undefined : (raw ?? JSON.stringify(value));
-  const res = await w.worker.fetch(new Request(BASE + path(name) + query,
+  const res = await w.http.fetch(new Request(BASE + path(name) + query,
     { method, body, headers: { 'x-mail-nonce': nonce, ...headers } }), w.env);
   const text = await res.clone().text();
   return { res, text, json: (() => { try { return JSON.parse(text); } catch { return undefined; } })(), nonce, path: path(name) };
