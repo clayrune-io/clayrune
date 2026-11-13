@@ -718,6 +718,27 @@ in the `/send` operation result only. `/send/status` itself is a successful 200
 read with code `ok` even when the reported state is uncertain/failed; it never
 means safe resend with a new intent id.
 
+**`/v1/pull/send` intent-receipt exception (Dave, 2026-11-12, MC-1166 units
+14a/21).** This is the only machine error that carries fields beyond the common
+prefix. When `/v1/pull/send` resolves to an existing or just-finished intent row
+whose state is not `accepted`, the signed 409 body is exactly
+`{v:1,code:C,request_id:I,intent_id:ID,thread_id:ID,message_id:MID,state:S,provider_id:string}`
+with `code === state` and `S` in `reserved|sending|uncertain|failed|revoked`
+(the non-accepted `IS` values). For this route only, `reserved`, `sending` and
+`failed` are added to the 409 closed codes. `intent_id` and `thread_id` must
+equal the request's; `provider_id` is `""` for `reserved`/`sending`/`failed`
+and `""` or retained opaque provider evidence (ASCII <=256) for
+`uncertain`/`revoked`, and is never acceptance evidence. Every other `/send`
+409 (`intent_conflict`, `registration_inactive`, `stale_generation`,
+`nonce_replayed`, a `revoked` raised before any intent row exists, ...) is
+common-prefix only. The receipt shape is all-or-nothing: any 409 carrying some
+but not all receipt fields, extra fields, `code !== state`, or a mismatched
+intent/thread is `response_unverified`. Client meaning: `reserved`/`sending`
+= in flight, read `/send/status`, never resubmit; `uncertain` = hold, no
+resend; `failed` = terminal for this intent, any retry is a new human-visible
+decision; `revoked` = generation hold. Both adapters (Worker unit 14a, Python
+unit 21) pin this with shared positive and negative vectors.
+
 401/403, invalid signatures/pin, corrupt store, frozen/revoked generation and
 vault lock are holds, not tight retry. 429/503/disconnect retry with bounded
 jitter and absolute expiry; respect explicit Retry-After. Unknown provider
