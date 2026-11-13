@@ -4,7 +4,7 @@
 # Do not deploy/enable until enrollment, receiver, provider fixtures, retention,
 # domain namespace and privacy gates in docs/AGENT_MAIL_TRANSPORT.md are met.
 name = "clayrune-agent-mail"
-main = "worker.js"
+main = "production.js"
 compatibility_date = "2026-11-01"
 
 [vars]
@@ -13,6 +13,12 @@ MAIL_INGRESS_VERIFIED = "false"
 MAIL_DOMAIN = "mail.example.net"
 MAIL_FROM = "agent@mail.example.net"
 MAIL_SERVICE_KEY_ID = "mail-service-v1"
+# Pull socket: reviewed origin and pin deadline (positive 13-digit Unix ms).
+# Required before unit 14 enables pull routing; no request may set these values.
+# MAIL_SERVICE_ORIGIN = "https://mail.example.net"
+# MAIL_SERVICE_PIN_EXPIRES_MS = "REVIEWED_PIN_EXPIRY_MS"
+# Socket expiry is min(pin deadline, signed manifest expiry, key retirement).
+# Renew reviewed config before that deadline; no automatic pin/key renewal.
 # Set the 32-hex account id in your operator copy before enabling enrollment.
 # MAIL_DESTINATION_ACCOUNT_ID = "YOUR_ACCOUNT_ID"
 # MAIL_DESTINATION_TOKEN is a human-created Worker secret, account-scoped with
@@ -34,6 +40,14 @@ database_id = "REPLACE_ONLY_AFTER_DEPLOY_APPROVAL"
 name = "MAIL_SEND"
 # Do not set destination_address or allowed_destination_addresses: Cloudflare
 # permits the account's verified destinations; app code enforces the exact owner.
+
+[[durable_objects.bindings]]
+name = "MAIL_PULL_MAILBOX"
+class_name = "PullSocketMailbox"
+
+[[migrations]]
+tag = "pull-mailbox-v1"
+new_sqlite_classes = ["PullSocketMailbox"]
 
 [triggers]
 crons = ["* * * * *"]
