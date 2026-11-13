@@ -47,6 +47,7 @@ from mc import desk as _desk
 from mc import desk_story as _story
 from mc import desk_product_context as _product
 from mc import desk_storyboard as _sb
+from mc import desk_story_media as _media
 from mc.core import _log, now_iso
 from mc.desk_storyboard import MAX_LINE
 
@@ -300,7 +301,9 @@ def chat(body, load_project: Callable[[str], Optional[dict]]) -> dict:
     rec = _story._agent(body.get('agent'), project)
     with _desk._store_lock:   # fail before the model is paid for
         store = _desk._read_store()
-        thread = [t for t in (_board(store, kind, oid, key).get('thread') or []) if isinstance(t, dict)]
+        board = _board(store, kind, oid, key)
+        thread = [t for t in (board.get('thread') or []) if isinstance(t, dict)]
+        saved = [s for s in (board.get('scenes') or []) if isinstance(s, dict)]
     payload, cut = _context(story, scenes, focus, thread, message)
     product = _product.product_context(project)
     if product is not None:
@@ -313,8 +316,12 @@ def chat(body, load_project: Callable[[str], Optional[dict]]) -> dict:
     engine = _story._resolve_engine(project, rec)
     effort = ((rec or {}).get('engine') or {}).get('effort') or ''
     try:
-        text = _story._call_model(engine.provider, prompt=_INSTR_CHAT + _product.PRODUCT_INSTRUCTION, system_prompt=persona, model=engine.model,
-                                  effort=effort, stdin_text=json.dumps(payload, ensure_ascii=False), project=project)
+        with _media.turn_media(saved, raw_scenes, message, focus, engine.provider, project) as media:
+            media.apply(payload)
+            extra = {'readable': media.readable} if media.readable else {}
+            text = _story._call_model(engine.provider, prompt=_INSTR_CHAT + media.instruction + _product.PRODUCT_INSTRUCTION,
+                                      system_prompt=persona, model=engine.model, effort=effort,
+                                      stdin_text=json.dumps(payload, ensure_ascii=False), project=project, **extra)
     except Exception as e:  # TransformFailure / TransformTimeout / provider refusal: the call did not happen
         _log(f'[desk] storyboard chat failed: {e}', flush=True)
         raise PieceError(f'the model call failed, so nothing was changed: {e}', 502)

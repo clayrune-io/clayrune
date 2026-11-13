@@ -9,7 +9,7 @@ import re
 import shlex
 import subprocess
 import tempfile
-from typing import cast
+from typing import Sequence, cast
 from urllib.request import Request, urlopen
 
 from mc import state, transform_sandbox, desk_dispatch
@@ -61,22 +61,34 @@ def capability(provider: str, project: dict | None = None) -> dict:
             'reason': reason}
 
 
-def _settings(root: Path | None, dispatch: bool = False) -> dict:
+def _settings(root: Path | None, dispatch: bool = False, readable: Path | None = None) -> dict:
     from mc import desk_read_guard, guardrail_hooks
     tokens = guardrail_hooks.hook_invocation_tokens(
         'desk-read', None, Path(desk_read_guard.__file__).resolve())
     tokens.append(str(root).replace('\\', '/') if root else '')
     if dispatch:
         tokens.append('--dispatch')
+    if readable:
+        tokens += ['--readable', str(readable).replace('\\', '/')]
     command = shlex.join(tokens)
     return {'permissions': {'defaultMode': 'dontAsk'},
             'hooks': {'PreToolUse': [{'matcher': '.*', 'hooks': [
                 {'type': 'command', 'command': command, 'timeout': 30, 'onFailure': 'block'}]}]}}
 
 
+def _tools(root: Path | None, research: bool, readable: Sequence[str] = ()) -> tuple[str, ...]:
+    """The tools this call is offered. Exact files the server chose (`readable`)
+    add Read when there is no project folder; the guard still limits it to them."""
+    if not research:
+        return ()
+    if root:
+        return TOOLS
+    return (*TOOLS[:2], 'Read') if readable else TOOLS[:2]
+
+
 def _argv(binary: str, settings: Path, root: Path | None, model: str, effort: str,
-          mcp: dict | None = None, research: bool = True) -> list[str]:
-    tools = (TOOLS if root else TOOLS[:2]) if research else ()
+          mcp: dict | None = None, research: bool = True, readable: Sequence[str] = ()) -> list[str]:
+    tools = _tools(root, research, readable)
     allowed = (*tools, desk_dispatch.TOOL) if mcp else tools
     cmd = [binary, '-p', '--verbose', '--output-format', 'stream-json',
            '--model', model or 'claude-haiku-5-5', '--max-turns', str(MAX_TURNS),
@@ -87,6 +99,8 @@ def _argv(binary: str, settings: Path, root: Path | None, model: str, effort: st
            '--no-session-persistence']
     if root:
         cmd += ['--add-dir', str(root)]
+    for folder in dict.fromkeys(str(Path(p).parent) for p in readable):
+        cmd += ['--add-dir', folder]   # the CLI's own path check; the hook still names the exact files
     if effort:
         cmd += ['--effort', effort]
     return cmd
@@ -105,7 +119,7 @@ def _register(pid: int, project: dict | None = None) -> None:
 
 
 def run(provider: str, *, prompt: str, system_prompt: str, model: str, effort: str,
-        stdin_text: str, project: dict | None = None) -> str:
+        stdin_text: str, project: dict | None = None, readable: Sequence[str] = ()) -> str:
     from mc import agent_runtime
     caps = capability(provider, project)
     supported = (desk_dispatch._current.get() is not None and provider == 'claude'
@@ -152,7 +166,13 @@ def run(provider: str, *, prompt: str, system_prompt: str, model: str, effort: s
     body = instruction + '\n\n=== UNTRUSTED TASK DATA ===\n' + stdin_text + '\n=== END DATA ===\n' + prompt + DATA_RULE
     with desk_dispatch.tool_session(turn) as token, tempfile.TemporaryDirectory(prefix='desk-research-') as tmp:
         settings = Path(tmp) / 'settings.json'
-        write_json_atomic(settings, _settings(root, bool(token)))
+        allow = None
+        if readable and not caps['toolless']:
+            allow = Path(tmp) / 'readable.json'
+            write_json_atomic(allow, list(readable))
+        else:
+            readable = ()
+        write_json_atomic(settings, _settings(root, bool(token), allow))
         env = transform_sandbox.transform_env()
         mcp = None
         if token:
@@ -163,7 +183,7 @@ def run(provider: str, *, prompt: str, system_prompt: str, model: str, effort: s
             port = int(os.environ.get('MC_PORT') or state.CONFIG.get('port') or 5199)
             env['CLAYRUNE_DESK_TURN'] = token
             env['CLAYRUNE_DESK_TOOL_URL'] = f'http://127.0.0.1:{port}/api/desk/dispatch-tool'
-        cmd = _argv(runtime.resolve_binary_str(), settings, root, model, effort, mcp, not caps['toolless'])
+        cmd = _argv(runtime.resolve_binary_str(), settings, root, model, effort, mcp, not caps['toolless'], readable)
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, encoding='utf-8', errors='replace',
                                 cwd=transform_sandbox.neutral_cwd(), env=env,
@@ -185,7 +205,7 @@ def run(provider: str, *, prompt: str, system_prompt: str, model: str, effort: s
             except ValueError:
                 continue
         init = next((e for e in events if e.get('type') == 'system' and e.get('subtype') == 'init'), {})
-        expected: set[str] = set((TOOLS if root else TOOLS[:2]) if not caps['toolless'] else ())
+        expected: set[str] = set(_tools(root, not caps['toolless'], readable))
         if token:
             expected.add(desk_dispatch.TOOL)
         servers = init.get('mcp_servers') or []

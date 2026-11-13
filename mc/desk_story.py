@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 from mc import characters as _chars
 from mc import desk_storyboard as _sb
@@ -88,11 +88,11 @@ _PERSONA_TAIL = ("For this call only: use only the capabilities explicitly suppl
 # -- the model seam (tests replace this) ---------------------------------------------
 
 def _call_model(provider: str, *, prompt: str, system_prompt: str, model: str, effort: str,
-                stdin_text: str, project: Optional[dict] = None) -> str:
+                stdin_text: str, project: Optional[dict] = None, readable: Sequence[str] = ()) -> str:
     from mc import desk_research
     return desk_research.run(
         provider, prompt=prompt, system_prompt=system_prompt, model=model, effort=effort,
-        stdin_text=stdin_text, project=project)
+        stdin_text=stdin_text, project=project, readable=readable)
 
 
 def _resolve_engine(project: Optional[dict], character: Optional[dict]):
