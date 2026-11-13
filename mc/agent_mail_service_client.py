@@ -180,11 +180,14 @@ def verify_pull_response(response: tuple[int, Mapping[str, str], bytes], *, cand
         if status == 200:
             _need(value.get('code') == ('accepted' if path == PULL_PREFIX + '/send' else
                                       'fenced' if path == FENCE else 'ok'))
-        elif status == 409 and path == SEND and _RECEIPT_FIELDS.intersection(value):
-            # Contract section 7: the sole structured error exception. A signed
-            # intent receipt is reconciliation metadata, never send acceptance.
+        if path == SEND and (status == 200 or status == 409 and (_RECEIPT_FIELDS.intersection(value)
+                or value.get('code') in {'reserved', 'sending', 'uncertain', 'failed'})):
+            # Sections 4/7: accepted requires provider evidence; a signed 409
+            # receipt is reconciliation metadata, never send acceptance.
+            # Only revoked may also be a common error before any intent exists.
             _need(value.keys() == _RECEIPT_FIELDS | {'v', 'code', 'request_id'}
-                  and isinstance(value['state'], str) and value['state'] in _RECEIPT_STATES
+                  and isinstance(value['state'], str)
+                  and value['state'] in ({'accepted'} if status == 200 else _RECEIPT_STATES)
                   and value['code'] == value['state'] and request is not None)
             assert request is not None
             _need(all(_match(ID, value[k]) and value[k] == request.get(k) for k in ('intent_id', 'thread_id')))
@@ -192,8 +195,9 @@ def verify_pull_response(response: tuple[int, Mapping[str, str], bytes], *, cand
             _need(isinstance(mid, str) and mid.isascii() and len(mid) <= 8192 and _MID.fullmatch(mid))
             _need(isinstance(provider, str) and len(provider) <= 256
                   and (provider == '' or re.fullmatch(r'[\x20-\x7e]+', provider) and provider.strip())
-                  and (value['state'] in {'uncertain', 'revoked'} or provider == ''))
-        else:
+                  and (value['state'] in {'accepted', 'uncertain', 'revoked'} or provider == '')
+                  and (value['state'] != 'accepted' or provider != ''))
+        elif status != 200:
             _need(isinstance(value.get('code'), str) and value['code'] in ERRORS[status]
                   and value.keys() in ({'v', 'code', 'request_id'},
                                        {'v', 'code', 'request_id', 'retry_after_ms'})
