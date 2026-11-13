@@ -459,7 +459,16 @@ def get() -> MailFactory:
     global _factory
     with _factory_lock:
         if _factory is None:
-            _factory = MailFactory()
+            # Lazy: the U1 build only runs (and fetches) when reviewed_service() is invoked.
+            from mc import agent_mail_reviewed_service
+            built: list[Callable[[], tuple[ServiceKeyCandidate, str]]] = []
+
+            def reviewed() -> tuple[ServiceKeyCandidate, str]:
+                if not built:
+                    built.append(agent_mail_reviewed_service.build(factory))
+                return built[0]()
+
+            factory = _factory = MailFactory(reviewed_service=reviewed)
         return _factory
 
 
