@@ -111,6 +111,16 @@ CREATE TABLE mail_pull_fences (
   UNIQUE(install_id,generation,flow_id,mode)
 );
 CREATE INDEX mail_pull_fence_due ON mail_pull_fences(state,next_attempt_ms,op_id);
+CREATE TABLE mail_pull_disable_ops (
+  op_id TEXT NOT NULL PRIMARY KEY CHECK(length(op_id)=32),
+  install_id TEXT NOT NULL REFERENCES mail_pull_accounts(install_id),
+  generation INTEGER NOT NULL CHECK(generation>0), owner_generation INTEGER NOT NULL CHECK(owner_generation>0),
+  flow_id TEXT NOT NULL CHECK(length(flow_id)=32),
+  input_digest TEXT NOT NULL CHECK(length(input_digest)=64),
+  state TEXT NOT NULL CHECK(state IN ('local_off','held')),
+  reason TEXT NOT NULL DEFAULT '', result_json TEXT NOT NULL, created_ms INTEGER NOT NULL
+);
+CREATE INDEX mail_pull_disable_scope ON mail_pull_disable_ops(install_id,generation,owner_generation,flow_id,op_id);
 CREATE TABLE mail_pull_connections (
   install_id TEXT NOT NULL PRIMARY KEY REFERENCES mail_pull_accounts(install_id),
   generation INTEGER NOT NULL, owner_generation INTEGER NOT NULL,
@@ -132,7 +142,7 @@ _CREATE = tuple(s.strip() for s in _SCHEMA.split(';') if s.strip().startswith('C
 # NULL; explicit indexes and constraints are checked against the literal DDL.
 _AUTO_COUNTS = {
     'accounts': 1, 'generations': 1, 'flows': 1, 'threads': 2,
-    'receipts': 5, 'ack_outbox': 2, 'fences': 2, 'connections': 1, 'status': 1,
+    'receipts': 5, 'ack_outbox': 2, 'fences': 2, 'disable_ops': 1, 'connections': 1, 'status': 1,
 }
 
 
@@ -193,7 +203,7 @@ def _validate(db: sqlite3.Connection) -> None:
         raise PullSchemaCorrupt()
     # Existing MailStore connections do not enable FK enforcement. Check the
     # extension explicitly without changing that connection policy or legacy rows.
-    for suffix in ('generations', 'flows', 'threads', 'receipts', 'ack_outbox', 'connections', 'status'):
+    for suffix in ('generations', 'flows', 'threads', 'receipts', 'ack_outbox', 'disable_ops', 'connections', 'status'):
         if db.execute(f'PRAGMA foreign_key_check(mail_pull_{suffix})').fetchone() is not None:
             raise PullSchemaCorrupt()
 

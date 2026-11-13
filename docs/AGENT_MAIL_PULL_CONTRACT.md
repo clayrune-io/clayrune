@@ -1277,6 +1277,16 @@ CREATE TABLE mail_pull_fences (
   UNIQUE(install_id,generation,flow_id,mode)
 );
 CREATE INDEX mail_pull_fence_due ON mail_pull_fences(state,next_attempt_ms,op_id);
+CREATE TABLE mail_pull_disable_ops (
+  op_id TEXT NOT NULL PRIMARY KEY CHECK(length(op_id)=32),
+  install_id TEXT NOT NULL REFERENCES mail_pull_accounts(install_id),
+  generation INTEGER NOT NULL CHECK(generation>0), owner_generation INTEGER NOT NULL CHECK(owner_generation>0),
+  flow_id TEXT NOT NULL CHECK(length(flow_id)=32),
+  input_digest TEXT NOT NULL CHECK(length(input_digest)=64),
+  state TEXT NOT NULL CHECK(state IN ('local_off','held')),
+  reason TEXT NOT NULL DEFAULT '', result_json TEXT NOT NULL, created_ms INTEGER NOT NULL
+);
+CREATE INDEX mail_pull_disable_scope ON mail_pull_disable_ops(install_id,generation,owner_generation,flow_id,op_id);
 CREATE TABLE mail_pull_connections (
   install_id TEXT NOT NULL PRIMARY KEY REFERENCES mail_pull_accounts(install_id),
   generation INTEGER NOT NULL, owner_generation INTEGER NOT NULL,
@@ -1292,6 +1302,38 @@ CREATE TABLE mail_pull_status (
   status_json TEXT NOT NULL, response_digest TEXT NOT NULL CHECK(length(response_digest)=64)
 );
 ```
+
+### 9.0 W02-S token-independent disable custody (2026-11-13)
+
+Section 9 v1 SQL is amended in place per Dave's **DECIDED WITHOUT RON - W02-S
+schema version gate**, MAIN journal `a841feef-agent-mail.md`, 2026-11-13 00:15 PST:
+`initialize_pull` is called only by `MailFactory.bootstrap()`, which has no
+production caller, so no deployed pull-extension DB requires migration. No
+version bump or migration is authorized. A DB carrying the former v1 object
+set now fails closed as schema drift; runtime never repairs its missing table.
+
+NEW `mail_pull_disable_ops` is exclusively the local `disable` action, not a
+management flow or remote fence. W02 must insert its immutable op/install/g/og/
+flow/input binding and original denial/hold result in the SAME transaction as
+local off, even without a usable fence token or flow row. `flow_id` is the
+account's exact original `seal_flow_id`; it deliberately has no flow FK.
+`input_digest` is SHA-256 of UTF-8 compact JSON of the exact non-passcode
+disable input (`{"op_id":"<I>"}`, no whitespace or trailing newline); action
+is fixed by this table, scope by its explicit columns.
+`state=local_off` records committed denial with available fence planning;
+`state=held` records committed denial with a hold, e.g. `fence_token_missing`.
+`reason` and `result_json` retain the closed reason and token-free original
+local denial result; neither state asserts remote revocation success.
+
+The globally unique op id must be read and compared BEFORE any duplicate
+denial: exact identity reopens its record, changed install/g/og/flow/input
+refuses `operation_conflict` without touching the later account. W02 owns that
+comparison and result parsing; this schema prerequisite alone implements no
+disable/replay API. Never overwrite/rebind or expire this original operation
+record as generations advance. Actual remote retry/receipt settlement remains
+in `mail_pull_fences`; no token, sentinel credential or reused flow purpose is
+introduced here. Validation covers the new table, implicit PK index, scope
+index and account FK; missing or changed objects/orphan rows remain held.
 
 ### 9.1 Mapping to EXISTING storage and execution
 
