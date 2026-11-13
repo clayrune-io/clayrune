@@ -12,7 +12,7 @@ from mc.agent_mail_ingress import MailIngress
 from mc.agent_mail_launder import MailLaunder
 from mc.agent_mail_signing import IngressRefused
 from mc.agent_mail_store import BLOCKED, MailStore
-from tests.test_agent_mail_ingress import TOKEN, count, envelope, setup, signed
+from tests.test_agent_mail_ingress import TOKEN, count, envelope, setup, signed, worker_clock
 
 
 def held():
@@ -27,21 +27,24 @@ def no_model(monkeypatch):
                         lambda **kw: pytest.fail('held event reached a model'))
 
 
-def worker_hold(mime, mutation=None):
+def worker_hold(mime, mutation=None, *, now):
     script = """import {fixture,sendValue,emailMessage} from './workers/agent-mail/test/transport-support.js';
 import {sign,bytes} from './workers/agent-mail/signing.js';
+import assert from 'node:assert/strict';
 let input=''; for await (const c of process.stdin) input+=c;
-const {mime,token,mutation}=JSON.parse(input); const f=await fixture();
-const sent=await f.worker.fetch(await f.request('/v1/mail/send',sendValue({reply_token:token})),f.env);
+const {mime,token,mutation,now}=JSON.parse(input); const f=await fixture(); f.clock.now=now;
+// Retained v2 hold/replay contract; the public Worker now exclusively serves pull.
+const sent=await f.http.fetch(await f.request('/v1/mail/send',sendValue({reply_token:token})),f.env);
+assert.equal(sent.status,200);
 const out=await sent.json();
 const options=mime==='signed' ? {
  type:'multipart/signed; boundary=s; protocol="application/pgp-signature"',
  text:'--s\\r\\nContent-Type: text/plain\\r\\n\\r\\n\\r\\n--s\\r\\nContent-Type: application/pgp-signature\\r\\n\\r\\nNEVER-STORE-SIGNATURE\\r\\n--s--'
 } : {text:''};
-const accepted=await f.worker.email(emailMessage({outId:out.message_id,token,...options}),f.env);
+const accepted=await f.legacy.email(emailMessage({outId:out.message_id,token,...options}),f.env);
 const queued=await f.ledger.first('SELECT * FROM events');
 // Capture the real replay request, including its fresh signature, without a network call.
-await f.worker.scheduled({},f.env); const d=f.delivered[0];
+await f.legacy.scheduled({},f.env); const d=f.delivered[0];
 let raw=new TextDecoder().decode(d.body); let headers=d.headers;
 if (mutation) {
  const p=JSON.parse(raw);
@@ -56,7 +59,7 @@ console.log(JSON.stringify({public_key:f.serviceKeys.publicKey,accepted,queued,
  headers:Object.fromEntries(headers),raw}));
 """
     child = subprocess.run(['node', '--input-type=module', '-e', script],
-                           input=json.dumps(dict(mime=mime, token=TOKEN, mutation=mutation)), text=True,
+                           input=json.dumps(dict(mime=mime, token=TOKEN, mutation=mutation, now=now)), text=True,
                            capture_output=True, check=False, timeout=20,
                            cwd=Path(__file__).resolve().parents[1])
     assert child.returncode == 0, f'Node child exited {child.returncode}:\n{child.stderr}'
@@ -74,8 +77,8 @@ def worker_ingress(setup, result):
 
 
 @pytest.mark.parametrize('mime', ['plain', 'signed'])
-def test_real_worker_empty_hold_replay_and_local_custody(setup, mime):
-    result = worker_hold(mime)
+def test_real_worker_empty_hold_replay_and_local_custody(setup, worker_clock, mime):
+    result = worker_hold(mime, now=worker_clock)
     assert result['accepted']['status'] == 'queued'
     assert result['queued']['state'] == 'pending'
     assert 'NEVER-STORE-SIGNATURE' not in result['queued']['payload']
@@ -100,8 +103,8 @@ def test_real_worker_empty_hold_replay_and_local_custody(setup, mime):
 
 
 @pytest.mark.parametrize('mutation', ['tamper', 'body', 'version'])
-def test_worker_signed_held_negative_variants_refused(setup, mutation):
-    result = worker_hold('signed', mutation)
+def test_worker_signed_held_negative_variants_refused(setup, worker_clock, mutation):
+    result = worker_hold('signed', mutation, now=worker_clock)
     ingress = worker_ingress(setup, result)
     with pytest.raises(IngressRefused):
         ingress.receive(result['headers'], result['raw'].encode())

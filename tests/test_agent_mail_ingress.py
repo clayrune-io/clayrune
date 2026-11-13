@@ -53,6 +53,14 @@ def setup(tmp_path):
     return ingress, clock, private, pin
 
 
+@pytest.fixture(params=[0, 30 * 86400000], ids=['fixed', 'plus30d'])
+def worker_clock(setup, request):
+    # One synthetic clock for the Worker handlers, signatures and local custody.
+    # The retained legacy SQL uses bound times, never SQLite's wall clock.
+    setup[1].ms += request.param
+    return setup[1].ms
+
+
 def envelope(**updates):
     env = dict(version=1, install_id='install1', generation=1, thread_id='thread1',
                incoming_message_id='reply1@example.test', text='Friday works.',
@@ -533,20 +541,27 @@ def test_two_sessions_same_subject_and_persona_cannot_cross_route(setup):
     assert ingress.store.get_event(second['event_id'])['session_id'] == 'session2'
 
 
-def test_real_worker_mime_strip_sign_and_local_custody(setup):
+def test_real_worker_mime_strip_sign_and_local_custody(setup, worker_clock):
     ingress, _, _, pin = setup
     script = """import {fixture,sendValue,emailMessage} from './workers/agent-mail/test/transport-support.js';
 import {sign,bytes} from './workers/agent-mail/signing.js';
+import assert from 'node:assert/strict';
+let input=''; for await (const c of process.stdin) input+=c;
 const f=await fixture(); const token='0123456789abcdef0123456789abcdef';
-const sent=await f.worker.fetch(await f.request('/v1/mail/send',sendValue({reply_token:token})),f.env);
+f.clock.now=JSON.parse(input).now;
+// This v1 envelope contract belongs to the retained handlers, not the public pull entry.
+const sent=await f.http.fetch(await f.request('/v1/mail/send',sendValue({reply_token:token})),f.env);
+assert.equal(sent.status,200);
 const out=await sent.json();
-await f.worker.email(emailMessage({outId:out.message_id,token,text:'Synthetic worker reply'}),f.env);
+const accepted=await f.legacy.email(emailMessage({outId:out.message_id,token,text:'Synthetic worker reply'}),f.env);
+assert.equal(accepted.status,'queued');
 const e=await f.ledger.first('SELECT payload FROM events');
 const h=await sign({...f.serviceKeys,key_id:'service1',install_id:'install1',generation:1,
  direction:'service-to-install',path:'/api/agent-mail/ingress',body:bytes(e.payload),now:f.clock.now});
 console.log(JSON.stringify({public_key:f.serviceKeys.publicKey,headers:Object.fromEntries(h),raw:e.payload}));
 """
     result = subprocess.run(['node', '--input-type=module', '-e', script], text=True,
+                            input=json.dumps(dict(now=worker_clock)),
                             capture_output=True, check=False, timeout=20,
                             cwd=Path(__file__).resolve().parents[1])
     assert result.returncode == 0, f'Node child exited {result.returncode}:\n{result.stderr}'
