@@ -371,8 +371,7 @@ def test_immediate_free_text_reply_consumes_only_its_recorded_form(channel):
     captured = []
     def reply(headers, raw):
         value = json.loads(raw)
-        ev = envelope(thread_id=value['thread_id'], text='Friday works for me.')
-        event_id = MailIngress(out.store).receive(*signed(ROOT, ev))['event_id']
+        ev, event_id = out.kit.receive(value, text='Friday works for me.')
         claim = out.store.claim_for_laundering()
         out.store.complete_laundering(event_id, claim['fence_token'], dict(
             version=1, source='owner_mail_laundered', warning=WARNING, reply_text=ev['text'],
