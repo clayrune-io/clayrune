@@ -5,6 +5,7 @@ import { EnrollmentDB, fixture } from './enrollment-support.js';
 import { keys } from './transport-support.js';
 import { base64url, verify } from '../signing.js';
 import { createWorker } from '../worker.js';
+import { enrollmentErrorBoundary } from '../legacy-error-boundary.js';
 import { enrollmentHttp } from '../enrollment-http.js';
 import { Ledger } from '../ledger.js';
 import { canonicalBegin } from '../enrollment-begin-proof.js';
@@ -53,12 +54,12 @@ export async function world({ send, preflight, provider, flags = {}, envOver = {
   const options = { clock: () => time.now, fetcher: fetcher ?? (async () => { throw new Error('no_network'); }),
     send: send ?? (async (mail) => { sent.push(mail); }) };
   // Module behavior goes straight to the retained legacy adapter. Only tests of the
-  // public entry's gates, routing and exception boundary opt back into createWorker.
+  // public entry's gates and routing opt back into createWorker.
   const http = publicEntry ? createWorker({ ...options, enrollment: inject }) : {
     fetch(request, env) {
-      return enrollmentHttp({ ...options, request, env, ledger: new Ledger(env.MAIL_DB),
+      return enrollmentErrorBoundary(() => enrollmentHttp({ ...options, request, env, ledger: new Ledger(env.MAIL_DB),
         config: { domain: env.MAIL_DOMAIN, from: env.MAIL_FROM, ingressVerified: env.MAIL_INGRESS_VERIFIED === 'true',
-          privateKey: env.MAIL_SERVICE_PRIVATE_KEY, keyId: env.MAIL_SERVICE_KEY_ID }, inject });
+          privateKey: env.MAIL_SERVICE_PRIVATE_KEY, keyId: env.MAIL_SERVICE_KEY_ID }, inject }));
     },
   };
   const w = { scratch, db, spy, env, http, service, sent, preflights, log, time, ledger: new Ledger(db),
