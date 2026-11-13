@@ -37,7 +37,7 @@ run('flag off (unset, "false", "TRUE") answers 503 before any D1 call, send or p
   untouched(w); assert.equal(w.preflights.length, 0);
 });
 
-run('MAIL_ENABLED off wins first: the existing mail_disabled answer', async (w) => {
+runWith('MAIL_ENABLED off wins first: the existing mail_disabled answer', { publicEntry: true }, async (w) => {
   w.env = { ...w.env, MAIL_ENABLED: 'false' };
   const r = await w.begin(); assert.equal(r.res.status, 503); assert.deepEqual(r.json, { code: 'mail_disabled' }); untouched(w);
 });
@@ -74,7 +74,7 @@ runWith('no destination provider configured -> 503 enrollment_config_required (n
     untouched(w);
   });
 
-run('unknown path, GET, and a query string are 404 and never reach the core', async (w) => {
+runWith('unknown path, GET, and a query string are 404 and never reach the core', { publicEntry: true }, async (w) => {
   assert.equal(isEnrollmentPath('/v1/mail/enrollment/begin'), true);
   assert.equal(isEnrollmentPath('/v1/mail/enrollment/cancel'), false);
   assert.equal(isEnrollmentPath('/v1/mail/enrollment/begin/'), false);
@@ -87,7 +87,7 @@ run('missing or malformed x-mail-nonce, bad JSON and oversize bodies are refused
   for (const nonce of ['', 'zz'.repeat(16), 'ab'.repeat(15)]) {
     const r = await w.begin({}, SECRET, { nonce }); assert.equal(r.res.status, 400);
   }
-  const noHeader = await w.worker.fetch(new Request(BASE + path('begin'), { method: 'POST', body: '{}' }), w.env);
+  const noHeader = await w.http.fetch(new Request(BASE + path('begin'), { method: 'POST', body: '{}' }), w.env);
   assert.equal(noHeader.status, 400);
   const bad = await w.call('begin', null, { raw: '{not json' }); assert.deepEqual(bad.json, { code: 'invalid_request' });
   const big = await w.call('begin', null, { raw: JSON.stringify({ pad: 'x'.repeat(ENROLLMENT_BODY_LIMIT) }) });
@@ -141,7 +141,7 @@ for (const [name, preflight, status, code] of [
   });
 }
 
-runWith('E2a fail closed: a preflight that throws -> 503, no D1 write, no send', { preflight: async () => { throw new Error('boom'); } }, async (w) => {
+runWith('E2a fail closed: a preflight that throws -> 503, no D1 write, no send', { publicEntry: true, preflight: async () => { throw new Error('boom'); } }, async (w) => {
   const r = await w.begin(); assert.equal(r.res.status, 503); assert.deepEqual(r.json, { code: 'storage_or_configuration_failure' });
   untouched(w); assert.equal(w.log.join('').includes('boom'), false);
 });
