@@ -1,4 +1,4 @@
-"""Human-authorized pull signup; no sockets, activation, schema creation or wiring.
+"""Human-authorized pull signup; no sockets or schema creation.
 
 Composition supplies the SAME guarded MailStore with the complete checked pull
 extension (contract section 9), IdentitySeal and a reviewed_service callback.
@@ -133,6 +133,11 @@ class Signup:
         return OwnerChange(self.store, self.seal, self.transport, install_id=install_id,
                            reviewed_service=self.reviewed_service, authorize=self.authorize, clock_ms=self.clock_ms)
 
+    def enable(self) -> dict[str, Any]:
+        """Explicit human action only; passive status/resume never retries enable."""
+        from mc.agent_mail_activation import Activation
+        return Activation(self).enable()
+
     def _service(self, row: dict[str, Any] | None = None) -> tuple[ServiceKeyCandidate, str]:
         try:
             pin, digest = self.reviewed_service()
@@ -179,7 +184,10 @@ class Signup:
         try:
             _need(isinstance(row['result_json'], str) and len(row['result_json']) <= 16384, 'schema_corrupt')
             meta = _object(row['result_json'].encode('utf-8'))
-            _need(set(meta) == {'v', 'op_id', 'public_key', 'start_body', 'started', 'notice_state', 'fence_token'}, 'schema_corrupt')
+            from mc.agent_mail_activation import FIELDS, validate_metadata, validate_registration
+            activating = validate_metadata(meta)
+            _need(set(meta) == {'v', 'op_id', 'public_key', 'start_body', 'started', 'notice_state', 'fence_token'}
+                  | (FIELDS if activating else set()), 'schema_corrupt')
             _need(meta['v'] == 1 and type(meta['v']) is int and I.fullmatch(meta['op_id'])
                   and H.fullmatch(meta['fence_token']) and meta['started'] in (0, 1) and type(meta['started']) is int
                   and (meta['notice_state'] is None or meta['notice_state'] in {'queued', 'accepted', 'uncertain', 'failed'}), 'schema_corrupt')
@@ -192,9 +200,14 @@ class Signup:
             _need(row['account_generation'] == row['account_owner_generation'] == 1
                   and row['consent_epoch'] == row['account_consent_epoch']
                   and row['generation_state'] == 'current'
-                  and row['account_state'] in {'pending', 'verified'} and row['local_enabled'] == 0,
+                  and (row['account_state'] in {'pending', 'verified'} and row['local_enabled'] == 0
+                       or activating and row['state'] == 'completed' and row['account_state'] == 'active'
+                       and row['local_enabled'] == 1 and meta['activation_active_since_ms'] > 0),
                   'stale_generation')
-            _need(row['state'] in {'pending', 'verified', 'completed', 'expired', 'cancelled'}, 'local_disabled')
+            _need(row['state'] in {'pending', 'verified', 'completed', 'expired', 'cancelled'}
+                  or activating and row['state'] == 'enable_pending', 'local_disabled')
+            if activating:
+                validate_registration(db, row)
             _need(not db.execute('''SELECT 1 FROM mail_pull_fences WHERE install_id=? AND generation=1
                 AND (mode='revoke' OR flow_id=?)''', (row['install_id'], row['flow_id'])).fetchone(), 'fenced')
             if meta['public_key']:
@@ -237,10 +250,12 @@ class Signup:
         state = 'not_enrolled' if row is None else row['state']
         if row and row['state'] == 'pending' and not row['meta']['started']:
             state = 'start_pending' if row['meta']['public_key'] else 'preparing'
-        return {'state': 'held' if reason else state, 'reason': reason, 'enabled': False,
+        view = {'state': 'held' if reason else state, 'reason': reason, 'enabled': False,
                 'install_id': row['install_id'] if row else None, 'flow_id': row['flow_id'] if row else None,
                 'address': row['address'] if row else '', 'expires_ms': row['expires_ms'] if row else None,
                 'verification_state': row['meta']['notice_state'] if row else None}
+        from mc.agent_mail_activation import project
+        return project(row, view, reason) if row else view
 
     def _run(self, action: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         try:
@@ -317,6 +332,8 @@ class Signup:
             observed = self._row(db)
         if observed is None:
             return self._view(None)
+        if 'activation_op' in observed['meta']:
+            return self.status()  # Passive recovery; never originates activation.
         if observed['state'] in {'expired', 'cancelled', 'completed'}:
             return {**self._view(observed), 'reason': 'flow_expired' if observed['state'] == 'expired' else ''}
         # The manifest verifier may CAS its floor in this SAME database. Never
