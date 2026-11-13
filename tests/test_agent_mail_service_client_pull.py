@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import urllib.error
+from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 import pytest
@@ -456,3 +457,24 @@ def test_importers_still_resolve_without_network():
     from mc.agent_mail_ceremony_remote import ServiceClient as same
     from mc.agent_mail_factory import HttpsTransport as same_transport
     assert callable(verify_response) and same is ServiceClient and same_transport is HttpsTransport
+
+
+_SEND_VECTORS = json.loads((Path(__file__).parent / 'fixtures' /
+    'agent-mail-pull-send-receipts.json').read_text())['vectors']
+
+
+@pytest.mark.parametrize('vector', _SEND_VECTORS, ids=lambda v: v['name'])
+def test_shared_send_intent_receipt_vectors(w, vector):
+    path, request = vector['path'], vector['request']
+    h, raw = w.request(path, request)
+    def response(*args):
+        return w.response(path, h, request, vector['body'], vector['status'])
+    w.change = response
+    before = w.rows('mail_pull_accounts')
+    if vector['valid']:
+        result = w.client('POST', path, h, raw)
+        assert json.loads(result[2]) == vector['body'] and result[0] == vector['status']
+    else:
+        with pytest.raises(ServiceRefused, match='^response_unverified$'):
+            w.client('POST', path, h, raw)
+    assert w.rows('mail_pull_accounts') == before and w.client.cached_evidence() is None

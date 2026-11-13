@@ -35,6 +35,7 @@ from mc.agent_mail_delivery_proof import DeliveryProof
 from mc.agent_mail_enrollment import OwnershipReceipt, PendingIdentity
 from mc.agent_mail_enrollment_keys import EnrollmentRefused, IdentitySeal, SealReference
 from mc.agent_mail_enrollment_revocations import CancelledAssignment
+from mc.agent_mail_envelope import _MID
 from mc.agent_mail_lifecycle_fence import LifecycleFences
 from mc.agent_mail_pull_schema import _validate
 from mc.agent_mail_remote import REMOTE_UNAVAILABLE, RemoteUnavailable
@@ -62,6 +63,9 @@ FENCE = PULL_PREFIX + '/fence'
 ROUTES = frozenset(PULL_PREFIX + s for s in (
     '/signup/start', '/signup/status', '/activate', '/status', '/ticket', '/send',
     '/send/status', '/fence', '/management/start', '/management/status', '/key/rotate'))
+SEND = PULL_PREFIX + '/send'
+_RECEIPT_FIELDS = frozenset({'intent_id', 'thread_id', 'message_id', 'state', 'provider_id'})
+_RECEIPT_STATES = frozenset({'reserved', 'sending', 'uncertain', 'failed', 'revoked'})
 ERRORS = {
     400: {'invalid_request', 'invalid_json', 'invalid_send', 'invalid_message_id', 'invalid_text',
           'invalid_hold', 'auth_evidence', 'event_identity', 'text_digest', 'unsupported_frame'},
@@ -148,7 +152,8 @@ def _object(raw: bytes) -> dict[str, Any]:
 
 def verify_pull_response(response: tuple[int, Mapping[str, str], bytes], *, candidate: ServiceKeyCandidate,
                          install: str, generation: int, owner_generation: int, path: str,
-                         nonce: str, request_id: str, clock_ms: Callable[[], int]) -> dict[str, Any]:
+                         nonce: str, request_id: str, clock_ms: Callable[[], int],
+                         request: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Verify v2 before parsing. Signed errors prove failure only; caller owns result shape."""
     try:
         status, supplied, raw = response
@@ -175,6 +180,19 @@ def verify_pull_response(response: tuple[int, Mapping[str, str], bytes], *, cand
         if status == 200:
             _need(value.get('code') == ('accepted' if path == PULL_PREFIX + '/send' else
                                       'fenced' if path == FENCE else 'ok'))
+        elif status == 409 and path == SEND and _RECEIPT_FIELDS.intersection(value):
+            # Contract section 7: the sole structured error exception. A signed
+            # intent receipt is reconciliation metadata, never send acceptance.
+            _need(value.keys() == _RECEIPT_FIELDS | {'v', 'code', 'request_id'}
+                  and isinstance(value['state'], str) and value['state'] in _RECEIPT_STATES
+                  and value['code'] == value['state'] and request is not None)
+            assert request is not None
+            _need(all(_match(ID, value[k]) and value[k] == request.get(k) for k in ('intent_id', 'thread_id')))
+            mid, provider = value['message_id'], value['provider_id']
+            _need(isinstance(mid, str) and mid.isascii() and len(mid) <= 8192 and _MID.fullmatch(mid))
+            _need(isinstance(provider, str) and len(provider) <= 256
+                  and (provider == '' or re.fullmatch(r'[\x20-\x7e]+', provider) and provider.strip())
+                  and (value['state'] in {'uncertain', 'revoked'} or provider == ''))
         else:
             _need(isinstance(value.get('code'), str) and value['code'] in ERRORS[status]
                   and value.keys() in ({'v', 'code', 'request_id'},
@@ -316,7 +334,8 @@ class ServiceClient:
             _log('[agent-mail] service_client connection_lost', flush=True)
             raise ServiceRefused('connection_lost') from None
         value = verify_pull_response(response, candidate=pin, install=install, generation=generation,
-            owner_generation=owner_generation, path=path, nonce=nonce, request_id=request_id, clock_ms=self._now_ms)
+            owner_generation=owner_generation, path=path, nonce=nonce, request_id=request_id,
+            clock_ms=self._now_ms, request=_object(raw))
         _need(self._service() == before, 'service_key_changed')
         return response, value
 
@@ -473,9 +492,9 @@ class ServiceClient:
         return CancelledAssignment(rows[0]['install_id'], rows[0]['generation'])
 
     def revoke(self, install: str, generation: int) -> None:
+        self._service()
         _need(_match(I, install) and _integer(generation, 1, 10**15 - 1)
               and (self.install_id is None or install == self.install_id), 'invalid_request')
-        self._service()
         with self.store._read() as db:
             _validate(db)
             rows = db.execute("SELECT op_id FROM mail_pull_fences WHERE install_id=? AND generation=? "

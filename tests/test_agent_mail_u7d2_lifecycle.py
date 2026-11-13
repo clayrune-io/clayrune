@@ -1,5 +1,9 @@
 """Unit 7d-2d: remote lifecycle adapters, Flask half. Fixed fixture seeds, synthetic clocks and a
-fake Worker transport; no network, no real key. The Worker half is workers/agent-mail/test/lifecycle.test.js.
+fake Worker transport; no network, no real key.
+
+Retired v1 lifecycle calls now assert legacy_retired/no network and retain local
+intent. The independent revocation/backoff/selector and v1 ceremony vectors remain;
+pull response security and shared409 vectors live in test_agent_mail_service_client_pull. The Worker half is workers/agent-mail/test/lifecycle.test.js.
 
 Run with the application tests (NOT with control_plane/tests: their `tests.conftest` collide).
 """
@@ -224,79 +228,70 @@ def test_a_damaged_fence_table_fails_closed(kit):
         LifecycleFences(kit.store, enabled=True)
 
 
+def assert_retired(kit, method, *args):
+    """Retirement is a visible refusal, never a wire call or local authority change.
+
+    Pull signature/fence coverage lives in test_agent_mail_service_client_pull.
+    Legacy higher-level loops may still translate this into their closed retry
+    code until unit22 replaces them; they must retain all pending durable work.
+    """
+    def snapshot():
+        return (rows(kit, 'SELECT * FROM mail_enrollment_flow'),
+                rows(kit, 'SELECT * FROM mail_enrollment_revocations'))
+    before = snapshot()
+    assert kit.worker.calls == []
+    with pytest.raises(ServiceRefused, match='^legacy_retired$'):
+        getattr(kit.client, method)(*args)
+    assert snapshot() == before and kit.worker.calls == []
+
+
 # --- cancel / revoke wire ---------------------------------------------------------------------------------
-def test_cancel_sends_the_token_with_no_signature_and_returns_the_assignment(kit):
+def test_legacy_cancel_sends_the_token_with_no_signature_and_returns_the_assignment(kit):
     kit.started()
-    flow = kit.flow()['flow']
-    kit.worker.assignment[flow] = ('install1', 1)
-    assert kit.client.cancel_flow(flow) == CancelledAssignment('install1', 1)
-    call = kit.worker.calls[0]
-    assert call['path'] == f'{PREFIX}/cancel' and call['origin'] == ORIGIN
-    assert call['value'] == {'flow_id': flow, 'fence_token': kit.fences.token_for(flow)}
-    assert 'x-mail-signature' not in call['headers'], 'fence-auth carries no key signature'
-    assert {'x-mail-install-id', 'x-mail-generation', 'x-mail-nonce'} <= set(call['headers'])
-    assert len(call['raw']) <= 2048
+    kit.worker.assignment[kit.flow()['flow']] = ('install1', 1)
+    assert_retired(kit, 'cancel_flow', kit.flow()['flow'])
 
 
-def test_cancel_before_assignment_returns_none_and_is_idempotent(kit):
+def test_legacy_cancel_before_assignment_returns_none_and_is_idempotent(kit):
     kit.started()
-    flow = kit.flow()['flow']
-    assert kit.client.cancel_flow(flow) is None and kit.client.cancel_flow(flow) is None
-    assert len(kit.worker.calls) == 2
+    for _ in range(2):
+        assert_retired(kit, 'cancel_flow', kit.flow()['flow'])
 
 
-def test_cancel_is_idempotent_after_revoke_and_the_same_assignment_comes_back(kit):
+def test_legacy_cancel_is_idempotent_after_revoke_and_the_same_assignment_comes_back(kit):
     kit.started()
-    flow = kit.flow()['flow']
-    kit.worker.assignment[flow] = ('install1', 1)
     kit.core.disable()
-    kit.core.retry_revocations()
-    again = kit.client.cancel_flow(flow)
-    assert again == CancelledAssignment('install1', 1)
+    for _ in range(2):
+        assert_retired(kit, 'cancel_flow', kit.flow()['flow'])
+    assert acked(kit)[0][1:] == (0, 0)
 
 
-def test_revoke_names_the_exact_generation_and_accepts_the_three_acknowledged_states(kit):
+def test_legacy_revoke_names_the_exact_generation_and_accepts_the_three_acknowledged_states(kit):
     kit.started()
     kit.core.disable()
     for state in ('revoked', 'already_superseded', 'fenced'):
-        kit.worker.override['revoke'] = lambda v, s=state: {'install_id': v['install_id'],
-                                                           'generation': v['generation'], 'state': s}
-        kit.client.revoke('install1', 1)
-    for call in kit.worker.calls:
-        assert call['value']['generation'] == 1 and call['value']['install_id'] == 'install1'
-        assert call['headers']['x-mail-generation'] == '1'
-    kit.worker.override['revoke'] = lambda v: {'install_id': v['install_id'], 'generation': 2, 'state': 'revoked'}
-    with pytest.raises(ServiceRefused, match='remote_scope_mismatch'):
-        kit.client.revoke('install1', 1)       # an answer about another generation is not an ack
-    kit.worker.override['revoke'] = lambda v: {'install_id': v['install_id'], 'generation': 1, 'state': 'noop'}
-    with pytest.raises(ServiceRefused, match='remote_scope_mismatch'):
-        kit.client.revoke('install1', 1)
+        kit.worker.override['revoke'] = {'install_id': 'install1', 'generation': 1, 'state': state}
+        assert_retired(kit, 'revoke', 'install1', 1)
 
 
-def test_revoke_tries_the_next_flows_token_when_the_worker_answers_401(kit):
+def test_legacy_revoke_tries_the_next_flows_token_when_the_worker_answers_401(kit):
     kit.started()
     kit.core.disable()
-    first = kit.fences.tokens_for_assignment('install1', 1)[0][1]
-    other = 'cd' * 32
     with kit.store._tx() as db:
         db.execute('INSERT INTO mail_enrollment_revocations(flow,install,generation,resolved) VALUES(?,?,?,1)',
                    ('0' * 32, 'install1', 1))
-        db.execute(f'INSERT INTO {FENCE_TABLE}(flow,token) VALUES(?,?)', ('0' * 32, other))
-    kit.worker.reject_tokens = {other}          # sorted: '000..' first, rejected; the real flow second
-    kit.client.revoke('install1', 1)
-    assert [c['value']['fence_token'] for c in kit.worker.calls] == [other, first]
+        db.execute(f'INSERT INTO {FENCE_TABLE}(flow,token) VALUES(?,?)', ('0' * 32, 'cd' * 32))
+    kit.worker.reject_tokens = {'cd' * 32}
+    assert_retired(kit, 'revoke', 'install1', 1)
 
 
-def test_revoke_with_no_token_refuses_and_sends_nothing(kit):
+def test_legacy_revoke_with_no_token_refuses_and_sends_nothing(kit):
     kit.started()
     kit.core.disable()
     with kit.store._tx() as db:
         db.execute(f'DELETE FROM {FENCE_TABLE}')
-    with pytest.raises(ServiceRefused, match='fence_token_missing'):
-        kit.client.revoke('install1', 1)
-    with pytest.raises(ServiceRefused, match='fence_token_missing'):
-        kit.client.cancel_flow(kit.flow()['flow'])
-    assert kit.worker.calls == []
+    assert_retired(kit, 'revoke', 'install1', 1)
+    assert_retired(kit, 'cancel_flow', kit.flow()['flow'])
 
 
 # --- the only acknowledgment is a verified, scope-bound, signed 200 --------------------------------------
@@ -350,18 +345,10 @@ def test_a_replayed_answer_for_another_nonce_or_path_is_not_an_ack(kit):
     assert acked(kit)[0][1:] == (0, 0)
 
 
-def test_a_tampered_body_fails_the_digest(kit):
+def test_legacy_a_tampered_body_fails_the_digest(kit):
     kit.started()
-    flow = kit.flow()['flow']
-
-    def tamper(o, p, h, b):
-        good = response({'flow_id': flow, 'state': 'cancelled', 'assignment': None}, path=p,
-                        nonce=h['x-mail-nonce'], install=h['x-mail-install-id'], generation=int(h['x-mail-generation']))
-        good['body'] = b'{"flow_id":"%s","state":"cancelled","assignment":{"install_id":"x","generation":1}}' % flow.encode()
-        return good
-    kit.worker.post = tamper
-    with pytest.raises(ServiceRefused, match='remote_response_unsigned'):
-        kit.client.cancel_flow(flow)
+    kit.worker.tweak = BAD['unsigned_body']
+    assert_retired(kit, 'cancel_flow', kit.flow()['flow'])
 
 
 @pytest.mark.parametrize('value', [
@@ -394,46 +381,26 @@ def test_a_cancel_answer_with_a_different_assignment_than_recorded_is_a_scope_mi
 
 
 # --- lost acks converge ---------------------------------------------------------------------------------
-def test_lost_cancel_and_revoke_acks_leave_the_row_and_the_retry_converges(kit):
-    kit.started()
-    flow = kit.flow()['flow']
-    kit.worker.assignment[flow] = ('install1', 1)
-    kit.core.disable()
-    kit.worker.fail = OSError('SECRET remote text token=abc')
-    with pytest.raises(EnrollmentRefused) as info:
-        kit.core.retry_revocations()
-    assert 'SECRET' not in repr(info.value) and acked(kit)[0][1:] == (0, 0)
-    kit.worker.fail = None
-    calls_before = len(kit.worker.calls)
-    # cancel acked, revoke ack lost: resolved=1 survives, done stays 0
-    real = kit.worker.post
-
-    def lose_revoke(origin, path, headers, body):
-        out = real(origin, path, headers, body)
-        if path.endswith('/revoke'):
-            raise TimeoutError('lost')
-        return out
-    kit.worker.post = lose_revoke
-    with pytest.raises(EnrollmentRefused, match='remote_revoke_retryable'):
-        kit.core.retry_revocations()
-    assert acked(kit)[0][1:] == (1, 0)
-    kit.worker.post = real
-    kit.core.retry_revocations()
-    assert acked(kit)[0][1:] == (1, 1) and len(kit.worker.calls) > calls_before
-
-
-def test_no_new_generation_starts_while_any_revocation_is_unacknowledged(kit):
+def test_legacy_lost_cancel_and_revoke_acks_leave_the_row_and_the_retry_converges(kit):
     kit.started()
     kit.core.disable()
-    kit.worker.from_ceremony = True
-    kit.worker.fail = OSError('down')
-    with pytest.raises(EnrollmentRefused):
-        kit.core.retry_revocations()
-    with pytest.raises(EnrollmentRefused, match='revocation_pending'):
-        kit.core.start(OWNER, *manifest(2, public=SVC_PUBLIC))
-    kit.worker.fail = None
-    kit.core.retry_revocations()
-    kit.core.start(OWNER, *manifest(2, public=SVC_PUBLIC))      # allowed only after the ack
+    for failure in (OSError('SECRET remote token'), None):
+        kit.worker.fail = failure
+        with pytest.raises(EnrollmentRefused, match='remote_cancel_retryable'):
+            kit.core.retry_revocations()
+        assert acked(kit)[0][1:] == (0, 0)
+    assert kit.worker.calls == []
+
+
+def test_legacy_no_new_generation_starts_while_any_revocation_is_unacknowledged(kit):
+    kit.started()
+    kit.core.disable()
+    for _ in range(2):
+        with pytest.raises(EnrollmentRefused, match='remote_cancel_retryable'):
+            kit.core.retry_revocations()
+        with pytest.raises(EnrollmentRefused, match='revocation_pending'):
+            kit.core.start(OWNER, *manifest(2, public=SVC_PUBLIC))
+    assert acked(kit)[0][1:] == (0, 0) and kit.worker.calls == []
 
 
 def test_one_failing_item_never_blocks_the_others(kit):
@@ -462,45 +429,31 @@ def test_one_failing_item_never_blocks_the_others(kit):
 
 
 # --- vault locked --------------------------------------------------------------------------------------
-def test_cancel_and_revoke_work_with_the_vault_locked_install_calls_do_not(kit):
+def test_legacy_cancel_and_revoke_work_with_the_vault_locked_install_calls_do_not(kit):
     kit.pending()
-    flow = kit.flow()['flow']
     kit.core.disable()
-    kit.master = None                            # locked or lost vault
-    kit.worker.assignment[flow] = ('install1', 1)
-    kit.core.retry_revocations()                 # cancel + revoke, no key anywhere
-    assert acked(kit)[0][1:] == (1, 1)
-    sent = len(kit.worker.calls)
-    kit.core.start  # the flow is disabled; install-auth needs an enabled stage anyway
-    for name in ('status', 'renew', 'activate'):
-        with pytest.raises(EnrollmentRefused):
-            getattr(kit.client, name)(*(('0' * 64,) if name == 'activate' else ()))
-    assert kit.client.proof_arm() is False       # nothing armed on a disabled flow: nothing to push
-    assert len(kit.worker.calls) == sent, 'a locked vault must send nothing'
+    kit.master = None
+    assert_retired(kit, 'cancel_flow', kit.flow()['flow'])
+    assert_retired(kit, 'revoke', 'install1', 1)
+    for method in ('status', 'renew', 'proof_arm'):
+        assert_retired(kit, method)
+    assert_retired(kit, 'activate', RECEIPT)
+    assert acked(kit)[0][1:] == (0, 0)
 
 
-def test_install_auth_with_a_locked_vault_signs_nothing_and_sends_nothing(kit):
+def test_legacy_install_auth_with_a_locked_vault_signs_nothing_and_sends_nothing(kit):
     kit.pending()
     kit.master = None
-    for call in (kit.client.status, kit.client.renew, lambda: kit.client.activate('0' * 64)):
-        with pytest.raises(EnrollmentRefused, match='vault_locked_or_unconfigured'):
-            call()
-    assert kit.worker.calls == []
+    for method in ('status', 'renew', 'proof_arm'):
+        assert_retired(kit, method)
+    assert_retired(kit, 'activate', RECEIPT)
 
 
 # --- install-auth wire ---------------------------------------------------------------------------------
-def test_install_calls_are_signed_by_the_mail_key_in_the_lifecycle_domain(kit):
+def test_legacy_install_calls_are_signed_by_the_mail_key_in_the_lifecycle_domain(kit):
     kit.pending()
-    kit.client.status()
-    call = kit.worker.calls[0]
-    h = call['headers']
-    assert h['x-mail-direction'] == LIFECYCLE_DIRECTION and call['path'] == f'{PREFIX}/status'
-    assert call['value'] == {'install_id': 'install1', 'generation': 1}
-    canonical = json.dumps(['clayrune-agent-mail', '1', LIFECYCLE_DIRECTION, h['x-mail-key-id'], 'install1', '1',
-                            'POST', call['path'], h['x-mail-timestamp'], h['x-mail-nonce'], h['x-mail-digest']],
-                           separators=(',', ':')).encode()
-    MAIL.public_key().verify(base64_decode(h['x-mail-signature']), canonical)
-    assert h['x-mail-digest'] == hashlib.sha256(call['raw']).hexdigest()
+    assert_retired(kit, 'status')
+    assert kit.client.cached_evidence() is None
 
 
 def base64_decode(value):
@@ -519,88 +472,55 @@ def test_the_send_signature_domain_is_unchanged(kit):
     MAIL.public_key().verify(base64_decode(out['x-mail-signature']), json.dumps(values, separators=(',', ':')).encode())
 
 
-def test_install_calls_need_an_enrolled_pending_or_active_flow(kit):
-    with pytest.raises(ServiceRefused, match='enrollment_required'):
-        kit.client.status()
-    kit.started()                                # stage 'pending' (assigned) but not delivery_pending
-    with pytest.raises(ServiceRefused, match='enrollment_required'):
-        kit.client.renew()
+def test_legacy_install_calls_need_an_enrolled_pending_or_active_flow(kit):
+    assert_retired(kit, 'status')
+    kit.started()
+    assert_retired(kit, 'renew')
 
 
-def test_a_stale_manifest_blocks_install_calls_but_not_the_fence_calls(kit):
+def test_legacy_a_stale_manifest_blocks_install_calls_but_not_the_fence_calls(kit):
     kit.pending()
-    kit.now = NOW + 4 * DAY + 1_000              # past the manifest expiry (NOW + 4 days)
-    with pytest.raises(ServiceRefused, match='manifest_stale'):
-        kit.client.status()
-    flow = kit.flow()['flow']
-    assert kit.client.cancel_flow(flow) is None  # cancel is vault-less and floor-less by design
+    kit.now = NOW + 4 * DAY + 1000
+    assert_retired(kit, 'status')
+    assert_retired(kit, 'cancel_flow', kit.flow()['flow'])
 
 
-def test_the_origin_is_fixed_and_validated(kit):
+def test_legacy_the_origin_is_fixed_and_validated(kit):
     with pytest.raises(ServiceRefused, match='service_origin_invalid'):
-        ServiceClient(kit.store, kit.seal, fences=kit.fences, transport=kit.worker, root_public_key=PUBLIC,
-                      service_origin='http://mail.example.test')
+        ServiceClient(kit.store, kit.seal, fences=kit.fences, transport=kit.worker,
+                      root_public_key=PUBLIC, service_origin='http://mail.example.test')
     kit.pending()
-    kit.client.status()
-    assert {c['origin'] for c in kit.worker.calls} == {ORIGIN}
+    assert_retired(kit, 'status')
 
 
-def test_status_caches_only_a_verified_proof_as_evidence_and_it_expires(kit):
+def test_legacy_status_caches_only_a_verified_proof_as_evidence_and_it_expires(kit):
     kit.pending()
-    kit.client.status()
-    assert kit.client.cached_evidence() is None
-    kit.worker.proof_state = 'verified'
-    kit.client.status()
-    evidence = kit.client.cached_evidence()
-    assert evidence == {'install_id': 'install1', 'generation': 1, 'state': 'verified', 'receipt_digest': RECEIPT,
-                        'expires_ms': NOW + 100_000}
-    kit.now += 119_000
-    assert kit.client.cached_evidence() is not None
-    kit.now += 2_000
-    assert kit.client.cached_evidence() is None, 'a stale status is never evidence'
-    kit.worker.tweak = BAD['unsigned_body']      # an unsigned status can neither refresh nor create evidence
-    kit.now = NOW
-    with pytest.raises(ServiceRefused):
-        kit.client.status()
-    assert kit.client.cached_evidence() is not None or True
+    for age in (0, 119000, 121000):
+        kit.now = NOW + age
+        kit.worker.proof_state = 'verified'
+        assert_retired(kit, 'status')
+        assert kit.client.cached_evidence() is None
 
 
-def test_status_scope_and_shape_are_exact(kit):
+def test_legacy_status_scope_and_shape_are_exact(kit):
     kit.pending()
-    kit.worker.override['status'] = lambda v: {'install_id': 'other', **{k: x for k, x in kit.worker.default_status(v).items() if k != 'install_id'}}
-    with pytest.raises(ServiceRefused, match='remote_scope_mismatch'):
-        kit.client.status()
-    kit.worker.override['status'] = lambda v: {k: x for k, x in kit.worker.default_status(v).items() if k != 'fences'}
-    with pytest.raises(ServiceRefused, match='remote_scope_mismatch'):
-        kit.client.status()
+    kit.worker.override['status'] = {'install_id': 'other', 'proof': {'state': 'verified'}}
+    assert_retired(kit, 'status')
 
 
-def test_proof_arm_sends_the_local_challenge_and_only_when_armed(kit):
+def test_legacy_proof_arm_sends_the_local_challenge_and_only_when_armed(kit):
     kit.pending()
-    assert kit.client.proof_arm() is False and kit.worker.calls == []
+    assert_retired(kit, 'proof_arm')
     kit.core.arm_proof()
-    assert kit.client.proof_arm() is True
-    armed = kit.delivery.armed('install1', 1)
-    assert kit.worker.calls[0]['value'] == {'install_id': 'install1', 'generation': 1,
-                                            'challenge': armed['challenge'], 'expires_ms': armed['expires_ms']}
-    kit.worker.override['proof-arm'] = lambda v: {'install_id': 'install1', 'generation': 1, 'state': 'armed',
-                                                  'expires_ms': v['expires_ms'] + 1}
-    with pytest.raises(ServiceRefused, match='remote_scope_mismatch'):
-        kit.client.proof_arm()
+    before = rows(kit, 'SELECT * FROM mail_delivery_proof')
+    assert_retired(kit, 'proof_arm')
+    assert rows(kit, 'SELECT * FROM mail_delivery_proof') == before
 
 
-def test_activate_requires_an_equal_receipt_digest_back(kit):
+def test_legacy_activate_requires_an_equal_receipt_digest_back(kit):
     kit.pending()
-    kit.client.activate(RECEIPT)
-    assert kit.worker.calls[0]['value'] == {'install_id': 'install1', 'generation': 1, 'receipt_digest': RECEIPT}
-    kit.worker.override['activate'] = lambda v: {**kit.worker.default_activate(v), 'receipt_digest': '11' * 32}
-    with pytest.raises(ServiceRefused, match='remote_scope_mismatch'):
-        kit.client.activate(RECEIPT)
-    kit.worker.override['activate'] = lambda v: {**kit.worker.default_activate(v), 'state': 'armed'}
-    with pytest.raises(ServiceRefused, match='remote_scope_mismatch'):
-        kit.client.activate(RECEIPT)
-    with pytest.raises(ServiceRefused, match='invalid_receipt_digest'):
-        kit.client.activate('not-hex')
+    for receipt in (RECEIPT, '11' * 32, 'not-hex'):
+        assert_retired(kit, 'activate', receipt)
 
 
 # --- renewal ------------------------------------------------------------------------------------------
@@ -608,77 +528,48 @@ def lease(kit):
     return kit.flow()['ownership_expires_ms']
 
 
-def test_renew_moves_the_lease_forward_only_and_changes_nothing_else(kit):
+def test_legacy_renew_moves_the_lease_forward_only_and_changes_nothing_else(kit):
     kit.pending()
-    before = kit.flow()
-    kit.now += 200_000                           # lease NOW+300000, now NOW+200000
-    kit.worker.lease = kit.now + 300_000
-    assert kit.client.renew() == kit.now + 300_000
-    after = kit.flow()
-    assert after['ownership_expires_ms'] == kit.now + 300_000
-    assert {k: v for k, v in after.items() if k != 'ownership_expires_ms'} == \
-        {k: v for k, v in before.items() if k != 'ownership_expires_ms'}
+    kit.now += 200000
+    kit.worker.lease = kit.now + 300000
+    assert_retired(kit, 'renew')
 
 
-def test_renew_never_lowers_and_refuses_an_out_of_window_lease(kit):
+def test_legacy_renew_never_lowers_and_refuses_an_out_of_window_lease(kit):
     kit.pending()
-    before = lease(kit)
-    kit.worker.lease = kit.now + 1_000           # valid window, but lower than the lease we hold
-    assert kit.client.renew() == before and lease(kit) == before
-    for bad in (kit.now - 1, kit.now, kit.now + 300_001):
-        kit.worker.lease = bad
-        with pytest.raises(ServiceRefused, match='remote_scope_mismatch'):
-            kit.client.renew()
-        assert lease(kit) == before
+    for remote_lease in (kit.now - 1, kit.now, kit.now + 1000, kit.now + 300001):
+        kit.worker.lease = remote_lease
+        assert_retired(kit, 'renew')
 
 
-def test_a_failed_or_unsigned_renew_leaves_the_old_lease(kit):
+def test_legacy_a_failed_or_unsigned_renew_leaves_the_old_lease(kit):
     kit.pending()
-    before = lease(kit)
     kit.worker.fail = OSError('down')
-    with pytest.raises(ServiceRefused, match='remote_unreachable'):
-        kit.client.renew()
+    assert_retired(kit, 'renew')
     kit.worker.fail, kit.worker.tweak = None, BAD['unsigned_body']
-    with pytest.raises(ServiceRefused, match='remote_response_unsigned'):
-        kit.client.renew()
-    assert lease(kit) == before
+    assert_retired(kit, 'renew')
 
 
-def test_renew_that_races_a_disable_changes_nothing(kit):
+def test_legacy_renew_that_races_a_disable_changes_nothing(kit):
     kit.pending()
-    before = lease(kit)
-    kit.worker.lease = kit.now + 300_000
-    kit.now += 1_000
-    real = kit.worker.post
-
-    def disable_midflight(*a):
-        out = real(*a)
+    def unexpected_wire(*args):
         kit.core.disable()
-        return out
-    kit.worker.post = disable_midflight
-    with pytest.raises(ServiceRefused, match='lifecycle_raced'):
-        kit.client.renew()
-    assert lease(kit) == before
+        raise AssertionError('retired route reached network')
+    kit.worker.post = unexpected_wire
+    assert_retired(kit, 'renew')
+    assert kit.flow()['stage'] == 'delivery_pending'
 
 
-def test_renewal_step_only_acts_in_the_last_150s_and_backs_off_after_failure(kit):
+def test_legacy_renewal_step_only_acts_in_the_last_150s_and_backs_off_after_failure(kit):
     kit.pending()
-    kit.worker.lease = None
     steps = kit.steps()
-    assert steps.renew(kit.store) == ('ok', 'ok', 0) and kit.worker.calls == []   # 300 s left
-    kit.now += 160_000                            # 140 s left
-    kit.worker.fail = OSError('down')
+    assert steps.renew(kit.store) == ('ok', 'ok', 0)
+    kit.now += 160000
     assert steps.renew(kit.store) == ('pending', 'remote_renew_retryable', 0)
     assert steps.renew(kit.store) == ('skipped', 'backoff', 0)
-    kit.now += 119_000
-    assert steps.renew(kit.store)[1] == 'backoff', '120 s floor between attempts'
-    kit.now += 2_000                              # 30 s backoff and the 120 s floor both elapsed
-    assert steps.renew(kit.store)[0] == 'pending'
-    kit.worker.fail = None
-    kit.now += 3_600_000
-    kit.worker.lease = kit.now + 300_000
-    # the original lease is long gone, but a renew still works (forward only) and succeeds
-    assert steps.renew(kit.store) == ('ok', 'ok', 1)
+    kit.now += 121000
+    assert steps.renew(kit.store) == ('pending', 'remote_renew_retryable', 0)
+    assert kit.worker.calls == []
 
 
 def test_backoff_doubles_to_an_hour_per_item():
@@ -695,43 +586,36 @@ def test_backoff_doubles_to_an_hour_per_item():
     assert backoff._items['a'][0] == 0
 
 
-def test_delivery_pending_renews_only_within_24_hours_of_the_verify(kit):
+def test_legacy_delivery_pending_renews_only_within_24_hours_of_the_verify(kit):
     kit.pending()
     steps = kit.steps()
-    kit.now += 24 * 3600 * 1000 - 100_000
-    kit.worker.lease = kit.now + 300_000
-    assert steps.renew(kit.store) == ('ok', 'ok', 1)
-    kit.now += 200_000                            # beyond 24 h since the verify
+    kit.now += 24 * 3600 * 1000 - 100000
+    assert steps.renew(kit.store) == ('pending', 'remote_renew_retryable', 0)
+    kit.now += 200000
     assert steps.renew(kit.store) == ('pending', 'renewal_cap', 0)
-    n = len(kit.worker.calls)
-    kit.now += 3_600_000
-    assert steps.renew(kit.store) == ('pending', 'renewal_cap', 0) and len(kit.worker.calls) == n
-    names = {r['name'] for r in rows(kit, "SELECT name FROM sqlite_master WHERE type='table'")}
-    assert 'mail_lifecycle_renewal' in names and not any(n.startswith('mail_enrollment_') and 'renewal' in n for n in names)
+    assert kit.worker.calls == []
 
 
-def test_an_active_flow_has_no_pending_cap(kit):
+def test_legacy_an_active_flow_has_no_pending_cap(kit):
     kit.pending()
     with kit.store._tx() as db:
-        db.execute("UPDATE mail_enrollment_flow SET stage='active'")
-    steps = kit.steps()
+        db.execute("UPDATE mail_enrollment_flow SET stage='active',ownership_expires_ms=?", (NOW + 10000,))
     kit.now += 48 * 3600 * 1000
-    kit.worker.lease = kit.now + 300_000
-    with kit.store._tx() as db:
-        db.execute('UPDATE mail_enrollment_flow SET ownership_expires_ms=?', (kit.now + 10_000,))
-    assert steps.renew(kit.store) == ('ok', 'ok', 1)
+    assert kit.steps().renew(kit.store) == ('pending', 'remote_renew_retryable', 0)
+    assert kit.worker.calls == []
 
 
-def test_renew_with_a_locked_vault_is_skipped_without_escalating_backoff(kit):
+def test_legacy_renew_with_a_locked_vault_is_skipped_without_escalating_backoff(kit):
     kit.pending()
-    kit.now += 200_000
+    kit.now += 200000
     kit.master = None
     steps = kit.steps()
-    assert steps.renew(kit.store) == ('skipped', 'vault_locked', 0)
+    assert_retired(kit, 'renew')
+    assert steps.renew(kit.store) == ('pending', 'remote_renew_retryable', 0)
     kit.master = MASTER
-    kit.now += 120_000
-    kit.worker.lease = kit.now + 300_000
-    assert steps.renew(kit.store) == ('ok', 'ok', 1), 'unlock then renew promptly: no backoff was charged'
+    kit.now += 120000
+    assert steps.renew(kit.store) == ('pending', 'remote_renew_retryable', 0)
+    assert kit.worker.calls == []
 
 
 # --- activation crash matrix (4.8) --------------------------------------------------------------------
@@ -752,33 +636,23 @@ def activation(kit):
     return rows(kit, 'SELECT state,epoch,receipt_digest FROM mail_delivery_activation')
 
 
-def test_crash_after_enable_before_activate_the_row_is_pending_then_acked(kit):
+def test_legacy_crash_after_enable_before_activate_the_row_is_pending_then_acked(kit):
     digest = activate_ready(kit)
-    assert [a['state'] for a in activation(kit)] == ['pending']
-    steps = kit.steps()
-    assert steps.activation(kit.store) == ('ok', 'ok', 1)
-    assert [a['state'] for a in activation(kit)] == ['acked']
-    assert kit.worker.calls[-1]['value'] == {'install_id': 'install1', 'generation': 1, 'receipt_digest': digest}
-    assert steps.activation(kit.store) == ('ok', 'ok', 0), 'an acked row is never re-sent'
-    assert len(kit.worker.calls) == 1
+    before = activation(kit)
+    assert_retired(kit, 'activate', digest)
+    assert kit.steps().activation(kit.store) == ('pending', 'remote_activation_retryable', 0)
+    assert activation(kit) == before and kit.worker.calls == []
 
 
-def test_a_lost_activate_ack_keeps_the_row_pending_and_the_retry_converges(kit):
+def test_legacy_a_lost_activate_ack_keeps_the_row_pending_and_the_retry_converges(kit):
     activate_ready(kit)
     steps = kit.steps()
-    real = kit.worker.post
-
-    def lose(*a):
-        real(*a)
-        raise TimeoutError('lost after the Worker applied it')
-    kit.worker.post = lose
-    assert steps.activation(kit.store) == ('pending', 'remote_activation_retryable', 0)
-    assert [a['state'] for a in activation(kit)] == ['pending']
-    assert steps.activation(kit.store)[1] == 'backoff'
-    kit.worker.post = real
-    kit.now += 31_000
-    assert steps.activation(kit.store) == ('ok', 'ok', 1)
-    assert [a['state'] for a in activation(kit)] == ['acked']
+    for attempt in range(2):
+        if attempt:
+            kit.now += 31000
+        assert steps.activation(kit.store) == ('pending', 'remote_activation_retryable', 0)
+        assert [a['state'] for a in activation(kit)] == ['pending']
+    assert kit.worker.calls == []
 
 
 @pytest.mark.parametrize('case', ['unsigned_body', 'wrong_key', 'wrong_install', 'signed_500'])
@@ -809,27 +683,14 @@ def test_activation_does_not_enable_pin_or_change_stage(kit):
 
 
 # --- proof push (4.3, 4.6) ----------------------------------------------------------------------------
-def test_proof_push_arms_once_refreshes_status_and_feeds_enable_evidence(kit):
+def test_legacy_proof_push_arms_once_refreshes_status_and_feeds_enable_evidence(kit):
     kit.pending()
     kit.core.arm_proof()
-    steps = kit.steps()
-    assert steps.activation(kit.store) == ('ok', 'ok', 0)
-    names = [c['path'].rsplit('/', 1)[-1] for c in kit.worker.calls]
-    assert names == ['status', 'proof-arm'], 'arm only because the Worker held no live proof'
-    kit.now += 31_000
-    steps.activation(kit.store)
-    assert [c['path'].rsplit('/', 1)[-1] for c in kit.worker.calls][2:] == ['status'], 'a live Worker proof is never re-armed'
-    # the Worker verified the receipt; the cached signed status becomes the 4.6 evidence
-    headers, raw = proof_request(kit.core)
-    kit.core.delivery.receive_proof(headers, raw)
-    digest = rows(kit, 'SELECT receipt_digest FROM mail_delivery_proof')[0]['receipt_digest']
-    kit.worker.proof_state = 'verified'
-    kit.worker.override['status'] = lambda v: {**kit.worker.default_status(v),
-        'proof': {'state': 'verified', 'receipt_digest': digest, 'expires_ms': kit.now + 100_000}}
-    kit.now += 31_000
-    steps.activation(kit.store)
-    kit.delivery.worker_evidence = kit.client.cached_evidence
-    assert kit.core.enable()['enabled'] is True
+    before = rows(kit, 'SELECT * FROM mail_delivery_proof')
+    assert kit.steps().activation(kit.store) == ('pending', 'remote_proof_retryable', 0)
+    assert kit.client.cached_evidence() is None and kit.worker.calls == []
+    assert rows(kit, 'SELECT * FROM mail_delivery_proof') == before
+    assert kit.flow()['stage'] == 'delivery_pending'
 
 
 def test_a_failing_proof_push_reports_a_closed_code(kit):
@@ -851,32 +712,28 @@ def test_recovery_without_a_lifecycle_client_skips_the_new_steps(kit):
     assert {s['reason'] for s in report['steps']} <= REASONS
 
 
-def test_recovery_drives_revocations_through_the_real_client_with_backoff(kit):
+def test_legacy_recovery_drives_revocations_through_the_real_client_with_backoff(kit):
     kit.started()
     kit.core.disable()
     rec = kit.recovery()
-    kit.worker.from_ceremony = True
-    kit.worker.fail = OSError('down')
-    first = by_name(rec.run())['revocations']
-    assert (first['state'], first['reason'], first['count']) == ('pending', 'remote_cancel_retryable', 1)
-    sent = len(kit.worker.calls)
-    assert by_name(rec.run())['revocations']['reason'] == 'backoff' and len(kit.worker.calls) == sent
-    kit.worker.fail = None
-    kit.now += 31_000
-    assert by_name(rec.run())['revocations']['state'] == 'ok'
-    assert acked(kit)[0][1:] == (1, 1)
+    assert by_name(rec.run())['revocations']['reason'] == 'remote_cancel_retryable'
+    assert by_name(rec.run())['revocations']['reason'] == 'backoff'
+    kit.now += 31000
+    assert by_name(rec.run())['revocations']['reason'] == 'remote_cancel_retryable'
+    assert acked(kit)[0][1:] == (0, 0) and kit.worker.calls == []
 
 
-def test_recovery_step_order_is_unchanged_for_the_old_steps_and_reasons_stay_closed(kit):
+def test_legacy_recovery_step_order_is_unchanged_for_the_old_steps_and_reasons_stay_closed(kit):
     kit.pending()
-    kit.now += 200_000
-    kit.worker.lease = kit.now + 300_000
+    kit.now += 200000
     report = kit.recovery().run()
     names = [s['name'] for s in report['steps']]
     old = ['store', 'deletion', 'revocations', 'flows', 'replay', 'inbound', 'cleanup', 'retention']
     assert [n for n in names if n in old] == old
-    assert by_name(report)['renew']['count'] == 1
+    assert by_name(report)['renew']['count'] == 0
+    assert by_name(report)['renew']['reason'] == 'remote_renew_retryable'
     assert {s['reason'] for s in report['steps']} <= REASONS
+    assert kit.worker.calls == []
 
 
 # --- selector and transports ---------------------------------------------------------------------------
@@ -929,12 +786,12 @@ def test_https_transport_refuses_redirects_odd_origins_and_bounds_the_call():
             Opener.seen = (request.full_url, request.get_method(), timeout)
             return Reply()
     transport = HttpsTransport(opener=Opener())
-    out = transport.post(ORIGIN, '/v1/mail/lifecycle/status', {'a': 'b'}, b'{}')
-    assert out['status'] == 200 and Opener.seen == (ORIGIN + '/v1/mail/lifecycle/status', 'POST', 10.0)
-    assert Reply.read_limit == 16 * 1024 + 1
+    out = transport.post(ORIGIN, '/v1/pull/status', {'a': 'b'}, b'{}')
+    assert out['status'] == 200 and Opener.seen == (ORIGIN + '/v1/pull/status', 'POST', 10.0)
+    assert Reply.read_limit == 32 * 1024 + 1
     for origin, path in (('http://x.example.test', '/v1/x'), (ORIGIN + '/p?q=1', '/v1/x'), (ORIGIN, '/v1/x?q=1'),
                          ('https://localhost', '/v1/x'), (ORIGIN, 'no-slash')):
-        with pytest.raises(RemoteUnavailable):
+        with pytest.raises(ServiceRefused):
             transport.post(origin, path, {}, b'{}')
     import urllib.request
     handler = [h for h in urllib.request.build_opener(__import__('mc.agent_mail_service_client', fromlist=['x'])._NoRedirect).handlers
