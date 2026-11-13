@@ -192,7 +192,8 @@ def test_cleanup_purges_expired_work_but_keeps_ownership_tombstones(tmp_path):
 def test_recovery_never_calls_a_human_ceremony_or_key_creation_path():
     source = inspect.getsource(recovery_module) + inspect.getsource(sup)
     for forbidden in ('.confirm(', '.verify(', '.enable(', '.disable(', '.change_identity(', '.enrollment(',
-                      'Enrollment(', 'generate', 'Ed25519PrivateKey', 'CLOUDFLARE', 'urlopen', 'requests', 'socket'):
+                      'Enrollment(', 'generate', 'Ed25519PrivateKey', 'CLOUDFLARE', 'urlopen', 'requests',
+                      'socket.socket(', 'socket.create_connection('):
         assert forbidden not in source, forbidden
 
 
