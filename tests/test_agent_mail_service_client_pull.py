@@ -75,6 +75,9 @@ class World(Harness):
             self.proof(path, h, raw)
             rid = request.get('op_id', h['x-mail-nonce'])
             value = self.status_value() if path == STATUS else {'sentinel': 'route owner validates this'}
+            if path == '/v1/pull/send':
+                value = dict(intent_id=request.get('intent_id'), thread_id=request.get('thread_id'),
+                             message_id='dedupe@example.test', state='accepted', provider_id='provider-id')
         common = dict(v=1, code='fenced' if path == FENCE else 'accepted' if path.endswith('/send') else 'ok', request_id=rid)
         response = self.change(*self.response(path, h, request, dict(common, **value)))
         self.after()
@@ -117,6 +120,8 @@ def test_status_uses_pull_exact_path_sealed_signature_and_no_evidence(w):
 @pytest.mark.parametrize('path', sorted(ROUTES - {FENCE}))
 def test_callable_is_a_verified_signup_transport_and_preserves_exact_raw_bytes(w, path):
     value = {} if path.endswith('/status') else {'op_id': '5' * 32}
+    if path == '/v1/pull/send':
+        value.update(intent_id='intent1', thread_id='thread1')
     h, raw = w.request(path, value)
     response = w.client('POST', path, h, raw)
     assert response[0] == 200 and w.calls[-1][3] == raw
@@ -463,6 +468,17 @@ _SEND_VECTORS = json.loads((Path(__file__).parent / 'fixtures' /
     'agent-mail-pull-send-receipts.json').read_text())['vectors']
 
 
+@pytest.mark.parametrize('path', ['/v1/pull/status', '/v1/pull/ticket'])
+def test_common_uncertain_remains_valid_outside_send(w, path):
+    request = {'op_id': '5' * 32} if path.endswith('/ticket') else {}
+    h, raw = w.request(path, request)
+    request_id = request.get('op_id', h['x-mail-nonce'])
+    body = {'v': 1, 'code': 'uncertain', 'request_id': request_id}
+    w.change = lambda *args: w.response(path, h, request, body, 409)
+    result = w.client('POST', path, h, raw)
+    assert result[0] == 409 and json.loads(result[2]) == body
+
+
 @pytest.mark.parametrize('vector', _SEND_VECTORS, ids=lambda v: v['name'])
 def test_shared_send_intent_receipt_vectors(w, vector):
     path, request = vector['path'], vector['request']
@@ -478,3 +494,24 @@ def test_shared_send_intent_receipt_vectors(w, vector):
         with pytest.raises(ServiceRefused, match='^response_unverified$'):
             w.client('POST', path, h, raw)
     assert w.rows('mail_pull_accounts') == before and w.client.cached_evidence() is None
+
+
+@pytest.mark.parametrize('provider,valid', [
+    ('provider-id', True), (' opaque id ', True), ('x' * 256, True),
+    ('', False), (' ', False), ('x' * 257, False), ('\nprovider', False),
+    ('non-ascii-\u00e9', False), (None, False), (123, False),
+])
+def test_accepted_send_requires_bounded_provider_evidence(w, provider, valid):
+    path = '/v1/pull/send'
+    request = {'op_id': '5' * 32, 'intent_id': 'intent1', 'thread_id': 'thread1'}
+    h, raw = w.request(path, request)
+    body = dict(v=1, code='accepted', request_id=request['op_id'], state='accepted',
+                intent_id='intent1', thread_id='thread1', message_id='dedupe@example.test',
+                provider_id=provider)
+    w.change = lambda *args: w.response(path, h, request, body, 200)
+    if valid:
+        assert json.loads(w.client('POST', path, h, raw)[2]) == body
+    else:
+        with pytest.raises(ServiceRefused, match='^response_unverified$'):
+            w.client('POST', path, h, raw)
+    assert w.client.cached_evidence() is None
