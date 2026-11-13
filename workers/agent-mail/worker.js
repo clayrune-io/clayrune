@@ -6,6 +6,7 @@ import { legacyTransportHooks } from './legacy-transport-hooks.js';
 import { lifecycle, isLifecyclePath, cpFor } from './lifecycle.js';
 import { enrollmentHttp, isEnrollmentPath } from './enrollment-http.js';
 import { manifestHttp, isManifestRequest } from './manifest-http.js';
+import { enrollmentErrorBoundary } from './legacy-error-boundary.js';
 const reply = (status, value) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
 export function createWorker({ send, fetcher = fetch, clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS, cp, enrollment } = {}) {
   const config = (env) => ({ domain: env.MAIL_DOMAIN, from: env.MAIL_FROM,
@@ -36,13 +37,8 @@ export function createWorker({ send, fetcher = fetch, clock = Date.now, bodyTime
       // Enrollment ceremony (7d-2e-2): own module, own flag (MAIL_ENROLLMENT_ENABLED), default off.
       // `enrollment` carries test doubles only (provider/reader/preflight); production passes none.
       if (request.method === 'POST' && !url.search && isEnrollmentPath(url.pathname)) {
-        try {
-          return await enrollmentHttp({ request, env, ledger: new Ledger(env.MAIL_DB), config: config(env),
-            send: (mail) => sender(env, mail), fetcher, clock, bodyTimeoutMs, inject: enrollment });
-        } catch {
-          console.error('[agent-mail] enrollment_storage_or_configuration_failure');
-          return reply(503, { code: 'storage_or_configuration_failure' });
-        }
+        return enrollmentErrorBoundary(() => enrollmentHttp({ request, env, ledger: new Ledger(env.MAIL_DB), config: config(env),
+          send: (mail) => sender(env, mail), fetcher, clock, bodyTimeoutMs, inject: enrollment }));
       }
       // Pre-signed service manifest (7e-2p): own module; serves operator config only, never signs.
       if (isManifestRequest(request, url)) return manifestHttp({ env });

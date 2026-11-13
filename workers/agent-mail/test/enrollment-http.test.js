@@ -141,7 +141,7 @@ for (const [name, preflight, status, code] of [
   });
 }
 
-runWith('E2a fail closed: a preflight that throws -> 503, no D1 write, no send', { publicEntry: true, preflight: async () => { throw new Error('boom'); } }, async (w) => {
+runWith('E2a fail closed: a preflight that throws -> 503, no D1 write, no send', { preflight: async () => { throw new Error('boom'); } }, async (w) => {
   const r = await w.begin(); assert.equal(r.res.status, 503); assert.deepEqual(r.json, { code: 'storage_or_configuration_failure' });
   untouched(w); assert.equal(w.log.join('').includes('boom'), false);
 });
