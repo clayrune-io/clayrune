@@ -1,14 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fixture, sendValue, emailMessage, NOW } from './transport-support.js';
+import { fixture, transportHttp, sendValue, emailMessage, NOW } from './transport-support.js';
 import { bytes, SKEW_MS, verify } from '../signing.js';
-import { createWorker } from '../worker.js';
 import { constructMail } from '../outbound.js';
 
 test('control: verified plus address and case remain the exact outbound recipient', async () => {
   const f = await fixture();
   await f.ledger.run('UPDATE registrations SET owner_address=?', 'Owner+tag@EXAMPLE.COM');
-  assert.equal((await f.worker.fetch(await f.request(), f.env)).status, 200);
+  assert.equal((await f.http.fetch(await f.request(), f.env)).status, 200);
   assert.equal(f.sent[0].to, 'Owner+tag@EXAMPLE.COM');
   assert.match(f.sent[0].raw, /To: Owner\+tag@EXAMPLE.COM\r\n/);
 });
@@ -29,10 +28,10 @@ test(`P1 unsigned requests must not exhaust the authenticated owner quota: ${pat
     const request = new Request(`https://service.example.net${path}`, {
       method: 'POST', headers: { 'x-mail-install-id': 'install1' }, body: '{}',
     });
-    assert.equal((await f.worker.fetch(request, f.env)).status, 401);
+    assert.equal((await f.http.fetch(request, f.env)).status, 401);
   }
   assert.equal((await f.ledger.first("SELECT COUNT(*) AS n FROM rate_limits WHERE bucket LIKE 'http:install1:%'")).n, 0);
-  const response = await f.worker.fetch(await f.request(path, path.endsWith('send') ? sendValue() : {}), f.env);
+  const response = await f.http.fetch(await f.request(path, path.endsWith('send') ? sendValue() : {}), f.env);
   console.log('unsigned quota result', response.status, await response.json(), 'sends', f.sent.length);
   assert.equal(response.status, 200, 'valid owner request must still be possible after unsigned traffic');
   assert.equal(f.sent.length, path.endsWith('send') ? 1 : 0);
@@ -41,7 +40,7 @@ test(`P1 unsigned requests must not exhaust the authenticated owner quota: ${pat
 
 test('P2 a transient thread lookup failure must surface as custody failure', async () => {
   const f = await fixture();
-  const sent = await (await f.worker.fetch(await f.request(), f.env)).json();
+  const sent = await (await f.http.fetch(await f.request(), f.env)).json();
   const prepare = f.db.prepare.bind(f.db);
   let injected = false;
   f.db.prepare = (sql) => {
@@ -76,7 +75,7 @@ for (const localLength of [31, 32]) {
     }
     await f.ledger.run('UPDATE registrations SET address_local=?', local);
     f.db.sql.exec('PRAGMA ignore_check_constraints=OFF');
-    const response = await f.worker.fetch(await f.request(), f.env);
+    const response = await f.http.fetch(await f.request(), f.env);
     if (localLength === 32) {
       assert.equal(response.status, 503);
       assert.deepEqual(await response.json(), { code: 'storage_or_configuration_failure' });
@@ -100,7 +99,7 @@ for (const localLength of [31, 32]) {
 test('P2 a delayed upload must not replay a nonce after its durable claim expires', async () => {
   const f = await fixture();
   const signed = await f.request('/v1/mail/reconcile', {});
-  assert.equal((await f.worker.fetch(signed.clone(), f.env)).status, 200);
+  assert.equal((await f.http.fetch(signed.clone(), f.env)).status, 200);
   assert.equal((await f.ledger.first('SELECT COUNT(*) AS n FROM nonces')).n, 1);
   const body = bytes('{}');
   const stream = new ReadableStream({
@@ -115,7 +114,7 @@ test('P2 a delayed upload must not replay a nonce after its durable claim expire
   const request = new Request(signed.url, {
     method: 'POST', headers: signed.headers, body: stream, duplex: 'half',
   });
-  const response = await f.worker.fetch(request, f.env);
+  const response = await f.http.fetch(request, f.env);
   console.log('replayed nonce result', response.status, await response.json(),
     'age at verification', f.clock.now - NOW,
     'nonce reused', signed.headers.get('x-mail-nonce') === request.headers.get('x-mail-nonce'));
@@ -124,7 +123,7 @@ test('P2 a delayed upload must not replay a nonce after its durable claim expire
 
 test('P3 concurrent conflicting incoming ids retain visible conflict metadata', async () => {
   const f = await fixture();
-  const sent = await (await f.worker.fetch(await f.request(), f.env)).json();
+  const sent = await (await f.http.fetch(await f.request(), f.env)).json();
   // Legal interleaving across Workers: both initial reads finish before either insert.
   const prepare = f.db.prepare.bind(f.db);
   let reads = 0;
@@ -162,11 +161,11 @@ for (const path of ['/v1/mail/send', '/v1/mail/reconcile']) {
       `http:unauthenticated:${Math.floor(NOW / 60_000)}`, 10_000, NOW + 120_000);
     const bad = await f.request(path, path.endsWith('send') ? sendValue() : {});
     bad.headers.set('x-mail-signature', 'A'.repeat(86));
-    const refused = await f.worker.fetch(bad, f.env);
+    const refused = await f.http.fetch(bad, f.env);
     assert.equal(refused.status, 429);
     assert.deepEqual(await refused.json(), { code: 'abuse_limit' });
     assert.equal((await f.ledger.first('SELECT COUNT(*) AS n FROM nonces')).n, 0);
-    assert.equal((await f.worker.fetch(await f.request(path,
+    assert.equal((await f.http.fetch(await f.request(path,
       path.endsWith('send') ? sendValue() : {}), f.env)).status, 200);
   });
 }
@@ -175,8 +174,8 @@ test('authenticated send and reconcile share the protected daily allowance', asy
   const f = await fixture();
   await f.ledger.run('INSERT INTO rate_limits VALUES(?,?,?)',
     `http:install1:${Math.floor(NOW / 86_400_000)}`, 199, NOW + 172_800_000);
-  assert.equal((await f.worker.fetch(await f.request('/v1/mail/reconcile', {}), f.env)).status, 200);
-  const refused = await f.worker.fetch(await f.request(), f.env);
+  assert.equal((await f.http.fetch(await f.request('/v1/mail/reconcile', {}), f.env)).status, 200);
+  const refused = await f.http.fetch(await f.request(), f.env);
   assert.equal(refused.status, 429);
   assert.deepEqual(await refused.json(), { code: 'request_limit' });
   assert.equal(f.sent.length, 0);
@@ -210,7 +209,7 @@ test('stalled upload times out and cancels without waiting on the producer', asy
     pull() { return new Promise(() => {}); },
     cancel() { cancelled = true; return new Promise(() => {}); },
   }, { highWaterMark: 0 });
-  const worker = createWorker({ clock: () => f.clock.now, bodyTimeoutMs: 10,
+  const worker = transportHttp({ clock: () => f.clock.now, bodyTimeoutMs: 10,
     send: async () => assert.fail('no send before authentication') });
   const response = await worker.fetch(new Request(signed.url, {
     method: 'POST', headers: signed.headers, body: stream, duplex: 'half',
@@ -229,7 +228,7 @@ test('oversized upload is cancelled before authentication or reservation', async
     start(controller) { controller.enqueue(new Uint8Array(131_073)); },
     cancel() { cancelled = true; },
   });
-  const response = await f.worker.fetch(new Request(signed.url, {
+  const response = await f.http.fetch(new Request(signed.url, {
     method: 'POST', headers: signed.headers, body: stream, duplex: 'half',
   }), f.env);
   assert.equal(response.status, 413);

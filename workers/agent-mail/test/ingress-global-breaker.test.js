@@ -7,7 +7,7 @@ import { DAY } from '../ledger.js';
 
 async function twoOwners() {
   const f = await fixture();
-  const one = await f.worker.fetch(await f.request(), f.env);
+  const one = await f.http.fetch(await f.request(), f.env);
   assert.equal(one.status, 200);
   const first = await one.json();
   await f.ledger.run(`INSERT INTO registrations SELECT 'install2',generation,active,owner_verified,
@@ -15,7 +15,7 @@ async function twoOwners() {
     FROM registrations WHERE install_id='install1'`);
   f.reg.install_id = 'install2';
   const token2 = 'b'.repeat(32);
-  const two = await f.worker.fetch(await f.request('/v1/mail/send', sendValue({ reply_token: token2 })), f.env);
+  const two = await f.http.fetch(await f.request('/v1/mail/send', sendValue({ reply_token: token2 })), f.env);
   assert.equal(two.status, 200);
   const second = await two.json();
   return { f, replies: () => {
@@ -59,7 +59,7 @@ for (const target of ['known', 'unknown']) {
 
 test('concurrent strangers do not spend protected quota below global limit', async () => {
   const f = await fixture();
-  const sent = await (await f.worker.fetch(await f.request(), f.env)).json();
+  const sent = await (await f.http.fetch(await f.request(), f.env)).json();
   const results = await Promise.all(Array.from({ length: 250 }, (_, i) => f.worker.email(emailMessage({
     from: 'stranger@example.org', envelope: 'stranger@example.org', token: '0'.repeat(32),
     outId: 'unknown@example.org', id: `race${i}@example.org`,

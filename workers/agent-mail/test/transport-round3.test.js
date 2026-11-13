@@ -8,7 +8,7 @@ import { cfAr } from './fixtures.js';
 // the public-handler attack, 200 messages and genuine-reply assertion are kept.
 test('P2 unauthenticated mail cannot spend the owner reply allowance', async () => {
   const f = await fixture();
-  const sent = await (await f.worker.fetch(await f.request(), f.env)).json();
+  const sent = await (await f.http.fetch(await f.request(), f.env)).json();
   // Attacker knows the opaque install address only. No real token, outbound
   // Message-ID or owner identity is supplied. DMARC authenticates the stranger's
   // own domain, a normal Cloudflare ingress shape, never the registered owner.
@@ -36,7 +36,7 @@ test('P2 unauthenticated mail cannot spend the owner reply allowance', async () 
 
 test('control: same valid reply queues on an unexhausted install', async () => {
   const f = await fixture();
-  const sent = await (await f.worker.fetch(await f.request(), f.env)).json();
+  const sent = await (await f.http.fetch(await f.request(), f.env)).json();
   const message = emailMessage({ outId: sent.message_id });
   assert.equal((await f.worker.email(message, f.env)).status, 'queued');
   assert.deepEqual(message.rejects, []);
@@ -44,7 +44,7 @@ test('control: same valid reply queues on an unexhausted install', async () => {
 
 test('authenticated owner attempts still exhaust their own allowance', async () => {
   const f = await fixture();
-  const sent = await (await f.worker.fetch(await f.request(), f.env)).json();
+  const sent = await (await f.http.fetch(await f.request(), f.env)).json();
   for (let i = 0; i < 200; i++) {
     // Genuine redeliveries keep the custody queue below its independent cap.
     const message = emailMessage({ outId: sent.message_id });
@@ -62,7 +62,7 @@ test('authenticated owner attempts still exhaust their own allowance', async () 
 
 test('saturated refusal accounting neither changes refusal reasons nor gates the owner', async () => {
   const f = await fixture();
-  const sent = await (await f.worker.fetch(await f.request(), f.env)).json();
+  const sent = await (await f.http.fetch(await f.request(), f.env)).json();
   for (let i = 0; i < 200; i++) assert.equal(await f.ledger.limit('ingress-refused:install1', 200, NOW), true);
   const spoof = emailMessage({ from: 'stranger@example.com', outId: sent.message_id });
   assert.equal((await f.worker.email(spoof, f.env)).reason, 'from_not_owner');
@@ -76,7 +76,7 @@ test('saturated refusal accounting neither changes refusal reasons nor gates the
 
 test('mismatched outbound Message-ID queues the token-authenticated owner reply', async () => {
   const f = await fixture();
-  const sent = await (await f.worker.fetch(await f.request(), f.env)).json();
+  const sent = await (await f.http.fetch(await f.request(), f.env)).json();
   assert.notEqual(sent.message_id, 'unknown@example.org');
   const message = emailMessage({ outId: 'unknown@example.org' });
   assert.equal((await f.worker.email(message, f.env)).status, 'queued');
@@ -96,7 +96,7 @@ for (const [over, reason, protectedCount] of [
 ]) {
   test(`post-lookup ${reason} refusal has separate accounting`, async () => {
     const f = await fixture();
-    const sent = await (await f.worker.fetch(await f.request(), f.env)).json();
+    const sent = await (await f.http.fetch(await f.request(), f.env)).json();
     const message = emailMessage({ outId: sent.message_id, ...over });
     assert.deepEqual(await f.worker.email(message, f.env), { status: 'rejected', reason });
     assert.deepEqual(message.rejects, ['Agent mail refused']);

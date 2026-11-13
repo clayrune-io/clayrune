@@ -104,10 +104,10 @@ test('MAIL_ENABLED off still answers mail_disabled first (feature switch unchang
 test('existing routes are unchanged: signed send works, GET send is 404, unsigned send is 401', async () => {
   const f = await fixture();
   f.env.MAIL_SERVICE_MANIFEST = JSON.stringify(await signedDocument());
-  assert.equal((await f.worker.fetch(await f.request(), f.env)).status, 200);
+  assert.equal((await f.http.fetch(await f.request(), f.env)).status, 200);
   assert.equal((await f.worker.fetch(new Request('https://service.example.net/v1/mail/send'), f.env)).status, 404);
   const unsigned = new Request('https://service.example.net/v1/mail/send', { method: 'POST', body: '{}' });
-  assert.equal((await f.worker.fetch(unsigned, f.env)).status, 401);
+  assert.equal((await f.http.fetch(unsigned, f.env)).status, 401);
   assert.equal((await f.worker.fetch(new Request(URL_), f.env)).status, 200);
 });
 test('the module holds no signing or key material and makes no network call', () => {
