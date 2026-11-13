@@ -301,6 +301,11 @@ receipt, no second revocation. Fence tokens confer no read/send/owner/address-
 release rights. Explicit address release/deletion requires the hosted human
 management flow, never the cancellation capability.
 
+Each `(install_id,flow_id,generation)` fence scope has one immutable `op_id` and
+`mode`. Only an exact `op_id` plus operation-digest retry returns its original
+receipt. A different `op_id` or mode on that already-fenced scope, including
+`cancel` followed by `revoke`, is refused with the uniform unsigned 401 above.
+
 Candidate proof for management/rotation is Ed25519 over
 `A("clayrune-mail-pull-candidate","1",origin,purpose,flow_id,install_id,
 expected_generation,expected_owner_generation,candidate_key_id,
