@@ -13,6 +13,7 @@ export const OWNER_CHANGE_PATHS = Object.freeze(['/mail/owner-change', '/mail/ch
 const DAY = 86_400_000;
 const WEEK = 7 * DAY;
 const TTL = 600_000;
+const FINAL_ENABLE_TTL = 30 * 60_000;
 const MAX_G = 999_999_999_999_999;
 const H = /^[a-f0-9]{64}$/;
 const I = /^[a-f0-9]{32}$/;
@@ -319,7 +320,7 @@ export class OwnerChangeHTTP extends OwnerManagementHTTP {
       this.stmt(`UPDATE pull_owner_changes SET state='completed',completed_ms=?,revert_until_ms=?,switched_generation=?,
         switched_owner_generation=?,new_owner_sealed=NULL WHERE change_id=?`, now, end, i.generation + 1, i.owner_generation + 1, c.change_id), this.registry.changed(),
       ...this.retire(i, now), ...this.nextGeneration(i, f, newOwner, 'verified', now, true),
-      this.stmt("UPDATE pull_flows SET state='completed',result_json=? WHERE flow_id=?", JSON.stringify(result), f.flow_id), this.registry.changed(),
+      this.stmt("UPDATE pull_flows SET state='completed',result_json=?,expires_ms=? WHERE flow_id=?", JSON.stringify(result), now + FINAL_ENABLE_TTL, f.flow_id), this.registry.changed(),
       this.stmt(`INSERT INTO pull_tokens(token_hash,install_id,flow_id,change_id,purpose,generation,owner_generation,owner_hash,
         binding_digest,state,created_ms,expires_ms) VALUES(?,?,?,?,'revert',?,?,?,?,'pending',?,?)`,
       await hash(revertToken), i.install_id, f.flow_id, c.change_id, revertScope.generation, revertScope.owner_generation,
@@ -399,7 +400,7 @@ export class OwnerChangeHTTP extends OwnerManagementHTTP {
     await this.db.batch([this.timeGuard(now, s.expires_ms), ...scope.statements, this.epochGuard(i),
       this.currentGuard(i, i.state === 'disabled' ? 'fenced' : 'current'),
       ...this.retire(i, now), ...this.nextGeneration(i, f, i, 'verified', now, false),
-      this.stmt("UPDATE pull_flows SET state='completed',result_json=? WHERE flow_id=?", JSON.stringify(result), f.flow_id), this.registry.changed(),
+      this.stmt("UPDATE pull_flows SET state='completed',result_json=?,expires_ms=? WHERE flow_id=?", JSON.stringify(result), now + FINAL_ENABLE_TTL, f.flow_id), this.registry.changed(),
       this.operation(i, '/mail/resume', v.op_id, digest, result, now), this.timeGuard(now, s.expires_ms)]);
     return receipt();
   }
