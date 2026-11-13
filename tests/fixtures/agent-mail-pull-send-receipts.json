@@ -1,0 +1,1429 @@
+{
+  "version": 1,
+  "contract": "AGENT_MAIL_PULL_CONTRACT section 7 intent-receipt exception",
+  "vectors": [
+    {
+      "name": "reserved-empty-provider",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "reserved",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "reserved",
+        "provider_id": ""
+      },
+      "valid": true
+    },
+    {
+      "name": "sending-empty-provider",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "sending",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "sending",
+        "provider_id": ""
+      },
+      "valid": true
+    },
+    {
+      "name": "uncertain-empty-provider",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": true
+    },
+    {
+      "name": "uncertain-retained-provider",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": "opaque-provider-id"
+      },
+      "valid": true
+    },
+    {
+      "name": "uncertain-provider-256",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "valid": true
+    },
+    {
+      "name": "failed-empty-provider",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "failed",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "failed",
+        "provider_id": ""
+      },
+      "valid": true
+    },
+    {
+      "name": "revoked-empty-provider",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "revoked",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "revoked",
+        "provider_id": ""
+      },
+      "valid": true
+    },
+    {
+      "name": "revoked-retained-provider",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "revoked",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "revoked",
+        "provider_id": "opaque-provider-id"
+      },
+      "valid": true
+    },
+    {
+      "name": "revoked-provider-256",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "revoked",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "revoked",
+        "provider_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "valid": true
+    },
+    {
+      "name": "common-intent_conflict",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "intent_conflict",
+        "request_id": "55555555555555555555555555555555"
+      },
+      "valid": true
+    },
+    {
+      "name": "common-registration_inactive",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "registration_inactive",
+        "request_id": "55555555555555555555555555555555"
+      },
+      "valid": true
+    },
+    {
+      "name": "common-stale_generation",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "stale_generation",
+        "request_id": "55555555555555555555555555555555"
+      },
+      "valid": true
+    },
+    {
+      "name": "common-nonce_replayed",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "nonce_replayed",
+        "request_id": "55555555555555555555555555555555"
+      },
+      "valid": true
+    },
+    {
+      "name": "common-revoked",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "revoked",
+        "request_id": "55555555555555555555555555555555"
+      },
+      "valid": true
+    },
+    {
+      "name": "common-uncertain",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555"
+      },
+      "valid": true
+    },
+    {
+      "name": "missing-v",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "missing-code",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "missing-request_id",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "missing-intent_id",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "missing-thread_id",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "missing-message_id",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "missing-state",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "missing-provider_id",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain"
+      },
+      "valid": false
+    },
+    {
+      "name": "extra-retry_after_ms",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": "",
+        "retry_after_ms": 0
+      },
+      "valid": false
+    },
+    {
+      "name": "extra-to",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": "",
+        "to": "unexpected"
+      },
+      "valid": false
+    },
+    {
+      "name": "extra-instruction",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": "",
+        "instruction": "unexpected"
+      },
+      "valid": false
+    },
+    {
+      "name": "bad-code-26",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "revoked",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "bad-state-27",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "accepted",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "bad-state-28",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "invented",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "bad-state-29",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": null,
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "bad-intent_id-30",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "other",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "bad-thread_id-31",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "other",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "bad-intent_id-32",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": null,
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "bad-message_id-33",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "bad-message_id-34",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "bad\r\nheader",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "bad-message_id-35",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "bad-message_id-36",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "caf\u00e9@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "bad-provider_id-37",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "valid": false
+    },
+    {
+      "name": "bad-provider_id-38",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": "bad\nheader"
+      },
+      "valid": false
+    },
+    {
+      "name": "bad-provider_id-39",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": "\u00e9"
+      },
+      "valid": false
+    },
+    {
+      "name": "bad-provider_id-40",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": "   "
+      },
+      "valid": false
+    },
+    {
+      "name": "bad-provider_id-41",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": null
+      },
+      "valid": false
+    },
+    {
+      "name": "bad-request_id-42",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "00000000000000000000000000000000",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "bad-v-43",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 2,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "reserved-provider-forbidden",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "reserved",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "reserved",
+        "provider_id": "opaque"
+      },
+      "valid": false
+    },
+    {
+      "name": "reserved-missing-receipt",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "reserved",
+        "request_id": "55555555555555555555555555555555"
+      },
+      "valid": false
+    },
+    {
+      "name": "sending-provider-forbidden",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "sending",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "sending",
+        "provider_id": "opaque"
+      },
+      "valid": false
+    },
+    {
+      "name": "sending-missing-receipt",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "sending",
+        "request_id": "55555555555555555555555555555555"
+      },
+      "valid": false
+    },
+    {
+      "name": "failed-provider-forbidden",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "failed",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "failed",
+        "provider_id": "opaque"
+      },
+      "valid": false
+    },
+    {
+      "name": "failed-missing-receipt",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "failed",
+        "request_id": "55555555555555555555555555555555"
+      },
+      "valid": false
+    },
+    {
+      "name": "receipt-on-status",
+      "path": "/v1/pull/send/status",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "receipt-on-status",
+      "path": "/v1/pull/status",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "receipt-on-ticket",
+      "path": "/v1/pull/ticket",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "receipt-http-200",
+      "path": "/v1/pull/send",
+      "status": 200,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "receipt-http-400",
+      "path": "/v1/pull/send",
+      "status": 400,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "receipt-http-429",
+      "path": "/v1/pull/send",
+      "status": 429,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "receipt-http-503",
+      "path": "/v1/pull/send",
+      "status": 503,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "missing-request-intent",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "thread_id": "thread1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    },
+    {
+      "name": "missing-request-thread",
+      "path": "/v1/pull/send",
+      "status": 409,
+      "request": {
+        "op_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "reply_token": "66666666666666666666666666666666",
+        "subject": "Synthetic",
+        "body": "Fixture only",
+        "kind": "note"
+      },
+      "body": {
+        "v": 1,
+        "code": "uncertain",
+        "request_id": "55555555555555555555555555555555",
+        "intent_id": "intent1",
+        "thread_id": "thread1",
+        "message_id": "dedupe@example.test",
+        "state": "uncertain",
+        "provider_id": ""
+      },
+      "valid": false
+    }
+  ]
+}
