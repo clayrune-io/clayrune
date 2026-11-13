@@ -8,7 +8,7 @@ import { replay, provenRoute } from '../replay.js';
 import { Ledger, DAY } from '../ledger.js';
 import { verify } from '../signing.js';
 test('durable local custody clears worker content without claiming a completed turn', async () => {
-  const f = await fixture(); await sendAndReceive(f); await f.worker.scheduled({}, f.env);
+  const f = await fixture(); await sendAndReceive(f); await f.legacy.scheduled({}, f.env);
   const event = await f.ledger.first('SELECT * FROM events');
   assert.equal(event.state, 'local_received'); assert.equal(event.payload, null); assert.equal(f.delivered.length, 1);
   const delivery = f.delivered[0];
@@ -29,7 +29,7 @@ for (const mode of ['offline', '500', '302', 'generic200', 'wrong_event', 'wrong
         body_digest: mode === 'wrong_digest' ? 'other' : p.body_digest, install_id: p.install_id,
         generation: mode === 'wrong_generation' ? 2 : p.generation });
     } });
-    await sendAndReceive(f); await f.worker.scheduled({}, f.env);
+    await sendAndReceive(f); await f.legacy.scheduled({}, f.env);
     const event = await f.ledger.first('SELECT * FROM events');
     assert.equal(event.state, 'pending'); assert.ok(event.payload); assert.ok(event.next_attempt > NOW);
   });
@@ -42,8 +42,8 @@ test('lost ack replay uses same bytes/event but a fresh nonce', async () => {
     return Response.json({ custody: 'durable', event_id: p.event_id, body_digest: p.body_digest,
       install_id: p.install_id, generation: p.generation });
   } });
-  await sendAndReceive(f); await f.worker.scheduled({}, f.env);
-  f.clock.now += 10_000; await f.worker.scheduled({}, f.env);
+  await sendAndReceive(f); await f.legacy.scheduled({}, f.env);
+  f.clock.now += 10_000; await f.legacy.scheduled({}, f.env);
   assert.equal(attempts.length, 2); assert.deepEqual(attempts[0].body, attempts[1].body);
   assert.notEqual(attempts[0].headers.get('x-mail-nonce'), attempts[1].headers.get('x-mail-nonce'));
   assert.equal((await f.ledger.first('SELECT * FROM events')).payload, null);
@@ -58,7 +58,7 @@ test('concurrent replay claims only once; expired lease cannot settle a replacem
 });
 test('one installation preserves receipt order while first event is blocked/offline', async () => {
   const f = await fixture(); const { outId, result } = await sendAndReceive(f);
-  const later = await f.worker.email(emailMessage({ outId, id: 'later@example.com' }), f.env);
+  const later = await f.legacy.email(emailMessage({ outId, id: 'later@example.com' }), f.env);
   assert.equal(await f.ledger.claim(later.event_id, NOW), null);
   const first = await f.ledger.claim(result.event_id, NOW); await f.ledger.settle(first, true, NOW);
   assert.ok(await f.ledger.claim(later.event_id, NOW));
@@ -66,10 +66,10 @@ test('one installation preserves receipt order while first event is blocked/offl
 for (const update of ['active=0', 'generation=2']) {
   test(`registration ${update} cancels old queued execution and purges body`, async () => {
     const f = await fixture(); await sendAndReceive(f); await f.ledger.run(`UPDATE registrations SET ${update}`);
-    await f.worker.scheduled({}, f.env);
+    await f.legacy.scheduled({}, f.env);
     const event = await f.ledger.first('SELECT * FROM events');
     assert.equal(event.state, 'revoked'); assert.equal(event.payload, null); assert.equal(f.delivered.length, 0);
-    await f.ledger.run('UPDATE registrations SET active=1,generation=3'); await f.worker.scheduled({}, f.env);
+    await f.ledger.run('UPDATE registrations SET active=1,generation=3'); await f.legacy.scheduled({}, f.env);
     assert.equal(f.delivered.length, 0);
   });
 }
@@ -90,7 +90,7 @@ for (const over of [ { route_verified: 0 }, { route_generation: 2 }, { route_ori
 }
 test('pending route never makes a network request', async () => {
   const f = await fixture(); await sendAndReceive(f); await f.ledger.run('UPDATE registrations SET route_verified=0');
-  await f.worker.scheduled({}, f.env); assert.equal(f.delivered.length, 0);
+  await f.legacy.scheduled({}, f.env); assert.equal(f.delivered.length, 0);
   assert.equal((await f.ledger.first('SELECT * FROM events')).reason, 'route_pending');
 });
 test('a fresh D1 connection recovers queue and nonce claims after restart', async () => {
@@ -103,7 +103,7 @@ test('a fresh D1 connection recovers queue and nonce claims after restart', asyn
     db = new D1(path, false); f.env.MAIL_DB = db;
     assert.equal((await f.http.fetch(copy, f.env)).status, 401);
     const ledger = new Ledger(db); assert.equal((await ledger.first('SELECT * FROM events WHERE event_id=?', result.event_id)).state, 'pending');
-    await f.worker.scheduled({}, f.env);
+    await f.legacy.scheduled({}, f.env);
     assert.equal((await ledger.first('SELECT * FROM events WHERE event_id=?', result.event_id)).state, 'local_received');
   } finally { db?.sql.close(); rmSync(dir, { recursive: true }); }
 });

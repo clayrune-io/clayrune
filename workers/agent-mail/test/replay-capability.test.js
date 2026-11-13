@@ -17,7 +17,7 @@ const run = (f, cp, over = {}) => replay({ ledger: f.ledger, config: f.config, n
 
 test('without cp the delivery carries no capability header (behaviour unchanged)', async () => {
   const { f, calls } = await pending();
-  await f.worker.scheduled({}, f.env);
+  await f.legacy.scheduled({}, f.env);
   assert.equal(calls.length, 1); assert.equal(calls[0].headers.has(MACHINE_HEADER), false);
 });
 

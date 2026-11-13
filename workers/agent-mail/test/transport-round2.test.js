@@ -53,7 +53,7 @@ test('P2 a transient thread lookup failure must surface as custody failure', asy
   const message = emailMessage({ outId: sent.message_id });
   let failure;
   let result;
-  try { result = await f.worker.email(message, f.env); } catch (error) { failure = error; }
+  try { result = await f.legacy.email(message, f.env); } catch (error) { failure = error; }
   console.log('thread lookup result', result, 'SMTP rejections', message.rejects,
     'event count', (await f.ledger.first('SELECT COUNT(*) AS n FROM events')).n);
   assert.ok(injected);
@@ -61,7 +61,7 @@ test('P2 a transient thread lookup failure must surface as custody failure', asy
   assert.deepEqual(message.rejects, []);
   assert.equal((await f.ledger.first('SELECT COUNT(*) AS n FROM events')).n, 0);
   assert.equal((await f.ledger.first('SELECT COUNT(*) AS n FROM rejections')).n, 0);
-  assert.equal((await f.worker.email(emailMessage({ outId: sent.message_id }), f.env)).status, 'queued');
+  assert.equal((await f.legacy.email(emailMessage({ outId: sent.message_id }), f.env)).status, 'queued');
 });
 
 for (const localLength of [31, 32]) {
@@ -90,7 +90,7 @@ for (const localLength of [31, 32]) {
     const replyTo = /^Reply-To: (.*)$/m.exec(f.sent[0].raw)[1];
     const message = emailMessage({ outId: sent.message_id });
     message.to = replyTo;
-    const result = await f.worker.email(message, f.env);
+    const result = await f.legacy.email(message, f.env);
     console.log('reply address result', { localLength, replyLocalLength: replyTo.split('@')[0].length, result });
     assert.equal(result.status, 'queued', 'successful outbound must have a usable reply address');
   });
@@ -144,7 +144,7 @@ test('P3 concurrent conflicting incoming ids retain visible conflict metadata', 
     return statement;
   };
   const results = await Promise.all(['first body', 'conflicting body'].map((text) =>
-    f.worker.email(emailMessage({ outId: sent.message_id, id: 'same@example.com', text }), f.env)));
+    f.legacy.email(emailMessage({ outId: sent.message_id, id: 'same@example.com', text }), f.env)));
   assert.deepEqual(results.map((result) => result.status).sort(), ['conflict', 'queued']);
   const conflicts = (await f.ledger.first("SELECT COUNT(*) AS n FROM rejections WHERE reason='message_id_conflict'")).n;
   console.log('concurrent ingress results', results, 'durable conflict records', conflicts);
