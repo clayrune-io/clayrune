@@ -113,7 +113,8 @@ test('valid send signs frozen owner-only receipt after nonce/op/accounting and p
   } });
   const r = await run(f);
   assert.equal(r.response.status, 200); assert.equal(r.body.code, 'accepted'); assert.equal(r.body.request_id, value().op_id);
-  assert.deepEqual(Object.keys(r.body).sort(), ['v', 'code', 'request_id', 'intent_id', 'thread_id', 'message_id', 'state', 'provider_id'].sort());
+  assert.deepEqual(Object.keys(r.body).sort(), ['v', 'code', 'request_id', 'intent_id', 'thread_id', 'message_id', 'state', 'provider_id', 'thread_expires_ms'].sort());
+  assert.equal(r.body.thread_expires_ms, one(f, 'pull_threads').expires_ms);
   assert.equal(r.body.provider_id, ' opaque receipt '); assert.equal(one(f).provider_id, r.body.provider_id);
   const op = one(f, 'pull_operations'); assert.equal(op.input_digest, r.request.headers.get('x-mail-digest'));
   assert.equal(op.expires_ms, NOW + 120 * DAY);

@@ -262,7 +262,7 @@ and rate accounting; no implicit send, consent, activation or key recovery.
 | `/v1/pull/activate` | Verified current key, local human enable action; `{op_id:I,flow_id:I,flow_secret:S,consent_version:ID}`. No receive proof/CP grant required. | `{install_id:I,generation:G,owner_generation:G,state:"active",active_since_ms:T}` |
 | `/v1/pull/status` | Current key even if disabled/frozen; `{}`. | `Status` below. |
 | `/v1/pull/ticket` | Active current key; `{op_id:I}`. | `{ticket:S,expires_ms:T,protocol:"clayrune-mail-pull.v1"}` |
-| `/v1/pull/send` | Active key; `{op_id:I,intent_id:ID,thread_id:ID,reply_token:32hex,subject:string,body:string,kind:"note"|"question"}`. Bounds in 2.1. | `{intent_id:ID,thread_id:ID,message_id:MID,state:"accepted",provider_id:string}`; provider id ASCII <=256. |
+| `/v1/pull/send` | Active key; `{op_id:I,intent_id:ID,thread_id:ID,reply_token:32hex,subject:string,body:string,kind:"note"|"question"}`. Bounds in 2.1. | `{intent_id:ID,thread_id:ID,message_id:MID,state:"accepted",provider_id:string,thread_expires_ms:T}`; provider id ASCII <=256. Expiry is the Worker's stored reservation deadline, also on replay. |
 | `/v1/pull/send/status` | Current key; `{intent_id:ID,intent_generation:G}`. Can read old metadata only for same install AND current owner_generation, no body. | `{intent_id:ID,thread_id:ID,message_id:MID,state:IS,provider_id:string}`; empty strings only before allocation/no positive provider evidence. |
 | `/v1/pull/fence` | Fence-only proof, not key headers: `{op_id:I,install_id:I,generation:G,flow_id:I,fence_token:S,mode:"cancel"|"revoke",nonce:I,timestamp:T}`. | `{install_id:I,generation:G,state:"fenced"|"already_fenced"|"already_superseded",fence_receipt:I}` |
 | `/v1/pull/management/start` | Current or candidate recovery key; `{op_id:I,flow_id:I,purpose:"owner_change"|"key_recovery"|"resume"|"rotate"|"delete",candidate_key_id:ID,candidate_public_key:B32,candidate_signature:B64,flow_secret_hash:H,fence_hash:H}`. Must match current owner; no requested new mailbox here. | `{flow_id:I,state:"pending",expires_ms:T,verification_state:VS}` |
@@ -752,6 +752,17 @@ extraction/turn/action completion. Rejected/expired items produce bounded visibl
 reason/count metadata rather than truncated bodies or fictional delivery success.
 
 ### 7.1 Retained authority and expiry details
+
+The Worker alone stamps thread expiry when reserving a send. An accepted
+`/send` receipt must include its stored `thread_expires_ms`, a positive safe
+integer with room for the 30-day dedupe deadline. The install verifies the
+signed receipt, then commits that deadline to the outbound intent, base thread
+binding and pull thread mapping in one local transaction (dedupe = expiry +
+30 days). Preparation-time expiry is provisional local admission only, never
+an input to the Worker's TTL. Existing local v1 outbound stores migrate to v2:
+correlation and payload remain immutable; changing intent expiry requires an
+accepted send transition. Updating deadlines never reactivates revoked rows.
+Non-accepted 409 receipts and `/send/status` retain their existing shapes.
 
 A retired key may authenticate only an exact previously committed mutation
 result lookup in its original flow/operation scope, or bound flow status; it

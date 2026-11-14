@@ -68,7 +68,8 @@ function flatJSON(raw) {
 export function projectSendResult(result, value, requestId) {
   valid(match(I, requestId), 'storage_unavailable');
   const prefix = { v: 1, code: result?.code, request_id: requestId };
-  if (result && exact(result, ['status', 'code', ...FIELDS])) {
+  const fields = result?.state === 'accepted' ? [...FIELDS, 'thread_expires_ms'] : FIELDS;
+  if (result && exact(result, ['status', 'code', ...fields])) {
     valid(STATES.includes(result.state) && result.code === result.state
       && result.status === (result.state === 'accepted' ? 200 : 409)
       && result.intent_id === value.intent_id && result.thread_id === value.thread_id
@@ -77,8 +78,10 @@ export function projectSendResult(result, value, requestId) {
       && !!result.message_id && strictMsgId(result.message_id) === result.message_id
       && provider(result.provider_id)
       && (result.state === 'accepted' ? result.provider_id !== '' : true)
-      && (!['reserved', 'sending', 'failed'].includes(result.state) || result.provider_id === ''), 'storage_unavailable');
-    return { status: result.status, body: { ...prefix, ...Object.fromEntries(FIELDS.map((k) => [k, result[k]])) } };
+      && (!['reserved', 'sending', 'failed'].includes(result.state) || result.provider_id === '')
+      && (result.state !== 'accepted' || Number.isSafeInteger(result.thread_expires_ms)
+        && result.thread_expires_ms > 0 && result.thread_expires_ms <= Number.MAX_SAFE_INTEGER - 30 * DAY), 'storage_unavailable');
+    return { status: result.status, body: { ...prefix, ...Object.fromEntries(fields.map((k) => [k, result[k]])) } };
   }
   valid(exact(result, ['status', 'code']) && CODES.get(result.code) === result.status, 'storage_unavailable');
   // revoked without a row is a common refusal, not a partial intent receipt.
@@ -178,6 +181,15 @@ export class PullSendHTTP {
         const result = await pullOutbound({ ledger: this.ledger, reg, value, body: raw, config: this.config,
           binding: this.binding, clock: () => this.now(), timers: this.timers, requestGuards: statements,
           onRequestCommitted: () => { committed = true; } });
+        if (result.state === 'accepted') {
+          // Read the reservation's immutable deadline, including on replay.
+          // No client-supplied TTL or local preparation time participates.
+          const thread = await this.first(`SELECT expires_ms FROM pull_threads WHERE install_id=?
+            AND generation=? AND owner_generation=? AND intent_id=? AND thread_id=?`,
+          auth.install_id, Number(auth.generation), Number(auth.owner_generation), value.intent_id, value.thread_id);
+          valid(thread, 'storage_unavailable');
+          result.thread_expires_ms = thread.expires_ms;
+        }
         return projectSendResult(result, value, value.op_id);
       } catch (error) {
         if (error.message !== 'storage_unavailable' || committed) throw error;

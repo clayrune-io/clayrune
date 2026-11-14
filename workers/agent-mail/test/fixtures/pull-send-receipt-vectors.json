@@ -92,7 +92,8 @@
         "thread_id": "thread-1",
         "message_id": "internal@mail.example.net",
         "state": "accepted",
-        "provider_id": "opaque-id"
+        "provider_id": "opaque-id",
+        "thread_expires_ms": 1800000000000
       },
       "valid": true
     },
@@ -373,7 +374,8 @@
         "thread_id": "thread-1",
         "message_id": "internal@mail.example.net",
         "state": "accepted",
-        "provider_id": ""
+        "provider_id": "",
+        "thread_expires_ms": 1800000000000
       },
       "valid": false
     },

@@ -25,7 +25,7 @@ from mc.agent_mail_extract import WARNING
 from mc.agent_mail_ingress import MailIngress
 from mc.agent_mail_outbound import Outbound
 from mc.agent_mail_signing import unbase64url
-from mc.agent_mail_store import MailStore, SUBMITTED
+from mc.agent_mail_store import MailStore, MailStoreError, SUBMITTED
 from mc.agent_mail_wake import MailWake
 
 
@@ -73,6 +73,8 @@ class PullWorld(World):
             intent_id=value['intent_id'], thread_id=value['thread_id'], state=code,
             message_id=result.get('message_id', ''), provider_id='provider-id' if code == 'accepted' else '')
         receipt.update({'code': code} if code == 'send_limit' else result)
+        if code == 'accepted':
+            receipt['thread_expires_ms'] = self.now + 90 * 86400000
         response = self.response(path, h, value, dict(v=1, request_id=value['op_id'], **receipt), status)
         return self.change(*response)
 
@@ -133,6 +135,65 @@ def test_all_bindings_and_immutable_intent_precede_send(out):
     assert prepare(out) == out.outbound.status(result['intent_id'])
     with out.store._read() as db:
         assert db.execute('SELECT payload FROM mail_outbound_intents').fetchone()[0] is None
+
+
+def test_send_receipt_replaces_prepare_expiry_in_all_local_rows(out):
+    first = prepare(out)
+    with out.store._read() as db:
+        prepared = db.execute('SELECT expires FROM mail_outbound_intents').fetchone()[0]
+    out.kit.now += 1234
+    assert out.outbound.send(first['intent_id'])['state'] == 'accepted'
+    expected = out.kit.now + 90 * 86400000
+    with out.store._read() as db:
+        intent = db.execute('SELECT expires FROM mail_outbound_intents').fetchone()[0]
+        bound = db.execute('SELECT expires_at FROM thread_bindings').fetchone()[0]
+        thread = db.execute('SELECT thread_expires_ms,dedupe_until_ms FROM mail_pull_threads').fetchone()
+    assert intent != prepared
+    assert intent * 1000 == bound * 1000 == thread[0] == expected
+    assert thread[1] == expected + 30 * 86400000
+    with out.store._tx() as db:
+        with pytest.raises(sqlite3.IntegrityError, match='expiry requires acceptance'):
+            db.execute('UPDATE mail_outbound_intents SET expires=expires+1')
+
+
+def test_v1_intent_migration_preserves_payload_and_correlation_guards(out):
+    first = prepare(out)
+    # Reconstruct the actual v1 trigger on a populated store, then reopen it.
+    with out.store._tx() as db:
+        db.execute('DROP TRIGGER mail_outbound_expiry')
+        db.execute('DROP TRIGGER mail_outbound_immutable')
+        db.execute('''CREATE TRIGGER mail_outbound_immutable BEFORE UPDATE OF
+            intent_id,request_key,request_digest,project_id,session_id,install,generation,
+            flow,epoch,thread_id,thread_hash,question_revision,digest,created,expires ON mail_outbound_intents
+            BEGIN SELECT RAISE(ABORT,'immutable outbound correlation'); END''')
+        db.execute('UPDATE mail_outbound_version SET version=1')
+    reopened = out.kit.outbound()
+    with out.store._tx() as db:
+        assert db.execute('SELECT version FROM mail_outbound_version').fetchone()[0] == 2
+        for statement in ("UPDATE mail_outbound_intents SET session_id='other'",
+                          "UPDATE mail_outbound_intents SET payload=x'01'",
+                          'UPDATE mail_outbound_intents SET expires=expires+1'):
+            with pytest.raises(sqlite3.IntegrityError):
+                db.execute(statement)
+    out.kit.now += 1234
+    assert reopened.send(first['intent_id'])['state'] == 'accepted'
+
+
+def test_receipt_and_expiry_updates_roll_back_together(out):
+    first = prepare(out)
+    with out.store._tx() as db:
+        before = tuple(db.execute('SELECT expires_at FROM thread_bindings').fetchone())
+        db.execute('''CREATE TRIGGER test_receipt_failure BEFORE UPDATE OF expires_at
+            ON thread_bindings BEGIN SELECT RAISE(ABORT,'test receipt failure'); END''')
+    out.kit.now += 1234
+    with pytest.raises(MailStoreError, match='IntegrityError') as failure:
+        out.outbound.send(first['intent_id'])
+    assert isinstance(failure.value.__cause__, sqlite3.IntegrityError)
+    assert str(failure.value.__cause__) == 'test receipt failure'
+    with out.store._read() as db:
+        assert tuple(db.execute('SELECT expires_at FROM thread_bindings').fetchone()) == before
+        intent = db.execute('SELECT state,expires,message_id FROM mail_outbound_intents').fetchone()
+        assert tuple(intent) == ('sending', before[0], '')
 
 
 @pytest.mark.parametrize('field', ['to', 'recipient', 'cc', 'bcc', 'from', 'reply_to', 'headers',

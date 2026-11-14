@@ -185,11 +185,14 @@ def verify_pull_response(response: tuple[int, Mapping[str, str], bytes], *, cand
             # Sections 4/7: accepted requires provider evidence; a signed 409
             # receipt is reconciliation metadata, never send acceptance.
             # Only revoked may also be a common error before any intent exists.
-            _need(value.keys() == _RECEIPT_FIELDS | {'v', 'code', 'request_id'}
+            expiry_fields = {'thread_expires_ms'} if status == 200 else set()
+            _need(value.keys() == _RECEIPT_FIELDS | {'v', 'code', 'request_id'} | expiry_fields
                   and isinstance(value['state'], str)
                   and value['state'] in ({'accepted'} if status == 200 else _RECEIPT_STATES)
                   and value['code'] == value['state'] and request is not None)
             assert request is not None
+            if status == 200:
+                _need(_integer(value['thread_expires_ms'], 1, 2**53 - 1 - 30 * 86400000))
             _need(all(_match(ID, value[k]) and value[k] == request.get(k) for k in ('intent_id', 'thread_id')))
             mid, provider = value['message_id'], value['provider_id']
             _need(isinstance(mid, str) and mid.isascii() and len(mid) <= 8192 and _MID.fullmatch(mid))
