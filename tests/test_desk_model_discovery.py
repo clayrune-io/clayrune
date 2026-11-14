@@ -304,3 +304,17 @@ def test_finite_scene_quotes_cannot_overflow_into_infinite_total(setup, monkeypa
         'structuredContent': {'items': [hf_row()]} if tool == 'models_explore' else {'cost': {'credits': 1e308}}})
     with pytest.raises(eng.EngineError, match='total quote'):
         quotes.quote('higgsfield_mcp', {'owner': {'id': 'test'}, 'model_id': 'new_video'})
+
+
+def test_curated_resolutions_survive_a_catalogue_that_lists_none(setup, monkeypatch):
+    # Google lists no resolutions; the server refuses a Gemini image request without
+    # one of the curated values, so the merge must not blank them (2026-11-14).
+    monkeypatch.setitem(catalogue.ADAPTERS, 'google', lambda creds, **kw: [
+        common.project('gemini-3.1-flash-image', 'image', 'x'),
+        common.project('gemini-3.1-flash-lite-image', 'image', 'x'),
+        common.project('gemini-new-image', 'image', 'x')])
+    out = catalogue.discover('google', kind='image')
+    by_id = {m['model_id']: m for m in out['models']}
+    assert by_id['gemini-3.1-flash-image']['resolutions'] == ['1K', '2K', '4K']
+    assert by_id['gemini-3.1-flash-lite-image']['resolutions'] == ['1K']
+    assert by_id['gemini-new-image']['resolutions'] == []      # not curated: nothing to invent

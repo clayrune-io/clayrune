@@ -89,6 +89,11 @@ def discover(engine_id: str, *, kind: str, query: str = '', project_id: str | No
             # Curated data supplies labels and rendering contracts, never an
             # invented discovery price. Catalogue membership comes from vendor.
             model = {**known.public(), **model, 'label': known.label}
+            # A vendor list that names no resolutions must not erase the curated ones:
+            # Google's catalogue never lists them, and the server refuses a Gemini
+            # image request without one of the curated values.
+            if not model.get('resolutions'):
+                model['resolutions'] = list(known.resolutions)
         model['render_supported'] = known is not None
         model['quote_supported'] = engine_id == 'higgsfield_mcp'
         models.append(model)

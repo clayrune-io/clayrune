@@ -65,7 +65,7 @@ try {
       });
     });
     await page.waitForSelector('[data-eng-reason]');
-    check(await page.locator('[data-eng-model] option').allTextContents().then(x => x.join() === '<New model>'), `${width}: discovered model replaces curated list and label is escaped`);
+    check(await page.locator('[data-eng-model] option').allTextContents().then(x => x.join() === '<New model> · price only'), `${width}: discovered model replaces curated list, label is escaped and marked price only`);
     check(await page.locator('[data-eng-usd]').textContent().then(x => x.includes('42')), `${width}: unregistered model displays a free quote`);
     check(await page.locator('[data-eng-render-btn]').isDisabled(), `${width}: read-only discovery does not enable unsupported generation`);
     check(await page.locator('[data-scene-render-one]').isDisabled(), `${width}: discovery-only model cannot submit a scene subset`);

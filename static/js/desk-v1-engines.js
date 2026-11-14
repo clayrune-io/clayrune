@@ -30,6 +30,8 @@ import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
 import { submissionHeld, renderNeedsPolling, recoveryActionHTML, bindRenderRecovery } from './desk-v1-render-recovery.js';
 import { wireSceneRenderPanel, sceneResultNote } from './desk-v1-render-scenes.js';
 import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } from './desk-v1-model-discovery.js';
+import { pickResolution, resolutionPickerHTML } from './desk-v1-engine-resolution.js';
+import { modelMark, disabledReason, reasonHTML } from './desk-v1-engine-readiness.js';
 
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -220,6 +222,7 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
     const models = engine.models.filter((m) => m.kind === kind);
     const model = models.find((m) => m.model_id === st.modelId) || models[0];
     st.modelId = model.model_id;
+    if (kind === 'image') st.resolution = pickResolution(model, st.resolution);
     return { usable, engine, model, models };
   }
 
@@ -229,9 +232,10 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
       <label>Engine <select class="desk-v1-cap-select" data-eng-engine>${p.usable.map((e) =>
         `<option value="${esc(e.id)}"${e.id === p.engine.id ? ' selected' : ''}>${esc(e.label)}${e.connected && e.connected.ready ? '' : ' (not connected)'}</option>`).join('')}</select></label>
       <label>Model <select class="desk-v1-cap-select" data-eng-model>${p.models.map((m) =>
-        `<option value="${esc(m.model_id)}"${m.model_id === p.model.model_id ? ' selected' : ''}>${esc(m.label)}${m.status === 'preview' ? ' · preview' : ''}</option>`).join('')}</select></label>
+        `<option value="${esc(m.model_id)}"${m.model_id === p.model.model_id ? ' selected' : ''}>${esc(m.label)}${m.status === 'preview' ? ' · preview' : ''}${esc(modelMark(m))}</option>`).join('')}</select></label>
       <label>Shape <select class="desk-v1-cap-select" data-eng-ratio>${ratios.map((r) =>
         `<option value="${esc(r)}"${r === st.ratio ? ' selected' : ''}>${esc(r)}</option>`).join('')}</select></label>
+      ${kind === 'image' ? resolutionPickerHTML(p.model, st.resolution, esc) : ''}
     </div>${discoveryNote(p.engine, esc)}`;
   }
 
@@ -330,6 +334,8 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
         ${conn.ready ? '' : `<div class="desk-v1-engine-refusal" data-eng-not-connected>${window.VaultUnlockUI && window.VaultUnlockUI.locked(conn) ? _errorHTML({ ...conn, message: conn.reason || 'Your vault is locked.' }) : esc(p.engine.label) + ' is not connected yet. Open Connections in the Desk header to set it up.'}</div>`}
         ${_estimateHTML(st, p.engine)}
         ${st.error ? `<div class="desk-v1-engine-refusal" data-eng-error>${_errorHTML(st.error)}</div>` : ''}
+        ${reasonHTML(canRender ? null : disabledReason(p, { busy: busy || submissionHeld(st.render) || st.acknowledging,
+          estimating: st.estimating, estimate: st.estimate, estimateError: st.estimateError }), esc)}
         <div class="desk-v1-engine-actions">
           <button type="button" class="btn-add" data-eng-render-btn${canRender ? '' : ' disabled'}>${busy ? 'Rendering…' : 'Render'}${st.estimate && st.estimate.estimate && !busy ? ` · ${esc(_fmt(p.engine, _amount(p.engine, st.estimate.estimate)))}` : ''}</button>
           <button type="button" class="btn-secondary" data-eng-reprice${busy || st.estimating ? ' disabled' : ''}>Price again</button>
@@ -533,6 +539,8 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
         ${conn.ready ? '' : `<div class="desk-v1-engine-refusal" data-eng-not-connected>${window.VaultUnlockUI && window.VaultUnlockUI.locked(conn) ? _errorHTML({ ...conn, message: conn.reason || 'Your vault is locked.' }) : esc(p.engine.label) + ' is not connected yet. Open Connections in the Desk header to set it up.'}</div>`}
         ${st.prompt.trim() ? _estimateHTML(st, p.engine) : '<div class="desk-v1-engine-est" data-eng-estimate data-state="none">Type a description to see the price.</div>'}
         ${st.error ? `<div class="desk-v1-engine-refusal" data-eng-error>${_errorHTML(st.error)}</div>` : ''}
+        ${reasonHTML(canGo ? null : disabledReason(p, { busy, estimating: st.estimating, estimate: st.estimate,
+          estimateError: st.estimateError, prompt: st.prompt }), esc)}
         <div class="desk-v1-engine-actions">
           <button type="button" class="btn-add" data-eng-render-btn${canGo ? '' : ' disabled'}>${busy ? 'Generating…' : 'Generate'}${st.estimate && st.estimate.estimate && !busy ? ` · ${esc(_fmt(p.engine, _amount(p.engine, st.estimate.estimate)))}` : ''}</button>
         </div>
@@ -549,6 +557,8 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
       host.querySelector('[data-eng-engine]').onchange = (ev) => { st.engineId = ev.target.value; st.modelId = null; st.estimate = null; paint(engines); estimate(engines); };
       host.querySelector('[data-eng-model]').onchange = (ev) => { st.modelId = ev.target.value; st.estimate = null; paint(engines); estimate(engines); };
       host.querySelector('[data-eng-ratio]').onchange = (ev) => { st.ratio = ev.target.value; st.estimate = null; paint(engines); estimate(engines); };
+      const resPick = host.querySelector('[data-eng-resolution]');
+      if (resPick) resPick.onchange = (ev) => { st.resolution = ev.target.value; st.estimate = null; paint(engines); estimate(engines); };
       host.querySelector('[data-eng-render-btn]').onclick = () => submit(engines);
       if (window.DeskV1LibraryRefs) window.DeskV1LibraryRefs.wire(host, st.refs, _refsOpts(p, st, (refs, what, it) => {
         if (what === 'add') window.DeskV1Kit.toast(it.provenance ? `Using “${it.title}”. A copy is saved in the library.` : `Using “${it.title}” from the library. The engine reads that file; nothing was copied.`);
@@ -558,6 +568,7 @@ import { studioModels, discoveryNote, discoveryPrice, discoveryBlocksRender } fr
 
     const body = (extra) => Object.assign({
       engine_id: st.engineId, model_id: st.modelId, kind: 'image', prompt: st.prompt.trim(), aspect_ratio: st.ratio,
+      resolution: st.resolution || undefined,
       project_id: opts.projectId || undefined,
       reference_images: st.refs.length && st.refsMax ? st.refs.map((r) => ({ path: r.path })) : undefined,
     }, extra || {});
