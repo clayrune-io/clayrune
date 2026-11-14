@@ -186,7 +186,16 @@ def test_resolve_shell_falls_back_to_powershell_when_no_bash_anywhere(monkeypatc
 
 
 def test_build_argv_uses_dash_c_for_bash():
-    assert aj.build_argv('bash', '/bin/bash', 'echo hi') == ['/bin/bash', '-c', 'echo hi']
+    assert aj.build_argv('bash', '/bin/bash', 'echo hi') ==         ['/bin/bash', '-o', 'pipefail', '-c', 'echo hi']
+
+
+def test_bash_job_exit_code_is_not_masked_by_a_pipe():
+    import shutil, subprocess
+    bash = aj.resolve_shell('bash')['path']
+    if not shutil.which(bash) and not __import__('os').path.exists(bash):
+        import pytest; pytest.skip('bash not available')
+    rc = subprocess.run(aj.build_argv('bash', bash, 'exit 3 | cat')).returncode
+    assert rc == 3
 
 
 def test_build_argv_uses_command_flag_for_powershell():

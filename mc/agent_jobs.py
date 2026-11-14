@@ -129,7 +129,12 @@ def build_argv(shell: str, path: str, command: str) -> List[str]:
     """argv for `shell` running `command` as a single statement -- replaces
     the old `shell=True` string invocation (which on Windows is always
     cmd.exe regardless of what the command was written for)."""
-    if shell in ('bash', 'sh'):
+    if shell == 'bash':
+        # pipefail: `pytest ... | tail -15` used to report the exit of `tail`
+        # (0), so a failing suite came back as a green job (2026-11-14, job
+        # 5bae3bee). The job's exit code must be the command's, not the pager's.
+        return [path, '-o', 'pipefail', '-c', command]
+    if shell == 'sh':
         return [path, '-c', command]
     if shell == 'powershell':
         return [path, '-NoProfile', '-Command', command]
