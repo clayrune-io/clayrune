@@ -47,6 +47,7 @@ from mc.agent_mail_owner_change import OwnerChange
 from mc.agent_mail_pull_client import PullClient
 from mc.agent_mail_pull_receiver import PullReceiver
 from mc.agent_mail_pull_schema import PullSchemaCorrupt, initialize as initialize_pull, validate as validate_pull
+from mc.agent_mail_service_review_schema import initialize as initialize_service_review
 from mc.agent_mail_service_client import HttpsTransport, ServiceClient
 from mc.agent_mail_service_manifest import ServiceKeyCandidate
 from mc.agent_mail_signup import Signup, SignupTransport
@@ -325,6 +326,9 @@ class MailFactory:
                 store = self.open_store(create=True)
                 assert store is not None
                 initialize_pull(store)
+                # The manifest rollback floor reviewed_service() reads; without it every
+                # real provisioning run failed closed with service_unavailable.
+                initialize_service_review(store)
                 self._check_seal(store)
                 return store
             except Exception as exc:

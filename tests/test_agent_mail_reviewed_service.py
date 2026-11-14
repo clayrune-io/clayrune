@@ -184,7 +184,10 @@ def test_manifest_for_other_origin_refused(w):
 
 
 def test_missing_floor_table_fails_closed(tmp_path):
+    # Bootstrap now installs the floor (2026-11-14); drop it to keep the fail-closed check.
     w = World(tmp_path, floor=False)
+    with w.store._tx() as db:
+        db.execute('DROP TABLE mail_enrollment_manifests')
     with pytest.raises(EnrollmentRefused, match='service_unavailable'):
         w.call()
     assert w.origin.urls  # fetched, then refused at the floor: nothing was returned or cached

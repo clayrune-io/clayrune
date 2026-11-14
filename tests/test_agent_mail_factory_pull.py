@@ -98,6 +98,19 @@ def test_bootstrap_creates_exact_extension_without_identity_or_configuration(tmp
     assert factory(tmp_path).require_pull_store().path == store.path
 
 
+def test_bootstrap_installs_service_review_floor_reviewed_service_reads(tmp_path):
+    # Regression 2026-11-14: bootstrap created only the pull schema, so the real
+    # provisioning run's reviewed_service() hit a missing manifest floor table
+    # and failed closed with service_unavailable. Tests had stubbed that seam.
+    from mc.agent_mail_service_review_schema import validate as validate_review
+    f = factory(tmp_path)
+    store = f.bootstrap(authorize=lambda: True)
+    validate_review(store)
+    with store._read() as db:
+        assert db.execute("SELECT 1 FROM sqlite_master WHERE name='mail_enrollment_manifests'").fetchone()
+    validate_review(f.bootstrap(authorize=lambda: True))
+
+
 def test_existing_legacy_store_requires_explicit_additive_bootstrap(tmp_path):
     f = factory(tmp_path)
     store = f.open_store(create=True)
