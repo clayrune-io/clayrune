@@ -378,6 +378,21 @@ _ENGINES: list[EngineDescriptor] = [
             VAULT_OPENAI, 'OpenAI API key',
             'Create the key on platform.openai.com; a ChatGPT or Codex plan does not include API use.',
             'https://platform.openai.com/api-keys')),
+    # Gemini on the web, driven in the browser pane on the user's own plan (Ron 2026-11-14).
+    # No vault entry and no price: the connection is a pane open on a signed-in profile.
+    # Its selectors live in mc/desk_gemini_web_selectors.py, its flow in mc/desk_gemini_web.py.
+    EngineDescriptor(
+        id='gemini_web', label='Gemini (your plan, in the browser pane)',
+        auth={'kind': 'browser_pane', 'vault_entry': ''},
+        job_model='sync', output_ttl_hours=0, estimate='plan', prices_read='2026-11-14',
+        models=[ModelDescriptor(
+            model_id='hydrogen', kind='image', label='Hydrogen (your Gemini plan)',
+            inputs={'text': True, 'first_frame': False, 'last_frame': False,
+                    'reference_images_max': 4, 'reference_kinds': ['object']},
+            aspect_ratios=list(_DESK_RATIOS),
+            price={'unit': 'image', 'usd': {}, 'read': '2026-11-14'},
+            vendor={'adapter': 'gemini_web'})],
+        credential={'vault_entry': '', 'kind': 'pane', 'url': 'https://gemini.google.com/app'}),
 ]
 
 ENGINES: dict[str, EngineDescriptor] = {e.id: e for e in _ENGINES}
@@ -583,6 +598,9 @@ def connection(engine_id: str, project_id: str | None = None) -> dict:
     refusal = _desk_connections.refusal(engine_id)
     if refusal:
         return {'ready': False, 'vault_entry': name, 'exists': True, **refusal}
+    if eng.auth['kind'] == 'browser_pane':
+        from mc import desk_gemini_web
+        return desk_gemini_web.connection_state()
     if eng.auth['kind'] == 'oauth':
         st = _oauth.status(eng.auth['service'])
         return {'ready': st['state'] == 'connected', 'vault_entry': name,
@@ -624,6 +642,12 @@ def _creds(engine_id: str, project_id: str | None, unattended: bool) -> _Creds:
     status = connection(engine_id, project_id)
     if not status['ready']:
         raise NotConnected(engine_id, status['reason'], name)
+    if eng.auth['kind'] == 'browser_pane':
+        # Drives the person's own signed-in pane: only a person at the Desk may start that.
+        if unattended:
+            raise NotConnected(engine_id, 'driving a browser pane needs a person at the Desk; '
+                                          'an unattended run cannot', name)
+        return _Creds(secret='')
     if eng.auth['kind'] == 'oauth':
         try:
             token = _oauth.access_token(eng.auth['service'], consumer='desk_engines',
@@ -1003,6 +1027,7 @@ def _mcp_data(res: dict) -> dict:
 
 
 from mc.desk_higgsfield_mcp import HiggsfieldMcpAdapter
+from mc.desk_gemini_web import GeminiWebAdapter
 
 
 class VeoAdapter:
@@ -1207,6 +1232,7 @@ def _multipart(fields: dict, files: list) -> tuple[bytes, str]:
 ADAPTERS: dict[str, Any] = {
     'higgsfield': HiggsfieldAdapter(),
     'higgsfield_mcp': HiggsfieldMcpAdapter(),
+    'gemini_web': GeminiWebAdapter(),
     'veo': VeoAdapter(),
     'gemini_image': GeminiImageAdapter(),
     'openai_image': OpenAIImageAdapter(),

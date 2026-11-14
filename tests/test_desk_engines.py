@@ -225,8 +225,9 @@ def test_engines_listed_with_connected_status_and_no_secret(client):
     r = client.get('/api/desk/engines')
     assert r.status_code == 200
     ids = {e['id']: e for e in r.get_json()['engines']}
-    assert set(ids) == {'higgsfield', 'higgsfield_mcp', 'google', 'openai'}
-    keyed = {k: v for k, v in ids.items() if k != 'higgsfield_mcp'}
+    assert set(ids) == {'higgsfield', 'higgsfield_mcp', 'google', 'openai', 'gemini_web'}
+    # gemini_web is a pane, not a vault entry: tests/test_desk_gemini_web.py pins its connection.
+    keyed = {k: v for k, v in ids.items() if k not in ('higgsfield_mcp', 'gemini_web')}
     assert all(e['connected'] == {'ready': True, 'exists': True, 'vault_entry': e['auth']['vault_entry'], 'reason': None}
                for e in keyed.values())
     assert {e['auth']['vault_entry'] for e in keyed.values()} == {'higgsfield', 'gemini-api', 'openai-api'}
