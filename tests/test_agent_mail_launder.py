@@ -208,7 +208,8 @@ def test_model_flags_hold_without_output_leak(store, model, key, reason):
 
 @pytest.mark.parametrize('raw', [
     'garbage ' + PAYLOAD, '{}', 'null', '[]', 'true', '"' + PAYLOAD + '"',
-    '```json\n' + digest() + '\n```', 'preface ' + digest(), digest() + ' trailing',
+    'preface ```json\n' + digest() + '\n```', '```json\n```\n' + digest() + '\n```\n```',
+    'preface ' + digest(), digest() + ' trailing',
     digest().replace('false', '0', 1), digest().replace('false', '"false"', 1),
     digest().replace('"reply_text":', '"reply_text": "duplicate", "reply_text":', 1),
     digest(reply_text=None), digest(segments=[]), digest(segments='bad'),
@@ -499,3 +500,41 @@ def test_legacy_digest_owner_neutral_and_errors_sanitized(model):
     model.error = RuntimeError(PAYLOAD)
     out = mail_launder.launder_mail_digest([{'body': FRESH}], query='tag')
     assert out['ok'] is False and PAYLOAD not in json.dumps(out)
+
+
+GMAIL_QUOTE = ('On Sat, Nov 14, 2026 at 11:14 AM Dave <agents@example.test> wrote:\n'
+               '> Please reply to send your answer.\n>')
+
+
+def _reply_and_quote(reply, quote, *, tail=''):
+    return digest(reply, segments=[{'kind': 'reply', 'text': reply},
+                                   {'kind': 'quote', 'text': quote + tail}])
+
+
+def test_gmail_narrow_nbsp_quote_line_survives_model_retyping(model):
+    """Gmail puts U+202F before AM; the model retypes it as a space (seen live)."""
+    reply = 'Second attempt\n\n'
+    model.text = _reply_and_quote(reply, GMAIL_QUOTE.replace(' ', ' '))
+    result = extract_reply(reply + GMAIL_QUOTE, kind='note')
+    assert result.reason == '' and result.envelope['reply_text'] == reply
+    assert ' ' not in model.calls[0]['stdin_text']
+
+
+def test_one_markdown_fence_and_trailing_newline_are_tolerated(model):
+    reply = 'Second attempt\n\n'
+    quote = GMAIL_QUOTE.replace(' ', ' ')
+    model.text = '```json\n' + _reply_and_quote(reply, quote, tail='\n') + '\n```'
+    result = extract_reply(reply + GMAIL_QUOTE, kind='note')
+    assert result.reason == '' and result.envelope['reply_text'] == reply
+
+
+def test_coverage_still_strict_on_inner_content(model):
+    reply = 'Second attempt\n\n'
+    model.text = _reply_and_quote(reply, GMAIL_QUOTE.replace('answer', 'answr'))
+    assert extract_reply(reply + GMAIL_QUOTE, kind='note').reason == 'extraction_mismatch'
+
+
+def test_prompt_scopes_model_instruction_flag_to_the_reply():
+    from mc.agent_mail_extract import _PROMPT
+    assert 'Screen the REPLY segment' in _PROMPT
+    assert 'never sets instruction_like' in _PROMPT
