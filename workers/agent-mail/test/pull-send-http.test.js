@@ -107,7 +107,8 @@ test('valid send signs frozen owner-only receipt after nonce/op/accounting and p
   const f = await fixture(t, { send: async (mail, f) => {
     assert.equal(one(f).state, 'sending'); assert.equal(rows(f, 'pull_nonces').length, 1);
     assert.equal(rows(f, 'pull_operations').length, 1); assert.equal(rows(f, 'pull_budgets').length, 3);
-    assert.deepEqual(mail, { from: 'agents@mail.example.net', to: 'Owner+tag@example.com', replyTo: `${LOCAL}+${id(3)}@mail.example.net`,
+    assert.deepEqual(mail, { from: { email: 'agents@mail.example.net', name: 'Clayrune agent' }, to: 'Owner+tag@example.com',
+      replyTo: { email: `${LOCAL}+${id(3)}@mail.example.net`, name: 'Clayrune agent' },
       subject: value().subject, text: value().body, headers: { 'Auto-Submitted': 'auto-generated', 'X-Clayrune-Agent-Mail': '1' } });
     return { messageId: ' opaque receipt ' };
   } });

@@ -126,7 +126,8 @@ def test_all_bindings_and_immutable_intent_precede_send(out):
             assert bound['native_id'] == 'native-original'
         assert value['reply_token'].encode() not in out.store.path.read_bytes()
         assert request()['body'].encode() not in out.store.path.read_bytes()
-        assert set(value) == {'op_id', 'intent_id', 'thread_id', 'reply_token', 'subject', 'body', 'kind'}
+        assert set(value) == {'op_id', 'intent_id', 'thread_id', 'reply_token', 'subject', 'body', 'kind',
+                              'display_name'}
         assert OWNER not in raw.decode()  # Worker derives sole verified owner
     out.recording.hook = inspect
     assert out.outbound.send(result['intent_id'])['state'] == 'accepted'
@@ -441,7 +442,7 @@ console.log(JSON.stringify({status:response.status,headers:Object.fromEntries(re
     result = json.loads(observed[0].stdout)
     assert len(result['sent']) == len(result['threads']) == len(result['intents']) == 1
     assert result['sent'][0]['to'] == OWNER
-    assert result['sent'][0]['replyTo'].startswith('m' + 'a' * 29 + '+')
+    assert result['sent'][0]['replyTo']['email'].startswith('m' + 'a' * 29 + '+')
     assert 'raw' not in result['sent'][0] and 'Message-ID' not in result['sent'][0]['headers']
     assert result['intents'][0]['state'] == response['state'] == 'accepted'
 
