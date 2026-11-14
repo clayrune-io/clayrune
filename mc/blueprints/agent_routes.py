@@ -6096,6 +6096,29 @@ def _session_owned_by(session, my_proc):
     return session.get('proc') is my_proc
 
 
+def _completion_owned_by(session, my_proc):
+    """Ownership for a reader's TERMINAL path: status flip, completion row,
+    merge-back and worktree removal. Stricter than `_session_owned_by`.
+
+    The MC-1002 respawns (auto-fresh rollover, follow-up respawn-B) kill the
+    old proc BEFORE the new one is assigned to session['proc'], and unlike
+    `agent_interrupt` they do not set `_interrupting`. So the killed proc's
+    reader still passed the identity check, marked the session terminal and
+    ran `_log_agent_completion` -- which removed the session's worktree just
+    before the respawn launched into it (WinError 267 on the new Popen,
+    2026-11-14). While the handoff window is open, the proc still in
+    session['proc'] is by construction the one being replaced: every site
+    clears `_respawn_in_flight` under the lock before the new reader starts.
+    The window is bounded (`_RESPAWN_WINDOW_MAX_S`), so a path that forgets
+    to clear it cannot suppress completion forever.
+
+    Not used for the stream loop's own `break` check: a reader must never
+    stop draining stdout because of this flag."""
+    if not _session_owned_by(session, my_proc):
+        return False
+    return not _respawn_window_open(session, _time.time())
+
+
 def _note_api_retry(session, line):
     """A Claude `system/api_retry` line: the CLI is alive and waiting to retry
     (with CLAUDE_CODE_RETRY_WATCHDOG=1, out a 429 until the limit resets). Goes
@@ -6366,7 +6389,7 @@ def _read_agent_stream(proc, session):
             # Single-emit gate: only update session status if we still own it.
             # Covers normal replacement (new proc assigned) AND in-flight interrupt
             # (kill issued, new proc not yet spawned — `_interrupting` flag set).
-            if not _credits_replayed and _session_owned_by(session, my_proc):
+            if not _credits_replayed and _completion_owned_by(session, my_proc):
                 # Never overwrite 'stopped' — that's a user-initiated terminal state
                 if session['status'] == 'running':
                     if session.get('waiting_for_question'):
@@ -6498,7 +6521,7 @@ def _read_agent_stream_b(proc, session):
             # Single-emit gate (see _session_owned_by). Skip when interrupt
             # is in flight — the new reader will set process_alive=True/status
             # legitimately and there's no point flipping it False between.
-            if not _credits_replayed and _session_owned_by(session, my_proc):
+            if not _credits_replayed and _completion_owned_by(session, my_proc):
                 session['process_alive'] = False
                 _gone = _bg_tasks.drain(session)
                 if _gone:
@@ -6538,7 +6561,7 @@ def _read_agent_stream_b(proc, session):
 
         # Auto-recover failed resume: if we tried to resume a prior session and
         # it died quickly without producing meaningful output, restart fresh.
-        if (not _credits_replayed and _session_owned_by(session, my_proc)
+        if (not _credits_replayed and _completion_owned_by(session, my_proc)
                 and session.get('_resume_id')
                 and session.get('status') == 'error'
                 and not session.get('_resume_recovery_attempted')

@@ -408,3 +408,22 @@ def test_route_summary_drops_unregistered_rows_keeps_count(repo, client):
     d = client.get('/api/worktrees/preserved?summary=1&refresh=1').get_json()
     [p] = d['projects']
     assert 'unregistered' not in p and p['unregistered_count'] == 1
+
+
+def test_vanished_worktree_dir_marks_partial_not_failed(repo, project, monkeypatch):
+    """A worktree whose dir vanishes mid-survey made subprocess raise OSError
+    (WinError 267 on Windows) out of git_run and failed the WHOLE survey
+    (2026-11-14). It must now fail only that row and mark the survey partial."""
+    _add_wt(repo, 'a1a1a1a1a1a1')
+    gone = _add_wt(repo, 'b2b2b2b2b2b2')
+    real = project_sync.git_run
+
+    def _raising(cwd, args, **kw):
+        if Path(cwd) == gone:
+            raise NotADirectoryError(267, 'The directory name is invalid', str(cwd))
+        return real(cwd, args, **kw)
+
+    monkeypatch.setattr(project_sync, 'git_run', _raising)
+    s = pw.survey_project(project)
+    assert s['partial'] is True
+    assert 'b2b2b2b2b2b2' in _by_sid(s)

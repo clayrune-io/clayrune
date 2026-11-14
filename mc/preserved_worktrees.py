@@ -77,7 +77,15 @@ def _flight_lock(key: tuple) -> threading.Lock:
 
 
 def _git(cwd: str, args: list[str]) -> tuple[bool, str]:
-    return _sync.git_run(cwd, args, timeout=GIT_TIMEOUT)
+    # A worktree removed between `worktree list` and this call (or one whose dir
+    # vanished but is still registered) makes subprocess raise OSError -- on
+    # Windows WinError 267 -- which git_run does not catch. Uncaught, that one
+    # row failed the WHOLE survey (2026-11-14). Fail this call only; the caller
+    # already treats `not ok` as "unknown" and marks the survey partial.
+    try:
+        return _sync.git_run(cwd, args, timeout=GIT_TIMEOUT)
+    except OSError as e:
+        return False, f'git could not run in {cwd}: {e}'
 
 
 def _porcelain_worktrees(base: str) -> dict[str, dict]:
