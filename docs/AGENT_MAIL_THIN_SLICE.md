@@ -112,13 +112,15 @@ in lines of source / test.
 | **W3** | `mc/blueprints/agent_mail_routes.py` (edit) | Register U3's blueprint beside the existing child blueprints (`:29-33`). About 3 lines. | U3 merged | Yes (merge after U3) | 3 / 20 |
 | **U7** | `tests/test_agent_mail_slice_e2e.py` (new) | Local interop proof, no network. Runs the real `worker.js` + `PullSocketMailbox` under Miniflare (already a devDependency) with D1 and all migrations, inline `node --input-type=module -e` as existing tests do. Provisions through U2's functions. Then: `PullClient` gets a ticket, opens the socket, gets one event injected through `email()` with a fixture message, custodies it and acks (D1 event retired). `Outbound.prepare/send` reaches `/v1/pull/send` against a fake `MAIL_SEND` that records the message: correct `to`, `Reply-To`, no other recipient. Launder and wake run with a stubbed extractor and a fake follow-up, asserting the exact `session_id`. | U1, U2 (W1 for the factory path) | After U1+U2 | 300 |
 
-**U8 partial branch (2026-11-13):** accepted `/send` receipts return the Worker
+**U8 branch candidate (2026-11-13):** accepted `/send` receipts return the Worker
 deadline and the install persists it to all three local rows atomically.
-The expiry xfail and test-side D1 expiry edits are removed. The ack-retirement
-xfail remains: suppressing wake status also loses client paging when a page
-contains only held/leased events (no offer means no ack/hold status). Dave
-must select a paging mechanism before Bug 2 proceeds; the client request-id
-guard stays unchanged. This is an offline proof, not a deployment claim.
+Both strict xfails and the test-side D1 expiry workaround are removed. Dave's
+option 2 replaces unsolicited wake status with a signed empty hint; the client
+owns each resume id and coalesces hints while pages finish. The ack-retirement
+test places ten held/leased rows ahead of the eligible reply, waits for the
+initial idle scan, then proves one email wake reaches page two, erases the
+D1 body, records its receipt and settles the local ack outbox. The client request-id guard stays
+unchanged. This is an offline proof, not a deployment claim.
 
 **Schedule (3–4 builders, under a day):**
 

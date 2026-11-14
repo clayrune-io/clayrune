@@ -328,9 +328,12 @@ class PullClient:
     def _verified(self, raw: bytes, pin: ServiceKeyCandidate) -> tuple[dict[str, Any], dict[str, Any]]:
         _need(len(raw) <= FRAME_BYTES, 'frame_limit')
         f = _object(raw)
+        _need(isinstance(f.get('type'), str) and f['type'] in
+              {'hello', 'event', 'hold', 'ack_committed', 'status', 'wake', 'reauth_required', 'error'},
+              'protocol_failure')
+        _need('signature' in f, 'protocol_failure')
         _need(f.keys() == _FRAME and type(f['v']) is int and f['v'] == 1 and
-              f['type'] in {'hello', 'event', 'hold', 'ack_committed', 'status', 'reauth_required', 'error'}
-              and _match(I, f['frame_id']) and _match(H, f['payload_digest'])
+              _match(I, f['frame_id']) and _match(H, f['payload_digest'])
               and all(_integer(f[k], 1, 10**15 - 1) for k in ('generation', 'owner_generation', 'epoch'))
               and _integer(f['issued_ms']), 'frame_unverified')
         _need((f['install_id'], f['generation'], f['owner_generation']) ==
@@ -350,7 +353,7 @@ class PullClient:
                     f['type'], pin.key_id, self.install_id, self._row['generation'], self._row['owner_generation'],
                     f['epoch'], f['frame_id'], f['issued_ms'], f['payload_digest']))
         except InvalidSignature:
-            raise IngressRefused('frame_unverified') from None
+            raise IngressRefused('protocol_failure' if f['type'] == 'wake' else 'frame_unverified') from None
         return f, _object(payload)
 
     def _current(self, db: Any) -> None:
@@ -412,7 +415,10 @@ class PullClient:
         return request
 
     def _resume(self, after: int) -> None:
-        self._send('resume', dict(after_seq=after, limit=10, available_bytes=WINDOW))
+        _need(self._resume_request is None, 'protocol_failure')
+        if after == 0:
+            self._wake_pending = False
+        self._resume_request = self._send('resume', dict(after_seq=after, limit=10, available_bytes=WINDOW))
 
     def _replay(self) -> None:
         with self.store._read() as db:
@@ -519,6 +525,11 @@ class PullClient:
             self._committed(p)
         elif kind == 'hold':
             self._receiver.receive(raw)
+        elif kind == 'wake':
+            _need(not p, 'protocol_failure')
+            # Hints never carry custody or paging state. Coalesce while a page
+            # is in flight; finish that scan before starting again from zero.
+            self._wake_pending = True
         elif kind == 'status':
             _need(p.keys() == {'request_id', 'next_seq', 'scan_complete', 'pending_count', 'oldest_expires_ms'}
                   and _match(I, p['request_id']) and p['request_id'] in self._requests
@@ -530,6 +541,8 @@ class PullClient:
                     WHERE install_id=? AND epoch=?''',
                     (p['next_seq'], int(p['scan_complete']), self._now(), self.install_id, self._epoch))
             self._page = None if p['scan_complete'] else p['next_seq']
+            if p['request_id'] == self._resume_request:
+                self._resume_request = None
         elif kind == 'reauth_required':
             _need(p.keys() == {'reason', 'close_at_ms'} and p['reason'] in {'reauth_due', 'service_key_changed'}
                   and _integer(p['close_at_ms']) and p['close_at_ms'] <= self._reauth, 'protocol_failure')
@@ -577,6 +590,8 @@ class PullClient:
         self._fragmented = False
         self._connected_at = None
         self._page: int | None = None
+        self._resume_request: str | None = None
+        self._wake_pending = False
         self._row = {}
         pin = self._authority()
         if not self._budget(True):
@@ -624,8 +639,9 @@ class PullClient:
                         raise IngressRefused('frame_unverified') from None
                 if self._epoch:
                     self._replay()
-                    if self._page is not None and self._budget(True):
-                        cursor, self._page = self._page, None
+                    if self._resume_request is None and self._budget(True) and (
+                            self._page is not None or self._wake_pending):
+                        cursor, self._page = self._page if self._page is not None else 0, None
                         self._resume(cursor)
         except (IngressRefused, EnrollmentRefused, _Failure) as exc:
             reason = exc.reason if isinstance(exc, _Failure) else str(exc)

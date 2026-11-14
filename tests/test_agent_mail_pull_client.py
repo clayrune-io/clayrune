@@ -426,6 +426,78 @@ def test_signed_status_pages_and_initial_scan_barrier(w):
         assert peer.incoming.empty()  # No endless idle resume polling.
 
 
+def page_status(w, request, *, next_seq=0, complete=True):
+    return w.control('status', dict(request_id=request['request_id'], next_seq=next_seq,
+        scan_complete=complete, pending_count=0, oldest_expires_ms=None))
+
+
+def test_wake_starts_own_resume_and_duplicate_hints_coalesce_mid_page(w):
+    with running(w) as (client, peer):
+        first = connect(w, peer)
+        peer.send(page_status(w, first))
+        eventually(lambda: w.rows('mail_pull_connections')[0]['scan_complete'] == 1)
+        raw = w.control('wake', {})
+        peer.send(raw)
+        resumed = peer.take('resume')
+        assert resumed['request_id'] != first['request_id']
+        assert resumed['payload']['after_seq'] == 0
+        # Exact wire replay and distinct hints cannot start concurrent resumes.
+        peer.send(raw)
+        for _ in range(4):
+            peer.send(w.control('wake', {}))
+        eventually(lambda: len(client._seen) == 7)  # hello, status, five unique hints
+        assert peer.incoming.empty()
+        # Finish the current scan, including an empty/skipped first page.
+        peer.send(page_status(w, resumed, next_seq=10, complete=False))
+        page2 = peer.take('resume')
+        assert page2['payload']['after_seq'] == 10
+        assert peer.incoming.empty()
+        peer.send(offered(w))
+        ack = peer.take('custody_ack')
+        peer.send(committed(w, ack))
+        peer.send(page_status(w, page2, next_seq=11))
+        # All hints that arrived mid-scan become one restart from zero.
+        coalesced = peer.take('resume')
+        assert coalesced['payload']['after_seq'] == 0
+        peer.send(page_status(w, coalesced, next_seq=11))
+        eventually(lambda: client._resume_request is None)
+        assert peer.incoming.empty() and len(w.rows('events')) == 1
+
+
+def test_wake_mid_initial_page_preserves_cursor_until_scan_finishes(w):
+    with running(w) as (client, peer):
+        first = connect(w, peer)
+        peer.send(w.control('wake', {}))
+        peer.send(page_status(w, first, next_seq=10, complete=False))
+        second = peer.take('resume')
+        assert second['payload']['after_seq'] == 10
+        peer.send(page_status(w, second, next_seq=20))
+        assert peer.take('resume')['payload']['after_seq'] == 0
+        assert peer.incoming.empty()
+
+
+@pytest.mark.parametrize('case', ['unknown', 'unsigned', 'forged', 'payload', 'unsolicited_status'])
+def test_invalid_wake_or_unsolicited_status_halts_protocol_failure(w, case):
+    with running(w) as (client, peer):
+        connect(w, peer)
+        if case == 'unsolicited_status':
+            raw = page_status(w, dict(request_id='0' * 32))
+        else:
+            raw = w.control('wake_unknown' if case == 'unknown' else 'wake',
+                            {'event': 'untrusted'} if case == 'payload' else {})
+            if case in ('unsigned', 'forged'):
+                frame = json.loads(raw)
+                if case == 'unsigned':
+                    del frame['signature']
+                else:
+                    frame['signature'] = encoded(b'x' * 64)
+                raw = compact(frame)
+        peer.send(raw)
+        eventually(lambda: not client.running)
+        assert client.reason == 'protocol_failure'
+        assert peer.incoming.empty() and not w.rows('events')
+
+
 def test_stop_cancels_blocked_receive_and_releases_exclusion(w):
     with running(w) as (client, peer):
         connect(w, peer)

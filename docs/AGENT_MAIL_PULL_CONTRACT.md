@@ -434,19 +434,20 @@ remain integration/launch gates, never inferred from synthetic input.
 ## 5. Complete NEW WebSocket frame registry
 
 Frame envelopes are defined in 3.3. Fields below are the exact decoded payloads.
-`hello`, `event`, `ack_committed`, `status`, `hold`, `reauth_required` and `error`
+`hello`, `event`, `ack_committed`, `status`, `hold`, `wake`, `reauth_required` and `error`
 are service signed. No unsolicited arbitrary target/command frame exists.
 
 | Direction/type | Payload | Semantics |
 | --- | --- | --- |
 | S->C `hello` | `{connection_id:I,authenticated_ms:T,reauth_ms:T,max_events:10,max_bytes:524288}` | First frame; verified service proof of current epoch. |
+| S->C `wake` | `{}` | Signed hint only, with no request id, event data or cursor. Client starts its own resume scan; no custody or delivery evidence. |
 | C->S `resume` | `{after_seq:N,limit:N,available_bytes:N}` | limit 1..10; bytes 0..524288; paging hint only, not acknowledgment. after_seq may be 0. |
 | S->C `event` | `{event:E,lease_id:I,lease_until_ms:T}` | Offer current event with 60s lease. |
 | C->S `custody_ack` | `{event_id:H,event_digest:H,body_digest:H,lease_id:I,local_receipt_id:I}` | Commit durable local custody first. Ack one exact event, never a seq/high-water range. |
 | S->C `ack_committed` | `{request_id:I,event_id:H,event_digest:H,body_digest:H,local_receipt_id:I,receipt_id:I,committed_ms:T}` | Only cloud-body deletion proof. Lost frame causes receipt reconciliation/redelivery, no new follow-up. |
 | C->S `hold` | `{event_id:H,event_digest:H,lease_id:I,reason:C,retry_after_ms:T}` | No custody. Keep service body; retry time capped at event expiry, minimum now+60s. Allowed reasons below. |
 | S->C `hold` | `{request_id:I,event_id:H,reason:C,retry_after_ms:T}` | Confirms scheduling hold only, never body deletion. |
-| S->C `status` | `{request_id:I,next_seq:N,scan_complete:boolean,pending_count:N,oldest_expires_ms:T|null}` | End of bounded resume page; scan_complete is a snapshot, not delivery/turn completion. |
+| S->C `status` | `{request_id:I,next_seq:N,scan_complete:boolean,pending_count:N,oldest_expires_ms:T|null}` | End of bounded resume/ack/hold drain, bound to a client-issued request id; scan_complete is a snapshot, not delivery/turn completion. |
 | S->C `reauth_required` | `{reason:"reauth_due"|"service_key_changed",close_at_ms:T}` | Stop offers; client closes/reconnects with new ticket before deadline. |
 | S->C `error` | `{request_id:I,code:C,retry_after_ms:T|null}` | One operation refused; 4001/4002/4003 scope/auth errors close. |
 
@@ -484,6 +485,24 @@ drain pass resets to zero. A held/not-yet-due head may be skipped for offering;
 its seq remains visible for later passes. Active offers are bounded by both
 window limits. Notification after enqueue prompts a new bounded pending scan;
 no endless idle DB polling. Sweep retries missed notification intents.
+
+**U8 wake hint (2026-11-13, Dave option 2):** enqueue/sweep wake sends only
+the signed empty `wake` frame on the current socket. It never drains with a
+service-generated request id or changes the current cursor/window. The client
+authenticates the hint with the same scope/epoch, signature, freshness and pin
+checks as other service frames; unknown types, unsigned hints and nonempty wake
+payloads halt the protocol. Exact frame replays are idempotent. Distinct hints
+coalesce into one pending scan flag, never a queue of resume requests. Only one
+client resume may be in flight; only status echoing that request id releases
+it. A hint received mid-page leaves that page and subsequent page cursors intact;
+after scan completion the pending hint starts one new scan from zero, subject to
+the existing request budget. Hints received during that scan may set the same
+single pending flag again so newly arrived earlier rows are not lost. Every
+status still requires a known client request id, including ack/hold statuses;
+unsolicited status remains a protocol failure. Empty pages containing only
+future-held or unexpired leased rows advance through their request-bound status
+to later eligible rows. Lost hints remain recoverable through existing durable
+notifications/sweep and reconnect, never through idle polling.
 
 Local receiver accepts only a known immutable thread with exact local
 project/session/native/permissions mapping and active consent. Preserve service

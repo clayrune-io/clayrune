@@ -13,6 +13,7 @@ const H = /^[a-f0-9]{64}$/;
 const match = (re, v) => typeof v === 'string' && re.test(v);
 const holdReasons = new Set(['unknown_thread', 'queue_full', 'storage_unavailable', 'local_disabled',
   'vault_locked', 'conversation_busy']);
+const serviceTypes = new Set(['hello', 'event', 'hold', 'ack_committed', 'status', 'wake', 'reauth_required', 'error']);
 
 // Client schemas contain only two objects, with scalar values. Lex strings and
 // integers before JSON.parse: duplicate/escaped keys and noncanonical numbers
@@ -70,6 +71,8 @@ export function clientFrame(message) {
 }
 
 export async function serviceFrame(config, scope, type, value) {
+  valid(serviceTypes.has(type), 'unsupported_frame');
+  if (type === 'wake') valid(exact(value, []));
   const raw = bytes(JSON.stringify(value)); valid(raw.length <= PAYLOAD_BYTES, 'frame_limit');
   // signing.base64url spreads its input; use bounded chunks for large payloads.
   let binary = '';
