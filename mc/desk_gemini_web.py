@@ -35,7 +35,10 @@ if TYPE_CHECKING:
 
 ENGINE_ID = 'gemini_web'
 AUTH_KIND = 'browser_pane'
-DEFAULT_PROFILE = 'gemini'
+# The profile a pane opened from the dashboard uses (BP_DEFAULT_PROFILE in
+# static/js/browser-pane.js), so the pane the person opens and signs in to by hand is
+# the one this engine drives. A separate profile had no UI path to open it.
+DEFAULT_PROFILE = 'main'
 CONFIG_KEY = 'desk_gemini_web_profile'
 _PROFILE_OK = re.compile(r'^[a-z0-9][a-z0-9_-]{0,40}$')
 

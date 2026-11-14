@@ -536,7 +536,7 @@ import { modelMark, disabledReason, reasonHTML } from './desk-v1-engine-readines
         <textarea class="desk-v1-sb-edit-input" id="eng-prompt" rows="3" data-eng-prompt placeholder="What should the picture show?">${esc(st.prompt)}</textarea>
         ${_refsHTML(p, st)}
         ${_pickersHTML(p, st, 'image')}
-        ${conn.ready ? '' : `<div class="desk-v1-engine-refusal" data-eng-not-connected>${window.VaultUnlockUI && window.VaultUnlockUI.locked(conn) ? _errorHTML({ ...conn, message: conn.reason || 'Your vault is locked.' }) : esc(p.engine.label) + ' is not connected yet. Open Connections in the Desk header to set it up.'}</div>`}
+        ${conn.ready ? '' : `<div class="desk-v1-engine-refusal" data-eng-not-connected>${window.VaultUnlockUI && window.VaultUnlockUI.locked(conn) ? _errorHTML({ ...conn, message: conn.reason || 'Your vault is locked.' }) : (p.engine.auth && p.engine.auth.kind === 'browser_pane' && conn.reason ? esc(conn.reason) : esc(p.engine.label) + ' is not connected yet. Open Connections in the Desk header to set it up.')}</div>`}
         ${st.prompt.trim() ? _estimateHTML(st, p.engine) : '<div class="desk-v1-engine-est" data-eng-estimate data-state="none">Type a description to see the price.</div>'}
         ${st.error ? `<div class="desk-v1-engine-refusal" data-eng-error>${_errorHTML(st.error)}</div>` : ''}
         ${reasonHTML(canGo ? null : disabledReason(p, { busy, estimating: st.estimating, estimate: st.estimate,

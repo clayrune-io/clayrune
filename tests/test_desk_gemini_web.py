@@ -134,6 +134,9 @@ class FakeGemini:
         return (self.pictures[index], 'image/png') if self.fetch_ok else None
 
 
+_REAL_PROFILE = gw.profile
+
+
 @pytest.fixture(autouse=True)
 def _profile(monkeypatch):
     monkeypatch.setattr(gw, 'profile', lambda: 'gemini')
@@ -471,3 +474,13 @@ def test_no_selector_or_url_lives_outside_the_table():
         src = (root / name).read_text(encoding='utf-8')
         for fragment in ('gemini.google.com', 'googleusercontent', 'ql-editor', 'contenteditable', 'model-response'):
             assert fragment not in src, f'{fragment!r} belongs in desk_gemini_web_selectors.py ({name})'
+
+
+def test_default_profile_is_the_dashboard_pane_profile(monkeypatch):
+    # The pane a person opens from the dashboard always uses profile 'main'
+    # (static/js/browser-pane.js BP_DEFAULT_PROFILE); the engine must drive that one.
+    from mc import state
+    monkeypatch.setitem(state.CONFIG, gw.CONFIG_KEY, '')
+    assert _REAL_PROFILE() == 'main'
+    js = (Path(__file__).resolve().parents[1] / 'static' / 'js' / 'browser-pane.js').read_text(encoding='utf-8')
+    assert "const BP_DEFAULT_PROFILE = 'main';" in js
