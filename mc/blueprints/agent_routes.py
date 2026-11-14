@@ -61,6 +61,7 @@ from mc import triggered_turns as _triggered_turns  # seed-line label for non-hu
 from mc import engine_selection
 from mc import claude_cli_min_version as _claude_cli_min_version  # Claude model -> minimum CLI guard
 from mc import agent_mail_continuation as _mail_continuation
+from mc import agent_mail_rollover as _mail_rollover
 from mc import agent_mail_pipe as _mail_pipe
 from mc import resume_cwd as _resume_cwd
 from mc.hivemind_worker import RosterRecoveryHeld, revive_roster_worker
@@ -8792,6 +8793,7 @@ def _note_claude_sid(session, sid):
                 hist.append(prev)
     if prev == sid:
         return
+    _mail_rollover.native_learned(session)
     try:
         _fork_other = _live_owner_of_csid(session.get('project_id', ''), sid,
                                           exclude_sid=session.get('session_id', ''))
@@ -10708,6 +10710,7 @@ def _runtime_note_init(_event, session):
     """Backfill identity without resetting prior turn usage, history or status."""
     if session.get('incognito') or session.get('housekeeping'):
         return
+    _mail_rollover.native_learned(session)
     attempt = _delivery_attempt.DeliveryAttempt(session.get('_delivery_attempt_id') or '')
     fields = {'provider_session_id': session.get('provider_session_id') or '',
               'observed_model': session.get('observed_model') or '',
@@ -12345,6 +12348,7 @@ def _auto_fresh_handoff(pp, provider, claude_sid, project_id, session_id,
     _mail_continuation.reject_rollover()
     from mc.session_provenance import note_rollover
     note_rollover(project_id, session_id, claude_sid)
+    _mail_rollover.expect(project_id, session_id, provider, claude_sid)
     _source_sid = claude_sid
     try:
         handoff_text, _meta = _build_handoff_context(
