@@ -42,7 +42,7 @@ test('quotedLabel is an RFC 5322 quoted-string and escapes backslash and double-
 test('structured send carries the display name on From and Reply-To, address unchanged', async () => {
   const m = await sent('Dave');
   assert.deepEqual(m.from, { email: FROM, name: 'Dave via Clayrune' });
-  assert.deepEqual(m.replyTo, { email: `${LOCAL}+${TOKEN}@${DOMAIN}`, name: 'Dave via Clayrune' });
+  assert.deepEqual(m.replyTo, { email: `${LOCAL}@${DOMAIN}`, name: 'Dave via Clayrune' });
   assert.deepEqual(Object.keys(m).sort(), ['from', 'headers', 'replyTo', 'subject', 'text', 'to']);
 });
 
@@ -61,7 +61,7 @@ test('INJECTION: CRLF + Bcc in display_name sends with the fallback, adds no rec
     assert.equal(m.from.name, FALLBACK_NAME); assert.equal(m.replyTo.name, FALLBACK_NAME);
     assert.equal(m.to, 'owner@example.com'); assert.equal(m.bcc, undefined);
     assert.equal(JSON.stringify(m).includes('evil@example.com'), false);
-    assert.deepEqual(Object.keys(m.headers).sort(), ['Auto-Submitted', 'X-Clayrune-Agent-Mail']);
+    assert.deepEqual(Object.keys(m.headers).sort(), ['Auto-Submitted', 'References', 'X-Clayrune-Agent-Mail']);
   }
 });
 
@@ -80,7 +80,7 @@ test('legacy raw MIME path: quoted display name on From and Reply-To, fallback o
   const config = { from: FROM, domain: DOMAIN };
   const raw = constructMail(r, { ...base(), display_name: "Dave O'Neil." }, 'id@mail.example.net', config).raw;
   assert.match(raw, /^From: "Dave O'Neil\. via Clayrune" <agents@mail\.example\.net>\r$/m);
-  assert.match(raw, new RegExp(`^Reply-To: "Dave O'Neil\\. via Clayrune" <opaque1\\+${TOKEN}@mail\\.example\\.net>\\r$`, 'm'));
+  assert.match(raw, new RegExp(`^Reply-To: "Dave O'Neil\\. via Clayrune" <opaque1@mail\\.example\\.net>\\r$`, 'm'));
   const bad = constructMail(r, { ...base(), display_name: 'Dave\r\nBcc: evil@example.com' }, 'id@mail.example.net', config).raw;
   assert.doesNotMatch(bad, /evil@example\.com/); assert.doesNotMatch(bad, /^Bcc:/mi);
   assert.match(bad, /^From: "Clayrune agent" </m);

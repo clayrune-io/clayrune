@@ -5,7 +5,7 @@ import { cloudflareEmailSending } from '../email-sending.js';
 const NOW = 1_800_000_000_000;
 const FROM = 'agents@mail.example.net', DOMAIN = 'mail.example.net';
 const OWNER = 'Owner.Name+tag@example.com', TOKEN = '0123456789abcdef'.repeat(2);
-const LOCAL = `m${'a'.repeat(29)}`;
+const LOCAL = `m${'a'.repeat(29)}`, NONCE = 'fixednonce0123456789';
 const reg = () => ({ active: 1, owner_verified: 1, address_local: LOCAL, owner_address: OWNER });
 const value = () => ({ intent_id: 'intent_1', thread_id: 'thread-1', kind: 'question',
   reply_token: TOKEN, subject: 'Question about the build', body: 'Which revision?\nQuoted text.' });
@@ -25,7 +25,7 @@ function fixture(send = async () => ({ messageId: 'provider-unique-1' }), option
     clearTimeout(id) { pending.delete(id); },
   };
   const binding = { send(message) { assert.equal(this, binding); calls.push(message); return send(message); } };
-  const adapter = cloudflareEmailSending({ binding, from: FROM, domain: DOMAIN, clock: () => now, timers, ...options });
+  const adapter = cloudflareEmailSending({ binding, from: FROM, domain: DOMAIN, clock: () => now, timers, nonce: NONCE, ...options });
   return { adapter, calls, delays, pending,
     send: (r = reg(), v = value()) => adapter.send({ reg: r, value: v }),
     setNow(at) { now = at; },
@@ -37,11 +37,12 @@ test('structured send has the exact owner-only field set and fixed headers; prov
   const f = fixture();
   assert.deepEqual(await f.send(), outcome('accepted', 'ok', 'provider-unique-1'));
   assert.deepEqual(f.calls, [{ from: { email: FROM, name: 'Clayrune agent' }, to: OWNER,
-    replyTo: { email: `${LOCAL}+${TOKEN}@${DOMAIN}`, name: 'Clayrune agent' },
+    replyTo: { email: `${LOCAL}@${DOMAIN}`, name: 'Clayrune agent' },
     subject: value().subject, text: value().body,
-    headers: { 'Auto-Submitted': 'auto-generated', 'X-Clayrune-Agent-Mail': '1' } }]);
-  assert.match(f.calls[0].replyTo.email, /^m[a-f0-9]{29}\+[a-f0-9]{32}@mail\.example\.net$/);
-  assert.equal(f.calls[0].replyTo.email.split('@')[0].length, 63);
+    headers: { 'Auto-Submitted': 'auto-generated', 'X-Clayrune-Agent-Mail': '1',
+      References: `<${TOKEN}.${NONCE}@${DOMAIN}>` } }]);
+  assert.match(f.calls[0].replyTo.email, /^m[a-f0-9]{29}@mail\.example\.net$/); // plain: no +token
+  assert.equal(f.calls[0].replyTo.email.split('@')[0].length, 30);
   assert.deepEqual(Object.keys(f.calls[0]).sort(), ['from', 'headers', 'replyTo', 'subject', 'text', 'to']);
   assert.deepEqual(f.delays, [10_000]); assert.equal(f.pending.size, 0);
   f.advance(100_000); await tick(); assert.equal(f.calls.length, 1);

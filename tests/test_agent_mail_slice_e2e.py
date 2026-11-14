@@ -99,7 +99,8 @@ const wrapper = [
   "    if (u.pathname === '/__x/inject') {",
   "      const m = await request.json();",
   "      const fields = ['Authentication-Results: ' + m.ar, 'From: ' + m.from, 'To: ' + m.to,",
-  "        'In-Reply-To: <' + m.inReplyTo + '>', 'Message-ID: <' + m.messageId + '>',",
+  "        'In-Reply-To: <' + m.inReplyTo + '>', ...(m.references ? ['References: <' + m.references + '>'] : []),",
+  "        'Message-ID: <' + m.messageId + '>',",
   "        'Content-Type: text/plain; charset=utf-8'];",
   "      const raw = new TextEncoder().encode([...fields, '', m.text].join('\\r\\n'));",
   "      const headers = new Headers();",
@@ -311,7 +312,8 @@ def test_outbound_note_reaches_send_and_mail_send_sees_owner_only(world):
     local = world.provision['address'].split('@')[0]
     # Exactly one recipient, the owner; the reply address carries the thread token; nobody else is addressed.
     assert message['to'] == OWNER
-    assert re.fullmatch(re.escape(local) + r'\+[a-f0-9]{32}@' + re.escape(DOMAIN), message['replyTo']['email'])
+    assert message['replyTo']['email'] == f'{local}@{DOMAIN}'  # plain address; token is in References
+    assert re.fullmatch(r'<[a-f0-9]{32}\.[a-f0-9]{32}@' + re.escape(DOMAIN) + '>', message['headers']['References'])
     assert not {'cc', 'bcc'} & set(message)
     assert set(message) == {'from', 'to', 'replyTo', 'subject', 'text', 'headers'}
     assert message['from'] == {'email': 'mail@' + DOMAIN, 'name': 'Clayrune agent'}
@@ -320,7 +322,7 @@ def test_outbound_note_reaches_send_and_mail_send_sees_owner_only(world):
     intents = world.harness.sql('SELECT state,message_id FROM pull_intents')
     assert intents == [dict(state='accepted', message_id=sent['message_id'])]
     (thread,) = world.harness.sql('SELECT token_hash FROM pull_threads')
-    token = message['replyTo']['email'].split('+')[1].split('@')[0]
+    token = message['headers']['References'].strip('<>').split('.')[0]
     assert thread['token_hash'] == hashlib.sha256(token.encode()).hexdigest()
 
 
@@ -342,6 +344,7 @@ def owner_reply(w):
 def inject_message(w, sent, message, message_id):
     result = w.harness.call('inject', dict(
         to=message['replyTo']['email'], envelopeFrom=OWNER, inReplyTo=sent['message_id'], messageId=message_id,
+        references=message['headers']['References'].strip('<>'),  # token rides here, not in the address
         text=REPLY, ar=f'mx.cloudflare.net; spf=pass smtp.mailfrom={OWNER}; dkim=pass header.d=example.com; '
                        'dmarc=pass header.from=example.com', **{'from': OWNER}))
     assert result == {'rejects': []}

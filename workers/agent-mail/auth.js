@@ -24,9 +24,14 @@
 import { allOf, normalizeHeaders } from './headers.js';
 import { parseAddrSpec, parseMailbox, sameMailbox } from './mailbox.js';
 import { evaluateIngress } from './authres.js';
+import { headerTokens } from './reply-token.js';
+
+// Lookups spent on header tokens for one message (each is a D1 read). Only the
+// verified owner reaches them: From and DMARC are checked first.
+const MAX_LOOKUPS = 4;
 
 export const REASONS = Object.freeze([
-  'bad_input', 'owner_inactive', 'owner_invalid', 'token_missing', 'from_invalid',
+  'bad_input', 'owner_inactive', 'owner_invalid', 'token_missing', 'token_conflict', 'from_invalid',
   'from_not_owner', 'untrusted_ingress', 'ingress_ambiguous', 'dmarc_not_pass',
   'auth_domain_mismatch', 'dmarc_unaligned', 'lookup_error', 'token_unknown',
   'thread_invalid', 'token_revoked', 'token_expired', 'thread_owner_mismatch',
@@ -36,7 +41,8 @@ export const REASONS = Object.freeze([
   'internal_error',
 ]);
 
-// Reply address shape (the spec leaves syntax to D2; this is our pick):
+// Legacy reply address shape (read-only since 2026-11-14; new mail carries the
+// token in References instead, see reply-token.js):
 //   <install>+<token>@<domain>   token = 26-64 chars of [a-z0-9]
 // 26 base32 chars = 130 bits. The lookup is the real check; this only bounds work.
 const TOKEN_LOCAL_RE = /^[a-z0-9][a-z0-9._-]{0,63}\+([a-z0-9]{26,64})$/;
@@ -45,12 +51,14 @@ function reject(reason_code, evidence) {
   return evidence ? { accept: false, reason_code, evidence } : { accept: false, reason_code };
 }
 
-function extractToken(rcptTo) {
+// -> { domain, plus } | null. `plus` is the legacy +token (read-only: mail sent
+// before 2026-11-14 still carries it in Reply-To), or null for the plain address.
+function parseRecipient(rcptTo) {
   if (typeof rcptTo !== 'string') return null;
   const addr = parseAddrSpec(rcptTo.trim());
   if (!addr) return null;
   const m = TOKEN_LOCAL_RE.exec(addr.local.toLowerCase());
-  return m ? m[1] : null;
+  return { domain: addr.domain, plus: m ? m[1] : null };
 }
 
 async function run(meta, ownerRecord, tokenLookup) {
@@ -68,8 +76,11 @@ async function run(meta, ownerRecord, tokenLookup) {
   }
 
   // Cheap checks first, so a stranger costs no lookup.
-  const token = extractToken(meta.rcptTo);
-  if (!token) return reject('token_missing');
+  // Two carriers: the legacy +token in the recipient, and the token id we put in
+  // References (reply-token.js). With neither, the mail is dropped, never a new chat.
+  const rcpt = parseRecipient(meta.rcptTo);
+  const fromHeaders = rcpt ? headerTokens(headers, rcpt.domain) : [];
+  if (!rcpt || (!rcpt.plus && !fromHeaders.length)) return reject('token_missing');
 
   const froms = allOf(headers, 'from');
   if (froms.length !== 1) return reject('from_invalid'); // two From fields is a classic spoof
@@ -80,10 +91,20 @@ async function run(meta, ownerRecord, tokenLookup) {
   const ingress = evaluateIngress(headers, from.domain);
   if (!ingress.ok) return reject(ingress.reason_code, ingress.evidence);
 
-  // Thread token.
-  let thread;
+  // A +token and header tokens must agree: both present and the +token is not
+  // among the header tokens means the message was composed, not replied -- drop.
+  if (rcpt.plus && fromHeaders.length && !fromHeaders.includes(rcpt.plus)) {
+    return reject('token_conflict', ingress.evidence);
+  }
+
+  // Thread token. An explicit +token is the only candidate; otherwise try the
+  // header tokens nearest-ancestor first and stop at the first that resolves.
+  let thread = null;
   try {
-    thread = await tokenLookup(token);
+    for (const token of rcpt.plus ? [rcpt.plus] : fromHeaders.slice(0, MAX_LOOKUPS)) {
+      thread = await tokenLookup(token);
+      if (thread) break;
+    }
   } catch {
     return reject('lookup_error', ingress.evidence);
   }

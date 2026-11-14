@@ -81,10 +81,11 @@ export async function fixture(options = {}) {
 }
 export function emailMessage({ text = 'A fresh reply', token = sendValue().reply_token,
   id = 'reply1@example.com', outId, from = 'owner@example.com', ar = cfAr(), extra = [],
-  type = 'text/plain; charset=utf-8', envelope = 'owner@example.com' } = {}) {
-  const rcpt = `opaque1+${token}@mail.example.net`;
+  type = 'text/plain; charset=utf-8', envelope = 'owner@example.com', plain = false, references = null } = {}) {
+  // plain: the post-2026-11-14 shape, a Reply-To with no +token (token rides in References).
+  const rcpt = plain ? 'opaque1@mail.example.net' : `opaque1+${token}@mail.example.net`;
   const fields = [ ...(ar === null ? [] : [`Authentication-Results: ${ar}`]), `From: ${from}`,
-    `To: ${rcpt}`, `In-Reply-To: <${outId}>`, ...(id === null ? [] : [`Message-ID: <${id}>`]),
+    `To: ${rcpt}`, `In-Reply-To: <${outId}>`, ...(references === null ? [] : [`References: ${references}`]), ...(id === null ? [] : [`Message-ID: <${id}>`]),
     ...extra, `Content-Type: ${type}` ];
   const raw = bytes([...fields, '', text].join('\r\n')); const rejects = [];
   const headers = new Headers();
