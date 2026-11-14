@@ -362,6 +362,7 @@ class Outbound:
                            (attempt, now, intent_id))
         # The admission commit precedes any possible external write. A crash or
         # thrown/lost response can never make this row automatically send again.
+        accepted_expires_ms = None
         try:
             wire = client('POST', SEND, signed, raw)
             # ServiceClient authenticates the envelope; recheck request-bound
@@ -379,6 +380,7 @@ class Outbound:
                 prefix = hashlib.sha256(f"{row['install']}:{row['generation']}:{intent_id}".encode()).hexdigest()
                 if re.fullmatch(prefix + r'@[a-z0-9.-]+', message_id):
                     state, reason = 'accepted', ''
+                    accepted_expires_ms = response['thread_expires_ms']
             elif wire[0] == 429 and code == 'send_limit':
                 state, reason = 'retryable', 'send_limit'  # Worker proves no reservation/write
             if state != 'accepted':
@@ -392,10 +394,21 @@ class Outbound:
             _log('[agent-mail] outbound held: transport_unavailable', flush=True)
             state, reason, message_id = 'uncertain', 'transport_unavailable', ''
         with self.store._tx() as db:
-            db.execute("UPDATE mail_outbound_intents SET state=?,reason=?,message_id=?,updated=? "
+            db.execute("UPDATE mail_outbound_intents SET state=?,reason=?,message_id=?,updated=?,expires=COALESCE(?,expires) "
                        "WHERE intent_id=? AND attempt=? AND state IN ('sending','uncertain')",
-                       (state, reason, message_id, self.store.clock(), intent_id, attempt))
-            if state == 'accepted':
+                       (state, reason, message_id, self.store.clock(),
+                        accepted_expires_ms / 1000 if accepted_expires_ms is not None else None, intent_id, attempt))
+            if accepted_expires_ms is not None:
+                # Receipt and both local deadlines commit together. Updating only
+                # expiry never reactivates a revoked binding or generation.
+                expires_ms = accepted_expires_ms
+                db.execute('UPDATE thread_bindings SET expires_at=? WHERE thread_hash=? AND registration_id=? '
+                           'AND owner_generation=?',
+                           (expires_ms / 1000, row['thread_hash'], row['install'], row['generation']))
+                db.execute('UPDATE mail_pull_threads SET thread_expires_ms=?,dedupe_until_ms=? '
+                           'WHERE install_id=? AND generation=? AND thread_id=? AND thread_hash=?',
+                           (expires_ms, expires_ms + 30 * 86400000, row['install'], row['generation'],
+                            row['thread_id'], row['thread_hash']))
                 # A disable may close local delivery while an admitted external
                 # write completes. Retain its positive receipt without reopening.
                 db.execute('UPDATE mail_outbound_intents SET message_id=? WHERE intent_id=? AND attempt=?',

@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-13] - Align pull-mail thread expiry (MC-1166 U8 partial)
+
+- Accepted send receipts return the Worker's reserved thread expiry; the install verifies and atomically persists it to the intent and both local thread bindings. Existing outbound stores migrate with correlation and payload guards preserved.
+- Removed the expiry thin-slice xfail and test-side expiry workaround. The separate unsolicited-status xfail remains pending Dave's paging decision: pages containing only held/leased events need progress even when no event produces an ack/hold.
+- Branch candidate only; no deployment or real mail. The client's strict request-id guard is unchanged.
+
 ## [2026-11-11] - Isolate sandbox browser profiles and identify profile owners (MC-1172)
 
 - Browser profiles and downloads use `<MC_DATA_DIR>/.clayrune` only for non-packaged sandbox instances with a separate data root. Packaged apps (which automatically set `MC_DATA_DIR`) and servers without an override keep the existing `~/.clayrune` paths and saved sign-ins.

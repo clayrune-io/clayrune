@@ -323,35 +323,16 @@ def test_outbound_note_reaches_send_and_mail_send_sees_owner_only(world):
     assert thread['token_hash'] == hashlib.sha256(token.encode()).hexdigest()
 
 
-THREAD_EXPIRY_BUG = ('REAL WIRING BUG 1, reported not fixed: the Worker stamps the thread expiry at /v1/pull/send time '
-                     '(ledger-pull.js:178, now+threadTTL) while Outbound.prepare stamps the local one at prepare time '
-                     '(agent_mail_outbound.py:236) and PullReceiver._thread (agent_mail_pull_receiver.py:237) demands '
-                     'equality, so every reply is refused unknown_thread: no custody, no ack.')
-UNSOLICITED_STATUS_BUG = ('REAL WIRING BUG 2, reported not fixed: when email() wakes a connected socket, '
-                          'PullMailbox.wake() (pull-mailbox.js:236) drains with a Worker-made request id and sends '
-                          'status after the event; PullClient._handle (agent_mail_pull_client.py:524) requires the '
-                          'request id to be one it sent, so it halts protocol_failure before ack_committed is read '
-                          'and the Worker copy is never retired.')
-
-
 def _all(store, sql):
     with store._read() as db:
         return db.execute(sql).fetchall()
 
 
-def align_thread_expiry(w):
-    """Test-side stand-in for the missing agreement (bug 1): copy the local thread expiry onto the Worker's row."""
-    (local,) = _all(w.store, 'SELECT thread_expires_ms,dedupe_until_ms FROM mail_pull_threads')
-    w.harness.sql('UPDATE pull_threads SET expires_ms=?,dedupe_until_ms=?', local['thread_expires_ms'], local['dedupe_until_ms'])
-
-
-def owner_reply(w, align):
-    """Connect, send the note, optionally align the expiry, then Ron's reply arrives through email()."""
+def owner_reply(w):
+    """Connect, send the note, then the owner's reply arrives through email()."""
     connect(w)
     out, sent = send_note(w)
     (message,) = w.harness.call('sent')
-    if align:
-        align_thread_expiry(w)
     result = w.harness.call('inject', dict(
         to=message['replyTo'], envelopeFrom=OWNER, inReplyTo=sent['message_id'], messageId='reply-1@example.com',
         text=REPLY, ar=f'mx.cloudflare.net; spf=pass smtp.mailfrom={OWNER}; dkim=pass header.d=example.com; '
@@ -365,16 +346,24 @@ def custodied_event(w):
     return wait_until(lambda: (_all(w.store, 'SELECT * FROM mail_pull_receipts') or [None])[0], 'local custody')
 
 
-@pytest.mark.xfail(strict=True, reason=THREAD_EXPIRY_BUG)
 def test_reply_over_the_real_send_path_reaches_local_custody(world):
-    owner_reply(world, align=False)
+    owner_reply(world)
+    (remote,) = world.harness.sql('SELECT expires_ms,dedupe_until_ms FROM pull_threads')
+    (intent,) = _all(world.store, 'SELECT expires FROM mail_outbound_intents')
+    (bound,) = _all(world.store, 'SELECT expires_at FROM thread_bindings')
+    (local,) = _all(world.store, 'SELECT thread_expires_ms,dedupe_until_ms FROM mail_pull_threads')
+    assert intent['expires'] * 1000 == bound['expires_at'] * 1000 == local['thread_expires_ms'] == remote['expires_ms']
+    assert local['dedupe_until_ms'] == remote['dedupe_until_ms']
     custodied_event(world)
 
 
-@pytest.mark.xfail(strict=True, reason=UNSOLICITED_STATUS_BUG)
+@pytest.mark.xfail(strict=True, reason=(
+    'Worker wake status uses an unsolicited request id; PullClient halts before ack_committed. '
+    'Removing wake status also removes paging progress on pages containing only held/leased events; '
+    'U8 paused for Dave to select the paging mechanism.'))
 def test_custody_ack_is_committed_and_the_worker_copy_retired(world):
     install = world.provision['install_id']
-    owner_reply(world, align=True)
+    owner_reply(world)
     got = custodied_event(world)
     assert (got['install_id'], got['disposition']) == (install, 'local_received')
 
@@ -390,7 +379,7 @@ def test_custody_ack_is_committed_and_the_worker_copy_retired(world):
 
 def test_worker_delivered_reply_is_laundered_and_wakes_the_exact_session(world, monkeypatch):
     setup = world.setup
-    owner_reply(world, align=True)  # align = workaround for bug 1; bug 2 hits only after custody is durable
+    owner_reply(world)
     got = custodied_event(world)
     local = world.store.get_event(got['event_id'], include_content=True)
     assert local['state'] == LOCAL_RECEIVED and local['session_id'] == setup.session['session_id']

@@ -77,7 +77,8 @@ class World(Harness):
             value = self.status_value() if path == STATUS else {'sentinel': 'route owner validates this'}
             if path == '/v1/pull/send':
                 value = dict(intent_id=request.get('intent_id'), thread_id=request.get('thread_id'),
-                             message_id='dedupe@example.test', state='accepted', provider_id='provider-id')
+                             message_id='dedupe@example.test', state='accepted', provider_id='provider-id',
+                             thread_expires_ms=self.now + 90 * 86400000)
         common = dict(v=1, code='fenced' if path == FENCE else 'accepted' if path.endswith('/send') else 'ok', request_id=rid)
         response = self.change(*self.response(path, h, request, dict(common, **value)))
         self.after()
@@ -507,7 +508,7 @@ def test_accepted_send_requires_bounded_provider_evidence(w, provider, valid):
     h, raw = w.request(path, request)
     body = dict(v=1, code='accepted', request_id=request['op_id'], state='accepted',
                 intent_id='intent1', thread_id='thread1', message_id='dedupe@example.test',
-                provider_id=provider)
+                provider_id=provider, thread_expires_ms=w.now + 90 * 86400000)
     w.change = lambda *args: w.response(path, h, request, body, 200)
     if valid:
         assert json.loads(w.client('POST', path, h, raw)[2]) == body
@@ -515,3 +516,17 @@ def test_accepted_send_requires_bounded_provider_evidence(w, provider, valid):
         with pytest.raises(ServiceRefused, match='^response_unverified$'):
             w.client('POST', path, h, raw)
     assert w.client.cached_evidence() is None
+
+
+@pytest.mark.parametrize('expiry', [None, True, 0, -1, 1.5, '1800000000000', 2**53 - 1])
+def test_accepted_send_requires_worker_expiry(w, expiry):
+    path = '/v1/pull/send'
+    request = {'op_id': '5' * 32, 'intent_id': 'intent1', 'thread_id': 'thread1'}
+    h, raw = w.request(path, request)
+    body = dict(v=1, code='accepted', request_id=request['op_id'], state='accepted',
+                intent_id='intent1', thread_id='thread1', message_id='dedupe@example.test', provider_id='provider-id')
+    if expiry is not None:
+        body['thread_expires_ms'] = expiry
+    w.change = lambda *args: w.response(path, h, request, body, 200)
+    with pytest.raises(ServiceRefused, match='^response_unverified$'):
+        w.client('POST', path, h, raw)
