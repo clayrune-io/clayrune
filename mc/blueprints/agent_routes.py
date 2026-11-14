@@ -156,6 +156,7 @@ from mc.rollover_threshold import threshold_for as _rollover_threshold_for
 import mc.background_tasks as _bg_tasks  # MC-958 background-job wake tracking (Mode B)
 import mc.delegation_waiting as _delegation_waiting  # MC-1063: queued child reports shown on the parent
 import mc.delegation_wake as _delegation_wake  # MC-1063: a parent's turn-end wakes its queued reports
+import mc.delegation_wake_absent as _delegation_wake_absent  # status-blocked reports of a parent gone from memory
 import mc.delegation_settlement as _delegation_settlement
 from mc.delegation_transcript_reconcile import TranscriptReconciler
 from mc.blueprints.delegation_report_routes import register_routes as _register_report_routes
@@ -9833,9 +9834,11 @@ def start_delegation_delivery(interval_s: float = 5.0):
                     _log(f'[delegation-delivery] log recovery failed for {log_file.name}: {exc}')
             stop_event = threading.Event()
             waker = _delegation_wake.ParentWaker()
+            absent_waker = _delegation_wake_absent.AbsentParentWaker()
             reconciler = TranscriptReconciler(parent_guard=lambda pid: get_manager(pid).lock)
 
-            def _loop(local_store=store, local_stop=stop_event, local_waker=waker):
+            def _loop(local_store=store, local_stop=stop_event, local_waker=waker,
+                      local_absent_waker=absent_waker):
                 while True:
                     # The iteration gate closes the stop-before-new-drain race:
                     # stop() sets the Event without taking this gate; a loop
@@ -9850,6 +9853,7 @@ def start_delegation_delivery(interval_s: float = 5.0):
                             drain_once(local_store, send_outbox=_deliver_outbox,
                                        process_inbox=_process_inbox)
                             local_waker.tick(local_store, agent_sessions)
+                            local_absent_waker.tick(local_store, agent_sessions)
                         except Exception as exc:
                             _log(f'[delegation-delivery] drain failed: {exc}')
                     if local_stop.wait(max(0.0, float(interval_s))):
@@ -18538,7 +18542,14 @@ GUARDIAN_HUNG_TIMEOUT = 600
 # promise — no heartbeat, no exit, until killed. Gemini itself rarely needs
 # more than ~60s for legitimate thinking, so a 90s watchdog catches the hang
 # fast without false-positiving real work.
-GUARDIAN_HUNG_TIMEOUT_BY_PROVIDER = {'gemini': 90}
+#
+# claude: 900. Claude Code's own API request timeout (API_TIMEOUT_MS) defaults
+# to 600000 ms. With the 600s default the guardian killed a session whose model
+# call had streamed no bytes at ~601-614s, the same moment the CLI would have
+# timed out and retried itself — so the retry never happened. 900s leaves the
+# CLI room to time out, emit system/api_retry (which stamps last_output_time
+# via _note_api_retry) and resume before the guardian steps in.
+GUARDIAN_HUNG_TIMEOUT_BY_PROVIDER = {'gemini': 90, 'claude': 900}
 GUARDIAN_STUCK_FLAG_TIMEOUT = 120
 GUARDIAN_MAX_RECOVERIES = 3
 GUARDIAN_BACKOFF_BASE = 5
