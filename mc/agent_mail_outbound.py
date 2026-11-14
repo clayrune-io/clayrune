@@ -12,6 +12,7 @@ import secrets
 from typing import Any, Callable, Protocol
 
 from mc import state
+from mc import agent_mail_display_name as display_name
 from mc.agent_mail_enrollment import Enrollment
 from mc.agent_mail_enrollment_keys import EnrollmentRefused, SealReference
 # Keep the separate compatibility signer reachable to frozen-app analysis;
@@ -223,7 +224,8 @@ class Outbound:
                 if len(body.encode()) > 16384:
                     raise _refused('body_limit')
                 value = dict(op_id=intent, intent_id=intent, thread_id='t_' + intent, reply_token=token,
-                             subject=request['subject'], body=body, kind=request['kind'])
+                             subject=request['subject'], body=body, kind=request['kind'],
+                             display_name=display_name.for_session(project, session))
                 raw = json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode()
                 now = self.store.clock()
                 row = dict(intent_id=intent, request_key=request['request_id'], request_digest=request_digest,

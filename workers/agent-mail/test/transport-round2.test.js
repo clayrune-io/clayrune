@@ -87,7 +87,7 @@ for (const localLength of [31, 32]) {
     }
     assert.equal(response.status, 200);
     const sent = await response.json();
-    const replyTo = /^Reply-To: (.*)$/m.exec(f.sent[0].raw)[1];
+    const replyTo = /^Reply-To: .*<(.*)>$/m.exec(f.sent[0].raw)[1]; // address inside the display-name form
     const message = emailMessage({ outId: sent.message_id });
     message.to = replyTo;
     const result = await f.legacy.email(message, f.env);

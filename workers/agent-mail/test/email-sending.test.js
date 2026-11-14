@@ -36,11 +36,12 @@ function fixture(send = async () => ({ messageId: 'provider-unique-1' }), option
 test('structured send has the exact owner-only field set and fixed headers; provider assigns Message-ID', async () => {
   const f = fixture();
   assert.deepEqual(await f.send(), outcome('accepted', 'ok', 'provider-unique-1'));
-  assert.deepEqual(f.calls, [{ from: FROM, to: OWNER, replyTo: `${LOCAL}+${TOKEN}@${DOMAIN}`,
+  assert.deepEqual(f.calls, [{ from: { email: FROM, name: 'Clayrune agent' }, to: OWNER,
+    replyTo: { email: `${LOCAL}+${TOKEN}@${DOMAIN}`, name: 'Clayrune agent' },
     subject: value().subject, text: value().body,
     headers: { 'Auto-Submitted': 'auto-generated', 'X-Clayrune-Agent-Mail': '1' } }]);
-  assert.match(f.calls[0].replyTo, /^m[a-f0-9]{29}\+[a-f0-9]{32}@mail\.example\.net$/);
-  assert.equal(f.calls[0].replyTo.split('@')[0].length, 63);
+  assert.match(f.calls[0].replyTo.email, /^m[a-f0-9]{29}\+[a-f0-9]{32}@mail\.example\.net$/);
+  assert.equal(f.calls[0].replyTo.email.split('@')[0].length, 63);
   assert.deepEqual(Object.keys(f.calls[0]).sort(), ['from', 'headers', 'replyTo', 'subject', 'text', 'to']);
   assert.deepEqual(f.delays, [10_000]); assert.equal(f.pending.size, 0);
   f.advance(100_000); await tick(); assert.equal(f.calls.length, 1);

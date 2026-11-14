@@ -1,6 +1,7 @@
 // Paid structured Email Sending; no HTTP, MIME, storage or retry policy.
 import { parseAddrSpec } from './mailbox.js';
 import { validateSend } from './outbound.js';
+import { displayLabel } from './display-name.js';
 import { bytes } from './signing.js';
 
 const TIMEOUT_MS = 10_000;
@@ -49,12 +50,16 @@ export function cloudflareEmailSending({ binding, from, domain, clock = Date.now
           || typeof reg?.address_local !== 'string' || !/^m[a-f0-9]{29}$/.test(reg.address_local)) {
         throw new Error('registration_inactive');
       }
+      const replyTo = `${reg.address_local}+${value.reply_token}@${domain}`;
+      if (!parseAddrSpec(replyTo)) throw new Error('invalid_service_address');
+      // Structured {name,email} form (Cloudflare Email Service accepts it for from
+      // and replyTo); the name is re-validated here, bad names use the fallback.
+      const name = displayLabel(value.display_name);
       const message = {
-        from, to: reg.owner_address, replyTo: `${reg.address_local}+${value.reply_token}@${domain}`,
+        from: { email: from, name }, to: reg.owner_address, replyTo: { email: replyTo, name },
         subject: value.subject, text: value.body,
         headers: { 'Auto-Submitted': 'auto-generated', 'X-Clayrune-Agent-Mail': '1' },
       };
-      if (!parseAddrSpec(message.replyTo)) throw new Error('invalid_service_address');
       const started = clock();
       if (!Number.isSafeInteger(started) || started < 0 || started > Number.MAX_SAFE_INTEGER - TIMEOUT_MS) {
         throw new Error('provider_config_required');

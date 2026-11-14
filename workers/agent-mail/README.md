@@ -21,6 +21,7 @@ text ever reaches custody. A failed check is a **drop**, not a hold.
 | File | Concern |
 | --- | --- |
 | `signing.js` | Mail-only Ed25519 v1, exact-body digest, scoped method/path/generation/direction, timestamp and durable nonce claim seam. |
+| `display-name.js` | Re-validates the optional `display_name` the install sends (allowlist `A-Za-z0-9 ._'-`, 40 chars, no control chars); any failure yields "Clayrune agent", never a refused send. Renders "<Name> via Clayrune" for From and Reply-To (structured `{name,email}` and quoted raw form). |
 | `outbound.js` | Allowlisted note/question payload; server-derived recipient, From, Reply-To and Message-ID; send-intent deduplication and uncertainty. |
 | `ingress.js` | Bounded raw stream and ordered headers; provider header agreement, loop suppression, unit-3 auth/strip, stable event identity and held missing ids. |
 | `ledger.js`, `schema.sql` | Dedicated D1 state, transactional send/correlation reservation, queue bounds, leased claims, generation revocation and retention. |

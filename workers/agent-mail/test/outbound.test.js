@@ -7,7 +7,8 @@ test('send constructs owner-only MIME after thread correlation is durable', asyn
   f = await fixture({ send: async (mail) => {
     assert.equal((await f.ledger.first('SELECT COUNT(*) AS n FROM threads')).n, 1);
     assert.equal(mail.to, f.reg.owner_address); assert.equal(mail.from, f.env.MAIL_FROM);
-    assert.match(mail.raw, /Reply-To: opaque1\+[a-f0-9]{32}@mail.example.net/);
+    assert.match(mail.raw, /Reply-To: "Clayrune agent" <opaque1\+[a-f0-9]{32}@mail.example.net>/);
+    assert.match(mail.raw, /^From: "Clayrune agent" <agent@mail.example.net>/m);
     assert.doesNotMatch(mail.raw, /^(?:Cc|Bcc):/mi);
   } });
   const r = await f.http.fetch(await f.request(), f.env);

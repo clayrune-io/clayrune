@@ -2,9 +2,17 @@
 import { bytes, sha256 } from './signing.js';
 import { parseAddrSpec } from './mailbox.js';
 import { cloudflareEmailSending } from './email-sending.js';
+import { quotedLabel } from './display-name.js';
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 export function validateSend(value) {
   const fields = ['intent_id', 'thread_id', 'reply_token', 'subject', 'body', 'kind'];
+  // display_name is optional (older installs omit it) and deliberately NOT
+  // content-checked here: a bad name is replaced by the fallback in
+  // display-name.js, it must never fail the send. Only type and size are bounded.
+  if (value && typeof value === 'object' && Object.hasOwn(value, 'display_name')) {
+    if (typeof value.display_name !== 'string' || bytes(value.display_name).length > 256) return false;
+    value = { ...value }; delete value.display_name;
+  }
   if (!value || typeof value !== 'object' || Array.isArray(value)
       || Object.keys(value).some((k) => !fields.includes(k))
       || typeof value.intent_id !== 'string' || !ID.test(value.intent_id)
@@ -33,7 +41,8 @@ export function constructMail(reg, value, message_id, config) {
   const reply = `${reg.address_local}+${value.reply_token}@${config.domain}`;
   if (!/^[a-f0-9]{32}$/.test(value.reply_token) || !parseAddrSpec(reply)) throw new Error('invalid_service_address');
   return { from: config.from, to: reg.owner_address,
-    raw: [`From: ${config.from}`, `To: ${reg.owner_address}`, `Reply-To: ${reply}`,
+    raw: [`From: ${quotedLabel(value.display_name)} <${config.from}>`, `To: ${reg.owner_address}`,
+      `Reply-To: ${quotedLabel(value.display_name)} <${reply}>`,
       `Message-ID: <${message_id}>`, `Subject: ${subjectWords(value.subject)}`,
       'MIME-Version: 1.0', 'Content-Type: text/plain; charset=utf-8',
       'Content-Transfer-Encoding: base64', 'Auto-Submitted: auto-generated', 'X-Clayrune-Agent-Mail: 1', '',

@@ -311,15 +311,16 @@ def test_outbound_note_reaches_send_and_mail_send_sees_owner_only(world):
     local = world.provision['address'].split('@')[0]
     # Exactly one recipient, the owner; the reply address carries the thread token; nobody else is addressed.
     assert message['to'] == OWNER
-    assert re.fullmatch(re.escape(local) + r'\+[a-f0-9]{32}@' + re.escape(DOMAIN), message['replyTo'])
+    assert re.fullmatch(re.escape(local) + r'\+[a-f0-9]{32}@' + re.escape(DOMAIN), message['replyTo']['email'])
     assert not {'cc', 'bcc'} & set(message)
     assert set(message) == {'from', 'to', 'replyTo', 'subject', 'text', 'headers'}
-    assert message['from'] == 'mail@' + DOMAIN
+    assert message['from'] == {'email': 'mail@' + DOMAIN, 'name': 'Clayrune agent'}
+    assert message['replyTo']['name'] == 'Clayrune agent'
     assert 'Does Friday work?' in message['text']
     intents = world.harness.sql('SELECT state,message_id FROM pull_intents')
     assert intents == [dict(state='accepted', message_id=sent['message_id'])]
     (thread,) = world.harness.sql('SELECT token_hash FROM pull_threads')
-    token = message['replyTo'].split('+')[1].split('@')[0]
+    token = message['replyTo']['email'].split('+')[1].split('@')[0]
     assert thread['token_hash'] == hashlib.sha256(token.encode()).hexdigest()
 
 
@@ -340,7 +341,7 @@ def owner_reply(w):
 
 def inject_message(w, sent, message, message_id):
     result = w.harness.call('inject', dict(
-        to=message['replyTo'], envelopeFrom=OWNER, inReplyTo=sent['message_id'], messageId=message_id,
+        to=message['replyTo']['email'], envelopeFrom=OWNER, inReplyTo=sent['message_id'], messageId=message_id,
         text=REPLY, ar=f'mx.cloudflare.net; spf=pass smtp.mailfrom={OWNER}; dkim=pass header.d=example.com; '
                        'dmarc=pass header.from=example.com', **{'from': OWNER}))
     assert result == {'rejects': []}
