@@ -2,6 +2,7 @@
 import { parseAddrSpec } from './mailbox.js';
 import { validateSend } from './outbound.js';
 import { displayLabel } from './display-name.js';
+import { referencesValue } from './reply-token.js';
 import { bytes } from './signing.js';
 
 const TIMEOUT_MS = 10_000;
@@ -31,11 +32,12 @@ function refusal(error) {
  * Caller owns the durable current-owner authorization/reservation and must not
  * resubmit uncertain intents. reg is its immutable authorized owner snapshot;
  * this adapter performs no lookup and never chooses a recipient from value.
- * clock returns Unix ms; timers supplies setTimeout/clearTimeout for tests.
+ * clock returns Unix ms; timers supplies setTimeout/clearTimeout for tests;
+ * nonce (tests only) replaces the random References nonce.
  * binding.send has no documented abort argument: the timeout bounds our wait,
  * not provider execution, and late completion cannot authorize another call.
  */
-export function cloudflareEmailSending({ binding, from, domain, clock = Date.now, timers = globalThis }) {
+export function cloudflareEmailSending({ binding, from, domain, clock = Date.now, timers = globalThis, nonce }) {
   if (typeof binding?.send !== 'function' || typeof clock !== 'function'
       || typeof timers?.setTimeout !== 'function' || typeof timers?.clearTimeout !== 'function'
       || !parseAddrSpec(from) || parseAddrSpec(from).domain !== domain
@@ -50,15 +52,18 @@ export function cloudflareEmailSending({ binding, from, domain, clock = Date.now
           || typeof reg?.address_local !== 'string' || !/^m[a-f0-9]{29}$/.test(reg.address_local)) {
         throw new Error('registration_inactive');
       }
-      const replyTo = `${reg.address_local}+${value.reply_token}@${domain}`;
+      // Plain per-user address; the reply token rides in References, the one
+      // header Cloudflare lets us set that a reply copies (reply-token.js).
+      const replyTo = `${reg.address_local}@${domain}`;
       if (!parseAddrSpec(replyTo)) throw new Error('invalid_service_address');
+      const references = referencesValue(value.reply_token, domain, nonce);
       // Structured {name,email} form (Cloudflare Email Service accepts it for from
       // and replyTo); the name is re-validated here, bad names use the fallback.
       const name = displayLabel(value.display_name);
       const message = {
         from: { email: from, name }, to: reg.owner_address, replyTo: { email: replyTo, name },
         subject: value.subject, text: value.body,
-        headers: { 'Auto-Submitted': 'auto-generated', 'X-Clayrune-Agent-Mail': '1' },
+        headers: { 'Auto-Submitted': 'auto-generated', 'X-Clayrune-Agent-Mail': '1', References: references },
       };
       const started = clock();
       if (!Number.isSafeInteger(started) || started < 0 || started > Number.MAX_SAFE_INTEGER - TIMEOUT_MS) {

@@ -67,7 +67,9 @@ export async function ingress({ message, ledger, config, now, wake }) {
   // been verified. Real provider fixtures are still required before enabling it.
   if (config.ingressVerified !== true) return drop('ingress_not_verified');
   if (!Number.isFinite(message.rawSize) || message.rawSize > 65_536) return drop('mime_too_large');
-  const match = /^([a-z0-9][a-z0-9._-]{0,63})\+([a-z0-9]{26,64})@([a-z0-9.-]+)$/.exec(message.to ?? '');
+  // Plain `<local>@domain` (token in References) or the legacy `<local>+<token>@domain`
+  // (read-only, mail already in flight). auth.js drops a plain recipient with no token.
+  const match = /^([a-z0-9][a-z0-9._-]{0,63})(?:\+([a-z0-9]{26,64}))?@([a-z0-9.-]+)$/.exec(message.to ?? '');
   if (!match || match[3] !== config.domain) return drop('unknown_recipient');
   if (pull && !/^m[a-f0-9]{29}$/.test(match[1])) return drop('unknown_recipient');
   reg = await ledger.recipient(match[1]);

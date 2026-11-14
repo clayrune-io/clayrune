@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
 import json
+import re
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -442,7 +443,8 @@ console.log(JSON.stringify({status:response.status,headers:Object.fromEntries(re
     result = json.loads(observed[0].stdout)
     assert len(result['sent']) == len(result['threads']) == len(result['intents']) == 1
     assert result['sent'][0]['to'] == OWNER
-    assert result['sent'][0]['replyTo']['email'].startswith('m' + 'a' * 29 + '+')
+    assert result['sent'][0]['replyTo']['email'].startswith('m' + 'a' * 29 + '@')  # plain; token is in References
+    assert re.fullmatch(r'<[a-f0-9]{32}\.[a-f0-9]{32}@[^>]+>', result['sent'][0]['headers']['References'])
     assert 'raw' not in result['sent'][0] and 'Message-ID' not in result['sent'][0]['headers']
     assert result['intents'][0]['state'] == response['state'] == 'accepted'
 

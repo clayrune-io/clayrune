@@ -61,7 +61,7 @@ async function fixture(t, { send = async () => ({ messageId: 'provider-id' }), b
     clearTimeout(token) { f.pending.delete(token); } };
   f.http = new PullSendHTTP({ db: f.db, serviceOrigin: ORIGIN, serviceKeyId: 'service-key',
     servicePrivateKey: f.service.privateKey, clock: () => f.time, bodyTimeoutMs, timers: f.timers,
-    config: { from: 'agents@mail.example.net', domain: 'mail.example.net' },
+    config: { from: 'agents@mail.example.net', domain: 'mail.example.net', nonce: 'fixednonce0123456789' },
     binding: { async send(mail) { f.calls.push(mail); return send(mail, f); } } });
   return f;
 }
@@ -108,8 +108,9 @@ test('valid send signs frozen owner-only receipt after nonce/op/accounting and p
     assert.equal(one(f).state, 'sending'); assert.equal(rows(f, 'pull_nonces').length, 1);
     assert.equal(rows(f, 'pull_operations').length, 1); assert.equal(rows(f, 'pull_budgets').length, 3);
     assert.deepEqual(mail, { from: { email: 'agents@mail.example.net', name: 'Clayrune agent' }, to: 'Owner+tag@example.com',
-      replyTo: { email: `${LOCAL}+${id(3)}@mail.example.net`, name: 'Clayrune agent' },
-      subject: value().subject, text: value().body, headers: { 'Auto-Submitted': 'auto-generated', 'X-Clayrune-Agent-Mail': '1' } });
+      replyTo: { email: `${LOCAL}@mail.example.net`, name: 'Clayrune agent' },
+      subject: value().subject, text: value().body, headers: { 'Auto-Submitted': 'auto-generated', 'X-Clayrune-Agent-Mail': '1',
+        References: `<${id(3)}.fixednonce0123456789@mail.example.net>` } });
     return { messageId: ' opaque receipt ' };
   } });
   const r = await run(f);

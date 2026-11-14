@@ -22,7 +22,8 @@ text ever reaches custody. A failed check is a **drop**, not a hold.
 | --- | --- |
 | `signing.js` | Mail-only Ed25519 v1, exact-body digest, scoped method/path/generation/direction, timestamp and durable nonce claim seam. |
 | `display-name.js` | Re-validates the optional `display_name` the install sends (allowlist `A-Za-z0-9 ._'-`, 40 chars, no control chars); any failure yields "Clayrune agent", never a refused send. Renders "<Name> via Clayrune" for From and Reply-To (structured `{name,email}` and quoted raw form). |
-| `outbound.js` | Allowlisted note/question payload; server-derived recipient, From, Reply-To and Message-ID; send-intent deduplication and uncertainty. |
+| `outbound.js` | Allowlisted note/question payload; server-derived recipient, From, Reply-To and Message-ID; send-intent deduplication and uncertainty. Reply-To is the plain per-user address; the reply token rides in `References`. |
+| `reply-token.js` | `referencesValue()` builds `<TOKEN.NONCE@domain>` for outbound `References` (Cloudflare rejects a caller-set Message-ID, allows References); `headerTokens()` reads token ids back from a reply's `In-Reply-To`/`References` (own domain only, nearest ancestor first, max 8). |
 | `ingress.js` | Bounded raw stream and ordered headers; provider header agreement, loop suppression, unit-3 auth/strip, stable event identity and held missing ids. |
 | `ledger.js`, `schema.sql` | Dedicated D1 state, transactional send/correlation reservation, queue bounds, leased claims, generation revocation and retention. |
 | `replay.js` | Scheduled or authenticated recovery replay; proven routes only, fresh signing nonce, manual redirects, exact durable-custody receipts. |
@@ -41,7 +42,7 @@ text ever reaches custody. A failed check is a **drop**, not a hold.
 
 ### `decide` inputs
 
-- `meta.rcptTo`: envelope recipient `<install>+<token>@<domain>`, token 26-64 chars `[a-z0-9]`.
+- `meta.rcptTo`: envelope recipient. Current mail: the plain `<address_local>@<domain>`, with the thread token carried as an id `<TOKEN.NONCE@domain>` (TOKEN = 32 hex) in `References` (outbound, `reply-token.js`) and read back from the reply's `In-Reply-To`/`References`. Legacy, read-only for mail already in flight: `<install>+<token>@<domain>`, token 26-64 chars `[a-z0-9]`. A plain recipient with no token id is dropped (`token_missing`), never a new chat. Both carriers present and different: `token_conflict`.
 - `meta.headers`: **ordered list** `[{key, value}]` (postal-mime's `email.headers` has this shape). Not a `Headers` object: it folds duplicates and loses order, and both matter.
 - `ownerRecord`: `{active: true, install_id, generation, owner_address}`.
 - `tokenLookup(token)`: sync or async; returns `{thread_id, install_id, owner_generation, expires_at (epoch ms), revoked: false, message_ids: [...]}` or null. Verifier hashing is the caller's.

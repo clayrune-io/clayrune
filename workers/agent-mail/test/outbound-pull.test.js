@@ -67,7 +67,7 @@ async function fixture(t, { send = async () => ({ messageId: 'provider-opaque-id
   };
   f.binding = { async send(message) { f.calls.push(message); return send(message, f); } };
   f.send = (v = value(), extra = {}) => pullOutbound({ ledger: f.ledger, reg: f.reg, value: v,
-    body: bytes(JSON.stringify(v)), config: { from: 'agents@mail.example.net', domain: 'mail.example.net' },
+    body: bytes(JSON.stringify(v)), config: { from: 'agents@mail.example.net', domain: 'mail.example.net', nonce: 'fixednonce0123456789' },
     binding: f.binding, clock: () => f.time, timers: f.timers, ...extra });
   f.switchOwner = async (restore = false) => {
     const i = row(f, 'pull_installs'), http = { stmt: f.ledger.stmt.bind(f.ledger), registry: f.ledger.registry };
@@ -84,8 +84,9 @@ test('pull send durably reserves correlation and authorizes before structured ow
     assert.equal(row(x).state, 'sending'); assert.equal(all(x, 'pull_threads').length, 1);
     assert.equal(all(x, 'pull_budgets').length, 2);
     assert.deepEqual(mail, { from: { email: 'agents@mail.example.net', name: 'Clayrune agent' }, to: 'Owner+tag@example.com',
-      replyTo: { email: `${LOCAL}+${id(3)}@mail.example.net`, name: 'Clayrune agent' }, subject: value().subject, text: value().body,
-      headers: { 'Auto-Submitted': 'auto-generated', 'X-Clayrune-Agent-Mail': '1' } });
+      replyTo: { email: `${LOCAL}@mail.example.net`, name: 'Clayrune agent' }, subject: value().subject, text: value().body,
+      headers: { 'Auto-Submitted': 'auto-generated', 'X-Clayrune-Agent-Mail': '1',
+        References: `<${id(3)}.fixednonce0123456789@mail.example.net>` } });
     return { messageId: ' opaque provider id ' };
   } });
   const result = await f.send();
@@ -243,7 +244,8 @@ test('caller mutation during awaits cannot select another owner, body or reply t
   v.body = 'changed'; v.reply_token = id(99); f.reg.owner_address = 'other@example.com';
   gate.resolve(); assert.equal((await pending).state, 'accepted');
   assert.equal(f.calls[0].to, 'Owner+tag@example.com'); assert.equal(f.calls[0].text, value().body);
-  assert.equal(f.calls[0].replyTo.email, `${LOCAL}+${id(3)}@mail.example.net`);
+  assert.equal(f.calls[0].replyTo.email, `${LOCAL}@mail.example.net`);
+  assert.equal(f.calls[0].headers.References, `<${id(3)}.fixednonce0123456789@mail.example.net>`); // token from the original value
 });
 
 // The HTTP caller's statements join the first transaction on new AND replay

@@ -88,7 +88,9 @@ for (const localLength of [31, 32]) {
     assert.equal(response.status, 200);
     const sent = await response.json();
     const replyTo = /^Reply-To: .*<(.*)>$/m.exec(f.sent[0].raw)[1]; // address inside the display-name form
-    const message = emailMessage({ outId: sent.message_id });
+    assert.equal(replyTo, `${local}@mail.example.net`); // plain: the token is not in the address
+    const references = /^References: (.*)\r$/m.exec(f.sent[0].raw)[1];
+    const message = emailMessage({ outId: sent.message_id, plain: true, references });
     message.to = replyTo;
     const result = await f.legacy.email(message, f.env);
     console.log('reply address result', { localLength, replyLocalLength: replyTo.split('@')[0].length, result });
@@ -243,7 +245,8 @@ test('full Reply-To validation refuses dot syntax and total mailbox overflow bef
     assert.throws(() => constructMail({ ...f.reg, address_local }, sendValue(),
       'synthetic@mail.example.net', f.config), /invalid_service_address/);
   }
-  const domain = `${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.net`;
+  // 31-char local + '@' + 246-char domain = 278 > 254 (the token no longer sits in the local part).
+  const domain = `${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(50)}.net`;
   assert.throws(() => constructMail({ ...f.reg, address_local: 'a'.repeat(31) }, sendValue(),
     `synthetic@${domain}`, { domain, from: `a@${domain}` }), /invalid_service_address/);
 });

@@ -3,6 +3,7 @@ import { bytes, sha256 } from './signing.js';
 import { parseAddrSpec } from './mailbox.js';
 import { cloudflareEmailSending } from './email-sending.js';
 import { quotedLabel } from './display-name.js';
+import { referencesValue } from './reply-token.js';
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 export function validateSend(value) {
   const fields = ['intent_id', 'thread_id', 'reply_token', 'subject', 'body', 'kind'];
@@ -38,12 +39,14 @@ export function constructMail(reg, value, message_id, config) {
   const from = parseAddrSpec(config.from);
   if (!owner || !from || from.domain !== config.domain || !/^[a-z0-9][a-z0-9._-]{0,30}$/.test(reg.address_local)
       || !/^[a-z0-9.-]+$/.test(config.domain)) throw new Error('invalid_service_address');
-  const reply = `${reg.address_local}+${value.reply_token}@${config.domain}`;
+  // Plain per-user Reply-To; the reply token rides in References (reply-token.js).
+  const reply = `${reg.address_local}@${config.domain}`;
   if (!/^[a-f0-9]{32}$/.test(value.reply_token) || !parseAddrSpec(reply)) throw new Error('invalid_service_address');
+  const references = referencesValue(value.reply_token, config.domain, config.nonce);
   return { from: config.from, to: reg.owner_address,
     raw: [`From: ${quotedLabel(value.display_name)} <${config.from}>`, `To: ${reg.owner_address}`,
       `Reply-To: ${quotedLabel(value.display_name)} <${reply}>`,
-      `Message-ID: <${message_id}>`, `Subject: ${subjectWords(value.subject)}`,
+      `Message-ID: <${message_id}>`, `References: ${references}`, `Subject: ${subjectWords(value.subject)}`,
       'MIME-Version: 1.0', 'Content-Type: text/plain; charset=utf-8',
       'Content-Transfer-Encoding: base64', 'Auto-Submitted: auto-generated', 'X-Clayrune-Agent-Mail: 1', '',
       b64(value.body).match(/.{1,76}/g).join('\r\n'), ''].join('\r\n') };
