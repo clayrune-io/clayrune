@@ -482,6 +482,9 @@ def test_claude_cold_revival_uses_saved_native_identity_and_lineage(monkeypatch,
              'requested_effort': 'high', 'incognito': False, 'source': 'agent',
              'spawned_by_session_id': 'grandparent', 'trigger_type': 'workflow',
              'trigger_id': 'run:step', 'ts': '1'}
+    # 7713c5a4 put launch_transaction's history reservation on the revive path;
+    # it writes <DATA_DIR>/<pid>_agent_log.json, so the module-level None must go.
+    monkeypatch.setattr(ar, 'DATA_DIR', tmp_path)
     monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'delivery.db'))
     monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **kwargs: [entry])
     monkeypatch.setattr(ar, '_model_quota_blocked', lambda *args: '')
@@ -565,6 +568,9 @@ def test_interrupted_claude_parent_is_fully_revived(monkeypatch, tmp_path):
              'requested_effort': 'high', 'incognito': False, 'source': 'agent',
              'spawned_by_session_id': 'grandparent', 'trigger_type': 'workflow',
              'trigger_id': 'run:step', 'ts': '1'}
+    # 7713c5a4 put launch_transaction's history reservation on the revive path;
+    # it writes <DATA_DIR>/<pid>_agent_log.json, so the module-level None must go.
+    monkeypatch.setattr(ar, 'DATA_DIR', tmp_path)
     monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'delivery.db'))
     monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **kwargs: [entry])
     monkeypatch.setattr(ar, '_model_quota_blocked', lambda *args: '')
