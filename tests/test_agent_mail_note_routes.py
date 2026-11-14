@@ -123,11 +123,11 @@ def test_factory_failure_is_503_not_a_traceback(monkeypatch):
     assert result.status_code == 503 and result.json == {'error': 'store_unavailable'}
 
 
-def test_module_is_not_registered_by_the_ingress_registry(tmp_path):
+def test_module_is_registered_by_the_ingress_registry(tmp_path):
     from mc.blueprints.agent_mail_routes import create_blueprint
     app = Flask(__name__)
     app.register_blueprint(create_blueprint(tmp_path))
-    assert not any('agent_mail_note' in name for name in app.blueprints)
+    assert any('agent_mail_note' in name for name in app.blueprints)
 
 
 def test_through_real_outbound_sends_only_content_and_binds_the_session(out, monkeypatch):
