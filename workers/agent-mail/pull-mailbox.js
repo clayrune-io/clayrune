@@ -23,7 +23,8 @@ const HEADERS = { 'cache-control': 'no-store', 'x-content-type-options': 'nosnif
  * Exported wake entry point: await namespace.get(namespace.idFromName(install_id))
  * .wake(install_id). Internal DO RPC for ingress10/sweep13, AFTER enqueue commit.
  * Returns {connected:boolean}; false/lost wake never constitutes delivery.
- * Wake performs ONE bounded page from zero; notifications/sweep retain retries.
+ * Wake sends a signed empty hint; the install owns resume ids and page scans.
+ * Notifications/sweep retain retries; a hint never grants custody.
  */
 export class PullMailbox extends DurableObject {
   constructor(state, config) {
@@ -233,7 +234,7 @@ export class PullMailbox extends DurableObject {
         const s = ws.deserializeAttachment();
         try {
           await this.current(s); const m = await this.meta(ws, s); connected = true;
-          m.after_seq = 0; await this.drain(ws, s, m, randomId());
+          if (!m.reauth_notified) await this.send(ws, s, 'wake', {});
         } catch (error) { await this.refuse(ws, s, error); }
       }
       await this.deadlines(); return { connected };

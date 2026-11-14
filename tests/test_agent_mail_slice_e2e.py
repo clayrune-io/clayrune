@@ -331,14 +331,19 @@ def _all(store, sql):
 def owner_reply(w):
     """Connect, send the note, then the owner's reply arrives through email()."""
     connect(w)
+    wait_until(lambda: _all(w.store, 'SELECT scan_complete FROM mail_pull_connections')[0][0] == 1,
+               'initial scan complete')
     out, sent = send_note(w)
-    (message,) = w.harness.call('sent')
+    inject_message(w, sent, w.harness.call('sent')[-1], 'reply-1@example.com')
+    return sent
+
+
+def inject_message(w, sent, message, message_id):
     result = w.harness.call('inject', dict(
-        to=message['replyTo'], envelopeFrom=OWNER, inReplyTo=sent['message_id'], messageId='reply-1@example.com',
+        to=message['replyTo'], envelopeFrom=OWNER, inReplyTo=sent['message_id'], messageId=message_id,
         text=REPLY, ar=f'mx.cloudflare.net; spf=pass smtp.mailfrom={OWNER}; dkim=pass header.d=example.com; '
                        'dmarc=pass header.from=example.com', **{'from': OWNER}))
     assert result == {'rejects': []}
-    return sent
 
 
 def custodied_event(w):
@@ -357,24 +362,35 @@ def test_reply_over_the_real_send_path_reaches_local_custody(world):
     custodied_event(world)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    'Worker wake status uses an unsolicited request id; PullClient halts before ack_committed. '
-    'Removing wake status also removes paging progress on pages containing only held/leased events; '
-    'U8 paused for Dave to select the paging mechanism.'))
 def test_custody_ack_is_committed_and_the_worker_copy_retired(world):
     install = world.provision['install_id']
+    # Real ingress produces ten live rows on distinct threads, all ineligible
+    # for offering. The eligible reply arrives only AFTER the idle scan ends,
+    # so a single email() wake must traverse a no-offer page to reach page two.
+    for n in range(10):
+        _, sent = send_note(world, request_id=f'blocked{n}')
+        message = world.harness.call('sent')[-1]
+        inject_message(world, sent, message, f'blocked-{n}@example.com')
+    future = int(time.time() * 1000) + 3600000
+    world.harness.sql("UPDATE pull_events SET state='held',next_attempt_ms=? WHERE seq<=5", future)
+    world.harness.sql("UPDATE pull_events SET state='offered',lease_id=?,lease_until_ms=? WHERE seq>5",
+                      'f' * 32, future)
     owner_reply(world)
     got = custodied_event(world)
     assert (got['install_id'], got['disposition']) == (install, 'local_received')
 
     def retired():
-        (event,) = world.harness.sql('SELECT event_id,state,text,body_bytes,terminal_ms FROM pull_events')
+        (event,) = world.harness.sql('SELECT event_id,state,text,body_bytes,terminal_ms FROM pull_events WHERE event_id=?',
+                                   got['event_id'])
         return event if event['terminal_ms'] is not None else None
     event = wait_until(retired, 'D1 event retired')
     assert event['event_id'] == got['event_id'] and (event['state'], event['text'], event['body_bytes']) == ('local_received', None, 0)
     (cloud,) = world.harness.sql('SELECT event_id FROM pull_receipts')
     assert cloud['event_id'] == got['event_id']
+    wait_until(lambda: _all(world.store, 'SELECT COUNT(*) FROM mail_pull_ack_outbox')[0][0] == 0,
+               'verified ack_committed retires local outbox')
     assert _all(world.store, 'SELECT COUNT(*) FROM mail_pull_ack_outbox')[0][0] == 0
+    assert world.harness.sql('SELECT COUNT(*) AS n FROM pull_events WHERE terminal_ms IS NULL') == [dict(n=10)]
 
 
 def test_worker_delivered_reply_is_laundered_and_wakes_the_exact_session(world, monkeypatch):

@@ -326,7 +326,7 @@ test('generation switch mid-connection closes at next wake and cannot delete bod
   assert.equal((await f.db.prepare('SELECT COUNT(*) AS n FROM pull_receipts').first()).n,0);
 });
 
-test('hold retains body; wake resumes a bounded page; zero byte capacity offers nothing', async (t) => {
+test('hold retains body; signed wake hints require client resume; zero byte capacity offers nothing', async (t) => {
   const f = await fixture(t,1); const box = await connect(f);
   assert.equal((await page(f,box,{after_seq:0,limit:10,available_bytes:0})).events.length,0);
   const p = await page(f,box); const e=p.events[0];
@@ -336,7 +336,10 @@ test('hold retains body; wake resumes a bounded page; zero byte capacity offers 
   assert.ok(hold.retry_after_ms>=Date.now()+59000); assert.equal((await box.next()).type,'status');
   assert.equal((await f.db.prepare('SELECT text FROM pull_events').first()).text,'reply');
   await enqueue(f); assert.deepEqual(await (await call(f,'/wake')).json(),{connected:true});
-  assert.equal((await box.next()).type,'event'); assert.equal((await box.next()).type,'status');
+  const hint = await box.next(); assert.equal(hint.type,'wake'); assert.deepEqual(await verified(f,hint),{});
+  assert.equal(box.messages.length,0);
+  const resumed = await page(f,box);
+  assert.equal(resumed.events.length,1);
 });
 
 test('resume timeout and absolute reauth deadlines close through hibernation-compatible alarm', async (t) => {

@@ -366,6 +366,8 @@ test('lost SMTP wake recovered from notification alone by actual D1 and DO RPC a
   await mf.unsafeEvictDurableObject('sweep-test', 'TestMailbox', { name: INSTALL, webSockets: 'hibernate' });
   const recovered = await mf.dispatchFetch('https://mail.example.com/sweep'); const result = await recovered.json();
   assert.deepEqual(result.result.notify, { claimed: 1, woken: 1 }); assert.deepEqual(result.wakeResult, { connected: true });
+  const hint = await next(); assert.equal(hint.type, 'wake'); assert.deepEqual(await verified(hint), {});
+  send('resume', { after_seq: 0, limit: 10, available_bytes: 524288 }, 103);
   const second = await next(); assert.equal(second.type, 'event'); const recoveredOffer = await verified(second);
   assert.equal(recoveredOffer.event.incoming_message_id, 'second@example.com'); assert.equal(recoveredOffer.event.text, 'A fresh reply');
   assert.equal((await next()).type, 'status');

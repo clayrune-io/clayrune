@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-13] - Resume pull mail through signed wake hints (MC-1166 U8)
+
+- Replaced Worker-initiated wake drains with signed empty hints. The install issues its own resume requests, coalesces hints and finishes active pages before rescanning; status still requires a known client request id.
+- Removed the final thin-slice xfail. The retirement test now proves one wake reaches an eligible reply behind ten held/leased rows, erases the D1 body and settles the local ack outbox. Added hint signature, duplicate, mid-page and protocol-refusal coverage; updated sweep recovery for the hint protocol.
+- Branch candidate only; no deployment or real mail. Worker and client must use the same frame registry.
+
 ## [2026-11-13] - Align pull-mail thread expiry (MC-1166 U8 partial)
 
 - Accepted send receipts return the Worker's reserved thread expiry; the install verifies and atomically persists it to the intent and both local thread bindings. Existing outbound stores migrate with correlation and payload guards preserved.
