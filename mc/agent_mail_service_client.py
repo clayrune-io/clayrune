@@ -43,6 +43,7 @@ from mc.agent_mail_service_manifest import ServiceKeyCandidate
 from mc.agent_mail_signing import HEX, ID, SKEW_MS, IngressRefused, unbase64url
 from mc.agent_mail_signup import H, I, MAX_INT, ORIGIN, _json, _mailbox
 from mc.agent_mail_store import MailStore
+from mc.agent_mail_user_agent import USER_AGENT
 from mc.core import _log
 
 # Compatibility constants for the retiring ceremony/lifecycle importers.
@@ -248,7 +249,8 @@ class HttpsTransport:
         _need(not any(k in h for k in ('host', 'cookie', 'authorization', 'origin', 'transfer-encoding',
                                       'content-length', 'accept-encoding')), 'invalid_request')
         h.update({'content-type': 'application/json', 'accept-encoding': 'identity',
-                  'cache-control': 'no-store', 'x-content-type-options': 'nosniff'})
+                  'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+                  'user-agent': USER_AGENT})
         request = urllib.request.Request(origin + path, data=body, method='POST', headers=h)
         try:
             with self._opener.open(request, timeout=self.timeout_s) as reply:

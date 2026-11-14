@@ -27,6 +27,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Mapping
 
+from mc.agent_mail_user_agent import USER_AGENT
 from mc.agent_mail_service_manifest import ManifestRefused, ManifestState, verify_service_manifest
 
 MANIFEST_PATH = '/v1/mail/manifest'
@@ -74,7 +75,7 @@ class HttpsGetTransport:
         self._opener = opener or urllib.request.build_opener(_NoRedirect)
 
     def get(self, url: str) -> dict[str, Any]:
-        request = urllib.request.Request(url, method='GET', headers={'Accept': 'application/json'})
+        request = urllib.request.Request(url, method='GET', headers={'Accept': 'application/json', 'User-Agent': USER_AGENT})
         try:
             with self._opener.open(request, timeout=self.timeout_s) as reply:
                 return {'status': reply.status, 'body': reply.read(RESPONSE_LIMIT + 1)}
