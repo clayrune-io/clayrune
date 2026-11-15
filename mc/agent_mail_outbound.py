@@ -13,6 +13,7 @@ from typing import Any, Callable, Protocol
 
 from mc import state
 from mc import agent_mail_display_name as display_name
+from mc.agent_mail_sender_line import sender_line
 from mc.agent_mail_enrollment import Enrollment
 from mc.agent_mail_enrollment_keys import EnrollmentRefused, SealReference
 # Keep the separate compatibility signer reachable to frozen-app analysis;
@@ -218,7 +219,8 @@ class Outbound:
                 session = ar.agent_sessions.get(session_id)
                 if not project or not session or session.get('project_id') != project_id:
                     raise _refused('session_unavailable')
-                context = (f"Project: {project.get('name') or project_id}\n"
+                context = (sender_line(project, session) + '\n'
+                           f"Project: {project.get('name') or project_id}\n"
                            f"Conversation: {str(session.get('task') or session_id)[:300]}\n\n")
                 body = context + request['body'] + '\n\nReply to continue this conversation. Replies cannot approve protected actions.'
                 if len(body.encode()) > 16384:

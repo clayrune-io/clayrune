@@ -272,6 +272,7 @@
 <link rel="stylesheet" href="/static/css/beacon.css">
 <link rel="stylesheet" href="/static/css/documents-search.css">
 <link rel="stylesheet" href="/static/css/report-waiting.css">
+<link rel="stylesheet" href="/static/css/agent-mail-hold-notice.css">
 <link rel="stylesheet" href="/static/css/agent-mail-status.css">
 <link rel="stylesheet" href="/static/css/agent-mail-actions.css">
 <link rel="stylesheet" href="/static/css/agent-mail-holds.css">
@@ -3930,6 +3931,7 @@ setInterval(async () => {
     try {
       const res = await fetch(API_BASE + `/api/project/${h.projectId}/agent/status`);
       const data = await res.json();
+      window.updateAgentMailHoldNotices?.(pid, data.agent_mail_holds);
       if (window.discoverNewSessions?.(pid, data.sessions)) continue;
       const serverMap = {};
       for (const s of (data.sessions || [])) serverMap[s.session_id] = s;
@@ -4445,6 +4447,7 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/chat-search.js"></script>
 <script type="module" src="/static/js/bg-wait-status.js"></script>
 <script type="module" src="/static/js/report-waiting.js"></script>
+<script type="module" src="/static/js/agent-mail-hold-notice.js"></script>
 <script type="module" src="/static/js/conversation.js"></script>
 <script type="module" src="/static/js/session-discovery.js"></script>
 <script type="module" src="/static/js/prompt-time-tag.js"></script>

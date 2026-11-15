@@ -6110,6 +6110,7 @@ async function fetchAgentStatus(projectId) {
     const res = await fetchFailFast(API_BASE + `/api/project/${projectId}/agent/status`);
     const data = await res.json();
     const sessions = data.sessions || [];
+    window.updateAgentMailHoldNotices?.(projectId, data.agent_mail_holds);
     const pName = (allProjects.find(x => x.id === projectId) || {}).name || projectId;
 
     for (const s of sessions) {
