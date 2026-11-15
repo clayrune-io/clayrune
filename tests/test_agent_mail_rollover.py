@@ -157,3 +157,137 @@ def test_non_claude_init_hook_rebinds_on_provider_session_id(wired, monkeypatch)
     rollover.expect('proj1', wired.session['session_id'], 'codex', 'thread-1')
     ar._runtime_note_init(None, wired.session)
     assert snapshot_native(wired.store) == 'thread-2'
+
+
+# --- stale snapshots (a thread silent across more than one rollover) ----------------
+ANCIENT = 'native-ancient'
+
+
+def pin(store, native_id, provider=None):
+    """Pin the thread's snapshot to an id, as if it was last bound/rebound back then."""
+    with store._tx() as db:
+        snap = json.loads(db.execute('SELECT snapshot FROM mail_continuations').fetchone()[0])
+        snap['native_id'] = native_id
+        snap['provider'] = provider or snap['provider']
+        db.execute('UPDATE mail_continuations SET snapshot=?',
+                   (json.dumps(snap, sort_keys=True, separators=(',', ':')),))
+
+
+def test_a_snapshot_two_rollovers_old_is_rebound_on_an_expected_rollover(wired):
+    ready(wired)
+    pin(wired.store, ANCIENT)
+    wired.session['_claude_transcript_history'] = [ANCIENT]      # ANCIENT -> OLD -> NEW
+    assert roll(wired) == 1
+    assert snapshot_native(wired.store) == NEW
+    assert wired.wake.process_next(wired.app)['state'] == SUBMITTED
+
+
+def test_a_history_id_without_an_expectation_does_not_rebind(wired):
+    ready(wired)
+    pin(wired.store, ANCIENT)
+    wired.session['_claude_transcript_history'] = [ANCIENT, OLD]
+    wired.session['claude_session_id'] = NEW                      # id changed, no rollover behind it
+    assert rollover.native_learned(wired.session) == 0
+    assert snapshot_native(wired.store) == ANCIENT
+    result = wired.wake.process_next(wired.app)
+    assert result['state'] == 'blocked' and result['reason'] == 'conversation_identity_changed'
+
+
+def test_an_id_not_in_the_session_history_does_not_rebind(wired):
+    ready(wired)
+    pin(wired.store, 'native-stranger')
+    wired.session['_claude_transcript_history'] = [ANCIENT]
+    assert roll(wired) == 0
+    assert snapshot_native(wired.store) == 'native-stranger'
+
+
+def test_other_providers_keep_the_exact_left_id_match(wired):
+    ready(wired)
+    pin(wired.store, 'thread-stale', provider='codex')
+    wired.session.update(provider='codex', provider_session_id='thread-2',
+                         _claude_transcript_history=['thread-stale'])
+    rollover.expect('proj1', wired.session['session_id'], 'codex', 'thread-1')
+    assert rollover.native_learned(wired.session) == 0            # history is Claude-only
+    assert snapshot_native(wired.store) == 'thread-stale'
+    pin(wired.store, 'thread-1', provider='codex')
+    rollover.expect('proj1', wired.session['session_id'], 'codex', 'thread-1')
+    assert rollover.native_learned(wired.session) == 1
+    assert snapshot_native(wired.store) == 'thread-2'
+
+
+# --- a human Release of an identity hold rebinds that one thread first ----------------
+@pytest.fixture
+def release_web(wired, monkeypatch):
+    from flask import Flask
+    from mc.blueprints import agent_mail_holds_routes as routes, local_auth
+    monkeypatch.setattr(local_auth, '_local_auth_is_configured', lambda: True)
+    monkeypatch.setattr(local_auth, '_local_auth_try_passcode', lambda v: v == 'pass')
+    app = Flask(__name__)
+    app.register_blueprint(routes.create_blueprint(store_factory=lambda: wired.store))
+    client = app.test_client()
+    return SimpleNamespace(client=client, routes=routes, setup=wired,
+                           release=lambda: client.post(f'{routes.BASE}/mail-one/release', json={'passcode': 'pass'}))
+
+
+from types import SimpleNamespace  # noqa: E402
+
+
+def hold_identity(wired):
+    ready(wired)
+    pin(wired.store, ANCIENT)
+    wired.session['claude_session_id'] = NEW
+    assert wired.wake.process_next(wired.app)['reason'] == 'conversation_identity_changed'
+
+
+def test_release_of_an_identity_hold_rebinds_then_delivers(release_web):
+    w = release_web.setup
+    hold_identity(w)
+    result = release_web.release()
+    assert (result.status_code, result.json['ok']) == (200, True)
+    assert snapshot_native(w.store) == NEW
+    assert w.wake.process_next(w.app)['state'] == SUBMITTED       # not re-blocked
+
+
+def test_release_without_the_rebind_would_re_block(wired):
+    hold_identity(wired)
+    assert wired.store.release_hold('mail-one') == 'ready'        # the old, bare release
+    assert wired.wake.process_next(wired.app)['reason'] == 'conversation_identity_changed'
+
+
+def test_release_of_another_hold_reason_does_not_rebind(release_web):
+    w = release_web.setup
+    ready(w)
+    pin(w.store, ANCIENT)
+    with w.store._tx() as db:
+        w.store._move(db, 'mail-one', 'ready', 'blocked', reason='session_closed')
+    assert release_web.release().status_code == 200
+    assert snapshot_native(w.store) == ANCIENT
+
+
+def test_release_refuses_when_the_session_cannot_be_rebound(release_web):
+    w = release_web.setup
+    hold_identity(w)
+    w.session['provider'] = 'codex'                               # snapshot is claude: no rebind possible
+    result = release_web.release()
+    assert (result.status_code, result.json['error']) == (409, 'cannot_rebind')
+    assert w.store.get_event('mail-one')['state'] == 'blocked'
+    assert snapshot_native(w.store) == ANCIENT
+
+
+def test_rebind_thread_is_scoped_to_its_own_session(release_web):
+    w = release_web.setup
+    hold_identity(w)
+    ev = w.store.get_event('mail-one')
+    assert rollover.rebind_thread(w.store, ev['thread_hash'], 'proj1', 'other-session', 'claude', NEW) is False
+    assert rollover.rebind_thread(w.store, ev['thread_hash'], 'proj1', ev['session_id'], 'codex', NEW) is False
+    assert snapshot_native(w.store) == ANCIENT
+
+
+def test_unattended_release_is_refused_and_changes_nothing(release_web, monkeypatch):
+    w = release_web.setup
+    hold_identity(w)
+    monkeypatch.setattr(release_web.routes, 'is_unattended_caller', lambda: True)
+    result = release_web.release()
+    assert (result.status_code, result.json['error']) == (403, 'human_required')
+    assert snapshot_native(w.store) == ANCIENT
+    assert w.store.get_event('mail-one')['state'] == 'blocked'

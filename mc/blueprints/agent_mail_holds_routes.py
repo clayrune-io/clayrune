@@ -6,7 +6,8 @@ queued "until it is reviewed"). `MailStore.release_hold` / `reject_event` are
 that review, and until this blueprint nothing but a script could reach them.
 
 * `GET  /api/agent-mail/holds`                 closed-field metadata, never mail text.
-* `POST /api/agent-mail/holds/<id>/release`    human-only: back into the pipeline.
+* `POST /api/agent-mail/holds/<id>/release`    human-only: back into the pipeline. A
+  conversation_identity_changed hold is first rebound to the chat's current id.
 * `POST /api/agent-mail/holds/<id>/reject`     human-only: dropped for good, content purged.
 
 The two POSTs are gated exactly as the other human-only agent-mail writes
@@ -23,6 +24,7 @@ from typing import Any, Callable
 
 from flask import Blueprint, jsonify, request
 
+from mc import agent_mail_rollover
 from mc.agent_mail_store import (BLOCKED, IllegalTransition, MailStore, MailStoreError,
                                  _UNSETTLED)
 from mc.blueprints.secrets_routes import _require_human_passcode
@@ -31,6 +33,7 @@ from mc.unattended import is_unattended_caller
 
 BASE = '/api/agent-mail/holds'
 REJECT_REASON = 'rejected_by_owner'
+IDENTITY_HOLD = 'conversation_identity_changed'
 MAX_HOLDS = 200
 # The only columns that leave this module. `body`, `laundered`, `last_error`,
 # `message_id` and `submit_evidence` are mail content or free text: never listed.
@@ -101,6 +104,11 @@ def create_blueprint(*, store_factory: Callable[[], MailStore] | None = None) ->
             if event['state'] != BLOCKED:
                 return jsonify({'error': 'not_held', 'state': event['state']}), 409
             if action == 'release':
+                # Without this the next validate re-blocks on the same stale native
+                # id. Only this one thread, only this session and provider.
+                if (event['reason'] == IDENTITY_HOLD
+                        and not agent_mail_rollover.rebind_held_thread(mail, event)):
+                    return jsonify({'error': 'cannot_rebind'}), 409
                 result = {'ok': True, 'state': mail.release_hold(event_id)}
             else:
                 mail.reject_event(event_id, REJECT_REASON)

@@ -38,12 +38,12 @@ def put(store, n, body):
                        message_id=f'<m{n}@x>', body=body)
 
 
-def hold_first_and_ready_second(store):
+def hold_first_and_ready_second(store, reason='conversation_identity_changed'):
     """ev1 held (conversation_identity_changed), ev2 behind it and ready."""
     put(store, 1, SECRET)
     put(store, 2, 'second reply')
     c = store.claim_for_laundering()
-    store.fail(c['event_id'], c['fence_token'], 'conversation_identity_changed', retryable=False)
+    store.fail(c['event_id'], c['fence_token'], reason, retryable=False)
     c = store.claim_for_laundering()
     assert store.complete_laundering(c['event_id'], c['fence_token'], {'reply_text': 'second reply'}) == READY
     assert store.get_event('ev1')['state'] == BLOCKED
@@ -120,7 +120,7 @@ def test_non_object_body_is_a_400(web):
 
 def test_human_release_returns_the_event_to_the_pipeline_and_never_auto_runs_it(web):
     client, store = web
-    hold_first_and_ready_second(store)
+    hold_first_and_ready_second(store, 'session_closed')
     result = release(client)
     assert result.status_code == 200 and result.json == {'ok': True, 'state': LOCAL_RECEIVED}
     assert store.get_event('ev1')['state'] == LOCAL_RECEIVED
@@ -178,3 +178,11 @@ def test_routes_are_wired_through_the_agent_mail_blueprint(tmp_path):
     app.register_blueprint(ingress_blueprint(tmp_path))
     rules = {r.rule for r in app.url_map.iter_rules()}
     assert routes.BASE in rules and routes.BASE + '/<event_id>/<action>' in rules
+
+
+def test_release_of_an_identity_hold_with_no_session_to_rebind_to_is_refused(web):
+    client, store = web
+    hold_first_and_ready_second(store)          # conversation_identity_changed; no such session exists
+    result = release(client)
+    assert (result.status_code, result.json['error']) == (409, 'cannot_rebind')
+    assert store.get_event('ev1')['state'] == BLOCKED
