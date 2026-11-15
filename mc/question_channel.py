@@ -349,8 +349,12 @@ def _deliver_if_still_unattended(qid: str, session: dict, grace: int) -> None:
     try:
         # Answered in the chat while we waited? Then there WAS someone there.
         if not session.get("waiting_for_question"):
+            _log(f"[question-channel] q:{qid[:8]} not mailed: answered "
+                 f"within the grace window", flush=True)
             return
         if is_attended(session, grace=grace):
+            _log(f"[question-channel] q:{qid[:8]} not mailed: session was "
+                 f"being watched (SSE poll within {grace}s)", flush=True)
             return
 
         meta = _outbox.get(qid)
