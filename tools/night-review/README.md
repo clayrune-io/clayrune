@@ -101,6 +101,28 @@ install's verified owner.
   so re-sending identical text from one session returns the same intent.
 - The HTML part exists only on the SMTP path; agent-mail carries plain text.
 
+### Which senders are agent-mail and which stay Gmail (MC-1176)
+
+- **Agent sessions, including steward and scheduled cycles:** the mailer runs
+  from the session's own Bash, so the env above is inherited and the mail goes
+  agent-mail. A steward cycle is a resumable session (`continue_session`), and
+  the owner's reply wakes that same session with its `trigger_type` intact, so
+  the steward fence stays armed on the resumed turn.
+- **Server-side steward-role asks** (`mc/steward_role_comms.default_mailer`):
+  the server has no session env, so the role's project and session are passed
+  as `--project` / `--session`. A mail agent-mail accepted is recorded as route
+  `agent_mail`; it is never read from Gmail. Only a Gmail-sent ask is read
+  through `read_digest.py`.
+- **Gmail only, by design (no session to wake):** the remote-access down and
+  enrollment-lost alerts (`mc_remote/tunnel_supervisor.py`,
+  `mc/blueprints/remote_routes.py`), workflow approval-gate mail and
+  `notify_operator` (`mc/workflows.py`), and hand runs.
+- **`mc:question` mail** (`mc/question_channel.py`) keeps its own transport:
+  the dedicated agent-mail question path when selected, otherwise Gmail with a
+  fixed `--message-id`/`--to` so its IMAP reply relay can match the answer.
+  Routing that Gmail leg through the generic agent-mail note would orphan the
+  relay, so it is deliberately not given a session.
+
 ## Managing the schedule
 
 - List: `curl -s http://localhost:5199/api/schedules`

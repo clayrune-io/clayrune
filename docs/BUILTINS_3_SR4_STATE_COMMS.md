@@ -36,6 +36,14 @@ never replaced by a default.
   else email. Spawner/chat never read or send mail.
 * `default_mailer` / `default_digest_reader` wrap `send_mail.py` /
   `read_digest.py`; both refuse under pytest.
+* Agent-mail (MC-1176): `mailer(subject, body, *, project_id, session_id)` is
+  handed the role's project and the asking session (`RouteContext.session_id`,
+  else the recorded `current_session_id`). `default_mailer` passes them as
+  `--project` / `--session`, so send_mail.py tries agent-mail first and the
+  owner's reply wakes that session. A `SendResult` with transport `agent_mail`
+  records the ask with route `agent_mail`: it is skipped by
+  `check_pending_replies` (no Gmail thread exists) and does not count toward
+  the unanswered-ask ceiling. Gmail-sent asks behave exactly as before.
 
 Send outcomes: exit 0 `sent`; 1/2/4/5 `held` (retryable, visible); 3
 (accepted but not in mailbox) `held: not_delivered`, counts toward the cap; any
