@@ -33,6 +33,26 @@ from mc.secrets_store import peek_passphrase_key
 from mc.core import _log
 
 
+# A note draft only ever moves forward in the call that created it. The note
+# route's only caller (tools/night-review/send_mail.py) falls back to Gmail on
+# any answer but 'accepted', so a draft left behind by a failed or crashed call
+# has ALREADY been delivered by the fallback. Sending it later would duplicate
+# it (incident 2026-11-15: intent 7223f4ee stranded in 'draft' after MailWake.bind
+# raised, while Gmail delivered the same mail). Such drafts become 'abandoned':
+# payload dropped, thread binding revoked, reason kept, never sendable.
+# Questions (question_revision != '') have no fallback channel and stay resumable.
+ORPHAN_DRAFT_SECONDS = 60
+
+
+def _held_reason(exc: BaseException) -> str:
+    # MailHeld/EnrollmentRefused carry closed, code-owned reasons; anything else
+    # is summarised so no exception text reaches the row or the caller.
+    from mc.agent_mail_target import MailHeld
+    if isinstance(exc, (MailHeld, EnrollmentRefused)) and str(exc):
+        return str(exc)[:60]
+    return 'binding_failed'
+
+
 def _refused(reason: str) -> EnrollmentRefused:
     _log(f'[agent-mail] outbound held: {reason}', flush=True)
     return EnrollmentRefused(reason)
@@ -71,8 +91,19 @@ def cleanup(store: Any) -> None:
                        "AND a.local_enabled=1 AND a.state='active' AND g.state='current' "
                        "AND a.generation=mail_outbound_intents.generation "
                        "AND a.seal_flow_id=flow AND a.consent_epoch=epoch)")
+        orphans = ("SELECT thread_hash FROM mail_outbound_intents WHERE state='draft' "
+                   "AND question_revision='' AND created+?<=?")
+        stale = db.execute(orphans, (ORPHAN_DRAFT_SECONDS, now)).fetchall()
+        if stale:
+            db.execute('UPDATE thread_bindings SET revoked_at=? WHERE revoked_at IS NULL AND thread_hash IN ('
+                       + orphans + ')', (now, ORPHAN_DRAFT_SECONDS, now))
+            db.execute("UPDATE mail_outbound_intents SET payload=NULL,state='abandoned',reason='draft_orphaned',"
+                       "updated=? WHERE state='draft' AND question_revision='' AND created+?<=?",
+                       (now, ORPHAN_DRAFT_SECONDS, now))
+            _log(f'[agent-mail] outbound abandoned {len(stale)} orphaned note draft(s): draft_orphaned',
+                 flush=True)
         db.execute("UPDATE mail_outbound_intents SET payload=NULL,state='expired',reason='thread_expired' "
-                   "WHERE expires<=? AND state!='revoked'", (now,))
+                   "WHERE expires<=? AND state NOT IN ('revoked','abandoned')", (now,))
         db.execute("UPDATE mail_outbound_intents SET state='uncertain',reason='receipt_missing' "
                    "WHERE state='sending' AND updated+60<=?", (now,))
         db.execute("DELETE FROM mail_outbound_intents WHERE payload IS NULL AND expires+?<=?",
@@ -200,6 +231,7 @@ class Outbound:
         request_digest = hashlib.sha256(json.dumps([request, question], sort_keys=True,
                                         separators=(',', ':')).encode()).hexdigest()
         row: dict[str, Any]
+        created = False
         with self.store._tx() as db:
             auth = self._authority(db)
             old = db.execute('SELECT * FROM mail_outbound_intents WHERE project_id=? '
@@ -241,12 +273,40 @@ class Outbound:
                 row['payload'] = seal(row, raw, self._key(), secrets.token_bytes(12))
                 db.execute('INSERT INTO mail_outbound_intents (' + ','.join(row) + ') VALUES ('
                            + ','.join('?' for _ in row) + ')', tuple(row.values()))
-        if row['state'] != 'draft':
+                created = True
+        if row['state'] != 'draft' or (not created and not row['question_revision']):
+            # Another call's note draft (in flight, or orphaned and already sent by
+            # the caller's fallback) is never resumed here. cleanup() abandons it.
             return metadata(row)
+        try:
+            return self._bind(row, project_id, session_id, request['kind'], question)
+        except BaseException as exc:
+            if not row['question_revision']:
+                self._abandon(row, _held_reason(exc))
+            raise
+
+    def _abandon(self, row: dict[str, Any], reason: str) -> None:
+        try:
+            with self.store._tx() as db:
+                now = self.store.clock()
+                done = db.execute("UPDATE mail_outbound_intents SET payload=NULL,state='abandoned',reason=?,"
+                                  "updated=? WHERE intent_id=? AND state='draft'",
+                                  (reason, now, row['intent_id'])).rowcount
+                if done:
+                    db.execute('UPDATE thread_bindings SET revoked_at=? WHERE thread_hash=? '
+                               'AND revoked_at IS NULL', (now, row['thread_hash']))
+            _log(f'[agent-mail] outbound abandoned: {reason}', flush=True)
+        except Exception as e:
+            # Still never sendable by this path; cleanup() abandons it after
+            # ORPHAN_DRAFT_SECONDS.
+            _log(f'[agent-mail] outbound abandon failed ({reason}): {type(e).__name__}', flush=True)
+
+    def _bind(self, row: dict[str, Any], project_id: str, session_id: str, kind: str,
+              question: dict[str, Any] | None) -> dict[str, str]:
         value, _ = self._payload(row)
         token = value['reply_token']
         self.store.bind_thread(row['install'], token, project_id, session_id,
-                               kind=request['kind'], expires_at=row['expires'])
+                               kind=kind, expires_at=row['expires'])
         MailWake(self.store).bind(token, question=question)
         with self.store._tx() as db:
             auth = self._authority(db, row)
@@ -283,7 +343,7 @@ class Outbound:
             reg = db.execute('SELECT * FROM registrations WHERE registration_id=?', (row['install'],)).fetchone()
             if not reg or not reg['enabled'] or reg['generation'] != row['generation']:
                 db.execute("UPDATE mail_outbound_intents SET payload=NULL,state='revoked',reason='consent_required' WHERE intent_id=?", (intent_id,))
-            elif row['expires'] <= self.store.clock():
+            elif row['expires'] <= self.store.clock() and row['state'] != 'abandoned':
                 db.execute("UPDATE mail_outbound_intents SET payload=NULL,state='expired',reason='thread_expired' WHERE intent_id=?", (intent_id,))
             elif row['state'] == 'sending' and row['updated'] + 60 <= self.store.clock():
                 db.execute("UPDATE mail_outbound_intents SET state='uncertain',reason='receipt_missing' WHERE intent_id=?", (intent_id,))
