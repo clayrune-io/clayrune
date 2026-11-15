@@ -54,6 +54,7 @@ they just note "email not sent" at the top of the report.
 
 ## Files
 
+- `agent_mail_route.py` — agent-mail-first call-in used by `send_mail.py`.
 - `send_mail.py` — Gmail SMTP sender (stdlib only). `--subject` + one of
   `--body` / `--body-file` / stdin; `--to` overrides the recipient. Sends
   `multipart/alternative`: the original text first, styled Markdown HTML
@@ -72,6 +73,33 @@ they just note "email not sent" at the top of the report.
 - `PROMPT.md` — canonical copy of the agent prompt the schedule runs. Edit
   here **and** update the live schedule (`PUT /api/schedules/<id>` or the
   Scheduler UI) to keep them in sync.
+
+## Agent-mail first
+
+When `send_mail.py` runs inside an agent session it tries **agent-mail** before
+Gmail (`agent_mail_route.py`, MC-1166). Every agent child gets
+`CLAYRUNE_PROJECT_ID`, `CLAYRUNE_SESSION_ID` and `CLAYRUNE_PORT` in its
+environment (`mc/agent_spawn.py`); with both ids set (or `--project` /
+`--session`) the mail is POSTed to the local
+`/api/project/<pid>/agent/mail/note` route. The recipient is always the
+install's verified owner.
+
+- **Replies land back in the sending chat, not in the Gmail inbox.**
+  `tools/mail-mcp/read_digest.py` reads Gmail, so it will **not** see a reply
+  to an agent-mail send. Replies to an SMTP-fallback send still arrive there.
+- Accepted: one stdout line, `[send_mail] sent via agent-mail, intent <id>`,
+  exit 0. With `--verify`, acceptance counts as verified (no IMAP check; the
+  line says so).
+- Any failure (route 404/refusal/503, connection refused, no answer in 20s,
+  subject over 200 bytes, body over 14000 bytes) prints
+  `[send_mail] agent-mail unavailable (<reason>); sending via Gmail` to stderr
+  and continues down the unchanged SMTP path. A body is never truncated.
+- No session env (server-side alerts, hand runs): SMTP, silently.
+- `--smtp-only` skips agent-mail. `--to` and `--message-id` also stay on SMTP:
+  agent-mail cannot honour a chosen recipient or Message-ID.
+- Retries are idempotent: `request_id` is a hash of session + subject + body,
+  so re-sending identical text from one session returns the same intent.
+- The HTML part exists only on the SMTP path; agent-mail carries plain text.
 
 ## Managing the schedule
 
