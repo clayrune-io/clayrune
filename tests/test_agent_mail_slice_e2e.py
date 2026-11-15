@@ -405,7 +405,7 @@ def test_worker_delivered_reply_is_laundered_and_wakes_the_exact_session(world, 
     assert local['state'] == LOCAL_RECEIVED and local['session_id'] == setup.session['session_id']
     # The Worker pushed the body to the install; the install holds it, so D1 kept no text (not the ack path).
     digest = json.dumps(dict(reply_text=REPLY, segments=[dict(kind='reply', text=REPLY)], ambiguous_or_mixed=False,
-                             extraction_failed=False, truncated=False, instruction_like=False))
+                             extraction_failed=False, truncated=False))
     calls = []
     monkeypatch.setattr(agent_runtime, 'claude_oneshot_available', lambda: True)
     monkeypatch.setattr(agent_runtime, 'run_text_transform', lambda provider, **kw: calls.append(kw) or digest)

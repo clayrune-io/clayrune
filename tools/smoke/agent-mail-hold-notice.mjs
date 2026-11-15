@@ -6,7 +6,7 @@ import {chromium} from 'playwright';
 
 const script = readFileSync(new URL('../../static/js/agent-mail-hold-notice.js', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../../static/css/agent-mail-hold-notice.css', import.meta.url), 'utf8');
-const text = 'Your email reply is held for review (looks like an instruction). Release or reject it in Settings > Connectivity > Agent mail.';
+const text = 'Your email reply is held for review. Release or reject it in Settings > Connectivity > Agent mail.';
 const browser = await chromium.launch({headless: true});
 let checks = 0;
 try {

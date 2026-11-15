@@ -8,7 +8,6 @@ from mc.core import _log
 
 REVIEW = 'Release or reject it in Settings > Connectivity > Agent mail.'
 HELD = 'Your email reply is held for review. ' + REVIEW
-INSTRUCTION = 'Your email reply is held for review (looks like an instruction). ' + REVIEW
 
 
 def by_session(project_id: str, *, store_factory: Callable[[], MailStore | None] | None = None
@@ -28,12 +27,11 @@ def by_session(project_id: str, *, store_factory: Callable[[], MailStore | None]
             return {}
         with store._read() as db:
             rows = db.execute(
-                'SELECT session_id, COUNT(*) AS n, '
-                "MAX(CASE WHEN reason='instruction_like' THEN 1 ELSE 0 END) AS instruction "
+                'SELECT session_id, COUNT(*) AS n '
                 'FROM events WHERE project_id=? AND state=? GROUP BY session_id',
                 (project_id, BLOCKED)).fetchall()
         return {row['session_id']: {'count': row['n'],
-                'text': INSTRUCTION if row['instruction'] else HELD} for row in rows}
+                'text': HELD} for row in rows}
     except Exception as exc:
         # Status polling must stay usable even when the optional mail store fails.
         _log(f'[agent-mail] hold notice unavailable: {type(exc).__name__}', flush=True)

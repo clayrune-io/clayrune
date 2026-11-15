@@ -1032,6 +1032,12 @@ Agent emails start with `From <agent name> in <project name> (chat <session id>)
 Clayrune stamps this line from the sending session; unnamed agents appear as
 **Clayrune agent**.
 
+Instruction wording (such as "run the tests") does not hold an authenticated
+reply. Sender and reply-token checks happen at the mail service before signing;
+Clayrune verifies the service signature and local conversation binding. Hidden
+characters, unsupported HTML, oversize text and ambiguous authorship still cause
+review holds. Email cannot unlock protected-action approval gates.
+
 When a reply is held for review, its target chat shows a notice above the
 transcript on the next status refresh (normally within 15 seconds while the
 project window is open). It contains no email text and does not wake the agent.

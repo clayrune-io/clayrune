@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-15] - Accept instruction-worded authenticated owner replies
+
+- Removed wording-based instruction holds from the local screen and tool-free extractor; the chat notice now uses generic review text for every hold, including older instruction holds.
+- Worker ingress still authenticates the verified owner and reply token before signing. Local signature, DMARC evidence, conversation binding, format/authorship holds and human-only approval gates remain enforced. Existing held events still require human review.
+
 ## [2026-11-15] - Identify agent-mail senders and show held replies in chat
 
 - Added a server-stamped first line naming the sending session's character, project and chat. Caller-supplied names cannot replace it; unnamed characters use `Clayrune agent`.
