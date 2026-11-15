@@ -180,8 +180,10 @@ class LaunchTransaction:
                             if r.get('session_id') == self.session_id), None)
                 if (self.destination or row is not None) and not self.attempt.owns_row(row or {}):
                     raise ReservationLost('durable launch reservation was superseded')
+        from mc.agent_spawn import project_scope
         try:
-            proc = spawn(*args, **kwargs)
+            with project_scope(self.project_id):
+                proc = spawn(*args, **kwargs)
         except BaseException as exc:
             if isinstance(exc, OSError) and not getattr(exc, '_mc_launch_ambiguous', False):
                 try:

@@ -57,6 +57,8 @@ Fallback
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import io
 import os
 import subprocess
@@ -64,7 +66,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 
 from mc import launch_transaction as _launch_transaction
 from mc import agent_shim as _shim
@@ -73,6 +75,41 @@ from mc import agent_uncertain_launch as _uncertain
 from mc.proc_kill import POPEN_NEW_SESSION
 
 _root_override: Optional[Path] = None
+
+# The Clayrune project a launch belongs to, for `_identity_env`. Set by
+# `LaunchTransaction.launch` around the spawn: a Claude session's first launch
+# is not in `state.agent_sessions` yet, so the registry alone cannot name it.
+_SPAWN_PROJECT: contextvars.ContextVar[str] = contextvars.ContextVar('mc_spawn_project', default='')
+
+
+@contextlib.contextmanager
+def project_scope(project_id: str) -> Iterator[None]:
+    token = _SPAWN_PROJECT.set(project_id or '')
+    try:
+        yield
+    finally:
+        _SPAWN_PROJECT.reset(token)
+
+
+def _identity_env(env: Optional[Mapping[str, str]], session_id: str) -> Optional[Mapping[str, str]]:
+    """Tell the child which Clayrune session it is (tools/night-review/agent_mail_route.py
+    reads these to route agent email through agent-mail). Set unconditionally: a
+    dispatched child must not inherit its spawner's ids. When the project cannot be
+    named the env is returned untouched, and the mailer falls back to SMTP."""
+    from mc import state
+    project_id = _SPAWN_PROJECT.get() or (state.agent_sessions.get(session_id) or {}).get('project_id') or ''
+    if not project_id:
+        return env
+    if env is None:
+        env = dict(os.environ)
+    elif not isinstance(env, dict):
+        env = dict(env)
+    env['CLAYRUNE_PROJECT_ID'] = str(project_id)
+    env['CLAYRUNE_SESSION_ID'] = str(session_id)
+    port = os.environ.get('MC_PORT') or state.CONFIG.get('port')
+    if port:
+        env['CLAYRUNE_PORT'] = str(port)
+    return env
 
 
 def set_root(root: Optional[Any]) -> None:
@@ -331,6 +368,8 @@ def spawn_engine_proc(cmd: Sequence[Any], *, session_id: Optional[str], engine: 
     `.stdin` goes over its socket (mc/agent_spawn_interactive.py). It excludes
     `deliver`. See the module docstring."""
     config = cfg if cfg is not None else _config()
+    if session_id:
+        env = _identity_env(env, str(session_id))
     plain: dict = dict(cwd=cwd, env=env, creationflags=creationflags, startupinfo=startupinfo,
                        defer_delivery=defer_delivery)
     if interactive:

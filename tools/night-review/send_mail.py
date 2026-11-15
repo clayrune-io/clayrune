@@ -20,6 +20,9 @@ Credentials (never committed) are read from, in order of precedence:
 Gmail requires an App Password (https://myaccount.google.com/apppasswords),
 NOT your normal account password. See tools/night-review/README.md.
 
+Agent sessions try agent-mail first (tools/night-review/agent_mail_route.py) and fall
+back to the SMTP path below on any failure; --smtp-only skips it.
+
 Exit codes: 0 = sent, 2 = credentials missing / invalid args, 1 = send failed,
             3 = accepted by SMTP but --verify could not find it in the mailbox.
 """
@@ -203,6 +206,12 @@ def main() -> int:
                     help="Use this exact Message-ID instead of generating one. "
                          "For callers (e.g. question_channel.py) that must know "
                          "the id in advance to match a later In-Reply-To.")
+    ap.add_argument("--smtp-only", action="store_true",
+                    help="Skip agent-mail and send through Gmail SMTP only.")
+    ap.add_argument("--project", help="Clayrune project id for agent-mail "
+                    "(default: CLAYRUNE_PROJECT_ID).")
+    ap.add_argument("--session", help="Clayrune session id for agent-mail "
+                    "(default: CLAYRUNE_SESSION_ID).")
     args = ap.parse_args()
 
     import datetime as _dt
@@ -266,6 +275,17 @@ def main() -> int:
         print("[send_mail] no body: pass --body, --body-file, or pipe via stdin",
               file=sys.stderr)
         return 2
+
+    # AGENT-MAIL FIRST (MC-1166). An agent session's mail goes to the verified
+    # owner through agent-mail; any failure falls through to Gmail below, so a
+    # mail is never lost. --to / --message-id name a specific recipient or
+    # thread header that agent-mail cannot honour, so those stay on SMTP.
+    if not (args.smtp_only or args.to or args.message_id):
+        import agent_mail_route
+
+        if agent_mail_route.attempt(args.subject, body, project=args.project,
+                                    session=args.session, verify=args.verify):
+            return 0
 
     cfg = _load_config()
     user = (cfg.get("user") or "").strip()
