@@ -7,6 +7,7 @@ from mc import state
 from mc.agent_mail_outbound import Outbound
 from mc.agent_mail_ownership import OwnershipHeld
 from mc.agent_mail_questions import revision
+from mc.agent_mail_target import MailHeld
 from mc.core import _log
 
 def _default_factory() -> Outbound:
@@ -61,8 +62,13 @@ def deliver(session: dict, question: dict, project_name: str) -> dict[str, str]:
             subject=f'Clayrune question: {project_name}'.encode()[:200].decode(errors='ignore'),
             body='\n'.join(lines), kind='question'), question=question)
         return outbound.send(result['intent_id'])
-    except Exception:
-        _log('[agent-mail] question delivery held: outbound_unavailable', flush=True)
+    except MailHeld as exc:
+        reason = str(exc) or 'mail_held'  # closed, code-owned vocabulary
+        _log(f'[agent-mail] question delivery held: {reason}', flush=True)
+        return {'state': 'blocked', 'reason': reason}
+    except Exception as exc:
+        _log(f'[agent-mail] question delivery held: outbound_unavailable '
+             f'({type(exc).__name__}: {str(exc)[:200]})', flush=True)
         return {'state': 'blocked', 'reason': 'outbound_unavailable'}
 
 
