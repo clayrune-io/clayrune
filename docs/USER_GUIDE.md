@@ -1010,13 +1010,13 @@ Enrollment shares your address, installation/public-key evidence and tunnel rout
 with the Clayrune mail service and its enrollment authority. The controls guide
 you through **Resume**, **Review details**, **Confirm**, the verification code,
 delivery proof and **Enable** as each becomes applicable. A working compatible
-tunnel, Claude extraction and machine delivery proof are prerequisites; pending
+tunnel and machine delivery proof are prerequisites; pending
 verification can be resumed after a restart. Passcode confirmation protects each
-mutation. Email replies cannot approve protected actions or unlock human gates.
+mutation. A reply that passes the mail service's checks (this email's one-time token and your verified sender address) is treated as you typing in the chat.
 
 The service on Cloudflare and email providers process sent notes/questions,
 including project name and conversation label. Incoming supported reply text
-passes through Cloudflare and a tool-free Claude extraction call, then through
+passes through Cloudflare, then through
 the selected provider for the recorded conversation. Accepted replies may remain
 in that conversation's local history and normal project memory. Read the
 [DRAFT privacy disclosure](AGENT_MAIL_PRIVACY_DRAFT.md) for data recipients,

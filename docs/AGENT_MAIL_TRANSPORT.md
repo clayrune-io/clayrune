@@ -333,7 +333,7 @@ enabled service is claimed by these internal Python seams. The Worker shared
 breaker P2 is addressed by the accepted/refused split below; real Cloudflare
 ingress provenance and all live pilot gates remain.
 
-## Recorded-event laundering adapter (unit 5)
+## Recorded-event extraction adapter (unit 5)
 
 `mc/agent_mail_launder.py` exposes `MailLaunder(store, enabled=False)` as a
 trusted Python integration seam, with no new route, scheduler or live setting.
@@ -342,34 +342,22 @@ event. Its return contains only event id, state and reason; ready text remains
 inside the dedicated inbox. No wake, provider submission, question consumption,
 outbound send or enrollment is performed. Units 6/7 own that integration.
 
-`mc/agent_mail_screen.py` conservatively holds command/tool syntax, impersonation,
-permission/approval requests, residual HTML, controls and invisible Unicode.
-Screening covers the whole input, including quoted/forwarded sections. It never
-silently removes or truncates those bytes; ambiguous everyday command words can
-therefore require owner review. This detector is not a complete injection defense.
+Since 2026-11-15 there is no screening and no model call on this path: a reply that
+reached local custody already passed the Worker's per-email reply-token and
+verified-owner (sender/DMARC) checks, so it is the owner. `mc/agent_mail_extract.py`
+deterministically cuts at the first quote header ("On ... wrote:", Outlook "Original
+Message"/"From:" block, a `____` rule), drops `>` lines, strips invisible characters
+and truncates oversize text; the only hold is an empty reply. The stored envelope is
+`{version, event_id, reply_text}` and wake delivers it under a plain
+"email reply from the project owner" header with the authority of a chat message.
 
-`mc/agent_mail_extract.py` uses the shared `claude_mail_transform()` in
-`mc/mail_launder.py`, backed by the verified isolated Claude text transform.
-Other providers fail closed. Legacy decision-digest callers keep their schema;
-their prompt no longer assumes an installation-specific owner identity. Child
-exceptions/errors are sanitized to constant codes, never echoed mail bodies.
-No real model calls are part of this unit's synthetic verification.
+The deadline paragraphs below describe the retired model-based extraction. The shared
+transform deadline machinery they document is still used by other callers.
 
-The new extractor accepts exactly one bounded JSON object, false boolean
-ambiguity/failure/truncation/instruction flags, and literal ordered reply/quote/
-forward segments covering the entire input. Exactly one fresh reply segment
-must match `reply_text`. Excluded quoted/forwarded bytes never enter the ready
-envelope. Notes and free-text questions use the same extraction, with **no**
-invented yes/no decision. The stored envelope has version, source, event id,
-warning, reply text and quote/forward-presence flags; it remains untrusted data,
-never approval or authority to change permissions or bypass a human gate.
+Finalization-time revalidation, crash/backoff recovery and hold-release semantics are
+unchanged.
 
-Unavailable runtime, timeout, malformed/oversize output, ambiguity and flags
-become visible durable holds without raw fallback. The adapter computes one
-absolute monotonic deadline from `min(25 seconds, configured timeout, actual
-remaining persisted lease - 3 seconds)`. Claim validation/preparation time is
-therefore deducted before extraction. An insufficient initial budget holds
-without calling the model. The optional `deadline` keyword passes through the
+The optional `deadline` keyword (no longer passed by agent mail) passes through the
 shared transform seam into `ClaudeRuntime.oneshot`; API credits and subscription
 CLI fallback each receive only the remaining budget, capped by the per-leg
 timeout. Fallback is skipped when fewer than three seconds remain. Exhaustion,
@@ -460,26 +448,10 @@ junction was removed nonrecursively after all cross-language tests completed;
 the main checkout dependency remained intact. No live mail/model validation,
 merge, push, restart or deployment was performed.
 
-Round 3 adds the real-I/O review probes at
-`tools/smoke/agent_mail_deadline_probe.py` (12 cases) and
-`tools/smoke/agent_mail_cli_tree_probe.py` (live-root and exited-root cases). Run them with the
-same installation launcher and `python -m pytest -o addopts=` selection.
-These smokes register their harmless synthetic children with the live Process
-Manager; they live outside `tests/`, whose live-state guard correctly refuses
-that registration. No guard or permission setting is changed. The HTTP probe
-uses real requests/urllib3 reads on a socket pair, with no listener/provider.
-Per Dave's 2026-11-09 13:03 decision, its only relaxed assertion permits
-ConnectionAbortedError/ConnectionResetError/BrokenPipeError or OSError winerror
-10053/10054, recorded at/after the absolute deadline minus 50ms measurement
-tolerance. Other errors or early disconnects fail. Added assertions require
-elapsed time below the lease, persisted blocked/extraction_timeout after one
-attempt, and no automatic reclaim. Original reviewer files remain byte-identical
-in retained scratch evidence. Synthetic clock mocks also target the new CLI
-runner seam; their assertions remain unchanged. The descendant probe requires
-elapsed < 3.2 seconds plus only 0.25 seconds of scheduling margin. Eleven isolated tests in
-`tests/test_transform_hard_io_deadline.py` cover headers, body trickles including
-`Connection: close`, timely success, stale-root refusal, bounded cleanup and
-immediate cancellation with 0.5 seconds or less remaining.
+Round 3's real-I/O smoke probes `tools/smoke/agent_mail_deadline_probe.py` and
+`tools/smoke/agent_mail_cli_tree_probe.py`, and round 5's
+`agent_mail_suspended_probe.py`, drove `MailLaunder` through the model and were deleted
+with it on 2026-11-15; the unit tests named below remain.
 Round 4 adds `tests/test_transform_process_ownership.py` for Job Object
 configuration/assignment/failure/close semantics and the recorded-group seam.
 The exited-root smoke asserts the wrapper exited before cancellation, its

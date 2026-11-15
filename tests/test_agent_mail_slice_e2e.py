@@ -13,9 +13,7 @@ What this file supplies (test plumbing only, no production file is touched):
   rewrites that one bare import for workerd.
 * an HttpsTransport opener and a websocket factory that point the reviewed ``https://`` origin at
   Miniflare's 127.0.0.1 listener. Everything else is the code that ships.
-* the model boundary of laundering (``agent_runtime.run_text_transform``) is stubbed, as in
-  test_agent_mail_launder.py, so the real digest validation still runs; the follow-up is the real
-  ``agent_followup`` writing to a fake session pipe.
+* the follow-up is the real ``agent_followup`` writing to a fake session pipe.
 
 Needs workers/agent-mail/node_modules (Miniflare); skips if it is absent.
 """
@@ -38,8 +36,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from test_agent_mail_wake import setup, env  # noqa: F401  (session + route patching fixtures)
 from mc import agent_mail_factory as fac
-from mc import agent_runtime
-from mc.agent_mail_extract import WARNING
 from mc import agent_mail_pull_client as pull_client
 from mc.agent_mail_launder import MailLaunder
 from mc.agent_mail_service_client import HttpsTransport
@@ -404,20 +400,14 @@ def test_worker_delivered_reply_is_laundered_and_wakes_the_exact_session(world, 
     local = world.store.get_event(got['event_id'], include_content=True)
     assert local['state'] == LOCAL_RECEIVED and local['session_id'] == setup.session['session_id']
     # The Worker pushed the body to the install; the install holds it, so D1 kept no text (not the ack path).
-    digest = json.dumps(dict(reply_text=REPLY, segments=[dict(kind='reply', text=REPLY)], ambiguous_or_mixed=False,
-                             extraction_failed=False, truncated=False))
-    calls = []
-    monkeypatch.setattr(agent_runtime, 'claude_oneshot_available', lambda: True)
-    monkeypatch.setattr(agent_runtime, 'run_text_transform', lambda provider, **kw: calls.append(kw) or digest)
     assert MailLaunder(world.store, enabled=True).process_next()['state'] == 'ready'
-    assert len(calls) == 1 and calls[0]['stdin_text'] == REPLY
     laundered = world.store.get_event(got['event_id'], include_content=True)
-    assert laundered['laundered']['warning'] == WARNING
+    assert laundered['laundered']['reply_text'] == REPLY
 
     # Wake: the real follow-up lands in the session the note was sent for, and only there.
     assert MailWake(world.store, enabled=True).process_next(setup.app)['state'] == SUBMITTED
     delivered = json.loads(setup.session['proc'].stdin.getvalue())
-    assert REPLY in delivered['message']['content'] and 'Owner mail reply' in delivered['message']['content']
+    assert REPLY in delivered['message']['content'] and 'Email reply from the project owner' in delivered['message']['content']
     assert world.other['proc'].stdin.getvalue() == ''
     after = world.store.get_event(got['event_id'])
     assert after['state'] == SUBMITTED and after['session_id'] == 'mail-session'

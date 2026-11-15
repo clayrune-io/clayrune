@@ -11,7 +11,6 @@ from mc import agent_runtime, question_channel as qc, state
 from mc import agent_mail_outbound_questions as adapter
 from mc.agent_mail_enrollment_keys import EnrollmentRefused
 from mc.agent_mail_questions import revision
-from mc.agent_mail_extract import WARNING
 from mc.agent_mail_ingress import MailIngress
 from mc.agent_mail_store import SUBMITTED
 from mc.agent_mail_wake import MailWake
@@ -374,9 +373,7 @@ def test_immediate_free_text_reply_consumes_only_its_recorded_form(channel):
         ev, event_id = out.kit.receive(value, text='Friday works for me.')
         claim = out.store.claim_for_laundering()
         out.store.complete_laundering(event_id, claim['fence_token'], dict(
-            version=1, source='owner_mail_laundered', warning=WARNING, reply_text=ev['text'],
-            ambiguous_or_mixed=False, quoted_content_present=False,
-            forwarded_content_present=False, event_id=event_id))
+            version=1, reply_text=ev['text'], event_id=event_id))
         assert MailWake(out.store, enabled=True).process_next(out.setup.app)['state'] == SUBMITTED
         captured.append(event_id)
     out.recording.hook = reply

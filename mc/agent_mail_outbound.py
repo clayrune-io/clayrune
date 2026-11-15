@@ -222,7 +222,7 @@ class Outbound:
                 context = (sender_line(project, session) + '\n'
                            f"Project: {project.get('name') or project_id}\n"
                            f"Conversation: {str(session.get('task') or session_id)[:300]}\n\n")
-                body = context + request['body'] + '\n\nReply to continue this conversation. Replies cannot approve protected actions.'
+                body = context + request['body'] + '\n\nReply to continue this conversation.'
                 if len(body.encode()) > 16384:
                     raise _refused('body_limit')
                 value = dict(op_id=intent, intent_id=intent, thread_id='t_' + intent, reply_token=token,

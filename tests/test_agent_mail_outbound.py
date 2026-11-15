@@ -22,7 +22,6 @@ from mc.agent_mail_pull_receiver import PullReceiver
 from test_agent_mail_wake import setup, env, wait_for  # noqa: F401
 from mc.agent_mail_enrollment_keys import EnrollmentRefused
 from mc.agent_mail_enrollment_keys import b64
-from mc.agent_mail_extract import WARNING
 from mc.agent_mail_ingress import MailIngress
 from mc.agent_mail_outbound import Outbound
 from mc.agent_mail_signing import unbase64url
@@ -366,9 +365,7 @@ def test_immediate_reply_before_send_receipt_reaches_only_original_conversation(
         assert event['session_id'] == out.session['session_id']
         claim = out.store.claim_for_laundering()
         out.store.complete_laundering(event['event_id'], claim['fence_token'], dict(
-            version=1, source='owner_mail_laundered', warning=WARNING, reply_text=ev['text'],
-            ambiguous_or_mixed=False, quoted_content_present=False,
-            forwarded_content_present=False, event_id=event['event_id']))
+            version=1, reply_text=ev['text'], event_id=event['event_id']))
         assert MailWake(out.store, enabled=True).process_next(out.setup.app)['state'] == SUBMITTED
         assert other['proc'].stdin.getvalue() == ''  # no second dispatch
     # Give the other synthetic session its own pipe.
