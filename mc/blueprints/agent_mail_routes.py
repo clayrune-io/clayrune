@@ -34,6 +34,8 @@ def create_blueprint(data_dir: Path, *, store_factory: Callable[[], MailStore] |
     bp.register_blueprint(deployment_blueprint())
     from mc.blueprints.agent_mail_note_routes import create_blueprint as note_blueprint
     bp.register_blueprint(note_blueprint())  # W3: outbound note POST (U3), 404 unless outbound enabled
+    from mc.blueprints.agent_mail_holds_routes import create_blueprint as holds_blueprint
+    bp.register_blueprint(holds_blueprint(store_factory=store_factory))  # held-event list + human-only release/reject
 
     def enrolled_store() -> MailStore:
         # The one shared, outside-repo store (7b location, external marker). It is
