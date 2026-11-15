@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-11-15] - Steward-role decision mail goes through agent-mail (MC-1176)
+
+- `steward_role_comms.default_mailer` now passes the role's project and session to `send_mail.py`, so a server-side steward decision ask goes through agent-mail and the owner's reply wakes that session; Gmail stays the fallback. It reports the transport that accepted the mail (`SendResult.transport`).
+- An ask accepted by agent-mail is recorded with route `agent_mail` (no state-schema change). `check_pending_replies` no longer reads Gmail for it, and it does not count toward the five-unanswered-asks ceiling; Gmail-sent asks are unchanged and still read through `read_digest.py`.
+- `RouteContext.session_id` names the asking session; empty falls back to the assignment's `current_session_id`. The injected mailer signature gained `project_id`/`session_id` keywords.
+- Audit, no code change: agent sessions (including steward cycles, already resumable via `continue_session` with `trigger_type` preserved on reply wake) inherit the agent-mail env; remote-access alerts, workflow approval/`notify_operator` mail and `mc:question`'s Gmail leg stay Gmail by design (see `tools/night-review/README.md`).
+- Branch candidate for review; no real mail sent, no server restart.
+
 ## [2026-11-15] - Agent-mail inbound: deterministic quote strip, no screening, no model
 
 - A reply that passes the Worker's per-email token and verified-owner checks is treated as the owner typing in chat. Extraction is now a deterministic quote strip ("On ... wrote:", Outlook original-message/From block, `>` lines); invisible characters are stripped, oversize text is truncated, and an empty reply is the only hold. No model call remains on the inbound path.

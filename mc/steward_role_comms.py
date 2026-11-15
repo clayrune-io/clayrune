@@ -11,10 +11,13 @@ Two jobs, both unattended-safe:
   A dispatched role reports to its spawner, an attended human is asked in
   chat, and only an unattended root with no spawner reaches the mailer.
 
-Mail goes through the existing ``tools/night-review/send_mail.py`` and replies
-are read ONLY through ``tools/mail-mcp/read_digest.py`` (laundered). There is
-no SMTP/IMAP code here and no fallback to the raw mail MCP: a reader error
-blocks the send. A digest is untrusted data; ``ReplyCheck.grants_authority`` is
+Mail goes through the existing ``tools/night-review/send_mail.py``, handed the
+role's project and session so it tries agent-mail first (the owner's reply then
+wakes that session as a chat follow-up) and falls back to Gmail SMTP only when
+agent-mail is unavailable. A Gmail-sent ask's reply is read ONLY through
+``tools/mail-mcp/read_digest.py`` (laundered); an agent-mail ask is never read
+from Gmail because its reply arrives in the session. There is no SMTP/IMAP code
+here and no fallback to the raw mail MCP: a reader error blocks the send. A digest is untrusted data; ``ReplyCheck.grants_authority`` is
 always False, so an ``approved`` still has to pass the action's own human gate.
 """
 from __future__ import annotations
@@ -57,6 +60,11 @@ _JOURNAL_LOCKS: dict[str, RLock] = {}
 _JOURNAL_GUARD = Lock()
 
 ROUTE_SPAWNER, ROUTE_CHAT, ROUTE_EMAIL = 'spawner', 'chat', 'email'
+# An ask that went out through agent-mail. Recorded in the same ``route`` field
+# (no state-schema change) once the mailer reports that transport; its reply
+# wakes the sending session, so no Gmail reply read applies to it.
+ROUTE_AGENT_MAIL = 'agent_mail'
+TRANSPORT_AGENT_MAIL, TRANSPORT_GMAIL = 'agent_mail', 'gmail'
 
 
 class CommsError(RoleError):
@@ -150,8 +158,29 @@ def _under_pytest() -> bool:
     return bool(os.environ.get('PYTEST_CURRENT_TEST')) and not os.environ.get('MC_LIVE_MAIL_TESTS')
 
 
-def default_mailer(subject: str, body: str, *, run: Callable[..., Any] | None = None) -> int:
+class SendResult(int):
+    """A mailer exit code that also says which transport carried the mail.
+
+    A plain ``int`` from a mailer means Gmail; only ``default_mailer`` (reading
+    send_mail.py's own ``sent via agent-mail`` line) sets ``agent_mail``.
+    """
+    transport: str = TRANSPORT_GMAIL
+
+    def __new__(cls, code: int, transport: str = TRANSPORT_GMAIL) -> 'SendResult':
+        obj = super().__new__(cls, code)
+        obj.transport = transport
+        return obj
+
+
+def default_mailer(subject: str, body: str, *, project_id: str = '', session_id: str = '',
+                   run: Callable[..., Any] | None = None) -> int:
     """Run the existing send_mail.py and return its exit code (body via file).
+
+    With ``project_id`` and ``session_id`` the mailer is told which session is
+    asking (``--project`` / ``--session``), so it goes through agent-mail first
+    and the owner's reply lands in that session. Without them (no session
+    recorded yet) it is Gmail, as before. The returned ``SendResult`` carries the
+    transport that actually accepted the mail.
 
     Exit codes: 0 sent+verified, 1 send failed, 2 not configured, 3 accepted but
     not found in the mailbox, 4 ``mail_paused`` kill switch, 5 pytest guard.
@@ -164,10 +193,14 @@ def default_mailer(subject: str, body: str, *, run: Callable[..., Any] | None = 
     with tempfile.TemporaryDirectory(prefix='mc-role-mail-') as tmp:
         body_file = Path(tmp) / 'body.txt'
         body_file.write_text(body, encoding='utf-8')
-        proc = run([sys.executable, '-I', str(SEND_MAIL), '--subject', subject,
-                    '--body-file', str(body_file), '--verify'],
-                   capture_output=True, text=True, timeout=300)
-    return int(proc.returncode)
+        cmd = [sys.executable, '-I', str(SEND_MAIL), '--subject', subject,
+               '--body-file', str(body_file), '--verify']
+        if project_id and session_id:
+            cmd += ['--project', project_id, '--session', session_id]
+        proc = run(cmd, capture_output=True, text=True, timeout=300)
+    code = int(proc.returncode)
+    via_agent_mail = code == 0 and '[send_mail] sent via agent-mail' in (proc.stdout or '')
+    return SendResult(code, TRANSPORT_AGENT_MAIL if via_agent_mail else TRANSPORT_GMAIL)
 
 
 def default_digest_reader(query: str, *, run: Callable[..., Any] | None = None) -> dict:
@@ -237,21 +270,29 @@ def _tag(role_tag: str) -> str:
     return f'[Clayrune {role_tag}]'
 
 
+def _awaits_gmail_reply(dec: dict[str, Any]) -> bool:
+    """An open ask whose reply, if any, is in Gmail. An agent-mail ask is not:
+    the owner's reply wakes the sending session as a chat follow-up, so there is
+    no Gmail thread to read and no reader to fail closed on."""
+    return dec['status'] in OPEN_STATUS and dec['route'] != ROUTE_AGENT_MAIL
+
+
 def check_pending_replies(project_id: str, schedule_id: str, *, store: RoleStateStore,
                           digest_reader: Callable[[str], dict], role_tag: str = 'steward',
                           now: datetime | None = None) -> list[ReplyCheck]:
-    """Read the reply for every open emailed ask, via the laundering reader only.
+    """Read the reply for every open Gmail-sent ask, via the laundering reader only.
 
     Call at the start of a cycle and before raising any email. An ``answered``
     reply closes the ask with ``reply_decision``. Reader failures come back as
     ``error`` results; callers must treat any ``error`` as "do not send".
-    Raises StateError if state is unreadable.
+    Asks sent through agent-mail are skipped: their reply arrives in the
+    session itself. Raises StateError if state is unreadable.
     """
     tag = _tag(role_tag)
     state = store.read(project_id, schedule_id)
     results: list[ReplyCheck] = []
     for dec in state['decisions']:
-        if dec['status'] not in OPEN_STATUS:
+        if not _awaits_gmail_reply(dec):
             continue
         try:
             check = interpret_digest(dec['id'], digest_reader(f'{tag} {dec["id"]}'))
@@ -293,6 +334,10 @@ class DecisionRequest:
 class RouteContext:
     spawner_session_id: str = ''
     human_attended: bool = False
+    # The role session raising the ask. Handed to the mailer so the mail goes
+    # through agent-mail and the owner's reply wakes THIS session. Empty falls
+    # back to the assignment's recorded ``current_session_id``.
+    session_id: str = ''
 
 
 @dataclass
@@ -356,11 +401,16 @@ _HELD_REASON = {1: 'send_failed', 2: 'channel_unavailable', 3: 'not_delivered',
 
 
 def raise_decision(project: dict, schedule: dict, req: DecisionRequest, ctx: RouteContext,
-                   *, store: RoleStateStore, mailer: Callable[[str, str], int],
+                   *, store: RoleStateStore, mailer: Callable[..., int],
                    digest_reader: Callable[[str], dict], role_tag: str = 'steward',
                    max_per_day: int = MAX_EMAILS_PER_DAY,
                    now: datetime | None = None) -> DecisionOutcome:
     """Route one ask. Never sends mail unless every earlier gate passed.
+
+    ``mailer(subject, body, *, project_id, session_id)`` returns an exit code;
+    a ``SendResult`` whose ``transport`` is ``agent_mail`` marks the ask as
+    answered in the session (route ``agent_mail``), so it is excluded from the
+    Gmail reply read and the open-ask ceiling.
 
     Outcome ``status`` values: ``reported`` (spawner/chat; ``report`` holds the
     text to put in the final message), ``sent``, ``delivery_unknown``, ``held``
@@ -406,7 +456,7 @@ def raise_decision(project: dict, schedule: dict, req: DecisionRequest, ctx: Rou
 
         # 2. Reply-first: read every open email ask before any new email.
         replies: list[ReplyCheck] = []
-        if route == ROUTE_EMAIL and any(d['status'] in OPEN_STATUS for d in state['decisions']):
+        if route == ROUTE_EMAIL and any(_awaits_gmail_reply(d) for d in state['decisions']):
             try:
                 replies = check_pending_replies(pid, sid, store=store, digest_reader=digest_reader,
                                                 role_tag=role_tag, now=stamp_now)
@@ -433,7 +483,7 @@ def raise_decision(project: dict, schedule: dict, req: DecisionRequest, ctx: Rou
             return DecisionOutcome('reported', route, ref, f'reported to {route}', text, replies)
 
         # 5. Email gates: open-ask ceiling, then the daily cap.
-        if existing is None and sum(d['status'] in OPEN_STATUS for d in state['decisions']) >= MAX_OPEN_DECISIONS:
+        if existing is None and sum(_awaits_gmail_reply(d) for d in state['decisions']) >= MAX_OPEN_DECISIONS:
             journal('decision_blocked', f'{req.key}: {MAX_OPEN_DECISIONS} asks are already unanswered.')
             return DecisionOutcome('blocked_open_asks', route, ref,
                                    'too many unanswered asks', replies=replies)
@@ -446,11 +496,19 @@ def raise_decision(project: dict, schedule: dict, req: DecisionRequest, ctx: Rou
         _upsert(store, pid, sid, ref, req.key, route, subject, 'sending', '', stamp_now,
                 attempted=True, bump=True)
         try:
-            code = mailer(subject, body)
+            code = mailer(subject, body, project_id=pid,
+                          session_id=ctx.session_id or state['current_session_id'])
         except Exception as exc:  # timeout / OSError: the message may have left
             _log(f'[steward-role-comms] mailer raised for {ref}: {exc!r}')
             code = None
         if code == 0:
+            if getattr(code, 'transport', TRANSPORT_GMAIL) == TRANSPORT_AGENT_MAIL:
+                _finish(store, pid, sid, ref, 'sent', '', stamp_now, counted=True, sent=True,
+                        route=ROUTE_AGENT_MAIL)
+                journal('decision_sent', f'{req.key}: sent via agent-mail ({ref}); the reply '
+                        'wakes this session as a chat follow-up.')
+                return DecisionOutcome('sent', ROUTE_AGENT_MAIL, ref, 'sent via agent-mail',
+                                       replies=replies)
             _finish(store, pid, sid, ref, 'sent', '', stamp_now, counted=True, sent=True)
             journal('decision_sent', f'{req.key}: emailed ({ref}); awaiting reply.')
             return DecisionOutcome('sent', route, ref, 'emailed', replies=replies)
@@ -489,11 +547,13 @@ def _upsert(store: RoleStateStore, pid: str, sid: str, ref: str, key: str, route
 
 
 def _finish(store: RoleStateStore, pid: str, sid: str, ref: str, status: str, reason: str,
-            now: datetime, *, counted: bool, sent: bool = False) -> None:
+            now: datetime, *, counted: bool, sent: bool = False, route: str = '') -> None:
     def mutate(state: dict[str, Any]) -> None:
         for dec in state['decisions']:
             if dec['id'] == ref:
                 dec['status'], dec['reason'], dec['last_reported_status'] = status, reason, status
+                if route:
+                    dec['route'] = route
                 if counted:
                     dec['cap_counted_at'] = _stamp(now)
                 if sent:

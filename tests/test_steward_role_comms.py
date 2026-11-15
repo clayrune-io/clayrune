@@ -24,10 +24,11 @@ JOURNAL = 'docs/_journal/c1-steward.md'
 
 class FakeMailer:
     def __init__(self, *codes):
-        self.codes, self.calls = list(codes), []
+        self.codes, self.calls, self.ctx = list(codes), [], []
 
-    def __call__(self, subject, body):
+    def __call__(self, subject, body, **ctx):
         self.calls.append((subject, body))
+        self.ctx.append(ctx)
         code = self.codes.pop(0) if self.codes else 0
         if isinstance(code, Exception):
             raise code
@@ -343,3 +344,76 @@ def test_default_digest_reader_uses_only_the_laundering_script():
     assert Path(seen['cmd'][2]) == comms.READ_DIGEST
     assert 'search_email' not in Path(comms.__file__).read_text(encoding='utf-8').replace(
         'search_email/read_email', '')
+
+
+# ── agent-mail transport (MC-1176) ─────────────────────────────────────────
+
+class AgentMailMailer(FakeMailer):
+    """Reports the same exit code, but as accepted by agent-mail."""
+
+    def __call__(self, subject, body, **ctx):
+        code = super().__call__(subject, body, **ctx)
+        return comms.SendResult(code, comms.TRANSPORT_AGENT_MAIL)
+
+
+def test_default_mailer_names_the_session_and_reports_the_transport():
+    seen = []
+
+    def runner(stdout, returncode=0):
+        def run(cmd, **kw):
+            seen.append(list(cmd))
+            return SimpleNamespace(returncode=returncode, stdout=stdout)
+        return run
+    sent = '[send_mail] sent via agent-mail, intent in_abc\n'
+    out = comms.default_mailer('S', 'B', project_id='p1', session_id='sess-1', run=runner(sent))
+    assert out == 0 and out.transport == comms.TRANSPORT_AGENT_MAIL
+    cmd = seen[-1]
+    assert cmd[cmd.index('--project') + 1] == 'p1' and cmd[cmd.index('--session') + 1] == 'sess-1'
+    # No session recorded: no flags, so send_mail.py cannot guess one.
+    out = comms.default_mailer('S', 'B', run=runner('[send_mail] verified: in the mailbox\n'))
+    assert out == 0 and out.transport == comms.TRANSPORT_GMAIL
+    assert '--project' not in seen[-1] and '--session' not in seen[-1]
+    # Gmail fallback after agent-mail declined, and a failed send, are both Gmail.
+    assert comms.default_mailer('S', 'B', project_id='p1', session_id='s',
+                                run=runner('sent via Gmail\n')).transport == comms.TRANSPORT_GMAIL
+    assert comms.default_mailer('S', 'B', project_id='p1', session_id='s',
+                                run=runner(sent, returncode=3)).transport == comms.TRANSPORT_GMAIL
+
+
+def test_raise_decision_gives_the_mailer_the_project_and_the_asking_session(env):
+    env.store.record_session('p1', 's1', 'sess-recorded')
+    mailer = FakeMailer(0, 0)
+    go(env, mailer, request=req('a'))
+    assert mailer.ctx[0] == {'project_id': 'p1', 'session_id': 'sess-recorded'}
+    go(env, mailer, request=req('b'), ctx=RouteContext(session_id='sess-caller'), now=DAY2)
+    assert mailer.ctx[1] == {'project_id': 'p1', 'session_id': 'sess-caller'}
+
+
+def test_agent_mail_ask_is_recorded_as_such_and_never_read_from_gmail(env):
+    out = go(env, AgentMailMailer(0), request=req('a'))
+    assert (out.status, out.route) == ('sent', comms.ROUTE_AGENT_MAIL)
+    dec = env.store.read('p1', 's1')['decisions'][0]
+    assert dec['route'] == 'agent_mail' and dec['status'] == 'sent'
+    assert 'agent-mail' in env.journal.read_text(encoding='utf-8')
+    digest = FakeDigest(error=comms.CommsError('imap down'))
+    assert check_pending_replies('p1', 's1', store=env.store, digest_reader=digest) == []
+    assert digest.queries == []
+    # A dead Gmail reader cannot block the next ask: there is nothing to read.
+    nxt = go(env, AgentMailMailer(0), digest, request=req('b'), now=DAY2)
+    assert nxt.status == 'sent' and digest.queries == [] and nxt.replies == []
+
+
+def test_agent_mail_asks_do_not_fill_the_open_ask_ceiling(env):
+    mailer = AgentMailMailer(*[0] * 10)
+    for i in range(comms.MAX_OPEN_DECISIONS + 1):
+        out = go(env, mailer, request=req(f'k{i}'), now=T0 + timedelta(days=2 * i))
+        assert out.status == 'sent', i
+    assert len(mailer.calls) == comms.MAX_OPEN_DECISIONS + 1
+
+
+def test_gmail_sent_ask_is_still_read_through_the_digest(env):
+    out = go(env, FakeMailer(0), request=req('a'))        # plain int: Gmail transport
+    assert (out.status, out.route) == ('sent', 'email')
+    digest = FakeDigest(decision='approved', text='yes')
+    checks = check_pending_replies('p1', 's1', store=env.store, digest_reader=digest, now=DAY2)
+    assert [c.status for c in checks] == ['answered'] and len(digest.queries) == 1
