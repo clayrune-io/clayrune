@@ -1,5 +1,16 @@
 # Clayrune — Changelog
 
+## [2026-11-15] - Accept instruction-worded authenticated owner replies
+
+- Removed wording-based instruction holds from the local screen and tool-free extractor; the chat notice now uses generic review text for every hold, including older instruction holds.
+- Worker ingress still authenticates the verified owner and reply token before signing. Local signature, DMARC evidence, conversation binding, format/authorship holds and human-only approval gates remain enforced. Existing held events still require human review.
+
+## [2026-11-15] - Identify agent-mail senders and show held replies in chat
+
+- Added a server-stamped first line naming the sending session's character, project and chat. Caller-supplied names cannot replace it; unnamed characters use `Clayrune agent`.
+- Held replies now show a metadata-only notice above the target chat transcript through existing status polling, including archived chats. The notice contains no email text, starts no agent turn, and clears after review; Release/Reject remain human-only in Settings > Connectivity > Agent mail.
+- Branch candidate for review; no Worker change, deployment or real email sent.
+
 ## [2026-11-13] - Resume pull mail through signed wake hints (MC-1166 U8)
 
 - Replaced Worker-initiated wake drains with signed empty hints. The install issues its own resume requests, coalesces hints and finishes active pages before rescanning; status still requires a known client request id.

@@ -1028,6 +1028,24 @@ reads it again. Uncertain delivery is not proof of a completed turn; it must not
 be blindly resent. This panel does not render raw replies or offer account-wide
 data erasure, owner changes or key/pin replacement.
 
+Agent emails start with `From <agent name> in <project name> (chat <session id>)`.
+Clayrune stamps this line from the sending session; unnamed agents appear as
+**Clayrune agent**.
+
+Instruction wording (such as "run the tests") does not hold an authenticated
+reply. Sender and reply-token checks happen at the mail service before signing;
+Clayrune verifies the service signature and local conversation binding. Hidden
+characters, unsupported HTML, oversize text and ambiguous authorship still cause
+review holds. Email cannot unlock protected-action approval gates.
+
+When a reply is held for review, its target chat shows a notice above the
+transcript on the next status refresh (normally within 15 seconds while the
+project window is open). It contains no email text and does not wake the agent.
+Use **Settings > Connectivity > Agent mail** to release or reject the reply;
+those actions still require your dashboard passcode. The notice clears on the
+next successful status refresh after review. If mail storage is unavailable,
+an already visible notice stays until status can be read again.
+
 To stop mail, choose **Disable** and confirm with your dashboard passcode. A
 successful local disable blocks new local sends and mail continuations at once.
 **Disabled here, revocation pending** means remote revocation still needs an

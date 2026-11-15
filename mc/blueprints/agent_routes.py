@@ -63,6 +63,7 @@ from mc import claude_cli_min_version as _claude_cli_min_version  # Claude model
 from mc import agent_mail_continuation as _mail_continuation
 from mc import agent_mail_rollover as _mail_rollover
 from mc import agent_mail_pipe as _mail_pipe
+from mc import agent_mail_hold_notice as _mail_hold_notice
 from mc import resume_cwd as _resume_cwd
 from mc.hivemind_worker import RosterRecoveryHeld, revive_roster_worker
 from mc import provider_preferences as _provider_preferences
@@ -16428,6 +16429,7 @@ def agent_status(project_id):
     # P2-1: surface memory-condensation state (default {'state':'idle'} so
     # the field is always present for the frontend).
     return jsonify({'sessions': sessions,
+                    'agent_mail_holds': _mail_hold_notice.by_session(project_id),
                     'condense': _get_condense_status(project_id)})
 
 
