@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-15] - Stop agent-mail notes from starting after the fallback deadline
+
+- The note route passes a 15-second budget from route entry through preparation and signing to the final transport boundary. An expired note becomes `abandoned` with reason `deadline_exceeded`, drops its payload and revokes its thread binding; the same request id stays abandoned on retry.
+- The budget stays below the 20-second agent-mail client timeout used by `send_mail.py`. Questions retain their existing behavior. Sends already started within the budget cannot be cancelled by this guard.
+- Branch candidate for review; Gmail fallback logic is unchanged. No real mail, restart or deployment.
+
 ## [2026-11-15] - Steward-role decision mail goes through agent-mail (MC-1176)
 
 - `steward_role_comms.default_mailer` now passes the role's project and session to `send_mail.py`, so a server-side steward decision ask goes through agent-mail and the owner's reply wakes that session; Gmail stays the fallback. It reports the transport that accepted the mail (`SendResult.transport`).

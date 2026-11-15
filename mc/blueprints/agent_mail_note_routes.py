@@ -10,6 +10,7 @@ blueprints in ``agent_mail_routes``. Dark unless ``agent_mail_outbound_enabled``
 """
 from __future__ import annotations
 
+import time
 from typing import Callable
 
 from flask import Blueprint, jsonify, request
@@ -25,6 +26,9 @@ from mc.core import _log
 FLAG = 'agent_mail_outbound_enabled'
 ROUTE = '/api/project/<pid>/agent/mail/note'
 FIELDS = frozenset({'session_id', 'request_id', 'subject', 'body'})
+# Keep below send_mail.py's agent-mail timeout: its agent_mail_route helper
+# uses TIMEOUT_S = 20 before falling back to Gmail.
+NOTE_SEND_DEADLINE_SECONDS = 15
 
 # Refusal reasons are a closed, code-owned vocabulary in mc.agent_mail_outbound, so
 # they are safe to return. Anything not listed is a held state: 409.
@@ -37,7 +41,8 @@ def _default_factory() -> Outbound:
     return agent_mail_factory.get().outbound()
 
 
-def create_blueprint(*, factory: Callable[[], Outbound] | None = None) -> Blueprint:
+def create_blueprint(*, factory: Callable[[], Outbound] | None = None,
+                     clock: Callable[[], float] = time.monotonic) -> Blueprint:
     bp = Blueprint('agent_mail_note', __name__)
 
     @bp.after_request
@@ -47,6 +52,7 @@ def create_blueprint(*, factory: Callable[[], Outbound] | None = None) -> Bluepr
 
     @bp.route(ROUTE, methods=['POST'])
     def note(pid: str):
+        deadline = clock() + NOTE_SEND_DEADLINE_SECONDS
         if state.CONFIG.get(FLAG) is not True:
             return jsonify({'error': 'not_found'}), 404
         body = request.get_json(silent=True)
@@ -57,7 +63,7 @@ def create_blueprint(*, factory: Callable[[], Outbound] | None = None) -> Bluepr
             outbound = (factory or _default_factory)()
             prepared = outbound.prepare(pid, body['session_id'], dict(
                 request_id=body['request_id'], subject=body['subject'], body=body['body'], kind='note'))
-            result = outbound.send(prepared['intent_id'])
+            result = outbound.send(prepared['intent_id'], deadline=deadline, clock=clock)
         except EnrollmentRefused as exc:
             reason = str(exc)
             return jsonify({'error': reason}), _STATUS.get(reason, 409)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import time
 from typing import Any, Callable, Protocol
 
 from mc import state
@@ -285,20 +286,21 @@ class Outbound:
                 self._abandon(row, _held_reason(exc))
             raise
 
-    def _abandon(self, row: dict[str, Any], reason: str) -> None:
+    def _abandon(self, row: dict[str, Any], reason: str, *, attempt: str = '') -> None:
         try:
             with self.store._tx() as db:
                 now = self.store.clock()
                 done = db.execute("UPDATE mail_outbound_intents SET payload=NULL,state='abandoned',reason=?,"
-                                  "updated=? WHERE intent_id=? AND state='draft'",
-                                  (reason, now, row['intent_id'])).rowcount
+                                  "updated=? WHERE intent_id=? AND question_revision='' "
+                                  "AND (state='draft' OR (state='sending' AND attempt=?))",
+                                  (reason, now, row['intent_id'], attempt)).rowcount
                 if done:
                     db.execute('UPDATE thread_bindings SET revoked_at=? WHERE thread_hash=? '
                                'AND revoked_at IS NULL', (now, row['thread_hash']))
             _log(f'[agent-mail] outbound abandoned: {reason}', flush=True)
         except Exception as e:
-            # Still never sendable by this path; cleanup() abandons it after
-            # ORPHAN_DRAFT_SECONDS.
+            # Still never sent by this path; cleanup() abandons drafts after
+            # ORPHAN_DRAFT_SECONDS and holds admitted attempts as uncertain.
             _log(f'[agent-mail] outbound abandon failed ({reason}): {type(e).__name__}', flush=True)
 
     def _bind(self, row: dict[str, Any], project_id: str, session_id: str, kind: str,
@@ -349,7 +351,8 @@ class Outbound:
                 db.execute("UPDATE mail_outbound_intents SET state='uncertain',reason='receipt_missing' WHERE intent_id=?", (intent_id,))
             return metadata(db.execute('SELECT * FROM mail_outbound_intents WHERE intent_id=?', (intent_id,)).fetchone())
 
-    def send(self, intent_id: str) -> dict[str, str]:
+    def send(self, intent_id: str, *, deadline: float | None = None,
+             clock: Callable[[], float] = time.monotonic) -> dict[str, str]:
         self._enabled()
         status = self.status(intent_id)
         if status['state'] not in ('ready', 'retryable'):
@@ -426,6 +429,12 @@ class Outbound:
                            (attempt, now, intent_id))
         # The admission commit precedes any possible external write. A crash or
         # thrown/lost response can never make this row automatically send again.
+        # Check after lock release/commit too: either can consume the remaining
+        # route budget. No transport has started, so this admitted note is safe
+        # to abandon. Questions have no Gmail fallback and remain unchanged.
+        if not row['question_revision'] and deadline is not None and clock() > deadline:
+            self._abandon(row, 'deadline_exceeded', attempt=attempt)
+            return self.status(intent_id)
         accepted_expires_ms = None
         try:
             wire = client('POST', SEND, signed, raw)

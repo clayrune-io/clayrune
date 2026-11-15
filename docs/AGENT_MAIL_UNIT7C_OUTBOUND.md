@@ -486,3 +486,39 @@ disabled internal correction only, no new user surface or conduct rule.
 No frontend/browser/boot, mobile or installer check applies. No new design
 question, operational integration, merge, push, restart, deployment, real mail
 or credential use. Dave owns review/integration and the existing pre-live gates.
+
+## Note-route fallback deadline (2026-11-15)
+
+The note route measures its budget from handler entry using an injectable
+monotonic clock. `NOTE_SEND_DEADLINE_SECONDS = 15` must remain below the
+20-second `agent_mail_route.TIMEOUT_S` used by `send_mail.py` before Gmail
+fallback. The absolute deadline is passed to `Outbound.send`, which checks it
+immediately before transport invocation, after preparation, signing, admission
+commit and lock release. Elapsed time strictly greater than the budget abandons
+the note through `_abandon`, matching only its admitted attempt, dropping the
+payload and revoking the binding with reason `deadline_exceeded`.
+
+The route returns non-accepted metadata, and a retry of the same request id
+returns the durable abandoned state without sending. Questions with a nonempty
+`question_revision` retain their existing behavior. The deadline bounds transport
+start; it cannot cancel a request already in flight or guarantee an accepted
+response reaches the caller before its timeout. No Gmail fallback logic changed.
+
+`tests/test_agent_mail_note_deadline.py` covers factory, preparation, signing and
+admission-commit delays at 14.999, 15, 15.001 and 25 seconds, once-only delivery,
+abandonment and binding revocation, same-id retry after reopening Outbound,
+unchanged question sends, and the client/server timeout relationship.
+
+Validation through the installation's reported-test launcher, using the branch
+worktree as cwd:
+
+- `pytest tests -k 'agent_mail or send_mail or question'`: **2881 passed, 6 skipped,
+  22475 deselected, 2 warnings in 265.87s (0:04:25)**, exit 0. One skip is POSIX
+  permission bits on Windows; five are slice E2E cases without Miniflare
+  dependencies in the worktree. The warnings are existing invalid escape
+  sequences in unrelated test files collected before keyword filtering.
+- Pyright on `mc/agent_mail_outbound.py` and
+  `mc/blueprints/agent_mail_note_routes.py`: **0 errors, 0 warnings,
+  0 informations**, exit 0.
+- Focused deadline/note-route/orphan-draft tests also exited 0. No live mail,
+  restart, deployment or frontend change; Gmail fallback source is unchanged.

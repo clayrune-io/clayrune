@@ -31,7 +31,8 @@ class Fake:
             raise self._prepare
         return {'intent_id': 'i1', 'state': 'ready', 'reason': '', 'message_id': '', 'transport_state': 'ready'}
 
-    def send(self, intent_id):
+    def send(self, intent_id, *, deadline, clock):
+        assert deadline > clock()
         self.calls.append(('send', intent_id))
         if self._send:
             raise self._send
