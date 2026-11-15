@@ -332,10 +332,13 @@ def test_snapshot_failure_or_missing_mapping_cannot_send(out, monkeypatch):
         prepare(out)
     with out.store._read() as db:
         row = dict(db.execute('SELECT * FROM mail_outbound_intents').fetchone())
-    assert row['state'] == 'draft'
-    assert out.outbound.send(row['intent_id'])['state'] == 'draft'
+    # The caller fell back to another channel: the note draft is dead, never resumed.
+    assert (row['state'], row['reason'], row['payload']) == ('abandoned', 'binding_failed', None)
+    assert out.outbound.send(row['intent_id'])['state'] == 'abandoned'
     monkeypatch.setattr(MailWake, 'bind', original)
-    assert prepare(out)['intent_id'] == row['intent_id']
+    assert prepare(out)['state'] == 'abandoned'
+    row = prepare(out, request_id='note2')
+    assert row['state'] == 'ready'
     with out.store._tx() as db:
         db.execute('DELETE FROM mail_pull_threads')
     with pytest.raises(EnrollmentRefused, match='outbound_binding_required'):

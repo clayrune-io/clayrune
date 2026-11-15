@@ -185,10 +185,11 @@ def test_generic_failure_logs_type_and_message_but_not_in_response(monkeypatch):
     assert len(logged) == 1 and 'RuntimeError' in logged[0] and 'SECRET boom' in logged[0]
 
 
-def test_through_real_outbound_held_bind_names_reason_and_retry_is_not_blocked(out, monkeypatch):
-    """The 2026-11-15 incident shape: bind_thread succeeds, MailWake.bind raises MailHeld,
-    the intent is left in 'draft'. The reason must surface, and the same request_id must
-    be retryable once the cause clears (a stale draft does not block it)."""
+def test_through_real_outbound_held_bind_abandons_the_draft_and_never_sends_it_late(out, monkeypatch):
+    """The 2026-11-15 incident shape: bind_thread succeeds, MailWake.bind raises MailHeld.
+    send_mail.py then delivers the same mail by Gmail, so the intent must become a
+    terminal 'abandoned' row (reason kept, payload dropped, binding revoked), and a
+    retry with the same request_id must NOT send it through agent-mail as a duplicate."""
     monkeypatch.setitem(state.CONFIG, routes.FLAG, True)
     app = Flask(__name__)
     app.register_blueprint(routes.create_blueprint(factory=lambda: out.outbound))
@@ -197,12 +198,15 @@ def test_through_real_outbound_held_bind_names_reason_and_retry_is_not_blocked(o
     held = app.test_client().post(URL, json=payload(session_id=sid))
     assert held.status_code == 409 and held.json == {'error': 'incognito_not_persistent'}
     with out.store._read() as db:
-        assert db.execute('SELECT state FROM mail_outbound_intents').fetchall()[0]['state'] == 'draft'
+        row = db.execute('SELECT state,reason,payload,thread_hash FROM mail_outbound_intents').fetchone()
+        assert (row['state'], row['reason'], row['payload']) == ('abandoned', 'incognito_not_persistent', None)
+        assert db.execute('SELECT revoked_at FROM thread_bindings WHERE thread_hash=?',
+                          (row['thread_hash'],)).fetchone()[0] is not None
         assert db.execute('SELECT COUNT(*) FROM mail_continuations').fetchone()[0] == 0
-    assert out.recording.calls == []
     out.session['incognito'] = False
     retry = app.test_client().post(URL, json=payload(session_id=sid))
-    assert retry.status_code == 200 and (retry.json or {})['state'] == 'accepted'
-    with out.store._read() as db:
-        assert db.execute('SELECT COUNT(*) FROM mail_outbound_intents').fetchone()[0] == 1
+    assert retry.status_code == 200 and (retry.json or {})['state'] == 'abandoned'
+    assert out.recording.calls == []  # send_mail.py reads "not accepted" and uses Gmail
+    fresh = app.test_client().post(URL, json=payload(session_id=sid, request_id='note2', body='A different note.'))
+    assert fresh.status_code == 200 and (fresh.json or {})['state'] == 'accepted'
     assert len(out.recording.calls) == 1
