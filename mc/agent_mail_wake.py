@@ -7,13 +7,15 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from mc.agent_mail_extract import WARNING
 from mc.agent_mail_questions import consume, matching
-from mc.agent_mail_screen import screen_text
 from mc.agent_mail_store import (EXPIRED, REVOKED, MailStore, SUBMITTED, SUBMITTING, TURN_COMPLETED,
                                  UNCERTAIN, hash_thread_token)
 from mc.agent_mail_target import MailHeld, resolve, snapshot, validate
 from mc.core import _log
+
+
+REPLY_HEADER = ("[Email reply from the project owner, verified sender + this email's "
+                "one-time token]")
 
 
 class MailWake:
@@ -203,26 +205,16 @@ class MailWake:
                 raise MailHeld('continuation_binding_missing')
             bound = json.loads(row['snapshot'])
             envelope = event['laundered']
-            expected = {'version', 'source', 'warning', 'reply_text', 'ambiguous_or_mixed',
-                        'quoted_content_present', 'forwarded_content_present', 'event_id'}
-            if (not isinstance(envelope, dict) or envelope.keys() != expected
-                    or type(envelope.get('version')) is not int or envelope.get('version') != 1
+            if (not isinstance(envelope, dict) or envelope.get('version') != 1
                     or envelope.get('event_id') != eid
-                    or envelope.get('source') != 'owner_mail_laundered'
-                    or envelope.get('warning') != WARNING or envelope.get('ambiguous_or_mixed') is not False
-                    or any(type(envelope.get(key)) is not bool for key in
-                           ('quoted_content_present', 'forwarded_content_present'))
-                    or not isinstance(envelope.get('reply_text'), str)
-                    or screen_text(envelope['reply_text'])):
+                    or not isinstance(envelope.get('reply_text'), str)):
                 raise MailHeld('laundered_envelope_invalid')
             project = ar.load_project(event['project_id'])
             if project is None:
                 raise MailHeld('project_unavailable')
             sid, source = resolve(project, bound)
             scope = continuation.Continuation(self, event, bound, project, sid, source)
-            late = bound.get('question') and matching(source, bound['question']) is None
-            message = ('[Owner mail reply' + ('; late question reply' if late else '')
-                       + f'; event {eid}]\n' + WARNING + '\n\n' + envelope['reply_text'])
+            message = REPLY_HEADER + '\n\n' + envelope['reply_text']
             with continuation.activate(scope), app.test_request_context(
                     f"/api/project/{project['id']}/agent/followup", method='POST',
                     json={'session_id': sid, 'message': message, '_durable_delivery_ack': True}):

@@ -1,4 +1,4 @@
-"""Disabled-by-default, recorded-event laundering adapter (MC-1166 unit 5).
+"""Disabled-by-default, recorded-event reply extraction adapter (MC-1166 unit 5).
 
 No scheduling, inbox fetch, follow-up, question consumption or provider delivery.
 Only metadata leaves this adapter; ready envelopes stay in the dedicated store.
@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import time
 from typing import Any, Optional
 
 from mc.agent_mail_extract import Extraction, extract_reply
@@ -15,13 +14,9 @@ from mc.agent_mail_store import BLOCKED, LAUNDERING, READY, MailStore
 
 
 class MailLaunder:
-    def __init__(self, store: MailStore, *, enabled: bool = False,
-                 provider: str = 'claude', model: str = 'haiku', timeout: int = 25):
+    def __init__(self, store: MailStore, *, enabled: bool = False):
         self.store = store
         self.enabled = enabled
-        self.provider = provider
-        self.model = model
-        self.timeout = timeout
 
     @staticmethod
     def _metadata(row: sqlite3.Row) -> dict[str, str]:
@@ -65,7 +60,7 @@ class MailLaunder:
         """Process at most one persisted event, once. Holds need explicit review.
 
         Releasing a hold never resets attempts. Crash/lease recovery uses the
-        store's existing bounded backoff; no raw-body or alternate-runtime retry.
+        store's existing bounded backoff.
         Storage failures propagate to the caller, never masquerade as readiness.
         """
         if self.enabled is not True:
@@ -75,25 +70,12 @@ class MailLaunder:
             return {'state': 'idle', 'reason': ''}
         event_id, fence = claimed['event_id'], claimed['fence_token']
         reason = ''
-        kind = ''
         with self.store._tx() as db:
             row = self._live(db, event_id, fence)
-            if row is not None:
-                binding = db.execute('SELECT kind FROM thread_bindings WHERE thread_hash=?',
-                                     (row['thread_hash'],)).fetchone()
-                kind = binding['kind'] if binding is not None else ''
-                if row['attempts'] >= self.store.config.max_attempts:
-                    reason = 'retry_exhausted'
-            else:
+            if row is None:
                 reason = 'claim_lost'
-        # Reserve finalization time using the actual remaining persisted lease.
-        timeout = min(25, self.timeout)
-        seconds = min(timeout, claimed['lease_until'] - self.store.clock() - 3)
-        deadline = time.monotonic() + seconds
-        if not reason and seconds < 1:
-            reason = 'extraction_timeout'
+            elif row['attempts'] >= self.store.config.max_attempts:
+                reason = 'retry_exhausted'
         result = (Extraction(reason) if reason else extract_reply(
-            claimed['body'], kind=kind, provider=self.provider, model=self.model,
-            timeout=timeout, deadline=deadline,
-            max_reply_bytes=self.store.config.max_reply_bytes))
+            claimed['body'], max_reply_bytes=self.store.config.max_reply_bytes))
         return self._finish(event_id, fence, result)

@@ -7,7 +7,6 @@ import subprocess
 
 import pytest
 
-from mc import mail_launder
 from mc.agent_mail_ingress import MailIngress
 from mc.agent_mail_launder import MailLaunder
 from mc.agent_mail_signing import IngressRefused
@@ -19,12 +18,6 @@ def held():
     value = envelope(text='')
     del value['text']
     return dict(value, version=2, reason='empty_body')
-
-
-@pytest.fixture(autouse=True)
-def no_model(monkeypatch):
-    monkeypatch.setattr(mail_launder, 'claude_mail_transform',
-                        lambda **kw: pytest.fail('held event reached a model'))
 
 
 def worker_hold(mime, mutation=None, *, now):

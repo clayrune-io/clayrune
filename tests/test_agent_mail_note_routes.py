@@ -142,7 +142,7 @@ def test_through_real_outbound_sends_only_content_and_binds_the_session(out, mon
     assert len(out.recording.calls) == 1
     wire = json.loads(out.recording.calls[0][3])
     assert wire['kind'] == 'note' and wire['subject'] == 'Hello'
-    assert wire['body'].endswith('Replies cannot approve protected actions.')
+    assert wire['body'].endswith('Reply to continue this conversation.')
     assert not {'to', 'recipient', 'cc', 'bcc', 'owner', 'owner_address'} & set(wire)
     with out.store._read() as db:
         row = db.execute('SELECT project_id,session_id,state FROM mail_outbound_intents').fetchone()

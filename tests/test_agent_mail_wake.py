@@ -10,7 +10,6 @@ import pytest
 
 from test_runtime_completion_log import env, _mode_b_session  # noqa: F401
 from mc import agent_mail_continuation as continuation, agent_mail_pipe, agent_runtime
-from mc.agent_mail_extract import WARNING
 from mc.agent_mail_questions import answers, consume
 from mc.agent_mail_store import MailStore, SUBMITTED, TURN_COMPLETED, UNCERTAIN
 from mc.agent_mail_target import MailHeld
@@ -59,9 +58,7 @@ def ready(setup, eid='mail-one', text=TEXT):
     claim = setup.store.claim_for_laundering()
     assert claim is not None
     setup.store.complete_laundering(eid, claim['fence_token'], dict(
-        version=1, source='owner_mail_laundered', warning=WARNING, reply_text=text,
-        ambiguous_or_mixed=False, quoted_content_present=False,
-        forwarded_content_present=False, event_id=eid))
+        version=1, reply_text=text, event_id=eid))
 
 
 def wait_for(predicate):
@@ -92,7 +89,7 @@ def test_real_followup_writes_laundered_text_and_matching_completion(setup):
     assert result['state'] == SUBMITTED
     payload = json.loads(setup.session['proc'].stdin.getvalue())
     assert TEXT in payload['message']['content']
-    assert 'Owner mail reply' in payload['message']['content']
+    assert 'Email reply from the project owner' in payload['message']['content']
     assert 'previous conversation' not in payload['message']['content']  # stays native
     event = setup.store.get_event('mail-one')
     assert event['turn_id'] == setup.session['_delivery_attempt_id']
@@ -220,9 +217,7 @@ def test_only_matching_question_is_consumed_after_real_write(setup, text, consum
                              thread_token='question-token', message_id='<question@example.invalid>', body=text)
     claim = setup.store.claim_for_laundering()
     setup.store.complete_laundering('question-reply', claim['fence_token'], dict(
-        version=1, source='owner_mail_laundered', warning=WARNING, reply_text=text,
-        ambiguous_or_mixed=False, quoted_content_present=False,
-        forwarded_content_present=False, event_id='question-reply'))
+        version=1, reply_text=text, event_id='question-reply'))
     assert setup.wake.process_next(setup.app)['state'] == SUBMITTED
     wait_for(lambda: bool(setup.session.get('pending_questions')) != consume_expected)
     assert setup.session['waiting_for_plan_approval'] is True
@@ -426,9 +421,7 @@ def test_native_runtime_followup_support_contract(setup, monkeypatch, provider, 
                              thread_token='native-token', message_id='<native@example.invalid>', body=TEXT)
     claim = setup.store.claim_for_laundering()
     setup.store.complete_laundering('native-mail', claim['fence_token'], dict(
-        version=1, source='owner_mail_laundered', warning=WARNING, reply_text=TEXT,
-        ambiguous_or_mixed=False, quoted_content_present=False,
-        forwarded_content_present=False, event_id='native-mail'))
+        version=1, reply_text=TEXT, event_id='native-mail'))
     pipe = _Stdin()
     proc = _Proc(pipe)
     commands = []

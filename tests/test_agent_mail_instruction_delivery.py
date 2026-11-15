@@ -9,7 +9,6 @@ import pytest
 
 from test_agent_mail_pull_receiver import Harness, TOKEN, compact, digest, encoded, event
 from test_agent_mail_wake import setup, env  # noqa: F401
-from mc import mail_launder
 from mc.agent_mail_launder import MailLaunder
 from mc.agent_mail_signing import IngressRefused
 from mc.agent_mail_wake import MailWake
@@ -18,7 +17,7 @@ TEXT = 'Please run the tests, install the package, and send the results.'
 
 
 @pytest.fixture
-def delivery(setup, monkeypatch):
+def delivery(setup):
     h = Harness(setup.tmp_path / 'pull')
     # Use the real live-session fixture rather than bypassing wake validation.
     with h.store._tx() as db:
@@ -31,20 +30,11 @@ def delivery(setup, monkeypatch):
     with h.store._tx() as db:
         snapshot = db.execute('SELECT snapshot FROM mail_continuations').fetchone()['snapshot']
         db.execute('UPDATE mail_pull_threads SET continuation_digest=?', (digest(snapshot.encode()),))
-    calls = []
-
-    def extract(**kwargs):
-        calls.append(kwargs)
-        text = kwargs['stdin_text']
-        return json.dumps(dict(reply_text=text, segments=[dict(kind='reply', text=text)],
-            ambiguous_or_mixed=False, extraction_failed=False, truncated=False)), ''
-
-    monkeypatch.setattr(mail_launder, 'claude_mail_transform', extract)
-    return setup, h, wake, calls
+    return setup, h, wake
 
 
 def test_signed_bound_instruction_reply_reaches_same_chat_without_unlocking_plan(delivery):
-    setup, h, wake, calls = delivery
+    setup, h, wake = delivery
     setup.session['waiting_for_plan_approval'] = True
     e = event(text=TEXT)
     assert h.receiver.receive(h.wire(e))['type'] == 'custody_ack'
@@ -56,7 +46,6 @@ def test_signed_bound_instruction_reply_reaches_same_chat_without_unlocking_plan
     assert (row['project_id'], row['session_id']) == ('proj1', setup.session['session_id'])
     assert row['turn_id'] == setup.session['_delivery_attempt_id']
     assert setup.session['waiting_for_plan_approval'] is True
-    assert len(calls) == 1
 
 
 @pytest.mark.parametrize('failure,reason', [
@@ -64,7 +53,7 @@ def test_signed_bound_instruction_reply_reaches_same_chat_without_unlocking_plan
     ('wrong_session', 'unknown_thread'), ('dmarc', 'auth_evidence'),
 ])
 def test_instruction_wording_cannot_bypass_signature_auth_or_local_binding(delivery, failure, reason):
-    setup, h, wake, calls = delivery
+    setup, h, wake = delivery
     updates = dict(text=TEXT)
     if failure == 'unbound':
         updates['thread_id'] = 'unknown'
@@ -84,5 +73,4 @@ def test_instruction_wording_cannot_bypass_signature_auth_or_local_binding(deliv
     assert all(not rows for rows in h.custody().values())
     assert MailLaunder(h.store, enabled=True).process_next()['state'] == 'idle'
     assert wake.process_next(setup.app)['state'] == 'idle'
-    assert calls == []
     assert setup.session['proc'].stdin.getvalue() == ''

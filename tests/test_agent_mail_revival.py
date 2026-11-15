@@ -8,7 +8,6 @@ import pytest
 
 from test_runtime_delivery_truth import app_env, revive_env, _Proc, _Stdin, CSID  # noqa: F401
 from mc import agent_mail_continuation as continuation, agent_mail_pipe, agent_runtime
-from mc.agent_mail_extract import WARNING
 from mc.agent_mail_store import MailStore
 from mc.agent_mail_wake import MailWake
 
@@ -40,9 +39,7 @@ def mail_revival(revive_env, tmp_path, monkeypatch):
                        message_id='<reply@example.invalid>', body=TEXT)
     claim = store.claim_for_laundering()
     store.complete_laundering('reply', claim['fence_token'], dict(
-        version=1, source='owner_mail_laundered', warning=WARNING, reply_text=TEXT,
-        ambiguous_or_mixed=False, quoted_content_present=False,
-        forwarded_content_present=False, event_id='reply'))
+        version=1, reply_text=TEXT, event_id='reply'))
     commands = []
 
     @continuation.spawn_boundary

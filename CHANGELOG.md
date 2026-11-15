@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-15] - Agent-mail inbound: deterministic quote strip, no screening, no model
+
+- A reply that passes the Worker's per-email token and verified-owner checks is treated as the owner typing in chat. Extraction is now a deterministic quote strip ("On ... wrote:", Outlook original-message/From block, `>` lines); invisible characters are stripped, oversize text is truncated, and an empty reply is the only hold. No model call remains on the inbound path.
+- Removed the HTML/invisible-character holds (`agent_mail_screen`), the "untrusted owner mail" warning, and "Replies cannot approve protected actions." from outbound mail. The wake message now starts with a plain "Email reply from the project owner" header. Human-only gates in the product are unchanged.
+- Deleted the three model-path smoke probes under `tools/smoke/agent_mail_*_probe.py`.
+
 ## [2026-11-15] - Accept instruction-worded authenticated owner replies
 
 - Removed wording-based instruction holds from the local screen and tool-free extractor; the chat notice now uses generic review text for every hold, including older instruction holds.
