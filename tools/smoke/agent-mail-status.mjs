@@ -130,6 +130,8 @@ await page.route('**/*', (route) => {
     }
     return route.abort();
   }
+  // The held-messages list (agent-mail-holds.js) reads on every status paint; it has its own smoke.
+  if (path === '/api/agent-mail/holds') return json({ holds: [] });
   if (path.startsWith('/api/agent-mail')) {
     requests.push({ method: req.method(), path });
     if (req.method() === 'GET') getCount++;

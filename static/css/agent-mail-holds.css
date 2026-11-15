@@ -1,0 +1,9 @@
+/* Settings > Connectivity > Agent mail: held messages. Reuses the .am-actions card from agent-mail-actions.css. */
+.am-holds-host { margin-top: 10px; min-width: 0; max-width: 100%; }
+.am-hold { padding: 10px 0; border-top: 1px solid var(--border); min-width: 0; }
+.am-actions-title + .am-act-hint + .am-hold, .am-outcome + .am-hold { border-top: 0; }
+.am-hold .am-act-title { overflow-wrap: anywhere; line-height: 1.4; }
+.am-hold-btns { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; min-width: 0; }
+@media (max-width: 960px) {
+  .am-hold-btns .am-act-btn { flex: 1 1 0; min-height: 40px; }
+}
