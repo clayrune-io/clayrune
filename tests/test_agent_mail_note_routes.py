@@ -10,6 +10,7 @@ from mc.agent_mail_enrollment_keys import EnrollmentRefused
 from mc.agent_mail_ownership import OwnershipHeld
 from mc.agent_mail_outbound import validate_request
 from mc.agent_mail_store import MailStoreError
+from mc.agent_mail_target import MailHeld
 from mc.blueprints import agent_mail_note_routes as routes
 
 URL = '/api/project/proj1/agent/mail/note'
@@ -160,3 +161,48 @@ def test_through_real_outbound_unknown_session_is_404(out, monkeypatch):
     result = app.test_client().post(URL, json=payload(session_id='no-such-session'))
     assert result.status_code == 404 and result.json == {'error': 'session_unavailable'}
     assert out.recording.calls == []
+
+
+@pytest.mark.parametrize('reason', ['incognito_not_persistent', 'rollover_required', 'session_busy'])
+def test_mail_held_returns_its_reason_as_409_and_logs_it(monkeypatch, reason):
+    logged = []
+    monkeypatch.setattr(routes, '_log', lambda msg, **kw: logged.append(msg))
+    result = client_for(monkeypatch, Fake(prepare=MailHeld(reason))).post(URL, json=payload())
+    assert result.status_code == 409 and result.json == {'error': reason}
+    assert logged == [f'[agent-mail] note route held: {reason}']
+
+
+def test_mail_held_from_send_is_also_reported(monkeypatch):
+    result = client_for(monkeypatch, Fake(send=MailHeld('worktree_unavailable'))).post(URL, json=payload())
+    assert result.status_code == 409 and result.json == {'error': 'worktree_unavailable'}
+
+
+def test_generic_failure_logs_type_and_message_but_not_in_response(monkeypatch):
+    logged = []
+    monkeypatch.setattr(routes, '_log', lambda msg, **kw: logged.append(msg))
+    result = client_for(monkeypatch, Fake(prepare=RuntimeError('SECRET boom'))).post(URL, json=payload())
+    assert result.status_code == 503 and result.json == {'error': 'outbound_unavailable'}
+    assert len(logged) == 1 and 'RuntimeError' in logged[0] and 'SECRET boom' in logged[0]
+
+
+def test_through_real_outbound_held_bind_names_reason_and_retry_is_not_blocked(out, monkeypatch):
+    """The 2026-11-15 incident shape: bind_thread succeeds, MailWake.bind raises MailHeld,
+    the intent is left in 'draft'. The reason must surface, and the same request_id must
+    be retryable once the cause clears (a stale draft does not block it)."""
+    monkeypatch.setitem(state.CONFIG, routes.FLAG, True)
+    app = Flask(__name__)
+    app.register_blueprint(routes.create_blueprint(factory=lambda: out.outbound))
+    sid = out.session['session_id']
+    out.session['incognito'] = True
+    held = app.test_client().post(URL, json=payload(session_id=sid))
+    assert held.status_code == 409 and held.json == {'error': 'incognito_not_persistent'}
+    with out.store._read() as db:
+        assert db.execute('SELECT state FROM mail_outbound_intents').fetchall()[0]['state'] == 'draft'
+        assert db.execute('SELECT COUNT(*) FROM mail_continuations').fetchone()[0] == 0
+    assert out.recording.calls == []
+    out.session['incognito'] = False
+    retry = app.test_client().post(URL, json=payload(session_id=sid))
+    assert retry.status_code == 200 and (retry.json or {})['state'] == 'accepted'
+    with out.store._read() as db:
+        assert db.execute('SELECT COUNT(*) FROM mail_outbound_intents').fetchone()[0] == 1
+    assert len(out.recording.calls) == 1

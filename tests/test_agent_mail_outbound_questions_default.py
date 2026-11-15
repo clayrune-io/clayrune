@@ -83,3 +83,15 @@ def test_flag_on_with_no_store_holds_never_raises(monkeypatch):
             state='blocked', reason='outbound_unavailable')
     finally:
         agent_mail_factory.reset_for_tests(None)
+
+
+def test_mail_held_in_deliver_surfaces_its_reason_and_logs_it(fake, monkeypatch):
+    from mc.agent_mail_target import MailHeld
+    logged = []
+    monkeypatch.setattr(adapter, '_log', lambda msg, **kw: logged.append(msg))
+    monkeypatch.setitem(state.CONFIG, 'agent_mail_outbound_enabled', True)
+    def held(*args, **kwargs):
+        raise MailHeld('rollover_required')
+    fake.out.prepare = held
+    assert adapter.deliver(dict(SESSION), QUESTION, 'Proj') == dict(state='blocked', reason='rollover_required')
+    assert logged == ['[agent-mail] question delivery held: rollover_required']

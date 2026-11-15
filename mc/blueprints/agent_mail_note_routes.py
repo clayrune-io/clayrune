@@ -19,6 +19,7 @@ from mc.agent_mail_enrollment_keys import EnrollmentRefused
 from mc.agent_mail_outbound import Outbound
 from mc.agent_mail_ownership import OwnershipHeld
 from mc.agent_mail_store import MailStoreError
+from mc.agent_mail_target import MailHeld
 from mc.core import _log
 
 FLAG = 'agent_mail_outbound_enabled'
@@ -64,8 +65,15 @@ def create_blueprint(*, factory: Callable[[], Outbound] | None = None) -> Bluepr
             return jsonify({'error': 'ownership_capacity'}), 503
         except MailStoreError:
             return jsonify({'error': 'store_unavailable'}), 503
-        except Exception:
-            _log('[agent-mail] note route held: outbound_unavailable', flush=True)
+        except MailHeld as exc:
+            # MailHeld reasons are a closed, code-owned vocabulary (agent_mail_target),
+            # so naming the reason is safe and is the only way to see why a send was held.
+            reason = str(exc) or 'mail_held'
+            _log(f'[agent-mail] note route held: {reason}', flush=True)
+            return jsonify({'error': reason}), 409
+        except Exception as exc:
+            _log(f'[agent-mail] note route held: outbound_unavailable '
+                 f'({type(exc).__name__}: {str(exc)[:200]})', flush=True)
             return jsonify({'error': 'outbound_unavailable'}), 503
         return jsonify(result)
 
