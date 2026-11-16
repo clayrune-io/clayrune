@@ -20,6 +20,9 @@
  *  - Disable (and Retry revocation) stay reachable: in every enrolled state, while Enable is
  *    blocked, and when the status itself cannot be read (503 / 500);
  *  - a closed prompt or a malformed code sends nothing;
+ *  - pull signup (U4): pending -> Check verification (POST /resume) -> verified -> Enable -> active;
+ *    link instructions shown, no code/proof/review/disable control; a HTTP-200 held view is
+ *    always a failure; 503 activation:'committed' shows the warn text; legacy panel unchanged;
  *  - no clipping, all controls scroll into view, and mobile targets >=40px;
  *    real-height screenshots under _scratch/7e3/ (no tall viewport workaround).
  *    The status card itself still has only its Refresh button.
@@ -405,6 +408,149 @@ try {
       await mailLayout(page, '#agent-mail-controls-host', `${name} ${W}`, check, SHOTS);
       check(wantDisable ? same(c, ['disable']) && await enabledBtn('disable') : c.length === 0,
         `${name} ${W}: ${wantDisable ? 'only the off switch is offered' : 'no controls at all'}`, `${name} ${W}: controls ${JSON.stringify(c)}`);
+    }
+
+    // ── pull signup (MC-1166 U4): shapes copied from agent_mail_enrollment_routes.py ──
+    // GET wraps the Signup view under `signup`; a POST answers FLAT {protocol:'pull', ...view} (HTTP 200
+    // even when the view holds a refusal). install_id / flow_id / address are hosted identifiers that
+    // must never reach the panel text.
+    {
+      const sv = (o) => ({ state: 'not_enrolled', reason: '', enabled: false, install_id: 'inst_HOSTEDTOKEN1', flow_id: 'flow_HOSTEDTOKEN2',
+        address: 'x7k2q9@clayrune.io', expires_ms: NOW + 1800000, verification_state: null, ...o });
+      const pg = (o) => ({ protocol: 'pull', pull_status: {}, signup: sv(o) });     // GET answer
+      const pp = (o) => ({ protocol: 'pull', ...sv(o) });                          // POST answer (flat)
+      const pending = (v) => pg({ state: 'pending', verification_state: v });
+      const FORBID = ['review', 'confirm', 'verify', 'proof', 'disable', 'retry-revocations'];
+      const noLegacy = () => page.evaluate((f) => ({
+        buttons: f.filter((a) => !!document.querySelector('#agent-mail-actions [data-am-action="' + a + '"]')),
+        code: !!document.querySelector('#agent-mail-actions [data-am-input="code"]') }), FORBID);
+      const text = () => page.evaluate(() => document.getElementById('agent-mail-controls-host').innerText);
+      const html = () => page.evaluate(() => document.getElementById('agent-mail-controls-host').innerHTML);
+      const pullState = () => page.evaluate(() => { const e = document.querySelector('#agent-mail-actions [data-am="pull-state"]'); return e ? e.textContent : null; });
+      const strip = (b) => { const { passcode, ...r } = b || {}; return r; };
+
+      // pending -> check -> verified -> enable -> active, one POST each, to the right route
+      {
+        const tag = `pull flow ${W}`;
+        get = { status: 200, body: pending('accepted') };
+        replies = {
+          resume: { status: 200, body: pp({ state: 'verified' }), next: pg({ state: 'verified' }) },
+          enable: { status: 200, body: pp({ state: 'active', enabled: true }), next: pg({ state: 'active', enabled: true }) },
+        };
+        posts.length = 0;
+        await openPanel();
+        check(same(await controls(), ['check']), `${tag}: pending offers only Check verification`, `${tag}: controls ${JSON.stringify(await controls())}`);
+        const ps = await pullState();
+        check(ps && ps.includes('Open the link in it and confirm'), `${tag}: pending shows the verification-link instructions`, `${tag}: pull-state ${JSON.stringify(ps)}`);
+        let nl = await noLegacy();
+        check(nl.buttons.length === 0 && !nl.code, `${tag}: no code entry, proof, review, confirm or disable control`, `${tag}: ${JSON.stringify(nl)}`);
+        await mailLayout(page, '#agent-mail-controls-host', `pull-pending ${W}`, check, SHOTS);
+        const g0 = getCount;
+        await page.click('#agent-mail-actions [data-am-action="check"]');
+        await prompt();
+        let o = await outcome('check');
+        check(posts.length === 1 && posts[0].action === 'resume' && posts[0].body.passcode === PASS && same(strip(posts[0].body), {}),
+          `${tag}: Check verification POSTs /resume with the typed passcode and an empty body`, `${tag}: posts ${JSON.stringify(posts)}`);
+        check(o.tone === 'good' && o.text.includes('Mailbox verified'), `${tag}: check -> good "${o.text.slice(0, 40)}"`, `${tag}: ${JSON.stringify(o)}`);
+        check(getCount > g0, `${tag}: status re-read after check`, `${tag}: GET count ${g0} -> ${getCount}`);
+        check(same(await controls(), ['enable']), `${tag}: verified offers only Enable`, `${tag}: controls ${JSON.stringify(await controls())}`);
+        await page.click('#agent-mail-actions [data-am-action="enable"]');
+        await prompt();
+        o = await outcome('enable');
+        check(posts.length === 2 && posts[1].action === 'enable' && posts[1].body.passcode === PASS && same(strip(posts[1].body), {}),
+          `${tag}: Enable POSTs /enable with the typed passcode`, `${tag}: posts ${JSON.stringify(posts)}`);
+        check(o.tone === 'good' && o.text === 'Agent mail is enabled.', `${tag}: active answer announces success`, `${tag}: ${JSON.stringify(o)}`);
+        check(same(await controls(), []) && /Agent mail is on\./.test((await pullState()) || ''), `${tag}: active offers no signup control and says mail is on`,
+          `${tag}: controls ${JSON.stringify(await controls())} text ${await pullState()}`);
+        nl = await noLegacy();
+        check(nl.buttons.length === 0 && !nl.code, `${tag}: still no legacy controls once active`, `${tag}: ${JSON.stringify(nl)}`);
+        const h = await html();
+        check(!/HOSTEDTOKEN|x7k2q9/.test(h), `${tag}: no install id, flow id or address in the panel`, `${tag}: leaked ${h.match(/HOSTEDTOKEN\d|x7k2q9/)}`);
+      }
+
+      // a 200 that carries a held view is a failure and never announces success
+      for (const [name, state, action, answer, want] of [
+        ['enable held by a changed service key', 'verified', 'enable', pp({ state: 'verified', reason: 'service_key_changed' }), 'service key changed'],
+        ['enable held by a locked vault', 'verified', 'enable', pp({ state: 'held', reason: 'vault_locked' }), 'vault is locked'],
+        ['enable answered with an unfinished activation', 'verified', 'enable', pp({ state: 'enable_pending' }), 'Enable again to finish'],
+        ['enable answered with an unverified service', 'verified', 'enable', pp({ state: 'verified', reason: 'response_unverified' }), 'could not be verified'],
+        ['enable answered active but not enabled', 'verified', 'enable', pp({ state: 'active', enabled: false }), 'not understood'],
+        ['enable answered with an unknown state', 'verified', 'enable', pp({ state: 'mystery' }), 'not understood'],
+        ['check held by a lost connection', 'pending', 'check', pp({ state: 'pending', reason: 'connection_lost' }), 'could not be reached'],
+      ]) {
+        const t = `pull held 200 (${name}) ${W}`;
+        get = { status: 200, body: state === 'pending' ? pending('accepted') : pg({ state }) };
+        replies = { [action === 'check' ? 'resume' : action]: { status: 200, body: answer } };
+        posts.length = 0;
+        await openPanel();
+        await page.click(`#agent-mail-actions [data-am-action="${action}"]`);
+        await prompt();
+        const o = await outcome(action);
+        check(o.tone === 'bad' && !/is enabled|Mailbox verified/.test(o.text) && o.text.includes(want),
+          `${t}: shown as a failure ("${o.text.slice(0, 48)}")`, `${t}: ${JSON.stringify(o)}`);
+        const goodBanner = await page.evaluate(() => !!document.querySelector('#agent-mail-actions [data-am="outcome"][data-tone="good"]'));
+        check(!goodBanner, `${t}: no success banner anywhere`, `${t}: a good banner is on screen`);
+      }
+
+      // 503 with activation:'committed' is the warn text, not a failure and not a success
+      for (const error of ['storage_unavailable', 'supervisor_unavailable']) {
+        const t = `pull 503 committed (${error}) ${W}`;
+        get = { status: 200, body: pg({ state: 'verified' }) };
+        replies = { enable: { status: 503, body: { error, protocol: 'pull', activation: 'committed' } } };
+        posts.length = 0;
+        await openPanel();
+        await page.click('#agent-mail-actions [data-am-action="enable"]');
+        await prompt();
+        const o = await outcome('enable');
+        check(o.tone === 'warn' && o.code === error && o.text.includes('activated at the service') && o.text.includes('Press Enable again'),
+          `${t}: warn text, ${error}`, `${t}: ${JSON.stringify(o)}`);
+        check(await enabledBtn('enable'), `${t}: Enable is offered again`, `${t}: Enable is not available`);
+      }
+
+      // which controls each pull state allows; only the setup step or a closed set of buttons
+      for (const [name, body, want, has] of [
+        ['pristine', pg({ state: 'not_enrolled' }), ['setup'], null],
+        ['start_pending', pg({ state: 'start_pending' }), ['resume'], 'not been asked yet'],
+        ['preparing', pg({ state: 'preparing' }), ['resume'], 'not been asked yet'],
+        ['pending, queued', pending('queued'), ['check'], 'queued'],
+        ['pending, accepted', pending('accepted'), ['check'], 'Open the link'],
+        ['pending, uncertain', pending('uncertain'), ['check'], 'may or may not'],
+        ['pending, failed', pending('failed'), ['check'], 'could not be sent'],
+        ['verified', pg({ state: 'verified' }), ['enable'], 'stays off until you enable'],
+        ['enable_pending', pg({ state: 'enable_pending' }), ['enable'], 'Enable again'],
+        ['active', pg({ state: 'active', enabled: true }), [], 'Agent mail is on'],
+        ['expired', pg({ state: 'expired', reason: 'flow_expired' }), [], '30-minute'],
+        ['held', pg({ state: 'held', reason: 'store_corrupt' }), [], 'damaged'],
+        ['malformed signup', { protocol: 'pull', signup: [] }, [], 'not understood'],
+      ]) {
+        get = { status: 200, body }; replies = {};
+        await openPanel();
+        const c = await controls();
+        const ps = await pullState();
+        const nl = await noLegacy();
+        await mailLayout(page, '#agent-mail-controls-host', `pull ${name} ${W}`, check, SHOTS);
+        check(same(c, want) && nl.buttons.length === 0 && !nl.code && (has === null ? ps === null : !!ps && ps.includes(has))
+          && !/off switch/.test(await text()),
+          `pull ${name} ${W}: controls ${JSON.stringify(want)}${has ? `, text has "${has}"` : ''}`,
+          `pull ${name} ${W}: controls ${JSON.stringify(c)} legacy ${JSON.stringify(nl)} text ${JSON.stringify(ps)}`);
+      }
+
+      // legacy panel untouched: still the legacy hint, controls and POST route, no pull-state line
+      {
+        const t = `legacy unchanged ${W}`;
+        get = { status: 200, body: S.verified_armed };
+        replies = { enable: { status: 200, body: {}, next: S.active } };
+        posts.length = 0;
+        await openPanel();
+        const ps = await pullState();
+        check(ps === null && same(await controls(), ['enable', 'disable']) && (await text()).includes('checklist above'),
+          `${t}: no pull text; Enable + Disable with the checklist hint`, `${t}: ${JSON.stringify([ps, await controls()])}`);
+        await page.click('#agent-mail-actions [data-am-action="enable"]');
+        await prompt();
+        const o = await outcome('enable');
+        check(posts.length === 1 && posts[0].action === 'enable' && o.tone === 'good' && o.text === 'Agent mail is enabled.',
+          `${t}: legacy Enable still posts /enable and succeeds`, `${t}: ${JSON.stringify([posts, o])}`);
+      }
     }
 
     // ── the status card itself is still read-only ──

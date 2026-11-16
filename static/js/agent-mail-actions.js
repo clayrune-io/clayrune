@@ -26,6 +26,8 @@
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const api = () => (typeof API_BASE === 'string' ? API_BASE : '');
+  // Pull signup (U4): "Check verification" is the authenticated resume; the route has no /check.
+  const ROUTE = { check: 'resume' };
 
   let last = null;        // the last status answer { status, body }
   let working = '';       // action in flight, '' when idle
@@ -38,7 +40,7 @@
     const a = M().ACTIONS[action];
     if (typeof window.humanProofFetch !== 'function' || !a) return { ok: false, status: 0, body: { error: 'prompt_unavailable' } };
     try {
-      return await window.humanProofFetch(api() + BASE + '/' + action,
+      return await window.humanProofFetch(api() + BASE + '/' + (ROUTE[action] || action),
         { method: 'POST', body: JSON.stringify(body || {}) },
         { title: a.title, description: a.ask, busyText: 'Working…' });
     } catch (_) {
@@ -93,7 +95,11 @@
       <div class="am-act-body">${inner}</div>
     </div>`;
 
-  function controlHTML(c) {
+  // `pull` is true while the panel shows a pull-protocol answer (plan().protocol === 'pull').
+  function controlHTML(c, pull) {
+    if (c === 'check') return block(c, 'Check verification',
+      'Open the link in the verification email and confirm it, then check here. Nothing is sent from this computer until you do.',
+      btn('check', ' am-primary'));
     if (c === 'resume') return block(c, 'Reserve the inbox',
       'Asks the mail service to reserve an inbox for this install. Safe to repeat after a restart or a failure.', btn('resume', ' am-primary'));
     if (c === 'review') {
@@ -117,7 +123,8 @@
     if (c === 'proof') return block(c, 'Delivery proof',
       'Starts the check that the mail service can deliver to this computer. It must be answered before mail can be enabled.', btn('proof'));
     if (c === 'enable') return block(c, 'Turn agent mail on',
-      'Needs the checklist above to be ready and no unattended agent session to be running.', btn('enable', ' am-primary'));
+      pull ? 'Needs no unattended agent session to be running.'
+        : 'Needs the checklist above to be ready and no unattended agent session to be running.', btn('enable', ' am-primary'));
     if (c === 'retry-revocations') return block(c, 'Revocation waiting',
       'The mail service has not yet confirmed a revocation. Retry asks it again.', btn('retry-revocations'));
     if (c === 'disable') return block(c, 'Turn agent mail off',
@@ -144,9 +151,10 @@
     if (!p.controls.includes('review')) review = null;
     host.innerHTML = `<div class="am-actions" id="agent-mail-actions" data-am-actions-state="${esc(p.state)}">`
       + `<div class="am-actions-title">Controls</div>`
-      + (p.state === 'unavailable' || p.state === 'error'
+      + (!p.protocol && (p.state === 'unavailable' || p.state === 'error')
         ? '<div class="am-act-hint">The status could not be read, so only the off switch is offered.</div>' : '')
-      + outcomeHTML() + p.controls.map(controlHTML).join('') + '</div>';
+      + (p.protocol === 'pull' && p.text ? `<div class="am-act-hint" data-am="pull-state">${esc(p.text)}</div>` : '')
+      + outcomeHTML() + p.controls.map((c) => controlHTML(c, p.protocol === 'pull')).join('') + '</div>';
     const slot = host.querySelector('#agent-mail-setup-slot');
     if (slot && window.AgentMailSetup) window.AgentMailSetup.mount(slot, { context: 'settings' });
     else if (slot) slot.innerHTML = '<div class="am-act-hint">Setup is not available.</div>';
