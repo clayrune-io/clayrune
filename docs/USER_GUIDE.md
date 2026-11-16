@@ -672,6 +672,12 @@ done, regardless of restart history.
 
 ## Operator email formatting
 
+Workflow **Send email** nodes and approval-gate notices use agent-mail when
+an earlier completed agent step in the run has a project and chat session.
+Replies return to the latest such agent's chat. Otherwise they use the existing
+Gmail fallback. Send email results show which transport accepted the message.
+Approval gates still require a human decision through the existing gate controls.
+
 Workflow **Send email** nodes and other operator notifications using Clayrune's
 shared mailer include both the original plain text and a formatted HTML version.
 Email clients can show headings, emphasis, lists, code and bordered tables

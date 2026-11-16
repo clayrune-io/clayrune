@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Route workflow notices to the completed agent's chat
+
+- Workflow Send email actions and approval-gate notices pass the latest completed agent step's project and session to the shared mailer, so owner replies wake that chat. Runs without a completed agent session retain the existing Gmail fallback; recipients and human approval gates are unchanged.
+- Send email results report `sent via agent-mail` or `sent via Gmail` from the mailer's stdout. Approval notices use the same sender and log transport or send failures.
+- Branch candidate for review; no real mail, merge, restart or deployment.
+
 ## [2026-11-15] - Stop agent-mail notes from starting after the fallback deadline
 
 - The note route passes a 15-second budget from route entry through preparation and signing to the final transport boundary. An expired note becomes `abandoned` with reason `deadline_exceeded`, drops its payload and revokes its thread binding; the same request id stays abandoned on retry.
