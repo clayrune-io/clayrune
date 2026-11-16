@@ -624,6 +624,9 @@ if(!sql.prepare("SELECT 1 FROM sqlite_master WHERE name='pull_installs'").get())
   for(const name of readdirSync('migrations').filter(n=>/^\d+.*\.sql$/.test(n)).sort())
     sql.exec(readFileSync('migrations/'+name,'utf8'));
 }
+// D1 admission guards use the same synthetic wall clock as the Worker.
+sql.function('strftime',(format,at)=>format==='%s'?String(Math.floor(p.now/1000)):
+ `${String(Math.floor(p.now/1000)%60).padStart(2,'0')}.${String(p.now%1000).padStart(3,'0')}`);
 const db={prepare(text){return {args:[],bind(...a){this.args=a;return this},
   async first(){return sql.prepare(text).get(...this.args)??null},
   async run(){return this.runSync()},
@@ -632,7 +635,7 @@ const db={prepare(text){return {args:[],bind(...a){this.args=a;return this},
     catch(e){sql.exec('ROLLBACK');throw e}}};
 const mail=new VerificationMail({db,serviceOrigin:p.origin,sealKeyId:'synthetic',sealKey:new Uint8Array(32).fill(4)});
 const http=new SignupHTTP({db,serviceOrigin:p.origin,domain:'clayrune.example',verificationMail:mail,
- serviceKeyId:'service-key',servicePrivateKey:p.service_key,clock:()=>p.now});
+ serviceKeyId:'service-key',servicePrivateKey:p.service_key,freshSignupEnabled:true,clock:()=>p.now});
 if(p.confirm) {
  const outbox=sql.prepare('SELECT outbox_id FROM pull_control_outbox').get();
  const message=await mail.message(outbox.outbox_id,p.now);
