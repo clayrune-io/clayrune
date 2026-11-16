@@ -25,6 +25,7 @@
 // page paints is the library path the server answers with, never a vendor URL.
 import { confirmationMatches, priceConfirmation, heldPriceConfirmation, renderStatusWord, dismissedPriceHold, dismissPriceHold } from './desk-v1-render-price.js';
 import { coalesceVaultPrompts, watchEngineVault } from './desk-v1-engine-vault.js';
+import { watchPaneEngine } from './desk-v1-engine-pane-watch.js';
 import { ConnectionWords as W } from './desk-v1-connection-words.js';
 import { ConnectionRemoval as Remove } from './desk-v1-connection-remove.js';
 import { submissionHeld, renderNeedsPolling, recoveryActionHTML, bindRenderRecovery } from './desk-v1-render-recovery.js';
@@ -599,6 +600,13 @@ import { modelMark, disabledReason, reasonHTML } from './desk-v1-engine-readines
       clearTimer: () => clearTimeout(_timer), getEngines: () => currentEngines,
       loadEngines: () => list(opts.projectId, { force: true }).then(es => studioModels(_api, es, 'image', opts.projectId)),
       setEngines: (engines) => { currentEngines = engines; _pick(engines, 'image', st); },
+    });
+    // A browser-pane engine (Gemini on your plan) turns ready when the person opens and signs in
+    // to the pane, which happens after this panel read the engine list: keep asking until it does.
+    watchPaneEngine(host, { alive, getEngines: () => currentEngines,
+      loadEngines: () => list(opts.projectId, { force: true }).then(es => studioModels(_api, es, 'image', opts.projectId)),
+      selected: (engines) => (engines ? _pick(engines, 'image', st).engine : null),
+      onChange: (engines) => { currentEngines = engines; _pick(engines, 'image', st); paint(engines); estimate(engines); },
     });
 
     const poll = (engines) => {

@@ -1496,11 +1496,15 @@ def _project_for(campaign_id: str) -> str | None:
 def list_engines(project_id: str | None = None) -> list[dict]:
     """Every engine descriptor with its connected status and the per-job USD
     limit the user set for it (null = none). Metadata only."""
+    # Only an engine with a model catalogue adapter can be asked for its models. gemini_web
+    # has none (its one model is fixed here); claiming discovery made the Studio ask anyway,
+    # get unknown_engine back, fall back to "price unknown" and keep Generate off.
+    from mc.desk_model_discovery.catalogue import ADAPTERS as _DISCOVERY
     limits = get_limits()
     out = []
     for e in _ENGINES:
         d = e.public()
-        d['model_discovery'] = True
+        d['model_discovery'] = e.id in _DISCOVERY
         d['models'] = [(get_model(e.id, m.model_id) or m).public() for m in e.models]
         d['connected'] = connection(e.id, project_id)
         d['job_limit_usd'] = None if e.currency == 'credits' else limits.get(e.id)
