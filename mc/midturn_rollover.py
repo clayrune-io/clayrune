@@ -37,7 +37,7 @@ from mc import state
 from mc import bg_job_liveness as _bg_live
 from mc.core import _log, TimestampedLines
 from mc.long_job_guidance import job_route_url as _job_url
-from mc.rollover_threshold import threshold_for
+from mc.rollover_threshold import _character_ref, threshold_for
 
 RECENT_TOOLS_KEEP = 10
 # MC-964 Step C: the last tool_results' first lines, carried across a roll
@@ -298,6 +298,10 @@ def note_call_tokens(session, tokens, parent_tool_use_id=None):
     if not enabled() or parent_tool_use_id or tokens is None:
         return
     session['_mt_main_tokens'] = tokens
+    if session.get('_mt_fresh_floor') is None:
+        # MC-1178 prep: log-only. The first reading since session start / the
+        # last roll is the fresh-start load, before any work grew it.
+        session['_mt_fresh_floor'] = tokens
     if session.get('_mt_awaiting_baseline'):
         session['_mt_awaiting_baseline'] = False
         session['_mt_baseline_tokens'] = tokens
@@ -371,6 +375,11 @@ def begin_roll(session):
     `should_roll` measures growth from (MIN_GROWTH_TOKENS). Called by
     agent_interrupt once the roll is committed to, so a refused or failed
     attempt never leaves a baseline armed."""
+    # begin_roll runs BEFORE record_roll (agent_interrupt, then the 200 branch
+    # of _maybe_midturn_roll), so the outgoing segment's floor is parked for
+    # that row and the new segment starts un-set.
+    session['_mt_rolled_floor'] = session.get('_mt_fresh_floor')
+    session['_mt_fresh_floor'] = None
     session['_mt_main_tokens'] = None
     session['_mt_awaiting_baseline'] = True
     session['_mt_baseline_tokens'] = None
@@ -490,9 +499,33 @@ def _log_dir():
     return base / 'midturn_rollover_log'
 
 
-def _append_row(session, extra):
-    """Append one JSONL row to the durable roll log. Never raises."""
+def _character_model_fields(session, floor):
+    """MC-1178 prep: who rolled, on what, and how much room the threshold left
+    after the fresh-start load. Absent values are None (null in the JSONL),
+    never missing keys. `model` is the observed one when the stream reported
+    it, else the requested one (`model`, then `agent_model` — the same order
+    agent_routes._requested_model_snapshot uses, where a present empty
+    `model` means native default and stays null)."""
+    model = session.get('observed_model')
+    if not model:
+        model = session['model'] if 'model' in session else session.get('agent_model')
+    threshold = threshold_for(session, state.CONFIG)
+    room = threshold - floor if floor is not None and threshold > 0 else None
+    return {
+        'character': _character_ref(session) or None,
+        'model': model or None,
+        'provider': session.get('provider') or None,
+        'fresh_floor_tokens': floor,
+        'working_room_tokens': room,
+    }
+
+
+def _append_row(session, extra, floor=None):
+    """Append one JSONL row to the durable roll log. Never raises. `floor` is
+    the fresh-start reading to log; None means the session's current segment."""
     pid = session.get('project_id', '') or 'unknown'
+    if floor is None:
+        floor = session.get('_mt_fresh_floor')
     row = {
         'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
         'project_id': pid,
@@ -502,6 +535,7 @@ def _append_row(session, extra):
         'roll_number': session.get('_mt_rolls', 0),
         'epoch': int(time.time()),
     }
+    row.update(_character_model_fields(session, floor))
     row.update(extra)
     try:
         d = _log_dir()
@@ -534,4 +568,4 @@ def record_roll(session, context_tokens, *, scribe_flushed=False):
         'tool_result_heads': len(session.get('_mt_tool_result_heads') or []),
         'unanswered_msgs': len(session.get('_mt_unanswered_msgs') or []),
         'scribe_flushed': bool(scribe_flushed),
-    })
+    }, floor=session.pop('_mt_rolled_floor', None))
