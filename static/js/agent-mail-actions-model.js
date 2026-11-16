@@ -136,6 +136,7 @@
     deployment_unconfigured: 'This version has no mail service configured yet.',
     deployment_incomplete: 'The saved mail service settings are incomplete.',
     human_required: 'A person must do this from the dashboard.',
+    service_unavailable: 'The mail service could not be reached or did not accept this. Try again in a moment.',
   };
   const VERIFY_WORDS = {
     queued: 'The verification email is queued. Check again shortly.',
@@ -144,8 +145,9 @@
     failed: 'The verification email could not be sent. Checking again will not resend it.',
   };
   const pullWhy = (c) => PULL_WORDS[c] || refusal(c);
-  function pullPlan(body) {
-    const v = isObj(body.signup) ? body.signup : null;
+  // `view` is the Signup view: body.signup on the GET answer, the flat POST body itself.
+  function pullPlan(view) {
+    const v = isObj(view) ? view : null;
     const reason = v ? code(v.reason) : '';
     const fail = (text) => ({ state: 'error', protocol: 'pull', controls: [], text });
     if (!v || typeof v.state !== 'string') return fail('The mail status was not understood. Nothing is offered.');
@@ -165,7 +167,8 @@
   }
   // A pull POST answers HTTP 200 even when it holds a refusal: judge the view, not the status.
   function pullOutcome(action, r) {
-    const p = pullPlan(r.body);
+    // POST answers are FLAT ({protocol, ...Signup view}); a nested `signup` is the GET shape.
+    const p = pullPlan('signup' in r.body ? null : r.body);
     const done = (tone, text, c) => ({ tone, text, blockers: [], code: c });
     if (p.state === 'held') return done('bad', p.text, p.reason);
     if (p.state === 'error') return done('bad', p.text, 'unrecognised');
@@ -183,7 +186,7 @@
     const status = input && input.status;
     const body = input && input.body;
     if (status === 404) return { state: 'off', controls: [] };
-    if (status === 200 && isPull(body)) return pullPlan(body);
+    if (status === 200 && isPull(body)) return pullPlan(body.signup);
     if (status !== 200 || !isObj(body) || !STAGES.includes(body.stage)) {
       return { state: status === 503 ? 'unavailable' : 'error', controls: ['disable'] };
     }

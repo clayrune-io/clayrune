@@ -69,9 +69,16 @@ check(same(M.plan({ status: 200, body: { stage: 'active', ownership: true, now_m
 check(same(M.plan({ status: 503, body: null }).controls, ['disable']), 'legacy 503 still offers disable');
 
 console.log('outcome: pull POST answers');
-const post = (action, o, status = 200) => M.outcome(action, { ok: status === 200, status, body: view(o).body });
+// POST answers are FLAT, exactly as the route sends them: jsonify({'protocol': 'pull', **signup_view}).
+const flat = (o) => ({ protocol: 'pull', state: 'pending', reason: '', enabled: false, install_id: 'i', flow_id: 'f',
+  address: 'm1@clayrune.io', expires_ms: 1, verification_state: null, ...o });
+const post = (action, o, status = 200) => M.outcome(action, { ok: status === 200, status, body: flat(o) });
 check(post('enable', { state: 'active', enabled: true }).tone === 'good', 'enable -> active+enabled is success');
 check(post('enable', { state: 'held', reason: 'stale_generation' }).tone === 'bad', 'HTTP 200 + held is a failure, never success');
+check(post('enable', { state: 'active', enabled: true, activation_attempts: 1, activation_pending: false }).text === 'Agent mail is enabled.', 'flat active+enabled enable answer is reported good');
+check(post('check', { state: 'pending', reason: 'connection_lost' }).tone === 'bad', 'flat answer with a reason set is bad');
+check(M.outcome('enable', { ok: true, status: 200, body: view({ state: 'active', enabled: true }).body }).tone === 'bad', 'GET-shaped (nested signup) body is not accepted as a POST answer');
+check(M.plan(view({ state: 'held', reason: 'service_unavailable' })).text.includes('mail service'), 'service_unavailable has plain words');
 check(post('enable', { state: 'verified' }).tone === 'bad', 'enable answered "verified" is not announced as success');
 check(post('enable', { state: 'active', enabled: false }).tone === 'bad', 'enable answered active without enabled is a failure');
 check(post('resume', { state: 'pending', verification_state: 'accepted' }).tone === 'good', 'resume pending is progress');
