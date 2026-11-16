@@ -81,6 +81,7 @@ from typing import Any, Callable, Optional
 
 from mc import state
 from mc.core import _atomic_write_text, _log, now_iso
+from mc.workflow_mail import mail_context_args
 from mc import engine_fallback as _engine_fallback  # MC-961: swap record + blocked-run pointer
 from mc.blueprints.push_mobile import _notify_push  # MC-961: same pointer, the notify/inbox surface
 
@@ -1858,9 +1859,6 @@ def _notify_approval_waiting(run: dict, workflow: dict, node: dict) -> None:
     if os.environ.get('PYTEST_CURRENT_TEST') and not os.environ.get('MC_LIVE_MAIL_TESTS'):
         _log('[workflows] approval-gate email suppressed under pytest')
         return
-    mailer = Path(__file__).resolve().parent.parent / 'tools' / 'night-review' / 'send_mail.py'
-    if not mailer.exists():
-        return
     options = node.get('options') or []
     body = (
         f"Workflow '{workflow.get('name','')}' is parked on an approval gate.\n\n"
@@ -1870,16 +1868,9 @@ def _notify_approval_waiting(run: dict, workflow: dict, node: dict) -> None:
         f"Resolve: POST /api/workflow-runs/{run['id']}/decision "
         f"{{\"choice\": \"<one of the options above>\"}}\n"
     )
-    try:
-        import subprocess
-        import sys
-        subprocess.run(
-            [sys.executable, str(mailer), '--subject',
-             f"[Clayrune workflow] DECISION NEEDED: {workflow.get('name','')}",
-             '--body', body],
-            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
-    except Exception as e:
-        _log(f"[workflows] approval-gate email failed: {e}")
+    ok, info = _send_operator_notification(
+        f"[Clayrune workflow] DECISION NEEDED: {workflow.get('name','')}", body, run=run)
+    _log(f"[workflows] approval-gate email {'sent' if ok else 'failed'}: {info}")
 
 
 # ── Clayrune actions (allowlisted, deterministic, no agent in the loop) ──────
@@ -1915,7 +1906,7 @@ def _journal_append(item_id: str, text: str, title: str = '') -> str:
         return str(path)
 
 
-def _send_operator_notification(subject: str, body: str) -> tuple:
+def _send_operator_notification(subject: str, body: str, *, run: Optional[dict] = None) -> tuple:
     """Best-effort email via the existing mailer (AGENT_RULES: no new SMTP
     code, no new creds) -- same mechanism `_notify_approval_waiting` already
     uses for the approval-gate channel. The recipient is resolved entirely
@@ -1934,11 +1925,13 @@ def _send_operator_notification(subject: str, body: str) -> tuple:
         import subprocess
         import sys
         r = subprocess.run(
-            [sys.executable, str(mailer), '--subject', subject, '--body', body],
+            [sys.executable, str(mailer), '--subject', subject, '--body', body]
+            + mail_context_args(run or {}),
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
         if r.returncode != 0:
             return False, f'send_mail exited {r.returncode}: {(r.stderr or r.stdout or "").strip()[:200]}'
-        return True, 'sent'
+        via_agent_mail = '[send_mail] sent via agent-mail' in (r.stdout or '')
+        return True, 'sent via agent-mail' if via_agent_mail else 'sent via Gmail'
     except Exception as e:
         return False, str(e)
 
@@ -1998,7 +1991,7 @@ def _execute_action(run: dict, node: dict, workflow: Optional[dict] = None) -> t
             message = rendered.get('message') or ''
             wf_name = (workflow or {}).get('name', '')
             subject = f"[Clayrune workflow] {wf_name}: {node.get('name', '')}".strip(': ')
-            ok, info = _send_operator_notification(subject, message or '(no message)')
+            ok, info = _send_operator_notification(subject, message or '(no message)', run=run)
             if not ok:
                 return False, '', f'notify_operator failed: {info}'
             return True, info, None

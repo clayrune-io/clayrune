@@ -953,7 +953,7 @@ def test_run_advances_against_its_snapshot_after_a_downstream_rename(wf, monkeyp
     definition it started with, sending through the ORIGINAL step."""
     sent = []
     monkeypatch.setattr(wf.m, '_send_operator_notification',
-                        lambda subject, body: (sent.append((subject, body)) or (True, 'recorded')))
+                        lambda subject, body, **kwargs: (sent.append((subject, body)) or (True, 'recorded')))
     doc = wf.m.create_workflow(_doc('Check US stocks', [
         _agent('us-stock-investor'),
         _action('action-2', 'notify_operator', config={'message': '{{prev.output}}'}),

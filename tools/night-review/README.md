@@ -113,10 +113,15 @@ install's verified owner.
   as `--project` / `--session`. A mail agent-mail accepted is recorded as route
   `agent_mail`; it is never read from Gmail. Only a Gmail-sent ask is read
   through `read_digest.py`.
+- **Workflow Send email and approval-gate notices** (`mc/workflows.py`): pass
+  `--project` / `--session` from the latest completed agent step in the same
+  run that has both IDs. Replies wake that agent's chat; an approval gate
+  still requires a human decision through its existing decision endpoint.
+  Without a completed agent session, the invocation stays unchanged (Gmail
+  fallback). Send email output reports `sent via agent-mail` or `sent via Gmail`.
 - **Gmail only, by design (no session to wake):** the remote-access down and
   enrollment-lost alerts (`mc_remote/tunnel_supervisor.py`,
-  `mc/blueprints/remote_routes.py`), workflow approval-gate mail and
-  `notify_operator` (`mc/workflows.py`), and hand runs.
+  `mc/blueprints/remote_routes.py`), and hand runs without session context.
 - **`mc:question` mail** (`mc/question_channel.py`) keeps its own transport:
   the dedicated agent-mail question path when selected, otherwise Gmail with a
   fixed `--message-id`/`--to` so its IMAP reply relay can match the answer.
