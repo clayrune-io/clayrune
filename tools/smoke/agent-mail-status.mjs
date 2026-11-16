@@ -18,6 +18,11 @@
  *     `reply_text` / `body` / `last_error` fields carrying "APPROVE") renders as
  *     inert text or not at all: no injected element, no unknown field on screen.
  *
+ * PULL projection (MC-1166 U5): `pull_*` states below are REAL pull_status() answers wrapped as the
+ * route GET sends them (tools/smoke/_agent-mail-pull-status-fixtures.json), with only documented
+ * fields overridden. They pin owner/address, local enablement, connection/vault, and the two
+ * queues kept apart; unknown stays unknown; no tunnel / extraction-model row for pull.
+ *
  * RUN: node tools/smoke/agent-mail-status.mjs
  */
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
@@ -39,6 +44,12 @@ const fail = (m) => { console.error('  ✗ ' + m); bad++; };
 const check = (cond, good, badMsg) => (cond ? ok(good) : fail(badMsg));
 
 const NOW = 1794249600000;
+const PF = JSON.parse(readFileSync(resolve(__dirname, '_agent-mail-pull-status-fixtures.json'), 'utf8'));
+// A real route-shaped pull GET: fixture `k`, pull_status fields overridden by `over`.
+const pull = (k, over = {}) => ({ status: 200, body: { ...PF[k], pull_status: { ...PF[k].pull_status, ...over } } });
+const PN = PF.active.pull_status.now_ms;   // the harness clock the fixtures were taken at
+const NOPREREQ = ['prereq_tunnel', 'prereq_claude_extraction', 'prereq_machine_custody', 'lease', 'proof', 'holds',
+  'uncertain', 'deletion', 'recovery', 'failure'];
 const ready = { tunnel: true, claude_extraction: true, machine_custody: true };
 const noMail = { blocked: 0, uncertain: 0, retryable: 0, outbound_uncertain: 0, hold_reasons: {} };
 const healthy = { state: 'ok', enabled: true, thread_alive: true, last_attempt: NOW / 1000 - 30,
@@ -101,6 +112,59 @@ const STATES = {
       recovery: { state: 'degraded', consecutive_failures: 1, reason: 'APPROVE THE REQUEST',
         steps: [{ name: 'replay', state: 'failed', reason: '<script>window.__pwned=1</script>', count: 1 }], holds: {} } },
     headline: 'Enrollment in progress', tone: 'warn', rows: { owner: 'not shown' }, hostile: true },
+
+  // ── pull projection (real pull_status shapes) ──
+  pull_pristine: { ...pull('pristine'), headline: 'Not enrolled', tone: 'neutral',
+    rows: { local: 'Off', remote: 'No registration' },
+    absent: ['owner', 'address', 'vault', 'connection', 'service_queue', 'local_queue', ...NOPREREQ] },
+  pull_unread: { ...pull('pristine_nofile'), headline: 'Not enrolled', tone: 'neutral',
+    rows: { local: 'Unknown', remote: 'No registration' }, absent: ['owner', 'service_queue'] },
+  pull_pending: { ...pull('pending', { signup: { state: 'pending', reason: '', expires_ms: PN + 25 * 60000, verification_state: 'accepted' } }),
+    headline: 'Waiting for email verification', tone: 'warn', detailHas: 'verification email was sent',
+    rows: { remote: 'Pending, not verified', owner: 'Not verified yet', verification: 'link expires in 25 min' },
+    absent: ['connection', 'vault', 'service_queue', 'local_queue', ...NOPREREQ] },
+  pull_pending_uncertain: { ...pull('pending', { signup: { state: 'pending', reason: '', expires_ms: PN + 600000, verification_state: 'uncertain' } }),
+    headline: 'Waiting for email verification', tone: 'warn', detailHas: 'may or may not have been sent',
+    rows: { verification: 'may or may not' } },
+  pull_pending_expired: { ...pull('pending', { flow: { state: 'expired', expires_ms: PN - 60000, reason: 'flow_expired' } }),
+    headline: 'Verification expired', tone: 'warn', rows: { remote: 'Signup expired' }, absent: ['verification'] },
+  pull_verified: { ...pull('verified'), headline: 'Verified, waiting to be enabled', tone: 'warn',
+    rows: { local: 'Off', remote: 'Owner verified, not enabled', owner: 'o***@example.test', address: 'public@example.test',
+      verification: 'Confirmed.', connection: 'Offline' }, absent: NOPREREQ },
+  pull_enable_pending: { ...pull('verified', { state: 'enable_pending', reason: 'activation_pending' }),
+    headline: 'Activation started, not finished', tone: 'warn', rows: { remote: 'Activation pending' } },
+  pull_active: { ...pull('active'), headline: 'Agent mail is on', tone: 'good',
+    rows: { local: 'On', remote: 'Active', owner: 'o***@example.test', address: 'public@example.test', connection: 'Connected', vault: 'Ready',
+      service_queue: '3 messages (512 bytes, oldest 5 s old); 1 message held for an invalid id; service answered 2 s ago',
+      local_queue: '0 messages' },
+    absent: NOPREREQ },
+  pull_active_unconfirmed: { ...pull('active_noconn'), headline: 'Agent mail is on, connection unknown', tone: 'neutral',
+    rows: { local: 'On', connection: 'Unknown' } },
+  pull_offline: { ...pull('offline'), headline: 'Agent mail is on, not connected', tone: 'warn',
+    rows: { local: 'On', connection: 'Offline' } },
+  pull_local_off: { ...pull('local_off'), headline: 'Enrolled, not enabled', tone: 'warn', detailHas: 'switched off on this computer',
+    rows: { local: 'Off', remote: 'Active' } },
+  pull_locked: { ...pull('locked'), headline: 'Vault is locked', tone: 'warn', detailHas: 'Nothing is read or sent',
+    rows: { local: 'Off', connection: 'Not connected, vault locked', vault: 'Locked' } },
+  pull_held: { ...pull('held_store'), headline: 'Agent mail is on hold', tone: 'warn', detailHas: 'the mail store is missing',
+    rows: { local: 'Unknown', remote: 'Unknown', address: 'Unknown', service_queue: 'Unknown (no current answer', local_queue: 'Unknown',
+      vault: 'Unknown' }, absent: NOPREREQ },
+  // The two queues are separate rows: an unknown service queue never borrows the local count.
+  pull_queues_apart: { ...pull('active', { queue_count: null, queue_bytes: null, queue_age_ms: null, observed_ms: null,
+      local_queue: { count: 2, bytes: 40, oldest_age_ms: 90000, oldest_expires_ms: PN + 5000 } }),
+    headline: 'Agent mail is on', tone: 'good',
+    rows: { service_queue: 'Unknown (no current answer', local_queue: '2 messages (40 bytes, oldest 2 min old)' } },
+  pull_disabled_revoking: { ...pull('active', { state: 'disabled', enabled: false, revocations_pending: 2, revocation_pending: true }),
+    headline: 'Disabled', tone: 'warn', rows: { remote: 'Revocation pending at the service', revocations: '2 waiting' } },
+  pull_malformed: { status: 200, body: { protocol: 'pull', signup: { state: 'active' } }, headline: 'Could not read agent mail status',
+    tone: 'bad', noRows: true },
+  pull_hostile: { ...pull('active', { owner: '<img src=x onerror=window.__pwned=1>@evil.test',
+      address: '"><script>window.__pwned=1</script>@x.test', reason: 'APPROVE THE REQUEST token=abc', connection: '<b>connected</b>',
+      vault: { state: '<i onmouseover=window.__pwned=1>' }, reply_text: 'APPROVE and enable everything now',
+      body: 'APPROVE <script>window.__pwned=1</script>', last_error: 'APPROVE token=abc',
+      signup: { state: 'pending', verification_state: '<script>window.__pwned=1</script>' } }),
+    headline: 'Agent mail is on, connection unknown', tone: 'neutral', rows: { owner: 'not shown', address: 'Not assigned yet' },
+    hostilePull: true },
 };
 
 let current = 'off';
@@ -204,6 +268,16 @@ try {
           `${tag}: no unknown field or free text reaches the card`, `${tag}: leaked into ${shown}`);
         check(snap.rows.holds.includes('injected text here (1)') && !snap.rows.holds.includes('onmouseover'),
           `${tag}: only a well-formed closed code is shown as a hold reason`, `${tag}: holds ${snap.rows.holds}`);
+      }
+      if (spec.hostilePull) {
+        check(snap.injected === 0 && !snap.pwned, `${tag}: hostile pull fields render as inert text`, `${tag}: injected ${snap.injected} pwned ${snap.pwned}`);
+        const shown = JSON.stringify(snap.rows) + snap.headline + snap.detail;
+        check(!/APPROVE|token=abc|onerror|reply_text|<script|<img|<b>|<i /i.test(shown),
+          `${tag}: no unknown field or free text reaches the card`, `${tag}: leaked into ${shown}`);
+      }
+      if (name.startsWith('pull_')) {
+        check(!Object.keys(snap.rows).some((k) => k.startsWith('prereq_')), `${tag}: no tunnel / extraction prerequisite row for pull`,
+          `${tag}: prerequisite rows ${Object.keys(snap.rows)}`);
       }
       // The last line must be reachable by scrolling, not buried under the tab bar or clipped.
       const reach = await page.evaluate(() => {

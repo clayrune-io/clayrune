@@ -86,10 +86,127 @@
       detail: status ? 'The server answered ' + int(status) + '.' : 'The server could not be reached.', rows: [], notes: [] };
   }
 
+  // ── pull projection (MC-1166 U5) ────────────────────────────────────────────
+  // body.protocol === 'pull' (the discriminator U1 sends and U3 reads) takes this path;
+  // an answer without it keeps using describe()'s legacy code unchanged. It reads ONLY
+  // body.pull_status (mc/agent_mail_status_view.pull_status, allow-listed server side)
+  // and re-validates every field: a null stays "unknown", never a guess. Pull has no
+  // tunnel / extraction-model prerequisite and no ownership lease.
+  const PULL_STATES = ['not_enrolled', 'pending', 'verified', 'enable_pending', 'active', 'disabled', 'frozen',
+    'deleted', 'held', 'unknown'];
+  const CONNECTIONS = ['connected', 'offline', 'vault_locked', 'held', 'unknown'];
+  const MAIL = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}$/;
+  const PULL_REASON = {
+    local_disabled: 'mail is switched off on this computer', registration_inactive: 'the registration is not current',
+    fenced: 'a cancel or revoke is still being applied', schema_corrupt: 'the local mail records do not agree',
+    status_failed: 'the status could not be read', activation_pending: 'activation is not finished',
+    flow_expired: 'the verification window ran out', vault_locked_or_unconfigured: 'the vault is locked or not set up',
+    service_key_changed: 'the mail service key changed', deployment_unconfigured: 'no mail service is configured',
+  };
+  const pullWhy = (c) => PULL_REASON[c] || why(c);
+  const VERIFY_TEXT = { queued: 'The verification email is queued.', accepted: 'The verification email was sent.',
+    uncertain: 'The verification email may or may not have been sent.', failed: 'The verification email could not be sent.' };
+  const VAULT_TEXT = { ready: 'Ready', vault_locked: 'Locked', vault_locked_or_unconfigured: 'Locked or not set up',
+    status_failed: 'Could not be read', unknown: 'Unknown' };
+  const count = (n, noun) => n + ' ' + noun + (n === 1 ? '' : 's');
+  const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+  const nat = (v) => (Number.isInteger(v) && v >= 0 ? v : null);   // null stays unknown, unlike int()
+
+  function describePull(body) {
+    const ps = body.pull_status;
+    if (!isObj(ps)) return unavailable(0, null);
+    const state = PULL_STATES.includes(ps.state) ? ps.state : 'unknown';
+    const now = int(ps.now_ms);
+    const ago = (ts) => (now && ts ? when(ts, now) : '');
+    const enabled = ps.enabled === true ? true : ps.enabled === false ? false : null;
+    const conn = CONNECTIONS.includes(ps.connection) ? ps.connection : 'unknown';
+    const reason = code(ps.reason);
+    const sig = isObj(ps.signup) ? ps.signup : {};
+    const flow = isObj(ps.flow) ? ps.flow : {};
+    const revoking = int(ps.revocations_pending);
+    const vault = code(isObj(ps.vault) ? ps.vault.state : '') || 'unknown';
+    const ended = state === 'pending' && ['expired', 'cancelled'].includes(flow.state) ? flow.state : '';
+
+    let tone = 'neutral', headline = 'Agent mail status unknown', remote = 'Unknown';
+    let detail = 'The status could not be read' + (pullWhy(reason) ? ': ' + pullWhy(reason) + '.' : '.') + ' Nothing here is a guess.';
+    if (state === 'not_enrolled') {
+      remote = 'No registration'; headline = 'Not enrolled';
+      detail = 'Mail is off. Nothing is enrolled, read or sent.';
+    } else if (state === 'pending') {
+      tone = 'warn'; remote = ended ? 'Signup ' + ended : 'Pending, not verified';
+      headline = ended === 'expired' ? 'Verification expired' : ended ? 'Signup cancelled' : 'Waiting for email verification';
+      detail = ended === 'expired' ? 'The 30-minute verification window ran out before the owner mailbox confirmed. Mail stays off.'
+        : ended ? 'This signup was cancelled. Mail stays off.'
+        : (VERIFY_TEXT[sig.verification_state] || 'Waiting for the owner mailbox to confirm.') + ' Mail stays off until it is verified and enabled.';
+    } else if (state === 'verified' || state === 'enable_pending') {
+      tone = 'warn'; remote = state === 'verified' ? 'Owner verified, not enabled' : 'Activation pending';
+      headline = state === 'verified' ? 'Verified, waiting to be enabled' : 'Activation started, not finished';
+      detail = state === 'verified' ? 'The owner mailbox is verified. Mail stays off until you enable it.'
+        : 'Activation was started and not finished. Enabling again finishes it.';
+    } else if (state === 'active') {
+      remote = 'Active';
+      if (enabled === true && conn === 'connected') { tone = 'good'; headline = 'Agent mail is on'; detail = 'Enabled here and connected to the mail service.'; }
+      else if (enabled === true && conn === 'offline') { tone = 'warn'; headline = 'Agent mail is on, not connected';
+        detail = 'Enabled here, but the connection to the mail service is not up. Mail waits until it reconnects.'; }
+      else if (enabled === true) { headline = 'Agent mail is on, connection unknown';
+        detail = 'Enabled here. Whether it is connected to the mail service could not be confirmed.'; }
+      else if (enabled === false) { tone = 'warn'; headline = 'Enrolled, not enabled';
+        detail = 'The mail record is active, but mail is off on this computer' + (pullWhy(reason) ? ' (' + pullWhy(reason) + ')' : '') + '.'; }
+    } else if (state === 'held') {
+      tone = 'warn';
+      headline = conn === 'vault_locked' ? 'Vault is locked' : 'Agent mail is on hold';
+      detail = conn === 'vault_locked' ? 'The vault is locked, so the mail identity key cannot be used. Nothing is read or sent until it is unlocked.'
+        : 'Mail is on hold' + (pullWhy(reason) ? ': ' + pullWhy(reason) + '.' : '.') + ' Nothing is read or sent while it is held.';
+    } else if (state !== 'unknown') {
+      remote = revoking > 0 ? 'Revocation pending at the service' : state === 'deleted' ? 'Deleted' : 'Disabled';
+      tone = revoking > 0 ? 'warn' : 'neutral';
+      headline = { disabled: 'Disabled', frozen: 'Frozen', deleted: 'Deleted' }[state];
+      detail = 'Mail is off on this computer' + (revoking > 0 ? '. The service has not yet confirmed the revocation (' + revoking + ' waiting); it will be retried.' : '.');
+    }
+
+    const rows = [row('local', 'On this computer', enabled === true ? 'On' : enabled === false ? 'Off' : 'Unknown', enabled ? 'good' : 'neutral'),
+      row('remote', 'At the mail service', remote, tone)];
+    if (state !== 'not_enrolled' && state !== 'unknown') {
+      const owner = typeof ps.owner === 'string' && MAIL.test(ps.owner) ? ps.owner.replace(/^(.)[^@]*/, '$1***') : '';
+      const address = typeof ps.address === 'string' && MAIL.test(ps.address) ? ps.address : '';
+      rows.push(row('owner', 'Owner mailbox', owner || (ps.owner_verified === false ? 'Not verified yet' : 'not shown')));
+      rows.push(row('address', 'Agent inbox address', address || (state === 'held' ? 'Unknown' : 'Not assigned yet')));
+    }
+    const exp = int(sig.expires_ms) || int(flow.expires_ms);
+    if ((state === 'pending' && !ended) || state === 'verified' || state === 'enable_pending') {
+      rows.push(row('verification', 'Verification', (state === 'pending' ? (VERIFY_TEXT[sig.verification_state] || 'Not confirmed yet.') : 'Confirmed.')
+        + (exp && state === 'pending' && ago(exp) ? ' The link expires ' + ago(exp) + ' (' + stamp(exp) + ').' : '') + ' Resumable after a restart.',
+        state === 'pending' ? 'warn' : 'good'));
+    }
+    if (!['not_enrolled', 'pending', 'unknown'].includes(state)) {
+      rows.push(row('connection', 'Connection to the mail service', { connected: 'Connected', offline: 'Offline',
+        vault_locked: 'Not connected, vault locked', held: 'On hold', unknown: 'Unknown' }[conn],
+        conn === 'connected' ? 'good' : conn === 'unknown' ? 'neutral' : 'warn'));
+      rows.push(row('vault', 'Identity key vault', VAULT_TEXT[vault] || pullWhy(vault),
+        vault === 'ready' ? 'good' : vault === 'unknown' ? 'neutral' : 'warn'));
+      // Two queues, never merged: what the service holds for this install vs what this computer received.
+      const sq = nat(ps.queue_count);
+      const seen = ago(int(ps.observed_ms));
+      const hold = int(ps.invalid_message_id_holds);
+      rows.push(row('service_queue', 'Waiting at the mail service', sq === null ? 'Unknown (no current answer from the service)'
+        : count(sq, 'message') + (sq ? ' (' + int(ps.queue_bytes) + ' bytes' + (nat(ps.queue_age_ms) !== null ? ', oldest ' + span(ps.queue_age_ms) + ' old' : '') + ')' : '')
+          + (hold ? '; ' + count(hold, 'message') + ' held for an invalid id' : '') + (seen ? '; service answered ' + seen : ''),
+        sq === null ? 'neutral' : sq ? 'warn' : 'good'));
+      const lq = isObj(ps.local_queue) && nat(ps.local_queue.count) !== null ? ps.local_queue : null;
+      rows.push(row('local_queue', 'Received here, not yet finished', lq === null ? 'Unknown'
+        : count(lq.count, 'message') + (lq.count ? ' (' + int(lq.bytes) + ' bytes' + (nat(lq.oldest_age_ms) !== null ? ', oldest ' + span(lq.oldest_age_ms) + ' old' : '') + ')' : ''),
+        lq === null ? 'neutral' : lq.count ? 'warn' : 'good'));
+      if (revoking > 0 || state === 'disabled') rows.push(row('revocations', 'Revocations',
+        revoking ? revoking + ' waiting for the mail service' : 'none waiting', revoking ? 'warn' : 'good'));
+    }
+    return { state, tone, headline, detail, rows, notes: ['This card only shows status. Changes are made with the controls below it.'] };
+  }
+
   function describe(input) {
     const status = input && input.status;
     const body = input && input.body;
     if (status !== 200 || !body || typeof body !== 'object' || Array.isArray(body)) return unavailable(status, body);
+    if (body.protocol === 'pull') return describePull(body);
     const stage = STAGES.includes(body.stage) ? body.stage : '';
     if (!stage) return unavailable(0, null);
     const now = int(body.now_ms);
