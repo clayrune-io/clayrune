@@ -7,6 +7,7 @@ import { VerificationMail, VERIFICATION_TTL } from '../verification-mail.js';
 import { bytes, base64url, unbase64url, sha256 } from '../signing.js';
 
 const NOW = 1_794_249_600_000;
+const DAY = 86_400_000;
 const ORIGIN = 'https://mail.example.com';
 const COOKIE = '__Secure-clayrune-mail';
 const START = '/v1/pull/signup/start';
@@ -56,13 +57,22 @@ async function keypair() {
   return { key: k.privateKey, publicKey: base64url(await crypto.subtle.exportKey('raw', k.publicKey)),
     privateKey: base64url(await crypto.subtle.exportKey('pkcs8', k.privateKey)), verify: k.publicKey };
 }
-async function fixture(t) {
+async function fixture(t, admission = { freshSignupEnabled: true }, realTime = false) {
   const db = new D1(); t.after(() => db.sql.close());
   const candidate = await keypair(); const service = await keypair();
   const mail = new VerificationMail({ db, serviceOrigin: ORIGIN, sealKeyId: 'synthetic', sealKey: new Uint8Array(32).fill(4) });
-  const f = { db, candidate, service, mail, time: NOW, nonce: 100, source: 'test-edge-source' };
-  f.http = new SignupHTTP({ db, serviceOrigin: ORIGIN, domain: 'clayrune.example', verificationMail: mail,
-    serviceKeyId: 'service-key', servicePrivateKey: service.privateKey, clock: () => f.time });
+  const f = { db, candidate, service, mail, time: realTime ? Date.now() : NOW, nonce: 100, source: 'test-edge-source' };
+  // Match the existing lifecycle harness: only the SQLite wall clock is
+  // substituted; admission predicates and rollback remain real SQL.
+  if (!realTime) db.sql.function('strftime', (format, at) => {
+    assert.equal(at, 'now');
+    const now = f.dbTime ?? f.time;
+    return format === '%s' ? String(Math.floor(now / 1000))
+      : `${String(Math.floor(now / 1000) % 60).padStart(2, '0')}.${String(now % 1000).padStart(3, '0')}`;
+  });
+  f.config = { db, serviceOrigin: ORIGIN, domain: 'clayrune.example', verificationMail: mail,
+    serviceKeyId: 'service-key', servicePrivateKey: service.privateKey, clock: () => f.time, ...admission };
+  f.http = new SignupHTTP(f.config);
   f.value = { op_id: id(1), flow_id: id(2), public_key: candidate.publicKey, key_id: 'candidate',
     owner: 'Private.Owner+tag@EXAMPLE.com', flow_secret_hash: await hash(SECRET), fence_hash: await hash(FENCE),
     consent_version: 'v1', manifest_sequence: 1, manifest_digest: 'a'.repeat(64) };
@@ -110,6 +120,16 @@ async function begin(f, overrides = {}, options = {}) {
   const value = response.headers.has('x-mail-signature') ? await signedValue(f, response, request) : await response.json();
   return { request, response, value };
 }
+const signupBudget = (f) => f.db.sql.prepare('SELECT count FROM pull_budgets WHERE bucket=?')
+  .get(`pull:signup:global:${Math.floor(f.time / DAY)}`)?.count ?? 0;
+async function freshRequest(f, n) {
+  return machine(f, START, { ...f.value, op_id: id(1000 + n), flow_id: id(2000 + n),
+    owner: `owner${n}@example.com` }, { fields: { install_id: id(3000 + n) } });
+}
+async function freshStart(f, n) {
+  const request = await freshRequest(f, n);
+  return run(f, request, `edge-${n}`);
+}
 async function link(f) {
   const message = await f.mail.message(one(f, 'pull_control_outbox').outbox_id, f.time);
   return /token=([a-f0-9]{64})/.exec(message.body)[1];
@@ -137,7 +157,7 @@ test('begin atomically reserves pending install/owner/address/flow/nonce/token/o
   assert.equal(one(f, 'pull_installs').owner_address, 'Private.Owner+tag@example.com');
   assert.equal(one(f, 'pull_addresses').state, 'reserved');
   assert.equal(one(f, 'pull_owner_slots').role, 'pending');
-  assert.equal(count(f, 'pull_budgets'), 4); assert.equal(one(f, 'pull_nonces').expires_ms, NOW + 300_001);
+  assert.equal(count(f, 'pull_budgets'), 5); assert.equal(one(f, 'pull_nonces').expires_ms, NOW + 300_001);
   assert.equal(one(f, 'pull_tokens').token_hash, await hash(await link(f)));
   assert.ok(!JSON.stringify(value).includes('Private.Owner'));
   assert.equal(f.db.sql.prepare('PRAGMA foreign_key_check').all().length, 0);
@@ -312,6 +332,164 @@ test('prepared concurrent duplicate starts converge on one operation, one addres
   assert.deepEqual(await signedValue(f, responses[0], a), await signedValue(f, responses[1], b));
   for (const table of ['pull_installs', 'pull_addresses', 'pull_tokens', 'pull_control_outbox', 'pull_operations']) assert.equal(count(f, table), 1);
   for (const row of rows(f, 'pull_budgets').filter((r) => !r.bucket.includes('http:management'))) assert.equal(row.count, 1);
+});
+
+test('fresh admission is refused by default and requires literal operator true before mail issuance', async (t) => {
+  for (const admission of [{}, { freshSignupEnabled: false }, { freshSignupEnabled: 'true' },
+    { freshSignupEnabled: 1 }, { freshSignupEnabled: null }]) {
+    const f = await fixture(t, admission); const before = snapshot(f);
+    let issued = 0; f.mail.issueStatements = async () => { issued++; throw new Error('must not issue'); };
+    const res = await begin(f);
+    assert.equal(res.response.status, 503); assert.equal(res.value.code, 'signup_closed');
+    assert.equal(issued, 0); assert.deepEqual(snapshot(f), before);
+  }
+});
+
+test('closing admission preserves exact durable replay, conflict detection, status and confirmation', async (t) => {
+  const f = await fixture(t); const original = await begin(f);
+  f.http = new SignupHTTP({ ...f.config, freshSignupEnabled: false });
+  const replay = await begin(f);
+  assert.equal(replay.response.status, 200); assert.deepEqual(replay.value, original.value);
+  assert.equal(signupBudget(f), 1); assert.equal(count(f, 'pull_control_outbox'), 1);
+  const conflict = await begin(f, { owner: 'different@example.com' });
+  assert.equal(conflict.response.status, 409); assert.equal(conflict.value.code, 'operation_conflict');
+  const b = await browser(f); assert.equal(b.response.status, 200);
+  assert.equal((await run(f, post(b))).status, 200);
+  const request = await machine(f, STATUS, { flow_id: f.value.flow_id, flow_secret: SECRET });
+  const response = await run(f, request); assert.equal(response.status, 200);
+  assert.equal((await signedValue(f, response, request)).state, 'verified');
+  assert.equal(signupBudget(f), 1); assert.equal(count(f, 'pull_control_outbox'), 1);
+  const refused = await freshStart(f, 99);
+  assert.equal(refused.status, 503); assert.equal((await refused.json()).code, 'signup_closed');
+});
+
+for (const cap of ['daily', 'pending']) test(`${cap}: prepared starts across installs/owners/sources cannot overshoot pilot cap`, async (t) => {
+  const f = await fixture(t);
+  if (cap === 'pending') {
+    // Carry nine unexpired reservations across UTC midnight: the new day has
+    // no signup charge, so this race can only be stopped by the pending guard.
+    f.time = (Math.floor(NOW / DAY) + 1) * DAY - 60_000;
+    for (let n = 0; n < 9; n++) assert.equal((await freshStart(f, n)).status, 200);
+    f.time += 60_000;
+    f.db.sql.exec("UPDATE pull_flows SET state='verified'");
+    assert.equal(signupBudget(f), 0);
+  }
+  const requests = await Promise.all(Array.from({ length: 12 }, (_, n) => freshRequest(f, 100 + n)));
+  let arrivals = 0; let release;
+  const barrier = new Promise((resolve) => { release = resolve; });
+  f.db.beforeBatch = async (statements) => {
+    if (statements.some((s) => s.sql.startsWith('INSERT INTO pull_installs')) && ++arrivals <= 12) {
+      if (arrivals === 12) release(); await barrier;
+    }
+  };
+  const responses = await Promise.all(requests.map((req, n) => run(f, req, `race-edge-${n}`)));
+  assert.equal(arrivals, 12); // All candidates passed their stale preflight.
+  assert.equal(responses.filter((r) => r.status === 200).length, cap === 'daily' ? 10 : 1);
+  for (let n = 0; n < responses.length; n++) {
+    const res = responses[n]; const value = await signedValue(f, res, requests[n]);
+    if (res.status === 200) continue;
+    assert.equal(res.status, 429); assert.equal(value.code, cap === 'daily' ? 'signup_limit' : 'pending_signup_limit');
+    assert.equal(value.retry_after_ms, cap === 'daily' ? (Math.floor(f.time / DAY) + 1) * DAY : f.time + 60_000);
+    assert.equal(Number(res.headers.get('retry-after')), Math.ceil((value.retry_after_ms - f.time) / 1000));
+  }
+  assert.equal(signupBudget(f), cap === 'daily' ? 10 : 1);
+  for (const table of ['pull_installs', 'pull_flows', 'pull_addresses', 'pull_tokens', 'pull_control_outbox',
+    'pull_operations', 'pull_nonces']) assert.equal(count(f, table), 10);
+  assert.equal(rows(f, 'pull_budgets').filter((r) => r.bucket.includes('http:management')).length, 10);
+  f.http = new SignupHTTP({ ...f.config, freshSignupEnabled: false });
+  const replay = await freshStart(f, 100 + responses.findIndex((r) => r.status === 200));
+  assert.equal(replay.status, 200); assert.equal(signupBudget(f), cap === 'daily' ? 10 : 1);
+  assert.equal(count(f, 'pull_control_outbox'), 10);
+  f.http = new SignupHTTP(f.config);
+  if (cap === 'daily') {
+    // Expiry frees pending capacity but never refunds the day's spend.
+    f.time += VERIFICATION_TTL;
+    const before = snapshot(f); let issued = 0;
+    f.mail.issueStatements = async () => { issued++; throw new Error('must not issue'); };
+    const refused = await freshStart(f, 500);
+    assert.equal(refused.status, 429); assert.equal((await refused.json()).code, 'signup_limit');
+    assert.equal(issued, 0); assert.deepEqual(snapshot(f), before);
+    f.time = (Math.floor(f.time / DAY) + 1) * DAY;
+    f.mail.issueStatements = VerificationMail.prototype.issueStatements.bind(f.mail);
+    assert.equal((await freshStart(f, 501)).status, 200); assert.equal(signupBudget(f), 1);
+  } else {
+    const before = snapshot(f); let issued = 0;
+    const issue = f.mail.issueStatements.bind(f.mail);
+    f.mail.issueStatements = async () => { issued++; throw new Error('must not issue'); };
+    assert.equal((await freshStart(f, 500)).status, 429);
+    assert.equal(issued, 0); assert.deepEqual(snapshot(f), before);
+    f.mail.issueStatements = issue;
+    // At the exact old expiry, those nine verified flows stop occupying slots.
+    f.time += VERIFICATION_TTL - 60_000;
+    assert.equal((await freshStart(f, 501)).status, 200); assert.equal(signupBudget(f), 2);
+  }
+});
+
+test('terminal and non-signup flows do not consume live pending signup capacity', async (t) => {
+  const f = await fixture(t); f.time = (Math.floor(NOW / DAY) + 1) * DAY - 60_000;
+  for (let n = 0; n < 10; n++) assert.equal((await freshStart(f, n)).status, 200);
+  f.time += 60_000;
+  for (const [n, mutation] of [[0, "state='completed'"], [1, "state='cancelled'"],
+    [2, "state='expired'"], [3, "purpose='owner_change'"]]) {
+    f.db.sql.prepare(`UPDATE pull_flows SET ${mutation} WHERE flow_id=?`).run(id(2000 + n));
+  }
+  for (let n = 0; n < 4; n++) assert.equal((await freshStart(f, 100 + n)).status, 200);
+  const refused = await freshStart(f, 500);
+  assert.equal(refused.status, 429); assert.equal((await refused.json()).code, 'pending_signup_limit');
+  assert.equal(signupBudget(f), 4);
+});
+
+test('D1 pending cap cannot be bypassed by a Worker clock ahead of live reservation expiry', async (t) => {
+  const f = await fixture(t); f.time = (Math.floor(NOW / DAY) + 1) * DAY - 60_000;
+  for (let n = 0; n < 10; n++) assert.equal((await freshStart(f, n)).status, 200);
+  f.time += 60_000; f.dbTime = f.time;
+  f.db.sql.prepare('UPDATE pull_flows SET expires_ms=?').run(f.dbTime + 1000);
+  f.time += 2000; // Worker preflight thinks the ten D1-live flows have expired.
+  const before = snapshot(f); const refused = await freshStart(f, 500);
+  assert.equal(refused.status, 503); assert.equal((await refused.json()).code, 'storage_unavailable');
+  assert.deepEqual(snapshot(f), before); assert.equal(signupBudget(f), 0);
+});
+
+test('lost signup commit response resolves exact receipt without a second admission charge', async (t) => {
+  const f = await fixture(t); const batch = f.db.batch.bind(f.db);
+  f.db.batch = async (statements) => {
+    const result = await batch(statements);
+    if (statements.some((s) => s.sql.startsWith('INSERT INTO pull_operations'))) throw new Error('lost commit response');
+    return result;
+  };
+  // The original nonce remains spent after a committed-but-lost response. A
+  // client retry signs the same immutable operation with a fresh nonce.
+  const lost = await begin(f);
+  assert.equal(lost.response.status, 409); assert.equal(lost.value.code, 'nonce_replayed');
+  f.http = new SignupHTTP({ ...f.config, freshSignupEnabled: false });
+  assert.equal((await begin(f)).response.status, 200);
+  assert.equal(signupBudget(f), 1); assert.equal(count(f, 'pull_control_outbox'), 1);
+  assert.equal(count(f, 'pull_tokens'), 1); assert.equal(count(f, 'pull_operations'), 1);
+});
+
+for (const stage of ['encryption', 'queued batch', 'final guard']) test(`signup cannot charge yesterday across UTC midnight at ${stage}`, async (t) => {
+  const f = await fixture(t); f.time = (Math.floor(NOW / DAY) + 1) * DAY - 1;
+  const nextDay = Math.floor(f.time / DAY) + 1;
+  f.db.sql.prepare('INSERT INTO pull_budgets VALUES(?,10,?)').run(`pull:signup:global:${nextDay}`, (nextDay + 2) * DAY);
+  const before = snapshot(f);
+  if (stage === 'encryption') {
+    const issue = f.mail.issueStatements.bind(f.mail);
+    f.mail.issueStatements = async (...args) => { const issued = await issue(...args); f.time++; return issued; };
+  } else if (stage === 'queued batch') {
+    f.db.beforeBatch = async (statements) => {
+      if (statements.some((s) => s.sql.startsWith('INSERT INTO pull_installs'))) f.time++;
+    };
+  } else {
+    f.db.inBatch = (s) => { if (s.sql.startsWith('INSERT INTO pull_operations')) f.time++; };
+  }
+  const refused = await begin(f);
+  assert.equal(refused.response.status, 429); assert.equal(refused.value.code, 'signup_limit');
+  assert.deepEqual(snapshot(f), before);
+});
+
+test('fresh signup admits with the actual unmodified SQLite wall clock', async (t) => {
+  const f = await fixture(t, { freshSignupEnabled: true }, true);
+  assert.equal((await begin(f)).response.status, 200); assert.equal(signupBudget(f), 1);
 });
 
 test('competing prepared confirmation batches consume at most once', async (t) => {

@@ -9,11 +9,14 @@ import { OwnerRegistry, ownerIdentity, newAddressLocal } from './owner-registry.
 import { VERIFICATION_TTL, confirmationPage } from './verification-mail.js';
 import { readRequestBody } from './request-body.js';
 import { Ledger } from './ledger.js';
+import { SQL_NOW } from './sql-clock.js';
 
 export const SIGNUP_PATHS = Object.freeze(['/v1/pull/signup/start', '/v1/pull/signup/status',
   '/mail/link', '/mail/link/confirm']);
 const START = SIGNUP_PATHS[0];
 const DAY = 86_400_000;
+const FRESH_SIGNUPS_PER_DAY = 10;
+const LIVE_PENDING_SIGNUPS = 10;
 const SKEW = 300_000;
 const SESSION_TTL = 600_000;
 const COOKIE = '__Secure-clayrune-mail';
@@ -27,8 +30,8 @@ const STATUS = new Map([[400, ['invalid_request', 'invalid_json']], [401, ['unau
   [404, ['not_found']], [408, ['body_timeout']],
   [409, ['operation_conflict', 'nonce_replayed', 'stale_generation', 'owner_limit', 'fenced', 'already_sent']],
   [410, ['flow_expired', 'token_expired']], [413, ['body_limit']],
-  [429, ['request_limit', 'verification_limit', 'abuse_limit']],
-  [503, ['storage_unavailable', 'service_unavailable']]]);
+  [429, ['request_limit', 'verification_limit', 'abuse_limit', 'signup_limit', 'pending_signup_limit']],
+  [503, ['storage_unavailable', 'service_unavailable', 'signup_closed']]]);
 const CODES = new Map([...STATUS].flatMap(([status, codes]) => codes.map((code) => [code, status])));
 const requireValue = (ok, code = 'invalid_request') => { if (!ok) throw new Error(code); };
 const matches = (re, s) => typeof s === 'string' && re.test(s);
@@ -106,11 +109,15 @@ function cookieSecret(request) {
  * Unit 06 may share the fixed v2 proof/accounting seam; legacy sign() is v1.
  */
 export class SignupHTTP {
-  constructor({ db, serviceOrigin, domain, verificationMail, serviceKeyId, servicePrivateKey, clock = Date.now }) {
+  constructor({ db, serviceOrigin, domain, verificationMail, serviceKeyId, servicePrivateKey,
+    freshSignupEnabled = false, clock = Date.now }) {
     requireValue(origin(serviceOrigin) && origin(`https://${domain}`) && domain.length <= 223 && matches(ID, serviceKeyId)
       && typeof servicePrivateKey === 'string' && unbase64url(servicePrivateKey).length > 0
       && verificationMail?.db === db && verificationMail.serviceOrigin === serviceOrigin);
     Object.assign(this, { db, serviceOrigin, domain, mail: verificationMail, serviceKeyId, servicePrivateKey, clock });
+    // Only reviewed operator configuration may enable fresh admission. Existing
+    // flows remain replayable/confirmable when this option is absent or closed.
+    this.freshSignupEnabled = freshSignupEnabled === true;
     this.registry = new OwnerRegistry(db);
     this.ledger = new Ledger(db);
   }
@@ -196,6 +203,16 @@ export class SignupHTTP {
       const accounting = await this.accounting(auth, now);
       const previous = await this.existing(auth, v);
       if (previous) { await this.db.batch(accounting); return previous; }
+      requireValue(this.freshSignupEnabled, 'signup_closed');
+      const signupBucket = `pull:signup:global:${Math.floor(now / DAY)}`;
+      const signupBudget = await this.first('SELECT count FROM pull_budgets WHERE bucket=?', signupBucket);
+      requireValue(!signupBudget || signupBudget.count < FRESH_SIGNUPS_PER_DAY, 'signup_limit');
+      // Verified but not yet activated still holds a live signup reservation.
+      // Expired/cancelled/completed flows do not occupy a pending slot.
+      const pendingSQL = (at) => `SELECT COUNT(*) AS n FROM pull_flows WHERE purpose='signup'
+        AND state IN ('pending','verified') AND expires_ms>${at}`;
+      const pending = await this.first(pendingSQL('?'), now);
+      requireValue(pending.n < LIVE_PENDING_SIGNUPS, 'pending_signup_limit');
       requireValue(!await r.installation(auth.install_id)
         && !await this.first('SELECT 1 FROM pull_flows WHERE flow_id=?', v.flow_id), 'operation_conflict');
       requireValue(!await this.first(`SELECT 1 FROM pull_fences WHERE install_id=? AND
@@ -216,7 +233,17 @@ export class SignupHTTP {
       const result = { flow_id: v.flow_id, install_id: auth.install_id, generation: 1, owner_generation: 1,
         address: `${local}@${this.domain}`, state: 'pending', expires_ms: end, verification_state: 'queued' };
       const issued = await this.mail.issueStatements({ outbox_id: randomId(), template: 'signup', to: owner.owner_address, flow }, now);
-      const statements = [...accounting,
+      // D1, rather than the pre-encryption Worker sample, owns the UTC day.
+      // Guard both ends so a queued batch cannot charge yesterday's allowance.
+      const dayGuard = () => r.guard(`CAST(${SQL_NOW}/86400000 AS INTEGER)=?`, Math.floor(now / DAY));
+      const statements = [dayGuard(), ...accounting,
+        // Repeat admission inside the same reservation batch: concurrent starts
+        // cannot overshoot either cap or leave a charge without their outbox.
+        r.guard(`(${pendingSQL(SQL_NOW)})<?`, LIVE_PENDING_SIGNUPS),
+        this.stmt(`INSERT INTO pull_budgets(bucket,count,expires_ms) VALUES(?,1,?)
+          ON CONFLICT(bucket) DO UPDATE SET count=count+1 WHERE count<?`,
+        signupBucket, (Math.floor(now / DAY) + 2) * DAY, FRESH_SIGNUPS_PER_DAY),
+        r.changed(),
         r.guard(`NOT EXISTS (SELECT 1 FROM pull_fences WHERE install_id=? AND generation=1 AND (mode='revoke' OR flow_id=?))`,
           auth.install_id, v.flow_id),
         this.stmt(`INSERT INTO pull_installs(install_id,generation,owner_generation,state,owner_hash,owner_address,
@@ -234,7 +261,7 @@ export class SignupHTTP {
         ...r.reserveAddressStatements({ address_local: local, install_id: auth.install_id, until_ms: end }, now),
         ...issued.statements,
         this.stmt(`INSERT INTO pull_operations VALUES(?,1,?,?,?,?,200,?,?)`, auth.install_id, START, v.op_id,
-          auth.digest, JSON.stringify(result), now, end + 30 * DAY)];
+          auth.digest, JSON.stringify(result), now, end + 30 * DAY), dayGuard()];
       requireValue(Math.abs(this.now() - Number(auth.timestamp)) <= SKEW, 'unauthorized');
       requireValue(this.now() < end, 'flow_expired');
       try { await this.db.batch(statements); return result; }
@@ -379,7 +406,7 @@ export class SignupHTTP {
       try {
         if (status === 429 || status === 503) {
           const now = this.now();
-          retryAt = ['request_limit', 'verification_limit'].includes(code)
+          retryAt = ['request_limit', 'verification_limit', 'signup_limit'].includes(code)
             ? (Math.floor(now / DAY) + 1) * DAY : now + 60_000;
         }
         response = browser ? html(code, status) : await this.response(auth && matches(I, requestId) ? auth : null,

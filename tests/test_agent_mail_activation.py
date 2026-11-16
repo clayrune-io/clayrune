@@ -354,11 +354,7 @@ ACTIVATE_NODE = NODE_HANDLER.replace(
     "const {PullActivateHTTP}=await import('./pull-activate-http.js');\n"
     "const target=p.path==='/v1/pull/activate'?new PullActivateHTTP({db,serviceOrigin:p.origin,"
     "domain:'clayrune.example',serviceKeyId:'service-key',servicePrivateKey:p.service_key,clock:()=>p.now}):http;\n"
-    'const response=await target.handle').replace(
-        'const db={',
-        "sql.function('strftime',(format,at)=>format==='%s'?String(Math.floor(p.now/1000)):"
-        "`${String(Math.floor(p.now/1000)%60).padStart(2,'0')}.${String(p.now%1000).padStart(3,'0')}`);\n"
-        'const db={')
+    'const response=await target.handle')
 
 
 def test_actual_worker_accepts_exact_activation_replay_after_lost_receipt(h):
