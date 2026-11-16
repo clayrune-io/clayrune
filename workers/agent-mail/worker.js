@@ -21,6 +21,7 @@ import { PullFenceHTTP, FENCE_PATH } from './pull-fence-http.js';
 import { PullKeyRotateHTTP, KEY_ROTATE_PATH } from './pull-key-rotate-http.js';
 import { ingress } from './ingress.js';
 import { sweep } from './pull-sweep.js';
+import { deliverControlMail } from './control-mail-delivery.js';
 
 const HTTP_ROUTES = [
   [[TICKET_PATH], SessionAuth],
@@ -35,12 +36,17 @@ const HOSTED_ROUTES = [
   [MANAGEMENT_PATHS, OwnerManagementHTTP],
   [OWNER_CHANGE_PATHS, OwnerChangeHTTP],
 ];
+// Fresh signup admission is operator configuration, never request input: only
+// the literal string 'open' admits new signups; absent or anything else is closed.
+const signupAdmission = (env) => env.MAIL_SIGNUP_ADMISSION === 'open';
 const reply = (status, value) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
 
 export function createWorker({ clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS } = {}) {
   const config = (env) => ({ db: env.MAIL_DB, serviceOrigin: env.MAIL_SERVICE_ORIGIN,
     domain: env.MAIL_DOMAIN, serviceKeyId: env.MAIL_SERVICE_KEY_ID,
     servicePrivateKey: env.MAIL_SERVICE_PRIVATE_KEY, clock, bodyTimeoutMs });
+  const verificationMail = (env) => new VerificationMail({ db: env.MAIL_DB, serviceOrigin: env.MAIL_SERVICE_ORIGIN,
+    sealKeyId: env.MAIL_PULL_OUTBOX_KEY_ID, sealKey: unbase64url(env.MAIL_PULL_OUTBOX_KEY) });
   const wake = (env) => (id) => env.MAIL_PULL_MAILBOX.get(env.MAIL_PULL_MAILBOX.idFromName(id)).wake(id);
   return {
     async fetch(request, env) {
@@ -62,15 +68,16 @@ export function createWorker({ clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS
         const context = { trustedSource: socketTrustedSource(request) };
         const options = config(env);
         if (hosted) {
-          options.verificationMail = new VerificationMail({ db: env.MAIL_DB, serviceOrigin: env.MAIL_SERVICE_ORIGIN,
-            sealKeyId: env.MAIL_PULL_OUTBOX_KEY_ID, sealKey: unbase64url(env.MAIL_PULL_OUTBOX_KEY) });
+          options.verificationMail = verificationMail(env);
+          // Admission reaches SignupHTTP only; no other handler is given the option.
+          const signupOptions = { ...options, freshSignupEnabled: signupAdmission(env) };
           // Shared links must reach only LinkRouter; its read-only purpose lookup
           // selects the original request's sole authoritative HTTP handler.
           if (LINK_PATHS.includes(url.pathname)) {
-            return await new LinkRouter({ signup: new SignupHTTP(options), management: new OwnerManagementHTTP(options),
+            return await new LinkRouter({ signup: new SignupHTTP(signupOptions), management: new OwnerManagementHTTP(options),
               ownerChange: new OwnerChangeHTTP(options) }).handle(request, context);
           }
-          return await new hosted[1](options).handle(request, context);
+          return await new hosted[1](hosted[1] === SignupHTTP ? signupOptions : options).handle(request, context);
         }
         return await new http[1]({ ...options, config: { from: env.MAIL_FROM, domain: env.MAIL_DOMAIN },
           binding: env.MAIL_SEND }).handle(request, context);
@@ -92,12 +99,28 @@ export function createWorker({ clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS
     },
     async scheduled(_event, env) {
       if (env.MAIL_ENABLED !== 'true') return;
+      // Two independent jobs: the pull notification sweep and the signup control
+      // mail consumer. Each runs even if the other fails; a failure is surfaced
+      // only after both have had their turn.
+      let swept, control, failure;
       try {
-        return await sweep({ ledger: new Ledger(env.MAIL_DB).pull({ clock }), wake: wake(env) });
+        swept = await sweep({ ledger: new Ledger(env.MAIL_DB).pull({ clock }), wake: wake(env) });
       } catch {
         console.error('[agent-mail] pull_sweep_storage_or_configuration_failure');
-        throw new Error('agent_mail_sweep_failed');
+        failure = new Error('agent_mail_sweep_failed');
       }
+      // No seal config means signup was never provisioned here: nothing to deliver.
+      if (env.MAIL_PULL_OUTBOX_KEY && env.MAIL_PULL_OUTBOX_KEY_ID) {
+        try {
+          control = await deliverControlMail({ mail: verificationMail(env), binding: env.MAIL_SEND,
+            from: env.MAIL_FROM, domain: env.MAIL_DOMAIN, clock });
+        } catch {
+          console.error('[agent-mail] control_delivery_failure');
+          failure ??= new Error('agent_mail_control_delivery_failed');
+        }
+      }
+      if (failure) throw failure;
+      return { ...swept, control };
     },
   };
 }
