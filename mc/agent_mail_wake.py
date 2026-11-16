@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from mc import agent_mail_spawner_fallback as spawner_fallback
 from mc.agent_mail_questions import consume, matching
 from mc.agent_mail_store import (EXPIRED, REVOKED, MailStore, SUBMITTED, SUBMITTING, TURN_COMPLETED,
                                  UNCERTAIN, hash_thread_token)
@@ -197,6 +198,7 @@ class MailWake:
             return {'state': 'idle', 'reason': ''}
         eid, fence = event['event_id'], event['fence_token']
         scope = None
+        bound = project = None
         try:
             with self.store._read() as db:
                 row = db.execute('SELECT snapshot FROM mail_continuations WHERE thread_hash=?',
@@ -231,7 +233,8 @@ class MailWake:
         except MailHeld as exc:
             if scope is not None and scope.started:
                 scope.unknown()
-            else:
+            elif not (bound and project and spawner_fallback.try_forward(
+                    self, app, event, bound, project, str(exc))):  # MC-1177
                 self.hold(event, str(exc))
         except Exception as exc:
             _log(f'[agent-mail] follow-up event {eid}: {type(exc).__name__}', flush=True)
