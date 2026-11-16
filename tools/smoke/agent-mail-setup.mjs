@@ -203,8 +203,12 @@ try {
     await page.fill('#setup-overlay [data-am-setup-input="owner"]', 'not an address');
     const beforeInvalid = JSON.stringify(reqs);
     await page.click('#setup-overlay [data-am-setup="continue"]');
-    check(/valid email/.test(await page.locator('#setup-overlay [data-am-setup="error"]').innerText())
-      && JSON.stringify(reqs) === beforeInvalid, `${W} invalid owner refused locally`);
+    // Wait for the error to render instead of reading it on the click tick (flaked ~1 in 7).
+    const invalidShown = await page.waitForFunction(
+      () => /valid email/.test(document.querySelector('#setup-overlay [data-am-setup="error"]')?.innerText || ''),
+      null, { timeout: 3000 }).then(() => true, () => false);
+    check(invalidShown, `${W} invalid owner refused locally`);
+    check(JSON.stringify(reqs) === beforeInvalid, `${W} invalid owner sends no request`);
     await page.fill('#setup-overlay [data-am-setup-input="owner"]', OWNER);
     await page.click('#setup-overlay [data-am-setup="continue"]');
     await cancelPrompt(page);
