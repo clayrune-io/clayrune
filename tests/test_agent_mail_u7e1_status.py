@@ -148,9 +148,14 @@ def web(kit, monkeypatch):
     return build
 
 
-def test_get_is_404_when_off_503_without_adapter_and_carries_recovery_when_on(kit, web, monkeypatch):
+def test_get_is_404_when_off_pull_default_without_adapter_and_carries_recovery_when_on(kit, web, monkeypatch, tmp_path):
+    from mc import agent_mail_factory
     assert web(kit.core, flag=False).get(routes.BASE).status_code == 404
-    assert web(None).get(routes.BASE).status_code == 503
+    # MC-1166 U1: no injected legacy adapter now means the pull signup composition (isolated home here).
+    monkeypatch.setattr(agent_mail_factory, 'get', lambda: agent_mail_factory.MailFactory(tmp_path / 'mail'))
+    default = web(None).get(routes.BASE)
+    assert default.status_code == 200 and default.json['protocol'] == 'pull'
+    assert default.json['signup']['state'] == 'not_enrolled' and not (tmp_path / 'mail').exists()
     monkeypatch.setattr(routes._supervisor, 'get', lambda: FakeSupervisor(HOSTILE))
     response = web(kit.core).get(routes.BASE)
     assert response.status_code == 200 and response.headers['Cache-Control'] == 'no-store'
