@@ -141,3 +141,30 @@ def test_decisions_unchanged_by_the_floor(log):
     over = lambda tokens, sess: tokens is not None and tokens >= 200_000
     mt.note_call_tokens(s, 250_000)            # fresh floor already over the limit
     assert mt.should_roll(s, over) is True     # no baseline armed -> rolls
+
+
+
+def test_model_threshold_reason_uses_outgoing_floor_after_reset(log, monkeypatch):
+    monkeypatch.setitem(state.CONFIG, 'context_rollover_by_character', {'global:dave': 100_000})
+    s = _session(model='claude-fable-5-2', character='global:dave')
+    mt.note_call_tokens(s, 90_000)
+    mt.begin_roll(s)
+    mt.record_roll(s, 280_000)
+    row = log()[0]
+    assert row['threshold'] == 277_349
+    assert row['threshold_reason'] == 'pin_ignored_below_floor'
+    assert row['fresh_floor_tokens'] == 90_000
+    assert row['working_room_tokens'] == 187_349
+    assert row['growth_source'] == 'measured' and row['mean_growth_tokens'] == 3900
+    assert s['_mt_fresh_floor'] is None
+
+
+def test_gave_up_logs_model_threshold_for_current_floor(log):
+    s = _session(agent_model='claude-fable-5-1')
+    mt.note_call_tokens(s, 90_000)
+    s['_mt_roll_failures'] = mt.MAX_ROLL_FAILURES
+    s['_mt_attempt_tokens'] = 280_000
+    mt._observe_failures(s)
+    row = log()[0]
+    assert row['threshold'] == 277_349 and row['threshold_reason'] == 'cost_optimal'
+    assert row['growth_source'] == 'family'

@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Choose Claude rollover limits by model and fresh context (MC-1178)
+
+- Known Claude models with a measured fresh-session floor use a cache-cost optimum, at least the global limit and 60,000 tokens above the floor, capped at half the model window. Haiku 5.5 also caps at its 100,000-token price step; hard caps win over the lower bound.
+- Character pins below the fresh floor plus 60,000 are ignored with a diagnostic; usable pins cap the result. Unknown models or floors retain global/character resolution. A nonpositive global value disables token rollover, including characters with pins.
+- Rollover rows carry the effective threshold, reason, growth assumption and source using the outgoing segment's floor. The context meter still displays the global threshold because no per-session threshold is sent to it.
+- Branch candidate for review; no merge, deployment or server restart.
+
 ## [2026-11-16] - Route workflow notices to the completed agent's chat
 
 - Workflow Send email actions and approval-gate notices pass the latest completed agent step's project and session to the shared mailer, so owner replies wake that chat. Runs without a completed agent session retain the existing Gmail fallback; recipients and human approval gates are unchanged.

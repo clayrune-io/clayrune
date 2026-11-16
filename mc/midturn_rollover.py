@@ -37,7 +37,7 @@ from mc import state
 from mc import bg_job_liveness as _bg_live
 from mc.core import _log, TimestampedLines
 from mc.long_job_guidance import job_route_url as _job_url
-from mc.rollover_threshold import _character_ref, threshold_for
+from mc.rollover_threshold import _character_ref, inputs_for_session, threshold_with_reason
 
 RECENT_TOOLS_KEEP = 10
 # MC-964 Step C: the last tool_results' first lines, carried across a roll
@@ -499,7 +499,7 @@ def _log_dir():
     return base / 'midturn_rollover_log'
 
 
-def _character_model_fields(session, floor):
+def _character_model_fields(session, floor, threshold):
     """MC-1178 prep: who rolled, on what, and how much room the threshold left
     after the fresh-start load. Absent values are None (null in the JSONL),
     never missing keys. `model` is the observed one when the stream reported
@@ -509,7 +509,7 @@ def _character_model_fields(session, floor):
     model = session.get('observed_model')
     if not model:
         model = session['model'] if 'model' in session else session.get('agent_model')
-    threshold = threshold_for(session, state.CONFIG)
+    inputs = inputs_for_session(session)
     room = threshold - floor if floor is not None and threshold > 0 else None
     return {
         'character': _character_ref(session) or None,
@@ -517,6 +517,8 @@ def _character_model_fields(session, floor):
         'provider': session.get('provider') or None,
         'fresh_floor_tokens': floor,
         'working_room_tokens': room,
+        'mean_growth_tokens': inputs['mean_growth_tokens'] if inputs else None,
+        'growth_source': inputs['growth_source'] if inputs else None,
     }
 
 
@@ -526,16 +528,19 @@ def _append_row(session, extra, floor=None):
     pid = session.get('project_id', '') or 'unknown'
     if floor is None:
         floor = session.get('_mt_fresh_floor')
+    threshold, reason = threshold_with_reason(
+        dict(session, _mt_fresh_floor=floor), state.CONFIG)
     row = {
         'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
         'project_id': pid,
         'session_id': session.get('session_id', ''),
         'claude_session_id': session.get('claude_session_id', ''),
-        'threshold': threshold_for(session, state.CONFIG),
+        'threshold': threshold,
+        'threshold_reason': reason,
         'roll_number': session.get('_mt_rolls', 0),
         'epoch': int(time.time()),
     }
-    row.update(_character_model_fields(session, floor))
+    row.update(_character_model_fields(session, floor, threshold))
     row.update(extra)
     try:
         d = _log_dir()

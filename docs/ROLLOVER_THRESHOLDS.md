@@ -1,4 +1,4 @@
-# Per-character rollover thresholds (MC-1072)
+# Rollover thresholds by model and character (MC-1072, MC-1178)
 
 Backlog: a2ac49d0. Status: local implementation; not merged, pushed or live.
 
@@ -13,10 +13,9 @@ No configured override means `context_rollover_tokens` (default 200000).
 Invalid map/entry values fall back to that global value. Invalid global
 values fall back to 200000. Integer strings and whole numeric counts work;
 booleans, fractional counts, non-finite numbers and other shapes do not.
-Active thresholds clamp to 60000 without rewriting config. For compatibility,
-the existing nonpositive global value still disables the token trigger;
-an explicit character override clamps to the floor and can enable that
-character's token trigger. Remove an override to restore global behavior.
+Active thresholds clamp to 60000 without rewriting config. A nonpositive global
+value disables the token trigger for every character, including pinned ones.
+Remove an override to restore global behavior.
 
 The map is exposed by the existing `/api/config` GET/PUT allowlist. The
 existing config-edit passcode and unattended-caller guards still apply.
@@ -30,7 +29,87 @@ Unknown token counts still use the existing transcript-byte backstop.
 Mid-turn enablement, pending-tool gates, retry growth/backoff, and handoff
 behavior remain governed by their existing code.
 
-## Plan and checkpoint
+## Model-aware resolution (MC-1178 v1)
+
+Status: branch candidate, not merged or deployed. The same resolver accepts a
+session with `observed_model`, or `model` (falling back to `agent_model` only
+when `model` is absent), and `_mt_fresh_floor` from the segment's first usage
+reading. Dated Claude IDs and a trailing `[1m]` normalize to canonical IDs.
+Unknown models or unknown/invalid floors preserve legacy character/global
+resolution. A present empty `model` means native default until observed.
+
+`mc/rollover_model_table.py` holds reviewed inputs, separately from the resolver.
+The v1 decision uses `F` (fresh floor), mean growth per model call `g`, and the
+cache-write/cache-read price ratio `w/r`:
+
+```text
+T* = F + sqrt(2 * F * (w/r) * g)
+lo = max(global threshold, F + 60000)
+hi = min(window / 2, optional price step, optional usable character pin)
+threshold = min(hi, max(lo, int(T*)))
+```
+
+Hard upper caps win when `hi < lo`. A pin below `F + 60000` is ignored with
+one diagnostic per character/pin (bounded process-local cache); a higher pin
+caps `hi`. No config is rewritten and no new config setting or API is added.
+A global value <= 0 disables token rollover before model or character logic.
+
+| Model | Window | Input/read/write $ per MTok | w/r | g | Growth source |
+| --- | ---: | --- | ---: | ---: | --- |
+| Fable 5.2 | 1M | 8 / 0.20 / 10 | 50 | 3900 | measured |
+| Fable 5.1 | 1M | 10 / 0.25 / 12.5 | 50 | 3900 | family |
+| Fable 5 | 1M | unknown | 12.5 | 3900 | family |
+| Opus 5.5 | 1M | 4 / 0.20 / 5 | 25 | 1600 | measured |
+| Opus 5 | 1M | unknown | 12.5 | 1600 | family |
+| Sonnet 5.5 | 1M | 2 / 0.10 / 2.5 | 25 | 2600 | measured |
+| Sonnet 5 | 1M | unknown | 12.5 | 2600 | family |
+| Haiku 5.5 | 1M | 0.10 / 0.01 / 0.125 | 12.5 | 2600 | provisional |
+| Haiku 4.5 | 200k | 1 / 0.10 / 1.25 | 12.5 | 2600 | provisional |
+
+These are reviewed plan inputs dated 2026-11-16, not a live price feed.
+Family growth uses the newest measured member of that family. Legacy absolute
+prices stay null; the formula uses the explicit ratio. Haiku 5.5's price-step
+cap is 100000 tokens. All cache writes above use the five-minute price.
+
+At F=90000 and global=200000, Fable 5.2 resolves to 277349, ignoring a 100000
+pin; Opus/Sonnet 5.5 stay at 200000; Haiku 5.5 and 4.5 cap at 100000.
+`threshold_with_reason` returns `(int, reason)` and `threshold_for` stays an
+integer API. Reasons: `global`, `pin`, `cost_optimal`, `window_cap`,
+`price_step`, `pin_ignored_below_floor`. A binding upper cap takes reason
+precedence; otherwise an ignored pin takes precedence over `cost_optimal`.
+`cost_optimal` also covers the global/fresh-floor lower clamp.
+
+Mid-turn rows add `threshold_reason`, `mean_growth_tokens`, `growth_source`.
+The threshold and working room use the outgoing segment's saved floor after
+`begin_roll` resets the live floor. Resume dispatch uses an available live
+session for model/floor inputs; unknown durable-only state keeps fallback.
+
+The client context meter still divides by global config. The server does not
+send a per-session threshold, so v1 intentionally leaves the frontend unchanged.
+No browser smoke is required because no static assets changed. Follow-up after
+review/merge belongs to the integrating session; no restart is part of this unit.
+Rollback: revert this branch's commit to restore legacy resolution.
+
+## MC-1178 validation
+
+- Focused suite: **183 passed** (resolver/table 76, mid-turn reader 69,
+  log fields 13, agent-route context trigger 19, live follow-up 6), exit 0.
+- Agent routes and dispatch-save regression suite: **143 passed**, exit 0;
+  one pre-existing invalid-escape SyntaxWarning in test_agent_routes.py.
+- `pyright mc/rollover_model_table.py mc/rollover_threshold.py`:
+  zero errors/warnings. `git diff --check`: clean.
+- Test launcher reported `telemetry_queue_full_progress_incomplete` on the
+  focused run; test exit status, terminal counts and JUnit XML independently
+  confirm results. No live provider calls, browser, deployment or restart.
+
+Commands from this worktree (using the installation's absolute launcher path):
+
+```powershell
+python <installation>/tools/test-run.py --project mission_control --port 5199 -- python -m pytest -o addopts=-ra tests/test_rollover_threshold.py tests/test_midturn_rollover.py tests/test_midturn_rollover_log_fields.py tests/test_context_rollover_trigger.py tests/test_context_rollover_live_followup.py -q --junitxml=_scratch/mc1178-focused.xml
+python <installation>/tools/test-run.py --project mission_control --port 5199 -- python -m pytest -o addopts=-ra tests/test_agent_routes.py tests/test_dispatch_spawn_save_race.py -q --junitxml=_scratch/mc1178-routes.xml
+```
+
+## MC-1072 historical checkpoint
 
 1. Read backlog, rollover memory, token-limit readers and character shapes.
 2. Add the resolver and wire only threshold call sites in agent_routes.py,

@@ -259,3 +259,31 @@ def test_in_flight_child_survives_the_token_triggered_roll(env, monkeypatch):
     assert 'parent-1' in env['sessions']
     after_kids = ar._in_flight_children('p1', 'parent-1')
     assert after_kids == before_kids
+
+
+
+@pytest.mark.parametrize('tokens,rolls', [(210_000, False), (280_000, True)])
+def test_model_floor_controls_live_followup(env, monkeypatch, tokens, rolls):
+    ar = env['ar']
+    monkeypatch.setitem(ar.state.CONFIG, 'context_rollover_by_character', {'global:dave': 100_000})
+    live = _session('model-session', context_tokens=tokens)
+    live.update(character='global:dave', model='claude-fable-5-2', _mt_fresh_floor=90_000)
+    old_proc = live['proc']
+    env['sessions']['model-session'] = live
+    spawned = []
+
+    def popen(cmd, **kwargs):
+        assert rolls, 'must stay on stdin below the model threshold'
+        spawned.append(cmd)
+        return _Proc(pid=999999)
+
+    monkeypatch.setattr(ar.subprocess, 'Popen', popen)
+    response = env['client'].post('/api/project/p1/agent/followup', json={
+        'session_id': 'model-session', 'message': 'continue'})
+    assert response.status_code == 200, response.get_data(as_text=True)
+    if rolls:
+        assert _wait(lambda: bool(spawned))
+        assert '-r' not in spawned[0] and old_proc.stdin.written == []
+    else:
+        assert _wait(lambda: bool(old_proc.stdin.written))
+        assert not spawned
