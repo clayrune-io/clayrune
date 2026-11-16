@@ -27,6 +27,8 @@
       ask: 'Re-enter your dashboard passcode to start agent mail setup with this address.' },
     resume: { label: 'Resume setup', title: 'Resume agent mail setup',
       ask: 'Re-enter your dashboard passcode to resume agent mail setup.' },
+    check: { label: 'Check verification', title: 'Check owner verification',
+      ask: 'Re-enter your dashboard passcode to check whether the owner mailbox was verified.' },
     review: { label: 'Review details', title: 'Review agent mail details',
       ask: 'Re-enter your dashboard passcode to show the enrollment details for review.' },
     confirm: { label: 'Confirm these details', title: 'Confirm agent mail details',
@@ -115,6 +117,66 @@
     return text ? 'Refused: ' + text + '.' : (c ? 'Refused: ' + c.replace(/_/g, ' ') + '.' : 'The server refused this.');
   };
 
+  // ── pull signup (MC-1166 U3) ─────────────────────────────────────────────
+  // Explicit protocol discriminator: only `body.protocol === 'pull'` takes this path;
+  // legacy answers (no discriminator) keep using the code below unchanged. Pull has no
+  // review/code/proof step and no disable route, so none is ever offered. The view is
+  // body.signup (Signup.status): anything unrecognised fails closed with NO controls,
+  // so a malformed answer can never offer Enable.
+  const isPull = (b) => isObj(b) && b.protocol === 'pull';
+  const PULL_WORDS = {
+    start_pending: 'Setup is saved on this computer; the mail service has not been asked yet.',
+    flow_expired: 'The 30-minute verification window ran out. Setup cannot be restarted from here yet.',
+    vault_locked: 'The vault is locked, so the mail identity key cannot be used. Unlock the vault and try again.',
+    service_key_changed: 'The mail service key changed since this was approved. Nothing was sent.',
+    response_unverified: 'The mail service answer could not be verified, so it was ignored.',
+    connection_lost: 'The mail service could not be reached. Try again in a moment.',
+    store_corrupt: 'The local mail store is damaged. Nothing was sent.',
+    storage_unavailable: 'The local mail store could not be read or written.',
+    deployment_unconfigured: 'This version has no mail service configured yet.',
+    deployment_incomplete: 'The saved mail service settings are incomplete.',
+    human_required: 'A person must do this from the dashboard.',
+    service_unavailable: 'The mail service could not be reached or did not accept this. Try again in a moment.',
+  };
+  const VERIFY_WORDS = {
+    queued: 'The verification email is queued. Check again shortly.',
+    accepted: 'Verification email sent. Open the link in it and confirm, then check verification.',
+    uncertain: 'The verification email may or may not have been sent. Check your inbox, then check verification.',
+    failed: 'The verification email could not be sent. Checking again will not resend it.',
+  };
+  const pullWhy = (c) => PULL_WORDS[c] || refusal(c);
+  // `view` is the Signup view: body.signup on the GET answer, the flat POST body itself.
+  function pullPlan(view) {
+    const v = isObj(view) ? view : null;
+    const reason = v ? code(v.reason) : '';
+    const fail = (text) => ({ state: 'error', protocol: 'pull', controls: [], text });
+    if (!v || typeof v.state !== 'string') return fail('The mail status was not understood. Nothing is offered.');
+    const out = (state, controls, text) => ({ state, protocol: 'pull', controls, text, reason });
+    if (reason && !['expired', 'cancelled'].includes(v.state)) return out('held', [], pullWhy(reason));
+    switch (v.state) {
+      case 'not_enrolled': return out('not_enrolled', ['setup'], '');
+      case 'preparing': case 'start_pending': return out(v.state, ['resume'], PULL_WORDS.start_pending);
+      case 'pending': return out('pending', ['check'], VERIFY_WORDS[v.verification_state] || 'Waiting for the owner mailbox to confirm.');
+      case 'verified': return out('verified', ['enable'], 'Mailbox verified. Mail stays off until you enable it.');
+      case 'enable_pending': return out('enable_pending', ['enable'], 'Activation was started but not finished. Enable again to finish it.');
+      case 'active': return v.enabled === true ? out('active', [], 'Agent mail is on.') : fail('The mail status was not understood. Nothing is offered.');
+      case 'expired': return out('expired', [], pullWhy(reason || 'flow_expired'));
+      case 'cancelled': return out('cancelled', [], 'This signup was cancelled.');
+      default: return fail('The mail status was not understood. Nothing is offered.');
+    }
+  }
+  // A pull POST answers HTTP 200 even when it holds a refusal: judge the view, not the status.
+  function pullOutcome(action, r) {
+    // POST answers are FLAT ({protocol, ...Signup view}); a nested `signup` is the GET shape.
+    const p = pullPlan('signup' in r.body ? null : r.body);
+    const done = (tone, text, c) => ({ tone, text, blockers: [], code: c });
+    if (p.state === 'held') return done('bad', p.text, p.reason);
+    if (p.state === 'error') return done('bad', p.text, 'unrecognised');
+    if (action === 'enable') return p.state === 'active' ? done('good', SUCCESS.enable, 'ok')
+      : done('bad', 'Agent mail was not turned on. ' + p.text, p.state);
+    return done('good', p.text || 'Done.', 'ok');
+  }
+
   // ── which controls does this status allow ────────────────────────────────
   // Returns { state, controls: [action, ...] }. `controls` holds action names, or
   // 'setup' (the setup step, for a not-yet-enrolled or finished-disabled install).
@@ -124,6 +186,7 @@
     const status = input && input.status;
     const body = input && input.body;
     if (status === 404) return { state: 'off', controls: [] };
+    if (status === 200 && isPull(body)) return pullPlan(body.signup);
     if (status !== 200 || !isObj(body) || !STAGES.includes(body.stage)) {
       return { state: status === 503 ? 'unavailable' : 'error', controls: ['disable'] };
     }
@@ -166,6 +229,10 @@
     const body = isObj(r && r.body) ? r.body : {};
     const err = code(body.error);
     const done = (tone, text, c, blockers) => ({ tone, text, blockers: blockers || [], code: c || err });
+    if (r && r.ok && status === 200 && isPull(body)) return pullOutcome(action, r);
+    if (status === 503 && isPull(body) && body.activation === 'committed') {
+      return done('warn', 'Agent mail was activated at the service, but this computer could not finish turning it on. Press Enable again.', err);
+    }
     if (r && r.ok && status === 200) return done('good', SUCCESS[action] || 'Done.', 'ok');
     if (status === 403 && err === 'human_required') {
       const blockers = (Array.isArray(body.blocking_sessions) ? body.blocking_sessions : []).slice(0, 10)
