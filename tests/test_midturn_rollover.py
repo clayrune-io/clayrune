@@ -336,6 +336,27 @@ def test_roll_is_logged_to_a_durable_file(env):
     assert len(env['spawned']) == 1
 
 
+def test_roll_row_logs_character_model_provider_and_fresh_floor(env):
+    """MC-1178 prep, through the real reader + agent_interrupt (which calls
+    begin_roll BEFORE record_roll): the row carries the segment that rolled."""
+    def lines():
+        yield _assistant('tool1', 50_000, 'm1')     # first reading = fresh floor
+        yield _tool_result('tool1')
+        yield _assistant('tool2', 250_000, 'm2')
+        yield _tool_result('tool2')
+
+    _run_reader(env, lines, character={'name': 'dave', 'scope': 'global'},
+                observed_model='claude-opus-x')
+    log = env['tmp'] / 'midturn_log' / 'p1.jsonl'
+    assert _wait(log.is_file)
+    row = json.loads(log.read_text().splitlines()[0])
+    assert (row['character'], row['model'], row['provider']) == \
+        ('global:dave', 'claude-opus-x', 'claude')
+    assert row['fresh_floor_tokens'] == 50_000
+    assert row['working_room_tokens'] == 150_000
+    env['join_respawns']()
+
+
 def test_journal_path_and_tool_result_heads_carried_across_roll(env):
     """MC-964 Step C: the fresh session's prompt carries the docs/_journal/
     file(s) this session wrote and the last tool_results' first lines. The
