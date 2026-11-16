@@ -1,0 +1,542 @@
+{
+ "_source": "Real mc.agent_mail_status_view.pull_status() output wrapped as the enrollment route GET sends it (protocol/pull_status/signup); generated through the Harness in tests/test_agent_mail_status_view_pull.py. MC-1166 U5.",
+ "pristine_nofile": {
+  "protocol": "pull",
+  "pull_status": {
+   "v": 1,
+   "state": "not_enrolled",
+   "reason": "not_enrolled",
+   "enabled": null,
+   "install_id": null,
+   "generation": null,
+   "owner_generation": null,
+   "owner": "",
+   "owner_verified": null,
+   "address": "",
+   "connection": "unknown",
+   "vault": {
+    "state": "unknown"
+   },
+   "queue_count": null,
+   "queue_bytes": null,
+   "invalid_message_id_holds": null,
+   "oldest_received_ms": null,
+   "oldest_expires_ms": null,
+   "queue_age_ms": null,
+   "observed_ms": null,
+   "notice_state": null,
+   "revocation_pending": null,
+   "revocations_pending": null,
+   "local_queue": null,
+   "flow": {
+    "state": "unknown"
+   },
+   "signup": {
+    "state": "unavailable"
+   },
+   "recovery": {
+    "state": "not_running"
+   }
+  },
+  "signup": {}
+ },
+ "pristine": {
+  "protocol": "pull",
+  "pull_status": {
+   "v": 1,
+   "state": "not_enrolled",
+   "reason": "not_enrolled",
+   "enabled": false,
+   "install_id": null,
+   "generation": null,
+   "owner_generation": null,
+   "owner": "",
+   "owner_verified": false,
+   "address": "",
+   "connection": "unknown",
+   "vault": {
+    "state": "unknown"
+   },
+   "queue_count": null,
+   "queue_bytes": null,
+   "invalid_message_id_holds": null,
+   "oldest_received_ms": null,
+   "oldest_expires_ms": null,
+   "queue_age_ms": null,
+   "observed_ms": null,
+   "notice_state": null,
+   "revocation_pending": false,
+   "revocations_pending": 0,
+   "local_queue": null,
+   "flow": {
+    "state": "unknown"
+   },
+   "signup": {
+    "state": "unavailable"
+   },
+   "recovery": {
+    "state": "not_running"
+   },
+   "now_ms": 1794249600000
+  },
+  "signup": {}
+ },
+ "held_store": {
+  "protocol": "pull",
+  "pull_status": {
+   "v": 1,
+   "state": "held",
+   "reason": "store_missing",
+   "enabled": null,
+   "install_id": null,
+   "generation": null,
+   "owner_generation": null,
+   "owner": "",
+   "owner_verified": null,
+   "address": "",
+   "connection": "unknown",
+   "vault": {
+    "state": "unknown"
+   },
+   "queue_count": null,
+   "queue_bytes": null,
+   "invalid_message_id_holds": null,
+   "oldest_received_ms": null,
+   "oldest_expires_ms": null,
+   "queue_age_ms": null,
+   "observed_ms": null,
+   "notice_state": null,
+   "revocation_pending": null,
+   "revocations_pending": null,
+   "local_queue": null,
+   "flow": {
+    "state": "unknown"
+   },
+   "signup": {
+    "state": "unavailable"
+   },
+   "recovery": {
+    "state": "not_running"
+   }
+  },
+  "signup": {}
+ },
+ "active": {
+  "protocol": "pull",
+  "pull_status": {
+   "v": 1,
+   "state": "active",
+   "reason": "",
+   "enabled": true,
+   "install_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "generation": 1,
+   "owner_generation": 1,
+   "owner": "owner@example.test",
+   "owner_verified": true,
+   "address": "public@example.test",
+   "connection": "connected",
+   "vault": {
+    "state": "ready"
+   },
+   "queue_count": 3,
+   "queue_bytes": 512,
+   "invalid_message_id_holds": 1,
+   "oldest_received_ms": 1794508795000,
+   "oldest_expires_ms": 1794508808000,
+   "queue_age_ms": 5000,
+   "observed_ms": 1794508798000,
+   "notice_state": "uncertain",
+   "revocation_pending": false,
+   "revocations_pending": 0,
+   "local_queue": {
+    "count": 0,
+    "bytes": 0,
+    "oldest_age_ms": null,
+    "oldest_expires_ms": null
+   },
+   "flow": {
+    "state": "unknown"
+   },
+   "signup": {
+    "state": "unavailable"
+   },
+   "recovery": {
+    "state": "ok",
+    "enabled": true,
+    "thread_alive": true,
+    "last_attempt": null,
+    "last_success": null,
+    "consecutive_failures": null,
+    "reason": "",
+    "steps": [],
+    "holds": {},
+    "last_tick": 1794508800.0,
+    "tick_stale": false,
+    "client": {
+     "state": "connected",
+     "running": true,
+     "reason": "",
+     "last_notice": "",
+     "epoch": 1,
+     "last_activity_ms": 1794508800000,
+     "failures": 0,
+     "next_attempt_ms": 0
+    },
+    "last_failure": null,
+    "failure_count": null,
+    "recent_failures": [],
+    "last_client_event": null
+   },
+   "now_ms": 1794508800000
+  },
+  "signup": {}
+ },
+ "active_noconn": {
+  "protocol": "pull",
+  "pull_status": {
+   "v": 1,
+   "state": "active",
+   "reason": "",
+   "enabled": true,
+   "install_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "generation": 1,
+   "owner_generation": 1,
+   "owner": "owner@example.test",
+   "owner_verified": true,
+   "address": "public@example.test",
+   "connection": "unknown",
+   "vault": {
+    "state": "ready"
+   },
+   "queue_count": 3,
+   "queue_bytes": 512,
+   "invalid_message_id_holds": 1,
+   "oldest_received_ms": 1794508795000,
+   "oldest_expires_ms": 1794508808000,
+   "queue_age_ms": 5000,
+   "observed_ms": 1794508798000,
+   "notice_state": "uncertain",
+   "revocation_pending": false,
+   "revocations_pending": 0,
+   "local_queue": {
+    "count": 0,
+    "bytes": 0,
+    "oldest_age_ms": null,
+    "oldest_expires_ms": null
+   },
+   "flow": {
+    "state": "unknown"
+   },
+   "signup": {
+    "state": "unavailable"
+   },
+   "recovery": {
+    "state": "not_running"
+   },
+   "now_ms": 1794508800000
+  },
+  "signup": {}
+ },
+ "offline": {
+  "protocol": "pull",
+  "pull_status": {
+   "v": 1,
+   "state": "active",
+   "reason": "",
+   "enabled": true,
+   "install_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "generation": 1,
+   "owner_generation": 1,
+   "owner": "owner@example.test",
+   "owner_verified": true,
+   "address": "public@example.test",
+   "connection": "offline",
+   "vault": {
+    "state": "ready"
+   },
+   "queue_count": 3,
+   "queue_bytes": 512,
+   "invalid_message_id_holds": 1,
+   "oldest_received_ms": 1794508795000,
+   "oldest_expires_ms": 1794508808000,
+   "queue_age_ms": 5000,
+   "observed_ms": 1794508798000,
+   "notice_state": "uncertain",
+   "revocation_pending": false,
+   "revocations_pending": 0,
+   "local_queue": {
+    "count": 0,
+    "bytes": 0,
+    "oldest_age_ms": null,
+    "oldest_expires_ms": null
+   },
+   "flow": {
+    "state": "unknown"
+   },
+   "signup": {
+    "state": "unavailable"
+   },
+   "recovery": {
+    "state": "ok",
+    "enabled": true,
+    "thread_alive": true,
+    "last_attempt": null,
+    "last_success": null,
+    "consecutive_failures": null,
+    "reason": "",
+    "steps": [],
+    "holds": {},
+    "last_tick": 1794508800.0,
+    "tick_stale": false,
+    "client": {
+     "state": "reconnecting",
+     "running": true,
+     "reason": "",
+     "last_notice": "",
+     "epoch": 1,
+     "last_activity_ms": 1794508800000,
+     "failures": 0,
+     "next_attempt_ms": 0
+    },
+    "last_failure": null,
+    "failure_count": null,
+    "recent_failures": [],
+    "last_client_event": null
+   },
+   "now_ms": 1794508800000
+  },
+  "signup": {}
+ },
+ "locked": {
+  "protocol": "pull",
+  "pull_status": {
+   "v": 1,
+   "state": "held",
+   "reason": "vault_locked",
+   "enabled": false,
+   "install_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "generation": 1,
+   "owner_generation": 1,
+   "owner": "owner@example.test",
+   "owner_verified": true,
+   "address": "public@example.test",
+   "connection": "vault_locked",
+   "vault": {
+    "state": "vault_locked"
+   },
+   "queue_count": 3,
+   "queue_bytes": 512,
+   "invalid_message_id_holds": 1,
+   "oldest_received_ms": 1794508795000,
+   "oldest_expires_ms": 1794508808000,
+   "queue_age_ms": 5000,
+   "observed_ms": 1794508798000,
+   "notice_state": "uncertain",
+   "revocation_pending": false,
+   "revocations_pending": 0,
+   "local_queue": {
+    "count": 0,
+    "bytes": 0,
+    "oldest_age_ms": null,
+    "oldest_expires_ms": null
+   },
+   "flow": {
+    "state": "unknown"
+   },
+   "signup": {
+    "state": "unavailable"
+   },
+   "recovery": {
+    "state": "ok",
+    "enabled": true,
+    "thread_alive": true,
+    "last_attempt": null,
+    "last_success": null,
+    "consecutive_failures": null,
+    "reason": "",
+    "steps": [],
+    "holds": {},
+    "last_tick": 1794508800.0,
+    "tick_stale": false,
+    "client": {
+     "state": "connected",
+     "running": true,
+     "reason": "",
+     "last_notice": "",
+     "epoch": 1,
+     "last_activity_ms": 1794508800000,
+     "failures": 0,
+     "next_attempt_ms": 0
+    },
+    "last_failure": null,
+    "failure_count": null,
+    "recent_failures": [],
+    "last_client_event": null
+   },
+   "now_ms": 1794508800000
+  },
+  "signup": {}
+ },
+ "local_off": {
+  "protocol": "pull",
+  "pull_status": {
+   "v": 1,
+   "state": "active",
+   "reason": "local_disabled",
+   "enabled": false,
+   "install_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "generation": 1,
+   "owner_generation": 1,
+   "owner": "owner@example.test",
+   "owner_verified": true,
+   "address": "public@example.test",
+   "connection": "offline",
+   "vault": {
+    "state": "ready"
+   },
+   "queue_count": 3,
+   "queue_bytes": 512,
+   "invalid_message_id_holds": 1,
+   "oldest_received_ms": 1794508795000,
+   "oldest_expires_ms": 1794508808000,
+   "queue_age_ms": 5000,
+   "observed_ms": 1794508798000,
+   "notice_state": "uncertain",
+   "revocation_pending": false,
+   "revocations_pending": 0,
+   "local_queue": {
+    "count": 0,
+    "bytes": 0,
+    "oldest_age_ms": null,
+    "oldest_expires_ms": null
+   },
+   "flow": {
+    "state": "unknown"
+   },
+   "signup": {
+    "state": "unavailable"
+   },
+   "recovery": {
+    "state": "ok",
+    "enabled": true,
+    "thread_alive": true,
+    "last_attempt": null,
+    "last_success": null,
+    "consecutive_failures": null,
+    "reason": "",
+    "steps": [],
+    "holds": {},
+    "last_tick": 1794508800.0,
+    "tick_stale": false,
+    "client": {
+     "state": "connected",
+     "running": true,
+     "reason": "",
+     "last_notice": "",
+     "epoch": 1,
+     "last_activity_ms": 1794508800000,
+     "failures": 0,
+     "next_attempt_ms": 0
+    },
+    "last_failure": null,
+    "failure_count": null,
+    "recent_failures": [],
+    "last_client_event": null
+   },
+   "now_ms": 1794508800000
+  },
+  "signup": {}
+ },
+ "verified": {
+  "protocol": "pull",
+  "pull_status": {
+   "v": 1,
+   "state": "verified",
+   "reason": "",
+   "enabled": false,
+   "install_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "generation": 1,
+   "owner_generation": 1,
+   "owner": "owner@example.test",
+   "owner_verified": true,
+   "address": "public@example.test",
+   "connection": "offline",
+   "vault": {
+    "state": "ready"
+   },
+   "queue_count": 3,
+   "queue_bytes": 512,
+   "invalid_message_id_holds": 1,
+   "oldest_received_ms": 1794508795000,
+   "oldest_expires_ms": 1794508808000,
+   "queue_age_ms": 5000,
+   "observed_ms": 1794508798000,
+   "notice_state": "uncertain",
+   "revocation_pending": false,
+   "revocations_pending": 0,
+   "local_queue": {
+    "count": 0,
+    "bytes": 0,
+    "oldest_age_ms": null,
+    "oldest_expires_ms": null
+   },
+   "flow": {
+    "state": "unknown"
+   },
+   "signup": {
+    "state": "unavailable"
+   },
+   "recovery": {
+    "state": "not_running"
+   },
+   "now_ms": 1794508800000
+  },
+  "signup": {}
+ },
+ "pending": {
+  "protocol": "pull",
+  "pull_status": {
+   "v": 1,
+   "state": "pending",
+   "reason": "",
+   "enabled": false,
+   "install_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "generation": 1,
+   "owner_generation": 1,
+   "owner": "",
+   "owner_verified": false,
+   "address": "public@example.test",
+   "connection": "offline",
+   "vault": {
+    "state": "ready"
+   },
+   "queue_count": 3,
+   "queue_bytes": 512,
+   "invalid_message_id_holds": 1,
+   "oldest_received_ms": 1794508795000,
+   "oldest_expires_ms": 1794508808000,
+   "queue_age_ms": 5000,
+   "observed_ms": 1794508798000,
+   "notice_state": "uncertain",
+   "revocation_pending": false,
+   "revocations_pending": 0,
+   "local_queue": {
+    "count": 0,
+    "bytes": 0,
+    "oldest_age_ms": null,
+    "oldest_expires_ms": null
+   },
+   "flow": {
+    "state": "unknown"
+   },
+   "signup": {
+    "state": "unavailable"
+   },
+   "recovery": {
+    "state": "not_running"
+   },
+   "now_ms": 1794508800000
+  },
+  "signup": {}
+ }
+}
