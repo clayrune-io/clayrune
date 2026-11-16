@@ -1,6 +1,11 @@
 """Resolve the token rollover limit shared by all rollover paths (MC-1072)."""
 from collections.abc import Mapping
+from functools import lru_cache
+from math import sqrt
 from typing import Any
+
+from mc.core import _log
+from mc.rollover_model_table import ModelInputs, model_inputs
 
 DEFAULT_THRESHOLD = 200_000
 MIN_THRESHOLD = 60_000
@@ -33,20 +38,61 @@ def _character_ref(session_or_character: Any) -> str:
     return ''
 
 
-def threshold_for(session_or_character: Any, config: Mapping[str, Any]) -> int:
-    """Character override, else global/default; active limits are at least 60k.
+def inputs_for_session(session: Any) -> ModelInputs | None:
+    """Prefer the observed model; a present empty model means native default."""
+    if not isinstance(session, Mapping):
+        return None
+    model = session.get('observed_model') or (
+        session['model'] if 'model' in session else session.get('agent_model'))
+    return model_inputs(model)
 
-    Invalid overrides fall back to the global limit. The existing nonpositive
-    global setting still disables token rollover; character overrides always
-    clamp to the floor. No config values are rewritten.
+
+@lru_cache(maxsize=256)
+def _log_ignored_pin(ref: str, pin: int) -> None:
+    """Warn once per character/pin, rather than at every tool boundary."""
+    _log(f"[rollover-threshold] ignoring {ref} pin {pin}: below fresh floor + 60000")
+
+
+def threshold_with_reason(session_or_character: Any, config: Mapping[str, Any]) -> tuple[int, str]:
+    """Resolve the legacy limit or the reviewed MC-1178 cost optimum.
+
+    The global nonpositive setting disables all token rollover. With a known
+    Claude model and fresh floor, the 50% window/price-step/valid-pin upper
+    bound wins even when below the global or fresh-floor lower bound.
     """
     global_tokens = _tokens(config.get('context_rollover_tokens', DEFAULT_THRESHOLD))
     if global_tokens is None:
         global_tokens = DEFAULT_THRESHOLD
-    fallback = max(MIN_THRESHOLD, global_tokens) if global_tokens > 0 else 0
+    if global_tokens <= 0:
+        return 0, 'global'
+    fallback = max(MIN_THRESHOLD, global_tokens)
     overrides = config.get('context_rollover_by_character')
-    if not isinstance(overrides, Mapping):
-        return fallback
     ref = _character_ref(session_or_character)
-    override = _tokens(overrides.get(ref)) if ref else None
-    return max(MIN_THRESHOLD, override) if override is not None else fallback
+    pin = _tokens(overrides.get(ref)) if ref and isinstance(overrides, Mapping) else None
+    inputs = inputs_for_session(session_or_character)
+    floor = (_tokens(session_or_character.get('_mt_fresh_floor'))
+             if isinstance(session_or_character, Mapping) else None)
+    if inputs is None or floor is None or floor < 0:
+        return (max(MIN_THRESHOLD, pin), 'pin') if pin is not None else (fallback, 'global')
+
+    lower = max(fallback, floor + MIN_THRESHOLD)
+    upper = inputs['window_tokens'] // 2
+    cap_reason = 'window_cap'
+    step = inputs['price_step_tokens']
+    if step is not None and step < upper:
+        upper, cap_reason = step, 'price_step'
+    ignored_pin = pin is not None and pin < floor + MIN_THRESHOLD
+    if pin is not None and ignored_pin:
+        _log_ignored_pin(ref, pin)
+    elif pin is not None and pin < upper:
+        upper, cap_reason = pin, 'pin'
+    optimum = floor + sqrt(2 * floor * inputs['write_read_ratio'] * inputs['mean_growth_tokens'])
+    candidate = max(lower, int(optimum))
+    if candidate > upper:
+        return upper, cap_reason
+    return candidate, 'pin_ignored_below_floor' if ignored_pin else 'cost_optimal'
+
+
+def threshold_for(session_or_character: Any, config: Mapping[str, Any]) -> int:
+    """Integer-only compatibility API shared by all rollover triggers."""
+    return threshold_with_reason(session_or_character, config)[0]

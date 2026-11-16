@@ -12899,7 +12899,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         _af_rolled_from = _live_session_rolled_from(project_id, resume_id)
         _af_reason, _af_detail = _auto_fresh_trigger(
             pp, resume_id, _live_context_tokens(project_id, resume_id),
-            session_or_character=character_meta)
+            session_or_character=next((s for s in agent_sessions.values()
+                if s.get('project_id') == project_id
+                and s.get('claude_session_id') == resume_id), character_meta))
         if not _af_reason and _fragile_resume_target(pp, 'claude', resume_id, _af_rolled_from):
             # An earlier roll already reset this live session's context_tokens
             # to None (`_mark_context_rolled`), so the trigger above sees

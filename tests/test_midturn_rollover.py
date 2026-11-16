@@ -1270,3 +1270,23 @@ def test_non_claude_process_that_really_dies_after_interrupt_still_goes_to_error
 
     assert session['status'] == 'error'
     assert [l for l in session['log_lines'] if 'found dead' in str(l)]
+
+
+
+def test_model_rollover_waits_for_cost_optimum_and_logs_it(env):
+    def lines():
+        yield _assistant('tool1', 90_000, 'm1')
+        yield _tool_result('tool1')
+        yield _assistant('tool2', 210_000, 'm2')
+        yield _tool_result('tool2')
+        yield _assistant('tool3', 280_000, 'm3')
+        yield _tool_result('tool3')
+
+    _run_reader(env, lines, model='claude-fable-5-2')
+    log = env['tmp'] / 'midturn_log' / 'p1.jsonl'
+    assert _wait(log.is_file)
+    row = json.loads(log.read_text().splitlines()[0])
+    assert row['context_tokens'] == 280_000
+    assert row['threshold'] == 277_349 and row['threshold_reason'] == 'cost_optimal'
+    env['join_respawns']()
+    assert len(env['spawned']) == 1
