@@ -11,18 +11,17 @@
 // computer's own server (agent-mail-actions.js `act`), and only after the human
 // typed an address and pressed Continue.
 //
-// `start` needs a root-signed service manifest. Continue reads it from
-// window.AgentMailManifestSource.get() (agent-mail-manifest-source.js, which asks
-// this computer's server for one it already verified against the pinned root) and
-// shows that source's plain-words reason when it fails. Without a source at all the
-// form says plainly that setup cannot begin. No signing path lives here.
+// Pull signup: the server resolves the release-reviewed service identity (or
+// preserves an existing pin) and verifies its manifest. The browser sends only
+// the owner and this disclosure's fixed consent version through the human gate.
 //
 // The step only appears in the first-run wizard when the enrollment route answers
-// "not enrolled" (it 404s while agent_mail_enrollment_enabled is off). Escaped
+// "not enrolled", including an unconfigured install. Escaped
 // text only; the typed address is read from the field, never from any answer.
 // Window-bridged, no `import`.
 (function () {
   const URL_PATH = '/api/agent-mail/enrollment';
+  const CONSENT_VERSION = 'v1';
   const M = () => window.AgentMailActionsModel;
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -32,8 +31,6 @@
   const S = { phase: 'intro', owner: '', error: '', message: null, working: false };
   let ctx = { context: 'settings', host: null, onDecline: null };
   let enrollable = false;   // first-run gate, set by reset()'s status read
-
-  const sourceReady = () => !!(window.AgentMailManifestSource && typeof window.AgentMailManifestSource.get === 'function');
 
   function render() {
     const host = ctx.host;
@@ -48,28 +45,30 @@
     } else if (S.phase === 'started') {
       inner = `<div class="am-setup-lead" data-am-setup="started">Setup started. You can finish it now or later in Settings, Connectivity, Agent mail: it picks up where it stopped, including after a restart.</div>`;
     } else if (S.phase === 'form') {
-      const blocked = !sourceReady();
       inner = `<div class="am-setup-field">
           <label class="am-label" for="am-setup-owner">Owner mailbox</label>
           <input id="am-setup-owner" type="email" class="am-input" data-am-setup-input="owner" value="${esc(S.owner)}"
             autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="254"${S.working ? ' disabled' : ''}>
-          <div class="am-act-hint">Only this address can approve what your agents do by mail. Use one you control.
-            It is sent to the Clayrune mail service when you press Continue, and not before.</div>
+          <div class="am-act-hint">Use a mailbox you control. Continue sends this address to the Clayrune mail service
+            to reserve your inbox and email you a verification link. Confirm the link, then check verification
+            and enable agent mail here. Starting setup does not enable mail.</div>
         </div>
-        ${blocked ? `<div class="am-setup-blocked" role="status" data-am-setup="blocked">Setup cannot begin yet: this install has no way
-          to get the signed service manifest that starting needs. Nothing has been sent.</div>` : ''}
+        <div class="am-act-hint">Service: Clayrune mail, issuing @clayrune.io addresses. This install uses the service identity
+          reviewed for its release, or its existing pinned service. You need an initialized, unlocked Secrets vault
+          and must type your dashboard passcode to continue. Open Secrets to set up or unlock the vault first.</div>
         ${S.error ? `<div class="am-setup-error" role="alert" data-am-setup="error">${esc(S.error)}</div>` : ''}
         ${S.message ? `<div class="am-outcome" role="status" data-am-setup="message" data-tone="${esc(S.message.tone)}">${esc(S.message.text)}</div>` : ''}
         <div class="am-setup-actions">
-          <button type="button" class="am-act-btn${prim}" data-am-setup="continue"${blocked || S.working ? ' disabled' : ''}>${S.working ? 'Working…' : 'Continue'}</button>
+          <button type="button" class="am-act-btn${prim}" data-am-setup="continue"${S.working ? ' disabled' : ''}>${S.working ? 'Working…' : 'Continue'}</button>
           <button type="button" class="am-act-btn" data-am-setup="back"${S.working ? ' disabled' : ''}>Back</button>
         </div>`;
     } else {
-      inner = `<div class="am-setup-lead">Give your agents an inbox they can send mail from and receive replies in. Replies are
-          only ever data: nothing in a reply can approve anything. You can turn it off at any time.</div>
+      inner = `<div class="am-setup-lead">Give your agents an inbox at @clayrune.io. Agents can email only the verified owner;
+          that owner's replies return to the chat that sent the note. You can turn it off at any time.</div>
         <ul class="am-setup-facts">
           <li>Off until you finish setup here and turn it on.</li>
-          <li>Continuing sends the owner address you enter to the Clayrune mail service, which reserves an inbox and asks you to prove you own that address with a code.</li>
+          <li>Continuing sends your owner address to Clayrune mail and requests a verification link. Confirming the link does not enable mail.</li>
+          <li>Uses this release's reviewed service identity, or your existing pinned service. Requires an initialized, unlocked Secrets vault and your dashboard passcode.</li>
           <li><b>Declining sends nothing:</b> no address, no check-in, no change to any setting.</li>
         </ul>
         <div class="am-setup-actions">
@@ -88,17 +87,12 @@
     const owner = ((input && input.value) || S.owner || '').trim().toLowerCase();
     S.owner = owner; S.error = ''; S.message = null;
     if (!M().validOwner(owner)) { S.error = 'Enter a valid email address.'; render(); return; }
-    let signed = null;
-    try { signed = sourceReady() ? await window.AgentMailManifestSource.get() : null; } catch (_) { signed = null; }
-    if (!signed || !Array.isArray(signed.manifest) || typeof signed.signature !== 'string') {
-      S.error = (signed && typeof signed.message === 'string' && signed.message) ||
-        'The signed service manifest could not be obtained, so nothing was sent.';
-      render(); return;
-    }
     S.working = true; render();
-    const r = await window.AgentMailActions.act('start', { owner, manifest: signed.manifest, signature: signed.signature });
+    const r = await window.AgentMailActions.act('start', { owner, consent_version: CONSENT_VERSION });
     S.working = false;
-    if (r && r.ok) { S.phase = ctx.context === 'settings' ? 'intro' : 'started'; S.owner = ''; S.error = ''; S.message = null; }
+    if (r && r.ok && r.body?.protocol === 'pull' && !['pending', 'verified', 'active'].includes(r.body.state)) {
+      S.error = 'Setup has not completed. Check Agent mail status in Settings before trying again.';
+    } else if (r && r.ok) { S.phase = ctx.context === 'settings' ? 'intro' : 'started'; S.owner = ''; S.error = ''; S.message = null; }
     else if (r === null) { S.message = null; }
     else { S.message = ctx.context === 'first-run' ? M().outcome('start', r) : null; }
     render();
@@ -132,8 +126,8 @@
 
   // ── first-run wizard registration ──────────────────────────────────────────
   // reset() runs when the wizard starts: forget a previous run and read the status
-  // once. The step is skipped unless the server says nothing is enrolled yet
-  // (a 404 while the feature is off, a 503, an unreadable answer: all skipped).
+  // once. Pull not_enrolled is shown even before deployment/vault setup. Held,
+  // enrolled, unavailable and malformed answers cannot offer fresh signup.
   async function reset() {
     S.phase = 'intro'; S.owner = ''; S.error = ''; S.message = null; S.working = false;
     enrollable = false;
@@ -141,8 +135,9 @@
       const base = typeof API_BASE === 'string' ? API_BASE : '';
       const res = await fetch(base + URL_PATH, { method: 'GET', cache: 'no-store' });
       const body = res.status === 200 ? await res.json().catch(() => null) : null;
-      const p = M().plan({ status: res.status, body });
-      enrollable = p.controls.includes('setup');
+      enrollable = body && body.protocol === 'pull'
+        ? body.signup?.state === 'not_enrolled' && body.pull_status?.state === 'not_enrolled'
+        : M().plan({ status: res.status, body }).controls.includes('setup');
     } catch (_) { enrollable = false; }
   }
 
