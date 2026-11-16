@@ -24,9 +24,8 @@
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
   --desk-chat-grow: 1.2;
 }
-/* no Popover API: dim the page with a shadow instead */
-.desk-v1-chat.is-popped:not([popover]) { box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.55); }
-.desk-v1-chat.is-popped::backdrop { background: rgba(0, 0, 0, 0.55); }
+/* Not modal (Ron 2026-11-15): nothing dims the page, which stays clickable beside the large view. */
+.desk-v1-chat.is-popped::backdrop { background: transparent; pointer-events: none; }
 .desk-v1-chat.is-popped .desk-v1-chat-thread { flex: 1 1 auto; min-height: 0; max-height: none; }
 .desk-v1-chat.is-popped .desk-v1-chat-thread:empty { display: block; }
 .desk-v1-chat.is-popped .desk-v1-sb-agent-ask { flex: 0 0 auto; }
@@ -52,3 +51,15 @@
 .desk-v1-chat.is-popped > .mc-resize-se { bottom: 0; right: 0; }
 .desk-v1-chat.is-popped > .mc-resize-sw { bottom: 0; left: 0; }
 @media (hover: none), (pointer: coarse) { .desk-v1-chat.is-popped > .mc-resize-handle { display: none; } }
+
+/* The darkened stand-in in the chat's own slot while it is in the large view (desk-v1-chat-chrome.js
+   _standIn). The rest of the box it sits in is dimmed with it, so nothing there reads as live. */
+.has-chat-away > :not(.desk-v1-chat-away):not(.desk-v1-chat) { opacity: 0.45; }
+.desk-v1-chat-away {
+  flex: 1 1 auto; min-height: 140px; box-sizing: border-box; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  padding: 16px; text-align: center; border-radius: 10px;
+  background: rgba(20, 16, 12, 0.72); color: #f3ece4;
+}
+.desk-v1-chat-away-text { font-size: 13px; line-height: 1.4; }
+.desk-v1-chat-away .desk-v1-chat-away-back { height: auto; padding: 7px 12px; color: var(--text); background: var(--surface); }

@@ -20,7 +20,7 @@
  *   9. Text     -> A-/A+ scale the thread and the box, keyboard reachable, clamped, and the
  *                  size survives a reload (localStorage).
  *  10. Pop out  -> the SAME chat element is lifted to a large view: sending from it lands in the
- *                  one thread, Esc / the backdrop / the button close it and return focus; at 1440
+ *                  one thread, not modal, Esc / the stand-in / the button close it and return focus; at 1440
  *                  and 390 with no horizontal scroll.
  *   7. Shots    -> screens at 1440 and 390 into docs/desk_v1/screens/.
  *
@@ -413,7 +413,8 @@ async function main(browser) {
   (stored === '1.3' && back2 === want && (await page.textContent('[data-chat-text-read]')) === '130%')
     ? ok(`after a reload the size is still 130% (stored ${stored}, ${back2}px)`) : fail('persist: ' + JSON.stringify({ stored, want, back2 }));
 
-  // 10. Pop out: the same chat element, large, live; Esc / backdrop / button close it.
+  // 10. Pop out: the same chat element, large, live, NOT modal (the page stays clickable and the
+  //     docked slot shows a darkened stand-in); Esc / the button / the stand-in's button close it.
   console.log('Pop out');
   await page.evaluate(() => { window.__chat = document.querySelector('[data-chat]'); });
   const before0 = (await turns(page)).length;
@@ -441,18 +442,25 @@ async function main(browser) {
   (docked.length === before0 + 2 && docked.slice(-2)[0][1] === 'sent from the large view')
     ? ok('the docked thread already has the exchange (same live thread)') : fail('docked: ' + JSON.stringify(docked.slice(-2)));
   await page.click('[data-chat-pop]');
+  const away = await page.evaluate(() => {
+    const a = document.querySelector('[data-chat-away]');
+    if (!a) return null;
+    const r = a.getBoundingClientRect();
+    const hit = document.elementFromPoint(4, 4);
+    return { w: r.width, h: r.height, inBox: !!a.closest('.has-chat-away'), pageHit: !!hit && !hit.closest('[data-chat]') };
+  });
+  (away && away.w > 0 && away.h > 0 && away.inBox && away.pageHit)
+    ? ok('not modal: the docked slot shows a darkened stand-in and the page behind takes clicks') : fail('stand-in: ' + JSON.stringify(away));
   await page.mouse.click(4, 4);
   ps = await popState(page);
-  !ps.popped ? ok('a click on the dimmed backdrop closes it') : fail('backdrop click did not close');
+  ps.popped ? ok('a click on the page beside the large view leaves it open') : fail('page click closed the large view');
+  await page.$eval('[data-chat-away-back]', (b) => b.click());   // the centred large view may sit over the slot
+  ps = await popState(page);
+  (!ps.popped && !(await page.$('[data-chat-away]'))) ? ok('the stand-in button brings the chat back and the stand-in goes') : fail('stand-in back: ' + JSON.stringify(ps));
   await page.click('[data-chat-pop]');
   await page.click('[data-chat-pop]');
   ps = await popState(page);
   (!ps.popped && ps.focus === 'pop') ? ok('the button (now x) closes it too') : fail('button close: ' + JSON.stringify(ps));
-  await page.click('[data-chat-pop]');
-  const tabs = [];
-  for (let i = 0; i < 8; i++) { await page.keyboard.press('Tab'); tabs.push(await page.evaluate(() => !!document.activeElement.closest('[data-chat]'))); }
-  tabs.every(Boolean) ? ok('Tab stays inside the large view') : fail('focus escaped: ' + tabs.join(','));
-  await page.keyboard.press('Escape');
 
   // 7. Screens: a thread long enough to scroll, at desktop and phone width.
   console.log('Screens');

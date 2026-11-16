@@ -16,6 +16,12 @@
 // the thread, the ask box and every listener on them are the live ones. Closing just
 // drops the class (and any size the reader dragged it to).
 //
+// The large view is NOT modal (Ron 2026-11-15): no dimmed backdrop, no focus trap, and a
+// click on the page behind it neither closes it nor is swallowed, so the Desk and the
+// dashboard stay usable beside it. The slot the chat came from shows a darkened stand-in
+// ("open in the large view", with a button to bring it back) so there is never a second
+// copy of the thread to keep in sync. Esc closes it only while focus is inside it.
+//
 // The large view is a window like every other: attach() hangs the shared 8-handle resizer
 // (makeResizable in interactions.js, .mc-resize-handle) on the chat element. The handles are
 // only shown while popped out (desk-v1-chat-chrome.css), and a fresh pop-out starts at the
@@ -23,7 +29,7 @@
 (function () {
   const KEY = 'clayrune.desk.chatTextScale';
   const MIN = 0.85, MAX = 1.75, STEP = 0.15;
-  let _open = null;   // { el, back, downIn } while a chat is popped out
+  let _open = null;   // { el, back, away } while a chat is popped out
   // What makeResizable / modalResizeStart write on the chat element: removed on open and close.
   const _SIZED = ['width', 'height', 'left', 'top', 'position', 'margin'];
   const _unsize = (el) => _SIZED.forEach((p) => el.style.removeProperty(p));
@@ -69,19 +75,17 @@
     _unsize(el);
     el.classList.add('is-popped');
     el.setAttribute('role', 'dialog');
-    el.setAttribute('aria-modal', 'true');
     el.setAttribute('aria-label', 'Conversation, large view');
+    // a press anywhere in the large view (its drag strip, a turn) puts focus in it, so Esc reaches it
+    if (!el.hasAttribute('tabindex')) { el.setAttribute('tabindex', '-1'); el.dataset.chatTabindex = '1'; }
     if (typeof el.showPopover === 'function') {
       el.setAttribute('popover', 'manual');
       try { el.showPopover(); } catch (_) { el.removeAttribute('popover'); }
     }
     const pop = el.querySelector('[data-chat-pop]');
     if (pop) { pop.innerHTML = '&times;'; pop.setAttribute('aria-label', 'Close the large view'); pop.title = 'Close (Esc)'; }
-    _open = { el, back, downIn: false };
+    _open = { el, back, away: _standIn(el) };
     document.addEventListener('keydown', _onKey, true);
-    document.addEventListener('mousedown', _onDown, true);
-    document.addEventListener('touchstart', _onDown, true);
-    document.addEventListener('click', _onClick, true);
     const thread = el.querySelector('[data-chat-thread]');
     if (thread) thread.scrollTop = thread.scrollHeight;
     const ask = el.querySelector('[data-sb-ask]');
@@ -91,43 +95,50 @@
     if (!_open) return;
     const { el, back } = _open;
     window.DeskV1ChatMove.cancel(el);
+    const away = _open.away;
     _open = null;
     document.removeEventListener('keydown', _onKey, true);
-    document.removeEventListener('mousedown', _onDown, true);
-    document.removeEventListener('touchstart', _onDown, true);
-    document.removeEventListener('click', _onClick, true);
+    if (away) {
+      if (away.parentElement) away.parentElement.classList.remove('has-chat-away');
+      away.remove();
+    }
     _unsize(el);
     if (el.hasAttribute('popover')) { try { el.hidePopover(); } catch (_) { /* already hidden */ } el.removeAttribute('popover'); }
     el.classList.remove('is-popped');
-    el.removeAttribute('role'); el.removeAttribute('aria-modal'); el.removeAttribute('aria-label');
+    el.removeAttribute('role'); el.removeAttribute('aria-label');
+    if (el.dataset.chatTabindex) { el.removeAttribute('tabindex'); delete el.dataset.chatTabindex; }
     const pop = el.querySelector('[data-chat-pop]');
     if (pop) { pop.innerHTML = '&#x2922;'; pop.setAttribute('aria-label', 'Open the conversation in a large view'); pop.title = 'Open in a large view'; }
     const to = pop && pop.isConnected ? pop : back.opener;
     if (to && to.isConnected) to.focus({ preventScroll: true });
   }
-  // where a press began decides what the click after it means: a drag that started inside the large view
-  // (a resize from an edge, a text selection) and was released over the dimmed page is not a click on the page
-  function _onDown(e) { if (_open) _open.downIn = _open.el.contains(e.target); }
-  // a click on the dimmed page around the large view closes it and does nothing else
-  function _onClick(e) {
-    if (!_open) return;
-    const startedInside = _open.downIn;
-    _open.downIn = false;
-    if (startedInside || _open.el.contains(e.target)) return;
-    e.preventDefault(); e.stopPropagation();
-    close();
+  // The darkened stand-in left in the chat's own slot while it is in the large view: the page around
+  // the large view stays live, so the small slot must say where the conversation went.
+  function _standIn(el) {
+    const host = el.parentElement;
+    if (!host) return null;
+    const away = document.createElement('div');
+    away.className = 'desk-v1-chat-away';
+    away.setAttribute('data-chat-away', '');
+    away.innerHTML = '<span class="desk-v1-chat-away-text">The conversation is open in the large view.</span>'
+      + '<button type="button" class="desk-v1-chat-tool desk-v1-chat-away-back" data-chat-away-back>Bring it back here</button>';
+    away.querySelector('[data-chat-away-back]').addEventListener('click', () => close());
+    // a click anywhere else on the stand-in brings the large view forward (focus into its ask box)
+    away.addEventListener('click', (e) => {
+      if (e.target.closest('[data-chat-away-back]') || !_open) return;
+      const ask = _open.el.querySelector('[data-sb-ask]');
+      if (ask && !ask.disabled) ask.focus({ preventScroll: true });
+    });
+    host.insertBefore(away, el);
+    host.classList.add('has-chat-away');
+    return away;
   }
   function _onKey(e) {
     if (!_open) return;
-    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); return; }
-    if (e.key !== 'Tab') return;
-    // the page behind is not reachable while the large view is open
-    const f = [..._open.el.querySelectorAll('button:not([disabled]), textarea:not([disabled]), [tabindex="0"]')].filter((n) => n.getClientRects().length);
-    if (!f.length) return;
-    const first = f[0], last = f[f.length - 1];
-    if (!_open.el.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
-    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    // Esc belongs to the large view while the reader is in it (or nowhere in particular);
+    // with focus out on the page, the page keeps it
+    const a = document.activeElement;
+    if (e.key === 'Escape' && (!a || a === document.body || _open.el.contains(a))) { e.preventDefault(); e.stopPropagation(); close(); }
   }
 
   function attach(el) {

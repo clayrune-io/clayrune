@@ -267,7 +267,7 @@ async function moving(browser, srv, S) {
   await page.mouse.move(800, 200, { steps: 6 });
   await page.dispatchEvent('body', 'mouseup', { clientX: 10, clientY: 10 });
   await page.dispatchEvent('body', 'click', { clientX: 10, clientY: 10 });
-  check(await isPopped(page, sel), 'a drag ending on the backdrop does not close the view', 'backdrop release closed the view');
+  check(await isPopped(page, sel), 'a drag ending on the page does not close the view', 'page release closed the view');
   await page.mouse.up();
   await page.keyboard.press('Escape');
   check(!(await page.$eval(sel, (e) => /width|height|left|top|position|margin/.test(e.getAttribute('style') || ''))), 'close clears movement and resize geometry', 'geometry remained after close');
