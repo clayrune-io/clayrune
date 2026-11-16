@@ -84,6 +84,8 @@ check(post('enable', { state: 'active', enabled: false }).tone === 'bad', 'enabl
 check(post('resume', { state: 'pending', verification_state: 'accepted' }).tone === 'good', 'resume pending is progress');
 check(post('check', { state: 'held', reason: 'connection_lost' }).text.includes('could not be reached'), 'check refused text is plain words');
 check(post('start', { state: 'bogus' }).tone === 'bad', 'malformed POST answer is a failure');
+check(post('check', { state: 'expired', reason: 'flow_expired' }).tone === 'bad', 'check answered expired is not success-toned');
+check(post('check', { state: 'cancelled' }).tone === 'bad', 'check answered cancelled is not success-toned');
 const committed = M.outcome('enable', { ok: false, status: 503, body: { protocol: 'pull', error: 'storage_unavailable', activation: 'committed' } });
 check(committed.tone === 'warn' && /Press Enable again/.test(committed.text), '503 activation committed -> retry enable');
 check(M.outcome('enable', { ok: false, status: 409, body: { error: 'deployment_unconfigured' } }).tone === 'bad', '409 refusal still bad');

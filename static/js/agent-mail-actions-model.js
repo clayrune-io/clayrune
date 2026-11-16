@@ -172,6 +172,8 @@
     const done = (tone, text, c) => ({ tone, text, blockers: [], code: c });
     if (p.state === 'held') return done('bad', p.text, p.reason);
     if (p.state === 'error') return done('bad', p.text, 'unrecognised');
+    // A flow that ran out or was cancelled is a dead end, not progress: never green.
+    if (p.state === 'expired' || p.state === 'cancelled') return done('bad', p.text, p.state);
     if (action === 'enable') return p.state === 'active' ? done('good', SUCCESS.enable, 'ok')
       : done('bad', 'Agent mail was not turned on. ' + p.text, p.state);
     return done('good', p.text || 'Done.', 'ok');
