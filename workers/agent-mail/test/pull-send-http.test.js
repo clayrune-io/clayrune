@@ -181,7 +181,8 @@ test('pre-reservation revoked refusal is common-prefix only, even though revoked
   const r = await run(f); assert.equal(r.response.status, 409); assert.equal(r.body.code, 'revoked'); common(r.body);
   assert.equal(rows(f, 'pull_intents').length, 0); assert.equal(f.calls.length, 0);
 });
-for (const state of ['reserved', 'sending', 'uncertain', 'failed', 'revoked']) test(`existing ${state} has the complete 409 receipt and never resends`, async (t) => {
+// 'reserved' is deliberately absent: a reserved replay is re-authorized (W1), see the send-limit tests below.
+for (const state of ['sending', 'uncertain', 'failed', 'revoked']) test(`existing ${state} has the complete 409 receipt and never resends`, async (t) => {
   const f = await fixture(t); await run(f);
   f.sql.prepare("UPDATE pull_intents SET state=?,provider_id='' ").run(state);
   const r = await run(f); assert.equal(r.response.status, 409); assert.equal(r.body.code, state); assert.equal(r.body.state, state);
@@ -390,7 +391,19 @@ test('authenticated send-limit refusal is signed with the retry deadline; no sec
   const r = await run(f); assert.equal(r.response.status, 429); assert.equal(r.body.code, 'send_limit');
   assert.equal(r.body.retry_after_ms, (day + 1) * DAY); assert.ok(r.response.headers.has('retry-after'));
   assert.equal(one(f).state, 'reserved'); assert.equal(f.calls.length, 0);
-  const again = await run(f); assert.equal(again.body.state, 'reserved'); assert.equal(again.response.status, 409);
+  // W1: a retry while the cap is still full is refused again, not answered with a stuck "reserved" receipt.
+  const again = await run(f); assert.equal(again.response.status, 429); assert.equal(again.body.code, 'send_limit');
+  assert.equal(again.body.retry_after_ms, (day + 1) * DAY); assert.equal(one(f).state, 'reserved'); assert.equal(f.calls.length, 0);
+});
+test('send_limit refusal does not strand the intent: the same intent_id sends once after the day bucket resets (W1)', async (t) => {
+  const f = await fixture(t), day = Math.floor(NOW / DAY);
+  f.sql.prepare('INSERT INTO pull_budgets VALUES(?,20,?)').run(`pull:send:install:${id(1)}:${day}`, NOW + 2 * DAY);
+  assert.equal((await run(f)).response.status, 429); assert.equal(f.calls.length, 0);
+  f.time += DAY;
+  const sent = await run(f); assert.equal(sent.response.status, 200); assert.equal(sent.body.state, 'accepted');
+  assert.equal(one(f).state, 'accepted'); assert.equal(f.calls.length, 1);
+  const replay = await run(f); assert.equal(replay.response.status, 200); assert.deepEqual(replay.body.state, 'accepted');
+  assert.equal(f.calls.length, 1);
 });
 test('untrusted claimed install never acquires per-install rows; shared source/global refusal limits apply', async (t) => {
   const f = await fixture(t);

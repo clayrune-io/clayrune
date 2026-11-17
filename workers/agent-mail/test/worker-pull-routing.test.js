@@ -411,3 +411,44 @@ test('sweep result and disabled flag keep their contracts with the consumer wire
   assert.deepEqual(result.notify, { claimed: 0, woken: 0 }); assert.deepEqual(result.control, { scanned: 0, submitted: 0 });
   assert.equal(await f.worker.scheduled({}, { ...f.env, MAIL_ENABLED: 'false' }), undefined);
 });
+
+// W3: retain() had no caller, so no expired nonce/operation/audit row was ever deleted.
+test('scheduled runs metadata retention as its own job: one family per tick, a full rotation reaches every table', async (t) => {
+  const f = await real(t);
+  f.sql.prepare("INSERT INTO pull_nonces VALUES('install-to-pull',?,7,'key','dead-nonce',1)").run(id(1));
+  f.sql.prepare("INSERT INTO pull_nonces VALUES('install-to-pull',?,7,'key','live-nonce',?)").run(id(1), f.time + 86_400_000);
+  const first = await f.worker.scheduled({}, f.env);
+  assert.equal(first.retention.family, 'control'); assert.equal(typeof first.retention.scanned, 'number');
+  assert.deepEqual(first.notify, { claimed: 0, woken: 0 });
+  assert.ok(f.sql.prepare("SELECT 1 FROM pull_sweep_cursors WHERE task='metadata'").get(), 'retention cursor persisted');
+  const seen = [first.retention.family];
+  for (let n = 1; n < 16; n++) seen.push((await f.worker.scheduled({}, f.env)).retention.family);
+  assert.equal(new Set(seen).size, 16, 'sixteen ticks visit sixteen distinct families');
+  const nonces = f.sql.prepare('SELECT nonce FROM pull_nonces').all().map((r) => r.nonce);
+  assert.ok(!nonces.includes('dead-nonce'), 'expired nonce deleted by the scheduled handler');
+  assert.ok(nonces.includes('live-nonce'), 'unexpired nonce kept');
+});
+
+test('retention failure cannot suppress the sweep or control delivery, and is surfaced after both', async (t) => {
+  const f = await real(t); await thread(f);
+  assert.equal((await f.worker.email(message(), f.env)).status, 'queued');
+  f.sql.prepare("INSERT INTO pull_sweep_cursors(task,cursor_ms,cursor_id,updated_ms) VALUES('metadata',0,'not json',1)").run();
+  const logs = []; t.mock.method(console, 'error', (...args) => logs.push(args.join(' ')));
+  const woken = f.wakes.length;
+  await assert.rejects(f.worker.scheduled({}, f.env), { message: 'agent_mail_retention_failed' });
+  assert.equal(f.wakes.length, woken + 1, 'sweep still woke the pending notification');
+  assert.ok(logs.includes('[agent-mail] pull_retention_failure'));
+  assert.ok(logs.every((l) => !l.includes('not json')));
+});
+
+test('sweep failure cannot suppress retention, and the sweep error is the one surfaced', async (t) => {
+  const f = await real(t);
+  const logs = []; t.mock.method(console, 'error', (...args) => logs.push(args.join(' ')));
+  const prepare = f.db.prepare.bind(f.db);
+  f.db.prepare = (query) => {
+    if (/FROM pull_notifications/.test(query)) throw new Error('private sweep storage detail');
+    return prepare(query);
+  };
+  await assert.rejects(f.worker.scheduled({}, f.env), { message: 'agent_mail_sweep_failed' });
+  assert.ok(f.sql.prepare("SELECT 1 FROM pull_sweep_cursors WHERE task='metadata'").get(), 'retention ran despite the sweep failure');
+});

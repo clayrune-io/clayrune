@@ -116,24 +116,21 @@ export async function pullOutbound({ ledger, reg, value, body, config, binding, 
   const receipt = (row) => ({ status: row.state === 'accepted' ? 200 : 409, code: row.state,
     intent_id: row.intent_id, thread_id: row.thread_id, message_id: row.message_id,
     state: row.state, provider_id: row.provider_id });
-  try {
-    const prior = await ledger.intent(reg, value.intent_id);
-    if (prior) {
-      if (prior.digest !== digest) return { status: 409, code: 'intent_conflict' };
-      const replay = requestGuards.length ? await ledger.replaySend(reg, value.intent_id, clock(), requestGuards) : prior;
-      onRequestCommitted?.();
-      return receipt(replay);
-    }
-    // Validate provider configuration before durable reservation/authorization.
-    const provider = cloudflareEmailSending({ ...config, binding, clock, timers });
-    const message_id = `${await sha256(bytes(`${reg.install_id}:${reg.generation}:${value.intent_id}`))}@${config.domain}`;
-    const reserved = await ledger.reserveSend(reg, { ...value, digest, message_id,
-      token_hash: await sha256(bytes(value.reply_token)) }, clock(), requestGuards);
-    onRequestCommitted?.();
-    if (reserved.duplicate) return receipt(reserved);
+  // Authorization CAS, provider handoff, outcome. `reserved` is the committed row;
+  // `replay` marks a retry of an intent that earlier stopped before authorization.
+  const handOff = async (reserved, replay) => {
     // This CAS is the only authorization point. No fresh lookup can replace the
     // recipient with a later owner after it commits, even across a switch/revert.
-    const authorized = await ledger.authorizeSend(reg, value.intent_id, clock());
+    let authorized;
+    try { authorized = await ledger.authorizeSend(reg, value.intent_id, clock()); }
+    catch (error) {
+      // Two retries of one stranded intent race on the CAS; exactly one wins.
+      // The loser reports the winner's state and never sends.
+      if (!replay || error.message !== 'intent_conflict') throw error;
+      const current = await ledger.intent(reg, value.intent_id);
+      if (current && current.state !== 'reserved') return receipt(current);
+      throw error;
+    }
     let result;
     try { result = await provider.send({ reg: authorized, value }); }
     catch {
@@ -153,6 +150,29 @@ export async function pullOutbound({ ledger, reg, value, body, config, binding, 
       if (state === 'accepted') return receipt(await ledger.recordSendAcceptance(authorized, providerId, observed));
       return receipt({ ...reserved, state: 'uncertain', provider_id: '' });
     }
+  };
+  let provider;
+  try {
+    const prior = await ledger.intent(reg, value.intent_id);
+    if (prior) {
+      if (prior.digest !== digest) return { status: 409, code: 'intent_conflict' };
+      const replay = requestGuards.length ? await ledger.replaySend(reg, value.intent_id, clock(), requestGuards) : prior;
+      onRequestCommitted?.();
+      // A row still `reserved` was refused or interrupted before authorization
+      // (send_limit, or a storage fault between the two batches). Nothing was
+      // sent. Authorize it now; every other state is a settled receipt.
+      if (replay.state !== 'reserved') return receipt(replay);
+      provider = cloudflareEmailSending({ ...config, binding, clock, timers });
+      return await handOff(replay, true);
+    }
+    // Validate provider configuration before durable reservation/authorization.
+    provider = cloudflareEmailSending({ ...config, binding, clock, timers });
+    const message_id = `${await sha256(bytes(`${reg.install_id}:${reg.generation}:${value.intent_id}`))}@${config.domain}`;
+    const reserved = await ledger.reserveSend(reg, { ...value, digest, message_id,
+      token_hash: await sha256(bytes(value.reply_token)) }, clock(), requestGuards);
+    onRequestCommitted?.();
+    if (reserved.duplicate) return receipt(reserved);
+    return await handOff(reserved, false);
   } catch (error) {
     if (['stale_generation', 'intent_conflict', 'registration_inactive'].includes(error.message)) {
       return { status: 409, code: error.message };

@@ -76,6 +76,8 @@ async function fixture(t, state = 'active', realTime = false) {
   f.config = { db, serviceOrigin: ORIGIN, domain: 'clayrune.example', verificationMail: f.mail,
     serviceKeyId: 'service', servicePrivateKey: service.privateKey, clock: () => f.time };
   f.http = new OwnerChangeHTTP(f.config); f.management = new OwnerManagementHTTP(f.config); f.auth = new SessionAuth(f.config);
+  // The 'delete' scoped session test drives the dormant purpose; production refuses it at start (W2).
+  f.management.unservedPurposes = [];
   db.sql.prepare(`INSERT INTO pull_installs(install_id,generation,owner_generation,state,owner_hash,owner_address,address_local,
     key_id,public_key,consent_version,epoch,connection_id,active_since_ms,created_ms,updated_ms)
     VALUES(?,7,3,?,?,?,?, 'current',?,'v1',4,?, ?,?,?)`).run(id(1), state, owner.owner_hash, owner.owner_address,

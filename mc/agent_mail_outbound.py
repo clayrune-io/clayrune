@@ -455,7 +455,7 @@ class Outbound:
                     state, reason = 'accepted', ''
                     accepted_expires_ms = response['thread_expires_ms']
             elif wire[0] == 429 and code == 'send_limit':
-                state, reason = 'retryable', 'send_limit'  # Worker proves no reservation/write
+                state, reason = 'retryable', 'send_limit'  # Worker reserved the intent but sent nothing; same intent_id re-authorizes on retry
             if state != 'accepted':
                 message_id = ''
                 _log(f'[agent-mail] outbound held: {reason}', flush=True)

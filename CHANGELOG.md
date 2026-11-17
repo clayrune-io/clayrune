@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Fix three high agent-mail Worker defects (MC-1184 / MC-1179 W1-W3)
+
+- W1: a send reserved but refused at authorization (the 20-a-day `send_limit`, or a storage fault between the two batches) no longer stays `reserved` forever. A retry with the same `intent_id` re-runs the authorization CAS and sends: still 429 `send_limit` while the cap is full, sent once after the day bucket resets. Two concurrent retries cannot both send. `accepted`, `sending`, `failed` and `revoked` replays are unchanged. The two tests that pinned the stuck behaviour were rewritten; corrected the Python comment at `mc/agent_mail_outbound.py` that claimed the Worker wrote nothing on `send_limit` (comment only).
+- W2: `/v1/pull/management/start` now refuses `key_recovery` and `delete` (400 `invalid_request`) before any step-up mail is queued or verification budget charged; the confirmation form for both posted to `/mail/key-recovery` and `/mail/delete`, which have no handler. Handlers are not built; the dormant branches are untouched.
+- W3: the scheduled handler now runs `retain()` as a third independent job (one bounded slice of one table family per tick, every tick), so expired nonces, operations, audit rows and sealed previous-owner addresses are finally deleted. A retention failure is logged and surfaced after the sweep and control delivery have run, and cannot suppress either.
+- Worker suite only (`workers/agent-mail`); branch candidate for review. No merge, push, Worker deploy or server restart.
+
 ## [2026-11-16] - Preserve workflow personas while their picker loads (MC-1183 / WB1)
 
 - Adding or duplicating a person with another step's inspector open no longer replaces that step's persona with the temporary empty loading option. Persona writes resume after the roster loads, including an intentional choice of Project default.
