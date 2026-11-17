@@ -102,7 +102,9 @@ class Tracker:
             for pid, ct in self.procs:
                 if shim.same_process(pid, ct):
                     try:
-                        os.kill(pid, signal.SIGKILL)
+                        # Windows has no SIGKILL; os.kill(pid, SIGTERM) there is
+                        # TerminateProcess, the same hard kill.
+                        os.kill(pid, getattr(signal, 'SIGKILL', signal.SIGTERM))
                     except OSError:
                         pass
             return
