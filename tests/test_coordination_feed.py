@@ -49,3 +49,47 @@ def test_a_live_session_is_not_its_own_sibling(coord, monkeypatch):
     monkeypatch.setattr(coord, '_read_events', lambda *a, **k: [])
     out = coord.sibling_activity('p1', 'sid-me', 'fix the scheduler')
     assert [i['summary'] for i in out] == ['fix the scheduler too']
+
+
+# ── OS39 ────────────────────────────────────────────────────────────────────
+
+def _client(coord):
+    import server
+    server.app.config['TESTING'] = True
+    c = server.app.test_client()
+    c.environ_base['HTTP_ORIGIN'] = 'http://localhost:5199'
+    return c
+
+
+def _stub_project(coord, monkeypatch):
+    monkeypatch.setattr(coord, 'load_project', lambda pid: {'id': pid})
+    monkeypatch.setattr(coord, '_push_sse', lambda *a, **k: None)
+
+
+@pytest.mark.parametrize('targets', [5, 'abc', ['a'] * 21, ['x' * 201], [1, 2], [['nested']]])
+def test_publish_refuses_bad_targets(coord, monkeypatch, targets):
+    _stub_project(coord, monkeypatch)
+    r = _client(coord).post('/api/project/p1/coord/publish',
+                            json={'type': 'completion', 'summary': 's', 'targets': targets})
+    assert r.status_code == 400
+    assert not coord._events_path('p1').exists()
+
+
+def test_publish_caps_agent_and_summary(coord, monkeypatch):
+    _stub_project(coord, monkeypatch)
+    r = _client(coord).post('/api/project/p1/coord/publish',
+                            json={'type': 'intention', 'agent': 'a' * 5000,
+                                  'summary': 's' * 5000, 'targets': ['f.py']})
+    assert r.status_code == 200
+    ev = r.get_json()['event']
+    assert len(ev['agent']) == 80 and len(ev['summary']) == 500
+
+
+def test_one_malformed_stored_event_does_not_blind_the_feed(coord, monkeypatch):
+    _live(coord, monkeypatch, {})
+    good = {'type': 'completion', 'ts': coord.now_iso(), 'summary': 'fix scheduler', 'targets': ['a.py'],
+            'agent': 'x'}
+    bad = {'type': 'completion', 'ts': coord.now_iso(), 'summary': 'boom', 'targets': 5}
+    monkeypatch.setattr(coord, '_read_events', lambda *a, **k: [bad, good])
+    out = coord.sibling_activity('p1', 'sid-me', 'fix scheduler')
+    assert [i['summary'] for i in out] == ['fix scheduler']
