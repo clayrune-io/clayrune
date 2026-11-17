@@ -112,3 +112,34 @@ def test_orchestrator_terminates_failed_dependencies_without_synthesis(client, m
     if failed:
         assert [w['status'] for w in workstreams] == ['failed'] * 3
         assert workstreams[2]['failure_reason'] == 'dependency_failed'
+
+
+def test_run_is_not_closed_while_a_workstream_file_is_unreadable(client, monkeypatch):
+    """MC-1179 OS30: a damaged file is dropped from the list; the rest being
+    completed must not close the run, and no synthesis may start."""
+    hm = client.hm
+    ws_dir = client.hm_dir / 'h' / 'workstreams'
+    ws_dir.mkdir(parents=True)
+    (ws_dir / 'ws_bad.json').write_text('{not json', encoding='utf-8')
+    manifest = {'id': 'h', 'status': 'active', 'project_id': 'p1'}
+    workstreams = [{'id': 'root', 'status': 'completed', 'dependencies': []}]
+
+    class OneTick:
+        stopped = False
+        def is_set(self):
+            return self.stopped
+        def wait(self, seconds):
+            self.stopped = True
+    monkeypatch.setattr(hm, '_hivemind_orchestrator_stop', OneTick())
+    monkeypatch.setattr(hm.obs, 'heartbeat', lambda *a: None)
+    monkeypatch.setattr(hm, '_hm_load_manifest', lambda _: manifest)
+    monkeypatch.setattr(hm, '_hm_list_workstreams', lambda _: [w.copy() for w in workstreams])
+    monkeypatch.setattr(hm, '_hm_save_manifest', lambda hid, m: manifest.update(m))
+    monkeypatch.setattr(hm, '_hm_auto_spawn_workers', lambda *a: None)
+    synthesis = []
+    monkeypatch.setattr(hm, '_hm_push_sse', lambda *a: None)
+    monkeypatch.setattr(hm, '_hm_dispatch_orchestrator', lambda *a: synthesis.append(a))
+    assert hm._hm_unreadable_workstream_files('h') == ['ws_bad.json']
+    hm._hivemind_orchestrator_loop()
+    assert manifest['status'] == 'active'
+    assert synthesis == []

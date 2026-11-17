@@ -278,7 +278,7 @@ def _initialize(api: Any, hid: str) -> dict:
 def advance(api: Any, hid: str) -> dict:
     """One resumable tick; returns as soon as an exact review is pending.
 
-    A held attempt is sticky. Dave reconciles it; repeat/startup calls never
+    A held attempt is sticky. the coordinating agent reconciles it; repeat/startup calls never
     replace the reviewer or silently select another integration attempt.
     """
     with _transaction(api, hid):
@@ -332,7 +332,7 @@ def advance(api: Any, hid: str) -> dict:
                         if not ws.get('worktree_session_id'):
                             raise ReviewRefused(409, 'code workstream has no isolated branch')
                         if ws.get('dependencies'):
-                            return _hold(api, hid, st, 'dependent code follow-up held for Dave (Q6)')
+                            return _hold(api, hid, st, 'dependent code follow-up held for the coordinating agent (Q6)')
                         current = st['current']
                         if current and current['phase'] == 'merging':
                             raise ReviewRefused(409, 'interrupted merge requires reconciliation; no automatic retry')

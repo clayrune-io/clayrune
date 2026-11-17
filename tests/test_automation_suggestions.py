@@ -315,3 +315,25 @@ def test_store_lives_outside_data_projects(ctx):
 def test_dismiss_unknown_id_is_404(ctx):
     assert ctx.client.post(
         '/api/automation/suggestions/deadbeefdeadbeef/dismiss').status_code == 404
+
+
+# MC-1179 OS41: a store that will not parse must not be rewritten with the
+# human's latched "no"s forgotten.
+def test_unreadable_store_is_not_overwritten_by_a_refresh(ctx):
+    s = _one_pending(ctx)
+    ctx.client.post(f"/api/automation/suggestions/{s['id']}/dismiss")
+    ctx.store_path.write_text('{"version": 1, "decisions": {"x"', encoding='utf-8')
+    before = ctx.store_path.read_text(encoding='utf-8')
+    ctx.client.get('/api/automation/suggestions')  # refreshes every project
+    assert ctx.store_path.read_text(encoding='utf-8') == before
+    assert ctx.sg.refresh_project('p1', ctx.log['p1'], []) == 0
+    assert ctx.sg.prune_project('p1', []) == 0
+    assert ctx.store_path.read_text(encoding='utf-8') == before
+
+
+def test_a_human_decision_on_an_unreadable_store_keeps_the_damaged_file(ctx):
+    ctx.store_path.write_text('{broken', encoding='utf-8')
+    ctx.sg.record_decision('fp1', 'dismissed')
+    assert ctx.sg.get_decision('fp1')['decision'] == 'dismissed'
+    kept = [p for p in ctx.store_path.parent.iterdir() if '.corrupt-' in p.name]
+    assert len(kept) == 1 and kept[0].read_text(encoding='utf-8') == '{broken'

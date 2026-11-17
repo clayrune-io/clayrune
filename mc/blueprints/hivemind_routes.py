@@ -53,6 +53,7 @@ import mc.agent_worktree as _agent_worktree
 import mc.hivemind_integration as _hm_integration
 import mc.hivemind_integration_cycle as _hm_integration_cycle
 import mc.hivemind_lineage as _hm_lineage
+import mc.hivemind_ids as _hm_ids
 import mc.hivemind_roster as _hm_roster
 import mc.hivemind_run_roles as _hm_run_roles
 import mc.hivemind_worker as _hm_worker
@@ -141,9 +142,15 @@ def wire(*, hivemind_dir, port, load_project_fn, get_manager_fn,
 
 
 def _hm_dir(hivemind_id):
-    """Return the directory for a hivemind, creating subdirs if needed."""
-    d = HIVEMIND_DIR / hivemind_id
+    """Return the directory for a hivemind, creating subdirs if needed.
+    Raises ValueError for an id that is not path-safe (MC-1179 OS27)."""
+    d = HIVEMIND_DIR / _hm_ids.check_id(hivemind_id, 'id')
     return d
+
+
+def _hm_ws_file(hivemind_id, ws_id, suffix):
+    """Path of a per-workstream file; ws_id is checked before it is joined."""
+    return _hm_dir(hivemind_id) / 'workstreams' / f'{_hm_ids.check_id(ws_id, "workstream id")}{suffix}'
 
 
 def _hm_ensure_dirs(hivemind_id):
@@ -158,12 +165,15 @@ def _hm_ensure_dirs(hivemind_id):
 
 def _hm_load_manifest(hivemind_id):
     """Load a hivemind manifest, or None if not found."""
+    if not _hm_ids.is_safe_id(hivemind_id):
+        return None  # an id that cannot name a run directory is not found
     p = _hm_dir(hivemind_id) / 'manifest.json'
     if not p.exists():
         return None
     try:
         return json.loads(p.read_text(encoding='utf-8'))
-    except Exception:
+    except Exception as e:
+        _log(f"[hivemind] manifest for {hivemind_id} unreadable: {e}", flush=True)
         return None
 
 
@@ -174,19 +184,24 @@ def _hm_save_manifest(hivemind_id, manifest):
 
 
 def _hm_load_workstream(hivemind_id, ws_id):
-    """Load a workstream definition."""
-    p = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}.json'
+    """Load a workstream definition, or None if not found."""
+    if not (_hm_ids.is_safe_id(hivemind_id) and _hm_ids.is_safe_id(ws_id)):
+        # Three routes look the workstream up before the manifest, with both ids
+        # straight from the URL: an id that cannot name a file is not found, not a 500.
+        return None
+    p = _hm_ws_file(hivemind_id, ws_id, '.json')
     if not p.exists():
         return None
     try:
         return json.loads(p.read_text(encoding='utf-8'))
-    except Exception:
+    except Exception as e:
+        _log(f"[hivemind] workstream {ws_id} of {hivemind_id} unreadable: {e}", flush=True)
         return None
 
 
 def _hm_save_workstream(hivemind_id, ws_id, ws):
     """Save a workstream definition."""
-    p = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}.json'
+    p = _hm_ws_file(hivemind_id, ws_id, '.json')
     write_json_atomic(p, ws, indent=2, ensure_ascii=False)
 
 
@@ -200,9 +215,37 @@ def _hm_list_workstreams(hivemind_id):
         try:
             ws = json.loads(f.read_text(encoding='utf-8'))
             result.append(ws)
-        except Exception:
-            pass
+        except Exception as e:
+            _log(f"[hivemind] workstream file {f.name} of {hivemind_id} unreadable: {e}", flush=True)
     return result
+
+
+def _hm_int_arg(name, default):
+    """An integer query argument; a missing or non-numeric one is `default`
+    (MC-1179 OS32: a bare int() answered `?limit=abc` with a 500)."""
+    try:
+        return int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _hm_unreadable_workstream_files(hivemind_id):
+    """Names of workstream files that exist but do not parse.
+
+    MC-1179 OS30: _hm_list_workstreams drops such a file, so a run whose only
+    unfinished workstream was unreadable on one tick looked fully completed.
+    The terminal check refuses while this is non-empty.
+    """
+    ws_dir = _hm_dir(hivemind_id) / 'workstreams'
+    if not ws_dir.exists():
+        return []
+    bad = []
+    for f in sorted(ws_dir.glob('*.json')):
+        try:
+            json.loads(f.read_text(encoding='utf-8'))
+        except Exception:
+            bad.append(f.name)
+    return bad
 
 
 # ── Worktree isolation + integration state (e3c0824e) ────────────────────────
@@ -298,7 +341,7 @@ def _hm_start_integration(hivemind_id):
 
 def _hm_append_finding(hivemind_id, ws_id, finding):
     """Append a finding to the workstream's JSONL file."""
-    p = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}_findings.jsonl'
+    p = _hm_ws_file(hivemind_id, ws_id, '_findings.jsonl')
     with open(p, 'a', encoding='utf-8') as f:
         f.write(json.dumps(finding, ensure_ascii=False) + '\n')
     # Increment findings_count on workstream
@@ -310,7 +353,7 @@ def _hm_append_finding(hivemind_id, ws_id, finding):
 
 def _hm_read_findings(hivemind_id, ws_id, last_n=20):
     """Read last N findings from a workstream's JSONL file."""
-    p = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}_findings.jsonl'
+    p = _hm_ws_file(hivemind_id, ws_id, '_findings.jsonl')
     if not p.exists():
         return []
     lines = []
@@ -474,7 +517,7 @@ def _hm_write_synthesis(hivemind_id, content):
 
 def _hm_read_context(hivemind_id, ws_id):
     """Read the workstream context markdown file."""
-    p = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}_context.md'
+    p = _hm_ws_file(hivemind_id, ws_id, '_context.md')
     if not p.exists():
         return ''
     return p.read_text(encoding='utf-8')
@@ -482,7 +525,7 @@ def _hm_read_context(hivemind_id, ws_id):
 
 def _hm_write_context(hivemind_id, ws_id, content):
     """Write the workstream context markdown file."""
-    p = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}_context.md'
+    p = _hm_ws_file(hivemind_id, ws_id, '_context.md')
     p.write_text(content, encoding='utf-8')
 
 
@@ -630,6 +673,22 @@ def hivemind_create():
     if type(project_generation) is not int or project_generation < 1:
         return jsonify({'error': 'project generation unavailable: invalid generation'}), 409
 
+    # MC-1179 OS28: when a decompose will be dispatched (no inline workstreams),
+    # an orchestrator engine that cannot resolve (unknown provider, a model that
+    # belongs to another vendor) is refused here, before a run exists, not as a
+    # 500 from the dispatch after the manifest saved.
+    if not data.get('workstreams'):
+        try:
+            _orch_p = data.get('orchestrator_provider') or ''
+            engine_selection.resolve_engine(
+                state.CONFIG, p, provider_override=_orch_p,
+                model_override=data.get('orchestrator_model', 'sonnet' if (
+                    _orch_p or p.get('provider') or state.CONFIG.get('default_provider')
+                    or 'claude') == 'claude' else ''),
+                legacy_default='claude')
+        except engine_selection.EngineSelectionError as exc:
+            return jsonify({'error': str(exc)}), 400
+
     hivemind_id = 'hm_' + str(uuid.uuid4())[:8]
     _hm_ensure_dirs(hivemind_id)
 
@@ -688,6 +747,8 @@ def hivemind_create():
             if not title:
                 continue  # skip malformed entries rather than fail the whole create
             ws_id = ws_in.get('id') or ('ws_' + str(uuid.uuid4())[:6])
+            if not _hm_ids.is_safe_id(ws_id):
+                continue  # same policy as a missing title: skip, do not fail the create
             ws = {
                 'id': ws_id,
                 'title': title,
@@ -895,6 +956,8 @@ def hivemind_workstream_create(hivemind_id):
         return jsonify({'error': error}), 400
 
     ws_id = data.get('id', 'ws_' + str(uuid.uuid4())[:6])
+    if not _hm_ids.is_safe_id(ws_id):
+        return jsonify({'error': 'invalid workstream id'}), 400
     try:
         warnings = []
         roster_fields = _hm_roster.check_workstream_create(
@@ -1012,7 +1075,7 @@ def hivemind_workstream_status(hivemind_id, ws_id):
 
 def _hm_read_handoff(hivemind_id, ws_id):
     """Read the latest handoff document for a workstream."""
-    p = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}_handoff.md'
+    p = _hm_ws_file(hivemind_id, ws_id, '_handoff.md')
     if p.exists():
         try:
             return p.read_text(encoding='utf-8')
@@ -1023,7 +1086,7 @@ def _hm_read_handoff(hivemind_id, ws_id):
 
 def _hm_write_handoff(hivemind_id, ws_id, content):
     """Write a handoff document for a workstream."""
-    p = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}_handoff.md'
+    p = _hm_ws_file(hivemind_id, ws_id, '_handoff.md')
     p.write_text(content, encoding='utf-8')
 
 
@@ -1194,7 +1257,7 @@ def hivemind_workstream_handoff(hivemind_id, ws_id):
 
     # Record artifact if provided
     if data.get('artifact'):
-        artifact_path = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}_artifact.json'
+        artifact_path = _hm_ws_file(hivemind_id, ws_id, '_artifact.json')
         write_json_atomic(artifact_path, data['artifact'], indent=2, ensure_ascii=False)
 
     _hm_push_sse(hivemind_id, {
@@ -1217,7 +1280,19 @@ def _hm_dispatch_orchestrator(hivemind_id, task_type, extra_context=''):
         if hivemind_id in _hivemind_orchestrating:
             return None
         _hivemind_orchestrating.add(hivemind_id)
+    try:
+        return _hm_dispatch_orchestrator_claimed(hivemind_id, task_type, extra_context)
+    except BaseException:
+        # MC-1179 OS28: anything raised between taking the slot and starting the
+        # worker thread (an engine selection error, a failed project load) used
+        # to leave the id in the set until restart.
+        with _hivemind_orch_lock:
+            _hivemind_orchestrating.discard(hivemind_id)
+        raise
 
+
+def _hm_dispatch_orchestrator_claimed(hivemind_id, task_type, extra_context=''):
+    """Body of _hm_dispatch_orchestrator once the orchestrator slot is held."""
     manifest = _hm_load_manifest(hivemind_id)
     if not manifest:
         with _hivemind_orch_lock:
@@ -1483,6 +1558,9 @@ def hivemind_bus_post(hivemind_id):
         return jsonify({'error': 'type required'}), 400
 
     msg_type = data['type'].strip()
+    if (msg_type == 'finding_report' and str(data.get('from', '')).startswith('ws_')
+            and not _hm_ids.is_safe_id(data['from'])):
+        return jsonify({'error': 'invalid workstream id in from'}), 400
     msg = {
         'id': 'msg_' + str(uuid.uuid4())[:8],
         'timestamp': now_iso(),
@@ -1557,7 +1635,7 @@ def hivemind_bus_history(hivemind_id):
     manifest = _hm_load_manifest(hivemind_id)
     if not manifest:
         return jsonify({'error': 'not found'}), 404
-    limit = int(request.args.get('limit', 100))
+    limit = _hm_int_arg('limit', 100)
     messages = _hm_read_bus_messages(hivemind_id, last_n=limit)
     return jsonify(messages)
 
@@ -1649,7 +1727,7 @@ def hivemind_knowledge_findings(hivemind_id):
         return jsonify({'error': 'not found'}), 404
     ws_id = request.args.get('ws_id', '')
     if ws_id:
-        last_n = int(request.args.get('limit', 50))
+        last_n = _hm_int_arg('limit', 50)
         return jsonify(_hm_read_findings(hivemind_id, ws_id, last_n))
     return jsonify(_hm_read_all_findings(hivemind_id))
 
@@ -1874,6 +1952,13 @@ def _hivemind_orchestrator_loop():
                 # Check if all workstreams are completed
                 workstreams = _hm_list_workstreams(hivemind_id)
                 outcome = _hm_terminal_outcome(workstreams)
+                if outcome:
+                    _bad_ws = _hm_unreadable_workstream_files(hivemind_id)
+                    if _bad_ws:
+                        # MC-1179 OS30: a workstream we could not read may be the
+                        # unfinished one; decide on a later tick.
+                        _log(f"[hivemind] {hivemind_id} not closed: unreadable workstream file(s) {_bad_ws}", flush=True)
+                        outcome = None
                 if outcome:
                     manifest['status'] = outcome
                     manifest['updated_at'] = now_iso()

@@ -305,3 +305,23 @@ def test_agent_disable_remains_a_working_kill_switch(sclient, monkeypatch, route
                    for s in json.loads(sr.SCHEDULES_PATH.read_text(encoding='utf-8')))
     hooks = _settings(Path(saved['project_path'])).get('hooks', {}).get('PreToolUse', [])
     assert not any('fence.py' in h['command'] for entry in hooks for h in entry['hooks'])
+
+
+# MC-1179 OS3: a schedules file that will not parse must not be read as "no
+# schedules" by the enable route and then written back with one row.
+def test_enable_refuses_to_overwrite_an_unreadable_schedules_file(sclient):
+    client, proj_path, pr, sr = sclient
+    sr.SCHEDULES_PATH.write_text('{"truncated": [', encoding='utf-8')
+    r = client.post('/api/project/p1/steward/enable',
+                    json={'objective': 'x', 'cadence_minutes': 60})
+    assert r.status_code == 500
+    assert sr.SCHEDULES_PATH.read_text(encoding='utf-8') == '{"truncated": ['
+
+
+def test_unreadable_schedules_file_read_is_logged(sclient, monkeypatch):
+    client, proj_path, pr, sr = sclient
+    sr.SCHEDULES_PATH.write_text('not json', encoding='utf-8')
+    seen = []
+    monkeypatch.setattr(sr, '_log', lambda msg, **k: seen.append(msg))
+    assert sr._load_schedules() == []
+    assert any('schedules' in m and 'unreadable' in m for m in seen)

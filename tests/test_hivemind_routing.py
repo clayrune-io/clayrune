@@ -115,6 +115,7 @@ def test_dependent_chain_retained_as_full_q6_holds(records, roots):
     for held, original in zip(result['held_units'], data['units'][-2:]):
         assert 'Q6' in held['hold_reason']
         assert 'reviewed integration' in held['hold_reason']
+        assert 'Dave' not in held['hold_reason']  # MC-1179 OS37: no operator persona in API strings
         assert {k: v for k, v in held.items() if k != 'hold_reason'} == original
     runnable = (result['payload']['workstreams'] if roots >= 3 else result['ordinary_units'])
     assert {u['id'] for u in runnable} == {f'ws_{i}' for i in range(roots)}

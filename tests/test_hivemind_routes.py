@@ -847,3 +847,81 @@ class TestAuthReject:
                         json={'goal': 'g', 'project_id': 'thm',
                               'workstreams': [{'title': 'w'}]})
         assert r.status_code == 200
+
+
+# ── MC-1179 OS27: ids that would escape the run folder ───────────────────────
+
+class TestPathSafeIds:
+    def _outside(self, client):
+        """Anything written outside the hivemind root or a run's own folder."""
+        return [p for p in client.hm_dir.parent.rglob('*')
+                if p.is_file() and client.hm_dir not in p.parents]
+
+    def test_workstream_create_refuses_a_traversal_id(self, client):
+        hm_id = _create(client)['hivemind']['id']
+        r = client.post(f'/api/hivemind/{hm_id}/workstreams/create',
+                        json={'title': 'x', 'id': '../../../escaped'})
+        assert r.status_code == 400
+        assert self._outside(client) == []
+
+    def test_inline_workstream_with_a_traversal_id_is_skipped(self, client):
+        out = _create(client, workstreams=[{'id': '../../evil', 'title': 'bad'},
+                                           {'id': 'ws_ok', 'title': 'good'}])
+        ids = [w['id'] for w in client.get(f"/api/hivemind/{out['hivemind']['id']}/workstreams").get_json()]
+        assert ids == ['ws_ok']
+        assert self._outside(client) == []
+
+    def test_finding_report_from_a_traversal_id_is_refused(self, client):
+        hm_id = _create(client)['hivemind']['id']
+        r = client.post(f'/api/hivemind/{hm_id}/bus/post',
+                        json={'type': 'finding_report', 'from': 'ws_/../../../../leak',
+                              'content': 'x'})
+        assert r.status_code == 400
+        assert self._outside(client) == []
+
+    def test_a_traversal_hivemind_id_is_not_found(self, client):
+        assert client.get('/api/hivemind/..%2f..%2fx').status_code == 404
+        assert client.hm._hm_load_manifest('../x') is None
+
+    def test_a_workstream_route_with_an_unsafe_id_is_not_found(self, client):
+        hm_id = _create(client)['hivemind']['id']
+        for url, method in [(f'/api/hivemind/{hm_id}/workstreams/..%5cevil', 'put'),
+                            (f'/api/hivemind/{hm_id}/workstreams/bad%20id/status', 'post'),
+                            (f'/api/hivemind/{hm_id}/workstreams/bad%20id/handoff', 'post'),
+                            ('/api/hivemind/bad%20id/workstreams/ws_ok/status', 'post')]:
+            r = getattr(client, method)(url, json={'status': 'active'})
+            assert r.status_code == 404, (url, r.status_code)
+        assert client.hm._hm_load_workstream(hm_id, '../x') is None
+        assert self._outside(client) == []
+
+
+# ── MC-1179 OS28: the orchestrator slot and the create-time engine check ─────
+
+class TestOrchestratorSlot:
+    def test_create_refuses_an_orchestrator_engine_that_cannot_resolve(self, client):
+        before = set(p.name for p in client.hm_dir.iterdir())
+        r = client.post('/api/hivemind/create', json={
+            'goal': 'g', 'project_id': 'thm', 'orchestrator_provider': 'no-such-vendor'})
+        assert r.status_code == 400
+        assert set(p.name for p in client.hm_dir.iterdir()) == before
+
+    def test_an_engine_error_frees_the_orchestrator_slot(self, client, monkeypatch):
+        hm_id = _create(client)['hivemind']['id']
+        from mc import engine_selection as es
+
+        def boom(*a, **k):
+            raise es.EngineSelectionError('model belongs to another provider')
+        monkeypatch.setattr(es, 'resolve_engine', boom)
+        with pytest.raises(es.EngineSelectionError):
+            client.hm._hm_dispatch_orchestrator(hm_id, 'synthesize')
+        assert hm_id not in client.state._hivemind_orchestrating
+
+
+# ── MC-1179 OS32: a non-numeric limit is the default, not a 500 ──────────────
+
+class TestNonNumericLimit:
+    def test_bus_history_and_findings_ignore_a_bad_limit(self, client):
+        hm_id = _create(client)['hivemind']['id']
+        assert client.get(f'/api/hivemind/{hm_id}/bus/history?limit=abc').status_code == 200
+        assert client.get(
+            f'/api/hivemind/{hm_id}/knowledge/findings?ws_id=ws_001&limit=abc').status_code == 200

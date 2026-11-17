@@ -26,6 +26,7 @@ upgrade audit log, model_upgrade_log.jsonl in the same directory.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
@@ -92,6 +93,10 @@ def set_price(provider: str, model: str, input_price: float, output_price: float
     model = str(model or '').strip()
     if not provider or not model:
         raise ValueError('provider and model are required')
+    if not (math.isfinite(input_price) and math.isfinite(output_price)):
+        # MC-1179 OS46: inf/nan slip past a `< 0` test and make the price gate
+        # approve (or refuse) every comparison.
+        raise ValueError('price must be a finite number')
     if input_price < 0 or output_price < 0:
         raise ValueError('price must be non-negative')
     data = load_prices()
@@ -310,8 +315,9 @@ def _global_apply(config: dict, config_path: Path) -> Callable[[str], None]:
     def _apply(new_model: str) -> None:
         config['agent_model'] = new_model
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
+        # MC-1179 OS47: same atomic write as the settings route, so a crash or
+        # an unserializable value cannot leave config.json truncated.
+        write_json_atomic(config_path, config, indent=2, ensure_ascii=False)
     return _apply
 
 

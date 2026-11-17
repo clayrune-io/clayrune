@@ -51,6 +51,9 @@ _STATE: Dict[str, dict] = {}
 # Claude and Codex are detected from real structured fields instead.
 _TEXT_HINTS = ('quota', 'rate limit', 'resource_exhausted', '429',
                'too many requests', 'usage limit')
+# '429' only counts as a whole number: "read 1429 bytes" is not a rate limit
+# (MC-1179 OS23). The other hints are phrases and stay substring matches.
+_TEXT_429_RE = re.compile(r'(?<![0-9a-z])429(?![0-9a-z])')
 
 
 def wire(state_path) -> None:
@@ -528,7 +531,7 @@ def _generic_text_exhaustion(text: str) -> Optional[dict]:
     vendor's plain-text error names one.
     """
     t = (text or '').lower()
-    if not any(h in t for h in _TEXT_HINTS):
+    if not (any(h in t for h in _TEXT_HINTS if h != '429') or _TEXT_429_RE.search(t)):
         return None
     return {
         'limit_kind': 'unknown',

@@ -4012,7 +4012,9 @@ def _provider_available_for_fallback(provider_name: str) -> bool:
     try:
         rt = _agent_runtime.get_runtime(provider_name)
         h = rt.health_check()
-    except Exception:
+    except Exception as e:
+        # MC-1179 OS49b: a crashed probe is not the same as a signed-out vendor.
+        _log(f"[engine-fallback] availability probe for {provider_name} failed: {e}", flush=True)
         return False
     return bool(h.installed) and bool(h.auth_state) and h.auth_state.status == 'ok'
 
@@ -5672,7 +5674,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             from mc.blueprints import coordination_routes as _coord
             _coord.reconcile_commits(project)  # publish any just-landed commits
             sib = _coord.sibling_activity(
-                project['id'], (project.get('_coord_session_id') or ''), task,
+                project['id'], session_id or '', task,
                 int(state.CONFIG.get('coordination_read_floor_topk', 3) or 3))
             block = _coord.render_readfloor(sib)
             if block:

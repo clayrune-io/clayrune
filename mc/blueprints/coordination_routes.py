@@ -58,6 +58,11 @@ _RECONCILE_WALK_LIMIT = 50
 # A completion older than this is stale for read-floor purposes (the change has
 # long since propagated; showing it just adds noise).
 _COMPLETION_TTL_SECS = 6 * 3600
+# MC-1179 OS39: bounds on explicit-publish text that reaches other agents' prompts.
+_MAX_TARGETS = 20
+_MAX_TARGET_LEN = 200
+_MAX_AGENT_LEN = 80
+_MAX_SUMMARY_LEN = 500
 # A recent completion whose targets/summary overlap a live agent's task at or
 # above this many tokens is a CONFLICT (⚠) — the sibling likely just changed
 # ground under this agent's feet. Freshness bounds it to "just landed".
@@ -127,7 +132,8 @@ def _read_events(project_id: str, last_n: int = 100) -> list[dict]:
                 line = line.strip()
                 if line:
                     lines.append(line)
-    except Exception:
+    except Exception as e:
+        _log(f"[coord] read_events failed for {project_id}: {e}")
         return []
     out: list[dict] = []
     for line in (lines[-last_n:] if last_n else lines):
@@ -174,7 +180,8 @@ def _load_state(project_id: str) -> dict:
         return {}
     try:
         return json.loads(p.read_text(encoding='utf-8'))
-    except Exception:
+    except Exception as e:
+        _log(f"[coord] load_state failed for {project_id}: {e}")
         return {}
 
 
@@ -383,13 +390,19 @@ def sibling_activity(project_id: str, my_session_id: str, task: str,
             if age is not None and age > _COMPLETION_TTL_SECS:
                 continue
             tgt = ev.get('targets', []) or []
+            if (not isinstance(tgt, list) or not all(isinstance(t, str) for t in tgt)
+                    or not isinstance(ev.get('summary', ''), str)
+                    or not isinstance(ev.get('agent', ''), str)):
+                # MC-1179 OS39: one malformed stored event is skipped, it does
+                # not blind the feed for every agent on the project.
+                continue
             score = _overlap(my_tokens, _tokens(
                 (ev.get('summary', '') + ' ' + ' '.join(tgt))))
             items.append({
                 'kind': 'completion',
-                'agent': ev.get('agent', ''),
+                'agent': ev.get('agent', '')[:_MAX_AGENT_LEN],
                 'summary': ev.get('summary', '')[:200],
-                'targets': tgt[:6],
+                'targets': [t[:_MAX_TARGET_LEN] for t in tgt[:6]],
                 'short': ev.get('short', ''),
                 'score': score,
                 'ts': ev.get('ts', ''),
@@ -621,18 +634,29 @@ def coord_publish(project_id):
     ev_type = (data.get('type') or '').strip()
     if ev_type not in ('intention', 'completion'):
         return jsonify({'error': "type must be 'intention' or 'completion'"}), 400
+    # MC-1179 OS39: this text lands in other agents' system prompts, so bound
+    # and type-check it here (the reader also skips a bad event, see
+    # sibling_activity, for rows written before this check existed).
+    targets = data.get('targets') or []
+    if (not isinstance(targets, list) or len(targets) > _MAX_TARGETS
+            or any(not isinstance(t, str) or len(t) > _MAX_TARGET_LEN for t in targets)):
+        return jsonify({'error': f'targets must be a list of at most {_MAX_TARGETS} '
+                                 f'strings of at most {_MAX_TARGET_LEN} characters'}), 400
+    for key in ('agent', 'session_id', 'summary', 'commit_sha'):
+        if not isinstance(data.get(key) or '', str):
+            return jsonify({'error': f'{key} must be a string'}), 400
     ev = {
         'id': ('i_' if ev_type == 'intention' else 'c_') + uuid.uuid4().hex[:8],
         'ts': now_iso(),
         'type': ev_type,
-        'agent': (data.get('agent') or '').strip(),
-        'session_id': (data.get('session_id') or '').strip(),
-        'summary': (data.get('summary') or '').strip(),
-        'targets': data.get('targets') or [],
+        'agent': (data.get('agent') or '').strip()[:_MAX_AGENT_LEN],
+        'session_id': (data.get('session_id') or '').strip()[:_MAX_AGENT_LEN],
+        'summary': (data.get('summary') or '').strip()[:_MAX_SUMMARY_LEN],
+        'targets': targets,
         'explicit': True,
     }
     if ev_type == 'completion':
-        ev['commit_sha'] = (data.get('commit_sha') or '').strip()
+        ev['commit_sha'] = (data.get('commit_sha') or '').strip()[:64]
     _append_event(project_id, ev)
     _push_sse(project_id, {'type': f'coord_{ev_type}', 'event': ev})
     return jsonify({'ok': True, 'event': ev})
