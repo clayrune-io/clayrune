@@ -140,6 +140,19 @@ def _clean_allowance_state():
     al._STATE = {}
 
 
+def test_a_crashed_availability_probe_is_logged_not_silent(ar, monkeypatch):
+    """MC-1179 OS49b: a probe that raises still means 'not available', but the
+    log must say the probe crashed, not leave it looking signed-out."""
+    lines = []
+    monkeypatch.setattr(ar, '_log', lambda msg, **k: lines.append(msg))
+
+    def boom(name):
+        raise RuntimeError('cli exploded')
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', boom)
+    assert ar._provider_available_for_fallback('gemini') is False
+    assert any('gemini' in l and 'cli exploded' in l for l in lines)
+
+
 def test_apply_engine_fallback_records_on_every_swap(ar, monkeypatch):
     """The literal brief requirement: a test that FAILS if a swap ever
     happens without the record. Both the durable activity-log write and the
