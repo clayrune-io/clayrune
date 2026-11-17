@@ -78,6 +78,14 @@ class MigrationError(Exception):
         self.code = code
 
 
+def read_text_arg(path: str, flag: str) -> str:
+    """Read a --charter-file / --task-file; a bad path is the tool's own ERROR line."""
+    try:
+        return Path(path).read_text(encoding='utf-8')
+    except (OSError, UnicodeDecodeError) as exc:
+        raise MigrationError(f'{flag} {path} could not be read: {exc}')
+
+
 class Api:
     """The only I/O the planner and applier use; tests substitute a fake."""
 
@@ -209,7 +217,7 @@ def plan_migration(api: Any, args: argparse.Namespace) -> dict:
     journal = args.journal
     new_text = None
     if args.charter_file:
-        new_text = Path(args.charter_file).read_text(encoding='utf-8').strip()
+        new_text = read_text_arg(args.charter_file, '--charter-file').strip()
         if not new_text:
             raise MigrationError('--charter-file is empty')
     role = {'version': 1, 'charter_item_id': args.charter_item_id, 'journal_path': journal}
@@ -397,7 +405,7 @@ def plan_rollback(api: Any, args: argparse.Namespace) -> dict:
     row = find_schedule(api, snap['schedule_id'])
     if not isinstance(row.get('steward_role'), dict):
         raise MigrationError('the schedule has no steward role; nothing to roll back')
-    task = Path(args.task_file).read_text(encoding='utf-8').strip() if args.task_file \
+    task = read_text_arg(args.task_file, '--task-file').strip() if args.task_file \
         else snap['old_row'].get('task', '')
     project = find_project(api, row['project_id'])
     charter = find_charter(project, row['steward_role']['charter_item_id'])
