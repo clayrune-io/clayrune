@@ -1369,6 +1369,7 @@ def _worktree_gc_background_run(snapshot):
 
 import copy
 from mc import agent_log_maintenance as _log_maintenance
+from mc import agent_log_file as _agent_log_file
 
 # _load_agent_log / _save_agent_log ── moved to mc/blueprints/agent_routes.py
 # (1.12); the startup/scheduler stayers below resolve the inbound shims.
@@ -1451,7 +1452,9 @@ def _backfill_agent_log_from_transcripts(project_id, project):
 
     log = _log_maintenance.snapshot(project_id)
     before = copy.deepcopy(log)
-    known_csids = {e.get('claude_session_id') for e in log if e.get('claude_session_id')}
+    # Both keys (MC-1179 S1): an earlier transcript of a rolled-over conversation
+    # is listed only in `claude_session_ids`; it is not a missing chat.
+    known_csids = _agent_log_file.known_transcript_ids(log)
 
     added = 0
     for t in transcripts:

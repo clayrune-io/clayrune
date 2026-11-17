@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Runtime core startup (MC-1179 S1, S2)
+
+- Startup backfill: a transcript listed in a real row's `claude_session_ids` (an earlier transcript of a conversation that rolled over or resumed fresh) is no longer re-imported as a fake "interrupted" row. Both the backfill and the commit-side insert guard now read `claude_session_ids` as well as `claude_session_id` (S1, new `known_transcript_ids` in `mc/agent_log_file.py`). Existing duplicate rows are not touched; their cleanup is handed back as a question.
+
 ## [2026-11-17] - Agent plumbing, second wave of decided fixes from the pass-10 review (MC-1179)
 
 - Guard hook: the command written into Codex and Gemini hook config uses the call prefix the shell needs, so an interpreter path with a space is no longer a PowerShell parse error that those CLIs read as allow (AP5, new `mc/hook_command_shell.py`).
