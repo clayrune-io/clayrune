@@ -6,7 +6,6 @@
 - Now the fallback first asks `mc/update_resync_guard.py` whether the reset would drop commits that exist only in this checkout, and answers 409 (`reason`, `local_commits`, a plain `error`; nothing reset) when there are any, or when the current branch has no `origin/<branch>`. "Local-only" means never on origin: commits that were on `origin/<branch>` before an upstream force-push (read from the remote-tracking ref's reflog) are not counted, so force-push recovery still works. If git cannot say, it refuses.
 - The reset itself is human-only, with the same checks as the stash branch: an agent caller gets 403, a browser caller must retype the dashboard passcode (the stash path's passcode check is reused, not asked twice). The plain fast-forward pull needs nothing extra. Settings > Update (`static/js/update-power.js`) now prompts for the passcode when the server answers `resync_needs_confirmation`, and shows the server's own message for the 409.
 - Tests: new `tests/test_system_update_local_commits.py` (both report rows, agent caller, forged Origin, passcode asked once, plain pull unchanged); the two force-push recovery tests in `tests/test_system_update_resync.py` now post as a human. Not changed: the installer half (P87).
-- Branch candidate for review; no merge, push, deployment or server restart.
 
 ## [2026-11-16] - Every new Desk account starts with Read and Post off (MC-1187 / DCW-C2)
 
