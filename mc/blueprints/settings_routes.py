@@ -290,9 +290,10 @@ _CONFIG_EDITABLE_KEYS = {
     # knob like the rest of this set: an unattended agent must not be able to
     # grant itself write access to the app's own source by flipping this on.
     'allow_project_in_install_dir',
-    # Desk v1 (MC-977, R0 plan T0a). Read live by the Settings toggle and by
-    # static/js/desk.js's openDesk() branch at the next open — no respawn or
-    # restart needed. `user_timezone` is read by the v1 shell's time helper.
+    # Desk v1 (MC-977, R0 plan T0a). `desk_v1` is inert since the legacy Desk
+    # was deleted (MC-1179 pass 04): nothing reads it, but it stays editable so
+    # a stale browser tab that still saves it is not refused. `user_timezone`
+    # is read by the v1 shell's time helper.
     'desk_v1', 'user_timezone',
     # Desk v1 R1-W (MC-1021 S0): the v1 store reads live data only when on.
     'desk_v1_live',

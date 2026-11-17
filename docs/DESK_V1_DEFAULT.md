@@ -1,9 +1,15 @@
 # Desk v1 default rollout
 
+> **2026-11-17 (MC-1179 pass 04): the legacy Desk and the Settings toggle were
+> deleted.** Desk v1 is the only Desk. `desk_v1` is inert: the frontend no longer
+> reads it, an old `false` shows the same Desk as `true`, and the key stays in
+> `_load_config()` and `_CONFIG_EDITABLE_KEYS` so old config files load and a stale
+> tab's save is accepted. The text below is the 2026-10-16 rollout record.
+
 Desk v1 defaults on as of 2026-10-16. `desk_v1_live` already defaults on, so
-opening The Desk uses the live workspace. Turning Desk v1 off restores the
-legacy Desk. While on, legacy write handlers retain their read-only guards.
-The toggle stays in Settings > Appearance > Experimental beside timezone.
+opening The Desk uses the live workspace. Turning Desk v1 off restored the
+legacy Desk. While on, legacy write handlers retained their read-only guards.
+The toggle sat in Settings > Appearance > Experimental beside timezone.
 
 ## Saved-config migration
 

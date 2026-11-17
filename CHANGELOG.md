@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - The legacy Desk screen is gone; Desk v1 is the only Desk (MC-1179 pass 04)
+
+- Deleted `static/js/desk.js` (2,361 lines; 37 of its 39 window names had no caller while `desk_v1` was on), `static/js/desk-impact-link-seam.js` (the legacy queue's tracked-link seam, only loaded by `desk.js`) and 643 + 11 lines of `.desk-*` CSS in `app.css` and `desk-window-maximize.css` that no remaining file names. Net 3,093 lines removed in this commit.
+- `openDesk` moved to `static/js/desk-open.js` (first commit of this change) and now calls `deskV1Open()` unconditionally; `render()` no longer re-renders the old screen; `_preserveOpenSocial` no longer keeps the Desk's Queue rows.
+- The **Desk v1** switch is gone from Settings. `desk_v1` stays in `_load_config()` defaults and `_CONFIG_EDITABLE_KEYS` so old `config.json` files load and a stale tab's save is accepted, but nothing reads it: an install that had it `false` now sees the same Desk as one with `true`. `mc/desk_v1_default.py` is unchanged. `desk_v1_live` is untouched (it picks the v1 store's data source, not the old screen).
+- No server route was removed: every `/api/desk/*` route is still called by Desk v1, tests or workflows.
+- `docs/USER_GUIDE.md` and `docs/DESK_V1_DEFAULT.md` updated. Smoke and test changes are in the next commit.
+
 ## [2026-11-17] - Workflow toolbar: buttons that add a block no longer look like buttons that do something
 
 - Action, Approval gate and Wait (which drop a block on the canvas) looked identical to Undo, Redo, Reset, Check workflow, Update and Run now. The toolbar is now three groups with a rule between each: Undo / Redo / Reset | a muted "Add" label then Action / Approval gate / Wait | Check workflow / Update / Run now.

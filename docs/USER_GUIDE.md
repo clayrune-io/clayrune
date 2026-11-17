@@ -1675,11 +1675,9 @@ browser manually.
 
 ## The Desk
 
-The Desk opens the live workspace for campaigns, content and publishing by default.
-Existing installs switch to Desk v1 once after updating, including installs whose
-saved settings carried the old off default. After that switch, your choice is
-kept: turn **Settings > Appearance > Experimental > Desk v1** off to return to the
-legacy Desk. Legacy Desk views remain read-only while Desk v1 is on.
+The Desk is the live workspace for campaigns, content and publishing. It is the
+only Desk: the old screen and the **Desk v1** switch in Settings were removed, and
+an old saved `desk_v1: false` is ignored.
 
 ### Conversation large view
 

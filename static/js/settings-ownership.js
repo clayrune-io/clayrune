@@ -21,12 +21,6 @@ function systemExtras(cfg, {toggle}) { return `
           <div class="settings-hint">Bakes brevity + model/effort into each chat at spawn (cached, fewer tokens per turn) instead of re-sending every message. Changing one of those mid-chat resumes the agent so it takes effect. Experimental.</div>
         </div>
         ${toggle('sticky_agent_settings', cfg.sticky_agent_settings)}
-      </div>      <div class="settings-row">
-        <div>
-          <div class="settings-label">Desk v1</div>
-          <div class="settings-hint">Manage campaigns, content and publishing in the live Desk workspace. The legacy Desk stays read-only while this is on.</div>
-        </div>
-        ${toggle('desk_v1', cfg.desk_v1)}
       </div></div>`; }
 function securityRow(cfg, {toggle}) { return `      <div class="settings-row" id="codex-sandbox-row">
         <div>

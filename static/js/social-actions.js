@@ -41,7 +41,7 @@ function editSocialItem(e, projectId, itemId) {
   openSocialEditModal(projectId, itemId);
 }
 
-// Same modal-window construction as deskNewCampaign/deskVoices (desk.js):
+// Same modal-window construction the legacy Desk used (desk.js, deleted):
 // `.modal-window` + `.modal-content`, registered in `openModals` so drag,
 // zoom (Ctrl+Scroll), minimize and z-order all come for free from the
 // delegated listeners in interactions.js/modal-manager.js — never hand-roll
