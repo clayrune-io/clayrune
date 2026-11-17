@@ -557,4 +557,61 @@ carry live evidence: the state block this session was handed.
   (`:358-377`) and measures from the last assistant output, not the last
   status change. The turn stamp is visible on this session's own first message.
 
+### N18. `mc/fence_fail_closed.py` (295), `vendor_fence.py` (182), `vendor_fence_probe.py` (171), `vendor_fence_hook.py` (70), `vendor_context_sync.py` (101): read fully
+
+- **AP43 (L, medium) `vendor_context_sync.py:99-101` with
+  `agent_routes.py:11321-11324` and `agent_worktree.py:1040-1042`** — Clayrune
+  itself makes an isolated vendor worktree dirty. Before a Codex, Gemini or
+  Qwen session starts, the sync writes `AGENTS.md` / `GEMINI.md` / `QWEN.md`
+  into the session's run directory, which for an isolated session is its
+  worktree (the call-site comment says so). The worktree's own dirty check is
+  `git status --porcelain` with only the shared runtime paths excluded, so the
+  mirror counts: a new untracked file where the project has none, a modified
+  tracked file where the project tracks a generated one and `CLAUDE.md` has
+  moved on. This repo hides it (`.gitignore:91-93` ignores all three names);
+  any other project with a `CLAUDE.md` does not. Same consequence class as
+  pass 2 **R59** (a tree that reads dirty does not land and is not cleaned
+  up), different cause. Read, not reproduced (needs a second repository and a
+  vendor dispatch). Fix: add the runtime's context file name to the
+  `:(exclude)` list when its first line is the generated-from marker, or write
+  the name into the worktree's `info/exclude`. No test runs the sync and the
+  dirty check together.
+- **AP44 (E, low) `fence_fail_closed.py:281`, `:193-195`,
+  `vendor_fence.py:171-175`, `vendor_fence_probe.py:128-148`** — every
+  unattended launch re-proves the fence from scratch and nothing is memoised
+  except the CLI version. Claude: one interpreter launch for the self-test per
+  spawn, plus one per differing project fence entry, by the module's own note
+  possibly while a project lock is held (`fence_fail_closed.py:63`). Gemini
+  and Qwen: a Python walk that reads the source of up to 2,000 modules of the
+  installed CLI to find two exports, then a Node process that imports the
+  CLI core and runs the hook three times (three more interpreter launches),
+  per spawn. A workflow or hivemind fan-out pays this once per worker, and a
+  per-turn engine pays it per turn. Read, not measured: the fence refused the
+  timing probe in this guarded session. Fix: memoise a pass for a short time
+  keyed by (interpreter and fence file stamps, CLI binary stamp, settings
+  digest); a changed stamp re-tests.
+- **AP45 (L, low) `fence_fail_closed.py:290`** — the CLI whose version decides
+  `onFailure` support is taken to be `out[0]`. Whether every Claude spawn site
+  passes the CLI itself first (not a wrapper such as a shell or `node`) was
+  not traced; if one does not, `--version` of the wrapper is parsed by the
+  same three-number regex (`:96`, `:136`) and will usually read as newer than
+  2.1.295. The effect is an `onFailure` key on a CLI that ignores it, so it
+  is harmless today; it stops being harmless the day the version gates
+  something that matters. Labelled a question, not a defect.
+- **Open question Q1 `vendor_fence_hook.py:24-30`** — the alias table maps
+  `edit_file` and `replace` to `Edit` but has no entry for a tool named
+  `edit`. If Qwen's native edit tool reports that name, a Qwen file edit
+  reaches the fence under a name the fence's Write/Edit rules do not key on.
+  Not checked: Qwen is not installed on this host and this pass may not launch
+  a provider CLI. One look at an installed Qwen's tool list settles it.
+- Sound: an unverified vendor is refused, not run unfenced, and the session is
+  left in a visible error (`vendor_fence.py:47-64`); the per-launch settings
+  copy is refused unless its source is Clayrune-owned (`:137-138`); the hook
+  adapter returns 2 on every load or translation failure and restores stdin
+  (`vendor_fence_hook.py:62-66`); `read_many_files` is refused rather than
+  half-translated (`:39-42`); the fail-closed settings copies are
+  content-addressed, and this install holds 7 of them, so they do not grow
+  per launch (read-only `ls`). The context sync never overwrites a
+  hand-authored mirror (`vendor_context_sync.py:90-95`).
+
 <!-- APPEND-HERE -->
