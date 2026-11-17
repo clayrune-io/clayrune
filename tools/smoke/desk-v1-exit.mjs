@@ -33,7 +33,7 @@ const OTHER_SMOKES = [
   'desk-v1-review.mjs',
   'desk-v1-calendar.mjs', 'desk-v1-video.mjs', 'desk-v1-conversations.mjs',
   'desk-v1-engagement.mjs',
-  'desk-v1-results.mjs', 'desk.mjs', 'boot-smoke.mjs',
+  'desk-v1-results.mjs', 'boot-smoke.mjs',
   // R2-13: the smokes that own the map's stops and the playbook loop. Each
   // runs its own 3-tone passes (how, where, studio, retro, project/Playbook).
   'desk-v1-how.mjs', 'desk-v1-where.mjs', 'desk-v1-studio.mjs',

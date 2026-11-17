@@ -10,7 +10,7 @@
  * points at it directly.
  *
  * Reuses the SAME Playwright dependency and launch pattern as
- * tools/smoke/*.mjs (see desk.mjs) rather than standing up a second browser
+ * tools/smoke/*.mjs (see desk-v1-harness.mjs) rather than standing up a second browser
  * harness — one-shot, no server, closes itself when done.
  *
  * Usage:

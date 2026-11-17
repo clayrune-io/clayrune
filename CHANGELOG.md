@@ -6,7 +6,9 @@
 - `openDesk` moved to `static/js/desk-open.js` (first commit of this change) and now calls `deskV1Open()` unconditionally; `render()` no longer re-renders the old screen; `_preserveOpenSocial` no longer keeps the Desk's Queue rows.
 - The **Desk v1** switch is gone from Settings. `desk_v1` stays in `_load_config()` defaults and `_CONFIG_EDITABLE_KEYS` so old `config.json` files load and a stale tab's save is accepted, but nothing reads it: an install that had it `false` now sees the same Desk as one with `true`. `mc/desk_v1_default.py` is unchanged. `desk_v1_live` is untouched (it picks the v1 store's data source, not the old screen).
 - No server route was removed: every `/api/desk/*` route is still called by Desk v1, tests or workflows.
-- `docs/USER_GUIDE.md` and `docs/DESK_V1_DEFAULT.md` updated. Smoke and test changes are in the next commit.
+- `docs/USER_GUIDE.md` and `docs/DESK_V1_DEFAULT.md` updated.
+- Smokes: deleted `tools/smoke/desk.mjs` (it drove only the old four-tab screen). Its two checks that still hold were ported into `desk-v1-harness.mjs`: the sidebar and the mobile drawer both read "The Desk", and the Desk opens the v1 shell even when `/api/config` reports `desk_v1: false` (that tone now runs with `false`). `inline-handler-escaping.mjs` lost its two legacy-Desk cases (`deskPlatformRules`, `deskVoices`); v1 has no inline handler that carries a record name. `desk-v1-exit.mjs` no longer lists `desk.mjs`.
+- Tests: `tests/test_desk_v1_flag.py` now pins that `openDesk` does not read `desk_v1`, that `desk.js` and its script tag are gone, and that the Settings row is gone.
 
 ## [2026-11-17] - Workflow toolbar: buttons that add a block no longer look like buttons that do something
 

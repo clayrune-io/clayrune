@@ -164,20 +164,32 @@ def test_settings_drill_has_a_desk_v1_toggle_row():
     # mounting assertions so a disconnected row cannot satisfy the guard.
     assert "import './settings-ownership.js'" in src
     assert 'SettingsOwnership.systemExtras(cfg, {toggle})' in src
-    assert "toggle('desk_v1'" in ownership
+    # The Desk v1 switch is gone (MC-1179 pass 04): the legacy Desk it toggled
+    # back to was deleted, so a row that saves a value nothing reads is a lie.
+    assert "toggle('desk_v1'" not in ownership
+    assert "toggle('desk_v1'" not in src
     assert 'openUserProfile()' in src
     assert "{key: 'user_timezone'" in profile
     assert 'window.openUserProfile' in profile
 
 
-def test_open_desk_branches_to_v1_shell_when_flagged():
-    """`openDesk()` in the legacy file is T0a's ONE edit to desk.js (ground
-    rule 1) — a branch to `window.deskV1Open()` gated on the config flag,
-    checked before anything else in the function runs so the legacy modal
-    never builds in the same call when v1 is on."""
-    src = (PROJECT_ROOT / 'static' / 'js' / 'desk.js').read_text(encoding='utf-8')
-    assert 'window.deskV1Open' in src
-    assert src.index('desk_v1') < src.index('DESK_MODAL_ID', src.index('async function openDesk'))
+def test_open_desk_goes_to_v1_whatever_the_stored_flag_says():
+    """MC-1179 pass 04: the legacy Desk is deleted, so `openDesk()` hands to
+    `window.deskV1Open()` without reading `desk_v1`. An install whose config
+    still holds `desk_v1: false` must see the same Desk as one holding true."""
+    src = (PROJECT_ROOT / 'static' / 'js' / 'desk-open.js').read_text(encoding='utf-8')
+    body = src[src.index('function openDesk'):src.index('window.openDesk')]
+    assert 'window.deskV1Open' in body
+    assert 'desk_v1' not in body
+    assert '_globalConfig' not in body
+    assert 'openLegacyDesk' not in src
+
+
+def test_legacy_desk_file_and_script_tag_are_gone():
+    assert not (PROJECT_ROOT / 'static' / 'js' / 'desk.js').exists()
+    html = (PROJECT_ROOT / 'static' / 'index.html').read_text(encoding='utf-8')
+    assert '/static/js/desk.js' not in html
+    assert '/static/js/desk-open.js' in html
 
 
 # ── desk_v1_live (MC-1021 R1-W S0) ────────────────────────────────────────────

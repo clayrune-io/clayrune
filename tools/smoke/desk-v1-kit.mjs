@@ -7,7 +7,7 @@
  * No later ticket wires a live UI consumer for most of this yet (T1/T2a do),
  * so this drives `window.DeskV1Kit` directly against a real headless boot
  * (real index.html + real static/js|css, no network) — same hermetic shape
- * as desk.mjs / desk-v1-harness.mjs — rather than waiting on a surface that
+ * as desk-v1-harness.mjs — rather than waiting on a surface that
  * doesn't exist in R0 T0b.
  *
  * RUN

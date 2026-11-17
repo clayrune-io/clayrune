@@ -2,8 +2,9 @@
 /**
  * Desk v1 (MC-977, R0 plan T0a) — shell + router smoke, flag ON, fixtures only.
  *
- * WHY THIS EXISTS BEYOND desk.mjs / boot-smoke.mjs. Neither of those turns the
- * `desk_v1` flag on, so neither would ever catch a v1 regression:
+ * WHY THIS EXISTS BEYOND boot-smoke.mjs. The boot smoke does not open the Desk,
+ * so it would never catch a v1 regression (the legacy Desk this file used to be
+ * contrasted with, and its desk.mjs smoke, were deleted in MC-1179 pass 04):
  *   1. Every pre-registered route (home, campaign, rules, review, calendar,
  *      video, conversations, results) must render SOMETHING when navigated to
  *      directly — a stub file failing to load must show the shell's honest
@@ -13,9 +14,15 @@
  *      hardcoded label.
  *   3. A1 (docs/desk_v1_r0_plan.md §13): no SVG connector paths on ANY v1
  *      route, in ANY of the three tones (ground rule 5).
+ *   4. (ported from the deleted desk.mjs) the sidebar item and the MOBILE drawer
+ *      item both read "The Desk" and open the `__desk` workspace. The drawer is a
+ *      second, separate list in index.html; a rename once touched only one of
+ *      them and only one had a check.
+ *   5. A stored `desk_v1: false` (an install that had the old switch off) opens
+ *      the same v1 shell: the default/dark tone runs with it, the others with true.
  *
  * Real headless boot (real index.html + real static/js|css, no network), same
- * hermetic shape as desk.mjs.
+ * hermetic shape as desk-v1-review.mjs.
  *
  * RUN
  *   cd tools/smoke && node desk-v1-harness.mjs
@@ -74,10 +81,12 @@ const PANEL_ALIAS_ROUTES = ['calendar', 'results'];
 // Engagement filtered to the campaign, checked separately below.
 const PANEL_ALIAS_STOP = { calendar: 'when', results: 'goal' };
 const TONES = [
-  { name: 'default/dark', ls: {} },
-  { name: 'tone-warm', ls: { mc_tone: 'warm' } },
-  { name: 'tone-editorial', ls: { mc_tone: 'editorial' } },
+  // `deskV1Stored` is what /api/config reports for the retired `desk_v1` key.
+  { name: 'default/dark', ls: {}, deskV1Stored: false },
+  { name: 'tone-warm', ls: { mc_tone: 'warm' }, deskV1Stored: true },
+  { name: 'tone-editorial', ls: { mc_tone: 'editorial' }, deskV1Stored: true },
 ];
+let deskV1Stored = true;
 
 let bad = 0;
 const ok = (m) => console.log('  ✓ ' + m);
@@ -91,12 +100,13 @@ async function fulfillOrAbort(route) {
   const hit = STATIC[path];
   if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
   if (path === '/api/projects') return J(PROJECTS);
-  if (path === '/api/config') return J({ desk_v1: true, user_timezone: '' });
+  if (path === '/api/config') return J({ desk_v1: deskV1Stored, user_timezone: '' });
   if (path === '/api/characters') return J([]);
   return route.abort();
 }
 
 async function runTone(browser, tone) {
+  deskV1Stored = tone.deskV1Stored;
   const ctx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
   const page = await ctx.newPage();
   await page.addInitScript((ls) => {
@@ -111,15 +121,23 @@ async function runTone(browser, tone) {
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card', { timeout: 15000 });
   if (pageErrors.length) { pageErrors.forEach((e) => fail(`[${tone.name}] uncaught page error during boot: ${e}`)); await ctx.close(); return; }
-  ok(`[${tone.name}] app booted clean with desk_v1=true`);
+  ok(`[${tone.name}] app booted clean (stored desk_v1=${tone.deskV1Stored})`);
+
+  // Two nav lists, two assertions (see header, item 4).
+  const sideLabel = await page.textContent('.sidebar-item[data-nav="social"] .si-label');
+  if ((sideLabel || '').trim() === 'The Desk') ok(`[${tone.name}] sidebar reads "The Desk"`);
+  else fail(`[${tone.name}] sidebar label is ${JSON.stringify(sideLabel)}, expected "The Desk"`);
+  const drawerLabel = await page.textContent('.mobile-drawer-item[data-nav="social"] .mdi-label');
+  if ((drawerLabel || '').trim() === 'The Desk') ok(`[${tone.name}] mobile drawer reads "The Desk" too`);
+  else fail(`[${tone.name}] mobile drawer label is ${JSON.stringify(drawerLabel)}, expected "The Desk"`);
 
   await page.click('.sidebar-item[data-nav="social"]');
   await page.waitForSelector('.modal-window[data-modal-id="__desk"] .desk-v1-shell', { timeout: 8000 });
-  ok(`[${tone.name}] flag on: the Desk opens the v1 shell, not the legacy tabs`);
+  ok(`[${tone.name}] the Desk opens the v1 shell whatever desk_v1 is stored as (${tone.deskV1Stored})`);
 
   const legacyTabs = await page.$('#desk-tabs .desk-tab');
   if (!legacyTabs) ok(`[${tone.name}] no legacy #desk-tabs rendered alongside v1`);
-  else fail(`[${tone.name}] legacy desk-tabs rendered even though desk_v1 is on`);
+  else fail(`[${tone.name}] legacy desk-tabs rendered (the legacy Desk was deleted)`);
 
   // ── Home: root of the stack, no Back ─────────────────────────────────────
   // IA1 (docs/THE_DESK_V1_IA_REVISION.md §5 row IA1): Home's crumb label
