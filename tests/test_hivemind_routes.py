@@ -847,3 +847,38 @@ class TestAuthReject:
                         json={'goal': 'g', 'project_id': 'thm',
                               'workstreams': [{'title': 'w'}]})
         assert r.status_code == 200
+
+
+# ── MC-1179 OS27: ids that would escape the run folder ───────────────────────
+
+class TestPathSafeIds:
+    def _outside(self, client):
+        """Anything written outside the hivemind root or a run's own folder."""
+        return [p for p in client.hm_dir.parent.rglob('*')
+                if p.is_file() and client.hm_dir not in p.parents]
+
+    def test_workstream_create_refuses_a_traversal_id(self, client):
+        hm_id = _create(client)['hivemind']['id']
+        r = client.post(f'/api/hivemind/{hm_id}/workstreams/create',
+                        json={'title': 'x', 'id': '../../../escaped'})
+        assert r.status_code == 400
+        assert self._outside(client) == []
+
+    def test_inline_workstream_with_a_traversal_id_is_skipped(self, client):
+        out = _create(client, workstreams=[{'id': '../../evil', 'title': 'bad'},
+                                           {'id': 'ws_ok', 'title': 'good'}])
+        ids = [w['id'] for w in client.get(f"/api/hivemind/{out['hivemind']['id']}/workstreams").get_json()]
+        assert ids == ['ws_ok']
+        assert self._outside(client) == []
+
+    def test_finding_report_from_a_traversal_id_is_refused(self, client):
+        hm_id = _create(client)['hivemind']['id']
+        r = client.post(f'/api/hivemind/{hm_id}/bus/post',
+                        json={'type': 'finding_report', 'from': 'ws_/../../../../leak',
+                              'content': 'x'})
+        assert r.status_code == 400
+        assert self._outside(client) == []
+
+    def test_a_traversal_hivemind_id_is_not_found(self, client):
+        assert client.get('/api/hivemind/..%2f..%2fx').status_code == 404
+        assert client.hm._hm_load_manifest('../x') is None

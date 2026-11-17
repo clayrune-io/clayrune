@@ -53,6 +53,7 @@ import mc.agent_worktree as _agent_worktree
 import mc.hivemind_integration as _hm_integration
 import mc.hivemind_integration_cycle as _hm_integration_cycle
 import mc.hivemind_lineage as _hm_lineage
+import mc.hivemind_ids as _hm_ids
 import mc.hivemind_roster as _hm_roster
 import mc.hivemind_run_roles as _hm_run_roles
 import mc.hivemind_worker as _hm_worker
@@ -141,9 +142,15 @@ def wire(*, hivemind_dir, port, load_project_fn, get_manager_fn,
 
 
 def _hm_dir(hivemind_id):
-    """Return the directory for a hivemind, creating subdirs if needed."""
-    d = HIVEMIND_DIR / hivemind_id
+    """Return the directory for a hivemind, creating subdirs if needed.
+    Raises ValueError for an id that is not path-safe (MC-1179 OS27)."""
+    d = HIVEMIND_DIR / _hm_ids.check_id(hivemind_id, 'id')
     return d
+
+
+def _hm_ws_file(hivemind_id, ws_id, suffix):
+    """Path of a per-workstream file; ws_id is checked before it is joined."""
+    return _hm_dir(hivemind_id) / 'workstreams' / f'{_hm_ids.check_id(ws_id, "workstream id")}{suffix}'
 
 
 def _hm_ensure_dirs(hivemind_id):
@@ -158,6 +165,8 @@ def _hm_ensure_dirs(hivemind_id):
 
 def _hm_load_manifest(hivemind_id):
     """Load a hivemind manifest, or None if not found."""
+    if not _hm_ids.is_safe_id(hivemind_id):
+        return None  # an id that cannot name a run directory is not found
     p = _hm_dir(hivemind_id) / 'manifest.json'
     if not p.exists():
         return None
@@ -175,7 +184,7 @@ def _hm_save_manifest(hivemind_id, manifest):
 
 def _hm_load_workstream(hivemind_id, ws_id):
     """Load a workstream definition."""
-    p = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}.json'
+    p = _hm_ws_file(hivemind_id, ws_id, '.json')
     if not p.exists():
         return None
     try:
@@ -186,7 +195,7 @@ def _hm_load_workstream(hivemind_id, ws_id):
 
 def _hm_save_workstream(hivemind_id, ws_id, ws):
     """Save a workstream definition."""
-    p = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}.json'
+    p = _hm_ws_file(hivemind_id, ws_id, '.json')
     write_json_atomic(p, ws, indent=2, ensure_ascii=False)
 
 
@@ -298,7 +307,7 @@ def _hm_start_integration(hivemind_id):
 
 def _hm_append_finding(hivemind_id, ws_id, finding):
     """Append a finding to the workstream's JSONL file."""
-    p = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}_findings.jsonl'
+    p = _hm_ws_file(hivemind_id, ws_id, '_findings.jsonl')
     with open(p, 'a', encoding='utf-8') as f:
         f.write(json.dumps(finding, ensure_ascii=False) + '\n')
     # Increment findings_count on workstream
@@ -310,7 +319,7 @@ def _hm_append_finding(hivemind_id, ws_id, finding):
 
 def _hm_read_findings(hivemind_id, ws_id, last_n=20):
     """Read last N findings from a workstream's JSONL file."""
-    p = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}_findings.jsonl'
+    p = _hm_ws_file(hivemind_id, ws_id, '_findings.jsonl')
     if not p.exists():
         return []
     lines = []
@@ -474,7 +483,7 @@ def _hm_write_synthesis(hivemind_id, content):
 
 def _hm_read_context(hivemind_id, ws_id):
     """Read the workstream context markdown file."""
-    p = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}_context.md'
+    p = _hm_ws_file(hivemind_id, ws_id, '_context.md')
     if not p.exists():
         return ''
     return p.read_text(encoding='utf-8')
@@ -482,7 +491,7 @@ def _hm_read_context(hivemind_id, ws_id):
 
 def _hm_write_context(hivemind_id, ws_id, content):
     """Write the workstream context markdown file."""
-    p = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}_context.md'
+    p = _hm_ws_file(hivemind_id, ws_id, '_context.md')
     p.write_text(content, encoding='utf-8')
 
 
@@ -688,6 +697,8 @@ def hivemind_create():
             if not title:
                 continue  # skip malformed entries rather than fail the whole create
             ws_id = ws_in.get('id') or ('ws_' + str(uuid.uuid4())[:6])
+            if not _hm_ids.is_safe_id(ws_id):
+                continue  # same policy as a missing title: skip, do not fail the create
             ws = {
                 'id': ws_id,
                 'title': title,
@@ -895,6 +906,8 @@ def hivemind_workstream_create(hivemind_id):
         return jsonify({'error': error}), 400
 
     ws_id = data.get('id', 'ws_' + str(uuid.uuid4())[:6])
+    if not _hm_ids.is_safe_id(ws_id):
+        return jsonify({'error': 'invalid workstream id'}), 400
     try:
         warnings = []
         roster_fields = _hm_roster.check_workstream_create(
@@ -1012,7 +1025,7 @@ def hivemind_workstream_status(hivemind_id, ws_id):
 
 def _hm_read_handoff(hivemind_id, ws_id):
     """Read the latest handoff document for a workstream."""
-    p = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}_handoff.md'
+    p = _hm_ws_file(hivemind_id, ws_id, '_handoff.md')
     if p.exists():
         try:
             return p.read_text(encoding='utf-8')
@@ -1023,7 +1036,7 @@ def _hm_read_handoff(hivemind_id, ws_id):
 
 def _hm_write_handoff(hivemind_id, ws_id, content):
     """Write a handoff document for a workstream."""
-    p = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}_handoff.md'
+    p = _hm_ws_file(hivemind_id, ws_id, '_handoff.md')
     p.write_text(content, encoding='utf-8')
 
 
@@ -1194,7 +1207,7 @@ def hivemind_workstream_handoff(hivemind_id, ws_id):
 
     # Record artifact if provided
     if data.get('artifact'):
-        artifact_path = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}_artifact.json'
+        artifact_path = _hm_ws_file(hivemind_id, ws_id, '_artifact.json')
         write_json_atomic(artifact_path, data['artifact'], indent=2, ensure_ascii=False)
 
     _hm_push_sse(hivemind_id, {
@@ -1483,6 +1496,9 @@ def hivemind_bus_post(hivemind_id):
         return jsonify({'error': 'type required'}), 400
 
     msg_type = data['type'].strip()
+    if (msg_type == 'finding_report' and str(data.get('from', '')).startswith('ws_')
+            and not _hm_ids.is_safe_id(data['from'])):
+        return jsonify({'error': 'invalid workstream id in from'}), 400
     msg = {
         'id': 'msg_' + str(uuid.uuid4())[:8],
         'timestamp': now_iso(),
