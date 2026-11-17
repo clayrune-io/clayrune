@@ -57,7 +57,10 @@ def shell_argv(shell: str, command: str) -> list[str] | str:
     path = shutil.which(shell)
     if os.name == 'nt' and shell in ('bash', 'sh'):
         wsl = Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32' / (shell + '.exe')
-        if path and Path(path).resolve() == wsl.resolve():
+        # The per-user WindowsApps folder holds a second WSL alias (bash.exe),
+        # so a path whose parent is WindowsApps is WSL too.
+        if path and (Path(path).resolve() == wsl.resolve()
+                     or Path(path).resolve().parent.name.lower() == 'windowsapps'):
             path = None
         if path is None:
             git = shutil.which('git')

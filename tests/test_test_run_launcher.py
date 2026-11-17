@@ -407,6 +407,21 @@ def test_requested_shell_has_no_different_shell_fallback(monkeypatch):
         launcher.shell_argv('bash', 'never execute')
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='WSL aliases exist on Windows only')
+def test_windowsapps_wsl_alias_is_never_the_bash(monkeypatch, tmp_path):
+    alias = tmp_path / 'WindowsApps' / 'bash.exe'
+    alias.parent.mkdir()
+    alias.write_bytes(b'')
+    real = launcher.shutil.which
+    monkeypatch.setattr(launcher.shutil, 'which',
+                        lambda name: str(alias) if name == 'bash' else real(name))
+    try:
+        argv = launcher.shell_argv('bash', 'echo hi')
+    except ValueError:
+        return  # no other bash on this box: refusing is the correct outcome
+    assert Path(argv[0]).resolve() != alias.resolve()
+
+
 @pytest.mark.parametrize('arguments', [
     [], ['--command', 'hi'], ['--shell', 'sh', '--', 'echo', 'hi'],
     ['--port', '0', '--', 'x'], ['--port', '65536', '--', 'x'],
