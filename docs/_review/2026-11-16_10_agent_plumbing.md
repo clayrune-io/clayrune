@@ -290,4 +290,124 @@ N9 to N12 is therefore LATENT here.
   (`:144-149`); `launch` never reports "nothing running" unless it verified it
   (`:784-800`, `cli_running`); spec carries env NAMES only (`:201`).
 
+### N11. `mc/agent_shim_adopt.py` (937 lines, read fully)
+
+- **AP24 (L, medium, latent) `agent_shim_adopt.py:69`, `:506-509`, `:848-849`** —
+  `RESTORABLE_READER_PATHS` is an empty frozenset and nothing in `mc/` adds to
+  it (grep: only tests monkeypatch it, `tests/test_agent_shim_adopt.py:47`,
+  and `tests/test_agent_shim_adopt_blockers.py:340` pins it empty). `assess`
+  therefore refuses every directory before it looks at a process, and
+  `is_adoptable_session` is always False. Consequences, flag ON: no session
+  is ever adopted, spared or moved out of the restart blockers; `_attach`,
+  `start_all`, `start_one`, `_start_reader`, `_register_adopted_cli`
+  (`:640-803`, about 165 lines) and the adoptable half of `partition_blockers`
+  run only under test. The docstring says so (`:57-68`, a recorded decision),
+  so this is not a bug in the module; it is the answer to "does survive-restart
+  work": turning the flag on buys the shim, a trampoline, a checkpoint write
+  per live session every 1 to 3 s (`:371-387`, a JSON round trip of the whole
+  session dict plus 2,000 log lines), and no survivable session. Fix: none
+  here; either finish one reader path or state in the settings text that the
+  flag does not yet keep anything alive.
+- **AP25 (E, low, latent) `agent_shim_adopt.py:622-623`,
+  `agent_shim_completion.py:124-125`, `agent_spawn.py:417`** — nothing ever
+  deletes a session directory under `agent_shims` (grep over `mc/`: the only
+  removals are `shim.json`/`exit.json` on relaunch, `agent_shim_client.py:216`,
+  and `prompt.txt`, `agent_shim.py:593`). `out.log` is append-only across
+  turns, so with the flag on each session keeps its whole raw output for
+  ever, and every boot reads `spec.json` + `shim.json` + `checkpoint.json`
+  (`claim_all`) and `checkpoint.json` again (`replay_pending`) for every
+  session that ever ran. Fix: prune directories whose shim and CLI are gone
+  and whose checkpoint has no pending stamp, older than N days.
+- **AP26 (E, low, latent) `agent_shim_adopt.py:268-269`, `:339-344`** —
+  `_WRITE_LOCKS` and `_LAST_OFFSET` gain one entry per (session, launch) and
+  are kept "for the life of the process" by design; a per-turn engine makes a
+  new launch id every turn. Small entries; unbounded count.
+- **AP27 (M, low) `agent_shim_adopt.py:558-559`** — `_holds_work` swallows a
+  failed job-table read as "holds nothing" while its sibling `_owns_open_job`
+  (`:812-820`) fails closed and logs. Two answers to one question.
+- Sound: `write_checkpoint` takes the reader boundary, then one lock over
+  snapshot and replace, and drops a snapshot behind what is on disk
+  (`:289-321`); `protected_pids` re-verifies identity when the reaper asks
+  (`:586-591`); the ledger entry keeps the manifest's create time, never a
+  fresh sample (`:746-770`).
+
+### N12. `mc/agent_shim_completion.py` (196), `agent_shim_completion_retry.py` (107), `agent_shim_tramp.py` (106): read fully
+
+- **AP28 (L, low, latent) `agent_shim_completion_retry.py:77-79` with
+  `agent_shim_completion.py:78-81`** — the retry tick skips a session that is
+  live in this process and carries a stamp, on the grounds that "its own
+  thread acks it". When the ack was called with `owed=True`
+  (`agent_routes.py:10171`, `:10206`) that thread has finished and did NOT
+  ack, and the stamp stays on the live dict. The retry then skips it on every
+  tick until the session is evicted from `agent_sessions`; only then does the
+  disk check run. The module's stated purpose (do not wait for the next boot)
+  is not met for that case. Fix: skip only while the session's status is
+  still `running`. Read, not measured.
+- **AP29 (M, low) `agent_shim_completion_retry.py:97-104`** — the idle-run
+  scan is a general workflow recovery (advance a `running` run that nothing
+  is driving) and is not gated on the survive-restart flag, yet it lives in a
+  module named for the shim and is reached only through
+  `scheduler_routes.py:906`. Anyone who removes or disables the shim family
+  removes workflow recovery with it. Fix: move the scan beside
+  `workflows.advance_idle_run`.
+- **AP30 (L, low, latent) `agent_shim_tramp.py:62-76`** — on POSIX the parent
+  ignores the first child's exit status (`:65`) and a failed `execv` in the
+  grandchild exits 127 with nothing written; `_record_error` (`:48-53`) only
+  covers the Windows spawn and the first `fork`. The server then waits out
+  the whole ready timeout to learn what the trampoline knew at once.
+- Sound: replay is serialized by one lock and clears a stamp only when the
+  runner returned True (`agent_shim_completion.py:141-146`, `:183-190`);
+  `begin` is a two-attribute check and returns for a plain Popen session, so
+  the default install pays nothing per turn (`:62-63`).
+
+### N13. `mc/agent_spawn.py` (473), `agent_spawn_interactive.py` (172), `agent_uncertain_launch.py` (119): read fully
+
+- **AP31 (L, low, latent) `agent_uncertain_launch.py:64-78`, `:99-110`,
+  `agent_spawn.py:384-387`** — when a shim launch misses its deadline and no
+  manifest for that launch ever lands (the shim died before its first write),
+  `_attempt` can never confirm anything, the marker stays, and every later
+  spawn for that session raises, with the flag on OR off. The only way out is
+  deleting `uncertain.json` by hand; the error text says so, and no route or
+  UI surface names the file (grep over `mc/` and `static/`: the marker is
+  read only here). One missed deadline ends a chat until someone opens a
+  file manager. Fix: when the launch's `spec.json` is older than the shim's
+  own `orphan_max`, treat the launch as gone and clear the marker.
+- **AP32 (L, low, latent) `agent_spawn.py:343-347`** — if the delivery code
+  has not closed the capture stream after 10 s, the factory logs "sending
+  what was written", settles the capture as FAILED, and still launches the
+  shim with the partial payload (`:414-426`). The CLI runs a turn on a
+  truncated prompt while the caller is told delivery failed. Fix: raise
+  instead of launching.
+- **AP33 (L, low) `process_guard.py:57-60` with `agent_spawn.py:109-111`** —
+  second half of AP4, confirmed: the spawn factory exports the bound port to
+  every agent as `CLAYRUNE_PORT`, the guard reads only `MC_PORT`, and
+  `server.py` never sets `MC_PORT` (only `app.py:475` does). A dev-mode
+  server on a port set in `config.json` has no protected listener at all.
+  Fix: one line, read `CLAYRUNE_PORT` in the guard.
+- Sound: with the flag off the factory is the old `Popen` with the old
+  arguments plus one failed `open()` for the marker (`:379-389`); the
+  fallback never runs the delivery code twice (`:443-473`); a prior shim that
+  cannot be proven gone is never overwritten (`:398-412`,
+  `agent_spawn_interactive.py:88-113`).
+
+### N14. `mc/agent_worktree_followup.py` (56), `agent_log_file.py` (110), `agent_log_maintenance.py` (18): read fully
+
+- **AP34 (E, low) `agent_log_file.py:96-101`, `agent_log_maintenance.py:7-11`
+  with `agent_routes.py:7444`** — `snapshot()` is used as a READ at three call
+  sites (`agent_routes.py:7540`, `:13724`, `:16126`) but always rewrites the
+  whole log: `_update_agent_log` saves unconditionally after the mutator, and
+  `claim_rows` changes nothing once every row carries an attempt id. Measured
+  (read-only `ls`): the three largest agent logs on this install are 1.6, 2.0
+  and 2.1 MB. So one message into a non-live or human-joinable session is a
+  full parse plus a full atomic rewrite of up to 2 MB before any work, the
+  model-pin route does it twice (`:13724` then `:13727`), and deleting a plan
+  rewrites EVERY project's log whether or not it referenced the plan
+  (`:16123-16126`). Fix: have `_update_agent_log` skip the save when the
+  mutator reports no change.
+- Sound: `transaction` is re-entrant per thread and releases the OS lock on
+  close, including after a crash (`agent_log_file.py:20-58`); `merge_rows`
+  applies a change only if the row is still what the snapshot saw (`:87-90`);
+  `resolve_followup_cwd` no longer drops an isolated session into the shared
+  tree (`agent_worktree_followup.py:48-49`).
+
 <!-- APPEND-HERE -->
