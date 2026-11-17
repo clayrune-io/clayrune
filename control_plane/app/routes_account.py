@@ -42,7 +42,9 @@ from typing import Any, Optional
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from . import cloudflare, firestore as fs, sessions as _sessions
+from .shared_name_devices import other_device_holds_hostname
 from .tunnel_names import is_tunnel_of, new_tunnel_name
+from .username_claim import forget_released_username
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -319,6 +321,9 @@ async def revoke_device(
     # Belt-and-suspenders: also run force_cleanup for any orphans missed
     hostname = device_row.get("hostname_claim", "")
     username = device_row.get("hostname_claim", "").split(".")[0]
+    # Read before force cleanup, which deletes every device row for the hostname.
+    name_still_in_use = other_device_holds_hostname(
+        device_row.get("user_id", ""), hostname, exclude_device_id=device_id)
     if hostname and username:
         try:
             await _force_cleanup_for_hostname(hostname=hostname, username=username)
@@ -333,12 +338,15 @@ async def revoke_device(
 
     # Release username claim if this device's user owned it
     user_id = device_row.get("user_id", "")
-    if username and user_id:
+    if username and user_id and not name_still_in_use:
         try:
             uref = fs.db().collection("usernames").document(username)
             snap = uref.get()
             if snap.exists and (snap.to_dict() or {}).get("user_id") == user_id:
                 uref.delete()
+                # The user row and the user's sessions still say `username`; without
+                # this the old owner keeps minting `u` = the name (MB22).
+                forget_released_username(user_id, username)
         except Exception as e:
             log.warning("revoke: failed releasing username %s: %s", username, e)
 

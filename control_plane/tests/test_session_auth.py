@@ -355,6 +355,9 @@ def test_expired_refresh_token_is_dead(mem_firestore):
 def _enroll_user(mem, *, user_id="u_ron", username="ron", **extra):
     mem.collection("users").document(user_id).set(
         {"user_id": user_id, "username": username, "email": f"{username}@example.com", **extra})
+    # Enrolment writes the claim and the user row together; sign-in and refresh now
+    # require both (MB22), so a fixture that seeds only the row is not an enrolled user.
+    mem.collection("usernames").document(username).set({"username": username, "user_id": user_id})
     return user_id
 
 
@@ -420,6 +423,8 @@ def test_username_change_propagates_into_the_u_claim(client, mem_firestore):
     _, token, _ = sessions.create(user_id=uid, username="ron")
 
     mem_firestore.collection("users").document(uid).set({"username": "ronald"}, merge=True)
+    mem_firestore.collection("usernames").document("ronald").set(
+        {"username": "ronald", "user_id": uid})
     r = client.post("/v1/session/refresh", json={"refresh_token": token})
     assert r.status_code == 200
     assert r.json()["username"] == "ronald"
