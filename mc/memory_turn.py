@@ -275,14 +275,14 @@ def seed_delivered(project, session, task, *, topk=None, expand=None) -> None:
         return
     try:
         from mc import state
-        from mc import distiller as _distiller
+        from mc import unattended_consumer as _unattended_consumer
         _topk = int(topk if topk is not None else state.CONFIG.get('read_floor_topk', 6) or 6)
         _expand = int(expand if expand is not None else state.CONFIG.get('read_floor_link_expand', 2) or 0)
         # Match _build_agent_context's task-scoped gate exactly: withheld
         # dispatch hits must not enter the suppression/position ledgers.
         hits = _mem._memory_search(
             project, task, _topk, expand=_expand, record=None,
-            consumer_unattended=_distiller.is_unattended_task(task))
+            consumer_unattended=_unattended_consumer.for_session(task, session))
         delivered = session.setdefault(_DELIVERED_KEY, set())
         added = 0
         # MC-1057: the dispatch-time system prompt carried these positions in

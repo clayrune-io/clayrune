@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Learning safety rails: four fixes from the memory and learning review (MC-1179 pass 3)
+
+- Read floor at dispatch (rail 2): a session is an unattended reader whenever its trigger type is not `manual`, the same test the writer stamp uses. Before, the dispatch-time read floor and exploration read floor looked at the task text only, so a scheduled or agent-dispatched session with a plain task was handed unattended-origin notes and explorations. Turn 1's delivered-set seed uses the same test. A session id with no known trigger type reads as unattended (ML4, new `mc/unattended_consumer.py`). Effect: scheduled and agent-dispatched sessions now receive only interactive-origin and unstamped topic notes, positions and explorations at dispatch, as they already did from their second turn.
+
 ## [2026-11-17] - Agent plumbing, second wave of decided fixes from the pass-10 review (MC-1179)
 
 - Guard hook: the command written into Codex and Gemini hook config uses the call prefix the shell needs, so an interpreter path with a space is no longer a PowerShell parse error that those CLIs read as allow (AP5, new `mc/hook_command_shell.py`).
