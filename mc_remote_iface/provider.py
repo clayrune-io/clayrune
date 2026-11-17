@@ -21,7 +21,7 @@ class ProviderStatus:
 
     enrolled: bool                  # Has the user completed enrollment?
     online: bool                    # Is the tunnel currently up?
-    hostname: Optional[str]         # e.g. "ron.clayrune.io" — None if not enrolled
+    hostname: Optional[str]         # e.g. "demo.clayrune.io" — None if not enrolled
     username: Optional[str]
     last_seen: Optional[str]        # ISO 8601 of last successful attestation
     error_code: Optional[str]       # One of `error_codes.md` codes; None if ok
