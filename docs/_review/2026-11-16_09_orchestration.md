@@ -730,8 +730,177 @@ happy path only.
   "never reconciled", republishes the last five commits and drops the
   interrupt dedup list (`:286-313`).
 
+### OS41 · medium · L — an unreadable suggestion store erases every latched "no" on the next list request
+
+`mc/automation_suggestions.py:258-265` treats a store that will not parse as
+empty, and the comment there says this is safe because "the write path below
+only ever merges, so a later write cannot silently erase decisions it could not
+parse". The write paths do not merge with the file, they merge with what
+`_read_store` returned: `refresh_project` (`:319-331`), `prune_project`
+(`:343-351`) and `record_decision` (`:300-305`) each read (empty), add to it
+and write the whole object back. `GET /api/automation/suggestions` calls
+`refresh_project` for every project (`mc/blueprints/automation_routes.py:86-96`),
+so the first time the Scheduler dialog opens after the file is damaged, the
+decisions are gone and every dismissed habit is offered again.
+
+**Measured** (`_scratch`, temp store): three suggestions dismissed, file
+replaced with a truncated object, one `refresh_project` call: decisions 3 → 0,
+and the three dismissed ids are back in `suggestions`. This is the "no must be
+durable" rail (CLAUDE.md, learning-system safety rails, rule 3) failing in the
+one module that says it mirrors it.
+
+Smallest fix: `_read_store` returns a distinct "unreadable" result and the
+three writers return without writing when they get it (or move the bad file
+aside to `*.corrupt` first and log it). No existing test covers it:
+`tests/test_automation_suggestions.py` has restart and content-key tests
+(`:264`, `:293`), none with a damaged store.
+
+### OS42 · medium · L — an accepted suggestion is scheduled at a different hour from the habit, and from the hour the card shows
+
+The miner converts each run's timestamp to UTC and takes the most common UTC
+hour (`mc/automation_suggestions.py:188-190`, `:204`), then writes it as the
+spec's `time` (`:227`). The card labels it "Daily at HH:00 UTC"
+(`static/js/automation-suggestions.js:37-39`). Accept hands the spec to the
+ordinary create path (`mc/blueprints/automation_routes.py:139`), and the
+scheduler reads a daily `time` as the host's local wall clock
+(`mc/blueprints/scheduler_routes.py:364-377`, `:419`). On a host eight hours
+behind UTC, a job run by hand at 09:00 local is proposed as "17:00 UTC" and
+then fires at 17:00 local: eight hours after the habit and eight hours after
+what the card promised. Correct only on a host whose zone is UTC. Read, not
+measured (the two conversions are a line each).
+
+Smallest fix: bucket by local hour in the miner (`dt.astimezone()` with no
+argument) and drop "UTC" from the card. `test_accept_creates_exactly_one_real_schedule`
+(`tests/test_automation_suggestions.py:182`) checks that a row is created, not
+when it fires.
+
+### OS43 · low · L — the three-per-project cap is applied before the "already decided" filter, and "accepted" is latched like "dismissed"
+
+- `mine_recurring_manual_tasks` cuts to the top three by count
+  (`mc/automation_suggestions.py:236-237`) and `refresh_project` then drops the
+  decided ones (`:325`). Once a project's three most frequent habits are
+  decided, no fourth is ever offered. **Measured**: five qualifying habits,
+  top three dismissed, next refresh adds 0 and the pending list is empty.
+  Fix: pass the decided set into the miner, or cut after the filter.
+- The module docstring says an accepted suggestion becomes proposable again
+  when its schedule is deleted (`:32-35`). `refresh_project` skips any
+  fingerprint in `decisions` whatever the decision was (`:325`), so it never
+  does. Either the docstring or the check is wrong; the test
+  (`tests/test_automation_suggestions.py:236`) only covers the case where the
+  schedule still exists.
+- Two accepts of one suggestion arriving together both pass `get_pending`
+  (`mc/blueprints/automation_routes.py:124`) before either records the
+  decision (`:145`), and two schedules are created. Narrow; the fix is to
+  record the decision under the store lock before creating, and undo it on a
+  failed create.
+
+### OS44 · low · E — the list request mines every project's whole agent log twice, and is a GET that writes
+
+`_refresh` mines once to learn the live ids (`mc/blueprints/automation_routes.py:74`)
+and `refresh_project` mines the same entries again (`mc/automation_suggestions.py:317`);
+`_load_schedules()` is read once per project (`automation_routes.py:58`);
+`load_projects()` twice per request (`:91`, `:103`); the store file is read and
+parsed under the lock twice per project (`prune_project`, `refresh_project`)
+and once more for the list. All of it runs on each open of the Scheduler
+dialog (`static/js/scheduler.js:82`) and again after each accept or dismiss
+(`static/js/automation-suggestions.js:80`, `:91`). Bounded by dialog opens, so
+low. `is_decided` (`automation_suggestions.py:282`) has no caller in `mc/`,
+`server.py` or `static/` (searched). Read, not measured.
+
+### OS45 · high · L/M — an auto-upgrade of a character's model rewrites the whole file and drops every frontmatter key the character module does not model
+
+`mc/model_upgrade.py:228-238` applies an approved upgrade by reading the
+character and calling `characters.write_character(..., overwrite=True,
+engine=engine)`. That function rebuilds the frontmatter from a fixed list
+(name, description, agent name, avatar, skills, emojis, engine keys:
+`mc/characters.py:451-510`) and writes the file whole (`:517-519`). Any other
+key in the file is gone afterwards.
+
+**Measured** (`_scratch`, temp agents directory): a file with `tools: Read,
+Grep` and `color: blue` plus a provider and model pin; after
+`_character_apply('global', name, None)('new-model')` the file holds only
+name, description, provider and model. Global characters live in the
+directory the Claude CLI reads its own subagent definitions from, where
+`tools:` is the list that limits what that subagent may call. Removing the
+line widens it to every tool. The job that does this is unattended by design
+(`POST /api/model-upgrades/run` from a daily scheduled run,
+`tools/cli-version-check.py:563-574`), on by default
+(`mc/blueprints/model_upgrade_routes.py:124`), and its audit line records the
+model change only (`model_upgrade.py:504-509`).
+
+Second effect, same write: a built-in character is tracked by a hash marker
+beside its file, and a file whose hash differs from the marker is treated as
+user-edited and never updated again (`mc/characters.py:594-597`). One
+auto-upgrade therefore takes a built-in out of built-in updates for good.
+Read, not measured.
+
+The drop is `write_character`'s (outside this region; the human editor has
+it too, where a person at least chose to save). What is in this region is
+that an unattended job triggers it across every pinned character at once.
+Smallest fix here: change the one `model:` line in place (read the text,
+replace the frontmatter value, write) instead of round-tripping through
+`write_character`, and rewrite the built-in marker when the file was in sync
+before the change. No test covers it: the model-upgrade tests build
+characters with modelled keys only.
+
+### OS46 · medium · M (security) — the price gate is decided by numbers any caller can post, with no bound, and "run" has no caller check
+
+The rule is "upgrade only when the newer model costs the same or less"
+(`mc/model_upgrade.py:5-6`, `:178`). Both prices come from
+`POST /api/model-upgrades/prices`, which is open to agents on purpose
+(`mc/blueprints/model_upgrade_routes.py:14-20`, `:81-99`) and validates only
+"not negative" (`model_upgrade.py:94-95`). `POST /api/model-upgrades/run`
+(`:120-137`) has no human or caller check either. So one session that posts a
+large price for the old model, or zero for the head, and then posts `run`,
+moves every pinned character, project, global default, schedule and workflow
+step to the family head whatever it really costs. The module's statement that
+the write "is never attacker-controlled" (`:18-20`) is true of the value
+written and not of the decision to write it.
+
+**Measured**: `set_price` accepts `inf` and `nan`; with the old model at `inf`
+the comparison at `:178` approves any head price.
+
+Related, read: `verified_at` is stored (`:100`) and never read, so a price
+recorded once approves upgrades for ever; and the docstring's "fails closed on
+... no discovery source" (`:7`) is not what `evaluate_pin` does: it takes the
+head from `model_choices()` (`:159`, `:168`), which falls back to the static
+list in source (`mc/agent_runtime.py:1021-1033`, `:1039-1041`), and never
+calls `discover_models()`.
+
+Smallest fix: refuse non-finite prices and require a source URL; make `run`
+with `apply` true refuse an agent caller the way the character routes do (the
+scheduled run can still post prices and read `/report`), or cap what one run
+may change and mail the list. `tests/` has gate tests with honest prices only.
+
+### OS47 · medium · L — the upgrade writers go round the write discipline of the stores they change
+
+- Global default: `_global_apply` (`mc/model_upgrade.py:311-317`) opens
+  `config.json` with mode `w` and `json.dump`s the live config dict into it.
+  The settings route writes the same file atomically
+  (`mc/blueprints/settings_routes.py:495`, `:548`). A crash or a
+  non-serializable value mid-dump leaves the install's whole configuration
+  truncated.
+- Schedules: `_schedule_apply` (`:334-343`) is a bare load, edit, save of the
+  whole schedules file. Every other schedule mutation runs under
+  `serialized_write`, and a steward-role row may only be changed by a human
+  (`mc/steward_role_writes.py:140-159`); this path has neither, so it can
+  change a role row's model without the human gate, and it is one more writer
+  in the lost-update race of OS2.
+- Projects: `_project_apply` (`:276-284`) loads the whole project record, sets
+  one key and saves it, without the project write lock that
+  `steward_role_writes` takes for the same record (`:169`). A backlog edit
+  between the load and the save is undone.
+
+Read, not measured. Smallest fix: `write_json_atomic` for the config; route
+the schedule write through `serialized_write` and skip role rows; take
+`_project_write_lock` around the project write.
+
 ## Measurements
 
+- OS45: `_scratch` script, temp agents directory, real `_character_apply`.
+- OS46: `_scratch` script, `prices_path` pointed at a temp file.
+- OS41, OS43: `_scratch` script against `mc.automation_suggestions` with a temp
+  store path; results quoted in the findings.
 - OS38, OS39: `_scratch` script importing the coordination module with a temp
   `COORD_DIR` and a stub session manager; results quoted in the findings.
 - OS24, OS25, OS26, OS27: `_scratch` script driving the real blueprint through a
@@ -778,6 +947,8 @@ happy path only.
   `hivemind_roster`, `hivemind_fallback`, `hivemind_routing`, `hivemind_lineage`,
   `hivemind_integration`, `hivemind_integration_cycle`, `hivemind_review`,
   `hivemind_review_routes`, `hivemind_reviewer` (OS24-OS37).
+- Rollover 4 (2026-11-16): `coordination_routes` written up (OS38-OS40). `automation_routes`
+  and `automation_suggestions` were being read when the context rolled; re-reading them.
 - Next: `hivemind_run_roles`, `hivemind_native_workflow`, engine_* (re-read: notes lost),
   coordination_routes, automation_*, model_upgrade*, usage_breakdown_*, wake_lock, then the
   backlog cross-check, then the assembled sections.
