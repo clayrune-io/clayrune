@@ -132,7 +132,8 @@ def _read_events(project_id: str, last_n: int = 100) -> list[dict]:
                 line = line.strip()
                 if line:
                     lines.append(line)
-    except Exception:
+    except Exception as e:
+        _log(f"[coord] read_events failed for {project_id}: {e}")
         return []
     out: list[dict] = []
     for line in (lines[-last_n:] if last_n else lines):
@@ -179,7 +180,8 @@ def _load_state(project_id: str) -> dict:
         return {}
     try:
         return json.loads(p.read_text(encoding='utf-8'))
-    except Exception:
+    except Exception as e:
+        _log(f"[coord] load_state failed for {project_id}: {e}")
         return {}
 
 

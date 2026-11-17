@@ -93,3 +93,14 @@ def test_one_malformed_stored_event_does_not_blind_the_feed(coord, monkeypatch):
     monkeypatch.setattr(coord, '_read_events', lambda *a, **k: [bad, good])
     out = coord.sibling_activity('p1', 'sid-me', 'fix scheduler')
     assert [i['summary'] for i in out] == ['fix scheduler']
+
+
+# ── OS40 (the logging half): an unreadable state file says so ───────────────
+
+def test_unreadable_state_file_is_logged(coord, monkeypatch):
+    seen = []
+    monkeypatch.setattr(coord, '_log', lambda m, **k: seen.append(m))
+    coord._state_path('p1').parent.mkdir(parents=True, exist_ok=True)
+    coord._state_path('p1').write_text('{bad', encoding='utf-8')
+    assert coord._load_state('p1') == {}
+    assert any('load_state failed' in m for m in seen)
