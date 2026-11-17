@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - The terminal pop-out no longer goes silent after 5,000 output chunks (MC-1179 pass 11, SF20)
+
+- The readers keep at most 5,000 chunks and cut to the last 3,000; the SSE stream followed the buffer with a list index, so after the first trim it never again had anything to send while the process kept running and `status` stayed `running`. Measured with one poll per chunk: 20,000 produced, 5,000 delivered.
+- New `mc/terminal_output_buffer.py` holds the cap and a running `dropped` count on the session (incremented by what each trim removes); the pipe and the PTY reader both append through it, and `terminal_stream` indexes by absolute position. A reader older than the oldest kept chunk resumes from the oldest kept chunk; the stream says nothing extra.
+- `GET /api/project/<id>/terminal/status` now also returns `dropped`, and `static/js/terminal.js` starts a refreshed pop-out's stream at `dropped` plus the restored chunks, so a refresh after the first trim does not replay the buffer.
+- New `tests/test_terminal_stream_trim.py` drives the real reader threads and the real stream in lockstep (pipe and PTY): 20,000 chunks with one poll per chunk arrive once each and in order; a reader that polls rarely gets the newest chunks and keeps receiving; the dropped count matches what was trimmed; status and `since` agree. 8 of 8 failed before the fix.
+
 ## [2026-11-17] - The clayrune MCP stdio server speaks UTF-8 on Windows (MC-1179 pass 11, SF8)
 
 - On Windows the server's stdin and stdout used the locale code page (cp1252), so a tool reply with a character outside it (an arrow, an emoji) ended the process with `UnicodeEncodeError` and the session lost all eight tools, and a non-ASCII argument (em dash, curly quotes) reached the handler as mojibake or with a lone surrogate; `_send_message` and `_dispatch_agent` forward that text on.
