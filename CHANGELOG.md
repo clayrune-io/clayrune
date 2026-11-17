@@ -1,5 +1,15 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Project ids can no longer walk out of the data dir (MC-1179 pass 07 / P54)
+
+- P54: a project id from a URL segment or the `/api/projects/order` body went straight into `DATA_DIR / f'{id}.json'`, so an encoded backslash (Windows) or an absolute path (any OS) read and rewrote any `.json` file on the machine. Reproduced on a temp dir: GET backlog and POST conversation-pin with `..\victim`, POST backlog with an absolute id, and the order route with an absolute id each reached the outside file (12 of the new tests failed before the fix).
+- One chokepoint, `mc/project_record_path.py`: `project_record_path(data_dir, id, suffix='')` returns the path for a plain id and None for anything else (separators, colon, leading dot, `..`, NUL, empty, over 64 characters, non-strings), and also requires the resolved parent to be the data dir. A refusal logs once per id. Every record-path site in `project_routes.py` (fingerprint, raw read, load, save, update, pin, delete, agent-log cleanup) now goes through it; a refused id reads as 404 or "no such project", never a 500.
+- `/api/projects/order` refuses a body holding a non-plain id with 400 before it writes `grid_layout.json` or any record.
+- Every id in `data/projects` on this install (including `_ideas`, `_incognito`) passes; a test checks the live listing. The pattern keeps capitals and inner dots so records from before ids were validated still load.
+- The report's fifth row (`POST /api/project/..%5Cverifier`) was already closed by the id check MC-1183 put at the top of `update_project`; the test pins it and the route now also answers 404 if the helper refuses.
+- Not fixed here: the same `f'{id}.json'` pattern in `guide_routes.py`, `mcp_routes.py`, `agent_routes.py`, `topics_routes.py` and `memory.py` (outside the module this unit covers); the lazy backlog backfill that saves on a GET.
+- Branch candidate for review; no merge, push, deployment or server restart.
+
 ## [2026-11-16] - Process guard: ordinary spellings of an image-name or listener-PID kill, and a lazy listener lookup (MC-1190 / MC-1179 AP1, AP3)
 
 - AP1: the process-guard hook now finds the kill command word (`kill`, the Windows kill tool, `Stop-Process`, `spps`) and reads its whole segment. Every integer in it is checked against the listener PIDs, so `kill -TERM <pid>`, `kill 111 <pid>`, a second `/PID`, `/FI "PID eq <pid>"`, positional `Stop-Process <pid>` and `-Id 111,<pid>` are refused. Image-name spellings added: the `/FI "IMAGENAME eq x"` filter and `-im`, `-ProcessName` and the `-Na`/`-Pr` prefixes, `spps -Name`, `Get-Process x | kill`, `gps x | spps`, `(Get-Process x).Kill()`, and the CIM/WMI `Terminate` form.

@@ -55,6 +55,7 @@ from mc import state
 from mc.ui_field_validation import validate_project_fields, validate_backlog_fields
 from mc.delegation_delivery import DeliveryStore
 from mc.atomic_json import write_json_atomic
+from mc.project_record_path import is_plain_project_id, project_record_path
 from mc.project_safety_settings import refuse_agent_safety_write
 from mc import steward_role_writes as _role_writes
 from mc.project_routing_guard import require_human_routing_write
@@ -216,6 +217,15 @@ _DERIVED_RUNTIME_KEYS = (
 
 _project_write_locks = {}
 _project_write_locks_guard = _RLock()
+
+
+def _record_path(project_id, suffix=''):
+    """The record path for a plain project id, or None (MC-1179 P54).
+
+    The only place in this module an id becomes a path; see
+    mc/project_record_path.py. None means "no such project".
+    """
+    return project_record_path(DATA_DIR, project_id, suffix)
 # Bumped on every save, under that project's write lock. See _record_fingerprint.
 _project_write_seq = {}
 # Per-thread {project_id: {collection: frozenset(ids)}} as of this thread's
@@ -264,8 +274,11 @@ def _record_fingerprint(project_id):
     stays for the cross-process case (the restart overlap spawns a second
     server that writes these same files).
     """
+    path = _record_path(project_id)
+    if path is None:
+        return None
     try:
-        st = os.stat(DATA_DIR / f'{project_id}.json')
+        st = os.stat(path)
     except OSError:
         return None
     return (_project_write_seq.get(project_id, 0), st.st_mtime_ns, st.st_size)
@@ -290,8 +303,8 @@ def _record_load_baseline(project_id, record, fingerprint=None):
 
 def _read_record_raw(project_id):
     """The on-disk record with no decoration, or None if absent/unparseable."""
-    filepath = DATA_DIR / f'{project_id}.json'
-    if not filepath.exists():
+    filepath = _record_path(project_id)
+    if filepath is None or not filepath.exists():
         return None
     try:
         raw = json.loads(filepath.read_text(encoding='utf-8'))
@@ -354,7 +367,9 @@ def load_project(project_id):
     already handles it; a 500 nobody handles is strictly worse than a
     project that reads as absent while the error sits in the log.
     """
-    filepath = DATA_DIR / f'{project_id}.json'
+    filepath = _record_path(project_id)
+    if filepath is None:
+        return None
     if not filepath.exists():
         _record_load_baseline(project_id, None)
         return None
@@ -376,6 +391,9 @@ def load_project(project_id):
 
 
 def save_project(project_id, data):
+    filepath = _record_path(project_id)
+    if filepath is None:
+        return  # refused id (logged): nothing to write, nothing to raise
     # Strip runtime-only attachment fields (e.g. `_present`) before persisting
     # so they never leak into the JSON. See _decorate_attachments.
     if isinstance(data, dict):
@@ -385,7 +403,6 @@ def save_project(project_id, data):
                     att.pop(k, None)
         for k in _DERIVED_RUNTIME_KEYS:
             data.pop(k, None)
-    filepath = DATA_DIR / f'{project_id}.json'
     # The whole read-back-reconcile-write runs under the project's write lock,
     # so two savers cannot both read the pre-state and both write over it.
     # See the "Lost-update guard" block above for the race and the rule.
@@ -718,7 +735,9 @@ def update_project(project_id):
     if error:
         return jsonify({'error': error}), 400
 
-    filepath = DATA_DIR / f'{project_id}.json'
+    filepath = _record_path(project_id)
+    if filepath is None:
+        return jsonify({'error': 'project not found'}), 404
     is_new = not filepath.exists()
     refusal = require_human_routing_write(data, is_new=is_new)
     if refusal is not None:
@@ -924,8 +943,8 @@ def set_conversation_pin(project_id):
     can lag, esp. Mode B); conversation_id is the fallback for closed/historical
     chats. Omit "pinned" to toggle.
     """
-    filepath = DATA_DIR / f'{project_id}.json'
-    if not filepath.exists():
+    filepath = _record_path(project_id)
+    if filepath is None or not filepath.exists():
         return jsonify({'error': 'project not found'}), 404
     body = request.get_json(silent=True) or {}
     csid = (body.get('conversation_id') or '').strip()
@@ -1035,8 +1054,8 @@ def generate_project_summary(project_id):
 @bp.route('/api/project/<project_id>', methods=['DELETE'])
 @_role_writes.project_delete
 def delete_project(project_id):
-    filepath = DATA_DIR / f'{project_id}.json'
-    if not filepath.exists():
+    filepath = _record_path(project_id)
+    if filepath is None or not filepath.exists():
         return jsonify({'error': 'not found'}), 404
 
     # Revoke before deletion side effects, under the same manager guard used by
@@ -1063,8 +1082,8 @@ def delete_project(project_id):
                     att_path.unlink()
 
     # Remove agent log file if exists
-    agent_log = DATA_DIR / f'{project_id}_agent_log.json'
-    if agent_log.exists():
+    agent_log = _record_path(project_id, '_agent_log')
+    if agent_log is not None and agent_log.exists():
         agent_log.unlink()
 
     # Kill any running agent sessions for this project
@@ -2914,6 +2933,11 @@ def save_project_order():
     if not data or 'order' not in data:
         return jsonify({'error': 'order array required'}), 400
     order = data['order']
+    # Ids from the body become file paths below; refuse the request, before any
+    # write, if one is not a plain id (MC-1179 P54). None is a spacer.
+    if not isinstance(order, list) or not all(
+            pid is None or is_plain_project_id(pid) for pid in order):
+        return jsonify({'error': 'order must be a list of project ids or null'}), 400
     # Save full grid layout (with nulls for spacers)
     layout_path = DATA_DIR.parent / 'grid_layout.json'
     write_json_atomic(layout_path, {'order': order}, indent=2, ensure_ascii=False)
