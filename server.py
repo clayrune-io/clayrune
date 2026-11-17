@@ -3555,8 +3555,11 @@ def _exit_port_in_use(err):
     sys.exit(2)
 
 
-def _reserve_listeners(port):
+def _reserve_listeners(port, loopback_only=None):
     """Bind the exclusive listening socket(s) NOW, before boot() (MC-1060).
+
+    `loopback_only`: None follows MC_BIND_LOOPBACK; app.py (the desktop launcher,
+    which has always served on 127.0.0.1 only) passes True.
 
     The bind is the one single-instance check that cannot be raced, so it runs
     first. Run after boot, the loser of a boot race had already reconciled the
@@ -3576,7 +3579,8 @@ def _reserve_listeners(port):
         _log(f"[serve] restart from PID {restart_parent}: waiting up to "
              f"{listen_socket.RETRY_WINDOW_S:.0f}s for it to release port {port}.", flush=True)
     try:
-        return listen_socket.reserve(port, loopback_only=_loopback_only(), shared=_shared_bind(),
+        return listen_socket.reserve(port, loopback_only=_loopback_only() if loopback_only is None else loopback_only,
+                                     shared=_shared_bind(),
                                      wait_for_holder=bool(restart_parent), log=_log)
     except listen_socket.PortInUse as e:
         _log(f"[serve] port {port} is held by another process ({e.strerror}); exiting "
@@ -3633,9 +3637,8 @@ def boot(check_port=True):
 
     check_port: the connect-probe guard (MC-908). `__main__` passes False
     because it has already bound the port (`_reserve_listeners`) and the probe
-    would see its own listening socket as a rival. app.py also passes False
-    but for a different reason: it binds through app.run and has no
-    single-instance guard of its own.
+    would see its own listening socket as a rival. app.py passes False for the
+    same reason: it also reserves the port first (MC-1179 S2).
     """
     global _BOOT_T0
     _BOOT_T0 = _time.time()
