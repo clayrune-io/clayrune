@@ -1398,7 +1398,9 @@ function _wfSyncNodeOwn(node, own) {
     const persEl = own.querySelector('.wfb-persona');
     const promptEl = own.querySelector('.wfb-prompt');
     if (projEl) node.project_id = projEl.value;
-    if (persEl) node.character = persEl.value;
+    // A render can be followed by another sync before the async roster loads.
+    // Its temporary empty option is not a choice of Project default (WB1).
+    if (persEl && persEl.dataset.loading !== '1') node.character = persEl.value;
     if (promptEl) node.prompt = promptEl.value;
     node.outcomes = [...own.querySelectorAll('.wfb-outcome-input')].map(i => i.value.trim()).filter(Boolean);
   } else if (node.type === 'approval') {
@@ -2372,7 +2374,7 @@ function _wfRenderAgentOwn(st, node) {
     <label>Agent</label>
     <div class="sched-agent-row">
       <span id="wfb-face-${seq}" class="sched-agent-face"></span>
-      <select id="wfb-persona-${seq}" class="wfb-persona"><option value="">Loading…</option></select>
+      <select id="wfb-persona-${seq}" class="wfb-persona" data-loading="1"><option value="">Loading…</option></select>
     </div>
     ${_wfRenderPromptField(st, node)}
     <div class="wfb-branch-labels">
@@ -2695,6 +2697,7 @@ async function _wfReloadCharacters(seq, want) {
   const pid = document.getElementById('wfb-proj-' + seq)?.value || '';
   if (!sel || !pid) return;
   const target = (want === undefined) ? sel.value : (want || '');
+  sel.dataset.loading = '1';
   sel.innerHTML = '<option value="">Loading…</option>';
   let list;
   try {
@@ -2714,6 +2717,7 @@ async function _wfReloadCharacters(seq, want) {
     `<option value=""${target ? '' : ' selected'}>${esc(dflt ? `Project default — ${label(dflt)}` : 'Project default (no persona)')}</option>`
     + group('This project', proj) + group('Global', glob);
   if (target && sel.value !== target) sel.value = '';
+  delete sel.dataset.loading;
   sel.onchange = () => _wfPaintFace(seq, _wfCharCache.get(pid));
   _wfPaintFace(seq, list);
 }
