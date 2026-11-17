@@ -315,7 +315,7 @@
     // While the live store is loading or has failed, say so instead of painting
     // a surface over nothing. A failed live load never falls back to demo data.
     const gate = window.DeskV1Store.gate();
-    if (gate) { _renderStoreGate(body, gate); return; }
+    if (gate) { _renderStoreGate(body, gate, entry.route === 'home'); return; }
     if (typeof renderFn === 'function') {
       renderFn(body, entry.params);
     } else {
@@ -327,8 +327,12 @@
     }
   }
 
-  function _renderStoreGate(body, gate) {
-    body.innerHTML = `<div class="desk-v1-stub" data-store-gate="${esc(gate.kind)}">
+  // MC-1205: Home paints its own frame (headings, placeholder rows, an error
+  // inside the frame) from desk-v1-loading.js; every other route, and the
+  // `off` gate, keeps the plain notice.
+  function _renderStoreGate(body, gate, isHome) {
+    const framed = isHome && window.DeskV1Loading && window.DeskV1Loading.paintHome(body, gate);
+    if (!framed) body.innerHTML = `<div class="desk-v1-stub" data-store-gate="${esc(gate.kind)}">
       <div class="desk-v1-stub-body">${esc(gate.message)}</div>
       ${gate.kind === 'error' ? '<button type="button" class="desk-v1-stub-link" data-store-retry>Try again</button>' : ''}
     </div>`;

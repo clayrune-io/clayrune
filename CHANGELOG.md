@@ -1,5 +1,22 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - The Desk is off the dashboard boot path; it loads in the background (MC-1205 half 2, FE21/FE22)
+
+- Before: `index.html` carried 134 Desk script tags and 84 Desk stylesheet links, so every dashboard load fetched, parsed and ran the Desk (168 scripts, 2.00 MB, 84 sheets cold, per `docs/_review/2026-11-16_04_frontend.md`) whether or not it was opened.
+- Now `index.html` has two Desk tags: `desk-v1-loading.js` and `desk-load.js` (plus the loading sheet). Once the dashboard reports `mc-boot-complete` and the browser is idle (`requestIdleCallback`, 4 s timeout), `desk-load.js` imports the new `static/js/desk-v1-entry.js`, which lists and loads the whole Desk in the old tag order. A later Desk open finds it ready.
+- `openDesk()` awaits that same single load. A click before it finishes opens the Desk window with the home page's loading frame in the same JS turn and swaps in the real Desk when the load settles: never a blank window, never a second load, a second click does not stack a window. A failed load shows its own error with Try again (the retry requests the entry under `&try=N` because a browser remembers a failed module fetch per URL).
+- Version token: `server.py` only stamps `?v=` onto tags in `index.html`. `desk-load.js` copies its own stamped token onto the entry's URL, and the entry copies it onto every script and sheet it requests, so a release cannot serve stale Desk modules and the files are still `immutable`. Modules that some other file imports by a relative path (`BARE`) keep the bare URL so they run once (FE22).
+- Non-Desk callers wait for the Desk instead of importing it: `vault-unlock-popup.js`, `secrets-panel.js`, `browser-accounts.js` (which no longer statically imports two Desk files at boot).
+- New: `static/js/desk-v1-entry.js`, `static/js/desk-load.js`, `docs/DESK_LAZY_LOAD.md`, `tests/test_desk_entry.py` (7 tests), `tools/smoke/desk-v1-lazy-load.mjs` (18 checks; fails on the old code at "zero Desk requests before boot"). `tests/test_desk_v1_flag.py` reads the store-before-shell order from the entry. A new Desk script or sheet is added to the entry, not to `index.html`.
+
+## [2026-11-17] - The Desk's first open paints its home page at once, with a loading state (MC-1205, half 1)
+
+- Before: opening the Desk while the workspace read was slow showed a header and one grey line, "Loading your workspace...". Measured in the smoke browser with the read held back: 7 ms to that line, 33 s until the home items. The scripts were not the wait (all 132 desk-v1 scripts were already loaded at dashboard boot); the single workspace read was.
+- Now the home page's own frame is in the DOM in the same JS turn as the click: column headings, three placeholder rows, and the crumb's Engagement / Studio buttons. New campaign is held back until the workspace has loaded (a draft made against an empty store would be thrown away by the load that follows). The words "Loading your workspace" stay on the region for screen readers.
+- A failed workspace read shows its error INSIDE that frame with Try again, which re-reads and fills the page in; no endless spinner. A slow engagement read does not hold the board.
+- New `static/js/desk-v1-loading.js` + `static/css/desk-v1-loading.css`; `desk-v1-shell.js` calls it for the Home route only (every other route keeps the plain notice), `desk-v1-home.js` exposes its crumb buttons as `window.deskV1HomeCrumbTools`. Nothing the Desk shows once loaded changed.
+- New smoke `tools/smoke/desk-v1-first-open.mjs` (fails on the old code at 5 checks, passes now).
+
 ## [2026-11-17] - Orchestration and scheduling review: the medium and low findings that needed no decision (MC-1179 pass 09)
 
 - Scheduler/steward: a `schedules.json` that will not parse is logged instead of read as "no schedules" (OS3). The legacy steward enable half was already closed.

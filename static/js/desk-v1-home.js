@@ -833,6 +833,8 @@
   }
 
   window.deskV1RenderHome = deskV1RenderHome;
+  // The loading state (desk-v1-loading.js) paints the same crumb buttons while the workspace is still arriving.
+  window.deskV1HomeCrumbTools = _renderCrumbTools;
   // T2a (docs/desk_v1_r0_plan.md) reuses this shelf pair for its Add tray —
   // "reuse, don't fork" — instead of duplicating the channel/material shelf
   // markup and drag wiring on desk-v1-campaign.js.

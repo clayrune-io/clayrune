@@ -44,6 +44,9 @@
         close(); window.showToast(state.state === 'unlocked' ? 'Vault is already unlocked.' : 'The vault has no passphrase lock configured.'); return;
       }
       if (state.state !== 'locked') throw new Error('Could not determine whether the vault is locked.');
+      // The vault gate is part of the Desk family, which loads in the background after boot.
+      if (window.DeskLoad) await window.DeskLoad.ready();
+      if (dialog !== d) return;
       body.replaceChildren();
       window.DeskV1VaultGate.mount(body, { hint: 'Enter your vault passphrase and dashboard passcode to use your saved credentials. Then retry the action that was held.', onUnlocked: () => { if (dialog === d) close(); } });
       body.querySelector('[data-vg-pass]').focus();

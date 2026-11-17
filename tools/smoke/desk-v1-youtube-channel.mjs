@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { loadFixtures } from './desk-v1-fixture-api.mjs';
-import { loadStaticJsCss } from './_static.mjs';
+import { loadStaticJsCss, deskLoaded } from './_static.mjs';
 const root = resolve(import.meta.dirname, '../..'), files = loadStaticJsCss(root);
 const index = readFileSync(resolve(root, 'static/index.html'), 'utf8');
 const browser = await chromium.launch({ headless: true });
@@ -33,6 +33,7 @@ try {
     });
     await page.goto('http://mc.smoke.test/');
     await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
+  await deskLoaded(page);
     await page.evaluate(() => window.sidebarNav('social'));
     await page.waitForFunction(() => window.DeskV1Store.state().campaigns.length);
     await page.evaluate(() => window.deskV1Nav('composer', { campaignId: 'camp-1', familyId: 'fam-yt' }));

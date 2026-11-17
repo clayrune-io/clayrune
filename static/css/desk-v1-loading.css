@@ -1,0 +1,43 @@
+/* Desk v1 loading state (MC-1205). Self-contained on purpose: it is loaded at
+   dashboard boot and has to look right before any other desk-v1 sheet has
+   arrived, so it re-states the home board's column grid instead of borrowing
+   it from desk-v1-home.css. Pairs with static/js/desk-v1-loading.js. */
+/* The Desk window's body before the Desk family has loaded: it stands in for
+   .desk-v1-shell (same gutters), which lives in a sheet that has not arrived yet. */
+.desk-v1-preload { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 24px 20px 28px; }
+@media (max-width: 960px) { .desk-v1-preload { padding: 0 14px 20px 14px; } }
+.desk-v1-loading-home { display: flex; flex-direction: column; gap: 16px; height: 100%; min-height: 0; }
+.desk-v1-loading-board { display: flex; flex-direction: column; gap: 10px; }
+.desk-v1-loading-caption { font-size: 12.5px; color: var(--text-dim); }
+.desk-v1-loading-head,
+.desk-v1-loading-row {
+  display: grid; grid-template-columns: 1.9fr 1.2fr 1.5fr 0.8fr 1.1fr 1.7fr;
+  align-items: center; gap: 12px;
+}
+.desk-v1-loading-head {
+  padding: 0 52px 0 14px; font-size: 11px; font-weight: 700; color: var(--text-faint);
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
+.desk-v1-loading-block {
+  border: 1px solid var(--border2); border-radius: 10px; background: var(--surface); overflow: hidden;
+}
+.desk-v1-loading-block-head {
+  padding: 12px 14px; border-bottom: 1px solid var(--border2); background: var(--surface2);
+}
+.desk-v1-loading-row { padding: 14px 52px 14px 14px; border-bottom: 1px solid var(--border); }
+.desk-v1-loading-row:last-child { border-bottom: none; }
+/* The bars reuse the dashboard's own `pulse` keyframes (app.css, the live dot). */
+.desk-v1-loading-bar {
+  display: block; height: 10px; border-radius: 5px; background: var(--surface3);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+.desk-v1-loading-error {
+  border: 1px dashed var(--border2); border-radius: 10px; padding: 20px; background: var(--surface);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.desk-v1-loading-error-msg { font-size: 13px; color: var(--text-dim); }
+@media (prefers-reduced-motion: reduce) { .desk-v1-loading-bar { animation: none; } }
+@media (max-width: 960px) {
+  .desk-v1-loading-head { display: none; }
+  .desk-v1-loading-row { grid-template-columns: 1fr 1fr; }
+}

@@ -10,7 +10,11 @@
 // (desk-v1-shell.js), which owns the `__desk` modal. It does not read the
 // stored `desk_v1` config value; an old `desk_v1: false` is inert.
 (function () {
+  // The Desk family loads in the background after boot (desk-load.js, MC-1205).
+  // open() is deskV1Open() once it has, and a Desk window showing the home
+  // page's loading frame until it does.
   function openDesk() {
+    if (window.DeskLoad) return window.DeskLoad.open();
     if (typeof window.deskV1Open === 'function') return window.deskV1Open();
   }
 
