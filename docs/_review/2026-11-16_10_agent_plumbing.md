@@ -410,4 +410,86 @@ N9 to N12 is therefore LATENT here.
   `resolve_followup_cwd` no longer drops an isolated session into the shared
   tree (`agent_worktree_followup.py:48-49`).
 
+### N15. `mc/conversation_contract.py` (102), `conversation_store.py` (1,478), `conversation_views.py` (107), `execution_lifecycle.py` (421)
+
+Read: `conversation_views.py` fully; `conversation_store.py` lines 178-300,
+485-522, 762-850, 1385-1478 plus every public method's call sites (script over
+`mc/`, `server.py`, `app.py`, `tests/`); `conversation_contract.py` and
+`execution_lifecycle.py` at structure level only.
+
+- **AP35 (L/M, low) `server.py:1070-1072` -> `runtime_lifecycle_service.py:40`,
+  `:88`, `:112`** — the whole provider-neutral conversation journal is
+  unreachable at run time. The only constructor call hard-codes
+  `enabled=False`, and every entry of the service returns `None`/`()` first
+  when disabled. This is the store half of pass 1 **L1** (which reported the
+  service wiring). What this pass adds, callers counted not guessed: of the
+  store's public methods, these have NO caller outside the store and the tests
+  even if the service were switched on: the legacy attempt API
+  (`begin_attempt`, `append_event`, `get_conversation`, `delete_conversation`,
+  `restore_conversation`, `:523-655`), all five migrations (`:346-482`), the
+  whole capture pipeline (`bind_capture_source` to `seal_capture_source` and
+  `record_coverage`, `:1209-1380`), the three history readers (`:1385-1478`),
+  and `claim_attempt`, `bind_native_handle`, `save_runtime_launch_facts`,
+  `bind_runtime_native_source`, `reconcile_attempt`, `change_engine`,
+  `append_evidence(_batch)`, `list_lifecycle_conversations`.
+  `conversation_views.py` has no importer at all outside tests (grep). About
+  2,100 lines of store, contract, views and reducer are exercised only by
+  their tests. Not a defect in the code; it is carrying cost, and it reads as
+  live. See Streamlining.
+- **AP36 (E, low, latent) `conversation_store.py:491-509`** — every store call
+  opens a new SQLite connection, sets a pragma, and re-validates the schema
+  (two pragmas plus a `sqlite_master` scan, `:184-186`) before its one query;
+  `bridge_factory` adds `ensure_project_generation_schema` (another
+  connection) and `project_generation` (a third) per dispatch
+  (`runtime_lifecycle_service.py:50-53`). Read, not measured (the service is
+  off). Fix when it is switched on: validate once per `ConversationStore`.
+- Sound (in the ranges read): writes use `BEGIN IMMEDIATE`, a missing file is
+  never created by a read (`:492-494`), history chunks are cut in SQL so a
+  large payload is not loaded (`:1449-1454`), a project revoke bumps the
+  generation and tombstones every conversation in one transaction (`:807-831`).
+
+### N16. `mc/launch_transaction.py` (291, read fully), `isolated_launch.py` (244, read fully), `launch_marker.py` (100, read fully), `execution_policy.py` (300, read fully)
+
+- **AP37 (L, medium) `launch_transaction.py:82-83`, `:89-90`, `:152-171`,
+  `:187-197`, `:283-290` with `agent_spawn.py:237-242`** — an "ambiguous"
+  launch failure ends the conversation for good, and most ordinary spawn
+  refusals are classed ambiguous. `_unknown()` sets
+  `session['_launch_uncertain']` and writes `launch_outcome='unknown'` on the
+  agent-log row; `reserve()` then refuses every later turn for that session,
+  live (`:82`) or rebuilt from the row after a restart (`:89`), with "previous
+  launch outcome requires review; not retried". Nothing clears either marker:
+  grep over `mc/` and `static/` finds one writer and two readers and no
+  `pop`, no route, no UI text. The "review" has no surface. What gets there:
+  only `FileNotFoundError` is marked a proven refusal (`agent_spawn.py:237`);
+  `spawn_boundary` marks everything else ambiguous. Measured on Windows
+  (scratch `subprocess.Popen` probe, no provider CLI): missing executable ->
+  `FileNotFoundError`; missing cwd -> `NotADirectoryError`; a non-executable
+  file -> `OSError` winerror 193; a directory as the target ->
+  `PermissionError`. So three of four refusals where no child can exist take
+  the terminal path, and the comment at `agent_spawn.py:238` ("missing
+  executable/cwd") is wrong for cwd on Windows. A CLI binary that is half
+  replaced or locked while it updates is exactly the winerror 193 / access
+  denied case. Fix, smallest first: (1) a human "this did not start, clear
+  it" action that pops both markers; (2) class `NotADirectoryError`,
+  `PermissionError` and winerror 193 raised by the `Popen` constructor before
+  `proc` is bound as refusals. `tests/test_launch_transaction.py:85-86` pins
+  that the marker is set; no test asks how it is ever unset. Whether a later
+  whole-row save by another path drops the durable marker was not traced.
+- **AP38 (E, low) `launch_transaction.py:86`, `:111`, `:179`** — each turn start
+  parses the whole agent log three times (strict read in `reserve`, the
+  forgiving `_load_agent_log` for `destination`, strict read again in
+  `launch`) on top of the read-modify-write inside the action, all under the
+  project manager lock and the log file lock. Measured, read-only, on the
+  largest log on this install: 1.6 MB, 500 rows, 4.6 ms per parse, 6.4 ms per
+  dump; so about 14 ms of parsing plus a 1.6 MB rewrite per turn start under
+  the project lock. Fix: keep the row found at `:86` and pass it to `launch`.
+- Sound: `restore` compares the live owner and the durable row before undoing
+  either (`:129-150`); a failed save of the unknown marker is logged, not
+  swallowed (`:170-171`); `isolated_launch.launch_cwd` never returns the
+  project checkout for an isolated session and refuses outside the lifecycle
+  exclusion (`isolated_launch.py:142-159`); `launch_env` removes an inherited
+  unattended marker for attended chats (`launch_marker.py:73-76`);
+  `execution_policy.authorize_execution` is pure, fails closed on every
+  missing or stale record, and has no shared state (`:242-287`).
+
 <!-- APPEND-HERE -->
