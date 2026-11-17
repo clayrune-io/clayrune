@@ -305,7 +305,7 @@ def test_api_retry_json_never_lands_in_the_chat(tmp_data_dir):
     assert not any('api_retry' in ln or '{' in ln for ln in session['log_lines'])
 
 
-# ── 4. the guardian's 10 minute stall kill, against the real tick ─────────────
+# ── 4. the guardian's stall kill, against the real tick ─────────────
 
 class _AliveProc:
     pid = 424242
@@ -331,10 +331,15 @@ def guardian(monkeypatch):
     return routes, killed
 
 
-def test_control_guardian_kills_a_claude_run_silent_past_600s(guardian):
+def _claude_hung_timeout(routes):
+    # Claude has its own threshold (900 s since fe07f33b), above the 600 s default.
+    return routes.GUARDIAN_HUNG_TIMEOUT_BY_PROVIDER.get('claude', routes.GUARDIAN_HUNG_TIMEOUT)
+
+
+def test_control_guardian_kills_a_claude_run_silent_past_its_hung_timeout(guardian):
     routes, killed = guardian
     now = routes._time.time()
-    s = _guardian_session(routes.GUARDIAN_HUNG_TIMEOUT + 60, now)
+    s = _guardian_session(_claude_hung_timeout(routes) + 60, now)
     routes._guardian_check_session('mc-retry', s, now)
     assert len(killed) == 1 and s['guardian_state'] == 'needs_attention'
 
@@ -352,8 +357,8 @@ def test_guardian_spares_a_session_that_is_in_api_retry(guardian):
     assert killed == [] and 'guardian_state' not in s
     stamped = s['last_output_time']
     # inside the window after the latest event: spared
-    routes._guardian_check_session('mc-retry', s, stamped + routes.GUARDIAN_HUNG_TIMEOUT - 1)
+    routes._guardian_check_session('mc-retry', s, stamped + _claude_hung_timeout(routes) - 1)
     assert killed == []
-    # the watchdog only resets the clock: if the events stop for >600 s it is hung again
-    routes._guardian_check_session('mc-retry', s, stamped + routes.GUARDIAN_HUNG_TIMEOUT + 1)
+    # the watchdog only resets the clock: if the events stop past the timeout it is hung again
+    routes._guardian_check_session('mc-retry', s, stamped + _claude_hung_timeout(routes) + 1)
     assert len(killed) == 1
