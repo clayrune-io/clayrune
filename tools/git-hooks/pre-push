@@ -1,7 +1,8 @@
 #!/bin/sh
 # ── Clayrune pre-push guardrail ──────────────────────────────────────────────
 # Refuse to push any ref whose tip tree contains an operator-private or secret
-# path. This repo is PUBLIC; several deliberately-untracked files still live in
+# path, or whose pushed commits ADD one (a file added early and deleted later
+# leaves the tip clean but still uploads its blob). This repo is PUBLIC; several deliberately-untracked files still live in
 # the history of old feature branches (data/SHARED_RULES.md, cloud pricing under
 # docs/poc/, signing/creds). Merging or pushing one of those branches would
 # re-publish them. This hook blocks the push locally, BEFORE anything leaves the
@@ -12,7 +13,8 @@
 # See CLAUDE.md "nothing operator-specific goes in the repo" (commit 3a1fd04).
 
 # Paths that must never reach the public repo (grep -E, matched against the
-# pushed tip's `git ls-tree -r --name-only`).
+# pushed tip's `git ls-tree -r --name-only` and against the paths added or
+# renamed-to in the commits being sent).
 FORBIDDEN='^data/SHARED_RULES\.md$|(^|/)AGENT_RULES\.md$|^docs/poc/|(^|/)HOSTED_CLOUD_|^tools/signing\.env$|^tools/gcp-cost-review/|(^|/)\.env$|\.pem$|\.key$|(^|/)id_rsa$|credential'
 
 status=0
@@ -22,14 +24,34 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   # Branch deletion (all-zero local sha): nothing to scan.
   case "$local_sha" in *[!0]*) : ;; *) continue ;; esac
 
-  hits=$(git ls-tree -r --name-only "$local_sha" | grep -E "$FORBIDDEN")
+  tip_hits=$(git ls-tree -r --name-only "$local_sha" | grep -E "$FORBIDDEN")
+
+  # Paths added (or renamed into place) by the commits this push sends. A new
+  # ref, or a remote_sha this clone does not have, sends everything not already
+  # on a remote-tracking ref.
+  case "$remote_sha" in
+    *[!0]*) range="$remote_sha..$local_sha" ;;
+    *)      range="" ;;
+  esac
+  if [ -n "$range" ] && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+    added=$(git -c core.quotepath=off log --diff-filter=AR --name-only --format= "$range" 2>/dev/null)
+  else
+    added=$(git -c core.quotepath=off log --diff-filter=AR --name-only --format= "$local_sha" --not --remotes 2>/dev/null)
+  fi
+  history_hits=$(printf '%s
+' "$added" | grep -E "$FORBIDDEN")
+
+  hits=$(printf '%s
+%s
+' "$tip_hits" "$history_hits" | sed '/^$/d' | sort -u)
   if [ -n "$hits" ]; then
     echo "" >&2
-    echo "BLOCKED: push to ${remote_ref:-<new ref>} carries operator-private / secret files:" >&2
+    echo "BLOCKED: push to ${remote_ref:-<new ref>} carries operator-private / secret files (in the tip tree or added by a commit being sent):" >&2
     printf '%s\n' "$hits" | sed 's/^/    - /' >&2
     echo "" >&2
     echo "  These must never reach the public repo. If a feature on this branch is" >&2
-    echo "  wanted, cherry-pick the CODE commit(s) without the paths above." >&2
+    echo "  wanted, cherry-pick the CODE commit(s) without the paths above; deleting" >&2
+    echo "  the file in a later commit does not help, its blob is still sent." >&2
     echo "  Genuine exception only: git push --no-verify" >&2
     echo "" >&2
     status=1
