@@ -53,13 +53,15 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections import deque
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent
 sys.path.insert(0, str(HERE))
 import live_gates as G  # noqa: E402
 
+TRACE_KEEP = 12  # API calls kept for the cell report
 VENDORS = ('claude', 'gemini', 'qwen', 'codex')
 PROD_PORT = 5199
 TERMINAL = {'idle', 'completed', 'error', 'stopped'}
@@ -254,7 +256,9 @@ class Api:
             raise ValueError('refusing to drive port 5199')
         self.base = f'http://127.0.0.1:{port}'
         self.port, self.vendor, self.cross_ok = port, vendor, cross_ok
-        self.trace: List[dict] = []
+        # Only the last TRACE_KEEP calls are ever read (the cell report), and wait() polls
+        # a full session list every 3 s, so an unbounded list held thousands of payloads.
+        self.trace: Deque[dict] = deque(maxlen=TRACE_KEEP)
         self._open = opener or urllib.request.urlopen
 
     def request(self, method: str, path: str, body: Any = None, human: bool = False,
@@ -976,7 +980,6 @@ def run_workflow(ctx: Ctx, run: CellRun) -> None:
 
 def run_schedule(ctx: Ctx, run: CellRun) -> None:
     a, b, e = ctx.mk('schedule', 1)
-    when = (datetime.now() .replace(microsecond=0)).isoformat()
     code, r = ctx.api.request('POST', '/api/schedules',
                               {'project_id': ctx.project, 'task': marker_prompt(a, b), 'schedule_type': 'once',
                                # UTC with Z: the server reads a naive run_at as UTC, so a naive
@@ -1129,7 +1132,6 @@ def run_mcp(ctx: Ctx, run: CellRun) -> None:
 
 
 def run_usage(ctx: Ctx, run: CellRun) -> None:
-    sids = [sid for _p, sid in ctx.notes.get('all_sessions', [])][:5]
     seen = []
     for proj, sid in ctx.notes.get('all_sessions', [])[:5]:
         s = ctx.api.session(proj, sid) or {}
@@ -1588,7 +1590,7 @@ def write_evidence(ctx: Ctx, cell: Cell, run: CellRun, status: str, token: dict,
         L += ['', '### Shell-tool invocations (the "was it attempted" evidence)', '```',
               san(run.artifacts['guardrail_tool_lines'])[:1200], '```']
     L += ['', '## Trace (sanitized, last 12 calls)', '```']
-    for t in ctx.api.trace[-12:] if ctx.api else []:
+    for t in list(ctx.api.trace)[-TRACE_KEEP:] if ctx.api else []:
         L.append(san(json.dumps({k: t[k] for k in ('method', 'path', 'status')}) + ' ' + json.dumps(t.get('response'))[:300]))
     L += ['```', '', f'Result: **{status}**']
     path.write_text('\n'.join(L) + '\n', encoding='utf-8')

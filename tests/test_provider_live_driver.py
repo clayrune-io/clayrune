@@ -787,3 +787,24 @@ def test_only_naming_no_cell_is_a_usage_error_not_a_green_empty_run(capsys):
     assert 'guardrial' in capsys.readouterr().err
     ok_id = D.CELLS[0].id
     assert D.parse(['--vendor', 'codex', '--only', ok_id]).only == ok_id
+
+
+def test_api_trace_keeps_only_the_calls_the_report_reads():
+    class Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b'{"x": 1}'
+    api = D.Api(5391, 'codex', opener=lambda req, timeout=None: Resp())
+    for i in range(D.TRACE_KEEP * 5):
+        api.request('GET', f'/api/ping/{i}')
+    assert len(api.trace) == D.TRACE_KEEP
+    assert api.trace[-1]['path'] == f'/api/ping/{D.TRACE_KEEP * 5 - 1}'
+
+
+def test_fixture_mcp_server_survives_a_json_line_that_is_not_an_object():
+    lines = '[1, 2]\n"x"\nnull\n' + json.dumps({'jsonrpc': '2.0', 'id': 7, 'method': 'tools/call'}) + '\n'
+    done = subprocess.run([sys.executable, str(TOOLS / 'fixture_mcp_server.py'), 'TOK'],
+                          input=lines, capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0, done.stderr
+    assert 'TOK' in done.stdout

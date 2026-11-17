@@ -23,6 +23,8 @@ for raw in sys.stdin:
         msg = json.loads(raw)
     except ValueError:
         continue
+    if not isinstance(msg, dict):
+        continue  # a JSON line that is not an object must not end the server
     method, mid = msg.get('method'), msg.get('id')
     if mid is None:
         continue  # notification
