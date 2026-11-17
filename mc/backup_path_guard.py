@@ -10,6 +10,8 @@ Importable without ``mc.backup`` (which imports this module).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 from pathlib import Path
@@ -58,3 +60,43 @@ def dest_refusal(member: str, dest: Path, roots: Iterable[Path]) -> Optional[str
     if any(is_within(dest, r) for r in roots):
         return None
     return f'{member}: destination {dest} is outside every location a backup may write to'
+
+
+def archive_project_paths(manifest: dict, read_member) -> list[Path]:
+    """Project paths named by the project records inside the archive itself.
+
+    A full restore after the records were lost must still be able to put a
+    project's unprotected files back, and the only thing that knows where that
+    project lived is its own record in the archive. Only a member that is
+    exactly ``records/projects/<id>.json`` for an id the manifest lists
+    (the rule ``_validate_records_write`` applies), whose name passes
+    ``member_name_refusal`` and whose sha256 matches the manifest, is parsed;
+    its ``project_path`` counts only if it is a non-empty absolute path that
+    is not a filesystem root. ``read_member(name)`` returns the member bytes.
+    Anything that fails a check is skipped, never an error: the member simply
+    adds no root, and the restore's own checks refuse what depended on it."""
+    ids = {p.get('id') for p in manifest.get('projects', []) if isinstance(p, dict)}
+    out: list[Path] = []
+    for name, meta in (manifest.get('files') or {}).items():
+        if not isinstance(meta, dict) or member_name_refusal(name):
+            continue
+        if not (name.startswith('records/projects/') and name.endswith('.json')):
+            continue
+        pid = name[len('records/projects/'):-len('.json')]
+        if not pid or '/' in pid or pid not in ids:
+            continue
+        try:
+            data = read_member(name)
+            if hashlib.sha256(data).hexdigest() != meta.get('sha256'):
+                continue
+            rec = json.loads(data.decode('utf-8'))
+        except (KeyError, ValueError, OSError):
+            continue
+        pp = rec.get('project_path') if isinstance(rec, dict) else None
+        if not isinstance(pp, str) or not pp.strip() or '\x00' in pp:
+            continue
+        p = Path(pp)
+        if not p.is_absolute() or p == p.parent:
+            continue
+        out.append(p)
+    return out

@@ -1173,6 +1173,14 @@ def restore_backup(archive_path: Path, categories: Optional[list[str]] = None,
         # restore here, before the first read or write. Every member is
         # checked, selected or not: a hostile archive is refused outright.
         allowed_roots = _restore_allowed_roots(paths) if dest_root is None else [Path(dest_root)]
+        # A project path named only by a record INSIDE the archive also counts
+        # (the records may be the very thing that was lost); reported below.
+        from_archive: list[Path] = []
+        if dest_root is None:
+            from_archive = [p for p in _path_guard.archive_project_paths(manifest, zf.read)
+                            if not any(_path_guard.is_within(p, k) and _path_guard.is_within(k, p)
+                                       for k in allowed_roots)]
+            allowed_roots = allowed_roots + from_archive
         planned: dict[str, Path] = {}
         for arcname, meta in manifest.get('files', {}).items():
             refusal = _path_guard.member_name_refusal(arcname)
@@ -1187,8 +1195,8 @@ def restore_backup(archive_path: Path, categories: Optional[list[str]] = None,
             refusal = _path_guard.dest_refusal(arcname, dest, allowed_roots)
             if refusal:
                 hint = ('' if meta.get('category') != 'unprotected' else
-                        ' (its project is not registered on this machine; restore the '
-                        'records category first, then the rest)')
+                        ' (an unprotected file is restored only under a project path that '
+                        'a project record on this machine, or in this archive, names)')
                 raise BackupError(f'refused archive member: {refusal}{hint}')
             planned[arcname] = dest
 
@@ -1206,6 +1214,7 @@ def restore_backup(archive_path: Path, categories: Optional[list[str]] = None,
             'announcement': announcement_for(manifest),
             'absent_categories': _absent_categories(manifest),
             'restored_categories': sorted(selected),
+            'project_paths_from_archive': [str(p) for p in from_archive],
             'per_category': {c: {'restored': 0, 'conflicts': 0, 'refused': 0, 'errors': []} for c in selected},
         }
 
