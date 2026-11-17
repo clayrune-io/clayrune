@@ -77,11 +77,12 @@ def _due(store: TestRunStore, project_id: str, now: float) -> bool:
         return True
 
 
-def maybe_sweep(store: TestRunStore, project_id: str, snapshots: list[dict[str, Any]],
+def maybe_sweep(store: TestRunStore, project_id: str, snapshots: Iterable[dict[str, Any]],
                 sessions: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Floor-read hook: sweep at most once per window, on the snapshots the read
     already holds, so the poll never walks the project's files a second time.
     Returns ``snapshots`` without the runs it closed."""
+    snapshots = list(snapshots)  # read once: the caller may hand a one-pass iterable
     now = _now()
     if not _due(store, project_id, now):
         return snapshots
