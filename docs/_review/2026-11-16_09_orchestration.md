@@ -40,14 +40,35 @@ until then read "Candidate findings" and "Progress log".
 
 ## Backlog cross-check
 
-(required by an addendum received 2026-11-16 21:56 PST; not yet done. Method:
-`GET /api/project/mission_control/backlog`, take every item whose status is
-open, in_progress or blocked, pick the ones whose subject is in this region,
-skip MC-1179 to MC-1183. Classify each as DONE / PARTLY DONE / NOT DONE /
-OBSOLETE or DUPLICATE / NEEDS A HUMAN, with item key, a five-word subject, the
-class and the evidence (file:line or commit). Do not PATCH or note any item.
-Do it after the last file is read and before the ranked summary. The final
-message lists the keys classed DONE or OBSOLETE.)
+Method: `GET /api/project/mission_control/backlog` (1,185 items, 91 with status
+open, in_progress or blocked). Every live item was searched in full for this
+region's subjects (hivemind, scheduler, steward, coordination, automation
+suggestions, keep-awake, question channel, limit and allowance handling, usage
+breakdown, engine and model selection). Twelve have their subject here.
+MC-1179 to MC-1185 are this review's own items and are skipped. Nothing was
+patched or noted. Code state is `master` @ `3f51b0e0`.
+
+| Key | Status now | Subject | Class | Evidence |
+|---|---|---|---|---|
+| MC-1076 | in_progress | Agents cannot write safety settings | **DONE** | The guard is on both steward enable routes (`mc/blueprints/steward_routes.py:190, 258`), the project write (`mc/blueprints/project_routes.py:712`) and the role editor (`mc/steward_role_writes.py:221`). Disable is left open as the item says (`steward_routes.py:278-280`). The browser path is kept by code: the guard returns None unless the caller is attributed to an agent (`mc/project_safety_settings.py:55-57`). Tests: `tests/test_project_safety_settings.py`. Only the owner's recorded browser test is outstanding. |
+| MC-998 | in_progress | Usage breakdown dashboard, Codex calibration | **PARTLY DONE** | The item's last open code point is met: Codex tokens-per-point now reads `ok` (live `GET`, 1,837 contributing intervals, 139 points, 248 runs, 5.8 s). What is left is UI acceptance, and that will fail for the Claude windows on **OS48**: the same request takes 103 s against a 25 s client timeout. Smallest next step: the OS48 fix, then the acceptance pass. |
+| MC-1071 | in_progress | Pace-aware routing to alternates | **PARTLY DONE** | Policy and dispatch are on master (`mc/engine_pace.py`, `mc/blueprints/agent_routes.py:13610-13618`); the dispatch answer carries the reroute record (`:13656`) and the chat line says it. The Floor figure does not: no reference to the pace record in `static/js/floor.js` or `mc/blueprints/floor_routes.py`. Left: that Floor line (the item calls it deferred) and a live routing acceptance, which needs a real weekly bar ahead of pace. OS50 is a low defect in the same policy. |
+| MC-1109 | in_progress | Keep machine awake setting | **NEEDS A HUMAN** | Code is complete and wired (`mc/wake_lock.py`, `server.py:3815-3819`); the Windows call was measured here and returns non-zero on engage and release. The one remaining check in the item is that the host stays awake overnight, which only the owner can observe. OS51 is a Linux-only log defect and does not block closing. |
+| MC-1132 | blocked | Hivemind roster and reviewer seat | **NEEDS A HUMAN** | HR-1 to HR-9 are on master. The two things left are the owner's: approve the HR-7 native-workflow pilot (`mc/hivemind_native_workflow.py` still has no production importer) and run the first real roster hivemind (the live install lists 26 runs, none a roster run). Read **OS33** before that run: reviewed integration holds on timing that is normal and has no release in the product, so the first real run is likely to end held. **OS24** and **OS25** apply to any run. |
+| MC-1140 | blocked | Steward role cycle directive, composer | **NEEDS A HUMAN** | The composer is on master (`mc/steward_role_task.py`, commit `b2755bc8`). The two human-applied patches are not applied: `docs/patches/steward-role-core-adapter.patch` and `docs/patches/steward-role-directive.patch`. Both still apply cleanly to master (`git apply --check`, measured) and neither is already in (`--check -R` fails). Until a person applies them no role can fire (**OS4**); after that, **OS5** and the unreported third gate in OS4 (b) are next. |
+| MC-1176 | in_progress | Steward decisions through agent-mail | **NEEDS A HUMAN** | `6048e618` is on master. The live end-to-end test needs the owner's go-ahead to run a cycle (the steward schedule is disabled). Two things to know first: the server-side half that commit changed, `steward_role_comms.default_mailer` under `raise_decision`, has no caller on master (searched `mc/`, `server.py`, `tools/`, the steward package; only tests and docs name it), so the test can only exercise the steward's own `send_mail.py` call from its chat; and if the mail fails to send, **OS16** applies (one attempt, nothing in the chat). |
+| MC-1004 | blocked | User-set per-action rules | **NEEDS A HUMAN** | No code. The item itself says it needs the owner's decisions before build, and its base is the human-owned fence file. The mc:question half it would build on has open defects: **OS16**, **OS17**, **OS18**. |
+| MC-1005 | blocked | Start agents on events | **NEEDS A HUMAN** | No code: a schedule is one of five timer types (`mc/blueprints/scheduler_routes.py:321`) and there is no event trigger record. The item is sequenced after MC-1004 and needs the owner's decisions. **OS1** and **OS2** are in the scheduler it would extend. |
+| MC-895 | open | Agent types, per-type model | **PARTLY DONE** | Phase 1 is on master, and the engine half is honoured: a character's provider, model and effort win over project and global (`mc/engine_selection.py:124-128, 268-280`). Phases 2 to 5 are design only; no binding map exists in `mc/` (searched). Smallest next step is the item's own: the {project, trigger} to character map. **OS45** damages these character files on a model auto-upgrade and should be fixed before more is built on them. |
+| MC-919 | open | Provider-agnosticism as vendor hedge | **PARTLY DONE** | Four runtimes are registered (`mc/agent_runtime.py:11523-11526`), selection never crosses vendors silently (`mc/engine_selection.py:137-140, 197-205`), and the user can name a second vendor for an exhausted first (`mc/engine_fallback.py`). The written standing position the item asks for is the owner's to write. One defect bears on it: **OS23**, where one error line blocks Gemini or Qwen on every project for 24 hours. |
+| MC-868 | open | Per-turn model switching, subprocesses | **NOT DONE** | No code; the item marks itself out of scope until the auto-router shipped. Nothing in this region blocks it and none of this pass's findings is the same defect. It is a product decision whether to build it at all. |
+
+Not in this region but touching it: MC-964 (memory retrieval; its allowance
+example is the stale-record case that **OS23** makes worse for two vendors).
+
+Blocked or in_progress items that the code shows finished: **MC-1076** (code
+complete, tests present). Items whose remaining step is a person's and nothing
+else: MC-1109, MC-1132, MC-1140, MC-1176.
 
 ## Streamlining
 
