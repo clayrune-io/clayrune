@@ -104,7 +104,8 @@
     let json = null;
     try { json = await res.json(); } catch (_) { /* a non-JSON body: fall through to the status text */ }
     if (!res.ok) {
-      const err = new Error((json && (json.error || json.message)) || `HTTP ${res.status}`);
+      const unreadable = window.DeskV1StoreUnreadable ? window.DeskV1StoreUnreadable.take(json) : null;   // 503 desk_store_unreadable: one notice, the server's plain words
+      const err = new Error(unreadable || (json && (json.error || json.message)) || `HTTP ${res.status}`);
       err.status = res.status;
       err.body = json;                 // the server's hint / suggestions travel with the message
       throw err;

@@ -2311,6 +2311,10 @@ _bp_desk.wire(
 )
 app.register_blueprint(_bp_desk.bp)
 
+# MC-1187 follow-up F2: an unreadable Desk store answers 503 on every Desk route.
+from mc.blueprints import desk_store_unreadable_routes as _bp_desk_store_unreadable  # noqa: E402
+app.register_blueprint(_bp_desk_store_unreadable.bp)
+
 from mc.blueprints import desk_export_routes as _bp_desk_export  # noqa: E402
 app.register_blueprint(_bp_desk_export.bp)
 

@@ -133,7 +133,7 @@ def test_an_unknown_site_is_still_refused_on_the_legacy_route(env):
 # -- LinkedIn has no API read ---------------------------------------------------
 
 def test_linkedin_cannot_be_set_to_an_api_read(env):
-    _create(env, platform='linkedin', identity='Clayrune', id='ch-li')
+    _create(env, platform='linkedin', identity='Clayrune', id='ch-li', account_kind='organization')
     _create(env, platform='x', identity='@ron', id='ch-x')
     r = env.patch('/api/desk/accounts/ch-li', json={'read_via': 'api'})
     assert r.status_code == 400 and 'only X' in r.get_json()['error']
@@ -145,7 +145,7 @@ def test_linkedin_cannot_be_set_to_an_api_read(env):
 
 
 def test_the_store_function_applies_the_same_rule_to_a_stored_account(env):
-    _create(env, platform='linkedin', identity='Clayrune', id='ch-li')
+    _create(env, platform='linkedin', identity='Clayrune', id='ch-li', account_kind='organization')
     _desk.set_account_read_settings('alpha', 'ch-li', platform='linkedin', read_via='pane')
     with pytest.raises(ValueError, match='only X'):
         _desk.set_account_read_settings('alpha', 'ch-li', read_via='api')          # platform read from the store
@@ -154,7 +154,7 @@ def test_the_store_function_applies_the_same_rule_to_a_stored_account(env):
 
 
 def test_a_stored_linkedin_api_setting_is_not_flipped_and_the_user_can_choose(env):
-    _create(env, platform='linkedin', identity='Clayrune', id='ch-li')
+    _create(env, platform='linkedin', identity='Clayrune', id='ch-li', account_kind='organization')
     with _desk._store_lock:                      # the record as saved before the option was removed
         store = _desk._read_store()
         store['accounts']['ch-li']['read_via'] = 'api'
