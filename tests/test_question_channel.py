@@ -496,3 +496,210 @@ def test_the_free_text_email_says_mail_cannot_answer_it():
     assert "verbatim" not in body
     assert "cannot be given by email" in body
     assert body.startswith(qc._OWN_BODY_MARKER)
+
+
+# ─── 3b. A failed send is not final (MC-1179 OS16 / MB13) ────────────────────
+#
+# Before: one attempt, one server-log line, the qid stayed in `_delivered`,
+# nothing in the chat, no push, no second timer, so the run parked for good.
+# No real mail and no real push: the sender, the push and the timer are fakes.
+
+import threading
+from mc import question_send_failure as qsf
+
+
+class _FakeTimer:
+    made: list = []
+
+    def __init__(self, delay, fn, args=(), kwargs=None):
+        self.delay, self.fn, self.args = delay, fn, args
+        self.daemon = False
+        self.finished = threading.Event()
+        self.cancelled = False
+        _FakeTimer.made.append(self)
+
+    def start(self):
+        pass
+
+    def cancel(self):
+        self.cancelled = True
+        self.finished.set()
+
+    def fire(self):
+        self.finished.set()
+        self.fn(*self.args)
+
+
+@pytest.fixture
+def chan(monkeypatch):
+    from types import SimpleNamespace
+    from mc.blueprints import push_mobile, project_routes
+    from mc import question_channel_retention as retention
+    _FakeTimer.made = []
+    qsf._attempts.clear()
+    qsf._retry_timers.clear()
+    pushes, sends = [], []
+    monkeypatch.setattr(qc.threading, 'Timer', _FakeTimer)
+    monkeypatch.setattr(project_routes, 'load_project', lambda pid: {'name': 'Proj'})
+    monkeypatch.setattr(push_mobile, 'PUSH_VAPID_PATH', object())  # "this process is the server"
+    monkeypatch.setattr(push_mobile, '_notify_push', lambda *a, **k: pushes.append((a, k)))
+    ns = SimpleNamespace(pushes=pushes, sends=sends, outcome=[], timers=_FakeTimer.made)
+
+    def fake_send(subject, body, to, mid):
+        sends.append(subject)
+        outcome = ns.outcome.pop(0) if ns.outcome else 'ok'
+        if outcome == 'ok':
+            return True
+        qsf.note_legacy(outcome)
+        return False
+
+    monkeypatch.setattr(qc, '_send_email', fake_send)
+    yield ns
+    qsf._attempts.clear()
+    qsf._retry_timers.clear()
+    retention._timers.clear()
+
+
+def _raise(chan_ns):
+    """Raise the question through the real turn-boundary path; return (session, key)."""
+    s = _session(waiting_for_question=True)  # no viewer, ever
+    agent_runtime.apply_mc_tool_blocks(s, QUESTION_TURN)
+    qc.on_question_raised(s)
+    key = s['pending_questions'][0]['question_id']
+    assert len(chan_ns.timers) == 1 and key in qc._delivered
+    return s, key
+
+
+def _notsent_lines(s):
+    return [l for l in s['log_lines'] if 'NOT' in l]
+
+
+def test_a_failed_send_makes_the_question_selectable_again_and_tells_the_chat(chan):
+    s, key = _raise(chan)
+    chan.outcome = ['rc1']  # SMTP refused / unreachable: can clear on its own
+    chan.timers[0].fire()
+
+    assert key not in qc._delivered, "a later boundary must be able to select it again"
+    lines = _notsent_lines(s)
+    assert len(lines) == 1 and 'NOT sent' in lines[0] and 'chat' in lines[0]
+    assert '@' not in lines[0], "no address or credential in the chat line"
+    assert len(chan.pushes) == 1, "the existing web push is raised"
+    assert 'could not be sent' in chan.pushes[0][0][1]
+    assert chan.pushes[0][1]['kind'] == 'agent'
+    assert len(chan.timers) == 2 and chan.timers[1].delay == qsf.BACKOFF_SECONDS[0]
+    assert chan.timers[1].args[0] == key and chan.timers[1].daemon
+
+    # A later turn boundary selects it again and takes over from the pending retry.
+    qc.on_question_raised(s)
+    assert chan.timers[1].cancelled, "the old retry must not also mail it"
+    assert len(chan.timers) == 3 and key in qc._delivered
+
+
+def test_a_failed_send_retries_with_backoff_then_stops_at_the_cap(chan):
+    s, key = _raise(chan)
+    chan.outcome = ['rc1'] * 10
+    i = 0
+    while i < len(chan.timers):  # fire every timer a failure arms
+        chan.timers[i].fire()
+        i += 1
+    assert len(chan.sends) == qsf.MAX_ATTEMPTS == 4
+    assert [t.delay for t in chan.timers[1:]] == list(qsf.BACKOFF_SECONDS)
+    assert 'Gave up after 4 attempts' in _notsent_lines(s)[-1]
+    assert len(chan.pushes) == 2, "first failure and the give-up, not every retry"
+    assert key not in qc._delivered
+
+
+def test_a_retry_that_goes_out_marks_the_question_delivered_and_stops(chan):
+    s, key = _raise(chan)
+    chan.outcome = ['rc1', 'ok']
+    chan.timers[0].fire()
+    chan.timers[1].fire()
+    assert len(chan.sends) == 2 and len(chan.timers) == 2, "no further timer after success"
+    assert key in qc._delivered and key not in qsf._attempts
+    assert 'sent to your offline channel' in s['log_lines'][-1]
+
+
+def test_a_failure_that_cannot_clear_alone_is_not_retried(chan):
+    s, key = _raise(chan)
+    chan.outcome = ['rc2']  # no mail credentials on this install
+    chan.timers[0].fire()
+    assert len(chan.timers) == 1, "retrying cannot fix missing credentials"
+    assert 'not set up' in _notsent_lines(s)[0] and 'not be retried' in _notsent_lines(s)[0]
+    assert len(chan.pushes) == 1
+    assert key not in qc._delivered
+
+
+def test_an_uncertain_send_is_never_repeated_and_the_chat_says_so(chan):
+    s, key = _raise(chan)
+    chan.outcome = ['timeout']  # the mailer ran out of time: bytes may have left
+    chan.timers[0].fire()
+    assert len(chan.sends) == 1 and len(chan.timers) == 1, "no automatic re-send"
+    assert key in qc._delivered, "and a later boundary must not re-mail it either"
+    assert 'NOT be re-sent automatically' in _notsent_lines(s)[0]
+    assert len(chan.pushes) == 1
+    qc.on_question_raised(s)
+    assert len(chan.timers) == 1
+
+
+def test_a_successful_send_behaves_as_before(chan):
+    s, key = _raise(chan)
+    chan.timers[0].fire()
+    assert len(chan.sends) == 1 and len(chan.timers) == 1
+    assert key in qc._delivered
+    assert _notsent_lines(s) == [] and chan.pushes == []
+    assert 'sent to your offline channel' in s['log_lines'][-1]
+
+
+def test_no_push_is_raised_from_a_process_that_is_not_the_server(chan, monkeypatch):
+    from mc.blueprints import push_mobile
+    monkeypatch.setattr(push_mobile, 'PUSH_VAPID_PATH', None)
+    s, key = _raise(chan)
+    chan.outcome = ['rc2']
+    chan.timers[0].fire()
+    assert chan.pushes == [] and len(_notsent_lines(s)) == 1
+
+
+def _agent_mail_chan(chan, monkeypatch, result):
+    """Force the agent-mail branch; `deliver` returns `result` and sends nothing."""
+    from mc import agent_mail_outbound_questions as mq
+    calls = []
+    monkeypatch.setattr(mq, 'deliver', lambda *a: calls.append(a) or dict(result))
+    s = _session(waiting_for_question=True)
+    agent_runtime.apply_mc_tool_blocks(s, QUESTION_TURN)
+    key = s['pending_questions'][0]['question_id']
+    qc._outbox[key] = {'project_id': 'p', 'project_name': 'P', 'session_id': 's', 'agent_mail': True,
+                       'questions': s['pending_questions'][0]['questions'], 'to': None}
+    qc._delivered.add(key)
+    return s, key, calls
+
+
+def test_agent_mail_retryable_result_is_retried_with_backoff(chan, monkeypatch):
+    s, key, calls = _agent_mail_chan(chan, monkeypatch, {'state': 'retryable', 'reason': 'transport_unavailable'})
+    qc._deliver_if_still_unattended(key, s, 45)
+    assert key not in qc._delivered
+    assert chan.timers and chan.timers[-1].delay == qsf.BACKOFF_SECONDS[0]
+    assert 'NOT sent' in _notsent_lines(s)[-1] and 'transport_unavailable' in _notsent_lines(s)[-1]
+    assert len(chan.pushes) == 1
+
+
+def test_agent_mail_uncertain_result_is_not_repeated(chan, monkeypatch):
+    s, key, calls = _agent_mail_chan(chan, monkeypatch, {'state': 'uncertain', 'reason': 'transport_uncertain'})
+    qc._deliver_if_still_unattended(key, s, 45)
+    assert chan.timers == [] and key in qc._delivered
+    assert 'NOT be re-sent automatically' in _notsent_lines(s)[-1]
+    assert len(chan.pushes) == 1
+
+
+def test_agent_mail_blocked_for_a_reason_that_needs_a_person_is_final(chan, monkeypatch):
+    s, key, calls = _agent_mail_chan(chan, monkeypatch, {'state': 'blocked', 'reason': 'consent_required'})
+    qc._deliver_if_still_unattended(key, s, 45)
+    assert chan.timers == [] and key not in qc._delivered
+    assert 'not be retried' in _notsent_lines(s)[-1]
+
+
+def test_agent_mail_accepted_result_is_a_plain_success(chan, monkeypatch):
+    s, key, calls = _agent_mail_chan(chan, monkeypatch, {'state': 'accepted', 'reason': ''})
+    qc._deliver_if_still_unattended(key, s, 45)
+    assert chan.timers == [] and key in qc._delivered
+    assert _notsent_lines(s) == [] and chan.pushes == []
+    assert s['log_lines'][-1] == '[question mail: accepted]'

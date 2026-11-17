@@ -21,7 +21,7 @@ from mc.agent_mail_enrollment_keys import EnrollmentRefused, SealReference
 # pull sends below never call it or select its retired route.
 from mc.agent_mail_outbound_signing import SEND_PATH as _LEGACY_SEND_PATH
 from mc.agent_mail_pull_schema import _validate
-from mc.agent_mail_service_client import ServiceClient, ServiceRefused, SEND, verify_pull_response
+from mc.agent_mail_service_client import ServiceClient, ServiceNotSent, ServiceRefused, SEND, verify_pull_response
 from mc.agent_mail_service_manifest import ServiceKeyCandidate
 from mc.agent_mail_ownership import OwnershipHeld, capacity_from
 from mc.agent_mail_outbound_state import initialize, metadata, seal, unseal
@@ -390,7 +390,7 @@ class Outbound:
                 session = ar.agent_sessions.get(row['session_id'])
                 if session is None:
                     raise _refused('session_unavailable')
-                validate(project, session, snapshot, busy=False)
+                validate(project, session, snapshot, busy=False, wake=False)
                 if value['kind'] == 'question' and matching(session, snapshot['question']) is None:
                     raise _refused('question_changed')
                 assert self.client is not None and self.reviewed_service is not None
@@ -462,7 +462,9 @@ class Outbound:
         except ServiceRefused as exc:
             reason = 'response_unverified' if str(exc) == 'response_unverified' else 'transport_unavailable'
             _log(f'[agent-mail] outbound held: {reason}', flush=True)
-            state, message_id = 'uncertain', ''
+            # A connection that never opened wrote nothing (MC-1179 MB13): the
+            # same intent may go again. Anything that may have written stays uncertain.
+            state, message_id = ('retryable' if isinstance(exc, ServiceNotSent) else 'uncertain'), ''
         except Exception:
             _log('[agent-mail] outbound held: transport_unavailable', flush=True)
             state, reason, message_id = 'uncertain', 'transport_unavailable', ''

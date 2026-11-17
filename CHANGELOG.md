@@ -1,5 +1,25 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - A question mail that fails to send is no longer lost (MC-1179 OS16, MB13)
+
+- A question raised by an unattended run got one attempt at being mailed; a failure wrote one server-log line, the qid stayed in `_delivered`, the chat showed nothing and no push was raised, so the run parked for good (on a default install with no mail credentials, every question).
+- A failed send now removes the qid from `_delivered` (a later boundary can select it again), appends a "question NOT sent, and why" chat line (closed phrases: no credential, address or remote error text), raises the existing web push (first failure and give-up; server process only), and re-arms the timer while the cause can clear on its own. Cap: 4 attempts in all, waits of 5 min, 15 min, 1 h. A cause that needs a person (no mail credentials, agent mail switched off) is final after the chat line and push. A send whose outcome is uncertain (mailer timeout, agent-mail `uncertain`) is NOT re-sent: it keeps the qid delivered, arms no timer, and the chat line says it may or may not have arrived. New module `mc/question_send_failure.py`; `question_channel.py` only calls it.
+- MB13, agent-mail send path: a connection that never opened (DNS, refused, network unreachable) raises the new `ServiceNotSent` and is stored `retryable`, not `uncertain`; a timeout or reset stays `uncertain`. `Outbound.send` no longer applies the `rollover_required` and provider-quota checks (`validate(..., wake=False)`); they still guard a wake.
+- Tests: `tests/test_agent_mail_send_not_sent.py` (new, 12) and 11 added to `tests/test_question_channel.py`. No existing test was rewritten. Branch candidate for review; no merge, push or server restart.
+
+## [2026-11-16] - Model auto-upgrade edits one line of a character file (MC-1179 OS45)
+
+- The unattended model auto-upgrade applied a change by round-tripping the character through `write_character`, which rebuilds the frontmatter from a fixed key list: a subagent `tools:` line (it limits what the subagent may call, so losing it widened the agent), `color:` and any other unmodelled key were dropped, across every pinned character at once.
+- New `mc/character_model_edit.py` replaces the value on the frontmatter `model:` line in place and writes atomically; every other byte (line endings, key order, quoting, body) is kept. A character with no usable `model:` line is refused and left untouched, reported as a skipped row.
+- A built-in whose file matched its hash marker before the change gets the marker rewritten, so it keeps receiving built-in updates; a user-edited built-in keeps its marker as it was. `write_character` and the human editor are unchanged.
+- Tests: `tests/test_character_model_edit.py`. Branch candidate for review; no merge, push or server restart.
+
+## [2026-11-16] - A failed interval schedule fire waits a full interval (MC-1179 OS1)
+
+- A failed dispatch of an `interval` schedule left `last_run` alone, so `_compute_next_run` found `last_run + interval` already past and returned now + 5 s: the row was retried on every 30 s tick for as long as the cause lasted (an hourly steward whose engine was out of allowance for five hours made about 600 attempts, activity lines and "Scheduled run blocked" pushes instead of 5).
+- The tick loop now sets `next_run = now + interval` on a failed interval fire, as the paused, condition-skip and steward-role paths already did. `last_run` is still stamped only on success; other schedule types are unchanged.
+- Tests: `tests/test_scheduler_interval_failure.py`. Branch candidate for review; no merge, push or server restart.
+
 ## [2026-11-16] - Self-update no longer resets away unpushed commits; the reset fallback is human-only (MC-1179 pass 07 / P43)
 
 - Before: a bare `POST /api/system/update` ran `git pull --ff-only` and, on any failure, `fetch` + `reset --hard origin/<branch>`. A diverged `master` with one local commit lost it (200 `resynced: true`); a local-only branch was repointed at `origin/master`. Both reproduced in scratch repos before the fix.

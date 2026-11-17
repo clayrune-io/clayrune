@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
 from mc import agent_runtime
+from mc import character_model_edit as _cme
 from mc import characters as _chars
 from mc import engine_selection as _es
 from mc.atomic_json import write_json_atomic
@@ -227,14 +228,11 @@ def _resolve_provider(config: dict, project: Optional[dict],
 
 def _character_apply(scope: str, name: str, project_path: Optional[str]) -> Callable[[str], None]:
     def _apply(new_model: str) -> None:
-        existing = _chars.read_character(scope, name, project_path=project_path)
-        if not existing:
-            raise RuntimeError(f'character {name!r} ({scope}) vanished before the upgrade applied')
-        engine = dict(existing.get('engine') or {})
-        engine['model'] = new_model
-        _chars.write_character(scope, name, existing.get('description') or '',
-                                existing.get('body') or '', project_path=project_path,
-                                overwrite=True, engine=engine)
+        # MC-1179 OS45: change the one `model:` value in place. Round-tripping
+        # through write_character dropped every frontmatter key it does not
+        # model (a subagent `tools:` line among them) and took a built-in out
+        # of built-in updates; see mc/character_model_edit.py.
+        _cme.set_character_model(scope, name, project_path, new_model)
     return _apply
 
 
