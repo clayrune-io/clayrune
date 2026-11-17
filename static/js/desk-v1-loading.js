@@ -64,7 +64,7 @@
   function paintHome(body, gate) {
     if (!body || !gate || (gate.kind !== 'loading' && gate.kind !== 'error')) return false;
     const region = gate.kind === 'error' ? boardErrorHTML(gate.message) : boardLoadingHTML(gate.message);
-    body.innerHTML = `<div class="desk-v1-home desk-v1-loading-home">${region}</div>`;
+    body.innerHTML = `<div class="desk-v1-loading-home">${region}</div>`;
     if (typeof window.deskV1HomeCrumbTools === 'function') {
       window.deskV1HomeCrumbTools();
       const host = document.getElementById('desk-v1-crumb-tools');
@@ -77,5 +77,12 @@
     return true;
   }
 
-  window.DeskV1Loading = { boardLoadingHTML, boardErrorHTML, paintHome };
+  // The body of the Desk window while the Desk family itself is still arriving
+  // (desk-load.js): the same frame, for a {kind, message} gate.
+  function preloadHTML(gate) {
+    const region = gate && gate.kind === 'error' ? boardErrorHTML(gate.message) : boardLoadingHTML(gate && gate.message);
+    return `<div class="desk-v1-loading-home">${region}</div>`;
+  }
+
+  window.DeskV1Loading = { boardLoadingHTML, boardErrorHTML, paintHome, preloadHTML };
 })();

@@ -219,8 +219,9 @@ def test_get_config_reports_desk_v1_live(ctx):
 
 
 def test_store_loads_before_the_shell():
-    html = (PROJECT_ROOT / 'static' / 'index.html').read_text(encoding='utf-8')
-    assert html.index('/static/js/desk-v1-store.js') < html.index('/static/js/desk-v1-shell.js')
+    # The Desk's scripts are imported in order by desk-v1-entry.js (MC-1205), no longer tagged in index.html.
+    entry = (PROJECT_ROOT / 'static' / 'js' / 'desk-v1-entry.js').read_text(encoding='utf-8')
+    assert entry.index("'desk-v1-store'") < entry.index("'desk-v1-shell'")
 
 
 def test_fixtures_are_not_served_to_the_page():

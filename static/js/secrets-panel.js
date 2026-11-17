@@ -735,9 +735,12 @@ let _secPresetsByName = null;
 
 function _secLoadPresets() {
   if (_secPresetsByName) return Promise.resolve(_secPresetsByName);
-  const eng = window.DeskV1Engines;
-  if (!eng || typeof eng.list !== 'function') return Promise.resolve({});
-  return eng.list(null).then((engines) => {
+  // DeskV1Engines is part of the Desk family, which loads in the background after boot.
+  return (window.DeskLoad ? window.DeskLoad.ready() : Promise.resolve()).then(() => {
+    const eng = window.DeskV1Engines;
+    if (!eng || typeof eng.list !== 'function') return {};
+    return eng.list(null);
+  }).then((engines) => {
     const m = {};
     (engines || []).forEach((e) => { if (e.credential && e.credential.vault_entry) m[e.credential.vault_entry] = e.credential; });
     return (_secPresetsByName = m);

@@ -1,13 +1,15 @@
 // Vault's read-only Desk accounts, plus the existing Needs you / Waiting on you lists.
-import { SigninMethod } from './desk-v1-connect-signin-method.js';
-import './desk-v1-connect-browser-check.js';
+// Desk code (DeskV1ConnectBrowserCheck, the sign-in method labels) is not
+// imported here: the Desk family loads in the background after boot
+// (desk-load.js), so it is awaited where it is used (render). A static import
+// would pull Desk files back onto the dashboard boot path (MC-1205).
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let pending = [], pendingKey = '', inFlight = null;
 const checks = new Set();
 
 function clear() {
-  for (const key of checks) window.DeskV1ConnectBrowserCheck.clear(key);
+  if (window.DeskV1ConnectBrowserCheck) for (const key of checks) window.DeskV1ConnectBrowserCheck.clear(key);
   checks.clear();
 }
 
@@ -37,6 +39,10 @@ async function render(host) {
     const data = await load();
     if (!host.isConnected) return;
     const rows = data.browser_accounts || [];
+    if (rows.length && window.DeskLoad) await window.DeskLoad.ready();
+    // Same bare URL the Desk's own modules import, so it is one instance.
+    const { SigninMethod } = rows.length ? await import('./desk-v1-connect-signin-method.js') : {};
+    if (!host.isConnected) return;
     host.innerHTML = rows.length ? `<h3>Browser accounts</h3><p class="memory-hint">Saved in Desk. Read-only here; passwords and sign-in codes are never stored in these rows.</p>` + rows.map(row => `
       <div data-browser-account="${esc(row.id)}" style="padding:10px 0;border-bottom:1px solid var(--border);overflow-wrap:anywhere">
         <strong>${esc(row.name)}</strong> <span>${esc(SigninMethod.labels[row.signin_method] || SigninMethod.labels.other)}</span>
