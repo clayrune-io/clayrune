@@ -1,5 +1,18 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Tools and small packages review: second wave (MC-1179 pass 12)
+
+- API reference check: `tools/regen-api-reference.py` now reads every blueprint under `mc/blueprints/` as well as `server.py` (585 routes, not 8), by reading source, never importing the server. Run as it stands it reports 339 routes missing from `CLAYRUNE_API.md` and 6 documented paths with no route; the reference itself was not regenerated. Two lines in the reference no longer tell agents to grep `server.py` or that the tool rewrites the file (TL33).
+- Backup CLI: the vault passphrase is no longer a command-line value. `--passphrase-env NAME` reads it from the environment, a terminal with neither gets a `getpass` prompt, and the old `--passphrase <value>` fails naming the new form (TL11).
+- Steward-role rollback: activating a role or the charter item updating itself is no longer reported as "edited after migration"; `--allow-edited` stays for real drift (TL36).
+- Tunnel: `mc_tunnel/build.rs` writes the embedded client secret to `OUT_DIR` instead of a tracked source file, and a key id without a key fails the build. Built by hand with cargo (no key, one key, both); the crate itself is still a skeleton (TL49). Bundled-cloudflared version text and citations of unpublished `docs/remote-access/` files corrected (TL50, bullets 3 and 4).
+- Pre-push guard also blocks private paths added by the commits being sent, not only the tip tree (TL24).
+- Removed `tools/_mc_restart.ps1`, which killed every `python.exe` running a `server.py` and had no caller (TL13).
+- `with-secret.py` keeps the child's stderr on stderr, scrubbed, instead of merging it into stdout (TL6).
+- Provider live pass: a cell whose agent ran its command is graded on the tool lines in the log instead of INCONCLUSIVE; `[tool: X] <preview>` lines count as events, not reply text (TL43).
+- Smaller: npm's global prefix is asked once per CLI-version run (TL10); hook installer help no longer describes a Codex merge (TL25); the notarize script prints spctl's verdict and cleans its temp files, and the frame-animation script escapes a quote in a file name (TL40, not run on macOS); the pyright baseline doc says the CI gate edit is still pending (TL34).
+- Left, with the question in the review report hand-back: TL3, TL4, the rest of TL25, TL40, TL45, TL48, and the per-CLI process listing in TL10.
+
 ## [2026-11-17] - Orchestration and scheduling review: the medium and low findings that needed no decision (MC-1179 pass 09)
 
 - Scheduler/steward: a `schedules.json` that will not parse is logged instead of read as "no schedules" (OS3). The legacy steward enable half was already closed.
