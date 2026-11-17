@@ -304,3 +304,20 @@ def test_wait_cap_sends_interim_then_rearms_for_the_job_path(client, monkeypatch
 
     ar._notify_spawner_unless_jobs_open(session, 'FINISHED - turn 2')
     assert sent == [sent[0], 'FINISHED - turn 2']
+
+
+@pytest.mark.parametrize('raw', ['nan', 'inf', float('nan'), float('inf')])
+def test_job_start_rejects_non_finite_timeout(client, raw):
+    # AP13: NaN survived `<= 0` and `min(nan, cap)`, and the watcher turned it
+    # into "no timeout"; inf is the same cap-removal when no cap is set.
+    resp = client.post('/api/project/p1/agent/s1/job',
+                       json={'command': 'echo hi', 'timeout_minutes': raw})
+    assert resp.status_code == 400
+
+
+@pytest.mark.parametrize('raw', [5, ['bash'], {'a': 1}, True])
+def test_job_start_rejects_a_non_string_shell_with_400_not_500(client, raw):
+    # AP14: .strip() on a non-string raised AttributeError, which was a 500.
+    resp = client.post('/api/project/p1/agent/s1/job',
+                       json={'command': 'echo hi', 'shell': raw})
+    assert resp.status_code == 400

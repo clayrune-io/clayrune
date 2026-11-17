@@ -237,3 +237,18 @@ def test_state_block_with_no_jobs_and_when_flag_off(rollover, monkeypatch, tmp_p
     monkeypatch.setitem(state.CONFIG, 'midturn_rollover_enabled', False)
     rollover.note_bg_job_result(session, 'tu1', 'Bash', DELIBERATE)
     assert not session.get('_mt_bg_jobs'), 'flag off records nothing'
+
+
+# ── AP39: a tool that only QUOTES the announcement is not a job ──────────────
+
+def test_parse_ignores_the_phrase_quoted_deep_in_a_long_result():
+    quoted = ('     1\t"""Background-job facts."""\n' * 30
+              + '    13\t  * The Bash tool_result for a background job (a foreground call '
+              'moved to the background after its timeout) names the task id\n')
+    assert bl.parse_tool_result(quoted) is None
+
+
+def test_rollover_ignores_a_non_shell_tool_that_quotes_the_announcement(rollover):
+    session = {'session_id': 'sess1', 'project_id': 'p1', 'proc': _Proc(424242)}
+    rollover.note_bg_job_result(session, 'tuR', 'Read', MOVED)
+    assert not session.get('_mt_bg_jobs')

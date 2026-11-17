@@ -371,8 +371,11 @@ def test_resume_cwd_is_the_transcript_tree(env, monkeypatch):
     transcript.write_text(json.dumps({'cwd': str(wt)}) + '\n', encoding='utf-8')
 
     class _RT:
+        # Like the real Claude runtime: a lookup under the PROJECT path already
+        # covers every agent-worktree transcript directory (AP60), so the
+        # resume lookup asks once with the project path.
         def transcript_path(self, path, csid):
-            return str(Path(path) / 't.jsonl') if Path(path) == wt and csid == CSID else None
+            return str(transcript) if Path(path) == pp and csid == CSID else None
 
     monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: _RT())
     assert ar._resume_cwd_for(str(pp), CSID) == str(wt)

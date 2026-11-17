@@ -555,8 +555,11 @@ def _holds_work(session: Mapping[str, Any]) -> bool:
         from mc import agent_jobs as _jobs
         sid = session.get('session_id')
         return bool(sid) and _jobs.open_job_count(sid) > 0
-    except Exception:
-        return False
+    except Exception as e:
+        # Fail closed like _owns_open_job: an unreadable job table must not
+        # read as "holds nothing" (AP27).
+        _log(f'[agent-shim-adopt] job-table check failed: {e}')
+        return True
 
 
 # ───────────────────────────────── adoption ──────────────────────────────────

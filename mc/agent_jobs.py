@@ -48,10 +48,14 @@ class ShellResolutionError(ValueError):
 
 def _tail(path: Path, n: int = TAIL_BYTES) -> str:
     try:
-        data = path.read_bytes()
+        # Seek to the end: a full test-suite log is megabytes (AP12).
+        with open(path, 'rb') as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - n))
+            data = fh.read()
     except OSError:
         return ''
-    return data[-n:].decode('utf-8', errors='replace')
+    return data.decode('utf-8', errors='replace')
 
 
 def _is_wsl_launcher(path: str, name: str) -> bool:
@@ -96,6 +100,9 @@ def resolve_shell(requested: Optional[str]) -> Dict[str, Any]:
     bash/sh exists anywhere on a Windows host, falls back to powershell and
     says so in `note` rather than failing the job outright.
     """
+    if requested is not None and not isinstance(requested, str):
+        raise ShellResolutionError(
+            f"unknown shell {requested!r} -- must be one of {', '.join(VALID_SHELLS)}")
     name = (requested or 'bash').strip().lower()
     if name not in VALID_SHELLS:
         raise ShellResolutionError(

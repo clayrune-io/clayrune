@@ -58,6 +58,8 @@ _OUTPUT_RE = re.compile(r'Output is being written to:\s*(.+?\.output)\b')
 _OUTPUT_FALLBACK_RE = re.compile(r'Output is being written to:\s*([^\n]+?)(?:\.\s|\.$|$)')
 _TASK_ID_RE = re.compile(r'(?:\(ID:|with ID:|task ID:)\s*([A-Za-z0-9_-]+)')
 _MOVED_RE = re.compile(r'moved to the background', re.I)
+# Genuine announcements put the hint phrase in the first ~100 characters.
+_ANNOUNCE_HEAD_CHARS = 400
 _BG_HINT_RE = re.compile(r'running in background|moved to the background|'
                          r'Output is being written to:', re.I)
 
@@ -65,7 +67,11 @@ _BG_HINT_RE = re.compile(r'running in background|moved to the background|'
 def parse_tool_result(text: Any) -> Optional[Dict[str, Any]]:
     """Facts from a Bash tool_result that announces a background job, or None
     when the text is not one. Never raises."""
-    if not isinstance(text, str) or not text or not _BG_HINT_RE.search(text):
+    # The CLI's announcement is a short line at the head of the result. A tool
+    # that merely QUOTES it deeper in a long text (a Read of this module's own
+    # docstring) is not a background job (AP39).
+    if (not isinstance(text, str) or not text
+            or not _BG_HINT_RE.search(text[:_ANNOUNCE_HEAD_CHARS])):
         return None
     try:
         m = _OUTPUT_RE.search(text) or _OUTPUT_FALLBACK_RE.search(text)

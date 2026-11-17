@@ -386,6 +386,12 @@ def kill_tree_if_ours(pid: Optional[int], create_time: Optional[float],
 
 
 # ───────────────────────────── atomic JSON ──────────────────────────────────
+# The temp name is one per process per target, so two threads writing the same
+# file (the serve threads and the main thread all write the manifest) must not
+# overlap: one would truncate or rename the other's temp file.
+_JSON_WRITE_LOCK = threading.Lock()
+
+
 def write_json_atomic(path: str, obj: Any) -> None:
     """tmp-in-same-dir + fsync + os.replace (stdlib twin of
     mc.atomic_json.write_json_atomic). The tmp name matches the orphan-tmp
@@ -393,18 +399,19 @@ def write_json_atomic(path: str, obj: Any) -> None:
     Windows replace fail transiently, hence the retry."""
     d, name = os.path.split(path)
     tmp = os.path.join(d, f'.{name}.tmp{os.getpid()}')
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, 'w', encoding='utf-8') as f:
-        json.dump(obj, f)
-        f.flush()
-        os.fsync(f.fileno())
-    for _ in range(100):
-        try:
-            os.replace(tmp, path)
-            return
-        except PermissionError:
-            time.sleep(0.01)
-    os.replace(tmp, path)
+    with _JSON_WRITE_LOCK:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(obj, f)
+            f.flush()
+            os.fsync(f.fileno())
+        for _ in range(100):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                time.sleep(0.01)
+        os.replace(tmp, path)
 
 
 # ───────────────────────────── lifetime policy ──────────────────────────────
@@ -876,7 +883,7 @@ class Shim:
             self.owner = _Owner(int(owner_pid), proc_create_time(int(owner_pid)), '', None)
         try:
             self._spawn_cli()
-        except OSError as e:
+        except (OSError, KeyError, TypeError, ValueError) as e:   # a spec with no usable argv too
             self._slog(f'cli spawn failed: {e}')
             write_json_atomic(self._p('exit.json'), {
                 'schema': SCHEMA, 'launch_id': self.spec.get('launch_id'), 'rc': None,

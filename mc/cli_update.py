@@ -150,7 +150,9 @@ def _cmp(a: Optional[str], b: Optional[str]) -> int:
 
 def installed_version(binary: Any, run_fn: Callable = _run) -> Optional[str]:
     rc, out = run_fn([str(binary), '--version'], 60)
-    return _ver(out) if rc == 0 or out else None
+    # Only a clean exit counts: a failed probe's text (`_run` puts the argv in
+    # its timeout message) can hold a dotted triple, e.g. an nvm path (AP47).
+    return _ver(out) if rc == 0 else None
 
 
 def npm_exe(binary: Any) -> Optional[str]:

@@ -176,6 +176,9 @@ def note_tool_result_text(session, tool_name, text):
         total -= len(removed['tool']) + len(removed['head'])
 
 
+_BG_SHELL_TOOLS = frozenset({'bash', 'powershell', 'shell', 'run_shell_command'})
+
+
 def note_bg_job_result(session, tool_use_id, tool_name, text):
     """Attach a background job's output file, task id and processes to its
     `_mt_bg_jobs` entry from the Bash tool_result that announced it
@@ -194,6 +197,10 @@ def note_bg_job_result(session, tool_use_id, tool_name, text):
                    None)
         if job is None:
             if not facts['moved_on_timeout']:
+                return
+            # Only a shell tool can be moved to the background; a Read or
+            # Grep whose output quotes the phrase is not a job (AP39).
+            if tool_name and tool_name.lower() not in _BG_SHELL_TOOLS:
                 return
             job = {'tool': tool_name or 'Bash', 'input': '(foreground call moved to the '
                    'background; see the recent tool calls)', 'tool_use_id': tool_use_id}
@@ -459,13 +466,17 @@ def build_state_block(session, cwd):
                        or '(none)')
     latest = session.get('_mt_latest_user_msg')
     latest_text = (f"--- Latest user message (current direction) ---\n"
-                   f"{latest or '(not recorded; use the recent conversation)'}\n\n")
+                   f"{latest or '(none recorded after the first message)'}\n\n")
+    # A dispatched one-prompt worker never records a later message, and its
+    # first message IS the task: only call it historical when something later
+    # superseded it (AP40).
+    first_label = ("historical; may be long finished, not the current task"
+                   if latest else "the current task; no later message was recorded")
     return (
         "=== Mid-task rollover state ===\n"
         f"--- Unanswered user messages (answer these first) ---\n{unanswered_text}\n\n"
         f"{latest_text}"
-        f"--- First message of this chat (historical; may be long finished, "
-        f"not the current task) ---\n{task}\n\n"
+        f"--- First message of this chat ({first_label}) ---\n{task}\n\n"
         f"--- Working directory ---\n{cwd}\n"
         f"Branch: {_git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD')}\n\n"
         f"--- git status --short ---\n{_git(cwd, 'status', '--short')}\n\n"

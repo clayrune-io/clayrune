@@ -2035,7 +2035,7 @@ def agent_job_start(project_id, session_id, *, job_data=None, completion_hook=No
                            else min(_agent_jobs.DEFAULT_TIMEOUT_MINUTES, cap or _agent_jobs.DEFAULT_TIMEOUT_MINUTES))
     except (TypeError, ValueError):
         return jsonify({'error': 'timeout_minutes must be a number'}), 400
-    if timeout_minutes <= 0:
+    if not math.isfinite(timeout_minutes) or timeout_minutes <= 0:  # NaN/inf removed the cap (AP13)
         return jsonify({'error': 'timeout_minutes must be positive'}), 400
     if cap and cap > 0:
         timeout_minutes = min(timeout_minutes, float(cap))

@@ -563,3 +563,13 @@ def test_script_endpoint_honors_disabled_toggle(srv, monkeypatch, state_file):
     report = server.app.test_client().post('/api/cli-updates/run').get_json()
     assert report['skipped'] and report['clis'] == []
     assert not state_file.exists()
+
+
+def test_failed_version_probe_is_not_read_as_a_version_from_its_error_text():
+    # AP47: _run puts the argv in its timeout text; an nvm path holds a dotted
+    # triple that used to read as the installed version.
+    nvm = '/home/u/.nvm/versions/node/v20.11.1/bin/codex'
+    timed_out = lambda argv, timeout=60, env=None: (
+        1, "TimeoutExpired: Command '['%s', '--version']' timed out after 60 seconds" % nvm)
+    assert cli_update.installed_version(nvm, timed_out) is None
+    assert cli_update.installed_version(nvm, lambda *a, **k: (0, 'codex-cli 0.158.0')) == '0.158.0'

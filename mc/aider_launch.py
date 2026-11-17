@@ -41,6 +41,7 @@ def prepare(cmd: list[str], cwd: str, env: dict[str, str]) -> list[str]:
         evidence: Any = json.loads(result.stdout.splitlines()[-1])
     except (ValueError, IndexError) as exc:
         raise RuntimeError('restricted Aider preflight returned no guard proof') from exc
-    if evidence != {'restricted_aider': '0.86.2', 'guard': 'ready'}:
+    from mc.aider_source_pin import VERSION
+    if evidence != {'restricted_aider': VERSION, 'guard': 'ready'}:
         raise RuntimeError('restricted Aider preflight returned unexpected guard proof')
     return prefix + cmd[1:]

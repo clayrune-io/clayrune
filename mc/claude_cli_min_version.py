@@ -86,8 +86,10 @@ def installed_version(binary: Any, *, run=subprocess.run) -> Optional[str]:
         return hit[1]
     ver = None
     try:
+        # stdin=DEVNULL: an inherited stdin is invalid on a console-less server
+        # and raises before the child runs, which skipped the floor (AP56).
         r = run([str(binary), '--version'], capture_output=True, text=True,
-                encoding='utf-8', errors='replace', timeout=30,
+                stdin=subprocess.DEVNULL, encoding='utf-8', errors='replace', timeout=30,
                 creationflags=_NO_WINDOW)
         raw = (r.stdout or r.stderr or '').strip()
         ver = raw.splitlines()[0] if raw else None

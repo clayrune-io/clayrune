@@ -121,8 +121,10 @@ def _persist_pid_ledger():
             } for e in tracked_processes.values()]
         _atomic_write_text(_PID_LEDGER_PATH, json.dumps(
             {'mc_pid': os.getpid(), 'written_at': now_iso(), 'children': entries}))
-    except Exception:
-        pass  # ledger is best-effort; a write failure must never break a spawn
+    except Exception as e:
+        # best-effort: a write failure must never break a spawn, but a ledger
+        # that stops being written means the next boot reaps nothing (AP7).
+        _log(f"[reaper] ledger write failed: {e}", flush=True)
 
 
 def _should_reap_entry(entry, live_image, live_ct):
@@ -158,7 +160,8 @@ def _reap_prior_instance_strays(protected=()):
         if not _PID_LEDGER_PATH.exists():
             return
         data = json.loads(_PID_LEDGER_PATH.read_text(encoding='utf-8'))
-    except Exception:
+    except Exception as e:
+        _log(f"[reaper] ledger read failed: {e}", flush=True)
         return
     me = os.getpid()
     prior_mc = data.get('mc_pid')
@@ -201,5 +204,5 @@ def _reap_prior_instance_strays(protected=()):
                  f"instance (was PID {prior_mc})")
         _atomic_write_text(_PID_LEDGER_PATH, json.dumps(
             {'mc_pid': me, 'written_at': now_iso(), 'children': []}))
-    except Exception:
-        pass
+    except Exception as e:
+        _log(f"[reaper] ledger reset failed: {e}", flush=True)

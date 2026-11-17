@@ -1498,3 +1498,98 @@ def test_same_pid_reconnect_mid_write_keeps_the_seq(tmp_path):
     assert sh.last_seq == 1
     assert sh._do_send(c2, _StubRF(b'ONE\n'), ['SEND', '1', '4']) is True
     assert stdin.writes == [b'ONE\n'] and c2.replies == ['ACK 1']
+
+
+def test_send_drops_the_socket_when_the_retry_also_times_out(tmp_path):
+    """AP21: a second timeout used to raise with the socket still connected and
+    the sequence number un-advanced, so a late ACK for the old payload was read
+    as the answer to the next send."""
+    class _Dead:
+        def sendall(self, data):
+            raise socket.timeout('timed out')
+
+        def close(self):
+            pass
+
+    client = C.ShimClient(tmp_path)
+    client._sock, client._rf = _Dead(), _Dead()
+
+    def reconnect():
+        client._sock, client._rf = _Dead(), _Dead()
+        return C.Hello(0, 1, True)
+
+    client.connect = reconnect
+    with pytest.raises(C.ShimUnavailable):
+        client.send(b'payload\n')
+    assert client._sock is None and client._rf is None
+
+
+@pytest.mark.parametrize('argv', [None, [None]])
+def test_spec_without_a_usable_argv_still_writes_exit_json(tmp_path, argv):
+    """AP19: a missing or malformed argv raised past run()'s OSError catch, so
+    the shim died with no exit.json and the server could not tell dead from
+    slow. It is a spawn failure and is recorded as one."""
+    sdir = C.session_dir(tmp_path, 'bad-argv')
+    spec = C.build_spec(argv=['placeholder'], cwd=None, mode='oneshot',
+                        session_id='bad-argv', owner_pid=0)
+    if argv is None:
+        spec.pop('argv')
+    else:
+        spec['argv'] = argv
+    C.write_spec(sdir, spec)
+    assert shim.Shim(str(sdir)).run() == 1
+    info = json.loads((Path(sdir) / 'exit.json').read_text(encoding='utf-8'))
+    assert info['reason'] == 'spawn_failed' and info['rc'] is None
+
+
+def test_concurrent_json_writes_to_one_target_never_tear_or_fail(tmp_path):
+    """AP18: the temp name is one per process per target, so two threads
+    writing the same manifest shared a temp file (truncate under the other's
+    writer, replace of an already-renamed temp)."""
+    target = str(tmp_path / 'shim.json')
+    errors = []
+
+    def writer(tag):
+        try:
+            for i in range(150):
+                shim.write_json_atomic(target, {'tag': tag, 'i': i, 'pad': 'x' * 2000})
+        except Exception as exc:        # noqa: BLE001 - the failure is the finding
+            errors.append(repr(exc))
+
+    threads = [threading.Thread(target=writer, args=(n,)) for n in range(4)]
+    [t.start() for t in threads]
+    [t.join(60) for t in threads]
+    assert errors == []
+    assert json.loads(Path(target).read_text(encoding='utf-8'))['pad'] == 'x' * 2000
+
+
+def _reference_cut(buf: bytes, final: bool):
+    """The byte-by-byte rule LogTail._cut had before AP22, kept as the oracle."""
+    for i, b in enumerate(buf):
+        if b == 10:
+            end = i + 1
+        elif b == 13:
+            if i + 1 < len(buf):
+                end = i + 2 if buf[i + 1] == 10 else i + 1
+            elif final:
+                end = i + 1
+            else:
+                return None, buf
+        else:
+            continue
+        return buf[:end], buf[end:]
+    return None, buf
+
+
+def test_logtail_cut_matches_the_byte_by_byte_rule(tmp_path):
+    """AP22: _cut now scans with a compiled search; every terminator spelling
+    and the held-back trailing CR must cut exactly where the old loop did."""
+    cases = [b'', b'abc', b'abc\n', b'abc\r\n', b'abc\r', b'abc\rdef', b'\r', b'\n', b'\r\n',
+             b'a\r\r\nb', b'x' * 5000, b'x' * 5000 + b'\r', b'x' * 5000 + b'\r\ny', b'\n\n']
+    for buf in cases:
+        for final in (False, True):
+            tail = C.LogTail(tmp_path / 'out.log')
+            tail._buf = buf
+            got = tail._cut(final)
+            want, rest = _reference_cut(buf, final)
+            assert (got, tail._buf) == (want, rest), (buf[:20], final)

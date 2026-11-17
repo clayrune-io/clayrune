@@ -118,3 +118,17 @@ def test_codex_metadata_refusal_keeps_vendor_native_identity(tmp_path, monkeypat
     assert rows[0]['provider'] == 'codex'
     assert rows[0]['provider_session_id'] == CSID
     assert 'claude_session_id' not in rows[0]
+
+
+def test_recorded_cwd_does_not_decode_rows_that_cannot_hold_a_cwd(tmp_path, monkeypatch):
+    # AP61: a transcript that never records a directory was fully JSON-decoded
+    # on every resume just to return nothing.
+    from mc import resume_cwd
+    transcript = tmp_path / 't.jsonl'
+    transcript.write_text('\n'.join(
+        json.dumps({'type': 'assistant', 'n': i}) for i in range(50)) + '\n', encoding='utf-8')
+    decoded = []
+    real = resume_cwd.json.loads
+    monkeypatch.setattr(resume_cwd.json, 'loads', lambda s: decoded.append(s) or real(s))
+    assert resume_cwd.recorded_cwd(transcript) is None
+    assert decoded == []

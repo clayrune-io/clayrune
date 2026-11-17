@@ -105,3 +105,17 @@ def test_build_command_keeps_model_on_a_new_or_unknown_cli(monkeypatch):
 def test_build_command_other_models_untouched_on_an_old_cli(monkeypatch):
     cmd = _build(monkeypatch, '2.1.100 (Claude Code)', model='claude-opus-5-5')
     assert cmd[cmd.index('--model') + 1] == 'claude-opus-5-5'
+
+
+def test_version_probe_does_not_inherit_stdin():
+    # AP56: an inherited stdin is invalid on a console-less server and raises
+    # before the child runs, which silently disabled the model floor.
+    import subprocess
+    seen = {}
+
+    def run(argv, **kw):
+        seen.update(kw)
+        return SimpleNamespace(stdout='2.1.300 (Claude Code)', stderr='')
+
+    assert m.installed_version('claude-stdin', run=run) == '2.1.300 (Claude Code)'
+    assert seen.get('stdin') == subprocess.DEVNULL

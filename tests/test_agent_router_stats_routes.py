@@ -68,3 +68,17 @@ def test_empty_data_dir(client_and_dir):
     client, _ = client_and_dir
     assert client.get('/api/router/stats').get_json() == {
         'totals': {}, 'by_pair': {}, 'last_fallback': None, 'projects': 0}
+
+
+def test_a_non_numeric_counter_in_one_file_does_not_fail_the_aggregate(client_and_dir):
+    # AP54: int(v or 0) on a state-file value used to make the route a 500.
+    client, data_dir = client_and_dir
+    (data_dir / 'good_router_stats.json').write_text(json.dumps({
+        'totals': {'auto': 2}, 'by_pair': {'opus->haiku': 1}}), encoding='utf-8')
+    (data_dir / 'odd_router_stats.json').write_text(json.dumps({
+        'totals': {'auto': 'many', 'manual': None, 'fallback': [1]},
+        'by_pair': {'opus->haiku': 'x', 'sonnet->haiku': 4}}), encoding='utf-8')
+    resp = client.get('/api/router/stats')
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body['totals']['auto'] == 2 and body['by_pair'] == {'opus->haiku': 1, 'sonnet->haiku': 4}

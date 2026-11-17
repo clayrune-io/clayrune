@@ -217,3 +217,19 @@ def test_hook_does_not_run_netstat_for_a_command_with_no_kill(monkeypatch):
     assert calls == []
     assert hook_main({'tool_name': 'Bash', 'tool_input': {'command': 'kill 4242'}}) == 2
     assert calls == [1]
+
+
+def test_listener_scan_reads_the_port_the_spawn_factory_exports(monkeypatch):
+    # AP33: agent_spawn exports the bound port as CLAYRUNE_PORT; a server on a
+    # port set only in config.json has no MC_PORT, so the listener was unseen.
+    import subprocess
+    from mc import process_guard
+
+    def fake_run(argv, **kwargs):
+        return subprocess.CompletedProcess(
+            argv, 0, stdout='  TCP    0.0.0.0:6123    0.0.0.0:0    LISTENING    777\n')
+
+    monkeypatch.setattr(process_guard.subprocess, 'run', fake_run)
+    monkeypatch.delenv('MC_PORT', raising=False)
+    monkeypatch.setenv('CLAYRUNE_PORT', '6123')
+    assert process_guard.clayrune_listener_pids() == {'777'}

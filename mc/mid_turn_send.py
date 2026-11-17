@@ -24,6 +24,8 @@ import json
 import time
 from typing import Any, Callable, Optional, Tuple
 
+from mc.core import _log
+
 STEER = 'steer'
 QUEUE = 'queue'
 INTERRUPT = 'interrupt'
@@ -48,7 +50,7 @@ def provider_mode_b_kind(provider: str) -> Optional[str]:
         from mc import agent_runtime
         return agent_runtime.get_runtime(provider).capabilities().mode_b_kind
     except Exception as e:
-        print(f'[mid-turn-send] capabilities lookup failed for {provider!r}: {e}', flush=True)
+        _log(f'[mid-turn-send] capabilities lookup failed for {provider!r}: {e}')
         return None
 
 
@@ -165,7 +167,13 @@ def drain_next(session: dict, deliver: Callable[[dict, str], Tuple[bool, str]]) 
     msg = pending.pop(0)
     if not pending:
         session.pop('pending_followups', None)
-    ok, err = deliver(session, msg)
+    try:
+        ok, err = deliver(session, msg)
+    except Exception as e:
+        # The message is already off the queue: say so in the chat rather
+        # than let the caller log it to the server log only (AP41).
+        _log(f'[mid-turn-send] queued follow-up delivery raised: {e}')
+        ok, err = False, f'{type(e).__name__}: {e}'
     if not ok:
         session['log_lines'].append(f"[queued follow-up not sent ({err}): {msg}]")
     return True
