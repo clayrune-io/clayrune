@@ -715,6 +715,186 @@ Test: none.
   and the manager's id set; no removal was found in `_run`. Not followed into
   the housekeeping reaper, so this is unconfirmed.
 
+## 3. The read side: search, per-turn delivery, the push observer, the note gate
+
+Timings in this section are **measured** on a copy of the reviewed install's
+memory directory in a scratch folder (`_scratch/p3/verify3.py`): 837 `.md`
+files (3.5 MB), an archive of 2.54 MB, 6,357 corpus units of which 5,517 are
+archive lines.
+
+| Operation | Time |
+|---|---|
+| `_memory_search`, cold cache (first search after a restart) | 1,612 ms |
+| `_memory_search`, warm | 79 ms |
+| `_memory_search`, first search after one line is appended to the archive | 358 ms |
+| `_memory_search`, first search after `SESSION_LOG.md` changes | 105 ms |
+| push-observer style query (`expand=0`, `keep_internal=True`), warm | 31 ms |
+| `delivery_stats.json` read + dump + write (one recorded search) | 14 ms |
+| skill-stats sidecar read + dump + write (one counter bump, 2.93 MB) | 29 ms |
+| `distiller.list_proposed()` (2,448 artifacts) | 520 to 705 ms |
+| `memory_note_gate._foreign_vault_of`, one unresolved link | 898 ms |
+
+For scale: the 2026-09-10 efficiency review measured the same search at 26 ms
+over 115 files.
+
+#### ML24 · high · E — the push observer runs a full search on the stream-reader thread for every file tool call, delivers nothing, and its log has no cap
+
+`memory_push_mode` ships as `'report'` (`server.py:612`), which is the only
+implemented mode: the observer never delivers to the agent
+(`server.py:603-606`). For every Read, Edit, Write or Grep tool input, and for
+every tool result with an error-looking line, `_observe`
+(`mc/memory_push.py:345-397`) calls `_memory_search` (`:351`) on the thread
+that reads the agent's stream (`agent_routes.py:4479-4503`, called from the
+reader at `:6324`, `:6732`), then appends up to six `near_miss` rows per call
+to a JSONL log.
+
+- **Per call:** 31 ms warm; 358 ms when the archive changed since the last
+  search (ML26), because this is then the search that rebuilds the cache.
+  That time is taken from stream reading.
+- **Log growth, read-only:** 129.6 MB, 273,371 rows since 2026-09-14, of
+  which 219,060 are `near_miss`. A grep of `mc/memory_push.py` for a rotation
+  or size cap finds none. One reader exists
+  (`tools/memory-eval/push_review.py`), run by hand.
+- **The data it logs is partly wrong.** `_ERROR_LINE_RE` contains
+  `\b[45]\d{2}\b` (`:102`), which matches any standalone number from 400 to
+  599: a line number, a byte count, a port. And `already = fname in
+  turn_delivered` (`:357`, `:366`) tests a file name against a set of unit
+  ids (`memory_turn._uid_of`); for archive and managed hits those differ, so
+  the "already delivered" column is wrong exactly where the comment at
+  `:367-368` says it matters.
+
+Smallest fix: sample (one observed call in N), drop `near_miss` rows below
+the top two, rotate the log at a fixed size, require an HTTP-ish context
+around the status-code pattern (`HTTP`, `status`, `code` within the line),
+and compare uids with uids.
+
+Test: `tests/test_memory_push.py` covers extraction and scoring; nothing
+bounds the log or asserts the `already` column for an archive hit.
+
+#### ML25 · high · E — every dispatch walks every proposed artifact of every project and rewrites the stats sidecar two or more times; a steward dispatch rewrites it once per withheld artifact
+
+`exploration_read_floor` (`mc/distiller.py:2378-2412`) runs at every dispatch
+with a task (`agent_routes.py:5642-5645`, `scheduler_routes.py:551-555`):
+
+- `_increment_counter('readback_query')` (`:2388`), and `readback_hit` on a
+  match (`:2408`). Each bump is a locked read, a full JSON parse, and a full
+  atomic rewrite of the sidecar (`:507-513`): 29 ms on a 2.93 MB file.
+- `list_proposed()` (`:2390`) reads every artifact file of every project,
+  twice each (`_read_proposed_meta`, `:2822`, then `_exploration_snippet`,
+  `:2831`), before the scope filter is applied (`:2393`): 520 to 705 ms for
+  2,448 artifacts.
+- For an unattended consumer, one more bump **per withheld artifact**
+  (`:2398-2400`). Read-only count: for the project with the most proposals,
+  474 in-scope explorations are not `interactive`. 474 bumps at 29 ms is
+  about 13.7 s of sidecar rewriting per steward dispatch (product of two
+  measured numbers; the loop itself was not run because it writes under
+  `data/`).
+
+`_proposed/` only grows on its own: promoted and rejected artifacts leave it,
+unreviewed ones stay (2,448 files, 4.8 MB).
+
+Smallest fix: count blocked artifacts in a local variable and bump once;
+filter by scope from the directory name before reading any file; cache
+`list_proposed()` by the `_proposed/` tree's mtime; keep counters in memory
+and flush on a timer.
+
+Test: `tests/test_distiller_readback.py` checks results on a handful of
+artifacts; nothing measures or bounds the work.
+
+#### ML26 · medium · E — the archive is one cache unit, so every eviction re-reads, re-tokenises and re-dedupes all of it
+
+`_mem_corpus` caches per file by stat (`mc/memory.py:2530-2543`); the archive
+is one file (`:2439-2443`). `_append_to_archive` rewrites the whole file per
+eviction (`:4687-4697`), and once the session-log ring is full every commit
+evicts. So each session end or checkpoint costs a 2.5 MB read and rewrite,
+and the next search pays 358 ms instead of 79 ms (table above). After a
+restart the first search of each project pays 1.6 s, inside dispatch.
+
+In `_memory_search` itself, `_mem_snippet` and `_head` are computed for every
+matched unit before the sort and the top-k cut (`:2709-2713`), config is read
+per unit (`:2682`), and the supersede graph is rebuilt per query
+(`:2720-2721`). Read, not separately measured; they are inside the 79 ms.
+
+Smallest fix: append to the archive with an append-mode write instead of
+read-modify-write, and cache archive tokenisation by (size, last line) so an
+append tokenises only the new lines; compute snippets for the top-k only.
+
+Test: none on cost.
+
+#### ML27 · medium · E/L — delivery telemetry rewrites a 1.4 MB JSON file on every search, never prunes it, and a corrupt read resets it
+
+`mc/memory_delivery.py:92-137`: every recorded search (each dispatch, and
+each live turn through `memory_turn.py:415`) reads the whole stats file,
+updates it and writes it back, indented and key-sorted, under one
+process-wide lock. Read-only: 1.39 MB, 3,530 units, 9,175 recorded searches
+since 2026-08-24; 14 ms per call measured. `units` is keyed by content hash
+and nothing removes a unit whose note is gone. `read_stats` returns `{}` on a
+corrupt file and `record` then writes fresh counters over it (logged; same
+class as ML8). The field named `tasks` counts search calls, so a ten-turn
+chat counts as ten tasks: any "delivered on N% of tasks" figure read from it
+is per turn.
+
+Smallest fix: append one JSONL row per search and aggregate in the review
+tool; or keep the dict in memory and flush on a timer. Rename `tasks`.
+
+Test: none on size or on the corrupt-file path.
+
+#### ML28 · medium · E — one unresolved link in a note costs a scan of every sibling vault, under the topic write lock
+
+`memory_note_gate._vault_keys` reads the head of every note in a vault
+(`mc/memory_note_gate.py:212-245`); `_foreign_vault_of` repeats that for
+every sibling vault for each unresolved link target. **Measured:** 898 ms for
+one unresolved link (4,280 vault directories exist on the reviewed install;
+agent worktrees each get one). `memory_gate_tap.begin` runs this for every
+automated mint, and `write_topic_note` calls it inside
+`_get_mem_write_lock(f'topic:{project_id}')` (`mc/memory.py:2320`,
+`:2337`). The gate is in report mode, so the answer is only logged.
+
+Smallest fix: call the tap after releasing the lock (it already has a
+`finish` half outside it, `:2339`), and resolve foreign vaults from a cached
+slug-to-vault map with a short TTL.
+
+Test: none on cost.
+
+#### ML29 · medium · L — `PATCH` on a note reads the old text outside the lock
+
+`mc/blueprints/memory_note_routes.py:143` reads `existing`; the gate then
+evaluates, merges origin from that stale text (`:164`) and writes with
+`atomic_write(must_exist=True)` (`:172`), which re-checks only that the file
+still exists. A write that lands between the read and the lock is overwritten,
+and if that write had set `origin: unattended`, the merge computed from the
+stale text puts the old stamp back.
+
+Smallest fix: read `existing` inside the same lock the write takes, or pass
+its hash to `atomic_write` and refuse on mismatch (`concurrent_change` is
+already a refusal the route knows how to return, `:175-176`).
+
+Test: none concurrent.
+
+### Lesser findings, read side (low)
+
+- `mc/memory_turn.py:283-285` — `seed_delivered` runs a second full
+  `_memory_search` at every dispatch only to recompute the hit list
+  `_build_agent_context` had a moment earlier (79 ms). Pass the hits in.
+- `mc/memory_turn.py:493-496` — the truncation log compares `raw_bytes`
+  (lines only) with `cost` (lines plus headers plus ledger), so dropping one
+  line is masked by the header bytes and the log stays silent.
+- `mc/memory.py:2432-2435` — a failed read caches `[]` for that file under
+  the stat taken before the read; the file stays invisible to search until it
+  changes again. No log.
+- `mc/memory.py:2837-2857` — negation entries render the description of every
+  node that resolves to the head, with no `consumer_unattended` filter.
+- `mc/memory_fts.py:186-189` — an incognito transcript is deleted and
+  re-recorded on every index build, with no "already indexed" check;
+  `:231-232` a non-dict agent-log entry raises and the file is retried every
+  build. The index is built at startup only (`server.py:1735`), so cold hits
+  never include the current run.
+- `mc/memory_note_gate.py:438-446` — rename is write-new then unlink-old; a
+  failed unlink leaves two files with one link identity and a 500 with no
+  gate row.
+- `mc/skill_scoping.py:116-130` — content-addressed settings files are never
+  removed, one per distinct override set.
+
 ---
 
 ## Working notes (candidates, NOT yet verified; removed when the pass completes)
