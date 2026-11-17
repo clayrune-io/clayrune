@@ -109,28 +109,28 @@ means the feature is behind a flag that is off by default.
 
 | # | Feature | Entry point | Verdict |
 |---|---|---|---|
-| 1 | Process-hygiene guard hook on all four vendors | `process_guard.py:80-113`, installed by `guardrail_hooks.py` | Works with a defect: AP1 (bypass spellings), AP5 (spaced interpreter path on Windows), AP4 and AP33 (listener half off Windows and on a config-only port) |
+| 1 | Process-hygiene guard hook on all four vendors | `process_guard.py:34-112`, installed by `guardrail_hooks.py` | Works with a defect: AP1 (bypass spellings), AP5 (spaced interpreter path on Windows), AP4 and AP33 (listener half off Windows and on a config-only port) |
 | 2 | Boot-time reap of the previous server's children | `process_ledger.py:147-205` | Works with a defect: AP6 (packaged macOS app) |
-| 3 | Orphaned-CLI sweep (Windows) | `process_sweep.py:350-405`, `system_routes.py:347-409` | Works as documented. AP8 and AP9 are narrowings for the owner to accept or not; a no-op off Windows, as documented |
+| 3 | Orphaned-CLI sweep (Windows) | `process_sweep.py:348-405`, `system_routes.py:347-409` | Works as documented. AP8 and AP9 are narrowings for the owner to accept or not; a no-op off Windows, as documented |
 | 4 | Kill-on-close job for child trees (Windows) | `windows_process_job.py` | Works as documented |
-| 5 | Long job route with a wake-up turn | `agent_routes.py:1956-2060`, `agent_jobs.py:186-289` | Works with a defect: AP13 (NaN removes the cap), AP11, AP14 |
+| 5 | Long job route with a wake-up turn | `agent_routes.py:1956-2060`, `agent_jobs.py:182-289` | Works with a defect: AP13 (NaN removes the cap), AP11, AP14 |
 | 6 | Background task and job tracking for the rollover block | `background_tasks.py`, `bg_job_liveness.py` | Works with a defect: AP39 (phantom jobs) |
-| 7 | Mid-turn context rollover with a carried state block | `midturn_rollover.py:336-576` | Works with a defect: AP40 (wrong label on a worker's only brief), AP39. This review was rolled over several times by it and resumed each time |
-| 8 | Send while a turn is running (steer or queue) | `mid_turn_send.py:73-171` | Works with a defect: AP41 |
+| 7 | Mid-turn context rollover with a carried state block | `midturn_rollover.py:310-576` | Works with a defect: AP40 (wrong label on a worker's only brief), AP39. This review was rolled over several times by it and resumed each time |
+| 8 | Send while a turn is running (steer or queue) | `mid_turn_send.py:65-171` | Works with a defect: AP41 |
 | 9 | Turn clock stamp and gap briefing | `turn_clock.py` | Works as documented |
-| 10 | Launch transaction and uncertain-launch protection | `launch_transaction.py:60-290` | Works with a defect: AP37 (the protection has no exit) |
+| 10 | Launch transaction and uncertain-launch protection | `launch_transaction.py:79-290` | Works with a defect: AP37 (the protection has no exit) |
 | 11 | Isolated agent launches never run in the shared tree | `isolated_launch.py:142-159`, `agent_worktree_followup.py` | Works as documented |
 | 12 | Spawn factory (plain `Popen` path, flag off) | `agent_spawn.py:379-389` | Works as documented |
 | 13 | Agent runs survive a server restart (latent) | `agent_shim*.py`, `agent_spawn.py:398-473` | Cannot work as written: AP24. The shim launches and logs; no session is ever adopted, so nothing survives. Also AP15, AP16, AP20, AP31 |
 | 14 | Fail-closed fence for unattended Claude launches | `fence_fail_closed.py:270-295`, `launch_marker.py:56-100` | Works as documented (cost: AP44) |
-| 15 | Fence for unattended Codex, Gemini and Qwen | `vendor_fence.py:47-175`, `vendor_fence_hook.py` | Works as documented for Codex and Gemini; Qwen's edit tool name could not be determined (Q1: Qwen may not be launched by this pass) |
-| 16 | Project context mirrored for non-Claude engines | `vendor_context_sync.py:60-101` | Works with a defect: AP43 |
-| 17 | Daily update of the agent CLIs | `cli_update.py:330-420`, `system_routes.py:412-459` | Works with a defect: AP46, AP47, AP48. Live state: three CLIs current, one waiting on an in-use binary, two not installed |
-| 18 | In-place update of the macOS app | `mac_update.py:500-568`, `system_routes.py:2560-2628` | Could not determine: no macOS host. Read: sound gates, one defect (AP50) |
-| 19 | Import projects from Claude Code | `claude_import_routes.py:31`, `claude_projects_scan.py:150-213` | Works with a defect: AP52 (27 s here) |
+| 15 | Fence for unattended Codex, Gemini and Qwen | `vendor_fence.py:57-182`, `vendor_fence_hook.py` | Works as documented for Codex and Gemini; Qwen's edit tool name could not be determined (Q1: Qwen may not be launched by this pass) |
+| 16 | Project context mirrored for non-Claude engines | `vendor_context_sync.py:42-101` | Works with a defect: AP43 |
+| 17 | Daily update of the agent CLIs | `cli_update.py:311-382`, `system_routes.py:412-459` | Works with a defect: AP46, AP47, AP48. Live state: three CLIs current, one waiting on an in-use binary, two not installed |
+| 18 | In-place update of the macOS app | `mac_update.py:485-568`, `system_routes.py:2560-2628` | Could not determine: no macOS host. Read: sound gates, one defect (AP50) |
+| 19 | Import projects from Claude Code | `claude_import_routes.py:31`, `claude_projects_scan.py:135-213` | Works with a defect: AP52 (27 s here) |
 | 20 | Router statistics aggregate | `agent_router_stats_routes.py` | Works with a defect: AP54 |
 | 21 | Model floor by Claude CLI version | `claude_cli_min_version.py` | Works as documented (AP56 on a console-less server) |
-| 22 | Claude usage limits source | `claude_usage_source.py:78-139` | Works with a defect: AP55 |
+| 22 | Claude usage limits source | `claude_usage_source.py:73-192` | Works with a defect: AP55 |
 | 23 | Codex live usage and mid-turn usage ticks | `codex_live_usage.py`, `codex_usage_checkpoint.py` | Works with a defect: AP57 (half the ticks unavailable) |
 | 24 | Codex run errors shown in the chat | `codex_run_error.py` | Works as documented |
 | 25 | Restricted Aider adapter (latent) | `aider_launch.py`, `aider_runner.py`, `aider_guard.py` | Could not determine live: Aider is not installed here. Read: fails closed correctly; one defect (AP58) |
