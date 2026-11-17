@@ -11,7 +11,7 @@ was started.
 Scope: in `mc/` and `mc/blueprints/`, every module whose name starts with
 `hivemind`, `scheduler`, `schedule`, `steward`, `coordination`, `automation`,
 `wake`, `question`, `limit`, `allowance`, `usage`, `engine` or `model`, except
-`mc/engine_pace_dispatch.py` (read fully by pass 2). 47 files, about 19,400
+`mc/engine_pace_dispatch.py` (read fully by pass 2). 48 files, 19,435
 lines. Earlier passes (`docs/_review/2026-11-16_01` to `_04`) are not repeated;
 where a finding here is the other half of one of theirs, the id is named.
 
@@ -24,19 +24,116 @@ disabled flag; **low** = hygiene.
 
 Finding ids in this pass start with `OS`.
 
-STATUS: IN PROGRESS. Written incrementally. The ranked summary, feature table
-and streamlining section are assembled last from the candidate findings below;
-until then read "Candidate findings" and "Progress log".
+STATUS: COMPLETE. 51 findings: 0 blocker, 8 high, 18 medium, 25 low. The
+detail section keeps the order in which the files were read; the table below
+is the ranking.
 
 ---
 
 ## Ranked summary
 
-(assembled last)
+Ranked by consequence. I would block a release on the eight highs; ranks 1 to
+4 first, because each is a thing the product tells the user it did and did
+not do.
+
+| Rank | Id | Finding | Lens | Severity |
+|---|---|---|---|---|
+| 1 | OS16 | A question mail that fails to send is lost: one attempt, no retry, nothing in the chat, no other alert | F/L | high |
+| 2 | OS26 | What a person sends into a hivemind is not delivered, and a worker's blocker reaches nobody who is not looking at the dashboard | F | high |
+| 3 | OS45 | A model auto-upgrade rewrites the character file and drops every frontmatter key the character module does not model | L/M | high |
+| 4 | OS48 | The Usage Breakdown panel cannot load for Claude: about 100 s of compute per request against a 25 s client timeout, cache invalidated every minute | E/F | high |
+| 5 | OS24 | A paused or stopped hivemind can never be resumed; its workstreams stay `paused` | L/F | high |
+| 6 | OS25 | A workstream marked `active` whose worker is gone stays `active` and blocks the whole run | L/F | high |
+| 7 | OS33 | Reviewed integration (roster runs) holds for good on normal timing, and a hold has no release in the product | L/F | high |
+| 8 | OS1 | A failed fire of an `interval` schedule is retried every 30 s for as long as the cause lasts | L | high |
+| 9 | OS2 | The scheduler tick and Run Now write back a stale whole-file snapshot; a schedule created, edited or deleted during a dispatch is undone | L | medium |
+| 10 | OS41 | An unreadable suggestion store erases every latched "no" on the next list request | L | medium |
+| 11 | OS18 | A mailed multi-question form cannot be answered correctly, and a one-word reply can pick an option the reader did not choose | L | medium |
+| 12 | OS17 | The reply half of the question channel does not survive a restart, and says nothing | L | medium |
+| 13 | OS23 | One Gemini or Qwen error containing "429", "quota" or "rate limit" blocks that vendor on every project for 24 hours | L | medium |
+| 14 | OS39 | `/coord/publish` puts unbounded, unvalidated text into other agents' system prompts; one malformed event blinds the feed | M (security) | medium |
+| 15 | OS27 | A legacy workstream id is used as a file path without a check | M (security) | medium |
+| 16 | OS46 | The model-upgrade price gate is decided by numbers any caller can post, and "run" has no caller check | M (security) | medium |
+| 17 | OS30 | An unreadable workstream file is dropped from the list, and the run can be declared complete without it | L/M | medium |
+| 18 | OS28 | The closing synthesis is skipped after a decompose in the same process; an engine error leaves the orchestrator slot taken | L | medium |
+| 19 | OS29 | A spawn that provably launched nothing is filed as `launch_uncertain` and never retried | L | medium |
+| 20 | OS34 | Legacy integration starts while the last worker may still be committing, runs once, and can never run again | L | medium |
+| 21 | OS3 | `_load_schedules` reads any failure as "no schedules", silently, and the legacy steward enable then saves that | L/M | medium |
+| 22 | OS42 | An accepted suggestion is scheduled at a different hour from the habit and from the hour the card shows | L | medium |
+| 23 | OS38 | Every agent with a live session is listed as its own sibling, at the top | L | medium |
+| 24 | OS47 | The upgrade writers go round the write discipline of the stores they change | L | medium |
+| 25 | OS4 | Steward roles cannot fire on `master`: two human-applied patches are not applied, and the editor's "runnable" verdict misses a third gate | F | medium |
+| 26 | OS5 | A role claim left in `preparing` or `delivery_unknown` has no release path (latent behind OS4) | L | medium |
+| 27 | OS22 | The limit-resume store is re-read and re-validated under an OS file lock at least twice per turn of every session; rows never pruned | E | low |
+| 28 | OS20 | The reply poller logs in to the mailbox every two minutes while one mailed question is unanswered; caches retired only by a loop that is off by default | E | low |
+| 29 | OS19 | An answer that fails to post is consumed | L | low |
+| 30 | OS10 | One-shot schedules: a skipped fire is filed as a completed one | L | low |
+| 31 | OS11 | Create and update accept rows that can never fire | L | low |
+| 32 | OS15 | Daily, weekly and cron next-run use a fixed UTC offset | L | low |
+| 33 | OS9 | The legacy steward's "respawn deferred" is dropped, not deferred | L | low |
+| 34 | OS36 | A recorded review pass is discarded if the reviewer's session then ends badly | L | low |
+| 35 | OS43 | The three-per-project cap is applied before the "already decided" filter; "accepted" is latched like "dismissed" | L | low |
+| 36 | OS49 | Engine fallback: a second swap can follow the first; the availability probe swallows its failure | L | low |
+| 37 | OS50 | Pace routing treats a weekly reading above 100 as no reading | L | low |
+| 38 | OS51 | Keep-awake on Linux logs "engaged" for an inhibitor that exited at once, every 20 s | L | low |
+| 39 | OS40 | Coordination: stored intentions never read, a dead stream route, an untrimmed event log | L/E | low |
+| 40 | OS31 | Hivemind knowledge base: parts written and never read, or read and never written | L | low |
+| 41 | OS32 | Route hygiene in the hivemind file (unvalidated status and dependencies, non-atomic rewrite, unbounded files) | M/E | low |
+| 42 | OS44 | The suggestions list mines every project's whole agent log twice and is a GET that writes | E | low |
+| 43 | OS12 | Six agent-log scans per continued fire, three of them the same loop | E/M | low |
+| 44 | OS35 | A pending review re-checks the whole run every 5 seconds | E | low |
+| 45 | OS13 | The scheduler thread does unrelated network and disk work every 30 s | E | low |
+| 46 | OS7 | The role kill switch leaves the schedule row enabled (latent behind OS4) | L | low |
+| 47 | OS6 | Role fire compares the whole project record before and after preparation (latent behind OS4) | L | low |
+| 48 | OS8 | `EXECUTION_ERROR` is a stale constant three responses still return | L | low |
+| 49 | OS14 | `steward_status` answers `fenced: true` as a literal | L | low |
+| 50 | OS21 | `_creds()` swallows a state-file read | M | low |
+| 51 | OS37 | An operator's persona name is in strings the API returns | M | low |
 
 ## Feature table (lens 4)
 
-(assembled last)
+Each row was traced from its entry point to its state change and its response
+or side effect, and through its most likely failure. Verdicts: **works** (as
+documented), **defect** (works, with the findings named), **cannot** (cannot
+work as written), **undetermined**.
+
+| # | Feature | Entry point | Verdict | Findings and the failure path |
+|---|---|---|---|---|
+| 1 | Schedules: create, edit, delete, list | `mc/blueprints/scheduler_routes.py` routes | defect | OS11 (rows that can never fire are accepted), OS3 (a read failure is "no schedules") |
+| 2 | Timer fire: daily, weekly, interval, once, cron | scheduler loop, 30 s tick | defect | OS1 (failed interval retried every 30 s), OS2 (stale snapshot written back), OS15 (fixed UTC offset), OS12 |
+| 3 | Run Now | same file | defect | OS2 |
+| 4 | Conditional schedules and the skip log | `mc/schedule_conditions.py`, `mc/schedule_skip_log.py` | defect | OS10 (a skipped one-shot is filed as completed) |
+| 5 | Failed scheduled delivery is recorded, not replayed | `mc/schedule_delivery_failure.py` | works | An attempt with no identity is logged and skipped |
+| 6 | Legacy steward: enable, disable, status, cycle with refresh | `mc/blueprints/steward_routes.py`, scheduler | defect | OS3, OS9, OS14. Agent callers are refused on enable (MC-1076, done) |
+| 7 | Steward roles (assignments, role fire, role mail) | `mc/steward_role_*.py`, `mc/blueprints/steward_role_routes.py` | **cannot** | OS4: two human-applied patches are missing on `master`; then OS5, OS7 |
+| 8 | A question reaches a human who is at the screen | `mc/question_channel.py`, chat card | works | The chat card path was read end to end |
+| 9 | A question reaches a human who is away (mail), and the reply comes back | `mc/question_channel.py` poller | defect | OS16 (a failed send is lost), OS17 (reply half lost on restart), OS18 (multi-question reply), OS19 |
+| 10 | A dispatched agent's question wakes its spawner | `mc/question_callback.py` | works | Per-question dedupe; the finished callback still fires later |
+| 11 | Resume a session after the vendor's usage reset | `mc/limit_resume*.py` | works | Cost only: OS22. A crashed submitting claim is not replayed, by design |
+| 12 | Refuse a run on an exhausted allowance, re-probe, unverified trial | `mc/allowance_*.py` | defect | OS23 (a loose text match blocks a vendor for 24 hours) |
+| 13 | Opt-in second vendor on an allowance refusal | `mc/engine_fallback.py` | defect | OS49 (low). Never silent on any path read |
+| 14 | Pace-aware reroute to a named alternate | `mc/engine_pace.py` | defect | OS50 (low). Dispatch half is pass 2's |
+| 15 | Provider, model and effort resolution, tier tracking | `mc/engine_selection.py` | works | An unknown provider or a foreign explicit model raises; nothing is translated |
+| 16 | Model pin auto-upgrade | `mc/model_upgrade.py`, `mc/blueprints/model_upgrade_routes.py` | defect | OS45 (drops character keys), OS46, OS47 |
+| 17 | Hivemind: create, decompose, run workers to completion | `mc/blueprints/hivemind_routes.py`, `mc/hivemind_worker.py` | defect | OS25 (a dead `active` workstream blocks the run), OS28, OS29, OS30 |
+| 18 | Hivemind: pause, stop, then resume | same | **cannot** | OS24: resume never un-pauses the workstreams |
+| 19 | Hivemind: message a run, answer a worker, escalation, "synthesize now" | same, bus routes | **cannot** | OS26: the message is not delivered, the button posts a body the route rejects, an escalation alerts nobody |
+| 20 | Hivemind: merge worker branches (legacy runs) | `mc/hivemind_integration.py` | defect | OS34 |
+| 21 | Hivemind: roster workers, reviewer seat, reviewed serial merge | `mc/hivemind_integration_cycle.py`, `mc/hivemind_review*.py` | undetermined | No roster run exists on the live install. Read: OS33 says the first real run is likely to end held with no release. Review records themselves are sound |
+| 22 | Hivemind: run-role view of a roster run | `mc/hivemind_run_roles.py` | works | Fail-closed; a projection error is `unverified` |
+| 23 | Hivemind: native workflow (HR-7) | `mc/hivemind_native_workflow.py` | not wired | No production importer; waits on the owner's pilot approval (MC-1132) |
+| 24 | Sibling awareness in each agent's prompt, coordination bus | `mc/blueprints/coordination_routes.py` | defect | OS38 (an agent is its own sibling), OS39, OS40 |
+| 25 | Consent-first automation suggestions | `mc/automation_suggestions.py`, `mc/blueprints/automation_routes.py` | defect | OS41 (a "no" can be erased), OS42 (wrong hour), OS43 |
+| 26 | Usage sampling, session facts, checkpoints | `mc/usage_breakdown_sampler.py`, `mc/usage_breakdown_store.py` | works | 52,581 samples and 43,761 checkpoints on the live store. The 90-day prune could not be observed: the store is 73 days old |
+| 27 | Usage Breakdown panel, Claude windows | `mc/usage_breakdown_aggregate.py` | **cannot** | OS48: 103 s measured against a 25 s timeout |
+| 28 | Usage Breakdown panel, Codex window | same | works | 5.8 s measured, calibration `ok`. It will meet OS48 as its history grows |
+| 29 | Keep machine awake | `mc/wake_lock.py` | works (Windows, measured) | Linux: OS51. macOS path read, not run |
+
+Count: 9 work as documented, 14 work with a defect, 4 cannot work as written,
+1 undetermined, 1 not wired.
+
+Row 8: the server half was read (raise, hold the session, accept the answer);
+the card itself is in pass 4's region.
 
 ## Backlog cross-check
 
@@ -72,14 +169,59 @@ else: MC-1109, MC-1132, MC-1140, MC-1176.
 
 ## Streamlining
 
-(assembled last; candidates are collected under "Streamlining candidates")
+Callers were searched in `mc/`, `server.py`, `static/`, `tools/`, the steward
+package and the builtin skills for every row; tests and docs are not callers.
+
+**A. Removable with no loss of behaviour: about 205 lines.**
+
+| What | Where | Evidence | Lines |
+|---|---|---|---|
+| Three copies of one agent-log loop in the scheduler's resume lookup | `mc/blueprints/scheduler_routes.py:1049-1170` | OS12: `_latest_resume_for_schedule`, `_schedule_resume_provider` and `_session_owning_resume` walk the same log for the same row; one pass returns all five values | 60 |
+| Finding-review and decision-approve routes, and the prompt blocks that print decisions | `mc/blueprints/hivemind_routes.py:1712-1753, 1226-1228`; `mc/hivemind_worker.py:438-445` | OS31: no script in `static/` calls either route, and no stored record has the keys the prompts print | 55 |
+| The coordination event stream | `mc/blueprints/coordination_routes.py:49-51, 191-197, 672-699` | OS40: `static/` never names the path; the MCP tools use `roster`, `events` and `publish` only | 38 |
+| `lookup_character` | `mc/hivemind_roster.py:93-109` | Only its own test calls it | 17 |
+| The bus poll route | `mc/blueprints/hivemind_routes.py:1524-1536` | OS26 (c): no caller anywhere, and no worker is told to poll | 13 |
+| `_hm_write_context` and the "ACCUMULATED CONTEXT" block it would feed | `mc/blueprints/hivemind_routes.py:480-483`; `mc/hivemind_worker.py:414-416` | OS31: the writer has no caller, so the block is always empty | 7 |
+| `is_decided` | `mc/automation_suggestions.py:280-284` | OS44: no caller; `get_decision` is the one in use | 6 |
+| `EXECUTION_ERROR` and the three response fields that return it | `mc/steward_role_writes.py:25, 285, 287, 383` | OS8: no script reads `execution_error`; the real value is computed elsewhere | 5 |
+| Three hivemind config keys | `mc/blueprints/hivemind_routes.py:644-646` | OS31: `auto_synthesize`, `synthesize_interval_turns`, `require_user_approval_for_decisions` are stored and read nowhere | 3 |
+
+Deleting the bus poll route and the decision routes is right only if OS26 is
+fixed some other way; if the fix is to make workers poll, the poll route
+stays.
+
+**B. Shipped and unreachable. Removing these is a product decision, not a
+cleanup; they are listed because the owner asked what is carried.**
+
+| What | Where | Evidence | Lines |
+|---|---|---|---|
+| The steward-role stack | `mc/steward_role_*.py` (2,415), `mc/blueprints/steward_role_routes.py` (253) | OS4: no role can fire on `master` until two patches are applied by a person | 2,668 |
+| Inside it, the decision-raising half of role mail | `mc/steward_role_comms.py:157-204, 322-576` | `raise_decision`, `resolve_unknown`, `default_mailer`, `compose_body`, `choose_route`, `_upsert`, `_finish` have no caller; `check_pending_replies` therefore always walks an empty list | about 300 |
+| The native-workflow contract | `mc/hivemind_native_workflow.py` (461), its test (562) | No production importer; waits on the HR-7 pilot | 1,023 |
+
+**C. Values that never vary.**
+
+- `fenced: true` in the steward status answer is a literal
+  (`mc/blueprints/steward_routes.py:100`, OS14).
+- The question-channel caches are retired only by a loop behind
+  `agent_mail_supervisor_enabled`, default off, so on a default install the
+  retention code never runs (OS20). Call it from the poller and the flag
+  dependency goes away.
+- `engine_fallback.resolve_fallback`'s handler for a probe that raises
+  (`mc/engine_fallback.py:82-85`) cannot fire, because the only probe passed in
+  catches everything first (OS49). Keep the handler; remove the catch in the
+  probe.
+
+No compatibility shim for a state that no longer exists was found in this
+region. The legacy (non-roster) hivemind path and the legacy steward are both
+still the paths that run.
 
 ---
 
-## Candidate findings (in the order found)
+## Detail (in the order the files were read)
 
-Working notes. Each is rewritten into the detail section at the end; ids are
-final.
+Ids are final. Findings marked "latent behind OS4" cannot be reached until the
+steward-role patches are applied.
 
 ### OS1 · high · L — a failed fire of an `interval` schedule is retried every 30 s, for as long as the cause lasts
 `mc/blueprints/scheduler_routes.py:851-857, 877` with `:428-444`.
@@ -1074,9 +1216,121 @@ previous state on engage and on release from a fresh thread, so the two
   `daily` with `time: "25:00"` raises `ValueError` (same script).
 - OS18, OS23: see the findings.
 
-## Streamlining candidates
+## Earlier audits: what is still open in this region
 
-## Sound (notes)
+- `docs/_review/2026-09-10_efficiency.md` **E3** (the agent log parsed whole,
+  several times per dispatch): open. This region's share is OS12 (six scans
+  per continued scheduled fire) and OS44 (two full mines per project on each
+  open of the Scheduler dialog).
+- `docs/_review/2026-09-10_efficiency.md` **E2** (the project record parsed on
+  hot paths): open in this region at OS6 (the role fire compares whole
+  records) and OS44 (`load_projects()` twice per suggestions request).
+- `docs/_review/2026-09-10_security.md` **F2** (a scheduled run reads
+  unattended-origin artifacts): open. The scheduler passes
+  `consumer_unattended=True` only on the two steward read-floor calls
+  (`mc/blueprints/scheduler_routes.py:536, 554`); an ordinary scheduled fire
+  still gets the text-only test. Pass 3 reports the dispatch half as **ML4**;
+  not re-reported here.
+- `docs/_review/2026-09-10_security.md` **F5** (human-only decisions that are
+  localhost routes): closed in this region for steward enable (MC-1076,
+  `mc/blueprints/steward_routes.py:190, 258`); open for the model-upgrade
+  "run" route (OS46) and for `/coord/publish` (OS39).
+- `docs/ENTANGLEMENT_AUDIT.md` rows 21 and 23
+  (`mc/blueprints/scheduler_routes.py`, `mc/blueprints/hivemind_routes.py`):
+  both open. The scheduler file has grown from 1,636 to 1,871 lines since the
+  audit; the hivemind file has shrunk from 2,115 to 1,991 as the worker,
+  roster, review and integration modules were carved out. Not repeated.
+
+## Cross-references to this review's other passes
+
+- Pass 2 (`2026-11-16_02_agent_routes.md`) read `mc/engine_pace_dispatch.py`
+  and the dispatch choke point. OS49 and OS50 are the policy halves of what it
+  read there; OS12 is the scheduler's share of its agent-log cost findings.
+- Pass 3 **ML4** is the dispatch half of 2026-09-10 F2 (above).
+- Pass 4 **SS4** (two breakdown computes per bar hover) is the client half of
+  OS48. Pass 4 did not report the "Synthesize now" button posting a body the
+  route rejects; it is in OS26 (d).
+- OS45 damages character files, which other passes' regions read. Whoever
+  fixes it should check those passes' frontmatter findings first.
+
+## Open choices (for the coordinating agent; none was picked here)
+
+1. **OS16, a question mail that fails to send.** (a) retry with backoff and put
+   a line in the chat on final failure; (b) fall back to web push on failure;
+   (c) both. Recommendation: (c); (a) alone still leaves an unattended run
+   silent when mail is misconfigured.
+2. **OS24 and OS25, hivemind resume and dead workers.** (a) fix resume and add
+   a liveness check that returns a dead `active` workstream to `pending`;
+   (b) retire pause and resume from the UI until then. Recommendation: (a).
+3. **OS33, held roster integration.** (a) make the four timing cases wait
+   instead of hold and add a human-only release route; (b) leave holds sticky
+   and build the reconciliation tool the design doc names. Recommendation:
+   (a), before the first real roster run in MC-1132.
+4. **OS48, the breakdown compute.** (a) the linear sweep plus an hourly cache
+   key; (b) precompute calibration on the sampler thread and have the route
+   read the stored result. Recommendation: (a) now; (b) only if (a) is still
+   over a second at 90 days.
+5. **Streamlining B.** Whether to keep carrying the steward-role stack and the
+   native-workflow contract unreachable, or to apply the patches and run the
+   pilot. This is the owner's call through MC-1140 and MC-1132.
+
+## Coverage
+
+**Read fully (45 files):** `mc/blueprints/scheduler_routes.py`,
+`mc/blueprints/steward_routes.py`, `mc/blueprints/steward_role_routes.py`,
+`mc/steward_role_writes.py`, `mc/steward_role_model.py`,
+`mc/steward_role_dispatch.py`, `mc/steward_role_comms.py`,
+`mc/steward_role_state.py`, `mc/steward_role_task.py`,
+`mc/steward_role_children.py`, `mc/steward_role_channel.py`,
+`mc/schedule_conditions.py`, `mc/schedule_skip_log.py`,
+`mc/schedule_delivery_failure.py`, `mc/question_channel.py`,
+`mc/question_channel_retention.py`, `mc/question_callback.py`,
+`mc/limit_resume.py`, `mc/limit_resume_completion.py`,
+`mc/limit_resume_dispatch.py`, `mc/allowance_state.py`,
+`mc/allowance_probe.py`, `mc/allowance_unverified.py`,
+`mc/engine_selection.py`, `mc/engine_fallback.py`, `mc/engine_pace.py`,
+`mc/blueprints/hivemind_routes.py`, `mc/hivemind_worker.py`,
+`mc/hivemind_roster.py`, `mc/hivemind_fallback.py`, `mc/hivemind_routing.py`,
+`mc/hivemind_lineage.py`, `mc/hivemind_integration.py`,
+`mc/hivemind_integration_cycle.py`, `mc/hivemind_review.py`,
+`mc/blueprints/hivemind_review_routes.py`, `mc/hivemind_reviewer.py`,
+`mc/hivemind_run_roles.py`, `mc/blueprints/coordination_routes.py`,
+`mc/blueprints/automation_routes.py`, `mc/automation_suggestions.py`,
+`mc/model_upgrade.py`, `mc/blueprints/model_upgrade_routes.py`,
+`mc/wake_lock.py`, `mc/usage_breakdown_aggregate.py`.
+
+**Read fully once, with a caveat (2 files):** `mc/usage_breakdown_store.py`
+and `mc/usage_breakdown_sampler.py` were read in full just before a context
+rollover, and the notes from that read did not survive it except for what
+became OS48. They were then re-read at structure level only (function list,
+the connection helper, the prune, the exception handlers). Treat "no finding"
+for these two as one read, not as a finding of soundness.
+
+**Structure level only (1 file):** `mc/hivemind_native_workflow.py`: module
+docstring, imports, and a search for importers. It has no production caller,
+so nothing in it runs today; its 461 lines were not reviewed for defects.
+
+**Not reached:** nothing in scope.
+
+**Excluded by the brief:** `mc/engine_pace_dispatch.py` (pass 2).
+
+**Outside scope, opened only to judge a finding:**
+`mc/blueprints/agent_routes.py` (`:3966-4070`, `:12720-12819`, and the lines
+cited in OS22, OS23 and OS26), `mc/blueprints/system_routes.py`
+(`:1235-1265`, `:1427-1500`), `static/js/system-status.js` (`:900-945`),
+`static/js/hivemind.js` (lines cited in OS26), `mc/project_safety_settings.py`
+(`:1-60`), `mc/distiller.py` (`:1646-1681`), `mc/landing_serialization.py`
+and `mc/agent_mail_recovery.py` (lines cited), the steward package's core
+module (`:128-142`), and `server.py` (the wiring blocks cited).
+
+**Not run:** nothing in this region was exercised against a provider CLI, a
+mailbox or a live hivemind. Every "measured" is a scratch script against the
+real function with temp paths, a read-only count, or a `GET`. Findings that
+need a live run to confirm end to end say "read, not measured": OS33, OS34,
+OS49, OS51 and the mail-send half of OS16.
+
+Five context rollovers happened during this pass. After each, the report file
+and the git log were read first and work resumed from the progress log below.
 
 ## Progress log
 
@@ -1107,6 +1361,9 @@ previous state on engage and on release from a fresh thread, so the two
   `hivemind_review_routes`, `hivemind_reviewer` (OS24-OS37).
 - Rollover 4 (2026-11-16): `coordination_routes` written up (OS38-OS40). `automation_routes`
   and `automation_suggestions` were being read when the context rolled; re-reading them.
-- Next: `hivemind_run_roles`, `hivemind_native_workflow`, engine_* (re-read: notes lost),
-  coordination_routes, automation_*, model_upgrade*, usage_breakdown_*, wake_lock, then the
-  backlog cross-check, then the assembled sections.
+- Rollover 5 (2026-11-16): `automation_*` and `model_upgrade*` written up (OS41-OS47);
+  `usage_breakdown_*` read fully, notes lost except the 103 s request.
+- Final session: re-read `engine_selection`, `engine_fallback`, `engine_pace`,
+  `hivemind_run_roles`, `wake_lock` and the aggregate's calibration path; OS48-OS51 written;
+  backlog cross-check done; ranked summary, feature table, streamlining, earlier-audit status,
+  open choices and coverage assembled. Report complete.
