@@ -20,6 +20,15 @@ from typing import Callable
 from flask import jsonify
 
 
+def _count(v) -> int:
+    """A counter read from a state file; anything non-numeric counts as 0 so one
+    bad file cannot fail the whole aggregate (AP54)."""
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def register_routes(bp, *, data_dir_fn: Callable[[], Path]):
     """Attach /api/router/stats to `bp`. `data_dir_fn` is called per request
     because agent_routes.DATA_DIR is bound late, by wire()."""
@@ -51,9 +60,9 @@ def register_routes(bp, *, data_dir_fn: Callable[[], Path]):
                 continue
             project_count += 1
             for k, v in (data.get('totals') or {}).items():
-                agg_totals[k] = int(agg_totals.get(k, 0)) + int(v or 0)
+                agg_totals[k] = int(agg_totals.get(k, 0)) + _count(v)
             for k, v in (data.get('by_pair') or {}).items():
-                agg_by_pair[k] = int(agg_by_pair.get(k, 0)) + int(v or 0)
+                agg_by_pair[k] = int(agg_by_pair.get(k, 0)) + _count(v)
             fb = data.get('last_fallback')
             if isinstance(fb, dict) and fb.get('ts'):
                 if last_fb is None or fb['ts'] > last_fb.get('ts', ''):
