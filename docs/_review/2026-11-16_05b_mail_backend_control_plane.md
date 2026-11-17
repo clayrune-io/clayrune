@@ -467,3 +467,254 @@ operator sees depends on which copy ran first. See streamlining ST3.
   (`:575`).
 * Exception text never reaches a log line or a status field anywhere in
   these files; every reason is a closed code.
+
+### 4. Outbound sends: notes, questions, and the mailer
+
+Files: `mc/agent_mail_outbound.py`, `agent_mail_outbound_questions.py`,
+`agent_mail_outbound_state.py`, `agent_mail_outbound_signing.py`,
+`agent_mail_sender_line.py`, `agent_mail_display_name.py`, `agent_mail_ownership.py`,
+`agent_mail_user_agent.py`, `mc/blueprints/agent_mail_note_routes.py`,
+`mc/blueprints/agent_mail_routes.py`, `tools/night-review/send_mail.py`,
+`tools/night-review/agent_mail_route.py`; `mc/question_channel.py:236-400` followed
+as the caller.
+
+#### MB13 — high — L/F — a question gets one attempt at being mailed; every failure of that attempt is final and there is no second channel
+
+`mc/question_channel.py:309-310`, `:369-376`; `mc/agent_mail_outbound_questions.py:41-72`;
+`mc/agent_mail_outbound.py:358-359`, `:393`, `:457-468`; `mc/agent_mail_target.py:113-122`.
+
+When agent mail owns a question, `_notify` adds the revision to `_delivered`
+before the grace timer is armed (`question_channel.py:309-310`), and the timer
+calls `deliver` once (`:369-376`). The comment there is the design: "selected
+channel owns failure/uncertainty too; never SMTP". What `deliver` can return,
+and what happens next:
+
+| outcome of the one attempt | state written | retried by |
+|---|---|---|
+| HTTPS connection never opened (DNS, Wi-Fi, timeout) | `uncertain` / `transport_unavailable` (`outbound.py:462-468`) | nothing: `send` returns early for any state but `ready`/`retryable` (`:358-359`) |
+| Worker answers 429 `send_limit` | `retryable` (`:457-458`) | nothing: no caller sends a `retryable` intent again (callers of `Outbound.send`: the note route and `deliver`, both one-shot) |
+| chat is over the auto-fresh threshold | `MailHeld('rollover_required')` from `validate` (`outbound.py:393`, `target.py:113-119`), returned as `blocked` | nothing |
+| provider allowance exhausted | `MailHeld('provider_quota_held')` (`target.py:120-122`) | nothing |
+| vault locked, or the ten-minute manifest refresh fails | `EnrollmentRefused`, returned as `blocked` / `outbound_unavailable` (`outbound_questions.py:69-72`) | nothing |
+
+In every row the owner is never mailed, the question stays open in a chat
+nobody is watching, and the only trace is one `[question mail: ...]` line in
+that chat's log (`question_channel.py:373-375`). That is the exact case the
+offline channel exists for. `retryable` is a state with no consumer.
+
+Two of the rows are the outbound half of earlier findings: a connection that
+never opened is treated as "may have been sent" (same class as MB8), and the
+send path applies the inbound wake preconditions, so a chat that could not be
+woken right now may not ask either (MB6). A long-lived chat is the likeliest
+one to be over the threshold.
+
+Smallest fix: in `send`, treat `ServiceRefused('connection_lost')` raised before
+any byte was written as `retryable`, not `uncertain` (the transport already
+knows: a `URLError` from `open` is pre-write); have `_deliver_if_still_unattended`
+re-arm its timer with backoff while the result is `retryable` or a held reason
+that clears on its own, and drop the revision from `_delivered` when the result
+is terminal so a later raise can select again; skip the `rollover_required` and
+quota checks on send (they guard a wake, not a send).
+
+Read, not measured. Tests pin the behaviour rather than catch it:
+`tests/test_agent_mail_outbound_questions.py:219-236` asserts `uncertain` for a
+transport exception and no other delivery;
+`tests/test_agent_mail_outbound_questions_default.py:94-97` asserts `blocked`
+for `rollover_required`.
+
+#### MB14 — medium — L — a slow send is delivered twice: the route's deadline is checked before the HTTPS call, the caller gives up during it
+
+`mc/blueprints/agent_mail_note_routes.py:31`, `:55`, `:66`; `mc/agent_mail_outbound.py:435-440`;
+`mc/agent_mail_service_client.py:58`; `tools/night-review/agent_mail_route.py:38`, `:84-88`.
+
+The note route gives a send 15 s (`NOTE_SEND_DEADLINE_SECONDS`). `Outbound.send`
+checks that deadline once, after admission and before the transport call
+(`outbound.py:435`). The transport then has its own 10 s timeout
+(`HTTP_TIMEOUT_S`). The mailer waits 20 s in total (`TIMEOUT_S`) and then sends
+the same text through Gmail. A send admitted at second 14 whose Worker call
+takes 7 s is accepted by the Worker at second 21: the owner gets it twice, once
+from each channel, and the Gmail copy's reply does not come back to the chat.
+The window is 5 s wide (admission between 10 s and 15 s with a slow call), and
+`prepare` can use most of the 15 s by itself: it runs `cleanup` three times, may
+fetch the manifest (5 s timeout) and reads the project file inside the write
+transaction.
+
+Smallest fix: pass the remaining budget to the transport as its timeout
+(`min(10, deadline - now)`), so the two clocks cannot overlap. Read, not
+measured. `tests/test_agent_mail_note_deadline.py` covers a deadline that
+passes before admission, not a slow transport after it.
+
+#### MB15 — low — L — sending the same text twice from one chat reports "sent" and sends nothing
+
+`tools/night-review/agent_mail_route.py:49-52`, `:141-147`; `mc/agent_mail_outbound.py:238-245`, `:278-281`, `:357-359`.
+
+`request_id` is a hash of session, subject and body. A second identical send
+finds the first intent, `prepare` returns its metadata, `send` returns its
+state, and if that state is `accepted` the route answers 200 and the mailer
+prints `sent via agent-mail, intent <id>` and exits 0. No mail leaves. The row
+lives for the 90-day thread lifetime plus 30 days. The docstring calls this
+idempotency, which is right for a retry and wrong for a long-lived chat that
+sends the same status line on two different days (a steward that mails
+"BLOCKED: waiting on X" and repeats it a week later). Fix: include the UTC date
+in the hash, or print "already sent on <date>" instead of "sent". Read, not
+measured.
+
+#### MB16 — low — L — `--verify` is accepted and does nothing on the agent-mail path
+
+`tools/night-review/agent_mail_route.py:144-145`; `tools/night-review/send_mail.py:103-131`, `:202-204`.
+
+`_verify_delivered` exists because "acceptance is not delivery" (its own
+docstring, with the incident). On the agent-mail path `--verify` prints
+"accepted by agent-mail counts as verified; no IMAP check" and exits 0. The
+Worker's `accepted` is the same kind of evidence SMTP's was. The exit-3
+contract in the module docstring (`send_mail.py:26-27`) no longer holds for an
+agent caller. Either keep the wording honest ("not verified") and return the
+documented code, or fall through to SMTP when `--verify` is set.
+
+#### MB17 — low — E — every send runs the store cleanup four times and reads the project file twice inside the write transaction
+
+`mc/agent_mail_outbound.py:229`, `:250-251`, `:327`, `:339`, `:357`, `:387`, `:491`.
+
+`prepare` calls `reconcile` (cleanup 1) and `_bind` ends in `status` (cleanup
+2); `send` starts with `status` (cleanup 3) and ends with it (cleanup 4). Each
+cleanup is a write transaction of up to eight statements over the whole intent
+table. `ar.load_project` is called inside the `prepare` transaction (`:251`)
+and again inside the `send` transaction while the project manager lock is held
+(`:387`); pass 1 measured that file read. `reviewed_service()` is called up to
+five times per send (`:187` twice via `_authority`, `:398`, `:410-411`); when
+its ten-minute cache has expired the first of those is a network GET inside
+the SQLite write transaction and the manager lock, which contradicts the
+comment at `:364` ("Network never holds SQLite"). Fix: one cleanup per public
+call, load the project before the transaction, and resolve the pin once before
+taking the lock. Read, not measured.
+
+#### Sound in this section
+
+* Admission commits before any external write, and the receipt update is
+  keyed on the attempt id (`outbound.py:428-429`, `:470-473`), so a late
+  response cannot overwrite a newer attempt.
+* The note body never carries a recipient; the route accepts exactly four
+  string fields (`note_routes.py:28`, `:59-61`).
+* An orphaned note draft is abandoned, not sent later, so the Gmail fallback
+  cannot be followed by a delayed duplicate (`outbound.py:37-45`, `:95-105`).
+* The display name is allow-listed before it reaches a header
+  (`agent_mail_display_name.py:22-33`).
+* An install that never enabled outbound is untouched: `eligible` is false and
+  the legacy channel is selected (`question_channel.py:298-302`).
+* `send_mail.py` refuses under pytest, honours the kill-switch file and writes
+  the sender ledger before any send (`:225-260`).
+
+### 5. Signup, enable, disable: the lifecycle the product exposes
+
+Files: `mc/agent_mail_signup.py`, `agent_mail_activation.py`, `agent_mail_disable.py`,
+`mc/blueprints/agent_mail_enrollment_routes.py`, `agent_mail_deployment_routes.py`,
+`agent_mail_manifest_routes.py`; `static/js/agent-mail-actions-model.js:120-195`
+read as the consumer.
+
+#### MB18 — high — F/L — signup has four ordinary dead ends and no way out of any of them; disable and owner change exist as modules and are not reachable
+
+`mc/blueprints/agent_mail_enrollment_routes.py:45`, `:193-194`, `:217-218`;
+`mc/agent_mail_signup.py:37`, `:291-323`, `:337-338`; `mc/agent_mail_activation.py:27`,
+`:114`, `:139-140`, `:220-225`; `mc/agent_mail_disable.py:3`; `mc/agent_mail_factory.py:388-392`.
+
+Production registers the enrollment blueprint with no `factory`
+(`agent_mail_routes.py:29-30`), so every request takes the pull branch, whose
+actions are `start`, `resume`, `enable` and nothing else (`:45`, `:193-194`).
+The states an owner can land in:
+
+1. **The 30-minute window runs out.** `TTL` is 30 minutes from Start
+   (`signup.py:37`) and is never extended (`:468`). Start, find the
+   verification mail, click it, come back and press Enable must all happen
+   inside it. After that the flow is `expired`; `start` with the same address
+   returns the expired view (`:337-338`), with another address it is
+   `operation_conflict` (`:307-308`). The UI text says so: "Setup cannot be
+   restarted from here yet" (`agent-mail-actions-model.js:129`).
+2. **A typo in the owner address.** The verification mail goes elsewhere, the
+   address cannot be changed (`:307-308`), and the flow then expires into
+   case 1.
+3. **Enable fails once.** The failure path stores the reason on the flow
+   (`activation.py:220-225`), `status` then reports `held` with that reason,
+   and the UI offers no control for any view that has a reason
+   (`agent-mail-actions-model.js:155`). A dropped connection during Enable
+   ("Try again in a moment") leaves nothing to press. The server would accept
+   a second Enable; the page cannot send one. The flow then expires.
+4. **Enable fails three times.** Each attempt is counted before the request
+   is sent (`activation.py:139-140`); the fourth is `request_limit` for good.
+
+There is no fifth path that resets any of these: nothing deletes or supersedes
+a flow row, and the store is never recreated (`agent_mail_factory.py:97-113`).
+The install is left with agent mail permanently unavailable short of removing
+the store by hand.
+
+The modules that would handle it are written and tested and have no caller:
+`Disable` (`agent_mail_disable.py`, docstring line 3: "Unwired"; no importer
+outside tests), `OwnerChange` (composed at `agent_mail_factory.py:388-392` and
+`agent_mail_signup.py:126-134`; neither method is called). The route's own
+docstring promises "Disable/revocation retry are always open to a valid
+passcode-holder" (`enrollment_routes.py:66`); in production `POST .../disable`
+answers 404 after the passcode. The UI offers Disable only when the status
+read fails (`agent-mail-actions-model.js:193`), which is the one case where it
+is certain to 404.
+
+So today an owner can turn agent mail on and cannot turn it off, change the
+address, or try again. Turning it off means editing the four flags in the
+config file by hand, and that leaves the service side enrolled and accepting
+mail.
+
+Tests pin each dead end as intended behaviour:
+`tests/test_agent_mail_signup.py:209-225` (expired stays expired),
+`:265` (owner immutable), `tests/test_agent_mail_activation.py:100-105`
+(reason persists after a lost response), `:140-149` (attempt cap). None
+asserts that an owner can recover.
+
+Smallest fix, in order of value: wire `Disable` into the pull branch as
+`disable` and `retry-revocations` (it needs the factory, the install id and
+the supervisor's stop, all available in the route); let `start` on an
+`expired` or `cancelled` flow that never reached `active` cancel it remotely
+and begin a new one; clear the stored reason on a `connection_lost` so the
+Enable control stays. Read, not measured (the tests named above are the
+measurement).
+
+#### MB19 — medium — L — any scheduled or dispatched run anywhere on the install blocks the human from starting, resuming or enabling
+
+`mc/blueprints/agent_mail_enrollment_routes.py:61-70`, `:195-197`.
+
+`blocking_sessions` returns every running session whose `trigger_type` is not
+`manual`, across all projects, and the pull branch refuses with 403
+`human_required` while the list is non-empty. On an install that runs
+scheduled jobs or dispatches agents, there is rarely a moment with none
+running, and the signup window is 30 minutes (MB18). The passcode has already
+proved the human on the same request (`:190-192`), and the deployment route in
+the same family uses the per-request check instead (`is_unattended_caller`,
+`agent_mail_deployment_routes.py:64`). The docstring records this as an
+accepted false positive "for this disabled unit" pending per-request
+attribution; the unit is no longer disabled and the per-request helper exists.
+Fix: replace `blocking_sessions()` with `is_unattended_caller()` here. Read,
+not measured. `tests/test_agent_mail_enrollment_routes.py` asserts the 403.
+
+#### MB20 — low — L — one flag gates two unrelated things, and its name describes the one that cannot happen
+
+`mc/blueprints/agent_mail_routes.py:20`, `:67`; `mc/agent_mail_supervisor.py:482-499`;
+`mc/agent_mail_ingress.py:52-78`, `:100-101`.
+
+`agent_mail_ingress_enabled` gates the push route `/api/agent-mail/ingress`
+and, separately, the trim-and-wake step for mail the pull client fetched
+(`supervisor.py:485-486`). On a pull install the push route cannot accept
+anything: it needs a row in `mail_service_pins`, written only by
+`MailIngress.pin_service`, whose one caller is the legacy `Enrollment.enable`
+(`agent_mail_enrollment.py:406`); `bind_transport` has no caller at all. So
+the flag's real job is "deliver pulled replies to chats", and turning it off
+to "close ingress" silently stops delivery while the socket keeps fetching.
+See streamlining ST4.
+
+#### Sound in this section
+
+* No SQLite transaction is held across a signup or activation request
+  (`signup.py:367-388`, `activation.py:146-166`), and the row is re-read and
+  compared before any result is stored.
+* Every mutating route needs the retyped passcode; the passive GET creates
+  nothing (`enrollment_routes.py:113-126`, `:190-192`).
+* Config is written atomically before memory is updated
+  (`enrollment_routes.py:89-98`, `deployment_routes.py:78-85`).
+* A signed answer for the wrong scope, a regressing state or an extended
+  expiry is refused (`signup.py:458-470`).
