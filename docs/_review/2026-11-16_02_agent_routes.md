@@ -388,3 +388,237 @@ gate (`:6094-6121`) is applied on every terminal write in both readers. The
 revive paths refuse rather than fall back to the project checkout when an
 isolated conversation's worktree cannot be restored (`:8037-8045`,
 `:8079-8082`, `:8254-8257`).
+
+---
+
+## 3. `mc/blueprints/agent_routes.py` lines 9160-12550
+
+Spawner and workflow wake, delegation delivery loop, usage-breakdown
+checkpoints, completion logging, queued follow-up, model router, runtime
+(non-Claude) dispatch, character and prior-conversation lookups, rollover
+handoff, quota block. `_dispatch_via_runtime` (`:11221-11669`) was read here;
+its two candidates need the Claude dispatch path for comparison and are in
+section 4.
+
+#### R38 · high · E/L — the Scribe model call runs while the project lock is held
+
+`_log_agent_completion_body` ends by calling `_write_session_memory`
+(`agent_routes.py:10592-10596`). That function is synchronous down to the
+provider CLI: `mc/memory.py:4919` → `_scribe_extract` → `_scribe_summarize_text`
+→ `_model_call` (`mc/memory.py:6169`, `:155`). For a transcript over the
+single-call limit it is a map-reduce: one model call per chunk in a loop, then
+one more to reduce (`mc/memory.py:6253-6271`).
+
+Every caller of the completion body holds the project manager lock when it
+calls it:
+
+- Mode A reader `finally`: `agent_routes.py:6390` takes the lock, `:6416`
+  calls `_log_agent_completion`.
+- Mode B `finish`: `agent_routes.py:6521` takes the lock, `:6560` calls it.
+- Runtime (non-Claude) exit hook: `agent_routes.py:10645` takes the lock,
+  `:10686` calls it. Non-Claude runtimes exit once per turn, so this is every
+  turn of every Gemini, Codex and Qwen chat.
+
+So for the length of one or several model calls, nothing else in that project
+can take the lock. The file takes it at 67 places (counted:
+`get_manager(...).lock` / `manager.lock`), including dispatch, send, follow-up,
+stop, interrupt and the delegation inbox (`:9726`). A user who sends a message
+to a second chat in the same project while a first chat is being scribed waits
+for the Scribe. Live config has `scribe_enabled` true (read from
+`GET /api/config`).
+
+**Read, not measured**: timing it needs a provider CLI, which this pass may not
+start. The bound is the oneshot timeout, and pass 1 A2 found that timeout does
+not kill the process tree on Windows.
+
+The same lock span also covers `_compute_code_delta` (`:10280`, R7), the
+worktree merge and removal (`:10292`), the transcript re-parse of R37
+(`:10366`) and, for a queued follow-up, the whole system-prompt rebuild
+(`:6419-6425` calls `_auto_dispatch_followup` inside the `with`; its own
+docstring at `:10770-10773` says that phase runs "with NO lifecycle lock
+held").
+
+**Fix:** under the lock do only what must be atomic with the status flip: the
+status change, the agent-log row, the spawner wake. Return the facts the rest
+needs and run memory write, telemetry and usage-breakdown writes after the
+`with` block. `_scribe_extract` already has its own per-project busy guard
+(`mc/memory.py:6137-6140`), so it does not need this lock.
+
+**Test:** none. `tests/test_runtime_completion_log.py` asserts the row is
+written, not what is held while it is.
+
+#### R37 · medium · E — every Mode B turn re-parses every transcript the session has ever had
+
+`_write_usage_breakdown_turn_checkpoint` runs at each Mode B turn boundary
+(`agent_routes.py:6515`) and calls `_session_cumulative_transcript_telemetry`
+(`:10014`). That does, per turn (`:8876-8907`): a full project-record parse
+(`:8894`), a full agent-log parse (`:8864`, via
+`_session_all_claude_session_ids`), then a line-by-line JSON parse of every
+transcript file the session has run under (`mc/memory.py:5795-5808`).
+
+The same function runs again for every running session at every allowance
+sample (`:10138`, called from `mc/blueprints/system_routes.py:1143`) and at
+process exit (`:10366`).
+
+**Measured** (`_extract_transcript_telemetry_multi`, one file, this box):
+9.4 ms on a 0.77 MB transcript (the 90th percentile of 53,835 on disk),
+737.6 ms on the largest (81.4 MB). The work grows with the conversation, so a
+long chat pays more on each turn than on the last, and a rolled-over chat pays
+for all of its transcripts.
+
+The turn-boundary call is outside the lock (`:6515` is after the `with` at
+`:6502`), which is right; the exit call is inside it (R38).
+
+**Fix:** keep running totals per transcript keyed on `(path, size)` and parse
+only the bytes appended since the last read. The dedup set of `message.id`
+has to be kept with the totals.
+
+**Test:** `tests/test_codex_usage_checkpoint.py` and
+`tests/test_effort_continuity.py` reference the function for its result, not
+its cost. Two swallowed exceptions on file reads here: `:8870` and `:8906`
+return empty with no log.
+
+#### R43 · medium · L — the 20-hour quota block lasts about an hour, and a later success does not clear it
+
+`_model_quota_blocked` refuses a model for `_QUOTA_BLOCK_WINDOW_HOURS = 20`
+after a quota failure (`agent_routes.py:12496`, `:12530`); the comment at
+`:12489-12495` argues for 20 rather than 24. Its only evidence is
+`_recent_quota_failures`, which reads the last 512,000 bytes of the server log
+(`:12450`, `:12471`).
+
+**Measured** on this box: the log is 518.7 MB; its last 512 KB is 4,487 lines,
+4,107 of them HTTP access lines, spanning 57.6 minutes. So a block lifts after
+roughly an hour of normal polling, not twenty. The docstring admits a scrolled
+line "silently stops being reported" (`:12457-12459`) but the constant and its
+comment state a window the mechanism cannot hold.
+
+It is wrong in the other direction too. Only failures are logged in this
+format (`:10680-10683`), "last occurrence wins" among failures (`:12485`), and
+a refused dispatch produces no new line. So inside the window, a model whose
+quota was restored (reset, or a top-up) stays refused: no successful run can
+be recorded because no run is allowed.
+
+Cost: the delegation inbox calls it under the project lock for every delivery
+attempt (`:9758`), and R16 covers the provider list. **Measured**: the regex
+pass over the tail is 0.9 ms; the cost is the 512 KB read.
+
+**Fix:** record quota failures in a small state file (`provider`, `model`,
+`ts`), cleared by the next successful turn of that model and by an explicit
+user retry. That removes the log read, makes the window real and gives the
+block an exit.
+
+**Test:** `tests/test_auth_routes.py`, `tests/test_callback_pingpong.py` and
+`tests/test_delegation_delivery.py` stub or call the function; none builds a
+log larger than the tail, so none can see the window collapse.
+
+#### R44 · medium · L — the rollover handoff lists finished children as still running
+
+`_in_flight_children` skips a child only when its status is `'done'` or
+`'error'` (`agent_routes.py:12321`). No session is ever given status `'done'`:
+the values assigned in `agent_routes.py` and `mc/agent_runtime.py` are
+`running`, `idle`, `completed`, `error` and `stopped` (counted by grep over
+both files; the one `'done'` in `mc/` is an OAuth flow in
+`mc/desk_oauth.py:800`).
+
+So a child that completed, was stopped, or is a Mode B child idle after its
+turn is listed. `_auto_fresh_handoff` then writes into the fresh
+conversation's first message: "Still waiting on N dispatched session(s) — do
+not re-dispatch these, they will notify back when done" (`:12378-12385`). The
+notification already happened, in the conversation that was just rolled away.
+The agent is told to wait for a wake that will not come and told not to redo
+the work.
+
+**Fix:** `if s.get('status') != 'running': continue` (and decide deliberately
+about a Mode B child idle with open background tasks).
+
+**Test:** `tests/test_context_rollover_trigger.py:145-155` pins the bug: its
+"finished" fixture uses `'status': 'done'`, the same value that never occurs.
+
+#### R41 · medium · L — eighteen places iterate the live session dict without a snapshot
+
+`agent_sessions` is one process-wide dict. Eight sites in this file iterate
+`list(agent_sessions.values())` or `.items()`; eighteen iterate the dict
+directly: `agent_routes.py:5710`, `:7050`, `:11959`, `:12094`, `:12108`,
+`:12145`, `:12316`, `:12902`, `:13802`, `:16280`, `:16973`, `:17046`,
+`:17060`, `:17536`, `:17898`, `:18195`, `:18355`, `:18511`.
+
+A dispatch on any thread inserts a key (`:11434` for example). The per-project
+lock does not help: the dict is global and the inserting dispatch can belong
+to another project. CPython raises `RuntimeError: dictionary changed size
+during iteration` in the iterating thread.
+
+`:16280` is the `/agent/status` poll and `:17898` is the conversations list:
+there it is a 500 on a poll. `:12094`, `:12108`, `:12316` and `:12902` are on
+the dispatch and rollover path, where it aborts a dispatch part-way. R22
+(`:5710`) and R29 (`:7050`) in section 2 are two instances of this.
+
+Narrow per call (the loop is short), but the poll runs every few seconds for
+every open tab.
+
+**Fix:** one `_sessions_snapshot(project_id=None)` helper returning a list,
+used at all 26 sites.
+
+**Test:** none can; it needs two threads.
+
+#### R34 · low · L — the interim-report reply scan skips a reply that opens with a marker (call-site half of pass 1 A1)
+
+`_last_reply_text` (`agent_routes.py:9160-9188`) is a second copy of the
+trailing-reply scan pass 1 reported as A1. It treats any block starting with
+`[` or `> ` as not-reply (`:9179-9188`). A reply whose last block opens with a
+`[file:…]` or `[browser:…]` marker, a markdown link or a blockquote is passed
+over and the previous text block is returned as the reply; blocks are joined
+with no separator. Users: the held-notify releases at `:9449` and `:9538` and
+the completion backstop at `:10200`.
+
+**Fix:** with A1: one function, in `agent_runtime`, used by both.
+**Test:** none for a marker-first reply.
+
+#### Low findings in this stretch
+
+- **`_router_stat`, `agent_routes.py:10949-10990`** (E/M). Runs on every Claude
+  dispatch (`:13125`) and follow-up (`:14969`) whether or not the router is
+  on: read, parse and atomically rewrite a stats file to add one. The
+  read-modify-write is unlocked, so two dispatches lose a count. Both
+  `except` blocks are silent on a state file (`:10968`, `:10989`); project
+  policy says log. The sidecar is suffix-excluded
+  (`mc/blueprints/project_routes.py:442`), so the DATA_DIR rule holds.
+- **Guardian interim release, `:9445-9451`, `:9534-9540`** (L). The held wake is
+  popped under the lock and sent outside it. A turn that completes in that gap
+  enqueues the same `event_id` with a different payload; one of the two is
+  refused as conflicting (`:9669-9676`). If the interim text wins, the turn's
+  real answer is the one dropped. Narrow.
+- **Comments that no longer describe the code** (M). `:10351-10355` and
+  `:9653-9654` say the spawner wake is "fired on a thread through the ordinary
+  /agent/send route"; it is a synchronous durable enqueue. `:10900` says the
+  context budget is 20 KB; the code tests `40 * 1024` (`:10920`). `:10770-10773`
+  is covered under R38.
+- **`:11395`** (M). `effort_support` is `'supported' if provider_name == 'codex'`.
+  The fact belongs on `runtime.capabilities()`; a second runtime with an effort
+  knob will be reported as unsupported until someone finds this line.
+
+#### Sound in this stretch
+
+- **Workflow step wake.** The live path sets `_notify_workflow_sent` before the
+  daemon thread runs (`:9285-9286`) and the thread only logs a failure
+  (`:9639-9644`). Checked as a possible lost wake and cleared:
+  `workflows.reconcile_running_steps` replays a confirmed end every 30 s
+  (`mc/workflows.py:2306-2322`).
+- **Spawner wake.** The latch is set only after the durable enqueue commits
+  (`:9268-9272`).
+- **Inbox handoff** (`:9710-9817`). Claim revalidated before and after waiting
+  for the lock, shutdown admission checked under the lock, uncertain outcomes
+  never replayed.
+- **Delivery loop lifecycle** (`:9820-9960`). Start and stop are linearized on
+  one lock; a timed-out stop keeps ownership; no join under the lock.
+- **Completion replay** (`:10263-10270`, `:10510-10514`). A replayed completion
+  reuses the row the dead run wrote and skips merge-back.
+- **`_log_agent_completion` wrapper** (`:10194-10207`). The wake is attempted
+  even when the body raises.
+- **Phantom-reap guard** (`:10546-10558`) and the turn-start checkpoint on the
+  queued follow-up (`:10885`).
+- **Runtime start failure** (`:11628-11655`). Does not overwrite a replacement
+  owner; a missing CLI trips the breaker on the first failure.
+- **`_resolve_character` strict mode** (`:11708-11800`). Raises only for an
+  explicitly picked persona.
+- **Handoff builder** (`:12011-12081`). Says how many turns it omitted and which
+  native id the turns came from.
