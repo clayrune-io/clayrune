@@ -1,5 +1,15 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Six high Desk core defects (MC-1187 / MC-1179 pass 06a, DK1-DK5 and DK7)
+
+- DK1: unarchive, campaign restore and PATCH `state=running` on a paused, done or dropped campaign are refused to an unattended caller. Unarchive and campaign restore return a previously approved version as `needs_review` with the approval stamp cleared (as piece-trash restore already did). A human resuming a paused campaign is unchanged. New `mc/desk_withdrawal.py`.
+- DK2: on an approved, scheduled version a new `scheduled_at` is accepted only from a human caller, on the same calendar day as the current slot and not in the past; any other change must arrive with `state: needs_review` or is refused; `null` on a scheduled version is refused. New `mc/desk_schedule_rule.py`.
+- DK3: `POST /api/desk/ledger` and `/api/desk/ledger/<id>/outcome` refuse an unattended caller; cost must be a finite number >= 0; `published_at` must parse, be UTC and not in the future (400). New `mc/desk_ledger_input.py`.
+- DK4: the incognito pseudo-project is never indexed or shown by project media; its rows leave an existing index on the next refresh.
+- DK5: removed `POST /api/desk/retro` (no caller in the product; it let any caller mark a human-confirmed finding stale) and its tests. `desk_retro.run_retro` stays: the per-campaign retro uses it.
+- DK7: an unreadable or non-object `desk.json` is moved to `desk.json.unreadable-<timestamp>` and never deleted; writers raise `StoreUnreadable` until a readable `desk.json` is restored or `desk.start_empty_store()` is called. Reads stay empty meanwhile. New `mc/desk_store_guard.py`.
+- Branch candidate for review; no merge, push, deployment or server restart.
+
 ## [2026-11-16] - Fix three high agent-mail Worker defects (MC-1184 / MC-1179 W1-W3)
 
 - W1: a send reserved but refused at authorization (the 20-a-day `send_limit`, or a storage fault between the two batches) no longer stays `reserved` forever. A retry with the same `intent_id` re-runs the authorization CAS and sends: still 429 `send_limit` while the cap is full, sent once after the day bucket resets. Two concurrent retries cannot both send. `accepted`, `sending`, `failed` and `revoked` replays are unchanged. The two tests that pinned the stuck behaviour were rewritten; corrected the Python comment at `mc/agent_mail_outbound.py` that claimed the Worker wrote nothing on `send_limit` (comment only).

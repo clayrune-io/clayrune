@@ -6,7 +6,7 @@ import uuid
 import json
 import time
 
-from mc import desk, desk_pieces as pieces
+from mc import desk, desk_pieces as pieces, desk_withdrawal
 from mc.core import now_iso, _log
 
 
@@ -27,6 +27,8 @@ def archive(piece_id: str, restoring: bool = False) -> dict:
                         original = deepcopy(before[version['id']])
                         version.clear()
                         version.update(original)
+                        # Archiving withdrew the post; undo must not re-arm it (MC-1187 DK1).
+                        desk_withdrawal.withdraw_version(version)
                 piece.pop('archive', None)
         elif not saved:
             before = {}

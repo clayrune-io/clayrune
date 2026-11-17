@@ -58,6 +58,15 @@ def wire(*, load_projects_fn: Callable[[], list], media_dir: Path, uploads_root:
             _log(f'[desk-project-media] cache read failed: {e}', flush=True)
 
 
+def _reserved(project) -> bool:
+    """The incognito pseudo-project, or any other reserved one (id starting `_`).
+    Its whole point is that it leaves no trace, so Desk never indexes or lists it;
+    same tests as desk_harvest (`pid.startswith('_')`) and desk_capture
+    (`_is_incognito_project`). MC-1187 DK4."""
+    pid = str((project or {}).get('id') or '')
+    return not pid or pid.startswith('_') or bool((project or {}).get('_is_incognito_project'))
+
+
 def _roots(projects: list) -> list[Path]:
     roots = []
     for p in projects:
@@ -164,7 +173,7 @@ def refresh() -> dict:
     if _media_dir is None:
         raise pieces.PieceError('project media is not wired', 503)
     with _refresh_lock:
-        projects = _load_projects()
+        projects = [p for p in _load_projects() if not _reserved(p)]
         roots = _roots(projects)
         items = []
         for project in projects:
@@ -220,7 +229,7 @@ def refresh() -> dict:
 def _listed(*, project_id: str | None = None, folder: str | None = None,
             query: str = '', kinds: tuple[str, ...] = ()) -> list[dict]:
     """Read index metadata only; refresh and _source own filesystem checks."""
-    projects = {str(p['id']): p for p in _load_projects()}
+    projects = {str(p['id']): p for p in _load_projects() if not _reserved(p)}
     with _state_lock:
         rows = _snapshot['items']
     query = query.strip().casefold()
@@ -279,7 +288,7 @@ def items_page(project_id: str, *, folder: str | None = None, query: str = '',
 def _source(item_id: str) -> tuple[dict, Path]:
     with _state_lock:
         row = next((dict(r) for r in _snapshot['items'] if r.get('id') == item_id), None)
-    projects = _load_projects()
+    projects = [p for p in _load_projects() if not _reserved(p)]
     if row is None or row['project_id'] not in {p.get('id') for p in projects}:
         raise pieces.PieceError('that project file is no longer listed; refresh the list', 404)
     project = next(p for p in projects if p.get('id') == row['project_id'])

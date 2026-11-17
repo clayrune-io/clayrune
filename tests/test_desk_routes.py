@@ -24,7 +24,10 @@ from mc import desk as _desk  # noqa: E402
 
 
 @pytest.fixture
-def client(tmp_path):
+def client(tmp_path, monkeypatch):
+    # MC-1187 DK3: the ledger routes need the human check (unattended refusal + dashboard
+    # passcode), like "I posted it"; these tests stand in for the person who has it.
+    monkeypatch.setattr(desk_routes, '_require_human_passcode', lambda data: None)
     app = Flask(__name__)
     app.config['TESTING'] = True
     desk_routes.wire(
@@ -192,6 +195,48 @@ def test_outcome_roundtrip(client):
     assert client.post('/api/desk/ledger/nope/outcome', json={}).status_code == 400
     assert client.post('/api/desk/ledger/nope/outcome',
                        json={'metric': 'likes', 'value': 1}).status_code == 404
+
+
+def test_ledger_routes_need_a_human(client, monkeypatch):
+    """MC-1187 DK3: the ledger feeds the budget, the cadence rules and the post cap;
+    an unattended agent (or a call without the passcode) cannot write it."""
+    pid = client.post('/api/desk/ledger', json={'platform': 'x', 'body': 'hello world'}).get_json()['id']
+    n = len(_desk.list_ledger())
+    monkeypatch.setattr(desk_routes, 'is_unattended_caller', lambda *a, **k: True)
+    assert client.post('/api/desk/ledger', json={'platform': 'x', 'body': 'agent post'}).status_code == 403
+    assert client.post(f'/api/desk/ledger/{pid}/outcome',
+                       json={'metric': 'likes', 'value': 1}).status_code == 403
+    monkeypatch.setattr(desk_routes, 'is_unattended_caller', lambda *a, **k: False)
+    monkeypatch.setattr(desk_routes, '_require_human_passcode', lambda data: ({'error': 'passcode'}, 403))
+    assert client.post('/api/desk/ledger', json={'platform': 'x', 'body': 'no passcode'}).status_code == 403
+    assert client.post(f'/api/desk/ledger/{pid}/outcome',
+                       json={'metric': 'likes', 'value': 1}).status_code == 403
+    assert len(_desk.list_ledger()) == n
+    assert _desk.list_ledger()[0]['outcomes'] == []
+
+
+@pytest.mark.parametrize('field, value', [
+    ('cost', -1000), ('cost', 'abc'), ('cost', None), ('cost', True),
+    ('cost', float('nan')), ('cost', float('inf')),
+    ('published_at', '9999-01-01T00:00:00Z'),       # the future: min_gap_h refuses every send
+    ('published_at', '2020-01-01T00:00:00'),        # no zone
+    ('published_at', '2020-01-01T00:00:00+02:00'),  # not UTC
+    ('published_at', 'last tuesday'), ('published_at', 12345),
+])
+def test_ledger_post_refuses_bad_cost_and_dates(client, field, value):
+    before = len(_desk.list_ledger())
+    r = client.post('/api/desk/ledger', json={'platform': 'x', 'body': 'a post', field: value})
+    assert r.status_code == 400, r.get_json()
+    assert len(_desk.list_ledger()) == before
+
+
+def test_ledger_post_accepts_a_zero_cost_and_a_past_utc_date(client):
+    r = client.post('/api/desk/ledger', json={'platform': 'x', 'body': 'a post', 'cost': 0.015,
+                                              'published_at': '2020-01-01T09:00:00Z'})
+    assert r.status_code == 201
+    r = client.post('/api/desk/ledger', json={'platform': 'x', 'body': 'b post', 'cost': 0,
+                                              'published_at': '2020-01-01T09:00:00+00:00'})
+    assert r.status_code == 201
 
 
 def test_repeat_check_catches_a_re_announcement(client):
@@ -621,51 +666,16 @@ def test_reconfirm_and_retire_refuse_an_unattended_caller(client, unattended):
     assert _desk.get_finding(fid)['state'] == 'stale'
 
 
-def test_retro_route_computes_too_few_posts_verdict_and_proposes_nothing(client):
-    r = client.post('/api/desk/retro', json={
-        'project_id': 'mc', 'metric': 'clicks',
-        'dimension_arms': {
-            'format': {'a': [10] * 6, 'b': [10] * 4},
-        }})
-    assert r.status_code == 200
-    body = r.get_json()
-    assert body['dimensions']['format']['verdict'] == 'too_few_posts'
-    assert body['proposed'] == []
-
-
-def test_retro_route_proposes_a_finding_stamped_unattended(client):
-    """§10.5.2: a retro run always stamps `origin:'unattended'` on what it
-    proposes — code computed it, no human judged it yet, whatever calls this
-    route."""
+def test_the_raw_retro_route_is_gone(client):
+    """MC-1187 DK5: POST /api/desk/retro had no caller, was open to any caller, and
+    let one request retire a human-confirmed finding (run_retro marks stale every
+    confirmed finding whose direction differs). The per-campaign retro reads the
+    ledger itself (GET/POST /api/desk/campaigns/<id>/retro)."""
     hi = [{'value': 30, 'campaign_id': f'c{i}'} for i in range(30)]
     lo = [{'value': 10, 'campaign_id': f'd{i}'} for i in range(30)]
     r = client.post('/api/desk/retro', json={
         'project_id': 'mc', 'account': 'x:ron', 'metric': 'clicks',
-        'dimension_arms': {'slot': {
-            'a': hi, 'b': lo, 'a_label': 'morning', 'b_label': 'evening',
-            'evidence': [{'campaign_id': f'c{i}', 'term': 't1'} for i in range(30)],
-        }}})
-    assert r.status_code == 200
-    body = r.get_json()
-    assert body['dimensions']['slot']['verdict'] == 'finding'
-    assert len(body['proposed']) == 1
-    f = _desk.get_finding(body['proposed'][0])
-    assert f['state'] == 'proposed' and f['origin'] == 'unattended'
-    assert f['arms'] == {'a': 'morning', 'b': 'evening'}
-
-
-def test_retro_interim_never_proposes_a_finding(client):
-    """§10.1: 'Run retro now' shows numbers only and never proposes findings."""
-    high_a = [{'value': v, 'campaign_id': f'c{i}'} for i, v in enumerate([30] * 30)]
-    high_b = [{'value': v, 'campaign_id': f'd{i}'} for i, v in enumerate([10] * 30)]
-    r = client.post('/api/desk/retro', json={
-        'project_id': 'mc', 'interim': True,
-        'dimension_arms': {'format': {'a': high_a, 'b': high_b}}})
-    assert r.status_code == 200
-    assert r.get_json()['proposed'] == []
-    assert client.get('/api/desk/findings?project_id=mc').get_json() == []
-
-
-def test_retro_route_validation(client):
-    assert client.post('/api/desk/retro', json={}).status_code == 400
-    assert client.post('/api/desk/retro', json={'project_id': 'mc'}).status_code == 400
+        'dimension_arms': {'slot': {'a': hi, 'b': lo, 'a_label': 'morning', 'b_label': 'evening',
+                                    'evidence': [{'campaign_id': f'c{i}', 'term': 't1'} for i in range(30)]}}})
+    assert r.status_code in (404, 405)
+    assert client.get('/api/desk/findings?project_id=mc').get_json() == []     # nothing was proposed

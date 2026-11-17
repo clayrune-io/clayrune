@@ -231,8 +231,7 @@ All new routes go in `mc/blueprints/desk_routes.py`; stores in `mc/desk.py` unde
   forecast|null, versions:[{version_id, outcome, metric|null, metric_label}]}` from ledger `outcomes[]`
   + `goal.entries`. Missing numbers stay `null` with a label (`delayed`, `n/a`), never 0 (MET-01).
 - **M12 `GET /api/desk/campaigns/<id>/retro?term=`** → assembles `dimension_arms` from ledger rows
-  (`piece_id/format/account/term`) and calls `desk_retro.run_retro`; `POST /api/desk/retro` stays the
-  raw computation.
+  (`piece_id/format/account/term`) and calls `desk_retro.run_retro`. (The raw `POST /api/desk/retro` this note once kept was removed, MC-1187 DK5.)
 
 ### 2.C Accounts (workspace-level, replaces presence-scoped accounts)
 New store `store['accounts']` keyed by id. `Account = {id, platform, identity, label, capability:

@@ -61,7 +61,11 @@ def save_address(project_id: str, raw, *, load_project, local_url: str, human_ty
                 raise Error('The saved app addresses could not be read. Nothing was changed.', 503) from None
         store = desk._read_store()
         store.setdefault('capture_apps', {})[project_id] = {'address': url, 'user_entered': human_typed}
-        desk._write_store(store)
+        try:
+            desk._write_store(store)
+        except desk.StoreUnreadable:
+            # MC-1187 DK7: reading just set an unreadable desk.json aside and writers refuse.
+            raise Error('The saved app addresses could not be read. Nothing was changed.', 503) from None
     return settings(project_id, load_project=load_project, local_url=local_url)
 
 

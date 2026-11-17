@@ -75,7 +75,8 @@ class RestoreError(Exception):
 
 
 def restore(store: dict, campaign_id: str) -> dict:
-    """Puts a deleted campaign back exactly as it was deleted. Returns the
+    """Puts a deleted campaign back as it was deleted, except that approved or
+    scheduled posts return as needs_review with the approval cleared. Returns the
     stored campaign record; raises RestoreError (404 nothing to restore, 409 a
     campaign or piece with that id exists again)."""
     trash = store.get(TRASH_KEY) or {}
@@ -91,6 +92,10 @@ def restore(store: dict, campaign_id: str) -> dict:
     if clash:
         raise RestoreError(f'pieces with these ids exist again: {clash}', 409)
     campaigns[campaign_id] = entry['campaign']
+    from mc import desk_withdrawal  # lazy: desk_withdrawal -> desk_pieces -> desk -> this module
+    for piece in (entry.get('pieces') or {}).values():
+        if isinstance(piece, dict):
+            desk_withdrawal.withdraw_piece(piece)       # MC-1187 DK1: deleted = withdrawn
     pieces.update(entry.get('pieces') or {})
     if entry.get('storyboards'):
         store.setdefault('storyboards', {}).update(entry['storyboards'])
