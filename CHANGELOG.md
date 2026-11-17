@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Model auto-upgrade edits one line of a character file (MC-1179 OS45)
+
+- The unattended model auto-upgrade applied a change by round-tripping the character through `write_character`, which rebuilds the frontmatter from a fixed key list: a subagent `tools:` line (it limits what the subagent may call, so losing it widened the agent), `color:` and any other unmodelled key were dropped, across every pinned character at once.
+- New `mc/character_model_edit.py` replaces the value on the frontmatter `model:` line in place and writes atomically; every other byte (line endings, key order, quoting, body) is kept. A character with no usable `model:` line is refused and left untouched, reported as a skipped row.
+- A built-in whose file matched its hash marker before the change gets the marker rewritten, so it keeps receiving built-in updates; a user-edited built-in keeps its marker as it was. `write_character` and the human editor are unchanged.
+- Tests: `tests/test_character_model_edit.py`. Branch candidate for review; no merge, push or server restart.
+
 ## [2026-11-16] - A failed interval schedule fire waits a full interval (MC-1179 OS1)
 
 - A failed dispatch of an `interval` schedule left `last_run` alone, so `_compute_next_run` found `last_run + interval` already past and returned now + 5 s: the row was retried on every 30 s tick for as long as the cause lasted (an hourly steward whose engine was out of allowance for five hours made about 600 attempts, activity lines and "Scheduled run blocked" pushes instead of 5).
