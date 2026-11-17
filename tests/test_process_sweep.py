@@ -515,3 +515,55 @@ def test_references_dir_requires_path_boundary():
     assert ps._references_dir('"' + base + '" --flag', d)
     assert ps._references_dir('node ' + base, d)
     assert not ps._references_dir('node ' + base + '-mcp' + os.sep + 'bin.js', d)
+
+
+# ── MC-1179 AP9: criterion 1 needs a node image running a script out of the dir ──
+
+_PKG = r'c:\fake\npm\node_modules\@openai\codex'
+_PKG_DIRS = {'codex': [_PKG]}
+_NODE_EXE = r'C:\Program Files\nodejs\node.exe'
+
+
+@pytest.mark.parametrize('name,exe,cmdline', [
+    ('notepad.exe', r'C:\Windows\notepad.exe', r'notepad.exe c:\fake\npm\node_modules\@openai\codex\README.md'),
+    ('less.exe', r'C:\Tools\less.exe', r'less c:\fake\npm\node_modules\@openai\codex\package.json'),
+    ('node.exe', _NODE_EXE, r'node C:\work\tool.js c:\fake\npm\node_modules\@openai\codex\README.md'),
+    ('node.exe', _NODE_EXE, r'node -e "require(\"c:\fake\npm\node_modules\@openai\codex\x.js\")"'),
+    ('node.exe', _NODE_EXE, r'node --require c:\fake\npm\node_modules\@openai\codex\hook.js C:\work\tool.js'),
+    ('cmd.exe', r'C:\Windows\System32\cmd.exe', r'cmd /c type c:\fake\npm\node_modules\@openai\codex\package.json'),
+])
+def test_a_command_line_that_merely_mentions_the_package_dir_no_longer_matches(name, exe, cmdline):
+    p = _proc(1, 0, name, exe=exe, cmdline=cmdline)
+    assert ps.matched_cli_name(p, _PKG_DIRS) is None
+
+
+@pytest.mark.parametrize('cmdline', [
+    r'node c:\fake\npm\node_modules\@openai\codex\bin\codex.js exec',
+    r'"C:\Program Files\nodejs\node.exe" "c:\fake\npm\node_modules\@openai\codex\bin\codex.js" --flag',
+    r'node --max-old-space-size=4096 c:\fake\npm\node_modules\@openai\codex\bin\codex.js',
+    r'node --require C:\hooks\h.js c:\fake\npm\node_modules\@openai\codex\bin\codex.js',
+    r'node -- c:\fake\npm\node_modules\@openai\codex\bin\codex.js',
+])
+def test_a_node_image_running_a_script_from_the_package_dir_still_matches(cmdline):
+    p = _proc(1, 0, 'node.exe', exe=_NODE_EXE, cmdline=cmdline)
+    assert ps.matched_cli_name(p, _PKG_DIRS) == 'codex'
+
+
+def test_a_relative_script_is_not_a_match():
+    p = _proc(1, 0, 'node.exe', exe=_NODE_EXE, cmdline=r'node bin\codex.js')
+    assert ps.matched_cli_name(p, _PKG_DIRS) is None
+
+
+def test_the_narrowing_never_widens_the_old_match():
+    """new match implies the old textual check also matched, over a spread of command lines."""
+    cmdlines = [
+        r'node c:\fake\npm\node_modules\@openai\codex\bin\codex.js',
+        r'node c:\fake\npm\node_modules\@openai\codex-mcp\bin.js',
+        r'node c:\fake\npm\node_modules\@openai\codexx\bin.js',
+        r'node ' + _PKG, r'node "' + _PKG + '"', 'node', '', None,
+        r'node C:/fake/npm/node_modules/@openai/codex/bin/codex.js',
+    ]
+    for cmdline in cmdlines:
+        p = _proc(1, 0, 'node.exe', exe=_NODE_EXE, cmdline=cmdline)
+        if ps.matched_cli_name(p, _PKG_DIRS):
+            assert ps._references_dir(cmdline, _PKG), cmdline
