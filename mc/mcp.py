@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from mc.desk_connect import custom_connection_guard as _desk_guard
+from mc.mcp_config_file import McpConfigUnreadable, read_lenient, read_strict  # noqa: F401  (re-exported)
 
 
 # ── Paths ────────────────────────────────────────────────────────────────────
@@ -165,25 +166,16 @@ def _atomic_write_json(path: Path, data: Any) -> None:
 
 
 def _read_json_or_empty(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        text = path.read_text(encoding='utf-8')
-    except Exception:
-        return {}
-    if not text.strip():
-        return {}
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}
+    """For paths that only display or select: an empty answer when the file cannot be read, logged
+    once. A path that goes on to REPLACE the file must use `read_strict` instead (see
+    `mc.mcp_config_file`), or a file that merely failed to read gets overwritten."""
+    return read_lenient(path)
 
 
 # ── Server CRUD — global scope ───────────────────────────────────────────────
 
-def _read_global_servers() -> dict[str, Any]:
-    data = _read_json_or_empty(GLOBAL_CLAUDE_JSON)
+def _read_global_servers(*, strict: bool = False) -> dict[str, Any]:
+    data = read_strict(GLOBAL_CLAUDE_JSON) if strict else read_lenient(GLOBAL_CLAUDE_JSON)
     servers = data.get('mcpServers')
     return servers if isinstance(servers, dict) else {}
 
@@ -193,9 +185,12 @@ def _write_global_servers(mutate) -> None:
 
     `mutate` receives the current mcpServers dict and mutates it in place. We
     only touch the `mcpServers` key — every other key is preserved verbatim.
+
+    Raises `McpConfigUnreadable`, writing nothing, when the file exists but cannot be read as a
+    JSON object: an unreadable file is not an empty one.
     """
     with _global_write_lock:
-        data = _read_json_or_empty(GLOBAL_CLAUDE_JSON)
+        data = read_strict(GLOBAL_CLAUDE_JSON)
         servers = data.get('mcpServers')
         if not isinstance(servers, dict):
             servers = {}
@@ -206,8 +201,9 @@ def _write_global_servers(mutate) -> None:
 
 # ── Server CRUD — project scope ──────────────────────────────────────────────
 
-def _read_project_servers(project_path: str) -> dict[str, Any]:
-    data = _read_json_or_empty(project_mcp_path(project_path))
+def _read_project_servers(project_path: str, *, strict: bool = False) -> dict[str, Any]:
+    path = project_mcp_path(project_path)
+    data = read_strict(path) if strict else read_lenient(path)
     servers = data.get('mcpServers')
     return servers if isinstance(servers, dict) else {}
 
@@ -217,7 +213,7 @@ def _write_project_servers(project_path: str, mutate) -> None:
     # Per-project file — no contention with other projects, so the global lock
     # is sufficient (and keeps us simple).
     with _global_write_lock:
-        data = _read_json_or_empty(path)
+        data = read_strict(path)                      # raises McpConfigUnreadable; nothing is written
         servers = data.get('mcpServers')
         if not isinstance(servers, dict):
             servers = {}
@@ -326,7 +322,7 @@ def write_server(
     normalized = normalize_config(transport, config or {})
 
     if scope == 'global':
-        existing = _read_global_servers()
+        existing = _read_global_servers(strict=True)
         if name in existing and not overwrite:
             raise FileExistsError(f'MCP server "{name}" already exists in global scope')
 
@@ -339,7 +335,7 @@ def write_server(
     if scope == 'project':
         if not project_path:
             raise ValueError('project scope requires project_path')
-        existing = _read_project_servers(project_path)
+        existing = _read_project_servers(project_path, strict=True)
         if name in existing and not overwrite:
             raise FileExistsError(f'MCP server "{name}" already exists in this project')
 
@@ -358,7 +354,7 @@ def delete_server(
     project_path: str | None = None,
 ) -> dict[str, Any]:
     if scope == 'global':
-        existing = _read_global_servers()
+        existing = _read_global_servers(strict=True)
         if name not in existing:
             raise FileNotFoundError(f'MCP server "{name}" not found in global scope')
 
@@ -372,7 +368,7 @@ def delete_server(
     if scope == 'project':
         if not project_path:
             raise ValueError('project scope requires project_path')
-        existing = _read_project_servers(project_path)
+        existing = _read_project_servers(project_path, strict=True)
         if name not in existing:
             raise FileNotFoundError(f'MCP server "{name}" not found in this project')
 
@@ -557,7 +553,14 @@ def install_global_builtins(
 
     marker_path = marker_dir / _GLOBAL_BUILTIN_MARKER_NAME
     marker = _load_marker(marker_path)
-    current_servers = _read_global_servers()
+    try:
+        current_servers = _read_global_servers(strict=True)
+    except McpConfigUnreadable as e:
+        # An unreadable file is not an empty one: installing now would replace it.
+        from mc.core import _log
+        _log(f'[mcp] built-in install skipped: {e}', flush=True)
+        result['error'] = [s['name'] for s in sources]
+        return result
 
     def _write(name: str, cfg: dict[str, Any]) -> None:
         def _mutate(servers: dict[str, Any]) -> None:
@@ -614,7 +617,13 @@ def install_project_builtins(
 
     marker_path = proj_root / _PROJECT_BUILTIN_MARKER_NAME
     marker = _load_marker(marker_path)
-    current_servers = _read_project_servers(project_path)
+    try:
+        current_servers = _read_project_servers(project_path, strict=True)
+    except McpConfigUnreadable as e:
+        from mc.core import _log
+        _log(f'[mcp] built-in install skipped: {e}', flush=True)
+        result['error'] = [s['name'] for s in sources]
+        return result
 
     def _write(name: str, cfg: dict[str, Any]) -> None:
         def _mutate(servers: dict[str, Any]) -> None:
