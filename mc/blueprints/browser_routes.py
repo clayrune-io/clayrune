@@ -94,6 +94,7 @@ from mc.state import browser_sessions, browser_lock
 from mc import browser_auth_diagnostics as _auth_diagnostics
 from mc import browser_frame_guard as _frame_guard
 from mc import browser_screencast_rearm as _rearm
+from mc import browser_first_paint_hold as _first_paint
 from mc.browser_profile_owner import profile_owner as _profile_owner
 from mc.browser_paths import browser_home
 
@@ -1873,8 +1874,15 @@ def _run_cdp(session):
                 send(method, params)
         elif session.get('ua_override'):
             send('Network.setUserAgentOverride', session['ua_override'])
-        send('Page.navigate', {'url': session['url']})
+        # The window must draw once BEFORE the first document swap, or its first
+        # root frame can wait forever on the swapped-out surface and the whole
+        # session gets no frame (MC-1200): mc/browser_first_paint_hold.py.
         start_screencast()
+        _first_paint.arm(session, _time.monotonic(), [('Page.navigate', {'url': session['url']})])
+
+        def release_first_paint(reason):
+            for m_, p_ in _first_paint.release(session, _time.monotonic(), reason):
+                send(m_, p_, session_id=_active_session_id(session))
 
         q = session['cmd_queue']
         errors = 0  # consecutive non-timeout recv errors before we give up
@@ -1927,12 +1935,17 @@ def _run_cdp(session):
                                      session_id=fc_sid)
                             session['file_chooser'] = None
                             _bump(session, 'file_chooser_seq')
-                        else:
+                        elif not _first_paint.defer(session, method, params):
                             send(method, params, session_id=_active_session_id(session))
                     except Exception as e:
                         session['error'] = f'send failed: {e}'
             except queue.Empty:
                 pass
+            if _first_paint.expired(session, _time.monotonic()):
+                try:
+                    release_first_paint('timeout')
+                except Exception as e:
+                    session['error'] = f'send failed: {e}'
             # Mobile frame narrower/wider than the page (see browser_frame_guard).
             heal = _frame_guard.due(session, _active_session_id(session), _time.monotonic())
             if heal:
@@ -2015,6 +2028,11 @@ def _run_cdp(session):
                         for cmd in _zoom_settle(session, md):
                             session['cmd_queue'].put(cmd)
                     _bump(session, 'frame_seq')
+                    if _first_paint.holding(session):
+                        try:
+                            release_first_paint('frame')
+                        except Exception as e:
+                            session['error'] = f'send failed: {e}'
                 try:
                     ack = {'id': _next_id(), 'method': 'Page.screencastFrameAck',
                            'params': {'sessionId': p['sessionId']}}
