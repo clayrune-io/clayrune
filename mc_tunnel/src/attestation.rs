@@ -3,7 +3,7 @@
 // PROPRIETARY AND CONFIDENTIAL.
 // Copyright (c) 2026 Clayrune. All rights reserved.
 //
-// See `02-attestation-protocol.md` §7. This is the load-bearing module:
+// See `02-attestation-protocol.md` §7 (operator-internal; not published in this repository). This is the load-bearing module:
 // every 10 minutes it produces an envelope signed by BOTH the device key
 // (proxied through MC's `/api/tunnel-handshake/sign`) and the embedded
 // client secret (us, locally), then exchanges it for a 15-minute Cloudflare

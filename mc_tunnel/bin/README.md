@@ -8,7 +8,7 @@ This directory holds a copy of Cloudflare's official `cloudflared` binary, which
 
 ## Currently bundled
 
-- **Version:** 2026.3.0 (latest at the time of vendoring)
+- **Version:** 2026.3.0 when first vendored in March 2026. This is a record of that vendoring, not of what is on disk now: it is below the enforced minimum (2026.10.2), and the supervisor replaces a binary below the minimum, or older than 90 days, with a checksum-verified release (see `docs/remote-access/09-cloudflared-updates.md`). Run `cloudflared --version` on the binary for the real answer.
 - **Source:** <https://github.com/cloudflare/cloudflared/releases/latest>
 - **SHA256 (Windows amd64):** `59b12880b24af581cf5b1013db601c7d843b9b097e9c78aa5957c7f39f741885`
 - **Authenticode signed by:** `CN="Cloudflare, Inc."`, issued by DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1
@@ -42,7 +42,7 @@ For macOS/Linux releases, fetch from the matching asset in the same release and 
 
 ## Why bundled, not auto-downloaded
 
-See `docs/remote-access/05-build-pipeline.md` §1.5 (open-core split) and the conversation that produced this directory: bundling avoids first-run network failures, corporate-firewall friction, and an extra "what's a tunnel client?" step in the user UX.
+Bundling avoids first-run network failures, corporate-firewall friction, and an extra "what's a tunnel client?" step in the user UX. The open-core split behind it is in `05-build-pipeline.md` §1.5 (operator-internal; not published in this repository).
 
 ## Where this is loaded from
 

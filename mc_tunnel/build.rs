@@ -16,7 +16,7 @@
 // $OUT_DIR lives under target/ (ignored), so the key never lands in a tracked
 // file or in the working tree outside the build directory.
 //
-// See `05-build-pipeline.md` §3.1 for the operator workflow.
+// See `05-build-pipeline.md` §3.1 for the operator workflow (operator-internal; not published in this repository).
 
 use std::env;
 use std::fs;
