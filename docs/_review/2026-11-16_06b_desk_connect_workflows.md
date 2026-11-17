@@ -300,3 +300,13 @@ each node branch.
 - `render_template` does not re-scan substituted text, so a step output that
   contains `{{…}}` cannot inject a slot (`:1129-1140`).
 
+### Open to-do for this report (delete when done)
+
+- Addendum from Dave (2026-11-16): add a "Backlog cross-check" table after the
+  feature table. Candidates picked from the 91 live items so far: MC-1119,
+  MC-1118, MC-1116, MC-1114, MC-1113, MC-1105, MC-1054, MC-1052, MC-1050,
+  MC-1048, MC-1005, MC-968. Classify each DONE / PARTLY DONE / NOT DONE /
+  OBSOLETE or DUPLICATE / NEEDS A HUMAN with file:line or commit. No PATCH.
+  Final message must list keys classed DONE or OBSOLETE.
+- Then: ranked summary, feature table, streamlining, prior audits, coverage.
+
