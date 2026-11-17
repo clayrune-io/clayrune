@@ -373,8 +373,206 @@ a short expiry (minutes) instead of none, so a throttle heals by itself.
 Test: `tests/test_allowance_state.py` (to confirm) asserts the hints match;
 nothing asserts a non-allowance error is left alone.
 
+### OS24 · high · L/F — a hivemind that was paused or stopped can never be resumed: its workstreams stay `paused` for ever
+`mc/blueprints/hivemind_routes.py:813-846` (pause sets every `active`
+workstream to `paused`; stop does the same to `active`, `pending` and
+`blocked`), `:793-810` (start sets only the manifest back to `active`),
+`:497-509` (`_hm_resolve_dependencies` takes `pending` only), `:1784-1849` (the
+loop acts on `active`, `pending` and `blocked` only), `:512-517` (terminal needs
+every workstream `completed` or `failed`). Nothing turns `paused` back into
+anything; the Resume and Restart buttons call `/start` and nothing else
+(`static/js/hivemind.js:37-39, 193-195`).
+**Measured** (scratch script, the real routes on a temp directory): after
+pause then start, the paused workstream is in neither the ready list nor a
+terminal state; after stop then start, all three workstreams are `paused`, the
+ready list is empty and the manifest says `active`. The run sits there for
+good; only a hand-made `POST …/workstreams/<id>/status` moves it.
+Also: neither route stops a process. Stop's docstring says "hard stop all
+agents" (`:833`); the workers keep running and keep spending, and because the
+loop skips a non-active manifest (`:1774`) and the workstream is no longer
+`active`, a worker that finishes during a pause is never collected.
+Smallest fix: in start, set each `paused` workstream to `active` if its
+session is still live, else to `pending`; in stop, call the session stop path
+for each live worker. Test: `tests/test_hivemind_routes.py:360-378` pins the
+`paused` write; no test resumes afterwards.
+
+### OS25 · high · L/F — a workstream marked `active` whose worker is gone, stopped or idle stays `active`, and that blocks the whole run
+`hivemind_routes.py:1784-1816`. The loop collects a worker only when its
+session is in `agent_sessions` AND its status is `completed` or `error`
+(`:1788-1791`). Three normal cases are neither:
+(a) the server restarted: `agent_sessions` starts empty, so `:1788-1789`
+`continue`s on every tick. `_hm_reconcile_stale_on_startup` relabels the
+MANIFEST `stale` after 24 hours (`:578-580`) and never touches a workstream;
+a younger run stays `active` with dead owners. They count against
+`max_concurrent_workers` (`:1390-1392`), so with three of them nothing else is
+ever spawned;
+(b) a person stops the worker's chat: status `stopped`
+(`agent_routes.py:15254`), not collected;
+(c) a legacy worker on the Claude engine runs in the streaming mode whenever
+`use_streaming_agent` is on (`agent_routes.py:12891-12892`; pass 2, R45): at
+turn end its status is `idle` (`agent_routes.py:6504`) and the process stays
+up, so it becomes `completed` only if the worker itself posted
+`status: completed`, or much later when the idle process exits
+(`:6549-6550`), at which point `:1804-1807` files the workstream as completed
+whether or not the work was done.
+**Measured**: scratch script, three `active` workstreams with no session and
+one `pending`: after the startup pass and one spawn pass nothing changed and
+nothing was spawned. Live install (GET, counts only): 4 of 26 runs are `stale`
+and each still holds 1 or 2 `active` workstreams, the oldest 237 days old.
+Smallest fix: in the loop, an `active` workstream whose session is absent,
+`stopped`, or `idle` past a grace period goes back to `pending` with
+`retry_count + 1` (legacy) or to a held state with a reason (roster); run the
+same pass once at startup. Test: none
+(`tests/test_hivemind_failure_outcomes.py` covers `error`; nothing covers a
+missing session).
+
+### OS26 · high · F — what a person sends into a hivemind is not delivered, and a worker's blocker reaches nobody who is not looking at the dashboard
+(a) Directive to the orchestrator, the default target (`:1694`,
+`hivemind.js:605-609`): appended to the bus and pushed to open dashboards. The
+orchestrator is a short-lived session whose prompt carries the goal, the
+workstream list, the synthesis and decisions, and no bus message
+(`:1272-1279`); `replan`, the one task type that takes extra context, has no
+caller (`:1262`, searched). Nothing reads the message.
+(b) Answering a worker's open question uses the same call and then marks the
+question resolved (`hivemind.js:610-612`). The answer is addressed to
+`orchestrator`, so the worker that asked never gets it. **Measured**: of three
+bus rows (an orchestrator directive, a broadcast to `all`, a direct message)
+`_hm_read_bus_messages(ws_filter='ws_0')` returns only the direct one
+(`:376-378`).
+(c) Directive to a workstream: it is read once, when the NEXT worker for that
+workstream is built (`mc/hivemind_worker.py:428-435`). A running worker is
+never told to poll: its capability list (`:448-466`) has no poll call and
+`GET …/bus/poll/<ws_id>` has no caller anywhere (searched `mc/`, `static/`,
+the builtin skills, the agent reference).
+(d) "Synthesize now" posts `{content, to}`; the route wants `message` and
+answers 400 (**measured**); the page shows "Synthesis requested"
+(`hivemind.js:708-713`). No route starts a synthesis at all (the frontend half
+belongs to pass 4's region; it is not in that report).
+(e) A worker's escalation (`:1654-1680`, and the `escalation` bus type,
+`:1505-1512`) is one line in the bus file and one event to dashboards that are
+open at that moment. No push, no mail, no `mc:question`. `requires_response`
+and `resolved` are written and never read or changed. Hivemind sessions are
+unattended by the file's own account (`:1879-1882`), and the design reference
+for this region is that a question must reach a human.
+Smallest fix: (e) raise the existing web push on an escalation, and list
+unresolved escalations on the run card; (a)/(b) route an answer to the
+workstream that asked and include unread `user` messages in the next
+orchestrator prompt; (c) put the poll call in the worker's capability list;
+(d) add `POST …/synthesize` that calls `_hm_dispatch_orchestrator`. Test:
+`tests/test_hivemind_routes.py:724-740` asserts the rows are written, not that
+anything reads them.
+
+### OS27 · medium · M (security) — a legacy workstream id is used as a file path without a check
+`hivemind_routes.py:681` and `:884` take `id` from the request body;
+`:173-187` build `workstreams/<id>.json` from it; `:1482-1483` take the bus
+`from` field as a workstream id for `<id>_findings.jsonl` (`:298-300`).
+**Measured** (scratch, temp directory): `POST …/workstreams/create` with
+`id: "../../../escaped"` answers 200 and writes `escaped.json` three levels
+above the run folder; a `finding_report` whose `from` is
+`ws_/../../../../leak` creates `leak_findings.jsonl` outside it.
+The usual caller is a model (the decomposing orchestrator, `:1239-1243`) whose
+prompt contains the user's goal and other agents' findings. One `.json` file
+landing in the project-records folder becomes a malformed project and breaks
+both restart endpoints (the load-bearing rule in `CLAUDE.md`).
+The roster path already refuses this (`mc/hivemind_roster.py:237-240`,
+`tests/test_hivemind_roster.py:268, 312`); the legacy path, which is every
+run on the live install (26 of 26, measured), never calls it. `hivemind_id`
+from the URL has the same shape in `_hm_dir` (`:140-143`).
+Smallest fix: one `_safe_id()` (the roster regex) applied inside `_hm_dir` and
+the workstream path helpers. Same producer as pass 4 FE3.
+
+### OS28 · medium · L — the closing synthesis is skipped after a decompose in the same server process, and an engine error leaves the orchestrator slot taken for good
+Other half of pass 2 R45. `_hm_dispatch_orchestrator` returns `None` while the
+id is in `_hivemind_orchestrating` (`:1199-1202`); the id is removed only by
+the exit callback (`:1308-1311`) or a dispatch exception (`:1344-1347`). With
+the callback lost on the Claude streaming path (R45), a run that was
+decomposed by the orchestrator reaches `completed` and the synthesize call at
+`:1868` does nothing: the synthesis file keeps "No findings yet".
+Separately, `engine_selection.resolve_engine` (`:1282-1288`) is called after
+the id is added and outside any `try`. An `EngineSelectionError` (an unknown
+provider, or a model that belongs to another provider, both reachable from the
+create body, `:650-652`) leaves the id in the set until restart and comes out
+of `hivemind_create` as a 500 AFTER the manifest was saved (`:663`, `:712`):
+the caller sees a failure, the run exists, is `active`, has no workstreams and
+cannot be decomposed.
+`max_turns=5` (`:1343`) for a task that asks for "3-8" separate create calls
+may also cut a decomposition short. Read, not measured.
+Smallest fix: wrap everything after the `add` in `try/except` that discards;
+resolve the engine before saving the manifest in create.
+
+### OS29 · medium · L — a spawn that provably launched nothing is filed as `launch_uncertain` and never retried
+`hivemind_routes.py:1416-1433`, `:1839`. Any exception other than
+`EngineSelectionError` blocks the workstream with `failure_reason:
+launch_uncertain`, and the unblock pass skips a blocked row that has a failure
+reason. Refusals raised before any process exists land here: the allowance
+refusal and the blocked-fallback error from the dispatch choke point
+(`agent_routes.py:12727-12752`), the generation check (`:1029-1036`), an
+unknown provider (`:1040-1044`), a held roster launch
+(`hivemind_worker.py:87-90`). The run then stays `active` with a blocked
+workstream and no terminal state; the only signal is one dashboard event.
+So a hivemind that meets a usage limit does not wait for the reset and does
+not fail: it parks without telling anyone. (It does not switch vendor on its
+own, which is the required half.)
+Related, read not measured: a legacy pre-session is registered as `running`
+with `process_alive: True` before the launch (`hivemind_worker.py:560, 576`;
+`hivemind_routes.py:1051`) and `record_launch_failure` returns early for a
+legacy session (`hivemind_worker.py:95-96`), so after a failed launch the next
+tick's ownership pass (`:1365-1381`) can find that entry "live" and hand the
+workstream to it.
+Smallest fix: treat an exception raised before the session is registered as
+"not launched": allowance refusals go back to `pending` with a next-try time
+taken from the vendor's reset, the rest to `failed` with the reason.
+
+### OS30 · medium · L/M — an unreadable workstream file is dropped from the list, and the run can then be declared complete without it
+`hivemind_routes.py:196-201` (`except Exception: pass`, no log), `:512-517`,
+`:1855-1868`. `_hm_terminal_outcome` runs on whatever the list returned. If the
+one unfinished workstream's file fails to read on that tick (damaged, or held
+for an instant while a route replaces it), the rest are all `completed`, the
+manifest is saved `completed`, synthesis is dispatched and integration starts
+with a workstream missing. The same silent `None` at `:163-164` and `:180-181`
+makes a damaged manifest a 404 and a damaged workstream "not found". Project
+policy: a JSON state load must log. Read, not reproduced.
+Smallest fix: log, and have `_hm_list_workstreams` report unreadable files so
+the terminal test refuses when there is one.
+
+### OS31 · low · L — parts of the knowledge base that are written and never read, or read and never written
+- Decisions: the only writers are the two review routes (`:1731`, `:1752`),
+  which have no caller in `static/` (searched). The orchestrator prompt prints
+  `d.get('decision')` (`:1226-1228`) and the worker prompt filters on
+  `impacts` / `workstream` and prints `decision` / `rationale`
+  (`hivemind_worker.py:438-445`); no record has any of those keys.
+- `_hm_write_context` (`:480-483`) has no caller, so "ACCUMULATED CONTEXT"
+  (`hivemind_worker.py:414-416`) is always empty.
+- Config keys `auto_synthesize`, `synthesize_interval_turns`,
+  `require_user_approval_for_decisions` (`:644-646`) are stored and read
+  nowhere (searched `mc/`, `static/`, `server.py`); a finding's
+  `user_reviewed` (`:1494`) is never set true.
+- The worker prompt calls the handoff "REQUIRED before marking complete"
+  (`hivemind_worker.py:459`); the status route does not check for one
+  (`:967-988`), and a process exit marks completion without one (`:1804`).
+
+### OS32 · low · M/E — route hygiene in the hivemind file
+- `PUT /api/hivemind/<id>` and `PUT …/workstreams/<id>` store any `status`
+  string and any `dependencies` value (`:783-785`, `:942-945`); a dependency on
+  an id that does not exist can never be satisfied, so the workstream waits
+  for ever (`:504-505`).
+- `int(request.args.get('limit'))` raises on a non-number (`:1543`, `:1635`).
+- `_hm_resolve_question` rewrites the file in place, not atomically, and one
+  bad line raises (`:435-455`).
+- `_hm_append_finding` re-saves the whole workstream record to bump a counter
+  (`:301-305`), unlocked, against the loop's own saves: a finding posted while
+  the loop marks the workstream completed can write the older status back.
+- The bus and findings files are read whole on every call (`:358-382`,
+  `:308-348`) and never trimmed. Small today (26 runs on the live install).
+- Restarting a `completed` run re-dispatches synthesis and mints a second
+  topic node on the next tick (`:799`, `:1856-1898`).
+
 ## Measurements
 
+- OS24, OS25, OS26, OS27: `_scratch` script driving the real blueprint through a
+  Flask test client on a temp directory; results quoted in the findings.
+- `GET /api/hivemind/list` on the live install: 26 runs, 144 KB, 0.10-0.16 s
+  warm (1.19 s on the first call). Not a finding.
 - OS1: `_compute_next_run` for an `interval` row of 60 minutes whose `last_run`
   is 3 hours old returns now + 5.0 s; with no `last_run`, now + 5.0 s
   (scratch script against the real function). The loop ticks every 30 s, so a
@@ -403,5 +601,14 @@ nothing asserts a non-allowance error is left alone.
   always walks an empty decision list.
 - Tooling note: the unattended fence refuses a shell heredoc whose text names a protected
   path, so the report is written with the Edit tool only.
-- Next: schedule_conditions / skip_log / delivery_failure, engine_*, allowance_*, limit_resume*,
-  question_*, hivemind_*, usage_breakdown_*, model_upgrade*, wake_lock, automation_*, coordination.
+- Also read fully (second batch): `mc/schedule_conditions.py`, `mc/schedule_skip_log.py`,
+  `mc/schedule_delivery_failure.py`, `mc/question_channel.py`, `mc/question_channel_retention.py`,
+  `mc/question_callback.py`, `mc/limit_resume.py`, `mc/limit_resume_completion.py`,
+  `mc/limit_resume_dispatch.py`, `mc/allowance_state.py`, `mc/allowance_probe.py`,
+  `mc/allowance_unverified.py`.
+- Rollover 2 (2026-11-16): `engine_selection`, `engine_fallback`, `engine_pace` and
+  `hivemind_routes` were read before the rollover but their notes were not yet in this file;
+  they are being re-read, findings written as found.
+- Next: engine_* (re-read), hivemind_routes (re-read), hivemind_worker, the other hivemind_*,
+  coordination_routes, automation_*, model_upgrade*, usage_breakdown_*, wake_lock, then the
+  backlog cross-check, then the assembled sections.
