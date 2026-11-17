@@ -73,6 +73,7 @@ from mc import agent_shim as _shim
 from mc import agent_shim_client as _client
 from mc import agent_uncertain_launch as _uncertain
 from mc.proc_kill import POPEN_NEW_SESSION
+from mc.spawn_refusal import is_prechild_refusal
 
 _root_override: Optional[Path] = None
 
@@ -234,11 +235,14 @@ def _popen(cmd: Sequence[Any], *, cwd: Any, env: Optional[Mapping[str, str]],
             startupinfo=_STARTUPINFO if startupinfo is None else startupinfo,
             **POPEN_NEW_SESSION,
         )
-    except FileNotFoundError as exc:
-        # Missing executable/cwd is a proven CreateProcess/exec refusal. A
-        # generic OSError can also come from post-creation handle cleanup;
-        # leave that ambiguous. Delivery errors occur below this boundary.
-        setattr(exc, '_mc_prechild_refusal', True)
+    except OSError as exc:
+        # The OS refused the spawn itself: missing executable or cwd, a
+        # directory or locked file as the target, a non-executable file
+        # (mc/spawn_refusal.py lists the proven cases). Any other OSError can
+        # also come from post-creation handle cleanup; leave that ambiguous.
+        # Delivery errors occur below this boundary.
+        if is_prechild_refusal(exc):
+            setattr(exc, '_mc_prechild_refusal', True)
         raise
     if deliver is not None:
         if defer_delivery:
