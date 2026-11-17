@@ -111,6 +111,7 @@ def test_pull_client_sets_the_event_only_after_custody_commits(w):
         assert not event.is_set()           # a hello commits no mail
         peer.send(offered(w))
         eventually(event.is_set)
+        eventually(lambda: bool(seen))      # the ack is sent just after the signal, on the client thread
         assert len(w.rows('events')) == 1
         assert seen == [(1, True)]          # committed before the signal and before the ack
     finally:

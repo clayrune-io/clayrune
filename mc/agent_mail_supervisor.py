@@ -190,6 +190,8 @@ class Supervisor:
                 # Cleared BEFORE the pass: a commit that lands during it leaves the event
                 # set, so the wait below returns at once rather than losing the signal.
                 self.custody_event.clear()
+                if self._stop.is_set():
+                    break  # stop() landed between the loop test and the clear above
                 if self.enabled():
                     try:
                         self._drive_client()
