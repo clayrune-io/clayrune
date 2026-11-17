@@ -5,9 +5,9 @@ The two user messages below are SYNTHETIC stand-ins of the same shape and
 length class as the real ones (a short statement, then a longer complaint that
 the agent did not remember it). The real words, their timestamp and their
 session id are not kept in this tracked file: they were a person's own messages
-(CLAUDE.md, "nothing operator-specific goes in the repo"). CUTOFF is likewise a
-made-up time on the day of the miss, so the snapshot is a representative
-as-of-cutoff corpus, not a reconstruction of one exact message.
+(CLAUDE.md, "nothing operator-specific goes in the repo"). CUTOFF is the
+midnight (UTC) before the miss, not the time of any message: it has to sit
+BEFORE the miss, or the snapshot would hold the notes written because of it.
 
 Read-only. Builds a point-in-time snapshot of the memory dir in a temp dir:
   * topic files CREATED after the cutoff are dropped (st_birthtime on Windows,
@@ -39,7 +39,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _harness  # noqa: E402
 
-CUTOFF = dt.datetime(2026, 9, 20, 9, 30, 0, tzinfo=dt.timezone.utc)   # made up
+CUTOFF = dt.datetime(2026, 9, 20, 0, 0, 0, tzinfo=dt.timezone.utc)   # midnight before the miss
 NEEDLE = 'after adding Codex credits'
 
 QUERIES = {
