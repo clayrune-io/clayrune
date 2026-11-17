@@ -15,11 +15,12 @@
  *         card, and a settled request shows its outcome, not buttons;
  *       - a 409 (answered elsewhere) refreshes the card to the real state.
  *
- * B — Desk Connections (static/js/desk-v1-connect-agent-read.js). A browser-pane connection's detail
- *     shows which sites agents may read through its saved profile and edits them through the same
- *     passcode-gated PUT. Asserts: the sites list from GET /api/browser/agent-read, Remove and Allow site
- *     each PUT {enabled, domains} with the passcode, cancelling the prompt sends nothing, a refused PUT
- *     says so in place and keeps the list, and an API-read connection shows no such block.
+ * B — Desk Connections. The per-connection "Agents may read" site editor (static/js/desk-v1-connect-agent-read.js
+ *     html/bind) was RETIRED by fc28e2d7 (2026-10-28, "Unify Connections words"): a connection's detail now shows
+ *     Read/Post permission rows, and the one place a browser sign-in's site list is edited is the Connect flow's Read
+ *     row (DeskV1ConnectBrowserPermission), covered by desk-v1-connect-browser-permission.mjs (grant/revoke PUT with the
+ *     passcode, cancel/wrong-passcode/refused-PUT change nothing). This smoke asserts only that the retired editor is
+ *     NOT on a pane connection's detail and that merely opening the detail writes nothing.
  *
  * RUN   cd tools/smoke && node agent-read-request-ui.mjs
  * Screenshots go to MC_SMOKE_SHOT_DIR if set.  Exit 0 = all checks pass; 1 = a check failed / harness error.
@@ -234,50 +235,12 @@ try {
   await page.click('.desk-v1-home-connections-btn');
   await page.waitForSelector('[data-connections] [data-conn-tile]', { timeout: 4000 });
   await page.click('[data-conn-tile="ch-x-ron"]');
-  await page.waitForSelector('[data-conn-detail="ch-x-ron"] [data-agentread-site]', { timeout: 4000 });
-  const sites = () => page.$$eval('[data-conn-detail="ch-x-ron"] [data-agentread-site]', (els) => els.map((e) => e.dataset.agentreadSite));
-  check(JSON.stringify(await sites()) === JSON.stringify(['linkedin.com', 'x.com']), `the connection lists the sites the profile allows (${JSON.stringify(await sites())})`);
+  await page.waitForSelector('[data-conn-detail="ch-x-ron"]', { timeout: 4000 });
+  await page.waitForTimeout(500);   // the retired editor loaded asynchronously: give it the time it used to take
+  check(await page.locator('[data-conn-detail="ch-x-ron"] [data-agentread-for], [data-conn-detail="ch-x-ron"] [data-agentread-site], [data-conn-detail="ch-x-ron"] [data-agentread-add]').count() === 0,
+        'a browser-pane connection detail no longer carries the per-site agent-read editor (retired by fc28e2d7)');
   if (SHOT_DIR) await page.screenshot({ path: resolve(SHOT_DIR, 'connections-agent-read.png') });
-
-  // Cancel sends nothing.
-  await page.fill('[data-conn-detail="ch-x-ron"] [data-agentread-input]', 'reddit.com');
-  await page.click('[data-conn-detail="ch-x-ron"] [data-agentread-add]');
-  check(await answerPrompt(page, '', { cancel: true }), 'Allow site opens the passcode prompt');
-  await page.waitForTimeout(300);
-  check(puts.length === 0, 'cancelling the prompt sent no PUT');
-
-  // Add.
-  await page.click('[data-conn-detail="ch-x-ron"] [data-agentread-add]');
-  await answerPrompt(page, 'smoke-passcode');
-  await page.waitForSelector('[data-conn-detail="ch-x-ron"] [data-agentread-site="reddit.com"]', { timeout: 4000 }).catch(() => {});
-  check(puts.length === 1 && puts[0].name === 'main' && puts[0].body.enabled === true
-        && JSON.stringify(puts[0].body.domains) === JSON.stringify(['linkedin.com', 'x.com', 'reddit.com']) && puts[0].body.passcode === 'smoke-passcode',
-        `Allow site PUT the whole list with the passcode (${JSON.stringify(puts[0] && puts[0].body)})`);
-  check((await sites()).includes('reddit.com'), 'the new site shows in the list');
-
-  // Remove.
-  await page.click('[data-conn-detail="ch-x-ron"] [data-agentread-remove="x.com"]');
-  await answerPrompt(page, 'smoke-passcode');
-  await page.waitForSelector('[data-conn-detail="ch-x-ron"] [data-agentread-site="x.com"]', { state: 'detached', timeout: 4000 }).catch(() => {});
-  check(puts.length === 2 && JSON.stringify(puts[1].body.domains) === JSON.stringify(['linkedin.com', 'reddit.com']), 'Remove PUT the list without the site');
-  check(!(await sites()).includes('x.com'), 'the removed site is gone from the list');
-
-  // A refused PUT says so in place and keeps the list.
-  srv.refusePut = true;
-  await page.click('[data-conn-detail="ch-x-ron"] [data-agentread-remove="reddit.com"]');
-  await answerPrompt(page, 'smoke-passcode');
-  await page.waitForFunction(() => /Could not save/.test((document.querySelector('[data-conn-detail="ch-x-ron"] [data-agentread-status]') || {}).textContent || ''), null, { timeout: 4000 }).catch(() => {});
-  check(/Could not save it: this action needs a human/.test(await page.textContent('[data-conn-detail="ch-x-ron"] [data-agentread-status]')), 'a refused PUT says so in place');
-  check((await sites()).includes('reddit.com'), 'a refused PUT leaves the list as it was');
-  srv.refusePut = false;
-
-  // A connection reading through the paid API has no such block.
-  await page.click('[data-conn-detail="ch-x-ron"] [data-readvia="api"]');
-  await page.waitForFunction(() => !document.querySelector('[data-conn-detail="ch-x-ron"] [data-agentread-for]'), null, { timeout: 4000 }).catch(() => {});
-  check(await page.locator('[data-conn-detail="ch-x-ron"] [data-agentread-for]').count() === 0, 'a connection reading through the API shows no agent-read block');
-  await page.click('[data-conn-detail="ch-x-ron"] [data-readvia="pane"]');
-  await page.waitForSelector('[data-conn-detail="ch-x-ron"] [data-agentread-site]', { timeout: 4000 }).catch(() => {});
-  check(await page.locator('[data-conn-detail="ch-x-ron"] [data-agentread-for]').count() === 1, 'switching back to the browser pane shows it again');
+  check(puts.length === 0, 'opening the connection detail wrote no agent-read policy');
 
   const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   uncaught.forEach((e) => fail('uncaught: ' + e));
