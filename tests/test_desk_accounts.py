@@ -165,7 +165,7 @@ def test_linkedin_page_is_not_connected_whatever_the_vault_holds(env, monkeypatc
     monkeypatch.setattr(local_auth, '_local_auth_try_passcode', lambda value: value == 'test-human-proof')
     client, vault, _ = env
     vault.add('linkedin.oauth-token')
-    _create(client, platform='linkedin', identity='Clayrune', id='ch-li')
+    _create(client, platform='linkedin', identity='Clayrune', id='ch-li', account_kind='organization')
     li = _by_id(client)['ch-li']
     assert li['publish']['ready'] is False and li['connected'] is False
     assert li['publish']['reason'] == 'LinkedIn app review pending (w_organization_social)'
@@ -232,7 +232,7 @@ def test_create_defaults_and_duplicate(env):
     acc = r.get_json()
     assert acc['id'].startswith('acct') and acc['capability'] == 'direct' and acc['label'].endswith('@ron')
     assert _create(client, platform='x', identity='@RON').status_code == 409      # same identity, same platform
-    assert _create(client, platform='linkedin', identity='@ron').status_code == 201
+    assert _create(client, platform='linkedin', identity='@ron', account_kind='member').status_code == 201
     assert _create(client, platform='x', identity='@other', id=acc['id']).status_code == 409
 
 

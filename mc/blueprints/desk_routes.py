@@ -38,6 +38,7 @@ from flask import Blueprint, jsonify, request
 from mc import characters as _chars
 from mc import desk as _desk
 from mc import desk_accounts as _accounts
+from mc import desk_account_kind_input as _account_kind_input
 from mc import desk_brief as _brief
 from mc import desk_engines as _engines
 from mc import desk_oauth as _oauth
@@ -991,9 +992,14 @@ def create_account():
     if refused:
         return refused
     d = request.get_json(silent=True) or {}
+    try:
+        kind = _account_kind_input.checked_kind(d.get('platform'), d.get('account_kind'))
+    except _accounts.AccountError as e:
+        return jsonify({'error': str(e)}), e.status
     return _account_call(_accounts.create_account, d.get('platform'), d.get('identity'),
                          label=d.get('label'), capability=d.get('capability'),
-                         voice=d.get('voice'), account_id=d.get('id'), status=201)
+                         voice=d.get('voice'), account_id=d.get('id'),
+                         account_kind=kind, status=201)
 
 
 @bp.route('/api/desk/accounts/<account_id>', methods=['PATCH'])
