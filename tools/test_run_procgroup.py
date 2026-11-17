@@ -10,7 +10,9 @@ every unit in a group it owns:
   still holds the unreaped child, so the id cannot have been recycled.
 - Windows: a Job Object with kill-on-job-close. The child is created suspended,
   assigned to the job, then resumed, so it cannot start a grandchild outside
-  the job. A job can only ever contain processes this launcher started, and no
+  the job. For argv units the job allows explicit breakaway
+  (CREATE_BREAKAWAY_FROM_JOB) but not silent breakaway; shell units get a strict
+  job. A job can only ever contain processes this launcher started, and no
   PID is looked up after the fact (Windows reuses PIDs).
 
 A unit that exits normally is left as it was: `release()` forgets the group
@@ -30,6 +32,7 @@ if os.name == 'nt':
     from ctypes import wintypes
 
     _CREATE_SUSPENDED = 0x00000004
+    _JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x00000800
     _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
     _JobObjectExtendedLimitInformation = 9
     _PROCESS_SET_QUOTA, _PROCESS_TERMINATE, _PROCESS_SUSPEND_RESUME = 0x0100, 0x0001, 0x0800
@@ -104,13 +107,23 @@ class Group:
         self.job = None
 
 
-def start(argv: Any, **popen_kwargs: Any) -> tuple[subprocess.Popen, Group]:
-    """Popen(argv, **popen_kwargs) in a new group. Raises OSError as Popen does."""
+def start(argv: Any, breakaway_ok: bool = False, **popen_kwargs: Any) -> tuple[subprocess.Popen, Group]:
+    """Popen(argv, **popen_kwargs) in a new group. Raises OSError as Popen does.
+
+    `breakaway_ok` (Windows only) lets a descendant that passes
+    CREATE_BREAKAWAY_FROM_JOB leave the job, and so outlive a timeout kill.
+    """
     if os.name != 'nt':
         proc = subprocess.Popen(argv, start_new_session=True, **popen_kwargs)
         return proc, Group(proc)
     job = _k32.CreateJobObjectW(None, None)
-    if job and not _set_limit(job, _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE):
+    # BREAKAWAY_OK (never SILENT_BREAKAWAY_OK): only a descendant that explicitly
+    # passes CREATE_BREAKAWAY_FROM_JOB (the agent shim launch,
+    # mc/agent_shim_client.py) may leave the job; everything else stays in it and
+    # is ended with the group. Off for shell units: bash tries that flag on its
+    # own forks, so allowing it lets bash grandchildren outlive a timeout.
+    limits = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | (_JOB_OBJECT_LIMIT_BREAKAWAY_OK if breakaway_ok else 0)
+    if job and not _set_limit(job, limits):
         _k32.CloseHandle(job)
         job = None
     if not job:

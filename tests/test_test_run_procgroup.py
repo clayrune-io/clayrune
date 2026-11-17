@@ -82,6 +82,60 @@ def test_cancel_ends_grandchild_and_keeps_output(api, monkeypatch, capfdbinary):
     assert parent['state'] == children[0]['state'] == 'cancelled'
 
 
+# A unit that starts one child with CREATE_BREAKAWAY_FROM_JOB (what the agent shim
+# launch does) and one ordinary child, each writing a marker after a short sleep.
+# It records whether the breakaway spawn was allowed, then waits past the timeout.
+BREAKAWAY_UNIT = ("import subprocess, sys, time\n"
+                  "marker = sys.argv[1]\n"
+                  "code = \"import sys, time; time.sleep(3); open(sys.argv[1], 'w').write('survived')\"\n"
+                  "try:\n"
+                  "    subprocess.Popen([sys.executable, '-c', code, marker + '.breakaway'],\n"
+                  "                     creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB)\n"
+                  "    status = 'ok'\n"
+                  "except OSError as exc:\n"
+                  "    status = 'refused: %r' % (exc,)\n"
+                  "subprocess.Popen([sys.executable, '-c', code, marker + '.normal'])\n"
+                  "open(marker + '.status', 'w').write(status)\n"
+                  "time.sleep(60)\n")
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Job Objects and CREATE_BREAKAWAY_FROM_JOB are Windows-only')
+def test_breakaway_child_is_allowed_and_ordinary_child_is_killed_on_timeout(api):
+    # MC-2982701a: the launcher's job must permit an explicit breakaway (the shim
+    # launch needs it) while every ordinary descendant is still ended on timeout.
+    import subprocess
+    try:
+        probe = subprocess.Popen([sys.executable, '-c', 'pass'], creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB)
+        probe.wait()
+    except OSError as exc:
+        pytest.skip(f'the job pytest itself runs in refuses breakaway ({exc!r}); the probe, not the launcher, fails')
+    script, marker = api.tmp / 'unit.py', api.tmp / 'marker'
+    script.write_text(BREAKAWAY_UNIT, encoding='utf-8')
+    done = invoke(api, '--timeout-seconds', '1.5', '--', sys.executable, str(script), str(marker))
+    assert done.returncode != 0
+    status = (api.tmp / 'marker.status')
+    assert status.read_text() == 'ok', 'breakaway spawn was refused under the launcher job'
+    assert wait_for_marker(api.tmp / 'marker.breakaway', 6), 'breakaway child did not outlive the timeout'
+    time.sleep(0.5)  # the ordinary child would have written at the same moment
+    assert not (api.tmp / 'marker.normal').exists(), 'ordinary child survived the timeout'
+    parent, children = family(api, 1)
+    assert parent['state'] == children[0]['state'] == 'timeout'
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Job Objects and CREATE_BREAKAWAY_FROM_JOB are Windows-only')
+@pytest.mark.skipif(shutil.which('bash') is None, reason='bash not installed')
+def test_shell_unit_job_stays_strict_and_bash_grandchild_dies_on_timeout(api):
+    # MC-2982701a: only argv units may break away. A shell unit's job is strict, so
+    # nothing bash starts, even with CREATE_BREAKAWAY_FROM_JOB, outlives a timeout.
+    script, marker = api.tmp / 'unit.py', api.tmp / 'marker'
+    script.write_text(BREAKAWAY_UNIT, encoding='utf-8')
+    command = f'"{sys.executable}" "{script.as_posix()}" "{marker.as_posix()}"; echo done'
+    done = invoke(api, '--timeout-seconds', '1.5', '--shell', 'bash', '--command', command)
+    assert done.returncode != 0
+    assert not wait_for_marker(api.tmp / 'marker.breakaway', 5), 'breakaway child survived a shell unit timeout'
+    assert not (api.tmp / 'marker.normal').exists(), 'ordinary child survived the timeout'
+
+
 def test_normal_exit_is_untouched(api):
     done = invoke(api, '--', sys.executable, '-c', 'print("ok"); raise SystemExit(3)')
     assert done.returncode == 3 and done.stdout.strip() == b'ok' and done.stderr == b''
