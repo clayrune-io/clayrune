@@ -29,10 +29,10 @@ a third unit. Checks are nonempty acceptance text, not executable commands.
 Optional smokes must be bare .mjs suite names accepted by existing integration.
 Both ownership and checks survive create in the workstream description.
 
-Independence is Dave's explicit declaration, not inferred from prose: only
+Independence is the coordinating agent's explicit declaration, not inferred from prose: only
 units with no depends_on can start at the common base. All dependents,
 including transitive ones, remain in held_units with their full briefs and a
-Q6 hold until Dave arranges work after reviewed integration. They are never
+Q6 hold until the coordinating agent arranges work after reviewed integration. They are never
 inserted into a common-base roster. Three roots still route to hivemind when
 capacity is one; the reviewer consumes no worker slot or threshold count.
 
@@ -40,7 +40,7 @@ Ownership is concrete repository-relative FILE paths, normalized lexically
 (backslashes, dot segments and case aliases). Globs, absolute/parent paths
 and directory declarations are refused. Any overlap invalidates the whole
 plan, even on a held unit. No filesystem/symlink or semantic independence
-claim is made; Dave remains responsible for those declarations.
+claim is made; the coordinating agent remains responsible for those declarations.
 """
 from __future__ import annotations
 
@@ -247,6 +247,7 @@ def plan_routing(data: Any, *, app_config: Mapping[str, Any],
         result.update(route='ordinary', ordinary_units=independent)
     result.update(
         independent_count=len(independent), independent_units=[u['id'] for u in independent],
-        held_units=[dict(u, hold_reason='Q6: dependent follow-up for Dave after reviewed integration')
+        held_units=[dict(u, hold_reason=('Q6: dependent follow-up for the coordinating agent '
+                                         'after reviewed integration'))
                     for u in units if u['depends_on']])
     return result
