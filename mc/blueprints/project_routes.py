@@ -55,6 +55,7 @@ from mc import state
 from mc.ui_field_validation import validate_project_fields, validate_backlog_fields
 from mc.delegation_delivery import DeliveryStore
 from mc.atomic_json import write_json_atomic
+from mc.project_mutate import mutate_project
 from mc.project_record_path import is_plain_project_id, project_record_path
 from mc.project_safety_settings import refuse_agent_safety_write
 from mc import steward_role_writes as _role_writes
@@ -621,15 +622,17 @@ def _log_agent_activity(project_id, msg, bump_updated=True):
     False for background machinery (e.g. GitHub auto-sync) that should be
     *logged* without floating the project to the top of the recency sort.
     """
-    p = load_project(project_id)
-    if not p:
-        return
-    log = p.setdefault('activity_log', [])
-    log.insert(0, {'ts': now_iso(), 'msg': msg})
-    p['activity_log'] = log[:20]
-    if bump_updated:
-        p['last_updated'] = now_iso()
-    save_project(project_id, p)
+    def _apply(p):
+        log = p.setdefault('activity_log', [])
+        log.insert(0, {'ts': now_iso(), 'msg': msg})
+        p['activity_log'] = log[:20]
+        if bump_updated:
+            p['last_updated'] = now_iso()
+        return True
+
+    # Applied to the record re-read under the project lock (MC-1179 P55): this
+    # runs on every agent event and must not carry a stale copy of the backlog.
+    mutate_project(project_id, _apply)
 
 
 # ── Project endpoints ────────────────────────────────────────────────────────
@@ -957,18 +960,25 @@ def set_conversation_pin(project_id):
             csid = s['claude_session_id']
     if not csid:
         return jsonify({'error': 'no resolvable conversation id (chat has no saved session yet)'}), 400
-    existing = json.loads(filepath.read_text(encoding='utf-8'))
-    pinned = existing.get('pinned_conversations')
-    if not isinstance(pinned, list):
-        pinned = []
-    is_pinned = csid in pinned
-    want = bool(body['pinned']) if 'pinned' in body else (not is_pinned)
-    if want and not is_pinned:
-        pinned.append(csid)
-    elif not want and is_pinned:
-        pinned = [c for c in pinned if c != csid]
-    existing['pinned_conversations'] = pinned
-    save_project(project_id, existing)
+
+    def _apply(existing):
+        pinned = existing.get('pinned_conversations')
+        if not isinstance(pinned, list):
+            pinned = []
+        is_pinned = csid in pinned
+        want = bool(body['pinned']) if 'pinned' in body else (not is_pinned)
+        if want and not is_pinned:
+            pinned.append(csid)
+        elif not want and is_pinned:
+            pinned = [c for c in pinned if c != csid]
+        existing['pinned_conversations'] = pinned
+        return pinned
+
+    # The toggle is decided on the record re-read under the project lock, so a
+    # second pin or any other writer between our read and write is not undone.
+    pinned = mutate_project(project_id, _apply)
+    if pinned is None:
+        return jsonify({'error': 'project not found'}), 404
     return jsonify({'ok': True, 'pinned_conversations': pinned, 'pinned': csid in pinned})
 
 
@@ -1037,18 +1047,21 @@ def generate_project_summary(project_id):
     emoji = (data.get('emoji') or '').strip()
     summary = (data.get('summary') or '').strip()
 
-    if emoji and (overwrite_emoji or not p.get('emoji')):
-        p['emoji'] = emoji
-    if summary:
-        p['summary'] = summary
-    p['last_updated'] = now_iso()
-    save_project(project_id, p)
+    # The model call is done; apply its result to the record as it is NOW, not
+    # to the copy loaded before the call (MC-1179 P55). The lock is taken only
+    # here, never across the call.
+    def _apply(fresh):
+        if emoji and (overwrite_emoji or not fresh.get('emoji')):
+            fresh['emoji'] = emoji
+        if summary:
+            fresh['summary'] = summary
+        fresh['last_updated'] = now_iso()
+        return {'emoji': fresh.get('emoji', ''), 'summary': fresh.get('summary', '')}
 
-    return jsonify({
-        'ok': True,
-        'emoji': p.get('emoji', ''),
-        'summary': p.get('summary', ''),
-    })
+    applied = mutate_project(project_id, _apply)
+    if applied is None:
+        return jsonify({'error': 'project not found'}), 404
+    return jsonify({'ok': True, **applied})
 
 
 @bp.route('/api/project/<project_id>', methods=['DELETE'])
@@ -2147,10 +2160,14 @@ def github_setup(project_id):
     if not ok:
         return jsonify({'error': err}), 400
 
-    p['github_repo'] = repo
-    p['github_sync_enabled'] = True
-    p['last_updated'] = now_iso()
-    save_project(project_id, p)
+    def _apply(rec):
+        rec['github_repo'] = repo
+        rec['github_sync_enabled'] = True
+        rec['last_updated'] = now_iso()
+        return True
+
+    if not mutate_project(project_id, _apply):
+        return jsonify({'error': 'not found'}), 404
     _log_agent_activity(project_id, f"GitHub: Connected to {repo}")
 
     # Trigger initial sync in background
@@ -2167,11 +2184,15 @@ def github_disconnect(project_id):
     if p is None:
         return jsonify({'error': 'not found'}), 404
     repo = p.get('github_repo', '')
-    p['github_sync_enabled'] = False
-    p['github_repo'] = ''
-    p['github_last_sync'] = None
-    p['last_updated'] = now_iso()
-    save_project(project_id, p)
+
+    def _apply(rec):
+        rec['github_sync_enabled'] = False
+        rec['github_repo'] = ''
+        rec['github_last_sync'] = None
+        rec['last_updated'] = now_iso()
+        return True
+
+    mutate_project(project_id, _apply)
     if repo:
         _log_agent_activity(project_id, f"GitHub: Disconnected from {repo}")
     return jsonify({'ok': True})
@@ -2945,10 +2966,9 @@ def save_project_order():
     for i, project_id in enumerate(order):
         if project_id is None:
             continue
-        p = load_project(project_id)
-        if p:
-            p['display_order'] = i
-            save_project(project_id, p)
+        # One field per record, applied to the record re-read under its lock:
+        # this loop touches every project and must not carry stale backlogs.
+        mutate_project(project_id, lambda p, i=i: p.__setitem__('display_order', i) or True)
     return jsonify({'ok': True})
 
 @bp.route('/api/grid-layout')

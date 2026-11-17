@@ -1,5 +1,14 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Single-field project writers no longer undo another writer's edit (MC-1179 pass 07 / P55)
+
+- P55: the lost-update guard restored rows another writer added but not rows it changed or deleted, so a writer holding an older copy of the record put back an item that had been closed or deleted. Reproduced with two writers on one record (A closes item one and deletes item two, B saves an activity entry): item one read `open` again and item two was back, with nothing logged. Six of the new tests failed that way before the fix.
+- New `mc/project_mutate.py`: `mutate_project(project_id, fn)` takes the project's write lock, re-reads the record, applies `fn` to the fresh copy and saves before releasing. `fn` must not call a model, the network or a subprocess.
+- Moved onto it: `_log_agent_activity` (runs on every agent event), the conversation pin, the order route (one `display_order` per project), `github_setup`, `github_disconnect`, and the summary writer. The summary does its model call with no lock held and applies the result inside `mutate_project`.
+- Left as load-then-save, one by one: `update_project`, the backlog add/patch/delete/note/link/attachment routes, the social-queue routes, the roster, changelog import and the rules/memory editors. They change several fields or rows from a request body and several need the item or number computed first; they still get the add-only guard. `P57` (two overlapping adds share a number) falls out of moving the backlog add onto the helper and is not done here.
+- Tests: new `tests/test_project_mutate.py` (10). No existing test pinned the old behaviour; none was rewritten.
+- Branch candidate for review; no merge, push, deployment or server restart.
+
 ## [2026-11-16] - Project ids can no longer walk out of the data dir (MC-1179 pass 07 / P54)
 
 - P54: a project id from a URL segment or the `/api/projects/order` body went straight into `DATA_DIR / f'{id}.json'`, so an encoded backslash (Windows) or an absolute path (any OS) read and rewrote any `.json` file on the machine. Reproduced on a temp dir: GET backlog and POST conversation-pin with `..\victim`, POST backlog with an absolute id, and the order route with an absolute id each reached the outside file (12 of the new tests failed before the fix).
