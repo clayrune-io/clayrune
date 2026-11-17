@@ -35,7 +35,7 @@
     session_closed: 'The chat this reply was addressed to has been closed.',
     session_unavailable: 'The chat this reply was addressed to is not available.',
     native_history_missing: 'The chat history needed to continue the conversation could not be found.',
-    rollover_required: 'The chat has grown too large and has to roll over before it can take another message.',
+    rollover_required: 'The chat has grown too large and has to roll over before it can take another message. Open the chat once and send it a message, then release this reply.',
     provider_quota_held: 'The agent engine is out of allowance right now.',
     duplicate_conversation_owner: 'Two chats claim the same conversation, so it is unclear which should get the reply.',
     recovery_held: 'The chat is recovering from an earlier failure.',

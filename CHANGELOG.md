@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Keep inbound agent mail flowing through network faults and transient refusals (MC-1186 / MC-1179 MB8, MB9, MB6)
+
+- MB8: one failed HTTPS request no longer halts the pull worker until the server restarts. A connection failure, DNS failure or timeout on the ticket request retries under the existing backoff (`connection_lost`); an unverifiable reply with a 5xx status retries as `service_unavailable`; `service_unavailable` from the manifest refresh (`reviewed_service`) retries. Every reason in `HALT` still halts, and an unverifiable 2xx/4xx reply still halts as `response_unverified`.
+- MB9: a reply taken into custody is delivered without waiting out the recovery tick. The pull client sets a `threading.Event` after each durable custody commit and the supervisor loop waits on it; `pending` steps no longer count toward the supervisor backoff (only `failed` and `held`), so they stop stretching the tick to 15 minutes.
+- MB6: `provider_quota_held`, `provider_recovery_held` and a busy spawner (`spawner_busy`) are now retryable with the store's existing backoff (new `mc/agent_mail_transient_holds.py`) instead of permanent holds that froze the chat's later replies; a reply waiting out one of them is no longer counted as a failed `inbound` recovery step. `rollover_required` still holds, and its hold text now says to open the chat once and send it a message, then release. Release stays passcode-gated; other hold reasons are unchanged.
+- Tests: new `test_agent_mail_pull_resilience.py`, `test_agent_mail_supervisor_wake.py`, `test_agent_mail_transient_holds.py`; three tests that pinned the old permanent hold were rewritten (`test_agent_mail_wake.py`, `test_agent_mail_spawner_fallback.py`).
+- Branch candidate for review; no merge, push, deployment or server restart.
+
 ## [2026-11-16] - Fix three high agent-mail Worker defects (MC-1184 / MC-1179 W1-W3)
 
 - W1: a send reserved but refused at authorization (the 20-a-day `send_limit`, or a storage fault between the two batches) no longer stays `reserved` forever. A retry with the same `intent_id` re-runs the authorization CAS and sends: still 429 `send_limit` while the cap is full, sent once after the day bucket resets. Two concurrent retries cannot both send. `accepted`, `sending`, `failed` and `revoked` replays are unchanged. The two tests that pinned the stuck behaviour were rewritten; corrected the Python comment at `mc/agent_mail_outbound.py` that claimed the Worker wrote nothing on `send_limit` (comment only).

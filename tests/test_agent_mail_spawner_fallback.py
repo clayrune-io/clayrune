@@ -46,7 +46,6 @@ def test_no_spawner_keeps_the_hold(spawned):
 
 
 @pytest.mark.parametrize('change', [
-    {'status': 'running'},                  # busy
     {'incognito': True},                    # fails its own snapshot
     {'_agent_cwd': 'missing-tree'},         # spawner's own worktree gone too
     {'project_id': 'other-project'},        # not in the same project
@@ -75,11 +74,19 @@ def test_session_naming_itself_as_spawner_keeps_the_hold(spawned):
     assert spawned.wake.process_next(spawned.app)['reason'] == 'worktree_unavailable'
 
 
+def test_transient_reason_is_retried_not_forwarded(spawned):
+    # MC-1186: provider_recovery_held used to be a permanent hold; it now retries, still unforwarded.
+    spawned.session.update(_agent_cwd=str(spawned.tmp_path), _launch_uncertain=True)
+    ready(spawned)
+    result = spawned.wake.process_next(spawned.app)
+    assert result['state'] == 'retryable' and result['reason'] == 'provider_recovery_held'
+    assert spawned.spawner['proc'].stdin.getvalue() == ''
+
+
 @pytest.mark.parametrize('change,reason', [
     ({'claude_session_id': 'different-native'}, 'conversation_identity_changed'),
     ({'status': 'stopped'}, 'session_closed'),
     ({'incognito': True}, 'incognito_not_persistent'),
-    ({'_launch_uncertain': True}, 'provider_recovery_held'),
     ({'character': {'name': 'different'}}, 'persona_changed'),
 ])
 def test_other_reasons_are_never_forwarded(spawned, change, reason):

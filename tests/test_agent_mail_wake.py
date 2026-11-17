@@ -103,10 +103,9 @@ def test_real_followup_writes_laundered_text_and_matching_completion(setup):
     ({'claude_session_id': 'different-native'}, 'conversation_identity_changed'),
     ({'status': 'stopped'}, 'session_closed'),
     ({'incognito': True}, 'incognito_not_persistent'),
-    ({'_launch_uncertain': True}, 'provider_recovery_held'),
     ({'character': {'name': 'different'}}, 'persona_changed'),
     ({'_agent_cwd': 'missing-tree'}, 'worktree_unavailable'),
-])
+])  # provider_recovery_held is retryable since MC-1186: tests/test_agent_mail_transient_holds.py
 def test_holds_before_any_pipe_write(setup, change, reason):
     ready(setup)
     setup.session.update(change)
