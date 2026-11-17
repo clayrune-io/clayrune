@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { deskLoaded } from './_static.mjs';
 const root = fileURLToPath(new URL('../..', import.meta.url));
 async function register(pid, command) {
   const r = await fetch('http://localhost:5199/api/processes/register', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -29,6 +30,7 @@ try {
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));
     await page.goto(origin);
+    await deskLoaded(page);
     await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
     await page.evaluate(() => window.sidebarNav('social'));
     await page.waitForSelector('.desk-v1-home');
@@ -53,7 +55,7 @@ try {
     await page.waitForFunction(() => document.querySelector('[data-piece-media] video')?.readyState >= 1);
     const duration = await page.locator('[data-piece-media] video').evaluate(el => el.duration);
     assert(duration > 0);
-    await page.reload(); await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
+    await page.reload(); await deskLoaded(page); await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
     await page.evaluate(() => window.sidebarNav('social')); await page.waitForSelector('.desk-v1-home');
     await page.evaluate(id => window.deskV1Nav('piece', { campaignId: 'camp-test', familyId: id }), piece.id);
     await page.waitForSelector('[data-piece-media] [data-pmed-open]');

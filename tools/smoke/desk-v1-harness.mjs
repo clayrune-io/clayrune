@@ -34,7 +34,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { seedDeskV1Fixtures } from './desk-v1-fixture-api.mjs';
-import { loadStaticJsCss } from './_static.mjs';
+import { loadStaticJsCss, deskLoaded } from './_static.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -119,6 +119,7 @@ async function runTone(browser, tone) {
   await seedDeskV1Fixtures(page);
 
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card', { timeout: 15000 });
   if (pageErrors.length) { pageErrors.forEach((e) => fail(`[${tone.name}] uncaught page error during boot: ${e}`)); await ctx.close(); return; }
   ok(`[${tone.name}] app booted clean (stored desk_v1=${tone.deskV1Stored})`);

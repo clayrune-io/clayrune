@@ -7,7 +7,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { loadFixtures, workspaceFromFixtures } from './desk-v1-fixture-api.mjs';
-import { loadStaticJsCss } from './_static.mjs';
+import { loadStaticJsCss, deskLoaded } from './_static.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const STATIC = loadStaticJsCss(ROOT);
@@ -64,6 +64,7 @@ try {
       return J({ error: 'unhandled ' + path }, 404);
     });
     await page.goto('http://mc.smoke.test/', { waitUntil: 'domcontentloaded' });
+    await deskLoaded(page);
     await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
     await page.evaluate(() => window.sidebarNav('social'));
     await page.waitForSelector('.desk-v1-home-studio-btn');

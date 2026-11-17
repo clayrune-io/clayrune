@@ -24,7 +24,7 @@ import { dirname, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright';
 import { loadFixtures, workspaceFromFixtures } from './desk-v1-fixture-api.mjs';
-import { loadStaticJsCss } from './_static.mjs';
+import { loadStaticJsCss, deskLoaded } from './_static.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -151,6 +151,7 @@ async function newPage(browser, srv, width, height) {
     return route.abort();
   });
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row', { timeout: 15000 });
   // The browser pane is a stub that records the call: the smoke opens no real pane and no real profile.
   await page.evaluate(() => { window.__panes = []; window.openBrowserPane = (...a) => { window.__panes.push(a); return Promise.resolve(); }; });

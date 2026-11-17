@@ -32,6 +32,7 @@ try {
       return route.abort();
     });
     await page.goto('http://mc.smoke.test/');
+    await deskLoaded(page);
     await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
   await deskLoaded(page);
     await page.evaluate(() => window.sidebarNav('social'));

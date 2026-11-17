@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { chromium } from 'playwright';
-import { loadStaticJsCss } from './_static.mjs';
+import { loadStaticJsCss, deskLoaded } from './_static.mjs';
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const assets = loadStaticJsCss(root);
@@ -67,6 +67,7 @@ try {
       return json({});
     });
     await page.goto('http://mc.smoke.test');
+    await deskLoaded(page);
     await page.waitForFunction(() => window.DeskV1Engines);
     const mount = async () => {
       await page.evaluate(() => {

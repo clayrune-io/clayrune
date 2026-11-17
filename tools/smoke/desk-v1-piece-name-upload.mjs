@@ -5,7 +5,7 @@ import { readFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
-import { loadStaticJsCss } from './_static.mjs';
+import { loadStaticJsCss, deskLoaded } from './_static.mjs';
 import { seedDeskV1Fixtures } from './desk-v1-fixture-api.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -35,6 +35,7 @@ try {
     });
     await seedDeskV1Fixtures(page);
     await page.goto('http://mc.smoke.test/');
+    await deskLoaded(page);
     await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
     await page.evaluate(() => window.sidebarNav('social'));
     await page.waitForSelector('.desk-v1-shell');

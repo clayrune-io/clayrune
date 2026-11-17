@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { loadFixtures, workspaceFromFixtures } from './desk-v1-fixture-api.mjs';
-import { loadStaticJsCss } from './_static.mjs';
+import { loadStaticJsCss, deskLoaded } from './_static.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const html = readFileSync(resolve(root, 'static/index.html'), 'utf8');
@@ -97,6 +97,7 @@ async function run(browser, width) {
     await page.waitForSelector('[data-sa-agent] textarea:not(:disabled)');
   }
   await page.goto(origin);
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
   await page.evaluate(() => window.sidebarNav('social'));
   await wait(() => window.DeskV1Store.state().projects.length > 0);
@@ -171,6 +172,7 @@ async function run(browser, width) {
   await page.screenshot({ path: resolve(shots, `draft_${width}.png`) });
   // Reload clears all module caches: persisted conversation still comes back.
   await page.reload();
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
   await page.evaluate(() => window.sidebarNav('social'));
   await wait(() => window.DeskV1Store.state().projects.length > 0);
