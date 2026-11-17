@@ -307,3 +307,31 @@ Read so far (update): `mc/memory_note_gate.py`, `mc/blueprints/memory_note_route
 - Sound: `scribe_user_turn.py` (positional cut, never raises),
   `memory_overlap_df.py` (pure), `memory_gate_tap.py` (observer, both calls
   guarded and logged).
+
+Read so far (update): `mc/memory_turn.py`, `mc/memory_push.py` (both whole).
+
+- K80 `memory_turn.py:285` `seed_delivered` gates on `is_unattended_task(task)`
+  (marker only); `_refresh_for_turn` `:401` on `is_unattended_session(task,
+  trigger_type)`. Check what `_build_agent_context` passes: if dispatch is
+  marker-only, a scheduled (non-steward) run gets unattended-origin notes in its
+  system prompt and loses them on live turns. Rail 2 coherence.
+- K81 `memory_turn.py:283` `seed_delivered` runs a second full `_memory_search`
+  at every dispatch only to recompute the hit list `_build_agent_context` had a
+  moment earlier. Measure one search.
+- K82 `memory_turn.py:445-447` cold hits replace `kept` with no delivered-set
+  check and no `consumer_unattended` filter; check `memory_fts.cold_search`
+  for an origin filter (rail 2) and whether the same excerpt repeats per turn.
+- K83 `memory_turn.py:493-496` truncation log compares `raw_bytes` (lines only)
+  with `cost` (lines + two ~150 B headers + ledger); dropping one line is masked
+  by the headers, so "a bound that bites silently" bites silently.
+- K84 `memory_turn.py:83`, `memory_push.py:189` put a Python `set` on the live
+  session dict. Check that no persist path json-dumps the session dict whole.
+- K85 `memory_push.py:345-397` report-mode observer, default on, delivers
+  nothing: one full `_memory_search` per Read/Edit/Write/Grep tool call and per
+  tool result with an error-looking line, on the stream reader thread, plus up
+  to 6 `near_miss` JSONL rows per call into a log with no cap. `:102`
+  `\b[45]\d{2}\b` matches any number 400-599 (a line number, a size). Measure
+  the log size read-only and one search.
+- K86 `memory_push.py:357`, `:366` `already = fname in turn_delivered` compares a
+  file name against a set of uids (`memory_turn._uid_of`); for archive/managed
+  hits they differ, so the "already delivered" column is wrong where it matters.
